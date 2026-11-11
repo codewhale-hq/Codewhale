@@ -21,6 +21,7 @@ mod diagnostic_read_only;
 mod dotenv_authority;
 mod eval_harness;
 mod exec_persistent_service;
+mod exec_prompt_input;
 mod exec_stream_drop_acceptance;
 mod exec_turn_usage;
 mod integration_mock_llm;

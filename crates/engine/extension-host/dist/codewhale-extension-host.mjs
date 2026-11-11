@@ -15852,6 +15852,16 @@ var init_prompt = __esm({
   }
 });
 
+// src/dsh/adapters.ts
+var DSH_ADAPTERS;
+var init_adapters = __esm({
+  "src/dsh/adapters.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    DSH_ADAPTERS = [];
+  }
+});
+
 // src/protocol.generated.ts
 var PROTOCOL_VERSION, MAGIC_ASCII, HEADER_LEN, MAX_FRAME, MAX_INFLIGHT, ErrorCode, METHODS, SHAPES;
 var init_protocol_generated = __esm({
@@ -17300,12 +17310,13 @@ function pendingFibers(fiber) {
   }
   return out;
 }
-var OWNER, REFUSED_SERVICES, PROVIDED_SERVICES, ACTIVATE_DEADLINE_MS, DISPOSE_DEADLINE_MS, ownerStorage, HostRoot;
+var OWNER, REFUSED_SERVICES, PROVIDED_SERVICES, CORDIS_SERVICES, ACTIVATE_DEADLINE_MS, DISPOSE_DEADLINE_MS, ownerStorage, HostRoot;
 var init_root = __esm({
   "src/root.ts"() {
     "use strict";
     init_define_BUILTIN_MODULE_DIGESTS();
     init_composition();
+    init_adapters();
     init_lib2();
     init_protocol();
     init_rpc();
@@ -17329,11 +17340,12 @@ var init_root = __esm({
     OWNER = /* @__PURE__ */ Symbol.for("codewhale.extension-host.owner");
     REFUSED_SERVICES = new Set(compatibility_default.refused_services);
     PROVIDED_SERVICES = new Set(Object.values(compatibility_default.provided_services).flat());
+    CORDIS_SERVICES = new Set(compatibility_default.provided_services.cordis);
     ACTIVATE_DEADLINE_MS = 5e3;
     DISPOSE_DEADLINE_MS = 2e3;
     ownerStorage = new AsyncLocalStorage2();
     HostRoot = class {
-      constructor(rpc2, tier) {
+      constructor(rpc2, tier, adapters = DSH_ADAPTERS) {
         this.rpc = rpc2;
         this.tier = tier;
         const root = new Context();
@@ -17764,32 +17776,45 @@ var init_root = __esm({
         Object.freeze(UserQuestionsShim.prototype);
         Object.freeze(SessionsShim.prototype);
         Object.freeze(StorageShim.prototype);
-        shimClasses.set("tools", ToolsShim);
-        shimClasses.set("commands", CommandsShim);
-        shimClasses.set("prompt", PromptShim);
-        shimClasses.set("storage", StorageShim);
-        shimClasses.set("sessions", SessionsShim);
-        shimClasses.set("userQuestions", UserQuestionsShim);
-        shimClasses.set("subagents", SubagentsShim);
-        shimClasses.set("agents", AgentsShim);
-        shimClasses.set("systemPrompt", SystemPromptShim);
-        shimClasses.set("skills", SkillsShim);
-        shimClasses.set("avatars", AvatarsShim);
-        shimClasses.set("mcp", McpShim);
-        shimClasses.set("shellHooks", ShellHooksShim);
-        root.plugin(ToolsShim);
-        root.plugin(CommandsShim);
-        root.plugin(PromptShim);
-        root.plugin(StorageShim);
-        root.plugin(SessionsShim);
-        root.plugin(UserQuestionsShim);
-        root.plugin(SubagentsShim);
-        root.plugin(AgentsShim);
-        root.plugin(SystemPromptShim);
-        root.plugin(SkillsShim);
-        root.plugin(AvatarsShim);
-        root.plugin(McpShim);
-        root.plugin(ShellHooksShim);
+        const adapterHost = {
+          tier,
+          rpc: rpc2,
+          ownerOf: (ctx) => ctx[OWNER],
+          liveInvocation: (ctx) => {
+            const invocation = host2.toolInvocations.getStore();
+            const owner = ctx[OWNER];
+            return invocation && invocation.active && !invocation.signal.aborted && owner !== void 0 && invocation.owner === owner && owner.state === "active" && !owner.disposing ? invocation : void 0;
+          },
+          log: (level, message, owner) => host2.log(level, message, owner)
+        };
+        const shims = /* @__PURE__ */ new Map([
+          ["tools", ToolsShim],
+          ["commands", CommandsShim],
+          ["prompt", PromptShim],
+          ["storage", StorageShim],
+          ["sessions", SessionsShim],
+          ["userQuestions", UserQuestionsShim],
+          ["subagents", SubagentsShim],
+          ["agents", AgentsShim],
+          ["systemPrompt", SystemPromptShim],
+          ["skills", SkillsShim],
+          ["avatars", AvatarsShim],
+          ["mcp", McpShim],
+          ["shellHooks", ShellHooksShim]
+        ]);
+        for (const adapter of adapters) {
+          if (shims.has(adapter.service)) throw new Error(`DSH adapter for \`${adapter.service}\` duplicates a service the host root already provides`);
+          shims.set(adapter.service, adapter.define(adapterHost));
+        }
+        const mismatched = [
+          ...[...shims.keys()].filter((name) => !PROVIDED_SERVICES.has(name)).map((name) => `${name} is installed but not declared in compatibility.json`),
+          ...[...PROVIDED_SERVICES].filter((name) => !CORDIS_SERVICES.has(name) && !shims.has(name)).map((name) => `${name} is declared in compatibility.json but has no installed service`)
+        ];
+        if (mismatched.length > 0) throw new Error(`DSH provided services disagree with the installed services: ${mismatched.join("; ")}`);
+        for (const [name, shim] of shims) {
+          shimClasses.set(name, shim);
+          root.plugin(shim);
+        }
         shimClasses.set("loader", ReviewedLoader);
         installCompositionLoader(root);
       }
@@ -17910,7 +17935,8 @@ var init_root = __esm({
           const plugin = pickPlugin(module);
           const missing = Object.keys(Inject.resolve(plugin.inject)).filter((name) => !PROVIDED_SERVICES.has(name));
           if (missing.length > 0) {
-            throw new Error(`requires ${missing.map((name) => `\`${name}\``).join(", ")}, not provided by the Codewhale extension host in this phase`);
+            const owned = missing.filter((name) => REFUSED_SERVICES.has(name));
+            throw new Error(`requires ${missing.map((name) => `\`${name}\``).join(", ")}, not provided by the Codewhale extension host in this phase` + (owned.length > 0 ? `; ${owned.map((name) => `\`${name}\``).join(", ")} belong${owned.length === 1 ? "s" : ""} to the Codewhale core and no reviewed bridge exposes ${owned.length === 1 ? "it" : "them"} yet` : ""));
           }
           const ownerCtx = this.root.extend({ [OWNER]: owner });
           const fiber = ownerStorage.run(owner, () => ownerCtx.plugin(plugin, params.config ?? {}));

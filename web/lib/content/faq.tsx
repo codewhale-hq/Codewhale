@@ -1,7 +1,12 @@
 import Link from "next/link";
 import { AUTO_ROUTING_COPY } from "./faq-routing";
 import { GETTING_STARTED_STEPS } from "./getting-started";
+import { releaseView } from "../capabilities";
 import { FACTS } from "../facts.generated";
+
+const RELEASED = releaseView(FACTS);
+const ROUTES = RELEASED.counts?.providerRoutes ?? null;
+const RELEASE_TAG = FACTS.latestPublishedRelease?.tag ?? "";
 import { pickText } from "../i18n/dictionaries";
 
 interface FaqItem {
@@ -149,12 +154,12 @@ codewhale doctor         # offline configuration checks`}
     q: "Which providers does Codewhale support?",
     a: (
       <>
-        <p className="mb-2">The current source declares {FACTS.providers.length} built-in provider routes:</p>
+        <p className="mb-2">{ROUTES !== null ? `Release ${RELEASE_TAG} declares ${ROUTES} built-in provider routes:` : "The built-in provider routes include:"}</p>
         <ul className="list-disc pl-5 space-y-1 text-sm text-ink-soft mb-3">
           <li><strong>DeepSeek</strong> — bundled default with a native API route, reasoning streaming, cache metrics, and thinking effort control.</li>
           <li><strong>Anthropic, OpenAI and Google</strong> — your own API account or plan for each, switchable per session.</li>
           <li><strong>Any OpenAI-compatible endpoint</strong> — gateways and servers you host yourself, through the <code className="inline">openai</code> provider with a custom <code className="inline">base_url</code>.</li>
-          <li><strong>{FACTS.providers.length - 5} more routes</strong> — including xAI, Mistral AI, Moonshot/Kimi, Z.ai, MiniMax, StepFun, Volcengine Ark, Baidu Qianfan, Model Studio, NVIDIA NIM, Fireworks AI, Together AI, DeepInfra, SiliconFlow, Novita AI, Hugging Face, OpenRouter, and the keyless local endpoints SGLang, vLLM and Ollama. <Link href={p("/models")} className="body-link">The full list is generated from the provider registry</Link>.</li>
+          <li><strong>{ROUTES !== null ? `${ROUTES - 5} more routes` : "More routes"}</strong> — including xAI, Mistral AI, Moonshot/Kimi, Z.ai, MiniMax, StepFun, Volcengine Ark, Baidu Qianfan, Model Studio, NVIDIA NIM, Fireworks AI, Together AI, DeepInfra, SiliconFlow, Novita AI, Hugging Face, OpenRouter, and the keyless local endpoints SGLang, vLLM and Ollama. <Link href={p("/models")} className="body-link">The full list is generated from the provider registry</Link>.</li>
         </ul>
         <p>
           Set the corresponding env var (e.g. <code className="inline">ANTHROPIC_API_KEY</code>) and your provider in <code className="inline">~/.codewhale/config.toml</code>.
@@ -536,12 +541,12 @@ codewhale doctor         # 离线配置检查`}
     q: "Codewhale 支持哪些提供商？",
     a: (
       <>
-        <p className="mb-2">当前源码声明了 {FACTS.providers.length} 条内置提供商路由：</p>
+        <p className="mb-2">{ROUTES !== null ? `${RELEASE_TAG} 版本声明了 ${ROUTES} 条内置提供商路由：` : "内置提供商路由包括："}</p>
         <ul className="list-disc pl-5 space-y-1 text-sm text-ink-soft mb-3">
           <li><strong>DeepSeek</strong> — 内置默认原生 API 路由，支持推理流、缓存指标和思考力度控制。</li>
           <li><strong>Anthropic、OpenAI 和 Google</strong> — 使用你自己的 API 账户或套餐，可按会话切换。</li>
           <li><strong>任何 OpenAI 兼容端点</strong> — 网关或你自己托管的服务，通过 <code className="inline">openai</code> 提供商并设置自定义 <code className="inline">base_url</code> 接入。</li>
-          <li><strong>另外 {FACTS.providers.length - 5} 条路由</strong>——包括 xAI、Mistral AI、Moonshot/Kimi、Z.ai、MiniMax、StepFun、Volcengine Ark、百度千帆、Model Studio、NVIDIA NIM、Fireworks、Together AI、DeepInfra、SiliconFlow、Novita、Hugging Face、OpenRouter，以及无需密钥的本地端点 SGLang、vLLM 和 Ollama。<Link href={p("/models")} className="body-link">完整列表由提供商注册表生成</Link>。</li>
+          <li><strong>{ROUTES !== null ? `另外 ${ROUTES - 5} 条路由` : "更多路由"}</strong>——包括 xAI、Mistral AI、Moonshot/Kimi、Z.ai、MiniMax、StepFun、Volcengine Ark、百度千帆、Model Studio、NVIDIA NIM、Fireworks、Together AI、DeepInfra、SiliconFlow、Novita、Hugging Face、OpenRouter，以及无需密钥的本地端点 SGLang、vLLM 和 Ollama。<Link href={p("/models")} className="body-link">完整列表由提供商注册表生成</Link>。</li>
         </ul>
         <p>
           设置对应的环境变量（如 <code className="inline">ANTHROPIC_API_KEY</code>）并在 <code className="inline">~/.codewhale/config.toml</code> 中配置你的提供商。

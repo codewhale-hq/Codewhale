@@ -85,7 +85,7 @@ codewhale --provider anthropic --model claude-sonnet-5-5`,
       title: "Codewhale 账户",
       blocks: [
         {
-          p: "提供商密钥和 Codewhale 账户是两回事。Codewhale 从不需要账户，新账户也暂未开放。提供商密钥通过 `codewhale auth set` 保存在你的机器上。",
+          p: "提供商密钥和 Codewhale 账户是两回事。本地使用从不需要账户；任何人都可以登录，云端计算机仅限受邀使用。提供商密钥通过 `codewhale auth set` 保存在你的机器上。",
         },
         {
           rows: [

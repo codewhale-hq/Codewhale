@@ -1,4 +1,5 @@
 import { ReviewedLoader, installCompositionLoader } from './dsh/composition.ts'
+import { DSH_ADAPTERS, type AdapterHost, type DshAdapter } from './dsh/adapters.ts'
 /**
  * The Cordis root that plugin fibers run under.
  *
@@ -68,6 +69,7 @@ export const REFUSED_SERVICES = new Set(compatibility.refused_services)
 
 /** Services the root provides; `inject` of anything else fails activation. */
 const PROVIDED_SERVICES = new Set(Object.values(compatibility.provided_services).flat())
+const CORDIS_SERVICES = new Set(compatibility.provided_services.cordis)
 
 const ACTIVATE_DEADLINE_MS = 5_000
 const DISPOSE_DEADLINE_MS = 2_000
@@ -134,7 +136,7 @@ function withDeadline<T>(promise: Promise<T>, ms: number, label: string): Promis
   return Promise.race([promise, deadline]).finally(() => clearTimeout(timer))
 }
 
-interface ToolInvocation {
+export interface ToolInvocation {
   owner: OwnerRecord
   session: object | undefined
   agent: object | undefined
@@ -165,6 +167,7 @@ export class HostRoot {
     private readonly rpc: RpcPeer,
     /** The trust tier this process serves; it activates only owners of that tier. */
     readonly tier: HostTier,
+    adapters: readonly DshAdapter[] = DSH_ADAPTERS,
   ) {
     const root: any = new Context()
     this.root = root
@@ -578,32 +581,48 @@ export class HostRoot {
     Object.freeze(UserQuestionsShim.prototype)
     Object.freeze(SessionsShim.prototype)
     Object.freeze(StorageShim.prototype)
-    shimClasses.set('tools', ToolsShim)
-    shimClasses.set('commands', CommandsShim)
-    shimClasses.set('prompt', PromptShim)
-    shimClasses.set('storage', StorageShim)
-    shimClasses.set('sessions', SessionsShim)
-    shimClasses.set('userQuestions', UserQuestionsShim)
-    shimClasses.set('subagents', SubagentsShim)
-    shimClasses.set('agents', AgentsShim)
-    shimClasses.set('systemPrompt', SystemPromptShim)
-    shimClasses.set('skills', SkillsShim)
-    shimClasses.set('avatars', AvatarsShim)
-    shimClasses.set('mcp',McpShim)
-    shimClasses.set('shellHooks',ShellHooksShim)
-    root.plugin(ToolsShim)
-    root.plugin(CommandsShim)
-    root.plugin(PromptShim)
-    root.plugin(StorageShim)
-    root.plugin(SessionsShim)
-    root.plugin(UserQuestionsShim)
-    root.plugin(SubagentsShim)
-    root.plugin(AgentsShim)
-    root.plugin(SystemPromptShim)
-    root.plugin(SkillsShim)
-    root.plugin(AvatarsShim)
-    root.plugin(McpShim)
-    root.plugin(ShellHooksShim)
+    const adapterHost: AdapterHost = {
+      tier,
+      rpc,
+      ownerOf: (ctx) => (ctx as { [OWNER]?: OwnerRecord })[OWNER],
+      liveInvocation: (ctx) => {
+        const invocation = host.toolInvocations.getStore()
+        const owner: OwnerRecord | undefined = (ctx as { [OWNER]?: OwnerRecord })[OWNER]
+        return invocation && invocation.active && !invocation.signal.aborted && owner !== undefined
+          && invocation.owner === owner && owner.state === 'active' && !owner.disposing
+          ? invocation
+          : undefined
+      },
+      log: (level, message, owner) => host.log(level, message, owner),
+    }
+    const shims = new Map<string, new (ctx: any) => Service>([
+      ['tools', ToolsShim],
+      ['commands', CommandsShim],
+      ['prompt', PromptShim],
+      ['storage', StorageShim],
+      ['sessions', SessionsShim],
+      ['userQuestions', UserQuestionsShim],
+      ['subagents', SubagentsShim],
+      ['agents', AgentsShim],
+      ['systemPrompt', SystemPromptShim],
+      ['skills', SkillsShim],
+      ['avatars', AvatarsShim],
+      ['mcp', McpShim],
+      ['shellHooks', ShellHooksShim],
+    ])
+    for (const adapter of adapters) {
+      if (shims.has(adapter.service)) throw new Error(`DSH adapter for \`${adapter.service}\` duplicates a service the host root already provides`)
+      shims.set(adapter.service, adapter.define(adapterHost))
+    }
+    const mismatched = [
+      ...[...shims.keys()].filter((name) => !PROVIDED_SERVICES.has(name)).map((name) => `${name} is installed but not declared in compatibility.json`),
+      ...[...PROVIDED_SERVICES].filter((name) => !CORDIS_SERVICES.has(name) && !shims.has(name)).map((name) => `${name} is declared in compatibility.json but has no installed service`),
+    ]
+    if (mismatched.length > 0) throw new Error(`DSH provided services disagree with the installed services: ${mismatched.join('; ')}`)
+    for (const [name, shim] of shims) {
+      shimClasses.set(name, shim)
+      root.plugin(shim)
+    }
     shimClasses.set('loader', ReviewedLoader)
     installCompositionLoader(root)
   }
@@ -714,7 +733,9 @@ export class HostRoot {
       const plugin = pickPlugin(module)
       const missing = Object.keys(Inject.resolve(plugin.inject)).filter((name) => !PROVIDED_SERVICES.has(name))
       if (missing.length > 0) {
-        throw new Error(`requires ${missing.map((name) => `\`${name}\``).join(', ')}, not provided by the Codewhale extension host in this phase`)
+        const owned = missing.filter((name) => REFUSED_SERVICES.has(name))
+        throw new Error(`requires ${missing.map((name) => `\`${name}\``).join(', ')}, not provided by the Codewhale extension host in this phase`
+          + (owned.length > 0 ? `; ${owned.map((name) => `\`${name}\``).join(', ')} belong${owned.length === 1 ? 's' : ''} to the Codewhale core and no reviewed bridge exposes ${owned.length === 1 ? 'it' : 'them'} yet` : ''))
       }
       const ownerCtx = this.root.extend({ [OWNER]: owner })
       const fiber = ownerStorage.run(owner, () => ownerCtx.plugin(plugin, params.config ?? {}))

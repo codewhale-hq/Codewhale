@@ -3,11 +3,11 @@ import type { DocsPageDict } from "../i18n/dictionaries/types";
 const EN: DocsPageDict = {
   metaTitle: "Sign in to Codewhale · Codewhale Docs",
   metaDescription:
-    "How to sign in to an existing Codewhale account from the web, the desktop app and the terminal, how to sign out, and where to export or delete your data. The terminal and codewhale web need no account.",
+    "How to sign in to Codewhale from the web, the desktop app and the terminal, how to sign out, and where to export or delete your data. The terminal and codewhale web need no account.",
   bodyClassName: "text-ink-soft leading-relaxed",
   title: "Sign in to Codewhale",
   lede:
-    "A Codewhale account is optional. This page is for people who already have one and want to sign in from the web, the desktop app or the terminal, and to sign out again.",
+    "A Codewhale account is optional, and anyone can create one by signing in. This page shows how to sign in from the web, the desktop app or the terminal, and how to sign out again. Cloud computers are invite-only.",
   sections: [
     {
       id: "no-account",
@@ -173,11 +173,11 @@ const EN: DocsPageDict = {
 const ZH: DocsPageDict = {
   metaTitle: "登录 Codewhale · Codewhale 文档",
   metaDescription:
-    "已有 Codewhale 账户的人如何在网页、桌面应用和终端登录，如何退出登录，以及在哪里导出或删除数据。终端和 codewhale web 无需账户。",
+    "如何在网页、桌面应用和终端登录 Codewhale，如何退出登录，以及在哪里导出或删除数据。终端和 codewhale web 无需账户。",
   bodyClassName: "text-ink-soft leading-[1.9] tracking-wide",
   title: "登录 Codewhale",
   lede:
-    "Codewhale 账户是可选的。本页写给已经有账户的人：如何在网页、桌面应用或终端登录，以及如何退出登录。",
+    "Codewhale 账户是可选的，任何人登录即可创建账户。本页说明如何在网页、桌面应用或终端登录，以及如何退出登录。云端计算机仅限受邀使用。",
   sections: [
     {
       id: "no-account",

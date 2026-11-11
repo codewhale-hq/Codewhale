@@ -38,25 +38,12 @@ export interface FeedItem {
 }
 
 export interface RepoStats {
-  stars: number;
-  forks: number;
-  openIssues: number;
-  openPulls: number;
-  contributors: number;
+  stars: number | null;
+  forks: number | null;
+  openIssues: number | null;
+  openPulls: number | null;
+  contributors: number | null;
   latestRelease?: { tag: string; publishedAt: string; url: string };
-  fetchedAt: string;
-}
-
-export interface CuratedDispatch {
-  generatedAt: string;
-  /** English — always present (backward compat). */
-  headline: string;
-  summary: string;
-  highlights: { title: string; href: string; tag: string; blurb: string }[];
-  movers: { number: number; title: string; href: string; reason: string }[];
-  /** zh-CN — populated by cron curate since ~May 2026. Falls back to English fields when absent. */
-  headlineZh?: string;
-  summaryZh?: string;
-  highlightsZh?: { title: string; href: string; tag: string; blurb: string }[];
-  moversZh?: { number: number; title: string; href: string; reason: string }[];
+  fetchedAt: string | null;
+  source: "live" | "snapshot" | "unknown";
 }

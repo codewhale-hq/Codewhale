@@ -1,4 +1,4 @@
-import { fetchFaces, fetchRepoStats, loadFeed, type Face } from "./github";
+import { fetchFaces, fetchRepoStats, loadFeed, readRepoStatsSnapshot, type Face } from "./github";
 import { getEnv } from "./kv";
 import { RELEASE_CONTRIBUTORS, RELEASE_HELPERS, UNRELEASED_CONTRIBUTORS } from "./release-credits";
 import type { FeedItem, RepoStats } from "./types";
@@ -36,6 +36,7 @@ export async function loadProjectPulse(mergedLimit = 6, faceLimit = 60): Promise
     faces.push(face);
   }
 
-  const live = stats.status === "fulfilled" && stats.value.stars > 0 ? stats.value : null;
-  return { stats: live, merged, faces: faces.slice(0, faceLimit) };
+  const live = stats.status === "fulfilled" && stats.value.stars !== null ? stats.value : null;
+  const known = live ?? readRepoStatsSnapshot();
+  return { stats: known.stars === null ? null : known, merged, faces: faces.slice(0, faceLimit) };
 }

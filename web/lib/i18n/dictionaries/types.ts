@@ -117,6 +117,22 @@ export interface ChromeDict {
    * the heading of the group that lists partial packs.
    */
   partialBadge: string;
+
+  stateReleased: string;
+  stateAvailable: string;
+  stateBeta: string;
+  stateDev: string;
+  stateOpen: string;
+  stateInviteOnly: string;
+  stateNotOpen: string;
+  stateNotPublic: string;
+  stateInSource: string;
+  numbersAsOf: string;
+  downloadMacos: string;
+  downloadVersion: string;
+  downloadSize: string;
+  downloadChecksum: string;
+  downloadSigned: string;
 }
 
 export interface FeaturesDict {

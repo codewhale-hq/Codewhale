@@ -5,17 +5,19 @@
  * it; wording changes here change every page at once.
  */
 
+import { DESKTOP_RELEASE, desktopDownload, type DesktopDownload, type DesktopReleaseFact } from "../desktop-release";
+import { stateLabel, STATE_TONE, surfaceCapabilities, surfaceState, type SurfaceId, type SurfaceState, type SurfaceTone } from "../surface-states";
+import { pickText } from "../i18n/dictionaries";
 import type { LocalizedText } from "./vocabulary";
 
-export type AvailabilityTone = "ready" | "attention" | "idle";
+export type AvailabilityTone = SurfaceTone;
 
 export interface ProductAvailabilityRow {
-  id: "terminal" | "local-browser" | "vscode" | "hosted-web" | "desktop" | "phone" | "computer-use";
+  id: Extract<SurfaceId, "terminal" | "local-browser" | "vscode" | "hosted-web" | "desktop" | "phone" | "computer-use">;
   surface: LocalizedText;
-  status: LocalizedText;
-  tone: AvailabilityTone;
   pages: ReadonlyArray<"product" | "app">;
   detail: LocalizedText;
+  detailReleased?: LocalizedText;
   /** Locale-relative route with the full story, an absolute external URL, or null. */
   href: string | null;
   linkLabel: LocalizedText | null;
@@ -25,8 +27,6 @@ export const AVAILABILITY_ROWS: ProductAvailabilityRow[] = [
   {
     id: "terminal",
     surface: { en: "Terminal", zh: "终端" },
-    status: { en: "Released", zh: "已发布" },
-    tone: "ready",
     pages: ["product", "app"],
     detail: {
       en: "Install release binaries for Linux, macOS, or Windows; npm and Cargo also work, and Android on Termux is a preview. The interactive TUI and codewhale exec for scripts ship together.",
@@ -38,8 +38,6 @@ export const AVAILABILITY_ROWS: ProductAvailabilityRow[] = [
   {
     id: "local-browser",
     surface: { en: "Local browser", zh: "本地浏览器" },
-    status: { en: "Released", zh: "已发布" },
-    tone: "ready",
     pages: ["product", "app"],
     detail: {
       en: "Run codewhale web to open Codewhale in your browser. Read the conversation, send a task, and answer approvals on your machine. It comes with the terminal and needs no account.",
@@ -51,8 +49,6 @@ export const AVAILABILITY_ROWS: ProductAvailabilityRow[] = [
   {
     id: "vscode",
     surface: { en: "CodeWhale GUI (VS Code)", zh: "CodeWhale GUI（VS Code）" },
-    status: { en: "Available", zh: "可用" },
-    tone: "ready",
     pages: ["product"],
     detail: {
       en: "A separate community project: chat, threads, and file changes in a VS Code sidebar over the local Runtime. Install it from the VS Code Marketplace; the source is on GitHub.",
@@ -64,8 +60,6 @@ export const AVAILABILITY_ROWS: ProductAvailabilityRow[] = [
   {
     id: "hosted-web",
     surface: { en: "Browser app", zh: "浏览器应用" },
-    status: { en: "Not open yet", zh: "暂未开放" },
-    tone: "idle",
     pages: ["product", "app"],
     detail: {
       en: "Being rebuilt to match the desktop app, and not open yet. For a browser view today, run codewhale web on your machine.",
@@ -77,12 +71,14 @@ export const AVAILABILITY_ROWS: ProductAvailabilityRow[] = [
   {
     id: "desktop",
     surface: { en: "Desktop", zh: "桌面端" },
-    status: { en: "Development build", zh: "开发版本" },
-    tone: "idle",
     pages: ["product", "app"],
     detail: {
-      en: "A native app on the same engine. Review changed files and commit them, and edit an earlier message to continue from it in a new conversation. No public download yet.",
-      zh: "基于同一引擎的原生应用。审阅已更改的文件并提交，还能编辑较早的一条消息，并在新对话中从那里继续。暂无公开下载。",
+      en: "A desktop app on the same engine. Review changed files and commit them, and edit an earlier message to continue from it in a new conversation. No public download yet.",
+      zh: "基于同一引擎的桌面应用。审阅已更改的文件并提交，还能编辑较早的一条消息，并在新对话中从那里继续。暂无公开下载。",
+    },
+    detailReleased: {
+      en: "A desktop app on the same engine. Review changed files and commit them, and edit an earlier message to continue from it in a new conversation.",
+      zh: "基于同一引擎的桌面应用。审阅已更改的文件并提交，还能编辑较早的一条消息，并在新对话中从那里继续。",
     },
     href: null,
     linkLabel: null,
@@ -90,8 +86,6 @@ export const AVAILABILITY_ROWS: ProductAvailabilityRow[] = [
   {
     id: "phone",
     surface: { en: "Phone", zh: "手机" },
-    status: { en: "Not public", zh: "未公开" },
-    tone: "idle",
     pages: ["app"],
     detail: {
       en: "The phone app is not available to the public yet.",
@@ -102,12 +96,37 @@ export const AVAILABILITY_ROWS: ProductAvailabilityRow[] = [
   },
   {
     id: "computer-use",
-    surface: { en: "Computer Use", zh: "Computer Use" },
-    status: { en: "Mac beta", zh: "Mac 测试版" },
-    tone: "attention",
+    surface: { en: "Computer Use (Mac)", zh: "Computer Use（Mac）" },
     pages: ["product"],
     detail: { en: "Background app control on macOS 13.5 or later. Requires the separate helper and plugin.", zh: "在 macOS 13.5 或更高版本上后台操作应用。需要单独安装辅助应用与插件。" },
     href: "/computer-use",
     linkLabel: { en: "Set up Computer Use", zh: "设置 Computer Use" },
   },
 ];
+
+export interface AvailabilityView {
+  state: SurfaceState;
+  status: string;
+  tone: SurfaceTone;
+  detail: string;
+  link: boolean;
+  download: DesktopDownload | null;
+}
+
+export function describeRow(
+  row: ProductAvailabilityRow,
+  locale: string,
+  desktopRelease: DesktopReleaseFact | null = DESKTOP_RELEASE,
+): AvailabilityView {
+  const context = { desktopRelease };
+  const state = surfaceState(row.id, context);
+  const capabilities = surfaceCapabilities(row.id, context);
+  return {
+    state,
+    status: stateLabel(state, locale),
+    tone: STATE_TONE[state],
+    detail: pickText(capabilities.download && row.detailReleased ? row.detailReleased : row.detail, locale),
+    link: capabilities.link && row.href !== null && row.linkLabel !== null,
+    download: capabilities.download ? desktopDownload(desktopRelease) : null,
+  };
+}

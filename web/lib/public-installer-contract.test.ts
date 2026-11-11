@@ -182,11 +182,11 @@ describe.skipIf(process.platform === "win32")("public installer compatibility co
   });
 
   it.each([
-    ["/bin/zsh", "Linux", `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="INSTALL:$PATH"' '# <<< codewhale PATH <<<' >> ~/.zshrc`, ". ~/.zshrc"],
-    ["/bin/bash", "Linux", `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="INSTALL:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc`, ". ~/.bashrc"],
-    ["/bin/bash", "Darwin", `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="INSTALL:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bash_profile`, ". ~/.bash_profile"],
+    ["/bin/zsh", "Linux", `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="INSTALL:$PATH"' '# <<< codewhale PATH <<<' >> ~/.zshrc`, "export PATH="],
+    ["/bin/bash", "Linux", `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="INSTALL:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc`, "export PATH="],
+    ["/bin/bash", "Darwin", `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="INSTALL:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bash_profile`, "export PATH="],
     ["/usr/bin/fish", "Linux", `fish_add_path "INSTALL"`, "this fish shell"],
-    ["/bin/dash", "Linux", `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="INSTALL:$PATH"' '# <<< codewhale PATH <<<' >> ~/.profile`, ". ~/.profile"],
+    ["/bin/dash", "Linux", `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="INSTALL:$PATH"' '# <<< codewhale PATH <<<' >> ~/.profile`, "export PATH="],
   ] as const)(
     "prints the persistent PATH line for %s on %s without editing a profile",
     (shell, os, persist, reload) => {
@@ -205,7 +205,7 @@ describe.skipIf(process.platform === "win32")("public installer compatibility co
   it.skipIf(!existsSync("/bin/dash"))("the printed profile and reload commands work in dash", () => {
     const { installDir, result } = installFixture(false, { shell: "/bin/dash", os: "Linux" });
     const persist = result.stdout.split("\n").find((line) => line.trim().startsWith("printf '%s\\n' '# >>> codewhale PATH >>>'"));
-    const reload = result.stdout.match(/Then run: (.+?)   \(or open a new terminal\)/)?.[1];
+    const reload = result.stdout.split("\n").find((line) => line.trim().startsWith('export PATH="'))?.trim();
     expect(persist).toBeDefined();
     expect(reload).toBeDefined();
     const home = path.join(installDir, "..", "home");
@@ -216,6 +216,37 @@ describe.skipIf(process.platform === "win32")("public installer compatibility co
     });
     expect(applied.status, applied.stderr).toBe(0);
     expect(applied.stdout.trim()).toBe(path.join(realpathSync(installDir), "codewhale"));
+  });
+
+  it.each([
+    ["/bin/zsh", "Linux"],
+    ["/bin/bash", "Linux"],
+    ["/usr/bin/fish", "Linux"],
+    ["/bin/dash", "Darwin"],
+  ] as const)("ends with the PATH command and the verify command for %s on %s", (shell, os) => {
+    const { result } = installFixture(false, { shell, os, installUnderHome: true });
+    const lines = result.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+
+    expect(lines.at(-1)).toBe("codewhale --version");
+    if (shell.endsWith("fish")) {
+      expect(lines.at(-5)).toContain("fish_add_path");
+    } else {
+      expect(lines.at(-3)).toBe('export PATH="$HOME/.local/bin:$PATH"; hash -r');
+    }
+  });
+
+  it("ends with the full-path verify command for a shell it has no PATH line for", () => {
+    const { installDir, result } = installFixture(false, { shell: "/bin/tcsh" });
+    const lines = result.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+
+    expect(lines.at(-1)).toBe(`"${realpathSync(installDir)}/codewhale" --version`);
+  });
+
+  it("ends with the next step when PATH already selects this install", () => {
+    const { result } = installFixture(false, { onPath: "first" });
+    const lines = result.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+
+    expect(lines.at(-1)).toBe("Next: codewhale --version");
   });
 
   it("writes the default directory as $HOME/.local/bin in the persistent line", () => {

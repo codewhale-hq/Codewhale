@@ -22,7 +22,15 @@ function run(args: string[], { status = 200, cloud = { release: { latest: "0.10.
   writeFileSync(join(root, "web", "data", "latest-published-release.json"), `${JSON.stringify(OLD, null, 2)}\n`);
   writeFileSync(join(root, "docs", "public-surface-facts.json"), `${JSON.stringify({ latestPublishedRelease: { ...OLD, sources: ["x"] } }, null, 2)}\n`);
   writeFileSync(join(root, "docs", "cloud-facts", "stable.json"), `${JSON.stringify(cloud, null, 2)}\n`);
-  const release = JSON.stringify({ tag_name: "v0.10.1", published_at: "2026-09-02T00:00:00Z" });
+  const release = JSON.stringify({
+    tag_name: "v0.10.1",
+    published_at: "2026-09-02T00:00:00Z",
+    assets: [
+      { name: "b-asset", size: 20, state: "uploaded", digest: `sha256:${"b".repeat(64)}` },
+      { name: "a-asset", size: 10, state: "uploaded" },
+      { name: "partial", size: 5, state: "open", digest: `sha256:${"c".repeat(64)}` },
+    ],
+  });
   const stub = `globalThis.fetch = async () => new Response(${JSON.stringify(release)}, { status: ${status} });`;
   const result = spawnSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(stub)}`, join(root, "web", "scripts", "sync-latest-release.mjs"), ...args], { encoding: "utf8", env: { ...process.env, GITHUB_TOKEN: "" } });
   const read = (...parts: string[]) => JSON.parse(readFileSync(join(root, ...parts), "utf8"));
@@ -45,7 +53,12 @@ describe("sync-latest-release", () => {
 
     const ok = run([]);
     expect(ok.result.status, ok.result.stderr).toBe(0);
-    expect(ok.target().tag).toBe("v0.10.1");
+    expect(ok.target()).toMatchObject({
+      tag: "v0.10.1",
+      assets: [{ name: "a-asset", size: 10, sha256: null }, { name: "b-asset", size: 20, sha256: "b".repeat(64) }],
+    });
+    expect(Date.parse(ok.target().readAt)).toBeGreaterThan(0);
+    expect(ok.mirror().latestPublishedRelease).not.toHaveProperty("assets");
     expect(ok.mirror().latestPublishedRelease).toMatchObject({ tag: "v0.10.1", sources: ["x"] });
     expect(JSON.parse(readFileSync(join(ok.root, "docs", "cloud-facts", "stable.json"), "utf8")).release).toMatchObject({ latest: "0.10.1" });
   });

@@ -13228,6 +13228,13 @@ var init_prompt = __esm({
   }
 });
 
+// src/dsh/adapters.ts
+var init_adapters = __esm({
+  "src/dsh/adapters.ts"() {
+    "use strict";
+  }
+});
+
 // src/protocol.generated.ts
 var MAGIC_ASCII;
 var init_protocol_generated = __esm({
@@ -13989,11 +13996,12 @@ var init_commands = __esm({
 
 // src/root.ts
 import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
-var REFUSED_SERVICES, PROVIDED_SERVICES, ownerStorage;
+var REFUSED_SERVICES, PROVIDED_SERVICES, CORDIS_SERVICES, ownerStorage;
 var init_root = __esm({
   "src/root.ts"() {
     "use strict";
     init_composition();
+    init_adapters();
     init_protocol();
     init_rpc();
     init_dsh_message_compat();
@@ -14015,6 +14023,7 @@ var init_root = __esm({
     init_commands();
     REFUSED_SERVICES = new Set(compatibility_default.refused_services);
     PROVIDED_SERVICES = new Set(Object.values(compatibility_default.provided_services).flat());
+    CORDIS_SERVICES = new Set(compatibility_default.provided_services.cordis);
     ownerStorage = new AsyncLocalStorage2();
   }
 });

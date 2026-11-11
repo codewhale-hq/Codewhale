@@ -87,16 +87,16 @@ export function deriveModels() {
   return models;
 }
 
+export function countToolSpecs(bodies) {
+  let count = 0;
+  for (const body of bodies) count += (body.match(/^impl ToolSpec for /gm) ?? []).length;
+  return count > 0 ? count : null;
+}
+
 export function deriveToolCount() {
   const dir = join(REPO_ROOT, "crates/engine/src/tools");
   if (!existsSync(dir)) return null;
-  let count = 0;
-  for (const f of readdirSync(dir)) {
-    if (!f.endsWith(".rs")) continue;
-    const body = readFileSync(join(dir, f), "utf-8");
-    count += (body.match(/^impl ToolSpec for /gm) ?? []).length;
-  }
-  return count > 0 ? count : null;
+  return countToolSpecs(readdirSync(dir).filter((f) => f.endsWith(".rs")).map((f) => readFileSync(join(dir, f), "utf-8")));
 }
 
 export function deriveContributorCount() {
@@ -132,7 +132,11 @@ export function deriveLatestPublishedRelease() {
       typeof release.publishedAt !== "string" ||
       !Number.isFinite(Date.parse(release.publishedAt)) ||
       typeof release.url !== "string" ||
-      release.url !== `https://github.com/codewhale-hq/CodeWhale/releases/tag/${release.tag}`
+      release.url !== `https://github.com/codewhale-hq/CodeWhale/releases/tag/${release.tag}` ||
+      (release.readAt !== undefined && !(typeof release.readAt === "string" && Number.isFinite(Date.parse(release.readAt)))) ||
+      (release.assets !== undefined && !(Array.isArray(release.assets) && release.assets.every((asset) =>
+        asset && typeof asset.name === "string" && Number.isSafeInteger(asset.size) && asset.size >= 0 &&
+        (asset.sha256 === null || (typeof asset.sha256 === "string" && /^[0-9a-f]{64}$/.test(asset.sha256))))))
     ) {
       return null;
     }
@@ -142,14 +146,19 @@ export function deriveLatestPublishedRelease() {
   }
 }
 
-export function deriveFeatures() {
-  const source = read("docs/features.toml");
-  if (!source) throw new Error("missing feature registry");
+export function parseFeatureRows(source) {
   const parsed = spawnSync("python3", ["-c", "import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())['feature']))"],
     { input: source, encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
   if (parsed.status !== 0) throw new Error(`feature registry parse failed: ${parsed.stderr || parsed.error || parsed.status}`);
   const rows = JSON.parse(parsed.stdout);
   if (!Array.isArray(rows) || rows.length === 0) throw new Error("empty feature registry");
+  return rows;
+}
+
+export function deriveFeatures() {
+  const source = read("docs/features.toml");
+  if (!source) throw new Error("missing feature registry");
+  const rows = parseFeatureRows(source);
   const ids = new Set();
   const features = rows.map((row) => {
     if (!row || typeof row.id !== "string" || !/^[a-z0-9-]+$/.test(row.id) || ids.has(row.id)

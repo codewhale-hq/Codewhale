@@ -180,7 +180,7 @@ describe("private merch interest list and deletion", () => {
     expect((await second.json()).cursor).toBeNull();
     const deleting = (origin: string, id: string) => new Request("https://codewhale.net/api/admin/merch/interest", { method: "DELETE", headers: { ...headers, Origin: origin, "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
     expect((await handleAdminMerchInterest(deleting("https://evil.example", first.entries[0].id), env, auth)).status).toBe(403);
-    expect((await handleAdminMerchInterest(deleting("https://codewhale.net", "dispatch:latest"), env, auth)).status).toBe(422);
+    expect((await handleAdminMerchInterest(deleting("https://codewhale.net", "agent:state:latest"), env, auth)).status).toBe(422);
     const removed = await handleAdminMerchInterest(deleting("https://codewhale.net", first.entries[0].id), env, auth);
     expect(await removed.json()).toEqual({ ok: true });
     expect(interestRecords()).toHaveLength(1);

@@ -2,15 +2,15 @@
 /*  Tokens and roles — the whale-road                                  */
 /* ------------------------------------------------------------------ */
 /*
- * Direction: codewhale-design/DIRECTION.md. The website ocean palette is
- * restored from the Codewhale brand kit; mapping: docs/BRAND_COLOR_MAPPING.md.
- * Shared type, spacing, radius, motion and elevation come from tokens.json,
- * exported to ../tokens.css (`--gpui-*`) by scripts/export-design-tokens.py.
- * Pages paint with these roles rather than importing desktop colors.
+ * Direction: codewhale-design/DIRECTION.md. The site's colour roles are the
+ * codewhale-design 5.x light and dark roles (the desktop app's), type is
+ * Geist, and shared spacing, radius, motion and elevation come from
+ * tokens.json, exported to ../tokens.css (`--gpui-*`) by
+ * scripts/export-design-tokens.py. Pages paint with these roles rather than
+ * importing desktop colors.
  *
- *   Grounds are warm paper (light) and navy ocean (dark). Filled actions
- *   use blue; links, focus and selection carry the matching accent.
- *   The sea below the horizon stays navy in both appearances.
+ *   Filled actions use the primary blue; links, focus and selection carry
+ *   the accent. The sea below the horizon stays navy in both appearances.
  *
  *   Depth is elevation. --panel is raised (nearer the surface, lighter);
  *   --bg is the floor; --surface is recessed (code, rails, fields).
@@ -18,8 +18,10 @@
  *   State is a mark and a word: --live (working, done, ready), --attention
  *   (needs you), --danger (failed), --muted (idle). Never colour alone.
  *
- * NAMING TRAP: tokens.json `surface` is the RAISED colour (web --panel);
- * tokens.json `sidebar` is the RECESSED one (web --surface).
+ * NAMING TRAP: tokens.json `background` is the floor (web --bg); in dark,
+ * tokens.json `sidebar` is the raised colour (web --panel) and `surface` the
+ * recessed one (web --surface); in light, `surface` is raised and `sidebar`
+ * the recessed one.
  */
 
 /* ---------- scheme-independent tokens ---------- */
@@ -32,55 +34,34 @@
   --kit-ocean-depth: #173b50;
   --kit-night-surface: #20374e;
   --kit-night-border: #31495e;
-  --kit-foam: #e6eef7;
-  --kit-mist: #bbc9d7;
-  --kit-bioluminescence: #8fbdff;
-  --kit-warm-paper: #faf9f5;
-  --kit-white: #ffffff;
-  --kit-seaglass: #edf1ef;
-  --kit-shallows: #dcefeb;
-  --kit-tideline: #d2dedd;
-  --kit-ink: #263844;
-  --kit-slate: #495a63;
-  --kit-signal-blue: #245bc7;
-  --kit-kelp: #9ecbbd;
-  --kit-kelp-deep: #396554;
-  --kit-lantern: #eab982;
-  --kit-amber: #84530d;
-  --kit-coral: #eea59d;
-  --kit-rust: #9e3f36;
   --ocean-abyss: var(--kit-abyss);
   --ocean-floor: var(--kit-deep-navy);
   --ocean-raised: var(--kit-ocean-depth);
   --ocean-hover: var(--kit-night-surface);
   --ocean-selected: var(--kit-night-border);
   --ocean-line: var(--kit-night-border);
-  --ocean-line-strong: var(--kit-mist);
+  --ocean-line-strong: var(--gpui-dark-border-strong);
   --ocean-sky: var(--kit-mark-navy);
   --brand-light: var(--kit-current-blue);
   --brand-deep: var(--kit-whale-blue);
   --brand-mid: #1877c9;
   --brand-fill: linear-gradient(135deg, var(--brand-mid), var(--brand-deep));
   --brand-fill-hover: linear-gradient(135deg, var(--brand-deep), var(--kit-mark-navy));
-  --on-brand: var(--kit-white);
+  --on-brand: var(--gpui-dark-on-primary);
   --sea-surface: var(--brand-deep);
   --sea-shallow: #0f3991;
   --sea-mid: var(--kit-mark-navy);
   --sea: linear-gradient(180deg, var(--sea-shallow) 0, var(--sea-mid) 5rem, var(--ocean-floor) 22rem);
   --sea-band: linear-gradient(180deg, var(--sea-shallow) 0, var(--sea-mid) 40%, var(--ocean-floor) 100%);
-  --tide-aqua: var(--kit-shallows);
-  --tide: linear-gradient(180deg, var(--kit-warm-paper) 0, var(--tide-aqua) 2rem, var(--brand-light) 4.5rem, var(--brand-deep) 7rem, var(--sea-mid) 11rem, var(--ocean-floor) 26rem);
-  --horizon-light: rgb(143 189 255 / 0.85);
+  --horizon-light: color-mix(in srgb, var(--gpui-dark-accent) 85%, transparent);
   --horizon-glow: var(--horizon-light);
   --ombre: var(--gpui-ombre);
 
-  /* Type: Shannon Sans for every role, the system monospace stack for
-     things a person could type or paste. No serif, no third family. */
-  --font-body: var(--font-shannon-latin), var(--font-shannon-ext), var(--gpui-font-fallbacks),
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body: var(--font-geist-sans), var(--gpui-font-fallbacks), ui-sans-serif, system-ui,
+    -apple-system, "Segoe UI", sans-serif;
   --font-display: var(--font-body);
-  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", monospace;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco,
+    Consolas, "Liberation Mono", monospace;
   --font-cjk: var(--gpui-font-fallbacks), sans-serif;
 
   /* Type roles from tokens.json. The editorial section and display sizes
@@ -150,67 +131,67 @@
   }
 }
 
-/* ---------- light — warm paper ---------- */
+/* ---------- light ---------- */
 :root {
-  --bg: #faf8f5;
-  --surface: #f0ede8;
-  --panel: var(--kit-white);
-  --text: var(--kit-ink);
-  --muted: var(--kit-slate);
-  --line: #d9d5cf;
-  --line-strong: var(--kit-slate);
-  --accent: var(--kit-whale-blue);
-  --accent-hover: rgb(11 72 187 / var(--gpui-primary-hover-opacity));
-  --on-accent: var(--kit-white);
+  --bg: var(--gpui-light-bg);
+  --surface: var(--gpui-light-sidebar);
+  --panel: var(--gpui-light-panel);
+  --text: var(--gpui-light-text);
+  --muted: var(--gpui-light-text-muted);
+  --line: var(--gpui-light-border);
+  --line-strong: var(--gpui-light-border-strong);
+  --accent: var(--gpui-light-primary);
+  --accent-hover: color-mix(in srgb, var(--gpui-light-primary) calc(var(--gpui-primary-hover-opacity) * 100%), transparent);
+  --on-accent: var(--gpui-light-on-primary);
 
-  --hover: #f0ede8;
-  --selected: var(--kit-shallows);
-  --selection: rgb(11 72 187 / var(--gpui-selection-opacity));
-  --ring: var(--kit-whale-blue);
-  --live: var(--kit-kelp-deep);
-  --success: var(--kit-kelp-deep);
-  --attention: var(--kit-amber);
-  --danger: var(--kit-rust);
-  --mark-ink: var(--kit-ink);
+  --hover: var(--gpui-light-hover);
+  --selected: var(--gpui-light-list-active);
+  --selection: color-mix(in srgb, var(--gpui-light-accent) calc(var(--gpui-selection-opacity) * 100%), transparent);
+  --ring: var(--gpui-light-accent);
+  --live: var(--gpui-light-live);
+  --success: var(--gpui-light-live);
+  --attention: var(--gpui-light-attention);
+  --danger: var(--gpui-light-danger);
+  --mark-ink: var(--gpui-light-text);
   --ombre-ink: linear-gradient(135deg, var(--brand-light), var(--brand-deep));
-  --diff-add: rgb(57 101 84 / 0.14);
-  --diff-del: rgb(158 63 54 / 0.11);
-  --ground: var(--bg);
+  --diff-add: var(--gpui-light-diff-add);
+  --diff-del: var(--gpui-light-diff-remove);
+  --ground: var(--gpui-water-light) top center / 100% 38rem no-repeat, var(--bg);
   --glow: 0 0 0 3px color-mix(in srgb, currentColor 16%, transparent);
-  --glow-focus: 0 0 0 4px rgb(11 72 187 / 0.16);
+  --glow-focus: 0 0 0 4px color-mix(in srgb, var(--gpui-light-accent) 16%, transparent);
   --shadow-popover: var(--gpui-elevation-popover-light);
   --shadow-dialog: var(--gpui-elevation-dialog-light);
   color-scheme: light;
 }
 
-/* ---------- dark — navy ocean, only when pinned ---------- */
+/* ---------- dark — only when pinned ---------- */
 :root[data-theme="dark"] {
-  --bg: var(--ocean-floor);
-  --surface: var(--ocean-abyss);
-  --panel: var(--ocean-raised);
-  --text: var(--kit-foam);
-  --muted: var(--kit-mist);
-  --line: var(--ocean-line);
-  --line-strong: var(--ocean-line-strong);
-  --accent: var(--kit-bioluminescence);
-  --accent-hover: rgb(143 189 255 / var(--gpui-primary-hover-opacity));
-  --on-accent: var(--kit-abyss);
+  --bg: var(--gpui-dark-bg);
+  --surface: var(--gpui-dark-panel);
+  --panel: var(--gpui-dark-sidebar);
+  --text: var(--gpui-dark-text);
+  --muted: var(--gpui-dark-text-muted);
+  --line: var(--gpui-dark-border);
+  --line-strong: var(--gpui-dark-border-strong);
+  --accent: var(--gpui-dark-accent);
+  --accent-hover: color-mix(in srgb, var(--gpui-dark-accent) calc(var(--gpui-primary-hover-opacity) * 100%), transparent);
+  --on-accent: var(--gpui-dark-bg);
 
-  --hover: var(--ocean-hover);
-  --selected: var(--ocean-selected);
-  --selection: rgb(143 189 255 / var(--gpui-selection-opacity));
-  --ring: var(--kit-bioluminescence);
-  --live: var(--kit-kelp);
-  --success: var(--kit-kelp);
-  --attention: var(--kit-lantern);
-  --danger: var(--kit-coral);
-  --mark-ink: var(--kit-foam);
-  --ombre-ink: linear-gradient(135deg, var(--kit-bioluminescence), var(--brand-light));
-  --diff-add: rgb(158 203 189 / 0.16);
-  --diff-del: rgb(238 165 157 / 0.12);
-  --ground: radial-gradient(90rem 38rem at 50% -14rem, rgb(30 143 216 / 0.3), transparent 70%), linear-gradient(180deg, var(--ocean-sky) 0, var(--ocean-floor) 34rem);
+  --hover: var(--gpui-dark-hover);
+  --selected: var(--gpui-dark-list-active);
+  --selection: color-mix(in srgb, var(--gpui-dark-accent) calc(var(--gpui-selection-opacity) * 100%), transparent);
+  --ring: var(--gpui-dark-accent);
+  --live: var(--gpui-dark-live);
+  --success: var(--gpui-dark-live);
+  --attention: var(--gpui-dark-attention);
+  --danger: var(--gpui-dark-danger);
+  --mark-ink: var(--gpui-dark-text);
+  --ombre-ink: linear-gradient(135deg, var(--gpui-dark-accent), var(--brand-light));
+  --diff-add: var(--gpui-dark-diff-add);
+  --diff-del: var(--gpui-dark-diff-remove);
+  --ground: var(--gpui-water-dark) top center / 100% 38rem no-repeat, var(--bg);
   --glow: 0 0 0 3px color-mix(in srgb, currentColor 20%, transparent), 0 0 12px 1px color-mix(in srgb, currentColor 45%, transparent);
-  --glow-focus: 0 0 0 4px rgb(143 189 255 / 0.3);
+  --glow-focus: 0 0 0 4px color-mix(in srgb, var(--gpui-dark-accent) 30%, transparent);
   --shadow-popover: var(--gpui-elevation-popover-dark);
   --shadow-dialog: var(--gpui-elevation-dialog-dark);
   color-scheme: dark;
@@ -225,28 +206,28 @@
   --bg: var(--ocean-floor);
   --surface: var(--ocean-abyss);
   --panel: var(--ocean-raised);
-  --text: var(--kit-foam);
-  --muted: var(--kit-mist);
+  --text: var(--gpui-dark-text);
+  --muted: var(--gpui-dark-text-muted);
   --line: var(--ocean-line);
   --line-strong: var(--ocean-line-strong);
-  --accent: var(--kit-bioluminescence);
-  --accent-hover: rgb(143 189 255 / var(--gpui-primary-hover-opacity));
-  --on-accent: var(--kit-abyss);
+  --accent: var(--gpui-dark-accent);
+  --accent-hover: color-mix(in srgb, var(--gpui-dark-accent) calc(var(--gpui-primary-hover-opacity) * 100%), transparent);
+  --on-accent: var(--gpui-dark-bg);
 
   --hover: var(--ocean-hover);
   --selected: var(--ocean-selected);
-  --selection: rgb(143 189 255 / var(--gpui-selection-opacity));
-  --ring: var(--kit-bioluminescence);
-  --live: var(--kit-kelp);
-  --success: var(--kit-kelp);
-  --attention: var(--kit-lantern);
-  --danger: var(--kit-coral);
-  --mark-ink: var(--kit-foam);
-  --ombre-ink: linear-gradient(135deg, var(--kit-bioluminescence), var(--brand-light));
-  --diff-add: rgb(158 203 189 / 0.16);
-  --diff-del: rgb(238 165 157 / 0.12);
+  --selection: color-mix(in srgb, var(--gpui-dark-accent) calc(var(--gpui-selection-opacity) * 100%), transparent);
+  --ring: var(--gpui-dark-accent);
+  --live: var(--gpui-dark-live);
+  --success: var(--gpui-dark-live);
+  --attention: var(--gpui-dark-attention);
+  --danger: var(--gpui-dark-danger);
+  --mark-ink: var(--gpui-dark-text);
+  --ombre-ink: linear-gradient(135deg, var(--gpui-dark-accent), var(--brand-light));
+  --diff-add: var(--gpui-dark-diff-add);
+  --diff-del: var(--gpui-dark-diff-remove);
   --glow: 0 0 0 3px color-mix(in srgb, currentColor 20%, transparent), 0 0 12px 1px color-mix(in srgb, currentColor 45%, transparent);
-  --glow-focus: 0 0 0 4px rgb(143 189 255 / 0.3);
+  --glow-focus: 0 0 0 4px color-mix(in srgb, var(--gpui-dark-accent) 30%, transparent);
   --shadow-popover: var(--gpui-elevation-popover-dark);
 
   --paper: var(--bg);

@@ -310,25 +310,50 @@ done
 echo ""
 install_binary "$receipt_tmp/$receipt_name" "$BIN_DIR/$receipt_name" 0644
 echo "Done. Commands installed to $BIN_DIR."
-echo "Uninstall this receipted copy: \"$BIN_DIR/codewhale\" uninstall --yes"
+supports_uninstall=0
+installed_help="$("$BIN_DIR/codewhale" --help </dev/null 2>/dev/null || true)"
+if printf '%s\n' "$installed_help" | grep -E '^[[:space:]]+uninstall([[:space:]]|$)' >/dev/null; then
+    supports_uninstall=1
+fi
+if [[ "$supports_uninstall" == 1 ]]; then
+    echo "Uninstall this receipted copy: \"$BIN_DIR/codewhale\" uninstall --yes"
+else
+    echo "Uninstall: this release has no uninstall command. Remove the files: rm \"$BIN_DIR/codewhale\" \"$BIN_DIR/codew\" \"$BIN_DIR/.codewhale-install.sha256\""
+    echo "Your data in ~/.codewhale is separate; delete it only if you want it gone."
+fi
 if [[ -n "$recovery_dir" ]]; then
     echo "Previous files are kept in $recovery_dir for 30 days. Undo: \"$BIN_DIR/codewhale\" doctor --restore $(basename "$recovery_dir")"
 fi
 "$BIN_DIR/codewhale" doctor --installs --brief 2>/dev/null || true
 echo "Future updates: \"$BIN_DIR/codewhale\" update"
-echo "Updates install automatically; turn off with: codewhale config set update.mode notify"
+if [[ "$supports_uninstall" == 1 ]]; then
+    echo "Updates install automatically; turn off with: codewhale config set update.mode notify"
+fi
+if [[ "$(uname -s)" == Darwin ]] && ! command -v node >/dev/null 2>&1; then
+    echo ""
+    echo "Computer Use is included and needs Node.js 20 or newer on PATH."
+    echo "Install Node.js from https://nodejs.org/, then restart Codewhale to enable Computer Use."
+fi
+path_selected=1
 for bin in codewhale codew; do
     resolved="$(command -v "$bin" || true)"
     if [[ "$resolved" != "$BIN_DIR/$bin" ]]; then
         echo "PATH selects ${resolved:-no $bin command}; this install is $BIN_DIR/$bin"
+        path_selected=0
     fi
 done
-echo "To select this installation in the current shell:"
-echo "  export PATH=\"$BIN_DIR:\$PATH\""
-echo "  hash -r"
-echo "  command -v codewhale codew"
-echo "Keep the directory first in your shell profile after verifying it."
-if ! command -v node >/dev/null 2>&1; then
-    echo "Computer Use is included and needs Node.js 20 or newer on PATH."
-    echo "Install Node.js from https://nodejs.org/, then restart Codewhale to enable Computer Use."
+echo ""
+if [[ "$path_selected" == 1 ]]; then
+    echo "Next: codewhale --version"
+else
+    if [[ -z "$(command -v codewhale || true)" ]]; then
+        echo "codewhale is not on your PATH in this shell yet."
+    else
+        echo "A different codewhale comes first on your PATH in this shell."
+    fi
+    echo "Keep the directory first in your shell profile once you have checked it."
+    echo "Run this now, in this shell:"
+    echo "  export PATH=\"$BIN_DIR:\$PATH\"; hash -r"
+    echo "Then check it:"
+    echo "  codewhale --version"
 fi

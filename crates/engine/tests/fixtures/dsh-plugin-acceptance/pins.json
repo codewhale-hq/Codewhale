@@ -1,0 +1,657 @@
+{
+ "schema": "codewhale.dsh-acceptance-pins/1",
+ "issue": "CW-7051",
+ "source": "DSH-PINNED-ACCEPTANCE.json (DSH-00) re-hashed against the survey tarballs",
+ "membership": "THE-33 option A, ratified in CURRENT_DECISIONS section 125 item 1 (DSH-H01)",
+ "target_dsh_version": "0.2.2-rc.1",
+ "supported_os": [
+  "macos",
+  "linux",
+  "windows"
+ ],
+ "rows": [
+  {
+   "row": 1,
+   "package": "@michengai/dsh-code-review",
+   "version": "1.0.9",
+   "family": "headless tool/command",
+   "tarball": "michengai-dsh-code-review-1.0.9.tgz",
+   "tarball_sha256": "09215a2f809327db33074a44d4371439b8163d953f1826b3f2a9481828b6bee3",
+   "admission": "admit",
+   "admission_basis": "engines.dsh",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [],
+   "named_brokers_needed": []
+  },
+  {
+   "row": 2,
+   "package": "@michengai/dsh-btw",
+   "version": "1.3.7",
+   "family": "headless command",
+   "tarball": "michengai-dsh-btw-1.3.7.tgz",
+   "tarball_sha256": "7cb6a910e82b21362a57e6007ad20df01d50048b6ef789ca6c5ed57be59622dc",
+   "admission": "admit",
+   "admission_basis": "engines.dsh",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "conversation.chat.text-interaction",
+    "conversation.input.dock",
+    "conversation.user.text.node",
+    "plugins.bundle.config",
+    "plugins.row.config"
+   ],
+   "named_brokers_needed": []
+  },
+  {
+   "row": 3,
+   "package": "@linxin666/dsh-liangshen",
+   "version": "0.4.16",
+   "family": "prompt/preset",
+   "tarball": "linxin666-dsh-liangshen-0.4.16.tgz",
+   "tarball_sha256": "ddbc39bbf88c0bbb724a7b9e129afd55a53f58d6ae68fe9777287c13a9de7b3e",
+   "admission": "admit",
+   "admission_basis": "peerDependencies",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "conversation.input.right",
+    "plugins.bundle.config",
+    "settings.plugin.item"
+   ],
+   "named_brokers_needed": []
+  },
+  {
+   "row": 4,
+   "package": "dsh-anchored-standard",
+   "version": "1.2.1",
+   "family": "prompt/preset",
+   "tarball": "Jungod1121-dsh-anchored-standard.tar.gz",
+   "tarball_sha256": "3ff95dbb5e7f8bcba984afdf503f06abe0896b298afb39d533a1eafef2d7bfa2",
+   "admission": "admit",
+   "admission_basis": "no-dsh-declaration",
+   "declares_client": false,
+   "declared_dsh_slot_keys": [],
+   "named_brokers_needed": []
+  },
+  {
+   "row": 5,
+   "package": "@michengai/dsh-agency-agents",
+   "version": "1.2.27",
+   "family": "prompt/skills + agents",
+   "tarball": "michengai-dsh-agency-agents-1.2.27.tgz",
+   "tarball_sha256": "fafb0c8a645ea088cbf5b427e135a62bf8c506c0fb5be9fc65bce4f635fd0216",
+   "admission": "admit",
+   "admission_basis": "engines.dsh",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "conversation.input.dock",
+    "plugins.bundle.config",
+    "settings.section",
+    "sidebar.panellist"
+   ],
+   "named_brokers_needed": []
+  },
+  {
+   "row": 6,
+   "package": "@liustack/modsearch",
+   "version": "5.10.12",
+   "family": "headless tool",
+   "tarball": "liustack-modsearch-5.10.12.tgz",
+   "tarball_sha256": "c6ebdba4ce896b76bc97351919ec717d71fd28d4a36aa33529016a9dd79c4e91",
+   "admission": "admit",
+   "admission_basis": "no-dsh-declaration",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "plugins.bundle.config",
+    "settings.plugin.item"
+   ],
+   "named_brokers_needed": []
+  },
+  {
+   "row": 7,
+   "package": "@liustack/modlens",
+   "version": "3.27.3",
+   "family": "headless tool (vision)",
+   "tarball": "liustack-modlens-3.27.3.tgz",
+   "tarball_sha256": "1cbf6fb0ec1221b8a8af27458128d6972b4083bf570aa263168f5ac1c580c325",
+   "admission": "admit",
+   "admission_basis": "no-dsh-declaration",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "plugins.bundle.config",
+    "settings.plugin.item"
+   ],
+   "named_brokers_needed": [
+    "llm"
+   ]
+  },
+  {
+   "row": 8,
+   "package": "@anionex/dsh-vision-toolkit",
+   "version": "0.1.49",
+   "family": "headless tool",
+   "tarball": "anionex-dsh-vision-toolkit-0.1.49.tgz",
+   "tarball_sha256": "09ffed8a5eb3dddbb61aee896117bf37fd3087837f2a1df2a6ed86a353f8d97d",
+   "admission": "admit",
+   "admission_basis": "peerDependencies",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "conversation.input.dock",
+    "settings.section",
+    "tool.call.toolview"
+   ],
+   "named_brokers_needed": [
+    "credentials",
+    "subprocess"
+   ]
+  },
+  {
+   "row": 9,
+   "package": "dsh-image-gen",
+   "version": "0.11.1",
+   "family": "headless tool + panel",
+   "tarball": "dsh-image-gen-0.11.1.tgz",
+   "tarball_sha256": "4d8d8add5614d8b14c031b0e9ba04de042a258f53913e23eaa297f6d0a4d0619",
+   "admission": "admit",
+   "admission_basis": "no-dsh-declaration",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "conversation.chat.node",
+    "conversation.input.right",
+    "conversation.view",
+    "main.page-menu",
+    "plugins.bundle.config",
+    "settings.plugin.item",
+    "sidebar.right.pane.tab",
+    "tool.call.toolview"
+   ],
+   "named_brokers_needed": [
+    "credentials"
+   ]
+  },
+  {
+   "row": 10,
+   "package": "@dfy-plugins/dsh-image-generation",
+   "version": "0.1.4",
+   "family": "headless tool",
+   "tarball": "dfy-plugins-dsh-image-generation-0.1.4.tgz",
+   "tarball_sha256": "fbd5e5b2bd874914460b9d367dd517936eeee804ce82ddc5d05f3911ab9040ea",
+   "admission": "admit",
+   "admission_basis": "peerDependencies",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "plugins.bundle.config",
+    "plugins.row.config",
+    "tool.call.toolview"
+   ],
+   "named_brokers_needed": [
+    "credentials",
+    "fs"
+   ]
+  },
+  {
+   "row": 11,
+   "package": "dsh-univer-office",
+   "version": "0.4.0",
+   "family": "headless tool + panel",
+   "tarball": "dsh-univer-office-0.4.0.tgz",
+   "tarball_sha256": "c5614b3e2dbaa809d6376a19821a108ddf8ae0e79818d4afd77be79de7cac2b8",
+   "admission": "admit",
+   "admission_basis": "peerDependencies",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "conversation.chat.turnTail",
+    "conversation.input.dock",
+    "plugins.bundle.config",
+    "settings.plugin.item",
+    "sidebar.right.pane.tab"
+   ],
+   "named_brokers_needed": [
+    "subprocess"
+   ]
+  },
+  {
+   "row": 12,
+   "package": "@michengai/dsh-skills-manager",
+   "version": "1.4.0",
+   "family": "skills + panel",
+   "tarball": "michengai-dsh-skills-manager-1.4.0.tgz",
+   "tarball_sha256": "81f2919071ad554a87e627e068bab0d222afe9f757dd5b9b2e1caf6591544f3c",
+   "admission": "admit",
+   "admission_basis": "engines.dsh",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "plugins.bundle.config",
+    "settings.section",
+    "sidebar.panellist"
+   ],
+   "named_brokers_needed": [
+    "fs"
+   ]
+  },
+  {
+   "row": 13,
+   "package": "@nanmicoder/dsh-agent-teams",
+   "version": "0.1.29",
+   "family": "agent-teams",
+   "tarball": "nanmicoder-dsh-agent-teams-0.1.29.tgz",
+   "tarball_sha256": "25aba307cb422aa20dbcaf2d25317425bd6f82ab2b1b400a1eda2d659cf57367",
+   "admission": "admit",
+   "admission_basis": "engines.dsh",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "conversation.chat.node",
+    "conversation.chat.turnTail",
+    "conversation.session.header.actions",
+    "sidebar.right.pane.tab"
+   ],
+   "named_brokers_needed": [
+    "llm",
+    "drive-grant"
+   ]
+  },
+  {
+   "row": 14,
+   "package": "dsh-agent-squad",
+   "version": "0.1.5",
+   "family": "agent-teams",
+   "tarball": "dsh-agent-squad-0.1.5.tgz",
+   "tarball_sha256": "126c632c68d25ce39f30d477f15f4badf76198688dadfc8f90b9fdb635918c70",
+   "admission": "refuse",
+   "admission_basis": "peerDependencies",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "conversation.chat.node"
+   ],
+   "named_brokers_needed": [
+    "llm"
+   ],
+   "refusal": {
+    "code": "incompatible-version",
+    "field": "peerDependencies.@deepseek-ai/dsh-agent",
+    "range": "^0.1.0-rc.6"
+   }
+  },
+  {
+   "row": 15,
+   "package": "@michengai/dsh-automation",
+   "version": "1.0.22",
+   "family": "agent-teams / out-of-turn",
+   "tarball": "michengai-dsh-automation-1.0.22.tgz",
+   "tarball_sha256": "1b3ac21c82b2e68dd2153444335f1b70c4be02c280ebc2778820c2a3cf832cc3",
+   "admission": "admit",
+   "admission_basis": "engines.dsh",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "plugins.bundle.config",
+    "settings.section",
+    "sidebar.panellist",
+    "sidebar.session.row.leading",
+    "sidebar.workspaces"
+   ],
+   "named_brokers_needed": [
+    "llm",
+    "out-of-turn"
+   ]
+  },
+  {
+   "row": 16,
+   "package": "dsh-mnemon",
+   "version": "0.5.43",
+   "family": "memory / out-of-turn",
+   "tarball": "dsh-mnemon-0.5.43.tgz",
+   "tarball_sha256": "5c1e6a6c4f3c14fda1c25343de4102dfd2f04f923f2f17551cbf9c8c112e0104",
+   "admission": "admit",
+   "admission_basis": "engines.dsh",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "conversation.chat.assistant-actions",
+    "conversation.chat.turnTail",
+    "conversation.view",
+    "plugins.bundle.config",
+    "plugins.row.config",
+    "sidebar.panellist"
+   ],
+   "named_brokers_needed": [
+    "egress"
+   ]
+  },
+  {
+   "row": 17,
+   "package": "@linxin666/dsh-client-ui-task-board",
+   "version": "0.4.16",
+   "family": "agent-teams panel",
+   "tarball": "linxin666-dsh-client-ui-task-board-0.4.16.tgz",
+   "tarball_sha256": "aee4785ea00613baee05f3ff21a8a2ace50d31c7b856d8140328f69dfc066456",
+   "admission": "admit",
+   "admission_basis": "peerDependencies",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "plugins.bundle.config",
+    "settings.plugin.item",
+    "sidebar.panellist"
+   ],
+   "named_brokers_needed": [
+    "llm"
+   ]
+  },
+  {
+   "row": 18,
+   "package": "@michengai/dsh-im-connect",
+   "version": "1.0.34",
+   "family": "IM bridge",
+   "tarball": "michengai-dsh-im-connect-1.0.34.tgz",
+   "tarball_sha256": "f4c2e114f1926fecd6f981081d69800420c1dcb21b2eb020259a932378583d26",
+   "admission": "admit",
+   "admission_basis": "engines.dsh",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "plugins.bundle.config",
+    "settings.section",
+    "sidebar.panellist",
+    "sidebar.session.row.leading",
+    "sidebar.workspaces"
+   ],
+   "named_brokers_needed": [
+    "llm",
+    "credentials",
+    "egress"
+   ]
+  },
+  {
+   "row": 19,
+   "package": "dsh-im",
+   "version": "1.0.5",
+   "family": "IM bridge",
+   "tarball": "dsh-im-1.0.5.tgz",
+   "tarball_sha256": "23875de57a006a5442cc1585071fc7c0e4d5b1dbd782230a31aa8f5c758f9380",
+   "admission": "refuse",
+   "admission_basis": "peerDependencies",
+   "declares_client": false,
+   "declared_dsh_slot_keys": [],
+   "named_brokers_needed": [
+    "approval"
+   ],
+   "refusal": {
+    "code": "incompatible-version",
+    "field": "peerDependencies.@deepseek-ai/dsh-agent",
+    "range": "^0.1.0-rc.6"
+   }
+  },
+  {
+   "row": 20,
+   "package": "dsh-context",
+   "version": "0.83.0",
+   "family": "sidebar/panel",
+   "tarball": "dsh-context-0.83.0.tgz",
+   "tarball_sha256": "fc9203b1a85081cf73808ca87e226219d111aebef7e2ce3dfc6a090649b421cc",
+   "admission": "admit",
+   "admission_basis": "engines.dsh",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "conversation.chat.assistant-actions",
+    "conversation.input.overlay",
+    "conversation.view",
+    "plugins.bundle.config",
+    "sidebar.panellist",
+    "sidebar.right.pane.tab"
+   ],
+   "named_brokers_needed": []
+  },
+  {
+   "row": 21,
+   "package": "dsh-cost-meter",
+   "version": "1.9.62",
+   "family": "panel + account",
+   "tarball": "dsh-cost-meter-1.9.62.tgz",
+   "tarball_sha256": "7196cc36d95caa7a287ac56d3d3d6819f7b6631915028fda55324c101e9cf676",
+   "admission": "admit",
+   "admission_basis": "engines.dsh",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "conversation.chat.turnTail",
+    "conversation.composer.dock",
+    "conversation.input.dock",
+    "conversation.input.overlay",
+    "conversation.session.header.actions",
+    "conversation.view",
+    "plugins.bundle.config",
+    "settings.general.item",
+    "settings.section",
+    "sidebar.footer.action",
+    "sidebar.right.pane.tab",
+    "sidebar.workspaces.session.row.action"
+   ],
+   "named_brokers_needed": [
+    "usage-stream-readonly"
+   ]
+  },
+  {
+   "row": 22,
+   "package": "@changfenhuang/dsh-genui",
+   "version": "0.16.0",
+   "family": "panel (genui)",
+   "tarball": "changfenhuang-dsh-genui-0.16.0.tgz",
+   "tarball_sha256": "faedeb35fda615f664d217c34d7d23ff076003294e16258352a5dc446d6a1be6",
+   "admission": "admit",
+   "admission_basis": "engines.dsh",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "conversation.input.dock",
+    "tool.call.toolview"
+   ],
+   "named_brokers_needed": []
+  },
+  {
+   "row": 23,
+   "package": "dsh-better-sidebar",
+   "version": "0.30.1",
+   "family": "sidebar/panel",
+   "tarball": "dsh-better-sidebar-0.30.1.tgz",
+   "tarball_sha256": "3b3deafd3096fdf42b271c4cda0f0e70f024d4f8ef55ffd523b42c6e6d79b41e",
+   "admission": "admit",
+   "admission_basis": "peerDependencies",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "conversation.session.header.utilities",
+    "main.conversation",
+    "settings.section",
+    "sidebar.right.pane.tab"
+   ],
+   "named_brokers_needed": [
+    "llm",
+    "workspace-overlay-rw"
+   ]
+  },
+  {
+   "row": 24,
+   "package": "@michengai/dsh-codex-ui",
+   "version": "2.0.21",
+   "family": "web shell/panel",
+   "tarball": "michengai-dsh-codex-ui-2.0.21.tgz",
+   "tarball_sha256": "3c4e1c95652ddc184dc5a581d2de443cf60f2d200ac1f03ae91f8c920fed22ea",
+   "admission": "admit",
+   "admission_basis": "engines.dsh",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "contextMenu.icon",
+    "conversation.input.dock",
+    "conversation.input.overlay",
+    "settings.section",
+    "sidebar.panellist"
+   ],
+   "named_brokers_needed": [
+    "llm"
+   ]
+  },
+  {
+   "row": 25,
+   "package": "dsh-pet",
+   "version": "0.4.7",
+   "family": "panel + llm",
+   "tarball": "dsh-pet-0.4.7.tgz",
+   "tarball_sha256": "5337aeb04ce13e230297d96cc8873d49cc8463c807d871a94b9234e1301b579d",
+   "admission": "admit",
+   "admission_basis": "peerDependencies",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "settings.section",
+    "sidebar.right.pane.tab"
+   ],
+   "named_brokers_needed": [
+    "llm",
+    "credentials",
+    "egress"
+   ]
+  },
+  {
+   "row": 26,
+   "package": "dsh-whale-widget",
+   "version": "0.4.2",
+   "family": "panel + account",
+   "tarball": "dsh-whale-widget-0.4.2.tgz",
+   "tarball_sha256": "2368de8192c4ba28682a6344f78ace11cb41bac397c13981e36dfca49c0ebc78",
+   "admission": "admit",
+   "admission_basis": "no-dsh-declaration",
+   "declares_client": false,
+   "declared_dsh_slot_keys": [],
+   "named_brokers_needed": [
+    "deepseekAccount-balance-readonly"
+   ]
+  },
+  {
+   "row": 27,
+   "package": "@linxin666/dsh-client-ui-skill-explorer",
+   "version": "0.4.16",
+   "family": "panel",
+   "tarball": "linxin666-dsh-client-ui-skill-explorer-0.4.16.tgz",
+   "tarball_sha256": "470064ce42067513c0df08a7159ba853ba4c4a7e2bbce678e4062ac8443b78ce",
+   "admission": "admit",
+   "admission_basis": "peerDependencies",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "sidebar.panellist"
+   ],
+   "named_brokers_needed": [
+    "fs-read"
+   ]
+  },
+  {
+   "row": 28,
+   "package": "@linxin666/dsh-client-ui-git-graph",
+   "version": "0.4.14",
+   "family": "panel",
+   "tarball": "linxin666-dsh-client-ui-git-graph-0.4.14.tgz",
+   "tarball_sha256": "5fd0c917316651f303a0bf49784c15aa02e25491f9f05f0289de016288ebab0f",
+   "admission": "admit",
+   "admission_basis": "peerDependencies",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "conversation.input.dock"
+   ],
+   "named_brokers_needed": [
+    "git-exec-readonly"
+   ]
+  },
+  {
+   "row": 29,
+   "package": "dsh-archive-manager",
+   "version": "1.1.1",
+   "family": "panel",
+   "tarball": "dsh-archive-manager-1.1.1.tgz",
+   "tarball_sha256": "011d9943494645318f3e893174998cf1ebdecd94ce87ff6d04f9815b128b1a0a",
+   "admission": "refuse",
+   "admission_basis": "peerDependencies",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "sidebar.footer.action",
+    "sidebar.workspaces"
+   ],
+   "named_brokers_needed": [],
+   "refusal": {
+    "code": "incompatible-version",
+    "field": "peerDependencies.@deepseek-ai/dsh-agent",
+    "range": "^0.1.0-rc.6"
+   }
+  },
+  {
+   "row": 30,
+   "package": "dshmarket",
+   "version": "1.73.17",
+   "family": "market (Engine-brokered)",
+   "tarball": "dshmarket-1.73.17.tgz",
+   "tarball_sha256": "b66be433c7952fbbd57d80be47fac82a873039f542ef4457cf858642f8da9564",
+   "admission": "admit",
+   "admission_basis": "peerDependencies",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "plugins.bundle.config",
+    "plugins.detail.section",
+    "plugins.tab",
+    "settings.plugin.item",
+    "settings.plugins.tab",
+    "settings.section",
+    "sidebar.panellist"
+   ],
+   "named_brokers_needed": [
+    "reviewed-install"
+   ]
+  },
+  {
+   "row": 31,
+   "package": "@deepseek-harness-tui/dsh-tui",
+   "version": "0.19.0",
+   "family": "terminal surface (Engine-brokered)",
+   "tarball": "deepseek-harness-tui-dsh-tui-0.19.0.tgz",
+   "tarball_sha256": "a5a41b24c69fc68f868ce4d5637feaef227cb7b34a177c0625d938eecab22da7",
+   "admission": "admit",
+   "admission_basis": "peerDependencies",
+   "declares_client": false,
+   "declared_dsh_slot_keys": [
+    "settings.plugin.item"
+   ],
+   "named_brokers_needed": [
+    "terminal-surface",
+    "llm",
+    "approval"
+   ]
+  },
+  {
+   "row": 32,
+   "package": "dsh-pocket",
+   "version": "2.12.0",
+   "family": "remote/mobile surface (Engine-brokered)",
+   "tarball": "dsh-pocket-2.12.0.tgz",
+   "tarball_sha256": "aa75689af6a2ded126248e0704ab5000224d2bb755734aa0a2d1aecb41b796d0",
+   "admission": "admit",
+   "admission_basis": "no-dsh-declaration",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "conversation.composer.dock",
+    "conversation.session.header.actions",
+    "settings.section",
+    "sidebar.footer.action"
+   ],
+   "named_brokers_needed": [
+    "remote-surface",
+    "licence-review-GPL-2.0"
+   ]
+  },
+  {
+   "row": 33,
+   "package": "dsh-plugin-model-proxy",
+   "version": "0.1.6",
+   "family": "provider proxy (Engine-brokered)",
+   "tarball": "dsh-plugin-model-proxy-0.1.6.tgz",
+   "tarball_sha256": "9a27b24e0fd6152fb6e7b005821298a6eb8d4c4a05cec2ef37fc6b082c2ddf62",
+   "admission": "admit",
+   "admission_basis": "peerDependencies",
+   "declares_client": true,
+   "declared_dsh_slot_keys": [
+    "plugins.bundle.config"
+   ],
+   "named_brokers_needed": [
+    "provider-routes"
+   ]
+  }
+ ]
+}

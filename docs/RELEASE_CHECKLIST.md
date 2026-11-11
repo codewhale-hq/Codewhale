@@ -1,10 +1,11 @@
 # Release Checklist
 
 Follow this sequence from the canonical `/Volumes/VIXinSSD/CW/codewhale`
-checkout on `main`. Agent-owned preparation lands as verified slices on `main`;
-it requires no release branch, worktree, nested clone or preparation PR.
-Contributor PRs still land as PRs. Treat any unchecked required gate as a release
-blocker.
+checkout on `main`. Agent-owned preparation is built in a short-lived agent
+worktree and lands as verified slices on `main` (CURRENT_DECISIONS §93); it
+needs no release branch, nested clone or preparation PR. Freezing, tagging and
+publication run from the clean canonical `main`. Contributor PRs still land as
+PRs. Treat any unchecked required gate as a release blocker.
 
 For deeper context on the underlying tools (preflight scripts, npm smoke,
 publish-crates), see [`RELEASE_RUNBOOK.md`](RELEASE_RUNBOOK.md).
@@ -190,14 +191,17 @@ known limitations and publication approval. These proofs are separate.
 
 ## 5a. Prerelease checkpoints (`X.Y.Z-prerelease`)
 
-A semver prerelease such as `0.10.3-beta.2` is prepared and tagged like a stable
+A semver prerelease such as `0.11.0-beta.1` is prepared and tagged like a stable
 version, but it publishes only a GitHub prerelease and the npm `next` dist-tag.
-Use it for optional desktop or Boat checkpoints. The plain `X.Y.Z` path is
-unchanged and remains the authority.
+The support stays in the tree for an optional checkpoint that the founder
+requests. The Engine 0.10.3 release does not use it: there is no
+`0.10.3-beta.2` and the next Engine release is the full `0.10.3`
+(CURRENT_DECISIONS §96). The plain `X.Y.Z` path is unchanged and remains the
+authority.
 
 - [ ] Write the CHANGELOG section as `## [X.Y.Z-prerelease] - YYYY-MM-DD` with a
       compare link from the last published tag, for example
-      `[0.10.3-beta.2]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.2...v0.10.3-beta.2`.
+      `[0.11.0-beta.1]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.3...v0.11.0-beta.1`.
 - [ ] Prepare the workspace with
       `./scripts/release/prepare-release.sh X.Y.Z-prerelease`, commit the bump
       on `main`, and check `./scripts/release/check-versions.sh --require-dated-release`

@@ -300,7 +300,22 @@
     "footerLegal": "Legal",
     "switcherLabel": "Language",
     "switcherSwitchTo": "Switch to {label}",
-    "partialBadge": "(partial)"
+    "partialBadge": "(partial)",
+    "stateReleased": "Released",
+    "stateAvailable": "Available",
+    "stateBeta": "Beta",
+    "stateDev": "Development build",
+    "stateOpen": "Open",
+    "stateInviteOnly": "Invite-only",
+    "stateNotOpen": "Not open yet",
+    "stateNotPublic": "Not public",
+    "stateInSource": "In source, not yet released",
+    "numbersAsOf": "As of {date}",
+    "downloadMacos": "Download for macOS",
+    "downloadVersion": "Version {version}",
+    "downloadSize": "Size {size}",
+    "downloadChecksum": "SHA-256 checksum",
+    "downloadSigned": "Signed and notarized"
   },
   "home": {
     "metaTitle": "Codewhale · Use any model through an agent you can read",
@@ -1989,7 +2004,7 @@
         "title": "Codewhale accounts",
         "blocks": [
           {
-            "p": "A provider key and a Codewhale account are different things. Codewhale never needs an account, and new accounts are not open. Provider keys stay on your machine with `codewhale auth set`."
+            "p": "A provider key and a Codewhale account are different things. Local use never needs an account; anyone can sign in, and cloud computers are invite-only. Provider keys stay on your machine with `codewhale auth set`."
           },
           {
             "rows": [

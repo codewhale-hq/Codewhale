@@ -1,0 +1,1536 @@
+{
+  "format": "codewhale.release-baseline.v1",
+  "tag": "v0.10.2",
+  "version": "0.10.2",
+  "features": [
+    {
+      "id": "shell-tool",
+      "name": "Shell tool",
+      "summary": "Runs shell commands for the agent through the approval gate and sandbox.",
+      "status": "stable",
+      "since": "0.1.0"
+    },
+    {
+      "id": "local-code-execution",
+      "name": "Local code execution",
+      "summary": "Runs Python and Node with the shared execution policy and explicitly approved per-call elevation.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "subagents",
+      "name": "Sub-agents",
+      "summary": "Delegates bounded work to background child agents with their own budgets.",
+      "status": "stable",
+      "since": "0.1.0"
+    },
+    {
+      "id": "web-search",
+      "name": "Web search",
+      "summary": "Searches and fetches the web for the agent, including DeepSeek Search (web.run, with the web_search alias).",
+      "status": "stable",
+      "since": "0.1.0"
+    },
+    {
+      "id": "apply-patch",
+      "name": "apply_patch",
+      "summary": "Edits files with structured patches the user can review and undo.",
+      "status": "stable",
+      "since": "0.1.0"
+    },
+    {
+      "id": "mcp-client",
+      "name": "MCP client",
+      "summary": "Connects local stdio and remote HTTP MCP servers and exposes their tools.",
+      "status": "stable",
+      "since": "0.1.0"
+    },
+    {
+      "id": "exec-policy",
+      "name": "Execution policy",
+      "summary": "Decides allow, ask or deny for each tool call from layered permission rules.",
+      "status": "stable",
+      "since": "0.1.0"
+    },
+    {
+      "id": "vision-model",
+      "name": "Vision model",
+      "summary": "Routes image analysis to a separate vision-capable model configured in [vision_model].",
+      "status": "flagged",
+      "since": "0.8.32"
+    },
+    {
+      "id": "verify-tool",
+      "name": "verify tool",
+      "summary": "Lets the agent ask for an adversarial self-critique of its own work.",
+      "status": "stable",
+      "since": "0.9.2"
+    },
+    {
+      "id": "code-mode",
+      "name": "Code mode",
+      "summary": "execute_tools programs compose MCP, plugin and native tool calls under the normal gate.",
+      "status": "experimental",
+      "since": "0.10.0"
+    },
+    {
+      "id": "extension-host",
+      "name": "Extension host",
+      "summary": "Runs reviewed plugins' native TypeScript/JavaScript tool and slash-command code in a Bun or Node sidecar.",
+      "status": "flagged",
+      "since": "0.10.1"
+    },
+    {
+      "id": "finance-host",
+      "name": "Finance host",
+      "summary": "Routes opted-in finance tools through the bundled Native host under the existing permission and sandbox gates.",
+      "status": "flagged",
+      "since": "0.10.1"
+    },
+    {
+      "id": "data-host",
+      "name": "Data host",
+      "summary": "Routes opted-in data validation through the bundled Native host with owned input and output bounds.",
+      "status": "flagged",
+      "since": "0.10.1"
+    },
+    {
+      "id": "speech-host",
+      "name": "Speech host",
+      "summary": "Routes opted-in speech tools through the bundled Native host while Rust retains credentials and permissions.",
+      "status": "flagged",
+      "since": "0.10.1"
+    },
+    {
+      "id": "pdf-host",
+      "name": "PDF host",
+      "summary": "Routes opted-in PDF extraction through the bundled Native host with the same Rust path and size guards.",
+      "status": "flagged",
+      "since": "0.10.1"
+    },
+    {
+      "id": "ocr-host",
+      "name": "OCR host",
+      "summary": "Routes opted-in image OCR through the bundled Native host under existing media and permission guards.",
+      "status": "flagged",
+      "since": "0.10.1"
+    },
+    {
+      "id": "github-host",
+      "name": "GitHub host",
+      "summary": "Routes opted-in GitHub operations through the bundled Native host while Rust retains credentials and approvals.",
+      "status": "flagged",
+      "since": "0.10.1"
+    },
+    {
+      "id": "web-search-host",
+      "name": "Web search host",
+      "summary": "Routes opted-in web search through the bundled Native host with the existing Rust credential and network gates.",
+      "status": "flagged",
+      "since": "0.10.1"
+    },
+    {
+      "id": "web-extract-host",
+      "name": "Web extract host",
+      "summary": "Routes opted-in web extraction through the bundled Native host with owned URL and response bounds.",
+      "status": "flagged",
+      "since": "0.10.1"
+    },
+    {
+      "id": "review-host",
+      "name": "Review host",
+      "summary": "Routes opted-in review tools through the bundled Native host while Rust retains route and permission authority.",
+      "status": "flagged",
+      "since": "0.10.1"
+    },
+    {
+      "id": "modes",
+      "name": "Modes",
+      "summary": "Plan, Work and Operate modes set what the agent may do in a session; a finished plan offers to start the work.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "permission-postures",
+      "name": "Permission postures",
+      "summary": "Ask, Auto-Review and Full Access postures decide when a tool call needs approval.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "sandbox",
+      "name": "Command sandbox",
+      "summary": "Seatbelt on macOS; verified bubblewrap on Linux by default. Sandboxed PTYs require util-linux setsid.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "providers",
+      "name": "Providers",
+      "summary": "Provider routes with endpoint-scoped model facts, explicit limits and sourced price estimates.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "model-routing",
+      "name": "Auto model routing",
+      "summary": "Picks a model per turn under Auto; /router sets up the router.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "fleet",
+      "name": "Fleet",
+      "summary": "Runs and supervises groups of worker agents with receipts and a pre-spend check.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "environment-placement",
+      "name": "Environment-aware Fleet placement",
+      "summary": "Places Fleet tasks by environment requirements and connects explicitly configured workers through Tailscale.",
+      "status": "experimental",
+      "since": null
+    },
+    {
+      "id": "workflows",
+      "name": "Workflows",
+      "summary": "Checked-in .workflow.js scripts coordinate agents step by step.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "automatic-workflows",
+      "name": "Automatic workflows",
+      "summary": "Turns a broad request into a compact Workflow plan without writing a script.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "goals",
+      "name": "Goals",
+      "summary": "/goal keeps the agent working toward one objective across turns.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "todos",
+      "name": "Todo list",
+      "summary": "The agent keeps a visible todo list for multi-step work.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "composer-queue-steer",
+      "name": "Queue and steer",
+      "summary": "Queue messages while a turn runs, or steer the running turn.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "receipts",
+      "name": "Receipts",
+      "summary": "/receipts lists what a session did: files, commands, calls, approvals and failures.",
+      "status": "stable",
+      "since": "0.10.1"
+    },
+    {
+      "id": "preview-request",
+      "name": "Request preview",
+      "summary": "/preview-request shows the redacted outbound request without sending it.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "read-media",
+      "name": "read_media",
+      "summary": "Reads and preprocesses images for vision-capable models with size and privacy guards.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "memory",
+      "name": "User memory",
+      "summary": "Opt-in local store of preferences and conventions that persists across sessions.",
+      "status": "flagged",
+      "since": null
+    },
+    {
+      "id": "skills",
+      "name": "Skills",
+      "summary": "Installs and loads trusted instruction packages with owned-root precedence and separate user/model invocation controls.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "plugins",
+      "name": "Plugins",
+      "summary": "Installs, reviews and trusts plugin bundles, including the first-party marketplace.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "computer-use",
+      "name": "Computer Use",
+      "summary": "Reviewed app control: one approval covers background and foreground use, fresh targets, bounded batches.",
+      "status": "experimental",
+      "since": null
+    },
+    {
+      "id": "script-tools",
+      "name": "Script tools",
+      "summary": "Scripts in ~/.codewhale/tools become approval-gated tools; [tools.overrides] disables built-ins, never replaces them.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "claude-plugin-compat",
+      "name": "Claude plugin compatibility",
+      "summary": "Loads Claude Code plugin bundles and skill folders where their features are supported.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "claude-settings-import",
+      "name": "Claude settings import",
+      "summary": "/import-claude plans a reviewable import of Claude Code settings and servers.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "hooks",
+      "name": "Hooks",
+      "summary": "Runs user commands on session and tool events, with an execution receipt after shell tools.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "lsp",
+      "name": "LSP diagnostics",
+      "summary": "Feeds language-server diagnostics to the agent; custom servers can be added.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "runtime-api",
+      "name": "Runtime API",
+      "summary": "Local API: replay-safe thread creation, events, approvals, project trust, workspace leases, Unix sockets, device tokens.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "compatibility-tool-free-turns",
+      "name": "Compatibility turn admission",
+      "summary": "Compatibility transports require explicit tool-free turns; interactive clients use the full HTTP/SSE API.",
+      "status": "stable",
+      "since": "0.10.2"
+    },
+    {
+      "id": "runtime-provider-keys",
+      "name": "Runtime provider keys",
+      "summary": "Runtime API provider keys: durable or process-only memory, with a session-only policy that disables stored fallback.",
+      "status": "stable",
+      "since": "0.10.2"
+    },
+    {
+      "id": "headless-exec",
+      "name": "Headless exec",
+      "summary": "codewhale exec runs one headless turn from a script and streams JSON.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "github-review",
+      "name": "GitHub PR review",
+      "summary": "codewhale review --pr N writes an advisory review; posting to GitHub is opt-in.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "web-client",
+      "name": "Local browser client",
+      "summary": "codewhale web opens the embedded browser client on 127.0.0.1 over the Runtime API.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "keybindings",
+      "name": "Keybindings",
+      "summary": "Terminal key bindings, documented from the keybinding catalog.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "settings",
+      "name": "Settings",
+      "summary": "/config and codewhale config edit settings declared once in the settings schema.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "whats-new-notice",
+      "name": "What's new after an update",
+      "summary": "Says once, on the first start after an update, what changed and links that version's release notes.",
+      "status": "stable",
+      "since": "0.10.2"
+    },
+    {
+      "id": "themes",
+      "name": "Themes",
+      "summary": "/theme picks a built-in theme; user themes follow a JSON schema.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "chat-color",
+      "name": "Chat color",
+      "summary": "/color gives one chat's composer box its own color, kept with that session.",
+      "status": "stable",
+      "since": "0.10.2"
+    },
+    {
+      "id": "localization",
+      "name": "Localization",
+      "summary": "Interface text in 15 locales.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "voice",
+      "name": "Voice input",
+      "summary": "/voice, /voicecontrol and /voicesend use the selected ASR backend without switching providers.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "pet",
+      "name": "Pet",
+      "summary": "Shared whale activity and reply views; desktop and app-server turns can follow an idle existing companion.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "overview",
+      "name": "Home dashboard",
+      "summary": "/overview shows the home dashboard.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "account-login",
+      "name": "Account login",
+      "summary": "/login signs in to an optional Codewhale account; plugin providers connect with /connect.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "account-computer-files",
+      "name": "Account computer files",
+      "summary": "Save computer files as account versions, restore with revision checks, and download verified bytes.",
+      "status": "experimental",
+      "since": "0.10.2"
+    },
+    {
+      "id": "context-anchors",
+      "name": "Context anchors",
+      "summary": "/anchor pins a fact that survives compaction.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "window-pin",
+      "name": "Pin window",
+      "summary": "/pin keeps the terminal window on top.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "structured-copy",
+      "name": "Structured copy",
+      "summary": "/structcopy copies one session object as redacted JSON.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "live-thinking",
+      "name": "Live thinking",
+      "summary": "/verbose toggles live model thinking in the transcript.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "workbar",
+      "name": "Workbar",
+      "summary": "/workbar places the tasks, agents and context bar on any edge or hides it.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "terminal-dock",
+      "name": "Terminal dock",
+      "summary": "/workbar terminal shows workspace PTYs with live output, human input, session selection and a fresh shell; macOS/Linux.",
+      "status": "stable",
+      "since": "0.10.2"
+    },
+    {
+      "id": "telemetry",
+      "name": "Telemetry",
+      "summary": "Anonymous aggregate usage counts, disclosed at first launch, with a saved off switch.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "docker",
+      "name": "Docker image",
+      "summary": "Runs Codewhale in a container, with an opt-in toolbox image.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "termux",
+      "name": "Android (Termux)",
+      "summary": "arm64 release archive for Termux on Android.",
+      "status": "experimental",
+      "since": null
+    },
+    {
+      "id": "chatgpt-plan-sign-in",
+      "name": "Sign in with ChatGPT",
+      "summary": "Uses official OAuth and the selected account catalog for eligible ChatGPT plan requests in the local OSS app.",
+      "status": "experimental",
+      "since": "0.10.1"
+    },
+    {
+      "id": "claude-plan-sign-in",
+      "name": "Sign in with Claude",
+      "summary": "Adds Claude subscription sign-in and native Messages routing. Live provider acceptance remains unverified.",
+      "status": "experimental",
+      "since": "0.10.2"
+    },
+    {
+      "id": "plugin-oauth-providers",
+      "name": "Reviewed plugin OAuth providers",
+      "summary": "Reviewed plugins sign in with /connect <id> and out with /disconnect; the host owns PKCE, models and approvals.",
+      "status": "experimental",
+      "since": "0.10.1"
+    },
+    {
+      "id": "orcarouter-sign-in",
+      "name": "Sign in with OrcaRouter",
+      "summary": "OrcaRouter provider: sk-orca- API key or OAuth 2.0 + PKCE sign-in, plus a live chat model catalog.",
+      "status": "experimental",
+      "since": "0.10.1"
+    },
+    {
+      "id": "merch-interest",
+      "name": "Merch interest list",
+      "summary": "The community website collects private merch opt-ins, material preferences and optional item-price feedback.",
+      "status": "experimental",
+      "since": "unreleased"
+    },
+    {
+      "id": "profile-constitution",
+      "name": "Profile constitution",
+      "summary": "Account preferences are captured per turn and previewed by the Engine.",
+      "status": "experimental",
+      "since": "0.10.1"
+    },
+    {
+      "id": "plugin-shell-install",
+      "name": "Plugin shell installation",
+      "summary": "codewhale install uses the reviewed bundle installer with local, GitHub and version-pinned npm sources.",
+      "status": "experimental",
+      "since": "0.10.2"
+    },
+    {
+      "id": "herdr-agent-state",
+      "name": "Herdr agent state",
+      "summary": "Reports idle, working or blocked to the Herdr multiplexer and reopens the session after a restart.",
+      "status": "stable",
+      "since": "0.10.2"
+    }
+  ],
+  "providers": [
+    {
+      "id": "deepseek",
+      "label": "DeepSeek",
+      "env": "DEEPSEEK_API_KEY"
+    },
+    {
+      "id": "deepseek-anthropic",
+      "label": "DeepSeek Anthropic",
+      "env": "DEEPSEEK_API_KEY / ANTHROPIC_API_KEY"
+    },
+    {
+      "id": "nvidia-nim",
+      "label": "NVIDIA NIM",
+      "env": "NVIDIA_API_KEY / NVIDIA_NIM_API_KEY"
+    },
+    {
+      "id": "openai",
+      "label": "OpenAI-compatible",
+      "env": "OPENAI_API_KEY"
+    },
+    {
+      "id": "atlascloud",
+      "label": "AtlasCloud",
+      "env": "ATLASCLOUD_API_KEY"
+    },
+    {
+      "id": "wanjie-ark",
+      "label": "Wanjie Ark",
+      "env": "WANJIE_ARK_API_KEY / WANJIE_API_KEY / WANJIE_MAAS_API_KEY"
+    },
+    {
+      "id": "volcengine",
+      "label": "Volcengine Ark",
+      "env": "VOLCENGINE_API_KEY / VOLCENGINE_ARK_API_KEY / ARK_API_KEY"
+    },
+    {
+      "id": "openrouter",
+      "label": "OpenRouter",
+      "env": "OPENROUTER_API_KEY"
+    },
+    {
+      "id": "orcarouter",
+      "label": "OrcaRouter",
+      "env": "ORCAROUTER_API_KEY"
+    },
+    {
+      "id": "xiaomi-mimo",
+      "label": "Xiaomi MiMo",
+      "env": "XIAOMI_MIMO_TOKEN_PLAN_API_KEY / MIMO_TOKEN_PLAN_API_KEY / XIAOMI_MIMO_API_KEY / XIAOMI_API_KEY / MIMO_API_KEY"
+    },
+    {
+      "id": "novita",
+      "label": "Novita AI",
+      "env": "NOVITA_API_KEY"
+    },
+    {
+      "id": "fireworks",
+      "label": "Fireworks AI",
+      "env": "FIREWORKS_API_KEY"
+    },
+    {
+      "id": "siliconflow",
+      "label": "SiliconFlow",
+      "env": "SILICONFLOW_API_KEY"
+    },
+    {
+      "id": "siliconflow-CN",
+      "label": "SiliconFlow CN",
+      "env": "SILICONFLOW_API_KEY"
+    },
+    {
+      "id": "arcee",
+      "label": "Arcee AI",
+      "env": "ARCEE_API_KEY"
+    },
+    {
+      "id": "moonshot",
+      "label": "Moonshot/Kimi",
+      "env": "MOONSHOT_API_KEY / KIMI_API_KEY"
+    },
+    {
+      "id": "sglang",
+      "label": "SGLang",
+      "env": "SGLANG_API_KEY"
+    },
+    {
+      "id": "vllm",
+      "label": "vLLM",
+      "env": "VLLM_API_KEY"
+    },
+    {
+      "id": "ollama",
+      "label": "Ollama",
+      "env": "OLLAMA_API_KEY"
+    },
+    {
+      "id": "ollama-cloud",
+      "label": "Ollama Cloud",
+      "env": "OLLAMA_CLOUD_API_KEY / OLLAMA_API_KEY"
+    },
+    {
+      "id": "huggingface",
+      "label": "Hugging Face",
+      "env": "HUGGINGFACE_API_KEY / HF_TOKEN"
+    },
+    {
+      "id": "together",
+      "label": "Together AI",
+      "env": "TOGETHER_API_KEY"
+    },
+    {
+      "id": "qianfan",
+      "label": "Baidu Qianfan",
+      "env": "QIANFAN_API_KEY / BAIDU_QIANFAN_API_KEY"
+    },
+    {
+      "id": "openai-codex",
+      "label": "OpenAI Codex",
+      "env": "ChatGPT OAuth via `codewhale auth chatgpt`; optional consented Codex CLI credentials (OPENAI_CODEX_ACCESS_TOKEN / CODEX_ACCESS_TOKEN override)"
+    },
+    {
+      "id": "anthropic",
+      "label": "Anthropic",
+      "env": "ANTHROPIC_API_KEY"
+    },
+    {
+      "id": "openmodel",
+      "label": "OpenModel",
+      "env": "OPENMODEL_API_KEY"
+    },
+    {
+      "id": "zai",
+      "label": "Z.ai",
+      "env": "ZAI_API_KEY / Z_AI_API_KEY"
+    },
+    {
+      "id": "stepfun",
+      "label": "StepFun",
+      "env": "STEPFUN_API_KEY / STEP_API_KEY"
+    },
+    {
+      "id": "minimax",
+      "label": "MiniMax",
+      "env": "MINIMAX_API_KEY"
+    },
+    {
+      "id": "minimax-anthropic",
+      "label": "MiniMax (Anthropic-compatible)",
+      "env": "MINIMAX_API_KEY"
+    },
+    {
+      "id": "deepinfra",
+      "label": "DeepInfra",
+      "env": "DEEPINFRA_API_KEY / DEEPINFRA_TOKEN"
+    },
+    {
+      "id": "sakana",
+      "label": "Sakana AI",
+      "env": "FUGU_API_KEY / SAKANA_API_KEY"
+    },
+    {
+      "id": "longcat",
+      "label": "Meituan LongCat",
+      "env": "LONGCAT_API_KEY"
+    },
+    {
+      "id": "opencode-go",
+      "label": "OpenCode Go",
+      "env": "OPENCODE_GO_API_KEY"
+    },
+    {
+      "id": "opencode-zen",
+      "label": "OpenCode Zen",
+      "env": "OPENCODE_ZEN_API_KEY / OPENCODE_API_KEY"
+    },
+    {
+      "id": "meta",
+      "label": "Meta Model API",
+      "env": "META_MODEL_API_KEY / MODEL_API_KEY"
+    },
+    {
+      "id": "xai",
+      "label": "xAI",
+      "env": "XAI_API_KEY"
+    },
+    {
+      "id": "mistral",
+      "label": "Mistral AI",
+      "env": "MISTRAL_API_KEY"
+    },
+    {
+      "id": "google",
+      "label": "Google Gemini",
+      "env": "GOOGLE_API_KEY / GEMINI_API_KEY"
+    },
+    {
+      "id": "modelscope",
+      "label": "ModelScope",
+      "env": "MODELSCOPE_API_KEY"
+    },
+    {
+      "id": "telecomjs",
+      "label": "TelecomJS TokenHub",
+      "env": "TELECOMJS_API_KEY"
+    },
+    {
+      "id": "edenai",
+      "label": "Eden AI",
+      "env": "EDENAI_API_KEY"
+    },
+    {
+      "id": "zenmux",
+      "label": "ZenMux",
+      "env": "ZENMUX_API_KEY"
+    },
+    {
+      "id": "csdn",
+      "label": "CSDN 星图 (Starmap)",
+      "env": "CSDN_API_KEY"
+    },
+    {
+      "id": "concentrate",
+      "label": "Concentrate",
+      "env": "CONCENTRATE_API_KEY"
+    },
+    {
+      "id": "codewhale",
+      "label": "Codewhale",
+      "env": "CODEWHALE_API_KEY"
+    },
+    {
+      "id": "modelstudio-token-plan",
+      "label": "Model Studio Token Plan",
+      "env": "MODELSTUDIO_API_KEY"
+    },
+    {
+      "id": "modelstudio-token-plan-anthropic",
+      "label": "Model Studio Token Plan (Anthropic-compatible)",
+      "env": "MODELSTUDIO_API_KEY"
+    },
+    {
+      "id": "modelstudio-coding-plan",
+      "label": "Model Studio Coding Plan",
+      "env": "MODELSTUDIO_API_KEY"
+    },
+    {
+      "id": "modelstudio-coding-plan-anthropic",
+      "label": "Model Studio Coding Plan (Anthropic-compatible)",
+      "env": "MODELSTUDIO_API_KEY"
+    }
+  ],
+  "models": [
+    {
+      "id": "claude-fable-5-1",
+      "provider": "Anthropic",
+      "contextWindow": 1000000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-10-17"
+    },
+    {
+      "id": "claude-haiku-5-5",
+      "provider": "Anthropic",
+      "contextWindow": 1000000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-10-17"
+    },
+    {
+      "id": "claude-opus-5-5",
+      "provider": "Anthropic",
+      "contextWindow": 1000000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-10-17"
+    },
+    {
+      "id": "claude-sonnet-5-5",
+      "provider": "Anthropic",
+      "contextWindow": 1000000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-10-17"
+    },
+    {
+      "id": "gemini-3.8-flash",
+      "provider": "Google",
+      "contextWindow": 1048576,
+      "maxOutput": 65536,
+      "reasoning": false,
+      "addedAt": "2026-10-17"
+    },
+    {
+      "id": "gemini-4-argon",
+      "provider": "Google",
+      "contextWindow": 1048576,
+      "maxOutput": null,
+      "reasoning": false,
+      "addedAt": "2026-10-17"
+    },
+    {
+      "id": "gpt-6-luna",
+      "provider": "OpenAI",
+      "contextWindow": 1050000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-10-17"
+    },
+    {
+      "id": "gpt-6-sol",
+      "provider": "OpenAI",
+      "contextWindow": 1050000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-10-17"
+    },
+    {
+      "id": "gpt-6.1-sol",
+      "provider": "OpenAI",
+      "contextWindow": 1050000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-10-17"
+    },
+    {
+      "id": "mimo-v2.6-flash",
+      "provider": "Xiaomi MiMo",
+      "contextWindow": 1048576,
+      "maxOutput": 131072,
+      "reasoning": true,
+      "addedAt": "2026-10-17"
+    },
+    {
+      "id": "mimo-v2.6-pro",
+      "provider": "Xiaomi MiMo",
+      "contextWindow": 1048576,
+      "maxOutput": 131072,
+      "reasoning": true,
+      "addedAt": "2026-10-17"
+    },
+    {
+      "id": "muse-spark-1.3",
+      "provider": "Meta",
+      "contextWindow": 1048576,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-10-17"
+    },
+    {
+      "id": "muse-spark-1.3-contributor",
+      "provider": "Meta",
+      "contextWindow": 1048576,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-10-17"
+    },
+    {
+      "id": "muse-wonder-1.0",
+      "provider": "Meta",
+      "contextWindow": 1048576,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-10-17"
+    },
+    {
+      "id": "grok-4.7",
+      "provider": "xAI",
+      "contextWindow": 500000,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-09-23"
+    },
+    {
+      "id": "step-3.5-flash",
+      "provider": "StepFun",
+      "contextWindow": 256000,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-09-19"
+    },
+    {
+      "id": "step-3.5-flash-2603",
+      "provider": "StepFun",
+      "contextWindow": 256000,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-09-19"
+    },
+    {
+      "id": "step-5-preview",
+      "provider": "StepFun",
+      "contextWindow": 1000000,
+      "maxOutput": 1000000,
+      "reasoning": true,
+      "addedAt": "2026-09-19"
+    },
+    {
+      "id": "qwen3.5-flash",
+      "provider": "Qwen",
+      "contextWindow": null,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-09-09"
+    },
+    {
+      "id": "glm-5.3-flash",
+      "provider": "Z.ai",
+      "contextWindow": 1000000,
+      "maxOutput": 131072,
+      "reasoning": true,
+      "addedAt": "2026-08-27"
+    },
+    {
+      "id": "qwen3.8-flash",
+      "provider": "Qwen",
+      "contextWindow": 1000000,
+      "maxOutput": 131072,
+      "reasoning": true,
+      "addedAt": "2026-08-27"
+    },
+    {
+      "id": "deepseek-v4-flash-vision-exp",
+      "provider": "DeepSeek",
+      "contextWindow": 1000000,
+      "maxOutput": 384000,
+      "reasoning": true,
+      "addedAt": "2026-08-21"
+    },
+    {
+      "id": "claude-opus-5",
+      "provider": "Anthropic",
+      "contextWindow": 1000000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-08-17"
+    },
+    {
+      "id": "gemini-3.7-flash",
+      "provider": "Google",
+      "contextWindow": 1048576,
+      "maxOutput": 65536,
+      "reasoning": false,
+      "addedAt": "2026-08-17"
+    },
+    {
+      "id": "kimi-k2.7-code-highspeed",
+      "provider": "Moonshot/Kimi",
+      "contextWindow": 262144,
+      "maxOutput": 32768,
+      "reasoning": true,
+      "addedAt": "2026-08-17"
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "provider": "Google",
+      "contextWindow": 1048576,
+      "maxOutput": 65536,
+      "reasoning": false,
+      "addedAt": "2026-08-14"
+    },
+    {
+      "id": "gemini-2.5-pro",
+      "provider": "Google",
+      "contextWindow": 1048576,
+      "maxOutput": 65536,
+      "reasoning": false,
+      "addedAt": "2026-08-14"
+    },
+    {
+      "id": "gemini-3-pro-preview",
+      "provider": "Google",
+      "contextWindow": 1048576,
+      "maxOutput": 65536,
+      "reasoning": false,
+      "addedAt": "2026-08-14"
+    },
+    {
+      "id": "gemini-3.1-pro-preview",
+      "provider": "Google",
+      "contextWindow": 1048576,
+      "maxOutput": 65536,
+      "reasoning": false,
+      "addedAt": "2026-08-14"
+    },
+    {
+      "id": "gemini-3.5-flash",
+      "provider": "Google",
+      "contextWindow": 1048576,
+      "maxOutput": 65536,
+      "reasoning": false,
+      "addedAt": "2026-08-14"
+    },
+    {
+      "id": "gemini-3.5-flash-lite",
+      "provider": "Google",
+      "contextWindow": 1048576,
+      "maxOutput": 65536,
+      "reasoning": false,
+      "addedAt": "2026-08-14"
+    },
+    {
+      "id": "gemini-3.6-flash",
+      "provider": "Google",
+      "contextWindow": 1048576,
+      "maxOutput": 65536,
+      "reasoning": false,
+      "addedAt": "2026-08-14"
+    },
+    {
+      "id": "grok-4.6",
+      "provider": "xAI",
+      "contextWindow": 500000,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-08-12"
+    },
+    {
+      "id": "mistral-code-latest",
+      "provider": "Mistral",
+      "contextWindow": 256000,
+      "maxOutput": null,
+      "reasoning": false,
+      "addedAt": "2026-08-09"
+    },
+    {
+      "id": "mistral-large-latest",
+      "provider": "Mistral",
+      "contextWindow": 262144,
+      "maxOutput": null,
+      "reasoning": false,
+      "addedAt": "2026-08-09"
+    },
+    {
+      "id": "mistral-medium-latest",
+      "provider": "Mistral",
+      "contextWindow": 262144,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-08-08"
+    },
+    {
+      "id": "mistral-small-latest",
+      "provider": "Mistral",
+      "contextWindow": 262144,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-08-08"
+    },
+    {
+      "id": "muse-spark-1.2-contributor",
+      "provider": "Meta",
+      "contextWindow": 1000000,
+      "maxOutput": 32000,
+      "reasoning": true,
+      "addedAt": "2026-08-06"
+    },
+    {
+      "id": "muse-spark-1.2",
+      "provider": "Meta",
+      "contextWindow": 1000000,
+      "maxOutput": 32000,
+      "reasoning": true,
+      "addedAt": "2026-08-05"
+    },
+    {
+      "id": "glm-5.3",
+      "provider": "Z.ai",
+      "contextWindow": 1000000,
+      "maxOutput": 131072,
+      "reasoning": true,
+      "addedAt": "2026-08-03"
+    },
+    {
+      "id": "deepseek-flash",
+      "provider": "DeepSeek",
+      "contextWindow": 1000000,
+      "maxOutput": 384000,
+      "reasoning": true,
+      "addedAt": "2026-08-02"
+    },
+    {
+      "id": "qwen3.8-max",
+      "provider": "Qwen",
+      "contextWindow": 1000000,
+      "maxOutput": 131072,
+      "reasoning": true,
+      "addedAt": "2026-08-02"
+    },
+    {
+      "id": "kimi-for-coding-highspeed",
+      "provider": "Moonshot/Kimi",
+      "contextWindow": 262144,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-07-27"
+    },
+    {
+      "id": "qwen3.5-plus",
+      "provider": "Qwen",
+      "contextWindow": null,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-07-26"
+    },
+    {
+      "id": "kimi-k3",
+      "provider": "Moonshot/Kimi",
+      "contextWindow": 1048576,
+      "maxOutput": 131072,
+      "reasoning": true,
+      "addedAt": "2026-07-17"
+    },
+    {
+      "id": "thinkingmachines/inkling",
+      "provider": "Together",
+      "contextWindow": null,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-07-15"
+    },
+    {
+      "id": "claude-fable-5",
+      "provider": "Anthropic",
+      "contextWindow": 1000000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-07-09"
+    },
+    {
+      "id": "claude-sonnet-5",
+      "provider": "Anthropic",
+      "contextWindow": 1000000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-07-09"
+    },
+    {
+      "id": "gpt-5.6",
+      "provider": "OpenAI",
+      "contextWindow": 1050000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-07-09"
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "provider": "OpenAI",
+      "contextWindow": 1050000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-07-09"
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "provider": "OpenAI",
+      "contextWindow": 1050000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-07-09"
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "provider": "OpenAI",
+      "contextWindow": 1050000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-07-09"
+    },
+    {
+      "id": "muse-spark-1.1",
+      "provider": "Meta",
+      "contextWindow": 1000000,
+      "maxOutput": 32000,
+      "reasoning": true,
+      "addedAt": "2026-07-09"
+    },
+    {
+      "id": "qwen3.7-plus",
+      "provider": "Qwen",
+      "contextWindow": 1000000,
+      "maxOutput": 65536,
+      "reasoning": true,
+      "addedAt": "2026-07-09"
+    },
+    {
+      "id": "grok-4.20-0309-non-reasoning",
+      "provider": "xAI",
+      "contextWindow": 2000000,
+      "maxOutput": null,
+      "reasoning": false,
+      "addedAt": "2026-07-08"
+    },
+    {
+      "id": "grok-4.20-0309-reasoning",
+      "provider": "xAI",
+      "contextWindow": 2000000,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-07-08"
+    },
+    {
+      "id": "grok-4.3",
+      "provider": "xAI",
+      "contextWindow": 1000000,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-07-08"
+    },
+    {
+      "id": "grok-4.5",
+      "provider": "xAI",
+      "contextWindow": 500000,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-07-08"
+    },
+    {
+      "id": "grok-build",
+      "provider": "xAI",
+      "contextWindow": 512000,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-07-08"
+    },
+    {
+      "id": "grok-composer-2.5-fast",
+      "provider": "xAI",
+      "contextWindow": 200000,
+      "maxOutput": null,
+      "reasoning": false,
+      "addedAt": "2026-07-08"
+    },
+    {
+      "id": "fugu-ultra",
+      "provider": null,
+      "contextWindow": 1000000,
+      "maxOutput": 131000,
+      "reasoning": true,
+      "addedAt": "2026-07-06"
+    },
+    {
+      "id": "fugu-ultra-20260615",
+      "provider": null,
+      "contextWindow": 1000000,
+      "maxOutput": 131000,
+      "reasoning": true,
+      "addedAt": "2026-06-28"
+    },
+    {
+      "id": "mimo-v2.5-pro-ultraspeed",
+      "provider": "Xiaomi MiMo",
+      "contextWindow": 1000000,
+      "maxOutput": 131072,
+      "reasoning": true,
+      "addedAt": "2026-06-22"
+    },
+    {
+      "id": "kimi-k2.5",
+      "provider": "Moonshot/Kimi",
+      "contextWindow": null,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-06-21"
+    },
+    {
+      "id": "claude-haiku-4-5",
+      "provider": "Anthropic",
+      "contextWindow": 200000,
+      "maxOutput": 64000,
+      "reasoning": true,
+      "addedAt": "2026-06-14"
+    },
+    {
+      "id": "claude-opus-4-8",
+      "provider": "Anthropic",
+      "contextWindow": 1000000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-06-14"
+    },
+    {
+      "id": "gpt-5-codex",
+      "provider": "OpenAI Codex",
+      "contextWindow": 400000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-06-14"
+    },
+    {
+      "id": "gpt-5.3-codex",
+      "provider": "OpenAI",
+      "contextWindow": 400000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-06-14"
+    },
+    {
+      "id": "gpt-5.5-pro",
+      "provider": "OpenAI",
+      "contextWindow": 1050000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-06-14"
+    },
+    {
+      "id": "glm-5.2",
+      "provider": "Z.ai",
+      "contextWindow": 1000000,
+      "maxOutput": 131072,
+      "reasoning": true,
+      "addedAt": "2026-06-12"
+    },
+    {
+      "id": "kimi-k2.7-code",
+      "provider": "Moonshot/Kimi",
+      "contextWindow": 262144,
+      "maxOutput": 32768,
+      "reasoning": true,
+      "addedAt": "2026-06-12"
+    },
+    {
+      "id": "minimax-m2.7",
+      "provider": "MiniMax",
+      "contextWindow": 204800,
+      "maxOutput": 131072,
+      "reasoning": true,
+      "addedAt": "2026-06-12"
+    },
+    {
+      "id": "minimax-m3",
+      "provider": "MiniMax",
+      "contextWindow": 1000000,
+      "maxOutput": 524288,
+      "reasoning": true,
+      "addedAt": "2026-06-12"
+    },
+    {
+      "id": "step-3.7-flash",
+      "provider": "StepFun",
+      "contextWindow": 256000,
+      "maxOutput": 256000,
+      "reasoning": true,
+      "addedAt": "2026-06-12"
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "provider": "Anthropic",
+      "contextWindow": 1000000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-06-11"
+    },
+    {
+      "id": "gpt-5.5",
+      "provider": "OpenAI",
+      "contextWindow": 1050000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-06-08"
+    },
+    {
+      "id": "qwen3.6-flash",
+      "provider": "Qwen",
+      "contextWindow": 1000000,
+      "maxOutput": 65536,
+      "reasoning": true,
+      "addedAt": "2026-06-02"
+    },
+    {
+      "id": "qwen3.6-plus",
+      "provider": "Qwen",
+      "contextWindow": null,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-06-02"
+    },
+    {
+      "id": "trinity-mini",
+      "provider": "Arcee",
+      "contextWindow": 128000,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-06-02"
+    },
+    {
+      "id": "glm-5.1",
+      "provider": "Z.ai",
+      "contextWindow": 202752,
+      "maxOutput": 131072,
+      "reasoning": true,
+      "addedAt": "2026-05-31"
+    },
+    {
+      "id": "qwen3.6-35b-a3b",
+      "provider": "Qwen",
+      "contextWindow": null,
+      "maxOutput": null,
+      "reasoning": false,
+      "addedAt": "2026-05-31"
+    },
+    {
+      "id": "qwen3.7-max",
+      "provider": "Qwen",
+      "contextWindow": 1000000,
+      "maxOutput": 65536,
+      "reasoning": true,
+      "addedAt": "2026-05-31"
+    },
+    {
+      "id": "trinity-large-thinking",
+      "provider": "Arcee",
+      "contextWindow": 262144,
+      "maxOutput": 262144,
+      "reasoning": true,
+      "addedAt": "2026-05-31"
+    },
+    {
+      "id": "mimo-v2.5",
+      "provider": "Xiaomi MiMo",
+      "contextWindow": 1000000,
+      "maxOutput": 131072,
+      "reasoning": true,
+      "addedAt": "2026-05-30"
+    },
+    {
+      "id": "mimo-v2.5-pro",
+      "provider": "Xiaomi MiMo",
+      "contextWindow": 1000000,
+      "maxOutput": 131072,
+      "reasoning": true,
+      "addedAt": "2026-05-30"
+    },
+    {
+      "id": "kimi-for-coding",
+      "provider": "Moonshot/Kimi",
+      "contextWindow": 262144,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-05-25"
+    },
+    {
+      "id": "kimi-k2.6",
+      "provider": "Moonshot/Kimi",
+      "contextWindow": 262144,
+      "maxOutput": 32768,
+      "reasoning": true,
+      "addedAt": "2026-05-25"
+    },
+    {
+      "id": "deepseek-coder:1.3b",
+      "provider": "DeepSeek",
+      "contextWindow": null,
+      "maxOutput": null,
+      "reasoning": false,
+      "addedAt": "2026-05-06"
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "provider": "DeepSeek",
+      "contextWindow": 1000000,
+      "maxOutput": 384000,
+      "reasoning": true,
+      "addedAt": "2026-04-23"
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "provider": "DeepSeek",
+      "contextWindow": 1000000,
+      "maxOutput": 384000,
+      "reasoning": true,
+      "addedAt": "2026-04-23"
+    },
+    {
+      "id": "deepseek-reasoner",
+      "provider": "DeepSeek",
+      "contextWindow": null,
+      "maxOutput": null,
+      "reasoning": false,
+      "addedAt": "2026-03-02"
+    }
+  ],
+  "toolCount": 79
+}

@@ -1,0 +1,7 @@
+derived: web/lib/facts.generated.ts
+derived: web/data/agent-docs.generated.json
+derived: web/data/features.generated.json
+derived: web/lib/terminal-capture.generated.ts
+derived: web/data/latest-published-release.json
+derived: docs/public-surface-facts.json
+derived: docs/cloud-facts/stable.json

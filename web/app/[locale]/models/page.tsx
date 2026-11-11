@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { releaseView } from "@/lib/capabilities";
 import { getFacts } from "@/lib/facts";
 import { buildPageMetadata } from "@/lib/page-meta";
 import {
@@ -32,17 +33,18 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
 export default async function ModelsPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
   const facts = await getFacts();
+  const released = releaseView(facts);
   const t = (copy: LocalizedText) => fill(pickText(copy, locale), {
-    version: facts.version ?? "—", model: facts.defaultModel ?? "—", count: facts.models.length,
+    version: facts.latestPublishedRelease?.version ?? "—", model: facts.defaultModel ?? "—", count: released.models.length,
   });
   const dateLocale = getChrome(locale).dateLocale;
-  const latest = latestFirstPartyModels(facts.models);
-  const providers = sortProvidersFirstPartyFirst(facts.providers);
+  const latest = latestFirstPartyModels(released.models);
+  const providers = sortProvidersFirstPartyFirst(released.providers);
   const routeEnv = ROUTE_PROVIDERS.flatMap((route) => {
-    const provider = facts.providers.find((p) => p.id === route.id);
+    const provider = released.providers.find((p) => p.id === route.id);
     return provider ? [{ ...route, env: provider.env }] : [];
   });
-  const deepseekEnv = facts.providers.find((p) => p.id === "deepseek")?.env;
+  const deepseekEnv = released.providers.find((p) => p.id === "deepseek")?.env;
 
   return (
     <>
@@ -120,14 +122,16 @@ export default async function ModelsPage({ params }: { params: Promise<{ locale:
           </div>
         </Section>
 
-        <Section id="models-title" title={t(MODELS_COPY.modelsTitle)} scope={t(MODELS_COPY.modelsLead)}>
-          <ModelsCatalog models={facts.models} locale={locale} />
-        </Section>
+        {released.counts && (
+          <Section id="models-title" title={t(MODELS_COPY.modelsTitle)} scope={t(MODELS_COPY.modelsLead)}>
+            <ModelsCatalog models={released.models} locale={locale} />
+          </Section>
+        )}
 
         <Section id="providers-title" title={t(MODELS_COPY.listTitle)}>
           <details className="group-card disclosure-row">
             <summary>
-              <span>{fill(pickText(MODELS_COPY.providerCount, locale), { count: providers.length })}</span>
+              <span>{released.counts ? fill(pickText(MODELS_COPY.providerCount, locale), { count: released.counts.providerRoutes }) : t(MODELS_COPY.listTitle)}</span>
               <Icon name="chevron-down" className="disclosure-chevron" />
             </summary>
             <div className="disclosure-body">

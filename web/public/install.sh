@@ -496,7 +496,17 @@ if [ "${CODEWHALE_INSTALL_COMPILED_HOST:-}" = 1 ]; then
 fi
 
 install_binary "$tmpdir/$receipt_name" "$install_dir/$receipt_name" 644
-say "Uninstall this receipted copy: \"$install_dir/codewhale\" uninstall --yes"
+supports_uninstall=0
+installed_help="$("$install_dir/codewhale" --help </dev/null 2>/dev/null || true)"
+if printf '%s\n' "$installed_help" | grep -E '^[[:space:]]+uninstall([[:space:]]|$)' >/dev/null; then
+  supports_uninstall=1
+fi
+if [ "$supports_uninstall" -eq 1 ]; then
+  say "Uninstall this receipted copy: \"$install_dir/codewhale\" uninstall --yes"
+else
+  say "Uninstall: this release has no uninstall command. Remove the files: rm \"$install_dir/codewhale\" \"$install_dir/codew\" \"$install_dir/.codewhale-install.sha256\""
+  say "Your data in ~/.codewhale is separate; delete it only if you want it gone."
+fi
 say "Installed checksummed release commands:"
 say "  $install_dir/codewhale"
 say "  $install_dir/codew"
@@ -506,10 +516,22 @@ if [ -n "$recovery_dir" ]; then
 fi
 "$install_dir/codewhale" doctor --installs --brief </dev/null 2>/dev/null || true
 
+case "$target" in
+  macos-*)
+    if ! command -v node >/dev/null 2>&1; then
+      say ""
+      say "Computer Use is included and needs Node.js 20 or newer on PATH."
+      say "Install Node.js from https://nodejs.org/, then restart Codewhale to enable Computer Use."
+    fi
+    ;;
+esac
+
 say ""
 say "Use this installation: \"$install_dir/codewhale\""
 say "Future updates: \"$install_dir/codewhale\" update"
-say "Updates install automatically; turn off with: codewhale config set update.mode notify"
+if [ "$supports_uninstall" -eq 1 ]; then
+  say "Updates install automatically; turn off with: codewhale config set update.mode notify"
+fi
 path_selected=1
 for command_name in codewhale codew; do
   resolved="$(command -v "$command_name" 2>/dev/null || true)"
@@ -518,16 +540,16 @@ for command_name in codewhale codew; do
     path_selected=0
   fi
 done
-if [ "$path_selected" -eq 0 ]; then
-  # Print the persistent line for the user's login shell. The installer never
-  # edits shell profiles itself; the user runs the line once.
+if [ "$path_selected" -eq 1 ]; then
+  say ""
+  say "Next: codewhale --version"
+else
   path_dir="$install_dir"
   if [ -n "${HOME:-}" ] && [ "$install_dir" = "$(cd -P "$HOME/.local/bin" 2>/dev/null && pwd)" ]; then
     path_dir="\$HOME/.local/bin"
   fi
   shell_name="${SHELL:-}"
   shell_name="${shell_name##*/}"
-  say ""
   case "$path_dir" in
     *[\'\"\`\\\$]*|*"
 "*)
@@ -539,11 +561,21 @@ if [ "$path_selected" -eq 0 ]; then
       fi
       ;;
   esac
+  say ""
+  if [ -z "$(command -v codewhale 2>/dev/null || true)" ]; then
+    say "codewhale is not on your PATH in this shell yet."
+  else
+    say "A different codewhale comes first on your PATH in this shell."
+  fi
   case "$shell_name" in
     fish)
       say "Put $install_dir first on PATH in future shells (run once; this installer does not edit shell profiles):"
       say "  fish_add_path \"$path_dir\""
       say "It takes effect in this fish shell and in new ones (fish 3.2 or newer)."
+      say "PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path"
+      say ""
+      say "Then check it:"
+      say "  codewhale --version"
       ;;
     zsh|bash|sh|dash|ksh|mksh|ash|"")
       case "$shell_name" in
@@ -568,22 +600,28 @@ if [ "$path_selected" -eq 0 ]; then
       esac
       say "Put $install_dir first on PATH in future shells (run once; this installer does not edit shell profiles):"
       say "  printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH=\"$path_dir:\$PATH\"' '# <<< codewhale PATH <<<' >> ~/$profile"
-      say "The marker lines let codewhale uninstall remove exactly this block; a bare export line is yours and is never touched."
-      say "Then run: . ~/$profile   (or open a new terminal)"
-      say "Or for this shell only:"
+      if [ "$supports_uninstall" -eq 1 ]; then
+        say "The marker lines let codewhale uninstall remove exactly this block; a bare export line is yours and is never touched."
+      else
+        say "To undo this later, delete the three lines between and including the marker lines."
+      fi
+      say "PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path"
+      say ""
+      say "Run this now, in this shell:"
       say "  export PATH=\"$path_dir:\$PATH\"; hash -r"
+      say "Then check it:"
+      say "  codewhale --version"
       ;;
     unsafe-path)
       say "Add $install_dir first to PATH in your shell's startup file; its name contains shell-special characters, so no command line is printed for it."
+      say "PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path"
       ;;
     *)
       say "Add $install_dir first to PATH in your shell's startup file; this installer has no PATH line for $shell_name."
+      say "PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path"
+      say ""
+      say "Until then, run it by its full path:"
+      say "  \"$install_dir/codewhale\" --version"
       ;;
   esac
-  say "Verify: command -v codewhale codew"
-  say "PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path"
-fi
-if ! command -v node >/dev/null 2>&1; then
-  say "Computer Use is included and needs Node.js 20 or newer on PATH."
-  say "Install Node.js from https://nodejs.org/, then restart Codewhale to enable Computer Use."
 fi

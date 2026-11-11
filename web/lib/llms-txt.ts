@@ -1,6 +1,7 @@
 import { CHANGELOG } from "./changelog.generated";
 import { GETTING_STARTED_STEPS } from "./content/getting-started";
 import { DOC_TOPICS, REPO_DOCS_BASE, docTopicHref } from "./docs-map";
+import { releaseView } from "./capabilities";
 import { BUILD_FACTS, type RepoFacts } from "./facts";
 import { computerUse } from "./i18n/dictionaries/en/computer-use";
 import { DISCORD_URL, REPO_URL } from "./i18n/links";
@@ -94,7 +95,7 @@ const EXTRA_PAGES: readonly { path: string; title: string; description: string }
     path: "/signin",
     title: "Sign in",
     description:
-      "Sign in to an existing Codewhale account. New accounts are not open; the terminal needs no account.",
+      "Sign in to Codewhale with GitHub, Google or an email code. Cloud computers are invite-only; the terminal needs no account.",
   },
   {
     path: "/legal/terms",
@@ -131,13 +132,14 @@ function factLines(facts: RepoFacts): string[] {
   const release = facts.latestPublishedRelease;
   const lines = [
     release
-      ? `- Latest published release: v${release.version}, published ${release.publishedAt.slice(0, 10)} (${release.url}). The install commands above install this release.`
+      ? `- Latest published release: v${release.version}, published ${release.publishedAt.slice(0, 10)}${release.readAt ? `, read ${release.readAt.slice(0, 10)}` : ""} (${release.url}). The install commands above install this release.`
       : "- Latest published release: unknown at build time; see https://github.com/codewhale-hq/CodeWhale/releases.",
   ];
   if (facts.license) lines.push(`- License: ${facts.license} (${REPO_URL}/blob/main/LICENSE). Free to use; you pay your model provider directly, and local models need no key.`);
   if (facts.defaultModel) lines.push(`- Default model id: \`${facts.defaultModel}\` (DeepSeek). Every provider and model is selectable with /provider and /model.`);
-  if (facts.providers.length > 0) {
-    lines.push(`- Built-in provider routes (${facts.providers.length}): ${facts.providers.map((provider) => provider.label).join(", ")}. Any OpenAI-compatible endpoint also works.`);
+  const released = releaseView(facts);
+  if (released.counts) {
+    lines.push(`- Built-in provider routes in ${release?.tag ?? "the published release"} (${released.counts.providerRoutes}): ${released.providers.map((provider) => provider.label).join(", ")}. Any OpenAI-compatible endpoint also works.`);
   }
   if (facts.sandboxBackends.length > 0) lines.push(`- OS command sandbox backends: ${facts.sandboxBackends.join("; ")}.`);
   lines.push(`- Facts generated ${facts.generatedAt.slice(0, 10)}${facts.sourceRevision ? ` from source revision ${facts.sourceRevision}` : ""}; feature registry: ${SITE_URL}/features.json.`);
