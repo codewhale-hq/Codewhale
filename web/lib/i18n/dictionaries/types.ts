@@ -126,6 +126,7 @@ export interface ChromeDict {
   stateInviteOnly: string;
   stateNotOpen: string;
   stateNotPublic: string;
+  stateInSource: string;
   numbersAsOf: string;
   downloadMacos: string;
   downloadVersion: string;

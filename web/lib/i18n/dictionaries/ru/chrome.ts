@@ -77,6 +77,7 @@ export const chrome: ChromeDict = {
   stateInviteOnly: "Только по приглашениям",
   stateNotOpen: "Пока не открыто",
   stateNotPublic: "Не опубликовано",
+  stateInSource: "Есть в исходном коде, ещё не выпущено",
   numbersAsOf: "По состоянию на {date}",
   downloadMacos: "Скачать для macOS",
   downloadVersion: "Версия {version}",

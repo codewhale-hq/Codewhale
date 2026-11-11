@@ -1,6 +1,7 @@
 import { CHANGELOG } from "./changelog.generated";
 import { GETTING_STARTED_STEPS } from "./content/getting-started";
 import { DOC_TOPICS, REPO_DOCS_BASE, docTopicHref } from "./docs-map";
+import { releaseView } from "./capabilities";
 import { BUILD_FACTS, type RepoFacts } from "./facts";
 import { computerUse } from "./i18n/dictionaries/en/computer-use";
 import { DISCORD_URL, REPO_URL } from "./i18n/links";
@@ -136,8 +137,9 @@ function factLines(facts: RepoFacts): string[] {
   ];
   if (facts.license) lines.push(`- License: ${facts.license} (${REPO_URL}/blob/main/LICENSE). Free to use; you pay your model provider directly, and local models need no key.`);
   if (facts.defaultModel) lines.push(`- Default model id: \`${facts.defaultModel}\` (DeepSeek). Every provider and model is selectable with /provider and /model.`);
-  if (facts.providers.length > 0) {
-    lines.push(`- Built-in provider routes (${facts.providers.length}): ${facts.providers.map((provider) => provider.label).join(", ")}. Any OpenAI-compatible endpoint also works.`);
+  const released = releaseView(facts);
+  if (released.counts) {
+    lines.push(`- Built-in provider routes in ${release?.tag ?? "the published release"} (${released.counts.providerRoutes}): ${released.providers.map((provider) => provider.label).join(", ")}. Any OpenAI-compatible endpoint also works.`);
   }
   if (facts.sandboxBackends.length > 0) lines.push(`- OS command sandbox backends: ${facts.sandboxBackends.join("; ")}.`);
   lines.push(`- Facts generated ${facts.generatedAt.slice(0, 10)}${facts.sourceRevision ? ` from source revision ${facts.sourceRevision}` : ""}; feature registry: ${SITE_URL}/features.json.`);

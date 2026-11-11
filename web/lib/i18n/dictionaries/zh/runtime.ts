@@ -15,7 +15,7 @@ export const runtime: RuntimeDict = {
   trustTitle: "信任边界",
   factsTitle: "运行时事实",
   version: "源码版本",
-  toolCount: "工具数量",
+  toolCount: "已发布版本中的工具实现数",
   sandboxBackends: "沙箱后端",
   details: "详情",
   sourceRevision: "源码版本",

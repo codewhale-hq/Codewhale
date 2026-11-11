@@ -19,7 +19,7 @@ export const runtime: RuntimeDict = {
   trustTitle: "Trust boundary",
   factsTitle: "Runtime facts",
   version: "Source version",
-  toolCount: "Tool count",
+  toolCount: "Tool implementations in the published release",
   sandboxBackends: "Sandbox backends",
   details: "Details",
   sourceRevision: "Source revision",

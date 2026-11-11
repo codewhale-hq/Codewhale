@@ -1,7 +1,7 @@
 import type { LocalizedText } from "./vocabulary";
 
 export const HOME_OVERVIEW = {
-  modelsCount: { en: "{providers} providers and {models} models in the current source.", zh: "当前源码包含 {providers} 个提供商和 {models} 个模型。" },
+  modelsCount: { en: "{version} has {routes} provider routes and {models} catalog models.", zh: "{version} 包含 {routes} 条提供商路由和 {models} 个目录模型。" },
   modelsAny: { en: "Any OpenAI-compatible endpoint", zh: "任何 OpenAI 兼容端点" },
   modelsNewest: { en: "Newest in the catalog", zh: "目录中最新的模型" },
   computerUseTitle: { en: "Computer Use", zh: "Computer Use" },

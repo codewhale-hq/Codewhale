@@ -7,6 +7,7 @@ import { Section } from "@/components/page-header";
 import { Strata } from "@/components/strata";
 import { NativeTerminalGallery } from "@/components/native-terminal-gallery";
 import { LivingHeroWhale } from "@/components/living-hero-whale";
+import { releaseView } from "@/lib/capabilities";
 import { getFacts } from "@/lib/facts";
 import { GitHubStar, FaceWall, MergedList, PulseStats, statsAsOf } from "@/components/project-pulse";
 import { LiveStarLink } from "@/components/github-live";
@@ -34,6 +35,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
   const facts = await getFacts();
   const updates = await getReleaseUpdates(facts.latestPublishedRelease);
   const pulse = await loadProjectPulse(5, 48);
+  const released = releaseView(facts);
   const sourceVersion = facts.version ?? "unknown";
   const publishedRelease = updates.terminal.release;
   const sourceIsPublished = publishedRelease?.version === sourceVersion;
@@ -42,10 +44,10 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
   const jsonLd = buildSoftwareApplicationJsonLd(publishedRelease);
   const ledeParts = splitToken(d.heroIntro, "brand");
   const gateways = new Set(["OpenRouter", "Together", "OpenAI Codex"]);
-  const makers = [...new Set(facts.models.map((model) => model.provider).filter((name): name is string => !!name && !gateways.has(name)))]
+  const makers = [...new Set(released.models.map((model) => model.provider).filter((name): name is string => !!name && !gateways.has(name)))]
     .sort((a, b) => a.localeCompare(b));
   const firstParty = new Set(makers);
-  const newest = facts.models
+  const newest = released.models
     .filter((model) => model.addedAt && model.provider && firstParty.has(model.provider))
     .sort((a, b) => (b.addedAt ?? "").localeCompare(a.addedAt ?? ""))
     .slice(0, 6);
@@ -131,7 +133,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
           id="home-models"
           className="home-section"
           title={d.modelsHeading}
-          scope={fill(pickText(HOME_OVERVIEW.modelsCount, locale), { providers: facts.providers.length, models: facts.models.length })}
+          scope={released.counts && publishedRelease ? fill(pickText(HOME_OVERVIEW.modelsCount, locale), { version: `v${publishedRelease.version}`, routes: released.counts.providerRoutes, models: released.counts.models }) : undefined}
           link={<Link href={`/${locale}/models`} className="section-link">{d.modelsLink}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
         >
           <ul className="home-makers" role="list">

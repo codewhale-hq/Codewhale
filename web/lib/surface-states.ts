@@ -3,7 +3,7 @@ import { FOUNDER_SWITCH_VALUES, type FounderSwitchValues } from "./founder-switc
 import { getChrome } from "./i18n/dictionaries";
 import type { ChromeDict } from "./i18n/dictionaries/types";
 
-export const SURFACE_STATES = ["released", "available", "beta", "dev", "open", "invite_only", "not_open", "not_public"] as const;
+export const SURFACE_STATES = ["released", "available", "beta", "dev", "open", "invite_only", "not_open", "not_public", "in_source"] as const;
 export type SurfaceState = (typeof SURFACE_STATES)[number];
 
 export const SURFACE_IDS = [
@@ -30,6 +30,7 @@ export const STATE_CHROME_KEY = {
   invite_only: "stateInviteOnly",
   not_open: "stateNotOpen",
   not_public: "stateNotPublic",
+  in_source: "stateInSource",
 } as const satisfies Record<SurfaceState, keyof ChromeDict>;
 
 export const STATE_TONE: Record<SurfaceState, SurfaceTone> = {
@@ -41,6 +42,7 @@ export const STATE_TONE: Record<SurfaceState, SurfaceTone> = {
   invite_only: "idle",
   not_open: "idle",
   not_public: "idle",
+  in_source: "idle",
 };
 
 const COMMITTED_STATE: Record<Exclude<SurfaceId, "desktop">, SurfaceState> = {

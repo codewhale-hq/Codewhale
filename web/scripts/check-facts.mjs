@@ -23,6 +23,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildFacts, deriveFeatures, REPO_ROOT } from "./facts-lib.mjs";
 import { deriveAgentDocs } from "./docs-sources-lib.mjs";
+import { deriveReleaseBaseline, readCommittedBaseline, serializeBaseline, tagResolves } from "./release-baseline-lib.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const GENERATED_PATH = resolve(__dirname, "..", "lib", "facts.generated.ts");
@@ -103,6 +104,21 @@ const featuresPath = resolve(__dirname, "..", "data", "features.generated.json")
 if (!existsSync(featuresPath) || JSON.stringify(JSON.parse(readFileSync(featuresPath, "utf8"))) !== JSON.stringify(deriveFeatures())) {
   console.error("[check-facts] FAIL — generated feature registry is stale; run npm run prebuild");
   process.exit(1);
+}
+
+const committedBaseline = readCommittedBaseline();
+if (!committedBaseline || !fresh.latestPublishedRelease || committedBaseline.tag !== fresh.latestPublishedRelease.tag) {
+  console.error(`[check-facts] FAIL — data/release-baseline.json is for ${committedBaseline?.tag ?? "nothing"}, the published release is ${fresh.latestPublishedRelease?.tag ?? "unknown"}; run npm run prebuild in a checkout that has the tag`);
+  process.exit(1);
+}
+if (tagResolves(committedBaseline.tag)) {
+  const derivedBaseline = deriveReleaseBaseline(fresh.latestPublishedRelease);
+  if (!derivedBaseline || serializeBaseline(derivedBaseline) !== serializeBaseline(committedBaseline)) {
+    console.error("[check-facts] FAIL — data/release-baseline.json differs from the tagged source; run npm run prebuild");
+    process.exit(1);
+  }
+} else {
+  console.warn(`[check-facts] warning: tag ${committedBaseline.tag} is not in this checkout, so the release baseline was not recomputed`);
 }
 
 // Quick sanity: critical source facts must never degrade to matching nulls.

@@ -80,6 +80,7 @@ export const chrome: ChromeDict = {
   stateInviteOnly: "Tylko na zaproszenie",
   stateNotOpen: "Jeszcze nie otwarte",
   stateNotPublic: "Niepubliczne",
+  stateInSource: "W kodzie źródłowym, jeszcze niewydane",
   numbersAsOf: "Stan na {date}",
   downloadMacos: "Pobierz dla macOS",
   downloadVersion: "Wersja {version}",
