@@ -873,10 +873,13 @@ MCP management for those integrations. The restricted tool catalog below is a
 Codewhale host profile, not an ACP protocol restriction.
 
 The trusted local ACP profile narrows Core to file/search/git/patch and admitted
-foreground shell tools. Shell requires both editor terminal support and operator
+foreground shell tools, plus reviewed plugin tools (`extension_host` feature) and
+the tools of MCP servers configured in Codewhale (`mcp` feature), under the same
+permission setting. Shell requires both editor terminal support and operator
 `allow_shell`; a requested external sandbox that is unavailable removes shell.
-MCP, dynamic tools, task/PTY/background shell, interpreter, subagent and RLM
-lifecycles are unavailable on this transport. Built-in overrides remove the
+Client-supplied MCP servers, dynamic tools, task/PTY/background shell,
+interpreter, subagent and RLM lifecycles are unavailable on this transport.
+Built-in overrides remove the
 whole compatibility alias family. Final dispatch rechecks the profile, so a
 fabricated alias, hook rewrite or omitted catalog entry cannot bypass it. Plan
 remains read-only under Full Access. Full Access and the ordinary approval
