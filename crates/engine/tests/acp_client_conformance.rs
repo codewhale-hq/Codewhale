@@ -1,7 +1,7 @@
 #[path = "support/acp_conformance.rs"]
 mod conformance;
 
-use codewhale_engine::fleet::acp::{AcpClient, PermissionPolicy};
+use codewhale_engine::fleet::acp::{AcpClient, ControlWrite, PermissionPolicy};
 use codewhale_engine::fleet::host::{
     FleetHostAdapter, FleetWorkerCommand, FleetWorkerStartRequest, FleetWorkerTransport,
     LocalProcessFleetHostAdapter,
@@ -11,6 +11,18 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const KNOWN: &[Allowed] = &[
+    Allowed {
+        side: Side::Client,
+        frame: "session/set_model request",
+        problem: "`session/set_model` is not a client request in official v1",
+        reason: "compatibility, kept: sent only to an agent that offers the pre-v1 `models` object and no `model` config option",
+    },
+    Allowed {
+        side: Side::Agent,
+        frame: "session/new response",
+        problem: "field `.models` is not in the official type",
+        reason: "the fixture's legacy leg offers the pre-v1 `models` object on purpose, to make the client send session/set_model",
+    },
     Allowed {
         side: Side::Agent,
         frame: "initialize response",
@@ -145,6 +157,29 @@ fn the_acp_client_and_its_fixture_agents_speak_official_v1_shapes() {
                     PermissionPolicy::AllowOnce,
                     STEP,
                 )
+                .unwrap();
+        },
+    ));
+
+    let legacy_workspace = tempfile::tempdir().unwrap();
+    std::fs::write(
+        legacy_workspace.path().join("fixture-plan.json"),
+        r#"{"legacyModels":true}"#,
+    )
+    .unwrap();
+    frames.extend(captured(
+        "acp-agent.mjs",
+        legacy_workspace.path(),
+        &capture.path().join("legacy.log"),
+        |client| {
+            let identity = client.initialize(STEP).unwrap();
+            let created = client
+                .new_session(&identity, legacy_workspace.path(), &[], STEP)
+                .unwrap();
+            let model = created.offer.control("model").unwrap();
+            assert_eq!(model.write, Some(ControlWrite::SetModel));
+            client
+                .apply_control(&created.session_id, model, "legacy-b", STEP)
                 .unwrap();
         },
     ));

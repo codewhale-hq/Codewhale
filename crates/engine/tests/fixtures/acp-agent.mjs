@@ -96,7 +96,12 @@ function handle(message) {
       record('session-params.jsonl', { method: message.method, params: message.params });
       sessionId = `fixture-session-${process.pid}`;
       cwd = message.params?.cwd ?? cwd;
-      result(message.id, { sessionId });
+      result(message.id, {
+        sessionId,
+        ...(plan().legacyModels
+          ? { models: { currentModelId: 'legacy-a', availableModels: [{ modelId: 'legacy-a', name: 'Legacy A' }, { modelId: 'legacy-b', name: 'Legacy B' }] } }
+          : {}),
+      });
       break;
     case 'session/load':
       record('session-params.jsonl', { method: message.method, params: message.params });
@@ -104,6 +109,9 @@ function handle(message) {
       cwd = message.params?.cwd ?? cwd;
       notify('session/update', { sessionId, update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'replayed history' } } });
       notify('session/update', { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'replayed answer' } } });
+      result(message.id, {});
+      break;
+    case 'session/set_model':
       result(message.id, {});
       break;
     case 'session/set_config_option':
