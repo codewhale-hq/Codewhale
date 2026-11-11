@@ -2084,6 +2084,7 @@ impl ExperimentalSearch {
         let patch = if replay {
             fs::read(&patch_path).map_err(|error| error.to_string())?
         } else {
+            let result = result.ok_or("fresh evaluation requires a completed worker")?;
             let workspace = result
                 .workspace
                 .as_ref()
