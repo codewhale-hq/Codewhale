@@ -66,7 +66,8 @@ def main():
             messages = json.dumps(request.get("messages", []), ensure_ascii=False)
             matches = re.findall(r"CANDIDATE ID: (candidate_g[0-2]_[12])", messages)
             candidate = matches[-1] if matches else "NONE"
-            if "Independent read-only review" in messages:
+            if ("Independent read-only review" in messages
+                    or "Review this verified coding patch adversarially" in messages):
                 category = "final_review"
                 response = support["sse_text"]('{"verdict":"pass","reasons":["resume E2E"]}')
             elif "Review the DEV candidate's complete changed files" in messages:
