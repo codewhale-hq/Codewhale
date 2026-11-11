@@ -45,9 +45,10 @@ target/release/codewhale --version
 # 1. Install. Downloads two checksum-verified binaries into ~/.local/bin (no sudo).
 curl -fsSL https://codewhale.net/install.sh | sh
 
-# 2. Make sure ~/.local/bin is on your PATH, now and in future terminals.
-printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc    # zsh: use ~/.zshrc
-export PATH="$HOME/.local/bin:$PATH"
+# 2. The installer adds ~/.local/bin to your shell profile (it prints what it added and
+#    how to undo it; --no-modify-path skips that). Shells that are already open do not
+#    reread the profile, so use it in this one now, then check it.
+export PATH="$HOME/.local/bin:$PATH"; hash -r
 codewhale --version          # -> codewhale 0.10.0 (1be1a703b975)
 
 # 3. Give it a DeepSeek API key (from https://platform.deepseek.com/api_keys).
@@ -135,7 +136,7 @@ curl -fsSL https://codewhale.net/install.sh | sh
 * 使用校验过的发布内容分别安装 `~/.local/bin/codewhale` 和
   `~/.local/bin/codew`。当两个清单摘要相同时，下载暂存阶段尽量使用硬链接，
   失败时使用临时副本。
-* **从不使用 sudo，也从不修改你的 shell 配置文件。** 它拒绝安装到系统或包管理器目录（`/usr/bin`、`~/.cargo/bin`、Homebrew 与 MacPorts 的 bin 目录、`node_modules`、`/nix/store` 等）、你的主目录或 `/`，以及其他用户或用户组可写的目录（你自己的目录可用 `chmod go-w <目录>` 修复）；也拒绝覆盖一个*不同的*已有 `codewhale`。
+* **从不使用 sudo。** 当安装目录不在 `PATH` 上时，它会向你的 shell 配置文件追加一个带标记的三行块（见[把它加入 PATH](#把它加入-path)），原样打印它加了什么，并可用 `--no-modify-path` 跳过。它拒绝安装到系统或包管理器目录（`/usr/bin`、`~/.cargo/bin`、Homebrew 与 MacPorts 的 bin 目录、`node_modules`、`/nix/store` 等）、你的主目录或 `/`，以及其他用户或用户组可写的目录（你自己的目录可用 `chmod go-w <目录>` 修复）；也拒绝覆盖一个*不同的*已有 `codewhale`。
 
 预期输出：
 
@@ -151,9 +152,13 @@ Installed checksummed release commands:
 PATH selects no codewhale command; this install is /home/you/.local/bin/codewhale
 
 codewhale is not on your PATH in this shell yet.
-Put /home/you/.local/bin first on PATH in future shells (run once; this installer does not edit shell profiles):
-  printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc
-The marker lines let codewhale uninstall remove exactly this block; a bare export line is yours and is never touched.
+Added to ~/.bashrc so new shells find codewhale (skip this with --no-modify-path):
+  # >>> codewhale PATH >>>
+  export PATH="$HOME/.local/bin:$PATH"
+  # <<< codewhale PATH <<<
+Only those three lines were added; nothing else in the file was changed. Shells that are already open do not reread the profile.
+To undo, run:
+  cw_tmp="$(mktemp)" && sed -e '/^# >>> codewhale PATH >>>$/{N;N;/\n# <<< codewhale PATH <<<$/d;}' ~/.bashrc > "$cw_tmp" && cat "$cw_tmp" > ~/.bashrc; rm -f "$cw_tmp"
 PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path
 
 Run this now, in this shell:
@@ -174,22 +179,35 @@ PATH 代码块始终是安装器打印的最后内容。如果你的 PATH 已经
 
 ### 把它加入 PATH
 
-如果安装器提示 `PATH selects no codewhale command`，说明 `~/.local/bin` **在当前 shell 里**不在 PATH 上。此时 `codewhale.net/install.sh` 安装器会根据你的 `$SHELL`（zsh、bash、fish 或 POSIX `sh`），打印下面这个代码块里对应的那一行；对于其他 shell，或者目录名含有引号、`$`、反引号或反斜杠的情况，它会让你自己添加该目录。它自己从不修改 shell 配置文件。发布压缩包内的 `install.sh` 只会打印针对当前 shell 的 `export` 行，同样作为它的最后输出。在 Ubuntu 和 Debian 上，`~/.profile` 会加入 `~/.local/bin`，但前提是该目录在你*登录*时已经存在。所以：
+如果安装器提示 `PATH selects no codewhale command`，说明 `~/.local/bin` **在当前 shell 里**不在 PATH 上。此时 `codewhale.net/install.sh` 以及发布压缩包内的 `install.sh` 默认会向你的 `$SHELL` 对应的配置文件追加一个带标记的三行块，打印文件名和这三行，并打印移除它们的命令：
 
-* 新开的 SSH 会话或登录 shell 会自动生效；
-* 桌面上新开的终端**窗口**（GNOME Terminal、Ghostty 等）通常不会，要等到你注销再登录。我刚装完就在 Ghostty 里遇到了 `bash: codewhale: command not found`。
+| `$SHELL` | 修改的文件 |
+| --- | --- |
+| zsh | `~/.zshrc`（设置了 `ZDOTDIR` 时为 `$ZDOTDIR/.zshrc`） |
+| Linux 上的 bash | `~/.bashrc` |
+| macOS 上的 bash | `~/.bash_profile`、`~/.bash_login`、`~/.profile` 中第一个存在的（都不存在则用 `~/.bash_profile`） |
+| sh、dash、ksh、ash | `~/.profile` |
 
-一次性修复：
+只会追加这三行（文件末尾没有换行时先补一个换行），不会改写或重排其他任何行。下列情况安装器不会修改任何文件：
+
+* 你传了 `--no-modify-path`（或设置 `CODEWHALE_NO_MODIFY_PATH=1`）；用网页安装器时写 `curl -fsSL https://codewhale.net/install.sh | sh -s -- --no-modify-path`。它会改为打印 `printf` 命令，由你自己运行；
+* 安装目录已经在 `PATH` 上；
+* 配置文件是符号链接、不是可写的普通文件，或其所在目录不存在，此时改为打印命令；
+* 你的 shell 是 fish 或其他它没有对应配置文件的 shell、`$SHELL` 为空，或目录名含有引号、`$`、反引号或反斜杠。安装器会告诉你该自己添加什么（fish 用 `fish_add_path ~/.local/bin`）。
+
+重复运行安装器不会再加第二个块：它看到标记行就保持文件原样。配置文件的改动不会影响已经打开的 shell，所以安装器的最后几行会给出当前 shell 用的 `export` 命令和 `codewhale --version`。
+
+要手动撤销，请删除两个标记行之间（含标记行）的三行，或运行安装器打印的命令：
 
 ```bash
-printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc   # bash (macOS login bash: ~/.bash_profile, or ~/.profile if only that exists)
-# printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.zshrc  # zsh
-# fish_add_path ~/.local/bin                               # fish (untested on this VM)
-export PATH="$HOME/.local/bin:$PATH"; hash -r
+cw_tmp="$(mktemp)" && sed -e '/^# >>> codewhale PATH >>>$/{N;N;/\n# <<< codewhale PATH <<<$/d;}' ~/.bashrc > "$cw_tmp" && cat "$cw_tmp" > ~/.bashrc; rm -f "$cw_tmp"   # undo
+export PATH="$HOME/.local/bin:$PATH"; hash -r   # this shell only
 command -v codewhale codew
 ```
 
-这个三行块带有标记，`codewhale uninstall`（0.10.3 及更高版本）之后可以精确地移除它；0.10.2 请自行删除这三行。你自己加的裸 `export PATH=…`
+在 Linux 桌面上，新开的终端**窗口**（GNOME Terminal、Ghostty 等）启动的是非登录 shell，读取 `~/.bashrc` 而不是 `~/.profile`，所以块写在 Linux 的 `~/.bashrc` 里。
+
+这个三行块带有标记，`codewhale uninstall`（0.10.3 及更高版本）之后可以精确地移除它；0.10.2 请用上面的命令或自行删除这三行。你自己加的裸 `export PATH=…`
 行归你自己管理：卸载从不改动它，因为 `~/.local/bin` 也被其他工具共用。
 
 ### 选项
@@ -275,7 +293,7 @@ cd codewhale-linux-x64 && ./install.sh               # -> ~/.local/bin; PREFIX=/
 
 （注意：校验清单是 *bundles*，不是 *artifacts*。）
 
-压缩包里的 `install.sh` 不用 sudo，不动内容不同的已有文件，从不修改 shell 配置文件，也不提问；它只打印针对当前 shell 的 `export` 行。
+压缩包里的 `install.sh` 不用 sudo，不动内容不同的已有文件，也不提问；和网页安装器一样，当目录不在 `PATH` 上时它会向 shell 配置文件追加带标记的 PATH 块（`./install.sh --no-modify-path` 可跳过；见[把它加入 PATH](#把它加入-path)）。
 
 **升级：** `codewhale update` 对 3a 和 3b 都适用，因为它们都属于"直接二进制"安装。**卸载：** 删除那两个文件（见 §12）。
 
@@ -665,7 +683,7 @@ TUI 会话、恢复的 exec 会话，以及向模型提供工具的 exec 运行�
 | 窗口标题显示状态（`waiting on you…`、`✓ done`） | ✅ |
 | 退出后终端恢复正常（回到普通屏幕、光标正常、没有鼠标上报的乱码） | ✅ |
 
-Linux 上的 Ghostty 启动的是**非登录** shell，所以它读取 `~/.bashrc` 而不是 `~/.profile`。这就是为什么 PATH 那一行需要写进 `~/.bashrc`（§2）。
+Linux 上的 Ghostty 启动的是**非登录** shell，所以它读取 `~/.bashrc` 而不是 `~/.profile`。这就是为什么 安装器把 PATH 块写进 `~/.bashrc`（§2）。
 
 你可能会注意到，一个回合结束后，一些小圆点和淡淡的标签（例如 `other · drift`）在空白区域飘动。那是 Codewhale 装饰性的"环境生命（ambient life）"小鲸鱼，不是渲染故障。
 
@@ -839,7 +857,7 @@ cargo install codewhale-cli --locked   # installs `codewhale`
 ```bash
 mkdir -p "$HOME/.local"
 codewhale_install_dir="$(mktemp -d "$HOME/.local/codewhale-release.XXXXXX")"
-curl -fsSL https://codewhale.net/install.sh | CODEWHALE_INSTALL_DIR="$codewhale_install_dir" sh
+curl -fsSL https://codewhale.net/install.sh | CODEWHALE_INSTALL_DIR="$codewhale_install_dir" sh -s -- --no-modify-path
 "$codewhale_install_dir/codewhale" --version
 export PATH="$codewhale_install_dir:$PATH"
 hash -r
@@ -847,7 +865,7 @@ command -v codewhale codew
 "$codewhale_install_dir/codewhale" update --check
 ```
 
-确认版本和命令路径之后，把该目录放在 shell 配置里 PATH 的最前面。在 PowerShell 里，用 `Get-Command codewhale, codew -All` 检查解析结果；运行所选可执行文件时使用它的完整路径。一次成功的更新只会改动它自己所在的安装目录，所以 PATH 上更靠前的其他条目仍可能启动旧副本。
+`--no-modify-path` 让安装器不去改动你的配置文件。确认版本和命令路径之后，把该目录放在 shell 配置里 PATH 的最前面。在 PowerShell 里，用 `Get-Command codewhale, codew -All` 检查解析结果；运行所选可执行文件时使用它的完整路径。一次成功的更新只会改动它自己所在的安装目录，所以 PATH 上更靠前的其他条目仍可能启动旧副本。
 
 现代的、成对匹配的 `codewhale`、`codew` 以及兼容性副本，都从同一份已校验的字节更新。指向正在运行的二进制的符号链接会被保留。内容不同或不相关的同级文件会在错误里被点名并原样保留；不会仅仅为了猜测其归属而执行任何同级文件。对于带有独立 dispatcher/TUI 二进制的旧安装，请使用上面的新目录迁移方式。
 
@@ -1034,6 +1052,8 @@ NSIS 安装器目前包含 Windows x64 二进制。Windows ARM64 用户应通过
 - 注册到 Windows 的**应用和功能（Apps & Features）**，便于卸载
 
 卸载会移除二进制、`codewhale.bat`、开始菜单快捷方式和用户 `PATH` 条目。
+
+发布压缩包里的 `install.ps1` 默认把 `%USERPROFILE%\bin` 加入**用户** PATH（只写注册表值 `HKCU\Environment\Path`，不动系统 PATH），打印加了什么以及只移除该条目的 PowerShell 命令；目录已在 PATH 上时什么都不做；加 `-NoModifyPath`（或 `CODEWHALE_NO_MODIFY_PATH=1`）可跳过，此时改为打印命令；重复运行不会重复添加。已打开的窗口看不到这个改动，所以最后几行给出当前窗口用的命令和 `codewhale --version`。该路径尚未在 Windows 主机上运行过。
 
 **静默安装**（供 IT 管理员、SCCM、Intune 使用）：
 

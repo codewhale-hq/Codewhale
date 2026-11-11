@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -39,6 +40,7 @@ function installFixture(
     installDirName?: string;
     homeFiles?: string[];
     onPath?: "first" | "shadowed";
+    args?: string[];
   } = {},
 ) {
   const {
@@ -52,6 +54,7 @@ function installFixture(
     installDirName = "install",
     homeFiles = [],
     onPath,
+    args = [],
   } = options;
   const root = mkdtempSync(path.join(tmpdir(), "codewhale-web-installer-"));
   fixtureRoots.push(root);
@@ -115,8 +118,8 @@ function installFixture(
     chmodSync(destination, 0o755);
   }
 
+  mkdirSync(home, { recursive: true });
   for (const file of homeFiles) {
-    mkdirSync(home, { recursive: true });
     writeFileSync(path.join(home, file), "# existing profile\n");
   }
   // The installer resolves its directory with `cd -P`, so PATH must carry the
@@ -139,9 +142,7 @@ function installFixture(
     chmodSync(legacyPath, 0o755);
   }
 
-  const result = spawnSync("/bin/sh", [installer], {
-    encoding: "utf8",
-    env: {
+  const env = {
       ...process.env,
       CODEWHALE_INSTALL_DIR: installDir,
       CODEWHALE_RELEASE_BASE_URL: "https://fixtures.invalid/download",
@@ -150,11 +151,11 @@ function installFixture(
       HOME: home,
       SHELL: shell,
       PATH: [...pathPrefix, fakeBin, process.env.PATH ?? "/usr/bin:/bin"].join(":"),
-    },
-  });
+  };
+  const result = spawnSync("/bin/sh", [installer, ...args], { encoding: "utf8", env });
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(expectedStatus);
 
-  return { installDir, legacyPath, result, runtime };
+  return { env, installDir, legacyPath, result, runtime };
 }
 
 afterEach(() => {
@@ -181,41 +182,73 @@ describe.skipIf(process.platform === "win32")("public installer compatibility co
     expect(result.stdout).not.toContain("Refreshed legacy compatibility command:");
   });
 
-  it.each([
-    ["/bin/zsh", "Linux", `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="INSTALL:$PATH"' '# <<< codewhale PATH <<<' >> ~/.zshrc`, "export PATH="],
-    ["/bin/bash", "Linux", `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="INSTALL:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc`, "export PATH="],
-    ["/bin/bash", "Darwin", `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="INSTALL:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bash_profile`, "export PATH="],
-    ["/usr/bin/fish", "Linux", `fish_add_path "INSTALL"`, "this fish shell"],
-    ["/bin/dash", "Linux", `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="INSTALL:$PATH"' '# <<< codewhale PATH <<<' >> ~/.profile`, "export PATH="],
-  ] as const)(
-    "prints the persistent PATH line for %s on %s without editing a profile",
-    (shell, os, persist, reload) => {
-      const { installDir, result } = installFixture(false, { shell, os });
+  const block = (dir: string) => `# >>> codewhale PATH >>>\nexport PATH="${dir}:$PATH"\n# <<< codewhale PATH <<<\n`;
 
-      // The fixture install dir is never on PATH, so the hint always prints.
-      expect(result.stdout).toContain("PATH selects");
-      expect(result.stdout).toContain(persist.replace("INSTALL", realpathSync(installDir)));
-      expect(result.stdout).toContain(reload);
+  it.each([
+    ["/bin/zsh", "Linux", ".zshrc"],
+    ["/bin/bash", "Linux", ".bashrc"],
+    ["/bin/bash", "Darwin", ".bash_profile"],
+    ["/bin/dash", "Linux", ".profile"],
+  ] as const)(
+    "adds the marked PATH block to the profile for %s on %s and says so",
+    (shell, os, profile) => {
+      const { installDir, result } = installFixture(false, { shell, os });
+      const home = path.join(installDir, "..", "home");
+
+      expect(readFileSync(path.join(home, profile), "utf8")).toBe(block(realpathSync(installDir)));
+      expect(result.stdout).toContain(`Added to ~/${profile}`);
+      expect(result.stdout).toContain("--no-modify-path");
+      expect(result.stdout).toContain("To undo, run:");
+      expect(result.stdout).toContain("export PATH=");
       expect(result.stdout).toContain("docs/INSTALL.md#put-it-on-your-path");
-      // HOME (a sibling of the install dir) is never created: no profile was written.
-      expect(existsSync(path.join(installDir, "..", "home"))).toBe(false);
     },
   );
 
-  it.skipIf(!existsSync("/bin/dash"))("the printed profile and reload commands work in dash", () => {
-    const { installDir, result } = installFixture(false, { shell: "/bin/dash", os: "Linux" });
-    const persist = result.stdout.split("\n").find((line) => line.trim().startsWith("printf '%s\\n' '# >>> codewhale PATH >>>'"));
-    const reload = result.stdout.split("\n").find((line) => line.trim().startsWith('export PATH="'))?.trim();
-    expect(persist).toBeDefined();
-    expect(reload).toBeDefined();
-    const home = path.join(installDir, "..", "home");
-    mkdirSync(home, { recursive: true });
-    const applied = spawnSync("/bin/dash", ["-c", `set -e\n${persist}\n${reload}\ncommand -v codewhale`], {
+  it("prints the fish command and edits no file", () => {
+    const { installDir, result } = installFixture(false, { shell: "/usr/bin/fish", os: "Linux" });
+
+    expect(result.stdout).toContain(`fish_add_path "${realpathSync(installDir)}"`);
+    expect(result.stdout).toContain("this fish shell");
+    expect(readdirSync(path.join(installDir, "..", "home"))).toEqual([]);
+  });
+
+  it("skips the edit with --no-modify-path and prints the command instead", () => {
+    const { installDir, result } = installFixture(false, { shell: "/bin/zsh", os: "Linux", args: ["--no-modify-path"] });
+
+    expect(readdirSync(path.join(installDir, "..", "home"))).toEqual([]);
+    expect(result.stdout).toContain("Not editing your shell profile");
+    expect(result.stdout).toContain(`'# <<< codewhale PATH <<<' >> ~/.zshrc`);
+  });
+
+  it("never duplicates the block when the installer runs again", () => {
+    const first = installFixture(false, { shell: "/bin/zsh", os: "Linux" });
+    const home = path.join(first.installDir, "..", "home");
+    const before = readFileSync(path.join(home, ".zshrc"), "utf8");
+    const again = spawnSync("/bin/sh", [installer], {
       encoding: "utf8",
-      env: { ...process.env, HOME: home },
+      env: first.env,
     });
-    expect(applied.status, applied.stderr).toBe(0);
-    expect(applied.stdout.trim()).toBe(path.join(realpathSync(installDir), "codewhale"));
+
+    expect(again.status, again.stderr).toBe(0);
+    expect(readFileSync(path.join(home, ".zshrc"), "utf8")).toBe(before);
+    expect(again.stdout).toContain("already has the codewhale PATH block");
+  });
+
+  it.skipIf(!existsSync("/bin/dash"))("a new dash shell finds codewhale through the added block and the undo command removes it", () => {
+    const { installDir, result } = installFixture(false, { shell: "/bin/dash", os: "Linux" });
+    const home = path.join(installDir, "..", "home");
+    const found = spawnSync("/bin/dash", ["-c", ". \"$HOME/.profile\"; command -v codewhale"], {
+      encoding: "utf8",
+      env: { ...process.env, HOME: home, PATH: "/usr/bin:/bin" },
+    });
+    expect(found.status, found.stderr).toBe(0);
+    expect(found.stdout.trim()).toBe(path.join(realpathSync(installDir), "codewhale"));
+
+    const undo = result.stdout.split("\n").map((line) => line.trim()).find((line) => line.startsWith("cw_tmp="));
+    expect(undo).toBeDefined();
+    const undone = spawnSync("/bin/sh", ["-c", undo as string], { encoding: "utf8", env: { ...process.env, HOME: home } });
+    expect(undone.status, undone.stderr).toBe(0);
+    expect(readFileSync(path.join(home, ".profile"), "utf8")).toBe("");
   });
 
   it.each([
@@ -249,12 +282,10 @@ describe.skipIf(process.platform === "win32")("public installer compatibility co
     expect(lines.at(-1)).toBe("Next: codewhale --version");
   });
 
-  it("writes the default directory as $HOME/.local/bin in the persistent line", () => {
-    const { result } = installFixture(false, { installUnderHome: true });
+  it("writes the default directory as $HOME/.local/bin in the added block", () => {
+    const { installDir } = installFixture(false, { installUnderHome: true });
 
-    expect(result.stdout).toContain(
-      `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.zshrc`,
-    );
+    expect(readFileSync(path.join(installDir, "..", "..", ".zshrc"), "utf8")).toBe(block("$HOME/.local/bin"));
   });
 
   it.each([
@@ -262,9 +293,11 @@ describe.skipIf(process.platform === "win32")("public installer compatibility co
     [[".bash_login", ".profile"], "~/.bash_login"],
     [[".bash_profile", ".profile"], "~/.bash_profile"],
   ] as const)("keeps macOS login bash reading %j by naming %s", (homeFiles, profile) => {
-    const { result } = installFixture(false, { shell: "/bin/bash", os: "Darwin", homeFiles: [...homeFiles] });
+    const { installDir, result } = installFixture(false, { shell: "/bin/bash", os: "Darwin", homeFiles: [...homeFiles] });
+    const file = path.join(installDir, "..", "home", profile.slice(2));
 
-    expect(result.stdout).toContain(`'# <<< codewhale PATH <<<' >> ${profile}\n`);
+    expect(result.stdout).toContain(`Added to ${profile}`);
+    expect(readFileSync(file, "utf8")).toBe(`# existing profile\n${block(realpathSync(installDir))}`);
   });
 
   it.each(["/bin/tcsh", "/usr/bin/nu"])("prints no POSIX line for the unrecognised shell %s", (shell) => {
@@ -295,10 +328,11 @@ describe.skipIf(process.platform === "win32")("public installer compatibility co
   });
 
   it("prints the PATH hint when an earlier PATH entry shadows this install", () => {
-    const { result } = installFixture(false, { onPath: "shadowed" });
+    const { installDir, result } = installFixture(false, { onPath: "shadowed" });
 
     expect(result.stdout).toMatch(/PATH selects .*shadow\/codewhale; this install is/);
-    expect(result.stdout).toContain("first on PATH in future shells");
+    expect(result.stdout).toContain("is on PATH but not first");
+    expect(readdirSync(path.join(installDir, "..", "home"))).toEqual([]);
   });
 
   it.each([undefined, "v0.9.6", "v0.9.11"])(

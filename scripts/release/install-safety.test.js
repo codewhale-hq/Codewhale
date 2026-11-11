@@ -58,9 +58,9 @@ cp "$INSTALL_TEST_ASSETS/$asset" "$output"
     INSTALL_TEST_EXECUTED: path.join(root, "executed"),
     INSTALL_TEST_DOWNLOADS: path.join(root, "downloads") };
   for (const key of ["CODEWHALE_RELEASE_BASE_URL", "DEEPSEEK_TUI_RELEASE_BASE_URL", "CODEWHALE_SKIP_GLIBC_CHECK", "DEEPSEEK_TUI_SKIP_GLIBC_CHECK", "DEEPSEEK_SKIP_GLIBC_CHECK", "TERMUX_VERSION", "CODEWHALE_HOME", "CODEWHALE_FORCE_REINSTALL", "CODEWHALE_INSTALL_COMPILED_HOST", "SHELL", "ZDOTDIR"]) delete env[key];
-  function run() {
+  function run(args = []) {
     const script = kind === "website" ? path.join(repo, "web/public/install.sh") : path.join(archive, "install.sh");
-    return spawnSync(kind === "website" ? "sh" : "bash", [script], { env, encoding: "utf8", timeout: 10000 });
+    return spawnSync(kind === "website" ? "sh" : "bash", [script, ...args], { env, encoding: "utf8", timeout: 10000 });
   }
   function prepare() { fs.mkdirSync(env.CODEWHALE_INSTALL_DIR, { recursive: true }); }
   function untouched() {
@@ -266,6 +266,131 @@ exec /bin/ln "$@"
   }
 }
 
+const blockOf = dir => `# >>> codewhale PATH >>>\nexport PATH="${dir}:$PATH"\n# <<< codewhale PATH <<<\n`;
+const shownDir = f => (fs.realpathSync(f.destination) === fs.realpathSync(path.join(f.home, ".local", "bin")) ? "$HOME/.local/bin" : fs.realpathSync(f.destination));
+for (const kind of ["website", "archive"]) {
+  for (const [shell, profile] of [["/bin/zsh", ".zshrc"], ["/bin/bash", ".bash_profile"], ["/bin/sh", ".profile"]]) {
+    test(`${kind}: ${shell} gets the marked PATH block in ~/${profile} by default and the output says so`, t => {
+      const f = fixture(t, kind);
+      f.env.SHELL = shell;
+      fs.writeFileSync(path.join(f.home, profile), "# mine\nalias a=b");
+      const result = f.run();
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(fs.readFileSync(path.join(f.home, profile), "utf8"), `# mine\nalias a=b\n${blockOf(shownDir(f))}`);
+      assert.ok(result.stdout.includes(`Added to ~/${profile}`), result.stdout);
+      assert.ok(result.stdout.includes("--no-modify-path"), result.stdout);
+      const lines = result.stdout.split("\n").map(line => line.trim()).filter(Boolean);
+      assert.equal(lines.at(-1), "codewhale --version", result.stdout);
+      assert.ok(lines.at(-3).startsWith("export PATH=") && lines.at(-3).endsWith("hash -r"), result.stdout);
+      f.untouched();
+    });
+  }
+
+  test(`${kind}: a fresh profile is created with only the block`, t => {
+    const f = fixture(t, kind);
+    f.env.SHELL = "/bin/zsh";
+    assert.equal(f.run().status, 0);
+    assert.equal(fs.readFileSync(path.join(f.home, ".zshrc"), "utf8"), blockOf(shownDir(f)));
+  });
+
+  test(`${kind}: the printed undo command removes exactly the block`, t => {
+    const f = fixture(t, kind);
+    f.env.SHELL = "/bin/zsh";
+    const before = "# top\nexport A=1\n";
+    const after = "export B=2\n";
+    fs.writeFileSync(path.join(f.home, ".zshrc"), before + after);
+    const result = f.run();
+    assert.equal(result.status, 0, result.stderr);
+    const undo = result.stdout.split("\n").map(line => line.trim()).find(line => line.startsWith("cw_tmp="));
+    assert.ok(undo, result.stdout);
+    const profile = path.join(f.home, ".zshrc");
+    fs.writeFileSync(profile, before + blockOf(shownDir(f)) + after);
+    const ran = spawnSync("sh", ["-c", undo], { env: { ...f.env }, encoding: "utf8" });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.equal(fs.readFileSync(profile, "utf8"), before + after);
+  });
+
+  test(`${kind}: --no-modify-path and CODEWHALE_NO_MODIFY_PATH leave every profile alone and print the command`, t => {
+    for (const mode of ["flag", "env"]) {
+      const f = fixture(t, kind);
+      f.env.SHELL = "/bin/zsh";
+      if (mode === "env") f.env.CODEWHALE_NO_MODIFY_PATH = "1";
+      const result = f.run(mode === "flag" ? ["--no-modify-path"] : []);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(fs.existsSync(path.join(f.home, ".zshrc")), false);
+      assert.ok(result.stdout.includes("Not editing your shell profile"), result.stdout);
+      assert.ok(result.stdout.includes(">> ~/.zshrc"), result.stdout);
+      assert.equal(result.stdout.trim().split("\n").at(-1).trim(), "codewhale --version");
+    }
+  });
+
+  test(`${kind}: an unknown option fails before installing`, t => {
+    const f = fixture(t, kind);
+    const result = f.run(["--no-modify-pth"]);
+    assert.equal(result.status, 2);
+    assert.equal(fs.existsSync(path.join(f.destination, "codewhale")), false);
+  });
+
+  test(`${kind}: no edit when the install directory is already on PATH`, t => {
+    const f = fixture(t, kind);
+    f.env.SHELL = "/bin/zsh";
+    const dir = fs.realpathSync(f.destination);
+    f.env.PATH = `${dir}:${f.env.PATH}`;
+    const result = f.run();
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.existsSync(path.join(f.home, ".zshrc")), false);
+    assert.ok(!result.stdout.includes("Added to"), result.stdout);
+  });
+
+  test(`${kind}: reinstalling never duplicates the block`, t => {
+    const f = fixture(t, kind);
+    f.env.SHELL = "/bin/zsh";
+    assert.equal(f.run().status, 0);
+    const first = fs.readFileSync(path.join(f.home, ".zshrc"), "utf8");
+    const again = f.run();
+    assert.equal(again.status, 0, again.stderr);
+    assert.equal(fs.readFileSync(path.join(f.home, ".zshrc"), "utf8"), first);
+    assert.ok(again.stdout.includes("already has the codewhale PATH block"), again.stdout);
+  });
+
+  test(`${kind}: a symlinked profile is refused, left alone, and the command is printed`, t => {
+    const f = fixture(t, kind);
+    f.env.SHELL = "/bin/zsh";
+    const target = path.join(f.root, "dotfiles-zshrc");
+    fs.writeFileSync(target, "# managed\n");
+    fs.symlinkSync(target, path.join(f.home, ".zshrc"));
+    const result = f.run();
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(target, "utf8"), "# managed\n");
+    assert.ok(result.stdout.includes("is a symlink"), result.stdout);
+    assert.ok(result.stdout.includes(">> ~/.zshrc"), result.stdout);
+    assert.equal(result.stdout.trim().split("\n").at(-1).trim(), "codewhale --version");
+  });
+
+  test(`${kind}: an unwritable profile is refused and left alone`, t => {
+    if (process.getuid && process.getuid() === 0) return t.skip("root can write read-only files");
+    const f = fixture(t, kind);
+    f.env.SHELL = "/bin/zsh";
+    const profile = path.join(f.home, ".zshrc");
+    fs.writeFileSync(profile, "# ro\n", { mode: 0o444 });
+    const result = f.run();
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(profile, "utf8"), "# ro\n");
+    assert.ok(result.stdout.includes("not a writable regular file"), result.stdout);
+  });
+
+  test(`${kind}: no profile is chosen or edited when the shell cannot be determined`, t => {
+    for (const shell of ["", "/usr/bin/fish", "/bin/tcsh"]) {
+      const f = fixture(t, kind);
+      f.env.SHELL = shell;
+      const result = f.run();
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(fs.readdirSync(f.home).filter(name => name !== ".local"), [], `${shell}: ${result.stdout}`);
+      assert.ok(!result.stdout.includes("Added to"), result.stdout);
+    }
+  });
+}
+
 const helpWithout = "Usage: codewhale [OPTIONS] [PROMPT]...\n\nCommands:\n  update   Update\n  doctor   Diagnose";
 const helpWith = `${helpWithout}\n  uninstall   Remove this receipt-owned release install`;
 for (const kind of ["website", "archive"]) {
@@ -278,7 +403,7 @@ for (const kind of ["website", "archive"]) {
       assert.equal(result.status, 0, result.stderr);
       assert.equal(result.stdout.includes("uninstall --yes"), supported, result.stdout);
       assert.equal(result.stdout.includes("update.mode"), supported, result.stdout);
-      assert.equal(/codewhale uninstall/.test(result.stdout), supported && kind === "website", result.stdout);
+      assert.equal(/codewhale uninstall/.test(result.stdout), supported, result.stdout);
       assert.equal(result.stdout.includes("this release has no uninstall command"), !supported, result.stdout);
       if (!supported) {
         assert.ok(result.stdout.includes(`rm "${fs.realpathSync(f.destination)}/codewhale" "${fs.realpathSync(f.destination)}/codew" "${fs.realpathSync(f.destination)}/.codewhale-install.sha256"`), result.stdout);
