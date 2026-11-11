@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 
-use super::{git, normalized_path, protected_git_path};
+use super::{git, normalized_path};
 
 const MAX_FILES: usize = 4096;
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
@@ -186,9 +186,6 @@ impl ArtifactStore {
                 return Err(format!("unsupported baseline tree entry: {path}"));
             }
             let path = normalized_path(path)?;
-            if protected_git_path(&path) {
-                return Err(format!("unsupported Git control file in baseline: {path}"));
-            }
             let bytes = git(repo, &["cat-file", "blob", oid])?.stdout;
             if bytes.len() as u64 > MAX_FILE_BYTES {
                 return Err(format!("baseline file exceeds limit: {path}"));

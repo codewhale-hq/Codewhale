@@ -83,7 +83,7 @@ limits. The evaluator clears the host environment and closes inherited file
 descriptors before the sandbox starts. Missing bubblewrap or an unsuccessful
 probe rejects the run.
 
-The run-owned directory is reported as `run_root` and named
+The private run-owned directory (mode 0700 on Unix) is reported as `run_root` and named
 `codewhale-evaluator-workflow_*` in the system temporary directory. It retains
 the frozen baseline blobs, sealed artifact manifests and blobs, manifest,
 receipts, and bounded stdout/stderr logs so evidence remains reviewable after
@@ -99,7 +99,8 @@ The full sealed artifact records added, modified, deleted, binary, and
 executable-mode changes. Its tree hash is separate from the artifact manifest
 hash. Receipts bind spec, baseline Git SHA and tree identity, case bundle
 hashes, artifact and candidate tree hashes, sandbox probe, and native binary
-SHA256. Replays compare these against the frozen spec and prior receipt.
+SHA256, plus bubblewrap and gate executable hashes. Replays compare these
+against the frozen spec and prior receipt.
 Missing or conflicting evidence yields `UNKNOWN`, `REJECTED`, or an explicit
 error, never a PASS.
 

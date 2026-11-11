@@ -54,6 +54,7 @@ pub(super) struct VerifiedCandidateEvaluator {
     spec_hash: String,
     manifest_hash: String,
     binary_hash: String,
+    executable_hashes: HashMap<String, String>,
     gate_cases: Vec<Vec<Case>>,
     case_hashes: Vec<String>,
     store: ArtifactStore,
@@ -512,6 +513,14 @@ impl VerifiedCandidateEvaluator {
             "codewhale-evaluator-{run_id}-{}",
             uuid::Uuid::new_v4().simple()
         ));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            let mut builder = fs::DirBuilder::new();
+            builder.mode(0o700);
+            builder.create(&root).map_err(|error| error.to_string())?;
+        }
+        #[cfg(not(unix))]
         fs::create_dir(&root).map_err(|error| error.to_string())?;
         let frozen = (|| {
             let store = ArtifactStore::freeze(&repo, &root)?;
@@ -520,6 +529,13 @@ impl VerifiedCandidateEvaluator {
                 &fs::read(std::env::current_exe().map_err(|error| error.to_string())?)
                     .map_err(|error| error.to_string())?,
             );
+            let mut executable_hashes = HashMap::new();
+            for executable in std::iter::once("/usr/bin/bwrap")
+                .chain(spec.hard_gates.iter().map(|gate| gate.candidate_argv[0].as_str()))
+            {
+                let bytes = fs::read(executable).map_err(|error| error.to_string())?;
+                executable_hashes.insert(executable.to_string(), hash(&bytes));
+            }
             let manifest = json!({
                 "version": 1,
                 "run_id": run_id,
@@ -533,6 +549,7 @@ impl VerifiedCandidateEvaluator {
                 "gate_policy_sha256": hash(&serde_json::to_vec(&spec.hard_gates)
                     .map_err(|error| error.to_string())?),
                 "native_binary_sha256": binary_hash,
+                "executable_sha256": executable_hashes,
                 "sandbox_probe": sandbox_probe,
                 "isolation_backend": spec.isolation_backend,
                 "allowed_write_roots": spec.allowed_write_roots,
@@ -555,6 +572,7 @@ impl VerifiedCandidateEvaluator {
                 spec_hash: hash(&spec_bytes),
                 manifest_hash: hash(&manifest_bytes),
                 binary_hash,
+                executable_hashes,
                 gate_cases,
                 case_hashes,
                 store,
@@ -585,6 +603,11 @@ impl VerifiedCandidateEvaluator {
         for (gate, digest) in self.spec.hard_gates.iter().zip(&self.case_hashes) {
             if hash(&fs::read(&gate.cases_path).map_err(|error| error.to_string())?) != *digest {
                 return Err("frozen oracle/fixture bundle changed".to_string());
+            }
+        }
+        for (executable, digest) in &self.executable_hashes {
+            if hash(&fs::read(executable).map_err(|error| error.to_string())?) != *digest {
+                return Err(format!("frozen execution binary changed: {executable}"));
             }
         }
         Ok(())
@@ -753,6 +776,7 @@ impl VerifiedCandidateEvaluator {
             "artifact_manifest_sha256": artifact_manifest_sha256,
             "oracle_sha256": self.case_hashes,
             "native_binary_sha256": self.binary_hash,
+            "executable_sha256": self.executable_hashes,
             "sandbox_probe": self.sandbox_probe,
             "changed_paths": artifact.entries.iter().map(|entry| &entry.path).collect::<Vec<_>>(),
             "gates": gates,
