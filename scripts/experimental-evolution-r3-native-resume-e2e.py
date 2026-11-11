@@ -64,8 +64,8 @@ def main():
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
             messages = json.dumps(request.get("messages", []), ensure_ascii=False)
-            match = re.search(r"candidate_g[0-2]_[12]", messages)
-            candidate = match.group(0) if match else "NONE"
+            matches = re.findall(r"CANDIDATE ID: (candidate_g[0-2]_[12])", messages)
+            candidate = matches[-1] if matches else "NONE"
             if "Independent read-only review" in messages:
                 category = "final_review"
                 response = support["sse_text"]('{"verdict":"pass","reasons":["resume E2E"]}')
@@ -149,6 +149,28 @@ def main():
         saved = json.loads(checkpoint.read_text(encoding="utf-8"))
         if saved.get("next_generation") != 2:
             raise AssertionError("checkpoint did not preserve G3 frontier")
+        manifest_path = root / "manifest.json"
+        original_manifest = manifest_path.read_bytes()
+        negative_rejections = {}
+        for field in ("baseline_sha", "hidden_evaluator_sha256",
+                      "native_binary_sha256", "shadow_policy"):
+            altered = json.loads(original_manifest)
+            if field == "shadow_policy":
+                altered[field]["planning_budget"] = 2
+            else:
+                altered[field] = "0" * 64
+            manifest_path.write_text(json.dumps(altered), encoding="utf-8")
+            count = len(requests)
+            rejected = run({"resumeFrom": str(checkpoint)}, f"reject-{field}")
+            negative_rejections[field] = rejected.returncode != 0 and len(requests) == count
+            manifest_path.write_bytes(original_manifest)
+        unknown_work = root / "candidate_g2_1-applied-policy.json"
+        unknown_work.write_text("{}\n", encoding="utf-8")
+        count = len(requests)
+        rejected = run({"resumeFrom": str(checkpoint)}, "reject-unknown-request")
+        negative_rejections["unknown_inflight_request"] = rejected.returncode != 0 \
+            and len(requests) == count
+        unknown_work.unlink()
         before_resume = len(requests)
         second = run({"resumeFrom": str(checkpoint)}, "after-restart")
         after_resume = requests[before_resume:]
@@ -161,6 +183,7 @@ def main():
                    "resumed_exit": second.returncode, "duplicate_exit": duplicate.returncode,
                    "checkpoint": str(checkpoint), "checkpoint_id": saved.get("checkpoint_id"),
                    "next_generation": saved.get("next_generation"),
+                   "negative_rejections": negative_rejections,
                    "first_generation_evaluations": len(list(root.glob("candidate_g[01]_*-evaluation.json"))),
                    "third_generation_evaluations": len(list(root.glob("candidate_g2_*-evaluation.json"))),
                    "resume_requests": after_resume,
@@ -172,6 +195,7 @@ def main():
                            and duplicate.returncode != 0
                            and receipt["first_generation_evaluations"] == 4
                            and receipt["third_generation_evaluations"] == 2
+                           and all(negative_rejections.values())
                            and all(item["candidate"] in ("candidate_g2_1", "candidate_g2_2", "NONE")
                                    for item in after_resume)
                            and result.get("winner_id") != "NONE"
