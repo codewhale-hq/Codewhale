@@ -60,7 +60,7 @@ export default async function (args) {
       ? args.evolution.arm : "evolution";
     const evolutionaryPopulation = Math.floor(Math.min(8, Math.max(2, Number(args?.n ?? 4) || 4)));
     const requestedGenerations = args.evolution.generations === 3 ? 3 : 2;
-    const executionBudget = Math.floor(Math.min(16, Math.max(2,
+    const executionBudget = Math.floor(Math.min(16, Math.max(arm === "single" ? 1 : 2,
       Number(args.evolution.executionBudget ?? evolutionaryPopulation * requestedGenerations) || 8)));
     const evolutionaryGenerations = arm === "serial" ? executionBudget : requestedGenerations;
     const population = ["single", "serial"].includes(arm) ? 1
@@ -74,6 +74,9 @@ export default async function (args) {
       throw new Error("Freeze the initial shadow policy in the host manifest");
     }
     const frozen = await task.experimentalSearch({ action: "summary" });
+    if (frozen.budget_plan?.feasible === false) {
+      throw new Error(`Infeasible experimental budget plan: required ${frozen.budget_plan.required_turns}, available ${frozen.budget_plan.available_turns}`);
+    }
     const basePolicy = Object.freeze({ ...frozen.shadow_policy });
     const all = [];
     const selections = [];
@@ -228,7 +231,7 @@ export default async function (args) {
                 `PUBLIC FEEDBACK: ${String(receipt.public_failure_feedback ?? "")}`,
                 "Return a concise structured verdict.",
               ].join("\n"),
-              label: `dev_review_${plan.id}`, type: "review", model,
+              label: `dev_review_${plan.id}`, type: "explore", model,
               allowedTools: [], maxSteps: 1, schemaRepairAttempts: 0,
               writeAuthority: "read_only", worktree: false,
               responseSchema: {
@@ -253,8 +256,16 @@ export default async function (args) {
       const selection = await task.experimentalSearch({
         action: "select_generation", generation,
         candidate_ids: plans.map((plan) => plan.id),
+        dev_reviews: Object.fromEntries(all.filter((item) => item.generation === generation)
+          .map((item) => [item.id, item.devReview?.verdict ?? "not_requested"])),
       });
       selections.push(selection);
+      const selectionCosts = new Map((selection.body.candidates ?? [])
+        .map((row) => [row.id, { cost_complete: row.cost_complete,
+          full_cost_microusd: row.full_cost_microusd }]));
+      for (const item of all.filter((item) => item.generation === generation)) {
+        item.selectionCost = selectionCosts.get(item.id) ?? null;
+      }
       const byId = new Map(all.filter((item) => item.generation === generation)
         .map((item) => [item.id, item]));
       parents = selection.body.parent_ids.map((id) => byId.get(id)).filter(Boolean).map((item) => ({
@@ -273,8 +284,8 @@ export default async function (args) {
     passing.sort((a, b) => {
       const aFootprint = a.receipt.changed_paths?.length ?? Infinity;
       const bFootprint = b.receipt.changed_paths?.length ?? Infinity;
-      const aCost = a.receipt.usage?.cost_microusd ?? Infinity;
-      const bCost = b.receipt.usage?.cost_microusd ?? Infinity;
+      const aCost = a.selectionCost?.cost_complete ? a.selectionCost.full_cost_microusd : Infinity;
+      const bCost = b.selectionCost?.cost_complete ? b.selectionCost.full_cost_microusd : Infinity;
       return aCost - bCost || aFootprint - bFootprint || a.id.localeCompare(b.id);
     });
     let winner = null;
@@ -287,12 +298,21 @@ export default async function (args) {
         generation: provisional.generation, lineage: provisional.lineage,
         policy: provisional.policy,
       });
+      const completeIdentity = (receipt) => receipt?.review_complete === true
+        && /^[0-9a-f]{64}$/.test(String(receipt.artifact_id ?? ""))
+        && /^[0-9a-f]{64}$/.test(String(receipt.candidate_tree_hash ?? ""))
+        && /^[0-9a-f]{64}$/.test(String(receipt.review_material_sha256 ?? ""))
+        && Number.isSafeInteger(receipt.review_material_bytes)
+        && receipt.review_material_bytes > 0
+        && typeof receipt.review_material === "string";
       if (replay.status === "PASS" && replay.artifact_id === provisional.receipt.artifact_id
-        && provisional.receipt.review_complete) {
+        && completeIdentity(provisional.receipt)
+        && completeIdentity(replay)
+        && replay.candidate_tree_hash === provisional.receipt.candidate_tree_hash
+        && replay.review_material_sha256 === provisional.receipt.review_material_sha256
+        && replay.review_material_bytes === provisional.receipt.review_material_bytes) {
         phase("Independent read-only review");
-        try {
-          review = await task({
-          description: [
+        const description = [
             "Review this verified coding patch adversarially. Do not edit or apply it.",
             `BRIEF: ${String(brief)}`,
             `ARTIFACT ID: ${String(provisional.receipt.artifact_id)}`,
@@ -301,34 +321,50 @@ export default async function (args) {
             `REVIEW MATERIAL SHA256: ${String(provisional.receipt.review_material_sha256)}`,
             `COMPLETE CHANGED FILES: ${String(provisional.receipt.review_material)}`,
             `HOST REPLAY: ${JSON.stringify({ status: replay.status, test_count: replay.test_count })}`,
-            "Return only the required structured response.",
-          ].join("\n"),
-          label: "evolution_reviewer",
-          type: "review", model,
-          allowedTools: [], maxSteps: 1, schemaRepairAttempts: 0,
-          writeAuthority: "read_only",
-          worktree: false,
-          responseSchema: {
-            type: "object", additionalProperties: false,
-            required: ["verdict", "reasons"],
-            properties: {
-              verdict: { type: "string", enum: ["pass", "fail"] },
-              reasons: { type: "array", items: { type: "string" } },
-            },
-          },
-          });
-        } catch (error) {
-          review = { verdict: "unknown", reasons: [String(error)] };
+            "Reply as plain JSON text with verdict and reasons. Do not call a tool.",
+          ].join("\n");
+        let attempts = 0;
+        for (const label of ["evolution_reviewer", "evolution_reviewer_retry"]) {
+          attempts++;
+          try {
+            review = await task({
+              description: label === "evolution_reviewer" ? description
+                : `${description}\nThe previous completed answer was a tool-only response. Return the JSON text directly.`,
+              label, type: "explore", model,
+              allowedTools: [], maxSteps: 1, schemaRepairAttempts: 0,
+              writeAuthority: "read_only", worktree: false,
+              responseSchema: {
+                type: "object", additionalProperties: false,
+                required: ["verdict", "reasons"],
+                properties: {
+                  verdict: { type: "string", enum: ["pass", "fail"] },
+                  reasons: { type: "array", items: { type: "string" } },
+                },
+              },
+            });
+            break;
+          } catch (error) {
+            review = { verdict: "unknown", reasons: [String(error)] };
+            if (label !== "evolution_reviewer"
+              || !String(error).includes("Model answered only with a tool call")) break;
+          }
         }
         review = { ...review,
+          review_status: review.verdict === "unknown" ? "INCOMPLETE" : "COMPLETE",
+          attempts,
           artifact_id: provisional.receipt.artifact_id,
           tree_hash: provisional.receipt.candidate_tree_hash,
           policy_id: provisional.receipt.policy_id,
           review_material_sha256: provisional.receipt.review_material_sha256,
           available_bytes: provisional.receipt.review_material_bytes,
-          unreviewed_scope: [],
+          unreviewed_scope: review.verdict === "unknown" ? ["whole_artifact"] : [],
         };
-        if (review.verdict === "pass") winner = provisional.id;
+        if (review.verdict === "pass" && review.review_status === "COMPLETE") winner = provisional.id;
+      } else {
+        review = { verdict: "unknown", review_status: "INCOMPLETE",
+          reasons: ["Host replay or complete review identity was unavailable"],
+          artifact_id: provisional.receipt.artifact_id,
+          unreviewed_scope: ["whole_artifact"] };
       }
     }
     return {
@@ -341,6 +377,7 @@ export default async function (args) {
         evaluation_id: item.receipt.evaluation_id,
         receipt: item.receipt.receipt, lineage: item.lineage, policy: item.policy,
         dev_review: item.devReview, applied_policy: item.appliedStatus,
+        selection_cost: item.selectionCost,
       })),
       winner_id: winner ?? "NONE", replay, review, selections,
       code_selection: { winner_id: winner ?? "NONE", artifact_id:

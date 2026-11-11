@@ -42,7 +42,8 @@ def make_baseline(destination, fixtures):
     return run(["git", "-C", str(destination), "rev-parse", "HEAD"], capture_output=True).stdout.strip()
 
 
-def write_manifest(directory, workspace, arm, budget, generations, fixtures, brief, initial_policy):
+def write_manifest(directory, workspace, arm, budget, generations, fixtures, brief, initial_policy,
+                   model_turn_ceiling):
     public = (fixtures / "public_gate.py").resolve()
     hidden = (fixtures / "heldout_gate.py").resolve()
     gates = []
@@ -77,7 +78,7 @@ def write_manifest(directory, workspace, arm, budget, generations, fixtures, bri
         "resolved_model": "deepseek-flash",
         "max_candidates": 1 if arm == "single" else budget,
         "max_generations": budget if arm == "serial" else generations if arm in ("fixed_policy", "evolution") else 1,
-        "max_model_turns": (1 if arm == "single" else budget) * 6 + 1,
+        "max_model_turns": model_turn_ceiling,
         "max_wall_secs": 3600,
         "shadow_policy": initial_policy,
     }
@@ -124,12 +125,31 @@ def summarize_receipts(evaluator_directory):
     }
 
 
+def budget_plan(budget, initial_policy):
+    if not isinstance(initial_policy["planning_budget"], int) or not 0 <= initial_policy["planning_budget"] <= 3 \
+            or not isinstance(initial_policy["extra_verification"], bool):
+        raise ValueError("invalid effective policy budget genes")
+    writer_turns = 4
+    final_review_turns = 2
+    initial_candidate_turns = initial_policy["planning_budget"] + writer_turns \
+        + int(initial_policy["extra_verification"])
+    max_candidate_turns = max(range(4)) + writer_turns + int(True)
+    ceiling = budget * max_candidate_turns + final_review_turns
+    return {"candidate_execution_ceiling": budget,
+            "initial_candidate_turns": initial_candidate_turns,
+            "initial_required_turns": budget * initial_candidate_turns + final_review_turns,
+            "max_candidate_turns": max_candidate_turns,
+            "final_review_turns": final_review_turns,
+            "max_model_turns": ceiling}
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--codewhale", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--codewhale", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--plan-only", action="store_true")
     parser.add_argument("--budget", type=int, default=6)
-    parser.add_argument("--generations", type=int, choices=[2, 3], default=3)
+    parser.add_argument("--generations", type=int, choices=[1, 2, 3], default=3)
     parser.add_argument("--fixture", type=Path, default=DEFAULT_FIXTURES)
     parser.add_argument("--arms", nargs="+", choices=["single", "independent", "serial", "fixed_policy", "evolution"],
                         default=["independent", "serial", "fixed_policy", "evolution"])
@@ -138,13 +158,10 @@ def main():
     parser.add_argument("--transfer-source-evaluation-id",
                         help="The verified DEV evaluation that selected the transferred genome")
     args = parser.parse_args()
-    if not 2 * args.generations <= args.budget <= 16 \
-            or args.budget % args.generations:
+    single_panel_cell = args.arms == ["single"] and args.budget == 1 and args.generations == 1
+    if not single_panel_cell and (not 2 * args.generations <= args.budget <= 16
+                                  or args.budget % args.generations):
         parser.error("budget must provide at least two candidates per generation, up to 16")
-    if not args.codewhale.is_file():
-        parser.error("--codewhale must name a built binary")
-    if not os.environ.get("DEEPSEEK_API_KEY"):
-        parser.error("DEEPSEEK_API_KEY must be exported for real provider runs")
     initial_policy = {
         "planning_budget": 1,
         "max_repair_rounds": 1,
@@ -157,6 +174,19 @@ def main():
         if set(initial_policy) != {"planning_budget", "max_repair_rounds", "extra_verification",
                                    "candidate_strategy", "trace_preference"}:
             parser.error("transferred genome must contain only the frozen five-gene schema")
+    try:
+        plan = budget_plan(args.budget, initial_policy)
+    except ValueError as error:
+        parser.error(str(error))
+    if args.plan_only:
+        print(json.dumps(plan, sort_keys=True))
+        return
+    if args.codewhale is None or not args.codewhale.is_file():
+        parser.error("--codewhale must name a built binary")
+    if args.output is None:
+        parser.error("--output is required for a provider run")
+    if not os.environ.get("DEEPSEEK_API_KEY"):
+        parser.error("DEEPSEEK_API_KEY must be exported for real provider runs")
     fixtures = args.fixture if args.fixture.is_absolute() else ROOT / args.fixture
     fixtures = fixtures.resolve()
     for required in ("task/README.md", "public_gate.py", "heldout_gate.py"):
@@ -179,7 +209,8 @@ def main():
         workspace = directory / "workspace"
         run(["git", "clone", "-q", "--local", str(baseline), str(workspace)])
         manifest = write_manifest(directory, workspace, arm, args.budget,
-                                  args.generations, fixtures, brief, initial_policy)
+                                  args.generations, fixtures, brief, initial_policy,
+                                  plan["max_model_turns"])
         payload = {
             "action": "run",
             "source_path": "workflows/operate_best_of_n.workflow.js",
@@ -233,6 +264,7 @@ def main():
                         receipt_summaries.append(summarize_receipts(destination))
         row = {"arm": arm, "exit_code": completed.returncode, "wall_seconds": elapsed,
                "baseline_sha": baseline_sha, "execution_budget": 1 if arm == "single" else args.budget,
+               "budget_plan": plan,
                "initial_policy": initial_policy,
                "transfer_source_evaluation_id": args.transfer_source_evaluation_id,
                "evidence": evidence, "receipt_summaries": receipt_summaries,

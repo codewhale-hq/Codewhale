@@ -5214,12 +5214,59 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
                         .ok_or_else(|| DriverError::Rejected("invalid candidate_id".to_string()))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            let review_values = request
+                .get("dev_reviews")
+                .and_then(Value::as_object)
+                .ok_or_else(|| DriverError::Rejected("dev_reviews are required".to_string()))?;
+            let mut dev_reviews = HashMap::new();
+            for id in &ids {
+                let verdict = review_values
+                    .get(id)
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        DriverError::Rejected("DEV review verdict is required".to_string())
+                    })?;
+                if !matches!(verdict, "pass" | "fail" | "unknown" | "not_requested") {
+                    return Err(DriverError::Rejected(
+                        "invalid DEV review verdict".to_string(),
+                    ));
+                }
+                dev_reviews.insert(id.clone(), verdict.to_string());
+            }
+            let mut task_costs = HashMap::new();
+            let mut task_succeeded = HashMap::new();
+            for record in self
+                .task_records
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("workflow task ledger lock poisoned".to_string())
+                })?
+                .values()
+            {
+                if let Some(label) = &record.label {
+                    if task_costs
+                        .insert(
+                            label.clone(),
+                            record.usage.as_ref().and_then(|usage| usage.cost_microusd),
+                        )
+                        .is_some()
+                    {
+                        return Err(DriverError::Rejected(
+                            "duplicate experimental task label".to_string(),
+                        ));
+                    }
+                    task_succeeded.insert(
+                        label.clone(),
+                        record.status == IrWorkflowRunStatus::Succeeded,
+                    );
+                }
+            }
             return experiment
                 .lock()
                 .map_err(|_| {
                     DriverError::Unavailable("experimental search lock poisoned".to_string())
                 })?
-                .select_generation(generation, &ids)
+                .select_generation(generation, &ids, &task_costs, &task_succeeded, &dev_reviews)
                 .map_err(DriverError::Rejected);
         }
         if action != "evaluate" && action != "replay" {
@@ -5286,6 +5333,7 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
             "reason": value.get("reason"),
             "patch_sha256": value.get("patch_sha256"),
             "artifact_id": value.get("artifact_id"),
+            "candidate_tree_hash": value.get("candidate_tree_hash"),
             "policy_id": value.get("policy_id"),
             "evaluation_id": value.get("evaluation_id"),
             "safety_status": value.get("safety_status"),
@@ -5293,6 +5341,8 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
             "execution_status": value.get("execution_status"),
             "review_material": value.get("review_material"),
             "review_complete": value.get("review_complete"),
+            "review_material_sha256": value.get("review_material_sha256"),
+            "review_material_bytes": value.get("review_material_bytes"),
             "public_failure_feedback": value.get("public_failure_feedback"),
             "changed_paths": value.get("changed_paths"),
             "test_count": value.get("test_count"),
