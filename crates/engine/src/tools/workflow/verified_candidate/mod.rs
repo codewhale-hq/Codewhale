@@ -449,7 +449,9 @@ impl VerifiedCandidateEvaluator {
             || spec.max_wall_secs == 0
             || spec.max_wall_secs > 3600
         {
-            return Err("evaluator spec, baseline or bounds differ from frozen request".to_string());
+            return Err(
+                "evaluator spec, baseline or bounds differ from frozen request".to_string(),
+            );
         }
         for root in &mut spec.allowed_write_roots {
             *root = normalized_path(root)?;
@@ -457,8 +459,14 @@ impl VerifiedCandidateEvaluator {
         for root in &mut spec.protected_paths {
             *root = normalized_path(root)?;
         }
-        if !spec.hard_gates.iter().any(|gate| !gate.holdout && gate.min_tests > 0)
-            || !spec.hard_gates.iter().any(|gate| gate.holdout && gate.min_tests > 0)
+        if !spec
+            .hard_gates
+            .iter()
+            .any(|gate| !gate.holdout && gate.min_tests > 0)
+            || !spec
+                .hard_gates
+                .iter()
+                .any(|gate| gate.holdout && gate.min_tests > 0)
         {
             return Err("public and held-out gates must both require nonzero cases".to_string());
         }
@@ -605,18 +613,28 @@ impl VerifiedCandidateEvaluator {
         if !completed || cancel.is_cancelled() {
             return Err("candidate worker has not completed or run was cancelled".to_string());
         }
-        if self.evaluated.contains_key(id) || self.root.join(format!("{id}-evaluation.json")).exists() {
+        if self.evaluated.contains_key(id)
+            || self.root.join(format!("{id}-evaluation.json")).exists()
+        {
             return Err("candidate already evaluated".to_string());
         }
         self.verify_frozen_inputs()?;
         let worktree = worktree.canonicalize().map_err(|error| error.to_string())?;
-        if worktree == self.repo || git_text(&worktree, &["rev-parse", "HEAD"])? != self.spec.baseline_sha {
-            return Err("candidate worktree starting HEAD differs from frozen baseline".to_string());
+        if worktree == self.repo
+            || git_text(&worktree, &["rev-parse", "HEAD"])? != self.spec.baseline_sha
+        {
+            return Err(
+                "candidate worktree starting HEAD differs from frozen baseline".to_string(),
+            );
         }
         let common_dir = |cwd: &Path| -> Result<PathBuf, String> {
             let raw = git_text(cwd, &["rev-parse", "--git-common-dir"])?;
             let path = PathBuf::from(raw);
-            let path = if path.is_absolute() { path } else { cwd.join(path) };
+            let path = if path.is_absolute() {
+                path
+            } else {
+                cwd.join(path)
+            };
             path.canonicalize().map_err(|error| error.to_string())
         };
         if common_dir(&worktree)? != common_dir(&self.repo)? {
@@ -628,24 +646,25 @@ impl VerifiedCandidateEvaluator {
         Ok(receipt)
     }
 
-    pub(super) fn replay(
-        &self,
-        id: &str,
-        cancel: &CancellationToken,
-    ) -> Result<Value, String> {
+    pub(super) fn replay(&self, id: &str, cancel: &CancellationToken) -> Result<Value, String> {
         candidate_id(id)?;
         if cancel.is_cancelled() {
             return Err("evaluation cancelled".to_string());
         }
         self.verify_frozen_inputs()?;
-        let original = self.evaluated.get(id).ok_or("missing original evaluation")?;
+        let original = self
+            .evaluated
+            .get(id)
+            .ok_or("missing original evaluation")?;
         if original.get("status").and_then(Value::as_str) != Some("PASS") {
             return Err("only a verified public candidate can be replayed".to_string());
         }
         let bytes = fs::read(self.root.join("artifacts").join(format!("{id}.json")))
             .map_err(|error| error.to_string())?;
         let digest = hash(&bytes);
-        if original.get("artifact_manifest_sha256").and_then(Value::as_str)
+        if original
+            .get("artifact_manifest_sha256")
+            .and_then(Value::as_str)
             != Some(digest.as_str())
         {
             return Err("sealed artifact manifest changed".to_string());
@@ -659,7 +678,9 @@ impl VerifiedCandidateEvaluator {
             ("spec_sha256", self.spec_hash.as_str()),
         ] {
             if original.get(key).and_then(Value::as_str) != Some(expected) {
-                return Err(format!("original receipt {key} differs from frozen spec/artifact"));
+                return Err(format!(
+                    "original receipt {key} differs from frozen spec/artifact"
+                ));
             }
         }
         self.run_candidate(id, &artifact, true, cancel)
@@ -785,17 +806,26 @@ impl VerifiedCandidateEvaluator {
             for (case_index, case) in self.gate_cases[gate_index].iter().enumerate() {
                 let remaining = Duration::from_secs(gate.timeout_secs)
                     .saturating_sub(started.elapsed())
-                    .min(Duration::from_secs(self.spec.max_wall_secs)
-                        .saturating_sub(self.started.elapsed()));
+                    .min(
+                        Duration::from_secs(self.spec.max_wall_secs)
+                            .saturating_sub(self.started.elapsed()),
+                    );
                 if remaining.is_zero() || cancel.is_cancelled() {
                     stopped = true;
                     failure.get_or_insert_with(|| "gate timeout or cancellation".to_string());
                     break;
                 }
-                let scratch = owned.path().join(format!("scratch-{gate_index}-{case_index}"));
+                let scratch = owned
+                    .path()
+                    .join(format!("scratch-{gate_index}-{case_index}"));
                 fs::create_dir(&scratch).map_err(|error| error.to_string())?;
                 let program = &gate.candidate_argv[0];
-                let args = vec![source.join(&gate.candidate_argv[1]).to_string_lossy().into_owned()];
+                let args = vec![
+                    source
+                        .join(&gate.candidate_argv[1])
+                        .to_string_lossy()
+                        .into_owned(),
+                ];
                 let timeout = remaining.min(Duration::from_secs(8));
                 let env = isolated_command(&source, &scratch, program, args, timeout)?;
                 let log_name = format!(
@@ -811,11 +841,15 @@ impl VerifiedCandidateEvaluator {
                 let actual = serde_json::from_str::<Value>(run.stdout.trim());
                 let passed = run.exit_code == Some(0)
                     && run.stop_reason.is_none()
-                    && actual.as_ref().is_ok_and(|value| same_json(value, &case.expected));
+                    && actual
+                        .as_ref()
+                        .is_ok_and(|value| same_json(value, &case.expected));
                 if passed {
                     passed_count += 1;
                 } else {
-                    failure.get_or_insert_with(|| format!("gate {gate_index} case {} failed", case_index + 1));
+                    failure.get_or_insert_with(|| {
+                        format!("gate {gate_index} case {} failed", case_index + 1)
+                    });
                     if !gate.holdout && feedback.len() < 2400 {
                         feedback.push_str(&format!(
                             "case {} input={} expected={} actual={} exit={:?} stop={:?} stderr={}\n",
@@ -851,7 +885,9 @@ impl VerifiedCandidateEvaluator {
             }));
             if !gate_pass {
                 if failure.is_none() {
-                    failure = Some(format!("gate {gate_index} did not execute all required cases"));
+                    failure = Some(format!(
+                        "gate {gate_index} did not execute all required cases"
+                    ));
                 }
                 break;
             }

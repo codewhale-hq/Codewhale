@@ -4,9 +4,9 @@
 //! driver that turns each `task(...)` call into a real `SubAgentManager` spawn.
 
 mod plan_schema;
-mod verified_candidate;
 #[cfg(test)]
 mod shortlist_tests;
+mod verified_candidate;
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -5123,7 +5123,9 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
                 .map(|evaluator| evaluator.summary());
         }
         if action != "evaluate" && action != "replay" {
-            return Err(DriverError::Rejected("unsupported evaluator action".to_string()));
+            return Err(DriverError::Rejected(
+                "unsupported evaluator action".to_string(),
+            ));
         }
         let id = request
             .get("candidate_id")

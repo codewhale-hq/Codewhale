@@ -56,7 +56,13 @@ impl Fixture {
         );
         git(
             &repo,
-            &["worktree", "add", "--detach", worktree.to_str().unwrap(), "HEAD"],
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                worktree.to_str().unwrap(),
+                "HEAD",
+            ],
         );
         let public_cases = temp.path().join("public.json");
         let hidden_cases = temp.path().join("hidden.json");
@@ -105,13 +111,8 @@ impl Fixture {
     }
 
     fn freeze(&self, id: &str) -> VerifiedCandidateEvaluator {
-        VerifiedCandidateEvaluator::freeze(
-            &self.manifest,
-            &self.repo,
-            id,
-            "increment an integer",
-        )
-        .unwrap()
+        VerifiedCandidateEvaluator::freeze(&self.manifest, &self.repo, id, "increment an integer")
+            .unwrap()
     }
 }
 
@@ -127,31 +128,38 @@ fn bwrap_available() -> bool {
 fn declared_baseline_and_case_identity_fail_closed() {
     let fixture = Fixture::new();
     fixture.edit_spec(|spec| spec["baseline_sha"] = json!("0".repeat(40)));
-    assert!(VerifiedCandidateEvaluator::freeze(
-        &fixture.manifest,
-        &fixture.repo,
-        "baseline_mismatch",
-        "increment an integer"
-    )
-    .is_err());
-    fixture.edit_spec(|spec| spec["baseline_sha"] = json!(git(&fixture.repo, &["rev-parse", "HEAD"])));
+    assert!(
+        VerifiedCandidateEvaluator::freeze(
+            &fixture.manifest,
+            &fixture.repo,
+            "baseline_mismatch",
+            "increment an integer"
+        )
+        .is_err()
+    );
+    fixture
+        .edit_spec(|spec| spec["baseline_sha"] = json!(git(&fixture.repo, &["rev-parse", "HEAD"])));
     fixture.edit_spec(|spec| spec["hard_gates"][0]["min_tests"] = json!(0));
     fixture.edit_spec(|spec| spec["hard_gates"][1]["min_tests"] = json!(0));
-    assert!(VerifiedCandidateEvaluator::freeze(
-        &fixture.manifest,
-        &fixture.repo,
-        "zero_tests",
-        "increment an integer"
-    )
-    .is_err());
+    assert!(
+        VerifiedCandidateEvaluator::freeze(
+            &fixture.manifest,
+            &fixture.repo,
+            "zero_tests",
+            "increment an integer"
+        )
+        .is_err()
+    );
     fixture.edit_spec(|spec| spec["isolation_backend"] = json!("unconfined"));
-    assert!(VerifiedCandidateEvaluator::freeze(
-        &fixture.manifest,
-        &fixture.repo,
-        "unsupported",
-        "increment an integer"
-    )
-    .is_err());
+    assert!(
+        VerifiedCandidateEvaluator::freeze(
+            &fixture.manifest,
+            &fixture.repo,
+            "unsupported",
+            "increment an integer"
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -164,15 +172,29 @@ fn sealed_artifact_survives_deleted_worktree_and_rejects_tampering() {
         "import helper\nprint(helper.answer())\n",
     )
     .unwrap();
-    fs::write(fixture.worktree.join("helper.py"), "def answer():\n    return 2\n").unwrap();
-    let artifact = store.capture(&fixture.worktree, "sealed_1", Vec::new()).unwrap();
+    fs::write(
+        fixture.worktree.join("helper.py"),
+        "def answer():\n    return 2\n",
+    )
+    .unwrap();
+    let artifact = store
+        .capture(&fixture.worktree, "sealed_1", Vec::new())
+        .unwrap();
     let tree = fixture.temp.path().join("materialized");
     git(
         &fixture.repo,
-        &["worktree", "remove", "--force", fixture.worktree.to_str().unwrap()],
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            fixture.worktree.to_str().unwrap(),
+        ],
     );
     store.materialize(&artifact, &tree).unwrap();
-    assert_eq!(fs::read(tree.join("helper.py")).unwrap(), b"def answer():\n    return 2\n");
+    assert_eq!(
+        fs::read(tree.join("helper.py")).unwrap(),
+        b"def answer():\n    return 2\n"
+    );
     assert_eq!(artifact.candidate_tree_hash, artifact.artifact_id);
     let blob = artifact
         .entries
@@ -183,9 +205,20 @@ fn sealed_artifact_survives_deleted_worktree_and_rejects_tampering() {
         .as_ref()
         .unwrap();
     fs::write(root.join("blobs").join(blob), b"tampered").unwrap();
-    assert!(store.materialize(&store.load("sealed_1").unwrap(), &fixture.temp.path().join("tampered")).is_err());
+    assert!(
+        store
+            .materialize(
+                &store.load("sealed_1").unwrap(),
+                &fixture.temp.path().join("tampered")
+            )
+            .is_err()
+    );
     let manifest = root.join("artifacts").join("sealed_1.json");
-    fs::write(&manifest, b"{\"schema_version\":1,\"candidate_id\":\"other\"}").unwrap();
+    fs::write(
+        &manifest,
+        b"{\"schema_version\":1,\"candidate_id\":\"other\"}",
+    )
+    .unwrap();
     assert!(store.load("sealed_1").is_err());
 }
 
@@ -197,14 +230,22 @@ fn artifact_rejects_links_traversal_and_protected_paths() {
     assert!(normalized_path("../escape").is_err());
     assert!(normalized_path("a/../../escape").is_err());
     fs::create_dir(fixture.worktree.join("tests")).unwrap();
-    fs::write(fixture.worktree.join("tests").join("test_hidden.py"), b"changed").unwrap();
-    let artifact = store.capture(&fixture.worktree, "protected", Vec::new()).unwrap();
-    assert!(validate_scope(
-        &artifact,
-        &["candidate.py".to_owned(), "helper.py".to_owned()],
-        &["tests".to_owned()]
+    fs::write(
+        fixture.worktree.join("tests").join("test_hidden.py"),
+        b"changed",
     )
-    .is_err());
+    .unwrap();
+    let artifact = store
+        .capture(&fixture.worktree, "protected", Vec::new())
+        .unwrap();
+    assert!(
+        validate_scope(
+            &artifact,
+            &["candidate.py".to_owned(), "helper.py".to_owned()],
+            &["tests".to_owned()]
+        )
+        .is_err()
+    );
     fs::remove_dir_all(fixture.worktree.join("tests")).unwrap();
     #[cfg(unix)]
     {
@@ -213,7 +254,11 @@ fn artifact_rejects_links_traversal_and_protected_paths() {
             fixture.worktree.join("helper.py"),
         )
         .unwrap();
-        assert!(store.capture(&fixture.worktree, "link", Vec::new()).is_err());
+        assert!(
+            store
+                .capture(&fixture.worktree, "link", Vec::new())
+                .is_err()
+        );
     }
 }
 
@@ -231,21 +276,38 @@ fn trusted_oracle_beats_candidate_claim_and_replay_uses_seal() {
     .unwrap();
     let mut evaluator = fixture.freeze("claim");
     let failed = evaluator
-        .evaluate("claim_1", &fixture.worktree, true, &CancellationToken::new())
+        .evaluate(
+            "claim_1",
+            &fixture.worktree,
+            true,
+            &CancellationToken::new(),
+        )
         .unwrap();
     assert_eq!(failed["status"], "FAIL");
     assert_eq!(failed["test_count"], 1);
     fixture.correct_candidate();
     let passed = evaluator
-        .evaluate("correct_1", &fixture.worktree, true, &CancellationToken::new())
+        .evaluate(
+            "correct_1",
+            &fixture.worktree,
+            true,
+            &CancellationToken::new(),
+        )
         .unwrap();
     assert_eq!(passed["status"], "PASS");
     assert_eq!(passed["test_count"], 1);
     git(
         &fixture.repo,
-        &["worktree", "remove", "--force", fixture.worktree.to_str().unwrap()],
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            fixture.worktree.to_str().unwrap(),
+        ],
     );
-    let replay = evaluator.replay("correct_1", &CancellationToken::new()).unwrap();
+    let replay = evaluator
+        .replay("correct_1", &CancellationToken::new())
+        .unwrap();
     assert_eq!(replay["status"], "PASS");
     assert_eq!(replay["test_count"], 2);
     assert_eq!(replay["artifact_id"], passed["artifact_id"]);
@@ -261,13 +323,27 @@ fn missing_evidence_incomplete_worker_and_changed_oracle_are_rejected() {
     let fixture = Fixture::new();
     fixture.correct_candidate();
     let mut evaluator = fixture.freeze("identity");
-    assert!(evaluator
-        .evaluate("not_done", &fixture.worktree, false, &CancellationToken::new())
-        .is_err());
+    assert!(
+        evaluator
+            .evaluate(
+                "not_done",
+                &fixture.worktree,
+                false,
+                &CancellationToken::new()
+            )
+            .is_err()
+    );
     fs::write(&fixture.public_cases, r#"[{"input":1,"expected":999}]"#).unwrap();
-    assert!(evaluator
-        .evaluate("changed_oracle", &fixture.worktree, true, &CancellationToken::new())
-        .is_err());
+    assert!(
+        evaluator
+            .evaluate(
+                "changed_oracle",
+                &fixture.worktree,
+                true,
+                &CancellationToken::new()
+            )
+            .is_err()
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -295,7 +371,9 @@ fn timeout_and_cancellation_do_not_leave_descendants() {
     assert!(!marker.exists());
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    assert!(evaluator
-        .evaluate("cancelled", &fixture.worktree, true, &cancelled)
-        .is_err());
+    assert!(
+        evaluator
+            .evaluate("cancelled", &fixture.worktree, true, &cancelled)
+            .is_err()
+    );
 }
