@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Website and docs:** installation now leads to a version check and a verifiable first task, article search finds text and commands with section links, and GitHub star links show the fetched count. The hero reuses the generated drone whale, and control/tool references distinguish the unpublished source candidate from v0.10.2; these website changes still await deployment.
 - **External agent options:** `GET /v1/agents/external/{id}/options?cwd=` returns the models, modes and options an external agent itself offers for a folder, and which Codewhale actions it will not carry. A saved agent model the agent no longer offers is refused with a stable `choice_not_offered` code instead of being ignored, per-turn settings an agent cannot honor are refused as `unsupported_control`, and each agent turn records the context window and tokens the agent reported, with cost shown as unknown (CW-7879). Probing starts a real agent session in the folder, which the agent may keep in its own history. Mode and config choices are listed but cannot yet be chosen through thread creation. Verified on Linux by unit and local HTTP tests against a fixture agent; no real installed agent, macOS, Windows or hosted CI run.
+- **External agent interrupts:** Interrupting a turn while an external agent waits for approval now answers the agent's permission request as cancelled. (CW-7958)
 
 ### Changed
 

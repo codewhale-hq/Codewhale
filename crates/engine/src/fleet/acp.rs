@@ -916,6 +916,11 @@ impl AcpClient {
                     } else {
                         PermissionAnswer::Cancelled
                     };
+                    let answer = if cancel.is_some_and(CancellationToken::is_cancelled) {
+                        PermissionAnswer::Cancelled
+                    } else {
+                        answer
+                    };
                     self.write(&json!({"jsonrpc": "2.0", "id": request_id, "result": {"outcome": answer.outcome()}}))?;
                 }
                 ("elicitation/create", Some(request_id)) => {
