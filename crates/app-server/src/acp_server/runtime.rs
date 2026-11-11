@@ -5,11 +5,16 @@ use codewhale_engine::runtime_threads::{
     manager::ExternalApprovalDecision, manager::StartTurnRequest,
 };
 use std::time::Duration;
+use tokio::sync::mpsc::UnboundedReceiver;
 struct Permission {
     thread_id: String,
     turn_id: String,
     approval_id: String,
     execution_id: String,
+}
+pub(super) struct PromptRun {
+    pub(super) runtime: Arc<RuntimeThreadManager>,
+    pub(super) sessions_dir: PathBuf,
 }
 struct Projection<'a> {
     session: &'a str,
@@ -42,21 +47,20 @@ impl Drop for TurnClaim {
         }
     }
 }
-impl AcpServer {
-    pub(super) async fn drive_prompt<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
-        &mut self,
-        params: Value,
-        reader: &mut crate::stdio::BoundedLines<R>,
-        writer: &mut W,
-    ) -> Result<&'static str> {
-        let (session_id, prompt) = self
-            .validate_prompt(&params)
-            .map_err(|error| anyhow!(error.message))?;
-        let binding = self
-            .sessions
-            .get(&session_id)
-            .ok_or_else(|| anyhow!("unknown sessionId"))?;
-        let thread_id = binding.thread_id.clone();
+fn update(session: &str, update: acp::SessionUpdate) -> Outgoing {
+    Outgoing::Update(acp::SessionNotification::new(session.to_string(), update))
+}
+impl PromptRun {
+    pub(super) async fn drive_prompt(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+        prompt: String,
+        emit: Emit<'_>,
+        inbox: &mut UnboundedReceiver<Inbound>,
+    ) -> Result<acp::StopReason> {
+        let session_id = session_id.to_string();
+        let thread_id = thread_id.to_string();
         // Subscribe before snapshot/admission; replay deduplicates by seq.
         let mut receiver = self.runtime.subscribe_events();
         let cursor = self.runtime.get_thread_detail(&thread_id).await?.latest_seq;
@@ -86,7 +90,7 @@ impl AcpServer {
             permissions: HashMap::new(),
         };
         let terminal = match self
-            .project_turn(&mut projection, &mut receiver, reader, writer)
+            .project_turn(&mut projection, &mut receiver, inbox, emit)
             .await
         {
             Ok(terminal) => terminal,
@@ -144,9 +148,6 @@ impl AcpServer {
             }
         };
         claim.armed = false;
-        if let Some(binding) = self.sessions.get_mut(&session_id) {
-            binding.cursor = projection.cursor;
-        }
         self.save_checkpoint(&thread_id, &session_id).await?;
         if terminal
             .model_request_diagnostics
@@ -154,11 +155,13 @@ impl AcpServer {
             .and_then(|facts| facts.stop_reason)
             == Some(RuntimeTurnStopReason::StepBudgetExhausted)
         {
-            return Ok("max_turn_requests");
+            return Ok(acp::StopReason::MaxTurnRequests);
         }
         match terminal.status {
-            RuntimeTurnStatus::Completed => Ok("end_turn"),
-            RuntimeTurnStatus::Interrupted | RuntimeTurnStatus::Canceled => Ok("cancelled"),
+            RuntimeTurnStatus::Completed => Ok(acp::StopReason::EndTurn),
+            RuntimeTurnStatus::Interrupted | RuntimeTurnStatus::Canceled => {
+                Ok(acp::StopReason::Cancelled)
+            }
             _ => Err(anyhow!(
                 "{}",
                 terminal.error.unwrap_or_else(
@@ -209,12 +212,12 @@ impl AcpServer {
         })?;
         Ok(())
     }
-    async fn project_turn<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
+    async fn project_turn(
         &self,
         projection: &mut Projection<'_>,
         receiver: &mut tokio::sync::broadcast::Receiver<RuntimeEventRecord>,
-        reader: &mut crate::stdio::BoundedLines<R>,
-        writer: &mut W,
+        inbox: &mut UnboundedReceiver<Inbound>,
+        emit: Emit<'_>,
     ) -> Result<TurnRecord> {
         let session = projection.session;
         let thread = projection.thread;
@@ -232,45 +235,26 @@ impl AcpServer {
             }
             tokio::select! {
                 () = async { match cancel_deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await } } => return Err(anyhow!("Core cancellation remains nonterminal; ACP cannot report a fabricated cancelled receipt")),
-                line = reader.next_line(), if !eof => {
-                    let line = match line {
-                        Ok(line) => line,
-                        Err(error) if crate::stdio::is_frame_refusal(&error) => {
-                            write_jsonrpc_error(writer, None, -32700, error.to_string()).await?;
-                            continue;
+                message = inbox.recv(), if !eof => {
+                    match message {
+                        Some(Inbound::Cancel { session: cancelled_session }) => {
+                            if cancelled_session == session {
+                                cancelled = true; projection.permissions.clear(); self.interrupt_claimed_turn(thread, turn).await?;
+                                cancel_deadline.get_or_insert(tokio::time::Instant::now() + Duration::from_secs(30));
+                            }
                         }
-                        Err(error) => return Err(error.into()),
-                    };
-                    let Some(line) = line else {
-                        eof = true; cancelled = true; projection.permissions.clear(); self.interrupt_claimed_turn(thread, turn).await?;
-                        cancel_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(30)); continue;
-                    };
-                    if line.trim().is_empty() { continue; }
-                    let message: Value = match serde_json::from_str(&line) {
-                        Ok(message) => message,
-                        Err(error) => { write_jsonrpc_error(writer, None, -32700, format!("invalid json: {error}")).await?; continue; }
-                    };
-                    if crate::is_control_input_closed(&message) {
-                        eof=true; cancelled=true; projection.permissions.clear();self.interrupt_claimed_turn(thread,turn).await?;
-                        cancel_deadline.get_or_insert(tokio::time::Instant::now()+Duration::from_secs(30));continue;
-                    }
-                    let response_id = message.get("id").cloned().map(|id| self.response_id_policy.response_id(id));
-                    if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") { write_jsonrpc_error(writer, response_id, -32600, "jsonrpc version must be 2.0").await?; continue; }
-                    if is_jsonrpc_response(&message) {
-                        if !cancelled && let Some(id) = message.get("id").and_then(Value::as_str) && let Some(permission) = projection.permissions.remove(id) { self.answer_permission(&permission, &message).await?; }
-                        continue;
-                    }
-                    if message.get("method").and_then(Value::as_str) == Some("session/cancel") {
-                        if message.pointer("/params/sessionId").and_then(Value::as_str) == Some(session) {
-                            cancelled = true; projection.permissions.clear(); self.interrupt_claimed_turn(thread, turn).await?;
+                        Some(Inbound::Permission { key, allow }) => {
+                            if !cancelled && let Some(permission) = projection.permissions.remove(&key) { self.answer_permission(&permission, allow).await?; }
+                        }
+                        Some(Inbound::Eof) | None => {
+                            eof = true; cancelled = true; projection.permissions.clear(); self.interrupt_claimed_turn(thread, turn).await?;
                             cancel_deadline.get_or_insert(tokio::time::Instant::now() + Duration::from_secs(30));
                         }
-                        if let Some(id) = response_id { write_jsonrpc_result(writer, id, json!(null)).await?; }
-                    } else if let Some(id) = response_id { write_jsonrpc_error(writer, Some(id), -32603, "a session/prompt turn is already in progress").await?; }
+                    }
                 }
                 record = async { replay_batch.pop_front().expect("nonempty bounded replay batch") }, if !replay_batch.is_empty() => {
                     projection.emit = !cancelled && !eof;
-                    if let Some(done) = self.project_event(projection, &record, writer).await? { return Ok(done); }
+                    if let Some(done) = self.project_event(projection, &record, &mut *emit).await? { return Ok(done); }
                 }
                 batch = async { replay.as_mut().expect("active replay").batches.recv().await }, if replay.is_some() && replay_batch.is_empty() => {
                     match batch {
@@ -280,7 +264,7 @@ impl AcpServer {
                 }
                 event = receiver.recv(), if replay.is_none() && replay_batch.is_empty() => {
                     match event {
-                        Ok(record) => { projection.emit = !cancelled && !eof; if let Some(done) = self.project_event(projection, &record, writer).await? { return Ok(done); } },
+                        Ok(record) => { projection.emit = !cancelled && !eof; if let Some(done) = self.project_event(projection, &record, &mut *emit).await? { return Ok(done); } },
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                             let captured = self.runtime.replay_events(thread, Some(projection.cursor), None).await?;
                             if captured.base_seq > projection.cursor { return Err(anyhow!("ACP replay no longer covers the cursor; projection is incomplete")); }
@@ -292,7 +276,7 @@ impl AcpServer {
             }
         }
     }
-    async fn answer_permission(&self, permission: &Permission, response: &Value) -> Result<()> {
+    async fn answer_permission(&self, permission: &Permission, allow: bool) -> Result<()> {
         let detail = self
             .runtime
             .get_thread_detail(&permission.thread_id)
@@ -304,15 +288,6 @@ impl AcpServer {
         }) {
             return Ok(());
         }
-        let allow = response.get("error").is_none()
-            && response
-                .pointer("/result/outcome/outcome")
-                .and_then(Value::as_str)
-                == Some("selected")
-            && response
-                .pointer("/result/outcome/optionId")
-                .and_then(Value::as_str)
-                == Some("allow-once");
         self.runtime
             .deliver_approval_from(
                 &permission.approval_id,
@@ -327,11 +302,11 @@ impl AcpServer {
             .await?;
         Ok(())
     }
-    async fn project_event<W: AsyncWrite + Unpin>(
+    async fn project_event(
         &self,
         projection: &mut Projection<'_>,
         record: &RuntimeEventRecord,
-        writer: &mut W,
+        out: Emit<'_>,
     ) -> Result<Option<TurnRecord>> {
         let session = projection.session;
         let thread = projection.thread;
@@ -353,7 +328,7 @@ impl AcpServer {
                 if emit && p.get("kind").and_then(Value::as_str) == Some("agent_message") =>
             {
                 if let Some(text) = p.get("delta").and_then(Value::as_str) {
-                    write_session_update(writer, session, text.to_string()).await?;
+                    out(update(session, agent_text(text.to_string())))?;
                 }
             }
             "item.started" => {
@@ -373,7 +348,10 @@ impl AcpServer {
                         input: tool.get("input").cloned().unwrap_or(Value::Null),
                     };
                     if emit {
-                        write_tool_call_start(writer, session, &call).await?;
+                        out(update(
+                            session,
+                            acp::SessionUpdate::ToolCall(tool_call_start(&call)),
+                        ))?;
                     }
                     calls.insert(id, call);
                 }
@@ -386,7 +364,15 @@ impl AcpServer {
                 let call = calls
                     .get(id)
                     .ok_or_else(|| anyhow!("Dispatch projection lacks its admitted start"))?;
-                write_tool_call_update(writer, session, call, "in_progress", None).await?;
+                out(update(
+                    session,
+                    acp::SessionUpdate::ToolCallUpdate(tool_call_update(
+                        call,
+                        acp::ToolCallStatus::InProgress,
+                        None,
+                        &[],
+                    )),
+                ))?;
             }
             "item.completed" | "item.failed" | "item.interrupted" if emit => {
                 if let Some(item) = p.get("item")
@@ -403,19 +389,19 @@ impl AcpServer {
                         .unwrap_or_default();
                     let status = if item.get("status").and_then(Value::as_str) == Some("completed")
                     {
-                        "completed"
+                        acp::ToolCallStatus::Completed
                     } else {
-                        "failed"
+                        acp::ToolCallStatus::Failed
                     };
-                    write_tool_call_update_with_blocks(
-                        writer,
+                    out(update(
                         session,
-                        &call,
-                        status,
-                        item.get("detail").and_then(Value::as_str),
-                        &blocks,
-                    )
-                    .await?;
+                        acp::SessionUpdate::ToolCallUpdate(tool_call_update(
+                            &call,
+                            status,
+                            item.get("detail").and_then(Value::as_str),
+                            &blocks,
+                        )),
+                    ))?;
                 }
             }
             "approval.required" if emit => {
@@ -436,11 +422,41 @@ impl AcpServer {
                     let call = calls
                         .get(execution)
                         .ok_or_else(|| anyhow!("Approval projection lacks admitted tool start"))?;
-                    let id = format!(
-                        "codewhale-permission-{}",
-                        NEXT_ACP_PERMISSION_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+                    let id = uuid::Uuid::new_v4().to_string();
+                    let title = tool_call_title(call);
+                    let text = p
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.trim().is_empty())
+                        .map_or_else(|| title.clone(), str::to_string);
+                    let request = acp::RequestPermissionRequest::new(
+                        session.to_string(),
+                        acp::ToolCallUpdate::new(
+                            execution.to_string(),
+                            acp::ToolCallUpdateFields::new()
+                                .title(title)
+                                .kind(tool_call_kind(call))
+                                .status(acp::ToolCallStatus::Pending)
+                                .raw_input((!call.input.is_null()).then(|| call.input.clone()))
+                                .content(vec![acp::ToolCallContent::from(text)]),
+                        ),
+                        vec![
+                            acp::PermissionOption::new(
+                                "allow-once",
+                                "Allow once",
+                                acp::PermissionOptionKind::AllowOnce,
+                            ),
+                            acp::PermissionOption::new(
+                                "reject-once",
+                                "Reject",
+                                acp::PermissionOptionKind::RejectOnce,
+                            ),
+                        ],
                     );
-                    write_json_line(writer, json!({"jsonrpc":"2.0","id":id,"method":"session/request_permission","params":{"sessionId":session,"toolCall":{"toolCallId":execution,"title":tool_call_title(call),"kind":tool_call_kind(call),"status":"pending","rawInput":call.input,"content":[{"type":"content","content":{"type":"text","text":p.get("description")}}]},"options":[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"},{"optionId":"reject-once","name":"Reject","kind":"reject_once"}]}})).await?;
+                    out(Outgoing::Permission {
+                        key: id.clone(),
+                        request,
+                    })?;
                     permissions.insert(
                         id,
                         Permission {
@@ -489,6 +505,22 @@ impl AcpServer {
 mod tests {
     use super::super::tests::{Rig, fixture_config};
     use super::*;
+    fn frame(outgoing: Outgoing) -> Value {
+        match outgoing {
+            Outgoing::Update(notification) => {
+                json!({"jsonrpc":"2.0","method":"session/update","params":serde_json::to_value(notification).unwrap()})
+            }
+            Outgoing::Permission { key, request } => {
+                json!({"jsonrpc":"2.0","id":key,"method":"session/request_permission","params":serde_json::to_value(request).unwrap()})
+            }
+        }
+    }
+    fn recording(out: &mut Vec<Value>) -> impl FnMut(Outgoing) -> Result<()> + Send + '_ {
+        move |outgoing| {
+            out.push(frame(outgoing));
+            Ok(())
+        }
+    }
     fn event(seq: u64, thread: &str, turn: &str, name: &str, payload: Value) -> RuntimeEventRecord {
         serde_json::from_value(json!({"seq":seq,"timestamp":chrono::Utc::now(),"thread_id":thread,"turn_id":turn,"event":name,"payload":payload})).unwrap()
     }
@@ -606,14 +638,15 @@ mod tests {
                 calls: HashMap::new(),
                 permissions: HashMap::new(),
             };
-            let mut output = Vec::new();
+            let mut output: Vec<Value> = Vec::new();
             // Project the actual Runtime records, not synthetic ACP frames.
             for record in rig.server.runtime.events_since(&thread, None)? {
                 rig.server
-                    .project_event(&mut projection, &record, &mut output)
+                    .prompt_run()
+                    .project_event(&mut projection, &record, &mut recording(&mut output))
                     .await?;
             }
-            let wire = super::super::tests::parse_lines(output);
+            let wire = output;
             let requests: Vec<_> = wire
                 .iter()
                 .filter(|frame| frame["method"] == "session/request_permission")
@@ -635,12 +668,8 @@ mod tests {
                     )
                     .ok_or_else(|| anyhow!("ACP permission was not retained"))?;
                 rig.server
-                    .answer_permission(
-                        &permission,
-                        &json!({
-                            "result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}
-                        }),
-                    )
+                    .prompt_run()
+                    .answer_permission(&permission, true)
                     .await?;
                 assert_eq!(
                     tokio::time::timeout(Duration::from_secs(10), engine.recv_approval_event())
@@ -758,7 +787,7 @@ mod tests {
             })
             .await??;
             let mut terminal = None;
-            let mut settled_output = Vec::new();
+            let mut settled_output: Vec<Value> = Vec::new();
             for record in rig
                 .server
                 .runtime
@@ -766,7 +795,12 @@ mod tests {
             {
                 if let Some(completed) = rig
                     .server
-                    .project_event(&mut projection, &record, &mut settled_output)
+                    .prompt_run()
+                    .project_event(
+                        &mut projection,
+                        &record,
+                        &mut recording(&mut settled_output),
+                    )
                     .await?
                 {
                     terminal = Some(completed);
@@ -781,7 +815,7 @@ mod tests {
             assert!(projection.permissions.is_empty());
             assert!(projection.calls.is_empty());
             assert!(
-                !super::super::tests::parse_lines(settled_output)
+                !settled_output
                     .iter()
                     .any(|frame| frame["method"] == "session/request_permission")
             );
@@ -804,7 +838,7 @@ mod tests {
             calls: HashMap::new(),
             permissions: HashMap::new(),
         };
-        let mut output = Vec::new();
+        let mut output: Vec<Value> = Vec::new();
         let start = event(
             1,
             &thread,
@@ -813,11 +847,13 @@ mod tests {
             json!({"tool":{"id":"core-call","name":"read","input":{"path":"x"}}}),
         );
         rig.server
-            .project_event(&mut p, &start, &mut output)
+            .prompt_run()
+            .project_event(&mut p, &start, &mut recording(&mut output))
             .await?;
         let before = output.len();
         rig.server
-            .project_event(&mut p, &start, &mut output)
+            .prompt_run()
+            .project_event(&mut p, &start, &mut recording(&mut output))
             .await?;
         assert_eq!(output.len(), before);
         let dispatch = event(
@@ -829,7 +865,8 @@ mod tests {
         );
         assert!(
             rig.server
-                .project_event(&mut p, &dispatch, &mut output)
+                .prompt_run()
+                .project_event(&mut p, &dispatch, &mut recording(&mut output))
                 .await
                 .is_err()
         );
@@ -850,7 +887,7 @@ mod tests {
             calls: HashMap::new(),
             permissions: HashMap::new(),
         };
-        let mut output = Vec::new();
+        let mut output: Vec<Value> = Vec::new();
         for record in [
             event(
                 1,
@@ -882,7 +919,8 @@ mod tests {
             ),
         ] {
             rig.server
-                .project_event(&mut p, &record, &mut output)
+                .prompt_run()
+                .project_event(&mut p, &record, &mut recording(&mut output))
                 .await?;
         }
         assert!(output.is_empty());
@@ -904,7 +942,7 @@ mod tests {
             calls: HashMap::new(),
             permissions: HashMap::new(),
         };
-        let mut output = Vec::new();
+        let mut output: Vec<Value> = Vec::new();
         let failure = event(
             1,
             &thread,
@@ -914,42 +952,14 @@ mod tests {
         );
         let error = rig
             .server
-            .project_event(&mut p, &failure, &mut output)
+            .prompt_run()
+            .project_event(&mut p, &failure, &mut recording(&mut output))
             .await
             .unwrap_err();
         assert!(error.to_string().contains("no terminal receipt"));
         assert!(output.is_empty());
         rig.close().await;
         Ok(())
-    }
-    struct FailedAnswerWriter(Vec<u8>);
-    impl AsyncWrite for FailedAnswerWriter {
-        fn poll_write(
-            mut self: std::pin::Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
-            bytes: &[u8],
-        ) -> std::task::Poll<std::io::Result<usize>> {
-            if String::from_utf8_lossy(bytes).contains("agent_message_chunk") {
-                return std::task::Poll::Ready(Err(std::io::Error::new(
-                    std::io::ErrorKind::BrokenPipe,
-                    "fixture client disappeared after tool effect",
-                )));
-            }
-            self.0.extend_from_slice(bytes);
-            std::task::Poll::Ready(Ok(bytes.len()))
-        }
-        fn poll_flush(
-            self: std::pin::Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<std::io::Result<()>> {
-            std::task::Poll::Ready(Ok(()))
-        }
-        fn poll_shutdown(
-            self: std::pin::Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<std::io::Result<()>> {
-            std::task::Poll::Ready(Ok(()))
-        }
     }
     #[tokio::test(flavor = "current_thread")]
     async fn failed_transport_after_completed_write_retains_actual_core_terminal_and_checkpoint()
@@ -969,20 +979,28 @@ mod tests {
             ],
         )?;
         let id = rig.new_session().await;
-        let (client, input) = tokio::io::duplex(1024);
-        let mut reader = crate::stdio::BoundedLines::new(BufReader::new(input));
-        let mut writer = FailedAnswerWriter(Vec::new());
+        let (_keep_open, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+        let thread = rig.server.sessions[&id].thread_id.clone();
+        let mut emit = |outgoing: Outgoing| -> Result<()> {
+            if let Outgoing::Update(notification) = &outgoing
+                && serde_json::to_string(notification)?.contains("agent_message_chunk")
+            {
+                anyhow::bail!("fixture client disappeared after tool effect");
+            }
+            Ok(())
+        };
         let error = tokio::time::timeout(
             Duration::from_secs(20),
-            rig.server.drive_prompt(
-                json!({"sessionId":id,"prompt":"write then answer"}),
-                &mut reader,
-                &mut writer,
+            rig.server.prompt_run().drive_prompt(
+                &id,
+                &thread,
+                "write then answer".to_string(),
+                &mut emit,
+                &mut inbox,
             ),
         )
         .await?
         .unwrap_err();
-        drop(client);
         assert!(error.to_string().contains("partial receipts retained"));
         assert_eq!(
             std::fs::read_to_string(rig.workspace.join("writer-failure.txt"))?,

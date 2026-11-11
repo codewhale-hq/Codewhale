@@ -18,50 +18,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
 
-const KNOWN: &[Allowed] = &[
-    Allowed {
-        side: Side::Agent,
-        frame: "initialize response",
-        problem: "field `.agentCapabilities.modelSelection` is not in the official type",
-        reason: "Codewhale extension flag; official AgentCapabilities has no modelSelection",
-    },
-    Allowed {
-        side: Side::Agent,
-        frame: "session/new response",
-        problem: "field `.models` is not in the official type",
-        reason: "pre-configOptions model selector; official NewSessionResponse has no models",
-    },
-    Allowed {
-        side: Side::Agent,
-        frame: "session/load response",
-        problem: "field `.models` is not in the official type",
-        reason: "pre-configOptions model selector; official LoadSessionResponse has no models",
-    },
-    Allowed {
-        side: Side::Agent,
-        frame: "session/load response",
-        problem: "field `.sessionId` is not in the official type",
-        reason: "session/load reuses the session/new body; official LoadSessionResponse has no sessionId",
-    },
-    Allowed {
-        side: Side::Agent,
-        frame: "session/list response",
-        problem: "field `.sessions[].createdAt` is not in the official type",
-        reason: "official SessionInfo carries updatedAt only",
-    },
-    Allowed {
-        side: Side::Agent,
-        frame: "session/list response",
-        problem: "field `.sessions[].messageCount` is not in the official type",
-        reason: "official SessionInfo has no message count",
-    },
-    Allowed {
-        side: Side::Agent,
-        frame: "response",
-        problem: "answers no outstanding request (id null)",
-        reason: "an unknown notification is answered with an id-null -32601 error; JSON-RPC forbids replying to a notification",
-    },
-];
+const KNOWN: &[Allowed] = &[Allowed {
+    side: Side::Agent,
+    frame: "session/load response",
+    problem: "field `.sessionId` is not in the official type",
+    reason: "session/load keeps the session/new body with its root sessionId through the 0.10.3 tag; official LoadSessionResponse has no sessionId",
+}];
 
 fn wire<T: Serialize>(value: T) -> Value {
     serde_json::to_value(value).expect("official type serializes")
