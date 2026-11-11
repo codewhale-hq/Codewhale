@@ -371,6 +371,30 @@ fn an_agent_approved_owner_never_loads_into_the_reviewed_host() {
     );
 }
 
+#[test]
+fn a_record_that_cannot_be_read_at_the_scan_loads_no_owner() {
+    let _policy = TestPolicyGuard::extension_host(true);
+    let plugins = Plugins::new(&[("alpha", &[])]);
+    let registry = plugins.registry();
+    let (sources, errors) = codewhale_plugins::runtime::active_component_sources(
+        &registry,
+        codewhale_plugins::activation::PluginActivationCapability::Native,
+    );
+    assert_eq!(sources.len(), 1, "{errors:?}");
+    plugins.registry().disable("alpha").unwrap();
+    let (desired, errors) = super::desired_owners_from(&registry, sources, errors);
+    assert!(desired.is_empty(), "{:?}", desired.keys());
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|error| error
+                .contains("`alpha` was not loaded because its review record could not be read"))
+            .count(),
+        1,
+        "{errors:?}"
+    );
+}
+
 #[tokio::test]
 async fn no_broker_ticket_is_minted_for_a_plugin_whose_reviewed_record_does_not_name_the_service() {
     let _policy = TestPolicyGuard::extension_host(true);

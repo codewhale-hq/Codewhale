@@ -3219,10 +3219,18 @@ fn builtin_source_path(root: &Path, module: &BuiltinModule) -> PathBuf {
 /// Reviewed, enabled plugins with `native` entries, keyed by plugin id, read
 /// from Codewhale's immutable staged snapshot. Blocking.
 fn desired_owners(plugins: &PluginRegistry) -> (BTreeMap<String, DesiredOwner>, Vec<String>) {
-    let (sources, mut errors) = codewhale_plugins::runtime::active_component_sources(
+    let (sources, errors) = codewhale_plugins::runtime::active_component_sources(
         plugins,
         PluginActivationCapability::Native,
     );
+    desired_owners_from(plugins, sources, errors)
+}
+
+fn desired_owners_from(
+    plugins: &PluginRegistry,
+    sources: Vec<codewhale_plugins::runtime::PluginComponentSource>,
+    mut errors: Vec<String>,
+) -> (BTreeMap<String, DesiredOwner>, Vec<String>) {
     let mut desired: BTreeMap<String, DesiredOwner> = BTreeMap::new();
     let mut broken: BTreeSet<String> = BTreeSet::new();
     let mut needs_selection: BTreeSet<String> = BTreeSet::new();
@@ -3263,14 +3271,34 @@ fn desired_owners(plugins: &PluginRegistry) -> (BTreeMap<String, DesiredOwner>, 
                     continue;
                 }
                 if !desired.contains_key(&plugin_id) {
-                    let record =
-                        codewhale_plugins::registry::reviewed_record(&source.authority).ok();
-                    if record.as_ref().is_some_and(|record| {
-                        record.approved_by.as_ref().is_some_and(|approver| {
-                            approver.cohort()
-                                != codewhale_plugins::host_services::PluginCohort::Reviewed
-                        })
-                    }) {
+                    let record = match codewhale_plugins::registry::reviewed_record(
+                        &source.authority,
+                    ) {
+                        Ok(record) => record,
+                        Err(reason) => {
+                            if broken.insert(plugin_id) {
+                                errors.push(format!(
+                                        "Plugin `{}` was not loaded because its review record could not be read: {reason}",
+                                        source.plugin_name
+                                    ));
+                            }
+                            continue;
+                        }
+                    };
+                    let by_agent =
+                        |approver: Option<&codewhale_plugins::host_services::PluginApprover>| {
+                            approver.is_some_and(|approver| {
+                                approver.cohort()
+                                    != codewhale_plugins::host_services::PluginCohort::Reviewed
+                            })
+                        };
+                    if by_agent(record.approved_by.as_ref())
+                        || by_agent(
+                            plugins
+                                .get(&plugin_id)
+                                .and_then(|plugin| plugin.approved_by.as_ref()),
+                        )
+                    {
                         if broken.insert(plugin_id) {
                             errors.push(format!(
                                 "Plugin `{}` was approved by the agent, so its code does not run in the host of the plugins you reviewed; review it to run its code",
@@ -3286,8 +3314,7 @@ fn desired_owners(plugins: &PluginRegistry) -> (BTreeMap<String, DesiredOwner>, 
                             authority: source.authority.clone(),
                             entries: Vec::new(),
                             host_services: record
-                                .map(|record| record.host_services)
-                                .unwrap_or_default()
+                                .host_services
                                 .into_iter()
                                 .filter_map(|service| protocol::DshService::parse(service.name()))
                                 .collect(),
