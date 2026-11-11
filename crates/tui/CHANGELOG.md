@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Docs for agents match the release:** `/llms-full.txt` and `/docs-markdown/*` now serve the documents as they were at the published release tag, from a committed snapshot that is checked against the published release.
 - **Extension host (experimental): trusted plugins ask for review once more.** With `extension_host` turned on, plugins you already trusted are shown for review again after this update, because the capability table they were reviewed against gained the `remote` service. No plugin can use that service yet: none is granted it.
 - **Website text for agents:** llms.txt now gives agents the install steps for the released version, the current release and the state of each part of Codewhale, from the same content as the pages. `/docs-markdown/install.md` serves those install steps as a page, and the main-branch documents beside it now say which release they can run ahead of.
 - **Website design:** codewhale.net now uses the desktop app's 5.3 light and dark colour roles and Geist / Geist Mono, replacing the warm-paper palette and Shannon Sans; the vendored design copy is synced to 5.3.0 and the whale-road ocean bands are unchanged.
@@ -55,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Starting after a hard kill:** the Engine now starts when its process was killed and its data directory was then deleted. A socket owner record whose process is dead and whose data directory, the one this start selected, no longer exists is discarded instead of failing every start with "Failed to resolve ... tasks/runtime". A home reached through a symbolic link, such as one under macOS /tmp, is not covered yet.
 - The install guide's note for a first message that gets no answer now describes v0.10.2: connect a model with `/provider`, and restart if messages stay saved for later after you connect. It described v0.10.0's key screen. The Chinese guide carries the same correction.
 - Project activity on the site now comes from a server-side snapshot with a freshness record, the browser no longer calls GitHub, and count sentences use the right plural form in every language.
 - The install page now gives the exact steps for the released version on every platform, including what the installer adds to PATH, how to turn off usage counting, and how to remove it, and the install command no longer gets cut off on phones.
