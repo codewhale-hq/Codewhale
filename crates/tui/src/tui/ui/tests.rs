@@ -11043,6 +11043,40 @@ async fn provider_switch_clears_turn_cache_history() {
     assert!(app.session.turn_cache_history.is_empty());
 }
 
+#[tokio::test]
+async fn route_activation_after_offline_explore_sends_instead_of_holding() {
+    let _home = SettingsHomeGuard::new();
+    let mut app = create_test_app();
+    app.trust_mode = true;
+    crate::tui::onboarding::choose_offline_explore(&mut app);
+    app.input.clear();
+    app.queue_message(QueuedMessage::new("first task".to_string(), None));
+    assert_eq!(
+        app.decide_submit_disposition(),
+        crate::tui::app::SubmitDisposition::Queue
+    );
+
+    let mut engine = mock_engine_handle();
+    let mut config = Config::default();
+    let identity = (config).test_identity_for_kind(ProviderKind::Ollama);
+    switch_provider(
+        &mut app,
+        &mut engine.handle,
+        &mut config,
+        identity,
+        Some("fixture-local:tag".to_string()),
+    )
+    .await;
+
+    assert!(!app.offline_mode);
+    assert_eq!(
+        app.decide_submit_disposition(),
+        crate::tui::app::SubmitDisposition::Immediate
+    );
+    assert_eq!(app.input, "first task");
+    assert!(app.queued_messages.is_empty());
+}
+
 /// #6566: re-selecting the provider already in use (first-run key entry)
 /// reads as a connection, not as a switch from a provider to itself.
 #[tokio::test]
