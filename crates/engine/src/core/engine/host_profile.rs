@@ -89,7 +89,7 @@ impl Engine {
         self.acp_tool_build_with_mcp(authority, route, allowed, McpToolState::Disabled)
     }
 
-    fn acp_tool_build_with_mcp(
+    pub(super) fn acp_tool_build_with_mcp(
         &self,
         authority: &TurnAuthority,
         route: &TurnRouteContext,
@@ -157,7 +157,11 @@ impl Engine {
             .unwrap_or_default()
             .into_iter()
             .collect();
-        let mut mcp_tools = mcp.tools().to_vec();
+        let mut mcp_tools = if self.child_host.is_none() {
+            mcp.tools().to_vec()
+        } else {
+            Vec::new()
+        };
         mcp_tools.sort_by(|a, b| a.name.cmp(&b.name));
         let mcp_tool_names: Vec<String> = mcp_tools.iter().map(|tool| tool.name.clone()).collect();
         let allowed = Some(

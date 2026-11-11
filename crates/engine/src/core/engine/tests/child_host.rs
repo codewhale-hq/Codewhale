@@ -180,6 +180,49 @@ async fn child_ceiling_filters_acp_foreground_catalog_without_optional_allow_lis
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn child_engine_gets_no_mcp_tools_from_the_acp_tool_build() {
+    let dir = tempdir().unwrap();
+    let _home = crate::test_support::SealedHome::at(dir.path());
+    let (child, _handle, _authority, route) = fixture(dir.path(), None);
+    let (mut root, _root_handle) = Engine::new(
+        EngineConfig {
+            workspace: dir.path().into(),
+            snapshots_enabled: false,
+            memory_enabled: false,
+            ..Default::default()
+        },
+        &route.api_config,
+    );
+    root.host_profile = EngineHostProfile::Acp;
+    let authority =
+        TurnAuthority::from_effective_fields(AppMode::Agent, true, false, true, ApprovalMode::Auto);
+    let live = || McpToolState::Live {
+        tools: vec![api_tool("mcp_fixture_echo")],
+        server_count: 1,
+    };
+    let offered = root.acp_tool_build_with_mcp(&authority, &route, None, live());
+    assert_eq!(offered.mcp_tool_names, ["mcp_fixture_echo"]);
+    assert!(
+        offered
+            .surface
+            .catalog
+            .iter()
+            .any(|tool| tool.name == "mcp_fixture_echo")
+    );
+    assert!(offered.surface.passes_allow_list("mcp_fixture_echo"));
+    let build = child.acp_tool_build_with_mcp(&authority, &route, None, live());
+    assert!(build.mcp_tool_names.is_empty());
+    assert!(
+        !build
+            .surface
+            .catalog
+            .iter()
+            .any(|tool| tool.name == "mcp_fixture_echo")
+    );
+    assert!(!build.surface.passes_allow_list("mcp_fixture_echo"));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn child_registry_rejects_context_override_identity_before_tool_effect() {
     let dir = tempdir().unwrap();
     let _home = crate::test_support::SealedHome::at(dir.path());
