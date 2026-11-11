@@ -35,6 +35,8 @@ def make_cell(root, name, task, genome, passed, price):
     candidate = "candidate_g0_1"
     manifest = {"shadow_policy": genome, "max_candidates": 1,
                 "max_model_turns": 10, "baseline_sha": baseline,
+                "requested_provider": "deepseek", "requested_model": "deepseek-flash",
+                "resolved_provider": "deepseek", "resolved_model": "deepseek-flash",
                 "objective_sha256": digest(f"objective:{task}"),
                 "public_fixture_sha256": digest(f"fixture:{task}"),
                 "hidden_evaluator_sha256": digest(f"hidden:{task}"),
@@ -75,7 +77,8 @@ def make_cell(root, name, task, genome, passed, price):
                            "winner_id": candidate if passed else "NONE", "review": review}}
     write(directory / "workspace" / ".codewhale" / "workflow-runs.jsonl", {"run": workflow})
     write(directory / "run.json", {"arm": "single", "execution_budget": 1,
-                                   "initial_policy": genome, "baseline_sha": baseline})
+                                   "initial_policy": genome, "baseline_sha": baseline,
+                                   "binary_sha256": digest("frozen-cli")})
     return {"task_id": task, "seed": "replicate_0", "run_dir": str(directory)}
 
 
@@ -156,7 +159,13 @@ def main():
         assert absent["selected_policy_id"] == fallback["policies"][1]["policy_id"]
         assert any(row["public_status"] == "MISSING" and not row["task_success"]
                    for row in absent["rows"])
-        print(json.dumps({"status": "PASS", "checks": 5,
+        different_binary = root / "d-beta" / "run.json"
+        changed = json.loads(different_binary.read_text(encoding="utf-8"))
+        changed["binary_sha256"] = digest("different-cli")
+        write(different_binary, changed)
+        sixth = invoke(plan_path, output)
+        assert sixth.returncode != 0 and "different native CLI binaries" in sixth.stderr
+        print(json.dumps({"status": "PASS", "checks": 6,
                           "scope": "receipt-contract-fixture-only"}))
 
 

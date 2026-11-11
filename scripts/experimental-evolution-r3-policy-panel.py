@@ -10,7 +10,9 @@ from pathlib import Path
 GENES = ("planning_budget", "max_repair_rounds", "extra_verification",
          "candidate_strategy", "trace_preference")
 TASK_IDENTITY = ("baseline_sha", "objective_sha256", "public_fixture_sha256",
-                 "hidden_evaluator_sha256", "case_bundle_sha256")
+                 "hidden_evaluator_sha256", "case_bundle_sha256",
+                 "requested_provider", "requested_model", "resolved_provider",
+                 "resolved_model")
 
 
 def read_json(path):
@@ -99,6 +101,10 @@ def full_cost(run):
 def read_cell(cell, genome, expected_policy_id):
     directory = Path(cell["run_dir"]).resolve()
     run_meta = read_json(directory / "run.json")
+    binary_sha256 = run_meta.get("binary_sha256")
+    if not isinstance(binary_sha256, str) or len(binary_sha256) != 64 \
+            or any(character not in "0123456789abcdef" for character in binary_sha256):
+        raise ValueError("panel cell lacks a pinned native CLI binary hash")
     if run_meta.get("arm") != "single" or run_meta.get("execution_budget") != 1:
         raise ValueError("panel cell must be a one-candidate frozen-policy run")
     if run_meta.get("initial_policy") != genome:
@@ -157,6 +163,7 @@ def read_cell(cell, genome, expected_policy_id):
         raise ValueError("native task identity is incomplete")
     return {"task_id": cell["task_id"], "seed": cell["seed"],
             "run_dir": str(directory), "run_id": workflow.get("run_id"),
+            "binary_sha256": binary_sha256,
             "workflow_status": workflow.get("status"),
             "evaluation_id": evaluation.get("evaluation_id") if evaluation else None,
             "artifact_id": evaluation.get("artifact_id") if evaluation else None,
@@ -174,6 +181,7 @@ def select(plan):
     rows = []
     identities = {}
     budget_ceiling = None
+    binary_sha256 = None
     for policy in plan["policies"]:
         genome = policy["genome"]
         identifier = policy_id(genome)
@@ -196,6 +204,9 @@ def select(plan):
             if budget_ceiling is not None and row["budget_ceiling_model_turns"] != budget_ceiling:
                 raise ValueError("panel cells used unequal model-turn ceilings")
             budget_ceiling = row["budget_ceiling_model_turns"]
+            if binary_sha256 is not None and row["binary_sha256"] != binary_sha256:
+                raise ValueError("panel cells used different native CLI binaries")
+            binary_sha256 = row["binary_sha256"]
             rows.append({"policy_id": identifier, **row})
         if len(identities) != 2:
             raise ValueError("panel must cover two distinct DEV task and seed cells")
@@ -226,7 +237,8 @@ def select(plan):
     selected = ranks[0]["policy_id"] if ranks[0]["task_successes"] else None
     body = {"schema_version": 1, "panel": "two_policy_two_task_dev",
             "provider_seed_control": "unavailable", "task_seed_labels": sorted(identities),
-            "equal_model_turn_ceiling": budget_ceiling, "rows": rows,
+            "equal_model_turn_ceiling": budget_ceiling,
+            "binary_sha256": binary_sha256, "rows": rows,
             "ranking": ranks, "selected_policy_id": selected,
             "policy_promotion_proposal": {"status": "NOT_QUALIFIED",
                 "reason": "A frozen new-task holdout run is required after DEV policy selection."}}

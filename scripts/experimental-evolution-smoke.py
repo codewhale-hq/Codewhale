@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -19,6 +20,14 @@ WORKFLOW = ROOT / "workflows" / "operate_best_of_n.workflow.js"
 
 def run(command, **kwargs):
     return subprocess.run(command, check=True, text=True, **kwargs)
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def make_baseline(destination, fixtures):
@@ -187,6 +196,7 @@ def main():
         parser.error("--output is required for a provider run")
     if not os.environ.get("DEEPSEEK_API_KEY"):
         parser.error("DEEPSEEK_API_KEY must be exported for real provider runs")
+    binary_sha256 = file_sha256(args.codewhale.resolve())
     fixtures = args.fixture if args.fixture.is_absolute() else ROOT / args.fixture
     fixtures = fixtures.resolve()
     for required in ("task/README.md", "public_gate.py", "heldout_gate.py"):
@@ -263,6 +273,7 @@ def main():
                         evidence.append(str(destination))
                         receipt_summaries.append(summarize_receipts(destination))
         row = {"arm": arm, "exit_code": completed.returncode, "wall_seconds": elapsed,
+               "binary_sha256": binary_sha256,
                "baseline_sha": baseline_sha, "execution_budget": 1 if arm == "single" else args.budget,
                "budget_plan": plan,
                "initial_policy": initial_policy,
