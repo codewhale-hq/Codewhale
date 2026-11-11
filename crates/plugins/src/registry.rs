@@ -1237,12 +1237,17 @@ fn persist_plugin_state(mut temporary: tempfile::TempPath, path: &Path) -> Resul
     })?;
 
     // The state lock serializes writers, but not everything that opens the
-    // stable file: another registry re-applies the state directory's
+    // stable file. Another registry re-applies the state directory's
     // inheritable ACL before it takes that lock, and Defender or the indexer
-    // can scan the file. Each holds the destination only briefly, and
-    // MoveFileExW then reports a refusal that clears on its own. Re-attempt
-    // only the rename, on the schedule the other atomic writers share; the
-    // hardened temporary and the stable file are both left untouched.
+    // can scan the file; each holds it only briefly. A plugin UI grant holds
+    // it for up to an hour. MoveFileExW refuses to replace a destination that
+    // any handle has open, so on access denied publish with std::fs::rename,
+    // which replaces a destination whose holders share delete access (POSIX
+    // rename: NTFS, Windows 10 1709 or later), and flush through a handle
+    // opened beforehand because that rename does not write through. When that
+    // is refused too, re-attempt on the schedule the other atomic writers
+    // share; a failed attempt leaves the hardened temporary and the stable
+    // file untouched.
     let mut attempt = 0;
     // SAFETY: both paths are NUL-terminated and live.
     while let Err(error) = unsafe {
