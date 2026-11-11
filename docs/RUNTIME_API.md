@@ -396,6 +396,11 @@ Fleet receipt artifacts keep their own route
 cannot provide an exact commit reports `unknown`, allowing compatibility
 clients to fail closed rather than accepting an ambiguous binary pair.
 
+`sandbox.kind` names the OS wrapper commands get (`linux-bwrap`, `macos-seatbelt`,
+`none`); `sandbox.tool_launcher` is true when the managed configuration runs
+tools as another user. Both are computed when the route is called, and with a
+launcher `kind` is `linux-bwrap` only after the launcher probe has passed.
+
 The same response advertises `capabilities.account_session: true` and
 `capabilities.turn_operation_idempotency: true`. A client must require the
 latter before relying on `operation_key`; do not infer support from a 2xx turn

@@ -12330,6 +12330,61 @@ fn tool_launcher_is_read_from_a_sealed_managed_file() -> Result<()> {
 
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 #[test]
+fn the_managed_file_named_by_the_host_survives_a_provider_that_resolves_late() -> Result<()> {
+    struct Sealed;
+    impl Drop for Sealed {
+        fn drop(&mut self) {
+            TEST_TREAT_MANAGED_FILE_AS_SEALED.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _lock = lock_test_env();
+    let temp_root = tempfile::tempdir()?;
+    let _guard = EnvGuard::new(temp_root.path());
+    let managed_path = temp_root.path().join("managed.toml");
+    let config_path = temp_root.path().join("config.toml");
+    let _managed = EnvVarGuard::set("CODEWHALE_MANAGED_CONFIG_PATH", &managed_path);
+    TEST_TREAT_MANAGED_FILE_AS_SEALED.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _sealed = Sealed;
+    fs::write(
+        &managed_path,
+        "sandbox_mode = \"workspace-write\"\ntool_launcher = [\"/usr/bin/sudo\", \"-n\"]\n",
+    )?;
+
+    let mut late_provider = |config: &mut Config| -> Result<()> {
+        let entry: ProviderConfig = toml::from_str(
+            "base_url = \"https://example.invalid/v1\"\nmodel = \"m\"\nkind = \"openai-compatible\"\n",
+        )?;
+        config
+            .providers
+            .get_or_insert_with(Default::default)
+            .custom
+            .insert("ghostplug".to_string(), entry);
+        Ok(())
+    };
+    for user_file in [
+        "provider = \"ghostplug\"\n",
+        "provider = \"ghostplug\"\nmanaged_config_path = \"/nonexistent/managed.toml\"\n",
+    ] {
+        fs::write(&config_path, user_file)?;
+        let loaded = Config::load_with(
+            Some(config_path.clone()),
+            None,
+            ConfigEnvironmentPolicy::Runtime,
+            &mut late_provider,
+        );
+        if let Ok(config) = loaded {
+            assert_eq!(
+                config.tool_launcher.as_deref(),
+                Some(["/usr/bin/sudo", "-n"].map(str::to_string).as_slice()),
+                "{user_file}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+#[test]
 fn tool_launcher_is_refused_from_a_managed_file_the_user_config_names() -> Result<()> {
     struct Sealed;
     impl Drop for Sealed {

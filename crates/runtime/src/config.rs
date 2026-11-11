@@ -10718,10 +10718,8 @@ fn warn_on_misplaced_top_level_keys(raw: &str) -> Option<String> {
 }
 
 fn apply_managed_overrides(config: &mut Config) -> Result<()> {
-    let path = config
-        .managed_config_path
-        .as_deref()
-        .map(expand_path)
+    let path = managed_path_from_env()
+        .or_else(|| config.managed_config_path.as_deref().map(expand_path))
         .or_else(default_managed_config_path);
     let Some(path) = path else {
         return Ok(());
@@ -10889,12 +10887,15 @@ fn managed_tool_launcher(path: &Path) -> Result<Option<Vec<String>>> {
     Ok(Some(argv))
 }
 
-fn managed_path_is_named_by_host(path: &Path) -> bool {
-    let from_env = std::env::var("CODEWHALE_MANAGED_CONFIG_PATH")
+fn managed_path_from_env() -> Option<PathBuf> {
+    std::env::var("CODEWHALE_MANAGED_CONFIG_PATH")
         .or_else(|_| std::env::var("DEEPSEEK_MANAGED_CONFIG_PATH"))
         .ok()
-        .map(|value| expand_path(&value));
-    from_env
+        .map(|value| expand_path(&value))
+}
+
+fn managed_path_is_named_by_host(path: &Path) -> bool {
+    managed_path_from_env()
         .into_iter()
         .chain(default_managed_config_path())
         .any(|named| named == path)

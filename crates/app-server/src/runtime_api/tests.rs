@@ -11083,6 +11083,8 @@ async fn runtime_info_reports_bind_state() -> Result<()> {
     assert!(info["account"].get("refresh_token").is_none());
     assert!(info["account"].get("email").is_none());
     assert!(info["experimental"].is_object());
+    assert!(info["sandbox"]["kind"].is_string());
+    assert_eq!(info["sandbox"]["tool_launcher"], false);
 
     handle.abort();
     Ok(())

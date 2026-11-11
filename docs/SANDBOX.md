@@ -145,16 +145,25 @@ The key is read only from the managed configuration file named by
 Linux, and only when neither that file nor any directory above it can be
 changed by the Engine's own user. A managed file at any other path (for
 example one a user config points at through `managed_config_path`) is refused.
-In a user `config.toml`, a profile or a project config the key is a load
-error. The managed file must also set `sandbox_mode` itself; a sandboxed mode
+In a user `config.toml` or a profile the key is a load error. The managed file must also set `sandbox_mode` itself; a sandboxed mode
 from a user config does not count. Without the key, nothing on this page
 changes.
 
-A host that relies on the launcher should set `CODEWHALE_MANAGED_CONFIG_PATH`
-for the Engine's service and check `sandbox.tool_launcher` in
-`GET /v1/runtime/info`: without the variable, a user config can point
-`managed_config_path` at a missing file, and the Engine then starts with no
-launcher.
+A host that relies on the launcher puts the managed file at the default
+managed path, owned by root, and also sets `CODEWHALE_MANAGED_CONFIG_PATH` to
+that same path for the Engine's service. The variable stops a user config from
+pointing `managed_config_path` at a missing file; the default path is needed
+because a Fleet local worker (a child `codewhale exec`) is started with a
+cleaned environment and reads only the default path. A file in another
+ordinary user's home also passes the "Engine's user cannot change it" check,
+so the file should be root-owned. Check `sandbox.tool_launcher` in
+`GET /v1/runtime/info` after start; it is read at start, so a later reload is
+not covered by that check.
+
+The launcher's first program runs as the Engine's user with the Engine's
+allow-listed environment, the model-chosen working directory and stdin, so it
+must ignore all three (a setuid switcher such as `sudo -n`, not a shell
+script).
 
 With a launcher configured:
 
@@ -182,8 +191,16 @@ With a launcher configured:
 
 Limits: only commands the sandbox manager prepares (shell commands, terminal
 sessions, workspace runners) go through the launcher. In-process file tools,
-MCP servers, hooks, LSP servers and the extension host still run as the
-Engine's user. Deny-list exceptions are not applied under a launcher. Search
+MCP servers, hooks, LSP servers, the extension host, Fleet local workers,
+external ACP agents and the Engine's own `git`, formatter and diagnostic
+helpers still run as the Engine's user. `codewhale serve --mcp` builds its own
+shell manager with no launcher and no deny list, so do not expose `exec_shell`
+there. With `sandbox_backend = "opensandbox"` a shell command goes to the
+remote backend before the launcher is consulted, so a launcher host pins
+`sandbox_backend = "none"`, `prefer_bwrap = true` and `sandbox_network_access`
+in the managed file. A `tool_launcher` in a project config stops an
+interactive launch with an error; `serve` and `exec` do not read project
+config, so there the key is ignored. Deny-list exceptions are not applied under a launcher. Search
 rights come from mode bits and group membership, not ACLs. Processes keep
 running after the Engine itself dies, until bubblewrap's parent exits.
 
