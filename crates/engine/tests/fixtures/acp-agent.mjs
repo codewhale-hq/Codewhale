@@ -1,6 +1,6 @@
 // A deterministic Agent Client Protocol agent for the fleet transport test.
 // Speaks newline-framed JSON-RPC on stdio. No dependencies, no network.
-import { writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const HANG = process.env.HANG === '1';
@@ -14,6 +14,12 @@ let permissionWaiter = null;
 let pendingPrompt = null;
 let calls = 0;
 let configModel = null;
+
+const plan = () => {
+  const path = join(process.cwd(), 'fixture-plan.json');
+  return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
+};
+const record = (name, value) => appendFileSync(join(process.cwd(), name), `${JSON.stringify(value)}\n`);
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 const result = (id, value) => send({ jsonrpc: '2.0', id, result: value });
@@ -41,6 +47,11 @@ function askPermission(toolCall) {
 async function prompt(request) {
   const text = (request.params?.prompt ?? []).map((block) => block.text ?? '').join('');
   notify('session/update', { sessionId, update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Thinking about it.' } } });
+  if (plan().extraUpdates) {
+    notify('session/update', { sessionId, update: { sessionUpdate: 'plan_update', entries: [{ content: 'Write the fixture', status: 'in_progress' }] } });
+    notify('session/update', { sessionId, update: { sessionUpdate: 'current_mode_update', currentModeId: 'review' } });
+    notify('session/update', { sessionId, update: { sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'compact', description: 'Shrink the context' }] } });
+  }
   for (const chunk of [`You said: `, text, `.`]) {
     notify('session/update', { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: chunk } } });
   }
@@ -67,6 +78,7 @@ function handle(message) {
     if (message.id === 9001 && permissionWaiter) {
       const resolve = permissionWaiter;
       permissionWaiter = null;
+      record('permission-outcomes.jsonl', message.result?.outcome ?? null);
       resolve(message.result);
     }
     return;
@@ -77,15 +89,17 @@ function handle(message) {
         protocolVersion: 1,
         agentInfo: { name: 'fixture-agent', version: '1.0.0' },
         authMethods: [],
-        agentCapabilities: { loadSession: true },
+        agentCapabilities: { loadSession: true, sessionCapabilities: plan().additionalDirectories ? { additionalDirectories: {} } : {} },
       });
       break;
     case 'session/new':
+      record('session-params.jsonl', { method: message.method, params: message.params });
       sessionId = `fixture-session-${process.pid}`;
       cwd = message.params?.cwd ?? cwd;
       result(message.id, { sessionId });
       break;
     case 'session/load':
+      record('session-params.jsonl', { method: message.method, params: message.params });
       sessionId = message.params?.sessionId ?? null;
       cwd = message.params?.cwd ?? cwd;
       notify('session/update', { sessionId, update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'replayed history' } } });

@@ -1107,3 +1107,153 @@ async fn per_turn_controls_an_agent_cannot_honor_are_typed_refusals() -> Result<
     );
     Ok(())
 }
+
+fn fixture_lines(workspace: &Path, name: &str) -> Vec<Value> {
+    std::fs::read_to_string(workspace.join(name))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
+#[tokio::test]
+async fn interrupting_a_pending_approval_answers_the_agents_request_as_cancelled() -> Result<()> {
+    if !node_available().await {
+        return Ok(());
+    }
+    let _env = crate::test_support::lock_test_env();
+    let _fixture = crate::test_support::EnvVarGuard::set(FIXTURE_AGENT_ENV, fixture_script());
+    let root = tempfile::tempdir()?;
+    let workspace = root.path().join("work");
+    std::fs::create_dir_all(&workspace)?;
+    let manager = test_manager(root.path().join("runtime"))?;
+    let thread = manager
+        .create_thread(fixture_thread_request(&workspace, "ask"))
+        .await?;
+    let turn = manager.start_turn(&thread.id, prompt("stop me")).await?;
+    wait_for_approval(&manager, &thread.id).await?;
+    manager.interrupt_turn(&thread.id, &turn.id).await?;
+    assert_eq!(
+        wait_for_turn(&manager, &turn.id).await?.status,
+        RuntimeTurnStatus::Interrupted
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let outcomes = loop {
+        let outcomes = fixture_lines(&workspace, "permission-outcomes.jsonl");
+        if !outcomes.is_empty() || Instant::now() >= deadline {
+            break outcomes;
+        }
+        sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(
+        outcomes,
+        vec![json!({ "outcome": "cancelled" })],
+        "the agent never received a cancelled answer for its open permission request"
+    );
+    assert!(!workspace.join("fixture.txt").exists());
+    manager.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn additional_directories_reach_only_an_agent_that_advertises_them() -> Result<()> {
+    if !node_available().await {
+        return Ok(());
+    }
+    let _env = crate::test_support::lock_test_env();
+    let _fixture = crate::test_support::EnvVarGuard::set(FIXTURE_AGENT_ENV, fixture_script());
+    let root = tempfile::tempdir()?;
+    let extra = root.path().join("extra");
+    std::fs::create_dir_all(&extra)?;
+    let extra = extra.canonicalize()?;
+    let mut sent = Vec::new();
+    for (name, advertises) in [("quiet", false), ("capable", true)] {
+        let workspace = root.path().join(name);
+        std::fs::create_dir_all(&workspace)?;
+        std::fs::write(
+            workspace.join("fixture-plan.json"),
+            json!({ "additionalDirectories": advertises }).to_string(),
+        )?;
+        let manager = test_manager(root.path().join(format!("runtime-{name}")))?;
+        let mut request = fixture_thread_request(&workspace, "ask");
+        request.add_dirs = vec![extra.clone()];
+        let thread = manager.create_thread(request).await?;
+        let turn = manager.start_turn(&thread.id, prompt("hello")).await?;
+        let approval = wait_for_approval(&manager, &thread.id).await?;
+        manager
+            .deliver_external_approval(
+                &approval.id,
+                ExternalApprovalDecision::Deny { remember: false },
+            )
+            .await?;
+        wait_for_turn(&manager, &turn.id).await?;
+        sent.push(fixture_lines(&workspace, "session-params.jsonl"));
+        manager.shutdown_and_wait().await?;
+    }
+    assert_eq!(sent[0].len(), 1);
+    assert!(
+        sent[0][0]["params"].get("additionalDirectories").is_none(),
+        "an agent that did not advertise the capability was sent directories: {:?}",
+        sent[0]
+    );
+    assert_eq!(
+        sent[1][0]["params"]["additionalDirectories"],
+        json!([extra.display().to_string()])
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn plan_mode_and_command_updates_are_projected() -> Result<()> {
+    if !node_available().await {
+        return Ok(());
+    }
+    let _env = crate::test_support::lock_test_env();
+    let _fixture = crate::test_support::EnvVarGuard::set(FIXTURE_AGENT_ENV, fixture_script());
+    let root = tempfile::tempdir()?;
+    let workspace = root.path().join("work");
+    std::fs::create_dir_all(&workspace)?;
+    std::fs::write(
+        workspace.join("fixture-plan.json"),
+        json!({ "extraUpdates": true }).to_string(),
+    )?;
+    let manager = test_manager(root.path().join("runtime"))?;
+    let thread = manager
+        .create_thread(fixture_thread_request(&workspace, "ask"))
+        .await?;
+    let turn = manager.start_turn(&thread.id, prompt("hello")).await?;
+    let approval = wait_for_approval(&manager, &thread.id).await?;
+    manager
+        .deliver_external_approval(
+            &approval.id,
+            ExternalApprovalDecision::Deny { remember: false },
+        )
+        .await?;
+    wait_for_turn(&manager, &turn.id).await?;
+    let events = events(&manager, &thread.id).await?;
+    let mode = events
+        .iter()
+        .find(|event| event.event == "turn.agent_mode")
+        .expect("a mode update is projected");
+    assert_eq!(mode.payload["mode"], "review");
+    let commands = events
+        .iter()
+        .find(|event| event.event == "turn.agent_commands")
+        .expect("a command update is projected");
+    assert_eq!(commands.payload["commands"][0]["name"], "compact");
+    let detail = manager.get_thread_detail(&thread.id).await?;
+    assert!(
+        detail
+            .items
+            .iter()
+            .any(|item| item.kind == TurnItemKind::Status
+                && item
+                    .detail
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("[in_progress] Write the fixture")),
+        "plan_update never reached a plan item"
+    );
+    manager.shutdown_and_wait().await?;
+    Ok(())
+}
