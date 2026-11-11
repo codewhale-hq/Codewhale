@@ -1,6 +1,8 @@
 import { Fragment } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { HeroInstall } from "@/components/hero-install";
+import { Icon } from "@/components/icon";
 import { readAsOf } from "@/components/project-pulse";
 import { InlineCode } from "@/components/route/inline-code";
 import { RouteMap, type RoutePart } from "@/components/route/product-route";
@@ -8,6 +10,7 @@ import { SessionFrames, type SessionFrame } from "@/components/route/session-fra
 import { TerminalCapture } from "@/components/terminal-capture";
 import { releaseView, runtimeCapabilityContext } from "@/lib/capabilities";
 import { captureCaption, frameNote } from "@/lib/capture-caption";
+import { PARTNER_PROMO } from "@/lib/content/partner-promo";
 import { PROJECT_COPY } from "@/lib/content/project";
 import { PRODUCT_MAP_STATE_KEY, PRODUCT_MAP_TEXT_KEYS, productMap, type ProductMapId } from "@/lib/content/product-map";
 import { getFacts } from "@/lib/facts";
@@ -75,6 +78,9 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
   const release = facts.latestPublishedRelease;
   const jsonLd = buildSoftwareApplicationJsonLd(release, locale);
   const numbers = new Intl.NumberFormat(chrome.dateLocale);
+  const promoLeft = Date.parse(PARTNER_PROMO.endsAt) - Date.now();
+  const promoDays = Math.max(1, Math.ceil(promoLeft / 86_400_000));
+  const showPromo = promoLeft > 0 && PARTNER_PROMO.locales.includes(locale);
 
   const parts: RoutePart[] = productMap({ capabilities: runtimeCapabilityContext(facts) }).map((row) => {
     const keys = PRODUCT_MAP_TEXT_KEYS[row.id];
@@ -201,6 +207,25 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
             {providerNote ? <figcaption className="home-caption">{d.captureFrameNoPosture}</figcaption> : null}
           </figure>
         </section>
+
+        {showPromo && (
+          <aside className="home-promo-bar home-promo-inline" aria-label={PARTNER_PROMO.title}>
+            <div className="home-promo-bar-inner">
+              <Image src={PARTNER_PROMO.image.src} alt="" width={64} height={36} className="home-promo-bar-art" unoptimized />
+              <p>
+                <strong>{PARTNER_PROMO.title}</strong>
+                <span>{pickText(PARTNER_PROMO.bar, locale)}</span>
+                <span className="home-promo-bar-days">{fill(pickText(promoDays === 1 ? PARTNER_PROMO.dayLeft : PARTNER_PROMO.daysLeft, locale), { count: promoDays })}</span>
+              </p>
+              <span className="home-promo-bar-tag">{pickText(PARTNER_PROMO.referralTag, locale)}</span>
+              <p className="home-promo-bar-disclosure">{pickText(PARTNER_PROMO.disclosure, locale)}</p>
+              <a href={PARTNER_PROMO.href} rel="sponsored noopener" className="btn btn-primary">
+                {pickText(PARTNER_PROMO.cta, locale)}
+                <Icon name="external" className="icon" />
+              </a>
+            </div>
+          </aside>
+        )}
 
         <section className="home-section home-split home-split-flip" aria-labelledby="home-control">
           <div className="home-text">

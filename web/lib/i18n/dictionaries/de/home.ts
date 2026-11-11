@@ -12,7 +12,7 @@ export const home: HomeDict = {
   installNote: "Version {version} ist veröffentlicht und braucht kein Konto.",
   captionDevelopment: "Ein Entwicklungs-Build in einem echten Terminal: Die Änderungen und Tests wurden wirklich ausgeführt, und das Modell ist eine Demo nach Drehbuch.",
   captionReleased: "Eine echte Terminalsitzung: Die Änderungen und Tests wurden wirklich ausgeführt, und das Modell ist eine Demo nach Drehbuch.",
-  captureFrameNoPosture: "Der Modellname und die Ask-Einstellung sind auf den Bildern vor und nach diesem zu sehen.",
+  captureFrameNoPosture: "Die Bilder „Eingabe“ und „Ergebnis“ zeigen den Modellnamen und die Ask-Einstellung.",
   frameLabelPrompt: "Eingabe",
   frameLabelEdit: "Änderung",
   frameLabelApproval: "Freigabe",

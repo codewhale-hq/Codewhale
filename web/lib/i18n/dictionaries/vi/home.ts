@@ -12,7 +12,7 @@ export const home: HomeDict = {
   installNote: "Phiên bản {version} đã phát hành và không cần tài khoản.",
   captionDevelopment: "Một bản dựng phát triển trong terminal thật: các chỉnh sửa và bài kiểm thử đã chạy thật, còn mô hình là bản trình diễn theo kịch bản.",
   captionReleased: "Một phiên terminal thật: các chỉnh sửa và bài kiểm thử đã chạy thật, còn mô hình là bản trình diễn theo kịch bản.",
-  captureFrameNoPosture: "Tên mô hình và thiết lập Ask được hiển thị ở các khung trước và sau khung này.",
+  captureFrameNoPosture: "Các khung Yêu cầu và Kết quả hiển thị tên mô hình và thiết lập Ask.",
   frameLabelPrompt: "Yêu cầu",
   frameLabelEdit: "Chỉnh sửa",
   frameLabelApproval: "Phê duyệt",

@@ -322,7 +322,7 @@
     "installNote": "版本 {version} 已发布，无需账号。",
     "captionDevelopment": "开发版本在真实终端中的运行：编辑和测试都是真实执行的，模型是脚本化的演示。",
     "captionReleased": "真实的终端会话：编辑和测试都是真实执行的，模型是脚本化的演示。",
-    "captureFrameNoPosture": "模型名称和 Ask 设置显示在这一帧之前和之后的画面中。",
+    "captureFrameNoPosture": "“提示”和“结果”两帧显示了模型名称和 Ask 设置。",
     "frameLabelPrompt": "提示",
     "frameLabelEdit": "编辑",
     "frameLabelApproval": "审批",

@@ -12,7 +12,7 @@ export const home: HomeDict = {
   installNote: "バージョン {version} はリリース済みで、アカウントは不要です。",
   captionDevelopment: "実際のターミナルでの開発ビルド。編集とテストは実際に実行されたもので、モデルは台本どおりのデモです。",
   captionReleased: "実際のターミナルセッション。編集とテストは実際に実行されたもので、モデルは台本どおりのデモです。",
-  captureFrameNoPosture: "モデル名と Ask の設定は、この画面の前後の画面に表示されています。",
+  captureFrameNoPosture: "モデル名と Ask の設定は、「プロンプト」と「結果」の画面に表示されています。",
   frameLabelPrompt: "プロンプト",
   frameLabelEdit: "編集",
   frameLabelApproval: "承認",

@@ -12,7 +12,7 @@ export const home: HomeDict = {
   installNote: "الإصدار {version} منشور، ولا يحتاج إلى حساب.",
   captionDevelopment: "نسخة تطوير في طرفية حقيقية: نُفِّذت التعديلات والاختبارات فعلًا، والنموذج عرض توضيحي مكتوب بنص مسبق.",
   captionReleased: "جلسة طرفية حقيقية: نُفِّذت التعديلات والاختبارات فعلًا، والنموذج عرض توضيحي مكتوب بنص مسبق.",
-  captureFrameNoPosture: "اسم النموذج وإعداد Ask معروضان في اللقطتين السابقة واللاحقة لهذه اللقطة.",
+  captureFrameNoPosture: "تعرض لقطتا «الطلب» و«النتيجة» اسم النموذج وإعداد Ask.",
   frameLabelPrompt: "الطلب",
   frameLabelEdit: "التعديل",
   frameLabelApproval: "الموافقة",

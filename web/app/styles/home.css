@@ -466,3 +466,28 @@ a.road-name:hover { text-decoration-color: currentColor; }
 @media (max-width: 900px) {
   .release-cards { grid-template-columns: minmax(0, 1fr); }
 }
+
+.home-promo-bar { border-bottom: 1px solid var(--line); background: var(--surface); }
+.home-promo-inline { margin-top: var(--space-7); border: 1px solid var(--line); border-radius: var(--radius-surface); }
+.home-promo-inline .home-promo-bar-inner { width: auto; padding: var(--space-4) var(--space-5); }
+.home-promo-bar-disclosure { flex-basis: 100%; order: 10; margin: 0; color: var(--muted); font-size: var(--text-caption); }
+.home-promo-bar-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-5);
+  width: var(--container);
+  margin-inline: auto;
+  padding-block: var(--space-3);
+}
+.home-promo-bar-art { width: 64px; height: 36px; border-radius: var(--radius-control); object-fit: cover; flex: none; }
+.home-promo-bar p { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-3); flex: 1 1 24rem; margin: 0; font-size: var(--text-ui); color: var(--muted); }
+.home-promo-bar p strong { color: var(--text); font-weight: 600; }
+.home-promo-bar-days { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
+.home-promo-bar-tag { padding: 0.125rem 0.5rem; border: 1px solid var(--line-strong); border-radius: var(--radius-control); color: var(--muted); font-size: var(--text-caption); }
+.home-promo-bar .btn { min-height: 2.25rem; padding-block: 0.25rem; }
+@media (max-width: 640px) {
+  .home-promo-bar-art { display: none; }
+  .home-promo-bar-inner { gap: var(--space-2) var(--space-3); padding-block: var(--space-2); }
+  .home-promo-bar p { flex-basis: 100%; }
+}

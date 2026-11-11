@@ -12,7 +12,7 @@ export const home: HomeDict = {
   installNote: "{version} sürümü yayımlandı ve hesap gerektirmez.",
   captionDevelopment: "Gerçek bir terminalde geliştirme sürümü: düzenlemeler ve testler gerçekten çalıştı, model ise senaryolu bir gösterim.",
   captionReleased: "Gerçek bir terminal oturumu: düzenlemeler ve testler gerçekten çalıştı, model ise senaryolu bir gösterim.",
-  captureFrameNoPosture: "Model adı ve Ask ayarı, bu karenin öncesindeki ve sonrasındaki karelerde gösterilir.",
+  captureFrameNoPosture: "İstem ve Sonuç kareleri model adını ve Ask ayarını gösterir.",
   frameLabelPrompt: "İstem",
   frameLabelEdit: "Düzenleme",
   frameLabelApproval: "Onay",

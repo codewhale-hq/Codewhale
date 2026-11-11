@@ -12,7 +12,7 @@ export const home: HomeDict = {
   installNote: "La versió {version} està publicada i no necessita cap compte.",
   captionDevelopment: "Una versió de desenvolupament en un terminal real: les edicions i les proves es van executar de debò, i el model és una demostració amb guió.",
   captionReleased: "Una sessió real de terminal: les edicions i les proves es van executar de debò, i el model és una demostració amb guió.",
-  captureFrameNoPosture: "El nom del model i el paràmetre Ask es mostren als fotogrames anterior i posterior a aquest.",
+  captureFrameNoPosture: "Els fotogrames «Instrucció» i «Resultat» mostren el nom del model i el paràmetre Ask.",
   frameLabelPrompt: "Instrucció",
   frameLabelEdit: "Edició",
   frameLabelApproval: "Aprovació",

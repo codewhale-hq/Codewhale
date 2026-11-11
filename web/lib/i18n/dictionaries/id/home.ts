@@ -12,7 +12,7 @@ export const home: HomeDict = {
   installNote: "Versi {version} sudah dirilis dan tidak memerlukan akun.",
   captionDevelopment: "Build pengembangan di terminal sungguhan: pengeditan dan pengujian benar-benar dijalankan, dan modelnya adalah demo berskrip.",
   captionReleased: "Sesi terminal sungguhan: pengeditan dan pengujian benar-benar dijalankan, dan modelnya adalah demo berskrip.",
-  captureFrameNoPosture: "Nama model dan pengaturan Ask ditampilkan pada bingkai sebelum dan sesudah bingkai ini.",
+  captureFrameNoPosture: "Bingkai Perintah dan Hasil menampilkan nama model dan pengaturan Ask.",
   frameLabelPrompt: "Perintah",
   frameLabelEdit: "Edit",
   frameLabelApproval: "Persetujuan",

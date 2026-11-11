@@ -12,7 +12,7 @@ export const home: HomeDict = {
   installNote: "버전 {version}은(는) 릴리스되었으며 계정이 필요 없습니다.",
   captionDevelopment: "실제 터미널에서 실행한 개발 빌드입니다. 편집과 테스트는 실제로 실행되었고, 모델은 대본에 따른 시연입니다.",
   captionReleased: "실제 터미널 세션입니다. 편집과 테스트는 실제로 실행되었고, 모델은 대본에 따른 시연입니다.",
-  captureFrameNoPosture: "모델 이름과 Ask 설정은 이 화면의 앞뒤 화면에 표시됩니다.",
+  captureFrameNoPosture: "프롬프트 화면과 결과 화면에 모델 이름과 Ask 설정이 표시됩니다.",
   frameLabelPrompt: "프롬프트",
   frameLabelEdit: "편집",
   frameLabelApproval: "승인",
