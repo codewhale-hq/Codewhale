@@ -222,29 +222,37 @@ export default async function (args) {
         }
         let devReview = null;
         if (["PASS", "FAIL"].includes(receipt.status) && plan.policy.extra_verification) {
-          try {
-            devReview = await task({
-              description: [
-                "Review the DEV candidate's complete changed files and public oracle feedback. Do not edit.",
-                `BRIEF: ${String(brief)}`,
-                `CHANGED FILES: ${String(receipt.review_material ?? "INCOMPLETE")}`,
-                `PUBLIC FEEDBACK: ${String(receipt.public_failure_feedback ?? "")}`,
-                "Reply as plain JSON text with verdict and reasons. Do not call a tool.",
-              ].join("\n"),
-              label: `dev_review_${plan.id}`, type: "explore", model,
-              allowedTools: [], maxSteps: 1, schemaRepairAttempts: 0,
-              writeAuthority: "read_only", worktree: false,
-              responseSchema: {
-                type: "object", additionalProperties: false,
-                required: ["verdict", "reasons"],
-                properties: {
-                  verdict: { type: "string", enum: ["pass", "fail"] },
-                  reasons: { type: "array", items: { type: "string" } },
+          const description = [
+            "Review the DEV candidate's complete changed files and public oracle feedback. Do not edit.",
+            `BRIEF: ${String(brief)}`,
+            `CHANGED FILES: ${String(receipt.review_material ?? "INCOMPLETE")}`,
+            `PUBLIC FEEDBACK: ${String(receipt.public_failure_feedback ?? "")}`,
+            "Reply as plain JSON text with verdict and reasons. Do not call a tool.",
+          ].join("\n");
+          for (const label of [`dev_review_${plan.id}`, `dev_review_retry_${plan.id}`]) {
+            try {
+              devReview = await task({
+                description: label.startsWith("dev_review_retry_")
+                  ? `${description}\nThe previous answer contained only a tool call. Return the JSON text directly.`
+                  : description,
+                label, type: "explore", model,
+                allowedTools: [], maxSteps: 1, schemaRepairAttempts: 0,
+                writeAuthority: "read_only", worktree: false,
+                responseSchema: {
+                  type: "object", additionalProperties: false,
+                  required: ["verdict", "reasons"],
+                  properties: {
+                    verdict: { type: "string", enum: ["pass", "fail"] },
+                    reasons: { type: "array", items: { type: "string" } },
+                  },
                 },
-              },
-            });
-          } catch (error) {
-            devReview = { verdict: "unknown", reasons: [String(error)] };
+              });
+              break;
+            } catch (error) {
+              devReview = { verdict: "unknown", reasons: [String(error)] };
+              if (label.startsWith("dev_review_retry_")
+                || !String(error).includes("Model answered only with a tool call")) break;
+            }
           }
         }
         const appliedStatus = await task.experimentalSearch({

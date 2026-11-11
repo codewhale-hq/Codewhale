@@ -86,7 +86,7 @@ impl ExperimentalPolicyGenome {
     fn admission_turns(&self) -> u32 {
         u32::from(self.planning_budget)
             .saturating_add(WRITER_MODEL_TURNS)
-            .saturating_add(u32::from(self.extra_verification))
+            .saturating_add(u32::from(self.extra_verification).saturating_mul(2))
     }
 }
 
@@ -1103,13 +1103,13 @@ impl ExperimentalSearch {
                     .sum::<u64>()
             });
             let dev_review = dev_reviews.get(id).map(String::as_str).unwrap_or("unknown");
-            let dev_review_succeeded = task_succeeded
-                .get(&format!("dev_review_{id}"))
-                .copied()
-                .unwrap_or(false);
+            let dev_review_succeeded =
+                [format!("dev_review_{id}"), format!("dev_review_retry_{id}")]
+                    .iter()
+                    .any(|label| task_succeeded.get(label).copied().unwrap_or(false));
             let dev_gate_pass = applied.is_some_and(|policy| {
                 !policy.genome.extra_verification
-                    || (policy.dev_review_calls == 1
+                    || ((1..=2).contains(&policy.dev_review_calls)
                         && dev_review_succeeded
                         && dev_review == "pass")
             });
@@ -1207,7 +1207,7 @@ impl ExperimentalSearch {
         let turns = request
             .max_steps
             .ok_or("experimental task requires a model-turn limit")?;
-        if self.model_requests >= self.spec.max_candidates.saturating_mul(5).saturating_add(2)
+        if self.model_requests >= self.spec.max_candidates.saturating_mul(6).saturating_add(2)
             || self.model_turns_reserved.saturating_add(turns) > self.spec.max_model_turns
             || self.started.elapsed().as_secs() >= self.spec.max_wall_secs
         {
@@ -1225,6 +1225,7 @@ impl ExperimentalSearch {
         let plan_owner = label
             .strip_prefix("planner_")
             .and_then(|tail| tail.rsplit_once('_').map(|(id, _)| id))
+            .or_else(|| label.strip_prefix("dev_review_retry_"))
             .or_else(|| label.strip_prefix("dev_review_"))
             .or_else(|| label.starts_with("candidate_g").then_some(label));
         if final_review {
@@ -1270,7 +1271,11 @@ impl ExperimentalSearch {
             }
             applied.planner_calls += 1;
             Some(candidate_id.to_string())
-        } else if let Some(candidate_id) = label.strip_prefix("dev_review_") {
+        } else if let Some((candidate_id, retry)) = label
+            .strip_prefix("dev_review_retry_")
+            .map(|id| (id, true))
+            .or_else(|| label.strip_prefix("dev_review_").map(|id| (id, false)))
+        {
             let applied = self
                 .applied
                 .get_mut(candidate_id)
@@ -1280,7 +1285,7 @@ impl ExperimentalSearch {
                 || turns != 1
                 || request.schema_repair_attempts != Some(0)
                 || !applied.genome.extra_verification
-                || applied.dev_review_calls != 0
+                || applied.dev_review_calls != u8::from(retry)
             {
                 return Err("extra review exceeds applied policy or authority".to_string());
             }
@@ -1877,6 +1882,6 @@ impl ExperimentalSearch {
     }
 
     pub(super) fn summary(&self) -> Value {
-        json!({"manifest": self.root.join("manifest.json"), "baseline_sha": self.baseline_sha, "baseline_id": self.store.baseline_id(), "admitted": self.admitted, "model_requests": self.model_requests, "max_model_requests": self.spec.max_candidates.saturating_mul(5).saturating_add(2), "model_turns_reserved": self.model_turns_reserved, "max_model_turns": self.spec.max_model_turns, "max_candidates": self.spec.max_candidates, "max_generations": self.spec.max_generations, "shadow_policy": self.spec.shadow_policy, "sandbox_probe": self.sandbox_probe, "receipts": self.root, "budget_plan": {"feasible": true, "initial_candidate_turns": self.spec.shadow_policy.admission_turns(), "initial_required_turns": self.spec.max_candidates.saturating_mul(self.spec.shadow_policy.admission_turns()).saturating_add(FINAL_REVIEW_MODEL_TURNS), "available_turns": self.spec.max_model_turns, "planned_turns_outstanding": self.planned_model_turns.values().copied().sum::<u32>(), "final_review_turns": FINAL_REVIEW_MODEL_TURNS}})
+        json!({"manifest": self.root.join("manifest.json"), "baseline_sha": self.baseline_sha, "baseline_id": self.store.baseline_id(), "admitted": self.admitted, "model_requests": self.model_requests, "max_model_requests": self.spec.max_candidates.saturating_mul(6).saturating_add(2), "model_turns_reserved": self.model_turns_reserved, "max_model_turns": self.spec.max_model_turns, "max_candidates": self.spec.max_candidates, "max_generations": self.spec.max_generations, "shadow_policy": self.spec.shadow_policy, "sandbox_probe": self.sandbox_probe, "receipts": self.root, "budget_plan": {"feasible": true, "initial_candidate_turns": self.spec.shadow_policy.admission_turns(), "initial_required_turns": self.spec.max_candidates.saturating_mul(self.spec.shadow_policy.admission_turns()).saturating_add(FINAL_REVIEW_MODEL_TURNS), "available_turns": self.spec.max_model_turns, "planned_turns_outstanding": self.planned_model_turns.values().copied().sum::<u32>(), "final_review_turns": FINAL_REVIEW_MODEL_TURNS}})
     }
 }

@@ -141,8 +141,8 @@ def budget_plan(budget, initial_policy):
     writer_turns = 4
     final_review_turns = 2
     initial_candidate_turns = initial_policy["planning_budget"] + writer_turns \
-        + int(initial_policy["extra_verification"])
-    max_candidate_turns = max(range(4)) + writer_turns + int(True)
+        + 2 * int(initial_policy["extra_verification"])
+    max_candidate_turns = max(range(4)) + writer_turns + 2 * int(True)
     ceiling = budget * max_candidate_turns + final_review_turns
     return {"candidate_execution_ceiling": budget,
             "initial_candidate_turns": initial_candidate_turns,
