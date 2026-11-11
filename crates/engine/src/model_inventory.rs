@@ -291,22 +291,14 @@ impl ModelInventory {
                     &identity,
                     Some(&model),
                 ) {
-                    if let Some(context_window) = route.candidate.limits().context_tokens {
-                        capability.context_window = context_window.min(u64::from(u32::MAX)) as u32;
-                        context_window_unverified = !route.context_window.source.is_verified();
-                    }
-                    // A concrete offering maximum is a stronger fact than the
-                    // static compatibility matrix — and is the only way a
-                    // membership route (no static cap) gets a known ceiling.
-                    if let Some(max_output) = route
+                    capability.context_window = route.context_window.tokens;
+                    context_window_unverified = !route.context_window.source.is_verified();
+                    capability.max_output = route
                         .candidate
                         .limits()
                         .output_tokens
                         .and_then(|tokens| u32::try_from(tokens).ok())
-                        .filter(|tokens| *tokens > 0)
-                    {
-                        capability.max_output = Some(max_output);
-                    }
+                        .filter(|tokens| *tokens > 0);
                     user_declared = route
                         .candidate
                         .applied_limit_overrides()
@@ -316,13 +308,6 @@ impl ModelInventory {
                                 == codewhale_config::route::OverrideSource::UserModelMetadata
                         });
                     if user_declared {
-                        context_window_unverified = !route.context_window.source.is_verified();
-                        capability.context_window = route.context_window.tokens;
-                        capability.max_output = route
-                            .candidate
-                            .limits()
-                            .output_tokens
-                            .and_then(|value| u32::try_from(value).ok());
                         capability.thinking_supported = route.candidate.capabilities().reasoning
                             == codewhale_config::route::CapabilityState::Supported;
                     }
