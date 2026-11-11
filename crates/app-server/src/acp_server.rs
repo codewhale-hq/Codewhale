@@ -1,7 +1,13 @@
 //! ACP stdio projection of the existing Runtime/Engine owner.
 //! History, provider requests, tools, approval and cancellation are Core facts.
-//! This module keeps only connection configuration, canonical bindings and
-//! JSON-RPC correlation. Secure cross-process attachment is not yet qualified.
+//! This module keeps only connection configuration and canonical bindings; the
+//! official ACP SDK owns framing, request ids and correlation. Secure
+//! cross-process attachment is not yet qualified.
+//!
+//! Known limits: a slow editor no longer slows a turn, because updates queue
+//! (SDK queue, then 256 frames of up to 8 MiB each) and memory is bounded only
+//! by what one turn emits; `$/cancel_request` for a running `session/prompt` is
+//! not honored (only `session/cancel` is).
 use agent_client_protocol::Error as SdkError;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::schema as acp;
@@ -3279,6 +3285,216 @@ mod tests {
             .unwrap();
         assert_eq!(selected["provider"], "acp-fixture");
         assert_eq!(rig.mock.call_count(), 0);
+        rig.close().await;
+        Ok(())
+    }
+    struct FailingInput(tokio::sync::mpsc::UnboundedReceiver<std::io::Result<Vec<u8>>>);
+    impl tokio::io::AsyncRead for FailingInput {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            match self.get_mut().0.poll_recv(cx) {
+                std::task::Poll::Ready(Some(Ok(bytes))) => {
+                    buf.put_slice(&bytes);
+                    std::task::Poll::Ready(Ok(()))
+                }
+                std::task::Poll::Ready(Some(Err(error))) => std::task::Poll::Ready(Err(error)),
+                std::task::Poll::Ready(None) => std::task::Poll::Ready(Ok(())),
+                std::task::Poll::Pending => std::task::Poll::Pending,
+            }
+        }
+    }
+    struct FailingOutput {
+        fail_on: Option<&'static str>,
+    }
+    impl AsyncWrite for FailingOutput {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            if self
+                .fail_on
+                .is_some_and(|marker| String::from_utf8_lossy(bytes).contains(marker))
+            {
+                return std::task::Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "the editor stopped reading",
+                )));
+            }
+            std::task::Poll::Ready(Ok(bytes.len()))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+    #[derive(Clone, Copy, PartialEq)]
+    enum Failure {
+        OutputAtPermission,
+        InputError,
+        OutputAfterWrite,
+    }
+    async fn transport_failure_case(mode: Failure) -> Result<()> {
+        let mut config = fixture_config();
+        config.yolo = (mode == Failure::OutputAfterWrite).then_some(true);
+        let mut rig = Rig::new(
+            config,
+            vec![
+                canned::tool_call_turn(
+                    "review-probe",
+                    "write",
+                    r#"{"path":"writer-failure.txt","content":"completed"}"#,
+                ),
+                canned::simple_text_turn("settled"),
+            ],
+        )?;
+        let id = rig.new_session().await;
+        let thread = rig.server.sessions[&id].thread_id.clone();
+        let manager = Arc::clone(&rig.server.runtime);
+        let (lines, input) = tokio::sync::mpsc::unbounded_channel::<std::io::Result<Vec<u8>>>();
+        let mut prompt = serde_json::to_vec(
+            &json!({"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"sessionId":id,"prompt":"write under Ask"}}),
+        )?;
+        prompt.push(b'\n');
+        lines
+            .send(Ok(prompt))
+            .map_err(|_| anyhow!("review probe input closed early"))?;
+        let placeholder = rig.placeholder();
+        let server = std::mem::replace(&mut rig.server, placeholder);
+        let serving = tokio::time::timeout(
+            Duration::from_secs(60),
+            super::connection::serve_connection(
+                server,
+                Box::new(BufReader::new(FailingInput(input))),
+                Box::new(FailingOutput {
+                    fail_on: match mode {
+                        Failure::OutputAtPermission => Some("session/request_permission"),
+                        Failure::OutputAfterWrite => Some("agent_message_chunk"),
+                        Failure::InputError => None,
+                    },
+                }),
+            ),
+        );
+        let breaking = async {
+            if mode == Failure::InputError {
+                let waited = tokio::time::timeout(Duration::from_secs(30), async {
+                    loop {
+                        if !manager
+                            .get_thread_detail(&thread)
+                            .await?
+                            .pending_approvals
+                            .is_empty()
+                        {
+                            return Ok::<_, anyhow::Error>(());
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await;
+                let _ = lines.send(Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "the editor's socket was reset",
+                )));
+                waited??;
+            }
+            Ok::<_, anyhow::Error>(())
+        };
+        let (served, broke) = tokio::join!(serving, breaking);
+        broke?;
+        let served = served.map_err(|_| anyhow!("serve did not return in 60s"))?;
+        let ended_with_error = served.is_err();
+        drop(served);
+        let terminal = tokio::time::timeout(Duration::from_secs(40), async {
+            loop {
+                let detail = manager.get_thread_detail(&thread).await?;
+                if detail.turns.last().is_some_and(|turn| {
+                    !matches!(
+                        turn.status,
+                        codewhale_engine::runtime_threads::RuntimeTurnStatus::Queued
+                            | codewhale_engine::runtime_threads::RuntimeTurnStatus::InProgress
+                    )
+                }) {
+                    return Ok::<_, anyhow::Error>(format!(
+                        "{:?}",
+                        detail.turns.last().map(|turn| &turn.status)
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .map_err(|_| anyhow!("the Core turn never settled"))??;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let saved_user_messages = codewhale_engine::session_manager::SessionManager::new(
+            rig.server.sessions_dir.clone(),
+        )?
+        .load_session(&id)
+        .map(|saved| {
+            saved
+                .messages
+                .iter()
+                .filter(|m| m.role == Role::User)
+                .count()
+        });
+        drop(lines);
+        rig.close().await;
+        assert!(
+            ended_with_error,
+            "a failed transport must end serve with an error"
+        );
+        assert!(
+            matches!(saved_user_messages, Ok(count) if count > 0),
+            "no checkpoint after a mid-turn transport failure ({}); Core turn ended {terminal}; saved user messages: {saved_user_messages:?}",
+            mode as u8
+        );
+        if mode == Failure::OutputAfterWrite {
+            assert_eq!(
+                std::fs::read_to_string(rig.workspace.join("writer-failure.txt"))?,
+                "completed"
+            );
+        }
+        Ok(())
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_output_write_mid_turn_keeps_the_checkpoint() -> Result<()> {
+        transport_failure_case(Failure::OutputAtPermission).await
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_input_read_mid_turn_keeps_the_checkpoint() -> Result<()> {
+        transport_failure_case(Failure::InputError).await
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn failed_transport_after_completed_write_retains_actual_core_terminal_and_checkpoint()
+    -> Result<()> {
+        transport_failure_case(Failure::OutputAfterWrite).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_oversize_update_fails_the_connection_without_dropping_the_turn() -> Result<()> {
+        use futures_util::SinkExt;
+        let rig = Rig::new(fixture_config(), vec![])?;
+        let shared = Arc::new(super::connection::Shared::new(rig.placeholder()));
+        let (frames, mut queued) = tokio::sync::mpsc::channel(4);
+        let mut sink = Box::pin(super::connection::outgoing_lines(
+            frames,
+            Arc::clone(&shared),
+        ));
+        let update = json!({"jsonrpc":"2.0","method":"session/update","params":{"big":"x".repeat(MAX_FRAME_BYTES)}})
+            .to_string();
+        sink.send(update).await?;
+        assert!(queued.try_recv().is_err());
+        assert!(shared.take_failure().is_some());
         rig.close().await;
         Ok(())
     }

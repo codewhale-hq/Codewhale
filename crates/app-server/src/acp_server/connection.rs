@@ -18,6 +18,7 @@ pub(super) struct Shared {
     prompt: std::sync::Mutex<Option<mpsc::UnboundedSender<Inbound>>>,
     idle: Notify,
     ending: Notify,
+    failure: std::sync::Mutex<Option<anyhow::Error>>,
 }
 
 struct PromptGuard(Arc<Shared>);
@@ -39,13 +40,30 @@ impl PromptGuard {
 }
 
 impl Shared {
-    fn new(server: AcpServer) -> Self {
+    pub(super) fn new(server: AcpServer) -> Self {
         Self {
             server: tokio::sync::Mutex::new(server),
             prompt: std::sync::Mutex::new(None),
             idle: Notify::new(),
             ending: Notify::new(),
+            failure: std::sync::Mutex::new(None),
         }
+    }
+
+    pub(super) fn fail(&self, error: anyhow::Error) {
+        self.failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert(error);
+        self.tell_prompt(Inbound::Eof);
+        self.ending.notify_one();
+    }
+
+    pub(super) fn take_failure(&self) -> Option<anyhow::Error> {
+        self.failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 
     #[cfg(test)]
@@ -279,21 +297,28 @@ fn closes_input(line: &str) -> bool {
 
 fn incoming_lines(
     input: Box<dyn AsyncBufRead + Send + Unpin>,
+    shared: Arc<Shared>,
 ) -> impl Stream<Item = io::Result<String>> + Send + 'static {
-    futures_util::stream::unfold(BoundedLines::new(input), |mut lines| async move {
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) if line.trim().is_empty() => continue,
-                Ok(Some(line)) if closes_input(&line) => return None,
-                Ok(Some(line)) => return Some((Ok(line), lines)),
-                Ok(None) => return None,
-                Err(error) if crate::stdio::is_frame_refusal(&error) => {
-                    return Some((Ok(error.to_string()), lines));
+    futures_util::stream::unfold(
+        (BoundedLines::new(input), shared),
+        |(mut lines, shared)| async move {
+            loop {
+                match lines.next_line().await {
+                    Ok(Some(line)) if line.trim().is_empty() => continue,
+                    Ok(Some(line)) if closes_input(&line) => return None,
+                    Ok(Some(line)) => return Some((Ok(line), (lines, shared))),
+                    Ok(None) => return None,
+                    Err(error) if crate::stdio::is_frame_refusal(&error) => {
+                        return Some((Ok(error.to_string()), (lines, shared)));
+                    }
+                    Err(error) => {
+                        shared.fail(anyhow!("ACP input failed: {error}"));
+                        return None;
+                    }
                 }
-                Err(error) => return Some((Err(error), lines)),
             }
-        }
-    })
+        },
+    )
 }
 
 pub(super) fn bound_outgoing(line: String) -> io::Result<String> {
@@ -319,17 +344,27 @@ pub(super) fn bound_outgoing(line: String) -> io::Result<String> {
     })
 }
 
-fn outgoing_lines(
+pub(super) fn outgoing_lines(
     frames: mpsc::Sender<String>,
+    shared: Arc<Shared>,
 ) -> impl Sink<String, Error = io::Error> + Send + 'static {
-    futures_util::sink::unfold(frames, |frames, line: String| async move {
-        let line = bound_outgoing(line)?;
-        frames
-            .send(line)
-            .await
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "ACP output closed"))?;
-        Ok::<_, io::Error>(frames)
-    })
+    futures_util::sink::unfold(
+        (frames, shared),
+        |(frames, shared), line: String| async move {
+            let line = match bound_outgoing(line) {
+                Ok(line) => line,
+                Err(error) => {
+                    shared.fail(anyhow!("ACP output refused: {error}"));
+                    return Ok((frames, shared));
+                }
+            };
+            frames
+                .send(line)
+                .await
+                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "ACP output closed"))?;
+            Ok::<_, io::Error>((frames, shared))
+        },
+    )
 }
 
 pub(super) async fn serve_connection<'a>(
@@ -339,7 +374,10 @@ pub(super) async fn serve_connection<'a>(
 ) -> Result<Arc<Shared>> {
     let shared = Arc::new(Shared::new(server));
     let (frames, mut queued) = mpsc::channel::<String>(OUTGOING_QUEUE_FRAMES);
-    let transport = Lines::new(outgoing_lines(frames), incoming_lines(input));
+    let transport = Lines::new(
+        outgoing_lines(frames, Arc::clone(&shared)),
+        incoming_lines(input, Arc::clone(&shared)),
+    );
     let requests = Arc::clone(&shared);
     let notifications = Arc::clone(&shared);
     let finishing = Arc::clone(&shared);
@@ -378,22 +416,26 @@ pub(super) async fn serve_connection<'a>(
             other => other.map_err(|error| anyhow!("ACP connection failed: {}", error.message)),
         }
     };
+    let failing = Arc::clone(&shared);
     let pump = async {
+        let mut broken = false;
         while let Some(frame) = queued.recv().await {
-            crate::stdio::write_control_line(&mut output, frame.as_bytes()).await?;
+            if broken {
+                continue;
+            }
+            if let Err(error) =
+                crate::stdio::write_control_line(&mut output, frame.as_bytes()).await
+            {
+                broken = true;
+                failing.fail(error);
+            }
         }
-        Ok::<(), anyhow::Error>(())
     };
-    tokio::pin!(connection, pump);
-    tokio::select! {
-        ended = &mut connection => {
-            pump.await?;
-            ended?;
-        }
-        written = &mut pump => {
-            written?;
-            connection.await?;
-        }
+    let (ended, ()) = tokio::join!(connection, pump);
+    drop(failing);
+    if let Some(error) = shared.take_failure() {
+        return Err(error);
     }
+    ended?;
     Ok(shared)
 }
