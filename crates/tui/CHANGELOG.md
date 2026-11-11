@@ -39,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fleet member starts are now durable: replaying an operation key after a timeout or restart returns the original worker, and GET /v1/threads/{id}/members/operations/{key} reports the outcome. A member start now answers with `state` `accepted` (200) or `unknown` (202) instead of `started` or `queued`. Verified by local HTTP tests on Linux; a real Engine restart is simulated, not exercised. (CW-7964)
 - Plugin activation now says when a requested service belongs to the Codewhale core and is not exposed to plugins yet. No plugin, provider or installed-app run exercised it; checked by the extension-host tests only.
 - Codex App Server v2 contract record (paused, not part of 0.10.3): the selected Codex v2 contract is frozen as a generated manifest in the protocol crate, with typed Rust and TypeScript shapes checked against the pinned Codex schema. It changes no wire behavior and adds no dispatch, so nothing is reachable through it yet.
+- **Website copy:** The site's headline is now "The model can be anyone's. The agent should be yours.", with its subhead, belief and labelled product map in every language.
+- **Website routes:** Pages that repeated each other now redirect to the one page that does the job, the header and footer list only pages that exist under their current names, the sitemap drops redirected and catalogue pages, and machine-drafted translations say so.
+- **Website privacy:** The website no longer counts anything when your browser sends Global Privacy Control or Do Not Track, and the privacy page says exactly what is counted and how it is keyed.
 
 ### Fixed
 
@@ -50,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: the launch resume confirmation no longer treats Meta+Enter, Meta+Y or Hyper+Enter as "resume"; only a plain Enter/Y or Shift+Y answers it. Verified by the focused unit tests only; not tried in a terminal that sends Meta or Hyper.
 - TUI: mentioning a huge directory or a far-away line range (`@file:N-M`) now stops after a bounded scan and says the result is partial instead of claiming end of file. Verified by the focused `file_mention` unit tests; no real 64 MiB file was tried.
 - Runtime `patch-undo` now restores a turn's own file changes in the default (Ask) posture without trust mode or Full Access; later edits and changes the turn did not make are still refused with nothing changed, and the `restore_requires_trust` error code is gone ([#6970](https://github.com/codewhale-hq/Codewhale/issues/6970)). Verified by app-server and TUI unit tests on Linux; no Windows `/undo` or process-restart run.
+- **Website terminal frames:** The site can render terminal frames captured from the released version, and chooses each frame's caption from where it was captured.
+- **Website docs truth:** Documentation pages now describe the released version first and show what exists only in source in a labelled section that switches on when a release carries it.
+- **Website Arabic pages:** On Arabic pages, English text that has no translation yet keeps its own direction and language, so punctuation, commands and dates no longer appear reversed.
 
 ## [0.10.3] - 2026-11-08
 
