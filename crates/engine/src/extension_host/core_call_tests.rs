@@ -1818,7 +1818,10 @@ async fn dsh_broker_tickets_bind_plugin_service_and_session_and_every_refusal_is
     let echo: &[(DshService, super::dsh_broker::Arm)] =
         &[(DshService::Workspace, echo_arm as super::dsh_broker::Arm)];
 
-    for service in DshService::ALL {
+    for service in DshService::ALL
+        .into_iter()
+        .filter(|s| *s != DshService::Network)
+    {
         let ticket = &tickets_a[service.name()];
         let result = f
             .broker(
@@ -2092,22 +2095,24 @@ async fn dsh_broker_services_are_granted_by_one_check_and_an_ungranted_service_i
                 service.name()
             );
         }
-        let result = f
-            .broker(
-                TABLE,
-                &f.owner,
-                ticket,
-                service.name(),
-                "echo",
-                json!({"text": "x"}),
-            )
-            .await;
-        assert_eq!(
-            dsh_refusal(&result),
-            (error_code::NOT_AVAILABLE, "not_available".into()),
-            "the landed {} stub still refuses",
-            service.name()
-        );
+        if service != DshService::Network {
+            let result = f
+                .broker(
+                    TABLE,
+                    &f.owner,
+                    ticket,
+                    service.name(),
+                    "echo",
+                    json!({"text": "x"}),
+                )
+                .await;
+            assert_eq!(
+                dsh_refusal(&result),
+                (error_code::NOT_AVAILABLE, "not_available".into()),
+                "the landed {} stub still refuses",
+                service.name()
+            );
+        }
 
         drop(grants);
         let withdrawn = f
@@ -2484,4 +2489,82 @@ async fn an_invocations_brokers_share_one_cap_on_nested_core_calls() {
         MAX_CALLS_PER_INVOCATION as usize
     );
     drop(guard);
+}
+
+#[tokio::test]
+async fn dsh_network_arm_refuses_foreign_tickets_unknown_methods_and_revoked_owners() {
+    use super::dsh_broker::TABLE;
+    use super::protocol::DshService;
+    use std::collections::BTreeMap;
+
+    let _grants =
+        super::dsh_broker::TestGrants::only(&[DshService::Workspace, DshService::Network]);
+    let mut f = fixture(true);
+    f.in_session("net-session-a");
+    let guard_a = f.begin(7, &f.owner);
+    let tickets: BTreeMap<String, String> = guard_a
+        .broker_tickets()
+        .unwrap()
+        .into_iter()
+        .map(|wire| (wire.service, wire.ticket))
+        .collect();
+    let network = tickets["network"].clone();
+    let fetch = json!({"url": "https://example.com/"});
+
+    let unknown = f
+        .broker(TABLE, &f.owner, &network, "network", "connect", json!({}))
+        .await;
+    assert_eq!(
+        dsh_refusal(&unknown),
+        (error_code::INVALID_PARAMS, "unknown_method".into())
+    );
+    let withheld = f
+        .broker(TABLE, &f.owner, &network, "network", "fetch", fetch.clone())
+        .await;
+    assert_eq!(
+        dsh_refusal(&withheld),
+        (error_code::NOT_AVAILABLE, "not_available".into())
+    );
+    for (owner, ticket) in [
+        (&f.other, network.as_str()),
+        (&f.owner, tickets["workspace"].as_str()),
+        (&f.owner, guard_a.ticket()),
+    ] {
+        let result = f
+            .broker(TABLE, owner, ticket, "network", "fetch", fetch.clone())
+            .await;
+        assert_eq!(
+            dsh_refusal(&result),
+            (error_code::REFUSED, "ticket_refused".into())
+        );
+    }
+
+    f.in_session("net-session-b");
+    let guard_b = f.begin(7, &f.owner);
+    let network_b = guard_b
+        .broker_tickets()
+        .unwrap()
+        .into_iter()
+        .find(|wire| wire.service == "network")
+        .unwrap()
+        .ticket;
+    drop(guard_a);
+    let other_session = f
+        .broker(TABLE, &f.owner, &network, "network", "fetch", fetch.clone())
+        .await;
+    assert_eq!(
+        dsh_refusal(&other_session),
+        (error_code::REFUSED, "ticket_refused".into())
+    );
+
+    f.manager.shared.core_calls.revoke_owner("a");
+    let revoked = f
+        .broker(TABLE, &f.owner, &network_b, "network", "fetch", fetch)
+        .await;
+    assert_eq!(
+        dsh_refusal(&revoked),
+        (error_code::REFUSED, "ticket_refused".into())
+    );
+    drop(guard_b);
+    assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
 }
