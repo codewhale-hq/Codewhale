@@ -154,11 +154,13 @@ managed path, owned by root, and also sets `CODEWHALE_MANAGED_CONFIG_PATH` to
 that same path for the Engine's service. The variable stops a user config from
 pointing `managed_config_path` at a missing file; the default path is needed
 because a Fleet local worker (a child `codewhale exec`) is started with a
-cleaned environment and reads only the default path. A file in another
-ordinary user's home also passes the "Engine's user cannot change it" check,
-so the file should be root-owned. Check `sandbox.tool_launcher` in
-`GET /v1/runtime/info` after start; it is read at start, so a later reload is
-not covered by that check.
+cleaned environment and does not get the variable; it reads the user config's
+`managed_config_path` and then the default path, so a user config can still
+point a worker at a missing file. A file in another ordinary user's home also
+passes the "Engine's user cannot change it" check, so the file should be
+root-owned. Check `sandbox.tool_launcher` in `GET /v1/runtime/info`: the route
+reads the live configuration, but a check made once at start does not cover a
+later reload, so ask again after a reload.
 
 The launcher's first program runs as the Engine's user with the Engine's
 allow-listed environment, the model-chosen working directory and stdin, so it
