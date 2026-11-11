@@ -3,6 +3,7 @@ import { releaseView } from "@/lib/capabilities";
 import { BUILD_FACTS, getFactsWithProvenance, type RepoFacts } from "@/lib/facts";
 import { cloudFactsSummary } from "@/lib/cloud-facts";
 import { getEnv } from "@/lib/kv";
+import { liveRecord } from "@/lib/repo-activity";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -39,6 +40,7 @@ export async function GET() {
       latestPublishedRelease: resolution.facts.latestPublishedRelease,
       releaseCounts: releaseView(resolution.facts).counts,
       cloudFacts,
+      liveRecord: liveRecord(),
     },
     {
       headers: {

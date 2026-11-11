@@ -19,4 +19,10 @@ export const contribute: ContributeDict = {
   devTitle: "コードの変更をビルドして確認する",
   devScope:
     "Rust のコードを変更する場合は、関連部分をビルドし、その部分に絞ったチェックを実行してください。変更内容に応じて必要になる広範なチェックは、貢献ガイドに従ってください。",
+  mergedAccountsCount: {
+    other: "過去 30 日間に {n} 件の GitHub アカウントの pull request がマージされました。",
+  },
+  mergedPeopleCount: {
+    other: "過去 30 日間に {n} 人の pull request がマージされました。",
+  },
 };

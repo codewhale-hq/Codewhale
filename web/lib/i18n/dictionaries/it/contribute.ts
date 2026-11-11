@@ -19,4 +19,12 @@ export const contribute: ContributeDict = {
   devTitle: "Compila e verifica la tua modifica al codice",
   devScope:
     "Per il codice Rust, compila la parte interessata ed esegui i controlli mirati. Segui la guida per i contributori per gli altri controlli che la tua modifica richiede.",
+  mergedAccountsCount: {
+    one: "{n} account GitHub ha avuto un pull request unito negli ultimi 30 giorni.",
+    other: "{n} account GitHub hanno avuto pull request uniti negli ultimi 30 giorni.",
+  },
+  mergedPeopleCount: {
+    one: "{n} persona ha avuto un pull request unito negli ultimi 30 giorni.",
+    other: "{n} persone hanno avuto pull request uniti negli ultimi 30 giorni.",
+  },
 };

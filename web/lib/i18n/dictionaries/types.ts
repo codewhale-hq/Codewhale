@@ -21,6 +21,8 @@
  * package-manager proper nouns, mirror names, and captured media paths.
  */
 
+import type { PluralForms } from "../plural";
+
 export interface ChromeDict {
   // --- primary nav labels (components/nav.tsx via lib/i18n/links.ts) ---
   navDocs: string;
@@ -497,56 +499,6 @@ export interface LegalPrivacyDict {
   homeLink: string;
 }
 
-/** `app/[locale]/feed/page.tsx`. */
-export interface FeedDict {
-  metaTitle: string;
-  metaDescription: string;
-  /** Page H1. */
-  title: string;
-  /** The H1 again in the other script, set beside it (the bilingual Han title). */
-  titleAside: string;
-  /** BCP 47 language of `titleAside`. */
-  titleAsideLang: string;
-  /** `{repo}` is where the page typesets the repository link. */
-  lede: string;
-  pulls: string;
-  issues: string;
-  /** Items in a column; `{count}` is filled at render time. */
-  shownCount: string;
-  openIssue: string;
-  openPull: string;
-  startDiscussion: string;
-}
-
-/** `app/[locale]/community/page.tsx`. */
-export interface CommunityDict {
-  metaTitle: string;
-  metaDescription: string;
-  kicker: string;
-  /** Page H1. */
-  title: string;
-  lede: string;
-  fileIssue: string;
-  browsePulls: string;
-  readGuide: string;
-  pathsTitle: string;
-  pathsScope: string;
-  recordTitle: string;
-  recordScope: string;
-  creditTitle: string;
-  /** Credit scope once the source version is the published release. */
-  creditScope: string;
-  /** Credit scope while the source version is ahead of the published release. */
-  creditScopeUnreleased: string;
-  /** Credit heading for the published release; `{version}` is filled at render time. */
-  creditLabel: string;
-  /** Credit heading while the source version is unreleased; `{version}` is filled at render time. */
-  creditLabelUnreleased: string;
-  mergedTitle: string;
-  helpersTitle: string;
-  fullRecord: string;
-}
-
 /** `app/[locale]/faq/page.tsx` and its `components/faq-search.tsx`. */
 export interface FaqDict {
   metaTitle: string;
@@ -573,27 +525,6 @@ export interface FaqDict {
   sourcesLabel: string;
   noResultsTitle: string;
   noResultsBody: string;
-}
-
-/** `app/[locale]/roadmap/page.tsx`. */
-export interface RoadmapDict {
-  metaTitle: string;
-  metaDescription: string;
-  eyebrow: string;
-  /** Page H1. */
-  title: string;
-  introduction: string;
-  sectionTitle: string;
-  browseIssues: string;
-  /** Track size; `{count}` is filled at render time. */
-  trackCount: string;
-  /** Track size when it is exactly one. */
-  trackCountOne: string;
-  contributeTitle: string;
-  contributeBody: string;
-  issuesDetail: string;
-  discussionsDetail: string;
-  pullsDetail: string;
 }
 
 /** `app/[locale]/docs/vocabulary/page.tsx`. */
@@ -634,6 +565,10 @@ export interface ContributeDict {
   reviewScope: string;
   devTitle: string;
   devScope: string;
+  /** `{n}` is the number of GitHub accounts; pick the form with `pluralText`. */
+  mergedAccountsCount: PluralForms;
+  /** `{n}` is the number of people; used once the exclusion list is confirmed. */
+  mergedPeopleCount: PluralForms;
 }
 
 /** `app/[locale]/constitution/page.tsx` and its `components/thinking-trace.tsx`. */

@@ -1,19 +1,28 @@
 import Link from "next/link";
 import { Icon } from "@/components/icon";
 import { PageHeader, Section } from "@/components/page-header";
-import { GitHubStar, FaceWall, MergedList, statsAsOf } from "@/components/project-pulse";
+import { Status, type StatusTone } from "@/components/status-badge";
+import { GitHubStar, FaceWall, MergedList, readAsOf, statsAsOf } from "@/components/project-pulse";
 import { getFacts } from "@/lib/facts";
 import { fetchLabelled, type OpenIssue } from "@/lib/github";
 import { getEnv } from "@/lib/kv";
 import { loadProjectPulse } from "@/lib/project-pulse";
-import { getContribute, pickText } from "@/lib/i18n/dictionaries";
+import { fill, getChrome, getContribute, pickText } from "@/lib/i18n/dictionaries";
+import { pluralText } from "@/lib/i18n/plural";
+import { parseExclusions } from "@/lib/repo-activity";
 import { REPO_ISSUES_URL, REPO_URL } from "@/lib/i18n/links";
 import { buildPageMetadata } from "@/lib/page-meta";
 import { getMerchCopy } from "@/lib/content/contributor-merch";
 import { SKILL_CONTRIBUTION } from "@/lib/content/contributing";
-import { CONTRIBUTION_ROUTES, PROJECT_COPY, STANDING_PROJECTS } from "@/lib/content/project";
+import { CONTRIBUTION_ROUTES, PROJECT_COPY, PROJECT_RELEASES, RELEASE_STATE_LABEL, STANDING_PROJECTS, type ReleaseState } from "@/lib/content/project";
 
 export const revalidate = 600;
+
+const RELEASE_TONES: Record<ReleaseState, StatusTone> = { progress: "accent", planned: "idle", later: "idle" };
+
+function milestoneNumber(url: string): string | null {
+  return url.match(/\/milestone\/(\d+)\/?$/)?.[1] ?? null;
+}
 
 export async function generateMetadata({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
@@ -33,6 +42,15 @@ export default async function ContributePage({ params }: { params: Promise<{ loc
   const standing = [...STANDING_PROJECTS, SKILL_CONTRIBUTION];
   const facts = await getFacts();
   const pulse = await loadProjectPulse(8, 96);
+  const chrome = getChrome(locale);
+  const activity = pulse.activity;
+  const countForms = parseExclusions().confirmed ? t.mergedPeopleCount : t.mergedAccountsCount;
+  const mergedCount = activity?.count != null ? pluralText(countForms, activity.count, locale, chrome.dateLocale) : null;
+  const countAsOf = readAsOf(activity?.readAt, locale);
+  const progressFor = (href: string) => {
+    const number = milestoneNumber(href);
+    return number ? activity?.milestones.find((milestone) => milestoneNumber(milestone.url) === number) : undefined;
+  };
   let openNow: OpenIssue[] = [];
   try {
     openNow = await fetchLabelled("help wanted", (await getEnv()).GITHUB_TOKEN, 6);
@@ -149,13 +167,44 @@ export default async function ContributePage({ params }: { params: Promise<{ loc
             label={pickText(PROJECT_COPY.liveLabel, locale)}
             title={pickText(PROJECT_COPY.mergedPageHeading, locale)}
             scope={pickText(PROJECT_COPY.mergedPageScope, locale)}
-            link={<Link href={`/${locale}/roadmap`} className="btn btn-secondary">{pickText(PROJECT_COPY.goalsLink, locale)}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
+            link={<Link href="#milestones" className="btn btn-secondary">{pickText(PROJECT_COPY.goalsLink, locale)}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
           >
+            {mergedCount ? <p className="page-meta tabular" title={countAsOf} aria-label={countAsOf ? `${mergedCount} ${countAsOf}` : undefined}>{mergedCount}</p> : null}
             <MergedList items={pulse.merged} locale={locale} />
           </Section>
         ) : null}
 
         <FaceWall faces={pulse.faces} total={facts.contributorCount} locale={locale} />
+
+        <Section
+          id="milestones"
+          title={pickText(PROJECT_COPY.releasesHeading, locale)}
+          scope={pickText(PROJECT_COPY.releasesScope, locale)}
+        >
+          <dl className="ruled-list release-plan">
+            {PROJECT_RELEASES.map((release) => {
+              const progress = progressFor(release.href);
+              const total = progress ? progress.open + progress.closed : 0;
+              return (
+                <div key={release.name}>
+                  <dt>
+                    <Link href={release.href} className="tabular">{release.name}</Link>
+                  </dt>
+                  <dd>
+                    <Status tone={RELEASE_TONES[release.state]}>{pickText(RELEASE_STATE_LABEL[release.state], locale)}</Status>
+                    {pickText(release.body, locale)}
+                    {progress && total > 0 ? (
+                      <span className="tide-progress" title={countAsOf}>
+                        <span className="tide-track" aria-hidden="true"><span style={{ inlineSize: `${Math.round((progress.closed / total) * 100)}%` }} /></span>
+                        <span className="tabular">{fill(pickText(PROJECT_COPY.milestoneProgress, locale), { closed: progress.closed, total })}</span>
+                      </span>
+                    ) : null}
+                  </dd>
+                </div>
+              );
+            })}
+          </dl>
+        </Section>
 
         <Section id="contributor-merch" title={merch.title} scope={merch.lede}>
           <Link href={`/${locale}/merch`} className="btn btn-secondary">{merch.cta}</Link>

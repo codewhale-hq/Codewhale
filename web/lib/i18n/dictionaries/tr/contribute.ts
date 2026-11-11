@@ -19,4 +19,12 @@ export const contribute: ContributeDict = {
   devTitle: "Kod değişikliğinizi derleyin ve kontrol edin",
   devScope:
     "Rust kodunda ilgili kodu derleyin ve odaklı kontrollerini çalıştırın. Değişikliğiniz daha kapsamlı kontroller gerektiriyorsa katkı rehberini izleyin.",
+  mergedAccountsCount: {
+    one: "Son 30 günde {n} GitHub hesabının pull request’i birleştirildi.",
+    other: "Son 30 günde {n} GitHub hesabının pull request’leri birleştirildi.",
+  },
+  mergedPeopleCount: {
+    one: "Son 30 günde {n} kişinin pull request’i birleştirildi.",
+    other: "Son 30 günde {n} kişinin pull request’leri birleştirildi.",
+  },
 };

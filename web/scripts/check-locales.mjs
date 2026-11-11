@@ -52,10 +52,7 @@ const OPTIONAL_FILES = [
   "changelog.ts",
   "legal-terms.ts",
   "legal-privacy.ts",
-  "feed.ts",
-  "community.ts",
   "faq.ts",
-  "roadmap.ts",
   "contribute.ts",
   "constitution.ts",
   "computer-use.ts",
@@ -66,6 +63,50 @@ function extractKeys(source) {
   return new Set(
     [...source.matchAll(/^ {2}(\w+):/gm)].map((m) => m[1]),
   );
+}
+
+const PLURAL_CATEGORIES = ["zero", "one", "two", "few", "many", "other"];
+
+/** Keys whose value is an object of plural categories (`key: {` then `one: "…"` lines). */
+function extractPluralBlocks(source) {
+  const blocks = new Map();
+  let key = null;
+  for (const line of source.split("\n")) {
+    const open = line.match(/^ {2}(\w+): \{$/);
+    if (open) {
+      key = open[1];
+      blocks.set(key, new Map());
+      continue;
+    }
+    if (key && /^ {2}\},?$/.test(line)) {
+      key = null;
+      continue;
+    }
+    const form = key && line.match(/^ {4}(\w+): (".*"),?$/);
+    if (form) blocks.get(key).set(form[1], JSON.parse(form[2]));
+  }
+  for (const [name, forms] of blocks) {
+    if (![...forms.keys()].every((category) => PLURAL_CATEGORIES.includes(category))) blocks.delete(name);
+  }
+  return blocks;
+}
+
+function neededCategories(locale) {
+  const rules = new Intl.PluralRules(locale);
+  const reached = new Set(["other"]);
+  for (let n = 0; n <= 1000; n += 1) reached.add(rules.select(n));
+  return PLURAL_CATEGORIES.filter((category) => reached.has(category));
+}
+
+function checkPluralForms(locale, file, source) {
+  const needed = neededCategories(locale);
+  for (const [key, forms] of extractPluralBlocks(source)) {
+    const missing = needed.filter((category) => !forms.has(category));
+    if (missing.length) fail(`${locale}/${file}: ${key} lacks plural form(s) ${missing.join(", ")} that ${locale} needs`);
+    for (const [category, text] of forms) {
+      if (!text.includes("{n}")) fail(`${locale}/${file}: ${key}.${category} dropped {n}`);
+    }
+  }
 }
 
 function extractTokens(source) {
@@ -108,6 +149,8 @@ function checkLocaleFile(locale, file, refKeys, refTokens) {
   if (missing.length) fail(`${locale}/${file}: missing keys: ${missing.join(", ")}`);
   if (extra.length) fail(`${locale}/${file}: keys the reference lacks: ${extra.join(", ")}`);
 
+  checkPluralForms(locale, file, source);
+
   const tokens = extractTokens(source);
   for (const [key, refSet] of refTokens) {
     const got = tokens.get(key) ?? new Set();
@@ -131,6 +174,7 @@ for (const file of [...FILES, ...OPTIONAL_FILES]) {
   const refSource = readFileSync(refPath, "utf8");
   const refKeys = extractKeys(refSource);
   const refTokens = extractTokens(refSource);
+  checkPluralForms(REFERENCE, file, refSource);
 
   for (const locale of locales) {
     if (!existsSync(join(DICT_DIR, locale, file))) {

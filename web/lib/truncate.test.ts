@@ -1,9 +1,5 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { truncateChars } from "./truncate";
-
-const webRoot = new URL("../", import.meta.url);
-const roadmap = readFileSync(new URL("lib/roadmap-feed.ts", webRoot), "utf8");
 
 describe("truncateChars", () => {
   it("leaves text at or under the limit untouched", () => {
@@ -34,10 +30,5 @@ describe("truncateChars", () => {
   it("supports a keep budget below the limit", () => {
     expect(truncateChars("y".repeat(139), 140, 137)).toBe("y".repeat(139));
     expect(truncateChars("y".repeat(141), 140, 137)).toBe(`${"y".repeat(137)}…`);
-  });
-
-  it("is the one truncation rule the GitHub-fed surfaces use", () => {
-    expect(roadmap).toContain("truncateChars(stripped, 140, 137)");
-    expect(roadmap).not.toContain("stripped.slice(");
   });
 });

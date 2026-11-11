@@ -1,0 +1,11 @@
+{
+  "confirmed": false,
+  "logins": [
+    { "login": "dependabot[bot]", "reason": "Automated dependency updates, not a person." },
+    { "login": "github-actions[bot]", "reason": "Automated repository workflow, not a person." },
+    { "login": "devin-ai-integration[bot]", "reason": "Automated agent account, not a person." }
+  ],
+  "suffixes": [
+    { "suffix": "[bot]", "reason": "GitHub marks app and automation accounts with this suffix." }
+  ]
+}

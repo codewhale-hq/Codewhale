@@ -1,7 +1,2159 @@
 {
-  "stars": 41173,
+  "stars": 41175,
   "forks": 3570,
-  "openIssues": 67,
-  "openPulls": 5,
-  "readAt": "2026-11-11T00:12:45.683Z"
+  "openIssues": 68,
+  "openPulls": 10,
+  "readAt": "2026-11-11T04:56:36.680Z",
+  "activity": {
+    "windowDays": 30,
+    "merged": [
+      {
+        "number": 7272,
+        "title": "chore: remove unreferenced code and stale dead_code allows",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7272",
+        "login": "luochen211",
+        "avatar": "https://avatars.githubusercontent.com/u/188724350?v=4",
+        "mergedAt": "2026-11-10T20:11:08Z",
+        "firstTime": false
+      },
+      {
+        "number": 7273,
+        "title": "fix(tui): pad and truncate CJK text by display width",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7273",
+        "login": "luochen211",
+        "avatar": "https://avatars.githubusercontent.com/u/188724350?v=4",
+        "mergedAt": "2026-11-10T17:06:30Z",
+        "firstTime": false
+      },
+      {
+        "number": 7276,
+        "title": "fix(engine): match search include globs in linear time",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7276",
+        "login": "luochen211",
+        "avatar": "https://avatars.githubusercontent.com/u/188724350?v=4",
+        "mergedAt": "2026-11-10T16:55:47Z",
+        "firstTime": false
+      },
+      {
+        "number": 7275,
+        "title": "fix: reject negative retry delays at config load instead of panicking on retry",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7275",
+        "login": "luochen211",
+        "avatar": "https://avatars.githubusercontent.com/u/188724350?v=4",
+        "mergedAt": "2026-11-10T16:50:46Z",
+        "firstTime": false
+      },
+      {
+        "number": 7269,
+        "title": "fix(tui): parse slash-command arguments on any whitespace and only well-formed suffixes",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7269",
+        "login": "luochen211",
+        "avatar": "https://avatars.githubusercontent.com/u/188724350?v=4",
+        "mergedAt": "2026-11-10T16:03:38Z",
+        "firstTime": false
+      },
+      {
+        "number": 7261,
+        "title": "feat: drive Responses behavior from a dialect profile",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7261",
+        "login": "SamhandsomeLee",
+        "avatar": "https://avatars.githubusercontent.com/u/135809116?v=4",
+        "mergedAt": "2026-11-10T13:04:56Z",
+        "firstTime": false
+      },
+      {
+        "number": 7259,
+        "title": "fix(tui): attach every line range when one file is mentioned twice",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7259",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-10T11:57:59Z",
+        "firstTime": false
+      },
+      {
+        "number": 7258,
+        "title": "fix(tui): recognize an @ mention that follows Chinese or Japanese text",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7258",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-10T11:57:47Z",
+        "firstTime": false
+      },
+      {
+        "number": 7267,
+        "title": "fix(tui): line up the /config detail values in every locale",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7267",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-10T11:57:33Z",
+        "firstTime": false
+      },
+      {
+        "number": 7260,
+        "title": "fix(tui): split a user command from its arguments on any whitespace",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7260",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-10T11:57:21Z",
+        "firstTime": false
+      },
+      {
+        "number": 7257,
+        "title": "fix(engine): keep the rest of the line when edit falls back to fuzzy matching",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7257",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-10T11:57:09Z",
+        "firstTime": false
+      },
+      {
+        "number": 7256,
+        "title": "fix(tui): drop per-message token estimates when the transcript is replaced",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7256",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-10T11:57:04Z",
+        "firstTime": false
+      },
+      {
+        "number": 7266,
+        "title": "docs(zh_hans): add a short provider setup page for beginners",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7266",
+        "login": "luochen211",
+        "avatar": "https://avatars.githubusercontent.com/u/188724350?v=4",
+        "mergedAt": "2026-11-10T11:03:40Z",
+        "firstTime": false
+      },
+      {
+        "number": 7263,
+        "title": "docs(zh_hans): translate CLAUDE_PLUGIN_COMPAT.md",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7263",
+        "login": "luochen211",
+        "avatar": "https://avatars.githubusercontent.com/u/188724350?v=4",
+        "mergedAt": "2026-11-10T10:46:38Z",
+        "firstTime": false
+      },
+      {
+        "number": 7265,
+        "title": "docs(zh_hans): translate GITHUB_ACTION.md",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7265",
+        "login": "luochen211",
+        "avatar": "https://avatars.githubusercontent.com/u/188724350?v=4",
+        "mergedAt": "2026-11-10T10:46:18Z",
+        "firstTime": false
+      },
+      {
+        "number": 7264,
+        "title": "docs(zh_hans): translate RECEIPTS.md",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7264",
+        "login": "luochen211",
+        "avatar": "https://avatars.githubusercontent.com/u/188724350?v=4",
+        "mergedAt": "2026-11-10T10:45:59Z",
+        "firstTime": false
+      },
+      {
+        "number": 7251,
+        "title": "feat(transport): allow an optional host policy on model HTTP clients",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7251",
+        "login": "zhuowp",
+        "avatar": "https://avatars.githubusercontent.com/u/9426526?v=4",
+        "mergedAt": "2026-11-09T13:27:24Z",
+        "firstTime": false
+      },
+      {
+        "number": 7253,
+        "title": "fix(engine): stop reporting provider timeouts as \"after 0ns\"",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7253",
+        "login": "gaord",
+        "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4",
+        "mergedAt": "2026-11-09T07:23:40Z",
+        "firstTime": false
+      },
+      {
+        "number": 7255,
+        "title": "fix(tui): keep a typed draft when a failed send comes back",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7255",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-09T07:23:35Z",
+        "firstTime": false
+      },
+      {
+        "number": 7254,
+        "title": "fix(engine): bound nested brace expansion and repeated globstars",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7254",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-09T07:23:30Z",
+        "firstTime": false
+      },
+      {
+        "number": 7230,
+        "title": "feat(tasks): pause the task wall clock for answerable human waits",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7230",
+        "login": "asto18089",
+        "avatar": "https://avatars.githubusercontent.com/u/44870036?v=4",
+        "mergedAt": "2026-11-08T00:42:19Z",
+        "firstTime": false
+      },
+      {
+        "number": 7245,
+        "title": "chore(deps): bump rusqlite from 0.40.2 to 0.41.1",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7245",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-07T01:56:43Z",
+        "firstTime": false
+      },
+      {
+        "number": 7234,
+        "title": "fix(fork): cut saved histories that carry workspace drift notices",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7234",
+        "login": "gaord",
+        "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4",
+        "mergedAt": "2026-11-07T01:55:39Z",
+        "firstTime": false
+      },
+      {
+        "number": 7243,
+        "title": "chore(deps): bump unicode-normalization from 0.1.25 to 0.1.26",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7243",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-07T01:54:05Z",
+        "firstTime": false
+      },
+      {
+        "number": 7231,
+        "title": "fix(net): go direct when a local proxy disappears",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7231",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-11-07T01:52:20Z",
+        "firstTime": false
+      },
+      {
+        "number": 7244,
+        "title": "chore(deps): bump rmcp from 3.7.0 to 3.8.0",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7244",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-07T01:50:47Z",
+        "firstTime": false
+      },
+      {
+        "number": 7239,
+        "title": "chore(deps): bump codewhale-hq/Codewhale from b92540d882b8e7c66389aa35e5fa0c3c178fe4ce to b0b2b9a335cc1d24abe8a087189bed080d1cc3db",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7239",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-07T01:50:38Z",
+        "firstTime": false
+      },
+      {
+        "number": 7242,
+        "title": "chore(deps): bump actions/setup-java from 4.7.1 to 6.1.0",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7242",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-07T01:49:30Z",
+        "firstTime": false
+      },
+      {
+        "number": 7240,
+        "title": "chore(deps): bump codewhale-hq/Codewhale/scripts/github-action/publish from b92540d882b8e7c66389aa35e5fa0c3c178fe4ce to b0b2b9a335cc1d24abe8a087189bed080d1cc3db",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7240",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-07T01:48:44Z",
+        "firstTime": false
+      },
+      {
+        "number": 7241,
+        "title": "chore(deps): bump webpki-roots from 1.0.10 to 1.0.11",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7241",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-07T01:48:38Z",
+        "firstTime": false
+      },
+      {
+        "number": 7246,
+        "title": "chore(deps): bump similar from 3.2.0 to 3.2.1",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7246",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-07T01:47:08Z",
+        "firstTime": false
+      },
+      {
+        "number": 7220,
+        "title": "feat: add bounded HTTP rate-limit recovery",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7220",
+        "login": "zhuowp",
+        "avatar": "https://avatars.githubusercontent.com/u/9426526?v=4",
+        "mergedAt": "2026-11-07T01:28:23Z",
+        "firstTime": false
+      },
+      {
+        "number": 7218,
+        "title": "fix(tui): read Windows clipboard images through .NET as a fallback",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7218",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-11-06T04:02:35Z",
+        "firstTime": false
+      },
+      {
+        "number": 7217,
+        "title": "feat(tui): paste clipboard images and preview every attachment",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7217",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-11-06T03:42:28Z",
+        "firstTime": false
+      },
+      {
+        "number": 7223,
+        "title": "fix(tools): stop the verify description from teaching the hidden run_verifiers name",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7223",
+        "login": "asto18089",
+        "avatar": "https://avatars.githubusercontent.com/u/44870036?v=4",
+        "mergedAt": "2026-11-06T01:14:39Z",
+        "firstTime": false
+      },
+      {
+        "number": 7207,
+        "title": "fix(workspace): stop a home workspace from refusing its own junctioned state directory",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7207",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-11-06T01:03:44Z",
+        "firstTime": false
+      },
+      {
+        "number": 7211,
+        "title": "feat(bridges): steer a running WeCom turn instead of dropping the message",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7211",
+        "login": "gaord",
+        "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4",
+        "mergedAt": "2026-11-06T01:03:36Z",
+        "firstTime": false
+      },
+      {
+        "number": 7205,
+        "title": "fix(tui): keep the draft when the command palette inserts a command",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7205",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-06T01:03:24Z",
+        "firstTime": false
+      },
+      {
+        "number": 7229,
+        "title": "fix(compaction): repair pre-v0.10.0 topology checkpoint placement on restore",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7229",
+        "login": "asto18089",
+        "avatar": "https://avatars.githubusercontent.com/u/44870036?v=4",
+        "mergedAt": "2026-11-06T01:03:16Z",
+        "firstTime": false
+      },
+      {
+        "number": 7227,
+        "title": "fix(subagent): accept absolute write paths that resolve inside the claimed workspace",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7227",
+        "login": "asto18089",
+        "avatar": "https://avatars.githubusercontent.com/u/44870036?v=4",
+        "mergedAt": "2026-11-06T00:58:49Z",
+        "firstTime": false
+      },
+      {
+        "number": 7215,
+        "title": "fix(engine): match brace and nested-directory globs in grep_files",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7215",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-06T00:57:29Z",
+        "firstTime": false
+      },
+      {
+        "number": 7212,
+        "title": "feat(bridges): accept media and voice messages on the WeCom bridge",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7212",
+        "login": "gaord",
+        "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4",
+        "mergedAt": "2026-11-06T00:36:12Z",
+        "firstTime": false
+      },
+      {
+        "number": 7209,
+        "title": "fix(bridges): cap WeCom reply chunks by UTF-8 bytes",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7209",
+        "login": "gaord",
+        "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4",
+        "mergedAt": "2026-11-06T00:33:49Z",
+        "firstTime": false
+      },
+      {
+        "number": 7224,
+        "title": "fix(subagent): only scan nested repositories at the worktree anchor",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7224",
+        "login": "asto18089",
+        "avatar": "https://avatars.githubusercontent.com/u/44870036?v=4",
+        "mergedAt": "2026-11-06T00:20:52Z",
+        "firstTime": false
+      },
+      {
+        "number": 7213,
+        "title": "fix(engine): report file_search results from the workspace root",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7213",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-06T00:18:16Z",
+        "firstTime": false
+      },
+      {
+        "number": 7222,
+        "title": "fix(tools): drop the false sandboxed claim from the fetch_url description",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7222",
+        "login": "asto18089",
+        "avatar": "https://avatars.githubusercontent.com/u/44870036?v=4",
+        "mergedAt": "2026-11-05T22:56:12Z",
+        "firstTime": false
+      },
+      {
+        "number": 7202,
+        "title": "fix(runtime): remove the isolated test state root at process exit",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7202",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-03T09:56:30Z",
+        "firstTime": false
+      },
+      {
+        "number": 7138,
+        "title": "feat(engine): observe background run completion",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7138",
+        "login": "zhuowp",
+        "avatar": "https://avatars.githubusercontent.com/u/9426526?v=4",
+        "mergedAt": "2026-11-03T08:40:02Z",
+        "firstTime": false
+      },
+      {
+        "number": 7201,
+        "title": "fix(tui): keep escaped characters and named delimiters in math",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7201",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-03T06:35:21Z",
+        "firstTime": false
+      },
+      {
+        "number": 7200,
+        "title": "fix(tui): resolve /save and /load paths against the workspace",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7200",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-03T05:16:59Z",
+        "firstTime": false
+      },
+      {
+        "number": 7195,
+        "title": "docs(harmonyos): describe how Codewhale runs there today",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7195",
+        "login": "gaord",
+        "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4",
+        "mergedAt": "2026-11-03T05:16:52Z",
+        "firstTime": false
+      },
+      {
+        "number": 7196,
+        "title": "fix(tui): stop treating dollar amounts as inline math",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7196",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-03T05:16:44Z",
+        "firstTime": false
+      },
+      {
+        "number": 7193,
+        "title": "fix(tui): expand tabs in replies and sent messages",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7193",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-03T05:16:33Z",
+        "firstTime": false
+      },
+      {
+        "number": 7197,
+        "title": "fix(tui): size table columns from their content",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7197",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-03T04:43:52Z",
+        "firstTime": false
+      },
+      {
+        "number": 7199,
+        "title": "fix(engine): read text files that start with BM as text",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7199",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-03T04:43:46Z",
+        "firstTime": false
+      },
+      {
+        "number": 7198,
+        "title": "fix(tui): stop math with non-ASCII text from crashing the TUI",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7198",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-03T04:43:38Z",
+        "firstTime": false
+      },
+      {
+        "number": 7192,
+        "title": "fix(tui): decode HTML character references in replies",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7192",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-03T02:23:26Z",
+        "firstTime": false
+      },
+      {
+        "number": 7139,
+        "title": "fix(workflow-js): generate Windows GNU LLVM bindings",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7139",
+        "login": "zhuowp",
+        "avatar": "https://avatars.githubusercontent.com/u/9426526?v=4",
+        "mergedAt": "2026-11-02T22:27:44Z",
+        "firstTime": false
+      },
+      {
+        "number": 7187,
+        "title": "chore(deps): bump react-dom and @types/react-dom in /web",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7187",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-02T22:18:17Z",
+        "firstTime": false
+      },
+      {
+        "number": 7182,
+        "title": "fix(tui): render markdown images as their alt text",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7182",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-02T21:51:18Z",
+        "firstTime": false
+      },
+      {
+        "number": 7161,
+        "title": "chore(deps): bump uuid from 1.28.0 to 1.29.0",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7161",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-02T21:44:21Z",
+        "firstTime": false
+      },
+      {
+        "number": 7186,
+        "title": "fix(tui): break the line at <br>",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7186",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-02T21:40:57Z",
+        "firstTime": false
+      },
+      {
+        "number": 7191,
+        "title": "chore(deps): bump nixpkgs from `7a0f122` to `31ecbac`",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7191",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-02T19:19:19Z",
+        "firstTime": false
+      },
+      {
+        "number": 7190,
+        "title": "chore(deps): bump fenix from `e659899` to `cf57f89`",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7190",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-02T19:19:15Z",
+        "firstTime": false
+      },
+      {
+        "number": 7189,
+        "title": "chore(deps): bump stripe from 23.0.0 to 23.1.0 in /web",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7189",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-01T21:49:00Z",
+        "firstTime": false
+      },
+      {
+        "number": 7188,
+        "title": "chore(deps-dev): bump @types/node from 26.6.4 to 26.6.6 in /web",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7188",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-01T21:48:49Z",
+        "firstTime": false
+      },
+      {
+        "number": 7185,
+        "title": "fix(tui): close inline code at a backtick run of the same length",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7185",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-01T18:40:16Z",
+        "firstTime": false
+      },
+      {
+        "number": 7184,
+        "title": "fix(tui): keep the spaces in a table cell's inline code",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7184",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-01T13:22:23Z",
+        "firstTime": false
+      },
+      {
+        "number": 7183,
+        "title": "fix(catalog): give the bare deepseek-v4.1-flash spelling its own row",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7183",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-11-01T13:15:09Z",
+        "firstTime": false
+      },
+      {
+        "number": 7181,
+        "title": "fix(tui): parse a table cell's markup before wrapping it",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7181",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-11-01T06:55:25Z",
+        "firstTime": false
+      },
+      {
+        "number": 7166,
+        "title": "chore(deps): bump toml from 1.1.4+spec-1.1.0 to 1.1.6+spec-1.1.0",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7166",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-01T06:46:56Z",
+        "firstTime": false
+      },
+      {
+        "number": 7165,
+        "title": "chore(deps): bump htmd from 0.5.5 to 0.5.6",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7165",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-01T06:46:47Z",
+        "firstTime": false
+      },
+      {
+        "number": 7163,
+        "title": "chore(deps): bump liblzma from 0.4.8 to 0.4.9",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7163",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-01T06:46:37Z",
+        "firstTime": false
+      },
+      {
+        "number": 7180,
+        "title": "fix(session): keep history matched when turn metadata differs",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7180",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-11-01T06:14:14Z",
+        "firstTime": false
+      },
+      {
+        "number": 7160,
+        "title": "chore(deps): bump jsonwebtoken from 10.4.0 to 11.1.0",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7160",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-01T05:52:23Z",
+        "firstTime": false
+      },
+      {
+        "number": 7167,
+        "title": "chore(deps): bump codewhale-hq/Codewhale/scripts/github-action/publish from c2a48723285c48978279f6c10672bbade49cc0cb to b92540d882b8e7c66389aa35e5fa0c3c178fe4ce",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7167",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-01T05:29:54Z",
+        "firstTime": false
+      },
+      {
+        "number": 7164,
+        "title": "chore(deps): bump actions/download-artifact from 7.0.0 to 8.0.2",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7164",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-01T05:29:49Z",
+        "firstTime": false
+      },
+      {
+        "number": 7162,
+        "title": "chore(deps): bump codewhale-hq/Codewhale from c2a48723285c48978279f6c10672bbade49cc0cb to b92540d882b8e7c66389aa35e5fa0c3c178fe4ce",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7162",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-01T05:29:43Z",
+        "firstTime": false
+      },
+      {
+        "number": 7159,
+        "title": "chore(deps): bump docker/login-action from 4.6.0 to 4.7.0",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7159",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-11-01T05:29:38Z",
+        "firstTime": false
+      },
+      {
+        "number": 7176,
+        "title": "fix(markdown): keep a keycap in one span through the inline parser",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7176",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-11-01T02:32:14Z",
+        "firstTime": false
+      },
+      {
+        "number": 7177,
+        "title": "fix(goal): route a needed user answer to yield, not blocked",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7177",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-11-01T01:55:29Z",
+        "firstTime": false
+      },
+      {
+        "number": 7173,
+        "title": "feat(tui): let the model read the transcript compaction replaced",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7173",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-10-31T23:12:27Z",
+        "firstTime": false
+      },
+      {
+        "number": 7131,
+        "title": "feat(providers): add Opper as a bundled descriptor row",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7131",
+        "login": "Felixkw12",
+        "avatar": "https://avatars.githubusercontent.com/u/151852644?v=4",
+        "mergedAt": "2026-10-31T22:37:57Z",
+        "firstTime": false
+      },
+      {
+        "number": 7175,
+        "title": "fix(goal): name the ask-the-user exit in continuation prompts",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7175",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-10-31T22:27:51Z",
+        "firstTime": false
+      },
+      {
+        "number": 7168,
+        "title": "fix(runtime): keep private state on a filesystem that cannot express ownership",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7168",
+        "login": "gaord",
+        "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4",
+        "mergedAt": "2026-10-31T20:43:12Z",
+        "firstTime": false
+      },
+      {
+        "number": 7171,
+        "title": "fix(tui): render code and links inside emphasis",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7171",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-31T19:48:48Z",
+        "firstTime": false
+      },
+      {
+        "number": 7170,
+        "title": "fix(tui): keep balanced parentheses in a markdown link's target",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7170",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-31T19:48:44Z",
+        "firstTime": false
+      },
+      {
+        "number": 7169,
+        "title": "fix(tui): drop the engine's status reply to a stream timeout change",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7169",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-31T19:48:40Z",
+        "firstTime": false
+      },
+      {
+        "number": 7117,
+        "title": "fix(setup): keep the setup checkpoint when a second instance is running",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7117",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-10-31T11:41:52Z",
+        "firstTime": false
+      },
+      {
+        "number": 7151,
+        "title": "Native HarmonyOS: fix the documented build, and ship a signed arm64 release",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7151",
+        "login": "gaord",
+        "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4",
+        "mergedAt": "2026-10-31T06:37:50Z",
+        "firstTime": false
+      },
+      {
+        "number": 7125,
+        "title": "fix: honor local model reasoning ladders",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7125",
+        "login": "gannp",
+        "avatar": "https://avatars.githubusercontent.com/u/36723715?v=4",
+        "mergedAt": "2026-10-31T05:20:42Z",
+        "firstTime": false
+      },
+      {
+        "number": 7146,
+        "title": "fix(tui): keep the indent of a paragraph nested in a list",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7146",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-31T04:58:33Z",
+        "firstTime": false
+      },
+      {
+        "number": 7158,
+        "title": "fix(tui): end a bare URL at full-width punctuation",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7158",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-31T04:58:32Z",
+        "firstTime": false
+      },
+      {
+        "number": 7157,
+        "title": "fix(tui): keep asterisks that don't open emphasis",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7157",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-31T04:58:32Z",
+        "firstTime": false
+      },
+      {
+        "number": 7156,
+        "title": "fix(tui): render ~~~ fences as code blocks",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7156",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-31T04:58:32Z",
+        "firstTime": false
+      },
+      {
+        "number": 7152,
+        "title": "fix(tui): drop the engine's status reply to a fleet roster refresh",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7152",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-31T04:58:32Z",
+        "firstTime": false
+      },
+      {
+        "number": 7150,
+        "title": "fix(l10n): unify zh-Hans pronoun and provider/token terms",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7150",
+        "login": "luochen211",
+        "avatar": "https://avatars.githubusercontent.com/u/188724350?v=4",
+        "mergedAt": "2026-10-31T04:58:32Z",
+        "firstTime": false
+      },
+      {
+        "number": 7149,
+        "title": "chore(tui): drop blanket dead_code allows in fleet alerts and pet worker",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7149",
+        "login": "luochen211",
+        "avatar": "https://avatars.githubusercontent.com/u/188724350?v=4",
+        "mergedAt": "2026-10-31T04:58:32Z",
+        "firstTime": false
+      },
+      {
+        "number": 7147,
+        "title": "fix(tui): fork a conversation by the history it carries, not the shape it stores",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7147",
+        "login": "gaord",
+        "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4",
+        "mergedAt": "2026-10-31T04:58:32Z",
+        "firstTime": false
+      },
+      {
+        "number": 7143,
+        "title": "fix(tui): detach recalled history when removing an attachment or deleting in vim",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7143",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-30T05:57:09Z",
+        "firstTime": false
+      },
+      {
+        "number": 7144,
+        "title": "fix(tui): keep the quote rail on wrapped rows of a blockquote",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7144",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-29T21:41:54Z",
+        "firstTime": false
+      },
+      {
+        "number": 7141,
+        "title": "docs(i18n): translate the review-bot row and refresh README stamps",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7141",
+        "login": "Aboysky",
+        "avatar": "https://avatars.githubusercontent.com/u/52989177?v=4",
+        "mergedAt": "2026-10-29T08:34:33Z",
+        "firstTime": false
+      },
+      {
+        "number": 7140,
+        "title": "fix(lsp): open TSX documents with typescriptreact language ID",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7140",
+        "login": "Ricardo-M-L",
+        "avatar": "https://avatars.githubusercontent.com/u/69202550?v=4",
+        "mergedAt": "2026-10-29T07:37:59Z",
+        "firstTime": false
+      },
+      {
+        "number": 7121,
+        "title": "fix(commands): localize /undo feedback",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7121",
+        "login": "Aboysky",
+        "avatar": "https://avatars.githubusercontent.com/u/52989177?v=4",
+        "mergedAt": "2026-10-29T07:31:35Z",
+        "firstTime": false
+      },
+      {
+        "number": 7127,
+        "title": "fix(tui): retain remote-control startup failure diagnostics",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7127",
+        "login": "laozidabo",
+        "avatar": "https://avatars.githubusercontent.com/u/145752528?v=4",
+        "mergedAt": "2026-10-29T07:31:26Z",
+        "firstTime": false
+      },
+      {
+        "number": 7130,
+        "title": "fix(tui): let vim Normal mode take shifted keys like G",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7130",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-29T07:31:12Z",
+        "firstTime": false
+      },
+      {
+        "number": 7126,
+        "title": "fix(tui): send a held key to vim Normal mode instead of typing it",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7126",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-29T07:30:35Z",
+        "firstTime": false
+      },
+      {
+        "number": 7135,
+        "title": "fix(tui): keep the turn metadata block out of /tree and /export",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7135",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-29T05:25:25Z",
+        "firstTime": false
+      },
+      {
+        "number": 7137,
+        "title": "fix(tui): route a streamed reasoning delta to the reasoning cell",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7137",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-10-29T04:56:37Z",
+        "firstTime": false
+      },
+      {
+        "number": 7122,
+        "title": "fix(tui): flush queued persistence before signal exit",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7122",
+        "login": "laozidabo",
+        "avatar": "https://avatars.githubusercontent.com/u/145752528?v=4",
+        "mergedAt": "2026-10-29T04:20:37Z",
+        "firstTime": false
+      },
+      {
+        "number": 7132,
+        "title": "fix(tui): put vim `$` on the line's last character",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7132",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-29T02:38:39Z",
+        "firstTime": false
+      },
+      {
+        "number": 7128,
+        "title": "Note the VS Code extension's dependency on the Runtime API",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7128",
+        "login": "gaord",
+        "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4",
+        "mergedAt": "2026-10-29T02:26:38Z",
+        "firstTime": false
+      },
+      {
+        "number": 7129,
+        "title": "fix(tui): restore the build after local Ollama discovery landed",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7129",
+        "login": "gaord",
+        "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4",
+        "mergedAt": "2026-10-29T02:03:42Z",
+        "firstTime": false
+      },
+      {
+        "number": 7111,
+        "title": "chore(deps): bump the npm_and_yarn group across 2 directories with 1 update",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7111",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-10-28T04:29:42Z",
+        "firstTime": false
+      },
+      {
+        "number": 7100,
+        "title": "fix(tui): stop a finished turn from blocking its session save",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7100",
+        "login": "gaord",
+        "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4",
+        "mergedAt": "2026-10-28T02:28:43Z",
+        "firstTime": false
+      },
+      {
+        "number": 7094,
+        "title": "fix(tui): only say \"Model set to\" when the model changes",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7094",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-27T23:32:31Z",
+        "firstTime": false
+      },
+      {
+        "number": 7110,
+        "title": "fix(commands): don't total unreported cache tokens as 0 in /cache",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7110",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-27T23:31:29Z",
+        "firstTime": false
+      },
+      {
+        "number": 7105,
+        "title": "fix(catalog): read the token limits a live model listing states",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7105",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-10-27T23:30:56Z",
+        "firstTime": false
+      },
+      {
+        "number": 7101,
+        "title": "fix(commands): localize diff feedback",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7101",
+        "login": "laozidabo",
+        "avatar": "https://avatars.githubusercontent.com/u/145752528?v=4",
+        "mergedAt": "2026-10-27T23:30:44Z",
+        "firstTime": false
+      },
+      {
+        "number": 7107,
+        "title": "fix(installer): avoid downloading identical codew asset twice",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7107",
+        "login": "ddlw",
+        "avatar": "https://avatars.githubusercontent.com/u/57355329?v=4",
+        "mergedAt": "2026-10-27T23:30:39Z",
+        "firstTime": false
+      },
+      {
+        "number": 7112,
+        "title": "fix(tui): shed to the folder name before clipping the launch card's path",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7112",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-27T23:30:27Z",
+        "firstTime": false
+      },
+      {
+        "number": 7092,
+        "title": "fix(fleet): enable rename_exclusive on Android to prevent SELinux EACCES linkat fallback",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7092",
+        "login": "printf033",
+        "avatar": "https://avatars.githubusercontent.com/u/187882179?v=4",
+        "mergedAt": "2026-10-27T23:29:38Z",
+        "firstTime": false
+      },
+      {
+        "number": 7103,
+        "title": "fix(tui): keep the workspace folder in view when /context shortens its path",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7103",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-27T23:29:26Z",
+        "firstTime": false
+      },
+      {
+        "number": 7108,
+        "title": "style(tui): apply rustfmt to mcp",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7108",
+        "login": "ddlw",
+        "avatar": "https://avatars.githubusercontent.com/u/57355329?v=4",
+        "mergedAt": "2026-10-27T23:07:33Z",
+        "firstTime": false
+      },
+      {
+        "number": 7099,
+        "title": "fix(catalog): inherit model facts across a provider's host move (#7096)",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7099",
+        "login": "Hmbown",
+        "avatar": "https://avatars.githubusercontent.com/u/101357273?v=4",
+        "mergedAt": "2026-10-27T22:19:07Z",
+        "firstTime": false
+      },
+      {
+        "number": 7104,
+        "title": "docs(i18n): refresh README source stamps after 4cf2d2cff",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7104",
+        "login": "Aboysky",
+        "avatar": "https://avatars.githubusercontent.com/u/52989177?v=4",
+        "mergedAt": "2026-10-27T21:13:24Z",
+        "firstTime": false
+      },
+      {
+        "number": 7086,
+        "title": "feat(context): per-scope instruction budgets with visible truncation (#6526)",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7086",
+        "login": "7jrxt42BxFZo4iAnN4CX",
+        "avatar": "https://avatars.githubusercontent.com/u/72938937?v=4",
+        "mergedAt": "2026-10-27T06:26:51Z",
+        "firstTime": false
+      },
+      {
+        "number": 7097,
+        "title": "fix(tui): resolve the state root before opening session-side state",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7097",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-10-27T05:22:29Z",
+        "firstTime": false
+      },
+      {
+        "number": 7089,
+        "title": "fix(tui): only say \"Goal cleared.\" when there was a goal to clear",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7089",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-26T01:13:55Z",
+        "firstTime": false
+      },
+      {
+        "number": 7087,
+        "title": "fix(tui): keep the /diff pager's place when the terminal is resized",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7087",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-25T22:03:58Z",
+        "firstTime": false
+      },
+      {
+        "number": 7090,
+        "title": "fix(tui): don't print an unpriced session cost as $0.0000 in /status",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7090",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-25T20:28:57Z",
+        "firstTime": false
+      },
+      {
+        "number": 7074,
+        "title": "feat(runtime): show a turn's cost and context while it runs",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7074",
+        "login": "gaord",
+        "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4",
+        "mergedAt": "2026-10-25T12:49:33Z",
+        "firstTime": false
+      },
+      {
+        "number": 7065,
+        "title": "chore(web): record v0.10.2 as the published release",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7065",
+        "login": "Hmbown",
+        "avatar": "https://avatars.githubusercontent.com/u/101357273?v=4",
+        "mergedAt": "2026-10-24T20:10:47Z",
+        "firstTime": false
+      },
+      {
+        "number": 7064,
+        "title": "tui: report agent state, resume command and release to Herdr",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7064",
+        "login": "dsingal0",
+        "avatar": "https://avatars.githubusercontent.com/u/170742396?v=4",
+        "mergedAt": "2026-10-24T03:39:13Z",
+        "firstTime": false
+      },
+      {
+        "number": 7063,
+        "title": "chore(deps): bump rust-i18n-support from 4.2.2 to 4.2.4",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7063",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-10-24T03:39:09Z",
+        "firstTime": false
+      },
+      {
+        "number": 7062,
+        "title": "chore(deps): bump sha2 from 0.11.0 to 0.11.1",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7062",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-10-24T03:39:06Z",
+        "firstTime": false
+      },
+      {
+        "number": 7061,
+        "title": "chore(deps): bump hyper-util from 0.1.20 to 0.1.21",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7061",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-10-24T03:39:02Z",
+        "firstTime": false
+      },
+      {
+        "number": 7060,
+        "title": "chore(deps): bump serde_json from 1.0.151 to 1.0.154",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7060",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-10-24T03:38:58Z",
+        "firstTime": false
+      },
+      {
+        "number": 7059,
+        "title": "chore(deps): bump syn from 3.0.6 to 3.0.9",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7059",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-10-24T03:38:55Z",
+        "firstTime": false
+      },
+      {
+        "number": 7057,
+        "title": "chore(deps): bump zod from 4.2.1 to 4.6.7 in /docs/examples/whalenet-reuse in the npm_and_yarn group across 1 directory",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7057",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-10-24T03:38:31Z",
+        "firstTime": false
+      },
+      {
+        "number": 7054,
+        "title": "fix(tui): show the session rename prompt once",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7054",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-23T02:10:16Z",
+        "firstTime": false
+      },
+      {
+        "number": 7052,
+        "title": "fix(tui): keep the space after an em dash when a footer notice sheds",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7052",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-22T22:17:40Z",
+        "firstTime": false
+      },
+      {
+        "number": 7053,
+        "title": "fix(tui): render the /diff pager at the width it paints",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7053",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-22T21:35:26Z",
+        "firstTime": false
+      },
+      {
+        "number": 7009,
+        "title": "refactor(commands): adopt portable core navigation Shapes (FEAT-031)",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7009",
+        "login": "aboimpinto",
+        "avatar": "https://avatars.githubusercontent.com/u/1231687?v=4",
+        "mergedAt": "2026-10-22T21:20:50Z",
+        "firstTime": false
+      },
+      {
+        "number": 7050,
+        "title": "fix(tui): use the singular for a count of one in the file activity receipt",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7050",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-22T20:50:49Z",
+        "firstTime": false
+      },
+      {
+        "number": 7041,
+        "title": "fix(shell): preserve Python stdio env defaults",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7041",
+        "login": "zhuowp",
+        "avatar": "https://avatars.githubusercontent.com/u/9426526?v=4",
+        "mergedAt": "2026-10-22T13:54:14Z",
+        "firstTime": false
+      },
+      {
+        "number": 7046,
+        "title": "fix(web): document JSONPath subset",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7046",
+        "login": "zhuowp",
+        "avatar": "https://avatars.githubusercontent.com/u/9426526?v=4",
+        "mergedAt": "2026-10-22T04:18:48Z",
+        "firstTime": false
+      },
+      {
+        "number": 7033,
+        "title": "fix(tui): keep a to-do row's status word when its title is long",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7033",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-21T09:08:35Z",
+        "firstTime": false
+      },
+      {
+        "number": 7030,
+        "title": "fix(tui): keep nested list indentation in rendered markdown",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7030",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-21T09:08:27Z",
+        "firstTime": false
+      },
+      {
+        "number": 7034,
+        "title": "fix(tui): put the approval footer's separators between its hints",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7034",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-21T09:08:18Z",
+        "firstTime": false
+      },
+      {
+        "number": 7026,
+        "title": "perf(picker): stop rebuilding catalogs per model row when /model opens",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7026",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-10-20T20:09:52Z",
+        "firstTime": false
+      },
+      {
+        "number": 7029,
+        "title": "fix(tui): drop the hotbar setup rows' description stub beside the detail pane",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7029",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-20T18:55:21Z",
+        "firstTime": false
+      },
+      {
+        "number": 7028,
+        "title": "fix(tui): show a scroll rail on the /statusline list when it doesn't fit",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7028",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-20T18:55:13Z",
+        "firstTime": false
+      },
+      {
+        "number": 7027,
+        "title": "fix(tui): end a clipped /feedback description at a word, with an ellipsis",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7027",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-20T18:55:04Z",
+        "firstTime": false
+      },
+      {
+        "number": 7016,
+        "title": "ci(sync): skip the CNB mirror when its token secret is absent",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7016",
+        "login": "asto18089",
+        "avatar": "https://avatars.githubusercontent.com/u/44870036?v=4",
+        "mergedAt": "2026-10-20T18:54:55Z",
+        "firstTime": false
+      },
+      {
+        "number": 7025,
+        "title": "fix(tui): drop the /statusline picker's padding rows when the list doesn't fit",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7025",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-19T05:59:37Z",
+        "firstTime": false
+      },
+      {
+        "number": 7024,
+        "title": "fix(tui): show a scroll rail on a settings choice list that doesn't fit",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7024",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-18T21:38:37Z",
+        "firstTime": false
+      },
+      {
+        "number": 7023,
+        "title": "fix(tui): say \"no matches\" in the /mcp status line when a search finds nothing",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7023",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-18T20:15:52Z",
+        "firstTime": false
+      },
+      {
+        "number": 7022,
+        "title": "fix(tui): size the /statusline picker for its padding rows",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7022",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-18T17:11:56Z",
+        "firstTime": false
+      },
+      {
+        "number": 7019,
+        "title": "fix(client): capture and replay Anthropic redacted thinking blocks",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7019",
+        "login": "asto18089",
+        "avatar": "https://avatars.githubusercontent.com/u/44870036?v=4",
+        "mergedAt": "2026-10-18T08:12:09Z",
+        "firstTime": false
+      },
+      {
+        "number": 7018,
+        "title": "fix(engine): keep turn and submission attribution on TurnComplete",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7018",
+        "login": "asto18089",
+        "avatar": "https://avatars.githubusercontent.com/u/44870036?v=4",
+        "mergedAt": "2026-10-18T06:05:13Z",
+        "firstTime": false
+      },
+      {
+        "number": 7014,
+        "title": "fix(client): drop sampling params for the Claude 5 generation and Haiku 5.5",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7014",
+        "login": "asto18089",
+        "avatar": "https://avatars.githubusercontent.com/u/44870036?v=4",
+        "mergedAt": "2026-10-18T05:52:04Z",
+        "firstTime": false
+      },
+      {
+        "number": 7020,
+        "title": "fix(route): honor a custom table's wire on runtime routes",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7020",
+        "login": "asto18089",
+        "avatar": "https://avatars.githubusercontent.com/u/44870036?v=4",
+        "mergedAt": "2026-10-18T05:52:00Z",
+        "firstTime": false
+      },
+      {
+        "number": 7017,
+        "title": "fix(compaction): scope legacy checkpoint recognition by era",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7017",
+        "login": "asto18089",
+        "avatar": "https://avatars.githubusercontent.com/u/44870036?v=4",
+        "mergedAt": "2026-10-18T05:51:55Z",
+        "firstTime": false
+      },
+      {
+        "number": 7015,
+        "title": "fix(kimi): repair empty items schemas instead of dropping the tool",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7015",
+        "login": "asto18089",
+        "avatar": "https://avatars.githubusercontent.com/u/44870036?v=4",
+        "mergedAt": "2026-10-18T05:51:44Z",
+        "firstTime": false
+      },
+      {
+        "number": 7013,
+        "title": "fix(catalog): discover a custom relay model list",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7013",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-10-17T21:25:49Z",
+        "firstTime": false
+      },
+      {
+        "number": 7012,
+        "title": "fix(tui): say work, not act, in the /statusline Mode hint",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7012",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-17T17:21:54Z",
+        "firstTime": false
+      },
+      {
+        "number": 7006,
+        "title": "chore(deps): bump dtolnay/rust-toolchain from e2a55d2ffb04f378e9626c28d38b36d230d1e12f to 683b588c487a69d01f6c6ddf40f036ff682cc2c8",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7006",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-10-17T13:59:34Z",
+        "firstTime": false
+      },
+      {
+        "number": 7005,
+        "title": "chore(deps): bump actions/download-artifact from 8.0.1 to 8.0.2",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7005",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-10-17T13:59:29Z",
+        "firstTime": false
+      },
+      {
+        "number": 7003,
+        "title": "chore(deps): bump actions/setup-node from 7.0.0 to 7.1.0",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7003",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-10-17T11:54:18Z",
+        "firstTime": false
+      },
+      {
+        "number": 7011,
+        "title": "fix(tui): give the /mcp panel's detail pane the rows its text wraps to",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7011",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-17T11:38:23Z",
+        "firstTime": false
+      },
+      {
+        "number": 7010,
+        "title": "fix(tui): don't call an empty terminal dock \"reset or lost\"",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/7010",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-17T11:13:53Z",
+        "firstTime": false
+      },
+      {
+        "number": 6998,
+        "title": "fix(tui): right-align the /theme row numbers",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6998",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-17T02:24:40Z",
+        "firstTime": false
+      },
+      {
+        "number": 6995,
+        "title": "fix(tui): keep the /help head-noun shortening to English",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6995",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-17T02:24:36Z",
+        "firstTime": false
+      },
+      {
+        "number": 6993,
+        "title": "fix(tui): use the footer's own words in the settings preview",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6993",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-16T11:48:55Z",
+        "firstTime": false
+      },
+      {
+        "number": 6968,
+        "title": "0.10.2 candidate: endpoint-scoped catalog, tiered pricing and release verification",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6968",
+        "login": "Hmbown",
+        "avatar": "https://avatars.githubusercontent.com/u/101357273?v=4",
+        "mergedAt": "2026-10-16T06:35:47Z",
+        "firstTime": false
+      },
+      {
+        "number": 6989,
+        "title": "fix(ohos): build CMake crates with Ninja and ungate the cli sha256 helper",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6989",
+        "login": "shenjackyuanjie",
+        "avatar": "https://avatars.githubusercontent.com/u/54507071?v=4",
+        "mergedAt": "2026-10-16T03:00:05Z",
+        "firstTime": false
+      },
+      {
+        "number": 6985,
+        "title": "feat(providers): add Standard Compute as a bundled descriptor row",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6985",
+        "login": "henrikdukefoss",
+        "avatar": "https://avatars.githubusercontent.com/u/76407537?v=4",
+        "mergedAt": "2026-10-16T01:37:01Z",
+        "firstTime": false
+      },
+      {
+        "number": 6807,
+        "title": "chore(pet): reconcile the contour port with the shared terminal renderer",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6807",
+        "login": "Hmbown",
+        "avatar": "https://avatars.githubusercontent.com/u/101357273?v=4",
+        "mergedAt": "2026-10-15T17:45:24Z",
+        "firstTime": false
+      },
+      {
+        "number": 6965,
+        "title": "0.10.2 slices: fail-closed tier pricing (#6396), build-lock bypass fix, then Windows owner recovery (#6915)",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6965",
+        "login": "Hmbown",
+        "avatar": "https://avatars.githubusercontent.com/u/101357273?v=4",
+        "mergedAt": "2026-10-15T15:32:47Z",
+        "firstTime": false
+      },
+      {
+        "number": 6917,
+        "title": "chore(deps): security bumps 2026-10-08",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6917",
+        "login": "devin-ai-integration[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/811515?v=4",
+        "mergedAt": "2026-10-15T15:30:29Z",
+        "firstTime": false
+      },
+      {
+        "number": 6873,
+        "title": "chore(deps): security bumps 2026-10-06",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6873",
+        "login": "devin-ai-integration[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/811515?v=4",
+        "mergedAt": "2026-10-15T15:28:29Z",
+        "firstTime": false
+      },
+      {
+        "number": 6983,
+        "title": "fix(tui): pin confined paths with O_PATH anchors on Linux so Android/Termux confined I/O works (fixes #6980)",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6983",
+        "login": "printf033",
+        "avatar": "https://avatars.githubusercontent.com/u/187882179?v=4",
+        "mergedAt": "2026-10-15T15:01:18Z",
+        "firstTime": false
+      },
+      {
+        "number": 6984,
+        "title": "fix(tui): line up the provider list's status column",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6984",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-15T14:58:38Z",
+        "firstTime": false
+      },
+      {
+        "number": 6982,
+        "title": "test(runtime-chat): give the refused admission 30 s instead of 1 s",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6982",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-15T14:57:35Z",
+        "firstTime": false
+      },
+      {
+        "number": 6979,
+        "title": "test(tui): six terminal tests no longer follow the developer's terminal",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6979",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-15T14:56:17Z",
+        "firstTime": false
+      },
+      {
+        "number": 6973,
+        "title": "refactor(commands): adopt portable config shapes for the complete config group (FEAT-028)",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6973",
+        "login": "aboimpinto",
+        "avatar": "https://avatars.githubusercontent.com/u/1231687?v=4",
+        "mergedAt": "2026-10-15T04:41:28Z",
+        "firstTime": false
+      },
+      {
+        "number": 6977,
+        "title": "test(extension-host): kill the host under a command with the default deadline",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6977",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-14T08:13:14Z",
+        "firstTime": false
+      },
+      {
+        "number": 6924,
+        "title": "feat(runtime): one control endpoint per runtime store, one driver per workspace",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6924",
+        "login": "gaord",
+        "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4",
+        "mergedAt": "2026-10-14T07:31:56Z",
+        "firstTime": false
+      },
+      {
+        "number": 6943,
+        "title": "chore(tui): drop the blanket dead_code allow in five modules",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6943",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-14T05:09:07Z",
+        "firstTime": false
+      },
+      {
+        "number": 6959,
+        "title": "feat(api): read and write a workspace's project trust over the Runtime API",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6959",
+        "login": "gaord",
+        "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4",
+        "mergedAt": "2026-10-14T04:02:26Z",
+        "firstTime": false
+      },
+      {
+        "number": 6958,
+        "title": "test(sessions): the picker search check no longer depends on the temp directory's name",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6958",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-14T03:43:18Z",
+        "firstTime": false
+      },
+      {
+        "number": 6956,
+        "title": "test(subagent): a git failure during worktree removal is not a test failure",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6956",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-14T02:22:51Z",
+        "firstTime": false
+      },
+      {
+        "number": 6966,
+        "title": "test(subagent): widen three short approval bounds to 30 s",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6966",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-14T00:06:48Z",
+        "firstTime": false
+      },
+      {
+        "number": 6975,
+        "title": "test(tui): fifteen more loopback fixtures stay out of an ambient proxy",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6975",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-13T23:52:19Z",
+        "firstTime": false
+      },
+      {
+        "number": 6974,
+        "title": "fix(config): write the provider-table api-key marker on a DeepSeek root key save",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6974",
+        "login": "gaord",
+        "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4",
+        "mergedAt": "2026-10-13T23:51:25Z",
+        "firstTime": false
+      },
+      {
+        "number": 6967,
+        "title": "test(runtime): steer tests no longer require the two-second in-band receipt",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6967",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-13T23:46:35Z",
+        "firstTime": false
+      },
+      {
+        "number": 6949,
+        "title": "fix(subagent): re-root the state-path check when the state root is relocated",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6949",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-10-13T13:34:16Z",
+        "firstTime": false
+      },
+      {
+        "number": 6971,
+        "title": "test(mcp): two loopback checks no longer fail behind an HTTP proxy",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6971",
+        "login": "Lstarsky0",
+        "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4",
+        "mergedAt": "2026-10-13T12:21:05Z",
+        "firstTime": false
+      },
+      {
+        "number": 6929,
+        "title": "fix(execpolicy): a redirect is not a command separator",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6929",
+        "login": "SparkofSpike",
+        "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4",
+        "mergedAt": "2026-10-13T10:12:04Z",
+        "firstTime": false
+      },
+      {
+        "number": 6811,
+        "title": "web: pair React and React DOM 19.3",
+        "url": "https://github.com/codewhale-hq/Codewhale/pull/6811",
+        "login": "dependabot[bot]",
+        "avatar": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "mergedAt": "2026-10-12T06:51:20Z",
+        "firstTime": false
+      }
+    ],
+    "milestones": [
+      {
+        "title": "v0.10.3",
+        "url": "https://github.com/codewhale-hq/Codewhale/milestone/73",
+        "open": 23,
+        "closed": 39
+      },
+      {
+        "title": "v0.10.4",
+        "url": "https://github.com/codewhale-hq/Codewhale/milestone/75",
+        "open": 19,
+        "closed": 0
+      },
+      {
+        "title": "v0.10.5",
+        "url": "https://github.com/codewhale-hq/Codewhale/milestone/76",
+        "open": 6,
+        "closed": 0
+      },
+      {
+        "title": "v0.11",
+        "url": "https://github.com/codewhale-hq/Codewhale/milestone/72",
+        "open": 11,
+        "closed": 45
+      },
+      {
+        "title": "v1.0",
+        "url": "https://github.com/codewhale-hq/Codewhale/milestone/66",
+        "open": 3,
+        "closed": 36
+      }
+    ],
+    "releases": [
+      {
+        "tag": "v0.10.2",
+        "url": "https://github.com/codewhale-hq/Codewhale/releases/tag/v0.10.2",
+        "publishedAt": "2026-10-24T17:31:14Z",
+        "previousPublishedAt": "2026-10-08T01:47:44Z",
+        "authors": [
+          {
+            "login": "Hmbown",
+            "avatar": "https://avatars.githubusercontent.com/u/101357273?v=4"
+          },
+          {
+            "login": "jayanthvee",
+            "avatar": "https://avatars.githubusercontent.com/u/156448548?v=4"
+          },
+          {
+            "login": "dajiaohuang",
+            "avatar": "https://avatars.githubusercontent.com/u/108231307?v=4"
+          },
+          {
+            "login": "gaord",
+            "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4"
+          },
+          {
+            "login": "Lstarsky0",
+            "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4"
+          },
+          {
+            "login": "SparkofSpike",
+            "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4"
+          },
+          {
+            "login": "dependabot[bot]",
+            "avatar": "https://avatars.githubusercontent.com/in/29110?v=4"
+          },
+          {
+            "login": "LIghtJUNction",
+            "avatar": "https://avatars.githubusercontent.com/u/106986785?v=4"
+          },
+          {
+            "login": "aboimpinto",
+            "avatar": "https://avatars.githubusercontent.com/u/1231687?v=4"
+          },
+          {
+            "login": "printf033",
+            "avatar": "https://avatars.githubusercontent.com/u/187882179?v=4"
+          },
+          {
+            "login": "devin-ai-integration[bot]",
+            "avatar": "https://avatars.githubusercontent.com/in/811515?v=4"
+          },
+          {
+            "login": "henrikdukefoss",
+            "avatar": "https://avatars.githubusercontent.com/u/76407537?v=4"
+          },
+          {
+            "login": "shenjackyuanjie",
+            "avatar": "https://avatars.githubusercontent.com/u/54507071?v=4"
+          },
+          {
+            "login": "asto18089",
+            "avatar": "https://avatars.githubusercontent.com/u/44870036?v=4"
+          },
+          {
+            "login": "zhuowp",
+            "avatar": "https://avatars.githubusercontent.com/u/9426526?v=4"
+          },
+          {
+            "login": "dsingal0",
+            "avatar": "https://avatars.githubusercontent.com/u/170742396?v=4"
+          }
+        ]
+      },
+      {
+        "tag": "v0.10.1",
+        "url": "https://github.com/codewhale-hq/Codewhale/releases/tag/v0.10.1",
+        "publishedAt": "2026-10-08T01:47:44Z",
+        "previousPublishedAt": "2026-09-22T17:28:34Z",
+        "authors": [
+          {
+            "login": "Water-Run",
+            "avatar": "https://avatars.githubusercontent.com/u/127740919?v=4"
+          },
+          {
+            "login": "Lstarsky0",
+            "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4"
+          },
+          {
+            "login": "gaord",
+            "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4"
+          },
+          {
+            "login": "Hmbown",
+            "avatar": "https://avatars.githubusercontent.com/u/101357273?v=4"
+          },
+          {
+            "login": "dajiaohuang",
+            "avatar": "https://avatars.githubusercontent.com/u/108231307?v=4"
+          },
+          {
+            "login": "aboimpinto",
+            "avatar": "https://avatars.githubusercontent.com/u/1231687?v=4"
+          },
+          {
+            "login": "dependabot[bot]",
+            "avatar": "https://avatars.githubusercontent.com/in/29110?v=4"
+          },
+          {
+            "login": "SparkofSpike",
+            "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4"
+          },
+          {
+            "login": "harryvgiunta",
+            "avatar": "https://avatars.githubusercontent.com/u/37885714?v=4"
+          },
+          {
+            "login": "aiapienthusiast",
+            "avatar": "https://avatars.githubusercontent.com/u/327629069?v=4"
+          },
+          {
+            "login": "Andrea-Bruno",
+            "avatar": "https://avatars.githubusercontent.com/u/21980406?v=4"
+          },
+          {
+            "login": "asto18089",
+            "avatar": "https://avatars.githubusercontent.com/u/44870036?v=4"
+          },
+          {
+            "login": "Guan0923",
+            "avatar": "https://avatars.githubusercontent.com/u/79012232?v=4"
+          },
+          {
+            "login": "hodeswildsmith455-boop",
+            "avatar": "https://avatars.githubusercontent.com/u/326881607?v=4"
+          },
+          {
+            "login": "LIghtJUNction",
+            "avatar": "https://avatars.githubusercontent.com/u/106986785?v=4"
+          }
+        ]
+      },
+      {
+        "tag": "v0.10.0",
+        "url": "https://github.com/codewhale-hq/Codewhale/releases/tag/v0.10.0",
+        "publishedAt": "2026-09-22T17:28:34Z",
+        "previousPublishedAt": "2026-09-14T03:48:56Z",
+        "authors": [
+          {
+            "login": "Hmbown",
+            "avatar": "https://avatars.githubusercontent.com/u/101357273?v=4"
+          },
+          {
+            "login": "dependabot[bot]",
+            "avatar": "https://avatars.githubusercontent.com/in/29110?v=4"
+          },
+          {
+            "login": "aboimpinto",
+            "avatar": "https://avatars.githubusercontent.com/u/1231687?v=4"
+          },
+          {
+            "login": "zhuowp",
+            "avatar": "https://avatars.githubusercontent.com/u/9426526?v=4"
+          },
+          {
+            "login": "yetuge",
+            "avatar": "https://avatars.githubusercontent.com/u/182123929?v=4"
+          },
+          {
+            "login": "Serendo",
+            "avatar": "https://avatars.githubusercontent.com/u/8120397?v=4"
+          },
+          {
+            "login": "AdityaVG13",
+            "avatar": "https://avatars.githubusercontent.com/u/44177453?v=4"
+          },
+          {
+            "login": "gaord",
+            "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4"
+          },
+          {
+            "login": "Water-Run",
+            "avatar": "https://avatars.githubusercontent.com/u/127740919?v=4"
+          }
+        ]
+      },
+      {
+        "tag": "v0.9.13",
+        "url": "https://github.com/codewhale-hq/Codewhale/releases/tag/v0.9.13",
+        "publishedAt": "2026-09-14T03:48:56Z",
+        "previousPublishedAt": "2026-09-05T09:59:53Z",
+        "authors": [
+          {
+            "login": "Hmbown",
+            "avatar": "https://avatars.githubusercontent.com/u/101357273?v=4"
+          },
+          {
+            "login": "dependabot[bot]",
+            "avatar": "https://avatars.githubusercontent.com/in/29110?v=4"
+          },
+          {
+            "login": "wuisabel-gif",
+            "avatar": "https://avatars.githubusercontent.com/u/231155141?v=4"
+          },
+          {
+            "login": "zhuowp",
+            "avatar": "https://avatars.githubusercontent.com/u/9426526?v=4"
+          },
+          {
+            "login": "EvanProgramming",
+            "avatar": "https://avatars.githubusercontent.com/u/170803900?v=4"
+          },
+          {
+            "login": "aboimpinto",
+            "avatar": "https://avatars.githubusercontent.com/u/1231687?v=4"
+          },
+          {
+            "login": "gaord",
+            "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4"
+          },
+          {
+            "login": "goransh-walia",
+            "avatar": "https://avatars.githubusercontent.com/u/276419438?v=4"
+          },
+          {
+            "login": "SparkofSpike",
+            "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4"
+          },
+          {
+            "login": "7jrxt42BxFZo4iAnN4CX",
+            "avatar": "https://avatars.githubusercontent.com/u/72938937?v=4"
+          },
+          {
+            "login": "googio",
+            "avatar": "https://avatars.githubusercontent.com/u/59339358?v=4"
+          }
+        ]
+      },
+      {
+        "tag": "v0.9.12",
+        "url": "https://github.com/codewhale-hq/Codewhale/releases/tag/v0.9.12",
+        "publishedAt": "2026-09-05T09:59:53Z",
+        "previousPublishedAt": "2026-08-23T17:39:46Z",
+        "authors": [
+          {
+            "login": "Lstarsky0",
+            "avatar": "https://avatars.githubusercontent.com/u/59827030?v=4"
+          },
+          {
+            "login": "aboimpinto",
+            "avatar": "https://avatars.githubusercontent.com/u/1231687?v=4"
+          },
+          {
+            "login": "wuisabel-gif",
+            "avatar": "https://avatars.githubusercontent.com/u/231155141?v=4"
+          },
+          {
+            "login": "Hmbown",
+            "avatar": "https://avatars.githubusercontent.com/u/101357273?v=4"
+          },
+          {
+            "login": "M-Maciej",
+            "avatar": "https://avatars.githubusercontent.com/u/130112810?v=4"
+          },
+          {
+            "login": "SparkofSpike",
+            "avatar": "https://avatars.githubusercontent.com/u/125943630?v=4"
+          },
+          {
+            "login": "h3c-hexin",
+            "avatar": "https://avatars.githubusercontent.com/u/13790929?v=4"
+          },
+          {
+            "login": "dependabot[bot]",
+            "avatar": "https://avatars.githubusercontent.com/in/29110?v=4"
+          },
+          {
+            "login": "serephus",
+            "avatar": "https://avatars.githubusercontent.com/u/14127940?v=4"
+          },
+          {
+            "login": "musichen",
+            "avatar": "https://avatars.githubusercontent.com/u/7377421?v=4"
+          },
+          {
+            "login": "gaord",
+            "avatar": "https://avatars.githubusercontent.com/u/9567937?v=4"
+          },
+          {
+            "login": "nightt5879",
+            "avatar": "https://avatars.githubusercontent.com/u/87569709?v=4"
+          },
+          {
+            "login": "devin-ai-integration[bot]",
+            "avatar": "https://avatars.githubusercontent.com/in/811515?v=4"
+          },
+          {
+            "login": "yiheng-kkk",
+            "avatar": "https://avatars.githubusercontent.com/u/272397091?v=4"
+          },
+          {
+            "login": "zhuowp",
+            "avatar": "https://avatars.githubusercontent.com/u/9426526?v=4"
+          }
+        ]
+      }
+    ]
+  }
 }

@@ -6,14 +6,6 @@ function routeSource(path: string): string {
 }
 
 describe("public API security contracts", () => {
-  it("keeps the unauthenticated feed cached and detached from the server token", () => {
-    const source = routeSource("github/feed");
-    expect(source).toContain('export const dynamic = "force-static"');
-    expect(source).toContain("fetchFeed(undefined, 50)");
-    expect(source).not.toContain("GITHUB_TOKEN");
-    expect(source).not.toContain('dynamic = "force-dynamic"');
-  });
-
   it("validates the draft namespace before admin discard can reach KV", () => {
     const source = routeSource("admin/post");
     expect(source).toContain("parseDraftKey(draftKey)");

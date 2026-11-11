@@ -19,4 +19,10 @@ export const contribute: ContributeDict = {
   devTitle: "Build dan periksa perubahan kodemu",
   devScope:
     "Untuk kode Rust, build bagian kode yang relevan dan jalankan pemeriksaan khususnya. Ikuti panduan kontributor untuk pemeriksaan lain yang dibutuhkan perubahanmu.",
+  mergedAccountsCount: {
+    other: "{n} akun GitHub memiliki pull request yang digabungkan dalam 30 hari terakhir.",
+  },
+  mergedPeopleCount: {
+    other: "{n} orang memiliki pull request yang digabungkan dalam 30 hari terakhir.",
+  },
 };
