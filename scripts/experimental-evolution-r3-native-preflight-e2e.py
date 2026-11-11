@@ -49,9 +49,12 @@ def main():
         },
     }
     environment = os.environ.copy()
-    environment.pop("DEEPSEEK_API_KEY", None)
+    environment["DEEPSEEK_API_KEY"] = "local-preflight-only"
     environment.update({"CODEWHALE_HOME": str(root / "host-home"),
                         "CODEWHALE_TELEMETRY": "0", "CODEWHALE_NO_UPDATE_CHECK": "1"})
+    environment.update({"HTTPS_PROXY": "http://127.0.0.1:9",
+                        "HTTP_PROXY": "http://127.0.0.1:9",
+                        "NO_PROXY": "127.0.0.1,localhost"})
     command = [str(args.codewhale.resolve()), "--config", str(config),
                "--workspace", str(workspace), "--provider", "deepseek",
                "--model", "deepseek-flash", "--sandbox-mode", "workspace-write",
@@ -67,7 +70,7 @@ def main():
     assert not list(workspace.glob(".codewhale/workflow-runs.jsonl")), "Workflow started despite rejected preflight"
     receipt = {"status": "PASS", "checks": 3, "exit_code": completed.returncode,
                "required_model_turns": 44, "available_model_turns": 37,
-               "provider_key_present": False, "cli": str(args.codewhale.resolve())}
+               "credential": "synthetic_local_only", "cli": str(args.codewhale.resolve())}
     (root / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(receipt))
 

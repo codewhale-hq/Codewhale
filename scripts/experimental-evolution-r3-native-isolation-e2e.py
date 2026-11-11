@@ -74,7 +74,7 @@ def make_handler(program, requests):
                     response = sse_tool("write", {"path": "src/probe.py", "content": program},
                                         "local-write-1")
                 else:
-                    response = sse_text("Implemented the probe in the candidate worktree.")
+                    response = sse_text("CHANGES: src/probe.py\nImplemented the probe in the candidate worktree.")
                 Handler.writer_calls += 1
             else:
                 category = "unexpected"
