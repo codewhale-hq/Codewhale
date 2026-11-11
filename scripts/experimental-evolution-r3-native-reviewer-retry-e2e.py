@@ -31,7 +31,7 @@ def main():
         if event.get("type") == "task_started" and event.get("label") in expected_labels
     }
     receipt["pass"] = receipt["pass"] and all(
-        receipt["reviewer_roles"].get(label) == "review" for label in expected_labels)
+        receipt["reviewer_roles"].get(label) == "reviewer" for label in expected_labels)
     (output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n",
                                          encoding="utf-8")
     print(json.dumps(receipt))
