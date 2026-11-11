@@ -1866,7 +1866,11 @@ async fn dsh_broker_tickets_bind_plugin_service_and_session_and_every_refusal_is
     for service in DshService::ALL.into_iter().filter(|s| {
         !matches!(
             s,
-            DshService::Network | DshService::Remote | DshService::Terminal | DshService::Workspace
+            DshService::Network
+                | DshService::Remote
+                | DshService::Terminal
+                | DshService::Workspace
+                | DshService::Catalog
         )
     }) {
         let ticket = &tickets_a[service.name()];
@@ -2145,7 +2149,11 @@ async fn dsh_broker_services_are_granted_by_one_check_and_an_ungranted_service_i
         }
         if !matches!(
             service,
-            DshService::Network | DshService::Remote | DshService::Terminal | DshService::Workspace
+            DshService::Network
+                | DshService::Remote
+                | DshService::Terminal
+                | DshService::Workspace
+                | DshService::Catalog
         ) {
             let result = f
                 .broker(
@@ -4228,4 +4236,348 @@ async fn every_way_a_plugin_can_end_its_call_after_an_act_returns_the_record_thr
         assert_eq!(acts["acts"][0]["method"], "status", "{mode}");
     }
     manager.shutdown().await;
+}
+
+fn catalog_without_an_account(
+    call: super::dsh_broker::BrokerCall,
+) -> super::dsh_broker::BrokerFuture {
+    super::dsh_catalog::serve_with(
+        call,
+        Some(super::dsh_catalog::AccountBalance {
+            available: false,
+            reading: None,
+        }),
+    )
+}
+
+fn catalog_with_a_balance(call: super::dsh_broker::BrokerCall) -> super::dsh_broker::BrokerFuture {
+    super::dsh_catalog::serve_with(
+        call,
+        Some(super::dsh_catalog::AccountBalance {
+            available: true,
+            reading: Some(crate::pricing::BalanceInfo {
+                currency: "CNY".into(),
+                total_balance: "123.45".into(),
+                topped_up_balance: "100.00".into(),
+                granted_balance: "23.45".into(),
+            }),
+        }),
+    )
+}
+
+#[tokio::test]
+async fn dsh_catalog_arm_plans_reviewed_installs_approved_routes_and_a_keyless_balance() {
+    use super::dsh_broker::{Arm, TABLE, TestGrants};
+    use super::protocol::DshService;
+    use codewhale_plugins::discovery::{DiscoveryConfig, discover_with_config};
+
+    let _grants = TestGrants::only(&[DshService::Workspace, DshService::Catalog]);
+    let mut f = fixture(true);
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    let user_plugins = temp.path().join("plugins");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let bundle = |name: &str, extension: Value| {
+        let dir = user_plugins.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = json!({
+            "$schema": codewhale_plugins::agent_plugin::PLUGIN_SCHEMA_URL,
+            "name": name,
+            "version": "1.0.0",
+            "extensions": { "net.codewhale": extension },
+        });
+        std::fs::write(dir.join("plugin.json"), manifest.to_string()).unwrap();
+    };
+    bundle(
+        "route-demo",
+        json!({"providers": {"gateway": {
+            "base_url": "https://gateway.example/api",
+            "model": "tiny-model",
+            "models": ["tiny-model"],
+            "oauth": {
+                "issuer": "https://gateway.example",
+                "authorization_endpoint": "https://gateway.example/authorize",
+                "token_endpoint": "https://gateway.example/token",
+                "client_id": "custom-cli",
+                "scopes": ["models:invoke"],
+            },
+        }}}),
+    );
+    bundle("idle-demo", json!({}));
+    let discovery = DiscoveryConfig {
+        workspace: workspace.clone(),
+        user_plugins_dir: user_plugins.clone(),
+        workspace_plugins_dir: workspace.join(".codewhale/plugins"),
+        builtin_plugin_dirs: Vec::new(),
+        state_path: temp.path().join("state/plugins.json"),
+    };
+    let mut reviewed = discover_with_config(&discovery);
+    reviewed.trust("route-demo").unwrap();
+    reviewed.enable("route-demo").unwrap();
+    let reviewed = discover_with_config(&discovery);
+    assert!(reviewed.is_active("route-demo"));
+    assert!(
+        reviewed
+            .get("idle-demo")
+            .is_some_and(|plugin| !plugin.active())
+    );
+
+    let owner = {
+        let mut owners = f.manager.shared.registry.lock().unwrap();
+        let owner = owners
+            .begin_owner(
+                HostTier::Plugin,
+                "route-demo",
+                "route-demo",
+                Some(fake_authority("route-demo")),
+                "hash",
+            )
+            .unwrap();
+        owners.mark_active(&owner);
+        owner
+    };
+    f.context = f.context.clone().with_plugin_registry(Arc::new(reviewed));
+    f.in_session("catalog-session-a");
+    let guard = f.begin(7, &owner);
+    let catalog = broker_ticket(&guard, "catalog").unwrap();
+    let workspace_ticket = broker_ticket(&guard, "workspace").unwrap();
+    let ask = async |method: &'static str, input: Value| {
+        f.broker(TABLE, &owner, &catalog, "catalog", method, input)
+            .await
+    };
+    let declined = (error_code::REFUSED, "refused".to_string());
+
+    let plan = ask(
+        "install.plan",
+        json!({"package": "dsh-demo", "version": "1.2.3"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(plan["status"], "review_required");
+    assert_eq!(plan["plugin"], "dsh-demo");
+    assert_eq!(plan["spec"], "npm:dsh-demo@1.2.3");
+    assert_eq!(plan["command"], "/plugin install npm:dsh-demo@1.2.3");
+    assert!(
+        plan["message"]
+            .as_str()
+            .unwrap()
+            .contains("nothing was installed")
+    );
+    let mirrored = ask(
+        "install.plan",
+        json!({"package": "@acme/dsh-demo", "version": "1.2.3", "registry": "https://registry.example.com/npm"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        mirrored["spec"],
+        "https://registry.example.com/npm/@acme/dsh-demo/-/dsh-demo-1.2.3.tgz"
+    );
+    let present = ask(
+        "install.plan",
+        json!({"package": "@acme/idle-demo", "version": "2.0.0"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(present["status"], "already_present");
+    assert_eq!(present["command"], "/plugin trust idle-demo");
+    assert!(present.get("spec").is_none());
+    for unreviewable in [
+        json!({"package": "dsh-demo", "version": "^1.2.3"}),
+        json!({"package": "dsh-demo", "version": "latest"}),
+        json!({"package": "../dsh-demo", "version": "1.2.3"}),
+        json!({"package": "dsh-demo", "version": "1.2.3", "registry": "http://registry.example.com"}),
+    ] {
+        let result = ask("install.plan", unreviewable.clone()).await;
+        assert_eq!(dsh_refusal(&result), declined, "{unreviewable}");
+    }
+    let forced = ask(
+        "install.plan",
+        json!({"package": "dsh-demo", "version": "1.2.3", "force": true}),
+    )
+    .await;
+    assert_eq!(
+        dsh_refusal(&forced),
+        (error_code::INVALID_PARAMS, "invalid_input".into())
+    );
+    for method in ["install", "install.run", "routes.register", "balance.topup"] {
+        let result = ask(method, json!({"package": "dsh-demo", "version": "1.2.3"})).await;
+        assert_eq!(
+            dsh_refusal(&result),
+            (error_code::INVALID_PARAMS, "unknown_method".into()),
+            "{method}"
+        );
+    }
+    assert!(
+        !user_plugins.join("dsh-demo").exists(),
+        "a plan installs nothing"
+    );
+
+    let gateway = json!({
+        "provider": "gateway",
+        "base_url": "https://gateway.example/api",
+        "default_model": "tiny-model",
+        "models": ["tiny-model"],
+    });
+    assert_eq!(
+        ask("routes.list", json!({})).await.unwrap(),
+        json!({"routes": [gateway.clone()]})
+    );
+    assert_eq!(
+        ask(
+            "routes.resolve",
+            json!({"provider": "gateway", "model": "tiny-model"})
+        )
+        .await
+        .unwrap(),
+        json!({"route": gateway.clone(), "model": "tiny-model"})
+    );
+    assert_eq!(
+        ask("routes.resolve", json!({"provider": "gateway"}))
+            .await
+            .unwrap()["model"],
+        "tiny-model"
+    );
+    for unapproved in [
+        json!({"provider": "openai"}),
+        json!({"provider": "Gateway"}),
+        json!({"provider": "gateway", "model": "large-model"}),
+    ] {
+        let result = ask("routes.resolve", unapproved.clone()).await;
+        assert_eq!(dsh_refusal(&result), declined, "{unapproved}");
+    }
+
+    assert_eq!(
+        ask("balance", json!({})).await.unwrap(),
+        json!({"status": "unknown"})
+    );
+    let steered = ask(
+        "balance",
+        json!({"provider": "deepseek", "api_key": "sk-x"}),
+    )
+    .await;
+    assert_eq!(
+        dsh_refusal(&steered),
+        (error_code::INVALID_PARAMS, "invalid_input".into())
+    );
+    let absent: &[(DshService, Arm)] = &[(DshService::Catalog, catalog_without_an_account as Arm)];
+    assert_eq!(
+        f.broker(absent, &owner, &catalog, "catalog", "balance", json!({}))
+            .await
+            .unwrap(),
+        json!({"status": "absent"})
+    );
+    let known: &[(DshService, Arm)] = &[(DshService::Catalog, catalog_with_a_balance as Arm)];
+    assert_eq!(
+        f.broker(known, &owner, &catalog, "catalog", "balance", json!({}))
+            .await
+            .unwrap(),
+        json!({"status": "known", "currency": "CNY", "total": "123.45", "topped_up": "100.00", "granted": "23.45"})
+    );
+
+    for (presenter, ticket) in [
+        (&f.other, catalog.as_str()),
+        (&owner, workspace_ticket.as_str()),
+        (&owner, guard.ticket()),
+    ] {
+        let result = f
+            .broker(
+                TABLE,
+                presenter,
+                ticket,
+                "catalog",
+                "routes.list",
+                json!({}),
+            )
+            .await;
+        assert_eq!(
+            dsh_refusal(&result),
+            (error_code::REFUSED, "ticket_refused".into())
+        );
+    }
+    let other_guard = f.begin(7, &f.other);
+    let other_catalog = broker_ticket(&other_guard, "catalog").unwrap();
+    assert_eq!(
+        f.broker(
+            TABLE,
+            &f.other,
+            &other_catalog,
+            "catalog",
+            "routes.list",
+            json!({})
+        )
+        .await
+        .unwrap(),
+        json!({"routes": []}),
+        "another plugin has no approved routes and sees none of this plugin's"
+    );
+    let borrowed = f
+        .broker(
+            TABLE,
+            &f.other,
+            &other_catalog,
+            "catalog",
+            "routes.resolve",
+            json!({"provider": "gateway"}),
+        )
+        .await;
+    assert_eq!(dsh_refusal(&borrowed), declined);
+    drop(other_guard);
+
+    let session_a = f.context.clone();
+    f.context = ToolContext::new(&session_a.workspace);
+    f.in_session("catalog-session-b");
+    let guard_b = f.begin(7, &owner);
+    let catalog_b = broker_ticket(&guard_b, "catalog").unwrap();
+    f.context = session_a;
+    let in_b = f
+        .broker(
+            TABLE,
+            &owner,
+            &catalog_b,
+            "catalog",
+            "routes.list",
+            json!({}),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&in_b),
+        (error_code::NOT_AVAILABLE, "not_available".into()),
+        "session b's invocation has no plugin snapshot and never borrows session a's"
+    );
+    assert_eq!(
+        f.broker(TABLE, &owner, &catalog, "catalog", "routes.list", json!({}))
+            .await
+            .unwrap(),
+        json!({"routes": [gateway]})
+    );
+
+    discover_with_config(&discovery)
+        .revoke_trust("route-demo")
+        .unwrap();
+    for (method, input) in [
+        ("routes.list", json!({})),
+        ("routes.resolve", json!({"provider": "gateway"})),
+    ] {
+        let result = f
+            .broker(TABLE, &owner, &catalog, "catalog", method, input)
+            .await;
+        assert_eq!(
+            dsh_refusal(&result),
+            declined,
+            "{method} after the review is withdrawn"
+        );
+        assert!(result.unwrap_err().message.contains("no longer holds"));
+    }
+    f.manager.shared.core_calls.revoke_owner("route-demo");
+    let revoked = f
+        .broker(TABLE, &owner, &catalog, "catalog", "balance", json!({}))
+        .await;
+    assert_eq!(
+        dsh_refusal(&revoked),
+        (error_code::REFUSED, "ticket_refused".into())
+    );
+    drop(guard_b);
+    drop(guard);
+    assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
 }
