@@ -6,7 +6,7 @@ import { GET as getTopicMarkdown } from "../app/docs-markdown/[topic]/route";
 import { GET as getFullText } from "../app/llms-full.txt/route";
 import { GET } from "../app/llms.txt/route";
 import robots from "../app/robots";
-import { AGENT_DOCS } from "./agent-docs";
+import { RELEASE_DOCS } from "./agent-docs";
 import { claimAvailability, runtimeCapabilityContext } from "./capabilities";
 import { INSTALL_COMMANDS, INSTALL_COPY, INSTALL_PAGE_COMMANDS } from "./content/install";
 import { PRODUCT_MAP_STATE_KEY, PRODUCT_MAP_TEXT_KEYS, productMap } from "./content/product-map";
@@ -175,10 +175,13 @@ describe("llms.txt", () => {
     expect(full).toContain(buildInstallMarkdown());
   });
 
-  it("labels every main-branch document in the full text with the published tag", async () => {
-    const scope = fill(REFERENCE_GUIDE_COPY.scope.en, { tag: release.tag });
-    expect(scope).toContain(release.tag);
-    expect((await getFullText().text()).split(scope).length - 1).toBe(AGENT_DOCS.length - 1);
+  it("serves the documents as they were at the published release tag", async () => {
+    const full = await getFullText().text();
+    const label = ` at the published release ${release.tag}.`;
+    expect(RELEASE_DOCS.tag).toBe(release.tag);
+    expect(full.split(label).length - 1).toBe(RELEASE_DOCS.topics.length - 1);
+    expect(full).not.toContain(REFERENCE_GUIDE_COPY.scope.en.slice(0, 40));
+    expect(full).not.toContain(`Source: ${REPO_URL}/blob/main/`);
   });
 
   it("advertises /llms.txt from robots without inventing a robots field", () => {

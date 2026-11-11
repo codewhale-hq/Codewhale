@@ -93,8 +93,8 @@ step "blocking-calls budget" "python3 scripts/check-blocking-calls-budget.py --u
   python3 scripts/check-blocking-calls-budget.py
 if command -v node >/dev/null 2>&1; then
   step "website generated facts" \
-    "cd web && npm ci (if node_modules is missing) && npm run prebuild, then commit web/lib/facts.generated.ts and web/data/*.generated.json (check-facts.mjs names the stale file); for a stale docs/RUNTIME_ROUTES.md run node web/scripts/check-runtime-routes.mjs --write, then node web/scripts/derive-facts.mjs" \
-    bash -c 'rc=0; node web/scripts/check-facts.mjs || rc=1; node web/scripts/check-cloud-facts.mjs || rc=1; node web/scripts/check-runtime-routes.mjs || rc=1; exit "${rc}"'
+    "cd web && npm ci (if node_modules is missing) && npm run prebuild, then commit web/lib/facts.generated.ts and web/data/*.generated.json and web/data/agent-docs.release.json (check-facts.mjs and check-release-docs.mjs name the stale file); for a stale docs/RUNTIME_ROUTES.md run node web/scripts/check-runtime-routes.mjs --write, then node web/scripts/derive-facts.mjs" \
+    bash -c 'rc=0; node web/scripts/check-facts.mjs || rc=1; node web/scripts/check-cloud-facts.mjs || rc=1; node web/scripts/check-release-docs.mjs || rc=1; node web/scripts/check-runtime-routes.mjs || rc=1; exit "${rc}"'
 else
   echo "== website generated facts: SKIPPED, node is not on PATH; run cd web && npm run check:facts && node scripts/check-runtime-routes.mjs before pushing" >&2
 fi

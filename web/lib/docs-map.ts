@@ -330,7 +330,7 @@ export const DOC_TOPICS: DocTopic[] = [
     id: "runtime-reference",
     slug: "runtime-reference",
     label: { en: "Runtime API reference", zh: "Runtime API 参考" },
-    description: { en: "Read the HTTP routes, request fields and event contracts in the repository's main branch.", zh: "查阅仓库 main 分支中的 HTTP 路由、请求字段和事件约定。" },
+    description: { en: "Read the HTTP routes, request fields and event contracts in the repository.", zh: "查阅仓库 main 分支中的 HTTP 路由、请求字段和事件约定。" },
     repoSource: ["docs/RUNTIME_API.md", "docs/RUNTIME_ROUTES.md"],
     hasPage: true,
     category: "reference",

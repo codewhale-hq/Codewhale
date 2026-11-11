@@ -1,10 +1,10 @@
-import { AGENT_DOCS, buildTopicMarkdown } from "@/lib/agent-docs";
+import { RELEASE_DOCS, buildTopicMarkdown } from "@/lib/agent-docs";
 
 export const dynamic = "force-static";
 export const dynamicParams = false;
 
 export function generateStaticParams() {
-  return AGENT_DOCS.map((document) => ({ topic: `${document.slug}.md` }));
+  return RELEASE_DOCS.topics.map((document) => ({ topic: `${document.slug}.md` }));
 }
 
 export async function GET(_request: Request, { params }: { params: Promise<{ topic: string }> }) {
