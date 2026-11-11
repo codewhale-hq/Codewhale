@@ -116,21 +116,22 @@ def read_cell(cell, genome, expected_policy_id):
             and run_meta["budget_plan"].get("max_model_turns") != manifest.get("max_model_turns")):
         raise ValueError("runner and native budget ceilings differ")
     evaluations = list(evaluator.glob("*-evaluation.json"))
-    if len(evaluations) != 1:
-        raise ValueError("panel cell requires exactly one sealed candidate evaluation")
-    evaluation = read_json(evaluations[0])
-    if evaluation.get("policy_id") != expected_policy_id or evaluation.get("shadow_policy") != genome:
+    if len(evaluations) > 1:
+        raise ValueError("panel cell contains multiple candidate evaluations")
+    evaluation = read_json(evaluations[0]) if evaluations else None
+    if evaluation and (evaluation.get("policy_id") != expected_policy_id
+                       or evaluation.get("shadow_policy") != genome):
         raise ValueError("evaluated policy identity differs from panel genome")
-    if evaluation.get("baseline_sha") != manifest.get("baseline_sha"):
+    if evaluation and evaluation.get("baseline_sha") != manifest.get("baseline_sha"):
         raise ValueError("candidate baseline identity changed")
     workflow = last_run(directory / "workspace" / ".codewhale" / "workflow-runs.jsonl")
     outcome = workflow.get("result") or {}
     if outcome.get("baseline_sha") != manifest.get("baseline_sha"):
         raise ValueError("Workflow baseline differs from evaluator")
-    replay_path = evaluator / f"{evaluation['candidate_id']}-replay.json"
-    replay = read_json(replay_path) if replay_path.is_file() else None
+    replay_path = evaluator / f"{evaluation['candidate_id']}-replay.json" if evaluation else None
+    replay = read_json(replay_path) if replay_path and replay_path.is_file() else None
     review = outcome.get("review") or {}
-    identity = bool(replay and isinstance(evaluation.get("review_material_bytes"), int)
+    identity = bool(evaluation and replay and isinstance(evaluation.get("review_material_bytes"), int)
                     and evaluation["review_material_bytes"] > 0
                     and evaluation.get("review_complete") is True
                     and replay.get("review_complete") is True
@@ -157,10 +158,10 @@ def read_cell(cell, genome, expected_policy_id):
     return {"task_id": cell["task_id"], "seed": cell["seed"],
             "run_dir": str(directory), "run_id": workflow.get("run_id"),
             "workflow_status": workflow.get("status"),
-            "evaluation_id": evaluation.get("evaluation_id"),
-            "artifact_id": evaluation.get("artifact_id"),
+            "evaluation_id": evaluation.get("evaluation_id") if evaluation else None,
+            "artifact_id": evaluation.get("artifact_id") if evaluation else None,
             "task_identity": task_identity,
-            "public_status": evaluation.get("status"),
+            "public_status": evaluation.get("status") if evaluation else "MISSING",
             "replay_status": replay.get("status") if replay else "MISSING",
             "review_status": review.get("review_status", "MISSING"),
             "task_success": success, "full_cost": cost,

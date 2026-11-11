@@ -147,7 +147,16 @@ def main():
         assert selected["selected_policy_id"] == fallback["policies"][0]["policy_id"]
         assert selected["ranking"][0]["token_usage_complete"] is True
         assert selected["ranking"][0]["cost_complete"] is False
-        print(json.dumps({"status": "PASS", "checks": 4,
+        missing = root / "c-beta" / "evaluator" / "codewhale-evolution-c-beta" \
+            / "candidate_g0_1-evaluation.json"
+        missing.unlink()
+        fifth = invoke(plan_path, output)
+        assert fifth.returncode == 0, fifth.stderr
+        absent = json.loads(output.read_text())
+        assert absent["selected_policy_id"] == fallback["policies"][1]["policy_id"]
+        assert any(row["public_status"] == "MISSING" and not row["task_success"]
+                   for row in absent["rows"])
+        print(json.dumps({"status": "PASS", "checks": 5,
                           "scope": "receipt-contract-fixture-only"}))
 
 
