@@ -407,7 +407,7 @@
   },
   "crates/sandbox/src/bwrap.rs": {
     "path_canonicalize": 2,
-    "std_fs": 1
+    "std_fs": 3
   },
   "crates/sandbox/src/lib.rs": {
     "path_canonicalize": 1,
