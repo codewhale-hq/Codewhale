@@ -31,7 +31,7 @@ import {
   saveDraft,
   type AgentDraft,
 } from "./community-agent";
-import { runDigest, runDupes, runTriage } from "./community-agent-tasks";
+import { runDigest } from "./community-agent-tasks";
 import { FakeDraftClaimLock } from "./draft-claim-lock.fake";
 
 /** In-memory KV that pages like Cloudflare KV (max 1000 keys per list call). */
@@ -86,7 +86,7 @@ class FakeKv {
 function draft(overrides: Partial<AgentDraft> = {}): AgentDraft {
   return {
     id: "42",
-    type: "triage",
+    type: "linkcheck",
     targetNumber: 42,
     bodyEn: "English body",
     bodyZh: "中文正文",
@@ -405,99 +405,14 @@ describe("weekly digest publication requires maintainer approval", () => {
   });
 });
 
-describe("resolved drafts are not resurrected by the cron", () => {
-  function stubIssues(updatedAt: string) {
-    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
-      const url = inputUrl(input);
-      if (!url.includes("/issues?")) throw new Error(`unexpected URL: ${url}`);
-      return jsonResponse([{
-        number: 42,
-        title: "Issue",
-        body: "body",
-        updated_at: updatedAt,
-        html_url: "https://github.com/codewhale-hq/CodeWhale/issues/42",
-        labels: [],
-      }]);
-    }));
-  }
-
-  beforeEach(() => {
-    mocks.agentChat.mockResolvedValue({
-      content: JSON.stringify({ bodyEn: "review", bodyZh: "审阅" }),
-      usage: { input: 1, output: 1 },
-    });
-  });
-
-  it("does not redraft a discarded triage item", async () => {
-    const kv = new FakeKv();
-    await saveDraft(kv.draftStores, draft());
-    stubAdminEnv(kv);
-    const res = await act(kv, { action: "discard", draftKey: "draft:triage:42" });
-    expect(res.status).toBe(200);
-
-    stubIssues("2020-01-01T00:00:00.000Z");
-    await expect(runTriage({ CURATED_KV: kv, DRAFT_CLAIM_LOCK: new FakeDraftClaimLock(), DEEPSEEK_API_KEY: "k" })).resolves.toMatchObject({ processed: 0, skipped: 1 });
-    expect(mocks.agentChat).not.toHaveBeenCalled();
-    expect(kv.values.has("draft:triage:42")).toBe(false);
-  });
-
-  it("does not turn a posted triage draft back into a pending one after the issue updates", async () => {
-    const kv = new FakeKv();
-    await saveDraft(kv.draftStores, draft());
-    stubAdminEnv(kv);
-    stubGitHub();
-    const res = await act(kv, { action: "post", draftKey: "draft:triage:42", lang: "en" });
-    expect(res.status).toBe(200);
-
-    // Our own comment bumps updated_at past the draft's generatedAt.
-    stubIssues(new Date().toISOString());
-    await runTriage({ CURATED_KV: kv, DRAFT_CLAIM_LOCK: new FakeDraftClaimLock(), DEEPSEEK_API_KEY: "k" });
-    expect(mocks.agentChat).not.toHaveBeenCalled();
-    expect(JSON.parse(kv.values.get("draft:triage:42")!)).toMatchObject({ posted: true });
-  });
-
-  it("drafts again when the item has new activity well after the maintainer's decision", async () => {
-    const kv = new FakeKv();
-    await saveDraft(kv.draftStores, draft());
-    stubAdminEnv(kv);
-    stubGitHub();
-    expect((await act(kv, { action: "post", draftKey: "draft:triage:42" })).status).toBe(200);
-
-    // New commits or a reply a day later.
-    stubIssues(new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString());
-    await expect(runTriage({ CURATED_KV: kv, DRAFT_CLAIM_LOCK: new FakeDraftClaimLock(), DEEPSEEK_API_KEY: "k" })).resolves.toMatchObject({ processed: 1 });
-    expect(JSON.parse(kv.values.get("draft:triage:42")!)).toMatchObject({ posted: false, bodyEn: "review" });
-
-    // The fresh draft can be posted.
-    const posts = stubGitHub();
-    expect((await act(kv, { action: "post", draftKey: "draft:triage:42" })).status).toBe(200);
-    expect(posts).toHaveLength(1);
-  });
-
-  it("does not let the dupes run overwrite a posted dupes draft", async () => {
-    const kv = new FakeKv();
-    kv.values.set("draft:dupes:7", JSON.stringify(draft({ id: "7", type: "dupes", targetNumber: 7, posted: true })));
-    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(
-      [1, 2, 7].map((n) => ({ number: n, title: `t${n}`, updated_at: "2020-01-01T00:00:00.000Z", html_url: `u${n}` }))
-    )));
-    mocks.agentChat.mockResolvedValue({
-      content: JSON.stringify({ suggestions: [{ targetNumber: 1, duplicateNumber: 7, reason: "r", bodyEn: "dup", bodyZh: "重复" }] }),
-      usage: { input: 1, output: 1 },
-    });
-
-    await expect(runDupes({ CURATED_KV: kv, DRAFT_CLAIM_LOCK: new FakeDraftClaimLock(), DEEPSEEK_API_KEY: "k" })).resolves.toMatchObject({ ok: true, processed: 0 });
-    expect(JSON.parse(kv.values.get("draft:dupes:7")!)).toMatchObject({ posted: true });
-  });
-});
-
 describe("admin post action is idempotent and bounded", () => {
   it("refuses to post a draft that is already posted", async () => {
     const kv = new FakeKv();
-    kv.values.set("draft:triage:42", JSON.stringify(draft({ posted: true })));
+    kv.values.set("draft:linkcheck:42", JSON.stringify(draft({ posted: true })));
     stubAdminEnv(kv);
     const posts = stubGitHub();
 
-    const res = await act(kv, { action: "post", draftKey: "draft:triage:42" });
+    const res = await act(kv, { action: "post", draftKey: "draft:linkcheck:42" });
     expect(res.status).toBe(409);
     expect(posts).toEqual([]);
   });
@@ -507,13 +422,13 @@ describe("admin post action is idempotent and bounded", () => {
     await saveDraft(kv.draftStores, draft());
     stubAdminEnv(kv);
     const posts = stubGitHub();
-    kv.failPutsMatching = /^draft:triage:42$/;
+    kv.failPutsMatching = /^draft:linkcheck:42$/;
 
-    const first = await act(kv, { action: "post", draftKey: "draft:triage:42" });
+    const first = await act(kv, { action: "post", draftKey: "draft:linkcheck:42" });
     expect(first.status).toBe(200);
     await expect(first.json()).resolves.toMatchObject({ ok: true, action: "posted", warning: expect.any(String) });
 
-    const retry = await act(kv, { action: "post", draftKey: "draft:triage:42" });
+    const retry = await act(kv, { action: "post", draftKey: "draft:linkcheck:42" });
     expect(retry.status).toBe(409);
     expect(posts).toHaveLength(1);
   });
@@ -524,11 +439,11 @@ describe("admin post action is idempotent and bounded", () => {
     stubAdminEnv(kv);
     stubGitHub(422);
 
-    const failed = await act(kv, { action: "post", draftKey: "draft:triage:42" });
+    const failed = await act(kv, { action: "post", draftKey: "draft:linkcheck:42" });
     expect(failed.status).toBe(502);
 
     const posts = stubGitHub();
-    const retry = await act(kv, { action: "post", draftKey: "draft:triage:42" });
+    const retry = await act(kv, { action: "post", draftKey: "draft:linkcheck:42" });
     expect(retry.status).toBe(200);
     expect(posts).toHaveLength(1);
   });
@@ -541,12 +456,12 @@ describe("admin post action is idempotent and bounded", () => {
       stubAdminEnv(kv);
       const posts = stubGitHub(status);
 
-      const failed = await act(kv, { action: "post", draftKey: "draft:triage:42" });
+      const failed = await act(kv, { action: "post", draftKey: "draft:linkcheck:42" });
       expect(failed.status).toBe(502);
       await expect(failed.json()).resolves.toMatchObject({ error: expect.stringContaining("check GitHub before retrying") });
 
       stubGitHub();
-      const retry = await act(kv, { action: "post", draftKey: "draft:triage:42" });
+      const retry = await act(kv, { action: "post", draftKey: "draft:linkcheck:42" });
       expect(retry.status).toBe(409);
       expect(posts).toHaveLength(1);
     }
@@ -560,8 +475,8 @@ describe("admin post action is idempotent and bounded", () => {
     const posts = stubGitHub();
 
     const results = await Promise.all([
-      act(kv, { action: "post", draftKey: "draft:triage:42" }),
-      act(kv, { action: "post", draftKey: "draft:triage:42" }),
+      act(kv, { action: "post", draftKey: "draft:linkcheck:42" }),
+      act(kv, { action: "post", draftKey: "draft:linkcheck:42" }),
     ]);
     const statuses = results.map((r) => r.status);
     // This fake KV makes every write visible at once, so the claim is exact
@@ -572,10 +487,10 @@ describe("admin post action is idempotent and bounded", () => {
 
     // Refused claims are released, so the maintainer's retry posts exactly once.
     if (posts.length === 0) {
-      expect((await act(kv, { action: "post", draftKey: "draft:triage:42" })).status).toBe(200);
+      expect((await act(kv, { action: "post", draftKey: "draft:linkcheck:42" })).status).toBe(200);
     }
     expect(posts).toHaveLength(1);
-    expect((await act(kv, { action: "post", draftKey: "draft:triage:42" })).status).toBe(409);
+    expect((await act(kv, { action: "post", draftKey: "draft:linkcheck:42" })).status).toBe(409);
     expect(posts).toHaveLength(1);
   });
 
@@ -630,8 +545,8 @@ describe("admin post action is idempotent and bounded", () => {
     const posts = raceAfterAbsenceChecks(kv);
 
     const results = await Promise.all([
-      act(kv, { action: "post", draftKey: "draft:triage:42" }),
-      act(kv, { action: "post", draftKey: "draft:triage:42" }),
+      act(kv, { action: "post", draftKey: "draft:linkcheck:42" }),
+      act(kv, { action: "post", draftKey: "draft:linkcheck:42" }),
     ]);
 
     expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
@@ -646,15 +561,15 @@ describe("admin post action is idempotent and bounded", () => {
     const posts = raceAfterAbsenceChecks(kv);
 
     const [post, discard] = await Promise.all([
-      act(kv, { action: "post", draftKey: "draft:triage:42" }),
-      act(kv, { action: "discard", draftKey: "draft:triage:42" }),
+      act(kv, { action: "post", draftKey: "draft:linkcheck:42" }),
+      act(kv, { action: "discard", draftKey: "draft:linkcheck:42" }),
     ]);
 
     expect(post.status).toBe(200);
     expect(discard.status).toBe(409);
     expect(posts).toHaveLength(1);
-    expect(JSON.parse(kv.values.get("draft-resolved:triage:42")!)).toMatchObject({ state: "posted" });
-    expect(JSON.parse(kv.values.get("draft:triage:42")!)).toMatchObject({ posted: true });
+    expect(JSON.parse(kv.values.get("draft-resolved:linkcheck:42")!)).toMatchObject({ state: "posted" });
+    expect(JSON.parse(kv.values.get("draft:linkcheck:42")!)).toMatchObject({ posted: true });
   });
 
   it("claims without KV list, whose results can lag writes by up to a minute", async () => {
@@ -669,7 +584,7 @@ describe("admin post action is idempotent and bounded", () => {
       return realList(options);
     };
 
-    const res = await act(kv, { action: "post", draftKey: "draft:triage:42" });
+    const res = await act(kv, { action: "post", draftKey: "draft:linkcheck:42" });
     expect(res.status).toBe(200);
     expect(posts).toHaveLength(1);
     expect([...kv.values.keys()].filter((k) => k.startsWith("draft-claim:"))).toEqual([]);
@@ -688,12 +603,12 @@ describe("admin post action is idempotent and bounded", () => {
       return realGet(key);
     };
 
-    const first = await act(kv, { action: "post", draftKey: "draft:triage:42" });
+    const first = await act(kv, { action: "post", draftKey: "draft:linkcheck:42" });
     expect(first.status).toBe(503);
     expect(posts).toEqual([]);
     expect([...kv.values.keys()].filter((k) => k.startsWith("draft-claim:") || k.startsWith("draft-resolved:"))).toEqual([]);
 
-    const retry = await act(kv, { action: "post", draftKey: "draft:triage:42" });
+    const retry = await act(kv, { action: "post", draftKey: "draft:linkcheck:42" });
     expect(retry.status).toBe(200);
     expect(posts).toHaveLength(1);
   });
@@ -703,14 +618,14 @@ describe("admin post action is idempotent and bounded", () => {
     await saveDraft(kv.draftStores, draft());
     stubAdminEnv(kv);
     const posts = stubGitHub();
-    kv.values.set("draft-claim:triage:42", "other-request");
+    kv.values.set("draft-claim:linkcheck:42", "other-request");
 
     for (const action of ["post", "discard"]) {
-      const res = await act(kv, { action, draftKey: "draft:triage:42" });
+      const res = await act(kv, { action, draftKey: "draft:linkcheck:42" });
       expect(res.status).toBe(409);
     }
     expect(posts).toEqual([]);
-    expect(kv.values.get("draft-claim:triage:42")).toBe("other-request");
+    expect(kv.values.get("draft-claim:linkcheck:42")).toBe("other-request");
   });
 
   it("treats a repeated discard as a no-op, including one that sees the marker only at claim time", async () => {
@@ -719,27 +634,27 @@ describe("admin post action is idempotent and bounded", () => {
     stubAdminEnv(kv);
     stubGitHub();
 
-    const first = await act(kv, { action: "discard", draftKey: "draft:triage:42" });
+    const first = await act(kv, { action: "discard", draftKey: "draft:linkcheck:42" });
     expect(first.status).toBe(200);
     // A double click whose request still reads the draft (its delete not yet
     // visible), first past the marker, then with the marker missed by the
     // route's own check and seen only by the claim.
     const staleDraft = JSON.stringify(draft());
-    kv.values.set("draft:triage:42", staleDraft);
-    const again = await act(kv, { action: "discard", draftKey: "draft:triage:42" });
+    kv.values.set("draft:linkcheck:42", staleDraft);
+    const again = await act(kv, { action: "discard", draftKey: "draft:linkcheck:42" });
     expect(again.status).toBe(200);
     await expect(again.json()).resolves.toEqual({ ok: true, action: "discarded" });
 
-    kv.values.set("draft:triage:42", staleDraft);
+    kv.values.set("draft:linkcheck:42", staleDraft);
     const realGet = kv.get.bind(kv);
     let markerReads = 0;
     kv.get = async (key: string) => {
       if (key.startsWith("draft-resolved:") && ++markerReads === 1) return null;
       return realGet(key);
     };
-    const racing = await act(kv, { action: "discard", draftKey: "draft:triage:42" });
+    const racing = await act(kv, { action: "discard", draftKey: "draft:linkcheck:42" });
     expect(racing.status).toBe(200);
-    expect(JSON.parse(kv.values.get("draft-resolved:triage:42")!)).toMatchObject({ state: "discarded" });
+    expect(JSON.parse(kv.values.get("draft-resolved:linkcheck:42")!)).toMatchObject({ state: "discarded" });
     expect([...kv.values.keys()].filter((k) => k.startsWith("draft-claim:"))).toEqual([]);
   });
 
@@ -753,12 +668,12 @@ describe("admin post action is idempotent and bounded", () => {
     const posts = stubGitHub();
 
     for (const action of ["post", "discard"]) {
-      const res = await act(kv, { action, draftKey: "draft:triage:42", lang: "en", reviewedSha256: shownA });
+      const res = await act(kv, { action, draftKey: "draft:linkcheck:42", lang: "en", reviewedSha256: shownA });
       expect(res.status).toBe(409);
       await expect(res.json()).resolves.toMatchObject({ error: expect.stringContaining("changed") });
     }
     expect(posts).toEqual([]);
-    expect(JSON.parse(kv.values.get("draft:triage:42")!)).toMatchObject({ bodyEn: "unseen B", posted: false });
+    expect(JSON.parse(kv.values.get("draft:linkcheck:42")!)).toMatchObject({ bodyEn: "unseen B", posted: false });
     expect([...kv.values.keys()].filter((k) => k.startsWith("draft-resolved:") || k.startsWith("draft-claim:"))).toEqual([]);
   });
 
@@ -768,7 +683,7 @@ describe("admin post action is idempotent and bounded", () => {
     stubAdminEnv(kv);
     const posts = stubGitHub();
 
-    const res = await adminPost(adminRequest(postBody({ action: "post", draftKey: "draft:triage:42" })));
+    const res = await adminPost(adminRequest(postBody({ action: "post", draftKey: "draft:linkcheck:42" })));
     expect(res.status).toBe(400);
     expect(posts).toEqual([]);
   });
@@ -800,7 +715,7 @@ describe("admin post action is idempotent and bounded", () => {
 });
 
 describe("admin claims with the DRAFT_CLAIM_LOCK Durable Object bound", () => {
-  const KEY = "draft:triage:42";
+  const KEY = "draft:linkcheck:42";
 
   async function lockedAdmin(status = 201) {
     const kv = new FakeKv();
@@ -819,7 +734,7 @@ describe("admin claims with the DRAFT_CLAIM_LOCK Durable Object bound", () => {
   /** What a location whose KV has not yet seen the first request's writes reads. */
   function forgetDecision(kv: FakeKv) {
     kv.values.set(KEY, JSON.stringify(draft()));
-    kv.values.delete("draft-resolved:triage:42");
+    kv.values.delete("draft-resolved:linkcheck:42");
   }
 
   it("lets exactly one of several concurrent posts through, without KV claim keys", async () => {
@@ -857,7 +772,7 @@ describe("admin claims with the DRAFT_CLAIM_LOCK Durable Object bound", () => {
     stubGitHub();
 
     // Even without the KV "posting" marker, the lease refuses a retry...
-    kv.values.delete("draft-resolved:triage:42");
+    kv.values.delete("draft-resolved:linkcheck:42");
     expect((await act(kv, { action: "post", draftKey: KEY })).status).toBe(409);
     expect(posts).toHaveLength(1);
 
@@ -872,7 +787,7 @@ describe("admin claims with the DRAFT_CLAIM_LOCK Durable Object bound", () => {
     const { kv, lock } = await lockedAdmin(502);
     expect((await act(kv, { action: "post", draftKey: KEY })).status).toBe(502);
     lock.now += 15 * 60 * 1000;
-    kv.values.delete("draft-resolved:triage:42");
+    kv.values.delete("draft-resolved:linkcheck:42");
 
     // GitHub did create it: the late retry records it and posts nothing.
     const posts = stubGitHub(201, [{ id: 7, body: "English body" }]);
@@ -880,15 +795,15 @@ describe("admin claims with the DRAFT_CLAIM_LOCK Durable Object bound", () => {
     expect(retry.status).toBe(200);
     await expect(retry.json()).resolves.toMatchObject({ ok: true, action: "posted", warning: expect.stringContaining("not posted again") });
     expect(posts).toEqual([]);
-    expect(JSON.parse(kv.values.get("draft-resolved:triage:42")!).state).toBe("posted");
-    expect(kv.values.has("draft-post-unknown:triage:42")).toBe(false);
+    expect(JSON.parse(kv.values.get("draft-resolved:linkcheck:42")!).state).toBe("posted");
+    expect(kv.values.has("draft-post-unknown:linkcheck:42")).toBe(false);
   });
 
   it("posts nothing when the lookup for an earlier attempt fails, and frees the draft", async () => {
     const { kv, lock } = await lockedAdmin(502);
     expect((await act(kv, { action: "post", draftKey: KEY })).status).toBe(502);
     lock.now += 15 * 60 * 1000;
-    kv.values.delete("draft-resolved:triage:42");
+    kv.values.delete("draft-resolved:linkcheck:42");
 
     const posts: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -924,7 +839,7 @@ describe("admin claims with the DRAFT_CLAIM_LOCK Durable Object bound", () => {
     ]);
     expect(both.map((r) => r.status)).toEqual([200, 200]);
     for (const res of both) await expect(res.json()).resolves.toEqual({ ok: true, action: "discarded" });
-    expect(JSON.parse(kv.values.get("draft-resolved:triage:42")!)).toMatchObject({ state: "discarded" });
+    expect(JSON.parse(kv.values.get("draft-resolved:linkcheck:42")!)).toMatchObject({ state: "discarded" });
 
     // A third click served from stale KV hits the post-discard hold.
     forgetDecision(kv);
@@ -957,14 +872,14 @@ describe("admin claims with the DRAFT_CLAIM_LOCK Durable Object bound", () => {
     const res = await act(kv, { action: "post", draftKey: KEY });
     expect(res.status).toBe(500);
     expect(posts).toEqual([]);
-    expect(kv.values.get("draft-resolved:triage:42")).toBeUndefined();
+    expect(kv.values.get("draft-resolved:linkcheck:42")).toBeUndefined();
   });
 });
 
 describe("admin draft queue", () => {
   function fill(kv: FakeKv, count: number) {
     for (let i = 1; i <= count; i++) {
-      kv.values.set(`draft:triage:${i}`, JSON.stringify(draft({ id: String(i), targetNumber: i })));
+      kv.values.set(`draft:linkcheck:${i}`, JSON.stringify(draft({ id: String(i), targetNumber: i })));
     }
   }
 
@@ -997,7 +912,7 @@ describe("admin draft queue", () => {
 });
 
 describe("post retry durability and generation admission", () => {
-  const KEY = "draft:triage:42";
+  const KEY = "draft:linkcheck:42";
   async function prepared() {
     const kv = new FakeKv();
     await saveDraft(kv.draftStores, draft());
@@ -1025,8 +940,8 @@ describe("post retry durability and generation admission", () => {
     stubGitHub(504);
     expect((await act(kv, { action: "post", draftKey: KEY })).status).toBe(502);
     lock.now += 15 * 60 * 1000;
-    kv.values.delete("draft-resolved:triage:42");
-    kv.values.delete("draft-post-unknown:triage:42");
+    kv.values.delete("draft-resolved:linkcheck:42");
+    kv.values.delete("draft-post-unknown:linkcheck:42");
     const posts: string[] = [], pages: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = inputUrl(input);
@@ -1043,7 +958,7 @@ describe("post retry durability and generation admission", () => {
     stubGitHub(504);
     await act(kv, { action: "post", draftKey: KEY });
     lock.now += 15 * 60 * 1000;
-    kv.values.delete("draft-resolved:triage:42");
+    kv.values.delete("draft-resolved:linkcheck:42");
     const posts: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       if (init?.method === "POST") posts.push(inputUrl(input));
@@ -1057,33 +972,31 @@ describe("post retry durability and generation admission", () => {
     stubGitHub(504);
     await act(kv, { action: "post", draftKey: KEY });
     lock.now += 15 * 60 * 1000;
-    kv.values.delete("draft-resolved:triage:42");
+    kv.values.delete("draft-resolved:linkcheck:42");
     const posts = stubGitHub();
     expect((await act(kv, { action: "post", draftKey: KEY, editedBody: "different body" })).status).toBe(409);
     expect(posts).toEqual([]);
   });
-  it("admits one overlapping generation batch and holds completed KV propagation", async () => {
-    const kv = new FakeKv(), lock = new FakeDraftClaimLock();
-    const env = { CURATED_KV: kv, DRAFT_CLAIM_LOCK: lock, DEEPSEEK_API_KEY: "k" };
-    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse([{ number: 42, title: "issue", body: "body", updated_at: "2020-01-01T00:00:00.000Z", html_url: "https://github.com/codewhale-hq/CodeWhale/issues/42", labels: [] }])));
-    let finish!: (value: unknown) => void;
-    mocks.agentChat.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; })).mockResolvedValue({ content: JSON.stringify({ bodyEn: "other", bodyZh: "另一个" }), usage: { input: 1, output: 1 } });
-    const first = runTriage(env);
-    await vi.waitFor(() => expect(mocks.agentChat).toHaveBeenCalledOnce());
-    const second = await runTriage(env);
-    expect(second).toMatchObject({ processed: 0, skipped: 1 });
-    finish({ content: JSON.stringify({ bodyEn: "generated", bodyZh: "生成" }), usage: { input: 1, output: 1 } });
-    expect(await first).toMatchObject({ processed: 1 });
-    kv.values.delete(KEY); // another location's stale KV must not spend again.
-    expect(await runTriage(env)).toMatchObject({ processed: 0, skipped: 1 });
-    expect(mocks.agentChat).toHaveBeenCalledOnce();
-  });
   it("missing or failed durable generation admission starts no provider call", async () => {
     const kv = new FakeKv();
     const reads = vi.fn(); vi.stubGlobal("fetch", reads);
-    expect(await runTriage({ CURATED_KV: kv, DEEPSEEK_API_KEY: "k" })).toMatchObject({ skipped: true });
+    expect(await runDigest({ CURATED_KV: kv, DEEPSEEK_API_KEY: "k" })).toMatchObject({ skipped: true });
     const broken = { idFromName: () => ({ toString: () => "x" }), get: () => ({ act: async () => { throw new Error("down"); } }) };
-    expect(await runTriage({ CURATED_KV: kv, DRAFT_CLAIM_LOCK: broken, DEEPSEEK_API_KEY: "k" })).toMatchObject({ skipped: true });
+    expect(await runDigest({ CURATED_KV: kv, DRAFT_CLAIM_LOCK: broken, DEEPSEEK_API_KEY: "k" })).toMatchObject({ skipped: true });
     expect(reads).not.toHaveBeenCalled(); expect(mocks.agentChat).not.toHaveBeenCalled();
+  });
+  it("admits one overlapping digest generation and spends once", async () => {
+    const kv = new FakeKv();
+    const env = { CURATED_KV: kv, DRAFT_CLAIM_LOCK: new FakeDraftClaimLock(), DEEPSEEK_API_KEY: "k" };
+    stubDigestSources();
+    const output = { content: JSON.stringify(DIGEST_MODEL_OUTPUT), usage: { input: 1, output: 1 } };
+    let finish!: (value: unknown) => void;
+    mocks.agentChat.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; })).mockResolvedValue(output);
+    const first = runDigest(env);
+    await vi.waitFor(() => expect(mocks.agentChat).toHaveBeenCalledOnce());
+    expect(await runDigest(env)).toMatchObject({ processed: 0, skipped: 1 });
+    finish(output);
+    await first;
+    expect(mocks.agentChat).toHaveBeenCalledOnce();
   });
 });

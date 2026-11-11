@@ -254,16 +254,12 @@ fn parse_goal_budget(text: &str) -> (String, Option<u32>) {
     // `budget:` followed by something that is not a number is prose that
     // belongs to the objective — truncating it would silently rewrite what
     // the user asked for.
-    for separator in [" | budget:", " budget:", "budget:"] {
-        if let Some((objective, rest)) = text.split_once(separator) {
-            let budget = rest
-                .split_whitespace()
-                .next()
-                .and_then(|value| value.parse::<u32>().ok());
-            if let Some(budget) = budget {
-                return (objective.trim().to_string(), Some(budget));
-            }
-        }
+    if let Some((objective, rest)) = text.rsplit_once("budget:")
+        && let Ok(budget) = rest.trim().parse::<u32>()
+    {
+        let objective = objective.trim_end();
+        let objective = objective.strip_suffix('|').unwrap_or(objective);
+        return (objective.trim().to_string(), Some(budget));
     }
     (text.trim().to_string(), None)
 }
@@ -525,6 +521,34 @@ mod tests {
                     })
                 ));
             }
+        }
+    }
+
+    #[test]
+    fn only_a_whole_numeric_final_budget_suffix_is_a_budget() {
+        for (input, expected_objective, expected_budget) in [
+            (
+                "Keep the budget: 5 engineers and ship login",
+                "Keep the budget: 5 engineers and ship login",
+                None,
+            ),
+            (
+                "Fix budget: label budget: 5000",
+                "Fix budget: label",
+                Some(5000),
+            ),
+            (
+                "Ship it budget: 99999999999",
+                "Ship it budget: 99999999999",
+                None,
+            ),
+            ("Ship 0.9.10 | budget:5000 ", "Ship 0.9.10", Some(5000)),
+        ] {
+            assert_eq!(
+                parse_goal_budget(input),
+                (expected_objective.to_string(), expected_budget),
+                "{input:?}"
+            );
         }
     }
 

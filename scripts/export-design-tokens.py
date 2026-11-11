@@ -139,6 +139,9 @@ def gpui_geometry(data, digest):
                          f"{e[kind + '_blur_px']}px rgb(0 0 0 / {e[kind + '_alpha_' + mode]:g});")
     for name, value in data["breakpoints"].items():
         lines.append(f"  --gpui-breakpoint-{name.removesuffix('_px')}: {value}px;")
+    for mode, stops in data["water"].items():
+        ramp = ", ".join(f"#{stop['color']} {stop['at']}%" for stop in stops)
+        lines.append(f"  --gpui-water-{mode}: linear-gradient(180deg, {ramp});")
     rise, deep = data["ombre"]["rise"], data["ombre"]["deep"]
     lines.append(f"  --gpui-ombre: linear-gradient(135deg, #{rise}, #{deep});")
     fallbacks = ", ".join(json.dumps(v) for v in data["typography"]["fallbacks"])

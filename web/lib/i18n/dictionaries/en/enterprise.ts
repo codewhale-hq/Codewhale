@@ -63,7 +63,7 @@ export const enterprise: EnterpriseDict = {
   today: [
     {
       title: "An agent for any model",
-      body: "Hosted providers, any OpenAI-compatible endpoint, and models you serve yourself with vLLM, SGLang or Ollama.",
+      body: "Hosted providers from DeepSeek, Anthropic, OpenAI and Google, any OpenAI-compatible endpoint, and models you serve yourself.",
     },
     {
       title: "Saved sessions with receipts",

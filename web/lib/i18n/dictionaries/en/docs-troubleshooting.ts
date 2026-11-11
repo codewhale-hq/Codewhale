@@ -103,7 +103,7 @@ codewhale -c                  # the latest session in this folder`,
           list: [
             "After changing `mcp.json` or a server's credentials, run `/mcp reload`. `/mcp validate` only refreshes what you see.",
             "Run the server's command yourself in a shell to confirm it starts.",
-            "If the config file is missing or broken, `codewhale mcp init --force` writes a fresh one.",
+            "If `mcp.json` is missing, `codewhale mcp init` can create it. Back up an existing file before repair; `--force` replaces its configuration.",
           ],
         },
       ],
@@ -118,11 +118,11 @@ docker run --rm -it \\
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \\
   -v codewhale-home:/home/codewhale/.codewhale \\
   -v "$PWD:/workspace" -w /workspace \\
-  ghcr.io/codewhale-hq/codewhale:latest`,
+  ghcr.io/hmbown/codewhale:v0.10.0`,
           lang: "Terminal",
         },
         {
-          p: "The image runs as a non-root user and keeps your settings and sessions in the named volume. Pin a release tag instead of `latest` for repeatable setups, use one volume per project, and never bake keys into an image.",
+          p: "This uses the image and v0.10.0 tag documented in the [Docker guide](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/DOCKER.md), not the 0.10.3 source candidate. It runs as a non-root user; keep settings in the named volume, use one volume per project and never bake keys into the image.",
         },
       ],
     },

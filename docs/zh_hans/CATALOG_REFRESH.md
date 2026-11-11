@@ -19,7 +19,7 @@ RFC [`rfcs/UNIFIED_PROVIDER_LOGIN.md`](../rfcs/UNIFIED_PROVIDER_LOGIN.md)。
 |---|---|
 | 用户想刷新模型，需要一个专门的模型吗？ | **不需要。** |
 | Codewhale 会自动更新公开的模型目录吗？ | **会，在运行时更新**，数据来自 [Models.dev](https://models.dev/catalog.json)，TTL 约 24 小时。 |
-| 离线内置种子会在 CI 里自动提交吗？ | **不会，但它是生成出来的。** 维护者运行 `seed lock` 和 `seed render` 后提 PR；手工改动会被 CI 拒绝（`seed render --check`）。 |
+| 离线内置种子会自动刷新吗？ | **会，通过 PR。** `.github/workflows/catalog-refresh.yml` 每天运行，重新生成种子并打开一个 PR，由维护者审阅合并，不会直接推送到 `main`。手工改动仍会被 CI 拒绝（`seed render --check`）。 |
 | 应该让 LLM 重写目录 JSON 吗？ | **不要。** 数据摄取是确定性的公开 JSON。LLM 能*审阅* PR，不能当事实来源。 |
 
 ---
@@ -226,25 +226,65 @@ spec 只负责选择和映射；它不能写出与上游不一致的值（未知
 
 ---
 
-## 推荐的定时任务（尚未发布）
+## 定时任务
 
-目标：让**仓库内的离线种子**不至于腐烂，同时不给 CI 改写密钥的权力，
-也不放任 LLM 自行改写。
+`.github/workflows/catalog-refresh.yml` 每天 05:17 UTC 运行，也可手动触发
+（`workflow_dispatch`）。它是确定性的 Python 和 shell，没有任何模型来写行，
+也从不推送到 `main`。
 
 ```text
-cron (daily or weekly)
-  → fetch Models.dev (public, no keys)
-  → validate shape + scrub
-  → compare against crates/config/assets/models_dev.bundled.json
-     (and optionally report new ids vs provider defaults)
-  → if material change: open PR
-       title: chore(catalog): refresh Models.dev offline seed
-  → optional: include an agent-written, human-readable diff summary in the PR body
+cron 或手动触发
+  → 抓取一次 https://models.dev/catalog.json（公开，无密钥）
+  → seed discover --write   从厂商白名单发现新的文本模型
+  → seed lock、seed render  重新锁定引用行，重新生成种子
+  → node web/scripts/derive-facts.mjs   重新生成 web/lib/facts.generated.ts
+  → 仅当有实质变化，或 main 上的锁定已超过 7 天，才打开 PR
+  → 检查：seed render --check、seed age、脚本单元测试、check-facts
+  → 推送 `catalog-refresh` 分支，并打开或更新唯一的 PR
 ```
 
-这样的任务会运行 `seed lock` 和 `seed render` 并提 PR。用默认的
-`GITHUB_TOKEN` 打开的 PR 不会触发 CI，所以它需要 bot token 或 GitHub App，
-这得由维护者来配置。
+PR 用 GitHub App 安装令牌创建，凭据来自 `vars.CODEWHALE_APP_ID` 和
+`secrets.CODEWHALE_APP_PRIVATE_KEY`（与 `codewhale-review.yml` 相同），因此 CI 会在
+PR 上运行。令牌只有 contents 和 pull-request 写权限。工作流只由 `schedule` 和
+`workflow_dispatch` 触发，不使用 `pull_request_target`，也不在 fork 上运行。
+若生成行之后检查失败，PR 会以草稿形式打开，失败信息在任务日志中；若 `seed lock`
+本身拒绝（引用行在上游消失、描述符默认值与模型列表不一致），任务失败，不会打开 PR。
+
+### `seed discover`
+
+```bash
+python3 scripts/catalog_models_dev.py seed discover            # 只报告
+python3 scripts/catalog_models_dev.py seed discover --write    # 写入这些行
+```
+
+它列出在时间窗口内发布（种子规范里的 `[discover].since_days`，默认 45，或
+`--since YYYY-MM-DD`）、而公开列表尚未收录的模型。厂商白名单是脚本里的
+`DISCOVER_VENDORS`：anthropic、openai、google、deepseek、xai、moonshotai、zai、
+minimax、alibaba（仅 Qwen 系 id）、mistral（仅 Mistral 系 id）、meta、xiaomi、
+stepfun。符合条件的行需要有 `release_date`、上下文上限、工具调用和纯文本输出，
+未被弃用，且不是带日期的快照、`-latest` 别名或嵌入、语音、图像、实时之类的 id。
+已在 `reviewed.public_models`、其别名或 `reviewed.intrinsic` 中的 id 不会再次提出，
+`[discover].skip` 中的 id 也不会，维护者靠它永久拒绝某个模型。
+
+加 `--write` 时，对每个新模型追加一条 `reviewed.intrinsic`（上下文、输出上限、
+推理、系列，均来自 models.dev，来源标注 `unreviewed`）、一行
+`reviewed.public_models`（`added_at` 为 models.dev 的 `release_date`），以及在厂商有种子
+提供商且该 id 尚未收录时，把 id 加入该提供商的 `models` 列表。没有种子提供商的厂商
+（Mistral、Qwen）只得到公开列表的行。
+
+### 已知限制
+
+- 网站不会自行部署。PR 合入 `main` 后，Worker 每 6 小时的 facts-drift 任务会读到新数据
+  （生产环境需要 `GITHUB_TOKEN`），部署仍是手动触发 `web.yml`。
+- 需要在本仓库安装 GitHub App（`CODEWHALE_APP_ID`、`CODEWHALE_APP_PRIVATE_KEY`），并授予
+  contents 与 pull-request 写权限；否则第一步就会失败，不会有任何提议。
+- 发现只依据 id 和 models.dev 元数据，无法判断厂商是否已向 API 用户开放；上游错误的
+  日期或上限会变成我们的行，需要人对照厂商文档审阅。`/model` 选择别名、参考价格、
+  Rust 定价决策、快速模式的计费策略等需要人判断的事实不会生成。
+- 新上架的模型可能按同系列规则超过某个提供商的默认值，现有的描述符/种子默认值检查
+  会把它标出来，表现为草稿 PR 上失败的检查，由人决定。
+- 它只会添加。models.dev 删除或弃用的模型会一直保留，直到有人手工修改规范和修正文件。
+- 公开列表反映的是 `main` 上的目录，而不是用户本机的实时选择器。
 
 ### 自动化的范围内
 
@@ -260,13 +300,6 @@ cron (daily or weekly)
 - 强推 `main`，或在默认分支上悄悄改写资产
 - 把 Models.dev 当作 OAuth 范围路由的唯一事实来源（Codex 名单仍特殊处理）
 
-### 建议的工作流位置
-
-`CodeWhale/.github/workflows/catalog-refresh.yml`（或类似名字），复用
-`scripts/catalog_models_dev.py`，但前提是先做一次有意为之的**写安全**扩展，
-让它只在 CI 里运行、用 bot token 创建 PR；如果写入会落进仓库，
-即便走 `workflow_dispatch`，也仍需审阅。
-
 如今的 nightly（`/.github/workflows/nightly.yml`）只构建发布产物，
 **不**刷新目录。
 
@@ -279,7 +312,7 @@ cron (daily or weekly)
 | 任务 | 合适的工具 |
 |---|---|
 | 让用户看到的已知模型、窗口和价格跟着 Models.dev 保持新鲜 | 运行时实时抓取（已发布） |
-| 让离线种子和发布资产在 git 中保持最新 | 定时 CI → PR（待建设） |
+| 让离线种子和发布资产在 git 中保持最新 | 定时 CI → PR（`catalog-refresh.yml`） |
 | 决定是否上调产品默认模型 | 人，或智能体（agent）在 PR 上*审阅* |
 | 接入全新的提供商类型 / 方言 | 人工 PR + 测试 |
 

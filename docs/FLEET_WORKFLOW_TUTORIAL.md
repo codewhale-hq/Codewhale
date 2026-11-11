@@ -10,7 +10,7 @@ of the problem:
 - **Workflow** describes orchestration: phases, branches, reducers, loops, and
   agent leaves that can dispatch through the fleet/sub-agent runtime.
 
-**Default product path:** ask in natural language. Operate handles small or
+**Default product path:** ask in natural language. Work handles small or
 tightly coupled work directly under the active posture. Multi-step delegation
 uses a compact Workflow plan with named steps, dependencies, bounded scopes,
 and completion checks; results and evidence pass to the steps that need them.
@@ -85,20 +85,31 @@ trust; fleet identity carries neither.
       "instructions": "Read docs/FLEET.md and docs/WORKFLOW_AUTHORING.md. Report the command surfaces, current limitations, and any confusing gaps.",
       "worker": {
         "role": "reviewer",
-        "profile": "reviewer",
-        "tools": ["rg", "sed", "git"],
-        "model": "deepseek-v4-flash"
+        "tools": [
+          "rg",
+          "sed",
+          "git"
+        ]
       },
       "workspace": {
-        "required_files": ["docs/FLEET.md", "docs/WORKFLOW_AUTHORING.md"],
+        "required_files": [
+          "docs/FLEET.md",
+          "docs/WORKFLOW_AUTHORING.md"
+        ],
         "writable_paths": [],
         "environment": {
           "required": [],
           "allowlist": []
         }
       },
-      "input_files": ["docs/FLEET.md", "docs/WORKFLOW_AUTHORING.md"],
-      "expected_artifacts": ["log", "report"],
+      "input_files": [
+        "docs/FLEET.md",
+        "docs/WORKFLOW_AUTHORING.md"
+      ],
+      "expected_artifacts": [
+        "log",
+        "report"
+      ],
       "scorer": {
         "kind": "manual"
       },
@@ -113,16 +124,26 @@ trust; fleet identity carries neither.
       "instructions": "Write a concise Markdown note with the missing fleet + Workflow tutorial steps. Do not edit public docs unless explicitly asked.",
       "worker": {
         "role": "builder",
-        "tools": ["rg", "sed"]
+        "tools": [
+          "rg",
+          "sed"
+        ]
       },
       "workspace": {
-        "required_files": ["docs/FLEET.md"],
-        "writable_paths": [".codewhale/fleet"],
+        "required_files": [
+          "docs/FLEET.md"
+        ],
+        "writable_paths": [
+          ".codewhale/fleet"
+        ],
         "environment": {
           "allowlist": []
         }
       },
-      "expected_artifacts": ["log", "report"],
+      "expected_artifacts": [
+        "log",
+        "report"
+      ],
       "scorer": {
         "kind": "manual"
       }
@@ -131,7 +152,10 @@ trust; fleet identity carries neither.
 }
 ```
 
-Save it as `tasks.json`.
+Save it as `tasks.json`. These workers inherit the active provider and model;
+connect a provider before validating their route. `--check` validates the
+specification and route without creating or launching a run; it does not
+prove that credentials or a remote model work.
 
 Common task fields:
 

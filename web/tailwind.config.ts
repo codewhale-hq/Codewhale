@@ -49,9 +49,8 @@ export default {
         ),
       },
       fontFamily: {
-        // One face, as GPUI set_theme: every family resolves through the
-        // role stacks in app/styles/tokens-roles.css (Shannon Sans subsets
-        // loaded in app/[locale]/layout.tsx; system mono for code).
+        // Every family resolves through the role stacks in
+        // app/styles/tokens-roles.css (Geist faces loaded in app/[locale]/layout.tsx).
         display: ["var(--font-display)"],
         body: ["var(--font-body)"],
         cjk: ["var(--font-cjk)"],

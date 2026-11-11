@@ -460,32 +460,18 @@ pub fn config(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommand
         let name = tokens.first().copied().unwrap_or("");
         return to_result(facet.apply_preset(name, persist), &mut parts, &prepared);
     }
-    let parts2 = raw.splitn(2, ' ').collect::<Vec<&str>>();
-    if parts2.len() == 1 {
-        let token = parts2[0];
-        if matches!(
-            token.to_ascii_lowercase().as_str(),
-            "tui" | "web" | "native"
-        ) {
-            return ConfigCommandResult::action(ConfigAction::OpenConfigView);
+    let key = first_word.unwrap_or(raw);
+    match raw_words.next() {
+        None => {
+            if matches!(key.to_ascii_lowercase().as_str(), "tui" | "web" | "native") {
+                return ConfigCommandResult::action(ConfigAction::OpenConfigView);
+            }
+            to_result(facet.get_value(key), &mut parts, &prepared)
         }
-        to_result(facet.get_value(token), &mut parts, &prepared)
-    } else {
-        let raw_value = parts2[1];
-        let persist = raw_value.ends_with(" --save") || raw_value.ends_with(" -s");
-        let value = if persist {
-            raw_value
-                .strip_suffix(" --save")
-                .or_else(|| raw_value.strip_suffix(" -s"))
-                .unwrap_or(raw_value)
-        } else {
-            raw_value
-        };
-        to_result(
-            facet.set_value(parts2[0], value, persist),
-            &mut parts,
-            &prepared,
-        )
+        Some(rest) => {
+            let (value, persist) = split_save_flag(rest);
+            to_result(facet.set_value(key, value, persist), &mut parts, &prepared)
+        }
     }
 }
 
@@ -1427,6 +1413,14 @@ fn parse_search_rest(rest: &str) -> (SearchOp<'_>, bool) {
     (op, persist)
 }
 
+fn split_save_flag(rest: &str) -> (&str, bool) {
+    let rest = rest.trim();
+    match rest.rsplit_once(char::is_whitespace) {
+        Some((value, "--save" | "-s")) => (value.trim_end(), true),
+        _ => (rest, false),
+    }
+}
+
 /// A parsed `/config notifications…` tail.
 #[derive(Debug, PartialEq, Eq)]
 enum NotificationsOp<'a> {
@@ -1437,10 +1431,7 @@ enum NotificationsOp<'a> {
 
 /// Parse the `/config notifications …` grammar in the command.
 fn parse_notifications_rest(rest: &str) -> (NotificationsOp<'_>, bool) {
-    let (rest, persist) = rest
-        .strip_suffix(" --save")
-        .or_else(|| rest.strip_suffix(" -s"))
-        .map_or((rest, false), |value| (value.trim_end(), true));
+    let (rest, persist) = split_save_flag(rest);
     let op = if rest.is_empty() || rest == "status" {
         NotificationsOp::Status
     } else {
@@ -2012,6 +2003,26 @@ mod tests {
             (SearchOp::Set("tavily"), true)
         );
         assert_eq!(parse_search_rest("a b"), (SearchOp::Usage, false));
+    }
+
+    #[test]
+    fn save_flag_splits_on_any_whitespace() {
+        assert_eq!(
+            split_save_flag("deepseek-v4\u{3000}--save"),
+            ("deepseek-v4", true)
+        );
+        assert_eq!(split_save_flag("on\t-s"), ("on", true));
+        assert_eq!(split_save_flag("--save"), ("--save", false));
+        assert_eq!(
+            parse_notifications_rest("method\u{3000}sound\u{3000}--save"),
+            (
+                NotificationsOp::Set {
+                    key: "method",
+                    value: "sound",
+                },
+                true,
+            )
+        );
     }
 
     #[test]

@@ -121,25 +121,11 @@ const HOME_PROSE_KEYS = [
   "heroIntro",
   "getCodewhale",
   "heroInstallAria",
-  "exploreProduct",
   "shotPreview",
   "screenshotAlt",
-  "gainHeading",
-  "gainLede",
   "modelsHeading",
-  "modelsBody",
   "modelsLink",
   "startHeading",
-  "startLede",
-  "startGuideLink",
-  "startVocabularyLink",
-  "availabilityHeading",
-  "availabilityLede",
-  "availabilityNote",
-  "surfacesHeading",
-  "runtimeLink",
-  "installBandHeading",
-  "installGuideLink",
 ] as const satisfies readonly (keyof HomeDict)[];
 
 function templateTokens(value: string): string[] {
@@ -296,11 +282,14 @@ describe("website dictionaries", () => {
       // `metaTitle` rather than `overviewTitle` because docs/mcp's heading is
       // the code-owned literal `MCP` and stays in the page.
       expect(get("zh").metaTitle, `zh ${label}`).not.toBe(reference.metaTitle);
-      // Every other locale renders English today, exactly as the `isZh`
-      // ternaries in the page did before the move.
-      for (const locale of ["ja", "fr", "ar", "und"]) {
-        expect(get(locale), `${locale} ${label}`).toBe(reference);
+      // Roadmap and Contribute ship in every routed locale; the other page
+      // dictionaries still render English outside en and zh.
+      const translated = label === "roadmap" || label === "contribute";
+      for (const locale of ["ja", "fr", "ar"]) {
+        if (translated) expect(get(locale).metaTitle, `${locale} ${label}`).not.toBe(reference.metaTitle);
+        else expect(get(locale), `${locale} ${label}`).toBe(reference);
       }
+      expect(get("und"), `und ${label}`).toBe(reference);
     }
   });
 
@@ -390,30 +379,6 @@ describe("website dictionaries", () => {
     expect(pickText(pair, "ja"), "non-zh locales read the English side").toBe("English");
     expect(pickTextLocale("zh")).toBe("zh");
     for (const locale of ["en", "ja", "ar"]) expect(pickTextLocale(locale)).toBe("en");
-  });
-
-  it("keeps the gain, models, availability, and surface lists structurally aligned", () => {
-    for (const locale of DICTIONARY_LOCALES) {
-      const home = getHome(locale);
-      expect(home.gain, `${locale} gain`).toHaveLength(3);
-      expect(home.modelsFacts, `${locale} modelsFacts`).toHaveLength(4);
-      expect(home.availability, `${locale} availability`).toHaveLength(4);
-      expect(home.surfaces, `${locale} surfaces`).toHaveLength(5);
-      for (const row of [...home.gain, ...home.modelsFacts, ...home.availability, ...home.surfaces]) {
-        for (const cell of row) {
-          if (cell === undefined) continue;
-          expect(cell.length, `${locale} empty cell`).toBeGreaterThan(0);
-        }
-      }
-    }
-  });
-
-  it("links the community VS Code GUI to its Marketplace listing in every locale", () => {
-    const marketplace = "https://marketplace.visualstudio.com/items?itemName=HengQuWorld.brotherwhale-vscode";
-    for (const locale of ["en", ...DICTIONARY_LOCALES]) {
-      const row = getHome(locale).availability.find(([surface]) => surface.startsWith("CodeWhale GUI"));
-      expect(row?.[3], `${locale} GUI Marketplace link`).toBe(marketplace);
-    }
   });
 
   it("falls back to the English dictionary for unrouted locales — no missing markers", () => {

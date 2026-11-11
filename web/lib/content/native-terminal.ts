@@ -58,7 +58,6 @@ export const NATIVE_TERMINAL_COPY = {
   showDetail: { en: "Focus on this panel", zh: "聚焦此面板" },
   detailLabel: { en: "Panel detail from the captured terminal", zh: "终端实录中的面板详情" },
   scrollHint: { en: "Scroll sideways to see the full terminal.", zh: "左右滚动，查看完整终端。" },
-  componentsLink: { en: "Build with these components", zh: "使用这些组件构建应用" },
 } satisfies Record<string, LocalizedText>;
 
 export function getNativeTerminalCopy(locale: string) {
@@ -70,7 +69,6 @@ export function getNativeTerminalCopy(locale: string) {
     showDetail: pickText(NATIVE_TERMINAL_COPY.showDetail, locale),
     detailLabel: pickText(NATIVE_TERMINAL_COPY.detailLabel, locale),
     scrollHint: pickText(NATIVE_TERMINAL_COPY.scrollHint, locale),
-    componentsLink: pickText(NATIVE_TERMINAL_COPY.componentsLink, locale),
     views: Object.fromEntries(Object.entries(NATIVE_TERMINAL_VIEWS).map(([id, view]) => [id, {
       label: pickText(view.label, locale),
       description: pickText(view.description, locale),

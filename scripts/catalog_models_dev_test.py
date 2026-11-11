@@ -338,6 +338,66 @@ class SeedGeneratorTests(unittest.TestCase):
             self.assertIn(message, proc.stderr)
 
 
+class SeedDiscoverTests(unittest.TestCase):
+    @staticmethod
+    def row(release: str, **extra: object) -> dict:
+        base = {
+            "release_date": release,
+            "tool_call": True,
+            "reasoning": True,
+            "modalities": {"input": ["text"], "output": ["text"]},
+            "limit": {"context": 200000, "output": 8000},
+        }
+        base.update(extra)
+        return base
+
+    def test_candidates_apply_vendor_window_and_chat_filters(self) -> None:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import catalog_models_dev as mod
+
+        upstream = {
+            "providers": {
+                "anthropic": {
+                    "models": {
+                        "claude-new-1": self.row("2026-11-09"),
+                        "claude-old-1": self.row("2026-01-01"),
+                        "claude-new-1-20261109": self.row("2026-11-09"),
+                        "claude-listed": self.row("2026-11-09"),
+                        "claude-skipped": self.row("2026-11-09"),
+                        "claude-image-1": self.row("2026-11-09", modalities={"output": ["image"]}),
+                    }
+                },
+                "mistral": {
+                    "models": {
+                        "mistral-new": self.row("2026-11-09"),
+                        "deepseek-hosted": self.row("2026-11-09"),
+                    }
+                },
+                "openrouter": {"models": {"vendor/not-allowlisted": self.row("2026-11-09")}},
+            }
+        }
+        reviewed = {
+            "intrinsic": {},
+            "public_models": [{"id": "claude-listed", "aliases": ["claude-listed-alias"]}],
+        }
+        found = mod.discover_candidates(upstream, reviewed, ["claude-skipped"], "2026-10-01")
+        self.assertEqual([item["id"] for item in found], ["claude-new-1", "mistral-new"])
+        self.assertEqual(found[0]["label"], "Anthropic")
+        self.assertIsNone(found[1]["spec_provider"])
+
+    def test_spec_append_targets_one_provider_array(self) -> None:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import catalog_models_dev as mod
+
+        text = (
+            '[[providers]]\nid = "a"\nmodels = [\n  "a1",\n]\n\n'
+            '[[providers]]\nid = "b"\nmodels = [\n  "b1",\n]\n'
+        )
+        out = mod.append_spec_model(text, "a", "a2")
+        self.assertIn('id = "a"\nmodels = [\n  "a1",\n  "a2",\n]', out)
+        self.assertIn('id = "b"\nmodels = [\n  "b1",\n]', out)
+
+
 class CommittedSeedTests(unittest.TestCase):
     def test_committed_seed_is_the_rendered_seed(self) -> None:
         proc = run_script("seed", "render", "--check")
@@ -349,7 +409,8 @@ class CommittedSeedTests(unittest.TestCase):
         self.assertEqual(data["_reviewed"], source["reviewed"])
         lock = json.loads((ROOT / "scripts/catalog/models_dev_seed.lock.json").read_text())
         self.assertIn(f"fetched {lock['source']['fetched_at']}", data["_meta"]["upstream"])
-        self.assertEqual(len(data["_reviewed"]["public_models"]), 92)
+        ids = [row["id"] for row in data["_reviewed"]["public_models"]]
+        self.assertEqual(len(ids), len(set(ids)))
 
     def test_reviewed_malformed_and_duplicate_public_facts_are_refused(self) -> None:
         sys.path.insert(0, str(ROOT / "scripts"))

@@ -14,6 +14,9 @@ const ROUTE_CONTENT_LOCALES: Readonly<Record<string, readonly string[]>> = {
   "/": locales,
   "/install": ["en"],
   "/features": ["en"],
+  "/docs/runtime-reference": ["en"],
+  "/docs/workflow-tutorial": ["en"],
+  "/docs/plugin-authoring": ["en"],
   "/computer-use": locales.filter(hasComputerUseTranslation),
 };
 

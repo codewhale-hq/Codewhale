@@ -6,18 +6,6 @@
 .check-row { display: flex; align-items: flex-start; gap: var(--space-3); font-size: var(--text-ui); line-height: 1.6; }
 .check-row .icon { margin-top: 0.2em; color: var(--live); }
 
-/* The models table's reasoning label. */
-.models-reasoning {
-  display: inline-block;
-  margin-inline-start: var(--space-2);
-  padding: 0 0.375rem;
-  color: var(--muted);
-  font-size: var(--text-caption);
-  font-weight: 500;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-control);
-}
-
 /* /install: the quick plate above the verified guide. */
 .install-head {
   width: var(--container);
@@ -286,3 +274,6 @@
 
 .github-star { flex-wrap: wrap; }
 .github-star-count { border-inline-start: 1px solid var(--line-strong); padding-inline-start: var(--space-3); font-family: var(--font-mono); }
+
+.onboarding-check { display: grid; gap: var(--space-2); margin-block: var(--space-4); max-inline-size: 100%; }
+.onboarding-check .btn { white-space: normal; max-inline-size: 100%; padding-block: var(--space-2); text-align: start; justify-self: start; }

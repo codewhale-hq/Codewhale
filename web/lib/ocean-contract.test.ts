@@ -26,11 +26,17 @@ describe("the whale", () => {
     expect(web("components/whale-pose.tsx")).toContain(POSES.map((p) => `"${p}"`).join(",\n  "));
   });
 
-  it("uses the brand mark for the site icons, not a tile", () => {
+  it("uses the mono mark as the site identity and the colored whale only as a character", () => {
     const icon = web("app/icon.svg");
-    expect(icon).toContain('stop-color="#1E8FD8"');
+    expect(icon).toContain("prefers-color-scheme:dark");
+    expect(icon).not.toContain("#1E8FD8");
     expect(icon).not.toMatch(/<rect/);
     expect(web("app/manifest.ts")).not.toContain("#142352");
+    for (const file of ["components/nav.tsx", "components/footer.tsx"]) {
+      expect(web(file), file).toContain("brand-mark");
+      expect(web(file), file).not.toContain("WhalePose");
+    }
+    expect(web("app/styles/shell.css")).toContain('mask: url("/brand/mark-mono.svg")');
   });
 
   it("keeps the founder's 404 poster, seals and recovered water drawing", () => {
@@ -57,7 +63,7 @@ describe("the horizon", () => {
   });
 
   it("paints the stage with the dark set in both appearances", () => {
-    expect(CSS).toMatch(/\.stage,\s*\.site-footer\s*\{[^}]*--ring: var\(--kit-bioluminescence\);[^}]*color-scheme: dark;/);
+    expect(CSS).toMatch(/\.stage,\s*\.site-footer\s*\{[^}]*--ring: var\(--gpui-dark-accent\);[^}]*color-scheme: dark;/);
   });
 
   it("keeps the horizon visible in forced colours", () => {

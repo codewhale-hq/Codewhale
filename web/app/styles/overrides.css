@@ -4,7 +4,7 @@
 
 /* ---------- docs: the reading sheet ---------- */
 /* Read mode: comprehension first. The article gets a book measure, the
-   Shannon Sans heading voice, generous leading, and a contents rail that
+   Geist heading voice, generous leading, and a contents rail that
    stays put while the sheet scrolls. */
 .docs-content {
   max-width: 46rem;
@@ -115,20 +115,8 @@
 }
 
 /* The docs hero band: the mark and the release line as one running head. */
-.docs-portal .hero {
-  padding-block: 1rem;
-  background: var(--paper-deep);
-}
-
-.docs-portal .portal-mark {
-  color: var(--ink);
-  font-family: var(--font-display);
-  font-size: 1.05rem;
-  font-weight: 600;
-}
-
 .release-truth {
-  margin-top: 0;
+  margin: 0 0 1.25rem;
 }
 
 /* Contextual help plate at the foot of every page, on the sheet's own card. */

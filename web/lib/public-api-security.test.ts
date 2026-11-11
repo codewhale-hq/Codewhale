@@ -5,10 +5,6 @@ function routeSource(path: string): string {
   return readFileSync(new URL(`../app/api/${path}/route.ts`, import.meta.url), "utf8");
 }
 
-function librarySource(path: string): string {
-  return readFileSync(new URL(path, import.meta.url), "utf8");
-}
-
 describe("public API security contracts", () => {
   it("keeps the unauthenticated feed cached and detached from the server token", () => {
     const source = routeSource("github/feed");
@@ -36,14 +32,6 @@ describe("public API security contracts", () => {
     expect(source.indexOf("readBoundedUrlEncodedForm(req, MAX_LOGIN_BODY_BYTES)")).toBeLessThan(
       source.indexOf("safeEqual(submitted, env.MAINTAINER_TOKEN)"),
     );
-  });
-
-  it("keeps paid review callers on the canonical persisted draft namespaces", () => {
-    const source = librarySource("./community-agent-tasks.ts");
-    expect(source).toContain('hasFreshDraft(env.CURATED_KV, "triage"');
-    expect(source).toContain('hasFreshDraft(env.CURATED_KV, "pr-review"');
-    expect(source).not.toContain('hasFreshDraft(env.CURATED_KV, "issue"');
-    expect(source).not.toContain('hasFreshDraft(env.CURATED_KV, "pr"');
   });
 
   it("digest post: never returns ok:true for a no-op (happy path returns real url/number)", () => {

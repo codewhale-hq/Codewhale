@@ -487,6 +487,19 @@
         );
     }
 
+    #[test]
+    fn token_bucket_saturates_delay_for_a_tiny_refill_rate() {
+        let mut bucket = TokenBucket {
+            enabled: true,
+            capacity: 1.0,
+            tokens: 0.0,
+            refill_per_sec: 1e-30,
+            last_refill: Instant::now(),
+        };
+
+        assert_eq!(bucket.delay_until_available(1.0), Some(Duration::MAX));
+    }
+
     /// Every queued waiter must be given a *distinct* wake time. `client.rs`
     /// releases the bucket lock before sleeping (`wait_for_rate_limit`), and a
     /// clone of the client shares one `Arc<AsyncMutex<TokenBucket>>` across

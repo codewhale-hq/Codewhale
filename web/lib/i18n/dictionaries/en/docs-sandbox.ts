@@ -59,11 +59,12 @@ export const docsSandbox: DocsSandboxDict = {
       blocks: [
         { p: "Install bubblewrap — Codewhale uses it by default. To run Linux commands unwrapped instead, opt out with one line in `~/.codewhale/config.toml`:" },
         {
-          code: `sudo apt install bubblewrap      # Fedora: dnf install bubblewrap · Arch: pacman -S bubblewrap
-
-# ~/.codewhale/config.toml
-prefer_bwrap = false`,
-          lang: "Terminal / config.toml",
+          code: "sudo apt install bubblewrap",
+          lang: "Debian / Ubuntu — Terminal",
+        },
+        {
+          code: "prefer_bwrap = false",
+          lang: "~/.codewhale/config.toml — optional opt-out",
         },
         {
           p: "Codewhale uses `/usr/bin/bwrap` only when that file exists, is executable, and a probe shows it can create its sandbox namespaces — an installed-but-blocked bwrap is treated as absent, not used. Commands then see a read-only view of the system, write only where the sandbox mode allows, and have no network unless the mode enables it.",

@@ -787,23 +787,6 @@ h1.state-title { font-size: var(--text-display); }
 .data-table tbody th { font-weight: 500; }
 .data-table td { color: var(--muted); }
 .data-table code { font-family: var(--font-mono); font-size: var(--text-mono); color: var(--text); overflow-wrap: anywhere; }
-.data-table-sort {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin: -0.25rem -0.375rem;
-  padding: 0.25rem 0.375rem;
-  color: inherit;
-  font: inherit;
-  border-radius: var(--radius-control);
-  cursor: pointer;
-}
-.data-table-sort:hover { background: var(--hover); color: var(--text); }
-.data-table-sort svg { width: 0.875rem; height: 0.875rem; transition: transform var(--dur-state) var(--ease-out); }
-.data-table-sort[data-dir="asc"] svg { transform: rotate(180deg); }
-.data-table-sort[data-dir="none"] svg { opacity: 0.45; }
-th[aria-sort="ascending"] .data-table-sort,
-th[aria-sort="descending"] .data-table-sort { color: var(--text); }
 
 /* ---------- fields ---------- */
 .field { display: grid; gap: var(--space-2); }

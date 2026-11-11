@@ -51,16 +51,18 @@
   min-width: 0;
 }
 
-/* The mark is the logo gradient; the wordmark is one ink (--mark-ink),
-   drawn through a mask so both appearances re-ink it without a filter or a
-   second file. */
-.paper-wordmark-mark {
+/* The mark and the wordmark are one ink (--mark-ink), drawn through masks so
+   both appearances re-ink them without a filter or a second file. */
+.brand-mark {
   display: block;
   flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
-  margin-inline: -3px;
+  width: 30px;
+  height: 30px;
+  background: var(--mark-ink);
+  -webkit-mask: url("/brand/mark-mono.svg") no-repeat center / contain;
+  mask: url("/brand/mark-mono.svg") no-repeat center / contain;
 }
+.site-wordmark-footer .brand-mark { width: 2.5rem; height: 2.5rem; }
 
 .paper-wordmark-logo,
 .wordmark {
@@ -81,6 +83,7 @@
 }
 
 @media (forced-colors: active) {
+  .brand-mark,
   .paper-wordmark-logo,
   .wordmark { background: CanvasText; }
 }
@@ -283,7 +286,6 @@ main:has(.sea-continues:last-child) + .site-footer .site-footer-sea { background
   font-size: var(--text-ui);
   line-height: 1.6;
 }
-.site-footer-brand .whale-pose { --pose-size: 3rem; }
 .site-wordmark-footer { color: var(--text); justify-self: start; gap: var(--space-3); }
 
 .site-footer-links {

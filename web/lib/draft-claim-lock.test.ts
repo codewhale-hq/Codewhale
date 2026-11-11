@@ -32,7 +32,7 @@ const claim = (token: string, action: "post" | "discard" = "post", leaseMs = 60_
 describe("DraftClaimLock", () => {
   it("grants exactly one of many concurrent claims", async () => {
     const ns = new FakeDraftClaimLock();
-    const lock = ns.get(ns.idFromName("draft-claim:triage:42"));
+    const lock = ns.get(ns.idFromName("draft-claim:linkcheck:42"));
     const results = await Promise.all(
       Array.from({ length: 8 }, (_, i) => lock.act(claim(`post:${i}`)))
     );
@@ -53,11 +53,11 @@ describe("DraftClaimLock", () => {
 
   it("keeps one lock per draft identity", async () => {
     const ns = new FakeDraftClaimLock();
-    const a = ns.get(ns.idFromName("draft-claim:triage:1"));
-    const b = ns.get(ns.idFromName("draft-claim:triage:2"));
+    const a = ns.get(ns.idFromName("draft-claim:linkcheck:1"));
+    const b = ns.get(ns.idFromName("draft-claim:linkcheck:2"));
     expect(await a.act(claim("post:a"))).toEqual({ ok: true });
     expect(await b.act(claim("post:b"))).toEqual({ ok: true });
-    expect(await ns.get(ns.idFromName("draft-claim:triage:1")).act(claim("post:c"))).toEqual({
+    expect(await ns.get(ns.idFromName("draft-claim:linkcheck:1")).act(claim("post:c"))).toEqual({
       ok: false,
       holder: "post",
     });

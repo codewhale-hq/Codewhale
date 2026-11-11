@@ -1,0 +1,18 @@
+/* /app: the desktop and browser app page. */
+.app-status { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-5); margin: 0; }
+
+.app-shots { display: grid; gap: var(--space-6); grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 900px) {
+  .app-shots { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .app-shots .figure:first-child { grid-column: 1 / -1; }
+}
+
+.app-note { color: var(--muted); font-size: var(--text-ui); line-height: 1.6; margin-top: var(--space-4); }
+.tile .ruled-list { margin-top: var(--space-3); }
+
+@media (max-width: 640px) {
+  .app-table thead { display: none; }
+  .app-table tbody tr { display: grid; gap: var(--space-1); padding: var(--space-3) var(--space-4); }
+  .app-table tbody tr + tr { border-top: 1px solid var(--line); }
+  .app-table tbody tr > * { padding: 0; border-top: 0 !important; }
+}

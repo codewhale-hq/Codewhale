@@ -1,4 +1,3 @@
-import { FakeDraftClaimLock } from "./draft-claim-lock.fake";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const securityMocks = vi.hoisted(() => ({
@@ -29,7 +28,6 @@ vi.mock("@/lib/github", async (importOriginal) => {
 import { POST as adminPost } from "../app/api/admin/post/route";
 import { GET as publicFeed } from "../app/api/github/feed/route";
 import { reviewedBodyHash } from "./community-agent";
-import { runPrReview, runTriage } from "./community-agent-tasks";
 
 class FakeKv {
   readonly values = new Map<string, string>();
@@ -62,13 +60,6 @@ class FakeKv {
   }
 }
 
-function jsonResponse(value: unknown): Response {
-  return new Response(JSON.stringify(value), {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  });
-}
-
 function inputUrl(input: string | URL | Request): string {
   if (typeof input === "string") return input;
   return input instanceof URL ? input.toString() : input.url;
@@ -90,7 +81,7 @@ afterEach(() => {
 describe("public security boundaries", () => {
   it("rejects a non-draft admin key before any draft KV read or delete", async () => {
     const kv = new FakeKv();
-    kv.values.set("dispatch:latest", JSON.stringify({ state: "running" }));
+    kv.values.set("agent:state:latest", JSON.stringify({ state: "running" }));
     securityMocks.getAgentEnv.mockResolvedValue({
       CURATED_KV: kv,
       MAINTAINER_TOKEN: "configured",
@@ -103,7 +94,7 @@ describe("public security boundaries", () => {
         cookie: "mt_sid=test-session",
         origin: "https://codewhale.net",
       },
-      body: JSON.stringify({ action: "discard", draftKey: "dispatch:latest" }),
+      body: JSON.stringify({ action: "discard", draftKey: "agent:state:latest" }),
     }));
 
     await expect(response.json()).resolves.toEqual({ error: "invalid draftKey namespace" });
@@ -111,7 +102,7 @@ describe("public security boundaries", () => {
     expect(securityMocks.validateSession).toHaveBeenCalledOnce();
     expect(kv.reads).toEqual([]);
     expect(kv.deleted).toEqual([]);
-    expect(kv.values.has("dispatch:latest")).toBe(true);
+    expect(kv.values.has("agent:state:latest")).toBe(true);
   });
 
   it("never forwards an ambient server token through the public feed route", async () => {
@@ -125,66 +116,10 @@ describe("public security boundaries", () => {
     expect(securityMocks.fetchFeed).toHaveBeenCalledExactlyOnceWith(undefined, 50);
   });
 
-  it("does not make another model call for unchanged triage or PR inputs", async () => {
-    securityMocks.agentChat.mockResolvedValue({
-      content: JSON.stringify({ bodyEn: "review", bodyZh: "审阅" }),
-      usage: { input: 10, output: 5 },
-    });
-
-    const triageKv = new FakeKv();
-    const triageFetch = vi.fn(async (input: string | URL | Request) => {
-      const url = inputUrl(input);
-      if (!url.includes("/issues?")) throw new Error(`unexpected triage URL: ${url}`);
-      return jsonResponse([{
-        number: 42,
-        title: "Unchanged issue",
-        body: "same body",
-        updated_at: "2020-01-01T00:00:00.000Z",
-        html_url: "https://github.com/codewhale-hq/CodeWhale/issues/42",
-        labels: [],
-      }]);
-    });
-    vi.stubGlobal("fetch", triageFetch);
-
-    const triageEnv = { CURATED_KV: triageKv, DRAFT_CLAIM_LOCK: new FakeDraftClaimLock(), DEEPSEEK_API_KEY: "test-key" };
-    await expect(runTriage(triageEnv)).resolves.toMatchObject({ processed: 1, skipped: 0 });
-    expect(securityMocks.agentChat).toHaveBeenCalledOnce();
-    securityMocks.agentChat.mockClear();
-    await expect(runTriage(triageEnv)).resolves.toMatchObject({ processed: 0, skipped: 1 });
-    expect(securityMocks.agentChat).not.toHaveBeenCalled();
-    expect(triageKv.values.has("draft:triage:42")).toBe(true);
-
-    const prKv = new FakeKv();
-    const prFetch = vi.fn(async (input: string | URL | Request) => {
-      const url = inputUrl(input);
-      if (!url.includes("/pulls?")) throw new Error(`unexpected PR URL: ${url}`);
-      return jsonResponse([{
-        number: 84,
-        title: "Unchanged PR",
-        body: "same body",
-        updated_at: "2020-01-01T00:00:00.000Z",
-        html_url: "https://github.com/codewhale-hq/CodeWhale/pull/84",
-        changed_files: 3,
-        additions: 10,
-        deletions: 2,
-        user: { login: "contributor" },
-      }]);
-    });
-    vi.stubGlobal("fetch", prFetch);
-
-    const prEnv = { CURATED_KV: prKv, DRAFT_CLAIM_LOCK: new FakeDraftClaimLock(), DEEPSEEK_API_KEY: "test-key" };
-    await expect(runPrReview(prEnv)).resolves.toMatchObject({ processed: 1, skipped: 0 });
-    expect(securityMocks.agentChat).toHaveBeenCalledOnce();
-    securityMocks.agentChat.mockClear();
-    await expect(runPrReview(prEnv)).resolves.toMatchObject({ processed: 0, skipped: 1 });
-    expect(securityMocks.agentChat).not.toHaveBeenCalled();
-    expect(prKv.values.has("draft:pr-review:84")).toBe(true);
-  });
-
   it("posts bodyZh when lang=zh and no editedBody is supplied", async () => {
     const draft = {
       id: "42",
-      type: "triage",
+      type: "linkcheck",
       targetNumber: 42,
       bodyEn: "English body",
       bodyZh: "中文正文",
@@ -192,7 +127,7 @@ describe("public security boundaries", () => {
       posted: false,
     };
     const kv = new FakeKv();
-    kv.values.set("draft:triage:42", JSON.stringify(draft));
+    kv.values.set("draft:linkcheck:42", JSON.stringify(draft));
 
     const capturedBodies: string[] = [];
     const mockFetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -222,7 +157,7 @@ describe("public security boundaries", () => {
       },
       body: JSON.stringify({
         action: "post",
-        draftKey: "draft:triage:42",
+        draftKey: "draft:linkcheck:42",
         lang: "zh",
         reviewedSha256: await reviewedBodyHash("中文正文"),
       }),

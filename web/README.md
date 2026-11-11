@@ -2,7 +2,7 @@
 
 Documentation and community site for [Codewhale](https://github.com/codewhale-hq/CodeWhale) — lives at **codewhale.net**.
 
-Next.js 16 (App Router) + Tailwind, deployed to Cloudflare Workers via [`@opennextjs/cloudflare`](https://opennext.js.org/cloudflare). Curated "Today's Dispatch" content is regenerated every 6 hours by a Cloudflare Cron Trigger that calls `deepseek-flash` to summarise recent repo activity, and stored in Workers KV.
+Next.js 16 (App Router) + Tailwind, deployed to Cloudflare Workers via [`@opennextjs/cloudflare`](https://opennext.js.org/cloudflare). Scheduled upkeep runs as pull requests from `.github/workflows/web-maintainer.yml` (see `maintainer/README.md`).
 
 ## Local dev
 
@@ -27,7 +27,7 @@ Env (mirrors `.env.example`):
 | `MAINTAINER_GITHUB_PAT`     | PAT with `issues:write`, for posting comments via `/admin`       | only for `/admin` posting |
 | `NEXT_PUBLIC_GITEE_ENABLED` | Set to `1` once the Gitee mirror exists; blank hides Gitee links | optional             |
 
-The site renders fine without any of them — `Today's Dispatch` falls back to a static editorial; the GitHub feed shows "feed not yet loaded".
+The site renders fine without any of them — the GitHub feed shows "feed not yet loaded".
 
 ## Deploy to Cloudflare
 
@@ -112,7 +112,7 @@ web/
 │   │   ├── contribute/page.tsx how to PR + house rules + dev loop
 │   │   └── admin/              maintainer panel (page.tsx + admin-client.tsx)
 │   └── api/
-│       ├── cron/route.ts          cron tasks: curate, triage, facts-drift, …
+│       ├── cron/route.ts          cron tasks: digest, facts-drift, linkcheck, …
 │       ├── facts/route.ts         public source/deployment receipt
 │       ├── github/feed/route.ts   cached JSON endpoint
 │       └── admin/                 login, logout, post (MAINTAINER_TOKEN-gated)
@@ -131,13 +131,13 @@ web/
 │   ├── types.ts                shared types
 │   ├── i18n/                   locale config, en/zh dictionaries
 │   ├── github.ts               REST client + relative-time formatter
-│   ├── deepseek.ts             v4-flash chat client + curate() prompt
+│   ├── deepseek.ts             v4-flash chat client
 │   ├── facts.ts                getFacts(): KV value, else build-time FACTS
 │   ├── facts.generated.ts      GENERATED — do not edit by hand
 │   ├── changelog.generated.ts  GENERATED at build/test time, untracked
 │   ├── install-guide.generated.ts GENERATED at build/test time, untracked
 │   ├── facts-drift.ts          runtime re-derivation for the drift cron
-│   ├── community-agent.ts      triage / pr-review / digest cron tasks
+│   ├── community-agent.ts      digest cron task and draft store
 │   └── kv.ts                   Cloudflare KV access via OpenNext bindings
 ├── scripts/
 │   ├── derive-facts.mjs        prebuild: repo sources → lib/facts.generated.ts

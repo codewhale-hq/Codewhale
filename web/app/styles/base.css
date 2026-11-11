@@ -14,8 +14,8 @@ html {
 }
 
 body {
-  /* The ground: paper under a pale sky in light; the navy ocean rising into
-     the logo's blue at the top of the page in dark. */
+  /* The ground: the 5.x water gradient over the floor colour in both
+     appearances. */
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -35,8 +35,8 @@ main { flex: 1 0 auto; }
 main, header, footer, nav { position: relative; z-index: 1; }
 
 /* ---------- type ---------- */
-/* One face: Shannon Sans for headings, body and labels, a little negative
-   tracking on the big headings. Code uses the system monospace stack. No
+/* One face: Geist for headings, body and labels, a little negative
+   tracking on the big headings. Code uses Geist Mono. No
    serif, no all-caps, no wide tracking. */
 .font-display { font-family: var(--font-display); font-weight: 600; }
 .font-cjk { font-family: var(--font-cjk); }
@@ -226,14 +226,3 @@ mark.search-highlight {
 }
 .skip-link:focus-visible { top: 0.5rem; }
 
-/* The docs band's mark and label (docs/layout.tsx): the reading whale. */
-.portal-mark-pose { --pose-size: 2.25rem; flex: none; }
-.portal-mark {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  margin-bottom: 1.25rem;
-  color: var(--muted);
-  font-size: var(--text-caption);
-  font-weight: 600;
-}

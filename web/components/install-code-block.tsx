@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Icon } from "./icon";
-import { recordUsage } from "./usage-counting";
+import { recordFunnel, recordUsage } from "./usage-counting";
 
 interface Props {
   cmd: string;
@@ -26,7 +26,10 @@ export function InstallCodeBlock({ cmd, copyLabel = "Copy", copiedLabel = "Copie
     try {
       await navigator.clipboard.writeText(cmd);
       setCopied(true);
-      if (installIntent) recordUsage("install_copy");
+      if (installIntent) {
+        recordUsage("install_copy");
+        recordFunnel("install_intent");
+      }
       setTimeout(() => setCopied(false), 1400);
     } catch {
       // Clipboard write failed (permissions, non-secure context, or a focused
