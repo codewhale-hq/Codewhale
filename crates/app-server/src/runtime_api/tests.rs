@@ -15,6 +15,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::time::sleep;
 use uuid::Uuid;
 
+mod catalog_parity;
 mod command_catalog;
 #[cfg(unix)]
 mod control_socket_selection;
