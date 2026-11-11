@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::activation::{PluginActivationCapability, PluginActivationPolicy};
+use super::host_services::{
+    AgentPosture, HostService, HostServiceLine, HostServiceReview, PersonVia, PluginApprover,
+    PluginCohort, ReviewApproval, ReviewPeer, cohort_of,
+};
 use super::managed_policy::{
     ManagedPluginPolicy, ManagedPolicyOutcome, load_managed_policy, resolve_managed_policy_path,
 };
@@ -21,6 +25,7 @@ pub mod gc;
 
 const STATE_SCHEMA_VERSION: u32 = 1;
 const MAX_REVIEW_HISTORY: usize = 32;
+const RECEIPT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,6 +51,8 @@ struct PersistedPluginState {
     generation: u64,
     #[serde(default)]
     enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    enabled_by: Option<PluginApprover>,
     #[serde(default)]
     trust: Option<TrustReceipt>,
     #[serde(default)]
@@ -59,6 +66,134 @@ struct TrustReceipt {
     capability_hash: String,
     reviewed_capabilities: PluginInventory,
     reviewed_at: String,
+    #[serde(default, skip_serializing_if = "receipt_version_is_unset")]
+    version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    approved_by: Option<PluginApprover>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    host_services: Vec<HostService>,
+}
+
+fn receipt_version_is_unset(version: &u32) -> bool {
+    *version == 0
+}
+
+impl TrustReceipt {
+    fn granted(&self) -> Vec<HostService> {
+        if self.version != RECEIPT_VERSION
+            || self.host_services.is_empty()
+            || !self
+                .host_services
+                .iter()
+                .all(|service| self.reviewed_capabilities.host_services.contains(service))
+            || super::manifest::hash_inventory(&self.reviewed_capabilities) != self.capability_hash
+        {
+            return Vec::new();
+        }
+        let mut granted = self.host_services.clone();
+        granted.sort();
+        granted.dedup();
+        granted
+    }
+}
+
+fn peer_name(id: &PluginId, names: &BTreeMap<PluginId, String>) -> String {
+    names.get(id).cloned().unwrap_or_else(|| {
+        id.as_str()
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    })
+}
+
+fn host_service_review_in(
+    state: &PluginStateFile,
+    plugin: &LoadedPlugin,
+    names: &BTreeMap<PluginId, String>,
+    cohort: &PluginCohort,
+) -> HostServiceReview {
+    let peers = |holds: bool, service: HostService| -> Vec<ReviewPeer> {
+        state
+            .plugins
+            .iter()
+            .filter(|(id, _)| **id != plugin.id)
+            .filter(|(_, entry)| {
+                entry.trust.as_ref().is_some_and(|receipt| {
+                    if cohort_of(receipt.approved_by.as_ref()) != *cohort {
+                        return false;
+                    }
+                    if holds {
+                        receipt.granted().contains(&service)
+                    } else {
+                        entry.enabled
+                            && receipt.reviewed_capabilities.native > 0
+                            && !receipt.granted().contains(&service)
+                    }
+                })
+            })
+            .map(|(id, _)| ReviewPeer {
+                id: id.as_str().to_string(),
+                name: peer_name(id, names),
+            })
+            .collect()
+    };
+    let lines = plugin
+        .inventory
+        .host_services
+        .iter()
+        .map(|service| HostServiceLine {
+            service: *service,
+            offered: super::host_services::offered(*service),
+            shared_with: peers(true, *service),
+            withheld_by: peers(false, *service),
+        })
+        .collect();
+    HostServiceReview::new(
+        plugin.id.as_str(),
+        &plugin.content_hash,
+        &plugin.capability_hash,
+        cohort,
+        lines,
+    )
+}
+
+fn check_approver(approver: &PluginApprover, workspace: &Path, shown: bool) -> Result<(), String> {
+    let PluginApprover::Agent(agent) = approver else {
+        return Ok(());
+    };
+    if !shown {
+        return Err(
+            "An approval by the agent must carry the token of the review composed for the call"
+                .to_string(),
+        );
+    }
+    let identified = |value: &Option<String>| value.as_deref().is_some_and(|id| !id.is_empty());
+    if matches!(
+        agent.posture,
+        AgentPosture::FullAccess | AgentPosture::AutoReview
+    ) && !(identified(&agent.thread_id)
+        && identified(&agent.turn_id)
+        && identified(&agent.tool_call_id))
+    {
+        return Err(
+            "An approval by the agent must name the thread, turn and tool call that made it"
+                .to_string(),
+        );
+    }
+    if agent.workspace.is_empty() || Path::new(&agent.workspace) != workspace {
+        return Err(
+            "An approval by the agent is limited to its own project, and this is not that project"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn outside_reach(approver: Option<&PluginApprover>, workspace: &Path) -> bool {
+    approver
+        .and_then(PluginApprover::agent_workspace)
+        .is_some_and(|recorded| recorded.is_empty() || Path::new(recorded) != workspace)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -277,9 +412,21 @@ impl PluginRegistry {
                 Some(_) => PluginTrustStatus::Trusted,
                 None => PluginTrustStatus::NeverReviewed,
             };
+            let receipt = persisted
+                .and_then(|state| state.trust.as_ref())
+                .filter(|_| plugin.trust_status == PluginTrustStatus::Trusted);
+            plugin.approved_by = receipt.and_then(|receipt| receipt.approved_by.clone());
+            plugin.enabled_by = persisted
+                .filter(|state| state.enabled)
+                .and_then(|state| state.enabled_by.clone());
+            plugin.host_services = receipt.map(TrustReceipt::granted).unwrap_or_default();
+            plugin.outside_reach = outside_reach(plugin.approved_by.as_ref(), &self.workspace);
             if self.state_error.is_some() {
                 plugin.enabled = false;
                 plugin.trust_status = PluginTrustStatus::NeverReviewed;
+                plugin.approved_by = None;
+                plugin.enabled_by = None;
+                plugin.host_services = Vec::new();
             }
             // The managed policy is enforced here — inside the single choke
             // point that turns persisted state into live enablement — so a
@@ -727,24 +874,87 @@ impl PluginRegistry {
         }
     }
 
+    fn peer_names(&self) -> BTreeMap<PluginId, String> {
+        self.plugins
+            .iter()
+            .map(|(id, plugin)| (id.clone(), plugin.name().to_string()))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn host_service_review(&self, selector: &str) -> Option<HostServiceReview> {
+        self.host_service_review_for(selector, &PluginApprover::person(PersonVia::Terminal))
+    }
+
+    #[must_use]
+    pub fn host_service_review_for(
+        &self,
+        selector: &str,
+        approver: &PluginApprover,
+    ) -> Option<HostServiceReview> {
+        if self.state_error.is_some() {
+            return None;
+        }
+        Some(host_service_review_in(
+            &self.state,
+            self.get(selector)?,
+            &self.peer_names(),
+            &approver.cohort(),
+        ))
+    }
+
     pub fn trust(&mut self, selector: &str) -> Result<(), String> {
+        self.trust_reviewed(
+            selector,
+            ReviewApproval {
+                approved_by: PluginApprover::person(PersonVia::Terminal),
+                host_services: None,
+            },
+        )
+    }
+
+    pub fn trust_reviewed(
+        &mut self,
+        selector: &str,
+        approval: ReviewApproval,
+    ) -> Result<(), String> {
         let plugin = self
             .get(selector)
             .ok_or_else(|| format!("Plugin bundle `{selector}` was not found"))?;
         let plugin = plugin.clone();
         let id = plugin.id.clone();
+        check_approver(
+            &approval.approved_by,
+            &self.workspace,
+            approval.host_services.is_some(),
+        )?;
         let state_path = self
             .state_path
             .as_deref()
             .ok_or_else(|| "Plugin registry has no persistence store".to_string())?;
         stage_bundle(state_path, &plugin, StageIntent::Review)?;
-        let receipt = TrustReceipt {
+        let names = self.peer_names();
+        let cohort = approval.approved_by.cohort();
+        let mut receipt = TrustReceipt {
             content_hash: plugin.content_hash.clone(),
             capability_hash: plugin.capability_hash.clone(),
             reviewed_capabilities: plugin.inventory.clone(),
             reviewed_at: chrono::Utc::now().to_rfc3339(),
+            version: RECEIPT_VERSION,
+            approved_by: Some(approval.approved_by),
+            host_services: Vec::new(),
         };
         self.commit_state_change(|state| {
+            if let Some(shown) = approval.host_services.as_deref() {
+                let review = host_service_review_in(state, &plugin, &names, &cohort);
+                if review.token != shown {
+                    return Err(format!(
+                        "The host service review for plugin bundle `{}` changed since it was shown; read it again before approving",
+                        plugin.name()
+                    ));
+                }
+                receipt.host_services = review.grants();
+            }
             let entry = state.plugins.entry(id).or_default();
             entry.generation = entry
                 .generation
@@ -754,6 +964,7 @@ impl PluginRegistry {
             // kept the enablement bit across revocation or content drift,
             // re-review must never reactivate the bundle implicitly.
             entry.enabled = false;
+            entry.enabled_by = None;
             entry.trust = Some(receipt.clone());
             entry.review_history.push(receipt);
             if entry.review_history.len() > MAX_REVIEW_HISTORY {
@@ -781,6 +992,10 @@ impl PluginRegistry {
     }
 
     pub fn enable(&mut self, selector: &str) -> Result<(), String> {
+        self.enable_by(selector, PluginApprover::person(PersonVia::Terminal))
+    }
+
+    pub fn enable_by(&mut self, selector: &str, enabled_by: PluginApprover) -> Result<(), String> {
         let plugin = self
             .get(selector)
             .ok_or_else(|| format!("Plugin bundle `{selector}` was not found"))?
@@ -874,6 +1089,7 @@ impl PluginRegistry {
                 .checked_add(1)
                 .ok_or_else(|| "Plugin authority generation is exhausted".to_string())?;
             entry.enabled = true;
+            entry.enabled_by = Some(enabled_by);
             Ok(())
         })
     }
@@ -890,6 +1106,7 @@ impl PluginRegistry {
                 .checked_add(1)
                 .ok_or_else(|| "Plugin authority generation is exhausted".to_string())?;
             entry.enabled = false;
+            entry.enabled_by = None;
             Ok(())
         })
     }
@@ -955,11 +1172,14 @@ impl PluginRegistry {
         let id = plugin.id.clone();
         let name = plugin.name().to_string();
         let applicable = plugin.applicable;
-        let carried = TrustReceipt {
+        let mut carried = TrustReceipt {
             content_hash: plugin.content_hash.clone(),
             capability_hash: plugin.capability_hash.clone(),
             reviewed_capabilities: plugin.inventory.clone(),
             reviewed_at: chrono::Utc::now().to_rfc3339(),
+            version: 0,
+            approved_by: None,
+            host_services: Vec::new(),
         };
         self.commit_state_change(|state| {
             let Some(predecessor) = builtin_predecessor(state, &id, &name).cloned() else {
@@ -968,9 +1188,14 @@ impl PluginRegistry {
             let Some(prior) = predecessor.trust else {
                 return Ok(());
             };
+            carried.approved_by.clone_from(&prior.approved_by);
+            if carried.approved_by.is_some() {
+                carried.version = RECEIPT_VERSION;
+            }
             let mut entry = PersistedPluginState {
                 generation: 1,
                 enabled: false,
+                enabled_by: None,
                 trust: None,
                 review_history: predecessor.review_history,
             };
@@ -981,6 +1206,9 @@ impl PluginRegistry {
                     return Ok(());
                 }
                 entry.enabled = predecessor.enabled && applicable;
+                if entry.enabled {
+                    entry.enabled_by = predecessor.enabled_by;
+                }
                 entry.trust = Some(carried.clone());
                 entry.review_history.push(carried);
                 if entry.review_history.len() > MAX_REVIEW_HISTORY {
@@ -2994,6 +3222,30 @@ pub fn capture_plugin_state_authority(
     authority: &PluginAuthority,
     expected: Option<&fs::File>,
 ) -> Result<fs::File, String> {
+    read_active_receipt(authority, expected).map(|(state_file, _)| state_file)
+}
+
+pub fn granted_host_services(authority: &PluginAuthority) -> Result<Vec<HostService>, String> {
+    reviewed_record(authority).map(|record| record.host_services)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewedRecord {
+    pub approved_by: Option<PluginApprover>,
+    pub host_services: Vec<HostService>,
+}
+
+pub fn reviewed_record(authority: &PluginAuthority) -> Result<ReviewedRecord, String> {
+    read_active_receipt(authority, None).map(|(_, receipt)| ReviewedRecord {
+        host_services: receipt.granted(),
+        approved_by: receipt.approved_by,
+    })
+}
+
+fn read_active_receipt(
+    authority: &PluginAuthority,
+    expected: Option<&fs::File>,
+) -> Result<(fs::File, TrustReceipt), String> {
     let policy_path = authority
         .managed_policy_source
         .as_deref()
@@ -3055,24 +3307,23 @@ pub fn capture_plugin_state_authority(
     .map_err(|_| {
         "Plugin authority state is invalid; the bundle is disabled fail-closed".to_string()
     })?;
-    let active = state
+    let receipt = state
         .plugins
         .get(&authority.plugin_id)
-        .is_some_and(|entry| {
-            entry.generation == authority.state_generation
-                && entry.enabled
-                && entry.trust.as_ref().is_some_and(|receipt| {
-                    receipt.content_hash == authority.content_hash
-                        && receipt.capability_hash == authority.capability_hash
-                })
-        });
-    if !active {
-        return Err(format!(
-            "Plugin bundle `{}` is disabled, revoked, or no longer matches its review receipt",
-            authority.plugin_name
-        ));
-    }
-    Ok(state_file)
+        .filter(|entry| entry.generation == authority.state_generation && entry.enabled)
+        .and_then(|entry| entry.trust.as_ref())
+        .filter(|receipt| {
+            receipt.content_hash == authority.content_hash
+                && receipt.capability_hash == authority.capability_hash
+        })
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "Plugin bundle `{}` is disabled, revoked, or no longer matches its review receipt",
+                authority.plugin_name
+            )
+        })?;
+    Ok((state_file, receipt))
 }
 
 #[cfg(test)]

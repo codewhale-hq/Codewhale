@@ -399,6 +399,10 @@ fn load_plugin(
         content_hash: validated.content_hash,
         capability_hash: validated.capability_hash,
         state_generation: 0,
+        approved_by: None,
+        enabled_by: None,
+        host_services: Vec::new(),
+        outside_reach: false,
         skill_snapshots,
         diagnostics,
     })

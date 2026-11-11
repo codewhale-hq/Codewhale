@@ -2599,6 +2599,48 @@ fn host_hook_bridge(name: &str) -> bool {
     crate::activation::dsh_row_bridge(name)
 }
 
+pub(crate) fn asked_host_services(
+    files: &BTreeMap<String, Vec<u8>>,
+    rows: &[String],
+    client_closures: &[DshClientClosure],
+    table: &[(&str, crate::host_services::HostService)],
+) -> Vec<crate::host_services::HostService> {
+    if table.is_empty() {
+        return Vec::new();
+    }
+    let mut injects = std::collections::BTreeSet::new();
+    for (path, bytes) in files {
+        let Some(relative) = path.strip_prefix("source/") else {
+            continue;
+        };
+        let module = relative
+            .rsplit_once('.')
+            .is_some_and(|(_, extension)| CLIENT_JS.contains(&extension));
+        let own = match relative.split_once("node_modules/") {
+            None => true,
+            Some(("", dependency)) => rows.iter().any(|row| {
+                dependency
+                    .strip_prefix(row.as_str())
+                    .and_then(|rest| rest.strip_prefix('/'))
+                    .is_some_and(|rest| !rest.split('/').any(|part| part == "node_modules"))
+            }),
+            Some(_) => false,
+        };
+        if !module
+            || !own
+            || client_closures
+                .iter()
+                .any(|closure| closure.files.contains_key(path))
+        {
+            continue;
+        }
+        if let Ok(text) = std::str::from_utf8(bytes) {
+            injects.extend(crate::host_services::declared_injects(text));
+        }
+    }
+    crate::host_services::services_for_injects(injects.iter().map(String::as_str), table)
+}
+
 /// Closed relative modules and exact contained ESM package exports. Missing
 /// foreign rows remain manual ports for a portable-only import; a live Native
 /// graph refuses unresolved rows and never uses an ambient Node parent-walk.
@@ -3061,8 +3103,33 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
             },
         );
     }
+    let mut capabilities = serde_json::Map::new();
     if !hosts.is_empty() {
-        extension.insert("capabilities".into(), json!({"network_hosts": hosts}));
+        capabilities.insert("network_hosts".into(), json!(hosts));
+    }
+    let host_services = if requires_native {
+        asked_host_services(
+            &output_files.files,
+            &native_rows,
+            &client_closures,
+            crate::host_services::HOST_SERVICE_INJECTS,
+        )
+    } else {
+        Vec::new()
+    };
+    if !host_services.is_empty() {
+        capabilities.insert("host_services".into(), json!(host_services));
+        notes.push(format!(
+            "asks for host services: {}; each is granted only by a review that shows it",
+            host_services
+                .iter()
+                .map(|service| service.name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !capabilities.is_empty() {
+        extension.insert("capabilities".into(), Json::Object(capabilities));
     }
     if requires_node || loaded.platforms.is_some() {
         let mut when = serde_json::Map::new();

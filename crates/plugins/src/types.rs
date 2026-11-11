@@ -154,6 +154,10 @@ pub struct LoadedPlugin {
     pub content_hash: String,
     pub capability_hash: String,
     pub state_generation: u64,
+    pub approved_by: Option<super::host_services::PluginApprover>,
+    pub enabled_by: Option<super::host_services::PluginApprover>,
+    pub host_services: Vec<super::host_services::HostService>,
+    pub outside_reach: bool,
     pub skill_snapshots: Vec<PluginSkillSnapshot>,
     pub diagnostics: Vec<PluginDiagnostic>,
 }
@@ -187,6 +191,7 @@ impl LoadedPlugin {
     pub fn active(&self) -> bool {
         self.enabled
             && self.trusted()
+            && !self.outside_reach
             && self.staged_root.is_some()
             && self.applicable
             && self.inventory.can_activate_supported_components()

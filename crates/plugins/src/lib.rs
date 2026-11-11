@@ -6,6 +6,7 @@ pub mod composition_scope;
 pub mod context;
 pub mod discovery;
 pub mod export;
+pub mod host_services;
 pub mod install;
 pub mod managed_policy;
 pub mod manifest;
@@ -19,6 +20,8 @@ pub mod registry;
 pub mod runtime;
 pub mod types;
 
+#[cfg(test)]
+mod host_service_tests;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_fixture;
 #[cfg(test)]

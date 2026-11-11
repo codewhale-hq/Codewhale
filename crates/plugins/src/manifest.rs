@@ -12,6 +12,7 @@ use super::activation::CAPABILITY_HASH_DOMAIN_V2;
 use super::activation::{
     CAPABILITY_HASH_DOMAIN_V1, PluginActivationCapability, PluginActivationPolicy,
 };
+use super::host_services::HostService;
 use codewhale_mcp::config::{McpServerConfig, is_relative_stdio_path_arg};
 use codewhale_util::path_identity::metadata_is_link_or_reparse;
 #[cfg(windows)]
@@ -146,6 +147,8 @@ pub struct PluginCapabilities {
     /// the bundle's supported declarative adapters from activating.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lifecycle_mutation: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub host_services: Vec<HostService>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -191,6 +194,8 @@ pub struct PluginInventory {
     pub filesystem_roots: Vec<String>,
     pub network_hosts: Vec<String>,
     pub lifecycle_mutation: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub host_services: Vec<HostService>,
 }
 
 /// Host compatibility of a reviewed bundle. This is independent of trust,
@@ -324,7 +329,7 @@ impl PluginInventory {
 
     #[must_use]
     pub fn summary(&self) -> String {
-        format!(
+        let mut summary = format!(
             "skills={} mcp={} (stdio={} remote={}) commands={} agents={} hooks={} lsp={} native={} providers={}",
             self.skills,
             self.mcp_servers,
@@ -336,7 +341,12 @@ impl PluginInventory {
             self.lsp,
             self.native,
             self.providers
-        )
+        );
+        if !self.host_services.is_empty() {
+            summary.push_str(" host_services=");
+            summary.push_str(&host_service_names(&self.host_services).join(","));
+        }
+        summary
     }
 }
 
@@ -614,6 +624,12 @@ impl PluginManifest {
         validate_unique_texts("keyword", &self.plugin.keywords, 128)?;
         validate_unique_texts("filesystem root", &self.capabilities.filesystem_roots, 512)?;
         validate_unique_texts("network host", &self.capabilities.network_hosts, 253)?;
+        let mut asked = BTreeSet::new();
+        for service in &self.capabilities.host_services {
+            if !asked.insert(*service) {
+                return Err(format!("duplicate host service value `{}`", service.name()));
+            }
+        }
         let declared_network_hosts = self
             .capabilities
             .network_hosts
@@ -946,6 +962,9 @@ impl PluginManifest {
         let mut filesystem_roots = self.capabilities.filesystem_roots.clone();
         filesystem_roots.sort();
         filesystem_roots.dedup();
+        let mut host_services = self.capabilities.host_services.clone();
+        host_services.sort();
+        host_services.dedup();
 
         Ok(PluginInventory {
             skills: components.skills.len(),
@@ -961,6 +980,7 @@ impl PluginManifest {
             filesystem_roots,
             network_hosts,
             lifecycle_mutation: self.capabilities.lifecycle_mutation,
+            host_services,
         })
     }
 
@@ -1601,8 +1621,12 @@ fn ensure_windows_path_still_opened(path: &Path, opened: &fs::File) -> Result<()
     Ok(())
 }
 
-fn hash_inventory(inventory: &PluginInventory) -> String {
+pub(super) fn hash_inventory(inventory: &PluginInventory) -> String {
     hash_inventory_with_policy(inventory, PluginActivationPolicy::current())
+}
+
+fn host_service_names(services: &[HostService]) -> Vec<&'static str> {
+    services.iter().map(|service| service.name()).collect()
 }
 
 fn hash_inventory_counts(inventory: &PluginInventory) -> BTreeMap<&'static str, String> {
@@ -1620,6 +1644,12 @@ fn hash_inventory_counts(inventory: &PluginInventory) -> BTreeMap<&'static str, 
     normalized.insert("filesystem", inventory.filesystem_roots.join("\n"));
     normalized.insert("network", inventory.network_hosts.join("\n"));
     normalized.insert("lifecycle", inventory.lifecycle_mutation.to_string());
+    if !inventory.host_services.is_empty() {
+        normalized.insert(
+            "host-services",
+            host_service_names(&inventory.host_services).join("\n"),
+        );
+    }
     normalized
 }
 
@@ -2172,6 +2202,82 @@ mod tests {
             PluginCompatibility::Partial
         );
         assert!(validated.inventory.can_activate_supported_components());
+    }
+
+    #[test]
+    fn asked_host_services_move_the_capability_hash_and_none_keeps_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plain = PluginManifest::validate_from_path(&write_manifest(tmp.path(), "")).unwrap();
+        assert!(plain.inventory.host_services.is_empty());
+        let mut before = Sha256::new();
+        PluginActivationPolicy::current().write_hash_material(&mut before);
+        let inventory = &plain.inventory;
+        for (key, value) in [
+            ("agents", inventory.agents.to_string()),
+            ("commands", inventory.commands.to_string()),
+            ("filesystem", inventory.filesystem_roots.join("\n")),
+            ("hooks", inventory.hooks.to_string()),
+            ("lifecycle", inventory.lifecycle_mutation.to_string()),
+            ("lsp", inventory.lsp.to_string()),
+            ("mcp", inventory.mcp_servers.to_string()),
+            ("mcp-remote", inventory.remote_mcp_servers.to_string()),
+            ("mcp-stdio", inventory.stdio_mcp_servers.to_string()),
+            ("native", inventory.native.to_string()),
+            ("network", inventory.network_hosts.join("\n")),
+            ("providers", inventory.providers.to_string()),
+            ("skills", inventory.skills.to_string()),
+        ] {
+            before.update(key.as_bytes());
+            before.update(b"\0");
+            before.update(value.as_bytes());
+            before.update(b"\0");
+        }
+        assert_eq!(
+            plain.capability_hash,
+            hex_digest(before.finalize()),
+            "a bundle that asks for nothing hashes exactly as it did before"
+        );
+        assert!(!plain.inventory.summary().contains("host_services"));
+        assert!(
+            !serde_json::to_string(&plain.inventory)
+                .unwrap()
+                .contains("host_services")
+        );
+
+        let asked = |list: &str| {
+            PluginManifest::validate_from_path(&write_manifest(
+                tmp.path(),
+                &format!("[capabilities]\nhost_services = [{list}]\n"),
+            ))
+        };
+        let network = asked("\"network\"").unwrap();
+        assert_eq!(network.inventory.host_services, vec![HostService::Network]);
+        assert_ne!(network.capability_hash, plain.capability_hash);
+        assert!(
+            network
+                .inventory
+                .summary()
+                .ends_with(" host_services=network")
+        );
+        let both = asked("\"network\", \"llm\"").unwrap();
+        assert_eq!(
+            both.inventory.host_services,
+            vec![HostService::Llm, HostService::Network]
+        );
+        assert_ne!(both.capability_hash, network.capability_hash);
+        assert_eq!(
+            both.capability_hash,
+            asked("\"llm\", \"network\"").unwrap().capability_hash
+        );
+        let reread: PluginInventory =
+            serde_json::from_str(&serde_json::to_string(&both.inventory).unwrap()).unwrap();
+        assert_eq!(reread, both.inventory);
+        assert!(asked("\"everything\"").is_err());
+        assert!(
+            asked("\"llm\", \"llm\"")
+                .unwrap_err()
+                .contains("duplicate host service")
+        );
     }
 
     #[test]
