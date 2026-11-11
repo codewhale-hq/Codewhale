@@ -513,12 +513,12 @@ pub fn choose_offline_explore(app: &mut App) {
 /// armed: it is not time-based and not cleared by dismissing a screen. A
 /// message held while offline is returned to the composer so the person can
 /// send it on the route that just became active; any further held messages
-/// drain after that turn completes.
+/// stay queued behind it in order and drain after that turn completes.
 pub fn clear_offline_explore_on_route_activation(app: &mut App) {
     app.onboarding_explore_offline = false;
     if app.offline_mode {
         app.offline_mode = false;
-        app.pop_last_queued_into_draft();
+        app.pop_first_queued_into_draft();
         app.needs_redraw = true;
     }
 }
@@ -720,7 +720,10 @@ mod tests {
         app.trust_mode = true;
         choose_offline_explore(&mut app);
         app.input.clear();
-        app.queue_message(crate::tui::app::QueuedMessage::new("first task".to_string(), None));
+        app.queue_message(crate::tui::app::QueuedMessage::new(
+            "first task".to_string(),
+            None,
+        ));
         assert_eq!(
             app.decide_submit_disposition(),
             crate::tui::app::SubmitDisposition::Queue
@@ -733,13 +736,20 @@ mod tests {
     }
 
     #[test]
-    fn rejected_key_offline_stays_queued_without_route_activation() {
+    fn route_activation_keeps_the_oldest_held_message_first() {
         let mut app = test_app_with_locale(Locale::En);
-        app.offline_mode = true;
-        assert_eq!(
-            app.decide_submit_disposition(),
-            crate::tui::app::SubmitDisposition::Queue
-        );
+        app.trust_mode = true;
+        choose_offline_explore(&mut app);
+        app.input.clear();
+        for text in ["first task", "second task"] {
+            app.queue_message(crate::tui::app::QueuedMessage::new(text.to_string(), None));
+        }
+
+        clear_offline_explore_on_route_activation(&mut app);
+
+        assert_eq!(app.input, "first task");
+        assert_eq!(app.queued_messages.len(), 1);
+        assert_eq!(app.queued_messages[0].display, "second task");
     }
 
     // ── Conditional required steps: the counter ──────────────────────────
