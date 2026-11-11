@@ -7439,6 +7439,7 @@ impl RuntimeThreadManager {
         if active.engines.contains_key(thread_id) {
             bail!("cannot discard a loaded Runtime thread");
         }
+        let generation = self.job_operation_generation().ok();
         self.store.with_job_operations(|transaction| {
             anyhow::ensure!(
                 !transaction
@@ -7448,6 +7449,11 @@ impl RuntimeThreadManager {
                         && !matches!(record.operation.status.as_str(), "completed" | "rejected")),
                 "thread has a running or unconfirmed job operation"
             );
+            anyhow::ensure!(
+                !transaction
+                    .thread_has_pending_member_operation(thread_id, generation.as_deref())?,
+                "thread has a pending member operation"
+            );
             let _thread_mutation = self.store.thread_mutation.lock();
             let thread = self.store.load_thread(thread_id)?;
             if thread.latest_turn_id.is_some() {
@@ -7455,6 +7461,7 @@ impl RuntimeThreadManager {
             }
             active.shell_managers.remove(thread_id);
             self.store.remove_thread(thread_id)?;
+            transaction.remove_thread_members(thread_id)?;
             Ok(())
         })?;
         drop(active);
@@ -7476,6 +7483,7 @@ impl RuntimeThreadManager {
         {
             bail!("thread {thread_id} already has an active turn; stop it before deleting");
         }
+        let generation = self.job_operation_generation().ok();
         let (thread, evicted, shell_manager) = self.store.with_job_operations(|transaction| {
             anyhow::ensure!(
                 !transaction
@@ -7484,6 +7492,11 @@ impl RuntimeThreadManager {
                     .any(|record| record.operation.thread_id == thread_id
                         && !matches!(record.operation.status.as_str(), "completed" | "rejected")),
                 "thread has a running or unconfirmed job operation"
+            );
+            anyhow::ensure!(
+                !transaction
+                    .thread_has_pending_member_operation(thread_id, generation.as_deref())?,
+                "thread has a pending member operation"
             );
             let _thread_mutation = self.store.thread_mutation.lock();
             let thread = self.store.load_thread(thread_id)?;
@@ -7501,6 +7514,7 @@ impl RuntimeThreadManager {
             remove_file_if_exists(&self.store.goal_path(thread_id)?)?;
             self.store.remove_seed_journal(thread_id)?;
             self.store.remove_thread(thread_id)?;
+            transaction.remove_thread_members(thread_id)?;
             Ok((thread, (evicted, external), shell_manager))
         })?;
         drop(active);

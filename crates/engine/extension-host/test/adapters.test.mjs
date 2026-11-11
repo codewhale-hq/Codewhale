@@ -44,7 +44,7 @@ before(async () => {
 const adapterFor = (service) => ({ service, define: () => class extends Service { constructor(ctx) { super(ctx, service) } } })
 
 test('the shipped adapter table holds the reviewed adapters, and the root still builds', () => {
-  assert.deepEqual(DSH_ADAPTERS.map((adapter) => adapter.service), ['sessions', 'systemPrompt'])
+  assert.deepEqual(DSH_ADAPTERS.map((adapter) => adapter.service), ['sessions', 'systemPrompt', 'subagents', 'agents'])
   assert.ok(new HostRoot(rpc, 'plugin'))
   assert.ok(new HostRoot(rpc, 'builtin'))
 })

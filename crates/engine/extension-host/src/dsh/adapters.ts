@@ -4,6 +4,7 @@ import type { OwnerRecord, ToolInvocation } from '../root.ts'
 import type { RpcPeer } from '../rpc.ts'
 import type { HostTier } from '../tier.ts'
 import { sessionsAdapter, systemPromptAdapter } from './session-prompt.ts'
+import { DSH_AGENT_ADAPTERS } from './agents.ts'
 
 export interface AdapterHost {
   readonly tier: HostTier
@@ -19,4 +20,4 @@ export interface DshAdapter {
   define(host: AdapterHost): new (ctx: any) => Service
 }
 
-export const DSH_ADAPTERS: readonly DshAdapter[] = [sessionsAdapter, systemPromptAdapter]
+export const DSH_ADAPTERS: readonly DshAdapter[] = [sessionsAdapter, systemPromptAdapter, ...DSH_AGENT_ADAPTERS]

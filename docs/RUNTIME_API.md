@@ -3837,11 +3837,37 @@ instructions join the child's task prompt as its Fleet profile, and the child
 keeps the session's permissions and spawn limits. The document is used for this
 start only; it is not saved and does not change the selected Fleet.
 
-The response is `200 {thread_id, member_id, agent_id, state: "started"}`, or
-`202 {state: "queued"}` when the thread is mid-turn: host requests are handled
-between turns. Repeating the same `operation_key` with the same body returns
-the original `agent_id` once started; a different body under the same key is
-refused. The child appears in `/v1/agent-runs` with `owner_session_id` set to the
+Member starts are durable when runtime capabilities report
+`thread_fleet_member_durable_operations_v1`. The body may also carry
+`expected_store_id` (the `job_operation_store_id` from `/v1/runtime/info`; a
+different store answers `409 member_operation_store_changed`) and
+`request_fingerprint` (checked against the server's own fingerprint of the
+request; a mismatch answers `400 member_request_fingerprint_mismatch`). The
+body is capped at 2 MiB (`413`).
+
+Before the Engine is asked, the start is reserved in the Runtime store under
+`(store, thread, operation_key)` with a pre-minted `agent_id`, and the child is
+spawned under that id and persisted before its acceptance is written. Every
+answer is a receipt `{thread_id, member_id, operation_key,
+request_fingerprint, runtime_store_id, agent_id, state}`: `200` with state
+`accepted` once the child exists, or `202` with state `unknown` when the thread
+is mid-turn (host requests are handled between turns) and the start has not
+settled within 20 seconds. Read the outcome later with
+`GET /v1/threads/{id}/members/operations/{operation_key}`; an unknown key, or a
+key that belongs to another thread, is `404`. `accepted` is reported only while
+the thread still owns a worker with that id started for that member; otherwise
+it reads as `unknown`.
+
+Repeating the same `operation_key` with the same body returns the same receipt
+and never starts a second child, including after an Engine restart or a
+timeout. A different body under the same key is refused with
+`409 member_operation_mismatch`. A reservation that did not produce a child
+before the Engine that held it stopped is reported as `abandoned`, and a
+repeated start answers `409 member_operation_abandoned`; start again with a
+new key. A start the Engine refuses withdraws its reservation, so the same key
+may be retried. A thread with a start still in flight cannot be deleted or
+discarded until it settles.
+The child appears in `/v1/agent-runs` with `owner_session_id` set to the
 thread and its `member_id` as `session_name` (a display name may hold spaces or
 non-ASCII text, which session names refuse); `agent.spawned`,
 `agent.progress` and `agent.completed` arrive on the thread's event stream.

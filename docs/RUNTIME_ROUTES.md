@@ -37,6 +37,7 @@ registration index.
 | GET | `/v1/agent-runs/{run_id}` |
 | POST | `/v1/agent-runs/{run_id}/cancel` |
 | GET | `/v1/agents/external` |
+| GET | `/v1/agents/external/{id}/options` |
 | GET | `/v1/approvals` |
 | POST | `/v1/approvals/{approval_id}` |
 | GET | `/v1/apps/avatars` |
@@ -206,6 +207,7 @@ registration index.
 | POST | `/v1/threads/{id}/jobs/{job_id}/resize` |
 | POST | `/v1/threads/{id}/jobs/{job_id}/stdin` |
 | POST | `/v1/threads/{id}/members` |
+| GET | `/v1/threads/{id}/members/operations/{operation_key}` |
 | GET | `/v1/threads/{id}/notices` |
 | DELETE | `/v1/threads/{id}/notices/{notice_id}` |
 | POST | `/v1/threads/{id}/notifications/prepare` |
@@ -257,4 +259,4 @@ registration index.
 | GET / POST | `/v1/worktrees` |
 | POST | `/v1/worktrees/remove` |
 
-The source contains 237 distinct literal paths in this table.
+The source contains 239 distinct literal paths in this table.

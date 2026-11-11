@@ -1620,6 +1620,7 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         worker_runtime: true,
         fleet_run_create: true,
         thread_fleet_members: true,
+        thread_fleet_member_durable_operations_v1: true,
         fleet_run_start: true,
         fleet_event_replay: true,
         fleet_event_stream: true,
@@ -3129,7 +3130,12 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/threads/{id}/context", get(context::get_thread_context))
         .route(
             "/v1/threads/{id}/members",
-            post(members::start_thread_member),
+            post(members::start_thread_member)
+                .layer(DefaultBodyLimit::max(members::MAX_MEMBER_REQUEST_BYTES)),
+        )
+        .route(
+            "/v1/threads/{id}/members/operations/{operation_key}",
+            get(members::get_member_operation),
         )
         .route("/v1/threads/{id}/plan", get(plans::get_thread_plan))
         .route("/v1/threads/{id}/todo", get(plans::get_thread_todo))

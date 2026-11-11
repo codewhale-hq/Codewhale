@@ -391,6 +391,11 @@
           "type": "boolean",
           "default": false
         },
+        "thread_fleet_member_durable_operations_v1": {
+          "type": "boolean",
+          "description": "Member starts are durable per `(store, thread, operation_key)`;\n`GET /v1/threads/{id}/members/operations/{operation_key}` reads them.",
+          "default": false
+        },
         "fleet_run_start": {
           "type": "boolean",
           "default": false
@@ -482,6 +487,7 @@
         "worker_runtime",
         "fleet_run_create",
         "thread_fleet_members",
+        "thread_fleet_member_durable_operations_v1",
         "fleet_run_start",
         "fleet_event_replay",
         "fleet_event_stream",
