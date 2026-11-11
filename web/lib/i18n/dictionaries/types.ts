@@ -160,12 +160,23 @@ export interface HomeDict {
 
   /** A complete headline that wraps naturally in each locale. */
   heroTitle: string;
+  heroTitleLead: string;
   /**
    * Hero lede. Carries a `{brand}` token so the brand can be typeset in its
    * own span wherever the sentence needs it — the page splits on the token
    * instead of concatenating fragments around it.
    */
   heroIntro: string;
+  readTheCode: string;
+  installNote: string;
+  captionDevelopment: string;
+  captionReleased: string;
+  captureFrameNoPosture: string;
+  frameLabelPrompt: string;
+  frameLabelEdit: string;
+  frameLabelApproval: string;
+  frameLabelResult: string;
+  frameLabelReceipt: string;
   /** Primary action → /install, e.g. "Get Codewhale". */
   getCodewhale: string;
   /** Accessible name for the hero install command and its platform choice. */
@@ -190,6 +201,38 @@ export interface HomeDict {
   copy: string;
   copied: string;
   contribute: string;
+
+  belief: string;
+  sectionModelHeading: string;
+  sectionModelBody: string;
+  sectionControlHeading: string;
+  sectionControlBody: string;
+  sectionAgentsHeading: string;
+  sectionAgentsBody: string;
+  sectionDirectionHeading: string;
+  sectionDirectionBody: string;
+  sectionOpenHeading: string;
+  sectionOpenBody: string;
+  sectionStartHeading: string;
+  sectionStartBody: string;
+
+  mapHeading: string;
+  mapStateReleased: string;
+  mapStateDeveloping: string;
+  mapStateInviteOnly: string;
+  mapStateBeingBuilt: string;
+  mapTerminal: string;
+  mapTerminalSentence: string;
+  mapLocalBrowser: string;
+  mapLocalBrowserSentence: string;
+  mapManyAgents: string;
+  mapManyAgentsSentence: string;
+  mapDesktop: string;
+  mapDesktopSentence: string;
+  mapCloud: string;
+  mapCloudSentence: string;
+  mapOneSession: string;
+  mapOneSessionSentence: string;
 }
 
 /**

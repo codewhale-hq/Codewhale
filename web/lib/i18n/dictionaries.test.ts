@@ -118,7 +118,43 @@ const HOME_PROSE_KEYS = [
   "metaTitle",
   "metaDescription",
   "heroTitle",
+  "heroTitleLead",
   "heroIntro",
+  "readTheCode",
+  "installNote",
+  "captionDevelopment",
+  "captionReleased",
+  "captureFrameNoPosture",
+  "belief",
+  "sectionModelHeading",
+  "sectionModelBody",
+  "sectionControlHeading",
+  "sectionControlBody",
+  "sectionAgentsHeading",
+  "sectionAgentsBody",
+  "sectionDirectionHeading",
+  "sectionDirectionBody",
+  "sectionOpenHeading",
+  "sectionOpenBody",
+  "sectionStartHeading",
+  "sectionStartBody",
+  "mapHeading",
+  "mapStateReleased",
+  "mapStateDeveloping",
+  "mapStateInviteOnly",
+  "mapStateBeingBuilt",
+  "mapTerminal",
+  "mapTerminalSentence",
+  "mapLocalBrowser",
+  "mapLocalBrowserSentence",
+  "mapManyAgents",
+  "mapManyAgentsSentence",
+  "mapDesktop",
+  "mapDesktopSentence",
+  "mapCloud",
+  "mapCloudSentence",
+  "mapOneSession",
+  "mapOneSessionSentence",
   "getCodewhale",
   "heroInstallAria",
   "shotPreview",
@@ -482,6 +518,15 @@ describe("website dictionaries", () => {
       const parts = splitToken(lede, "brand");
       expect(parts.length, `${locale} heroIntro brand split`).toBe(2);
       expect(parts.join("").includes("{brand}")).toBe(false);
+    }
+  });
+
+  it("starts every headline with its lead sentence so a page can set the two sentences apart", () => {
+    for (const locale of ["en", ...DICTIONARY_LOCALES]) {
+      const home = getHome(locale);
+      expect(home.heroTitle.startsWith(home.heroTitleLead), `${locale} heroTitle`).toBe(true);
+      expect(home.heroTitle.length, `${locale} heroTitle has a second sentence`).toBeGreaterThan(home.heroTitleLead.length);
+      expect(home.metaTitle, `${locale} metaTitle`).toBe(`Codewhale · ${home.heroTitle}`);
     }
   });
 
