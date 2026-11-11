@@ -212,6 +212,14 @@ struct SandboxRun {
     wall_ms: u128,
 }
 
+struct GateExecution {
+    receipts: Vec<Value>,
+    test_count: u64,
+    failure: Option<String>,
+    feedback: String,
+    stopped: bool,
+}
+
 fn isolated_command(
     source: &Path,
     scratch: &Path,
@@ -772,13 +780,13 @@ impl VerifiedCandidateEvaluator {
         if scope.is_ok() {
             let execution = self.execute_gates(id, artifact, replay, cancel);
             match execution {
-                Ok((gate_receipts, count, failure, feedback, stopped)) => {
-                    gates = gate_receipts;
-                    test_count = count;
-                    public_feedback = feedback;
-                    execution_status = if stopped { "STOPPED" } else { "COMPLETE" };
-                    reason = failure;
-                    status = if stopped {
+                Ok(outcome) => {
+                    gates = outcome.receipts;
+                    test_count = outcome.test_count;
+                    public_feedback = outcome.feedback;
+                    execution_status = if outcome.stopped { "STOPPED" } else { "COMPLETE" };
+                    reason = outcome.failure;
+                    status = if outcome.stopped {
                         "UNKNOWN"
                     } else if reason.is_none() && test_count > 0 {
                         "PASS"
@@ -846,7 +854,7 @@ impl VerifiedCandidateEvaluator {
         artifact: &Artifact,
         replay: bool,
         cancel: &CancellationToken,
-    ) -> Result<(Vec<Value>, u64, Option<String>, String, bool), String> {
+    ) -> Result<GateExecution, String> {
         let owned = tempfile::Builder::new()
             .prefix("candidate-")
             .tempdir_in(&self.root)
@@ -956,6 +964,12 @@ impl VerifiedCandidateEvaluator {
                 break;
             }
         }
-        Ok((receipts, test_count, failure, feedback, stopped))
+        Ok(GateExecution {
+            receipts,
+            test_count,
+            failure,
+            feedback,
+            stopped,
+        })
     }
 }
