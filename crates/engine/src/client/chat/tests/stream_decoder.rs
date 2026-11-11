@@ -1337,6 +1337,134 @@ fn restored_tool_results_obey_the_active_route_budget() {
         ContentBlock::ToolResult { content, .. } if content == &output));
 }
 
+#[tokio::test]
+async fn request_builder_preserves_execution_matched_native_read_windows() {
+    use crate::tools::spec::{ToolContext, ToolSpec as _};
+
+    let _workshop_guard = codewhale_runtime::active_workshop::active_workshop_test_guard();
+    let workspace = tempfile::tempdir().unwrap();
+    let context = ToolContext::new(workspace.path());
+    for character in ["x", "é"] {
+        let source = format!("// {}\n", character.repeat(96)).repeat(3_000);
+        tokio::fs::write(workspace.path().join("budget.rs"), source)
+            .await
+            .unwrap();
+        for configured in [None, Some(500_000)] {
+            codewhale_runtime::active_workshop::install_active_workshop(Some(
+                &codewhale_config::WorkshopConfig {
+                    read_result_max_bytes: configured,
+                    ..Default::default()
+                },
+            ));
+            let input = json!({"path": "budget.rs"});
+            let output = crate::tools::file_tool::ReadTool
+                .execute(input.clone(), &context)
+                .await
+                .unwrap();
+            assert!(
+                output.content.len() as u64
+                    <= output.metadata.as_ref().unwrap()["read_budget_bytes"]
+                        .as_u64()
+                        .unwrap()
+            );
+            let mut messages = vec![
+                tool_use_message("read-1", "read", input),
+                tool_result_message("read-1", &output.content),
+            ];
+            for message in &mut messages {
+                match &mut message.content[0] {
+                    ContentBlock::ToolUse { execution_id, .. }
+                    | ContentBlock::ToolResult { execution_id, .. } => {
+                        *execution_id = Some("native-read-1".into());
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            // Exercise the persisted shape: ToolResult metadata is not retained here.
+            let messages = serde_json::from_value(serde_json::to_value(messages).unwrap()).unwrap();
+            let request = MessageRequest {
+                model: "deepseek-flash".into(),
+                messages,
+                max_tokens: 1_024,
+                system: None,
+                tools: None,
+                tool_choice: None,
+                metadata: None,
+                thinking: None,
+                reasoning_effort: None,
+                stream: None,
+                temperature: None,
+                top_p: None,
+            };
+            for context_tokens in [128_000, 1_000_000] {
+                for stream in [false, true] {
+                    let limits = Some(RouteLimits {
+                        context_tokens: Some(context_tokens),
+                        ..RouteLimits::default()
+                    });
+                    let wire = build_chat_wire_body(
+                        &request,
+                        ProviderKind::Deepseek,
+                        "https://api.deepseek.com",
+                        stream,
+                        limits,
+                    )
+                    .unwrap();
+                    let sent = tool_message_content(wire.body["messages"].as_array().unwrap(), 0);
+                    assert!(
+                        sent == output.content,
+                        "native bounded read was cut again: {context_tokens}, stream={stream}"
+                    );
+                }
+            }
+
+            for (name, call_execution, result_execution, overrun) in [
+                ("read", None, None, false),
+                ("read", Some("native-read-1"), None, false),
+                ("read", Some("native-read-1"), Some("other-read"), false),
+                (
+                    "read_file",
+                    Some("native-read-1"),
+                    Some("native-read-1"),
+                    false,
+                ),
+                ("read", Some("native-read-1"), Some("native-read-1"), true),
+            ] {
+                let mut unqualified = request.clone();
+                if let ContentBlock::ToolUse {
+                    name: tool_name,
+                    execution_id,
+                    ..
+                } = &mut unqualified.messages[0].content[0]
+                {
+                    *tool_name = name.into();
+                    *execution_id = call_execution.map(str::to_string);
+                }
+                if let ContentBlock::ToolResult {
+                    execution_id,
+                    content,
+                    ..
+                } = &mut unqualified.messages[1].content[0]
+                {
+                    *execution_id = result_execution.map(str::to_string);
+                    if overrun {
+                        // A native-looking footer is not a budget grant.
+                        *content = format!(
+                            "{}\n\n[Showing lines 1-10 of 20. Use offset=11 to continue.]",
+                            "z".repeat(600_000)
+                        );
+                    }
+                }
+                let built = build_chat_messages(None, &unqualified.messages, "trinity-mini");
+                let sent = tool_message_content(&built, 0);
+                assert!(sent.starts_with("[TOOL_RESULT_TRUNCATED]"));
+                assert!(sent.chars().count() <= tool_result_sent_char_budget("trinity-mini"));
+            }
+        }
+    }
+    codewhale_runtime::active_workshop::install_active_workshop(None);
+}
+
 #[test]
 fn request_builder_keeps_unowned_extreme_tool_output_bounded_without_false_hint() {
     with_tool_result_sha_spillover_root(|| {

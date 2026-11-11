@@ -1649,9 +1649,11 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     // alt-tabbed sessions communicate state without a second in-app spinner.
     crate::tui::underwater::sync_title_activity(app);
 
-    // Clear entire area with the configured app background.
-    let background = Block::default().style(Style::default().bg(app.ui_theme.surface_bg));
-    f.render_widget(background, size);
+    // Frame-wide ink backstop (#400), including gaps after pane toggles or resize.
+    // Frame's buffer is exactly its viewport; preserve symbols and all non-bg style.
+    for cell in &mut f.buffer_mut().content {
+        cell.set_bg(app.ui_theme.surface_bg);
+    }
 
     // Show onboarding screen if needed
     if app.onboarding != OnboardingState::None {
@@ -1941,13 +1943,8 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     // rejected build still read as the old TUI under a gradient.
     let shell_ocean;
     {
-        // Defensive backstop (#400): fill the entire body area with ink
-        // background before any sub-widgets render, so cells that end up
-        // uncovered by layout splits (e.g. after file-tree toggle or
-        // resize) don't retain stale content from a previous frame.
-        Block::default()
-            .style(Style::default().bg(app.ui_theme.surface_bg))
-            .render(work_chat_area, f.buffer_mut());
+        // The frame-wide ink backstop above also covers layout gaps here
+        // after file-tree toggles and resize; do not repaint the same cells.
 
         // When the file-tree pane is visible and the terminal is wide
         // enough, reserve the left ~25% for the file tree.
@@ -2489,8 +2486,12 @@ pub(crate) fn context_usage_snapshot_for_window(app: &App, max: u32) -> Option<(
     // A submitted first turn has started the conversation even before the
     // engine mirrors its messages back, and so has any provider usage; those
     // keep the real pressure reading.
-    let conversation_started =
-        !app.api_messages.is_empty() || app.is_loading || count_user_history_cells(app) > 0;
+    let conversation_started = !app.api_messages.is_empty()
+        || app.is_loading
+        || app
+            .history
+            .iter()
+            .any(|cell| matches!(cell, HistoryCell::User { .. }));
     if !conversation_started
         && app.session.last_prompt_tokens.unwrap_or(0) == 0
         && app.last_billed_input_tokens.unwrap_or(0) == 0

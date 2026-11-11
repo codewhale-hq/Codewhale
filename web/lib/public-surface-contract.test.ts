@@ -438,7 +438,7 @@ done
     expect(nativeNames.length).toBeGreaterThan(0);
     expect(matrix.toolSurface.defaultActive).toEqual(nativeNames);
     expect(matrix.toolSurface.schemas).toEqual({
-      read: ["path", "offset?", "limit?"],
+      read: ["path", "offset?", "limit?", "expected_revision?"],
       write: ["path", "content"],
       edit: ["path", "edits"],
       bash: ["command", "timeout?"],

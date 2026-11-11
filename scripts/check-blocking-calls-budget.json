@@ -201,6 +201,9 @@
   "crates/engine/src/session_secret_scrub.rs": {
     "std_fs": 8
   },
+  "crates/engine/src/tools/echolocation.rs": {
+    "path_canonicalize": 9
+  },
   "crates/engine/src/tools/git.rs": {
     "path_canonicalize": 1
   },
@@ -230,7 +233,7 @@
     "std_fs": 1
   },
   "crates/engine/src/tools/search.rs": {
-    "path_canonicalize": 3
+    "path_canonicalize": 5
   },
   "crates/engine/src/tools/shell.rs": {
     "path_canonicalize": 2,

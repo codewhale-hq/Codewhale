@@ -16,14 +16,11 @@ fn default_active_contract_keeps_discovery_and_core_tools_eager() {
         "present",
         "load_skill",
     ];
-    assert_eq!(
-        default_active_native_tool_names(),
-        EXPECTED_NATIVE.as_slice()
-    );
+    assert_eq!(default_active_native_tool_names(), EXPECTED_NATIVE);
 
     let always_load = HashSet::new();
     let mut catalog = build_model_tool_catalog(
-        EXPECTED_NATIVE.into_iter().map(api_tool).collect(),
+        EXPECTED_NATIVE.iter().copied().map(api_tool).collect(),
         Vec::new(),
         AppMode::Agent,
         &always_load,
@@ -36,7 +33,8 @@ fn default_active_contract_keeps_discovery_and_core_tools_eager() {
     );
     let active = initial_active_tools(&catalog);
     let expected = EXPECTED_NATIVE
-        .into_iter()
+        .iter()
+        .copied()
         .chain([TOOL_SEARCH_NAME])
         .map(str::to_string)
         .collect::<HashSet<_>>();
@@ -254,13 +252,15 @@ fn capability_full_surface_preserves_small_default_head() {
             "{name} should stay eager on full tool surfaces"
         );
     }
-    assert_eq!(
-        catalog
-            .iter()
-            .find(|tool| tool.name == "Run")
-            .and_then(|tool| tool.defer_loading),
-        Some(true)
-    );
+    for name in ["Run"] {
+        assert_eq!(
+            catalog
+                .iter()
+                .find(|tool| tool.name == name)
+                .and_then(|tool| tool.defer_loading),
+            Some(true)
+        );
+    }
 }
 
 #[test]

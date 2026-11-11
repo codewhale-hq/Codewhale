@@ -121,10 +121,9 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
         "agent",
         "bash",
         "create_goal",
-        "get_goal",
-        "update_goal",
         "edit",
         "file_search",
+        "get_goal",
         "grep_files",
         "load_skill",
         "present",
@@ -132,6 +131,7 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
         "task_shell_wait",
         "todo_write",
         "tool_search",
+        "update_goal",
         "write",
     ]
     .into_iter()
@@ -158,6 +158,8 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
             "Run",
             "tasks",
             "load_skill",
+            "context_archive_get",
+            "context_archive_search",
         ]
         .into_iter()
         .map(tool)
@@ -381,6 +383,23 @@ fn compact_surface_keeps_agent_eager_defers_workflow() {
             Some(deferred),
             "{name}"
         );
+    }
+}
+
+#[test]
+fn deferred_core_tools_restore_through_always_load() {
+    // Explicitly requested specialized tools join the default eager tools.
+    let mut catalog = ["agent", "workflow", "get_goal", "update_goal", "read"]
+        .into_iter()
+        .map(tool)
+        .collect::<Vec<_>>();
+    let always_load = ["agent", "workflow", "get_goal", "update_goal"]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    apply_native_tool_deferral(&mut catalog, &always_load);
+    for definition in &catalog {
+        assert_eq!(definition.defer_loading, Some(false), "{}", definition.name);
     }
 }
 

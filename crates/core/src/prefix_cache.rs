@@ -707,9 +707,9 @@ impl PrefixStabilityManager {
     }
 }
 
-/// Serialize the logical tool fields used by this stability fingerprint.
-/// Provider wire projection and omission are measured by the prepared request.
-fn logical_tool_fingerprint_json(tool: &Tool) -> Option<String> {
+/// Serialize the logical tool fields used by the stability fingerprint and
+/// supported-dialect fork comparison. Prepared requests own wire identity.
+pub fn logical_tool_fingerprint_json(tool: &Tool) -> Option<String> {
     let mut value = serde_json::json!({
         "type": "function",
         "function": {

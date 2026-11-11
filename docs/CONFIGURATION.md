@@ -1121,16 +1121,15 @@ routing with `CODEWHALE_ADAPTIVE_OUTPUT_ROUTING=1`; they set where a result
 stops being inline and becomes handle-only evidence.
 
 Two optional byte ceilings (#5367) apply either way. They raise the
-model-visible floor and never lower it:
+corresponding default budgets without disabling ordinary spillover:
 
-- `read_result_max_bytes` — cap for a single `read` / `read_file`
-  result. Absent keeps the compile-time defaults (100000 bytes for
-  `read`, which has no line cap; 16KiB / 500 lines for `read_file`).
-  For `read` this is the middle of a three-layer budget: the model's
-  own per-call `max_bytes` (hard maximum 500000) raises the budget for
-  one call, this setting raises the floor for the whole process, and
-  either way 2MiB is the absolute ceiling. Highest wins; neither layer
-  can lower a budget the other granted.
+- `read_result_max_bytes` — operator-owned source-byte cap for the native
+  `read` tool. Absent keeps its 50 KiB default. A configured value is clamped
+  between 50 KiB and 2 MiB. Each call still returns at most 2,000 lines, and
+  lines over 2,000 characters are marked truncated. The model pages with
+  `offset` and `limit`; it has no `max_bytes` parameter. Raising this byte cap
+  does not raise the line ceiling or bypass classic spillover's 100 KiB
+  threshold. Hidden compatibility readers retain their existing contracts.
 - `tool_result_max_bytes` — cap for a generic tool result after
   spillover. Absent keeps the 12K-character compact floor (48K on
   windows ≥500K tokens). Hard cap is 2MiB.
@@ -2971,7 +2970,7 @@ reasoning contract, and all four membership ids omit generic sampling fields.
 
 - `tui.stream_chunk_timeout_secs` (int, optional, default `900`): per-SSE-chunk idle timeout for streamed model responses. Slow local or compatible servers can raise this with `/config stream_chunk_timeout_secs <seconds>` (add `--save` to write canonical `stream.chunk_timeout_secs`); `0` maps to the default and explicit values must be `1..=3600`. The legacy `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` env var is still honored when this key is omitted.
 - `tui.osc8_links` (bool, optional, default on for macOS/Linux, off for Windows): emit OSC 8 escape sequences around URLs in transcript output so supporting terminals (iTerm2, Terminal.app 13+, Ghostty, Kitty, WezTerm, Alacritty, recent gnome-terminal/konsole) can open them with the terminal's link gesture—usually Cmd-click on macOS and Ctrl-click on Linux/Windows. Terminals without OSC 8 support render the plain label and ignore the escape. The escapes are emitted out-of-band (not inside buffer cells), so column corruption is not a concern; set `false` only for terminals that misrender the OSC 8 terminator itself. Windows legacy consoles default off; opt in with `true`.
-- `tui.max_model_steps` (int, optional, default uncapped): optional model-step ceiling for one ordinary turn. Omission or `0` leaves model steps uncapped; explicit positive values are preserved (`4294967295` is the compatibility value for no limit). Headless `exec` and Fleet workers also have no implicit model-step ceiling; `exec --max-turns N` and positive worker budgets still apply. At exhaustion the turn ends `Failed` with `Maximum model steps reached before completion (limit: N)` after one bounded final-report response when needed. Cumulative wall-clock and per-stream limits remain independent. Active interactive goal turns use `goal.max_steps` instead (also uncapped by default); see the Goal loop section below.
+- `tui.max_model_steps` (int, optional, default uncapped): optional model-step ceiling for one ordinary turn. Omission or `0` leaves model steps uncapped; explicit positive values are preserved (`4294967295` is the compatibility value for no limit). Headless `exec` and Fleet workers also have no implicit model-step ceiling; `exec --max-turns N` and positive worker budgets still apply. Ordinary tool-loop turns log one history notice when at most three working requests remain; it does not extend the ceiling or change the session-pinned prefix. At exhaustion the turn ends `Failed` with `Maximum model steps reached before completion (limit: N)` after one bounded final-report response when needed. Cumulative wall-clock and per-stream limits remain independent. Active interactive goal turns use `goal.max_steps` instead (also uncapped by default); see the Goal loop section below.
 - `tui.turn_wall_clock_secs` (int, optional, default: no limit): cumulative per-turn wall-clock budget in seconds, measured across every model step of one turn (not per request). Time blocked on a human approval is excluded. Omitted or `0` means no limit; positive values are preserved without an added runtime ceiling. When exhausted the turn stops before authorizing another billable request with a message naming the limit and the key to raise.
 - `tui.stream_max_resumes` (int, optional, default `3`): turn-level recovery after a proven transient connection failure before request dispatch. `0` disables this additional recovery; values clamp to `0..=10`. Missing response headers, empty or partial streams, sleep and network drops never authorize inference replay.
 - `tui.stream_max_transparent_retries` (int, optional, default `2`): retained for configuration compatibility, clamped to `0..=10`. Interrupted streams no longer trigger transparent inference reissues, including before visible content.

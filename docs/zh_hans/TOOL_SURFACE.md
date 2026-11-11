@@ -20,28 +20,29 @@
 
 ## 默认激活契约
 
-新回合开始时带有十五个预加载（eager）的原生名称，外加合成的 `tool_search`：
+新回合开始时带有十四个预加载（eager）的原生名称，外加合成的 `tool_search`：
 
 1. `read`
 2. `write`
 3. `edit`
 4. `file_search`
-5. `bash`
-6. `agent`
-7. `workflow`
+5. `grep_files`
+6. `bash`
+7. `agent`
 8. `todo_write`
 9. `create_goal`
 10. `get_goal`
 11. `update_goal`
 12. `task_shell_wait`
-13. `load_skill`
-14. `context_archive_get`
-15. `context_archive_search`
-16. `tool_search`（合成，始终激活）
+13. `present`
+14. `load_skill`
+15. `tool_search`（合成，始终激活）
 
-这十五个原生名称就是 `crates/engine/src/core/engine/tool_catalog.rs` 里的
+这十四个原生名称就是 `crates/engine/src/core/engine/tool_catalog.rs` 里的
 `DEFAULT_ACTIVE_NATIVE_TOOLS`，由
 `default_active_contract_keeps_discovery_and_core_tools_eager` 固定住。
+`workflow`、`context_archive_get` 和 `context_archive_search` 默认延迟加载，
+通过 `tool_search` 发现后激活。
 权限边界（authority boundary）可以在子智能体达到最大深度时移除 `agent`，
 Plan 只注册前台 shell 表面（因此没有 `task_shell_wait`），但仅凭路由大小不得改变
 这套核心词汇。
@@ -50,18 +51,20 @@ Plan 只注册前台 shell 表面（因此没有 `task_shell_wait`），但仅�
 
 | 工具 | 输入 | 用途 |
 |---|---|---|
-| `read` | `path`、可选的 `offset`、可选的 `limit` | 读取一个有界的文件窗口，并给出明确的续读或截断提示。 |
+| `read` | `path`，以及可选的 `offset`、`limit`、`expected_revision` | 读取有界文件窗口；版本守卫拒绝过期的导航偏移。 |
 | `write` | `path`、`content` | 创建或替换文件。 |
 | `edit` | `path`、`edits` | 针对同一份原始快照应用一处或多处无歧义的文本替换。 |
 | `file_search` | `query`，以及可选的 `path`、`limit`、`extensions`、`exclude` | 按文件名、路径片段或 glob 查找文件，返回有界的排序结果。遵循忽略文件；`exclude` 会替换默认排除规则。 |
+| `grep_files` | `pattern`，以及可选的 `path`、`include`、`exclude`、`context_lines`、`case_insensitive`、`max_results` | 直接搜索文件内容，返回有界匹配行及上下文。 |
 | `bash` | `command`、可选的 `timeout` | 运行一条可取消的前台 shell 命令，并返回有界的尾部输出。 |
 | `agent` | 被委派的任务以及可选的作用域/上下文控制项 | 启动或查看专注的子智能体任务。 |
-| `workflow` | plan/script/source_path 加上运行控制项 | 用依赖关系和完成检查来协调多智能体阶段。 |
+| `workflow`（延迟） | plan/script/source_path 加上运行控制项 | 用依赖关系和完成检查来协调多智能体阶段。 |
 | `todo_write` | `{content, status}` 条目的完整替换列表 | 为真正的多步工作保留可选的、由智能体自己维护的进度笔记。 |
 | `create_goal` | 目标文本以及可选预算 | 启动本回合所追求的会话目标（goal）。 |
 | `get_goal` | 无 | 读取当前生效的目标及其进度。 |
 | `update_goal` | 终态状态 | 把目标标记为完成或受阻。 |
 | `task_shell_wait` | `task_id`，以及可选的 `wait`、`timeout_ms`、`cancel`、`gate` | 轮询或停止一个后台 shell 任务。完成结果仍会作为运行时事件到达，因此只在需要提前输出、真正的依赖屏障或闸门证据时使用。 |
+| `present` | `files`、可选的 `note` | 为已有工作区文件生成只读 SHA-256 交付回执，不复制或移动文件。 |
 | `load_skill` | 可选的 `name`、`query` | 加载命名技能的 `SKILL.md` 正文及配套文件列表；省略 `name` 或使用 `name="list"` 列出可调用技能，也可用 `query` 搜索名称与描述。 |
 | `tool_search` | `query`、可选的匹配控制项 | 发现策略允许的延迟工具，并把选中的 schema 加入本次对话的工具箱。 |
 
@@ -331,3 +334,8 @@ cargo test --locked -p codewhale-tui --lib core::engine::tests::print_mode_tool_
 不依赖提供商的回执必须报告上面列出的十五个默认激活名称。另一份仓库范围的
 工具计数可能包含延迟、动态、受特性开关控制以及仅为兼容而存在的注册；
 它不是放进首回合模型目录的工具数量。
+
+
+## 源码导航回声
+
+文件和搜索工具可在工具结果历史中附带同目录伙伴、符号、导入和修改归因，不加入会话固定前缀。调用者扫描最多选择 32 个可见、排序后的候选文件，每个正文最多接受 256 KiB，超额候选明确标为未扫描。关键文件正文最多接受 8 MiB。受保护路径或拒绝结果不会作为“读取不存在”继续探测；读取通过已验证的常规文件句柄完成。删除按旧侧、替换按两侧归因。完整目录名称枚举和内核 I/O 延迟不受正文上限约束。见英文 [ECHOLOCATION.md](../ECHOLOCATION.md) 及 [TOOL_SURFACE.md](../TOOL_SURFACE.md)。

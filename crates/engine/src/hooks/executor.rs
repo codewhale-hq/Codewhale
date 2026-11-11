@@ -6800,8 +6800,6 @@ command = "echo project"
             // The router itself touches nothing a hook needs to gate.
             ("agent", "other"),
             ("todo_write", "safe"),
-            // Goal controls retain their existing hook classification when
-            // promoted from deferred discovery to the eager catalog.
             ("create_goal", "other"),
             ("get_goal", "other"),
             ("update_goal", "other"),
@@ -6830,6 +6828,8 @@ command = "echo project"
                  it so this table keeps describing what actually ships."
             );
         }
+
+        assert_eq!(tool_category_for("workflow", None), "other");
 
         // The shell surface.
         assert_eq!(tool_category_for("Bash", None), "shell");

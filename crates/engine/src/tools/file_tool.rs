@@ -78,6 +78,10 @@ impl ToolSpec for ReadTool {
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of lines to return. Defaults to 2000."
+                },
+                "expected_revision": {
+                    "type": "string",
+                    "description": "Optional snapshot guard from a code navigation reference. Pass the reference's path, offset, limit and expected_revision together; changed source is refused instead of silently reading stale offsets. Omit for an ordinary read."
                 }
             },
             "required": ["path"],

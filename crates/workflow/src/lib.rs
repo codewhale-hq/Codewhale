@@ -624,7 +624,7 @@ pub struct BranchResult {
     pub status: WorkflowRunStatus,
     #[serde(default)]
     pub usage: WorkflowUsage,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "WorkflowMemoUsage::is_zero")]
     pub memo_usage: WorkflowMemoUsage,
     #[serde(default)]
     pub artifacts: Vec<String>,
@@ -645,7 +645,7 @@ pub struct LeafResult {
     pub status: WorkflowRunStatus,
     #[serde(default)]
     pub usage: WorkflowUsage,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "WorkflowMemoUsage::is_zero")]
     pub memo_usage: WorkflowMemoUsage,
     #[serde(default)]
     pub output: Option<String>,
@@ -703,6 +703,15 @@ pub struct WorkflowMemoUsage {
 }
 
 impl WorkflowMemoUsage {
+    /// True when every counter is zero: 136 bytes of nothing on the wire.
+    pub fn is_zero(&self) -> bool {
+        self.armh_hits == 0
+            && self.armh_misses == 0
+            && self.armh_saved_estimated_tokens == 0
+            && self.provider_prompt_cache_hits == 0
+            && self.provider_prompt_cache_misses == 0
+    }
+
     pub(crate) fn add_assign(&mut self, other: Self) {
         self.armh_hits = self.armh_hits.saturating_add(other.armh_hits);
         self.armh_misses = self.armh_misses.saturating_add(other.armh_misses);
@@ -759,7 +768,7 @@ pub struct WorkflowExecution {
     pub status: WorkflowRunStatus,
     #[serde(default)]
     pub usage: WorkflowUsage,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "WorkflowMemoUsage::is_zero")]
     pub memo_usage: WorkflowMemoUsage,
     #[serde(default)]
     pub leaf_results: Vec<LeafResult>,
@@ -808,7 +817,7 @@ pub struct MockLeafOutcome {
     pub status: WorkflowRunStatus,
     #[serde(default)]
     pub usage: WorkflowUsage,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "WorkflowMemoUsage::is_zero")]
     pub memo_usage: WorkflowMemoUsage,
     #[serde(default)]
     pub output: Option<String>,

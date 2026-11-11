@@ -72,7 +72,7 @@ async fn contract_read_defaults_to_the_line_limit() {
         .await
         .expect("read result");
     assert_eq!(
-        result.content,
+        result.content.split("\n\n[Pod").next().unwrap(),
         format!(
             "{}\n\n[Showing lines 1-2000 of 5001. Continue with offset=2001.]",
             lines[..2_000].join("\n")
@@ -84,7 +84,7 @@ async fn contract_read_defaults_to_the_line_limit() {
 }
 
 #[tokio::test]
-async fn contract_read_returns_an_ordinary_source_file_whole_without_a_footer() {
+async fn contract_read_appends_a_pod_footer_to_a_whole_source_file() {
     let temporary = tempfile::tempdir().expect("tempdir");
     let content = "fn main() {\n    println!(\"hi\");\n}\n";
     std::fs::write(temporary.path().join("main.rs"), content).expect("fixture");
@@ -92,7 +92,66 @@ async fn contract_read_returns_an_ordinary_source_file_whole_without_a_footer() 
     let result = ReadFileTool::execute_contract_read(json!({"path": "main.rs"}), &context)
         .await
         .expect("read result");
-    assert_eq!(result.content, content);
+    assert!(
+        result.content.starts_with(content),
+        "whole file first, pod footer after"
+    );
+    assert!(
+        result.content.contains("[Pod ("),
+        "pod footer present: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("[Sound: 1 symbol: fn main:1]"),
+        "sounded symbol present: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn contract_read_miss_echoes_parent_mates_on_not_found() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temporary.path().join("alpha.rs"), "fn a() {}\n").expect("fixture");
+    std::fs::write(temporary.path().join("beta.rs"), "fn b() {}\n").expect("fixture");
+    let context = ToolContext::new(temporary.path());
+    let error = ReadFileTool::execute_contract_read(json!({"path": "alpah.rs"}), &context)
+        .await
+        .expect_err("typo'd path must fail");
+    match error {
+        ToolError::ExecutionFailed { message, .. } => {
+            assert!(message.contains("Failed to read"), "{message}");
+            assert!(message.contains("[Miss echo: "), "{message}");
+            assert!(message.contains("alpha.rs"), "{message}");
+            assert!(message.contains("beta.rs"), "{message}");
+        }
+        other => panic!("expected ordinary read failure, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn contract_read_refused_probe_gets_no_miss_echo() {
+    // Security gate: a denylisted path must fail WITHOUT the miss echo —
+    // listing the parent would answer the refused probe. The denylist
+    // check runs before the IO read, so the refusal wins whether or not
+    // the file exists. Mirrors the home-dir fixture pattern in
+    // file/tests/tools.rs (the guard snapshots HOME process-wide).
+    let _env_lock = crate::test_support::lock_test_env();
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let context = ToolContext::new(temporary.path());
+    let probe = home.join(".ssh").join("id_ed25519_no_such_key");
+    let error =
+        ReadFileTool::execute_contract_read(json!({"path": probe.to_string_lossy()}), &context)
+            .await
+            .expect_err("denylisted path must fail");
+    let message = error.to_string();
+    assert!(message.contains("deny-list"), "{message}");
+    assert!(
+        !message.contains("[Miss echo: "),
+        "refused probe must not echo: {message}"
+    );
 }
 
 #[test]
@@ -188,8 +247,8 @@ async fn contract_read_paginates_an_oversized_file_with_an_honest_budget_footer(
     let first = ReadFileTool::execute_contract_read(json!({"path": "big.txt"}), &context)
         .await
         .expect("first page");
-    let footer = first
-        .content
+    let first_page = first.content.split("\n\n[Pod").next().unwrap();
+    let footer = first_page
         .rsplit_once("\n\n")
         .expect("footer present")
         .1
@@ -198,7 +257,7 @@ async fn contract_read_paginates_an_oversized_file_with_an_honest_budget_footer(
         footer,
         "[Showing lines 1-51 of 2000; output cap reached. Continue with offset=52.]"
     );
-    let shown = first.content.rsplit_once("\n\n").expect("body").0;
+    let shown = first_page.rsplit_once("\n\n").expect("body").0;
     assert_eq!(shown.lines().count(), 51);
 
     // The named continuation offset is exact: page two starts on line 52.
@@ -295,8 +354,8 @@ async fn contract_read_pages_stay_bounded_and_cover_the_whole_file() {
         );
         let body = result
             .content
-            .rsplit_once("\n\n[")
-            .map(|(body, _)| body)
+            .split("\n\n[")
+            .next()
             .unwrap_or(&result.content);
         seen.extend(body.lines().map(str::to_string));
         let truncated = metadata["truncated"].as_bool().expect("truncated flag");
@@ -311,7 +370,7 @@ async fn contract_read_pages_stay_bounded_and_cover_the_whole_file() {
 }
 
 /// #6283: ordinary whole reads carry the same paging metadata (with
-/// truncated=false) and keep their footer-free shape.
+/// truncated=false); the pod footer follows the whole file.
 #[tokio::test]
 async fn contract_read_metadata_for_ordinary_whole_read() {
     let temporary = tempfile::tempdir().expect("tempdir");
@@ -322,7 +381,15 @@ async fn contract_read_metadata_for_ordinary_whole_read() {
     let result = ReadFileTool::execute_contract_read(json!({"path": "small.txt"}), &context)
         .await
         .expect("read result");
-    assert_eq!(result.content, content);
+    assert!(
+        result.content.starts_with(content),
+        "whole file first, pod footer after"
+    );
+    assert!(
+        result.content.contains("[Pod ("),
+        "pod footer present: {}",
+        result.content
+    );
     let metadata = result.metadata.clone().expect("paging metadata");
     assert_eq!(metadata["size"], content.len() as u64);
     assert_eq!(metadata["truncated"], false);
@@ -388,7 +455,7 @@ async fn contract_read_truncates_a_huge_first_line_with_a_marker() {
         .await
         .expect("read result");
     assert_eq!(
-        result.content,
+        result.content.split("\n\n[Pod").next().unwrap(),
         format!(
             "{}... [line truncated at 2000 chars]",
             "x".repeat(READ_MAX_LINE_CHARS)
@@ -409,7 +476,7 @@ async fn contract_read_offset_oob_and_limit_continuation_match_contract() {
     .await
     .expect("limited read");
     assert_eq!(
-        limited.content,
+        limited.content.split("\n\n[Pod").next().unwrap(),
         "two\n\n[Showing lines 2-2 of 3. Continue with offset=3.]"
     );
 
@@ -439,7 +506,7 @@ async fn contract_read_accepts_whole_number_floats_and_still_refuses_fractions()
     .await
     .expect("float-typed ranged read");
     assert_eq!(
-        ranged.content,
+        ranged.content.split("\n\n[Pod").next().unwrap(),
         "two\n\n[Showing lines 2-2 of 3. Continue with offset=3.]"
     );
 
@@ -481,7 +548,11 @@ async fn contract_read_uses_magic_not_extension_for_images() {
     let text = ReadFileTool::execute_contract_read(json!({"path": "plain.png"}), &context)
         .await
         .expect("fake extension remains text");
-    assert_eq!(text.content, "ordinary text");
+    assert!(
+        text.content.starts_with("ordinary text"),
+        "text first, pod footer after: {}",
+        text.content
+    );
     let image = ReadFileTool::execute_contract_read(json!({"path": "renamed.data"}), &context)
         .await
         .expect("real image uses typed transport");
@@ -537,6 +608,15 @@ fn contract_edit_fuzzy_normalization_preserves_untouched_lines() {
     )
     .expect("fuzzy edit");
     assert_eq!(updated, "untouched line  \nShe said hello.\ntail  \n");
+}
+
+fn mutation_evidence(result: &ToolResult) -> Value {
+    result
+        .content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|value| value.get("read").is_some())
+        .expect("written snapshot and guarded read must reach the model")
 }
 
 #[test]
@@ -596,9 +676,10 @@ async fn contract_edit_preserves_bom_and_crlf_without_prior_read() {
     )
     .await
     .expect("edit");
-    assert_eq!(
-        result.content,
-        "Successfully replaced 1 block(s) in doc.txt."
+    assert!(
+        result
+            .content
+            .starts_with("Successfully replaced 1 block(s) in doc.txt.")
     );
     assert_eq!(
         std::fs::read(&path).expect("updated"),
@@ -607,6 +688,17 @@ async fn contract_edit_preserves_bom_and_crlf_without_prior_read() {
     // The receipt describes the bytes written (BOM and CRLF included), not
     // the edited text, so a turn artifact's revision matches the file read.
     let on_disk = std::fs::read(&path).expect("updated");
+    let evidence = mutation_evidence(&result);
+    assert_eq!(evidence["diff"]["status"], "complete");
+    let diff = result.metadata.as_ref().expect("metadata")["mutation"]["diff"]
+        .as_str()
+        .expect("applied diff");
+    assert!(result.content.contains(diff), "model and TUI must agree");
+    assert!(diff.contains("+\u{FEFF}one\r\n+two\r\n"), "{diff}");
+    assert_eq!(
+        evidence["read"]["expected_revision"],
+        content_hash(&on_disk)
+    );
     assert_eq!(
         result.metadata.as_ref().expect("metadata")["mutation"]["files"],
         json!([{
@@ -638,6 +730,82 @@ async fn contract_write_receipt_carries_written_size_and_sha256() {
             "sha256": codewhale_runtime::hashing::sha256_hex(&on_disk),
         }])
     );
+    let evidence = mutation_evidence(&result);
+    assert_eq!(evidence["diff"]["status"], "complete");
+    assert!(result.content.contains("+# Title\n"), "{}", result.content);
+    assert_eq!(evidence["read"]["path"], "notes/out.md");
+    let read = super::super::file_tool::ReadTool
+        .execute(evidence["read"].clone(), &context)
+        .await
+        .expect("the emitted reference must be directly usable");
+    assert!(read.content.starts_with("# Title\n"));
+    std::fs::write(temporary.path().join("notes/out.md"), "# Other\n")
+        .expect("same-size external edit");
+    let error = super::super::file_tool::ReadTool
+        .execute(evidence["read"].clone(), &context)
+        .await
+        .expect_err("written evidence must not authorize a stale snapshot");
+    assert!(error.to_string().contains("stale"), "{error}");
+}
+
+#[tokio::test]
+async fn contract_mutation_reports_normalized_rust_not_requested_text() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let path = temporary.path().join("reef.rs");
+    std::fs::write(&path, "fn reef() -> u32 {\n    1\n}\n").expect("fixture");
+    let context = ToolContext::new(temporary.path());
+    let result = super::super::file_tool::EditTool
+        .execute(
+            json!({"path": "reef.rs", "edits": [{"oldText": "    1", "newText": "    1+2"}]}),
+            &context,
+        )
+        .await
+        .expect("edit");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("normalized source"),
+        "fn reef() -> u32 {\n    1 + 2\n}\n"
+    );
+    assert!(
+        result.content.contains("+    1 + 2\n"),
+        "{}",
+        result.content
+    );
+    assert!(!result.content.contains("+    1+2\n"));
+    assert_eq!(mutation_evidence(&result)["diff"]["status"], "complete");
+}
+
+#[tokio::test]
+async fn contract_mutation_omits_an_oversized_diff_without_cutting_a_hunk() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let context = ToolContext::new(temporary.path());
+    let name = if cfg!(windows) {
+        "large reef.txt"
+    } else {
+        "large \"reef\".txt"
+    };
+    let result = super::super::file_tool::WriteTool
+        .execute(json!({"path": name, "content": "🦀".repeat(650)}), &context)
+        .await
+        .expect("write");
+    let evidence = mutation_evidence(&result);
+    let diff = result.metadata.as_ref().expect("metadata")["mutation"]["diff"]
+        .as_str()
+        .expect("full TUI diff retained");
+    assert!(diff.len() > 2048 && diff.chars().count() < 2048);
+    assert_eq!(evidence["diff"]["status"], "omitted");
+    assert_eq!(evidence["diff"]["bytes"], diff.len());
+    assert_eq!(evidence["diff"]["reason"], "inline_byte_limit");
+    assert!(!result.content.contains("--- a/"), "no partial diff");
+    assert!(!result.content.contains('🦀'), "no partial source");
+    assert_eq!(
+        evidence["read"]["path"], name,
+        "JSON-escaped path roundtrip"
+    );
+    let read = super::super::file_tool::ReadTool
+        .execute(evidence["read"].clone(), &context)
+        .await
+        .expect("omitted source is recoverable through native read");
+    assert!(read.content.starts_with(&"🦀".repeat(650)));
 }
 
 /// B6: bytes that are not UTF-8 survive an edit elsewhere in the file.
@@ -649,7 +817,7 @@ async fn contract_edit_keeps_non_utf8_bytes() {
     original.extend_from_slice(b"change me\n");
     std::fs::write(&path, &original).expect("fixture");
     let context = ToolContext::new(temporary.path());
-    EditFileTool::execute_contract_edits(
+    let result = EditFileTool::execute_contract_edits(
         json!({"path": "latin1.txt", "edits": [{"oldText": "change me", "newText": "changed"}]}),
         &context,
     )
@@ -659,6 +827,10 @@ async fn contract_edit_keeps_non_utf8_bytes() {
         std::fs::read(&path).expect("updated"),
         b"caf\xe9 \xff\xfe tail\nchanged\n".to_vec()
     );
+    let evidence = mutation_evidence(&result);
+    assert_eq!(evidence["diff"]["status"], "omitted");
+    assert_eq!(evidence["diff"]["reason"], "non_utf8_snapshot");
+    assert!(!result.content.contains("--- a/"));
 }
 
 /// A valid UTF-8 file may use the placeholder range itself (Nerd Font
@@ -731,6 +903,56 @@ async fn queued_parallel_contract_edits_preserve_both_changes() {
     assert_eq!(
         std::fs::read_to_string(path).expect("updated"),
         "A\nbeta\nG\n"
+    );
+}
+
+#[tokio::test]
+async fn contract_edit_echoes_touched_symbols_and_callers() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let context = ToolContext::new(temporary.path());
+    std::fs::write(temporary.path().join("a.py"), "import b\nprint(b.swim())\n").expect("fixture");
+    std::fs::write(temporary.path().join("b.py"), "def swim():\n    return 1\n").expect("fixture");
+    let result = EditFileTool::execute_contract_edits(
+        json!({
+            "path": "b.py",
+            "edits": [{"oldText": "return 1", "newText": "return 2"}]
+        }),
+        &context,
+    )
+    .await
+    .expect("edit runs");
+    assert!(
+        result.content.contains("Successfully replaced"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("[Edit echo: touched def swim:1"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("heard by a.py"),
+        "{}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn contract_write_receipt_counts_bytes_not_utf16_units() {
+    // "héllo\n" is 7 bytes but 6 UTF-16 units; the receipt must say 7.
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let context = ToolContext::new(temporary.path());
+    let result = WriteFileTool::execute_contract_write(
+        json!({"path": "note.txt", "content": "héllo\n"}),
+        &context,
+    )
+    .await
+    .expect("write runs");
+    assert!(
+        result.content.contains("Successfully wrote 7 bytes"),
+        "{}",
+        result.content
     );
 }
 
@@ -1055,7 +1277,7 @@ async fn contract_read_newline_dense_ranges_preserve_trailing_and_empty_lines() 
     )
     .await
     .unwrap();
-    assert_eq!(result.content, "\n");
+    assert_eq!(result.content, "\n\n\n[Pod (1): dense.txt (this file)]");
     let metadata = result.metadata.as_ref().unwrap();
     assert_eq!(metadata["size"], text.len());
     assert_eq!(metadata["line_count"], text.len() + 1);
@@ -1170,4 +1392,40 @@ async fn contract_read_admits_only_an_image_the_user_attached_from_outside_the_w
             .await
             .expect_err("an outside image the user never attached stays refused");
     assert!(matches!(error, ToolError::PathEscape { .. }), "{error:?}");
+}
+
+#[tokio::test]
+async fn contract_read_enters_terminal_buzz_on_third_pod_visit() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let root = temporary.path();
+    std::fs::create_dir_all(root.join("src/net")).expect("mkdir");
+    std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("fixture");
+    std::fs::write(root.join("src/net/mod.rs"), "pub mod server;\n").expect("fixture");
+    std::fs::write(root.join("src/net/server.rs"), "fn serve() {}\n").expect("fixture");
+    std::fs::write(root.join("src/net/client.rs"), "fn connect() {}\n").expect("fixture");
+    let context = ToolContext::new(root);
+
+    // First two pod reads: full footer, no callers yet.
+    for path in ["src/net/mod.rs", "src/net/client.rs"] {
+        let result = ReadFileTool::execute_contract_read(json!({"path": path}), &context)
+            .await
+            .expect("read result");
+        assert!(!result.content.contains("heard by"), "{path}");
+    }
+    // Third distinct pod read: the buzz adds who links here.
+    let result =
+        ReadFileTool::execute_contract_read(json!({"path": "src/net/server.rs"}), &context)
+            .await
+            .expect("read result");
+    assert!(
+        result.content.contains("heard by: mod.rs"),
+        "{}",
+        result.content
+    );
+    // Another pod stays sparse: the buzz is per-pod, not global.
+    std::fs::write(root.join("src/other.rs"), "fn other() {}\n").expect("fixture");
+    let result = ReadFileTool::execute_contract_read(json!({"path": "src/other.rs"}), &context)
+        .await
+        .expect("read result");
+    assert!(!result.content.contains("heard by"), "{}", result.content);
 }

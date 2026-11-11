@@ -138,7 +138,7 @@ pub fn read_codewhale_owned_to_string(path: &Path) -> Result<Option<String>> {
 }
 
 #[cfg(unix)]
-fn open_secure_regular_file(path: &Path, require_owner_only: bool) -> io::Result<File> {
+pub(crate) fn open_secure_regular_file(path: &Path, require_owner_only: bool) -> io::Result<File> {
     use std::ffi::CString;
     use std::os::fd::FromRawFd;
     use std::os::unix::ffi::OsStrExt;
@@ -266,7 +266,7 @@ fn mount_cannot_express_ownership(path: &std::path::Path) -> bool {
 }
 
 #[cfg(windows)]
-fn open_secure_regular_file(path: &Path, require_owner_only: bool) -> io::Result<File> {
+pub(crate) fn open_secure_regular_file(path: &Path, require_owner_only: bool) -> io::Result<File> {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
@@ -655,7 +655,10 @@ fn reject_windows_reparse_components(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn open_secure_regular_file(_path: &Path, _require_owner_only: bool) -> io::Result<File> {
+pub(crate) fn open_secure_regular_file(
+    _path: &Path,
+    _require_owner_only: bool,
+) -> io::Result<File> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "secure external credential reads are unsupported on this platform",

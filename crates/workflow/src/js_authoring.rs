@@ -714,11 +714,6 @@ workflow({
             assert_eq!(leaf.role.as_deref(), Some(expected_role));
             assert_eq!(leaf.mode, TaskMode::ReadOnly);
             assert!(!leaf.permissions.allow_write);
-            // No explicit `allowed_tools` anywhere: the read-only lowering
-            // alone scopes the source-gathering explore role, and its
-            // catalog-visible surface (tool_search + deferred grep_files) is
-            // pinned from the TUI side (scout_surface_keeps_tool_search_
-            // grep_files_activation_path).
             assert!(leaf.permissions.allowed_tools.is_empty());
             assert_eq!(
                 leaf.permissions.deny_all_tools,

@@ -41,10 +41,10 @@ use super::reasoning_effort::apply_reasoning_effort;
 use super::role_placement::{RolePlacement, role_placement};
 use super::wire::{
     ERROR_BODY_MAX_BYTES, SSE_BACKPRESSURE_HIGH_WATERMARK, SSE_BACKPRESSURE_SLEEP_MS,
-    SSE_MAX_LINES_PER_CHUNK, acquire_stream_buffer, bounded_error_text, from_api_tool_name,
-    parse_usage, release_stream_buffer, system_to_instructions, to_api_tool_name,
+    SSE_MAX_LINES_PER_CHUNK, acquire_stream_buffer, bounded_error_text, extract_sse_data_value,
+    flush_sse_line, from_api_tool_name, parse_usage, push_sse_event_data, release_stream_buffer,
+    system_to_instructions, take_sse_line_from_slice, to_api_tool_name,
 };
-use super::wire::{extract_sse_data_value, flush_sse_line, push_sse_event_data, take_sse_line};
 use codewhale_config::route::RouteLimits;
 use codewhale_models::Role;
 
@@ -1567,8 +1567,9 @@ impl CodewhaleClient {
                 // a `\n` so an HTTP/2 DATA split mid-character cannot become
                 // U+FFFD; genuine invalid bytes fail closed.
                 let mut lines_processed = 0usize;
+                let mut remaining = byte_buf.as_slice();
                 loop {
-                    let line = match take_sse_line(&mut byte_buf) {
+                    let line = match take_sse_line_from_slice(&mut remaining) {
                         Ok(Some(line)) => line,
                         Ok(None) => break,
                         Err(err) => {
@@ -1657,6 +1658,9 @@ impl CodewhaleClient {
                         tokio::task::yield_now().await;
                     }
                 }
+                // Move the unterminated tail once per chunk, not once per line.
+                let consumed = byte_buf.len() - remaining.len();
+                byte_buf.drain(..consumed);
             }
 
             // Flush a final SSE frame that arrived without a terminating blank
@@ -1851,7 +1855,6 @@ impl<'a> PromptBuilder<'a> {
             ),
             false,
         );
-        dump_system_prompt_if_requested(&messages);
         if provider == ProviderKind::Arcee {
             apply_arcee_waf_safe_message_encoding(&mut messages);
         }
@@ -1931,38 +1934,82 @@ const SYSTEM_PROMPT_DUMP_BEGIN: &str = "<<<CODEWHALE_SYSTEM_PROMPT_BEGIN>>>";
 const SYSTEM_PROMPT_DUMP_END: &str = "<<<CODEWHALE_SYSTEM_PROMPT_END>>>";
 const ARCEE_WAF_TEXT_SPLIT_TRIGGERS: &[(&str, &str, &str)] = &[("python -c", "python ", "-c")];
 
-fn dump_system_prompt_if_requested(messages: &[Value]) {
+/// Dump the wire prefix (system region + tools array) when the
+/// system-prompt dump flag is set, so prefix-token audits can measure the
+/// catalog beside the prompt. Called once from
+/// [`PreparedOutboundRequest::new`](super::prepared::PreparedOutboundRequest::new),
+/// the single funnel for all three wire dialects, so the bytes are the
+/// exact-final-body bytes. Debug-only, zero production impact.
+pub(crate) fn dump_wire_prefix_if_requested(body: &Value) {
     let Ok(flag) = std::env::var(SYSTEM_PROMPT_DUMP_ENV) else {
         return;
     };
     if !matches!(flag.trim(), "1" | "true" | "TRUE" | "yes" | "YES") {
         return;
     }
-    let Some(prompt) = messages.iter().find_map(system_message_text) else {
-        return;
-    };
     let mut stderr = std::io::stderr().lock();
-    let _ = writeln!(stderr, "{SYSTEM_PROMPT_DUMP_BEGIN}");
-    let _ = writeln!(stderr, "{prompt}");
-    let _ = writeln!(stderr, "{SYSTEM_PROMPT_DUMP_END}");
+    if let Some(prompt) = wire_system_text(body) {
+        let _ = writeln!(stderr, "{SYSTEM_PROMPT_DUMP_BEGIN}");
+        let _ = writeln!(stderr, "{prompt}");
+        let _ = writeln!(stderr, "{SYSTEM_PROMPT_DUMP_END}");
+    }
+    if let Some(tools) = body.get("tools") {
+        let _ = writeln!(stderr, "<<<CODEWHALE_WIRE_TOOLS_BEGIN>>>");
+        let _ = writeln!(stderr, "{tools}");
+        let _ = writeln!(stderr, "<<<CODEWHALE_WIRE_TOOLS_END>>>");
+    }
 }
 
-fn system_message_text(message: &Value) -> Option<String> {
-    if message.get("role").and_then(Value::as_str) != Some("system") {
-        return None;
+/// Best-effort system-region text across the three wire dialects:
+/// Anthropic `system` (string or blocks), Responses `instructions`, and
+/// chat `messages[]` with a system/developer role.
+fn wire_system_text(body: &Value) -> Option<String> {
+    if let Some(system) = body.get("system") {
+        return Some(match system {
+            Value::String(text) => text.clone(),
+            Value::Array(parts) => {
+                let text = parts
+                    .iter()
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if text.is_empty() {
+                    system.to_string()
+                } else {
+                    text
+                }
+            }
+            _ => system.to_string(),
+        });
     }
-    match message.get("content")? {
-        Value::String(text) => Some(text.clone()),
-        Value::Array(parts) => {
-            let text = parts
-                .iter()
-                .filter_map(|part| part.get("text").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("");
-            (!text.is_empty()).then_some(text)
-        }
-        _ => None,
+    if let Some(instructions) = body.get("instructions").and_then(Value::as_str) {
+        return Some(instructions.to_string());
     }
+    body.get("messages")?
+        .as_array()?
+        .iter()
+        .find_map(|message| {
+            if !matches!(
+                message.get("role").and_then(Value::as_str),
+                Some("system" | "developer")
+            ) {
+                return None;
+            }
+            match message.get("content")? {
+                Value::String(text) => Some(text.clone()),
+                Value::Array(parts) => {
+                    // Same "\n" block join as the Anthropic arm above, so
+                    // the audit text is dialect-consistent.
+                    let text = parts
+                        .iter()
+                        .filter_map(|part| part.get("text").and_then(Value::as_str))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    (!text.is_empty()).then_some(text)
+                }
+                _ => None,
+            }
+        })
 }
 
 fn apply_arcee_waf_safe_message_encoding(messages: &mut [Value]) {
@@ -2450,6 +2497,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 struct PendingToolCallInfo {
     tool_name: String,
     input: Value,
+    execution_id: Option<String>,
 }
 
 struct SeenToolResult {
@@ -2793,7 +2841,8 @@ fn build_chat_messages_with_reasoning(
         let mut thinking_parts = Vec::new();
         let mut tool_calls = Vec::new();
         let mut tool_call_infos = Vec::new();
-        let mut tool_results: Vec<(String, String, String, Vec<Value>)> = Vec::new();
+        let mut tool_results: Vec<(String, String, String, Vec<Value>, Option<String>)> =
+            Vec::new();
         let mut turn_meta_budget: Option<TurnMetaBudget> = None;
 
         for block in &message.content {
@@ -2823,6 +2872,7 @@ fn build_chat_messages_with_reasoning(
                     input,
                     caller,
                     thought_signature,
+                    execution_id,
                     ..
                 } => {
                     let args = serde_json::to_string(input).unwrap_or_else(|_| input.to_string());
@@ -2849,6 +2899,7 @@ fn build_chat_messages_with_reasoning(
                         PendingToolCallInfo {
                             tool_name: name.clone(),
                             input: input.clone(),
+                            execution_id: execution_id.clone(),
                         },
                     ));
                 }
@@ -2856,6 +2907,7 @@ fn build_chat_messages_with_reasoning(
                     tool_use_id,
                     content,
                     content_blocks,
+                    execution_id,
                     ..
                 } => {
                     let message_label = format!("Message #{message_index}");
@@ -2864,6 +2916,7 @@ fn build_chat_messages_with_reasoning(
                         content.clone(),
                         message_label,
                         content_blocks.clone().unwrap_or_default(),
+                        execution_id.clone(),
                     ));
                 }
                 ContentBlock::ServerToolUse { .. }
@@ -3028,7 +3081,8 @@ fn build_chat_messages_with_reasoning(
             if pending_tool_calls.is_empty() {
                 logging::warn("Dropping tool results without matching tool_calls");
             } else {
-                for (tool_id, content, message_label, content_blocks) in tool_results {
+                for (tool_id, content, message_label, content_blocks, execution_id) in tool_results
+                {
                     if let Some(tool_info) = pending_tool_calls.remove(&tool_id) {
                         let (image, omitted) = crate::image_attach::provider_tool_result_image_refs(
                             Some(&content_blocks),
@@ -3037,12 +3091,27 @@ fn build_chat_messages_with_reasoning(
                             codewhale_models::image_window::tool_result_text_with_omission(
                                 &content, omitted,
                             );
+                        // Native reads already bound source plus presentation. Only a
+                        // matching host execution can use that byte ceiling; footer text
+                        // never grants an exemption. Legacy/over-ceiling bodies retain
+                        // the route backstop. This changes append-only history, not prefix.
+                        let native_read_ceiling = (tool_info.tool_name == "read"
+                            && tool_info.execution_id.as_deref().is_some_and(|id| {
+                                !id.is_empty() && Some(id) == execution_id.as_deref()
+                            }))
+                        .then(|| {
+                            crate::tools::file::contract_read_result_byte_ceiling(&tool_info.input)
+                        })
+                        .flatten()
+                        .filter(|ceiling| content.len() <= *ceiling);
                         let wire_result = compact_tool_result_for_wire(
                             &tool_info.tool_name,
                             &tool_info.input,
                             &content,
                             &message_label,
-                            tool_result_budget,
+                            native_read_ceiling.map_or(tool_result_budget, |ceiling| {
+                                tool_result_budget.max(ceiling)
+                            }),
                             &mut seen_tool_results,
                         );
                         let mut tool_msg = json!({

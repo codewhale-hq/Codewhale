@@ -8,6 +8,583 @@ use crate::tools::spec::{ApprovalRequirement, ToolContext, ToolSpec};
 
 use super::{GrepFilesTool, matches_glob};
 
+#[tokio::test]
+async fn grep_match_scope_can_be_read_without_guessing_ranges_and_refuses_stale_source() {
+    let tmp = tempdir().expect("tempdir");
+    // A late definition must not be displaced by the cached file-prefix cap;
+    // a matching comment must not manufacture a function.
+    let mut source = String::from("// fn target_symbol() { marker 源 }\r\n");
+    for index in 0..30 {
+        source.push_str(&format!("fn prefix_{index}() {{}}\r\n"));
+    }
+    let declaration = "/// Navigation contract 源\r\n#[cfg(feature = \"trace\")]\r\npub(crate)\r\nasync\r\nunsafe\r\nextern \"C\"\r\nfn target_symbol() -> u32 {\r\n    // marker 源\r\n    7\r\n}\r\n";
+    source.push_str(declaration);
+    let path = tmp.path().join("scope.rs");
+    fs::write(&path, &source).expect("write");
+    let ctx = ToolContext::new(tmp.path());
+    let result = GrepFilesTool
+        .execute(
+            json!({"pattern": "target_symbol|marker", "path": "scope.rs"}),
+            &ctx,
+        )
+        .await
+        .expect("grep");
+    let payload: Value = serde_json::from_str(&result.content).expect("json");
+    assert_eq!(payload["total_matches"], 3);
+    assert_eq!(
+        payload["matches"][0]["line"],
+        "// fn target_symbol() { marker 源 }"
+    );
+    let navigation = payload["navigation"].as_array().expect("search scopes");
+    assert_eq!(navigation.len(), 1);
+    assert_eq!(navigation[0]["status"], "ready");
+    let symbols = navigation[0]["symbols"]
+        .as_array()
+        .expect("function scopes");
+    assert_eq!(symbols.len(), 1, "no fake or unrelated prefix functions");
+    assert_eq!(symbols[0]["name"], "target_symbol");
+    assert_eq!(symbols[0]["source"], declaration);
+    let reference = symbols[0]["read"].clone();
+    assert_eq!(reference["path"], "scope.rs");
+    assert_eq!(reference["offset"], 32);
+    assert_eq!(reference["limit"], declaration.lines().count());
+    assert_eq!(
+        reference["expected_revision"],
+        crate::tools::file::content_hash(source.as_bytes())
+    );
+    assert_eq!(
+        crate::tools::echolocation::delivered_navigation_refs(&result.content).len(),
+        1
+    );
+
+    let read = crate::tools::file_tool::ReadTool
+        .execute(reference.clone(), &ctx)
+        .await
+        .expect("follow exact search reference through the real reader");
+    for line in declaration.lines() {
+        assert!(
+            read.content.contains(line),
+            "missing {line:?}: {}",
+            read.content
+        );
+    }
+    // The ordinary symbol footer may name prefix functions; their source
+    // declarations must not leak into the requested declaration window.
+    for index in 0..30 {
+        assert!(!read.content.contains(&format!("fn prefix_{index}() {{}}")));
+    }
+
+    fs::write(&path, source.replace("    7", "    8")).expect("same-size mutation");
+    let error = crate::tools::file_tool::ReadTool
+        .execute(reference, &ctx)
+        .await
+        .expect_err("search references never authorize stale coordinates");
+    assert!(error.to_string().contains("stale"), "{error}");
+
+    // A partial scan cannot mint a whole-file revision, and broad searches
+    // must not turn into a function-body dump.
+    for (body, input) in [
+        (
+            source.clone(),
+            json!({"pattern": "target_symbol|marker", "path": "scope.rs", "max_results": 1}),
+        ),
+        (
+            "fn target_symbol() {}\n".repeat(17),
+            json!({"pattern": "target_symbol", "path": "scope.rs"}),
+        ),
+        (
+            format!("{}fn target_symbol() {{}}\n", "// padding\n".repeat(30_000)),
+            json!({"pattern": "target_symbol", "path": "scope.rs"}),
+        ),
+    ] {
+        fs::write(&path, body).expect("boundary fixture");
+        let result = GrepFilesTool.execute(input, &ctx).await.expect("grep");
+        let payload: Value = serde_json::from_str(&result.content).expect("json");
+        assert!(payload.get("navigation").is_none(), "{payload}");
+        assert!(crate::tools::echolocation::delivered_navigation_refs(&result.content).is_empty());
+    }
+
+    fs::write(&path, "fn target_symbol() {\n").expect("invalid syntax");
+    let result = GrepFilesTool
+        .execute(
+            json!({"pattern": "target_symbol", "path": "scope.rs"}),
+            &ctx,
+        )
+        .await
+        .expect("grep still works for incomplete Rust");
+    let payload: Value = serde_json::from_str(&result.content).expect("json");
+    assert_eq!(payload["navigation"][0]["reason"], "syntax_error");
+    assert!(crate::tools::echolocation::delivered_navigation_refs(&result.content).is_empty());
+}
+
+#[tokio::test]
+async fn grep_declarations_offer_complete_guarded_reads_before_matching_uses() {
+    let tmp = tempdir().expect("tempdir");
+    let path = tmp.path().join("types.rs");
+    let ctx = ToolContext::new(tmp.path());
+    fs::write(&path, "const _: u32 = 9;\r\n").expect("write unnamed constant");
+    let anonymous = GrepFilesTool
+        .execute(json!({"pattern": "_", "path": "types.rs"}), &ctx)
+        .await
+        .expect("grep unnamed constant");
+    let anonymous: Value = serde_json::from_str(&anonymous.content).expect("json");
+    assert_eq!(anonymous["total_matches"], 1);
+    assert!(
+        anonymous["navigation"][0]["symbols"]
+            .as_array()
+            .expect("syntax scopes")
+            .is_empty(),
+        "an unnamed constant must not manufacture a named navigation target"
+    );
+    let prefix: String = (0..30)
+        .map(|index| format!("fn prefix_{index}() {{}}\r\n"))
+        .collect();
+    for (name, declaration) in [
+        (
+            "Payload",
+            "pub type Payload<T> =\r\n    Result<Vec<T>, ()>\r\n;\r\n",
+        ),
+        (
+            "RETRIES",
+            "pub const RETRIES: usize = {\r\n    3\r\n}\r\n;\r\n",
+        ),
+        (
+            "DEFAULT_PORTS",
+            "pub static DEFAULT_PORTS: [u16; 2] =\r\n    [80, 443]\r\n;\r\n",
+        ),
+        (
+            "ACTIVE_PORTS",
+            "pub static mut ACTIVE_PORTS: [u16; 2] =\r\n    [0, 0]\r\n;\r\n",
+        ),
+        (
+            "RawPacket",
+            "pub union RawPacket {\r\n    pub bytes: [u8; 4],\r\n    pub word: u32,\r\n}\r\n",
+        ),
+        (
+            "Packet",
+            "pub struct Packet {\r\n    pub body: u32,\r\n}\r\n",
+        ),
+        (
+            "Pair",
+            "pub struct Pair(\r\n    pub u8,\r\n    pub u16,\r\n);\r\n",
+        ),
+        ("Marker", "pub struct Marker;\r\n"),
+        (
+            "Mode",
+            "pub enum Mode {\r\n    Idle,\r\n    Active { id: u32 },\r\n}\r\n",
+        ),
+        (
+            "Channel",
+            "pub trait Channel {\r\n    fn send(&self);\r\n}\r\n",
+        ),
+        ("UnsafeChannel", "unsafe\r\ntrait UnsafeChannel {}\r\n"),
+        ("AutoChannel", "auto\r\ntrait AutoChannel {}\r\n"),
+        ("const_fn", "const\r\nfn const_fn() {}\r\n"),
+        ("async_fn", "async\r\nfn async_fn() {}\r\n"),
+        ("unsafe_fn", "unsafe\r\nfn unsafe_fn() {}\r\n"),
+        ("foreign_fn", "extern \"C\"\r\nfn foreign_fn() {}\r\n"),
+        ("visible_fn", "pub(crate)\r\nfn visible_fn() {}\r\n"),
+    ] {
+        for header in [
+            "",
+            "/// Navigation contract 源\r\n#[cfg(feature = \"trace\")]\r\n",
+        ] {
+            let declaration = format!("{header}{declaration}");
+            // Exercise late declarations, inline-module qualification, an earlier
+            // matching use, and a declaration lookalike that must stay a comment.
+            // Put the use on its own line: declaration matching is line-based.
+            let source = format!(
+                "mod transport {{\r\n{prefix}// struct {name} {{ fake }}\r\nfn consumer() {{\r\n    let _ = stringify!({name});\r\n}}\r\n{declaration}}}\r\n"
+            );
+            fs::write(&path, &source).expect("write declaration fixture");
+            let result = GrepFilesTool
+                .execute(json!({"pattern": name, "path": "types.rs"}), &ctx)
+                .await
+                .expect("grep declaration");
+            let payload: Value = serde_json::from_str(&result.content).expect("json");
+            assert_eq!(payload["total_matches"], 3);
+            let symbols = payload["navigation"][0]["symbols"]
+                .as_array()
+                .expect("syntax scopes");
+            assert_eq!(
+                symbols[0]["name"],
+                format!("transport::{name}"),
+                "the complete declaration must precede the matching use"
+            );
+            assert_eq!(symbols.len(), 2, "no comment or unrelated prefix scopes");
+            assert_eq!(symbols[0]["source"], declaration);
+            let reference = symbols[0]["read"].clone();
+            assert_eq!(reference["offset"], 36);
+            assert_eq!(reference["limit"], declaration.lines().count());
+            assert_eq!(
+                reference["expected_revision"],
+                crate::tools::file::content_hash(source.as_bytes())
+            );
+            if !header.is_empty() {
+                let attributes = GrepFilesTool
+                    .execute(json!({"pattern": "trace", "path": "types.rs"}), &ctx)
+                    .await
+                    .expect("find the owning declaration from an attribute-only hit");
+                let attributes: Value = serde_json::from_str(&attributes.content).expect("json");
+                assert_eq!(attributes["total_matches"], 1);
+                assert_eq!(
+                    attributes["navigation"][0]["symbols"][0]["read"], reference,
+                    "attribute-only search must offer the owning declaration: {attributes}"
+                );
+                assert_eq!(
+                    attributes["navigation"][0]["symbols"][0]["source"],
+                    declaration
+                );
+            }
+            let read = crate::tools::file_tool::ReadTool
+                .execute(reference.clone(), &ctx)
+                .await
+                .expect("follow declaration reference through the real reader");
+            for line in declaration.lines() {
+                assert!(
+                    read.content.contains(line),
+                    "missing {line:?}: {}",
+                    read.content
+                );
+            }
+            assert!(!read.content.contains("fn consumer()"));
+            assert!(!read.content.contains("fn prefix_0()"));
+
+            fs::write(&path, source.replacen("fake", "edit", 1)).expect("same-size edit");
+            let error = crate::tools::file_tool::ReadTool
+                .execute(reference, &ctx)
+                .await
+                .expect_err("declaration references must reject stale snapshots too");
+            assert!(error.to_string().contains("stale"), "{error}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn grep_prioritizes_matched_identifiers_not_other_text_on_their_line() {
+    let tmp = tempdir().expect("tempdir");
+    let path = tmp.path().join("ranking.rs");
+    let ctx = ToolContext::new(tmp.path());
+    // Several declarations can share one matched line. The symbol cap must
+    // retain the matching identifier even when unrelated scopes fill it first.
+    let crowded: String = (0..40)
+        .map(|index| format!("fn unrelated_{index}() {{}} "))
+        .collect();
+    let crowded_functions =
+        format!("fn consumer() {{ needle(); }}\r\n{crowded}fn needle() {{}}\r\n");
+    let crowded_trait = format!(
+        "fn consumer() {{ let _ = stringify!(needle); }}\r\ntrait Contract {{ {crowded}fn needle(); }}\r\n"
+    );
+    let crowded_impl = format!(
+        "struct Owner; fn consumer() {{ Owner::needle(); }}\r\nimpl Owner {{ {crowded}fn needle() {{}} }}\r\n"
+    );
+    for (source, pattern, case_insensitive, expected, line) in [
+        (
+            "fn consumer() { target(); }\r\nfn target() {}\r\n",
+            "target",
+            false,
+            "target",
+            2,
+        ),
+        (
+            "fn consumer() { let _ = Payload; }\r\npub struct Payload;\r\n",
+            "Payload",
+            false,
+            "Payload",
+            2,
+        ),
+        (
+            "fn consumer() { let _ = Payload; }\r\npub struct Payload;\r\n",
+            "pub|Payload",
+            false,
+            "Payload",
+            2,
+        ),
+        (
+            "// 源\r\nfn consumer() { let _ = Étape; }\r\npub struct Étape;\r\n",
+            "Étape",
+            false,
+            "Étape",
+            3,
+        ),
+        (
+            "fn consumer() { let _ = r#type; }\r\npub struct r#type;\r\n",
+            "r#type",
+            false,
+            "r#type",
+            2,
+        ),
+        (
+            "\u{feff}fn consumer() { let _ = A; }\r\nstruct A;\r\n",
+            "A",
+            false,
+            "A",
+            2,
+        ),
+        (
+            "#!/usr/bin/env codew\r\nfn consumer() { let _ = A; }\r\nstruct A;\r\n",
+            "A",
+            false,
+            "A",
+            3,
+        ),
+        (
+            "\u{feff}#!/usr/bin/env codew\r\nfn consumer() { let _ = A; }\r\nstruct A;\r\n",
+            "A",
+            false,
+            "A",
+            3,
+        ),
+        (
+            "\u{feff}fn consumer() { let _ = A; }\r\nstruct A;\r\n",
+            "^fn.*|A",
+            false,
+            "A",
+            2,
+        ),
+        (
+            "fn consumer() { let _ = a; }\r\nstruct A;\r\n",
+            "a",
+            true,
+            "A",
+            2,
+        ),
+        (
+            "struct Payload;\r\nfn consumer() {}\r\n",
+            r"consumer|\B",
+            false,
+            "consumer",
+            2,
+        ),
+        (&crowded_functions, "needle", false, "needle", 2),
+        (&crowded_trait, "needle", false, "Contract::needle", 2),
+        (&crowded_impl, "needle", false, "impl@2::needle", 2),
+    ] {
+        fs::write(&path, source).expect("write ranking fixture");
+        let result = GrepFilesTool
+            .execute(
+                json!({"pattern": pattern, "path": "ranking.rs", "context_lines": 0,
+                    "case_insensitive": case_insensitive}),
+                &ctx,
+            )
+            .await
+            .expect("grep identifier");
+        let payload: Value = serde_json::from_str(&result.content).expect("json");
+        assert_eq!(payload["total_matches"], 2, "{payload}");
+        assert_eq!(payload["matches"][0]["line_number"], line - 1);
+        assert_eq!(payload["matches"][1]["line_number"], line);
+        let symbol = &payload["navigation"][0]["symbols"][0];
+        assert_eq!(
+            symbol["name"], expected,
+            "only a nonempty match overlapping the identifier earns definition priority: {payload}"
+        );
+        let reference = symbol["read"].clone();
+        assert_eq!(reference["offset"], line);
+        assert_eq!(reference["limit"], 1);
+        assert_eq!(
+            reference["expected_revision"],
+            crate::tools::file::content_hash(source.as_bytes())
+        );
+        let read = crate::tools::file_tool::ReadTool
+            .execute(reference, &ctx)
+            .await
+            .expect("follow ranked identifier reference");
+        assert!(read.content.contains(source.lines().nth(line - 1).unwrap()));
+    }
+}
+
+#[tokio::test]
+async fn grep_associated_items_offer_focused_guarded_reads() {
+    let tmp = tempdir().expect("tempdir");
+    let path = tmp.path().join("members.rs");
+    let ctx = ToolContext::new(tmp.path());
+    let trait_items = [
+        (
+            "Payload",
+            "    /// Payload contract\r\n    #[cfg(feature = \"trace\")]\r\n    type Payload:\r\n        Copy;\r\n",
+        ),
+        (
+            "DefaultPayload",
+            "    type DefaultPayload =\r\n        u16;\r\n",
+        ),
+        (
+            "LIMIT",
+            "    #[cfg(feature = \"trace\")]\r\n    const LIMIT: usize\r\n    ;\r\n",
+        ),
+        (
+            "DEFAULT_LIMIT",
+            "    const DEFAULT_LIMIT: usize = {\r\n        8\r\n    }\r\n    ;\r\n",
+        ),
+        (
+            "send",
+            "    #[must_use]\r\n    async\r\n    fn send(&self)\r\n    ;\r\n",
+        ),
+        (
+            "flush",
+            "    unsafe\r\n    fn flush(&mut self) -> bool {\r\n        true\r\n    }\r\n",
+        ),
+    ];
+    let impl_items = [
+        (
+            "Payload",
+            "    #[cfg(feature = \"trace\")]\r\n    default\r\n    type Payload =\r\n        u32;\r\n",
+        ),
+        (
+            "LIMIT",
+            "    default\r\n    const LIMIT: usize = {\r\n        4\r\n    }\r\n    ;\r\n",
+        ),
+        (
+            "send",
+            "    default\r\n    fn send(&self) {\r\n        let _ = ();\r\n    }\r\n",
+        ),
+    ];
+    let prefix: String = (0..30)
+        .map(|index| format!("fn prefix_{index}() {{}}\r\n"))
+        .collect();
+    let trait_body: String = trait_items.iter().map(|(_, body)| *body).collect();
+    let impl_body: String = impl_items.iter().map(|(_, body)| *body).collect();
+    let source = format!(
+        "mod transport {{\r\n// stamp:a\r\n{prefix}fn consumer() {{\r\n    let _ = stringify!(Payload DefaultPayload LIMIT DEFAULT_LIMIT send flush);\r\n}}\r\npub trait Channel {{\r\n{trait_body}}}\r\nimpl Channel for () {{\r\n{impl_body}}}\r\n}}\r\n"
+    );
+    let impl_line = source[..source.find("impl Channel for () {").unwrap()]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1;
+    for (scope, items) in [
+        ("transport::Channel::".to_string(), trait_items.as_slice()),
+        (
+            format!("transport::impl@{impl_line}::"),
+            impl_items.as_slice(),
+        ),
+    ] {
+        for (name, declaration) in items {
+            fs::write(&path, &source).expect("write associated items");
+            let result = GrepFilesTool
+                .execute(
+                    json!({"pattern": format!(r"\b{name}\b"), "path": "members.rs"}),
+                    &ctx,
+                )
+                .await
+                .expect("grep associated item");
+            let payload: Value = serde_json::from_str(&result.content).expect("json");
+            let symbols = payload["navigation"][0]["symbols"]
+                .as_array()
+                .expect("syntax scopes");
+            assert!(
+                symbols[0]["name"]
+                    .as_str()
+                    .is_some_and(|qualified| qualified.ends_with(&format!("::{name}"))),
+                "associated definitions must precede uses and trait containers: {payload}"
+            );
+            let qualified = format!("{scope}{name}");
+            let symbol = symbols
+                .iter()
+                .find(|symbol| symbol["name"].as_str() == Some(qualified.as_str()))
+                .unwrap_or_else(|| panic!("missing {qualified}: {payload}"));
+            assert_eq!(symbol["source"], *declaration);
+            let offset = source[..source.find(declaration).unwrap()]
+                .bytes()
+                .filter(|byte| *byte == b'\n')
+                .count()
+                + 1;
+            let reference = symbol["read"].clone();
+            assert_eq!(reference["path"], "members.rs");
+            assert_eq!(reference["offset"], offset);
+            assert_eq!(reference["limit"], declaration.lines().count());
+            assert_eq!(
+                reference["expected_revision"],
+                crate::tools::file::content_hash(source.as_bytes())
+            );
+            let read = crate::tools::file_tool::ReadTool
+                .execute(reference.clone(), &ctx)
+                .await
+                .expect("follow associated-item reference");
+            for line in declaration.lines() {
+                assert!(
+                    read.content.contains(line),
+                    "missing {line:?}: {}",
+                    read.content
+                );
+            }
+            assert!(!read.content.contains("fn consumer()"));
+            assert!(!read.content.contains("fn prefix_0()"));
+
+            let partial = crate::tools::file_tool::ReadTool
+                .execute(
+                    json!({"path": "members.rs", "offset": offset, "limit": 1,
+                        "expected_revision": reference["expected_revision"]}),
+                    &ctx,
+                )
+                .await
+                .expect("partially read associated item beyond the cached prefix");
+            let offered = crate::tools::echolocation::delivered_navigation_refs(&partial.content);
+            assert_eq!(
+                serde_json::to_value(offered.first()).unwrap(),
+                reference,
+                "complete the member before its enclosing trait: {}",
+                partial.content
+            );
+
+            fs::write(&path, source.replace("stamp:a", "stamp:b")).expect("same-size edit");
+            let error = crate::tools::file_tool::ReadTool
+                .execute(reference, &ctx)
+                .await
+                .expect_err("associated-item references must reject stale snapshots");
+            assert!(error.to_string().contains("stale"), "{error}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn grep_max_results_is_clamped_not_trusted() {
+    let tmp = tempdir().expect("tempdir");
+    let body = "needle here\n".repeat(1_200);
+    fs::write(tmp.path().join("hay.txt"), &body).expect("write");
+    let ctx = ToolContext::new(tmp.path());
+    let result = GrepFilesTool
+        .execute(json!({"pattern": "needle", "max_results": 1_000_000}), &ctx)
+        .await
+        .expect("grep runs");
+    let payload: Value = serde_json::from_str(&result.content).expect("json");
+    assert_eq!(payload["matches"].as_array().expect("matches").len(), 1000);
+    assert_eq!(payload["truncated"], true);
+    assert_eq!(payload["total_matches"], 1000);
+}
+
+#[tokio::test]
+async fn grep_truncated_fires_only_on_a_proven_cut() {
+    let tmp = tempdir().expect("tempdir");
+    // Exactly max: the walk completes, nothing cut, flag stays false.
+    fs::write(tmp.path().join("exact.txt"), "needle\n".repeat(3)).expect("write");
+    // Over max across files: the second file proves the cut.
+    fs::write(tmp.path().join("a.txt"), "needle\n".repeat(2)).expect("write");
+    fs::write(tmp.path().join("b.txt"), "needle\n".repeat(5)).expect("write");
+    let ctx = ToolContext::new(tmp.path());
+
+    let result = GrepFilesTool
+        .execute(
+            json!({"pattern": "needle", "path": "exact.txt", "max_results": 3}),
+            &ctx,
+        )
+        .await
+        .expect("grep runs");
+    let payload: Value = serde_json::from_str(&result.content).expect("json");
+    assert_eq!(payload["matches"].as_array().expect("matches").len(), 3);
+    assert_eq!(payload["truncated"], false);
+
+    let result = GrepFilesTool
+        .execute(
+            json!({"pattern": "needle", "path": "a.txt", "max_results": 1}),
+            &ctx,
+        )
+        .await
+        .expect("grep runs");
+    let payload: Value = serde_json::from_str(&result.content).expect("json");
+    assert_eq!(payload["matches"].as_array().expect("matches").len(), 1);
+    assert_eq!(payload["truncated"], true);
+}
+
 #[test]
 fn grep_description_matches_default_exclusion_behavior() {
     let description = GrepFilesTool.description();
@@ -112,6 +689,35 @@ fn test_matches_glob_unicode_filename() {
     assert!(matches_glob(filename, "*冰糖*"));
     // Non-matching pattern must not panic either.
     assert!(!matches_glob(filename, "nonexistent*"));
+}
+
+#[tokio::test]
+async fn grep_pods_chart_matched_dirs_with_marks() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path().to_path_buf());
+    fs::create_dir(tmp.path().join("net")).expect("subdir");
+    fs::write(tmp.path().join("net/server.rs"), "fn serve() {}\n").expect("write");
+    fs::write(tmp.path().join("net/client.rs"), "fn connect() {}\n").expect("write");
+
+    let result = GrepFilesTool
+        .execute(json!({"pattern": "serve"}), &ctx)
+        .await
+        .expect("execute");
+    assert!(result.success);
+    let body: Value = serde_json::from_str(&result.content).expect("json result");
+    assert_eq!(body["total_matches"], 1);
+    let pods = body["pods"].as_array().expect("pods array");
+    assert_eq!(pods.len(), 1);
+    assert_eq!(pods[0]["dir"], "net");
+    let mates: Vec<&str> = pods[0]["mates"]
+        .as_array()
+        .expect("mates")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(mates.contains(&"client.rs"), "{mates:?}");
+    assert!(mates.contains(&"server.rs (match)"), "{mates:?}");
+    assert_eq!(body["pods_omitted"], 0);
 }
 
 #[tokio::test]
@@ -415,12 +1021,13 @@ async fn test_grep_files_ring_buffer_context_matches_full_read() {
     let parsed: Value = serde_json::from_str(&result.content).unwrap();
     let matches = parsed["matches"].as_array().unwrap();
     assert_eq!(matches.len(), 3);
-    assert_eq!(matches[0]["context_before"], json!([]));
+    // Token diet: empty context arrays are omitted on the wire.
+    assert!(matches[0].get("context_before").is_none());
     assert_eq!(matches[0]["context_after"], json!(["b1", "b2"]));
     assert_eq!(matches[1]["context_before"], json!(["b2", "b3"]));
     assert_eq!(matches[1]["context_after"], json!(["a1", "a2"]));
     assert_eq!(matches[2]["context_before"], json!(["a2", "a3"]));
-    assert_eq!(matches[2]["context_after"], json!([]));
+    assert!(matches[2].get("context_after").is_none());
     assert_eq!(matches[2]["line_number"].as_u64().unwrap(), 9);
 }
 

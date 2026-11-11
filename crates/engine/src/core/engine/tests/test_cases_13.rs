@@ -61,7 +61,10 @@ fn agent_mode_elevates_writes_without_granting_network() {
         .as_ref()
         .expect("Plan mode should make the shell sandbox policy explicit");
     assert!(
-        matches!(plan_policy, codewhale_sandbox::SandboxPolicy::ReadOnly { .. }),
+        matches!(
+            plan_policy,
+            codewhale_sandbox::SandboxPolicy::ReadOnly { .. }
+        ),
         "Plan mode must use ReadOnly sandbox to deny workspace writes (#1077); got {plan_policy:?}",
     );
     assert!(!plan_policy.has_network_access());
@@ -606,8 +609,8 @@ async fn provider_request_bodies_never_carry_the_todo_list() {
         .mount(&server)
         .await;
 
-    let api_config = Config::default()
-    .with_legacy_root(Some("test-key".to_string()), Some(server.uri()));
+    let api_config =
+        Config::default().with_legacy_root(Some("test-key".to_string()), Some(server.uri()));
     let todos = crate::tools::todo::new_shared_todo_list();
     let plan = crate::tools::plan::new_shared_plan_state();
     let work = crate::work_graph::new_shared_work_runtime(todos.clone(), plan.clone());
@@ -724,6 +727,7 @@ async fn fork_state_block_reuses_the_snapshot_body() {
     };
     let fork_context = crate::tools::subagent::SubAgentForkContext {
         messages: engine.messages_with_turn_metadata(),
+        live_header: codewhale_runtime::prompt_zones::new_live_header_cell(),
         structured_state_block: state.to_system_block(),
         work_source: Some(engine.todo_source()),
     };
@@ -964,6 +968,7 @@ async fn same_turn_fork_carries_the_updated_todo() {
     .to_system_block();
     let fork_context = crate::tools::subagent::SubAgentForkContext {
         messages: engine.messages_with_turn_metadata(),
+        live_header: codewhale_runtime::prompt_zones::new_live_header_cell(),
         structured_state_block: stable_block.clone(),
         work_source: Some(engine.todo_source()),
     };

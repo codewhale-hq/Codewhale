@@ -133,7 +133,8 @@
       "read": [
         "path",
         "offset?",
-        "limit?"
+        "limit?",
+        "expected_revision?"
       ],
       "write": [
         "path",

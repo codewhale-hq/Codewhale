@@ -47,17 +47,43 @@ change this core vocabulary. `workflow`, `context_archive_get` and
 `context_archive_search` remain available through `tool_search` when policy
 permits; they are no longer eager names.
 
-The direct schemas deliberately stay small:
+`file_search` matches names and paths, not file contents. `grep_files` searches
+contents for symbols or regex patterns and is available without a discovery
+hop, including on a read-only scout. Command allow/deny rules and the existing
+read guards still apply. Availability does not choose the right search tool,
+interpret natural-language queries, or require snapshot-guarded reads.
+
+Both advertised search schemas are closed to additional parameters. Content search
+filters file types with `include` globs; `extensions` belongs to filename search.
+An accidental `extensions` on content search is refused with an `include`
+correction, not silently translated. Search roots, ranking and guard behavior
+are unchanged.
+
+Focused, untruncated Rust content searches can add bounded enclosing-function
+references and small complete bodies to their logged results before the first
+read. Larger functions offer an exact snapshot-guarded `read` instead of a guessed
+window. Broad searches remain lean; see [Echolocation](ECHOLOCATION.md#focused-rust-search-to-read)
+for the source, analysis, and output bounds. This adds no schema parameter or
+permission grant.
+
+KV-cache effect: search schemas and descriptions are session-pinned prefix
+content. Changes apply to new sessions; validation corrections are ordinary
+logged tool results in append-only history. This adds no volatile context or
+per-turn guidance messages.
+
+The core schemas deliberately stay small (deferred rows load via
+`tool_search` rather than riding every turn):
 
 | Tool | Input | Purpose |
 |---|---|---|
-| `read` | `path`, optional `offset`, optional `limit` | Read a bounded file window with explicit continuation or truncation notices. |
+| `read` | `path`, optional `offset`, `limit`, `expected_revision` | Read a bounded file window with explicit continuation or truncation notices; a revision guard refuses stale navigation offsets. |
 | `write` | `path`, `content` | Create or replace a file. |
 | `edit` | `path`, `edits` | Apply one or more unambiguous text replacements against one original snapshot. |
 | `file_search` | `query`, optional `path`, `limit`, `extensions`, `exclude` | Find files by name, path fragment or glob and return bounded, ranked matches. Respects ignore files; `exclude` replaces default exclusions. |
+| `grep_files` | `pattern`, optional `path`, `include`, `exclude`, `context_lines`, `case_insensitive`, `max_results` | Search file contents for a regex and return bounded matching lines with context. |
 | `bash` | `command`, optional `timeout`, optional `description` | Run one cancellable foreground shell command and return a bounded tail. The optional description is display-only. |
 | `agent` | delegated task and optional scope/context controls | Start or inspect focused child work. |
-| `grep_files` | `pattern`, optional search controls | Find matching content in workspace files. |
+| `workflow` (deferred) | plan/script/source_path plus run controls | Coordinate multi-agent phases with dependencies and completion checks. |
 | `todo_write` | complete replacement list of `{content, status}` items | Keep optional, agent-owned progress notes for genuinely multi-step work. |
 | `create_goal` | objective plus optional budget | Start the session goal the turn works toward. |
 | `get_goal` | none | Read the active goal and its progress. |
@@ -405,7 +431,13 @@ above must report `1 passed` (the ignored metrics test reports `1 passed`
 only because `--ignored` selects it); `0 passed` means the filter matched
 nothing and the check did not run.
 
-The provider-free receipt must report the thirteen default-active names listed
+The provider-free receipt must report the ten default-active names listed
+above.
 above. A separate repository-wide tool count may include deferred, dynamic,
 feature-gated, and compatibility-only registrations; it is not the number of
 tools placed in the first-turn model catalog.
+
+
+### Source navigation receipts
+
+Source reads may include a bounded pod/symbol/link footer. Edits retain their unified diff in metadata and can name affected declarations and confirmed same-directory callers. File-name search and grep report matched directory pods; project maps can report bounded key-file symbols. Sounding content uses the same denied-read and credential exclusions plus protected regular-file handles. Caller content scans at most32 deterministic candidates at256KiB each; candidates outside that budget are reported as unscanned, never as additional known callers. Key-file content is capped at8MiB. Enumeration itself and platform I/O latency are not wall-clock bounded.

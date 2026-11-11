@@ -1016,7 +1016,12 @@ fn discover_tools_with_regex(
     let regex = compile_user_regex(query)
         .map_err(|err| ToolError::invalid_input(format!("Invalid regex query: {err}")))?;
 
-    let mut matches = Vec::new();
+    // Name matches outrank haystack matches: a regex that hits the tool's
+    // own name is the strongest possible signal, and catalog (alphabetical)
+    // order otherwise lets an incidental mention evict the literal target
+    // from the bounded activation cache.
+    let mut name_matches = Vec::new();
+    let mut hay_matches = Vec::new();
     let mut scratch = ToolSearchScratch::default();
     for tool in catalog {
         // tool_search loads definitions omitted from the current request. An
@@ -1026,15 +1031,19 @@ fn discover_tools_with_regex(
         if !tool.defer_loading.unwrap_or(false) || is_tool_search_tool(&tool.name) {
             continue;
         }
-        scratch.load(tool);
-        if regex.is_match(&scratch.name_lower) || regex.is_match(&scratch.hay) {
-            matches.push(tool.name.clone());
+        // Lowercased, like the haystack path below: `Agent` must hit `agent`.
+        if regex.is_match(&tool.name.to_lowercase()) {
+            name_matches.push(tool.name.clone());
+            continue;
         }
-        if matches.len() >= max_results {
-            break;
+        scratch.load(tool);
+        if regex.is_match(&scratch.hay) {
+            hay_matches.push(tool.name.clone());
         }
     }
-    Ok(matches)
+    name_matches.extend(hay_matches);
+    name_matches.truncate(max_results);
+    Ok(name_matches)
 }
 
 fn discover_tools_with_bm25_like(catalog: &[Tool], query: &str, max_results: usize) -> Vec<String> {

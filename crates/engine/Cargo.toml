@@ -131,7 +131,7 @@ shellexpand = "3"
 # same version rather than vendoring a second parser (#6151). `span-locations`
 # is what turns a parse failure into the `line:column` the model needs — the
 # feature is inert without it.
-syn = { version = "3.0.3", default-features = false, features = ["full", "parsing"] }
+syn = { version = "3.0.3", default-features = false, features = ["full", "parsing", "visit"] }
 proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
 toml.workspace = true
 toml_edit.workspace = true

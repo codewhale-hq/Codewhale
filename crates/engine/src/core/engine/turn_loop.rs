@@ -35,6 +35,7 @@ const MAX_IMAGE_COUNT_RECOVERIES: u8 = 3;
 struct TurnLoopProgress {
     turn_error: Option<String>,
     step_budget_exhaustion_is_terminal: bool,
+    step_budget_notice_sent: bool,
     final_report_sent: bool,
     context_recovery_attempts: u8,
     auto_compaction_suppressed: bool,
@@ -1699,6 +1700,7 @@ impl Engine {
         let mut progress = TurnLoopProgress {
             turn_error,
             step_budget_exhaustion_is_terminal,
+            step_budget_notice_sent: false,
             final_report_sent,
             context_recovery_attempts,
             auto_compaction_suppressed,
@@ -1784,6 +1786,20 @@ impl Engine {
             self.send_answer_retry_summary(&turn.stop_diagnostics, TurnOutcomeStatus::Interrupted)
                 .await;
             return (TurnOutcomeStatus::Interrupted, None);
+        }
+        // A report cannot complete an exhausted ordinary turn. Goal turns keep
+        // their separate Completed-turn / BudgetLimit-pause contract.
+        if turn.budget_exhausted_final_report
+            && turn.budget_source == crate::core::turn::StepBudgetSource::Interactive
+            && progress.turn_error.is_none()
+        {
+            let error = format!(
+                "Maximum model steps reached before completion (limit: {}, {})",
+                turn.max_steps,
+                turn.budget_source.key_label(),
+            );
+            self.post_turn_budget_stop(&error).await;
+            progress.turn_error = Some(error);
         }
         if let Some(err) = progress.turn_error {
             let running = foreground_children
