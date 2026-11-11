@@ -2035,7 +2035,7 @@ async fn admit_runtime_host(
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let probe = match crate::daemon_client::probe_owner_for_host_startup(
-                config_path.clone(), selected_socket.clone(),
+                config_path.clone(), selected_socket.clone(), &selected_store,
             ).await {
                 Err(error) if error.is::<PublicationChangedBeforeAttach>() => {
                     tokio::time::sleep(Duration::from_millis(25)).await;

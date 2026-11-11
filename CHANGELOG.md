@@ -55,6 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Starting after a hard kill:** the Engine now starts when its process was killed and its data directory was then deleted. A socket owner record whose process is dead and whose data directory, the one this start selected, no longer exists is discarded instead of failing every start with "Failed to resolve ... tasks/runtime". A home reached through a symbolic link, such as one under macOS /tmp, is not covered yet.
 - The install guide's note for a first message that gets no answer now describes v0.10.2: connect a model with `/provider`, and restart if messages stay saved for later after you connect. It described v0.10.0's key screen. The Chinese guide carries the same correction.
 - Project activity on the site now comes from a server-side snapshot with a freshness record, the browser no longer calls GitHub, and count sentences use the right plural form in every language.
 - The install page now gives the exact steps for the released version on every platform, including what the installer adds to PATH, how to turn off usage counting, and how to remove it, and the install command no longer gets cut off on phones.

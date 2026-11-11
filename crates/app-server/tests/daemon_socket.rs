@@ -139,6 +139,7 @@ impl BootstrapPublicationFixture {
         if reused {
             process_start.push_str("-different-generation");
         }
+        std::fs::create_dir_all(harness.root.join("runtime")).unwrap();
         let owner = codewhale_protocol::RuntimeOwnerReceipt {
             version: 1,
             data_dir: harness.root.join("runtime"),
@@ -168,6 +169,7 @@ impl BootstrapPublicationFixture {
         match codewhale_app_server::daemon_client::probe_owner_for_host_startup(
             self.owner.config_path.clone(),
             Some(self.owner.socket_path.clone()),
+            &self.owner.data_dir,
         )
         .await
         .unwrap()
@@ -250,10 +252,56 @@ async fn owner_bootstrap_unavailable_is_host_only_and_read_only() {
         fixture.parent.socket_identity("daemon.sock").unwrap(),
         identity
     );
-    assert!(
-        !fixture.owner.data_dir.exists(),
+    assert_eq!(
+        std::fs::read_dir(&fixture.owner.data_dir).unwrap().count(),
+        0,
         "standalone control must not open or mint a store"
     );
+}
+
+#[tokio::test]
+async fn dead_owner_whose_store_was_deleted_is_discarded_and_startup_proceeds() {
+    let fixture = BootstrapPublicationFixture::new("boot-gone", true, false).await;
+    std::fs::remove_dir(&fixture.owner.data_dir).unwrap();
+    assert!(matches!(
+        codewhale_app_server::daemon_client::probe_owner_for_host_startup(
+            fixture.owner.config_path.clone(),
+            Some(fixture.owner.socket_path.clone()),
+            &fixture.harness.root.join("another-store"),
+        )
+        .await
+        .unwrap(),
+        codewhale_app_server::daemon_client::HostOwnerProbe::Unavailable(_)
+    ));
+    fixture.assert_publication(&fixture.bytes);
+    let probe = codewhale_app_server::daemon_client::probe_owner_for_host_startup(
+        fixture.owner.config_path.clone(),
+        Some(fixture.owner.socket_path.clone()),
+        &fixture.owner.data_dir,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        probe,
+        codewhale_app_server::daemon_client::HostOwnerProbe::Absent
+    ));
+    assert!(
+        fixture
+            .parent
+            .read_private_receipt("daemon.sock.owner.json", 16384)
+            .unwrap()
+            .is_none()
+    );
+    assert!(!fixture.owner.data_dir.exists());
+    fixture.bind_replacement(None).await.unwrap();
+}
+
+#[tokio::test]
+async fn live_owner_with_a_missing_store_is_never_discarded() {
+    let fixture = BootstrapPublicationFixture::new("boot-gone-live", false, false).await;
+    std::fs::remove_dir(&fixture.owner.data_dir).unwrap();
+    fixture.capture().await;
+    fixture.assert_publication(&fixture.bytes);
 }
 
 #[tokio::test]

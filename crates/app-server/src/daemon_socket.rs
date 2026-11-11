@@ -1349,6 +1349,7 @@ mod platform {
             let config = root.join("config.toml");
             std::fs::write(&config, "")?;
             let parent = PrivateDirectory::admit(path.parent().unwrap())?;
+            std::fs::create_dir_all(root.join("runtime"))?;
             let stale = std::os::unix::net::UnixListener::bind(&path)?;
             let identity = parent.socket_identity("daemon.sock")?.unwrap();
             parent.protect_socket("daemon.sock", identity)?;
@@ -1383,6 +1384,7 @@ mod platform {
                 crate::daemon_client::probe_owner_for_host_startup(
                     Some(config.clone()),
                     Some(path.clone()),
+                    &owner.data_dir,
                 )
                 .await?
             else {
@@ -1392,6 +1394,7 @@ mod platform {
             let observed_hook = observed.clone();
             let selected = path.clone();
             let selected_config = config.clone();
+            let selected_store = owner.data_dir.clone();
             let stale_capture = captured.clone();
             BEFORE_OWNER_REBIND.with(|slot| {
                 *slot.borrow_mut() = Some(Box::new(move |endpoint| {
@@ -1412,6 +1415,7 @@ mod platform {
                                     crate::daemon_client::probe_owner_for_host_startup(
                                         Some(selected_config),
                                         Some(endpoint),
+                                        &selected_store,
                                     )
                                     .await
                                     .unwrap(),

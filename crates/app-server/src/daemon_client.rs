@@ -227,6 +227,36 @@ mod platform {
             );
             Ok(())
         }
+        fn discard_if_store_gone_blocking(&self, selected_store: PathBuf) -> Result<bool> {
+            let gone =
+                codewhale_engine::runtime_threads::checked_runtime_store_root(selected_store)
+                    .is_ok_and(|selected| {
+                        selected == self.receipt().data_dir
+                            && matches!(
+                                selected.symlink_metadata(),
+                                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+                            )
+                    });
+            if !gone || !matches!(self.revalidate_receipt(), Ok(true)) {
+                return Ok(false);
+            }
+            anyhow::ensure!(
+                self.publication.parent.retire_private_receipt(
+                    &self.publication.receipt_name,
+                    &self.publication.file
+                )?,
+                PublicationChangedBeforeAttach
+            );
+            Ok(true)
+        }
+        async fn discard_if_store_gone(
+            self: &Arc<Self>,
+            selected_store: &std::path::Path,
+        ) -> Result<bool> {
+            let held = self.clone();
+            let selected_store = selected_store.to_path_buf();
+            owner_work(move || held.discard_if_store_gone_blocking(selected_store)).await
+        }
         /// Caller retains the real Runtime lease; this checks evidence only.
         pub(crate) fn revalidate_receipt(&self) -> Result<bool> {
             if !self.publication.receipt_is_current()? {
@@ -345,8 +375,9 @@ mod platform {
     pub async fn probe_owner_for_host_startup(
         config_path: Option<PathBuf>,
         selected: Option<PathBuf>,
+        selected_store: &std::path::Path,
     ) -> Result<HostOwnerProbe> {
-        probe_frontend(
+        match probe_frontend(
             config_path,
             selected,
             crate::daemon_socket::AttachFrontend::Control,
@@ -355,7 +386,15 @@ mod platform {
             None,
             None,
         )
-        .await
+        .await?
+        {
+            HostOwnerProbe::Unavailable(publication)
+                if publication.discard_if_store_gone(selected_store).await? =>
+            {
+                Ok(HostOwnerProbe::Absent)
+            }
+            probe => Ok(probe),
+        }
     }
 
     pub async fn connect(
