@@ -3381,6 +3381,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             get(plugins::get_plugin_ui_asset),
         )
         .route(
+            "/v1/apps/plugins/{selector}/routes/{*path}",
+            any(plugins::plugin_route_bridge),
+        )
+        .route(
             "/v1/apps/plugins/{selector}/update",
             post(plugins::update_plugin_api),
         )

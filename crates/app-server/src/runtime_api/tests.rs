@@ -25,6 +25,7 @@ mod headless_catalog;
 mod member_operations;
 #[cfg(unix)]
 mod owner_bootstrap;
+mod plugin_ui;
 mod profile_constitution;
 #[cfg(any(unix, windows))]
 mod runtime_store_convergence;

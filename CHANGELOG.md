@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Website copy:** The site's headline is now "The model can be anyone's. The agent should be yours.", with its subhead, belief and labelled product map in every language.
 - **Website routes:** Pages that repeated each other now redirect to the one page that does the job, the header and footer list only pages that exist under their current names, the sitemap drops redirected and catalogue pages, and machine-drafted translations say so.
 - **Website privacy:** The website no longer counts anything when your browser sends Global Privacy Control or Do Not Track, and the privacy page says exactly what is counted and how it is keyed.
+- Plugin UI: the Runtime API now serves reviewed DSH client closures on six seats (customize.plugins.detail, conversation.composer.dock, conversation.chat.node, workpane.panel, sidebar.section, command.row) with coded refusals, drops a plugin's UI grants the moment it is disabled, revoked or uninstalled, and adds a plugin route bridge that refuses until a plugin web server exists. No real DSH package has been served end to end yet, and a client that imports `@deepseek-ai/dsh-client-*` modules is still refused. (CW-7956)
 
 ### Fixed
 

@@ -59,6 +59,7 @@ registration index.
 | POST | `/v1/apps/plugins/{selector}/enable` |
 | POST | `/v1/apps/plugins/{selector}/restage` |
 | POST | `/v1/apps/plugins/{selector}/revoke` |
+| ANY | `/v1/apps/plugins/{selector}/routes/{*path}` |
 | POST | `/v1/apps/plugins/{selector}/trust` |
 | GET | `/v1/apps/plugins/{selector}/ui` |
 | GET | `/v1/apps/plugins/{selector}/ui/{*path}` |
@@ -260,4 +261,4 @@ registration index.
 | GET / POST | `/v1/worktrees` |
 | POST | `/v1/worktrees/remove` |
 
-The source contains 240 distinct literal paths in this table.
+The source contains 241 distinct literal paths in this table.
