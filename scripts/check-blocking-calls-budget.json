@@ -121,6 +121,9 @@
   "crates/engine/src/core/engine/tool_execution.rs": {
     "std_fs": 1
   },
+  "crates/engine/src/extension_host/dsh_workspace.rs": {
+    "path_canonicalize": 2
+  },
   "crates/engine/src/extension_host/mod.rs": {
     "std_fs": 7
   },
