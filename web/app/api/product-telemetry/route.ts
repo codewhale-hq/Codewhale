@@ -1,6 +1,6 @@
 import { BodyReadError, readBoundedBody } from "@/lib/bounded-body";
 import { NextResponse } from "next/server";
-import { MAX_ENVELOPE_BYTES, validateEnvelope } from "@/lib/telemetry/product-usage";
+import { MAX_ENVELOPE_BYTES, privacySignalHeader, validateEnvelope } from "@/lib/telemetry/product-usage";
 
 /**
  * POST /api/product-telemetry — the website's same-origin forwarder.
@@ -55,7 +55,7 @@ export async function handleProductTelemetry(
       headers: { "cache-control": "no-store" },
     });
 
-  if (!target) return reply(200, false, "disabled");
+  if (privacySignalHeader(request.headers) || !target) return reply(200, false, "disabled");
 
   let text: string;
   try {

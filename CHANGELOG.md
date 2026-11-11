@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Codex App Server v2 contract record (paused, not part of 0.10.3): the selected Codex v2 contract is frozen as a generated manifest in the protocol crate, with typed Rust and TypeScript shapes checked against the pinned Codex schema. It changes no wire behavior and adds no dispatch, so nothing is reachable through it yet.
 - **Website copy:** The site's headline is now "The model can be anyone's. The agent should be yours.", with its subhead, belief and labelled product map in every language.
 - **Website routes:** Pages that repeated each other now redirect to the one page that does the job, the header and footer list only pages that exist under their current names, the sitemap drops redirected and catalogue pages, and machine-drafted translations say so.
+- **Website privacy:** The website no longer counts anything when your browser sends Global Privacy Control or Do Not Track, and the privacy page says exactly what is counted and how it is keyed.
 
 ### Fixed
 
