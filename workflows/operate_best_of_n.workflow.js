@@ -190,6 +190,6 @@ export default async function (args) {
     apply_policy:
       "Parent applies a winner only after independent clean replay and explicit user approval.",
     execution_boundary:
-      "This recipe generates and reviews candidates. It does not claim runtime-owned hidden gates, benchmark scoring, or clean-baseline replay; those need a runtime evaluator host that does not exist yet.",
+      "This run generates and reviews candidates without the optional host evaluator. It does not claim hidden gates, benchmark scoring, or clean-baseline replay.",
   };
 }

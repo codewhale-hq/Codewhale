@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -37,7 +38,7 @@ def sse(content=None, tool=None, tool_name=None, call_id=None):
                     for chunk in chunks) + "data: [DONE]\n\n").encode()
 
 
-def handler(programs, ledger):
+def handler(programs, ledger, hidden_path, hidden_sentinel):
     class Handler(BaseHTTPRequestHandler):
         counts = {"cand_001": 0, "cand_002": 0}
         lock = threading.Lock()
@@ -64,11 +65,19 @@ def handler(programs, ledger):
                 else:
                     call = -1
                 ledger.append({"candidate": name, "call": call, "path": self.path,
-                               "model": request.get("model")})
+                               "model": request.get("model"),
+                               "hidden_exposed": hidden_sentinel in messages})
             if name is not None and call == 0:
+                body = sse(tool={"action": "run", "command": f"cat {hidden_path}",
+                                 "timeout_ms": 1000}, tool_name="bash",
+                           call_id=f"local-{name}-shell-hidden-probe")
+            elif name is not None and call == 1:
+                body = sse(tool={"path": str(hidden_path)}, tool_name="read",
+                           call_id=f"local-{name}-hidden-probe")
+            elif name is not None and call == 2:
                 body = sse(tool={"path": "src/probe.py"}, tool_name="read",
                            call_id=f"local-{name}-read")
-            elif name is not None and call == 1:
+            elif name is not None and call == 3:
                 body = sse(tool={"path": "src/probe.py", "content": programs[name]},
                            tool_name="write", call_id=f"local-{name}-write")
             elif name is not None:
@@ -92,6 +101,17 @@ def last_workflow(path):
     records = [json.loads(line) for line in path.read_text().splitlines()]
     runs = [record["run"] for record in records if "run" in record]
     return runs[-1] if runs else {}
+
+
+def descendant_pids(token):
+    found = []
+    for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
+        try:
+            if token.encode() in cmdline.read_bytes():
+                found.append(int(cmdline.parent.name))
+        except (OSError, ValueError):
+            continue
+    return found
 
 
 def main():
@@ -132,10 +152,12 @@ def main():
                "home": str(home_secret)}
     inherited_fd = os.open(host_secret, os.O_RDONLY)
     os.set_inheritable(inherited_fd, True)
+    orphan_token = "codewhale-evaluator-e2e-" + hashlib.sha256(
+        str(output).encode()).hexdigest()[:16]
     program = (
         "import json,os,subprocess,sys\n"
         "json.load(sys.stdin)\n"
-        f"targets={targets!r}\nfd={inherited_fd}\n"
+        f"targets={targets!r}\nfd={inherited_fd}\norphan_token={orphan_token!r}\n"
         "def blocked(path, mode):\n"
         "    try:\n"
         "        with open(path, mode) as stream:\n"
@@ -149,17 +171,23 @@ def main():
         "result['credential_env_blocked']='DEEPSEEK_API_KEY' not in os.environ\n"
         "try: result['inherited_fd_blocked']=b'synthetic host secret' not in os.read(fd,1024)\n"
         "except OSError: result['inherited_fd_blocked']=True\n"
-        "child=subprocess.run([sys.executable,'-c','open(sys.argv[1]).read()',targets['host']],capture_output=True)\n"
+        "child=subprocess.run([sys.executable,'-c','open(sys.argv[1]).read()',targets['host']],stdout=subprocess.PIPE,stderr=subprocess.PIPE)\n"
         "result['child_blocked']=child.returncode!=0\n"
+        "subprocess.Popen([sys.executable,'-c','import time; time.sleep(120)',orphan_token])\n"
         "print(json.dumps(result))\n"
     )
+    compile(program, "<isolated-candidate>", "exec")
     expected = {name + "_" + op + "_blocked": True
                 for name in targets for op in ("read", "write")}
     expected.update({"credential_env_blocked": True, "inherited_fd_blocked": True,
                      "child_blocked": True})
+    hidden_sentinel = "heldout-writer-sentinel-" + hashlib.sha256(
+        str(output).encode()).hexdigest()[:16]
     public.write_text(json.dumps([{"input": {"case": i}, "expected": expected}
                                   for i in range(2)]) + "\n")
-    hidden.write_text(json.dumps([{"input": {"case": 2}, "expected": expected}]) + "\n")
+    hidden.write_text(json.dumps([{"input": {"case": 2,
+                                             "hidden_sentinel": hidden_sentinel},
+                                   "expected": expected}]) + "\n")
     spec = output / "evaluator.json"
     spec.write_text(json.dumps({
         "version": 1, "objective": "Verify the isolated JSON probe",
@@ -176,9 +204,11 @@ def main():
         ],
     }, indent=2) + "\n")
     claim = "import json,sys\njson.load(sys.stdin)\nprint(json.dumps({'status':'PASS','test_count':999}))\n"
+    compile(claim, "<self-reported-candidate>", "exec")
     requests = []
     server = ThreadingHTTPServer(("127.0.0.1", 0),
-                                 handler({"cand_001": claim, "cand_002": program}, requests))
+                                 handler({"cand_001": claim, "cand_002": program},
+                                         requests, hidden, hidden_sentinel))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     config = output / "config.toml"
@@ -212,6 +242,8 @@ def main():
     (output / "stdout.log").write_text(completed.stdout)
     (output / "stderr.log").write_text(completed.stderr)
     (output / "mock_requests.json").write_text(json.dumps(requests, indent=2) + "\n")
+    time.sleep(2)
+    surviving_descendants = descendant_pids(orphan_token)
     roots = [path for path in
              set(Path(tempfile.gettempdir()).glob("codewhale-evaluator-workflow_*")) - before
              if (path / "manifest.json").is_file()]
@@ -241,6 +273,9 @@ def main():
         "isolated_tests": replay.get("test_count"),
         "replay_tests": replay.get("replay", {}).get("test_count"),
         "provider_requests": requests,
+        "writer_hidden_exposed": any(item["hidden_exposed"] for item in requests),
+        "surviving_descendant_pids": surviving_descendants,
+        "descendants_reaped": not surviving_descendants,
         "host_secret_untouched": host_secret.read_text() == "synthetic host secret\n",
         "sibling_secret_untouched": (sibling / "sibling-secret").read_text()
             == "synthetic sibling secret\n",
@@ -255,6 +290,8 @@ def main():
         receipt["replay_status"] == "PASS", receipt["replay_tests"] == 3,
         receipt["host_secret_untouched"], receipt["sibling_secret_untouched"],
         receipt["parent_secret_untouched"], receipt["hidden_unchanged"],
+        not receipt["writer_hidden_exposed"],
+        receipt["descendants_reaped"],
         len(requests) >= 4,
     ])
     (output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")

@@ -41,8 +41,11 @@ public and one held-out gate must each require a nonzero number of cases.
 }
 ```
 
-Invoke the existing `workflow` tool with a checked-in source path, or use the
-CLI `workflow-tool --input-json` equivalent:
+Invoke the existing `workflow` tool, or use the CLI `workflow-tool --input-json`
+equivalent. For `source_path`, place the checked-in Workflow file inside the
+active workspace or `~/.codewhale/workflows`; the host checks its exact content
+against the bundled recipe. Alternatively, pass that file's exact text as
+`script`, as the native E2E below does.
 
 ```json
 {
@@ -117,3 +120,18 @@ small.
 
 Policy genomes, mutation, selection, strategy transfer, model-turn planning,
 and promotion research remain separate from this evaluator.
+
+For a repeatable Linux run using a local scripted provider, a synthetic Git
+workspace, both public and held-out cases, and the real CLI entry:
+
+```sh
+python3 scripts/verified-candidate-native-e2e.py \
+  --codewhale target/debug/codewhale \
+  --workflow-source workflows/operate_best_of_n.workflow.js \
+  --source-sha "$(git rev-parse HEAD)" \
+  --output /tmp/codewhale-evaluator-native-e2e-new
+```
+
+The output directory must be absent before the run. Its `receipt.json`, CLI
+logs, provider request ledger, and copied `sealed-evidence/` allow the result
+to be inspected and repeated with a fresh output path.
