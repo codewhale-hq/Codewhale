@@ -207,7 +207,7 @@ def main():
                            and all(negative_rejections.values())
                            and all(item["candidate"] in ("candidate_g2_1", "candidate_g2_2", "NONE")
                                    for item in after_resume)
-                           and result.get("winner_id") != "NONE"
+                           and (result.get("winner_id") or "").startswith(("candidate_g0_", "candidate_g1_"))
                            and receipt["review_status"] == "COMPLETE"
                            and receipt["promotion"] == "proposal_only")
         shutil.copytree(root, output / "evaluator",
