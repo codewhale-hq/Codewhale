@@ -259,7 +259,7 @@ export default async function (args) {
                 description: label.startsWith("dev_review_retry_")
                   ? `${description}\nThe previous answer contained only a tool call. Return the JSON text directly.`
                   : description,
-                label, type: "explore", model,
+                label, type: "review", model,
                 allowedTools: [], maxSteps: 1, schemaRepairAttempts: 0,
                 writeAuthority: "read_only", worktree: false,
                 responseSchema: {
@@ -383,7 +383,7 @@ export default async function (args) {
             review = await task({
               description: label === "evolution_reviewer" ? description
                 : `${description}\nThe previous completed answer was a tool-only response. Return the JSON text directly.`,
-              label, type: "explore", model,
+              label, type: "review", model,
               allowedTools: [], maxSteps: 1, schemaRepairAttempts: 0,
               writeAuthority: "read_only", worktree: false,
               responseSchema: {
