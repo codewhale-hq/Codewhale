@@ -592,8 +592,6 @@ pick_profile() {
       ;;
     bash)
       case "$target" in
-        # Login bash reads the first of these that exists; creating
-        # ~/.bash_profile would stop an existing ~/.profile from loading.
         macos-*)
           profile=".bash_profile"
           for candidate in .bash_profile .bash_login .profile; do
@@ -650,7 +648,7 @@ add_path_block() {
 }
 
 undo_path_block_command() {
-  printf '%s' "cw_tmp=\"\$(mktemp)\" && sed -e '/^# >>> codewhale PATH >>>\$/{N;N;/\\n# <<< codewhale PATH <<<\$/d;}' $profile_shown > \"\$cw_tmp\" && cat \"\$cw_tmp\" > $profile_shown; rm -f \"\$cw_tmp\""
+  printf '%s' "cw_tmp=\"\$(mktemp)\" && sed -e '/^# >>> codewhale PATH >>>\$/{\$!N;\$!N;/\\n# <<< codewhale PATH <<<\$/d;}' $profile_shown > \"\$cw_tmp\" && cat \"\$cw_tmp\" > $profile_shown; rm -f \"\$cw_tmp\""
 }
 
 if [ "$path_selected" -eq 1 ]; then

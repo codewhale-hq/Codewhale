@@ -158,7 +158,7 @@ Added to ~/.bashrc so new shells find codewhale (skip this with --no-modify-path
   # <<< codewhale PATH <<<
 Only those three lines were added; nothing else in the file was changed. Shells that are already open do not reread the profile.
 To undo, run:
-  cw_tmp="$(mktemp)" && sed -e '/^# >>> codewhale PATH >>>$/{N;N;/\n# <<< codewhale PATH <<<$/d;}' ~/.bashrc > "$cw_tmp" && cat "$cw_tmp" > ~/.bashrc; rm -f "$cw_tmp"
+  cw_tmp="$(mktemp)" && sed -e '/^# >>> codewhale PATH >>>$/{$!N;$!N;/\n# <<< codewhale PATH <<<$/d;}' ~/.bashrc > "$cw_tmp" && cat "$cw_tmp" > ~/.bashrc; rm -f "$cw_tmp"
 PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path
 
 Run this now, in this shell:
@@ -200,7 +200,7 @@ PATH 代码块始终是安装器打印的最后内容。如果你的 PATH 已经
 要手动撤销，请删除两个标记行之间（含标记行）的三行，或运行安装器打印的命令：
 
 ```bash
-cw_tmp="$(mktemp)" && sed -e '/^# >>> codewhale PATH >>>$/{N;N;/\n# <<< codewhale PATH <<<$/d;}' ~/.bashrc > "$cw_tmp" && cat "$cw_tmp" > ~/.bashrc; rm -f "$cw_tmp"   # undo
+cw_tmp="$(mktemp)" && sed -e '/^# >>> codewhale PATH >>>$/{$!N;$!N;/\n# <<< codewhale PATH <<<$/d;}' ~/.bashrc > "$cw_tmp" && cat "$cw_tmp" > ~/.bashrc; rm -f "$cw_tmp"   # undo
 export PATH="$HOME/.local/bin:$PATH"; hash -r   # this shell only
 command -v codewhale codew
 ```

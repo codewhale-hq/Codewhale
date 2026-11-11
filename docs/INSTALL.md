@@ -207,7 +207,7 @@ Added to ~/.bashrc so new shells find codewhale (skip this with --no-modify-path
   # <<< codewhale PATH <<<
 Only those three lines were added; nothing else in the file was changed. Shells that are already open do not reread the profile.
 To undo, run:
-  cw_tmp="$(mktemp)" && sed -e '/^# >>> codewhale PATH >>>$/{N;N;/\n# <<< codewhale PATH <<<$/d;}' ~/.bashrc > "$cw_tmp" && cat "$cw_tmp" > ~/.bashrc; rm -f "$cw_tmp"
+  cw_tmp="$(mktemp)" && sed -e '/^# >>> codewhale PATH >>>$/{$!N;$!N;/\n# <<< codewhale PATH <<<$/d;}' ~/.bashrc > "$cw_tmp" && cat "$cw_tmp" > ~/.bashrc; rm -f "$cw_tmp"
 PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path
 
 Run this now, in this shell:
@@ -275,7 +275,7 @@ command the installer printed:
 
 ```bash
 printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc   # what the installer appended (bash; zsh: ~/.zshrc)
-cw_tmp="$(mktemp)" && sed -e '/^# >>> codewhale PATH >>>$/{N;N;/\n# <<< codewhale PATH <<<$/d;}' ~/.bashrc > "$cw_tmp" && cat "$cw_tmp" > ~/.bashrc; rm -f "$cw_tmp"   # undo
+cw_tmp="$(mktemp)" && sed -e '/^# >>> codewhale PATH >>>$/{$!N;$!N;/\n# <<< codewhale PATH <<<$/d;}' ~/.bashrc > "$cw_tmp" && cat "$cw_tmp" > ~/.bashrc; rm -f "$cw_tmp"   # undo
 export PATH="$HOME/.local/bin:$PATH"; hash -r   # this shell only
 command -v codewhale codew
 ```

@@ -310,6 +310,21 @@ for (const kind of ["website", "archive"]) {
     assert.equal(fs.readFileSync(profile, "utf8"), before + after);
   });
 
+  for (const tail of ["a\n# >>> codewhale PATH >>>\nlast\n", "a\n# >>> codewhale PATH >>>\n", "a\n# >>> codewhale PATH >>>"]) {
+    test(`${kind}: the printed undo command leaves a lone start marker near end of file untouched (${JSON.stringify(tail)})`, t => {
+      const f = fixture(t, kind);
+      f.env.SHELL = "/bin/zsh";
+      const result = f.run();
+      assert.equal(result.status, 0, result.stderr);
+      const undo = result.stdout.split("\n").map(line => line.trim()).find(line => line.startsWith("cw_tmp="));
+      const profile = path.join(f.home, ".zshrc");
+      fs.writeFileSync(profile, tail);
+      const ran = spawnSync("sh", ["-c", undo], { env: { ...f.env }, encoding: "utf8" });
+      assert.equal(ran.status, 0, ran.stderr);
+      assert.equal(fs.readFileSync(profile, "utf8"), tail);
+    });
+  }
+
   test(`${kind}: --no-modify-path and CODEWHALE_NO_MODIFY_PATH leave every profile alone and print the command`, t => {
     for (const mode of ["flag", "env"]) {
       const f = fixture(t, kind);
