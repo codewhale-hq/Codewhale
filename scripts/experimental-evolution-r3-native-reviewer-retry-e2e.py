@@ -21,6 +21,17 @@ def main():
     cas = runpy.run_path(str(source / "experimental-evolution-r3-native-cas-e2e.py"))
     receipt = cas["case"](output / "retry_dev_review", "retry_dev_review",
                           args.codewhale.resolve(), helper, support)
+    workflow = cas["last_run"](output / "retry_dev_review" / "workspace" /
+                                ".codewhale" / "workflow-runs.jsonl")
+    expected_labels = ("dev_review_candidate_g0_1",
+                       "dev_review_retry_candidate_g0_1", "evolution_reviewer")
+    receipt["reviewer_roles"] = {
+        event.get("label"): event.get("resolved_role")
+        for event in workflow.get("events", [])
+        if event.get("type") == "task_started" and event.get("label") in expected_labels
+    }
+    receipt["pass"] = receipt["pass"] and all(
+        receipt["reviewer_roles"].get(label) == "review" for label in expected_labels)
     (output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n",
                                          encoding="utf-8")
     print(json.dumps(receipt))
