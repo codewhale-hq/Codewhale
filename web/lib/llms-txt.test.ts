@@ -6,9 +6,11 @@ import { GET as getTopicMarkdown } from "../app/docs-markdown/[topic]/route";
 import { GET as getFullText } from "../app/llms-full.txt/route";
 import { GET } from "../app/llms.txt/route";
 import robots from "../app/robots";
+import { AGENT_DOCS } from "./agent-docs";
 import { claimAvailability, runtimeCapabilityContext } from "./capabilities";
 import { INSTALL_COMMANDS, INSTALL_COPY, INSTALL_PAGE_COMMANDS } from "./content/install";
 import { PRODUCT_MAP_STATE_KEY, PRODUCT_MAP_TEXT_KEYS, productMap } from "./content/product-map";
+import { REFERENCE_GUIDE_COPY } from "./content/reference-guides";
 import type { DesktopReleaseFact } from "./desktop-release";
 import { DOC_TOPICS, docTopicHref } from "./docs-map";
 import type { RepoFacts } from "./facts";
@@ -171,6 +173,12 @@ describe("llms.txt", () => {
     const full = await getFullText().text();
     expect(full.startsWith(buildLlmsTxt())).toBe(true);
     expect(full).toContain(buildInstallMarkdown());
+  });
+
+  it("labels every main-branch document in the full text with the published tag", async () => {
+    const scope = fill(REFERENCE_GUIDE_COPY.scope.en, { tag: release.tag });
+    expect(scope).toContain(release.tag);
+    expect((await getFullText().text()).split(scope).length - 1).toBe(AGENT_DOCS.length - 1);
   });
 
   it("advertises /llms.txt from robots without inventing a robots field", () => {
