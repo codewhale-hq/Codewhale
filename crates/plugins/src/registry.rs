@@ -1208,7 +1208,7 @@ fn persist_plugin_state_with_directory_sync(
 #[cfg(windows)]
 fn persist_plugin_state(mut temporary: tempfile::TempPath, path: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt as _;
-    use windows::Win32::Foundation::WIN32_ERROR;
+    use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, WIN32_ERROR};
     use windows::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_TEMPORARY, MOVEFILE_REPLACE_EXISTING,
         MOVEFILE_WRITE_THROUGH, MoveFileExW, SetFileAttributesW,
@@ -1254,7 +1254,19 @@ fn persist_plugin_state(mut temporary: tempfile::TempPath, path: &Path) -> Resul
     } {
         // MoveFileExW reports an HRESULT; the shared classifier reads the
         // Win32 code it wraps.
-        let backoff = WIN32_ERROR::from_error(&error).and_then(|code| {
+        let code = WIN32_ERROR::from_error(&error);
+        if code == Some(ERROR_ACCESS_DENIED)
+            && let Ok(Some(source)) = open_existing_regular_file(&temporary_path, true)
+            && fs::rename(&temporary_path, path).is_ok()
+        {
+            temporary.disable_cleanup(true);
+            return source.sync_all().map_err(|error| {
+                format!(
+                    "plugin state was published but its durability could not be confirmed: {error}"
+                )
+            });
+        }
+        let backoff = code.and_then(|code| {
             codewhale_util::utils::windows_publish_retry_delay(
                 &std::io::Error::from_raw_os_error(code.0 as i32),
                 attempt,
@@ -3060,7 +3072,10 @@ pub fn capture_plugin_state_authority(
 
 #[cfg(test)]
 mod state_publication_tests {
-    use super::{PluginStateFile, harden_plugin_state_file, save_state_with_hardener};
+    use super::{
+        PluginStateFile, harden_plugin_state_file, open_existing_regular_file,
+        save_state_with_hardener,
+    };
 
     fn prepare_private_directory(_path: &std::path::Path) {
         #[cfg(unix)]
@@ -3091,6 +3106,42 @@ mod state_publication_tests {
             .map(|entry| entry.unwrap().file_name())
             .collect::<Vec<_>>();
         assert_eq!(entries, [std::ffi::OsString::from("state-鲸.json")]);
+    }
+
+    #[test]
+    fn state_publication_replaces_a_stable_file_that_a_reader_still_holds_open() {
+        use std::io::Read as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        prepare_private_directory(directory.path());
+        let state_path = directory.path().join("state.json");
+        std::fs::write(&state_path, b"old-authoritative-state").unwrap();
+        let mut held = open_existing_regular_file(&state_path, false)
+            .unwrap()
+            .unwrap();
+
+        save_state_with_hardener(
+            &state_path,
+            &PluginStateFile::default(),
+            harden_plugin_state_file,
+        )
+        .unwrap();
+
+        let mut published = open_existing_regular_file(&state_path, false)
+            .unwrap()
+            .unwrap();
+        assert!(!codewhale_util::files::same_file(&held, &published).unwrap());
+        let mut superseded = String::new();
+        held.read_to_string(&mut superseded).unwrap();
+        assert_eq!(superseded, "old-authoritative-state");
+        let mut current = String::new();
+        published.read_to_string(&mut current).unwrap();
+        assert!(current.contains("\"schema_version\": 1"));
+        let entries = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, [std::ffi::OsString::from("state.json")]);
     }
 
     #[test]

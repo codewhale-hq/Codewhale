@@ -135,6 +135,11 @@ async fn ui(
     Ok((status, response.json().await?))
 }
 
+async fn mutate(client: &reqwest::Client, url: String) -> Result<(StatusCode, String)> {
+    let response = client.post(url).send().await?;
+    Ok((response.status(), response.text().await?))
+}
+
 fn refusal(status: u16, body: &serde_json::Value) -> (u16, String) {
     (
         status,
@@ -370,14 +375,14 @@ async fn plugin_ui_dsh_client_serves_admitted_seats_and_denies_and_revokes() -> 
             .is_client_error()
     );
 
-    let disabled = client.post(format!("{base}/{name}/disable")).send().await?;
-    assert_eq!(disabled.status(), StatusCode::OK);
+    let (status, body) = mutate(&client, format!("{base}/{name}/disable")).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
     for url in [&asset_url, &route] {
         let response = client.get(url).header("If-Match", &revision).send().await?;
         assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED, "{url}");
     }
-    let enabled = client.post(format!("{base}/{name}/enable")).send().await?;
-    assert_eq!(enabled.status(), StatusCode::OK);
+    let (status, body) = mutate(&client, format!("{base}/{name}/enable")).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let stale = client
         .get(&asset_url)
         .header("If-Match", &revision)
@@ -509,8 +514,8 @@ async fn plugin_ui_native_client_serves_only_the_detail_seat_and_is_revoked() ->
     let body: serde_json::Value = routed.json().await?;
     assert_eq!(body["error"]["code"], "plugin_route_not_admitted");
 
-    let revoked = client.post(format!("{base}/{name}/revoke")).send().await?;
-    assert_eq!(revoked.status(), StatusCode::OK);
+    let (status, body) = mutate(&client, format!("{base}/{name}/revoke")).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let after = client
         .get(&asset)
         .header("If-Match", &revision)
