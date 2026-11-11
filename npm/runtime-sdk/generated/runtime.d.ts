@@ -86,6 +86,7 @@ export type RuntimeCapabilities = {
   worker_runtime: boolean
   fleet_run_create: boolean
   thread_fleet_members: boolean
+  thread_fleet_member_durable_operations_v1: boolean
   fleet_run_start: boolean
   fleet_event_replay: boolean
   fleet_event_stream: boolean

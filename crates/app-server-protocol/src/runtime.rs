@@ -173,6 +173,10 @@ pub struct RuntimeCapabilities {
     pub fleet_run_create: bool,
     #[serde(default)]
     pub thread_fleet_members: bool,
+    /// Member starts are durable per `(store, thread, operation_key)`;
+    /// `GET /v1/threads/{id}/members/operations/{operation_key}` reads them.
+    #[serde(default)]
+    pub thread_fleet_member_durable_operations_v1: bool,
     #[serde(default)]
     pub fleet_run_start: bool,
     #[serde(default)]
@@ -550,6 +554,7 @@ mod tests {
             worker_runtime: false,
             fleet_run_create: true,
             thread_fleet_members: true,
+            thread_fleet_member_durable_operations_v1: true,
             fleet_run_start: true,
             fleet_event_replay: true,
             fleet_event_stream: true,
