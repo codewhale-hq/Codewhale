@@ -13228,13 +13228,6 @@ var init_prompt = __esm({
   }
 });
 
-// src/dsh/adapters.ts
-var init_adapters = __esm({
-  "src/dsh/adapters.ts"() {
-    "use strict";
-  }
-});
-
 // src/protocol.generated.ts
 var MAGIC_ASCII;
 var init_protocol_generated = __esm({
@@ -13260,6 +13253,23 @@ var init_rpc = __esm({
   "src/rpc.ts"() {
     "use strict";
     init_protocol();
+  }
+});
+
+// src/dsh/session-prompt.ts
+var init_session_prompt = __esm({
+  "src/dsh/session-prompt.ts"() {
+    "use strict";
+    init_protocol();
+    init_rpc();
+  }
+});
+
+// src/dsh/adapters.ts
+var init_adapters = __esm({
+  "src/dsh/adapters.ts"() {
+    "use strict";
+    init_session_prompt();
   }
 });
 

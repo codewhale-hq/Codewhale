@@ -302,28 +302,6 @@ export class HostRoot {
       set(key: string, value: Json) { return this.api().set(key, value) }
       delete(key: string) { return this.api().delete(key) }
     }
-    class SessionsShim extends Service {
-      constructor(ctx: any) { super(ctx, 'sessions') }
-      async flush(session: unknown): Promise<boolean> {
-        const invocation = host.toolInvocations.getStore()
-        const owner: OwnerRecord | undefined = (this.ctx as any)[OWNER]
-        const live = () => invocation && invocation.active && !invocation.signal.aborted
-          && invocation.owner === owner && owner?.state === 'active' && !owner.disposing
-          && invocation.ticket !== undefined && session === invocation.session && session !== undefined
-        if (!live()) throw new RpcError(ErrorCode.NotAvailable, 'sessions.flush requires this live tool invocation’s session')
-        const call = invocation!
-        const run = async () => {
-          if (!live()) throw new RpcError(ErrorCode.NotAvailable, 'session checkpoint invocation ended')
-          const result = await host.rpc.request<unknown>('session/checkpoint', { owner: call.owner.ref, ticket: call.ticket }, call.signal)
-          if (!live()) throw new RpcError(ErrorCode.NotAvailable, 'session checkpoint invocation ended')
-          if (typeof result !== 'boolean') throw new RpcError(ErrorCode.Internal, 'invalid session checkpoint receipt')
-          return result
-        }
-        const result = call.pending.then(run)
-        call.pending = result.then(() => undefined, () => undefined)
-        return result
-      }
-    }
     class UserQuestionsShim extends Service {
       constructor(ctx: any) { super(ctx, 'userQuestions') }
       async ask(request: { agent?: unknown; questions: unknown; signal?: AbortSignal; wait?: unknown }) {
@@ -570,16 +548,9 @@ export class HostRoot {
     class AgentsShim extends Service {
       constructor(ctx: any) { super(ctx, 'agents') }
     }
-    class SystemPromptShim extends Service {
-      constructor(ctx: any) { super(ctx, 'systemPrompt') }
-      section() { throw new RpcError(ErrorCode.NotAvailable, "system prompt sections are only available on a child agent's agent/created context") }
-      getSectionOrder() { throw new RpcError(ErrorCode.NotAvailable, "system prompt sections are only available on a child agent's agent/created context") }
-    }
     Object.freeze(SubagentsShim.prototype)
     Object.freeze(AgentsShim.prototype)
-    Object.freeze(SystemPromptShim.prototype)
     Object.freeze(UserQuestionsShim.prototype)
-    Object.freeze(SessionsShim.prototype)
     Object.freeze(StorageShim.prototype)
     const adapterHost: AdapterHost = {
       tier,
@@ -600,11 +571,9 @@ export class HostRoot {
       ['commands', CommandsShim],
       ['prompt', PromptShim],
       ['storage', StorageShim],
-      ['sessions', SessionsShim],
       ['userQuestions', UserQuestionsShim],
       ['subagents', SubagentsShim],
       ['agents', AgentsShim],
-      ['systemPrompt', SystemPromptShim],
       ['skills', SkillsShim],
       ['avatars', AvatarsShim],
       ['mcp', McpShim],
