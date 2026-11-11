@@ -3479,6 +3479,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             get(external_agents::list_external_agents),
         )
         .route(
+            "/v1/agents/external/quota",
+            get(external_agents::get_external_agent_quota),
+        )
+        .route(
             "/v1/agents/external/{id}/options",
             get(external_agent_options::get_external_agent_options),
         )

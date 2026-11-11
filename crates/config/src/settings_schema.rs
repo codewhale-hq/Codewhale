@@ -1520,6 +1520,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
     // Trust posture with a `/set` entry point but no row; surfaced where
     // sandboxing acts, not as a settings sentence.
     def("sandbox_mode", SettingKind::String, "", None),
+    def("agents", SettingKind::String, "", None),
     // Route memory written by the pickers: per-provider defaults, enabled
     // chooser sets, and pinned routes. Structured values no row could edit.
     def("provider_models", SettingKind::String, "", None),

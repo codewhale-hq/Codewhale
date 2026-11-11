@@ -514,6 +514,8 @@ pub struct Settings {
     /// Omitted entirely before the first recorded use.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub footer_hint_uses: std::collections::BTreeMap<String, u8>,
+    #[serde(default, skip_serializing_if = "AgentSettings::is_empty")]
+    pub agents: AgentSettings,
     /// True only for the current load when `default_mode = "yolo"` was read
     /// from an older settings file. App startup uses this provenance to migrate
     /// the old bundled Full Access choice without weakening project or managed
@@ -535,6 +537,75 @@ pub struct Settings {
     /// policy / project producers mark their own layers when they land.
     #[serde(skip)]
     pub provenance: std::collections::BTreeMap<String, Layer>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSettings {
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub quota: std::collections::BTreeMap<String, AgentQuotaSetting>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentQuotaSetting {
+    #[serde(skip_serializing_if = "is_false")]
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consented_at: Option<String>,
+}
+
+pub const AGENT_QUOTA_KEY_PREFIX: &str = "agents.quota.";
+const MAX_AGENT_ID_CHARS: usize = 64;
+
+impl AgentSettings {
+    pub fn is_empty(&self) -> bool {
+        self.quota.is_empty()
+    }
+
+    pub fn quota(&self, agent_id: &str) -> AgentQuotaSetting {
+        self.quota.get(agent_id).cloned().unwrap_or_default()
+    }
+
+    fn set_quota_key(&mut self, key: &str, value: &str) -> Result<()> {
+        let rest = &key[AGENT_QUOTA_KEY_PREFIX.len()..];
+        let (agent_id, consent) = match rest.strip_suffix(".consent") {
+            Some(agent_id) => (agent_id, true),
+            None => (rest, false),
+        };
+        let valid_id = !agent_id.is_empty()
+            && agent_id.len() <= MAX_AGENT_ID_CHARS
+            && agent_id
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-');
+        if !valid_id {
+            anyhow::bail!(
+                "Failed to update setting: `{key}` does not name an agent. Expected agents.quota.<agent> or agents.quota.<agent>.consent with a lowercase agent id."
+            );
+        }
+        let mut entry = self.quota(agent_id);
+        if consent {
+            entry.consented_at = match value.trim().to_ascii_lowercase().as_str() {
+                "granted" => Some(chrono::Utc::now().to_rfc3339()),
+                "revoked" => None,
+                _ => anyhow::bail!(
+                    "Failed to update setting: invalid consent for {key}. Expected: granted or revoked."
+                ),
+            };
+        } else {
+            entry.enabled = parse_bool(value).map_err(|_| {
+                anyhow::anyhow!(
+                    "Failed to update setting: invalid value for {key}. Expected: on or off."
+                )
+            })?;
+        }
+        if entry == AgentQuotaSetting::default() {
+            self.quota.remove(agent_id);
+        } else {
+            self.quota.insert(agent_id.to_string(), entry);
+        }
+        Ok(())
+    }
 }
 
 impl Default for Settings {
@@ -622,6 +693,7 @@ impl Default for Settings {
             behavioral_tip_impressions: std::collections::BTreeMap::new(),
             dismissed_plugin_suggestions: std::collections::BTreeSet::new(),
             footer_hint_uses: std::collections::BTreeMap::new(),
+            agents: AgentSettings::default(),
             legacy_yolo_default: false,
             tui_prefs_migration: None,
             provenance: std::collections::BTreeMap::new(),
@@ -1789,6 +1861,9 @@ impl Settings {
                         "Failed to update setting: invalid sandbox_mode '{value}'. Expected: read-only, workspace-write, danger-full-access, or external-sandbox."
                     );
                 }
+            }
+            quota if quota.starts_with(AGENT_QUOTA_KEY_PREFIX) => {
+                self.agents.set_quota_key(quota, value)?;
             }
             _ => {
                 anyhow::bail!("Failed to update setting: unknown setting '{key}'.");

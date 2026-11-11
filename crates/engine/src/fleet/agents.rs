@@ -520,9 +520,144 @@ pub async fn launch(id: &str) -> Result<ExternalAgentLaunch, ExecutorUnavailable
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QuotaGate {
+    pub enabled: bool,
+    pub consented: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuotaSource {
+    AgentReported,
+    LocalSignin,
+}
+
+impl QuotaSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentReported => "agent_reported",
+            Self::LocalSignin => "local_signin",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuotaUnknown {
+    FlagOff,
+    ConsentMissing,
+    NotImplemented,
+    UnknownAgent,
+}
+
+impl QuotaUnknown {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FlagOff => "flag_off",
+            Self::ConsentMissing => "consent_missing",
+            Self::NotImplemented => "not_implemented",
+            Self::UnknownAgent => "unknown_agent",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuotaWindow {
+    pub name: String,
+    pub used_percent: Option<f64>,
+    pub resets_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AgentQuota {
+    Known {
+        source: QuotaSource,
+        windows: Vec<QuotaWindow>,
+    },
+    Unknown(QuotaUnknown),
+}
+
+pub enum LocalSigninReader {}
+
+fn local_signin_reader(_agent: &ExternalAgent) -> Option<LocalSigninReader> {
+    None
+}
+
+pub async fn local_signin_quota(agent: &ExternalAgent, gate: QuotaGate) -> AgentQuota {
+    if !gate.enabled {
+        return AgentQuota::Unknown(QuotaUnknown::FlagOff);
+    }
+    if !gate.consented {
+        return AgentQuota::Unknown(QuotaUnknown::ConsentMissing);
+    }
+    match local_signin_reader(agent) {
+        None => AgentQuota::Unknown(QuotaUnknown::NotImplemented),
+        Some(reader) => match reader {},
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn quota_gate_reads_nothing_without_flag_and_consent_and_logs_nothing() {
+        let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(move || CaptureWriter(writer.clone()))
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let cases = [
+            (QuotaGate::default(), QuotaUnknown::FlagOff),
+            (
+                QuotaGate {
+                    enabled: false,
+                    consented: true,
+                },
+                QuotaUnknown::FlagOff,
+            ),
+            (
+                QuotaGate {
+                    enabled: true,
+                    consented: false,
+                },
+                QuotaUnknown::ConsentMissing,
+            ),
+            (
+                QuotaGate {
+                    enabled: true,
+                    consented: true,
+                },
+                QuotaUnknown::NotImplemented,
+            ),
+        ];
+        for agent in AGENTS {
+            assert!(local_signin_reader(agent).is_none(), "{}", agent.id);
+            for (gate, reason) in cases {
+                assert_eq!(
+                    local_signin_quota(agent, gate).await,
+                    AgentQuota::Unknown(reason),
+                    "{} {gate:?}",
+                    agent.id
+                );
+            }
+        }
+        assert!(buffer.lock().unwrap().is_empty());
+    }
+
+    struct CaptureWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CaptureWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
 
     fn names(paths: &[PathBuf]) -> Vec<String> {
         paths
