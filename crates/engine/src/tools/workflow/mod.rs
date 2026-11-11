@@ -5272,7 +5272,12 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
                     DriverError::Unavailable("experimental search lock poisoned".to_string())
                 })?
                 .select_generation(
-                    generation, &ids, &task_costs, &task_tokens, &task_succeeded, &dev_reviews,
+                    generation,
+                    &ids,
+                    &task_costs,
+                    &task_tokens,
+                    &task_succeeded,
+                    &dev_reviews,
                 )
                 .map_err(DriverError::Rejected);
         }

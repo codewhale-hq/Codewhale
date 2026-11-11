@@ -1156,7 +1156,9 @@ impl ExperimentalSearch {
                 (None, Some(value)) => (1, value),
                 (None, None) => (2, u64::MAX),
             };
-            rank(a.1, a.2).cmp(&rank(b.1, b.2)).then_with(|| a.0.cmp(&b.0))
+            rank(a.1, a.2)
+                .cmp(&rank(b.1, b.2))
+                .then_with(|| a.0.cmp(&b.0))
         });
         let mut parent_ids = Vec::new();
         if let Some((id, _)) = failed.first() {
