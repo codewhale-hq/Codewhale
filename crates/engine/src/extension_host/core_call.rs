@@ -342,6 +342,45 @@ impl BrokerContext {
     }
 }
 
+#[cfg(test)]
+impl BrokerContext {
+    pub fn detached_for_test(owner: &OwnerRef, service: DshService) -> Self {
+        let tool = ToolContext::new(std::path::PathBuf::from("."));
+        let gate = NestedCallGate::admitting_for_test();
+        let calls = CodemodeInvoker::for_extension(
+            Vec::new(),
+            tool.clone(),
+            gate.clone(),
+            String::new(),
+            |_, _, _| None,
+        );
+        let invocation = Arc::new(Invocation {
+            tier: HostTier::Plugin,
+            host_generation: 0,
+            owner: owner.clone(),
+            scope: None,
+            plugins: None,
+            content_hash: String::new(),
+            calls,
+            gate,
+            root_caller: None,
+            broker: None,
+            broker_core_calls: AtomicU32::new(0),
+            tickets: Vec::new(),
+            caller_tools: Vec::new(),
+            activations: Mutex::new(HashMap::new()),
+            session_call_lock: tokio::sync::Mutex::new(()),
+            cancel: CancellationToken::new(),
+        });
+        Self {
+            invocation,
+            tool: Arc::new(tool),
+            service,
+            cancel: CancellationToken::new(),
+        }
+    }
+}
+
 /// The tickets and invocations of one manager.
 #[derive(Default)]
 pub struct CoreCalls {
