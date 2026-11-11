@@ -37,12 +37,18 @@ export interface FeedItem {
   firstTimeContributor?: boolean;
 }
 
+/**
+ * A number that could not be read is `null`, never 0 and never a floor.
+ * `source` says whether the values were read live or come from the committed
+ * snapshot, and `fetchedAt` is when they were read (null when nothing was).
+ */
 export interface RepoStats {
-  stars: number;
-  forks: number;
-  openIssues: number;
-  openPulls: number;
-  contributors: number;
+  stars: number | null;
+  forks: number | null;
+  openIssues: number | null;
+  openPulls: number | null;
+  contributors: number | null;
   latestRelease?: { tag: string; publishedAt: string; url: string };
-  fetchedAt: string;
+  fetchedAt: string | null;
+  source: "live" | "snapshot" | "unknown";
 }

@@ -79,7 +79,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
                 <Link href={`/${locale}/install`} className="btn btn-primary btn-lg">
                   {d.getCodewhale}
                 </Link>
-                <GitHubStar stars={pulse.stats?.stars} locale={locale} />
+                <GitHubStar stars={pulse.stats?.stars ?? undefined} locale={locale} />
                 <Link href={`/${locale}/contribute`} className="btn btn-ghost btn-lg">
                   {d.contribute}
                   <Icon name="arrow-right" className="icon icon-flip" />
@@ -117,7 +117,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
               ) : (
                 <Link href={`/${locale}/changelog`} className="section-link">{chrome.footerChangelog}</Link>
               )}
-              <LiveStarLink initial={pulse.stats?.stars} label={pickText(PROJECT_COPY.statStars, locale)} href={REPO_URL} numberLocale={chrome.dateLocale} />
+              <LiveStarLink initial={pulse.stats?.stars ?? undefined} label={pickText(PROJECT_COPY.statStars, locale)} href={REPO_URL} numberLocale={chrome.dateLocale} />
               <Link href={`/${locale}/contribute`} className="section-link">{fill(d.proofContributors, { count: facts.contributorCount })}</Link>
               <span>{facts.license ?? "MIT"}</span>
               <Link href={`/${locale}/roadmap`} className="section-link">{chrome.footerRoadmap}</Link>

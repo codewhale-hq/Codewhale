@@ -132,7 +132,11 @@ export function deriveLatestPublishedRelease() {
       typeof release.publishedAt !== "string" ||
       !Number.isFinite(Date.parse(release.publishedAt)) ||
       typeof release.url !== "string" ||
-      release.url !== `https://github.com/codewhale-hq/CodeWhale/releases/tag/${release.tag}`
+      release.url !== `https://github.com/codewhale-hq/CodeWhale/releases/tag/${release.tag}` ||
+      (release.readAt !== undefined && !(typeof release.readAt === "string" && Number.isFinite(Date.parse(release.readAt)))) ||
+      (release.assets !== undefined && !(Array.isArray(release.assets) && release.assets.every((asset) =>
+        asset && typeof asset.name === "string" && Number.isSafeInteger(asset.size) && asset.size >= 0 &&
+        (asset.sha256 === null || (typeof asset.sha256 === "string" && /^[0-9a-f]{64}$/.test(asset.sha256))))))
     ) {
       return null;
     }

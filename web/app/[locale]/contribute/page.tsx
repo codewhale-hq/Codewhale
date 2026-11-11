@@ -53,7 +53,7 @@ export default async function ContributePage({ params }: { params: Promise<{ loc
               {t.fileIssue}
               <Icon name="external" className="icon" />
             </Link>
-            <GitHubStar stars={pulse.stats?.stars} locale={locale} />
+            <GitHubStar stars={pulse.stats?.stars ?? undefined} locale={locale} />
             <Link href={`${REPO_URL}/blob/main/CONTRIBUTING.md`} className="btn btn-secondary btn-lg">
               {t.fullGuide}
               <Icon name="external" className="icon" />

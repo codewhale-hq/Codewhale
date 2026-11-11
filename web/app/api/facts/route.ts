@@ -8,6 +8,7 @@ export const revalidate = 0;
 
 function summary(facts: RepoFacts) {
   return {
+    generatedAt: facts.generatedAt,
     sourceRevision: facts.sourceRevision,
     sourceCommittedAt: facts.sourceCommittedAt,
     version: facts.version,

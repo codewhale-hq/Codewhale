@@ -5,7 +5,7 @@ import { fetchFeed, fetchRepoStats, lastPageFromLink, loadFeed, relativeAge, rel
 // The async fetch functions require mocking the global fetch.
 
 describe("production-build fallback", () => {
-  it("keeps static generation offline and uses truthful empty live chrome", async () => {
+  it("keeps static generation offline and uses the dated snapshot and never a zero", async () => {
     const previousPhase = process.env.NEXT_PHASE;
     process.env.NEXT_PHASE = "phase-production-build";
     const fetchMock = vi.fn();
@@ -20,12 +20,10 @@ describe("production-build fallback", () => {
         issuesStatus: "skipped",
         pullsStatus: "skipped",
       });
-      expect(await fetchRepoStats()).toMatchObject({
-        stars: 0,
-        forks: 0,
-        openIssues: 0,
-        openPulls: 0,
-      });
+      const stats = await fetchRepoStats();
+      expect(stats.source).toBe("snapshot");
+      expect(stats.stars).toBeGreaterThan(0);
+      expect(stats.contributors).toBeNull();
       expect(fetchMock).not.toHaveBeenCalled();
     } finally {
       if (previousPhase === undefined) delete process.env.NEXT_PHASE;

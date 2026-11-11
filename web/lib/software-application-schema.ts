@@ -28,7 +28,6 @@ export function buildSoftwareApplicationJsonLd(
     ...(publishedRelease?.version && publishedRelease.url ? { releaseNotes: publishedRelease.url } : {}),
     ...(publishedRelease?.version && publishedRelease.publishedAt ? { dateModified: publishedRelease.publishedAt } : {}),
     isAccessibleForFree: true,
-    offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
     installUrl: `${SITE_URL}/en/install`,
     sameAs: [REPO_URL, "https://www.npmjs.com/package/codewhale", "https://crates.io/crates/codewhale-cli"],
     license: `${REPO_URL}/blob/main/LICENSE`,

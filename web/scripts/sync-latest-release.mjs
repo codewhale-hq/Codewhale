@@ -80,6 +80,23 @@ function releaseFact(release) {
 }
 const next = releaseFact(release);
 
+// The checked-in record also carries what GitHub listed for the release when
+// it was read: each asset's name, size and sha256 digest, and the read time.
+// Only the four core fields above are mirrored to docs/ and the cloud facts.
+function releaseAssets(release) {
+  if (!Array.isArray(release.assets)) return [];
+  return release.assets
+    .filter((asset) => asset && (asset.state === undefined || asset.state === "uploaded") && typeof asset.name === "string"
+      && Number.isSafeInteger(asset.size) && asset.size >= 0)
+    .map((asset) => ({
+      name: asset.name,
+      size: asset.size,
+      sha256: typeof asset.digest === "string" && /^sha256:[0-9a-f]{64}$/.test(asset.digest) ? asset.digest.slice(7) : null,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+const nextAssets = releaseAssets(release);
+
 // deriveLatestPublishedRelease() silently returns null on any shape violation,
 // which would drop the fact entirely rather than report a bad one. Fail loudly.
 if (!next.version || !Number.isFinite(Date.parse(next.publishedAt))) {
@@ -102,6 +119,8 @@ const cloudMatches = (fact) =>
   cloud?.release?.latest === fact.version && cloud.release.release_url === fact.url;
 const allMatch = (fact) =>
   differingFields(current, fact).length === 0 && differingFields(currentMirror, fact).length === 0 && cloudMatches(fact);
+const assetsMatch = () =>
+  typeof current?.readAt === "string" && JSON.stringify(current?.assets) === JSON.stringify(nextAssets);
 
 // True when `recordedTag` is the published (non-draft, non-prerelease) release
 // immediately before `next`, and `next` is younger than GRACE_MS. Any lookup
@@ -124,7 +143,7 @@ async function isFreshlyOneBehind(recordedTag) {
   }
 }
 
-if (allMatch(next)) {
+if (allMatch(next) && assetsMatch()) {
   console.log(`[sync-latest-release] already current at ${next.tag}`);
   process.exit(0);
 }
@@ -133,6 +152,9 @@ if (checkOnly) {
   for (const [path, record] of [[target, current], [mirror, currentMirror]]) {
     const fields = differingFields(record, next);
     if (fields.length) console.error(`[sync-latest-release] ${path} differs from ${next.tag} in ${fields.join(", ")}.`);
+  }
+  if (allMatch(next) && !assetsMatch()) {
+    console.error(`[sync-latest-release] ${target} does not carry the ${nextAssets.length} assets GitHub lists for ${next.tag}.`);
   }
   if (!cloudMatches(next)) {
     console.error(`[sync-latest-release] release version or URL in docs/cloud-facts/stable.json differs from ${next.tag}.`);
@@ -171,7 +193,7 @@ cloud.release.latest = next.version;
 cloud.release.release_url = next.url;
 
 const staged = [
-  [target, next],
+  [target, { ...next, readAt: new Date().toISOString(), assets: nextAssets }],
   [mirror, matrix],
   [cloudFacts, cloud],
 ].map(([path, value]) => {

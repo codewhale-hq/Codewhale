@@ -28,13 +28,13 @@ export const APP_COPY = {
   metadata: {
     title: { en: "Desktop and browser apps · Codewhale", zh: "桌面与浏览器应用 · Codewhale" },
     description: {
-      en: "The Codewhale desktop app is a native app on the same agent you can read, in development today. The terminal and the local browser client are released.",
-      zh: "Codewhale 桌面应用是基于同一个可读智能体的原生应用，目前处于开发阶段。终端与本地浏览器客户端均已发布。",
+      en: "The Codewhale desktop app is built on the same agent you can read, in development today. The terminal and the local browser client are released.",
+      zh: "Codewhale 桌面应用基于同一个可读智能体构建，目前处于开发阶段。终端与本地浏览器客户端均已发布。",
     },
   },
   title: {
-    en: "The desktop app is a native app on the same agent you can read.",
-    zh: "桌面应用是基于同一个可读智能体的原生应用。",
+    en: "The desktop app is built on the same agent you can read.",
+    zh: "桌面应用基于同一个可读智能体构建。",
   },
   lede: {
     en: "It runs the same engine as the terminal, so the app and the terminal share one agent. It is a development build today, and the browser app is not open yet.",

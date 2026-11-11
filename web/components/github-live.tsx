@@ -46,9 +46,9 @@ async function fetchLive(): Promise<LiveRepo | null> {
         user: { login: string; avatar_url: string; type?: string };
       }>>,
     ]);
-    const stars = repo.stargazers_count ?? 0;
-    if (stars <= 0) return null;
-    const openPulls = prs.total_count ?? 0;
+    const stars = repo.stargazers_count;
+    const openPulls = prs.total_count;
+    if (typeof stars !== "number" || stars <= 0 || typeof openPulls !== "number" || typeof repo.open_issues_count !== "number") return null;
     const merged = pulls
       .filter((pr) => pr.merged_at && pr.user.type !== "Bot" && !pr.user.login.endsWith("[bot]"))
       .sort((a, b) => +new Date(b.merged_at!) - +new Date(a.merged_at!))
@@ -61,7 +61,7 @@ async function fetchLive(): Promise<LiveRepo | null> {
         mergedAt: pr.merged_at!,
         firstTime: pr.author_association === "FIRST_TIME_CONTRIBUTOR",
       }));
-    const data = { stars, openPulls, openIssues: Math.max(0, (repo.open_issues_count ?? 0) - openPulls), merged };
+    const data = { stars, openPulls, openIssues: Math.max(0, repo.open_issues_count - openPulls), merged };
     try { sessionStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), data })); } catch {}
     return data;
   } catch {

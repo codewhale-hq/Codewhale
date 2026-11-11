@@ -1,9 +1,11 @@
 import { OUTBOUND_TIMEOUT_MS } from "./bounded-body";
+import snapshot from "../data/repo-stats-snapshot.json";
 import type { FeedItem, RepoStats } from "./types";
+
+const SNAPSHOT: unknown = snapshot;
 
 const REPO = process.env.GITHUB_REPO ?? "codewhale-hq/CodeWhale";
 const GH = "https://api.github.com";
-const MIN_KNOWN_CONTRIBUTORS = 141;
 
 function isProductionBuild(): boolean {
   return process.env.NEXT_PHASE === "phase-production-build";
@@ -19,79 +21,91 @@ function headers(token?: string): HeadersInit {
   return h;
 }
 
-export async function fetchRepoStats(token?: string): Promise<RepoStats> {
-  // Live repository chrome is optional. Static generation must stay
-  // deterministic and offline; deployed requests and ISR refreshes populate
-  // the current values after the build.
-  if (isProductionBuild()) {
-    return {
-      stars: 0,
-      forks: 0,
-      openIssues: 0,
-      openPulls: 0,
-      contributors: MIN_KNOWN_CONTRIBUTORS,
-      fetchedAt: new Date().toISOString(),
-    };
-  }
+const UNKNOWN_STATS: RepoStats = {
+  stars: null,
+  forks: null,
+  openIssues: null,
+  openPulls: null,
+  contributors: null,
+  fetchedAt: null,
+  source: "unknown",
+};
 
-  const [repoRes, contribRes, releaseRes] = await Promise.all([
-    fetch(`${GH}/repos/${REPO}`, { headers: headers(token), signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS), next: { revalidate: 1800 } }),
-    fetch(`${GH}/repos/${REPO}/contributors?per_page=1&anon=true`, {
-      headers: headers(token), signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
-      next: { revalidate: 3600 },
-    }),
-    fetch(`${GH}/repos/${REPO}/releases/latest`, { headers: headers(token), signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS), next: { revalidate: 3600 } }),
-  ]);
+function count(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
 
-  const repo = repoRes.ok ? await repoRes.json().catch(() => null) : null;
-  const stars = numberField(repo, "stargazers_count");
-  const forks = numberField(repo, "forks_count");
-  const repoOpenCount = numberField(repo, "open_issues_count");
-
-  const contributors = await contributorCount(contribRes);
-
-  // Open PRs: cheapest path is the search API.
-  const prRes = await fetch(
-    `${GH}/search/issues?q=${encodeURIComponent(`repo:${REPO} is:pr is:open`)}&per_page=1`,
-    { headers: headers(token), signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS), next: { revalidate: 1800 } }
-  );
-  const prJson = prRes.ok ? ((await prRes.json().catch(() => null)) as { total_count?: number } | null) : null;
-  const openPulls = typeof prJson?.total_count === "number" ? prJson.total_count : 0;
-  const openIssues = Math.max(0, repoOpenCount - openPulls);
-
-  let latestRelease: RepoStats["latestRelease"];
-  if (releaseRes.ok) {
-    const r = (await releaseRes.json()) as { tag_name: string; published_at: string; html_url: string };
-    latestRelease = { tag: r.tag_name, publishedAt: r.published_at, url: r.html_url };
-  }
-
+export function readRepoStatsSnapshot(raw: unknown = SNAPSHOT): RepoStats {
+  if (!raw || typeof raw !== "object") return UNKNOWN_STATS;
+  const row = raw as Record<string, unknown>;
+  if (typeof row.readAt !== "string" || !Number.isFinite(Date.parse(row.readAt))) return UNKNOWN_STATS;
+  const stars = count(row.stars);
+  if (stars === null || stars === 0) return UNKNOWN_STATS;
   return {
     stars,
-    forks,
-    openIssues,
-    openPulls,
-    contributors,
-    latestRelease,
-    fetchedAt: new Date().toISOString(),
+    forks: count(row.forks),
+    openIssues: count(row.openIssues),
+    openPulls: count(row.openPulls),
+    contributors: null,
+    fetchedAt: row.readAt,
+    source: "snapshot",
   };
 }
 
-function numberField(body: unknown, key: string): number {
-  if (!body || typeof body !== "object") return 0;
-  const value = (body as Record<string, unknown>)[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+export async function fetchRepoStats(token?: string): Promise<RepoStats> {
+  if (isProductionBuild()) return readRepoStatsSnapshot();
+
+  try {
+    const [repoRes, contribRes, releaseRes] = await Promise.all([
+      fetch(`${GH}/repos/${REPO}`, { headers: headers(token), signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS), next: { revalidate: 1800 } }),
+      fetch(`${GH}/repos/${REPO}/contributors?per_page=1&anon=true`, {
+        headers: headers(token), signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
+        next: { revalidate: 3600 },
+      }),
+      fetch(`${GH}/repos/${REPO}/releases/latest`, { headers: headers(token), signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS), next: { revalidate: 3600 } }),
+    ]);
+
+    const repo = repoRes.ok ? await repoRes.json().catch(() => null) : null;
+    const stars = numberField(repo, "stargazers_count");
+    const forks = numberField(repo, "forks_count");
+    const repoOpenCount = numberField(repo, "open_issues_count");
+    const contributors = contribRes.ok ? (lastPageFromLink(contribRes.headers.get("link")) ?? null) : null;
+
+    const prRes = await fetch(
+      `${GH}/search/issues?q=${encodeURIComponent(`repo:${REPO} is:pr is:open`)}&per_page=1`,
+      { headers: headers(token), signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS), next: { revalidate: 1800 } }
+    );
+    const prJson = prRes.ok ? ((await prRes.json().catch(() => null)) as { total_count?: unknown } | null) : null;
+    const openPulls = count(prJson?.total_count);
+    const openIssues = repoOpenCount !== null && openPulls !== null ? Math.max(0, repoOpenCount - openPulls) : null;
+
+    let latestRelease: RepoStats["latestRelease"];
+    if (releaseRes.ok) {
+      const r = (await releaseRes.json().catch(() => null)) as { tag_name?: string; published_at?: string; html_url?: string } | null;
+      if (r && typeof r.tag_name === "string" && typeof r.published_at === "string" && typeof r.html_url === "string") {
+        latestRelease = { tag: r.tag_name, publishedAt: r.published_at, url: r.html_url };
+      }
+    }
+
+    if (stars === null) return UNKNOWN_STATS;
+    return {
+      stars: stars === 0 ? null : stars,
+      forks,
+      openIssues,
+      openPulls,
+      contributors,
+      latestRelease,
+      fetchedAt: new Date().toISOString(),
+      source: "live",
+    };
+  } catch {
+    return UNKNOWN_STATS;
+  }
 }
 
-async function contributorCount(res: Response): Promise<number> {
-  if (!res.ok) return MIN_KNOWN_CONTRIBUTORS;
-
-  const fromLink = lastPageFromLink(res.headers.get("link"));
-  if (fromLink) return Math.max(fromLink, MIN_KNOWN_CONTRIBUTORS);
-
-  const body = await res.json().catch(() => null);
-  if (Array.isArray(body)) return Math.max(body.length, MIN_KNOWN_CONTRIBUTORS);
-
-  return MIN_KNOWN_CONTRIBUTORS;
+function numberField(body: unknown, key: string): number | null {
+  if (!body || typeof body !== "object") return null;
+  return count((body as Record<string, unknown>)[key]);
 }
 
 export function lastPageFromLink(link: string | null): number | undefined {
