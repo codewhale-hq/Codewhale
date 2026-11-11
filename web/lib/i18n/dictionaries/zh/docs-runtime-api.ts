@@ -8,7 +8,7 @@ export const docsRuntimeApi: DocsRuntimeApiDict = {
   bodyClassName: "text-ink-soft leading-[1.9] tracking-wide",
   title: "用 Runtime API 自动化",
   lede:
-    "单次任务可使用 `codewhale exec`；本教程演示如何通过本地 Runtime API 创建线程并读取回合事件流。[完整源码候选版参考](/docs/runtime-reference) 介绍路由、请求字段、事件和兼容性限制。",
+    "单次任务可使用 `codewhale exec`；本教程演示如何通过本地 Runtime API 创建线程并读取回合事件流。[完整参考](/docs/runtime-reference)（由仓库 main 分支生成）介绍路由、请求字段、事件和兼容性限制。",
   sections: [
     {
       id: "exec",
@@ -30,7 +30,7 @@ codewhale exec --auto --sandbox workspace-write --output-format stream-json "upd
       title: "启动 Runtime API",
       blocks: [
         { p: "请使用具备 `curl`、`jq` 和 `openssl` 的 POSIX shell，以及支持 `app-server --http` 的 Codewhale 构建。在同一个终端中完成所有步骤，才能保留令牌、服务进程 id 和线程 id。" },
-        { note: "本教程描述尚未发布的 0.10.3 源码候选版本；请先运行 `codewhale --version` 核对版本。下方回合需要已连接的提供商，并按其正常规则计费；启动服务和检查 `/health` 不发送模型请求。" },
+        { note: "本页的命令均存在于已发布版本；请先运行 `codewhale --version` 核对版本。下方回合需要已连接的提供商，并按其正常规则计费；启动服务和检查 `/health` 不发送模型请求。" },
         {
           code: `export CODEWHALE_RUNTIME_TOKEN="$(openssl rand -hex 32)"
 codewhale app-server --http &
@@ -72,7 +72,7 @@ curl -fN "$API/v1/threads/$THREAD/events?since_seq=0" -H "$AUTH"`,
           ],
         },
         {
-          p: "[Runtime API 参考](/docs/runtime-reference) 展示规范源码，包括端点表、请求字段、事件封装和版本限制。",
+          p: "[Runtime API 参考](/docs/runtime-reference) 展示仓库 main 分支的契约，包括端点表、请求字段、事件封装和版本限制。",
         },
       ],
     },

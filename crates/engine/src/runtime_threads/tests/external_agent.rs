@@ -715,3 +715,395 @@ async fn an_abandoned_external_startup_stops_its_agent_inside_the_shutdown_barri
     );
     Ok(())
 }
+
+#[cfg(unix)]
+fn options_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/acp-options-agent.mjs")
+}
+
+#[cfg(unix)]
+fn received(workspace: &Path) -> Vec<Value> {
+    std::fs::read_to_string(workspace.join("options-received.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
+#[cfg(unix)]
+fn pid_alive(pid: u64) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(unix)]
+fn refusal_code(error: &anyhow::Error) -> Option<&'static str> {
+    error
+        .downcast_ref::<crate::fleet::agents::ExecutorUnavailable>()
+        .map(|refusal| refusal.code)
+}
+
+#[cfg(unix)]
+fn options_thread_request(workspace: &Path, model: &str) -> CreateThreadRequest {
+    let mut request = fixture_thread_request(workspace, "ask");
+    request.executor.as_mut().unwrap().config.model = Some(model.to_string());
+    request
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_options_probe_reports_the_agents_own_offer_and_leaves_no_process() -> Result<()> {
+    if !node_available().await {
+        return Ok(());
+    }
+    let _env = crate::test_support::lock_test_env();
+    let _fixture = crate::test_support::EnvVarGuard::set(FIXTURE_AGENT_ENV, options_fixture());
+    let _secret = crate::test_support::EnvVarGuard::set("CODEWHALE_TEST_SECRET", "must-not-travel");
+    let root = tempfile::tempdir()?;
+    let workspace = root.path().join("work");
+    std::fs::create_dir_all(&workspace)?;
+    let manager = test_manager(root.path().join("runtime"))?;
+
+    let options = manager
+        .external_agent_options(FIXTURE_AGENT_ID, &workspace)
+        .await?;
+    let json = serde_json::to_value(&options)?;
+    let controls: Vec<&str> = options.controls.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(
+        controls,
+        ["model", "config:effort", "config:verbose", "mode"]
+    );
+    let model = &options.controls[0];
+    assert_eq!(model.current.as_deref(), Some("model-a"));
+    let values: Vec<&str> = model.choices.iter().map(|c| c.value.as_str()).collect();
+    assert_eq!(values, ["model-a", "model-b", "model-c"]);
+    assert_eq!(
+        json["controls"][0]["write"]["method"],
+        "session/set_config_option"
+    );
+    assert_eq!(json["controls"][3]["write"]["method"], "session/set_mode");
+    let verbose = &options.controls[2];
+    assert_eq!(
+        verbose.unavailable.as_ref().map(|u| u.code),
+        Some("control_type_unsupported")
+    );
+    assert!(verbose.write.is_none());
+    assert_eq!(json["capabilities"]["prompt_image"], true);
+    assert_eq!(json["capabilities"]["fork_session"], true);
+    let action = |name: &str| {
+        json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["action"] == name)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(action("model_choice")["supported"], true);
+    assert_eq!(action("steering")["code"], "unsupported_control");
+    assert_eq!(action("images")["supported"], false);
+    assert_eq!(action("images")["agent_reports"], true);
+
+    let log = received(&workspace);
+    let pid = log[0]["pid"].as_u64().expect("the probe agent's pid");
+    assert!(!pid_alive(pid), "the probe's agent process was stopped");
+    assert!(log.iter().all(|entry| entry["method"] != "session/prompt"));
+    let dumped = std::fs::read_to_string(workspace.join("options-env.json"))?;
+    assert!(!dumped.contains("CODEWHALE_TEST_SECRET"));
+
+    let wrong = manager
+        .external_agent_options(FIXTURE_AGENT_ID, &workspace.join("missing"))
+        .await
+        .unwrap_err();
+    assert!(wrong.to_string().contains("unavailable"), "{wrong}");
+    let unknown = manager
+        .external_agent_options("nope", &workspace)
+        .await
+        .unwrap_err();
+    assert_eq!(refusal_code(&unknown), Some("unknown_agent"));
+
+    std::fs::write(
+        workspace.join("options-fixture.json"),
+        r#"{"auth_required":true}"#,
+    )?;
+    let unauthenticated = manager
+        .external_agent_options(FIXTURE_AGENT_ID, &workspace)
+        .await
+        .unwrap_err();
+    assert_eq!(refusal_code(&unauthenticated), Some("needs_sign_in"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_options_probe_ends_when_the_runtime_shuts_down() -> Result<()> {
+    if !node_available().await {
+        return Ok(());
+    }
+    let _env = crate::test_support::lock_test_env();
+    let _fixture = crate::test_support::EnvVarGuard::set(FIXTURE_AGENT_ENV, options_fixture());
+    let root = tempfile::tempdir()?;
+    let workspace = root.path().join("work");
+    std::fs::create_dir_all(&workspace)?;
+    std::fs::write(workspace.join("options-fixture.json"), r#"{"hang":true}"#)?;
+    let manager = test_manager(root.path().join("runtime"))?;
+    let probing = manager.clone();
+    let probe_workspace = workspace.clone();
+    let probe = tokio::spawn(async move {
+        probing
+            .external_agent_options(FIXTURE_AGENT_ID, &probe_workspace)
+            .await
+    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let pid = loop {
+        if let Some(pid) = received(&workspace)
+            .iter()
+            .find(|entry| entry["method"] == "session/new")
+            .and_then(|entry| entry["pid"].as_u64())
+        {
+            break pid;
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "the probe never reached session/new"
+        );
+        sleep(Duration::from_millis(20)).await;
+    };
+    assert!(pid_alive(pid));
+    manager.close_execution_admission().await;
+    let ended = tokio::time::timeout(Duration::from_secs(20), probe).await??;
+    assert!(ended.is_err());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while pid_alive(pid) {
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "the probe's agent outlived shutdown"
+        );
+        sleep(Duration::from_millis(50)).await;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_chosen_model_reaches_the_agent_survives_reopen_and_usage_is_agent_reported() -> Result<()>
+{
+    if !node_available().await {
+        return Ok(());
+    }
+    let _env = crate::test_support::lock_test_env();
+    let _fixture = crate::test_support::EnvVarGuard::set(FIXTURE_AGENT_ENV, options_fixture());
+    let root = tempfile::tempdir()?;
+    let workspace = root.path().join("work");
+    std::fs::create_dir_all(&workspace)?;
+    let manager = test_manager(root.path().join("runtime"))?;
+    let offered = manager
+        .external_agent_options(FIXTURE_AGENT_ID, &workspace)
+        .await?;
+    let chosen = &offered.controls[0].choices[1].value;
+    assert_eq!(chosen, "model-b");
+
+    let thread = manager
+        .create_thread(options_thread_request(&workspace, chosen))
+        .await?;
+    let turn = manager.start_turn(&thread.id, prompt("first")).await?;
+    let settled = wait_for_turn(&manager, &turn.id).await?;
+    assert_eq!(settled.status, RuntimeTurnStatus::Completed, "{settled:?}");
+    let detail = manager.get_thread_detail(&thread.id).await?;
+    let message = detail
+        .items
+        .iter()
+        .find(|item| item.kind == TurnItemKind::AgentMessage)
+        .and_then(|item| item.detail.clone())
+        .unwrap_or_default();
+    assert!(message.contains("model=model-b"), "{message}");
+
+    let usage: Vec<_> = events(&manager, &thread.id)
+        .await?
+        .into_iter()
+        .filter(|event| event.event == "turn.agent_usage")
+        .collect();
+    let window = usage
+        .iter()
+        .find(|event| event.payload["kind"] == "context_window")
+        .expect("a context window update");
+    assert_eq!(window.payload["used"], 1200);
+    assert_eq!(window.payload["size"], 200000);
+    let total = usage
+        .iter()
+        .find(|event| event.payload["kind"] == "turn_total")
+        .expect("a turn total");
+    assert_eq!(total.payload["source"], "agent reported");
+    assert_eq!(total.payload["cost"], "unknown");
+    assert_eq!(total.payload["tokens"]["total_tokens"], 150);
+    assert_eq!(total.payload["tokens"]["input_tokens"], 100);
+    assert_eq!(total.payload["context"]["used"], 1200);
+
+    assert!(manager.stop_external_agent(&thread.id).await?);
+    let reopened = manager.start_turn(&thread.id, prompt("second")).await?;
+    let settled = wait_for_turn(&manager, &reopened.id).await?;
+    assert_eq!(settled.status, RuntimeTurnStatus::Completed, "{settled:?}");
+    let log = received(&workspace);
+    let sets: Vec<_> = log
+        .iter()
+        .filter(|entry| entry["method"] == "session/set_config_option")
+        .collect();
+    assert_eq!(sets.len(), 2, "{log:?}");
+    assert!(sets.iter().all(|entry| entry["value"] == "model-b"));
+    assert_ne!(
+        sets[0]["pid"], sets[1]["pid"],
+        "a new agent process took the saved choice"
+    );
+    let prompts: Vec<_> = log
+        .iter()
+        .filter(|entry| entry["method"] == "session/prompt")
+        .collect();
+    assert_eq!(prompts.len(), 2);
+    assert!(log.iter().any(|entry| entry["method"] == "session/load"));
+    assert_eq!(prompts[1]["state"]["model"], "model-b");
+    assert_eq!(
+        manager
+            .store
+            .load_thread(&thread.id)?
+            .executor
+            .and_then(|record| record.model)
+            .as_deref(),
+        Some("model-b")
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_agent_that_reports_no_usage_says_unknown() -> Result<()> {
+    if !node_available().await {
+        return Ok(());
+    }
+    let _env = crate::test_support::lock_test_env();
+    let _fixture = crate::test_support::EnvVarGuard::set(FIXTURE_AGENT_ENV, options_fixture());
+    let root = tempfile::tempdir()?;
+    let workspace = root.path().join("work");
+    std::fs::create_dir_all(&workspace)?;
+    std::fs::write(
+        workspace.join("options-fixture.json"),
+        r#"{"no_usage":true}"#,
+    )?;
+    let manager = test_manager(root.path().join("runtime"))?;
+    let thread = manager
+        .create_thread(fixture_thread_request(&workspace, "ask"))
+        .await?;
+    let turn = manager.start_turn(&thread.id, prompt("quiet")).await?;
+    wait_for_turn(&manager, &turn.id).await?;
+    let events = events(&manager, &thread.id).await?;
+    let usage: Vec<_> = events
+        .iter()
+        .filter(|event| event.event == "turn.agent_usage")
+        .collect();
+    assert_eq!(usage.len(), 1, "{usage:?}");
+    assert_eq!(usage[0].payload["tokens"], "unknown");
+    assert_eq!(usage[0].payload["context"], "unknown");
+    assert_eq!(usage[0].payload["source"], "none");
+    assert_eq!(usage[0].payload["cost"], "unknown");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_stale_or_withdrawn_choice_is_refused_before_any_prompt() -> Result<()> {
+    if !node_available().await {
+        return Ok(());
+    }
+    let _env = crate::test_support::lock_test_env();
+    let _fixture = crate::test_support::EnvVarGuard::set(FIXTURE_AGENT_ENV, options_fixture());
+    let root = tempfile::tempdir()?;
+    let workspace = root.path().join("work");
+    std::fs::create_dir_all(&workspace)?;
+    let manager = test_manager(root.path().join("runtime"))?;
+
+    let invented = manager
+        .create_thread(options_thread_request(&workspace, "model-z"))
+        .await?;
+    let error = manager
+        .start_turn(&invented.id, prompt("never"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refusal_code(&error),
+        Some("choice_not_offered"),
+        "{error:#}"
+    );
+
+    std::fs::write(
+        workspace.join("options-fixture.json"),
+        r#"{"withdraw":["model-b"]}"#,
+    )?;
+    let withdrawn = manager
+        .create_thread(options_thread_request(&workspace, "model-b"))
+        .await?;
+    let error = manager
+        .start_turn(&withdrawn.id, prompt("never"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refusal_code(&error),
+        Some("choice_not_offered"),
+        "{error:#}"
+    );
+
+    let log = received(&workspace);
+    assert!(log.iter().all(|entry| entry["method"] != "session/prompt"));
+    assert!(
+        log.iter()
+            .all(|entry| entry["method"] != "session/set_config_option")
+    );
+    for pid in log.iter().filter_map(|entry| entry["pid"].as_u64()) {
+        assert!(!pid_alive(pid), "a refused setup left agent {pid} running");
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn per_turn_controls_an_agent_cannot_honor_are_typed_refusals() -> Result<()> {
+    if !node_available().await {
+        return Ok(());
+    }
+    let _env = crate::test_support::lock_test_env();
+    let _fixture = crate::test_support::EnvVarGuard::set(FIXTURE_AGENT_ENV, options_fixture());
+    let root = tempfile::tempdir()?;
+    let workspace = root.path().join("work");
+    std::fs::create_dir_all(&workspace)?;
+    let manager = test_manager(root.path().join("runtime"))?;
+    let thread = manager
+        .create_thread(fixture_thread_request(&workspace, "ask"))
+        .await?;
+    for request in [
+        StartTurnRequest {
+            allowed_tools: Some(Vec::new()),
+            ..prompt("x")
+        },
+        StartTurnRequest {
+            model: Some("model-b".to_string()),
+            ..prompt("x")
+        },
+        StartTurnRequest {
+            reasoning_effort: Some("high".to_string()),
+            ..prompt("x")
+        },
+    ] {
+        let error = manager.start_turn(&thread.id, request).await.unwrap_err();
+        assert_eq!(
+            refusal_code(&error),
+            Some("unsupported_control"),
+            "{error:#}"
+        );
+    }
+    assert!(
+        received(&workspace).is_empty(),
+        "no agent was started for a refused turn"
+    );
+    Ok(())
+}

@@ -32,6 +32,8 @@ const sourceCommittedAt =
   (sourceRevision ? git(["show", "-s", "--format=%cI", sourceRevision]) : null) ||
   "";
 
+const factsGeneratedAt = new Date().toISOString();
+
 // Security headers are set in middleware.ts (more reliable under OpenNext on
 // Cloudflare than next.config.ts headers(), which doesn't always apply to
 // prerendered/cached responses).
@@ -45,6 +47,7 @@ const nextConfig: NextConfig = {
   env: {
     NEXT_PUBLIC_CODEWHALE_SOURCE_REVISION: sourceRevision,
     NEXT_PUBLIC_CODEWHALE_SOURCE_COMMITTED_AT: sourceCommittedAt,
+    NEXT_PUBLIC_CODEWHALE_FACTS_GENERATED_AT: factsGeneratedAt,
   },
   images: {
     remotePatterns: [

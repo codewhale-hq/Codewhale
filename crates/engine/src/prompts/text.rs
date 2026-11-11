@@ -75,9 +75,11 @@ Never present a partial result as the whole. An honest "not done" beats a
 polished "done".
 
 ### Tools
-Use `edit`/`write` for changes and read a file before editing it. For inspection
-and search, `bash`, `read`, `grep_files`, and `file_search` are all fine — use
-whichever gets the answer in one call. Skills: call `load_skill` with
+Use only tools offered in the current request; do not invent missing tool names.
+Use `tool_search`, when offered, to discover additional tools. When available,
+use `edit`/`write` for changes and read a file before editing it. For inspection
+and search, choose an offered tool that gets the answer in one call.
+The following controls apply only when offered. Skills: call `load_skill` with
 `name="list"` or `query="..."` to find one, then load it by name before starting
 that work. Independent parts go to `agent` children together; never poll for
 results. Use `create_goal` for a verifiable end state over multiple turns.

@@ -14,14 +14,11 @@ import type { ChromeDict } from "../types";
  */
 export const chrome: ChromeDict = {
   navDocs: "التوثيق",
-  navStart: "البداية",
-  navInstall: "التثبيت",
-  navFaq: "الأسئلة الشائعة",
-  navCommunity: "المجتمع",
   navContribute: "المساهمة",
+  navSignIn: "تسجيل الدخول",
+  navDesktop: "سطح المكتب",
 
   navFeatures: "القدرات",
-  navProduct: "المنتج",
   navModels: "النماذج",
   navPlugins: "الإضافات",
 
@@ -36,6 +33,7 @@ export const chrome: ChromeDict = {
 
   menuOpen: "افتح القائمة",
   menuClose: "أغلق القائمة",
+  translationMachineDraft: "هذه الترجمة مسودة آلية ولم يراجعها بعد متحدث أصلي.",
 
   themeAuto: "تلقائي",
   themeLight: "فاتح",
@@ -43,20 +41,17 @@ export const chrome: ChromeDict = {
   themeAria: "السمة: {mode} (انقر للتبديل)",
   themeTitle: "السمة · تلقائي / فاتح / داكن",
 
-  footerTagline: "استخدم أي نموذج عبر وكيل يمكنك قراءته.",
   footerProduct: "المنتج",
   footerProject: "المشروع",
   footerDocs: "التوثيق",
   footerGuide: "البداية",
   footerInstall: "التثبيت",
-  footerApps: "سطح المكتب والويب",
   footerModels: "النماذج",
-  footerRuntime: "Runtime",
   footerFaq: "الأسئلة الشائعة",
-  footerIssues: "Issues",
   footerContribute: "المساهمة",
   footerRoadmap: "خارطة الطريق",
   footerLicense: "رخصة MIT",
+  footerMerch: "منتجات الدعم",
   footerTerms: "شروط الخدمة",
   footerPrivacy: "الخصوصية",
   footerChangelog: "سجل التغييرات",
@@ -69,4 +64,20 @@ export const chrome: ChromeDict = {
   switcherLabel: "اللغة",
   switcherSwitchTo: "التبديل إلى {label}",
   partialBadge: "(جزئي)",
+
+  stateReleased: "تم الإصدار",
+  stateAvailable: "متاح",
+  stateBeta: "تجريبي",
+  stateDev: "نسخة تطوير",
+  stateOpen: "مفتوح",
+  stateInviteOnly: "بدعوة فقط",
+  stateNotOpen: "لم يُفتح بعد",
+  stateNotPublic: "غير متاح للعامة",
+  stateInSource: "في الشيفرة المصدرية، ولم يصدر بعد",
+  numbersAsOf: "اعتبارًا من {date}",
+  downloadMacos: "تنزيل لنظام macOS",
+  downloadVersion: "الإصدار {version}",
+  downloadSize: "الحجم {size}",
+  downloadChecksum: "المجموع الاختباري SHA-256",
+  downloadSigned: "موقّع وموثّق",
 };

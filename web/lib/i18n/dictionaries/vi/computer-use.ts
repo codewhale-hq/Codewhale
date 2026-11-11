@@ -42,7 +42,7 @@ export const computerUse: ComputerUseDict = {
   connectVersion: "Codewhale 0.10.2 tích hợp một plugin Computer Use cũ. Cài mục trong danh mục không nâng cấp plugin đó. Hãy kết nối trực tiếp với ứng dụng trợ giúp Mac đã cài qua MCP.",
   connectLimit: "Kết nối MCP trực tiếp thêm công cụ nhưng không thêm kỹ năng của plugin. Không dùng đồng thời với plugin tích hợp cũ. Nếu plugin đó đang bật, hãy chạy /plugin disable computer-use trước.",
   connectRuntime: "Ứng dụng có sẵn Node, không cần cài riêng. Nếu cài ở nơi khác, đặt APP thành đường dẫn thực tế của gói ứng dụng.",
-  connectReload: "Trong phiên terminal đang chạy, chạy /mcp reload, chuyển sang Operate rồi yêu cầu:",
+  connectReload: "Trong phiên terminal đang chạy, chạy /mcp reload rồi yêu cầu:",
   connectPrompt: "Kiểm tra quyền Computer Use bằng request_access. Không gửi thao tác nhập liệu.",
   connectExpected: "Kiểm tra via: app, phiên bản ứng dụng trợ giúp và các quyền còn thiếu trong phản hồi. Nếu thiếu ứng dụng trợ giúp, hãy dừng lại và làm theo hướng dẫn thiết lập. Bước này chỉ kiểm tra kết nối và quyền.",
   connectGuide: "Hướng dẫn thiết lập MCP",

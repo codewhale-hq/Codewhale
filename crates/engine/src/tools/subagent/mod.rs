@@ -1909,6 +1909,7 @@ pub struct SubAgentSpawnOptions {
     pub preserve_runtime_profile: Option<WorkerRuntimeProfile>,
     /// Workflow run that owns this child; recorded on the worker spec.
     pub workflow_run_id: Option<String>,
+    pub reserved_agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -10172,13 +10173,23 @@ impl SubAgentManager {
             runtime.model = model.to_string();
         }
         let effective_model = runtime.model.clone();
-        let agent_id = loop {
-            let candidate = format!("agent_{}", &Uuid::new_v4().to_string()[..8]);
-            if !self.agents.contains_key(&candidate)
-                && !self.worker_records.contains_key(&candidate)
-            {
-                break candidate;
+        let agent_id = match options.reserved_agent_id.clone() {
+            Some(reserved) => {
+                if self.agents.contains_key(&reserved)
+                    || self.worker_records.contains_key(&reserved)
+                {
+                    return Err(anyhow!("Reserved agent id {reserved} is already in use"));
+                }
+                reserved
             }
+            None => loop {
+                let candidate = format!("agent_{}", &Uuid::new_v4().to_string()[..8]);
+                if !self.agents.contains_key(&candidate)
+                    && !self.worker_records.contains_key(&candidate)
+                {
+                    break candidate;
+                }
+            },
         };
         let identity = ChildActivationIdentity {
             owner_session_id: runtime.context.state_namespace.clone(),
@@ -10355,6 +10366,7 @@ impl SubAgentManager {
             None
         };
         let durable_registration = public_child_id.is_some()
+            || options.reserved_agent_id.is_some()
             || write_capable
             || runtime_origin_turn_id.is_some()
             || continuation_from.is_some()
@@ -15926,8 +15938,10 @@ async fn spawn_subagent_from_input(
     verified_posture_denials: bool,
     workflow_identity: Option<&WorkflowTaskSpawnIdentity>,
     response_schema: Option<Value>,
-    member_roster: Option<&crate::fleet::roster::FleetRoster>,
+    member: Option<(&crate::fleet::roster::FleetRoster, Option<&str>)>,
 ) -> Result<(SubAgentResult, WorkflowTaskSpawnMetadata), ToolError> {
+    let member_roster = member.map(|(roster, _)| roster);
+    let reserved_agent_id = member.and_then(|(_, agent_id)| agent_id.map(str::to_string));
     let exact_fleet_binding =
         workflow_identity.and_then(|identity| identity.exact_fleet_binding.as_ref());
     if start_requests_read_only_role(&input) {
@@ -16324,6 +16338,7 @@ async fn spawn_subagent_from_input(
         claim_pre_namespaced: false,
         preserve_runtime_profile: None,
         workflow_run_id: workflow_identity.map(|identity| identity.workflow_run_id.clone()),
+        reserved_agent_id,
     };
     let spawn_owner = manager.clone();
     let result = codewhale_runtime::runtime_control::owner_work(move || {
@@ -23709,6 +23724,7 @@ pub struct FleetMemberStart {
     pub member_id: String,
     pub display_name: String,
     pub prompt: String,
+    pub reserved_agent_id: Option<String>,
 }
 
 pub async fn start_fleet_member(
@@ -23764,7 +23780,7 @@ pub async fn start_fleet_member(
         false,
         None,
         None,
-        Some(&roster),
+        Some((&roster, start.reserved_agent_id.as_deref())),
     )
     .await
     .map_err(|error| error.to_string())?;

@@ -7,7 +7,8 @@ import { PageHeader } from "@/components/page-header";
 import { getMerchCopy, MERCH_LANGUAGES } from "@/lib/content/contributor-merch";
 import { contributorCost, CONTRIBUTOR_CATALOG_SOURCE, validateContributorIdentity, type IdentityError } from "@/lib/contributor-merch";
 import { MerchCheckout } from "@/components/merch-storefront";
-import { countryLabel, getStorefrontCopy } from "@/lib/content/merch-storefront";
+import { getStorefrontCopy } from "@/lib/content/merch-storefront";
+import { useCountryLabel } from "./use-country-label";
 import { MERCH_COUNTRIES, MERCH_SIZES } from "@/lib/merch/catalog";
 import checkoutStyles from "./merch-storefront.module.css";
 import styles from "./contributor-merch.module.css";
@@ -25,6 +26,7 @@ export function ContributorMerch({ locale }: { locale: string }) {
   const githubInput = useRef<HTMLInputElement>(null);
   const contributionInput = useRef<HTMLInputElement>(null);
   const d = getMerchCopy(language);
+  const labelCountry = useCountryLabel(language);
   const flow = getStorefrontCopy(language);
   const cost = contributorCost();
   const format = (value: number) => new Intl.NumberFormat(language, { style: "currency", currency: "CNY" }).format(value);
@@ -79,7 +81,7 @@ export function ContributorMerch({ locale }: { locale: string }) {
             <label htmlFor="merch-contribution">{d.url}</label>
             <input id="merch-contribution" name="contribution" ref={contributionInput} value={contribution} maxLength={2048} placeholder="https://github.com/codewhale-hq/CodeWhale/pull/…" autoComplete="off" autoCapitalize="none" spellCheck={false} dir="ltr" aria-invalid={error === "badUrl"} aria-describedby={error ? "merch-error" : undefined} onChange={(e) => { setContribution(e.target.value); reset(); }} />
             <div className={styles.pair}>
-              <div><label htmlFor="merch-destination">{d.destination}</label><select id="merch-destination" value={destination} onChange={(e) => { setDestination(e.target.value); reset(); }}>{MERCH_COUNTRIES.map((c) => <option key={c.code} value={c.code}>{countryLabel(c.code, c.name, language)}</option>)}</select></div>
+              <div><label htmlFor="merch-destination">{d.destination}</label><select id="merch-destination" value={destination} onChange={(e) => { setDestination(e.target.value); reset(); }}>{MERCH_COUNTRIES.map((c) => <option key={c.code} value={c.code}>{labelCountry(c.code, c.name)}</option>)}</select></div>
               <div><label htmlFor="merch-size">{d.size}</label><select id="merch-size" value={size} onChange={(e) => { setSize(e.target.value); reset(); }}>{MERCH_SIZES.map((v) => <option key={v}>{v}</option>)}</select></div>
             </div>
             {error ? <p role="alert" id="merch-error" className={styles.error}>{d[error]}</p> : null}

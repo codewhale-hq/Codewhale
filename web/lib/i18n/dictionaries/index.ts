@@ -1,7 +1,5 @@
 import { docsClaudeCode as enDocsClaudeCode } from "./en/docs-claude-code";
 import { docsClaudeCode as zhDocsClaudeCode } from "./zh/docs-claude-code";
-import { enterprise as enEnterprise, type EnterpriseDict } from "./en/enterprise";
-import { enterprise as zhEnterprise } from "./zh/enterprise";
 import { docsSkills as enDocsSkills } from "./en/docs-skills";
 import { docsSkills as zhDocsSkills } from "./zh/docs-skills";
 /**
@@ -23,7 +21,6 @@ import type {
   ChromeDict,
   ContributeDict,
   ConstitutionDict,
-  RuntimeDict,
   ComputerUseDict,
   DocsAuthDict,
   DocsConfigurationDict,
@@ -46,7 +43,6 @@ import type {
   HomeDict,
   FeaturesDict,
   DocsPageDict,
-  DigestDict,
   FeedDict,
   CommunityDict,
   FaqDict,
@@ -137,8 +133,6 @@ import { legalTerms as enLegalTerms } from "./en/legal-terms";
 import { legalTerms as zhLegalTerms } from "./zh/legal-terms";
 import { legalPrivacy as enLegalPrivacy } from "./en/legal-privacy";
 import { legalPrivacy as zhLegalPrivacy } from "./zh/legal-privacy";
-import { digest as enDigest } from "./en/digest";
-import { digest as zhDigest } from "./zh/digest";
 import { feed as enFeed } from "./en/feed";
 import { feed as zhFeed } from "./zh/feed";
 import { community as enCommunity } from "./en/community";
@@ -183,8 +177,6 @@ import { roadmap as arRoadmap } from "./ar/roadmap";
 import { contribute as arContribute } from "./ar/contribute";
 import { constitution as enConstitution } from "./en/constitution";
 import { constitution as zhConstitution } from "./zh/constitution";
-import { runtime as enRuntime } from "./en/runtime";
-import { runtime as zhRuntime } from "./zh/runtime";
 import { chrome as zhChrome } from "./zh/chrome";
 import { home as zhHome } from "./zh/home";
 import { chrome as jaChrome } from "./ja/chrome";
@@ -401,10 +393,6 @@ const LEGAL_PRIVACY: Record<string, LegalPrivacyDict> = {
   zh: zhLegalPrivacy,
 };
 
-const DIGEST: Record<string, DigestDict> = {
-  zh: zhDigest,
-};
-
 const FEED: Record<string, FeedDict> = {
   zh: zhFeed,
 };
@@ -459,10 +447,6 @@ const CONTRIBUTE: Record<string, ContributeDict> = {
 
 const CONSTITUTION: Record<string, ConstitutionDict> = {
   zh: zhConstitution,
-};
-
-const RUNTIME: Record<string, RuntimeDict> = {
-  zh: zhRuntime,
 };
 
 const FEATURES: Record<string, FeaturesDict> = {
@@ -599,10 +583,6 @@ export function getLegalPrivacy(locale: string): LegalPrivacyDict {
   return LEGAL_PRIVACY[locale] ?? enLegalPrivacy;
 }
 
-export function getDigest(locale: string): DigestDict {
-  return DIGEST[locale] ?? enDigest;
-}
-
 export function getFeed(locale: string): FeedDict {
   return FEED[locale] ?? enFeed;
 }
@@ -625,10 +605,6 @@ export function getContribute(locale: string): ContributeDict {
 
 export function getConstitution(locale: string): ConstitutionDict {
   return CONSTITUTION[locale] ?? enConstitution;
-}
-
-export function getRuntime(locale: string): RuntimeDict {
-  return RUNTIME[locale] ?? enRuntime;
 }
 
 /**
@@ -671,14 +647,12 @@ export const EN_STATES = enStates;
 export const EN_CHANGELOG = enChangelog;
 export const EN_LEGAL_TERMS = enLegalTerms;
 export const EN_LEGAL_PRIVACY = enLegalPrivacy;
-export const EN_DIGEST = enDigest;
 export const EN_FEED = enFeed;
 export const EN_COMMUNITY = enCommunity;
 export const EN_FAQ = enFaq;
 export const EN_ROADMAP = enRoadmap;
 export const EN_CONTRIBUTE = enContribute;
 export const EN_CONSTITUTION = enConstitution;
-export const EN_RUNTIME = enRuntime;
 
 /** Interpolate `{name}` tokens in a dictionary template. Unknown tokens are
  * left intact so a template/variable drift is visible in review, not silent. */
@@ -702,10 +676,6 @@ export function splitToken(template: string, token: string): string[] {
 
 export function getDocsSkills(locale: string): DocsPageDict {
   return locale === "zh" ? zhDocsSkills : enDocsSkills;
-}
-
-export function getEnterprise(locale: string): EnterpriseDict {
-  return locale === "zh" ? zhEnterprise : enEnterprise;
 }
 
 export function getDocsClaudeCode(locale: string): DocsPageDict {

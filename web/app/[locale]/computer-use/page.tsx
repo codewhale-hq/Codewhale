@@ -7,6 +7,7 @@ import { buildPageMetadata } from "@/lib/page-meta";
 import { COMPUTER_USE_REPO, getComputerUseRelease } from "@/lib/computer-use-release";
 import { getEnv } from "@/lib/kv";
 import { FACTS } from "@/lib/facts.generated";
+import { EnglishText, FallbackRegion } from "@/components/fallback-region";
 
 const BUNDLED_CU_CAVEAT_VERSION = "0.10.2";
 
@@ -36,7 +37,7 @@ export default async function ComputerUsePage({ params }: { params: Promise<{ lo
   const primary = release.status === "ready" ? (release.dmg ?? { downloadUrl: release.downloadUrl, size: release.size }) : null;
 
   return (
-    <>
+    <FallbackRegion path="/computer-use" locale={locale}>
       <PageHeader
         title={t.title}
         lede={t.lead}
@@ -112,7 +113,7 @@ codewhale mcp tools computer`}</pre>
           <p>{t.connectExpected}</p>
           <p className="status-line">
             <Link href={`/${locale}/docs/mcp`} className="link">{t.connectGuide}</Link>
-            <a href={`${COMPUTER_USE_REPO}/blob/main/README.md#codewhale-cli-setup`} className="link">Computer Use</a>
+            <a href={`${COMPUTER_USE_REPO}/blob/main/README.md#codewhale-cli-setup`} className="link"><EnglishText>Computer Use</EnglishText></a>
           </p>
         </Section>
 
@@ -159,6 +160,6 @@ codewhale mcp tools computer`}</pre>
           </div>
         </Section>
       </div>
-    </>
+    </FallbackRegion>
   );
 }

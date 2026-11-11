@@ -2,7 +2,7 @@ import type { DocsPageDict } from "../types";
 
 export const docsSkills: DocsPageDict = {
   metaTitle: "Manage skills · Codewhale Docs",
-  metaDescription: "Find, install and trust SKILL.md instruction packages. Control user and model invocation and import compatible Claude Code skills.",
+  metaDescription: "Find, install and trust SKILL.md instruction packages. Control user and model invocation and import compatible skill folders from other coding agents.",
   bodyClassName: "text-ink-soft leading-relaxed",
   title: "Manage reusable skills",
   lede: "Skills are SKILL.md instruction packages. Discover compatible folders, then review the source and trust before using a skill.",
@@ -57,7 +57,7 @@ export const docsSkills: DocsPageDict = {
   next: [
     {
       "href": "/docs/claude-code",
-      "label": "Move from Claude Code",
+      "label": "Bring your settings from another coding agent",
       "note": "Bring compatible skills and review a settings import."
     },
     {

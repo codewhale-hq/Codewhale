@@ -6,6 +6,7 @@ import { RatatuiProjectLinks } from "@/components/ratatui/project-links";
 import { getRatatuiCopy } from "@/lib/content/ratatui";
 import { buildPageMetadata } from "@/lib/page-meta";
 import { readCatalogue } from "@/lib/ratatui/catalogue";
+import { fallbackAttrs } from "@/lib/i18n/fallback";
 
 type PageParams = Promise<{ locale: string; component: string }>;
 
@@ -39,7 +40,7 @@ export default async function RatatuiComponentPage({ params }: { params: PagePar
   const family = catalogue.families.find((item) => item.id === entry.family);
 
   return (
-    <div className="ratatui-page">
+    <div className="ratatui-page" {...fallbackAttrs("/ratatui", locale)}>
       <PageHeader
         title={entry.title}
         lede={entry.description}

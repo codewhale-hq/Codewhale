@@ -3,7 +3,8 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
-import { getStorefrontCopy, countryLabel } from "@/lib/content/merch-storefront";
+import { getStorefrontCopy } from "@/lib/content/merch-storefront";
+import { useCountryLabel } from "./use-country-label";
 import { getMerchCopy } from "@/lib/content/contributor-merch";
 import { MERCH_PRODUCTS, MERCH_COUNTRIES, MERCH_SIZES, type MerchProductId } from "@/lib/merch/catalog";
 import type { Address, Quote as StoredQuote, QuoteInput } from "@/lib/merch/types";
@@ -34,13 +35,14 @@ export function MerchCheckout({ locale, productId, country, size, contributor, h
   const paymentStarted = useRef(false);
   const destination = country ?? ownCountry;
   const selectedSize = size ?? ownSize;
+  const labelCountry = useCountryLabel(locale);
   const payload = { productId, size: selectedSize, color: "White", quantity: 1, country: destination, address, ...(contributor ? { contributor } : {}) };
   const signature = JSON.stringify(payload);
   // Any edit, including contributor print text/identity, immediately invalidates the visible quote.
   const quote = quoted?.signature === signature ? quoted.quote : null;
   const ready = status?.checkoutConfigured === true && status.readyProductIds.includes(productId);
   const countryName = MERCH_COUNTRIES.find((c) => c.code === destination);
-  const displayCountry = countryLabel(destination, countryName?.name ?? destination, locale);
+  const displayCountry = labelCountry(destination, countryName?.name ?? destination);
   const errorMessage = (code: unknown, fallback: string) => code === "quote_expired" ? d.expired : code === "checkout_unavailable" ? d.notReady : code === "route_unavailable" || code === "product_unavailable" ? d.routeUnavailable : code === "try_later" ? d.tryLater : fallback;
   useEffect(() => {
     const controller = new AbortController();
@@ -94,7 +96,7 @@ export function MerchCheckout({ locale, productId, country, size, contributor, h
     <form onSubmit={review}>
       <fieldset disabled={busy !== null}>
         {!hideSelection ? <div className={styles.pair}>
-          <div className={styles.field}><label htmlFor={`${id}-country`}>{d.destination}</label><select id={`${id}-country`} value={destination} onChange={(event) => { setCountry(event.target.value); setError(""); }}>{MERCH_COUNTRIES.map((c) => <option key={c.code} value={c.code}>{countryLabel(c.code, c.name, locale)}</option>)}</select></div>
+          <div className={styles.field}><label htmlFor={`${id}-country`}>{d.destination}</label><select id={`${id}-country`} value={destination} onChange={(event) => { setCountry(event.target.value); setError(""); }}>{MERCH_COUNTRIES.map((c) => <option key={c.code} value={c.code}>{labelCountry(c.code, c.name)}</option>)}</select></div>
           <div className={styles.field}><label htmlFor={`${id}-size`}>{d.size}</label><select id={`${id}-size`} value={selectedSize} onChange={(event) => { setSize(event.target.value); setError(""); }}>{MERCH_SIZES.map((s) => <option key={s} value={s}>{s}</option>)}</select></div>
         </div> : <p><strong>{displayCountry}</strong> · {selectedSize}</p>}
         <p className={styles.note}>{d.white}</p>

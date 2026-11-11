@@ -92,6 +92,8 @@ describe("terminal capture", () => {
     expect(component).toContain('role="region"');
     expect(component).toContain("tabIndex={0}");
     expect(component).toContain('role="img"');
+    expect(component).toContain('dir="ltr"');
+    expect(component).toContain('lang="en"');
     expect(component).toContain("aria-label={label}");
   });
 });

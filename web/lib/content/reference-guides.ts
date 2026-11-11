@@ -1,7 +1,4 @@
-import { FACTS } from "../facts.generated";
 import type { LocalizedText } from "./vocabulary";
-
-const PUBLISHED_VERSION = FACTS.latestPublishedRelease?.version ?? FACTS.version;
 
 export const REFERENCE_GUIDES = [
   {
@@ -31,7 +28,8 @@ export const REFERENCE_GUIDES = [
 ] satisfies { slug: string; repoSource: string; title: LocalizedText; lead: LocalizedText; tutorial: string; tutorialLabel: LocalizedText }[];
 
 export const REFERENCE_GUIDE_COPY = {
-  scope: { en: `These documents follow the unpublished ${FACTS.version} source candidate, including behavior that may differ from v${PUBLISHED_VERSION}. Check your installed version and use its tagged documentation when needed.`, zh: `这些文档依据尚未发布的 ${FACTS.version} 源码候选版本编写，行为可能与 v${PUBLISHED_VERSION} 不同。请核对已安装版本，需要时使用对应标签下的文档。` },
+  scope: { en: "The document below is generated from the repository's main branch, so it can describe behavior that the published release ({tag}) does not have. Check your installed version and read the tagged document when you need the published behavior.", zh: "下方文档由仓库 main 分支生成，因此可能描述已发布版本（{tag}）尚不具备的行为。请核对已安装版本；需要已发布版本的行为时，请阅读对应标签下的文档。" },
+  published: { en: "Read this document as published in {tag}", zh: "阅读 {tag} 中发布的这份文档" },
   language: { en: "The complete reference below is rendered from the current English source. Its body has not been translated or reviewed in other languages.", zh: "下方完整参考内容由当前英文源码文档生成，正文尚未翻译为其他语言，也未完成相应语言审校。" },
   source: { en: "Read the source document", zh: "阅读源码文档" },
   revision: { en: "Inspect the source revision", zh: "查看来源版本" },

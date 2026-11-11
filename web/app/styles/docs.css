@@ -323,3 +323,10 @@
   background: var(--hover);
 }
 
+.release-truth.dotline {
+  font-size: var(--text-body);
+}
+
+.release-truth .release-truth-label {
+  font-size: inherit;
+}

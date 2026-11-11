@@ -2,19 +2,26 @@ import type { MetadataRoute } from "next";
 import { DOC_TOPICS } from "@/lib/docs-map";
 import { contentLocalesForPath } from "@/lib/i18n/content-locales";
 import { SITE_URL } from "@/lib/page-meta";
-import { readCatalogue } from "@/lib/ratatui/catalogue";
+import { REDIRECTED_ROUTES } from "@/lib/route-redirects";
 
-// Public, indexable routes (locale-prefixed). /admin and /api are
-// intentionally excluded; see app/robots.ts.
-const PATHS = ["", "/product", "/app", "/features", "/runtime", "/docs", "/faq", "/roadmap", "/enterprise", "/feed", "/digest", "/changelog", "/contribute", "/community", "/signin", "/legal/terms", "/legal/privacy"];
+const PATHS = ["", "/app", "/computer-use", "/docs", "/faq", "/changelog", "/contribute", "/ratatui", "/legal/terms", "/legal/privacy"];
+
+function buildTime(): Date {
+  const committed = Date.parse(process.env.NEXT_PUBLIC_CODEWHALE_SOURCE_COMMITTED_AT ?? "");
+  return new Date(Number.isFinite(committed) ? committed : Date.now());
+}
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const catalogue = readCatalogue();
-  const componentPaths = catalogue.entries.map((entry) => `/ratatui/${encodeURIComponent(entry.name)}`);
-  const docsPaths = DOC_TOPICS.filter((topic) => topic.hasPage).map((topic) => topic.sitePath ? `/${topic.sitePath}` : `/docs/${topic.slug}`);
-  return [...new Set([...PATHS, ...docsPaths]), "/computer-use", "/ratatui", ...componentPaths].flatMap((path) =>
+  const lastModified = buildTime();
+  const docsPaths = DOC_TOPICS
+    .filter((topic) => topic.hasPage)
+    .map((topic) => topic.sitePath ? `/${topic.sitePath}` : `/docs/${topic.slug}`);
+  const paths = [...new Set([...PATHS, ...docsPaths])]
+    .filter((path) => !REDIRECTED_ROUTES.includes(path.split("/")[1] ?? ""));
+  return paths.flatMap((path) =>
     contentLocalesForPath(path || "/").map((locale) => ({
       url: `${SITE_URL}/${locale}${path}`,
+      lastModified,
       alternates: {
         languages: Object.fromEntries(
           contentLocalesForPath(path || "/").map((l) => [

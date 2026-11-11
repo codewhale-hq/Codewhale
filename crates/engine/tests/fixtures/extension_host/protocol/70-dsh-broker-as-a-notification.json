@@ -1,0 +1,21 @@
+{
+  "direction": "host_to_core",
+  "valid": false,
+  "frame": {
+    "jsonrpc": "2.0",
+    "method": "dsh/broker",
+    "params": {
+      "owner": {
+        "plugin_id": "dsh-workspace-deps",
+        "generation": 3,
+        "owner_token": "5f0c6a3e9b2d4c1a8e7f60123456789a"
+      },
+      "ticket": "cwt.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "service": "workspace",
+      "method": "read",
+      "input": {
+        "path": "README.md"
+      }
+    }
+  }
+}

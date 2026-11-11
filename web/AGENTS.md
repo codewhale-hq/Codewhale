@@ -22,6 +22,8 @@ site.
   point GT at TUI locale packs.
 - Real-session media is owned by `lib/media-manifest.ts`. `pending` is the
   truthful state until the complete asset set passes manifest tests.
+- Review a change to the home headline or subhead against the churn rule in
+  `MESSAGING.md`: it needs a new decision and names the proof it retires.
 - `AGENT.md` (singular) documents maintainer-owned community automation. Do not
   expand its authority without Hunter.
 

@@ -114,9 +114,11 @@ mod account;
 mod auth;
 mod automations;
 mod avatars;
+mod builtin_commands;
 mod computer_display;
 mod context;
 mod diagnostics;
+mod external_agent_options;
 mod external_agents;
 mod git;
 mod jobs;
@@ -1619,6 +1621,7 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         worker_runtime: true,
         fleet_run_create: true,
         thread_fleet_members: true,
+        thread_fleet_member_durable_operations_v1: true,
         fleet_run_start: true,
         fleet_event_replay: true,
         fleet_event_stream: true,
@@ -3128,7 +3131,12 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/threads/{id}/context", get(context::get_thread_context))
         .route(
             "/v1/threads/{id}/members",
-            post(members::start_thread_member),
+            post(members::start_thread_member)
+                .layer(DefaultBodyLimit::max(members::MAX_MEMBER_REQUEST_BYTES)),
+        )
+        .route(
+            "/v1/threads/{id}/members/operations/{operation_key}",
+            get(members::get_member_operation),
         )
         .route("/v1/threads/{id}/plan", get(plans::get_thread_plan))
         .route("/v1/threads/{id}/todo", get(plans::get_thread_todo))
@@ -3277,6 +3285,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/skills", get(list_skills))
         .route("/v1/commands", get(list_commands))
         .route("/v1/threads/{id}/commands", post(run_thread_command))
+        .route(
+            "/v1/threads/{id}/commands/builtin",
+            post(builtin_commands::run_builtin_command),
+        )
         .route(
             "/v1/threads/{id}/commands/{operation_key}",
             get(get_thread_command).delete(cancel_thread_command),
@@ -3461,6 +3473,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/v1/agents/external",
             get(external_agents::list_external_agents),
+        )
+        .route(
+            "/v1/agents/external/{id}/options",
+            get(external_agent_options::get_external_agent_options),
         )
         .route("/v1/providers", get(list_providers))
         .route("/v1/providers/{id}/models", get(list_provider_models))
@@ -9211,14 +9227,13 @@ async fn preview_patch_undo_thread_turn(
         .iter()
         .map(|turn| turn.turn_id.clone())
         .collect();
-    let trusted = thread.trust_mode || thread.auto_approve;
     #[cfg(any(test, feature = "test-support"))]
     let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     let (result, paths) = tokio::task::spawn_blocking(move || {
         let _reservation = _reservation;
         #[cfg(any(test, feature = "test-support"))]
         let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
-        patch_undo_workspace_files_impl(&thread.workspace, &dropped_turns, trusted, true, None)
+        patch_undo_workspace_files_impl(&thread.workspace, &dropped_turns, true, None)
     })
     .await
     .map_err(|error| ApiError::internal(format!("Patch undo preview failed: {error}")))??;
@@ -9255,10 +9270,6 @@ async fn patch_undo_thread_turn(
         // Validate the selected turn/history before touching any file, so an invalid
         // undo request cannot leave a half-applied workspace.
         let prepared = prepare_patch_undo(&state, &id, &req).await?;
-        // File rollback is a workspace mutation, so it needs the trust the
-        // TUI's `/undo` requires. Read from the thread's own record: the
-        // client does not get to assert it.
-        let trusted = thread.trust_mode || thread.auto_approve;
         let workspace = thread.workspace.clone();
         // The restore points come from the dropped turns' own records, not
         // from the thread's saved-session binding or a scan of the shared
@@ -9270,7 +9281,7 @@ async fn patch_undo_thread_turn(
         let patch_result = tokio::task::spawn_blocking(move || {
             #[cfg(any(test, feature = "test-support"))]
             let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
-            patch_undo_workspace_files_impl(&workspace, &dropped_turns, trusted, false, req.expected_paths.as_deref()).map(|(result, _)| result)
+            patch_undo_workspace_files_impl(&workspace, &dropped_turns, false, req.expected_paths.as_deref()).map(|(result, _)| result)
         })
         .await
         .map_err(|e| ApiError::internal(format!("Patch undo task failed: {e}")))??;
@@ -9313,7 +9324,6 @@ const PATCH_UNDO_NO_RESTORE_POINT: &str = "restore_point_unavailable";
 const PATCH_UNDO_RESTORE_POINT_PRUNED: &str = "restore_point_pruned";
 const PATCH_UNDO_PATH_NOT_SNAPSHOTTED: &str = "path_not_snapshotted";
 const PATCH_UNDO_WORKSPACE_CHANGED: &str = "workspace_changed_since_turn";
-const PATCH_UNDO_UNTRUSTED: &str = "restore_requires_trust";
 const PATCH_UNDO_WORKSPACE_UNAVAILABLE: &str = "workspace_unavailable";
 
 /// One pre-turn → post-turn window of a dropped turn, resolved to the trees
@@ -9545,21 +9555,23 @@ fn no_restore_point(turn_id: &str, why: &str) -> ApiError {
 /// point, or a path changed since the turn is a `409` with a stable
 /// `error.code`, never a `201` that forks while the files stay changed.
 ///
-/// `trusted` mirrors the gate the TUI's `patch_undo()` applies
-/// (`yolo || trust_mode`), evaluated once a real change is known.
+/// # Posture
+///
+/// No trust mode or Full Access is required. Undo reverses only what the
+/// dropped turns' own tool calls wrote, and only while every such path still
+/// holds exactly the bytes the turn left; the same ownership and later-edit
+/// proofs refuse anything else, so the default posture cannot lose work the
+/// turn did not make.
 pub fn patch_undo_workspace_files(
     workspace: &FsPath,
     dropped_turns: &[codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots],
-    trusted: bool,
 ) -> Result<PatchUndoResult, ApiError> {
-    patch_undo_workspace_files_impl(workspace, dropped_turns, trusted, false, None)
-        .map(|(result, _)| result)
+    patch_undo_workspace_files_impl(workspace, dropped_turns, false, None).map(|(result, _)| result)
 }
 
 fn patch_undo_workspace_files_impl(
     workspace: &FsPath,
     dropped_turns: &[codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots],
-    trusted: bool,
     preview: bool,
     expected_paths: Option<&[String]>,
 ) -> Result<(PatchUndoResult, Vec<String>), ApiError> {
@@ -9814,17 +9826,6 @@ fn patch_undo_workspace_files_impl(
             },
             Vec::new(),
         ));
-    }
-
-    // Restoring is a workspace mutation. Gate it exactly where the TUI gates
-    // it — after a real, owned change is known — so the two surfaces cannot
-    // drift into "one refuses, the other half-undoes".
-    if !trusted {
-        return Err(ApiError::conflict(
-            "Refusing to undo workspace files outside trusted mode. \
-             Turn on /trust or switch this thread to Full Access, then undo again.",
-        )
-        .with_code(PATCH_UNDO_UNTRUSTED));
     }
 
     let paths: Vec<String> = to_restore

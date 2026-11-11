@@ -1,0 +1,30 @@
+[1m[38;5;221m[48;5;234m▎ [0m[38;5;255m[48;5;234mAdd a --json flag to ls.py so the tests pass, then run the tests.[39m
+[38;5;103m▏    [39m  [3m[38;5;109meach turn, so they include anything that wrote to the workspace during the turn, not only[0m[48;5;234m   [38;5;239m│
+[38;5;103m▏    [39m  [3m[38;5;109mCodewhale. They leave out what snapshots do not track: ignored and skipped paths[0m[48;5;234m            [38;5;239m│
+[38;5;103m▏    [39m  [3m[38;5;109m(.gitignore entries, .env, node_modules, target, and the like) and anything outside the[0m[48;5;234m     [38;5;239m│
+[38;5;103m▏    [39m  [3m[38;5;109mworkspace.[0m[48;5;234m                                                                                  [38;5;239m│
+[38;5;103m▏    [38;5;74m- [3m[38;5;109mLine counts: some file changes have no saved diff, so their +/- counts are not recorded.[0m[48;5;234m    [38;5;239m│
+[38;5;103m▏    [38;5;74m- [3m[38;5;109mTimestamps: a terminal session saves calls in order, not when each one ran.[0m[48;5;234m                 [38;5;239m│
+[39m                                                                                                   [38;5;239m│
+[39m                                                                                                   [38;5;239m│
+[1m[38;5;103mNote[0m[48;5;234m [3m[38;5;109mSession Cost:[0m[48;5;234m                                                                                 [38;5;239m│
+[38;5;103m▏    [3m[38;5;109m─────────────────────────────[0m[48;5;234m                                                                 [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mEstimated total: unknown[0m[48;5;234m                                                                      [38;5;239m│
+[38;5;103m▏    [39m                                                                                              [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mNo turn has an authoritative price in the selected currency.[0m[48;5;234m                                  [38;5;239m│
+[38;5;103m▏    [39m                                                                                              [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mThis is an estimate, not a bill: it is computed locally from provider-reported token usage[0m[48;5;234m    [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mand published rates, and can differ from your invoice.[0m[48;5;234m                                        [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mCovered: 0 of 1 money-metered turn(s) priced.[0m[48;5;234m                                                 [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mExcluded: 1 money-metered turn(s) had no authoritative price (billing basis unknown); their[0m[48;5;234m   [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mspend is missing from the total above.[0m[48;5;234m                                                        [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mAudited routes (redacted):[0m[48;5;234m                                                                    [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mprovider=custom identity=scripted_local model=scripted-demo surface=unclassified endpoint_[0m[48;5;234m    [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mfp=fc6e420923bfd229847108c13ac292d5e480427fea945d7cb657127eb4933424 billing_mode=unknown[0m[48;5;234m      [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mcurrency=unpriced[0m[48;5;234m                                                                             [38;5;80m┃
+[38;5;74m[48;5;235m╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│❯[39m [38;5;146mType a message…[39m                                                                                 [38;5;74m│
+│[39m                                                                                              [38;5;103m[·][39m [38;5;74m│
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+[39m[48;5;233m [1m[38;5;173m● ask · files: workspace (unenforced)[0m[38;5;103m[48;5;233m  Shift+Tab to change   [38;5;74mwork[38;5;103m (Tab)   [38;5;74mWork bar[38;5;103m (Ctrl+])[39m
+ [38;5;146mscripted_local · scripted-demo[38;5;103m   [38;5;109mcontext[39m [38;5;74m5%[38;5;103m   [38;5;146mcost: unknown (billing basis unknown)[38;5;103m   [38;5;109mttft[39m [38;5;146m397ms[39m

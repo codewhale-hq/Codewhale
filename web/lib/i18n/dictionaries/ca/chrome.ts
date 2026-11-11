@@ -19,14 +19,11 @@ import type { ChromeDict } from "../types";
  */
 export const chrome: ChromeDict = {
   navDocs: "Documentació",
-  navStart: "Començar",
-  navInstall: "Instal·lar",
-  navFaq: "PMF",
-  navCommunity: "Comunitat",
   navContribute: "Col·laborar",
+  navSignIn: "Inicia la sessió",
+  navDesktop: "Escriptori",
 
   navFeatures: "Capacitats",
-  navProduct: "Producte",
   navModels: "Models",
   navPlugins: "Plugins",
 
@@ -41,6 +38,7 @@ export const chrome: ChromeDict = {
 
   menuOpen: "Obre el menú",
   menuClose: "Tanca el menú",
+  translationMachineDraft: "Aquesta traducció és un esborrany automàtic que encara no ha revisat cap parlant nadiu.",
 
   themeAuto: "auto",
   themeLight: "clar",
@@ -48,20 +46,17 @@ export const chrome: ChromeDict = {
   themeAria: "Tema: {mode} (fes clic per canviar)",
   themeTitle: "Tema · auto / clar / fosc",
 
-  footerTagline: "Fes servir qualsevol model amb un agent que pots llegir.",
   footerProduct: "Producte",
   footerProject: "Projecte",
   footerDocs: "Documentació",
   footerGuide: "Primers passos",
   footerInstall: "Instal·lació",
-  footerApps: "Escriptori i web",
   footerModels: "Models",
-  footerRuntime: "Runtime",
   footerFaq: "PMF",
-  footerIssues: "Issues",
   footerContribute: "Col·laborar",
   footerRoadmap: "Full de ruta",
   footerLicense: "Llicència MIT",
+  footerMerch: "Productes",
   footerTerms: "Termes del servei",
   footerPrivacy: "Privadesa",
   footerChangelog: "Registre de canvis",
@@ -74,4 +69,20 @@ export const chrome: ChromeDict = {
   switcherLabel: "Llengua",
   switcherSwitchTo: "Canvia a {label}",
   partialBadge: "(parcial)",
+
+  stateReleased: "Publicat",
+  stateAvailable: "Disponible",
+  stateBeta: "Beta",
+  stateDev: "Versió de desenvolupament",
+  stateOpen: "Obert",
+  stateInviteOnly: "Només per invitació",
+  stateNotOpen: "Encara no obert",
+  stateNotPublic: "No públic",
+  stateInSource: "Al codi font, encara no publicat",
+  numbersAsOf: "A data de {date}",
+  downloadMacos: "Baixa per a macOS",
+  downloadVersion: "Versió {version}",
+  downloadSize: "Mida {size}",
+  downloadChecksum: "Suma de verificació SHA-256",
+  downloadSigned: "Signat i notaritzat",
 };

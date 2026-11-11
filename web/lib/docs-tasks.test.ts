@@ -67,7 +67,7 @@ describe("task-based docs index", () => {
       expect(t.searchNoMatches).toContain("{query}");
       expect(t.helpSource).toContain("{name}");
       expect(t.releasePublished).toContain("{tag}");
-      expect(t.releaseCandidate).toContain("{version}");
+      expect(t.releaseDescribes).toContain("{tag}");
     }
     expect(getDocsShell("zh").tasksHeading).not.toBe(EN_DOCS_SHELL.tasksHeading);
   });

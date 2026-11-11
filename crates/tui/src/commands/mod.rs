@@ -6,6 +6,7 @@
 //! module keeps registry construction, user-command precedence, and the
 //! fall-through behaviour.
 
+mod builtin_execution;
 mod config_group;
 mod config_host;
 mod config_main_host;
@@ -254,6 +255,19 @@ impl codewhale_engine::command_catalog::CommandCatalog for CommandTable {
                 unlisted: info.is_unlisted(),
             })
             .collect()
+    }
+
+    fn serves_builtin(&self, name: &str) -> bool {
+        builtin_execution::serves_builtin(name)
+    }
+
+    fn execute_builtin(
+        &self,
+        name: &str,
+        args: Option<&str>,
+        host: &codewhale_engine::command_catalog::BuiltinCommandHostSnapshot,
+    ) -> Option<codewhale_engine::command_catalog::BuiltinCommandExecution> {
+        builtin_execution::execute_builtin(name, args, host)
     }
 
     fn user_commands(

@@ -41,7 +41,7 @@ export const computerUse: ComputerUseDict = {
   connectVersion: "Codewhale 0.10.2 zawiera starszą wtyczkę Computer Use. Instalacja pozycji z katalogu jej nie aktualizuje. Połącz zainstalowaną aplikację pomocniczą Mac bezpośrednio przez MCP.",
   connectLimit: "Bezpośrednie połączenie MCP dodaje narzędzia bez umiejętności wtyczki. Nie używaj go równocześnie ze starszą wbudowaną wtyczką. Jeśli jest włączona, najpierw uruchom /plugin disable computer-use.",
   connectRuntime: "Aplikacja zawiera Node; osobna instalacja nie jest potrzebna. Jeśli jest zainstalowana gdzie indziej, ustaw APP na rzeczywistą ścieżkę pakietu aplikacji.",
-  connectReload: "W działającej sesji terminala uruchom /mcp reload, przełącz na Operate i poproś:",
+  connectReload: "W działającej sesji terminala uruchom /mcp reload i poproś:",
   connectPrompt: "Sprawdź uprawnienia Computer Use za pomocą request_access. Nie wysyłaj żadnych danych wejściowych.",
   connectExpected: "Sprawdź w odpowiedzi via: app, wersję aplikacji pomocniczej i brakujące uprawnienia. Jeśli aplikacji pomocniczej nie ma, zatrzymaj się i postępuj zgodnie ze wskazówką konfiguracji. To sprawdza tylko połączenie i uprawnienia.",
   connectGuide: "Instrukcja konfiguracji MCP",

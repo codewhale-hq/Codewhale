@@ -62,4 +62,26 @@ describe("usage-counting copy", () => {
       expect(privacy.includes(wording.en)).toBe(sent);
     },
   );
+
+  it("states how counts are keyed and which signals are honoured, and never calls them anonymous", () => {
+    const english = [privacy, USAGE_COUNTING_COPY.summary.en, USAGE_COUNTING_COPY.choice.en].join(" ");
+    const chinese = [USAGE_COUNTING_COPY.summary.zh, USAGE_COUNTING_COPY.choice.zh].join(" ");
+    for (const phrase of ["random install id", "90 days", "Global Privacy Control", "Do Not Track", "referrer", "not anonymous"]) {
+      expect(english, phrase).toContain(phrase);
+    }
+    for (const phrase of ["随机安装 id", "90 天", "Global Privacy Control", "Do Not Track", "来源", "匿名"]) {
+      expect(chinese, phrase).toContain(phrase);
+    }
+    for (const text of [english, chinese, JSON.stringify(USAGE_COUNTING_COPY.status)]) {
+      expect(text).not.toMatch(/plain totals|纯总数|Anonymous usage|匿名使用统计/);
+    }
+    expect(WEBSITE_USAGE_DISCLOSURE.title).not.toMatch(/anonymous/i);
+  });
+
+  it("names the program's off switches exactly", () => {
+    for (const text of [privacy, USAGE_COUNTING_COPY.elsewhere.en, USAGE_COUNTING_COPY.elsewhere.zh]) {
+      expect(text).toContain("codewhale config set telemetry false");
+      expect(text).toContain("CODEWHALE_TELEMETRY=0");
+    }
+  });
 });

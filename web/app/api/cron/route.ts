@@ -1,23 +1,20 @@
 import { NextResponse } from "next/server";
 import { getEnv } from "@/lib/kv";
-import {
-  runDigest,
-  type AgentEnv,
-} from "@/lib/community-agent-tasks";
+import type { AgentEnv } from "@/lib/community-agent-tasks";
 import { runFactsDrift } from "@/lib/facts-drift";
 import { runLinkCheck, runSemanticDrift } from "@/lib/content-watch";
 import { safeEqual } from "@/lib/community-agent";
 
 export const dynamic = "force-dynamic";
 
-const TASKS = ["digest", "facts-drift", "linkcheck", "semantic-drift"] as const;
+const TASKS = ["facts-drift", "linkcheck", "semantic-drift"] as const;
 type Task = (typeof TASKS)[number];
 
 /**
  * Manual trigger surface for community-agent tasks.
  *
  * Usage:
- *   GET /api/cron?task=digest
+ *   GET /api/cron?task=facts-drift
  *   Header: x-cron-secret: <CRON_SECRET>
  *
  * Real cron scheduling is handled by worker.ts's scheduled() handler.
@@ -66,9 +63,6 @@ export async function GET(req: Request) {
   try {
     let result: Record<string, unknown>;
     switch (task) {
-      case "digest":
-        result = await runDigest(agentEnv);
-        break;
       case "facts-drift":
         result = await runFactsDrift(watchEnv) as unknown as Record<string, unknown>;
         break;

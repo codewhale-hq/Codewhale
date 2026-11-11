@@ -10,14 +10,11 @@ import type { ChromeDict } from "../types";
  */
 export const chrome: ChromeDict = {
   navDocs: "Документація",
-  navStart: "Початок",
-  navInstall: "Встановлення",
-  navFaq: "Питання",
-  navCommunity: "Спільнота",
   navContribute: "Участь",
+  navSignIn: "Увійти",
+  navDesktop: "Десктоп",
 
   navFeatures: "Можливості",
-  navProduct: "Продукт",
   navModels: "Моделі",
   navPlugins: "Плагіни",
 
@@ -32,6 +29,7 @@ export const chrome: ChromeDict = {
 
   menuOpen: "Відкрити меню",
   menuClose: "Закрити меню",
+  translationMachineDraft: "Цей переклад є машинною чернеткою, яку ще не перевіряли носії мови.",
 
   themeAuto: "авто",
   themeLight: "світла",
@@ -39,20 +37,17 @@ export const chrome: ChromeDict = {
   themeAria: "Тема: {mode} (натисніть, щоб перемкнути)",
   themeTitle: "Тема · авто / світла / темна",
 
-  footerTagline: "Використовуйте будь-яку модель через агента, код якого можна прочитати.",
   footerProduct: "Продукт",
   footerProject: "Проєкт",
   footerDocs: "Документація",
   footerGuide: "З чого почати",
   footerInstall: "Встановлення",
-  footerApps: "Десктоп і веб",
   footerModels: "Моделі",
-  footerRuntime: "Рантайм",
   footerFaq: "Питання та відповіді",
-  footerIssues: "Проблеми",
   footerContribute: "Участь",
   footerRoadmap: "Дорожня карта",
   footerLicense: "Ліцензія MIT",
+  footerMerch: "Мерч",
   footerTerms: "Умови використання",
   footerPrivacy: "Приватність",
   footerChangelog: "Журнал змін",
@@ -65,4 +60,20 @@ export const chrome: ChromeDict = {
   switcherLabel: "Мова",
   switcherSwitchTo: "Перемкнути на {label}",
   partialBadge: "(частково)",
+
+  stateReleased: "Випущено",
+  stateAvailable: "Доступно",
+  stateBeta: "Бета",
+  stateDev: "Збірка для розробки",
+  stateOpen: "Відкрито",
+  stateInviteOnly: "Лише за запрошеннями",
+  stateNotOpen: "Ще не відкрито",
+  stateNotPublic: "Не опубліковано",
+  stateInSource: "Є у вихідному коді, ще не випущено",
+  numbersAsOf: "Станом на {date}",
+  downloadMacos: "Завантажити для macOS",
+  downloadVersion: "Версія {version}",
+  downloadSize: "Розмір {size}",
+  downloadChecksum: "Контрольна сума SHA-256",
+  downloadSigned: "Підписано й нотаризовано",
 };

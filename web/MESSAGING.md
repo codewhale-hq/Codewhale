@@ -1,74 +1,67 @@
 # Codewhale website positioning
 
-Reviewed November 6, 2026 Pacific. Current homepage and product copy follow
-this brief. Earlier competitive observations remain in Git history.
+The words below are the site's positioning. Pages arrange them; they do not
+rewrite them. Every locale carries the same words through the dictionary spine
+(`lib/i18n/dictionaries/<locale>/home.ts`). `COPY_STYLE.md` owns the voice.
 
-## What the live competitors actually present
+## The line
 
-| Site | What the page does | Lesson for Codewhale |
+**The model can be anyone's. The agent should be yours.**
+
+## The subhead
+
+Codewhale is becoming the open environment where you build software with many
+agents, on any model, on your own computer and in the cloud. It starts today in
+your terminal and your browser, open source and yours to read.
+
+The line under the install box reads "Version {version} is released, and it
+needs no account." The version comes from the published release.
+
+## The belief
+
+The model you use is usually someone else's. You rent it, and it changes under
+you. The agent is different. It reads your files, runs your commands, holds
+what you are working on and acts in your name, so it should belong to you.
+Codewhale is that agent. It is open source, so you can read every line of it,
+or ask it to read itself to you. It works with any model you choose, you decide
+what it may do without asking, and it leaves a record you can read. We are
+building it into one place where you and many agents make software together,
+from your terminal to a computer in the cloud, and it stays yours the whole way.
+
+## The six sections
+
+1. **Any model can work through your agent.** Use a built-in provider, any OpenAI-compatible endpoint or a model on your own machine, and change models between turns. Codewhale runs in your repository with no account, and `codewhale web` lets you work with it in your browser on your own machine.
+2. **Your agent answers to you.** You decide what Codewhale may do without asking, and its commands can run in a sandbox on macOS and Linux. Every session leaves a receipt of the files it changed, the commands it ran and who approved each step.
+3. **Several agents can share one task with you.** Codewhale splits a job across agents with roles such as explorer, implementer and reviewer, and you can watch, inspect and stop each one. A Fleet keeps a ledger, so a run can pick up again after a restart.
+4. **Here is where your agent is going.** Codewhale is becoming one environment across your terminal, a desktop app, the browser and cloud computers, all run by one engine, so your work can move between them and stay yours. Each part below says where it stands today.
+5. **Codewhale is built in the open by the people who use it.** It began as an open-source terminal tool for one model and became a project that hundreds of people in many languages build together. You can read its code, change it, or ask it to explain itself.
+6. **Make your agent yours today.** Install Codewhale and run it in a repository with a model key you already have or a model on your own computer. You need no account, and `codewhale update` keeps it current.
+
+## The whole product, labelled
+
+| Part | State | Sentence |
 | --- | --- | --- |
-| [OpenCode](https://opencode.ai/) | Names the category, shows desktop/terminal/mobile/SDK views, then models, integrations and contributor proof. | Show usable surfaces and the next action. Model choice is expected here. Do not offer our unfinished clients as downloads. |
-| [Pi](https://pi.dev/) | Leads with ownership and customization; demonstrates extensions, session history and workflows; packages connect use with contribution. | Show what people can adapt and share. A Markdown skill is an inviting first contribution. |
-| [Oh My Pi](https://omp.sh/) | Leads with built-in IDE tools, a copyable installer, provider marks and selectable feature demonstrations. | Sell a working capability, then show it. Avoid an undifferentiated feature list. |
-| [Aider](https://aider.chat/) | Establishes terminal pair programming, then shows the product, codebase/git/testing capabilities and installation. | Name the job and make trying it straightforward. |
-| [Cursor](https://cursor.com/) | Leads with building software and puts interface demonstrations beside feature claims. | Evidence should carry more weight than adjectives. |
-| [Claude Code](https://claude.com/product/claude-code) | Opens with recognizable tasks and steering/review across supported surfaces. | Use concrete jobs; distinguish shipping capability from our roadmap. |
+| Terminal app | Released | Install it on macOS, Linux or Windows and run `codewhale` in any repository. |
+| Local browser client | Released | Run `codewhale web` to read the conversation, send a task and answer approvals in your browser; it comes with the terminal and needs no account. |
+| Many agents on one task | Released | Sub-agents, Fleets and workflows let several agents share one task, each with its own role. |
+| Desktop app | In development, no download | We are building a desktop app on the same engine, and it has no public download yet. |
+| Cloud computers | Invite-only | Cloud computers are invite-only, and we are building them so a session can keep working on a machine in the cloud. |
+| One session across them | Being built | We are building one session that goes with you from the terminal to the desktop, the browser and the cloud, and stays yours the whole way. |
 
-These are presentation observations, not an independent evaluation of
-competitor quality, adoption or completeness.
+The map is headed "One engine". The four states are Released, In development,
+no download, Invite-only and Being built. A state is data, computed from the
+typed surface states and the release facts in `lib/content/product-map.ts`,
+never typed into a page. A part becomes Released on the day its tag and its
+download exist. A sentence is written for one state; when a state changes, the
+sentence changes with it. No dates anywhere.
 
-## The supported position
+## Churn rule
 
-**Use any model through an agent you can read.** (founder, 2026-11-10.) The model is the
-part nobody can inspect. Codewhale is the open-source agent between the reader
-and that model: it decides what is sent, which tools run and what is allowed,
-and its code can be read, or Codewhale can be asked to read its own code and
-explain it. An international community improves it with every release. The
-earlier headline, "An open-source agent for your computer", is retired.
-Codewhale combines a model-neutral local agent, coordinated model
-teams, reusable Workflows, connected tools and an independently released
-Computer Use plugin, with visible permissions and recorded execution.
-Do not claim competitors lack these capabilities.
+A change to the headline or subhead cites a new decision in CURRENT_DECISIONS
+and names the proof it retires. No alternative headline is tried in git.
 
-| Capability | Value to the reader | Owning evidence and limit |
-| --- | --- | --- |
-| Operate | Keep a larger objective moving through planning, delegation and verification. | v0.10.2 docs/MODES.md and crates/tui/src/runtime_handoff.rs; current crates/engine/src/runtime_handoff.rs. Same authority as Work. No hosted or always-on promise. |
-| Fleet | Choose different models for investigation, implementation and review, then save the roles. | v0.10.2 docs/FLEET.md. Model pins are explicit; configuration alone proves no quality or cost gain. |
-| Workflows | Connect steps, dependencies, parallel branches, review gates and results into a repeatable process. | Released Workflow tool/CLI and workflows/issue_audit.workflow.js. Some saved Fleet fields remain unsupported; link the guide. |
-| Skills and plugins | Teach a checklist or report format, then share it without changing Rust. | v0.10.2 docs/SKILLS.md and docs/PLUGIN_AUTHORING.md. Native ESM mods and DSH have separate experimental/candidate limits. |
-| Request preview and receipts | Inspect the next primary request and review recorded work and approvals. | v0.10.2 docs/PREVIEW_REQUEST.md, docs/RECEIPTS.md, docs/GUIDE.md. Coverage has limits; undo does not reverse external effects. |
-| Computer Use | Work in another Mac app while keeping your cursor and foreground app; use accessible controls or a separate browser profile. | [Published v0.16.1](https://github.com/codewhale-hq/codewhale-cu-plugin/releases/tag/v0.16.1), README and release checklist. Mac beta; Windows unsigned experimental preview; Linux experimental. Helper plus compatible MCP host connection. |
-| Terminal and local browser | Use files, commands, approvals and session history on your machine. | Released v0.10.2 docs/WEB.md, docs/GUIDE.md and feature registry. Native desktop and hosted web remain separate development surfaces. |
+## Translator note
 
-## The page's sequence
-
-1. Promise, brief category explanation, install command and contribution path.
-2. Real terminal gallery: conversation, workbar, delegated reviewer and models.
-   These captures are a local development demo with a deterministic provider,
-   not live-provider performance evidence.
-3. Show how one task grows into Operate, a Fleet and a reusable Workflow.
-4. Give Computer Use a dedicated section with practical background behavior
-   and accurate setup, rather than hiding it in a generic tools row.
-5. Explain model choice and current availability. Keep preview/source labels.
-6. Invite bugs, docs, translations, skills, code and testing on another setup.
-
-## Marketing habits to apply
-
-- Start with a recurring job and show the feature that helps.
-  [April Dunford's method](https://www.aprildunford.com/post/a-quickstart-guide-to-positioning)
-  connects alternatives, differentiated capabilities and value for a specific audience.
-- Make the category and next step clear. [Nielsen Norman Group](https://www.nngroup.com/articles/homepage-design-principles/)
-  recommends an understandable proposition and scannable content.
-- Make contribution part of use. [GitHub's community guide](https://opensource.guide/building-community/)
-  recommends clear, low-friction entry points. Its [contribution guide](https://opensource.guide/how-to-contribute/)
-  includes useful noncode work.
-- Publish verified examples: a parallel issue review, a reusable report
-  Workflow, or background Mac app work. State version and environment. Do
-  not substitute a synthetic animation for measured evidence.
-- Measure install completion, first useful task and first useful contribution
-  before claiming better conversion. This change establishes no conversion result.
-
-COPY_STYLE.md owns the voice. The existing Codewhale Moda kit supplies the
-restored ocean identity; shared type, spacing and motion remain in tokens.
-Do not invent customer logos, performance comparisons, spending guarantees or
-continuous-operation claims.
+"Yours" means owned and controlled by the reader, not merely assigned to them.
+Do not soften it to "for you". Commands, file names and product names stay in
+Latin script and unchanged.

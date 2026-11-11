@@ -65,9 +65,10 @@ still need an available release asset source.
 # 1. Install. Downloads two checksum-verified binaries into ~/.local/bin (no sudo).
 curl -fsSL https://codewhale.net/install.sh | sh
 
-# 2. Make sure ~/.local/bin is on your PATH, now and in future terminals.
-printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc    # zsh: use ~/.zshrc
-export PATH="$HOME/.local/bin:$PATH"
+# 2. The installer adds ~/.local/bin to your shell profile (it prints what it added and
+#    how to undo it; --no-modify-path skips that). Shells that are already open do not
+#    reread the profile, so use it in this one now, then check it.
+export PATH="$HOME/.local/bin:$PATH"; hash -r
 codewhale --version          # -> codewhale 0.10.0 (1be1a703b975)
 
 # 3. Give it a DeepSeek API key (from https://platform.deepseek.com/api_keys).
@@ -174,7 +175,10 @@ What it does (verified):
   verified release bytes as two separately managed files. When both manifest
   entries match, the download staging step uses a hard link when possible and
   a temporary copy otherwise.
-* It **never uses sudo and never edits your shell profile.** It refuses to
+* It **never uses sudo.** When the install directory is not on `PATH`, it appends one
+  marked three-line block to your shell profile (see [Put it on your
+  PATH](#put-it-on-your-path)), prints exactly what it added, and skips this with
+  `--no-modify-path`. It refuses to
   install into system or package-manager directories (`/usr/bin`,
   `~/.cargo/bin`, Homebrew and MacPorts bin directories, `node_modules`,
   `/nix/store`…), into your home directory or `/`, or into a directory that
@@ -195,13 +199,28 @@ Installed checksummed release commands:
   /home/you/.local/bin/codew
 …
 PATH selects no codewhale command; this install is /home/you/.local/bin/codewhale
-…
-Put /home/you/.local/bin first on PATH in future shells (run once; this installer does not edit shell profiles):
-  printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc
-The marker lines let codewhale uninstall remove exactly this block; a bare export line is yours and is never touched.
-Then run: . ~/.bashrc   (or open a new terminal)
-…
+
+codewhale is not on your PATH in this shell yet.
+Added to ~/.bashrc so new shells find codewhale (skip this with --no-modify-path):
+  # >>> codewhale PATH >>>
+  export PATH="$HOME/.local/bin:$PATH"
+  # <<< codewhale PATH <<<
+Only those three lines were added; nothing else in the file was changed. Shells that are already open do not reread the profile.
+To undo, run:
+  cw_tmp="$(mktemp)" && sed -e '/^# >>> codewhale PATH >>>$/{$!N;$!N;/\n# <<< codewhale PATH <<<$/d;}' ~/.bashrc > "$cw_tmp" && cat "$cw_tmp" > ~/.bashrc; rm -f "$cw_tmp"
+PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path
+
+Run this now, in this shell:
+  export PATH="$HOME/.local/bin:$PATH"; hash -r
+Then check it:
+  codewhale --version
 ```
+
+The PATH block is always the last thing the installer prints. When your PATH already
+selects the install, the last line is `Next: codewhale --version`. When the release you
+installed ships an `uninstall` command, the output also says that `codewhale uninstall`
+removes the added block; v0.10.2 has no uninstall command, so the printed `sed` command (or
+deleting the three marked lines by hand) is how you undo it there.
 
 ### macOS notes
 
@@ -222,31 +241,58 @@ Re-checked on macOS 26.1, Apple silicon (`macos-arm64`), with a fresh `HOME`:
 ### Put it on your PATH
 
 If the installer says `PATH selects no codewhale command`, `~/.local/bin` isn't
-on your PATH **in this shell**. The `codewhale.net/install.sh` installer then
-prints the matching line from the block below for your `$SHELL` (zsh, bash,
-fish, or a POSIX `sh`; for any other shell, or a directory name with quotes,
-`$`, backticks or backslashes, it tells you to add the directory yourself). It
-never edits a shell profile itself. The `install.sh` inside a release archive
-prints only the current-shell `export` line. On Ubuntu and Debian, `~/.profile` adds
-`~/.local/bin`, but only if the directory existed when you *logged in*. So:
+on your PATH **in this shell**. The `codewhale.net/install.sh` installer and, in release
+archives from 0.10.3 on, the `install.sh` inside the archive then add one marked three-line block to
+the profile of your `$SHELL` by default, print the file and the three lines, and
+print the command that removes them:
 
-* a new SSH or login shell picks it up automatically;
-* a new terminal **window** on a desktop (GNOME Terminal, Ghostty, …) usually
-  doesn't, until you log out and back in. I hit
-  `bash: codewhale: command not found` in Ghostty right after installing.
+| `$SHELL` | File edited |
+| --- | --- |
+| zsh | `~/.zshrc` (`$ZDOTDIR/.zshrc` when `ZDOTDIR` is set) |
+| bash on Linux | `~/.bashrc` |
+| bash on macOS | the first that exists of `~/.bash_profile`, `~/.bash_login`, `~/.profile` (else `~/.bash_profile`) |
+| sh, dash, ksh, ash | `~/.profile` |
 
-Fix it once:
+Only those three lines are appended (after a newline if the file did not end in one);
+no other line is rewritten or reordered. The installer does not edit anything when:
+
+* you pass `--no-modify-path` (or set `CODEWHALE_NO_MODIFY_PATH=1`); with the web installer
+  write `curl -fsSL https://codewhale.net/install.sh | sh -s -- --no-modify-path`. It then
+  prints the `printf` command for you to run yourself;
+* the install directory is already on `PATH`;
+* the profile is a symlink, is not a writable regular file, or its folder is missing. The
+  command is printed instead;
+* your shell is fish or another shell it has no profile for, `$SHELL` is empty, or the
+  directory name contains quotes, `$`, backticks or backslashes. The installer says what to
+  add yourself (`fish_add_path ~/.local/bin` for fish).
+
+The v0.10.2 release archive (what `releases/latest` serves until 0.10.3 ships) does
+not do this: its `install.sh` takes no options, never edits a profile and only prints the
+current-shell `export` line, and its `install.ps1` tells you to add the directory yourself.
+Run the `printf` line in the block below to add the same three lines by hand.
+
+Running the installer again never adds a second block: it sees the marker line and leaves
+the file as is. A profile change does not reach shells that are already open, so the
+installer's last lines give the `export` command for the current shell and `codewhale --version`.
+
+To undo it by hand, delete the three lines between and including the markers, or run the
+command the installer printed:
 
 ```bash
-printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc   # bash (macOS login bash: ~/.bash_profile, or ~/.profile if only that exists)
-# printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.zshrc  # zsh
-# fish_add_path ~/.local/bin                               # fish (untested on this VM)
-export PATH="$HOME/.local/bin:$PATH"; hash -r
+printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc   # what the installer appended (bash; zsh: ~/.zshrc)
+cw_tmp="$(mktemp)" && sed -e '/^# >>> codewhale PATH >>>$/{$!N;$!N;/\n# <<< codewhale PATH <<<$/d;}' ~/.bashrc > "$cw_tmp" && cat "$cw_tmp" > ~/.bashrc; rm -f "$cw_tmp"   # undo
+export PATH="$HOME/.local/bin:$PATH"; hash -r   # this shell only
 command -v codewhale codew
 ```
 
-The three-line block is marked so `codewhale uninstall` can remove exactly it later. A bare
+On Ubuntu and Debian, `~/.profile` adds `~/.local/bin`, but only if the directory existed
+when you *logged in*, and a new terminal **window** on a desktop (GNOME Terminal, Ghostty, …)
+starts a non-login shell that reads `~/.bashrc`, not `~/.profile`. That is why the block goes
+in `~/.bashrc` on Linux.
+
+The three-line block is marked so `codewhale uninstall` can remove exactly it. A bare
 `export PATH=…` line is yours: uninstall never touches it, because other tools share `~/.local/bin`.
+`codewhale uninstall` exists in Codewhale 0.10.3 and later; on 0.10.2 use the command above.
 
 ### Options
 
@@ -291,8 +337,10 @@ codewhale doctor        # diagnostics; see the note in §8 about what it does NO
 ### Upgrade / uninstall
 
 * Upgrade: automatic for this install (see §7), or `codewhale update` now.
-* Uninstall: `~/.local/bin/codewhale uninstall` previews the receipt-owned
-  files; add `--yes` to remove them. See §12 for data.
+* Uninstall (0.10.3 and later): `~/.local/bin/codewhale uninstall` previews the receipt-owned
+  files; add `--yes` to remove them. On 0.10.2 or earlier there is no such command (the word
+  would start a chat): run `rm ~/.local/bin/codewhale ~/.local/bin/codew ~/.local/bin/.codewhale-install.sha256`.
+  See §12 for data.
 
 ---
 
@@ -352,8 +400,11 @@ cd codewhale-linux-x64 && ./install.sh               # -> ~/.local/bin; PREFIX=/
 ```
 
 The archive's `install.sh` never uses sudo, leaves differing existing files
-alone, never edits a shell profile, and asks nothing; it prints only the
-current-shell `export` line.
+alone and asks nothing. In archives from 0.10.3 on, like the web installer, it adds the
+marked PATH block to your shell profile when the directory is not on `PATH`
+(`./install.sh --no-modify-path` skips that). The v0.10.2 archive does not: it takes no
+options and only prints an `export` line for the current shell, so add the block yourself
+(see [Put it on your PATH](#put-it-on-your-path)).
 
 **Upgrade:** `codewhale update` works for both 3a and 3b, because they're
 "direct binary" installs. **Uninstall:** delete the two files (see §12).
@@ -629,6 +680,8 @@ binary whose SHA-256 that manifest already lists. Non-interactive
 starts never prompt and never apply an unsigned update.
 
 Turn it down or off:
+
+Needs Codewhale 0.10.3 or later; 0.10.2 has no `update.mode` key.
 
 ```bash
 codewhale config set update.mode notify   # tell me about updates, don't download
@@ -1005,7 +1058,7 @@ Everything I checked worked in Ghostty with its default config
 | Exit restores the terminal (normal screen, cursor, no mouse-reporting garbage) | ✅ |
 
 Ghostty on Linux starts a **non-login** shell, so it reads `~/.bashrc` and not
-`~/.profile`. That's why you need the PATH line in `~/.bashrc` (§2).
+`~/.profile`. That's why the installer puts its PATH block in `~/.bashrc` (§2).
 
 You may notice small dots and a faint label (e.g. `other · drift`) drifting
 across empty space after a turn. That's Codewhale's decorative "ambient life"
@@ -1030,10 +1083,12 @@ codewhale auth clear --provider deepseek
 
 ### Step 2: remove the program
 
+The `uninstall` command exists in Codewhale 0.10.3 and later. On 0.10.2 or earlier it is not a command, and typing it starts a chat that sends the word to your model. Remove the files by hand instead, for a Unix installer copy: `rm <dir>/codewhale <dir>/codew <dir>/.codewhale-install.sha256`, where `<dir>` is the install directory (`~/.local/bin` by default).
+
 | Installed with | Remove with |
 |---|---|
 | current Unix installer (§2) | Run the intended executable by its full path with `uninstall` to inspect the plan, then `uninstall --yes` to remove it. |
-| Windows release archive (`install.ps1`) | `"%USERPROFILE%\bin\codewhale.exe" uninstall`, then `uninstall --yes`. Remove `%USERPROFILE%\bin` from your user PATH if you added it only for Codewhale. |
+| Windows release archive (`install.ps1`) | `"%USERPROFILE%\bin\codewhale.exe" uninstall`, then `uninstall --yes`. Remove `%USERPROFILE%\bin` from your user PATH; `install.ps1` from 0.10.3 on adds it by default (see below). |
 | Windows setup (NSIS) | Settings > Apps > CodeWhale > Uninstall, or `%LOCALAPPDATA%\Programs\CodeWhale\Uninstall.exe`. `codewhale uninstall` prints this path. |
 | WinGet | `winget uninstall --id HunterBown.CodeWhale` |
 | Scoop | `scoop uninstall codewhale` |
@@ -1052,6 +1107,8 @@ The command runs before configuration, credential migration and telemetry, so ma
 Successful self-update renews an existing command receipt, and writes one for a pre-receipt directory whose commands it just installed; it never claims unknown siblings. This command does not remove a remote-setup service or a desktop application.
 
 On Windows, `codewhale uninstall --yes` removes `codewhale.exe`, `codew.exe`, `codewhale.bat`, any receipted compiled-host files and the receipt itself. Windows cannot delete a running program, so the running `codewhale.exe` is renamed in place to a `.codewhale-host-recovery-…` name and deleted by a helper once the command exits; the output names that file in case it remains. `codewhale.old-…` files left by an earlier self-update are listed, not deleted. A known legacy directory can adopt matching command bytes into a receipt. Other unreceipted archive copies are preserved; reinstall with the current `install.ps1` to obtain a receipt before automatic removal. Windows removal has been compile-checked but not yet exercised on a Windows host.
+
+From 0.10.3 on, the Windows archive's `install.ps1` adds `%USERPROFILE%\bin` to your **user** PATH by default (one registry value, `HKCU\Environment\Path`; it never touches the machine PATH), prints what it added and the PowerShell command that removes just that entry, and does nothing when the directory is already on PATH. Run it with `-NoModifyPath` (or `CODEWHALE_NO_MODIFY_PATH=1`) to skip the edit; it then prints the command to add the entry yourself. Running it again never adds a second entry. Windows terminals that are already open do not see the change, so its last lines give the command for the current window and `codewhale --version`. The v0.10.2 `install.ps1` does none of this and tells you to add the directory yourself. This path has not been run on a Windows host.
 
 Repeating `uninstall` after removal is safe: the removed copy is gone, and any other copy only removes what its own receipt owns. Reinstalling into the same directory afterwards writes a fresh receipt.
 
@@ -1301,7 +1358,7 @@ when you want to keep every existing installation exactly as it is:
 ```bash
 mkdir -p "$HOME/.local"
 codewhale_install_dir="$(mktemp -d "$HOME/.local/codewhale-release.XXXXXX")"
-curl -fsSL https://codewhale.net/install.sh | CODEWHALE_INSTALL_DIR="$codewhale_install_dir" sh
+curl -fsSL https://codewhale.net/install.sh | CODEWHALE_INSTALL_DIR="$codewhale_install_dir" sh -s -- --no-modify-path
 "$codewhale_install_dir/codewhale" --version
 export PATH="$codewhale_install_dir:$PATH"
 hash -r
@@ -1309,7 +1366,8 @@ command -v codewhale codew
 "$codewhale_install_dir/codewhale" update --check
 ```
 
-After verifying the version and command paths, keep that directory first in your
+`--no-modify-path` keeps the installer from touching your profile for a side-by-side
+copy. After verifying the version and command paths, keep that directory first in your
 shell profile. In PowerShell, use `Get-Command codewhale, codew -All` to inspect
 resolution; run the selected executable using its full path. A successful update
 only changes its own install directory, so another earlier PATH entry can still

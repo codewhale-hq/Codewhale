@@ -16,14 +16,11 @@ import type { ChromeDict } from "../types";
  */
 export const chrome: ChromeDict = {
   navDocs: "Belgeler",
-  navStart: "Başlangıç",
-  navInstall: "Kurulum",
-  navFaq: "SSS",
-  navCommunity: "Topluluk",
   navContribute: "Katkı",
+  navSignIn: "Giriş yap",
+  navDesktop: "Masaüstü",
 
   navFeatures: "Özellikler",
-  navProduct: "Ürün",
   navModels: "Modeller",
   navPlugins: "Eklentiler",
 
@@ -38,6 +35,7 @@ export const chrome: ChromeDict = {
 
   menuOpen: "Menüyü aç",
   menuClose: "Menüyü kapat",
+  translationMachineDraft: "Bu çeviri makine taslağıdır ve henüz anadili konuşan biri tarafından gözden geçirilmedi.",
 
   themeAuto: "otomatik",
   themeLight: "açık",
@@ -45,20 +43,17 @@ export const chrome: ChromeDict = {
   themeAria: "Tema: {mode} (geçiş için tıkla)",
   themeTitle: "Tema · otomatik / açık / koyu",
 
-  footerTagline: "Her modeli, okuyabileceğiniz bir ajanla kullanın.",
   footerProduct: "Ürün",
   footerProject: "Proje",
   footerDocs: "Belgeler",
   footerGuide: "Başlangıç",
   footerInstall: "Kurulum",
-  footerApps: "Masaüstü ve web",
   footerModels: "Modeller",
-  footerRuntime: "Runtime",
   footerFaq: "SSS",
-  footerIssues: "Issues",
   footerContribute: "Katkı",
   footerRoadmap: "Yol haritası",
   footerLicense: "MIT lisansı",
+  footerMerch: "Ürünler",
   footerTerms: "Hizmet şartları",
   footerPrivacy: "Gizlilik",
   footerChangelog: "Değişiklik günlüğü",
@@ -71,4 +66,20 @@ export const chrome: ChromeDict = {
   switcherLabel: "Dil",
   switcherSwitchTo: "{label} diline geç",
   partialBadge: "(kısmi)",
+
+  stateReleased: "Yayımlandı",
+  stateAvailable: "Kullanılabilir",
+  stateBeta: "Beta",
+  stateDev: "Geliştirme sürümü",
+  stateOpen: "Açık",
+  stateInviteOnly: "Yalnızca davetle",
+  stateNotOpen: "Henüz açık değil",
+  stateNotPublic: "Herkese açık değil",
+  stateInSource: "Kaynakta var, henüz yayımlanmadı",
+  numbersAsOf: "{date} itibarıyla",
+  downloadMacos: "macOS için indir",
+  downloadVersion: "Sürüm {version}",
+  downloadSize: "Boyut {size}",
+  downloadChecksum: "SHA-256 sağlama toplamı",
+  downloadSigned: "İmzalı ve noter onaylı",
 };

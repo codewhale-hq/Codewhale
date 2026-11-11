@@ -18,7 +18,7 @@ export const docsReview: DocsReviewDict = {
           "p": "用 [/preview-request](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/PREVIEW_REQUEST.md) 检查下一次主要模型请求，无需发送。"
         },
         {
-          "p": "会话收据列出已记录的文件修改、命令、工具、智能体、审批与失败。下方的审查收据记录单独的代码审查。"
+          "p": "会话收据列出修改的文件、运行的命令以及每一步由谁批准，并在末尾列出它没有记录的内容。收据不显示费用或 token 行：页脚和 `/cost` 会显示费用数字，或显示“未知”。下方的审查收据记录单独的代码审查。"
         },
         {
           "code": "/receipts\n/receipts json",

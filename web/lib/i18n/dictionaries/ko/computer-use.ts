@@ -42,7 +42,7 @@ export const computerUse: ComputerUseDict = {
   connectVersion: "Codewhale 0.10.2에는 이전 Computer Use 플러그인이 내장되어 있습니다. 카탈로그 항목을 설치해도 이 플러그인은 업데이트되지 않습니다. 설치된 Mac 도우미에 MCP로 직접 연결하세요.",
   connectLimit: "MCP 직접 연결은 도구만 추가하며 플러그인 스킬은 포함하지 않습니다. 이전 내장 플러그인과 함께 사용하지 마세요. 해당 플러그인이 켜져 있다면 먼저 /plugin disable computer-use를 실행하세요.",
   connectRuntime: "앱에 Node가 포함되어 있어 별도 설치가 필요 없습니다. 다른 위치에 설치했다면 APP를 실제 앱 번들 경로로 설정하세요.",
-  connectReload: "실행 중인 터미널 세션에서 /mcp reload를 실행하고 Operate로 전환한 뒤 다음과 같이 요청하세요:",
+  connectReload: "실행 중인 터미널 세션에서 /mcp reload를 실행한 뒤 다음과 같이 요청하세요:",
   connectPrompt: "request_access로 Computer Use 권한을 확인하세요. 입력은 보내지 마세요.",
   connectExpected: "응답에서 via: app, 도우미 버전, 누락된 권한을 확인하세요. 도우미가 없다면 중단하고 설정 안내를 따르세요. 이 단계는 연결과 권한만 확인합니다.",
   connectGuide: "MCP 설정 안내",

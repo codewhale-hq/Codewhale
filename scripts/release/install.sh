@@ -3,6 +3,23 @@ set -euo pipefail
 # CodeWhale Unix installer
 # Copies codewhale and codew to ~/.local/bin (or $PREFIX/bin)
 
+modify_path=1
+case "${CODEWHALE_NO_MODIFY_PATH:-}" in
+    1|true|yes) modify_path=0 ;;
+esac
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help)
+            echo "Usage: ./install.sh [--no-modify-path]"
+            echo "  Installs codewhale and codew to \$PREFIX/bin (default ~/.local/bin)."
+            echo "  --no-modify-path  Do not add that directory to your shell profile."
+            exit 0
+            ;;
+        --no-modify-path) modify_path=0 ;;
+        *) echo "codewhale install: unknown option: $arg (see --help)" >&2; exit 2 ;;
+    esac
+done
+
 PREFIX="${PREFIX:-$HOME/.local}"
 BIN_DIR="${PREFIX}/bin"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -310,25 +327,215 @@ done
 echo ""
 install_binary "$receipt_tmp/$receipt_name" "$BIN_DIR/$receipt_name" 0644
 echo "Done. Commands installed to $BIN_DIR."
-echo "Uninstall this receipted copy: \"$BIN_DIR/codewhale\" uninstall --yes"
+supports_uninstall=0
+installed_help="$("$BIN_DIR/codewhale" --help </dev/null 2>/dev/null || true)"
+if printf '%s\n' "$installed_help" | grep -E '^[[:space:]]+uninstall([[:space:]]|$)' >/dev/null; then
+    supports_uninstall=1
+fi
+if [[ "$supports_uninstall" == 1 ]]; then
+    echo "Uninstall this receipted copy: \"$BIN_DIR/codewhale\" uninstall --yes"
+else
+    echo "Uninstall: this release has no uninstall command. Remove the files: rm \"$BIN_DIR/codewhale\" \"$BIN_DIR/codew\" \"$BIN_DIR/.codewhale-install.sha256\""
+    echo "Your data in ~/.codewhale is separate; delete it only if you want it gone."
+fi
 if [[ -n "$recovery_dir" ]]; then
     echo "Previous files are kept in $recovery_dir for 30 days. Undo: \"$BIN_DIR/codewhale\" doctor --restore $(basename "$recovery_dir")"
 fi
 "$BIN_DIR/codewhale" doctor --installs --brief 2>/dev/null || true
 echo "Future updates: \"$BIN_DIR/codewhale\" update"
-echo "Updates install automatically; turn off with: codewhale config set update.mode notify"
+if [[ "$supports_uninstall" == 1 ]]; then
+    echo "Updates install automatically; turn off with: codewhale config set update.mode notify"
+fi
+if [[ "$(uname -s)" == Darwin ]] && ! command -v node >/dev/null 2>&1; then
+    echo ""
+    echo "Computer Use is included and needs Node.js 20 or newer on PATH."
+    echo "Install Node.js from https://nodejs.org/, then restart Codewhale to enable Computer Use."
+fi
+path_selected=1
 for bin in codewhale codew; do
     resolved="$(command -v "$bin" || true)"
     if [[ "$resolved" != "$BIN_DIR/$bin" ]]; then
         echo "PATH selects ${resolved:-no $bin command}; this install is $BIN_DIR/$bin"
+        path_selected=0
     fi
 done
-echo "To select this installation in the current shell:"
-echo "  export PATH=\"$BIN_DIR:\$PATH\""
-echo "  hash -r"
-echo "  command -v codewhale codew"
-echo "Keep the directory first in your shell profile after verifying it."
-if ! command -v node >/dev/null 2>&1; then
-    echo "Computer Use is included and needs Node.js 20 or newer on PATH."
-    echo "Install Node.js from https://nodejs.org/, then restart Codewhale to enable Computer Use."
+say() { printf '%s\n' "$*"; }
+install_dir="$BIN_DIR"
+case "$(uname -s)" in Darwin) target=macos-host ;; *) target=other ;; esac
+path_marker_start="# >>> codewhale PATH >>>"
+path_marker_end="# <<< codewhale PATH <<<"
+
+install_dir_on_path() {
+  case ":${PATH:-}:" in
+    *":$install_dir:"*) return 0 ;;
+  esac
+  return 1
+}
+
+pick_profile() {
+  profile_file=""
+  profile_shown=""
+  [ -n "${HOME:-}" ] || return 0
+  case "$1" in
+    zsh)
+      if [ -n "${ZDOTDIR:-}" ]; then
+        case "$ZDOTDIR" in
+          /*) ;;
+          *) return 0 ;;
+        esac
+        case "$ZDOTDIR" in
+          *[!A-Za-z0-9_./+-]*) return 0 ;;
+        esac
+        profile_file="$ZDOTDIR/.zshrc"
+        profile_shown="\"$profile_file\""
+        return 0
+      fi
+      profile=".zshrc"
+      ;;
+    bash)
+      case "$target" in
+        macos-*)
+          profile=".bash_profile"
+          for candidate in .bash_profile .bash_login .profile; do
+            if [ -e "$HOME/$candidate" ]; then
+              profile="$candidate"
+              break
+            fi
+          done
+          ;;
+        *) profile=".bashrc" ;;
+      esac
+      ;;
+    *) profile=".profile" ;;
+  esac
+  profile_file="$HOME/$profile"
+  profile_shown="~/$profile"
+}
+
+add_path_block() {
+  path_note=""
+  path_state=added
+  if [ -L "$profile_file" ]; then
+    path_note="$profile_shown is a symlink"
+    return 1
+  fi
+  lead_newline=0
+  if [ -e "$profile_file" ]; then
+    if [ ! -f "$profile_file" ] || [ ! -w "$profile_file" ]; then
+      path_note="$profile_shown is not a writable regular file"
+      return 1
+    fi
+    if grep -qxF "$path_marker_start" "$profile_file" 2>/dev/null; then
+      path_state=present
+      return 0
+    fi
+    if [ -s "$profile_file" ] && [ -n "$(tail -c 1 "$profile_file" 2>/dev/null)" ]; then
+      lead_newline=1
+    fi
+  else
+    profile_parent="$(dirname "$profile_file")"
+    if [ ! -d "$profile_parent" ] || [ ! -w "$profile_parent" ]; then
+      path_note="the folder for $profile_shown is missing or not writable"
+      return 1
+    fi
+  fi
+  if ! {
+    if [ "$lead_newline" -eq 1 ]; then printf '\n'; fi
+    printf '%s\n' "$path_marker_start" "export PATH=\"$path_dir:\$PATH\"" "$path_marker_end"
+  } >> "$profile_file" 2>/dev/null; then
+    path_note="could not write to $profile_shown"
+    return 1
+  fi
+  return 0
+}
+
+undo_path_block_command() {
+  printf '%s' "cw_tmp=\"\$(mktemp)\" && sed -e '/^# >>> codewhale PATH >>>\$/{\$!N;\$!N;/\\n# <<< codewhale PATH <<<\$/d;}' $profile_shown > \"\$cw_tmp\" && cat \"\$cw_tmp\" > $profile_shown; rm -f \"\$cw_tmp\""
+}
+
+if [ "$path_selected" -eq 1 ]; then
+  say ""
+  say "Next: codewhale --version"
+else
+  path_dir="$install_dir"
+  if [ -n "${HOME:-}" ] && [ "$install_dir" = "$(cd -P "$HOME/.local/bin" 2>/dev/null && pwd)" ]; then
+    path_dir="\$HOME/.local/bin"
+  fi
+  shell_name="${SHELL:-}"
+  shell_name="${shell_name##*/}"
+  case "$path_dir" in
+    *[\'\"\`\\\$]*|*"
+"*)
+      if [ "$path_dir" != "\$HOME/.local/bin" ]; then
+        shell_name="unsafe-path"
+      fi
+      ;;
+  esac
+  say ""
+  if [ -z "$(command -v codewhale 2>/dev/null || true)" ]; then
+    say "codewhale is not on your PATH in this shell yet."
+  else
+    say "A different codewhale comes first on your PATH in this shell."
+  fi
+  case "$shell_name" in
+    fish)
+      say "This installer does not edit fish's configuration. Put $install_dir first on PATH in future shells (run once):"
+      say "  fish_add_path \"$path_dir\""
+      say "It takes effect in this fish shell and in new ones (fish 3.2 or newer)."
+      say "PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path"
+      say ""
+      say "Then check it:"
+      say "  codewhale --version"
+      ;;
+    zsh|bash|sh|dash|ksh|mksh|ash)
+      pick_profile "$shell_name"
+      persist_line="printf '%s\\n' '$path_marker_start' 'export PATH=\"$path_dir:\$PATH\"' '$path_marker_end' >> $profile_shown"
+      if [ -z "$profile_file" ]; then
+        say "This installer could not pick a profile file for $shell_name, so it changed nothing. To keep it in future shells (run once):"
+        say "  Add $install_dir first to PATH in your shell's startup file."
+      elif [ "$modify_path" -eq 0 ]; then
+        say "Not editing your shell profile (--no-modify-path). To keep it in future shells, run once:"
+        say "  $persist_line"
+      elif install_dir_on_path; then
+        say "$install_dir is on PATH but not first, so your shell profile was not edited. To put it first in future shells, run once:"
+        say "  $persist_line"
+      elif add_path_block; then
+        if [ "$path_state" = present ]; then
+          say "$profile_shown already has the codewhale PATH block; it was left as is."
+        else
+          say "Added to $profile_shown so new shells find codewhale (skip this with --no-modify-path):"
+          say "  $path_marker_start"
+          say "  export PATH=\"$path_dir:\$PATH\""
+          say "  $path_marker_end"
+          say "Only those three lines were added; nothing else in the file was changed. Shells that are already open do not reread the profile."
+        fi
+        say "To undo, run:"
+        say "  $(undo_path_block_command)"
+        if [ "$supports_uninstall" -eq 1 ]; then
+          say "The marker lines let codewhale uninstall remove exactly this block; a bare export line is yours and is never touched."
+        fi
+      else
+        say "Did not edit your shell profile: $path_note. To keep it in future shells, run once:"
+        say "  $persist_line"
+        say "To undo that later, delete the three lines between and including the marker lines."
+      fi
+      say "PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path"
+      say ""
+      say "Run this now, in this shell:"
+      say "  export PATH=\"$path_dir:\$PATH\"; hash -r"
+      say "Then check it:"
+      say "  codewhale --version"
+      ;;
+    unsafe-path)
+      say "Add $install_dir first to PATH in your shell's startup file; its name contains shell-special characters, so no command line is printed for it and nothing was edited."
+      say "PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path"
+      ;;
+    *)
+      say "Add $install_dir first to PATH in your shell's startup file; this installer has no PATH line for ${shell_name:-an unknown shell} and edited nothing."
+      say "PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path"
+      say ""
+      say "Until then, run it by its full path:"
+      say "  \"$install_dir/codewhale\" --version"
+      ;;
+  esac
 fi

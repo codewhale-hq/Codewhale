@@ -28,7 +28,6 @@ const FILES = ["chrome.ts", "home.ts"];
 const OPTIONAL_FILES = [
   "project.ts",
   "features.ts",
-  "enterprise.ts",
   "docs-skills.ts",
   "docs-claude-code.ts",
   "docs-guide.ts",
@@ -53,14 +52,12 @@ const OPTIONAL_FILES = [
   "changelog.ts",
   "legal-terms.ts",
   "legal-privacy.ts",
-  "digest.ts",
   "feed.ts",
   "community.ts",
   "faq.ts",
   "roadmap.ts",
   "contribute.ts",
   "constitution.ts",
-  "runtime.ts",
   "computer-use.ts",
 ];
 

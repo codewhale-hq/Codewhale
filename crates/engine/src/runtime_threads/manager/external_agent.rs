@@ -1,7 +1,10 @@
 use std::sync::mpsc as std_mpsc;
 
 use super::*;
-use crate::fleet::acp::{AcpCanceller, AcpClient, AcpHandler, AgentIdentity, PermissionAnswer};
+use crate::fleet::acp::{
+    AcpCanceller, AcpClient, AcpError, AcpHandler, AgentIdentity, AgentOptions, AgentTokenUsage,
+    PermissionAnswer, PromptReply, SessionOffer, refusal,
+};
 use crate::fleet::agents::ExternalAgentLaunch;
 use crate::fleet::host::{
     FleetHostAdapter, FleetWorkerCommand, FleetWorkerStartRequest, FleetWorkerTransport,
@@ -19,6 +22,11 @@ const MAX_ID_BYTES: usize = 128;
 const MAX_TOOL_ITEMS_PER_TURN: usize = 512;
 const MAX_LOCATIONS: usize = 32;
 const MAX_OPTIONS: usize = 16;
+const MAX_CONCURRENT_OPTION_PROBES: usize = 4;
+static OPTIONS_PROBES: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| {
+        Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_OPTION_PROBES))
+    });
 const KILLED_REASON: &str = "The agent did not stop; Codewhale ended its process.";
 
 pub(crate) struct ExternalThreadState {
@@ -47,7 +55,7 @@ enum AgentSignal {
         params: Value,
         reply: std_mpsc::Sender<PermissionAnswer>,
     },
-    Finished(Result<String, String>),
+    Finished(Result<PromptReply, String>),
 }
 
 pub(crate) struct ExternalSession {
@@ -145,6 +153,149 @@ struct SessionStart {
     session_id: String,
 }
 
+struct AgentProcess {
+    host: Option<LocalProcessFleetHostAdapter>,
+    worker_id: String,
+}
+
+impl AgentProcess {
+    fn spawn(
+        log_root: &Path,
+        worker_id: String,
+        workspace: &Path,
+        launch: &ExternalAgentLaunch,
+    ) -> Result<(Self, AcpClient)> {
+        let mut host = LocalProcessFleetHostAdapter::new(log_root);
+        let mut request = FleetWorkerStartRequest::new(
+            worker_id.clone(),
+            FleetWorkerCommand::new(launch.program.display().to_string(), launch.args.clone()),
+        );
+        request.transport = FleetWorkerTransport::JsonRpc;
+        request.cwd = Some(workspace.to_path_buf());
+        request.env_allowlist = launch.env.keys().cloned().collect();
+        request.env = launch.env.clone();
+        host.start_worker(request)
+            .map_err(|error| anyhow!("{} could not start: {error}", launch.agent_name))?;
+        let io = host.take_worker_io(&worker_id);
+        let process = Self {
+            host: Some(host),
+            worker_id,
+        };
+        let Some(io) = io else {
+            bail!("{} started without a protocol channel", launch.agent_name);
+        };
+        Ok((process, AcpClient::new(io)))
+    }
+
+    fn release(mut self) -> LocalProcessFleetHostAdapter {
+        self.host.take().expect("an agent process is released once")
+    }
+
+    fn stop(&mut self) {
+        if let Some(mut host) = self.host.take()
+            && let Err(error) = host.stop_worker(&self.worker_id)
+        {
+            tracing::warn!(worker = %self.worker_id, %error, "stopping an external agent failed");
+        }
+    }
+}
+
+impl Drop for AgentProcess {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn sign_in_or(
+    error: anyhow::Error,
+    agent_name: &str,
+    login: Option<&'static str>,
+) -> anyhow::Error {
+    if error
+        .downcast_ref::<AcpError>()
+        .is_some_and(AcpError::is_auth_required)
+    {
+        let hint = login
+            .map(|command| format!(" Run `{command}` in a terminal, then try again."))
+            .unwrap_or_default();
+        return crate::fleet::agents::ExecutorUnavailable::new(
+            crate::fleet::agents::ExecutorUnavailable::NEEDS_SIGN_IN,
+            format!("{agent_name} needs you to sign in to it first.{hint}"),
+        )
+        .into();
+    }
+    if error
+        .downcast_ref::<crate::fleet::agents::ExecutorUnavailable>()
+        .is_some()
+    {
+        return error;
+    }
+    anyhow!("{agent_name}: {error}")
+}
+
+fn executor_choices(executor: &ExecutorRecord) -> Vec<(&'static str, String)> {
+    executor
+        .model
+        .iter()
+        .map(|model| ("model", model.clone()))
+        .collect()
+}
+
+fn refuse(code: &'static str, message: impl Into<String>) -> anyhow::Error {
+    crate::fleet::agents::ExecutorUnavailable::new(code, message).into()
+}
+
+fn apply_choices(
+    client: &mut AcpClient,
+    session_id: &str,
+    offer: &SessionOffer,
+    choices: &[(&'static str, String)],
+) -> Result<()> {
+    for (id, value) in choices {
+        let shown = label(Some(&Value::String(value.clone())), "");
+        if offer.controls.is_empty() && *id == "model" {
+            client
+                .set_config_option(session_id, "model", value, SETUP_TIMEOUT)
+                .map_err(|error| rejected_choice(id, &shown, error))?;
+            continue;
+        }
+        let Some(control) = offer.control(id) else {
+            return Err(refuse(
+                refusal::CONTROL_NOT_OFFERED,
+                format!("The agent does not offer a {id} choice, so `{shown}` was not applied."),
+            ));
+        };
+        if let Some(why) = control.unavailable.as_ref() {
+            return Err(refuse(refusal::CONTROL_UNAVAILABLE, why.reason.clone()));
+        }
+        if !control.offers(value) {
+            return Err(refuse(
+                refusal::CHOICE_NOT_OFFERED,
+                format!(
+                    "The agent no longer offers `{shown}` for {id}; choose one of its current options."
+                ),
+            ));
+        }
+        if control.current.as_deref() == Some(value.as_str()) {
+            continue;
+        }
+        client
+            .apply_control(session_id, control, value, SETUP_TIMEOUT)
+            .map_err(|error| rejected_choice(id, &shown, error))?;
+    }
+    Ok(())
+}
+
+fn rejected_choice(id: &str, shown: &str, error: AcpError) -> anyhow::Error {
+    if error.is_auth_required() {
+        return error.into();
+    }
+    refuse(
+        refusal::CHOICE_REJECTED,
+        format!("The agent refused {id} `{shown}`: {error}"),
+    )
+}
+
 fn start_session_blocking(
     log_root: PathBuf,
     thread_id: String,
@@ -155,82 +306,74 @@ fn start_session_blocking(
     abandoned: CancellationToken,
 ) -> Result<SessionStart> {
     let worker_id = format!("acp-{thread_id}");
-    let mut host = LocalProcessFleetHostAdapter::new(&log_root);
-    let mut request = FleetWorkerStartRequest::new(
-        worker_id.clone(),
-        FleetWorkerCommand::new(launch.program.display().to_string(), launch.args.clone()),
-    );
-    request.transport = FleetWorkerTransport::JsonRpc;
-    request.cwd = Some(workspace.clone());
-    request.env_allowlist = launch.env.keys().cloned().collect();
-    request.env = launch.env.clone();
-    host.start_worker(request)
-        .map_err(|error| anyhow!("{} could not start: {error}", launch.agent_name))?;
-    let Some(io) = host.take_worker_io(&worker_id) else {
-        let _ = host.stop_worker(&worker_id);
-        bail!("{} started without a protocol channel", launch.agent_name);
-    };
-    let mut client = AcpClient::new(io);
+    let (process, mut client) =
+        AgentProcess::spawn(&log_root, worker_id.clone(), &workspace, &launch)?;
     client.abort_requests_on(Some(abandoned));
-    let setup = (|| {
+    let choices = executor_choices(&executor);
+    let setup = (|| -> Result<(AgentIdentity, String)> {
         let identity = client.initialize(SETUP_TIMEOUT)?;
-        let session_id = match executor.foreign_session_id.as_deref() {
+        let (session_id, offer) = match executor.foreign_session_id.as_deref() {
             Some(session_id) => {
-                client.reopen_session(&identity, session_id, &workspace, SETUP_TIMEOUT)?;
-                session_id.to_string()
+                let offer =
+                    client.reopen_session(&identity, session_id, &workspace, SETUP_TIMEOUT)?;
+                (session_id.to_string(), offer)
             }
-            None => client.new_session(&workspace, SETUP_TIMEOUT)?,
+            None => {
+                let started = client.new_session(&workspace, SETUP_TIMEOUT)?;
+                (started.session_id, started.offer)
+            }
         };
-        if let Some(model) = executor.model.as_deref() {
-            client.set_config_option(&session_id, "model", model, SETUP_TIMEOUT)?;
-        }
-        Ok::<_, crate::fleet::acp::AcpError>((identity, session_id))
+        apply_choices(&mut client, &session_id, &offer, &choices)?;
+        Ok((identity, session_id))
     })();
-    let (identity, session_id) = match setup {
-        Ok(setup) => setup,
-        Err(error) => {
-            let _ = host.stop_worker(&worker_id);
-            if error.is_auth_required() {
-                let hint = login
-                    .map(|command| format!(" Run `{command}` in a terminal, then try again."))
-                    .unwrap_or_default();
-                return Err(crate::fleet::agents::ExecutorUnavailable::new(
-                    crate::fleet::agents::ExecutorUnavailable::NEEDS_SIGN_IN,
-                    format!(
-                        "{} needs you to sign in to it first.{hint}",
-                        launch.agent_name
-                    ),
-                )
-                .into());
-            }
-            bail!("{}: {error}", launch.agent_name);
-        }
-    };
+    let (identity, session_id) =
+        setup.map_err(|error| sign_in_or(error, &launch.agent_name, login))?;
     if !valid_id(&session_id) {
-        let _ = host.stop_worker(&worker_id);
         bail!("{} named an invalid session id", launch.agent_name);
     }
     client.abort_requests_on(None);
     let canceller = client.canceller(&session_id);
     let (commands, receiver) = std_mpsc::channel();
     let session_for_thread = session_id.clone();
-    if let Err(error) = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name(format!("acp-{}", launch.agent_id))
         .spawn(move || run_session(client, session_for_thread, receiver))
-    {
-        let _ = host.stop_worker(&worker_id);
-        bail!("starting the agent session thread failed: {error}");
-    }
+        .map_err(|error| anyhow!("starting the agent session thread failed: {error}"))?;
     Ok(SessionStart {
         session: ExternalSession {
             commands: parking_lot::Mutex::new(Some(commands)),
             canceller,
-            host: parking_lot::Mutex::new(host),
+            host: parking_lot::Mutex::new(process.release()),
             worker_id,
         },
         identity,
         session_id,
     })
+}
+
+fn probe_options_blocking(
+    log_root: PathBuf,
+    workspace: PathBuf,
+    launch: ExternalAgentLaunch,
+    login: Option<&'static str>,
+    abandoned: CancellationToken,
+) -> Result<AgentOptions> {
+    let worker_id = format!("acp-options-{}", runtime_record_id("probe"));
+    let (mut process, mut client) = AgentProcess::spawn(&log_root, worker_id, &workspace, &launch)?;
+    client.abort_requests_on(Some(abandoned));
+    let probed = (|| -> Result<AgentOptions> {
+        let identity = client.initialize(SETUP_TIMEOUT)?;
+        let started = client.new_session(&workspace, SETUP_TIMEOUT)?;
+        Ok(AgentOptions::new(
+            &identity,
+            &launch.agent_id,
+            &workspace,
+            started.offer,
+        ))
+    })();
+    drop(client);
+    process.stop();
+    probed.map_err(|error| sign_in_or(error, &launch.agent_name, login))
 }
 
 fn valid_id(value: &str) -> bool {
@@ -394,6 +537,8 @@ struct ExternalProjection {
     plan: Option<TurnItemRecord>,
     title: Option<String>,
     failure: Option<String>,
+    context: Option<(Option<u64>, Option<u64>)>,
+    tokens: Option<AgentTokenUsage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -637,6 +782,48 @@ impl RuntimeThreadManager {
         Ok(session)
     }
 
+    pub async fn external_agent_options(&self, agent_id: &str, cwd: &Path) -> Result<AgentOptions> {
+        self.ensure_accepting_execution()?;
+        let agent = crate::fleet::agents::find(agent_id).ok_or_else(|| {
+            crate::fleet::agents::ExecutorUnavailable::new(
+                crate::fleet::agents::ExecutorUnavailable::UNKNOWN_AGENT,
+                format!("No external agent is named `{agent_id}`."),
+            )
+        })?;
+        let workspace = tokio::fs::canonicalize(cwd)
+            .await
+            .map_err(|error| anyhow!("cwd {} is unavailable: {error}", cwd.display()))?;
+        anyhow::ensure!(
+            tokio::fs::metadata(&workspace)
+                .await
+                .is_ok_and(|metadata| metadata.is_dir()),
+            "cwd {} is not a directory",
+            workspace.display()
+        );
+        let launch = crate::fleet::agents::launch(agent.id).await?;
+        let log_root = self
+            .session_store_binding()
+            .data_dir
+            .join("external-agents");
+        tokio::fs::create_dir_all(&log_root)
+            .await
+            .context("creating the external agent log directory failed")?;
+        let abandoned = self.cancel_token.child_token();
+        let _abandon = abandoned.clone().drop_guard();
+        let permit = tokio::select! {
+            permit = Arc::clone(&OPTIONS_PROBES).acquire_owned() => permit?,
+            () = abandoned.cancelled() => bail!("Runtime is shutting down; execution admission is closed"),
+        };
+        self.ensure_accepting_execution()?;
+        let login = agent.login;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            probe_options_blocking(log_root, workspace, launch, login, abandoned)
+        })
+        .await
+        .context("external agent options worker failed")?
+    }
+
     pub(super) async fn external_thread_loaded(&self, thread_id: &str) -> bool {
         self.active.lock().await.external.contains_key(thread_id)
     }
@@ -724,27 +911,36 @@ impl RuntimeThreadManager {
             matches!(input_source, RuntimeTurnInputSource::ExternalUser),
             "this kind of turn is not available in a session with another agent"
         );
-        anyhow::ensure!(
-            req.images.is_empty(),
-            "image inputs are not available in a session with another agent"
-        );
-        anyhow::ensure!(
-            req.dynamic_tools.is_empty(),
-            "dynamic tools are not available in a session with another agent"
-        );
-        anyhow::ensure!(
-            req.model.is_none()
-                && req.reasoning_effort.is_none()
-                && req.max_output_tokens.is_none()
-                && req.model_provider.is_none()
-                && req.model_provider_id.is_none()
-                && req.account_model_owner.is_none(),
-            "a session with another agent uses its saved agent model; per-turn model controls are unavailable"
-        );
-        anyhow::ensure!(
-            req.allowed_tools.is_none(),
-            "a session with another agent uses that agent's own tools; tool allowlists are unavailable"
-        );
+        if !req.images.is_empty() {
+            return Err(refuse(
+                refusal::UNSUPPORTED_CONTROL,
+                "Image inputs are not available in a session with another agent.",
+            ));
+        }
+        if !req.dynamic_tools.is_empty() {
+            return Err(refuse(
+                refusal::UNSUPPORTED_CONTROL,
+                "Dynamic tools are not available in a session with another agent.",
+            ));
+        }
+        if req.model.is_some()
+            || req.reasoning_effort.is_some()
+            || req.max_output_tokens.is_some()
+            || req.model_provider.is_some()
+            || req.model_provider_id.is_some()
+            || req.account_model_owner.is_some()
+        {
+            return Err(refuse(
+                refusal::UNSUPPORTED_CONTROL,
+                "A session with another agent keeps its saved agent model; per-turn model, reasoning, output and provider controls are unavailable.",
+            ));
+        }
+        if req.allowed_tools.is_some() {
+            return Err(refuse(
+                refusal::UNSUPPORTED_CONTROL,
+                "A session with another agent uses that agent's own tools; tool allowlists are unavailable.",
+            ));
+        }
         if req.environment_id.is_some() {
             return Err(crate::fleet::agents::ExecutorUnavailable::new(
                 crate::fleet::agents::ExecutorUnavailable::ENVIRONMENT_NOT_SUPPORTED,
@@ -1041,16 +1237,53 @@ impl RuntimeThreadManager {
                     };
                     let _ = reply.send(answer);
                 }
-                Some(AgentSignal::Finished(result)) => break result,
+                Some(AgentSignal::Finished(result)) => {
+                    break result.map(|reply| {
+                        projection.tokens = reply.usage;
+                        reply.stop_reason
+                    });
+                }
                 None => break Err("the agent session ended".to_string()),
             }
         };
+        if let Err(error) = self
+            .emit_agent_usage(&thread.id, &turn_id, &projection)
+            .await
+        {
+            tracing::warn!(thread_id = %thread.id, turn_id = %turn_id, %error, "recording an external agent's usage failed");
+        }
         if let Err(error) = self
             .settle_external_turn(&thread, &turn_id, projection, outcome)
             .await
         {
             tracing::warn!(thread_id = %thread.id, turn_id = %turn_id, %error, "settling an external agent turn failed");
         }
+    }
+
+    async fn emit_agent_usage(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        projection: &ExternalProjection,
+    ) -> Result<()> {
+        let tokens = projection
+            .tokens
+            .as_ref()
+            .filter(|tokens| !tokens.is_empty());
+        let reported = tokens.is_some() || projection.context.is_some();
+        let payload = json!({
+            "kind": "turn_total",
+            "source": if reported { "agent reported" } else { "none" },
+            "tokens": tokens.map_or_else(|| json!("unknown"), |tokens| json!(tokens)),
+            "context": projection.context.map_or_else(
+                || json!("unknown"),
+                |(used, size)| json!({ "used": used, "size": size }),
+            ),
+            "cost": "unknown",
+        });
+        self.emit_event(thread_id, Some(turn_id), None, "turn.agent_usage", payload)
+            .await?;
+        Ok(())
     }
 
     async fn open_external_item(
@@ -1265,12 +1498,13 @@ impl RuntimeThreadManager {
                 let used = update.get("used").and_then(Value::as_u64);
                 let size = update.get("size").and_then(Value::as_u64);
                 if used.is_some() || size.is_some() {
+                    projection.context = Some((used, size));
                     self.emit_event(
                         thread_id,
                         Some(turn_id),
                         None,
                         "turn.agent_usage",
-                        json!({ "used": used, "size": size, "source": "agent reported", "cost": "unknown" }),
+                        json!({ "kind": "context_window", "used": used, "size": size, "source": "agent reported", "cost": "unknown" }),
                     )
                     .await?;
                 }

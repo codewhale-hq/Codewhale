@@ -265,17 +265,16 @@ Common forwarded flags:
   --output-format <FORMAT>         Output format: text or stream-json
   --hooks                          Opt in to configured hooks (tool_call_before, shell_env)
 
-Plain `codewhale exec` is a one-shot model response: one Engine turn with the
-same system prompt as every other run, and no tools. Use `--auto` for
-non-interactive agent-with-tools execution. Tools are offered only with
-`--auto`, `--yolo`, `--allowed-tools`, or when resuming a session; limits such
-as `--max-turns`, `--disallowed-tools` or `--sandbox`, and the output format,
-never add tools. A reply cut off at the provider's output limit is continued
-in the same turn, at most 8 model steps unless `--max-turns` says otherwise.
+Plain `codewhale exec` runs the agent with the normal tool surface under the
+configured sandbox and approval posture. Use `--no-tools` for one answer with
+no tools. `--auto` selects automatic approvals and Full Access by default. A
+reply cut off at the provider's output limit is continued in the same turn, at
+most 8 model steps unless `--max-turns` says otherwise.
 --auto defaults to Full Access: no shell sandbox and trust mode on. Use --sandbox workspace-write to keep the shell sandbox and file-tool workspace restrictions; stricter configured policies also apply. A denied sandbox retry requires --allow-sandbox-elevation or --sandbox danger-full-access.
 Any --sandbox other than danger-full-access (or an equivalent sandbox_mode in config) disables trust mode.
-Runs that offer tools, stream-json runs, and resumed sessions are saved for codewhale sessions, exec --continue, and codewhale receipts <id>. Plain answer-only text/--json runs are not saved unless compaction needs recovery.
+Runs that offer tools, stream-json runs, and resumed sessions are saved for codewhale sessions, exec --continue, and codewhale receipts <id>. Answer-only (--no-tools) text/--json runs are not saved unless compaction needs recovery.
 Put flags before the prompt. Put -- before a prompt starting with - or containing literal exec flags.
+Piped stdin is the prompt when no prompt argument is given, or is appended to it; with a prompt argument, stdin that sends nothing for 2 seconds is ignored with a note on stderr.
 ")]
     Exec(TuiPassthroughArgs),
     /// Manage durable Agent fleet runs.

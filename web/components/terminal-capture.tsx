@@ -1,9 +1,15 @@
 import type { CSSProperties } from "react";
 import {
   TERMINAL_CAPTURE_FRAMES,
+  type TerminalCaptureFrame,
   type TerminalCaptureFrameId,
   type TerminalCaptureStyle,
 } from "@/lib/terminal-capture.generated";
+
+export type TerminalCaptureData = Pick<TerminalCaptureFrame, "file" | "cols"> & {
+  styles: readonly TerminalCaptureStyle[];
+  lines: readonly (readonly (readonly [string, number])[])[];
+};
 
 const BRAILLE = /[⠀-⣿]/;
 
@@ -35,22 +41,24 @@ export function TerminalCapture({
   label,
   regionLabel,
   rows,
+  data: given,
 }: {
   frame?: TerminalCaptureFrameId;
+  data?: TerminalCaptureData;
   label: string;
   regionLabel: string;
   rows?: readonly [number, number];
 }) {
-  const data = TERMINAL_CAPTURE_FRAMES[frame];
+  const data: TerminalCaptureData = given ?? TERMINAL_CAPTURE_FRAMES[frame];
   const start = rows ? Math.max(0, Math.min(data.lines.length - 1, rows[0])) : 0;
   const end = rows ? Math.max(start + 1, Math.min(data.lines.length, rows[1])) : data.lines.length;
   const lines = data.lines.slice(start, end);
-  const styles = data.styles as readonly TerminalCaptureStyle[];
+  const styles = data.styles;
   // The padding around the grid continues the frame's own top and bottom rows.
   const top = styles[lines[0][0][1]].bg;
   const bottom = styles[lines[lines.length - 1][0][1]].bg;
   return (
-    <div className="term-capture-scroll" role="region" aria-label={regionLabel} tabIndex={0}>
+    <div className="term-capture-scroll" dir="ltr" lang="en" role="region" aria-label={regionLabel} tabIndex={0}>
       <pre
         className="term-capture"
         role="img"

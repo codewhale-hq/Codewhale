@@ -4,7 +4,7 @@ import { funnelExit, funnelPath } from "./funnel";
 describe("bounded website acquisition categories", () => {
   it("recognizes all mapped documentation without collecting paths", () => {
     for (const locale of ["en", "zh", "pt-BR", "pt-br", "ar"]) {
-      for (const path of ["install", "models", "plugins", "constitution", "docs/runtime-reference"]) expect(funnelPath(`/${locale}/${path}`)).toMatchObject({ documentation: true });
+      for (const path of ["install", "models", "plugins", "docs/constitution", "docs/runtime-reference"]) expect(funnelPath(`/${locale}/${path}`)).toMatchObject({ documentation: true });
       expect(funnelPath(`/${locale}`)).toEqual({ view: "home_view", documentation: false });
       expect(funnelPath(`/${locale}/docs/guide`)).toEqual({ view: "quickstart_view", documentation: true });
       expect(funnelPath(`/${locale}/contribute`)).toEqual({ view: "contribute_view", documentation: false });

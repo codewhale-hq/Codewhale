@@ -1,9 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import handler from "./.open-next/worker.js";
-import {
-  runDigest,
-  type AgentEnv,
-} from "./lib/community-agent-tasks";
+import type { AgentEnv } from "./lib/community-agent-tasks";
 import { runFactsDrift } from "./lib/facts-drift";
 import { runLinkCheck, runSemanticDrift } from "./lib/content-watch";
 import { fetchWithStaticInstaller } from "./lib/static-installer";
@@ -40,7 +37,6 @@ export default {
         await runLinkCheck(agentEnv);
         await runSemanticDrift(agentEnv);
       }
-      else if (expr === "0 9 * * 1") await runDigest(agentEnv);
     })());
   },
 } satisfies ExportedHandler;

@@ -1607,7 +1607,7 @@ latest turn and publishes a `thread.permissions_changed` event (`from`, `to`,
 - `POST /v1/threads/{id}/undo` - fork the thread with the last N turns removed (`{"depth": N}`, default 0 = last turn only); returns the forked thread plus `original_user_text` so a GUI can pre-populate the input box. `{"turn_id": "turn_…"}` instead names the user turn to remove, together with every turn after it, and wins over `depth`; the Runtime resolves it under the thread's restore guard, so a turn another client appends meanwhile cannot move the cut. `400` when the turn is not a user turn of that thread
 - `POST /v1/threads/{id}/fork-at-turn` - fork at one named user turn (`{"turn_id": "turn_…"}`, as `GET /v1/threads/{id}` reports it). The fork *keeps* that turn and every turn before it, and drops the turns after it; naming the last turn therefore keeps the whole conversation. The receipt is `/undo`'s (`thread`, `original_user_text`, `original_user_images`), carrying the *first dropped* user turn's prompt — what was asked next, even when a prompt-less turn such as a manual `/compact` sits between — so a client can put it back in the composer for editing. The source thread, its session document and the workspace are untouched, and there is no file rollback: a fork is a sibling conversation, and rewinding the workspace would rewind the branch left behind with it. Clients should name the turn instead of computing a `depth` — the transcript they render and the turn list this cuts are not the same list (steers, image-only prompts and injected handoffs each sit on one side only), and a client-side count that is off by one forks the wrong prefix while answering `201`. `400` when the turn is not a user turn of that thread.
 - `GET /v1/threads/{id}/patch-undo?turn_id=turn_…` - validates the selected restore without changing files or publishing a fork; returns `turn_ids`, the exact dropped range, `paths` needing restoration and an optional no-change `summary`. Requires the `thread_patch_undo_turn_id` capability.
-- `POST /v1/threads/{id}/patch-undo` - rolls back the files the dropped turns changed, then the same fork (`{"depth": N}` or `{"turn_id": "turn_…"}`, with `turn_id` taking precedence); returns `patch_result` (`files_restored`, `summary`, `snapshot_label`) alongside the forked thread. See [Workspace restore endpoints](#workspace-restore-endpoints) for ownership, the trust, admission and abort rules, and the `error.code` values of a refusal.
+- `POST /v1/threads/{id}/patch-undo` - rolls back the files the dropped turns changed, then the same fork (`{"depth": N}` or `{"turn_id": "turn_…"}`, with `turn_id` taking precedence); returns `patch_result` (`files_restored`, `summary`, `snapshot_label`) alongside the forked thread. See [Workspace restore endpoints](#workspace-restore-endpoints) for ownership, the admission and abort rules, and the `error.code` values of a refusal.
 - `POST /v1/threads/{id}/file-revert` - restore exactly one file from one restore point the thread owns (`{"path", "snapshot_id", "expected_hash"}`); never forks the conversation. See [Workspace restore endpoints](#workspace-restore-endpoints).
 - `POST /v1/threads/{id}/retry` - fork with the last N turns removed and immediately start a new turn (`{"depth": N, "prompt": "..."}`; `prompt` overrides the original user text, which is re-used when omitted)
 
@@ -1942,7 +1942,7 @@ admission rule and one safety net, and they differ in scope and trust.
 | Route | Scope | Trust | Forks the thread |
 | --- | --- | --- | --- |
 | `POST /v1/snapshots/{id}/restore` | whole server workspace, or the `thread_id` workspace | bearer token only (operator action) | no |
-| `POST /v1/threads/{id}/patch-undo` | the files the dropped turns changed | thread `trust_mode` or `auto_approve` when files would change | yes |
+| `POST /v1/threads/{id}/patch-undo` | the files the dropped turns changed | none; only files the dropped turns' own tool calls wrote, still holding the bytes the turn left, are restored | yes |
 | `POST /v1/threads/{id}/file-revert` | exactly one regular file | none; the restore point must be one the thread owns and `expected_hash` must match | no |
 
 **Admission.** A restore reserves the same admission the Runtime uses for
@@ -2043,7 +2043,6 @@ changed and no fork is published; `error.code` says why:
 | `restore_point_pruned` | the restore point is no longer in the snapshot store |
 | `path_not_snapshotted` | a dropped file-tool call wrote a path snapshots do not hold (ignored, built-in exclusion, or outside the workspace) |
 | `workspace_changed_since_turn` | a path the turns changed was changed afterwards (or between two dropped turns), a path changed while a dropped turn ran but outside its own tool calls, or a path that is not a regular file |
-| `restore_requires_trust` | there is something to restore and the thread is not in trusted mode or Full Access |
 | `workspace_unavailable` | the workspace directory is not available |
 
 For the first four a client can offer the conversation-only
@@ -2604,6 +2603,30 @@ thread deletion.
   checked against it instead of drifting from it. Two rules a client must
   respect: a `binding: "host"` row is never submitted as a model prompt, and
   a user command shadowing a builtin name wins that spelling.
+
+- `POST /v1/threads/{id}/commands/builtin` — run one terminal built-in
+  against the thread and return its own answer: `{name, text, is_error,
+  text_only}`. The body is `{name, args?}`, where `name` takes the canonical
+  spelling or an alias, with or without the leading slash.
+
+  Only read-only diagnostics the server can answer from thread state are
+  served (`/system`, `/tokens`, `/cost`); the served set lives in the
+  terminal host and is gated a second time by the data each portable handler
+  declares it needs, so a route cannot widen without the host widening
+  first. Any other name — including one no host knows — answers 404. A
+  thread whose engine is not loaded, or that has no live context estimate
+  yet, answers 409 rather than printing zeros; the route never starts an
+  engine. `/system` reports the effective system prompt the engine sends, and
+  `/tokens` counts the live session transcript. Like every other POST route,
+  it answers 403 to a watch-only device token, so a watch client cannot read
+  `/tokens` or `/cost` through it.
+
+  `text_only` is `false` when the command also asked the terminal host for an
+  action (a balance fetch, a snapshot restore): the text is still what the
+  command answered, but no client can perform that action on the host's
+  behalf. These executions keep no command receipt — every served handler is
+  pure over the snapshot — so a client must not look for one. Anything that
+  mutates the session stays a terminal-side command.
 
 **Hooks**
 - `GET /v1/hooks[?thread_id=...]` — `{workspace, enabled, hooks: [...],
@@ -3838,11 +3861,37 @@ instructions join the child's task prompt as its Fleet profile, and the child
 keeps the session's permissions and spawn limits. The document is used for this
 start only; it is not saved and does not change the selected Fleet.
 
-The response is `200 {thread_id, member_id, agent_id, state: "started"}`, or
-`202 {state: "queued"}` when the thread is mid-turn: host requests are handled
-between turns. Repeating the same `operation_key` with the same body returns
-the original `agent_id` once started; a different body under the same key is
-refused. The child appears in `/v1/agent-runs` with `owner_session_id` set to the
+Member starts are durable when runtime capabilities report
+`thread_fleet_member_durable_operations_v1`. The body may also carry
+`expected_store_id` (the `job_operation_store_id` from `/v1/runtime/info`; a
+different store answers `409 member_operation_store_changed`) and
+`request_fingerprint` (checked against the server's own fingerprint of the
+request; a mismatch answers `400 member_request_fingerprint_mismatch`). The
+body is capped at 2 MiB (`413`).
+
+Before the Engine is asked, the start is reserved in the Runtime store under
+`(store, thread, operation_key)` with a pre-minted `agent_id`, and the child is
+spawned under that id and persisted before its acceptance is written. Every
+answer is a receipt `{thread_id, member_id, operation_key,
+request_fingerprint, runtime_store_id, agent_id, state}`: `200` with state
+`accepted` once the child exists, or `202` with state `unknown` when the thread
+is mid-turn (host requests are handled between turns) and the start has not
+settled within 20 seconds. Read the outcome later with
+`GET /v1/threads/{id}/members/operations/{operation_key}`; an unknown key, or a
+key that belongs to another thread, is `404`. `accepted` is reported only while
+the thread still owns a worker with that id started for that member; otherwise
+it reads as `unknown`.
+
+Repeating the same `operation_key` with the same body returns the same receipt
+and never starts a second child, including after an Engine restart or a
+timeout. A different body under the same key is refused with
+`409 member_operation_mismatch`. A reservation that did not produce a child
+before the Engine that held it stopped is reported as `abandoned`, and a
+repeated start answers `409 member_operation_abandoned`; start again with a
+new key. A start the Engine refuses withdraws its reservation, so the same key
+may be retried. A thread with a start still in flight cannot be deleted or
+discarded until it settles.
+The child appears in `/v1/agent-runs` with `owner_session_id` set to the
 thread and its `member_id` as `session_name` (a display name may hold spaces or
 non-ASCII text, which session names refuse); `agent.spawned`,
 `agent.progress` and `agent.completed` arrive on the thread's event stream.

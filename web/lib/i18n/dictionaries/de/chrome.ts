@@ -19,14 +19,11 @@ import type { ChromeDict } from "../types";
  */
 export const chrome: ChromeDict = {
   navDocs: "Dokumentation",
-  navStart: "Erste Schritte",
-  navInstall: "Installieren",
-  navFaq: "FAQ",
-  navCommunity: "Community",
   navContribute: "Mitwirken",
+  navSignIn: "Anmelden",
+  navDesktop: "Desktop",
 
   navFeatures: "Funktionen",
-  navProduct: "Produkt",
   navModels: "Modelle",
   navPlugins: "Plugins",
 
@@ -41,6 +38,7 @@ export const chrome: ChromeDict = {
 
   menuOpen: "Menü öffnen",
   menuClose: "Menü schließen",
+  translationMachineDraft: "Diese Übersetzung ist ein maschineller Entwurf und wurde noch nicht von Muttersprachlern geprüft.",
 
   themeAuto: "auto",
   themeLight: "hell",
@@ -48,20 +46,17 @@ export const chrome: ChromeDict = {
   themeAria: "Design: {mode} (Klick zum Wechseln)",
   themeTitle: "Design · auto / hell / dunkel",
 
-  footerTagline: "Nutze jedes Modell mit einem Agenten, den du lesen kannst.",
   footerProduct: "Produkt",
   footerProject: "Projekt",
   footerDocs: "Dokumentation",
   footerGuide: "Erste Schritte",
   footerInstall: "Installation",
-  footerApps: "Desktop und Web",
   footerModels: "Modelle",
-  footerRuntime: "Runtime",
   footerFaq: "FAQ",
-  footerIssues: "Issues",
   footerContribute: "Mitwirken",
   footerRoadmap: "Roadmap",
   footerLicense: "MIT-Lizenz",
+  footerMerch: "Merchandise",
   footerTerms: "Nutzungsbedingungen",
   footerPrivacy: "Datenschutz",
   footerChangelog: "Änderungsprotokoll",
@@ -74,4 +69,20 @@ export const chrome: ChromeDict = {
   switcherLabel: "Sprache",
   switcherSwitchTo: "Zu {label} wechseln",
   partialBadge: "(teilweise)",
+
+  stateReleased: "Veröffentlicht",
+  stateAvailable: "Verfügbar",
+  stateBeta: "Beta",
+  stateDev: "Entwicklungsversion",
+  stateOpen: "Offen",
+  stateInviteOnly: "Nur auf Einladung",
+  stateNotOpen: "Noch nicht geöffnet",
+  stateNotPublic: "Nicht öffentlich",
+  stateInSource: "Im Quellcode, noch nicht veröffentlicht",
+  numbersAsOf: "Stand: {date}",
+  downloadMacos: "Für macOS herunterladen",
+  downloadVersion: "Version {version}",
+  downloadSize: "Größe {size}",
+  downloadChecksum: "SHA-256-Prüfsumme",
+  downloadSigned: "Signiert und notarisiert",
 };

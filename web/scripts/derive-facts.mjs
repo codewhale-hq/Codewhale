@@ -13,6 +13,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildFacts, deriveFeatures, REPO_ROOT } from "./facts-lib.mjs";
 import { deriveAgentDocs } from "./docs-sources-lib.mjs";
+import { refreshReleaseBaseline } from "./release-baseline-lib.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const target = resolve(__dirname, "..", "lib", "facts.generated.ts");
@@ -71,11 +72,15 @@ export interface ModelFact {
   addedAt: string | null;
 }
 
+export interface ReleaseAssetFact { name: string; size: number; sha256: string | null }
+
 export interface PublishedReleaseFact {
   tag: string;
   version: string;
   publishedAt: string;
   url: string;
+  readAt?: string;
+  assets?: ReleaseAssetFact[];
 }
 
 export interface RepoFacts {
@@ -100,6 +105,7 @@ export const FACTS: RepoFacts = ${JSON.stringify(out, null, 2)};
 
 writeFileSync(target, ts);
 writeFileSync(resolve(__dirname, "..", "data", "features.generated.json"), `${JSON.stringify(deriveFeatures(), null, 2)}\n`);
+refreshReleaseBaseline(out.latestPublishedRelease);
 writeFileSync(resolve(__dirname, "..", "data", "agent-docs.generated.json"), `${JSON.stringify(deriveAgentDocs(resolve(__dirname, ".."), REPO_ROOT), null, 2)}\n`);
 console.log(`[derive-facts] wrote ${target}`);
 console.log(

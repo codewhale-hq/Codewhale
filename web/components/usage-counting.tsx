@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Anonymous usage counting on the website — the recorder owner and the
+ * Usage counting on the website — the recorder owner and the
  * privacy-page control.
  *
  *   <UsageCounting>          Mounted once in the locale layout. Renders
@@ -33,6 +33,7 @@ import {
   FUNNEL_COUNTER_FIELDS,
   type FunnelCounter,
   createUsageRecorder,
+  privacySignalActive,
   type ProductCounter,
   type UsagePreference,
   type UsageRecorder,
@@ -57,6 +58,7 @@ function getRecorder(appVersion: string): UsageRecorder | null {
       appVersion,
       endpoint: ENDPOINT,
       storage,
+      blocked: () => privacySignalActive(),
     });
   }
   return recorder;
@@ -125,10 +127,14 @@ export function UsageCounting({ appVersion }: { appVersion: string }) {
 /** The privacy page's status line and opt-out control. */
 export function UsagePreferenceControl({ locale, appVersion }: { locale: string; appVersion: string }) {
   // `null` until mounted; `"unavailable"` when the browser offers no storage.
-  const [preference, setPreference] = useState<UsagePreference | "unavailable" | "unsaved" | null>(null);
+  const [preference, setPreference] = useState<UsagePreference | "unavailable" | "unsaved" | "signal" | null>(null);
   const t = (text: { en: string; zh: string }) => pickText(text, locale);
 
   useEffect(() => {
+    if (privacySignalActive()) {
+      setPreference("signal");
+      return;
+    }
     const current = getRecorder(appVersion);
     if (!current) {
       setPreference("unavailable");
@@ -160,7 +166,7 @@ export function UsagePreferenceControl({ locale, appVersion }: { locale: string;
           {t(USAGE_COUNTING_COPY.status[preference])}
         </p>
       )}
-      {preference !== null && preference !== "unavailable" && (
+      {preference !== null && preference !== "unavailable" && preference !== "signal" && (
         <button type="button" className="usage-counting-button" onClick={toggle} aria-pressed={!off}>
           {off ? t(USAGE_COUNTING_COPY.turnOn) : t(USAGE_COUNTING_COPY.turnOff)}
         </button>

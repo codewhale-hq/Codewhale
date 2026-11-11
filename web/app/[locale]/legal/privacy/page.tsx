@@ -4,9 +4,11 @@ import { PageHeader } from "@/components/page-header";
 import { UsagePreferenceControl } from "@/components/usage-counting";
 import { USAGE_COUNTING_COPY } from "@/lib/content/usage-counting";
 import { BUILD_FACTS } from "@/lib/facts";
-import { getChrome, getLegalPrivacy, pickText } from "@/lib/i18n/dictionaries";
+import { getLegalPrivacy, pickText } from "@/lib/i18n/dictionaries";
 import { buildPageMetadata } from "@/lib/page-meta";
 import { formatLegalDocumentStatus, LEGAL_DOCUMENTS, PrivacyContent, WEBSITE_USAGE_DISCLOSURE } from "@/lib/legal-copy";
+import { bodyDateLocale } from "@/lib/i18n/fallback";
+import { FallbackRegion } from "@/components/fallback-region";
 
 export async function generateMetadata({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
@@ -23,11 +25,11 @@ export default async function PrivacyPage({ params }: { params: Promise<{ locale
   const { locale } = await params;
   const t = getLegalPrivacy(locale);
   return (
-    <>
+    <FallbackRegion path="/legal/privacy" locale={locale}>
       <PageHeader
         kicker={t.kicker}
         title={t.title}
-        meta={formatLegalDocumentStatus("privacy", getChrome(locale).dateLocale)}
+        meta={formatLegalDocumentStatus("privacy", bodyDateLocale("/legal/privacy", locale))}
       />
       <div className="page-body">
         <div className="page-body-narrow">
@@ -49,6 +51,6 @@ export default async function PrivacyPage({ params }: { params: Promise<{ locale
           </article>
         </div>
       </div>
-    </>
+    </FallbackRegion>
   );
 }

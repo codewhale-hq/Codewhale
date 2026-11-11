@@ -13,14 +13,11 @@ import type { ChromeDict } from "../types";
  */
 export const chrome: ChromeDict = {
   navDocs: "Dokumentasi",
-  navStart: "Mulai",
-  navInstall: "Instal",
-  navFaq: "Tanya jawab",
-  navCommunity: "Komunitas",
   navContribute: "Kontribusi",
+  navSignIn: "Masuk",
+  navDesktop: "Desktop",
 
   navFeatures: "Kemampuan",
-  navProduct: "Produk",
   navModels: "Model",
   navPlugins: "Plugin",
 
@@ -35,6 +32,7 @@ export const chrome: ChromeDict = {
 
   menuOpen: "Buka menu",
   menuClose: "Tutup menu",
+  translationMachineDraft: "Terjemahan ini adalah draf mesin yang belum ditinjau oleh penutur asli.",
 
   themeAuto: "otomatis",
   themeLight: "terang",
@@ -42,20 +40,17 @@ export const chrome: ChromeDict = {
   themeAria: "Tema: {mode} (klik untuk mengganti)",
   themeTitle: "Tema · otomatis / terang / gelap",
 
-  footerTagline: "Gunakan model apa pun lewat agen yang bisa Anda baca.",
   footerProduct: "Produk",
   footerProject: "Proyek",
   footerDocs: "Dokumentasi",
   footerGuide: "Panduan memulai",
   footerInstall: "Instalasi",
-  footerApps: "Desktop dan web",
   footerModels: "Model",
-  footerRuntime: "Antarmuka runtime",
   footerFaq: "Tanya jawab",
-  footerIssues: "Masalah",
   footerContribute: "Kontribusi",
   footerRoadmap: "Peta jalan",
   footerLicense: "Lisensi MIT",
+  footerMerch: "Merchandise",
   footerTerms: "Ketentuan layanan",
   footerPrivacy: "Privasi",
   footerChangelog: "Catatan perubahan",
@@ -68,4 +63,20 @@ export const chrome: ChromeDict = {
   switcherLabel: "Bahasa",
   switcherSwitchTo: "Beralih ke {label}",
   partialBadge: "(sebagian)",
+
+  stateReleased: "Dirilis",
+  stateAvailable: "Tersedia",
+  stateBeta: "Beta",
+  stateDev: "Build pengembangan",
+  stateOpen: "Terbuka",
+  stateInviteOnly: "Hanya undangan",
+  stateNotOpen: "Belum dibuka",
+  stateNotPublic: "Belum publik",
+  stateInSource: "Ada di kode sumber, belum dirilis",
+  numbersAsOf: "Per {date}",
+  downloadMacos: "Unduh untuk macOS",
+  downloadVersion: "Versi {version}",
+  downloadSize: "Ukuran {size}",
+  downloadChecksum: "Checksum SHA-256",
+  downloadSigned: "Ditandatangani dan dinotarisasi",
 };

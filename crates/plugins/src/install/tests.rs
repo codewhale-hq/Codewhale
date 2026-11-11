@@ -1597,3 +1597,88 @@ fn dsh_admission_validates_engines_peer_ranges_and_platforms_and_admits_cjs_and_
         .to_string();
     assert!(err.contains(".node"), "{err}");
 }
+
+#[test]
+fn dsh_client_closure_is_retained_hashed_and_refuses_ambient_dependencies() {
+    let tmp = tempfile::tempdir().unwrap();
+    let make = |name: &str, client: &str| -> PathBuf {
+        let dir = tmp.path().join(name);
+        fs::create_dir_all(dir.join("lib")).unwrap();
+        fs::write(
+            dir.join("package.json"),
+            serde_json::json!({
+                "name": format!("@demo/{name}"),
+                "version": "1.0.0",
+                "main": "lib/index.cjs",
+                "exports": { "./client": { "default": "./lib/client.js" } },
+                "dsh": {
+                    "bundle": { "patch": "./cordis.patch.yml" },
+                    "client": { "inject": ["@deepseek-ai/dsh-client-ui-primitives"], "platform": "web" }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("cordis.patch.yml"),
+            "- insert:\n  - id: entry\n    name: ./lib/index.cjs\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("lib/index.cjs"),
+            "module.exports = { apply() {} };\n",
+        )
+        .unwrap();
+        fs::write(dir.join("lib/client.js"), client).unwrap();
+        fs::write(dir.join("lib/util.js"), "exports.v = 1;\n").unwrap();
+        dir
+    };
+
+    let good = make(
+        "good",
+        "const r = require(\"react\");\nconst p = require('@deepseek-ai/dsh-client-ui-primitives');\nconst u = require(\"./util\");\n",
+    );
+    let converted = dsh::convert_package(&good, &tmp.path().join("out-good")).unwrap();
+    assert_eq!(converted.client_closures.len(), 1);
+    let closure = &converted.client_closures[0];
+    assert_eq!(closure.entry, "source/lib/client.js");
+    assert!(closure.files.contains_key("source/lib/util.js"));
+    assert_eq!(closure.host_provided.len(), 2);
+    let installed = fs::read(tmp.path().join("out-good/source/lib/util.js")).unwrap();
+    assert_eq!(
+        closure.files["source/lib/util.js"],
+        codewhale_skill_install::install::sha256_hex(&installed)
+    );
+    assert!(
+        converted
+            .outcomes
+            .iter()
+            .any(|o| o.kind == "client" && o.outcome == "retained")
+    );
+    assert!(!converted.outcomes.iter().any(|o| o.needs_manual_port()));
+
+    for (label, source) in [
+        ("ambient", "require(\"left-pad\");\n"),
+        ("builtin", "require(\"node:fs\");\n"),
+        ("computed", "const n = \"x\"; require(n);\n"),
+        ("concat", "const l = \"en\"; require(\"./locale/\" + l);\n"),
+        ("concat-import", "const l = \"en\"; import(\"./a\" + l);\n"),
+        ("escape", "require(\"../../outside.js\");\n"),
+    ] {
+        let bad = make(label, source);
+        let converted =
+            dsh::convert_package(&bad, &tmp.path().join(format!("out-{label}"))).unwrap();
+        assert!(converted.client_closures.is_empty(), "{label}");
+        assert!(
+            converted
+                .outcomes
+                .iter()
+                .any(|o| o.kind == "client" && o.outcome == "skipped"),
+            "{label}"
+        );
+        assert!(
+            converted.requires_native,
+            "{label}: server half still imports"
+        );
+    }
+}

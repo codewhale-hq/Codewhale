@@ -14,6 +14,7 @@
  */
 
 import { AVAILABILITY_ROWS } from "./availability";
+import type { CapabilityClaim } from "../capabilities";
 import { FACTS } from "../facts.generated";
 import type { LocalizedText } from "./vocabulary";
 
@@ -22,6 +23,7 @@ const PUBLISHED_TAG = FACTS.latestPublishedRelease?.tag ?? "main";
 export interface ProductRow {
   title: LocalizedText;
   body: LocalizedText;
+  capability?: CapabilityClaim;
 }
 
 export type { ProductAvailabilityRow } from "./availability";
@@ -53,6 +55,7 @@ export const PRODUCT_COPY = {
       },
       href: "/docs/modes",
       command: "/mode work",
+      capability: { feature: "modes" },
     },
     {
       title: { en: "Fleet", zh: "Fleet" },
@@ -62,6 +65,7 @@ export const PRODUCT_COPY = {
       },
       href: "/docs/fleet",
       command: "/fleet setup",
+      capability: { feature: "fleet" },
     },
     {
       title: { en: "Workflows", zh: "Workflows" },
@@ -71,6 +75,7 @@ export const PRODUCT_COPY = {
       },
       href: `https://github.com/codewhale-hq/Codewhale/blob/${PUBLISHED_TAG}/docs/AUTOMATIC_WORKFLOWS.md`,
       command: "codewhale workflow run <workflow>",
+      capability: { feature: "workflows" },
     },
     {
       title: { en: "Skills and plugins", zh: "技能与插件" },
@@ -80,6 +85,7 @@ export const PRODUCT_COPY = {
       },
       href: "/docs/skills",
       command: "SKILL.md",
+      capability: { feature: "skills" },
     },
     {
       title: { en: "Receipts and undo", zh: "回执与撤销" },
@@ -89,6 +95,7 @@ export const PRODUCT_COPY = {
       },
       href: "/docs/review",
       command: "/receipts",
+      capability: { feature: "receipts" },
     },
   ],
 
@@ -97,14 +104,14 @@ export const PRODUCT_COPY = {
 
   controlHeading: { en: "Set permissions in the 0.10.3 source candidate", zh: "设置 0.10.3 源码候选版本的权限" },
   modes: [
-    { title: { en: "Plan", zh: "Plan" }, body: { en: "Blocks file mutation and shell execution. Permitted research may contact external services; session state can still be saved.", zh: "禁止文件修改与 shell 执行。获准的研究可访问外部服务；会话状态仍可保存。" } },
-    { title: { en: "Work", zh: "Work" }, body: { en: "Edits files and runs commands within the permission you set.", zh: "在你设定的权限内修改文件、运行命令。" } },
+    { title: { en: "Plan", zh: "Plan" }, capability: { feature: "modes" }, body: { en: "Blocks file mutation and shell execution. Permitted research may contact external services; session state can still be saved.", zh: "禁止文件修改与 shell 执行。获准的研究可访问外部服务；会话状态仍可保存。" } },
+    { title: { en: "Work", zh: "Work" }, capability: { feature: "modes" }, body: { en: "Edits files and runs commands within the permission you set.", zh: "在你设定的权限内修改文件、运行命令。" } },
   ] satisfies ProductRow[],
   permissions: [
-    { title: { en: "Ask", zh: "Ask" }, body: { en: "Prompts according to the active approval rules; saved permissions and hard policy boundaries still apply.", zh: "按当前审批规则询问；已保存的权限与强制策略边界仍然生效。" } },
-    { title: { en: "Accept Edits", zh: "Accept Edits" }, body: { en: "Allows ordinary edits inside a git workspace and asks before commands or sensitive-file edits. New source-candidate installs use this posture; an explicit saved choice stays in control.", zh: "允许 Git 工作区内的普通文件编辑，并在运行命令或修改敏感文件前询问。新安装的源码候选版本使用此设置；明确保存的选择始终优先。" } },
-    { title: { en: "Auto-Review", zh: "Auto-Review" }, body: { en: "Automatically reviews eligible actions and reports any action it cannot approve.", zh: "自动审核符合条件的操作，并报告无法批准的操作。" } },
-    { title: { en: "Full Access", zh: "Full Access" }, body: { en: "Allows commands to reach anything on this computer. Managed policy and repository law still apply.", zh: "允许命令访问这台计算机上的任何内容。托管策略与仓库规则仍然适用。" } },
+    { title: { en: "Ask", zh: "Ask" }, capability: { feature: "permission-postures" }, body: { en: "Prompts according to the active approval rules; saved permissions and hard policy boundaries still apply.", zh: "按当前审批规则询问；已保存的权限与强制策略边界仍然生效。" } },
+    { title: { en: "Accept Edits", zh: "Accept Edits" }, capability: { feature: "permission-postures", describesCurrentRow: true }, body: { en: "Allows ordinary edits inside a git workspace and asks before commands or sensitive-file edits. New source-candidate installs use this posture; an explicit saved choice stays in control.", zh: "允许 Git 工作区内的普通文件编辑，并在运行命令或修改敏感文件前询问。新安装的源码候选版本使用此设置；明确保存的选择始终优先。" } },
+    { title: { en: "Auto-Review", zh: "Auto-Review" }, capability: { feature: "permission-postures" }, body: { en: "Automatically reviews eligible actions and reports any action it cannot approve.", zh: "自动审核符合条件的操作，并报告无法批准的操作。" } },
+    { title: { en: "Full Access", zh: "Full Access" }, capability: { feature: "permission-postures" }, body: { en: "Allows commands to reach anything on this computer. Managed policy and repository law still apply.", zh: "允许命令访问这台计算机上的任何内容。托管策略与仓库规则仍然适用。" } },
   ] satisfies ProductRow[],
 
   actions: {

@@ -65,7 +65,7 @@ export const docsFleet: DocsFleetDict = {
           p: "这种声明式写法支持 `agent`、`branch`、`sequence`、`reduce`、`loop_until`、`cond`、`expand` 和 `teacher_review`。它会编译成经过验证的计划，拒绝 `import`、`fetch`、`eval`、`async` 等语法与调用。高级命令式 JavaScript 可在沙箱中通过异步 `task()` 和 `parallel()` 协调工作，但仍不能直接访问文件、shell 或网络；这些操作由智能体按当前策略执行。",
         },
         {
-          note: "Workflow 默认最多同时运行 16 个智能体；已接纳的工作等待空闲位置。默认不限制累计子智能体数量或计划结构深度，可用正数的 `[workflow] max_children` 或 `max_depth` 设置上限。运行时的智能体接纳和委派限制另行生效。循环必须声明 `max_iterations`。",
+          note: "Workflow 会限制同时运行的智能体数量；已接纳的工作等待空闲位置。默认不限制累计子智能体数量或计划结构深度，可用正数的 `[workflow] max_children` 或 `max_depth` 设置上限。运行时的智能体接纳和委派限制另行生效。循环必须声明 `max_iterations`。",
         },
       ],
     },

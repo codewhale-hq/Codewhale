@@ -24,6 +24,8 @@ use codewhale_util::files::{WorkspaceFile, same_file};
 const LEASE: Duration = Duration::from_secs(2);
 const OWNER_IDLE_EXIT: Duration = Duration::from_secs(600);
 const MAX_CLIENTS: usize = 4096;
+const PAIR_CODE_LIFETIME: Duration = Duration::from_secs(30);
+const MAX_PAIR_CODES: usize = 8;
 /// Request body limit for every owner route. Clients size batches to it.
 pub(super) const MAX_REQUEST_BYTES: usize = 64 * 1024;
 /// How long a route waits for the world thread's reply before answering 503.
@@ -158,6 +160,7 @@ struct Service {
     descriptor: Descriptor,
     frames: Arc<Mutex<VecDeque<Value>>>,
     tx: mpsc::SyncSender<Work>,
+    codes: Arc<Mutex<Vec<(String, Instant)>>>,
 }
 
 fn valid_client(id: &str) -> bool {
@@ -181,16 +184,19 @@ fn token_matches(candidate: &[u8], expected: &[u8]) -> bool {
     diff == 0
 }
 
-fn authorized(headers: &HeaderMap, state: &Service) -> bool {
+fn pinned(headers: &HeaderMap, state: &Service) -> bool {
     let origin = format!("http://127.0.0.1:{}", state.descriptor.port);
     let host = format!("127.0.0.1:{}", state.descriptor.port);
     if headers.get("host").and_then(|v| v.to_str().ok()) != Some(host.as_str()) {
         return false;
     }
-    if headers
+    !headers
         .get("origin")
         .is_some_and(|o| o.as_bytes() != origin.as_bytes())
-    {
+}
+
+fn authorized(headers: &HeaderMap, state: &Service) -> bool {
+    if !pinned(headers, state) {
         return false;
     }
     let bearer = format!("Bearer {}", state.descriptor.token);
@@ -205,6 +211,35 @@ fn authorized(headers: &HeaderMap, state: &Service) -> bool {
                 v.split(';')
                     .any(|v| token_matches(v.trim().as_bytes(), cookie.as_bytes()))
             })
+}
+
+fn mint_code(state: &Service, now: Instant) -> Option<String> {
+    let mut codes = state.codes.lock().ok()?;
+    codes.retain(|(_, issued)| now.duration_since(*issued) < PAIR_CODE_LIFETIME);
+    if codes.len() >= MAX_PAIR_CODES {
+        codes.remove(0);
+    }
+    let code = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    codes.push((code.clone(), now));
+    Some(code)
+}
+
+fn redeem_code(state: &Service, candidate: &[u8], now: Instant) -> bool {
+    let Ok(mut codes) = state.codes.lock() else {
+        return false;
+    };
+    codes.retain(|(_, issued)| now.duration_since(*issued) < PAIR_CODE_LIFETIME);
+    let mut found = None;
+    for (index, (code, _)) in codes.iter().enumerate() {
+        if token_matches(candidate, code.as_bytes()) {
+            found = Some(index);
+        }
+    }
+    found.map(|index| codes.remove(index)).is_some()
 }
 
 fn answer(result: Result<Value, String>) -> Response {
@@ -290,8 +325,21 @@ async fn export(State(state): State<Service>, headers: HeaderMap) -> Response {
     }
     submit(&state, Work::Export).await
 }
-async fn attach(State(state): State<Service>, headers: HeaderMap) -> Response {
+async fn pair(State(state): State<Service>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &state) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match mint_code(&state, Instant::now()) {
+        Some(code) => Json(json!({"code": code})).into_response(),
+        None => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
+async fn attach(State(state): State<Service>, headers: HeaderMap) -> Response {
+    let redeemed = pinned(&headers, &state)
+        && headers
+            .get("x-pet-code")
+            .is_some_and(|v| redeem_code(&state, v.as_bytes(), Instant::now()));
+    if !redeemed && !authorized(&headers, &state) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     (
@@ -394,6 +442,7 @@ pub fn serve(root: PathBuf, requested_port: u16) -> anyhow::Result<()> {
         descriptor: descriptor.clone(),
         frames: frames.clone(),
         tx,
+        codes: Arc::new(Mutex::new(Vec::new())),
     };
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let (ended_tx, ended_rx) = tokio::sync::oneshot::channel();
@@ -419,7 +468,7 @@ pub fn serve(root: PathBuf, requested_port: u16) -> anyhow::Result<()> {
         .route("/pixel-whale.webp", get(|| async { ([("content-type", "image/webp")], include_bytes!("pixel-whale.webp").as_slice()) }))
         .route("/v1/frame", get(frame)).route("/v1/action", post(action))
         .route("/v1/producer", post(producer)).route("/v1/audio", post(audio))
-        .route("/v1/export", get(export)).route("/v1/attach", post(attach))
+        .route("/v1/export", get(export)).route("/v1/attach", post(attach)).route("/v1/pair", post(pair))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .layer(axum::middleware::from_fn(|request: axum::extract::Request, next: axum::middleware::Next| async move {
             let mut response = next.run(request).await;
@@ -1013,6 +1062,103 @@ mod tests {
         assert!(activity.is_valid(), "invalid projection: {activity:?}");
         assert_eq!(activity.cursor, cursor);
         activity
+    }
+
+    fn service(port: u16) -> Service {
+        let (tx, _rx) = mpsc::sync_channel(1);
+        Service {
+            descriptor: Descriptor {
+                version: 1,
+                port,
+                token: "a".repeat(64),
+                identity: uuid::Uuid::new_v4().to_string(),
+            },
+            frames: Arc::new(Mutex::new(VecDeque::new())),
+            tx,
+            codes: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (key, value) in pairs {
+            map.insert(
+                axum::http::HeaderName::from_bytes(key.as_bytes()).unwrap(),
+                axum::http::HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        map
+    }
+
+    #[test]
+    fn authorized_accepts_only_the_owner_token_on_the_pinned_origin() {
+        let state = service(4100);
+        let token = "a".repeat(64);
+        let bearer = format!("Bearer {token}");
+        let cookie = format!("theme=dark; cw_pet={token}");
+        let wrong = format!("Bearer {}", "b".repeat(64));
+        let host = ("host", "127.0.0.1:4100");
+        assert!(authorized(
+            &headers(&[host, ("authorization", &bearer)]),
+            &state
+        ));
+        assert!(authorized(&headers(&[host, ("cookie", &cookie)]), &state));
+        assert!(authorized(
+            &headers(&[
+                host,
+                ("origin", "http://127.0.0.1:4100"),
+                ("authorization", &bearer)
+            ]),
+            &state
+        ));
+        assert!(!authorized(&headers(&[host]), &state));
+        assert!(!authorized(
+            &headers(&[host, ("authorization", &wrong)]),
+            &state
+        ));
+        assert!(!authorized(
+            &headers(&[host, ("authorization", &token)]),
+            &state
+        ));
+        assert!(!authorized(
+            &headers(&[host, ("cookie", &format!("cw_pet={}", "b".repeat(64)))]),
+            &state
+        ));
+        assert!(!authorized(
+            &headers(&[("host", "evil.test:4100"), ("authorization", &bearer)]),
+            &state
+        ));
+        assert!(!authorized(&headers(&[("authorization", &bearer)]), &state));
+        assert!(!authorized(
+            &headers(&[
+                host,
+                ("origin", "http://evil.test"),
+                ("authorization", &bearer)
+            ]),
+            &state
+        ));
+    }
+
+    #[test]
+    fn pair_code_is_single_use_and_expires() {
+        let state = service(4100);
+        let now = Instant::now();
+        let code = mint_code(&state, now).unwrap();
+        assert_eq!(code.len(), 64);
+        assert_ne!(code, state.descriptor.token);
+        assert!(!redeem_code(&state, b"nope", now));
+        assert!(redeem_code(&state, code.as_bytes(), now));
+        assert!(!redeem_code(&state, code.as_bytes(), now));
+        let stale = mint_code(&state, now).unwrap();
+        assert!(!redeem_code(
+            &state,
+            stale.as_bytes(),
+            now + PAIR_CODE_LIFETIME
+        ));
+        for _ in 0..MAX_PAIR_CODES + 3 {
+            mint_code(&state, now).unwrap();
+        }
+        assert_eq!(state.codes.lock().unwrap().len(), MAX_PAIR_CODES);
     }
 
     #[test]

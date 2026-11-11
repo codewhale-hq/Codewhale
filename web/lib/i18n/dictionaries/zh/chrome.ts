@@ -7,14 +7,11 @@ import type { ChromeDict } from "../types";
  */
 export const chrome: ChromeDict = {
   navDocs: "文档",
-  navStart: "指引",
-  navInstall: "安装",
-  navFaq: "常见问题",
-  navCommunity: "社区",
   navContribute: "贡献",
+  navSignIn: "登录",
+  navDesktop: "桌面版",
 
   navFeatures: "功能",
-  navProduct: "产品",
   navModels: "模型",
   navPlugins: "插件",
 
@@ -29,6 +26,7 @@ export const chrome: ChromeDict = {
 
   menuOpen: "打开菜单",
   menuClose: "关闭菜单",
+  translationMachineDraft: "本翻译为机器草稿，尚未经母语者审校。",
 
   themeAuto: "自动",
   themeLight: "浅色",
@@ -36,20 +34,17 @@ export const chrome: ChromeDict = {
   themeAria: "主题：{mode}（点击切换）",
   themeTitle: "主题 · 自动 / 浅色 / 深色",
 
-  footerTagline: "通过一个你读得懂的智能体使用任意模型。",
   footerProduct: "产品",
   footerProject: "项目",
   footerDocs: "文档",
   footerGuide: "新手指引",
   footerInstall: "安装",
-  footerApps: "桌面与网页",
   footerModels: "模型",
-  footerRuntime: "运行时",
   footerFaq: "常见问题",
-  footerIssues: "议题",
   footerContribute: "参与贡献",
   footerRoadmap: "路线图",
   footerLicense: "MIT 许可证",
+  footerMerch: "周边商品",
   footerTerms: "服务条款",
   footerPrivacy: "隐私政策",
   footerChangelog: "更新日志",
@@ -62,4 +57,20 @@ export const chrome: ChromeDict = {
   switcherLabel: "语言",
   switcherSwitchTo: "切换到 {label}",
   partialBadge: "(部分)",
+
+  stateReleased: "已发布",
+  stateAvailable: "可用",
+  stateBeta: "测试版",
+  stateDev: "开发版本",
+  stateOpen: "已开放",
+  stateInviteOnly: "仅限受邀",
+  stateNotOpen: "暂未开放",
+  stateNotPublic: "未公开",
+  stateInSource: "已在源码中，尚未发布",
+  numbersAsOf: "截至 {date}",
+  downloadMacos: "下载 macOS 版",
+  downloadVersion: "版本 {version}",
+  downloadSize: "大小 {size}",
+  downloadChecksum: "SHA-256 校验和",
+  downloadSigned: "已签名并经过公证",
 };

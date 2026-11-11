@@ -5,7 +5,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { getInterestCopy, getInterestItemCopy } from "@/lib/content/merch-interest";
 import { MERCH_INTEREST_ITEMS, type MerchInterestCurrency, type MerchInterestItemId, type MerchInterestPriceChoice } from "@/lib/merch/interest-options";
 import { MERCH_COUNTRIES } from "@/lib/merch/catalog";
-import { countryLabel } from "@/lib/content/merch-storefront";
+import { useCountryLabel } from "./use-country-label";
 import styles from "./merch-interest.module.css";
 
 export function MerchInterest({ locale }: { locale: string }) {
@@ -22,6 +22,7 @@ export function MerchInterest({ locale }: { locale: string }) {
   const [consent, setConsent] = useState(false);
   const errorRef = useRef<HTMLParagraphElement>(null);
   const groups = ["cotton", "stretch", "desk", "plush"] as const;
+  const labelCountry = useCountryLabel(locale);
   const prices = new Intl.NumberFormat(locale, { style: "currency", currency: currency.toUpperCase(), maximumFractionDigits: 0 });
   const changeCurrency = (value: MerchInterestCurrency) => {
     setCurrency(value);
@@ -74,7 +75,7 @@ export function MerchInterest({ locale }: { locale: string }) {
             </div>; })}</div>
           </div>)}
         </fieldset>
-        <div className={styles.contact}><div className={styles.field}><label htmlFor={`${id}-email`}>{d.email}</label><input id={`${id}-email`} name="email" type="email" autoComplete="email" required maxLength={254} value={email} onChange={event => setEmail(event.target.value)} /></div><div className={styles.field}><label htmlFor={`${id}-country`}>{d.country}</label><input id={`${id}-country`} name="country" autoComplete="country-name" required maxLength={80} list={`${id}-countries`} aria-describedby={`${id}-country-hint`} value={country} onChange={event => setCountry(event.target.value)} /><datalist id={`${id}-countries`}>{MERCH_COUNTRIES.map(country => <option key={country.code} value={countryLabel(country.code, country.name, locale)} />)}</datalist><p className={styles.note} id={`${id}-country-hint`}>{d.countryHint}</p></div></div>
+        <div className={styles.contact}><div className={styles.field}><label htmlFor={`${id}-email`}>{d.email}</label><input id={`${id}-email`} name="email" type="email" autoComplete="email" required maxLength={254} value={email} onChange={event => setEmail(event.target.value)} /></div><div className={styles.field}><label htmlFor={`${id}-country`}>{d.country}</label><input id={`${id}-country`} name="country" autoComplete="country-name" required maxLength={80} list={`${id}-countries`} aria-describedby={`${id}-country-hint`} value={country} onChange={event => setCountry(event.target.value)} /><datalist id={`${id}-countries`}>{MERCH_COUNTRIES.map(country => <option key={country.code} value={labelCountry(country.code, country.name)} />)}</datalist><p className={styles.note} id={`${id}-country-hint`}>{d.countryHint}</p></div></div>
         <div className={styles.trap} aria-hidden="true"><label htmlFor={`${id}-website`}>Website</label><input id={`${id}-website`} name="website" type="text" tabIndex={-1} autoComplete="off" maxLength={200} /></div>
         <label className={styles.consent}><input name="consent" type="checkbox" required checked={consent} onChange={event => setConsent(event.target.checked)} /><span>{d.consent}</span></label>
         <p className={styles.note}>{d.privacy} <Link href={`/${locale}/legal/privacy`}>{d.privacyLink}</Link></p>

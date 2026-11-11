@@ -1171,7 +1171,7 @@ fork 还可能包含 `backtrack_depth_from_tail` 与 `dropped_turn_id`，而
 - `POST /v1/threads/{id}/compact`（手动压缩）
 - `POST /v1/threads/{id}/undo` - 以去掉最后 N 个回合的方式 fork 线程（`{"depth": N}`，默认 0 = 仅最后一个回合）；返回 fork 出的线程以及 `original_user_text`，以便 GUI 预填输入框。改用 `{"turn_id": "turn_…"}` 时，指明要去掉的用户回合及其之后的所有回合，并优先于 `depth`；Runtime 在线程的恢复保护下解析它，因此其他客户端同时追加的回合不会移动切点。该回合不是此线程的用户回合时返回 `400`
 - `POST /v1/threads/{id}/fork-at-turn` - 在一个具名用户回合处 fork（`{"turn_id": "turn_…"}`，即 `GET /v1/threads/{id}` 报告的那个）。该 fork *保留*那个回合及其之前的每个回合，丢弃其后的回合；因此指名最后一个回合会保留整个对话。回执与 `/undo` 相同（`thread`、`original_user_text`、`original_user_images`），携带*第一个被丢弃*的用户回合的提示词——即接下来被问的是什么，即使中间夹着一个无提示词回合（如一次手动 `/compact`）——这样客户端可以把它放回输入区供编辑。源线程、它的会话文档与工作区都不受影响，也没有文件回滚：fork 是一个兄弟对话，而回退工作区会把随之留下的分支一起回退。客户端应当指名回合，而不是计算 `depth`——它们渲染的转录与这里裁剪的回合列表不是同一个列表（引导、仅图片提示词与注入的交接各自只位于一侧），一个差一的客户端计数会在回答 `201` 的同时 fork 错前缀。当该回合不是该线程的用户回合时返回 `400`。
-- `POST /v1/threads/{id}/patch-undo` - 回滚被丢弃回合改动过的文件，随后做同样的 fork（`{"depth": N}`）；除 fork 出的线程外还返回 `patch_result`（`files_restored`、`summary`、`snapshot_label`）。所有权、信任、准入与中止规则，以及拒绝时的 `error.code` 取值，参见 [工作区恢复端点](#工作区恢复端点)。
+- `POST /v1/threads/{id}/patch-undo` - 回滚被丢弃回合改动过的文件，随后做同样的 fork（`{"depth": N}`）；除 fork 出的线程外还返回 `patch_result`（`files_restored`、`summary`、`snapshot_label`）。所有权、准入与中止规则，以及拒绝时的 `error.code` 取值，参见 [工作区恢复端点](#工作区恢复端点)。
 - `POST /v1/threads/{id}/file-revert` - 从线程拥有的一个恢复点中恢复恰好一个文件（`{"path", "snapshot_id", "expected_hash"}`）；永不 fork 对话。参见 [工作区恢复端点](#工作区恢复端点)。
 - `POST /v1/threads/{id}/retry` - 以去掉最后 N 个回合的方式 fork，并立即启动一个新回合（`{"depth": N, "prompt": "..."}`；`prompt` 覆盖原始用户文本，省略时复用后者）
 
@@ -1450,7 +1450,7 @@ HTTP `202 Accepted` 与 `tool_call.resolved` 共享“持久接受”这层含�
 | 路由 | 范围 | 信任 | 是否 fork 线程 |
 | --- | --- | --- | --- |
 | `POST /v1/snapshots/{id}/restore` | 整个服务器工作区 | 仅需 bearer 令牌（操作者动作） | 否 |
-| `POST /v1/threads/{id}/patch-undo` | 被丢弃回合改动过的文件 | 当文件将被改动时需要线程 `trust_mode` 或 `auto_approve` | 是 |
+| `POST /v1/threads/{id}/patch-undo` | 被丢弃回合改动过的文件 | 无；只恢复被丢弃回合自己的工具调用写入、且仍保持该回合所留内容的文件 | 是 |
 | `POST /v1/threads/{id}/file-revert` | 恰好一个常规文件 | 无；恢复点必须属于该线程，且 `expected_hash` 必须匹配 | 否 |
 
 **准入。** 一次恢复会预定 Runtime 用于配置重载与会话检查点的同一个准入，
@@ -1531,7 +1531,6 @@ shell 命令不声明路径：它在被排除路径下写入的东西（构建�
 | `restore_point_pruned` | 恢复点已不在快照存储中 |
 | `path_not_snapshotted` | 某个被丢弃的文件工具调用写入了快照不保存的路径（被忽略、内置排除，或在工作区之外） |
 | `workspace_changed_since_turn` | 这些回合改动过的某个路径之后又被改动（或在两个被丢弃回合之间被改动）、某个路径在被丢弃回合运行期间但在其自身工具调用之外被改动，或某个路径不是常规文件 |
-| `restore_requires_trust` | 有东西要恢复，而线程不处于受信任模式或 Full Access |
 | `workspace_unavailable` | 工作区目录不可用 |
 
 对前四种情况，客户端可以改为提供只作用于对话的 `POST /v1/threads/{id}/undo`，
@@ -1936,6 +1935,24 @@ POST 前保留预期指纹，并在响应及按键 GET 恢复时核对，之后�
   对照它检查，而不是与它逐渐偏离。客户端必须遵守的两条规则：
   `binding: "host"` 的行永不会被作为模型提示词提交，且
   占用内置名称的用户命令在该拼写上胜出。
+
+- `POST /v1/threads/{id}/commands/builtin` — 针对该线程运行一个终端内置命令，
+  并返回它自己的回答：`{name, text, is_error, text_only}`。请求体为
+  `{name, args?}`，其中 `name` 可用规范拼写或别名，带不带前导斜杠均可。
+
+  只提供服务器能从线程状态回答的只读诊断命令（`/system`、`/tokens`、
+  `/cost`）；可提供的命令集合由终端宿主持有，并由各可移植处理器声明所需的
+  数据再把关一次，因此路由不会在宿主未先放开时自行扩展。其他任何名称——包括
+  没有任何宿主认识的名称——都返回 404。线程的引擎未加载，或尚无实时上下文
+  估算时返回 409，而不是打印零值；该路由从不启动引擎。`/system` 报告引擎实际
+  发送的有效系统提示词，`/tokens` 统计实时会话的对话记录。与其他 POST 路由一样，
+  它对仅用于观看的设备令牌返回 403，因此观看客户端无法通过它读取 `/tokens`
+  或 `/cost`。
+
+  当命令还向终端宿主请求了某个操作（余额获取、快照恢复）时，`text_only` 为
+  `false`：文本仍是命令的回答，但没有任何客户端能代宿主执行该操作。这些执行不
+  保留命令回执——每个提供的处理器对快照都是纯函数——因此客户端不应寻找回执。
+  任何会修改会话的操作仍是终端侧命令。
 
 **钩子**
 - `GET /v1/hooks[?thread_id=...]` — `{workspace, enabled, hooks: [...],

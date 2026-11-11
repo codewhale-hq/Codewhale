@@ -45,6 +45,7 @@ changelog or release notes, and this contributor record.
 **Contributions**
 
 - **[SamhandsomeLee](https://github.com/SamhandsomeLee)** — drove Responses request, URL and stream behavior from one checked dialect profile table ([#7261](https://github.com/codewhale-hq/Codewhale/pull/7261)).
+- **[gaord](https://github.com/gaord)** — ran the read-only `/system`, `/tokens` and `/cost` builtins over the Runtime API through one gated terminal-host catalog ([#7277](https://github.com/codewhale-hq/Codewhale/pull/7277)).
 
 </details>
 
@@ -78,6 +79,7 @@ changelog or release notes, and this contributor record.
 - **[asto18089](https://github.com/asto18089)** — diagnosed the NoNewPrivs child-matrix failure on hardened containers ([#7021](https://github.com/codewhale-hq/Codewhale/issues/7021)), dropped the false sandbox claim from the `fetch_url` description ([#7222](https://github.com/codewhale-hq/Codewhale/pull/7222)) and limited nested-repository discovery to the sub-agent worktree anchor ([#7224](https://github.com/codewhale-hq/Codewhale/pull/7224)). Accepted absolute in-workspace paths in sub-agent write claims ([#7227](https://github.com/codewhale-hq/Codewhale/pull/7227)). Repaired pre-0.10.0 topology checkpoint placement on session restore ([#7229](https://github.com/codewhale-hq/Codewhale/pull/7229)). Pointed the `verify` description at the Run tool instead of a retired name ([#7223](https://github.com/codewhale-hq/Codewhale/pull/7223)). Swept stale mode-jump and rail copy from the non-English packs ([#7225](https://github.com/codewhale-hq/Codewhale/pull/7225)), accepted absolute image paths that resolve inside the workspace ([#7226](https://github.com/codewhale-hq/Codewhale/pull/7226)) and reported follow-up delivery truthfully ([#7228](https://github.com/codewhale-hq/Codewhale/pull/7228)); all three were harvested with the original commits kept. Paused the durable task wall clock while an answerable prompt waits ([#7230](https://github.com/codewhale-hq/Codewhale/pull/7230)).
 - **[cmdcorp6534](https://github.com/cmdcorp6534)** — reported the Chinese input-method candidate window appearing away from the field being typed into ([#2323](https://github.com/codewhale-hq/Codewhale/issues/2323)).
 - **[Asteria1028](https://github.com/Asteria1028)** — reported pasted clipboard images piling up with no way to remove them ([#7221](https://github.com/codewhale-hq/Codewhale/issues/7221)).
+- **[ychu824](https://github.com/ychu824)** — reported every Anthropic request failing with a 400 once `tool_search` added a tool whose name contains a dot, such as `web.run` ([#7252](https://github.com/codewhale-hq/Codewhale/issues/7252)).
 
 </details>
 

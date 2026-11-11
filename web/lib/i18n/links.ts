@@ -28,78 +28,60 @@ export interface ChromeLink {
   label: string;
 }
 
-/**
- * The primary nav links — Product / Computer Use / Models / Plugins / Docs — identical
- * in shape for every routed locale. This is the strip a serious product
- * shows; discovery and community routes live in `secondaryNavLinks` (the
- * compact sheet's second group) and the footer.
- */
-export function navLinks(locale: string, chrome: ChromeDict): ChromeLink[] {
+export const SECURITY_POLICY_URL = `${REPO_URL}/blob/main/SECURITY.md`;
+
+export function navLinks(locale: string, chrome: ChromeDict, desktopReleased = false): ChromeLink[] {
   return [
-    { href: `/${locale}/product`, label: chrome.navProduct },
-    { href: `/${locale}/computer-use`, label: "Computer Use" },
-    { href: `/${locale}/models`, label: chrome.navModels },
-    { href: `/${locale}/plugins`, label: chrome.navPlugins },
     { href: `/${locale}/docs`, label: chrome.navDocs },
+    { href: `/${locale}/models`, label: chrome.navModels },
+    { href: `/${locale}/changelog`, label: chrome.footerChangelog },
+    { href: `/${locale}/contribute`, label: chrome.navContribute },
+    ...(desktopReleased ? [{ href: `/${locale}/app`, label: chrome.navDesktop }] : []),
   ];
 }
 
-/** The compact sheet's second group: getting started, releases, and community. */
-export function secondaryNavLinks(locale: string, chrome: ChromeDict): ChromeLink[] {
-  return [
-    { href: `/${locale}/features`, label: chrome.navFeatures },
-    { href: `/${locale}/docs/guide`, label: chrome.navStart },
-    { href: `/${locale}/install`, label: chrome.navInstall },
-    { href: `/${locale}/changelog`, label: chrome.footerChangelog },
-    { href: `/${locale}/ratatui`, label: "Ratatui" },
-    { href: `/${locale}/faq`, label: chrome.navFaq },
-    { href: `/${locale}/community`, label: chrome.navCommunity },
-    { href: `/${locale}/contribute`, label: chrome.navContribute },
-    { href: `/${locale}/roadmap`, label: chrome.footerRoadmap },
-  ];
+export function signInLink(locale: string, chrome: ChromeDict): ChromeLink {
+  return { href: `/${locale}/signin`, label: chrome.navSignIn };
 }
 
 /** Footer "Product" column: what it is and where to get it. */
 export function footerProductLinks(locale: string, chrome: ChromeDict): ChromeLink[] {
   return [
-    { href: `/${locale}/computer-use`, label: "Computer Use" },
-    { href: `/${locale}/app`, label: chrome.footerApps },
-    { href: `/${locale}/features`, label: chrome.navFeatures },
+    { href: `/${locale}/install`, label: chrome.footerInstall },
     { href: `/${locale}/models`, label: chrome.footerModels },
     { href: `/${locale}/plugins`, label: chrome.navPlugins },
-    { href: `/${locale}/install`, label: chrome.footerInstall },
+    { href: `/${locale}/computer-use`, label: "Computer Use" },
   ];
 }
 
 /** Footer "Docs" column: reading material for people building on Codewhale. */
 export function footerDocsLinks(locale: string, chrome: ChromeDict): ChromeLink[] {
   return [
-    { href: `/${locale}/docs`, label: chrome.footerDocs },
     { href: `/${locale}/docs/guide`, label: chrome.footerGuide },
-    { href: `/${locale}/runtime`, label: chrome.footerRuntime },
-    { href: `/${locale}/ratatui`, label: "Ratatui" },
+    { href: `/${locale}/docs`, label: chrome.footerDocs },
     { href: `/${locale}/changelog`, label: chrome.footerChangelog },
     { href: `/${locale}/faq`, label: chrome.footerFaq },
+    { href: `/${locale}/ratatui`, label: "Ratatui" },
   ];
 }
 
-/** Footer "Project" column — GitHub plus the pinned legal link. */
 export function footerProjectLinks(locale: string, chrome: ChromeDict): ChromeLink[] {
   return [
-    { href: `/${locale}/roadmap`, label: chrome.footerRoadmap },
-    { href: `/${locale}/contribute`, label: chrome.footerContribute },
     { href: REPO_URL, label: "GitHub" },
-    { href: REPO_ISSUES_URL, label: chrome.footerIssues },
+    { href: `/${locale}/contribute`, label: chrome.footerContribute },
     { href: DISCORD_URL, label: "Discord" },
+    { href: `/${locale}/merch`, label: chrome.footerMerch },
     { href: REPO_LICENSE_URL, label: chrome.footerLicense },
   ];
 }
 
 /** Footer legal destinations — reachable, never a 404. */
-export function footerLegalLinks(locale: string, chrome: ChromeDict): ChromeLink[] {
+export function footerLegalLinks(locale: string, chrome: ChromeDict, usageData: string): ChromeLink[] {
   return [
     { href: `/${locale}/legal/terms`, label: chrome.footerTerms },
     { href: `/${locale}/legal/privacy`, label: chrome.footerPrivacy },
+    { href: `/${locale}/legal/privacy#usage-counting`, label: usageData },
+    { href: SECURITY_POLICY_URL, label: chrome.footerSecurity },
   ];
 }
 
