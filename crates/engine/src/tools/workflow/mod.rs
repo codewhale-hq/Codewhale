@@ -1464,11 +1464,21 @@ async fn start_workflow(
             })?
             .to_string();
         let path = PathBuf::from(path);
+        let resume_from = args
+            .pointer("/evolution/resumeFrom")
+            .and_then(Value::as_str)
+            .map(PathBuf::from);
         let workspace = context.workspace.clone();
         let id = run_id.clone();
         Some(
             tokio::task::spawn_blocking(move || {
-                ExperimentalSearch::freeze(&path, &workspace, &id, &brief, &model)
+                if let Some(checkpoint) = resume_from {
+                    ExperimentalSearch::resume(
+                        &checkpoint, &path, &workspace, &id, &brief, &model,
+                    )
+                } else {
+                    ExperimentalSearch::freeze(&path, &workspace, &id, &brief, &model)
+                }
             })
             .await
             .map_err(|error| ToolError::execution_failed(error.to_string()))?
@@ -5161,6 +5171,32 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
                     DriverError::Unavailable("experimental search lock poisoned".to_string())
                 })
                 .map(|experiment| experiment.summary());
+        }
+        if action == "resume_state" {
+            return experiment
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("experimental search lock poisoned".to_string())
+                })?
+                .resume_state()
+                .map_err(DriverError::Rejected);
+        }
+        if action == "checkpoint" {
+            let generation = request
+                .get("generation")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| DriverError::Rejected("generation is required".to_string()))?
+                as u32;
+            let state = request
+                .get("state")
+                .ok_or_else(|| DriverError::Rejected("checkpoint state is required".to_string()))?;
+            return experiment
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("experimental search lock poisoned".to_string())
+                })?
+                .checkpoint(generation, state)
+                .map_err(DriverError::Rejected);
         }
         if action == "apply_policy" {
             let candidate_id = request

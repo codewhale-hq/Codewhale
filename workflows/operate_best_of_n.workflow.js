@@ -78,10 +78,34 @@ export default async function (args) {
       throw new Error(`Infeasible experimental budget plan: required ${frozen.budget_plan.required_turns}, available ${frozen.budget_plan.available_turns}`);
     }
     const basePolicy = Object.freeze({ ...frozen.shadow_policy });
+    const mode = args.evolution.mode === "solve_task" ? "solve_task" : "learn_policy";
+    const config = { arm, mode, population, generations, executionBudget };
     const all = [];
     const selections = [];
     let parents = [];
-    const mode = args.evolution.mode === "solve_task" ? "solve_task" : "learn_policy";
+    let startGeneration = 0;
+    let resumeSummary = null;
+    if (args.evolution.resumeFrom !== undefined) {
+      const state = await task.experimentalSearch({ action: "resume_state" });
+      if (JSON.stringify(state.config) !== JSON.stringify(config)
+        || !Number.isInteger(state.next_generation)
+        || state.next_generation <= 0 || state.next_generation >= generations
+        || !Array.isArray(state.all) || !Array.isArray(state.parents)
+        || !Array.isArray(state.selections)) {
+        throw new Error("Frozen evolution population or run configuration changed on resume");
+      }
+      all.push(...state.all);
+      selections.push(...state.selections);
+      parents = state.parents;
+      startGeneration = state.next_generation;
+      resumeSummary = await task.experimentalSearch({ action: "summary" });
+    }
+    const pauseAfterGeneration = args.evolution.pauseAfterGeneration;
+    if (pauseAfterGeneration !== undefined
+      && (!Number.isInteger(pauseAfterGeneration) || pauseAfterGeneration < startGeneration
+        || pauseAfterGeneration >= generations - 1)) {
+      throw new Error("Experimental pause requires a nonfinal generation boundary");
+    }
     const chooseDelta = (parent) => {
       const previous = Object.keys(parent.lineage?.mutation_delta ?? {});
       if (parent.status === "FAIL" && !previous.includes("planning_budget")
@@ -97,7 +121,7 @@ export default async function (args) {
       return parent.policy.candidate_strategy === "direct"
         ? { candidate_strategy: "focused" } : { candidate_strategy: "direct" };
     };
-    for (let generation = 0; generation < generations; generation++) {
+    for (let generation = startGeneration; generation < generations; generation++) {
       if (generation > 0 && !parents.length) break;
       if (generation > 0 && mode === "solve_task" && all.some((item) => item.receipt.status === "PASS")) break;
       phase(`Evolution generation ${generation}`);
@@ -289,6 +313,19 @@ export default async function (args) {
         feedback: item.receipt.public_failure_feedback,
         material: item.receipt.review_material,
       }));
+      if (generation + 1 < generations) {
+        const checkpoint = await task.experimentalSearch({
+          action: "checkpoint", generation,
+          state: { config, next_generation: generation + 1,
+            all, selections, parents },
+        });
+        if (pauseAfterGeneration === generation) {
+          return { scenario: "operate-evolution", strategy, arm, mode,
+            status: "PAUSED", checkpoint, population, generations,
+            executionBudget, completed_generations: generation + 1,
+            winner_id: "NONE", promotion: "proposal_only" };
+        }
+      }
     }
     const passing = all.filter((item) => item.receipt.status === "PASS"
       && (!item.policy.extra_verification || item.devReview?.verdict === "pass"));
@@ -397,6 +434,7 @@ export default async function (args) {
         selection_cost: item.selectionCost,
       })),
       winner_id: winner ?? "NONE", replay, review, selections,
+      resume_summary: resumeSummary,
       code_selection: { winner_id: winner ?? "NONE", artifact_id:
         winner ? all.find((item) => item.id === winner)?.receipt.artifact_id : null,
         basis: winner ? "public_pass_holdout_replay_read_only_review" : "no_qualified_code" },

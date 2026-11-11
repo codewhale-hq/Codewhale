@@ -245,6 +245,27 @@ impl ArtifactStore {
         &self.baseline_id
     }
 
+    pub(super) fn reopen_verified(root: &Path, frozen: &Self) -> Result<Self, String> {
+        let recorded = fs::read(root.join("baseline.json")).map_err(|error| error.to_string())?;
+        let expected = fs::read(frozen.root.join("baseline.json"))
+            .map_err(|error| error.to_string())?;
+        if recorded != expected {
+            return Err("resume baseline tree differs from current frozen baseline".to_string());
+        }
+        for entry in &frozen.baseline {
+            let path = root.join("blobs").join(&entry.blob_hash);
+            let bytes = fs::read(&path).map_err(|error| error.to_string())?;
+            if bytes.len() as u64 != entry.size_bytes || digest(&bytes) != entry.blob_hash {
+                return Err(format!("resume baseline blob changed: {}", entry.path));
+            }
+        }
+        Ok(Self {
+            root: root.to_path_buf(),
+            baseline: frozen.baseline.clone(),
+            baseline_id: frozen.baseline_id.clone(),
+        })
+    }
+
     pub(super) fn capture(
         &self,
         workspace: &Path,
