@@ -1188,6 +1188,9 @@
         "context_window": 1000000,
         "max_output": 131072
       },
+      "qwen4-max-preview": {
+        "source": "Token Plan Supported Models table, https://qwencloud.com/pricing/token-plan, verified 2026-11-11: id qwen4-max-preview (New), capabilities Text Generation, Reasoning Model, Visual Understanding; see source_receipts"
+      },
       "step-3.5-flash": {
         "context_window": 256000,
         "modalities": [
@@ -4178,6 +4181,12 @@
         "aliases": []
       },
       {
+        "id": "qwen4-max-preview",
+        "label": "Qwen",
+        "added_at": "2026-11-10",
+        "aliases": []
+      },
+      {
         "id": "kimi-for-coding-highspeed",
         "label": "Moonshot/Kimi",
         "added_at": "2026-07-27",
@@ -4779,7 +4788,8 @@
       "https://api.deepinfra.com/models/list": "verified 2026-10-20: deepseek-ai/DeepSeek-V4.1-Flash-1017, deepseek-ai/DeepSeek-V4.1-Flash, deepseek-ai/DeepSeek-V4-Pro-0813 and deepseek-ai/DeepSeek-V4-Flash-0731 are listed and not deprecated, each with max_tokens 1048576 and the tools tag; both V4.1 Flash ids are tagged multimodal and reasoning, V4-Flash-0731 reasoning; V4-Pro-0813 carries can-disable-reasoning beside a non-reasoning tag, while its model page documents low, high and max reasoning effort and the Models.dev deepseek/deepseek-v4-pro-0813 row marks reasoning, so reasoning is recorded; the V4-Pro and V4-Flash previews are still listed; no separate output limit is published, so none is recorded",
       "https://modelscope.cn/api/v1/models/deepseek-ai/DeepSeek-V4-Pro-0813": "verified 2026-10-20: the ModelScope card describes DeepSeek-V4-Pro-0813 as the official release of DeepSeek-V4-Pro on the preview model structure, whose card lists a 1M context length; no separate ModelScope API-Inference context limit is published there",
       "https://modelscope.cn/api/v1/models/deepseek-ai/DeepSeek-V4.1-Flash": "verified 2026-10-20: the ModelScope card states contexts of up to one million tokens and a recommended 1M context_window; no separate ModelScope API-Inference context limit is published there",
-      "https://platform.claude.com/docs/en/models/haiku-4-5/overview": "verified 2026-10-22: claude-haiku-4-5 supports manual extended thinking and image input, with 200K context and 64K output; no adaptive-thinking or default-effort support inferred"
+      "https://platform.claude.com/docs/en/models/haiku-4-5/overview": "verified 2026-10-22: claude-haiku-4-5 supports manual extended thinking and image input, with 200K context and 64K output; no adaptive-thinking or default-effort support inferred",
+      "https://qwencloud.com/pricing/token-plan": "verified 2026-11-11: the Supported Models table lists qwen4-max-preview marked New with Text Generation, Reasoning Model and Visual Understanding, so image input is recorded; the page gives no context window, maximum output, tool calling or thinking control, so none is recorded and Codewhale sends no thinking switch"
     },
     "transports": [
       {
@@ -5051,6 +5061,17 @@
         "endpoint_key": "messages",
         "default_for_provider": false,
         "source": "preserved reviewed exact transport snapshot; see source_receipts"
+      },
+      {
+        "provider": "modelstudio-token-plan",
+        "id": "qwen4-max-preview",
+        "endpoint_key": "chat",
+        "default_for_provider": false,
+        "source": "Token Plan Supported Models table, verified 2026-11-11; see source_receipts",
+        "limits": {},
+        "capabilities": {
+          "image_input": "supported"
+        }
       },
       {
         "provider": "opencode-go",
@@ -6870,10 +6891,22 @@
         "@MODELSTUDIO_TEXT_MODELS"
       ],
       "modelstudio-coding-plan": [
-        "@MODELSTUDIO_TEXT_MODELS"
+        "qwen3.8-max",
+        "qwen3.7-plus",
+        "qwen3.7-max",
+        "qwen3.6-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash-0731",
+        "glm-5.2"
       ],
       "modelstudio-coding-plan-anthropic": [
-        "@MODELSTUDIO_TEXT_MODELS"
+        "qwen3.8-max",
+        "qwen3.7-plus",
+        "qwen3.7-max",
+        "qwen3.6-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash-0731",
+        "glm-5.2"
       ],
       "mistral": [
         "$DEFAULT_MISTRAL_MODEL",

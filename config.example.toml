@@ -924,7 +924,7 @@ base_url = "https://api.deepseek.com/beta"
 # (https://bailian.console.aliyun.com/)
 #
 # Token Plan Personal and Team share the same AP-Southeast (Singapore) endpoint.
-# Available text/coding models: qwen3.8-max, qwen3.8-max-preview, qwen3.7-plus,
+# Available text/coding models: qwen3.8-max, qwen4-max-preview, qwen3.7-plus,
 # qwen3.7-max, qwen3.6-flash, deepseek-v4-pro, deepseek-v4-flash-0731, glm-5.2
 #
 # Provider aliases: modelstudio-token-plan, modelstudio_token_plan,
@@ -944,7 +944,8 @@ base_url = "https://api.deepseek.com/beta"
 # (https://bailian.console.aliyun.com/)
 #
 # Coding Plan uses a separate international endpoint (coding-intl.dashscope).
-# Same model catalog as the Token Plan.
+# Same model ids as the Token Plan except qwen4-max-preview, which is
+# Token Plan only.
 #
 # Provider aliases: modelstudio-coding-plan, modelstudio_coding_plan,
 #                   alibaba-coding-plan, dashscope-coding-plan

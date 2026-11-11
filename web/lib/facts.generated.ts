@@ -42,7 +42,7 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-11-11T04:33:00.951Z",
+  "generatedAt": "2026-11-11T04:36:18.685Z",
   "sourceRevision": null,
   "sourceCommittedAt": null,
   "version": "0.10.3",
@@ -357,6 +357,14 @@ export const FACTS: RepoFacts = {
       "contextWindow": 1048576,
       "maxOutput": 65536,
       "reasoning": true,
+      "addedAt": "2026-11-10"
+    },
+    {
+      "id": "qwen4-max-preview",
+      "provider": "Qwen",
+      "contextWindow": null,
+      "maxOutput": null,
+      "reasoning": false,
       "addedAt": "2026-11-10"
     },
     {

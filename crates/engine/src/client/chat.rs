@@ -5443,6 +5443,7 @@ mod alias_thinking_detection_tests {
             "foo-reasoner",
             "new-model-reasoning",
             "acme-reasoner-v2",
+            "qwen4-max-preview",
         ] {
             assert!(
                 !should_replay_reasoning_content_for_provider_on_route(

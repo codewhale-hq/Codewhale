@@ -1942,6 +1942,18 @@ mod tests {
             Some("disabled"),
             "{body}"
         );
+
+        let mut preview_client = modelstudio_test_client(
+            "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic",
+        );
+        preview_client.route_facts = preview_client.catalog_facts_for_model("qwen4-max-preview");
+        for effort in [None, Some("high"), Some("max"), Some("off")] {
+            let mut request = request_with("qwen4-max-preview", effort, None, None);
+            request.max_tokens = 64_000;
+            let body = preview_client.build_anthropic_body(&request, true);
+            assert!(body.get("thinking").is_none(), "{effort:?}: {body}");
+            assert!(body.get("output_config").is_none(), "{effort:?}: {body}");
+        }
     }
 
     #[test]
