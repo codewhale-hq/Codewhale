@@ -11,7 +11,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const repo = path.resolve(__dirname, "../..");
-const bytes = '#!/bin/sh\necho "executed $*" >> "$INSTALL_TEST_EXECUTED"\necho "codewhale 0.9.11"\n';
+const bytes = '#!/bin/sh\necho "executed $*" >> "$INSTALL_TEST_EXECUTED"\ncase "$1" in --help) printf \'%s\\n\' "${INSTALL_TEST_HELP:-}" ;; *) echo "codewhale 0.9.11" ;; esac\n';
 
 function executable(file, body) {
   fs.writeFileSync(file, body, { mode: 0o755 });
@@ -65,7 +65,7 @@ cp "$INSTALL_TEST_ASSETS/$asset" "$output"
   function prepare() { fs.mkdirSync(env.CODEWHALE_INSTALL_DIR, { recursive: true }); }
   function untouched() {
     const runs = fs.existsSync(env.INSTALL_TEST_EXECUTED) ? fs.readFileSync(env.INSTALL_TEST_EXECUTED, "utf8").trim().split("\n") : [];
-    assert.ok(runs.every(line => line === "executed doctor --installs --brief"), `installers must not execute existing files or sudo: ${runs.join(", ")}`);
+    assert.ok(runs.every(line => line === "executed doctor --installs --brief" || line === "executed --help"), `installers must not execute existing files or sudo: ${runs.join(", ")}`);
   }
   return { root, home, bin, archive, assets, destination, env, run, prepare, untouched };
 }
@@ -233,6 +233,28 @@ exec /bin/ln "$@"
       assert.deepEqual(fs.readdirSync(foreign), []);
       assert.equal(fs.existsSync(path.join(f.destination, "codew")), false);
       assert.equal(fs.readdirSync(f.destination).some(name => name.startsWith(".codewhale-install.")), false);
+      f.untouched();
+    });
+  }
+}
+
+const helpWithout = "Usage: codewhale [OPTIONS] [PROMPT]...\n\nCommands:\n  update   Update\n  doctor   Diagnose";
+const helpWith = `${helpWithout}\n  uninstall   Remove this receipt-owned release install`;
+for (const kind of ["website", "archive"]) {
+  for (const [label, help, supported] of [["without", helpWithout, false], ["with", helpWith, true]]) {
+    test(`${kind}: a binary ${label} an uninstall command ${supported ? "gets" : "never gets"} the uninstall and update-mode lines`, t => {
+      const f = fixture(t, kind);
+      f.env.INSTALL_TEST_HELP = help;
+      f.env.SHELL = "/bin/bash";
+      const result = f.run();
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout.includes("uninstall --yes"), supported, result.stdout);
+      assert.equal(result.stdout.includes("update.mode"), supported, result.stdout);
+      assert.equal(/codewhale uninstall/.test(result.stdout), supported && kind === "website", result.stdout);
+      assert.equal(result.stdout.includes("this release has no uninstall command"), !supported, result.stdout);
+      if (!supported) {
+        assert.ok(result.stdout.includes(`rm "${fs.realpathSync(f.destination)}/codewhale" "${fs.realpathSync(f.destination)}/codew" "${fs.realpathSync(f.destination)}/.codewhale-install.sha256"`), result.stdout);
+      }
       f.untouched();
     });
   }

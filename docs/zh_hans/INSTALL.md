@@ -182,7 +182,7 @@ export PATH="$HOME/.local/bin:$PATH"; hash -r
 command -v codewhale codew
 ```
 
-这个三行块带有标记，`codewhale uninstall` 之后可以精确地移除它。你自己加的裸 `export PATH=…`
+这个三行块带有标记，`codewhale uninstall`（0.10.3 及更高版本）之后可以精确地移除它；0.10.2 请自行删除这三行。你自己加的裸 `export PATH=…`
 行归你自己管理：卸载从不改动它，因为 `~/.local/bin` 也被其他工具共用。
 
 ### 选项
@@ -216,8 +216,8 @@ codewhale doctor        # diagnostics; see the note in §8 about what it does NO
 ### 升级 / 卸载
 
 * 升级：此安装会自动更新（见 §7），也可以立即运行 `codewhale update`。
-* 卸载：`~/.local/bin/codewhale uninstall` 预览该安装收据所拥有的文件；加上
-  `--yes` 才会删除。数据的清理见 §12。
+* 卸载（0.10.3 及更高版本）：`~/.local/bin/codewhale uninstall` 预览该安装收据所拥有的文件；加上
+  `--yes` 才会删除。0.10.2 及更早版本没有这个命令（输入它会开启一次对话，并把这个词发给模型），请运行 `rm ~/.local/bin/codewhale ~/.local/bin/codew ~/.local/bin/.codewhale-install.sha256`。数据的清理见 §12。
 
 ---
 
@@ -680,7 +680,7 @@ codewhale auth clear --provider <id>
 
 ### 第 2 步：预览并删除所选安装
 
-先运行 `codewhale doctor --installs` 查看每个副本的路径、所有者和删除方式。
+先运行 `codewhale doctor --installs` 查看每个副本的路径、所有者和删除方式。`uninstall` 命令从 0.10.3 起提供；0.10.2 及更早版本请手动删除文件：`rm <目录>/codewhale <目录>/codew <目录>/.codewhale-install.sha256`。
 使用要移除的程序的完整路径运行 `uninstall` 查看计划，确认后再加 `--yes`。
 普通卸载保留会话、配置和文件快照。
 

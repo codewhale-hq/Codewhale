@@ -496,7 +496,17 @@ if [ "${CODEWHALE_INSTALL_COMPILED_HOST:-}" = 1 ]; then
 fi
 
 install_binary "$tmpdir/$receipt_name" "$install_dir/$receipt_name" 644
-say "Uninstall this receipted copy: \"$install_dir/codewhale\" uninstall --yes"
+supports_uninstall=0
+installed_help="$("$install_dir/codewhale" --help </dev/null 2>/dev/null || true)"
+if printf '%s\n' "$installed_help" | grep -E '^[[:space:]]+uninstall([[:space:]]|$)' >/dev/null; then
+  supports_uninstall=1
+fi
+if [ "$supports_uninstall" -eq 1 ]; then
+  say "Uninstall this receipted copy: \"$install_dir/codewhale\" uninstall --yes"
+else
+  say "Uninstall: this release has no uninstall command. Remove the files: rm \"$install_dir/codewhale\" \"$install_dir/codew\" \"$install_dir/.codewhale-install.sha256\""
+  say "Your data in ~/.codewhale is separate; delete it only if you want it gone."
+fi
 say "Installed checksummed release commands:"
 say "  $install_dir/codewhale"
 say "  $install_dir/codew"
@@ -509,7 +519,9 @@ fi
 say ""
 say "Use this installation: \"$install_dir/codewhale\""
 say "Future updates: \"$install_dir/codewhale\" update"
-say "Updates install automatically; turn off with: codewhale config set update.mode notify"
+if [ "$supports_uninstall" -eq 1 ]; then
+  say "Updates install automatically; turn off with: codewhale config set update.mode notify"
+fi
 path_selected=1
 for command_name in codewhale codew; do
   resolved="$(command -v "$command_name" 2>/dev/null || true)"
@@ -568,7 +580,11 @@ if [ "$path_selected" -eq 0 ]; then
       esac
       say "Put $install_dir first on PATH in future shells (run once; this installer does not edit shell profiles):"
       say "  printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH=\"$path_dir:\$PATH\"' '# <<< codewhale PATH <<<' >> ~/$profile"
-      say "The marker lines let codewhale uninstall remove exactly this block; a bare export line is yours and is never touched."
+      if [ "$supports_uninstall" -eq 1 ]; then
+        say "The marker lines let codewhale uninstall remove exactly this block; a bare export line is yours and is never touched."
+      else
+        say "To undo this later, delete the three lines between and including the marker lines."
+      fi
       say "Then run: . ~/$profile   (or open a new terminal)"
       say "Or for this shell only:"
       say "  export PATH=\"$path_dir:\$PATH\"; hash -r"

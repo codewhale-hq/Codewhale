@@ -310,13 +310,25 @@ done
 echo ""
 install_binary "$receipt_tmp/$receipt_name" "$BIN_DIR/$receipt_name" 0644
 echo "Done. Commands installed to $BIN_DIR."
-echo "Uninstall this receipted copy: \"$BIN_DIR/codewhale\" uninstall --yes"
+supports_uninstall=0
+installed_help="$("$BIN_DIR/codewhale" --help </dev/null 2>/dev/null || true)"
+if printf '%s\n' "$installed_help" | grep -E '^[[:space:]]+uninstall([[:space:]]|$)' >/dev/null; then
+    supports_uninstall=1
+fi
+if [[ "$supports_uninstall" == 1 ]]; then
+    echo "Uninstall this receipted copy: \"$BIN_DIR/codewhale\" uninstall --yes"
+else
+    echo "Uninstall: this release has no uninstall command. Remove the files: rm \"$BIN_DIR/codewhale\" \"$BIN_DIR/codew\" \"$BIN_DIR/.codewhale-install.sha256\""
+    echo "Your data in ~/.codewhale is separate; delete it only if you want it gone."
+fi
 if [[ -n "$recovery_dir" ]]; then
     echo "Previous files are kept in $recovery_dir for 30 days. Undo: \"$BIN_DIR/codewhale\" doctor --restore $(basename "$recovery_dir")"
 fi
 "$BIN_DIR/codewhale" doctor --installs --brief 2>/dev/null || true
 echo "Future updates: \"$BIN_DIR/codewhale\" update"
-echo "Updates install automatically; turn off with: codewhale config set update.mode notify"
+if [[ "$supports_uninstall" == 1 ]]; then
+    echo "Updates install automatically; turn off with: codewhale config set update.mode notify"
+fi
 for bin in codewhale codew; do
     resolved="$(command -v "$bin" || true)"
     if [[ "$resolved" != "$BIN_DIR/$bin" ]]; then

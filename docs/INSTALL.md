@@ -247,6 +247,7 @@ command -v codewhale codew
 
 The three-line block is marked so `codewhale uninstall` can remove exactly it later. A bare
 `export PATH=…` line is yours: uninstall never touches it, because other tools share `~/.local/bin`.
+`codewhale uninstall` exists in Codewhale 0.10.3 and later; on 0.10.2 delete the three lines yourself.
 
 ### Options
 
@@ -291,8 +292,10 @@ codewhale doctor        # diagnostics; see the note in §8 about what it does NO
 ### Upgrade / uninstall
 
 * Upgrade: automatic for this install (see §7), or `codewhale update` now.
-* Uninstall: `~/.local/bin/codewhale uninstall` previews the receipt-owned
-  files; add `--yes` to remove them. See §12 for data.
+* Uninstall (0.10.3 and later): `~/.local/bin/codewhale uninstall` previews the receipt-owned
+  files; add `--yes` to remove them. On 0.10.2 or earlier there is no such command (the word
+  would start a chat): run `rm ~/.local/bin/codewhale ~/.local/bin/codew ~/.local/bin/.codewhale-install.sha256`.
+  See §12 for data.
 
 ---
 
@@ -629,6 +632,8 @@ binary whose SHA-256 that manifest already lists. Non-interactive
 starts never prompt and never apply an unsigned update.
 
 Turn it down or off:
+
+Needs Codewhale 0.10.3 or later; 0.10.2 has no `update.mode` key.
 
 ```bash
 codewhale config set update.mode notify   # tell me about updates, don't download
@@ -1029,6 +1034,8 @@ codewhale auth clear --provider deepseek
 ```
 
 ### Step 2: remove the program
+
+The `uninstall` command exists in Codewhale 0.10.3 and later. On 0.10.2 or earlier it is not a command, and typing it starts a chat that sends the word to your model. Remove the files by hand instead, for a Unix installer copy: `rm <dir>/codewhale <dir>/codew <dir>/.codewhale-install.sha256`, where `<dir>` is the install directory (`~/.local/bin` by default).
 
 | Installed with | Remove with |
 |---|---|
