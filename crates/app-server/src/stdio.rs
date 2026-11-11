@@ -18,111 +18,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::time::Duration;
+use tokio::io::AsyncWriteExt as _;
 use tokio::io::{AsyncBufRead, AsyncWrite};
-use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 use tokio_util::sync::CancellationToken;
 
-#[derive(Debug, thiserror::Error)]
-pub enum FrameRefusal {
-    #[error("control frame exceeds the 8 MiB transport limit")]
-    TooLarge,
-    #[error("control frame is not UTF-8")]
-    InvalidUtf8,
-}
+pub use codewhale_util::bounded_lines::{BoundedLines, FrameRefusal, is_frame_refusal};
 
-pub fn is_frame_refusal(error: &std::io::Error) -> bool {
-    error
-        .get_ref()
-        .is_some_and(|source| source.is::<FrameRefusal>())
-}
-
-/// Cancellation-safe, allocation-bounded newline framing shared by every
-/// local control transport. Consumed partial bytes remain owned by the reader.
-pub struct BoundedLines<R> {
-    reader: R,
-    pub(crate) pending: Vec<u8>,
-    discarding: bool,
-}
-
-impl<R: AsyncBufRead + Unpin> BoundedLines<R> {
-    pub fn new(reader: R) -> Self {
-        Self {
-            reader,
-            pending: Vec::new(),
-            discarding: false,
-        }
-    }
-
-    pub fn into_inner(self) -> R {
-        self.reader
-    }
-    pub async fn next_line(&mut self) -> std::io::Result<Option<String>> {
-        loop {
-            let available = self.reader.fill_buf().await?;
-            if available.is_empty() {
-                self.discarding = false;
-                if self.pending.is_empty() {
-                    return Ok(None);
-                }
-                if self.pending.len() > MAX_RUNTIME_IMAGE_BODY_BYTES {
-                    self.pending.clear();
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        FrameRefusal::TooLarge,
-                    ));
-                }
-                let bytes = std::mem::take(&mut self.pending);
-                return String::from_utf8(bytes).map(Some).map_err(|_| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, FrameRefusal::InvalidUtf8)
-                });
-            }
-            let available = &available[..available.len().min(8192)];
-            let newline = available.iter().position(|&byte| byte == b'\n');
-            let count = newline.unwrap_or(available.len());
-            if self.discarding {
-                self.reader.consume(count + usize::from(newline.is_some()));
-                if newline.is_some() {
-                    self.discarding = false;
-                } else {
-                    tokio::task::yield_now().await;
-                }
-                continue;
-            }
-            if count > (MAX_RUNTIME_IMAGE_BODY_BYTES + 1).saturating_sub(self.pending.len()) {
-                self.pending.clear();
-                self.reader.consume(count + usize::from(newline.is_some()));
-                self.discarding = newline.is_none();
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    FrameRefusal::TooLarge,
-                ));
-            }
-            // Do not let Vec's geometric growth double an almost-full frame.
-            self.pending.reserve_exact(count);
-            self.pending.extend_from_slice(&available[..count]);
-            self.reader.consume(count + usize::from(newline.is_some()));
-            if self.pending.len() > MAX_RUNTIME_IMAGE_BODY_BYTES
-                && self.pending.last() != Some(&b'\r')
-            {
-                self.pending.clear();
-                self.discarding = newline.is_none();
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    FrameRefusal::TooLarge,
-                ));
-            }
-            if newline.is_some() {
-                if self.pending.last() == Some(&b'\r') {
-                    self.pending.pop();
-                }
-                let bytes = std::mem::take(&mut self.pending);
-                return String::from_utf8(bytes).map(Some).map_err(|_| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, FrameRefusal::InvalidUtf8)
-                });
-            }
-        }
-    }
-}
+const _: () =
+    assert!(codewhale_util::bounded_lines::MAX_FRAME_BYTES == MAX_RUNTIME_IMAGE_BODY_BYTES);
 
 /// The stdio JSON-RPC loop, generic over its transport so it can be driven by
 /// a duplex pipe in tests rather than the process's real stdin/stdout.

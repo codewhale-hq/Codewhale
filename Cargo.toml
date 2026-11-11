@@ -73,6 +73,7 @@ repository = "https://github.com/codewhale-hq/CodeWhale"
 warnings = "deny"
 
 [workspace.dependencies]
+agent-client-protocol = { version = "=5.2.0", default-features = false }
 agent-client-protocol-schema = { version = "=1.17.0", default-features = false }
 anyhow = "1.0.100"
 async-trait = "0.1.89"

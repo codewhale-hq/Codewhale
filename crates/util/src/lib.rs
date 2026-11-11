@@ -1,3 +1,4 @@
+pub mod bounded_lines;
 pub mod bundle_file;
 pub mod files;
 pub mod fs_confined;
