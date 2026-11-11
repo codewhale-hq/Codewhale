@@ -45,7 +45,6 @@ pub(in crate::commands) mod debug_operations;
 use debug_operations::DebugOperationsAdapter;
 pub(in crate::commands) mod config_messages;
 mod config_policy_messages;
-mod diagnostics_messages;
 #[cfg(test)]
 pub(crate) use debug_diagnostics::CostComponents as DebugCostComponents;
 use debug_diagnostics::DebugDiagnosticsAdapter;
@@ -2464,7 +2463,7 @@ pub(crate) fn resolve_message_id(key: &str) -> Option<MessageId> {
         .or_else(|| key_to_project_message_id(key))
         .or_else(|| key_to_plugin_message_id(key))
         .or_else(|| key_to_session_message_id(key))
-        .or_else(|| diagnostics_messages::resolve(key))
+        .or_else(|| codewhale_engine::diagnostics_messages::resolve(key))
         .or_else(|| config_policy_messages::resolve(key))
         .or_else(|| config_messages::resolve(key))
         .or_else(|| core_navigation::resolve_message(key))
@@ -2619,49 +2618,7 @@ pub(crate) fn key_to_project_message_id(key: &str) -> Option<MessageId> {
     })
 }
 
-/// Replace `{name}` placeholders with the supplied named values.
-///
-/// Returns `None` when the replacement set does not exactly cover every
-/// placeholder in the template (missing, extra, or duplicate names).
-pub(in crate::commands) fn apply_named_replacements(
-    template: &str,
-    replacements: &[(&str, &str)],
-) -> Option<String> {
-    let supplied: std::collections::BTreeMap<&str, &str> = replacements.iter().copied().collect();
-    if supplied.len() != replacements.len() {
-        return None; // duplicate replacement name
-    }
-    let mut placeholders = std::collections::BTreeSet::new();
-    let mut cursor = 0usize;
-    while let Some(start) = template[cursor..].find('{') {
-        let start = cursor + start;
-        let Some(end) = template[start + 1..].find('}') else {
-            break;
-        };
-        let end = start + 1 + end;
-        let name = &template[start + 1..end];
-        if !name.is_empty() {
-            placeholders.insert(name);
-        }
-        cursor = end + 1;
-    }
-    if placeholders != supplied.keys().copied().collect() {
-        return None;
-    }
-    let placeholders: Vec<_> = replacements
-        .iter()
-        .map(|(name, _)| format!("{{{name}}}"))
-        .collect();
-    let replacements: Vec<_> = placeholders
-        .iter()
-        .zip(replacements)
-        .map(|(placeholder, (_, value))| (placeholder.as_str(), *value))
-        .collect();
-    Some(codewhale_protocol::display::interpolate(
-        template,
-        &replacements,
-    ))
-}
+pub(in crate::commands) use codewhale_engine::diagnostics_messages::apply_named_replacements;
 
 /// Atomic composer/media adapter (FEAT-018 D4).
 ///

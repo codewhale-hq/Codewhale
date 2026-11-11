@@ -414,6 +414,53 @@ pub fn action_line(action: &ReceiptAction) -> String {
     one_line(&line)
 }
 
+fn tokens_line(tokens: &ReceiptTokens) -> String {
+    let mut line = match (tokens.input, tokens.output) {
+        (Some(input), Some(output)) => {
+            format!("Tokens: {input} in · {output} out · {} total", tokens.total)
+        }
+        _ => format!("Tokens: {} total", tokens.total),
+    };
+    if let Some(calls) = tokens.calls {
+        line.push_str(&format!(
+            " · {}",
+            plural(calls, "provider call", "provider calls")
+        ));
+    }
+    let detail: Vec<String> = [
+        ("cache read", tokens.cache_read),
+        ("cache write", tokens.cache_write),
+        ("reasoning", tokens.reasoning),
+    ]
+    .into_iter()
+    .filter_map(|(label, value)| value.map(|value| format!("{value} {label}")))
+    .collect();
+    if !detail.is_empty() {
+        line.push_str(&format!(" ({})", detail.join(", ")));
+    }
+    line
+}
+
+fn usage_block(usage: &ReceiptUsage) -> String {
+    let mut out = String::new();
+    if let Some(tokens) = &usage.tokens {
+        out.push_str(&one_line(&tokens_line(tokens)));
+        out.push('\n');
+    }
+    if let Some(cost) = &usage.cost {
+        out.push_str("Cost, as /cost reports it:\n");
+        for line in cost
+            .report
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
+            out.push_str(&format!("  {}\n", one_line(line)));
+        }
+    }
+    out
+}
+
 /// The readable receipt: header, totals, one line per action, then what the
 /// record does not hold. Valid Markdown and plain enough for a terminal.
 #[must_use]
@@ -457,6 +504,10 @@ pub fn render_markdown(receipt: &Receipt) -> String {
     out.push_str("\n\n");
     out.push_str(&one_line(&totals_line(receipt)));
     out.push_str("\n\n");
+    if let Some(usage) = &receipt.usage {
+        out.push_str(&usage_block(usage));
+        out.push('\n');
+    }
     let width = receipt.actions.len().to_string().len();
     for action in &receipt.actions {
         out.push_str(&format!(

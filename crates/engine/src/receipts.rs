@@ -70,6 +70,12 @@ const CLAIM_CEILING: [&str; 3] = [
 
 pub use codewhale_command_contract::facets::debug_receipts::*;
 
+mod usage;
+pub use usage::{
+    cost_projection_from_snapshot, receipt_cost, saved_session_usage, session_usage,
+    tokens_from_sources, with_usage,
+};
+
 // ---------------------------------------------------------------------------
 // Normalized input
 // ---------------------------------------------------------------------------
@@ -325,7 +331,15 @@ pub fn thread_receipt(
     let notes = BTreeSet::from([
         "Shell file changes: a Runtime thread's workspace snapshots are not tagged with the thread, so files a command changed are not itemized; only file tools are.".to_string(),
     ]);
-    Ok(assemble(
+    let covered: Vec<&TurnRecord> = ordered
+        .iter()
+        .copied()
+        .filter(|record| turn.is_none_or(|turn| record.id == turn))
+        .collect();
+    let tokens = usage::thread_tokens(&covered);
+    let mut notes = notes;
+    notes.insert(usage::thread_cost_note().to_string());
+    let mut receipt = assemble(
         source,
         steps,
         approvals,
@@ -338,7 +352,12 @@ pub fn thread_receipt(
             approvals_recorded: true,
         },
         notes,
-    ))
+    );
+    receipt.usage = tokens.map(|tokens| ReceiptUsage {
+        tokens: Some(tokens),
+        cost: None,
+    });
+    Ok(receipt)
 }
 
 // ---------------------------------------------------------------------------
@@ -414,13 +433,16 @@ pub fn run_receipts_command(
         Some(prefix) => {
             let id = sessions.resolve_session_id_prefix(prefix)?;
             let session = sessions.load_session_snapshot(&id)?;
-            session_receipt(
-                session_source(&session.metadata),
-                &session.messages,
-                &session.approval_receipts,
-                &session.turn_outcomes,
-                turn,
-            )?
+            with_usage(
+                session_receipt(
+                    session_source(&session.metadata),
+                    &session.messages,
+                    &session.approval_receipts,
+                    &session.turn_outcomes,
+                    turn,
+                )?,
+                saved_session_usage(&session.metadata),
+            )
         }
         None => {
             let latest_session = sessions.list_sessions()?.into_iter().next();
@@ -440,13 +462,16 @@ pub fn run_receipts_command(
                 }
                 (Some(metadata), _, _) => {
                     let session = sessions.load_session_snapshot(&metadata.id)?;
-                    session_receipt(
-                        session_source(&session.metadata),
-                        &session.messages,
-                        &session.approval_receipts,
-                        &session.turn_outcomes,
-                        turn,
-                    )?
+                    with_usage(
+                        session_receipt(
+                            session_source(&session.metadata),
+                            &session.messages,
+                            &session.approval_receipts,
+                            &session.turn_outcomes,
+                            turn,
+                        )?,
+                        saved_session_usage(&session.metadata),
+                    )
                 }
                 _ => anyhow::bail!("no saved session or Runtime thread to read"),
             }
@@ -2009,6 +2034,7 @@ fn assemble(
         turn: turn.map(str::to_string),
         postures,
         totals,
+        usage: None,
         actions,
         omitted_actions,
         not_recorded: notes.into_iter().collect(),

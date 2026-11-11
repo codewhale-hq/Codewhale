@@ -1,11 +1,12 @@
 //! Stable diagnostics translation keys mapped to the existing catalog.
-//! This host-only bridge does not introduce new copy or infer provider prices.
+//! This bridge does not introduce new copy or infer provider prices.
 
-use codewhale_localization::MessageId;
+use codewhale_command_contract::facets::CommandPresentationContext;
+use codewhale_localization::{Locale, MessageId, tr};
 
-pub(super) fn resolve(key: &str) -> Option<MessageId> {
+pub fn resolve(key: &str) -> Option<MessageId> {
     if let Some(reason) = key.strip_prefix("cost_reason_") {
-        return Some(codewhale_engine::pricing::UnpricedReason::from_label(reason).message_id());
+        return Some(crate::pricing::UnpricedReason::from_label(reason).message_id());
     }
     Some(match key {
         "cmd_diff_git_unavailable" => MessageId::CmdDiffGitUnavailable,
@@ -82,4 +83,51 @@ pub(super) fn resolve(key: &str) -> Option<MessageId> {
         "cmd_cache_session_rates" => MessageId::CmdCacheSessionRates,
         _ => return None,
     })
+}
+
+pub fn apply_named_replacements(template: &str, replacements: &[(&str, &str)]) -> Option<String> {
+    let supplied: std::collections::BTreeMap<&str, &str> = replacements.iter().copied().collect();
+    if supplied.len() != replacements.len() {
+        return None;
+    }
+    let mut placeholders = std::collections::BTreeSet::new();
+    let mut cursor = 0usize;
+    while let Some(start) = template[cursor..].find('{') {
+        let start = cursor + start;
+        let Some(end) = template[start + 1..].find('}') else {
+            break;
+        };
+        let end = start + 1 + end;
+        let name = &template[start + 1..end];
+        if !name.is_empty() {
+            placeholders.insert(name);
+        }
+        cursor = end + 1;
+    }
+    if placeholders != supplied.keys().copied().collect() {
+        return None;
+    }
+    let placeholders: Vec<_> = replacements
+        .iter()
+        .map(|(name, _)| format!("{{{name}}}"))
+        .collect();
+    let replacements: Vec<_> = placeholders
+        .iter()
+        .zip(replacements)
+        .map(|(placeholder, (_, value))| (placeholder.as_str(), *value))
+        .collect();
+    Some(codewhale_protocol::display::interpolate(
+        template,
+        &replacements,
+    ))
+}
+
+pub struct EnglishDiagnostics;
+
+impl CommandPresentationContext for EnglishDiagnostics {
+    fn translate(&self, key: &str, replacements: &[(&str, &str)]) -> Result<String, String> {
+        let message_id = resolve(key).ok_or_else(|| "unknown translation key".to_string())?;
+        apply_named_replacements(&tr(Locale::En, message_id), replacements)
+            .ok_or_else(|| "invalid translation replacement contract".to_string())
+    }
 }

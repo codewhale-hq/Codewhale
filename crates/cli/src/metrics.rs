@@ -425,6 +425,74 @@ pub struct RuntimeRequestStats {
     pub provider_reported_output_tokens: u64,
 }
 
+#[derive(Debug, Default, serde::Serialize)]
+pub struct SessionUsageStats {
+    pub sessions: u64,
+    pub usage_receipts: u64,
+    pub usage_receipts_incomplete: u64,
+    pub provider_reported_input_tokens: u64,
+    pub provider_reported_output_tokens: u64,
+    pub sessions_with_total_tokens_only: u64,
+    pub total_tokens_only: u64,
+}
+
+fn record_session_usage(v: &Value, rollup: &mut Rollup) {
+    let Some(sources) = v
+        .pointer("/metadata/cost/accounted_usage_sources")
+        .and_then(Value::as_object)
+    else {
+        let total = v
+            .pointer("/metadata/total_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if total > 0 {
+            let stats = &mut rollup.session_usage;
+            stats.sessions_with_total_tokens_only =
+                stats.sessions_with_total_tokens_only.saturating_add(1);
+            stats.total_tokens_only = stats.total_tokens_only.saturating_add(total);
+        }
+        return;
+    };
+    let stats = &mut rollup.session_usage;
+    let mut counted = false;
+    for contribution in sources.values() {
+        let record = contribution.get("record");
+        let reported = match record
+            .and_then(|record| record.pointer("/settlement/coverage"))
+            .and_then(Value::as_str)
+        {
+            Some(coverage) => matches!(coverage, "reported" | "incomplete"),
+            None => record
+                .and_then(|record| record.pointer("/usage/usage"))
+                .is_some_and(|usage| {
+                    usage.get("input_tokens").and_then(Value::as_u64) != Some(0)
+                        || usage.get("output_tokens").and_then(Value::as_u64) != Some(0)
+                }),
+        };
+        if !reported {
+            continue;
+        }
+        let tokens = |name: &str| {
+            record
+                .and_then(|record| record.pointer(&format!("/usage/usage/{name}")))
+                .and_then(Value::as_u64)
+        };
+        let (Some(input), Some(output)) = (tokens("input_tokens"), tokens("output_tokens")) else {
+            stats.usage_receipts_incomplete = stats.usage_receipts_incomplete.saturating_add(1);
+            continue;
+        };
+        stats.usage_receipts = stats.usage_receipts.saturating_add(1);
+        stats.provider_reported_input_tokens =
+            stats.provider_reported_input_tokens.saturating_add(input);
+        stats.provider_reported_output_tokens =
+            stats.provider_reported_output_tokens.saturating_add(output);
+        counted = true;
+    }
+    if counted {
+        stats.sessions = stats.sessions.saturating_add(1);
+    }
+}
+
 /// Top-level rollup.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct Rollup {
@@ -445,6 +513,7 @@ pub struct Rollup {
     pub capacity: CapacityStats,
     pub credentials: CredentialStats,
     pub runtime_requests: RuntimeRequestStats,
+    pub session_usage: SessionUsageStats,
     /// Total lines read across all sources.
     pub total_lines: u64,
     /// Lines successfully parsed.
@@ -935,6 +1004,8 @@ fn read_session_file(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rol
     if let Some(ts) = session_ts {
         rollup.touch_ts(&ts);
     }
+
+    record_session_usage(&v, rollup);
 
     // Walk messages looking for tool_use calls with associated results.
     let messages = match v.get("messages").and_then(|m| m.as_array()) {
@@ -1640,13 +1711,42 @@ fn print_human(rollup: &Rollup, since: Option<DateTime<Utc>>) {
         );
     }
     if runtime.provider_usage_receipts == 0 {
-        println!("Provider usage receipts: (none recorded; this is not zero usage)");
+        println!(
+            "Provider usage receipts (Runtime events): (none recorded; this is not zero usage)"
+        );
     } else {
         println!(
-            "Provider usage receipts: {} records, {} input tokens, {} output tokens",
+            "Provider usage receipts (Runtime events): {} records, {} input tokens, {} output tokens",
             fmt_num(runtime.provider_usage_receipts),
             fmt_num(runtime.provider_reported_input_tokens),
             fmt_num(runtime.provider_reported_output_tokens),
+        );
+    }
+    let session_usage = &rollup.session_usage;
+    if session_usage.usage_receipts == 0 {
+        println!(
+            "Provider usage receipts (saved terminal sessions): (none recorded; this is not zero usage)"
+        );
+    } else {
+        println!(
+            "Provider usage receipts (saved terminal sessions): {} records in {} sessions, {} input tokens, {} output tokens",
+            fmt_num(session_usage.usage_receipts),
+            fmt_num(session_usage.sessions),
+            fmt_num(session_usage.provider_reported_input_tokens),
+            fmt_num(session_usage.provider_reported_output_tokens),
+        );
+    }
+    if session_usage.sessions_with_total_tokens_only > 0 {
+        println!(
+            "Saved sessions with a combined token total only: {} sessions, {} tokens (no per-call usage receipts saved)",
+            fmt_num(session_usage.sessions_with_total_tokens_only),
+            fmt_num(session_usage.total_tokens_only),
+        );
+    }
+    if session_usage.usage_receipts_incomplete > 0 {
+        println!(
+            "Saved-session usage coverage: {} usage receipts incomplete, not counted as zero",
+            fmt_num(session_usage.usage_receipts_incomplete),
         );
     }
     if runtime.diagnostics_unavailable_turn_receipts > 0
@@ -2239,6 +2339,33 @@ mod tests {
         assert_eq!(runtime.provider_reported_output_tokens, 5);
         assert_ne!(runtime.provider_reported_input_tokens, 10_018);
         assert_eq!(runtime.model_requests_started, 2, "status is not a request");
+    }
+
+    #[test]
+    fn saved_terminal_session_usage_is_counted_apart_from_runtime_events() {
+        let session = serde_json::json!({
+            "metadata": { "cost": { "accounted_usage_sources": {
+                "a": { "record": { "settlement": { "coverage": "reported" }, "usage": { "usage": { "input_tokens": 40, "output_tokens": 6 } } } },
+                "b": { "record": { "settlement": { "coverage": "missing" }, "usage": { "usage": { "input_tokens": 0, "output_tokens": 0 } } } },
+                "c": { "record": { "settlement": { "coverage": "incomplete" }, "usage": { "usage": { "input_tokens": 3 } } } }
+            } } }
+        });
+        let mut rollup = Rollup::default();
+        record_session_usage(&session, &mut rollup);
+        let usage = &rollup.session_usage;
+        assert_eq!(usage.usage_receipts, 1);
+        assert_eq!(usage.usage_receipts_incomplete, 1);
+        assert_eq!(usage.sessions, 1);
+        assert_eq!(usage.provider_reported_input_tokens, 40);
+        assert_eq!(usage.provider_reported_output_tokens, 6);
+        record_session_usage(&serde_json::json!({ "metadata": {} }), &mut rollup);
+        assert_eq!(rollup.session_usage.sessions, 1);
+        record_session_usage(
+            &serde_json::json!({ "metadata": { "total_tokens": 900 } }),
+            &mut rollup,
+        );
+        assert_eq!(rollup.session_usage.sessions_with_total_tokens_only, 1);
+        assert_eq!(rollup.session_usage.total_tokens_only, 900);
     }
 
     #[test]

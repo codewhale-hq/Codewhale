@@ -429,7 +429,7 @@ impl CostComponents {
     }
 }
 
-fn cost_projection(app: &App) -> DebugCostProjection {
+pub(super) fn cost_projection(app: &App) -> DebugCostProjection {
     let currency = app.cost_display_currency(app.cost_currency);
     let total = app.displayed_session_cost_for_currency(app.cost_currency);
     let components = CostComponents::compute(app);

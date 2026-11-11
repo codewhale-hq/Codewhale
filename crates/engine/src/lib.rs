@@ -17,6 +17,7 @@ pub mod compaction;
 pub mod compaction_archive;
 pub mod core;
 pub mod cost_status;
+pub mod diagnostics_messages;
 pub mod exec_events;
 pub mod extension_host;
 pub mod fleet;

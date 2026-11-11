@@ -39,12 +39,58 @@ pub struct Receipt {
     /// own record; empty when no turn recorded one.
     pub postures: Vec<&'static str>,
     pub totals: ReceiptTotals,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ReceiptUsage>,
     pub actions: Vec<ReceiptAction>,
     /// Actions left off the list because it hit [`MAX_RECEIPT_ACTIONS`].
     pub omitted_actions: usize,
     /// Facts this record does not hold, stated instead of guessed.
     pub not_recorded: Vec<String>,
     pub claim_ceiling: [&'static str; 3],
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReceiptUsage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<ReceiptTokens>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost: Option<ReceiptCost>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct ReceiptTokens {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<u64>,
+    pub total: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calls: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReceiptCost {
+    pub state: ReceiptCostState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount: Option<f64>,
+    pub currency: &'static str,
+    pub priced_turns: u32,
+    pub unpriced_turns: u32,
+    pub report: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptCostState {
+    Priced,
+    Partial,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]

@@ -1,9 +1,9 @@
 # 回执
 
 > 英文原文：[RECEIPTS.md](../RECEIPTS.md)。
-> 最后与英文同步日期（last synced with English revision）：2026-11-10。
+> 最后与英文同步日期（last synced with English revision）：2026-11-11。
 
-回执（receipt）用 Codewhale 已经保存的记录回答“这个会话做了什么？”。它按顺序列出改动的文件、运行的命令、Web 与 MCP 调用、启动的智能体、审批（以及每一项由谁决定）和失败，并在顶部给出汇总。它还会统计哪些操作未经询问就运行了，并写明放行它们的权限姿态。
+回执（receipt）用 Codewhale 已经保存的记录回答“这个会话做了什么？”。它按顺序列出改动的文件、运行的命令、Web 与 MCP 调用、启动的智能体、审批（以及每一项由谁决定）和失败，并在顶部给出汇总。它还会统计哪些操作未经询问就运行了，并写明放行它们的权限姿态。汇总下方还会给出提供商报告的 token 数，以及 `/cost` 打印的同一条费用说明（见[Token 与费用](#token-与费用)）。
 
 ```text
 # Receipt: Fix the parser
@@ -19,8 +19,11 @@ Changed 1 file (+2 −1) · ran 1 command · made 1 MCP call · 1 approved by yo
 6. turn failed — failed: provider returned 500
 
 Not recorded:
+- Cost: a Runtime thread receipt carries token counts only; GET /v1/threads/{id}/usage reports the thread's cost and what it covers.
 - Shell file changes: a Runtime thread's workspace snapshots are not tagged with the thread, so files a command changed are not itemized; only file tools are.
 ```
+
+上面的示例是 Runtime 线程的形式。终端会话的回执没有整文件写入的行数，通过的调用只显示通过或失败而不显示退出码，也没有逐次调用的时间戳；它的“Not recorded”列表会说明这些（见[未记录的内容](#未记录的内容)）。
 
 终端会话的回执还会根据该回合自己的工作区快照，列出命令改动的文件：
 
@@ -87,6 +90,43 @@ Runtime 回执端点接受 `?format=md`，返回与终端相同的 Engine Markdo
 
 0.9.10（2026-08-20）之前开始的终端会话没有审批日志，所以它们的回执不统计这一项，并会说明原因。
 
+### Token 与费用
+
+终端会话的回执会为整个会话提供 `usage` 部分：
+
+```text
+Tokens: 1200 in · 90 out · 1290 total · 2 provider calls (800 cache read)
+Cost, as /cost reports it:
+  Session Cost:
+  ─────────────────────────────
+  Estimated total: unknown
+  No turn has an authoritative price in the selected currency.
+  This is an estimate, not a bill: it is computed locally from provider-reported token usage and published rates, and can differ from your invoice.
+  Covered: 0 of 2 money-metered turn(s) priced.
+  Excluded: 2 money-metered turn(s) had no authoritative price (billing basis unknown); their spend is missing from the total above.
+```
+
+JSON 中同一部分是 `usage`，费用是一个对象：
+
+```json
+"usage": {
+  "tokens": { "input": 1200, "output": 90, "total": 1290, "cache_read": 800, "calls": 2 },
+  "cost": {
+    "state": "unknown", "currency": "USD",
+    "priced_turns": 0, "unpriced_turns": 2,
+    "report": "Session Cost: …"
+  }
+}
+```
+
+- **Token 数**是提供商报告的数值，对会话已记录的各次提供商调用（父回合和子智能体）求和。如果会话只保存了合计，回执只显示该合计；如果什么都没保存，回执会明说：这不等于零用量。
+- **费用**是 `/cost` 打印的报告，由同一个格式化器、依据同一份已保存的覆盖信息生成，措辞与数字不会漂移。当路线没有已知价格时，回执写明“unknown”及原因，绝不估算。JSON 中的 `usage.cost.state` 为 `priced`、`partial`（小计：部分回合没有价格）或 `unknown`；只有至少一个回合有价格时才会有 `amount`。
+- 针对单个回合的回执（`/receipts 2`、`--turn 2`）会省略 `usage` 并说明原因，因为 token 与费用是按整个会话保存的。
+- Runtime 线程的回执只带有来自其回合记录的 token 数，不含费用；`GET /v1/threads/{id}/usage` 会报告线程的费用及其覆盖范围。
+- `codewhale metrics` 会在单独一行统计已保存终端会话中的同类用量，与 Runtime 的 `turn.usage` 事件分开，因为会话范围的 Runtime 存储可能从自己的一侧描述同一次调用。
+
+0.10.3 之前的构建写出的回执没有 `usage` 部分；读取方应把该字段视为可选。
+
 ### 未记录的内容
 
 回执会如实说明，而不是猜测：
@@ -135,6 +175,9 @@ Runtime 回执端点接受 `?format=md`，返回与终端相同的 Engine Markdo
     "ran_without_asking": 1, "failures": 1, "blocked": 1,
     "other_tool_calls": 0
   },
+  "usage": {
+    "tokens": { "input": 1200, "output": 90, "total": 1290, "cache_read": 800, "calls": 2 }
+  },
   "actions": [
     {
       "seq": 2, "turn": "turn_1", "at": "2026-09-24T10:02:00Z",
@@ -149,7 +192,7 @@ Runtime 回执端点接受 `?format=md`，返回与终端相同的 Engine Markdo
     }
   ],
   "omitted_actions": 0,
-  "not_recorded": ["Shell file changes: …"],
+  "not_recorded": ["Cost: …", "Shell file changes: …"],
   "claim_ceiling": [
     "local_record_only",
     "not_safety_certification",
