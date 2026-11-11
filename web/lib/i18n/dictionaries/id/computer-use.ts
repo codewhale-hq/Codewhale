@@ -41,7 +41,7 @@ export const computerUse: ComputerUseDict = {
   connectVersion: "Codewhale 0.10.2 menyertakan plugin Computer Use versi lama. Memasang entri katalog tidak memperbaruinya. Hubungkan langsung aplikasi pembantu Mac yang terpasang melalui MCP.",
   connectLimit: "Koneksi MCP langsung menambahkan alat tanpa keterampilan plugin. Jangan gunakan bersamaan dengan plugin bawaan lama. Jika plugin itu aktif, jalankan /plugin disable computer-use terlebih dahulu.",
   connectRuntime: "Aplikasi sudah menyertakan Node; tidak perlu pemasangan terpisah. Jika terpasang di lokasi lain, isi APP dengan jalur bundel aplikasi yang sebenarnya.",
-  connectReload: "Dalam sesi terminal yang sedang berjalan, jalankan /mcp reload, beralih ke Operate, lalu minta:",
+  connectReload: "Dalam sesi terminal yang sedang berjalan, jalankan /mcp reload, lalu minta:",
   connectPrompt: "Periksa izin Computer Use dengan request_access. Jangan kirim input.",
   connectExpected: "Periksa via: app, versi aplikasi pembantu, dan izin yang belum diberikan dalam respons. Jika aplikasi pembantu tidak ditemukan, berhenti dan ikuti petunjuk pengaturan. Ini hanya memeriksa koneksi dan izin.",
   connectGuide: "Panduan pengaturan MCP",

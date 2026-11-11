@@ -122,7 +122,7 @@ docker run --rm -it \\
           lang: "Terminal",
         },
         {
-          p: "This uses the image and v0.10.0 tag documented in the [Docker guide](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/DOCKER.md), not the 0.10.3 source candidate. It runs as a non-root user; keep settings in the named volume, use one volume per project and never bake keys into the image.",
+          p: "This uses the image and v0.10.0 tag documented in the [Docker guide](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/DOCKER.md). It runs as a non-root user; keep settings in the named volume, use one volume per project and never bake keys into the image.",
         },
       ],
     },

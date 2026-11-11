@@ -117,7 +117,7 @@
   },
   "docs-skills": {
     "metaTitle": "Manage skills · Codewhale Docs",
-    "metaDescription": "Find, install and trust SKILL.md instruction packages. Control user and model invocation and import compatible Claude Code skills.",
+    "metaDescription": "Find, install and trust SKILL.md instruction packages. Control user and model invocation and import compatible skill folders from other coding agents.",
     "bodyClassName": "text-ink-soft leading-relaxed",
     "title": "Manage reusable skills",
     "lede": "Skills are SKILL.md instruction packages. Discover compatible folders, then review the source and trust before using a skill.",
@@ -173,7 +173,7 @@
     "next": [
       {
         "href": "/docs/claude-code",
-        "label": "Move from Claude Code",
+        "label": "Bring your settings from another coding agent",
         "note": "Bring compatible skills and review a settings import."
       },
       {
@@ -185,10 +185,10 @@
     "sourceNote": "Source: docs/SKILLS.md and docs/CLAUDE_PLUGIN_COMPAT.md."
   },
   "docs-claude-code": {
-    "metaTitle": "Move from Claude Code · Codewhale Docs",
-    "metaDescription": "Use Codewhale as an open-source Claude Code alternative. Bring compatible instructions and skills, and review a settings and MCP import plan.",
+    "metaTitle": "Bring your settings from another coding agent · Codewhale Docs",
+    "metaDescription": "Keep the project instructions and skill folders you already have, and review a settings and MCP import plan before applying it.",
     "bodyClassName": "text-ink-soft leading-relaxed",
-    "title": "Move from Claude Code",
+    "title": "Bring your settings from another coding agent",
     "lede": "Keep compatible project instructions and skill folders while choosing your own model connection. Review settings and plugin imports before applying them.",
     "sections": [
       {
@@ -196,10 +196,10 @@
         "title": "Keep your project instructions",
         "blocks": [
           {
-            "p": "AGENTS.md is the canonical project instruction file. CLAUDE.md and .claude/instructions.md are compatibility fallbacks; they do not override Codewhale security controls."
+            "p": "AGENTS.md is the canonical project instruction file. If a project has only `CLAUDE.md` or `.claude/instructions.md`, Codewhale reads it as a compatibility fallback; neither overrides Codewhale security controls."
           },
           {
-            "p": "Plain .claude/skills/<name>/SKILL.md folders are discovered through the normal [skills registry](/docs/skills), with workspace trust and invocation controls."
+            "p": "Plain `.claude/skills/<name>/SKILL.md` folders are discovered through the normal [skills registry](/docs/skills), with workspace trust and invocation controls."
           }
         ]
       },
@@ -212,7 +212,7 @@
             "lang": "Codewhale"
           },
           {
-            "p": "The command reads Claude settings and writes a reviewable report and unapplied config bundle. MCP servers use the existing import consent flow; permissions and hooks need separate review."
+            "p": "The command reads settings from an existing `.claude` folder and writes a reviewable report and unapplied config bundle. MCP servers use the existing import consent flow; permissions and hooks need separate review."
           },
           {
             "note": "Secret-shaped and unknown environment values are not imported or echoed. Running the plan does not enable servers or apply permissions."
@@ -228,13 +228,13 @@
             "lang": "Codewhale"
           },
           {
-            "p": "The declarative .claude-plugin/plugin.json subset supports skills, commands, agent profiles and MCP declarations. Codewhale review hashes and explicit trust and enablement still apply."
+            "p": "The declarative `.claude-plugin/plugin.json` subset supports skills, commands, agent profiles and MCP declarations. Codewhale review hashes and explicit trust and enablement still apply."
           },
           {
-            "note": "Codewhale does not run Claude Code plugin runtimes. Hooks, plugin LSP declarations, build steps and TypeScript agents are outside this importer."
+            "note": "Codewhale does not run plugin runtimes from other agents. Hooks, plugin LSP declarations, build steps and TypeScript agents are outside this importer."
           },
           {
-            "p": "[Read the compatibility limits](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/CLAUDE_PLUGIN_COMPAT.md). Choose credentials and endpoints in [model setup](/models)."
+            "p": "[Read the compatibility limits](https://github.com/codewhale-hq/CodeWhale/blob/v0.10.2/docs/CLAUDE_PLUGIN_COMPAT.md). Choose credentials and endpoints in [model setup](/models)."
           }
         ]
       }
@@ -251,7 +251,7 @@
         "note": "Use your chosen hosted or local model."
       }
     ],
-    "sourceNote": "Source: docs/CONFIGURATION.md, docs/CLAUDE_PLUGIN_COMPAT.md and the claude-settings-import entry in docs/features.toml."
+    "sourceNote": "Source: docs/CONFIGURATION.md, docs/CLAUDE_PLUGIN_COMPAT.md and the claude-settings-import entry in docs/features.toml at the published release tag."
   },
   "chrome": {
     "navDocs": "Docs",
@@ -391,8 +391,8 @@
     "installCta": "Install Codewhale",
     "releaseLabel": "Release",
     "releasePublished": "Latest release {tag} · {date}",
-    "releaseCandidate": "These pages describe the {version} source candidate, which is not published yet.",
-    "releaseMatches": "These pages describe {tag}, the published release.",
+    "releaseDescribes": "These pages describe {tag}, the published release.",
+    "sourceLead": "This section describes behavior that exists in the project's source and is not in the published release. Check which version you have with `codewhale --version`.",
     "releaseChangelog": "Changelog →",
     "searchLabel": "Search the documentation",
     "searchPlaceholder": "Search guides and reference",
@@ -484,7 +484,7 @@
             "note": "This example covers only the exact `bash` tool; it does not block other tools, external clients or commands you run yourself. A substring match for force-push flags is not a shell security boundary; use the execution policy and OS sandbox for broader restrictions."
           },
           {
-            "note": "`ask` forces a prompt in Ask, Accept Edits and Auto-Review. Full Access does not add approval prompts, so `ask` does not add one there."
+            "note": "`ask` forces a prompt wherever the active permission posture asks or reviews. Full Access does not add approval prompts, so `ask` does not add one there."
           }
         ]
       },
@@ -535,7 +535,7 @@
               ],
               [
                 "mode_change",
-                "When you switch between Plan and Work."
+                "When you change the mode."
               ],
               [
                 "subagent_spawn / subagent_complete",
@@ -758,7 +758,7 @@
             "lang": "Terminal"
           },
           {
-            "p": "This uses the image and v0.10.0 tag documented in the [Docker guide](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/DOCKER.md), not the 0.10.3 source candidate. It runs as a non-root user; keep settings in the named volume, use one volume per project and never bake keys into the image."
+            "p": "This uses the image and v0.10.0 tag documented in the [Docker guide](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/DOCKER.md). It runs as a non-root user; keep settings in the named volume, use one volume per project and never bake keys into the image."
           }
         ]
       }
@@ -942,7 +942,7 @@
             "p": "This declarative form supports `agent`, `branch`, `sequence`, `reduce`, `loop_until`, `cond`, `expand`, and `teacher_review`. It compiles to a validated plan and rejects constructs such as `import`, `fetch`, `eval`, and `async`. Advanced imperative JavaScript can use asynchronous `task()` and `parallel()` in a sandbox, still without direct filesystem, shell or network access. Workers perform those actions under the active policy."
           },
           {
-            "note": "Workflow defaults to 16 concurrently live agents; admitted work waits for a slot. There is no default cumulative child limit or structural depth limit. Set positive `[workflow] max_children` or `max_depth` values to limit them. Runtime agent admission and delegation limits apply separately. Loops must declare `max_iterations`."
+            "note": "Workflow caps how many agents are live at once, and admitted work waits for a slot. There is no default cumulative child limit or structural depth limit. Set positive `[workflow] max_children` or `max_depth` values to limit them. Runtime agent admission and delegation limits apply separately. Loops must declare `max_iterations`."
           }
         ]
       },
@@ -1244,10 +1244,10 @@
   },
   "docs-modes": {
     "metaTitle": "Set modes and approvals · Codewhale Docs",
-    "metaDescription": "Choose Plan or Work and set when Codewhale asks for approval. Compare the published v0.10.2 controls with the 0.10.3 source candidate.",
+    "metaDescription": "Choose Plan, Work or Operate and set when Codewhale asks for approval. You decide what it may do without asking.",
     "bodyClassName": "text-ink-soft leading-relaxed",
     "title": "Set modes and approvals",
-    "lede": "Plan lets you inspect and agree on an approach before making changes. Work can edit files and run commands within the permissions you choose.",
+    "lede": "Plan lets you inspect and agree on an approach before making changes. Work and Operate can edit files and run commands within the permissions you choose. You decide what it may do without asking.",
     "sections": [
       {
         "id": "versions",
@@ -1258,16 +1258,17 @@
             "lang": "Shell"
           },
           {
-            "p": "The latest published release is v0.10.2. In that release, Tab with an empty composer cycles Plan → Work → Operate, and Shift+Tab cycles Ask → Auto-Review → Full Access. Operate coordinates larger tasks with the same permissions as Work; read the [v0.10.2 mode guide](https://github.com/codewhale-hq/CodeWhale/blob/v0.10.2/docs/MODES.md) for that release."
-          },
-          {
-            "note": "The sections below describe the unpublished 0.10.3 source candidate. Installing the latest published release does not give you these new controls."
+            "p": "This page describes the published release named at the top of the page. Behavior that exists only in the project's source is in the labelled section at the end."
           }
         ]
       },
       {
         "id": "modes",
-        "title": "Choose Plan or Work in the source candidate",
+        "title": "Choose Plan, Work or Operate",
+        "until": {
+          "feature": "modes",
+          "describesCurrentRow": true
+        },
         "blocks": [
           {
             "rows": [
@@ -1278,37 +1279,41 @@
               [
                 "Work",
                 "Codewhale reads, edits files and runs commands within the approval, sandbox and policy boundaries you set. It can delegate independent tasks to other agents."
+              ],
+              [
+                "Operate",
+                "The same tools and authority as Work, with more emphasis on delegating multi-part work to parallel agents and on checking results before calling the work done. It does not bypass the approval, sandbox or policy boundaries Work uses."
               ]
             ]
           },
           {
-            "p": "Open `/mode` to choose a mode, or enter one of these commands. In the source candidate, `/mode operate` remains a compatibility alias for Work and explains that Operate was retired."
+            "p": "With an empty composer, Tab cycles Plan → Work → Operate. Open `/mode` to choose a mode, or enter one of these commands:"
           },
           {
-            "code": "/mode plan\n/mode work",
+            "code": "/mode plan\n/mode work\n/mode operate",
             "lang": "Codewhale"
           },
           {
-            "p": "After a successful Plan response, Codewhale asks whether to continue in Work with Ask, Accept Edits or Auto-Review, or to keep planning. Switching to Work sends the approved plan as a follow-up."
+            "p": "After a successful Plan response, Codewhale asks whether to continue in Work with Ask or Auto-Review, or to keep planning. Switching to Work sends the approved plan as a follow-up."
           }
         ]
       },
       {
         "id": "approvals",
-        "title": "Set when the source candidate asks",
+        "title": "Set when Codewhale asks",
+        "until": {
+          "feature": "permission-postures",
+          "describesCurrentRow": true
+        },
         "blocks": [
           {
-            "p": "Press Shift+Tab to step one permission dial: Ask → Accept Edits → Plan → Auto-Review → Full Access → Ask. Plan is the Plan mode; every other stop uses Work. Tab only completes commands, file mentions and suggestions; it never changes modes or sends text."
+            "p": "Press Shift+Tab to cycle the permission posture: Ask → Auto-Review → Full Access. A fresh install starts in Ask. The posture is separate from the mode."
           },
           {
             "rows": [
               [
                 "Ask",
-                "Codewhale asks before every file edit and command, including edits inside the workspace. Saved approvals and policy rules still apply."
-              ],
-              [
-                "Accept Edits",
-                "Ordinary file edits inside the workspace's git work tree can run without a prompt. Commands, network and MCP actions still ask, as do sensitive-file edits, edits outside the workspace and edits in a folder without git. ACP sessions treat this setting as Ask."
+                "The default. Codewhale asks before a command runs. Saved approvals and policy rules still apply."
               ],
               [
                 "Auto-Review",
@@ -1321,10 +1326,7 @@
             ]
           },
           {
-            "note": "New source-candidate installs start with Accept Edits when no posture is saved. An explicit saved choice stays in control; managed approval policy can lock the setting. Use [Review what changed](/docs/review) to inspect edits and available restore points."
-          },
-          {
-            "p": "The dial works while a turn is running unless another modal blocks it. A change applies at the agent's next step; a previously approved call runs only if the new posture is equal or broader. Each effective change appears in the transcript."
+            "note": "Use [Review what changed](/docs/review) to inspect edits and available restore points."
           }
         ]
       },
@@ -1376,6 +1378,67 @@
         ]
       }
     ],
+    "sourceGroups": [
+      {
+        "claim": {
+          "feature": "modes",
+          "describesCurrentRow": true
+        },
+        "sections": [
+          {
+            "id": "source-modes",
+            "title": "Plan and Work",
+            "blocks": [
+              {
+                "p": "Plan and Work are the two modes. `/mode operate` still works as an alias for Work and explains that Operate was retired. Tab only completes commands, file mentions and suggestions; it never changes modes or sends text."
+              },
+              {
+                "code": "/mode plan\n/mode work",
+                "lang": "Codewhale"
+              },
+              {
+                "p": "After a successful Plan response, Codewhale asks whether to continue in Work with Ask, Accept Edits or Auto-Review, or to keep planning."
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "claim": {
+          "feature": "permission-postures",
+          "describesCurrentRow": true
+        },
+        "sections": [
+          {
+            "id": "source-approvals",
+            "title": "One permission dial",
+            "blocks": [
+              {
+                "p": "Shift+Tab steps one permission dial: Ask → Accept Edits → Plan → Auto-Review → Full Access → Ask. Plan is the Plan mode; every other stop uses Work."
+              },
+              {
+                "rows": [
+                  [
+                    "Ask",
+                    "Codewhale asks before every file edit and command, including edits inside the workspace. Saved approvals and policy rules still apply."
+                  ],
+                  [
+                    "Accept Edits",
+                    "Ordinary file edits inside the workspace's git work tree can run without a prompt. Commands, network and MCP actions still ask, as do sensitive-file edits, edits outside the workspace and edits in a folder without git. ACP sessions treat this setting as Ask."
+                  ]
+                ]
+              },
+              {
+                "note": "New installs start with Accept Edits when no posture is saved. An explicit saved choice stays in control; managed approval policy can lock the setting."
+              },
+              {
+                "p": "The dial works while a turn is running unless another modal blocks it. A change applies at the agent's next step; a previously approved call runs only if the new posture is equal or broader. Each effective change appears in the transcript."
+              }
+            ]
+          }
+        ]
+      }
+    ],
     "next": [
       {
         "href": "/docs/review",
@@ -1393,14 +1456,14 @@
         "note": "Delegate independent tasks and follow each agent's progress."
       }
     ],
-    "sourceNote": "The source-candidate controls follow docs/MODES.md, docs/KEYBINDINGS.md and docs/CONFIGURATION.md. The published-release link points to the v0.10.2 tag."
+    "sourceNote": "Source: docs/MODES.md, docs/KEYBINDINGS.md and docs/CONFIGURATION.md at the published release tag; the in-source section follows main."
   },
   "docs-runtime-api": {
     "metaTitle": "Automate with the Runtime API · Codewhale Docs",
     "metaDescription": "Drive Codewhale from your own scripts and apps: run one-shot prompts in CI, or start the local HTTP API and send turns, stream events, and answer approvals.",
     "bodyClassName": "text-ink-soft leading-relaxed",
     "title": "Automate with the Runtime API",
-    "lede": "Use `codewhale exec` for a one-shot job, or follow this tutorial to create a thread and stream a turn through the local Runtime API. The [complete source-candidate reference](/docs/runtime-reference) covers routes, request fields, events and compatibility limits.",
+    "lede": "Use `codewhale exec` for a one-shot job, or follow this tutorial to create a thread and stream a turn through the local Runtime API. The [complete reference](/docs/runtime-reference), generated from the repository's main branch, covers routes, request fields, events and compatibility limits.",
     "sections": [
       {
         "id": "exec",
@@ -1423,7 +1486,7 @@
             "p": "Use a POSIX shell with `curl`, `jq` and `openssl`, and a Codewhale build that supports `app-server --http`. Run all steps in the same terminal so the token, server process id and thread id remain available."
           },
           {
-            "note": "This tutorial follows the unpublished 0.10.3 source candidate; check `codewhale --version` before comparing behavior. Connecting a provider is required for the turn below, and that request uses your provider's normal billing; starting the server and checking `/health` do not send a model request."
+            "note": "The commands on this page exist in the published release; check `codewhale --version` before comparing behavior. Connecting a provider is required for the turn below, and that request uses your provider's normal billing; starting the server and checking `/health` do not send a model request."
           },
           {
             "code": "export CODEWHALE_RUNTIME_TOKEN=\"$(openssl rand -hex 32)\"\ncodewhale app-server --http &\nCODEWHALE_RUNTIME_PID=$!\ncurl --fail --silent --show-error --retry 10 --retry-connrefused   --retry-delay 1 http://127.0.0.1:7878/health",
@@ -1466,7 +1529,7 @@
             ]
           },
           {
-            "p": "The [Runtime API reference](/docs/runtime-reference) renders the canonical source contract, including endpoint tables, request fields, event envelopes and version limits."
+            "p": "The [Runtime API reference](/docs/runtime-reference) renders the contract from the repository's main branch, including endpoint tables, request fields, event envelopes and version limits."
           }
         ]
       },
@@ -1590,11 +1653,11 @@
               ],
               [
                 "Linux",
-                "Bubblewrap, automatically, once it is installed and verified working (opt out below). Without it, commands run with no OS sandbox."
+                "Bubblewrap, automatically, once it is installed and verified working (opt out below). Without it, commands run with no OS sandbox, and Codewhale shows the workspace limit as unenforced."
               ],
               [
                 "Windows",
-                "No OS sandbox today. Your approval setting and Windows permissions still apply."
+                "No OS sandbox. Codewhale shows the workspace limit as unenforced, and your approval setting and Windows permissions still apply."
               ],
               [
                 "External service",
@@ -2326,7 +2389,7 @@
     "connectVersion": "Codewhale 0.10.2 includes an older Computer Use plugin. Installing the catalog entry does not upgrade it. Use the installed Mac helper directly over MCP.",
     "connectLimit": "Direct MCP adds tools without plugin skills. Do not use it alongside the older built-in plugin. If that plugin is enabled, run /plugin disable computer-use first.",
     "connectRuntime": "The app includes Node; no separate Node install is needed. If installed elsewhere, set APP to the actual app bundle path.",
-    "connectReload": "In a running terminal session, run /mcp reload, switch to Operate, and ask:",
+    "connectReload": "In a running terminal session, run /mcp reload and ask:",
     "connectPrompt": "Check Computer Use permissions with request_access. Do not send input.",
     "connectExpected": "Check for via: app, the helper version and any missing permissions. If the helper is missing, stop and follow the setup hint. This checks the connection and permissions only.",
     "connectGuide": "MCP setup guide",

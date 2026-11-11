@@ -115,7 +115,7 @@ docker run --rm -it \\
           lang: "终端",
         },
         {
-          p: "此处使用 [Docker 指南](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/DOCKER.md) 中记录的镜像与 v0.10.0 标签，不是 0.10.3 源码候选版本。镜像以非 root 用户运行；请将配置保存在命名卷中，每个项目使用独立卷，不要把密钥写入镜像。",
+          p: "此处使用 [Docker 指南](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/DOCKER.md) 中记录的镜像与 v0.10.0 标签。镜像以非 root 用户运行；请将配置保存在命名卷中，每个项目使用独立卷，不要把密钥写入镜像。",
         },
       ],
     },

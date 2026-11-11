@@ -118,7 +118,7 @@ export const PLUGINS_COPY = {
   },
   catalogSeeAll: { en: "See all plugins in the catalog repository", zh: "在目录仓库中查看全部插件" },
 
-  safeTitle: { en: "Safe by default", zh: "默认安全" },
+  safeTitle: { en: "Installed disabled and untrusted", zh: "安装后未启用、未信任" },
   safeLead: {
     en: "Every plugin installs disabled and untrusted. You review what it asks for, trust it, then enable it.",
     zh: "每个插件安装后都处于未启用、未信任状态。你先审阅它所请求的能力，再信任，最后启用。",
@@ -198,6 +198,6 @@ export const PLUGIN_COMMANDS = [
 
 export const PLUGIN_COMPATIBILITY = [
   { title: { en: "Codewhale / Agent Plugins v1", zh: "Codewhale / Agent Plugins v1" }, detail: { en: "Declarative skills, commands, agent profiles, hooks, MCP and provider declarations. Native TypeScript extensions are experimental and require extension_host.", zh: "声明式技能、命令、代理配置、钩子、MCP 及模型提供商声明。原生 TypeScript 扩展为实验功能，需启用 extension_host。" }, href: "https://github.com/codewhale-hq/Codewhale/blob/main/docs/PLUGIN_AUTHORING.md" },
-  { title: { en: "Claude Code and Kimi bundles", zh: "Claude Code 与 Kimi 插件包" }, detail: { en: "Compatible skills, commands, agent profiles and MCP declarations can be imported. Claude hooks, LSP and custom MCP paths are rejected.", zh: "可导入兼容的技能、命令、代理配置及 MCP 声明。Claude 钩子、LSP 和自定义 MCP 路径会被拒绝。" }, href: "/docs/claude-code" },
+  { title: { en: "Plugin bundles from other agents", zh: "来自其他智能体的插件包" }, detail: { en: "Compatible skills, commands, agent profiles and MCP declarations in .claude-plugin bundles can be imported. Hooks, LSP declarations and custom MCP paths are rejected.", zh: "可导入 .claude-plugin 插件包中兼容的技能、命令、代理配置及 MCP 声明。钩子、LSP 声明和自定义 MCP 路径会被拒绝。" }, href: "/docs/claude-code" },
   { title: { en: "DeepSeek Harness (DSH)", zh: "DeepSeek Harness（DSH）" }, detail: { en: "Experimental. Import previews a bundle and installs it disabled and untrusted; services Codewhale owns are refused by name.", zh: "实验功能。导入会先预览插件包，并以未启用、未信任状态安装；Codewhale 自己持有的服务会按名称拒绝。" }, href: "https://github.com/codewhale-hq/Codewhale/blob/main/docs/DSH_PLUGIN_COMPAT.md" },
 ];

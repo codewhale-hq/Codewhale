@@ -7,11 +7,11 @@ import type { ConstitutionDict } from "../types";
  * are content and stay with the page and the component.
  */
 export const constitution: ConstitutionDict = {
-  metaTitle: "Three layers of law · Codewhale",
+  metaTitle: "Three layers of rules · Codewhale",
   metaDescription:
-    "Codewhale's nested constitution: bundled base law, your standing law (/constitution), and your repo's law (.codewhale/constitution.json). Rank is enforced in code and survives a model swap.",
+    "Codewhale's nested constitution: bundled base rules, your standing rules (/constitution), and your repo's rules (.codewhale/constitution.json). Rank is enforced in code and survives a model swap.",
   kicker: "The thesis",
-  title: "Three layers of law",
+  title: "Three layers of rules",
   titleAside: "三层法",
   titleAsideLang: "zh",
   lede: "As a project ages, instructions pile up and conflict: the original spec, a refactor that contradicts it, stale memory, a previous agent's handoff, your current request, fresh test output that doesn't match what the handoff claimed. A flat system prompt makes the model resolve that by guess. Codewhale uses a nested constitution with a defined rank. The order is enforced in code, tests assert it can't drift, and it stays intact when you swap models.",
@@ -21,7 +21,7 @@ export const constitution: ConstitutionDict = {
   rankTitle: "The rank, most-static first",
   rankScope:
     "Below the three layers rank project instructions (AGENTS.md), then memory and handoffs. Your current request and live tool evidence still control the active turn — the model may be given many layers, but it is instructed never to report a fact the tools did not return.",
-  boundaryTitle: "The honest boundary",
+  boundaryTitle: "What stays enforced in code",
   boundaryBody:
     "Approval, sandbox, network, and trust controls are enforced in code — constitution text never overrides them.",
   traceTitle: "Observable in the reasoning",

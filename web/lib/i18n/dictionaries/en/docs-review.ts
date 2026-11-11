@@ -24,7 +24,7 @@ export const docsReview: DocsReviewDict = {
           "p": "Inspect the next primary model request without sending it: [/preview-request](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/PREVIEW_REQUEST.md)."
         },
         {
-          "p": "Session receipts list recorded file changes, commands, tools, agents, approvals and failures. Review receipts below cover a separate code review."
+          "p": "A session receipt lists the files changed, the commands run and who approved each step, and ends with what it did not record. It shows no cost or token line: the footer and `/cost` show cost as a figure or as \"unknown\". Review receipts below cover a separate code review."
         },
         {
           "code": "/receipts\n/receipts json",

@@ -178,8 +178,8 @@ export const DOC_TASKS: DocTask[] = [
   {
     "id": "move-from-claude-code",
     "label": {
-      "en": "Move from Claude Code",
-      "zh": "从 Claude Code 迁移"
+      "en": "Bring your settings from another coding agent",
+      "zh": "从其他编码智能体带来你的设置"
     },
     "description": {
       "en": "Keep compatible instructions and skills, and review a settings import plan.",
@@ -188,8 +188,8 @@ export const DOC_TASKS: DocTask[] = [
     "href": "/docs/claude-code",
     "topicId": "claude-code",
     "keywords": {
-      "en": "claude code alternative import-claude plugin settings migration",
-      "zh": "Claude Code 替代 迁移 导入 插件 设置"
+      "en": "import-claude plugin settings migration move import instructions skills",
+      "zh": "迁移 导入 插件 设置 指令 技能"
     }
   },
   {
@@ -327,7 +327,7 @@ export const DOC_TASKS: DocTask[] = [
   {
     id: "runtime-reference",
     label: { en: "Look up an API route or event", zh: "查找 API 路由或事件" },
-    description: { en: "Search the canonical contract and registered HTTP path inventory for the source candidate.", zh: "搜索源码候选版本的规范约定和已注册 HTTP 路径清单。" },
+    description: { en: "Search the HTTP routes, request fields and event contracts in the repository's main branch.", zh: "搜索仓库 main 分支中的 HTTP 路由、请求字段和事件约定。" },
     href: "/docs/runtime-reference",
     topicId: "runtime-reference",
     keywords: { en: "reference endpoint schema request response fields SSE event replay", zh: "参考 端点 结构 请求 响应 字段 事件 回放" },

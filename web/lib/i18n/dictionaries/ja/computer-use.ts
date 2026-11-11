@@ -42,7 +42,7 @@ export const computerUse: ComputerUseDict = {
   connectVersion: "Codewhale 0.10.2 には旧版の Computer Use プラグインが内蔵されています。カタログからインストールしても更新されません。インストール済みの Mac ヘルパーに MCP で直接接続してください。",
   connectLimit: "MCP での直接接続はツールを追加しますが、プラグインのスキルは含みません。旧版の内蔵プラグインと併用しないでください。有効なら、先に /plugin disable computer-use を実行してください。",
   connectRuntime: "アプリには Node が含まれるため、別途インストールする必要はありません。別の場所にインストールした場合は、APP を実際のアプリバンドルのパスに設定してください。",
-  connectReload: "実行中のターミナルセッションで /mcp reload を実行し、Operate に切り替えて次のように依頼します：",
+  connectReload: "実行中のターミナルセッションで /mcp reload を実行し、次のように依頼します：",
   connectPrompt: "request_access で Computer Use の権限を確認してください。入力操作は行わないでください。",
   connectExpected: "応答の via: app、ヘルパーのバージョン、不足している権限を確認してください。ヘルパーが見つからない場合は停止し、設定の案内に従ってください。これは接続と権限のみの確認です。",
   connectGuide: "MCP 設定ガイド",

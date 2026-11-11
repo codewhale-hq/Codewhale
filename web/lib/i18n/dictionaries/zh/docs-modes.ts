@@ -3,11 +3,11 @@ import type { DocsModesDict } from "../types";
 export const docsModes: DocsModesDict = {
   metaTitle: "设置模式与审批 · Codewhale 文档",
   metaDescription:
-    "选择 Plan 或 Work，并设置 Codewhale 何时询问审批。比较已发布的 v0.10.2 与 0.10.3 源码候选版本的控制方式。",
+    "选择 Plan、Work 或 Operate，并设置 Codewhale 何时询问审批。哪些操作可以不经询问，由你决定。",
   bodyClassName: "text-ink-soft leading-[1.9] tracking-wide",
   title: "设置模式与审批",
   lede:
-    "Plan 让你先检查情况、商定方案，再开始修改。Work 可以在你选择的权限范围内修改文件和运行命令。",
+    "Plan 让你先检查情况、商定方案，再开始修改。Work 和 Operate 可以在你选择的权限范围内修改文件和运行命令。哪些操作可以不经询问，由你决定。",
   sections: [
     {
       id: "versions",
@@ -15,16 +15,14 @@ export const docsModes: DocsModesDict = {
       blocks: [
         { code: "codewhale --version", lang: "Shell" },
         {
-          p: "最新已发布版本是 v0.10.2。在该版本中，输入框为空时按 Tab，按 Plan → Work → Operate 切换模式；按 Shift+Tab，按 Ask → Auto-Review → Full Access 切换权限。Operate 协调较大的任务，权限与 Work 相同；该版本的详细说明见 [v0.10.2 模式指南](https://github.com/codewhale-hq/CodeWhale/blob/v0.10.2/docs/MODES.md)。",
-        },
-        {
-          note: "以下各节介绍尚未发布的 0.10.3 源码候选版本。安装最新已发布版本不会获得这些新的控制方式。",
+          p: "本页描述页面顶部标明的已发布版本。仅存在于项目源码中的行为，列在页面末尾带标注的一节。",
         },
       ],
     },
     {
       id: "modes",
-      title: "在源码候选版本中选择 Plan 或 Work",
+      title: "选择 Plan、Work 或 Operate",
+      until: { feature: "modes", describesCurrentRow: true },
       blocks: [
         {
           rows: [
@@ -36,33 +34,34 @@ export const docsModes: DocsModesDict = {
               "Work",
               "Codewhale 在你设置的审批、沙箱和策略边界内阅读、修改文件和运行命令，也可以把独立任务交给其他智能体。",
             ],
+            [
+              "Operate",
+              "工具和权限与 Work 相同，但更倾向于把多部分任务交给并行智能体，并在宣布完成前检查结果。它不会绕过 Work 所用的审批、沙箱或策略边界。",
+            ],
           ],
         },
         {
-          p: "输入 `/mode` 打开模式选择器，或使用以下命令。在源码候选版本中，`/mode operate` 仍是 Work 的兼容别名，并会说明 Operate 模式已退役。",
+          p: "输入框为空时，按 Tab 按 Plan → Work → Operate 切换模式。输入 `/mode` 打开模式选择器，或使用以下命令：",
         },
-        { code: "/mode plan\n/mode work", lang: "Codewhale" },
+        { code: "/mode plan\n/mode work\n/mode operate", lang: "Codewhale" },
         {
-          p: "Plan 成功回复后，Codewhale 会询问是否切换到带 Ask、Accept Edits 或 Auto-Review 权限的 Work，或者继续规划。选择 Work 会把已批准的计划作为后续消息发送。",
+          p: "Plan 成功回复后，Codewhale 会询问是否切换到带 Ask 或 Auto-Review 权限的 Work，或者继续规划。选择 Work 会把已批准的计划作为后续消息发送。",
         },
       ],
     },
     {
       id: "approvals",
-      title: "设置源码候选版本何时询问你",
+      title: "设置 Codewhale 何时询问你",
+      until: { feature: "permission-postures", describesCurrentRow: true },
       blocks: [
         {
-          p: "按 Shift+Tab 在同一个权限拨盘上逐档切换：Ask → Accept Edits → Plan → Auto-Review → Full Access → Ask。Plan 档使用 Plan 模式，其余各档使用 Work。Tab 只补全命令、文件提及和建议，既不切换模式，也不发送文本。",
+          p: "按 Shift+Tab 在权限设置间切换：Ask → Auto-Review → Full Access。全新安装从 Ask 开始。权限设置与模式相互独立。",
         },
         {
           rows: [
             [
               "Ask",
-              "Codewhale 在每次修改文件或运行命令前询问你，包括工作区内的修改。已保存的批准和策略规则仍然适用。",
-            ],
-            [
-              "Accept Edits",
-              "工作区 Git 工作树内的普通文件修改可以不经提示执行。命令、网络和 MCP 操作仍会询问；修改敏感文件、工作区外的文件或不属于 Git 仓库的文件夹也会询问。ACP 会话将此设置按 Ask 处理。",
+              "默认设置。Codewhale 在运行命令前询问你。已保存的批准和策略规则仍然适用。",
             ],
             [
               "Auto-Review",
@@ -75,10 +74,7 @@ export const docsModes: DocsModesDict = {
           ],
         },
         {
-          note: "未保存权限设置时，新安装的源码候选版本从 Accept Edits 开始。明确保存的选择始终优先；托管审批策略可能锁定设置。通过[查看改动](/docs/review)检查修改和可用的恢复点。",
-        },
-        {
-          p: "只要没有其他弹窗阻挡，回合运行期间也可使用权限拨盘。改动在智能体的下一步生效；已经批准的调用只有在新权限相同或更宽时才会运行。每次有效变化都会写入对话记录。",
+          note: "通过[查看改动](/docs/review)检查修改和可用的恢复点。",
         },
       ],
     },
@@ -115,6 +111,58 @@ export const docsModes: DocsModesDict = {
       ],
     },
   ],
+  sourceGroups: [
+    {
+      claim: { feature: "modes", describesCurrentRow: true },
+      sections: [
+        {
+          id: "source-modes",
+          title: "Plan 和 Work",
+          blocks: [
+            {
+              p: "Plan 和 Work 是仅有的两种模式。`/mode operate` 仍可作为 Work 的别名使用，并会说明 Operate 已退役。Tab 只补全命令、文件提及和建议，既不切换模式，也不发送文本。",
+            },
+            { code: "/mode plan\n/mode work", lang: "Codewhale" },
+            {
+              p: "Plan 成功回复后，Codewhale 会询问是否切换到带 Ask、Accept Edits 或 Auto-Review 权限的 Work，或者继续规划。",
+            },
+          ],
+        },
+      ],
+    },
+    {
+      claim: { feature: "permission-postures", describesCurrentRow: true },
+      sections: [
+        {
+          id: "source-approvals",
+          title: "一个权限拨盘",
+          blocks: [
+            {
+              p: "按 Shift+Tab 在同一个权限拨盘上逐档切换：Ask → Accept Edits → Plan → Auto-Review → Full Access → Ask。Plan 档使用 Plan 模式，其余各档使用 Work。",
+            },
+            {
+              rows: [
+                [
+                  "Ask",
+                  "Codewhale 在每次修改文件或运行命令前询问你，包括工作区内的修改。已保存的批准和策略规则仍然适用。",
+                ],
+                [
+                  "Accept Edits",
+                  "工作区 Git 工作树内的普通文件修改可以不经提示执行。命令、网络和 MCP 操作仍会询问；修改敏感文件、工作区外的文件或不属于 Git 仓库的文件夹也会询问。ACP 会话将此设置按 Ask 处理。",
+                ],
+              ],
+            },
+            {
+              note: "未保存权限设置时，新安装从 Accept Edits 开始。明确保存的选择始终优先；托管审批策略可能锁定设置。",
+            },
+            {
+              p: "只要没有其他弹窗阻挡，回合运行期间也可使用权限拨盘。改动在智能体的下一步生效；已经批准的调用只有在新权限相同或更宽时才会运行。每次有效变化都会写入对话记录。",
+            },
+          ],
+        },
+      ],
+    },
+  ],
   next: [
     {
       href: "/docs/review",
@@ -132,5 +180,5 @@ export const docsModes: DocsModesDict = {
       note: "委派独立任务，并查看每个智能体的进度。",
     },
   ],
-  sourceNote: "源码候选版本的控制方式依据 docs/MODES.md、docs/KEYBINDINGS.md 和 docs/CONFIGURATION.md。已发布版本的链接指向 v0.10.2 标签。",
+  sourceNote: "依据已发布版本标签下的 docs/MODES.md、docs/KEYBINDINGS.md 和 docs/CONFIGURATION.md；源码一节依据 main。",
 };

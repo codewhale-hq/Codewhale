@@ -41,8 +41,8 @@ export const docsSandbox: DocsSandboxDict = {
         {
           rows: [
             ["macOS", "Seatbelt, automatically, when its startup check succeeds. Commands get broad read access, writes limited by the sandbox mode, and network only when the mode allows it."],
-            ["Linux", "Bubblewrap, automatically, once it is installed and verified working (opt out below). Without it, commands run with no OS sandbox."],
-            ["Windows", "No OS sandbox today. Your approval setting and Windows permissions still apply."],
+            ["Linux", "Bubblewrap, automatically, once it is installed and verified working (opt out below). Without it, commands run with no OS sandbox, and Codewhale shows the workspace limit as unenforced."],
+            ["Windows", "No OS sandbox. Codewhale shows the workspace limit as unenforced, and your approval setting and Windows permissions still apply."],
             ["External service", "With `sandbox_backend = \"opensandbox\"`, shell commands run on an OpenSandbox-compatible service you configure; its isolation is that service's to guarantee."],
           ],
         },

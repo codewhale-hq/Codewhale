@@ -71,7 +71,7 @@ export const docsFleet: DocsFleetDict = {
           p: "This declarative form supports `agent`, `branch`, `sequence`, `reduce`, `loop_until`, `cond`, `expand`, and `teacher_review`. It compiles to a validated plan and rejects constructs such as `import`, `fetch`, `eval`, and `async`. Advanced imperative JavaScript can use asynchronous `task()` and `parallel()` in a sandbox, still without direct filesystem, shell or network access. Workers perform those actions under the active policy.",
         },
         {
-          note: "Workflow defaults to 16 concurrently live agents; admitted work waits for a slot. There is no default cumulative child limit or structural depth limit. Set positive `[workflow] max_children` or `max_depth` values to limit them. Runtime agent admission and delegation limits apply separately. Loops must declare `max_iterations`.",
+          note: "Workflow caps how many agents are live at once, and admitted work waits for a slot. There is no default cumulative child limit or structural depth limit. Set positive `[workflow] max_children` or `max_depth` values to limit them. Runtime agent admission and delegation limits apply separately. Loops must declare `max_iterations`.",
         },
       ],
     },

@@ -247,7 +247,7 @@ describe("no literal count in copy", () => {
   const PATTERN = new RegExp(`\\b${COUNT_WORDS} ${NOUNS}\\b`, "i");
   const ZH = /\d+\s*(?:个|条|种)\s*(?:提供商|模型|工具|语言|路由)/;
   const ALLOWED: Record<string, string> = {
-    "lib/content/tools.ts": "fourteen native tools",
+    "lib/content/tools.ts": "native tools for reading, editing",
     "lib/i18n/dictionaries/en/docs-mcp.ts": "listed those two tools",
   };
 
