@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **External agents over ACP:** Codewhale now drives external agents through the official Agent Client Protocol SDK. Request ids on the wire are strings, and an agent's error is treated as a sign-in problem only when it carries the protocol's auth-required code.
 - **Website home page:** the page is reorganized around what a visitor does: a dated OrcaRouter offer strip with a visible referral tag, one proof strip (release, stars, contributors), a models section with the newest first-party models, one capabilities section that includes Computer Use, an "Everything is a plugin" teaser and a community panel whose live GitHub numbers fill in from the browser and hide when unavailable. Unused home copy was removed from all 18 site languages.
 - **Website models and plugins:** /models leads with recently added models, three ways to connect (DeepSeek, first-party providers, any OpenAI-compatible endpoint) and a catalog grouped by maker; Ollama and OpenRouter are listed but no longer featured. /plugins leads with "Everything is a plugin" (credited to DeepSeek Harness) and shows MCP connectors from the connection catalog.
 - **Model catalog:** Claude Fable 5.2 (`claude-fable-5-2`) and Gemini 4 Carbon (`gemini-4-carbon`) are in the bundled catalog, and a daily catalog-refresh workflow proposes new first-party models from models.dev as a pull request. The workflow has not run in GitHub Actions yet.
