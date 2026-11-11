@@ -373,7 +373,7 @@ fn run_isolated(
                 file_size_bytes: 1024 * 1024,
                 open_files: 64,
                 processes: 32,
-                cpu_seconds: timeout.as_secs().max(1).min(8),
+                cpu_seconds: timeout.as_secs().clamp(1, 8),
             },
         )
         .map_err(|error| error.to_string())?;
@@ -1430,10 +1430,8 @@ impl ExperimentalSearch {
             .map_err(|error| error.to_string())?;
         file.write_all(&bytes).map_err(|error| error.to_string())?;
         file.sync_all().map_err(|error| error.to_string())?;
-        if repair_parent {
-            if let Some(root) = repair_root {
-                *self.repair_counts.entry(root).or_default() += 1;
-            }
+        if repair_parent && let Some(root) = repair_root {
+            *self.repair_counts.entry(root).or_default() += 1;
         }
         self.planned_model_turns
             .insert(candidate_id.to_string(), genome.admission_turns());
@@ -2204,7 +2202,7 @@ impl ExperimentalSearch {
                         case_index + 1,
                         case.input,
                         case.expected,
-                        actual.map_or_else(|_| Value::String(run.stdout.clone()), |value| value),
+                        actual.unwrap_or_else(|_| Value::String(run.stdout.clone())),
                         run.exit_code,
                         run.stop_reason,
                         run.stderr.chars().take(200).collect::<String>(),
