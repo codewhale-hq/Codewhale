@@ -40,9 +40,9 @@ export const APP_COPY = {
     en: "It runs the same engine as the terminal, so the app and the terminal share one agent. It is a development build today, and the browser app is not open yet.",
     zh: "它与终端运行同一个引擎，因此应用与终端共用同一个智能体。目前它是开发版本，浏览器应用尚未开放。",
   },
-  status: {
-    desktop: { en: "Desktop: development build", zh: "桌面端：开发版本" },
-    browser: { en: "Browser app: not open yet", zh: "浏览器应用：暂未开放" },
+  surfaces: {
+    desktop: { en: "Desktop", zh: "桌面端" },
+    browser: { en: "Browser app", zh: "浏览器应用" },
   },
   actions: {
     install: { en: "Install the terminal", zh: "安装终端版" },

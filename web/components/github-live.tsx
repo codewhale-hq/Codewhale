@@ -81,27 +81,36 @@ export function useLiveRepo(enabled: boolean): LiveRepo | null {
   return data;
 }
 
-export function LiveStarCount({ initial, numberLocale }: { initial?: number; numberLocale: string }) {
+export function LiveStarCount({ initial, numberLocale, asOf }: { initial?: number; numberLocale: string; asOf?: string }) {
   const live = useLiveRepo(initial === undefined);
   const stars = initial ?? live?.stars;
   if (stars === undefined) return null;
+  const dated = initial !== undefined ? asOf : undefined;
+  const formatted = new Intl.NumberFormat(numberLocale).format(stars);
   return (
-    <span className="github-star-count tabular" data-live={initial === undefined ? "client" : "server"}>
-      {new Intl.NumberFormat(numberLocale).format(stars)}
+    <span
+      className="github-star-count tabular"
+      data-live={initial === undefined ? "client" : "server"}
+      title={dated}
+      aria-label={dated ? `${formatted}, ${dated}` : undefined}
+    >
+      {formatted}
     </span>
   );
 }
 
-export interface PulseRow { key: "stars" | "contributors" | "pulls" | "issues"; label: string; href: string; value?: string }
+export interface PulseRow { key: "stars" | "contributors" | "pulls" | "issues"; label: string; href: string; value?: string; asOf?: string }
 
-export function LiveStarLink({ initial, label, href, numberLocale }: { initial?: number; label: string; href: string; numberLocale: string }) {
+export function LiveStarLink({ initial, label, href, numberLocale, asOf }: { initial?: number; label: string; href: string; numberLocale: string; asOf?: string }) {
   const live = useLiveRepo(initial === undefined);
   const stars = initial ?? live?.stars;
   if (stars === undefined) return null;
+  const dated = initial !== undefined ? asOf : undefined;
+  const formatted = new Intl.NumberFormat(numberLocale).format(stars);
   return (
-    <a href={href} className="section-link home-proof-stars">
+    <a href={href} className="section-link home-proof-stars" title={dated} aria-label={dated ? `${formatted} ${label}, ${dated}` : undefined}>
       <span aria-hidden="true">★</span>
-      <span className="tabular">{new Intl.NumberFormat(numberLocale).format(stars)}</span>
+      <span className="tabular">{formatted}</span>
       <span>{label}</span>
     </a>
   );
@@ -126,7 +135,16 @@ export function LivePulseStats({ rows, numberLocale }: { rows: PulseRow[]; numbe
         return (
           <div key={row.key}>
             <dt>{row.label}</dt>
-            <dd><a href={row.href} className="tabular">{value}</a></dd>
+            <dd>
+              <a
+                href={row.href}
+                className="tabular"
+                title={row.value !== undefined ? row.asOf : undefined}
+                aria-label={row.value !== undefined && row.asOf ? `${value} ${row.label}, ${row.asOf}` : undefined}
+              >
+                {value}
+              </a>
+            </dd>
           </div>
         );
       })}
