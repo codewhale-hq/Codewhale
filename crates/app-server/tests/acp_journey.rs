@@ -8,7 +8,8 @@ use codewhale_engine::runtime_threads::RuntimeTurnStatus;
 use codewhale_engine::runtime_threads::manager::{
     RuntimeThreadManager, RuntimeThreadManagerConfig,
 };
-use serde_json::json;
+use serde_json::{Value, json};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -458,7 +459,14 @@ async fn extension_journey() -> Result<()> {
             assert_eq!(completed, 2, "both extension calls complete: {frames:#?}");
             let rendered = serde_json::to_string(&frames)?;
             assert!(rendered.contains("mcp-echo:from-acp"), "{rendered}");
-            assert!(rendered.contains(workspace.to_str().unwrap()), "{rendered}");
+            let probed = updates(&frames, "tool_call_update")
+                .iter()
+                .filter_map(|frame| frame.pointer("/params/update/content/0/content/text"))
+                .filter_map(Value::as_str)
+                .filter_map(|text| serde_json::from_str::<Value>(&text[text.find('{')?..]).ok())
+                .find_map(|result| Some(PathBuf::from(result.get("workspace")?.as_str()?)))
+                .ok_or_else(|| anyhow!("the plugin result did not reach the editor: {rendered}"))?;
+            assert_eq!(probed.canonicalize()?, workspace.canonicalize()?);
             assert_eq!(
                 text_of(&frames, "agent_message_chunk"),
                 "both extension tools ran"
