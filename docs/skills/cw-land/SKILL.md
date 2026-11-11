@@ -30,9 +30,9 @@ Stage 5 of the loop: [cw-orient](../cw-orient/SKILL.md) →
    Several agents share the checkout, so partition by file, check
    `git status` before staging, stage only your paths (never `git add -A`),
    and retry a commit that fails on `index.lock`. Push verified `main`
-   directly. A push is not a CI request: hosted CI runs once, at the final
-   release step (`docs/RELEASE_CHECKLIST.md`), and routine slice commits carry
-   `[skip ci]`. PRs are for contributors.
+   directly. Every push to `main` starts full hosted CI on that commit through
+   the landing gate (`main-landing.yml`): never add `[skip ci]`, watch the run
+   and repair what it finds. PRs are for contributors.
 
 2. **Commit narrow and build-green.** One coherent change per commit; the tree
    builds at every commit. Put the real verification in the message — actual
@@ -54,7 +54,11 @@ Stage 5 of the loop: [cw-orient](../cw-orient/SKILL.md) →
    `check-blocking-calls-budget.py` (async code),
    `check-readme-translations.py` and `check-readme-locales.sh` (READMEs),
    `node web/scripts/derive-facts.mjs && node web/scripts/check-facts.mjs`
-   (public facts). Put a new CHANGELOG entry at the **top** of
+   (public facts and agent docs, which embed the docs), and
+   `node web/scripts/check-runtime-routes.mjs --write` (a Runtime API route
+   added or removed). Regenerate those two files after every rebase or
+   cherry-pick, even a clean one: git can merge `docs/RUNTIME_ROUTES.md`
+   wrongly with no conflict marker. Put a new CHANGELOG entry at the **top** of
    `[Unreleased]`. Open contributor PRs append at its end, and an entry of
    ours there conflicts with every one of them.
 

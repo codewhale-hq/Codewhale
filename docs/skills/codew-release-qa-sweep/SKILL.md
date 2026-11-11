@@ -11,8 +11,9 @@ that do.
 - **Gates and the release cut:** follow `docs/RELEASE_CHECKLIST.md` from the
   canonical checkout on `main` (`docs/RELEASE_RUNBOOK.md` for the tools behind
   it). Native builds go through `scripts/dev-cargo.sh` / `scripts/dev-test.sh`
-  ([cw-gates](../cw-gates/SKILL.md)). Hosted CI runs once, at the final release
-  step, against the frozen candidate commit.
+  ([cw-gates](../cw-gates/SKILL.md)). Every push to `main` runs full hosted
+  CI; the release step dispatches CI and `release-candidate.yml` again on the
+  frozen candidate commit.
 - **Manual QA targets:** [cw-dogfood](../cw-dogfood/SKILL.md) step 5. Unit and
   build gates do not cover the live TUI.
 
