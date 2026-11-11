@@ -530,9 +530,11 @@ impl VerifiedCandidateEvaluator {
                     .map_err(|error| error.to_string())?,
             );
             let mut executable_hashes = HashMap::new();
-            for executable in std::iter::once("/usr/bin/bwrap")
-                .chain(spec.hard_gates.iter().map(|gate| gate.candidate_argv[0].as_str()))
-            {
+            for executable in std::iter::once("/usr/bin/bwrap").chain(
+                spec.hard_gates
+                    .iter()
+                    .map(|gate| gate.candidate_argv[0].as_str()),
+            ) {
                 let bytes = fs::read(executable).map_err(|error| error.to_string())?;
                 executable_hashes.insert(executable.to_string(), hash(&bytes));
             }
