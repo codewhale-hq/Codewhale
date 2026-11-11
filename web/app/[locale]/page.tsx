@@ -41,7 +41,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
   const sourceIsPublished = publishedRelease?.version === sourceVersion;
   const promoDays = daysLeft(PARTNER_PROMO.endsAt);
   const showPromo = isActiveAt(PARTNER_PROMO.endsAt) && PARTNER_PROMO.locales.includes(locale);
-  const jsonLd = buildSoftwareApplicationJsonLd(publishedRelease);
+  const jsonLd = buildSoftwareApplicationJsonLd(publishedRelease, locale);
   const ledeParts = splitToken(d.heroIntro, "brand");
   const gateways = new Set(["OpenRouter", "Together", "OpenAI Codex"]);
   const makers = [...new Set(released.models.map((model) => model.provider).filter((name): name is string => !!name && !gateways.has(name)))]
