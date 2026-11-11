@@ -44,13 +44,16 @@ def case(root, mode, binary, helper, support):
               "extra_verification": True, "candidate_strategy": "direct",
               "trace_preference": "evidence_refs"}
     manifest = helper["write_manifest"](root, workspace, "single", 1, 1,
-                                          fixture, brief, policy, 10)
+                                          fixture, brief, policy,
+                                          11 if mode == "retry_dev_review" else 10)
     program = "import json,sys\njson.load(sys.stdin)\nprint(json.dumps({'ok':True}))\n"
     before = set(Path(tempfile.gettempdir()).glob("codewhale-evolution-workflow_*"))
     intervention = {}
 
     def on_dev_review():
         try:
+            if mode == "retry_dev_review":
+                return
             roots = [path for path in
                      set(Path(tempfile.gettempdir()).glob("codewhale-evolution-workflow_*")) - before
                      if (path / "artifacts" / "candidate_g0_1.json").is_file()]
@@ -88,7 +91,9 @@ def case(root, mode, binary, helper, support):
 
     requests = []
     server = ThreadingHTTPServer(("127.0.0.1", 0),
-                                 support["make_handler"](program, requests, on_dev_review))
+                                 support["make_handler"](
+                                     program, requests, on_dev_review,
+                                     tool_only_dev_requests=7 if mode == "retry_dev_review" else 0))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     config = root / "config.toml"
@@ -146,6 +151,9 @@ def case(root, mode, binary, helper, support):
                "review_status": (outcome.get("review") or {}).get("review_status"),
                "intervention": intervention,
                "native_evaluator_count": len(roots),
+               "dev_review_task_labels": [event.get("label") for event in workflow.get("events", [])
+                                          if event.get("type") == "task_started"
+                                          and str(event.get("label", "")).startswith("dev_review_")],
                "dev_review_requests": sum(item["category"] == "dev_review" for item in requests),
                "final_review_requests": sum(item["category"] == "final_review" for item in requests)}
     if mode == "delete_original":
@@ -156,6 +164,16 @@ def case(root, mode, binary, helper, support):
                            and intervention.get("original_absent") is True
                            and "src/generated_note.txt" in replay.get("changed_paths", [])
                            and receipt["dev_review_requests"] == 1)
+    elif mode == "retry_dev_review":
+        receipt["pass"] = (evaluation.get("status") == "PASS"
+                           and replay.get("status") == "PASS"
+                           and outcome.get("winner_id") == "candidate_g0_1"
+                           and outcome.get("promotion") == "proposal_only"
+                           and receipt["review_status"] == "COMPLETE"
+                           and receipt["dev_review_task_labels"] == [
+                               "dev_review_candidate_g0_1", "dev_review_retry_candidate_g0_1"]
+                           and receipt["dev_review_requests"] == 8
+                           and receipt["final_review_requests"] == 1)
     else:
         expected = "sealed artifact manifest changed" if mode == "tamper_manifest" \
             else "review blob hash mismatch"

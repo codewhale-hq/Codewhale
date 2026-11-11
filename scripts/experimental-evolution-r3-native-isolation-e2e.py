@@ -41,9 +41,10 @@ def sse_tool(name, arguments, call_id):
                    )) + "data: [DONE]\n\n"
 
 
-def make_handler(program, requests, on_dev_review=None):
+def make_handler(program, requests, on_dev_review=None, tool_only_dev_requests=0):
     class Handler(BaseHTTPRequestHandler):
         writer_calls = 0
+        dev_review_calls = 0
 
         def log_message(self, *_args):
             pass
@@ -68,7 +69,10 @@ def make_handler(program, requests, on_dev_review=None):
                 category = "dev_review"
                 if on_dev_review is not None:
                     on_dev_review()
-                response = sse_text('{"verdict":"pass","reasons":["local DEV fixture"]}')
+                Handler.dev_review_calls += 1
+                response = (sse_tool("submit_review", {"verdict": "pass"}, "local-dev-tool-only")
+                            if Handler.dev_review_calls <= tool_only_dev_requests
+                            else sse_text('{"verdict":"pass","reasons":["local DEV fixture"]}'))
             elif "Plan one bounded implementation step" in messages:
                 category = "planner"
                 response = sse_text('{"plan":"Read starter, then write the bounded probe."}')
