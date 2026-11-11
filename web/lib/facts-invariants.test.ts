@@ -161,24 +161,17 @@ describe("no price, currency amount or plan name in the public surface", () => {
 
   const pages: [string, () => Promise<{ default: unknown }>][] = [
     ["home", () => import("../app/[locale]/page")],
-    ["product", () => import("../app/[locale]/product/page")],
     ["app", () => import("../app/[locale]/app/page")],
     ["features", () => import("../app/[locale]/features/page")],
-    ["runtime", () => import("../app/[locale]/runtime/page")],
     ["docs", () => import("../app/[locale]/docs/page")],
     ["faq", () => import("../app/[locale]/faq/page")],
-    ["roadmap", () => import("../app/[locale]/roadmap/page")],
-    ["enterprise", () => import("../app/[locale]/enterprise/page")],
-    ["feed", () => import("../app/[locale]/feed/page")],
-    ["digest", () => import("../app/[locale]/digest/page")],
     ["contribute", () => import("../app/[locale]/contribute/page")],
-    ["community", () => import("../app/[locale]/community/page")],
     ["signin", () => import("../app/[locale]/signin/page")],
     ["install", () => import("../app/[locale]/install/page")],
     ["models", () => import("../app/[locale]/models/page")],
     ["plugins", () => import("../app/[locale]/plugins/page")],
     ["computer-use", () => import("../app/[locale]/computer-use/page")],
-    ["constitution", () => import("../app/[locale]/constitution/page")],
+    ["docs/constitution", () => import("../app/[locale]/docs/constitution/page")],
   ];
 
   beforeEach(failEveryGitHubCall);

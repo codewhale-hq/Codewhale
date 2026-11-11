@@ -21,9 +21,7 @@ import { FACTS } from "./facts.generated";
 import { FEATURE_CATALOGUE, type Feature } from "./features";
 import { FOUNDER_SWITCHES, FOUNDER_SWITCH_VALUES } from "./founder-switches";
 import { PRODUCT_COPY } from "./content/product";
-import { stateLabel } from "./surface-states";
 import ModelsPage from "../app/[locale]/models/page";
-import ProductPage from "../app/[locale]/product/page";
 import HomePage from "../app/[locale]/page";
 import { buildLlmsTxt } from "./llms-txt";
 
@@ -240,22 +238,6 @@ describe("counts are the counts at the published release tag", () => {
   it("omit every counted sentence when the count is unknown", async () => {
     const other = { ...FACTS, latestPublishedRelease: { ...FACTS.latestPublishedRelease!, tag: "v9.9.9", version: "9.9.9" } };
     expect(releaseView(other).counts).toBeNull();
-  });
-});
-
-describe("the product page labels a source-only permission", () => {
-  it("shows the in-source label beside a claim the published release does not describe", async () => {
-    const context = runtimeCapabilityContext(FACTS);
-    const accept = PRODUCT_COPY.permissions.find((item) => item.title.en === "Accept Edits")!;
-    const availability = claimAvailability(accept.capability!, context);
-    const props = { params: Promise.resolve({ locale: "en" }) } as never;
-    const html = renderToStaticMarkup((await ProductPage(props)) as never);
-    if (availability === "in_source") {
-      expect(html).toContain(stateLabel("in_source", "en"));
-      expect(html).toContain("Accept Edits");
-    } else {
-      expect(html).not.toContain(stateLabel("in_source", "en"));
-    }
   });
 });
 

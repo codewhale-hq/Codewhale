@@ -375,7 +375,6 @@ export const DOC_TOPICS: DocTopic[] = [
     },
     repoSource: "docs/ARCHITECTURE.md",
     hasPage: true,
-    sitePath: "constitution",
     category: "reference",
   },
   {
