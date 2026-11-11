@@ -96,7 +96,12 @@ function handle(message) {
       record('session-params.jsonl', { method: message.method, params: message.params });
       sessionId = `fixture-session-${process.pid}`;
       cwd = message.params?.cwd ?? cwd;
-      result(message.id, { sessionId });
+      result(message.id, {
+        sessionId,
+        ...(plan().legacyModels
+          ? { models: { currentModelId: 'legacy-a', availableModels: [{ modelId: 'legacy-a', name: 'Legacy A' }, { modelId: 'legacy-b', name: 'Legacy B' }] } }
+          : {}),
+      });
       break;
     case 'session/load':
       record('session-params.jsonl', { method: message.method, params: message.params });
@@ -106,11 +111,18 @@ function handle(message) {
       notify('session/update', { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'replayed answer' } } });
       result(message.id, {});
       break;
+    case 'session/set_model':
+      result(message.id, {});
+      break;
     case 'session/set_config_option':
       configModel = message.params?.value ?? null;
       result(message.id, { configOptions: [] });
       break;
     case 'session/prompt':
+      if (plan().ignoreCancel) {
+        record('held-prompts.jsonl', { id: message.id });
+        break;
+      }
       if (HANG) {
         pendingPrompt = message;
         break;

@@ -2,11 +2,14 @@
 //! stdio.
 //!
 //! The fleet host owns the process: groups, parent-death, stop, restart and
-//! logs. This module owns only the wire: newline-framed JSON-RPC, one request
-//! at a time, and the client side of the agent's requests. A caller supplies
-//! an [`AcpHandler`] that sees every `session/update` and answers every
-//! `session/request_permission`; [`PermissionPolicy`] is the fixed-answer
-//! handler for callers with no person in the loop.
+//! logs. This module owns only the wire, and the wire is the official
+//! `agent-client-protocol` SDK: one connection thread per client drives the
+//! SDK over the worker's pipes, and the caller's thread sends one request at a
+//! time and answers the agent's requests. What we send is built from the
+//! official v1 types; what an agent sends is read leniently as JSON. A caller
+//! supplies an [`AcpHandler`] that sees every `session/update` and answers
+//! every `session/request_permission`; [`PermissionPolicy`] is the
+//! fixed-answer handler for callers with no person in the loop.
 //!
 //! Deliberately absent: filesystem and terminal client methods (advertised
 //! false and answered method-not-found), elicitation (declined), `authenticate`
@@ -15,22 +18,38 @@
 //! another session id are ignored, and a permission request for one is
 //! answered `cancelled`. A line longer than [`MAX_MESSAGE_BYTES`] ends the
 //! connection rather than being parsed.
+//!
+//! Known limits: each message is bounded but the number of queued messages is
+//! not, so an agent that floods small frames grows memory until the caller
+//! drains them. A permission request the agent withdraws with
+//! `$/cancel_request` is answered `cancelled`, but only once the handler
+//! returns; the handler is not interrupted.
 
-use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use agent_client_protocol::schema::ProtocolVersion;
+use agent_client_protocol::v1::schema::{
+    CancelNotification, ClientCapabilities, ContentBlock, CreateElicitationResponse,
+    ElicitationAction, Implementation, InitializeRequest, LoadSessionRequest, NewSessionRequest,
+    PromptRequest, RequestPermissionOutcome, RequestPermissionResponse, ResumeSessionRequest,
+    SelectedPermissionOutcome, SetSessionConfigOptionRequest, SetSessionModeRequest,
+};
+use agent_client_protocol::{Client, ErrorCode, Lines, UntypedMessage};
+use codewhale_util::bounded_lines::{BoundedLines, MAX_FRAME_BYTES, is_frame_refusal};
+use futures_util::{Sink, Stream};
 use serde::Serialize;
 use serde_json::{Value, json};
+use tokio::io::AsyncWriteExt as _;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
 use super::host::FleetWorkerIo;
 
 const CLIENT_NAME: &str = "codewhale";
-const METHOD_NOT_FOUND: i64 = -32601;
-pub const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_MESSAGE_BYTES: usize = MAX_FRAME_BYTES;
 pub const AUTH_REQUIRED: i64 = -32000;
 const ABORT_POLL: Duration = Duration::from_millis(25);
 pub const MAX_CONTROLS: usize = 32;
@@ -76,12 +95,12 @@ pub enum PermissionAnswer {
 }
 
 impl PermissionAnswer {
-    fn outcome(&self) -> Value {
+    fn outcome(&self) -> RequestPermissionOutcome {
         match self {
-            PermissionAnswer::Selected(option_id) => {
-                json!({"outcome": "selected", "optionId": option_id})
-            }
-            PermissionAnswer::Cancelled => json!({"outcome": "cancelled"}),
+            PermissionAnswer::Selected(option_id) => RequestPermissionOutcome::Selected(
+                SelectedPermissionOutcome::new(option_id.clone()),
+            ),
+            PermissionAnswer::Cancelled => RequestPermissionOutcome::Cancelled,
         }
     }
 }
@@ -113,8 +132,15 @@ impl AcpError {
         self.code
     }
 
+    fn from_agent(method: &str, error: &SdkError) -> Self {
+        Self {
+            message: format!("{method} failed: {}", describe(error)),
+            code: Some(i64::from(i32::from(error.code))),
+        }
+    }
+
     pub fn is_auth_required(&self) -> bool {
-        self.code == Some(AUTH_REQUIRED) || self.message.to_ascii_lowercase().contains("auth")
+        self.code == Some(AUTH_REQUIRED)
     }
 }
 
@@ -668,135 +694,284 @@ impl AcpHandler for DiscardHandler {
     }
 }
 
-type Line = Result<String, String>;
+type SdkError = agent_client_protocol::Error;
+
+enum Command {
+    Request {
+        method: &'static str,
+        params: Value,
+        token: u64,
+        cancel: Option<CancellationToken>,
+    },
+    Notify(Value),
+}
+
+enum Event {
+    Update(Value),
+    Request {
+        method: String,
+        params: Value,
+        responder: Box<agent_client_protocol::v1::Responder<Value>>,
+    },
+    Response {
+        token: u64,
+        result: Result<Value, AcpError>,
+    },
+    Closed(Option<String>),
+}
 
 /// One live ACP conversation over a worker's pipes.
 pub struct AcpClient {
-    stdin: Arc<Mutex<std::process::ChildStdin>>,
-    lines: Receiver<Line>,
-    next_id: u64,
+    commands: UnboundedSender<Command>,
+    events: Receiver<Event>,
+    closed: Arc<Mutex<Option<String>>>,
+    next_token: u64,
     abort: Option<CancellationToken>,
 }
 
 /// A write-only handle that can send `session/cancel` while a prompt blocks
-/// the client that owns the reader.
+/// the client that owns the event queue.
 #[derive(Clone)]
 pub struct AcpCanceller {
-    stdin: Arc<Mutex<std::process::ChildStdin>>,
+    commands: UnboundedSender<Command>,
     session: String,
 }
 
 impl AcpCanceller {
     pub fn cancel(&self) -> Result<(), AcpError> {
-        write_line(
-            &self.stdin,
-            &json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": self.session}}),
-        )
+        send_cancel(&self.commands, &self.session)
     }
 }
 
 impl std::fmt::Debug for AcpClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AcpClient")
-            .field("next_id", &self.next_id)
+            .field("next_token", &self.next_token)
             .finish_non_exhaustive()
     }
 }
 
-fn session_params(
-    identity: &AgentIdentity,
-    session: Option<&str>,
-    cwd: &Path,
-    add_dirs: &[PathBuf],
-) -> Value {
-    let mut params = json!({"cwd": cwd.display().to_string(), "mcpServers": []});
-    if let Some(session) = session {
-        params["sessionId"] = json!(session);
-    }
-    if identity.capabilities.additional_directories && !add_dirs.is_empty() {
-        params["additionalDirectories"] = add_dirs
-            .iter()
-            .map(|dir| dir.display().to_string())
-            .collect::<Vec<_>>()
-            .into();
-    }
-    params
+fn encode(message: impl Serialize) -> Result<Value, AcpError> {
+    serde_json::to_value(message)
+        .map_err(|err| AcpError::new(format!("encoding a message failed: {err}")))
 }
 
-fn write_line(stdin: &Mutex<std::process::ChildStdin>, message: &Value) -> Result<(), AcpError> {
-    write_line_unless_cancelled(stdin, message, None)
-}
-
-fn write_line_unless_cancelled(
-    stdin: &Mutex<std::process::ChildStdin>,
-    message: &Value,
-    cancel: Option<&CancellationToken>,
-) -> Result<(), AcpError> {
-    let mut line = serde_json::to_string(message)
-        .map_err(|err| AcpError::new(format!("encoding a message failed: {err}")))?;
-    line.push('\n');
-    let mut stdin = stdin
-        .lock()
-        .map_err(|_| AcpError::new("the agent's stdin lock was poisoned"))?;
-    if cancel.is_some_and(CancellationToken::is_cancelled) {
-        return Err(AcpError::new(
-            "session/prompt was cancelled before dispatch",
-        ));
+fn describe(error: &SdkError) -> String {
+    let message = if error.message.is_empty() {
+        "the agent refused"
+    } else {
+        error.message.as_str()
+    };
+    match bounded_text(error.data.as_ref(), MAX_DESCRIPTION_CHARS) {
+        Some(detail) => format!("{message}: {detail}"),
+        None => message.to_string(),
     }
-    stdin
-        .write_all(line.as_bytes())
-        .and_then(|()| stdin.flush())
-        .map_err(|err| AcpError::new(format!("the agent's stdin closed: {err}")))
 }
 
-fn read_bounded_line(
-    stdout: &mut std::io::BufReader<std::process::ChildStdout>,
-    line: &mut Vec<u8>,
-) -> std::io::Result<usize> {
-    line.clear();
-    (&mut *stdout)
-        .take(MAX_MESSAGE_BYTES as u64 + 1)
-        .read_until(b'\n', line)
+fn send_cancel(commands: &UnboundedSender<Command>, session: &str) -> Result<(), AcpError> {
+    let params = encode(CancelNotification::new(session.to_string()))?;
+    commands
+        .send(Command::Notify(params))
+        .map_err(|_| AcpError::new("the agent's connection has ended"))
+}
+
+fn wire_path(path: &Path) -> PathBuf {
+    PathBuf::from(path.display().to_string())
+}
+
+fn advertised_dirs(identity: &AgentIdentity, add_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    if identity.capabilities.additional_directories {
+        add_dirs.iter().map(|dir| wire_path(dir)).collect()
+    } else {
+        Vec::new()
+    }
+}
+
+fn bounded_lines<R>(
+    reader: R,
+    closed: Arc<Mutex<Option<String>>>,
+) -> impl Stream<Item = std::io::Result<String>> + Send + 'static
+where
+    R: tokio::io::AsyncBufRead + Unpin + Send + 'static,
+{
+    futures_util::stream::unfold(
+        (BoundedLines::new(reader), closed),
+        |(mut lines, closed)| async move {
+            loop {
+                match lines.next_line().await {
+                    Ok(Some(line)) if line.trim().is_empty() => continue,
+                    Ok(Some(line)) => return Some((Ok(line), (lines, closed))),
+                    Ok(None) => return None,
+                    Err(error) => {
+                        if is_frame_refusal(&error)
+                            && let Ok(mut slot) = closed.lock()
+                        {
+                            slot.get_or_insert_with(|| {
+                                format!("the agent's message was refused: {error}")
+                            });
+                        }
+                        return Some((Err(error), (lines, closed)));
+                    }
+                }
+            }
+        },
+    )
+}
+
+fn line_sink<W>(writer: W) -> impl Sink<String, Error = std::io::Error> + Send + 'static
+where
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    futures_util::sink::unfold(writer, |mut writer, line: String| async move {
+        writer.write_all(line.as_bytes()).await?;
+        writer.write_all(b"\n").await?;
+        writer.flush().await?;
+        Ok::<_, std::io::Error>(writer)
+    })
+}
+
+async fn drive(
+    io: FleetWorkerIo,
+    mut commands: UnboundedReceiver<Command>,
+    events: Sender<Event>,
+    closed: Arc<Mutex<Option<String>>>,
+) -> Result<(), SdkError> {
+    let stdin =
+        tokio::process::ChildStdin::from_std(io.stdin).map_err(SdkError::into_internal_error)?;
+    let stdout = tokio::process::ChildStdout::from_std(io.stdout.into_inner())
+        .map_err(SdkError::into_internal_error)?;
+    let transport = Lines::new(
+        line_sink(stdin),
+        bounded_lines(tokio::io::BufReader::new(stdout), closed),
+    );
+    let requests = events.clone();
+    let updates = events.clone();
+    Client
+        .v1()
+        .on_receive_request(
+            async move |request: UntypedMessage, responder, _cx| {
+                let (method, params) = request.into_parts();
+                let _ = requests.send(Event::Request {
+                    method,
+                    params,
+                    responder: Box::new(responder),
+                });
+                Ok(())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_notification(
+            async move |notification: UntypedMessage, _cx| {
+                let (method, params) = notification.into_parts();
+                if method == "session/update" {
+                    let _ = updates.send(Event::Update(params));
+                }
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(transport, async move |cx| {
+            loop {
+                let command = tokio::select! {
+                    command = commands.recv() => command,
+                    () = cx.incoming_closed() => None,
+                };
+                match command {
+                    Some(Command::Request {
+                        method,
+                        params,
+                        token,
+                        cancel,
+                    }) => {
+                        let answered = events.clone();
+                        let sent = if cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
+                            Err(AcpError::new(format!(
+                                "{method} was cancelled before dispatch"
+                            )))
+                        } else {
+                            UntypedMessage::new(method, params)
+                                .and_then(|message| {
+                                    cx.send_request(message).on_receiving_result(
+                                        async move |result| {
+                                            let _ = answered.send(Event::Response {
+                                                token,
+                                                result: result.map_err(|error| {
+                                                    AcpError::from_agent(method, &error)
+                                                }),
+                                            });
+                                            Ok(())
+                                        },
+                                    )
+                                })
+                                .map_err(|error| AcpError::from_agent(method, &error))
+                        };
+                        if let Err(error) = sent {
+                            let _ = events.send(Event::Response {
+                                token,
+                                result: Err(error),
+                            });
+                        }
+                    }
+                    Some(Command::Notify(params)) => {
+                        if let Err(error) = UntypedMessage::new("session/cancel", params)
+                            .and_then(|message| cx.send_notification(message))
+                        {
+                            tracing::warn!(error = %describe(&error), "sending session/cancel failed");
+                        }
+                    }
+                    None => return Ok(()),
+                }
+            }
+        })
+        .await
 }
 
 impl AcpClient {
     pub fn new(io: FleetWorkerIo) -> Self {
-        let FleetWorkerIo { stdin, stdout } = io;
-        let (tx, lines) = sync_channel::<Line>(2);
-        std::thread::spawn(move || {
-            let mut stdout = stdout;
-            let mut line = Vec::new();
-            loop {
-                match read_bounded_line(&mut stdout, &mut line) {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {
-                        if line.len() > MAX_MESSAGE_BYTES {
-                            let _ = tx.send(Err(format!(
-                                "the agent sent a message larger than {MAX_MESSAGE_BYTES} bytes"
-                            )));
-                            break;
-                        }
-                        let text = match std::str::from_utf8(&line) {
-                            Ok(text) => text.trim_end().to_string(),
-                            Err(_) => {
-                                let _ = tx.send(Err("the agent sent invalid UTF-8".to_string()));
-                                break;
-                            }
-                        };
-                        if text.is_empty() {
-                            continue;
-                        }
-                        if tx.send(Ok(text)).is_err() {
-                            break;
-                        }
+        let (commands, command_rx) = unbounded_channel();
+        let (event_tx, events) = channel();
+        let closed = Arc::new(Mutex::new(None));
+        let stream_closed = Arc::clone(&closed);
+        let spawned = std::thread::Builder::new()
+            .name("acp-conn".to_string())
+            .spawn(move || {
+                let ended = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => {
+                        let ended = runtime.block_on(drive(
+                            io,
+                            command_rx,
+                            event_tx.clone(),
+                            stream_closed,
+                        ));
+                        runtime.shutdown_background();
+                        ended
                     }
-                }
-            }
-        });
+                    Err(error) => Err(SdkError::into_internal_error(error)),
+                };
+                let reason = match ended {
+                    Ok(()) => None,
+                    Err(error) if agent_client_protocol::is_incoming_transport_closed(&error) => {
+                        None
+                    }
+                    Err(error) => {
+                        Some(format!("the agent connection failed: {}", describe(&error)))
+                    }
+                };
+                let _ = event_tx.send(Event::Closed(reason));
+            });
+        if let Err(error) = spawned
+            && let Ok(mut slot) = closed.lock()
+        {
+            *slot = Some(format!("the agent connection could not start: {error}"));
+        }
         Self {
-            stdin: Arc::new(Mutex::new(stdin)),
-            lines,
-            next_id: 1,
+            commands,
+            events,
+            closed,
+            next_token: 1,
             abort: None,
         }
     }
@@ -805,26 +980,25 @@ impl AcpClient {
         self.abort = abort;
     }
 
-    fn write(&self, message: &Value) -> Result<(), AcpError> {
-        write_line(&self.stdin, message)
-    }
-
     /// A handle that can settle a blocked prompt from another thread.
     pub fn canceller(&self, session: &str) -> AcpCanceller {
         AcpCanceller {
-            stdin: Arc::clone(&self.stdin),
+            commands: self.commands.clone(),
             session: session.to_string(),
         }
     }
 
-    fn next(&mut self) -> u64 {
-        let id = self.next_id;
-        self.next_id += 1;
-        id
+    fn ended(&self, method: &str, reason: Option<String>) -> AcpError {
+        let refused = self.closed.lock().ok().and_then(|slot| slot.clone());
+        AcpError::new(
+            refused
+                .or(reason)
+                .unwrap_or_else(|| format!("the agent exited before answering {method}")),
+        )
     }
 
-    fn read(&mut self, deadline: Instant, method: &str) -> Result<Value, AcpError> {
-        let line = loop {
+    fn read(&mut self, deadline: Instant, method: &str) -> Result<Event, AcpError> {
+        loop {
             if self
                 .abort
                 .as_ref()
@@ -843,93 +1017,90 @@ impl AcpClient {
             } else {
                 left
             };
-            match self.lines.recv_timeout(wait) {
-                Ok(Ok(line)) => break line,
-                Ok(Err(reason)) => return Err(AcpError::new(reason)),
+            match self.events.recv_timeout(wait) {
+                Ok(event) => return Ok(event),
                 Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => {
-                    return Err(AcpError::new(format!(
-                        "the agent exited before answering {method}"
-                    )));
-                }
+                Err(RecvTimeoutError::Disconnected) => return Err(self.ended(method, None)),
             }
-        };
-        let message: Value = serde_json::from_str(&line).map_err(|err| {
-            AcpError::new(format!("the agent sent a line that is not JSON: {err}"))
-        })?;
-        if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
-            return Err(AcpError::new("the agent sent an invalid JSON-RPC envelope"));
         }
-        Ok(message)
     }
 
     fn request(
         &mut self,
-        method: &str,
+        method: &'static str,
         params: Value,
         session: Option<&str>,
         deadline: Instant,
         handler: &mut dyn AcpHandler,
         cancel: Option<&CancellationToken>,
     ) -> Result<Value, AcpError> {
-        let id = self.next();
-        write_line_unless_cancelled(
-            &self.stdin,
-            &json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
-            cancel,
-        )?;
-        loop {
-            let message = self.read(deadline, method)?;
-            let incoming = message.get("method").and_then(Value::as_str);
-            if incoming.is_none() && message.get("id").and_then(Value::as_u64) == Some(id) {
-                if let Some(error) = message.get("error") {
-                    let text = error
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("the agent refused");
-                    return Err(AcpError {
-                        message: format!("{method} failed: {text}"),
-                        code: error.get("code").and_then(Value::as_i64),
-                    });
-                }
-                return message.get("result").cloned().ok_or_else(|| {
-                    AcpError::new("the agent sent a response without a result or error")
-                });
-            }
-            let Some(incoming) = incoming else {
-                continue;
-            };
-            let incoming_id = message.get("id").cloned();
-            let params = message.get("params").cloned().unwrap_or(Value::Null);
-            let ours = session.is_some_and(|session| {
+        let token = self.next_token;
+        self.next_token += 1;
+        self.commands
+            .send(Command::Request {
+                method,
+                params,
+                token,
+                cancel: cancel.cloned(),
+            })
+            .map_err(|_| self.ended(method, None))?;
+        let ours = |params: &Value| {
+            session.is_some_and(|session| {
                 params.get("sessionId").and_then(Value::as_str) == Some(session)
-            });
-            match (incoming, incoming_id) {
-                ("session/update", None) => {
-                    if ours && let Some(update) = params.get("update") {
+            })
+        };
+        loop {
+            match self.read(deadline, method)? {
+                Event::Response {
+                    token: answered,
+                    result,
+                } => {
+                    if answered == token {
+                        return result;
+                    }
+                }
+                Event::Update(params) => {
+                    if ours(&params)
+                        && let Some(update) = params.get("update")
+                    {
                         handler.update(update);
                     }
                 }
-                ("session/request_permission", Some(request_id)) => {
-                    let answer = if ours {
-                        handler.permission(&params)
-                    } else {
-                        PermissionAnswer::Cancelled
+                Event::Request {
+                    method: incoming,
+                    params,
+                    responder,
+                } => {
+                    let answered = match incoming.as_str() {
+                        "session/request_permission" => {
+                            let answer = if ours(&params) {
+                                handler.permission(&params)
+                            } else {
+                                PermissionAnswer::Cancelled
+                            };
+                            let answer = if cancel.is_some_and(CancellationToken::is_cancelled)
+                                || responder.cancellation().is_cancelled()
+                            {
+                                PermissionAnswer::Cancelled
+                            } else {
+                                answer
+                            };
+                            responder
+                                .respond(encode(RequestPermissionResponse::new(answer.outcome()))?)
+                        }
+                        "elicitation/create" => responder.respond(encode(
+                            CreateElicitationResponse::new(ElicitationAction::Decline),
+                        )?),
+                        other => responder.respond_with_error(SdkError::new(
+                            ErrorCode::METHOD_NOT_FOUND,
+                            format!("{other} is not supported by this client"),
+                        )),
                     };
-                    let answer = if cancel.is_some_and(CancellationToken::is_cancelled) {
-                        PermissionAnswer::Cancelled
-                    } else {
-                        answer
-                    };
-                    self.write(&json!({"jsonrpc": "2.0", "id": request_id, "result": {"outcome": answer.outcome()}}))?;
+                    answered.map_err(|error| {
+                        AcpError::new(format!("answering the agent failed: {}", describe(&error)))
+                    })?;
                 }
-                ("elicitation/create", Some(request_id)) => {
-                    self.write(&json!({"jsonrpc": "2.0", "id": request_id, "result": {"action": "decline"}}))?;
-                }
-                (other, Some(request_id)) => {
-                    self.write(&json!({"jsonrpc": "2.0", "id": request_id, "error": {"code": METHOD_NOT_FOUND, "message": format!("{other} is not supported by this client")}}))?;
-                }
-                (_, None) => {}
+                Event::Closed(reason) => return Err(self.ended(method, reason)),
             }
         }
     }
@@ -938,11 +1109,11 @@ impl AcpClient {
         let deadline = Instant::now() + timeout;
         let result = self.request(
             "initialize",
-            json!({
-                "protocolVersion": 1,
-                "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false},
-                "clientInfo": {"name": CLIENT_NAME, "version": env!("CARGO_PKG_VERSION")}
-            }),
+            encode(
+                InitializeRequest::new(ProtocolVersion::V1)
+                    .client_capabilities(ClientCapabilities::new())
+                    .client_info(Implementation::new(CLIENT_NAME, env!("CARGO_PKG_VERSION"))),
+            )?,
             None,
             deadline,
             &mut DiscardHandler,
@@ -1009,7 +1180,10 @@ impl AcpClient {
         let deadline = Instant::now() + timeout;
         let result = self.request(
             "session/new",
-            session_params(identity, None, cwd, add_dirs),
+            encode(
+                NewSessionRequest::new(wire_path(cwd))
+                    .additional_directories(advertised_dirs(identity, add_dirs)),
+            )?,
             None,
             deadline,
             &mut DiscardHandler,
@@ -1034,10 +1208,23 @@ impl AcpClient {
         add_dirs: &[PathBuf],
         timeout: Duration,
     ) -> Result<SessionOffer, AcpError> {
-        let method = if identity.resume_session {
-            "session/resume"
+        let dirs = advertised_dirs(identity, add_dirs);
+        let (method, params) = if identity.resume_session {
+            (
+                "session/resume",
+                encode(
+                    ResumeSessionRequest::new(session.to_string(), wire_path(cwd))
+                        .additional_directories(dirs),
+                )?,
+            )
         } else if identity.load_session {
-            "session/load"
+            (
+                "session/load",
+                encode(
+                    LoadSessionRequest::new(session.to_string(), wire_path(cwd))
+                        .additional_directories(dirs),
+                )?,
+            )
         } else {
             return Err(AcpError::new(
                 "the agent cannot reopen its stored session; start a new session",
@@ -1046,7 +1233,7 @@ impl AcpClient {
         let deadline = Instant::now() + timeout;
         self.request(
             method,
-            session_params(identity, Some(session), cwd, add_dirs),
+            params,
             Some(session),
             deadline,
             &mut DiscardHandler,
@@ -1066,7 +1253,11 @@ impl AcpClient {
         let (method, params) = match control.write.as_ref() {
             Some(ControlWrite::SetConfigOption { config_id }) => (
                 "session/set_config_option",
-                json!({"sessionId": session, "configId": config_id, "value": value}),
+                encode(SetSessionConfigOptionRequest::new(
+                    session.to_string(),
+                    config_id.clone(),
+                    value,
+                ))?,
             ),
             Some(ControlWrite::SetModel) => (
                 "session/set_model",
@@ -1074,7 +1265,10 @@ impl AcpClient {
             ),
             Some(ControlWrite::SetMode) => (
                 "session/set_mode",
-                json!({"sessionId": session, "modeId": value}),
+                encode(SetSessionModeRequest::new(
+                    session.to_string(),
+                    value.to_string(),
+                ))?,
             ),
             None => {
                 return Err(AcpError::new(
@@ -1103,7 +1297,11 @@ impl AcpClient {
         let deadline = Instant::now() + timeout;
         self.request(
             "session/set_config_option",
-            json!({"sessionId": session, "configId": config_id, "value": value}),
+            encode(SetSessionConfigOptionRequest::new(
+                session.to_string(),
+                config_id.to_string(),
+                value,
+            ))?,
             Some(session),
             deadline,
             &mut DiscardHandler,
@@ -1123,7 +1321,10 @@ impl AcpClient {
         let deadline = Instant::now() + timeout;
         let result = self.request(
             "session/prompt",
-            json!({"sessionId": session, "prompt": [{"type": "text", "text": text}]}),
+            encode(PromptRequest::new(
+                session.to_string(),
+                vec![ContentBlock::from(text)],
+            ))?,
             Some(session),
             deadline,
             handler,
@@ -1164,7 +1365,7 @@ impl AcpClient {
     }
 
     pub fn cancel(&self, session: &str) -> Result<(), AcpError> {
-        self.write(&json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": session}}))
+        send_cancel(&self.commands, session)
     }
 
     pub fn permission_option(params: &Value, policy: PermissionPolicy) -> Option<String> {
@@ -1418,10 +1619,22 @@ mod tests {
         if node().is_none() {
             return;
         }
-        for response in [
-            "({ id: request.id, result: { protocolVersion: 1 } })",
-            "({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: 2 } })",
-            "({ jsonrpc: '2.0', id: request.id })",
+        for (response, timeout, expected) in [
+            (
+                "({ id: request.id, result: { protocolVersion: 1 } })",
+                Duration::from_secs(3),
+                "deadline",
+            ),
+            (
+                "({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: 2 } })",
+                Duration::from_secs(20),
+                "protocol version",
+            ),
+            (
+                "({ jsonrpc: '2.0', id: request.id })",
+                Duration::from_secs(3),
+                "deadline",
+            ),
         ] {
             let workspace = tempfile::tempdir().unwrap();
             let program = format!(
@@ -1437,13 +1650,8 @@ mod tests {
             host.start_worker(request).unwrap();
             let io = host.take_worker_io("invalid-acp").unwrap();
             let mut client = AcpClient::new(io);
-            let error = client.initialize(Duration::from_secs(20)).unwrap_err();
-            assert!(
-                error.to_string().contains("invalid JSON-RPC")
-                    || error.to_string().contains("protocol version")
-                    || error.to_string().contains("without a result"),
-                "{error}"
-            );
+            let error = client.initialize(timeout).unwrap_err();
+            assert!(error.to_string().contains(expected), "{response}: {error}");
             host.stop_worker("invalid-acp").unwrap();
         }
     }
@@ -1512,5 +1720,203 @@ mod tests {
         let outcome = blocked.join().unwrap().unwrap();
         assert_eq!(outcome.stop_reason, "cancelled");
         host.stop_worker("w-acp").unwrap();
+    }
+
+    const WIRE_AGENT: &str = r#"
+const fs = require('fs');
+const send = (message) => process.stdout.write(JSON.stringify(message) + '\n');
+let pending = null;
+require('readline').createInterface({ input: process.stdin }).on('line', (line) => {
+  fs.appendFileSync('received.jsonl', line + '\n');
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1, agentCapabilities: {}, agentInfo: { name: 'wire-agent', version: '0' } } });
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId: 's1' } });
+  } else if (message.method === 'session/set_config_option') {
+    send({ jsonrpc: '2.0', id: message.id, result: { configOptions: [] } });
+  } else if (message.method === 'session/prompt') {
+    const text = message.params.prompt[0].text;
+    const options = [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }];
+    if (text === 'hang') {
+      pending = message.id;
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'mine' } } } });
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'other', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'theirs' } } } });
+      send({ jsonrpc: '2.0', id: 'p-other', method: 'session/request_permission', params: { sessionId: 'other', toolCall: { toolCallId: 't1' }, options } });
+    } else if (text === 'withdraw') {
+      pending = message.id;
+      send({ jsonrpc: '2.0', id: 'p-withdrawn', method: 'session/request_permission', params: { sessionId: 's1', toolCall: { toolCallId: 't2' }, options } });
+      send({ jsonrpc: '2.0', method: '$/cancel_request', params: { requestId: 'p-withdrawn' } });
+    } else if (text === 'flood') {
+      process.stdout.write('"' + 'x'.repeat(8 * 1024 * 1024 + 16) + '"\n');
+    }
+  } else if (message.method === 'session/cancel' && pending !== null) {
+    send({ jsonrpc: '2.0', id: pending, result: { stopReason: 'cancelled' } });
+    pending = null;
+  } else if (message.id === 'p-withdrawn' && pending !== null) {
+    send({ jsonrpc: '2.0', id: pending, result: { stopReason: 'end_turn' } });
+    pending = null;
+  }
+});
+"#;
+
+    fn wire_client(workspace: &Path) -> (LocalProcessFleetHostAdapter, AcpClient, String) {
+        let mut host = LocalProcessFleetHostAdapter::new(workspace);
+        let mut request = FleetWorkerStartRequest::new(
+            "w-wire",
+            FleetWorkerCommand::new("node", ["-e".to_string(), WIRE_AGENT.to_string()]),
+        );
+        request.transport = FleetWorkerTransport::JsonRpc;
+        request.cwd = Some(workspace.to_path_buf());
+        host.start_worker(request).unwrap();
+        let mut client = AcpClient::new(host.take_worker_io("w-wire").unwrap());
+        let identity = client.initialize(Duration::from_secs(20)).unwrap();
+        assert_eq!(identity.name, "wire-agent");
+        let session = client
+            .new_session(&identity, workspace, &[], Duration::from_secs(20))
+            .unwrap()
+            .session_id;
+        (host, client, session)
+    }
+
+    struct SlowAllow {
+        texts: Vec<String>,
+    }
+
+    impl AcpHandler for SlowAllow {
+        fn update(&mut self, update: &Value) {
+            if let Some(text) = update.pointer("/content/text").and_then(Value::as_str) {
+                self.texts.push(text.to_string());
+            }
+        }
+
+        fn permission(&mut self, _params: &Value) -> PermissionAnswer {
+            std::thread::sleep(Duration::from_millis(750));
+            PermissionAnswer::Selected("allow".to_string())
+        }
+    }
+
+    #[test]
+    fn foreign_sessions_withdrawn_requests_and_missed_deadlines_keep_their_rules() {
+        if node().is_none() {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let (mut host, mut client, session) = wire_client(workspace.path());
+
+        let canceller = client.canceller(&session);
+        let prompt_session = session.clone();
+        let blocked = std::thread::spawn(move || {
+            let mut handler = SlowAllow { texts: Vec::new() };
+            let reply = client.prompt_with(
+                &prompt_session,
+                "hang",
+                Duration::from_secs(30),
+                &mut handler,
+                None,
+            );
+            (client, reply, handler.texts)
+        });
+        std::thread::sleep(Duration::from_millis(400));
+        canceller.cancel().unwrap();
+        let (mut client, reply, texts) = blocked.join().unwrap();
+        assert_eq!(reply.unwrap().stop_reason, "cancelled");
+        assert_eq!(texts, ["mine"], "another session's update was ignored");
+
+        let mut handler = SlowAllow { texts: Vec::new() };
+        let withdrawn = client
+            .prompt_with(
+                &session,
+                "withdraw",
+                Duration::from_secs(20),
+                &mut handler,
+                None,
+            )
+            .unwrap();
+        assert_eq!(withdrawn.stop_reason, "end_turn");
+
+        let silent = client
+            .prompt(
+                &session,
+                "silent",
+                PermissionPolicy::AllowOnce,
+                Duration::from_millis(500),
+            )
+            .unwrap_err();
+        assert!(silent.to_string().contains("deadline"), "{silent}");
+        client
+            .set_config_option(&session, "model", "any", Duration::from_secs(20))
+            .unwrap();
+
+        let received: Vec<Value> = std::fs::read_to_string(workspace.path().join("received.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let answer = |id: &str| {
+            received
+                .iter()
+                .find(|message| message["id"] == id)
+                .map(|message| message["result"]["outcome"].clone())
+        };
+        assert!(
+            received
+                .iter()
+                .any(|message| message["method"] == "session/cancel"
+                    && message["params"]["sessionId"] == session.as_str()),
+            "{received:?}"
+        );
+        assert_eq!(
+            answer("p-other"),
+            Some(json!({"outcome": "cancelled"})),
+            "a foreign permission request is answered cancelled: {received:?}"
+        );
+        assert_eq!(
+            answer("p-withdrawn"),
+            Some(json!({"outcome": "cancelled"})),
+            "a withdrawn permission request is never answered with a selection: {received:?}"
+        );
+        assert!(
+            !received
+                .iter()
+                .any(|message| message["method"] == "$/cancel_request"),
+            "a missed deadline sends nothing to the agent: {received:?}"
+        );
+        let requests: Vec<&Value> = received
+            .iter()
+            .filter(|message| message.get("method").is_some() && message.get("id").is_some())
+            .collect();
+        assert_eq!(requests.len(), 6, "{received:?}");
+        assert!(
+            requests.iter().all(|message| message["id"].is_string()),
+            "request ids are strings: {received:?}"
+        );
+        host.stop_worker("w-wire").unwrap();
+    }
+
+    #[test]
+    fn a_line_over_the_limit_ends_the_connection_unparsed() {
+        if node().is_none() {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let (mut host, mut client, session) = wire_client(workspace.path());
+        let flooded = client
+            .prompt(
+                &session,
+                "flood",
+                PermissionPolicy::AllowOnce,
+                Duration::from_secs(20),
+            )
+            .unwrap_err();
+        assert!(flooded.to_string().contains("8 MiB"), "{flooded}");
+        let after = client
+            .set_config_option(&session, "model", "any", Duration::from_secs(5))
+            .unwrap_err();
+        assert!(
+            after.to_string().contains("8 MiB"),
+            "the connection stays ended: {after}"
+        );
+        host.stop_worker("w-wire").unwrap();
     }
 }
