@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
+#[cfg(target_os = "linux")]
 use tokio_util::sync::CancellationToken;
 
 fn git(cwd: &Path, args: &[&str]) -> String {
@@ -26,6 +27,7 @@ struct Fixture {
     repo: PathBuf,
     worktree: PathBuf,
     manifest: PathBuf,
+    #[cfg(target_os = "linux")]
     public_cases: PathBuf,
 }
 
@@ -92,6 +94,7 @@ impl Fixture {
             repo,
             worktree,
             manifest,
+            #[cfg(target_os = "linux")]
             public_cases,
         }
     }
@@ -102,6 +105,7 @@ impl Fixture {
         fs::write(&self.manifest, serde_json::to_vec_pretty(&spec).unwrap()).unwrap();
     }
 
+    #[cfg(target_os = "linux")]
     fn correct_candidate(&self) {
         fs::write(
             self.worktree.join("candidate.py"),
@@ -110,12 +114,14 @@ impl Fixture {
         .unwrap();
     }
 
+    #[cfg(target_os = "linux")]
     fn freeze(&self, id: &str) -> VerifiedCandidateEvaluator {
         VerifiedCandidateEvaluator::freeze(&self.manifest, &self.repo, id, "increment an integer")
             .unwrap()
     }
 }
 
+#[cfg(target_os = "linux")]
 fn bwrap_available() -> bool {
     Path::new("/usr/bin/bwrap").exists()
         && Command::new("/usr/bin/bwrap")
