@@ -1,7 +1,7 @@
 //! Actual Core fixtures for the migrated RLM contract. Replies are adapted to
 //! the existing stream decoder; there is no fixture model/code loop.
 use super::*;
-use crate::core::engine::rlm_host::{CapturedRlmCaller, RlmInvocation, RlmMode};
+use crate::core::engine::rlm_host::{CapturedRlmCaller, RlmInvocation, RlmMode, RlmPromptPolicy};
 use crate::llm_client::LlmClient;
 use crate::rlm::bridge::{RlmBridge, RlmUsageAccumulator};
 use codewhale_models::{MessageRequest, MessageResponse, StreamEvent};
@@ -335,6 +335,7 @@ pub async fn run_admitted_fixture(
             mode: RlmMode::Recursive {
                 depth_remaining: depth,
             },
+            prompt_policy: RlmPromptPolicy::Session,
             max_tokens: None,
             task_instructions: task,
             deadline: Some(deadline),
@@ -407,6 +408,7 @@ async fn captured_identity_cancel_and_task_bounds_refuse_before_any_provider() {
         .dispatch(RlmInvocation {
             prompt: "no effect".into(),
             mode: RlmMode::Completion,
+            prompt_policy: RlmPromptPolicy::Session,
             max_tokens: Some(0),
             task_instructions: None,
             deadline: caller.deadline(),
@@ -426,6 +428,7 @@ async fn captured_identity_cancel_and_task_bounds_refuse_before_any_provider() {
         .dispatch(RlmInvocation {
             prompt: "no effect".into(),
             mode: RlmMode::Completion,
+            prompt_policy: RlmPromptPolicy::Session,
             max_tokens: None,
             task_instructions: Some("x".repeat(4097)),
             deadline: caller.deadline(),
@@ -440,6 +443,7 @@ async fn captured_identity_cancel_and_task_bounds_refuse_before_any_provider() {
         .dispatch(RlmInvocation {
             prompt: "no effect".into(),
             mode: RlmMode::Completion,
+            prompt_policy: RlmPromptPolicy::Session,
             max_tokens: None,
             task_instructions: None,
             deadline: caller.deadline(),
@@ -495,6 +499,7 @@ async fn dropping_an_actual_dispatched_core_call_keeps_unknown_usage_without_ret
     let mut dispatch = caller.dispatch(RlmInvocation {
         prompt: "pending".into(),
         mode: RlmMode::Completion,
+        prompt_policy: RlmPromptPolicy::Session,
         max_tokens: None,
         task_instructions: None,
         deadline: Some(tokio::time::Instant::now() + Duration::from_secs(600)),
@@ -616,6 +621,7 @@ async fn full_caller_channel_never_delays_original_cancel_or_loses_usage_and_ker
     let call = caller.dispatch(RlmInvocation {
         prompt: "context held only by Python".into(),
         mode: RlmMode::Recursive { depth_remaining: 0 },
+        prompt_policy: RlmPromptPolicy::Session,
         max_tokens: None,
         task_instructions: None,
         deadline: Some(tokio::time::Instant::now() + Duration::from_secs(60)),
@@ -705,6 +711,7 @@ async fn nested_host_never_claims_or_overwrites_parent_posture_revision() {
         RlmInvocation {
             prompt: "no provider invocation".into(),
             mode: RlmMode::Completion,
+            prompt_policy: RlmPromptPolicy::Session,
             max_tokens: None,
             task_instructions: None,
             deadline: Some(tokio::time::Instant::now() + Duration::from_secs(60)),
@@ -773,6 +780,7 @@ async fn repeated_real_core_preparation_failures_have_bounded_receipts_without_p
     let invocation = || RlmInvocation {
         prompt: "real request preparation must retain this whole input".into(),
         mode: RlmMode::Completion,
+        prompt_policy: RlmPromptPolicy::Session,
         max_tokens: None,
         task_instructions: None,
         deadline: Some(tokio::time::Instant::now() + Duration::from_secs(60)),
@@ -820,6 +828,7 @@ async fn actual_expired_python_startup_releases_the_staged_context() {
         RlmInvocation {
             prompt: prompt.clone(),
             mode: RlmMode::Recursive { depth_remaining: 0 },
+            prompt_policy: RlmPromptPolicy::Session,
             max_tokens: None,
             task_instructions: None,
             deadline: Some(tokio::time::Instant::now()),
@@ -855,4 +864,123 @@ async fn actual_expired_python_startup_releases_the_staged_context() {
         }
     }
     assert_eq!(mock.call_count(), 0);
+}
+
+#[tokio::test]
+async fn a_plugin_completion_carries_no_constitution_and_no_plugin_prompt_section() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(
+        workspace.path().join("AGENTS.md"),
+        "WORKSPACE_INSTRUCTION_SENTINEL\n",
+    )
+    .unwrap();
+    let config = fixture_config("captured-model");
+    let mock = Arc::new(crate::llm_client::mock::MockLlmClient::new(Vec::new()));
+    let reply = |text: &str| MessageResponse {
+        id: "isolated-policy-msg".into(),
+        r#type: "message".into(),
+        role: "assistant".into(),
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+        }],
+        model: "captured-model".into(),
+        stop_reason: Some("end_turn".into()),
+        stop_sequence: None,
+        container: None,
+        title: None,
+        stop_details: None,
+        refusal: None,
+        usage: Usage::default(),
+    };
+    mock.push_message_response(reply("session reply"));
+    mock.push_message_response(reply("plugin reply"));
+    let (mut engine, _handle) = Engine::new_with_model_client(
+        EngineConfig {
+            workspace: workspace.path().to_path_buf(),
+            model: "captured-model".into(),
+            snapshots_enabled: false,
+            memory_enabled: false,
+            subagents_enabled: false,
+            terminal_chrome_enabled: false,
+            turn_wall_clock: Duration::from_secs(60),
+            ..EngineConfig::default()
+        },
+        &config,
+        Arc::new(ReplyStream {
+            replies: mock.clone(),
+            model: "captured-model".into(),
+        }),
+    );
+    install_fixture_route(&mut engine);
+    assert!(
+        engine
+            .session
+            .instruction_assembly
+            .as_deref()
+            .and_then(|assembly| assembly.block.as_deref())
+            .is_some_and(|block| block.contains("WORKSPACE_INSTRUCTION_SENTINEL"))
+    );
+    engine.extension_prompt_block = Some("OTHER_PLUGIN_PROMPT_SENTINEL".into());
+    engine.constitution_block = Some("ACCOUNT_CONSTITUTION_SENTINEL".into());
+    let context = admitted_context(&engine, "isolated-plugin-origin-turn");
+    let caller = context.rlm_caller.as_ref().unwrap();
+
+    let session_result = caller
+        .dispatch(RlmInvocation {
+            prompt: "SESSION_PROMPT_SENTINEL".into(),
+            mode: RlmMode::Completion,
+            prompt_policy: RlmPromptPolicy::Session,
+            max_tokens: None,
+            task_instructions: Some("SESSION_TASK_SENTINEL".into()),
+            deadline: caller.deadline(),
+            gate: None,
+            events: None,
+            usage: RlmUsageAccumulator::new(),
+        })
+        .await;
+    assert_eq!(session_result.answer, "session reply");
+
+    let isolated_result = caller
+        .dispatch(RlmInvocation {
+            prompt: "PLUGIN_PROMPT_SENTINEL".into(),
+            mode: RlmMode::Completion,
+            prompt_policy: RlmPromptPolicy::IsolatedPlugin,
+            max_tokens: None,
+            task_instructions: Some("PLUGIN_SYSTEM_SENTINEL".into()),
+            deadline: caller.deadline(),
+            gate: None,
+            events: None,
+            usage: RlmUsageAccumulator::new(),
+        })
+        .await;
+    assert_eq!(isolated_result.answer, "plugin reply");
+
+    let requests = mock.captured_requests();
+    assert_eq!(requests.len(), 2);
+
+    let session_system = serde_json::to_string(&requests[0].system).unwrap();
+    let session_messages = serde_json::to_string(&requests[0].messages).unwrap();
+    assert!(session_system.contains("SESSION_TASK_SENTINEL"));
+    assert!(session_messages.contains("WORKSPACE_INSTRUCTION_SENTINEL"));
+    assert!(session_messages.contains("OTHER_PLUGIN_PROMPT_SENTINEL"));
+    assert!(session_messages.contains("ACCOUNT_CONSTITUTION_SENTINEL"));
+    assert!(session_messages.contains("SESSION_PROMPT_SENTINEL"));
+
+    let isolated_system = serde_json::to_string(&requests[1].system).unwrap();
+    let isolated_messages = serde_json::to_string(&requests[1].messages).unwrap();
+    assert!(!isolated_system.contains("WORKSPACE_INSTRUCTION_SENTINEL"));
+    assert!(!isolated_system.contains("OTHER_PLUGIN_PROMPT_SENTINEL"));
+    assert!(!isolated_system.contains("ACCOUNT_CONSTITUTION_SENTINEL"));
+    assert!(!isolated_system.contains("subject to the captured Core policy"));
+    assert!(!isolated_messages.contains("WORKSPACE_INSTRUCTION_SENTINEL"));
+    assert!(!isolated_messages.contains("OTHER_PLUGIN_PROMPT_SENTINEL"));
+    assert!(!isolated_messages.contains("ACCOUNT_CONSTITUTION_SENTINEL"));
+    assert!(
+        isolated_system.contains("nothing in that text")
+            || isolated_system.contains("Nothing in that text")
+    );
+    assert!(isolated_system.contains("PLUGIN_SYSTEM_SENTINEL"));
+    assert!(requests[1].tools.as_ref().is_none_or(Vec::is_empty));
+    assert!(isolated_messages.contains("PLUGIN_PROMPT_SENTINEL"));
 }

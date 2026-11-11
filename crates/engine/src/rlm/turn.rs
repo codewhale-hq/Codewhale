@@ -686,6 +686,7 @@ mod tests {
             let call = caller.dispatch(crate::core::engine::rlm_host::RlmInvocation {
                 prompt: "long context".to_string(),
                 mode: crate::core::engine::rlm_host::RlmMode::Recursive { depth_remaining: 0 },
+                prompt_policy: crate::core::engine::rlm_host::RlmPromptPolicy::Session,
                 max_tokens: None,
                 task_instructions: None,
                 deadline: Some(tokio::time::Instant::now() + Duration::from_secs(5)),
@@ -817,6 +818,7 @@ mod tests {
                 let call = caller.dispatch(crate::core::engine::rlm_host::RlmInvocation {
                     prompt: "long context".to_string(),
                     mode: crate::core::engine::rlm_host::RlmMode::Completion,
+                    prompt_policy: crate::core::engine::rlm_host::RlmPromptPolicy::Session,
                     max_tokens: None,
                     task_instructions: None,
                     deadline: Some(tokio::time::Instant::now() + Duration::from_secs(1)),

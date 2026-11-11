@@ -1921,6 +1921,7 @@ async fn dsh_broker_tickets_bind_plugin_service_and_session_and_every_refusal_is
                 | DshService::Terminal
                 | DshService::Workspace
                 | DshService::Catalog
+                | DshService::Llm
         )
     }) {
         let ticket = &tickets_a[service.name()];
@@ -2204,6 +2205,7 @@ async fn dsh_broker_services_are_granted_by_one_check_and_an_ungranted_service_i
                 | DshService::Terminal
                 | DshService::Workspace
                 | DshService::Catalog
+                | DshService::Llm
         ) {
             let result = f
                 .broker(
@@ -5388,7 +5390,394 @@ async fn dsh_catalog_arm_plans_reviewed_installs_approved_routes_and_a_keyless_b
         dsh_refusal(&revoked),
         (error_code::REFUSED, "ticket_refused".into())
     );
-    drop(guard_b);
     drop(guard);
     assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
+}
+
+#[tokio::test]
+async fn dsh_llm_arm_dispatches_through_the_engine_and_refuses_foreign_tickets_and_unknown_methods()
+{
+    use super::dsh_broker::TABLE;
+    use super::protocol::DshService;
+    use crate::core::engine::tests::rlm_host::{context_for_replies, fixture_config};
+    use std::collections::BTreeMap;
+
+    let _grants = super::dsh_broker::TestGrants::only(&[DshService::Workspace, DshService::Llm]);
+    let mock = Arc::new(crate::llm_client::mock::MockLlmClient::new(Vec::new()));
+    mock.push_message_response(codewhale_models::MessageResponse {
+        id: "mock_msg".to_string(),
+        r#type: "message".to_string(),
+        role: "assistant".to_string(),
+        content: vec![codewhale_models::ContentBlock::Text {
+            text: "from the one engine".to_string(),
+            cache_control: None,
+        }],
+        model: "captured-model".to_string(),
+        stop_reason: Some("end_turn".to_string()),
+        stop_sequence: None,
+        container: None,
+        title: None,
+        stop_details: None,
+        refusal: None,
+        usage: codewhale_models::Usage {
+            input_tokens: 5,
+            output_tokens: 3,
+            ..codewhale_models::Usage::default()
+        },
+    });
+    let mut f = fixture(true);
+    f.context = context_for_replies(
+        &fixture_config("captured-model"),
+        "captured-model",
+        &f.context,
+        mock.clone(),
+    );
+    f.in_session("llm-session-a");
+    let guard_a = f.begin(7, &f.owner);
+    let tickets: BTreeMap<String, String> = guard_a
+        .broker_tickets()
+        .unwrap()
+        .into_iter()
+        .map(|wire| (wire.service, wire.ticket))
+        .collect();
+    let llm = tickets["llm"].clone();
+    let ask = json!({"prompt": "say it"});
+
+    let unknown = f
+        .broker(TABLE, &f.owner, &llm, "llm", "registerAdapter", json!({}))
+        .await;
+    assert_eq!(
+        dsh_refusal(&unknown),
+        (error_code::INVALID_PARAMS, "unknown_method".into())
+    );
+    let removed_usage = f
+        .broker(TABLE, &f.owner, &llm, "llm", "usage", json!({}))
+        .await;
+    assert_eq!(
+        dsh_refusal(&removed_usage),
+        (error_code::INVALID_PARAMS, "unknown_method".into())
+    );
+    assert_eq!(mock.call_count(), 0, "no refusal reached the provider");
+
+    let served = f
+        .broker(TABLE, &f.owner, &llm, "llm", "complete", ask.clone())
+        .await
+        .unwrap();
+    assert_eq!(served["text"], "from the one engine");
+    assert_eq!(served["usage"]["coverage"], "reported");
+    assert_eq!(served["usage"]["input_tokens"], 5);
+    assert_eq!(served["usage"]["output_tokens"], 3);
+    assert_eq!(mock.call_count(), 1);
+
+    f.in_session("llm-session-b");
+    let guard_b = f.begin(7, &f.owner);
+    let llm_b = guard_b
+        .broker_tickets()
+        .unwrap()
+        .into_iter()
+        .find(|wire| wire.service == "llm")
+        .unwrap()
+        .ticket;
+    drop(guard_a);
+    let ended_invocation = f
+        .broker(TABLE, &f.owner, &llm, "llm", "complete", ask.clone())
+        .await;
+    assert_eq!(
+        dsh_refusal(&ended_invocation),
+        (error_code::REFUSED, "ticket_refused".into())
+    );
+
+    f.manager.shared.core_calls.revoke_owner("a");
+    let revoked = f
+        .broker(TABLE, &f.owner, &llm_b, "llm", "complete", ask)
+        .await;
+    assert_eq!(
+        dsh_refusal(&revoked),
+        (error_code::REFUSED, "ticket_refused".into())
+    );
+    drop(guard_b);
+    assert_eq!(mock.call_count(), 1);
+    assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
+}
+
+#[tokio::test]
+async fn a_completion_asks_the_session_gate_and_a_no_dispatches_nothing() {
+    use super::dsh_broker::TABLE;
+    use super::protocol::DshService;
+    use crate::core::engine::tests::rlm_host::{context_for_replies, fixture_config};
+
+    let _grants = super::dsh_broker::TestGrants::only(&[DshService::Workspace, DshService::Llm]);
+    let mock = Arc::new(crate::llm_client::mock::MockLlmClient::new(Vec::new()));
+    let mut f = fixture(true);
+    let mut context = context_for_replies(
+        &fixture_config("captured-model"),
+        "captured-model",
+        &f.context,
+        mock.clone(),
+    );
+    context.disallowed_tools = vec!["rlm_eval".to_string()];
+    f.context = context;
+    f.in_session("llm-gate-denied-session");
+    let denied_guard = f.begin(7, &f.owner);
+    let denied_ticket = broker_ticket(&denied_guard, "llm").unwrap();
+
+    let catalog = f
+        .broker(TABLE, &f.owner, &denied_ticket, "llm", "catalog", json!({}))
+        .await;
+    assert_eq!(dsh_refusal(&catalog), (error_code::DENIED, "denied".into()));
+    let blocked_by_caller = f
+        .broker(
+            TABLE,
+            &f.owner,
+            &denied_ticket,
+            "llm",
+            "complete",
+            json!({ "prompt": "blocked" }),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&blocked_by_caller),
+        (error_code::DENIED, "denied".into())
+    );
+    assert_eq!(f.server.asked.load(Ordering::SeqCst), 0);
+    drop(denied_guard);
+
+    f.context.disallowed_tools.clear();
+    let guard = f.begin(7, &f.owner);
+    let ticket = broker_ticket(&guard, "llm").unwrap();
+
+    let ok_catalog = f
+        .broker(TABLE, &f.owner, &ticket, "llm", "catalog", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(ok_catalog["models"][0]["id"], "captured-model");
+    assert_eq!(
+        f.server.asked.load(Ordering::SeqCst),
+        0,
+        "catalog asks no gate"
+    );
+
+    let bad_input = f
+        .broker(
+            TABLE,
+            &f.owner,
+            &ticket,
+            "llm",
+            "complete",
+            json!({ "prompt": "x".repeat(256 * 1024 + 1) }),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&bad_input),
+        (error_code::INVALID_PARAMS, "invalid_input".into())
+    );
+    assert_eq!(
+        f.server.asked.load(Ordering::SeqCst),
+        0,
+        "oversized input refuses before asking the gate"
+    );
+
+    f.server.deny.store(true, Ordering::SeqCst);
+    let gated_no = f
+        .broker(
+            TABLE,
+            &f.owner,
+            &ticket,
+            "llm",
+            "complete",
+            json!({ "prompt": "SECRET_PROMPT_NEVER_SENT" }),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&gated_no),
+        (error_code::DENIED, "denied".into())
+    );
+    assert_eq!(f.server.asked.load(Ordering::SeqCst), 1);
+    assert_eq!(mock.call_count(), 0);
+}
+
+#[tokio::test]
+async fn a_completion_is_recorded_on_the_tool_result_without_its_text() {
+    use super::dsh_broker::TABLE;
+    use super::protocol::DshService;
+    use crate::core::engine::tests::rlm_host::{context_for_replies, fixture_config};
+
+    let _grants = super::dsh_broker::TestGrants::only(&[DshService::Workspace, DshService::Llm]);
+    let mock = Arc::new(crate::llm_client::mock::MockLlmClient::new(Vec::new()));
+    mock.push_message_response(codewhale_models::MessageResponse {
+        id: "mock_msg".to_string(),
+        r#type: "message".to_string(),
+        role: "assistant".to_string(),
+        content: vec![codewhale_models::ContentBlock::Text {
+            text: "SECRET_ANSWER_BODY".to_string(),
+            cache_control: None,
+        }],
+        model: "captured-model".to_string(),
+        stop_reason: Some("end_turn".to_string()),
+        stop_sequence: None,
+        container: None,
+        title: None,
+        stop_details: None,
+        refusal: None,
+        usage: codewhale_models::Usage {
+            input_tokens: 7,
+            output_tokens: 11,
+            ..codewhale_models::Usage::default()
+        },
+    });
+    let mut f = fixture(true);
+    f.context = context_for_replies(
+        &fixture_config("captured-model"),
+        "captured-model",
+        &f.context,
+        mock,
+    );
+    f.in_session("llm-record-session");
+    let guard = f.begin(7, &f.owner);
+    let ticket = broker_ticket(&guard, "llm").unwrap();
+
+    let prompt = "SECRET_PROMPT_BODY";
+    let system = "SECRET_SYSTEM_BODY";
+    let served = f
+        .broker(
+            TABLE,
+            &f.owner,
+            &ticket,
+            "llm",
+            "complete",
+            json!({ "prompt": prompt, "system": system }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(served["text"], "SECRET_ANSWER_BODY");
+
+    let receipts = guard.receipts().expect("receipts on tool result");
+    let serialized = receipts.to_string();
+    assert!(!serialized.contains("SECRET_PROMPT_BODY"));
+    assert!(!serialized.contains("SECRET_SYSTEM_BODY"));
+    assert!(!serialized.contains("SECRET_ANSWER_BODY"));
+
+    let acts = &receipts["broker_acts"];
+    assert_eq!(acts["total"], 2, "{receipts}");
+    assert_eq!(acts["acts"][0]["service"], "llm");
+    assert_eq!(acts["acts"][0]["method"], "complete");
+    assert_eq!(acts["acts"][0]["effect"], "reach");
+    assert_eq!(acts["acts"][0]["outcome"], "allowed");
+    assert_eq!(
+        acts["acts"][0]["target"],
+        format!("model captured-model, {} bytes", prompt.len())
+    );
+    assert_eq!(acts["acts"][1]["service"], "llm");
+    assert_eq!(acts["acts"][1]["method"], "complete");
+    assert_eq!(acts["acts"][1]["outcome"], "completed");
+    assert_eq!(acts["acts"][1]["model"], "captured-model");
+    assert!(
+        acts["acts"][1]["provider"]
+            .as_str()
+            .is_some_and(|p| !p.is_empty())
+    );
+    assert_eq!(acts["acts"][1]["input_tokens"], 7);
+    assert_eq!(acts["acts"][1]["output_tokens"], 11);
+    assert_eq!(acts["acts"][1]["requests"], 1);
+    assert_eq!(acts["acts"][1]["prompt_bytes"], prompt.len());
+    assert_eq!(
+        acts["acts"][1]["prompt_sha256"],
+        codewhale_runtime::hashing::sha256_hex(prompt)
+    );
+    assert_eq!(acts["acts"][1]["system_bytes"], system.len());
+    assert_eq!(
+        acts["acts"][1]["system_sha256"],
+        codewhale_runtime::hashing::sha256_hex(system)
+    );
+}
+
+#[tokio::test]
+async fn a_withdrawn_completion_is_recorded_as_unknown() {
+    use super::dsh_broker::TABLE;
+    use super::protocol::DshService;
+    use crate::core::engine::tests::rlm_host::{Replies, context_for_replies, fixture_config};
+    use std::future::Future;
+    use std::pin::Pin;
+
+    struct Pending(Arc<tokio::sync::Notify>);
+    impl Replies for Pending {
+        fn effective_route_envelope(
+            &self,
+            model: &str,
+            at: chrono::DateTime<chrono::Utc>,
+        ) -> crate::cost_status::EffectiveRouteEnvelope {
+            crate::cost_status::EffectiveRouteEnvelope::capture_observed(
+                codewhale_config::ProviderKind::Custom,
+                "rlm-fixture",
+                model,
+                Some("http://127.0.0.1:9/v1"),
+                at,
+            )
+        }
+        fn effective_max_output_tokens(&self, _: &str) -> u32 {
+            8192
+        }
+        fn create_message_boxed(
+            &self,
+            _: codewhale_models::MessageRequest,
+        ) -> Pin<
+            Box<dyn Future<Output = anyhow::Result<codewhale_models::MessageResponse>> + Send + '_>,
+        > {
+            let notify = Arc::clone(&self.0);
+            Box::pin(async move {
+                notify.notify_one();
+                std::future::pending().await
+            })
+        }
+    }
+
+    let _grants = super::dsh_broker::TestGrants::only(&[DshService::Workspace, DshService::Llm]);
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let pending = Arc::new(Pending(Arc::clone(&entered)));
+    let mut f = fixture(true);
+    f.context = context_for_replies(
+        &fixture_config("captured-model"),
+        "captured-model",
+        &f.context,
+        pending,
+    );
+    f.in_session("llm-withdrawn-session");
+    let guard = f.begin(7, &f.owner);
+    let ticket = broker_ticket(&guard, "llm").unwrap();
+
+    let (cx, _violations, cancel) = HostRequestContext::for_test(40);
+    let prompt = "WITHDRAWN_PROMPT_SECRET";
+    let (result, ()) = tokio::join!(
+        f.broker_in(
+            cx,
+            TABLE,
+            &f.owner,
+            &ticket,
+            "llm",
+            "complete",
+            json!({ "prompt": prompt }),
+        ),
+        async {
+            entered.notified().await;
+            cancel.cancel();
+        }
+    );
+    assert_eq!(result.unwrap_err().code, error_code::CANCELLED);
+
+    let receipts = guard.receipts().expect("receipts include drop record");
+    assert!(!receipts.to_string().contains(prompt));
+    let acts = &receipts["broker_acts"];
+    assert_eq!(acts["total"], 2, "{receipts}");
+    assert_eq!(acts["acts"][0]["service"], "llm");
+    assert_eq!(acts["acts"][0]["effect"], "reach");
+    assert_eq!(acts["acts"][0]["outcome"], "allowed");
+    assert_eq!(acts["acts"][1]["service"], "llm");
+    assert_eq!(acts["acts"][1]["method"], "complete");
+    assert_eq!(acts["acts"][1]["outcome"], "unknown");
+    assert_eq!(acts["acts"][1]["model"], "captured-model");
+    assert_eq!(acts["acts"][1]["prompt_bytes"], prompt.len());
+    assert_eq!(
+        acts["acts"][1]["prompt_sha256"],
+        codewhale_runtime::hashing::sha256_hex(prompt)
+    );
 }

@@ -2396,7 +2396,7 @@ impl Engine {
             prompts::PromptHost::Headless
         };
         let (system_prompt, instruction_assembly) = if let Some(host) = host.as_ref() {
-            (host.system_prompt().clone(), None)
+            (host.system_prompt().clone(), host.instruction_assembly())
         } else if api_config.runtime_chat_isolated {
             (
                 SystemPrompt::Text(ISOLATED_CHAT_SYSTEM_PROMPT.to_string()),
@@ -2464,10 +2464,10 @@ impl Engine {
                 Some((&raw, &instruction_settings, initial_instruction_budgets)),
             );
             session.project_context = Some(raw);
-            (prompt, Some(assembly))
+            (prompt, Some(Arc::new(assembly)))
         };
         let pending_instruction_notices = Vec::new();
-        session.instruction_assembly = instruction_assembly.map(Arc::new);
+        session.instruction_assembly = instruction_assembly;
         let stable_prompt = Some(system_prompt);
         session.last_system_prompt_hash = Some(system_prompt_hash(stable_prompt.as_ref()));
         session.system_prompt = stable_prompt;
@@ -10085,7 +10085,7 @@ impl Engine {
             return;
         }
         let (stable_prompt, assembly) = match self.host_owned_system_prompt() {
-            Some(prompt) => (Some(prompt), None),
+            Some(prompt) => (Some(prompt), self.host_owned_instruction_assembly()),
             None => {
                 self.record_project_trust_warning();
                 let raw = self.capture_project_instructions_for(context);
@@ -10103,10 +10103,10 @@ impl Engine {
                     budgets,
                 );
                 self.session.project_context = Some(raw);
-                (Some(prompt), Some(assembly))
+                (Some(prompt), Some(Arc::new(assembly)))
             }
         };
-        self.session.instruction_assembly = assembly.map(Arc::new);
+        self.session.instruction_assembly = assembly;
         self.instruction_guard_key = None;
         let stable_hash = system_prompt_hash(stable_prompt.as_ref());
         self.session.pinned_prompt_context = Some(context.clone());
@@ -10253,6 +10253,14 @@ impl Engine {
         None
     }
 
+    fn host_owned_instruction_assembly(
+        &self,
+    ) -> Option<Arc<crate::project_context::InstructionAssembly>> {
+        self.rlm_host
+            .as_ref()
+            .and_then(rlm_host::RlmHostState::instruction_assembly)
+    }
+
     /// Compose the stable system prompt for an explicit route, without
     /// touching session state.
     ///
@@ -10278,7 +10286,11 @@ impl Engine {
         Option<crate::project_context::InstructionAssembly>,
     ) {
         if let Some(prompt) = self.host_owned_system_prompt() {
-            return (Some(prompt), None, None);
+            return (
+                Some(prompt),
+                None,
+                self.host_owned_instruction_assembly().as_deref().cloned(),
+            );
         }
         let raw = self.capture_project_instructions_for(context);
         let memory = codewhale_runtime::native_memory::native_prompt_block(

@@ -15,9 +15,17 @@ pub enum RlmMode {
     Recursive { depth_remaining: u32 },
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RlmPromptPolicy {
+    #[default]
+    Session,
+    IsolatedPlugin,
+}
+
 pub struct RlmInvocation {
     pub prompt: String,
     pub mode: RlmMode,
+    pub prompt_policy: RlmPromptPolicy,
     pub max_tokens: Option<u32>,
     pub task_instructions: Option<String>,
     pub deadline: Option<tokio::time::Instant>,
@@ -40,6 +48,7 @@ pub struct CapturedRlmCaller {
     injected: bool,
     config: EngineConfig,
     system: SystemPrompt,
+    instruction_assembly: Option<Arc<crate::project_context::InstructionAssembly>>,
     extension_prompt_block: Option<String>,
     constitution_block: Option<String>,
     approval_store: Result<ApprovalReceiptStore, String>,
@@ -147,6 +156,7 @@ impl CapturedRlmCaller {
                 system: engine.session.system_prompt.clone().ok_or_else(|| {
                     ToolError::not_available("the Core policy prompt is unavailable")
                 })?,
+                instruction_assembly: engine.session.instruction_assembly.clone(),
                 extension_prompt_block: engine.extension_prompt_block.clone(),
                 constitution_block: engine.constitution_block.clone(),
                 approval_store: engine.approval_receipt_store.clone(),
@@ -211,6 +221,18 @@ impl CapturedRlmCaller {
 
     pub fn deadline(&self) -> Option<tokio::time::Instant> {
         self.deadline
+    }
+
+    pub(crate) fn route_model(&self) -> &str {
+        &self.route.model
+    }
+
+    pub(crate) fn route_provider_id(&self) -> String {
+        self.route.identity.key.to_string()
+    }
+
+    pub(crate) fn route_context_window(&self) -> Option<u32> {
+        (self.route.context_window.tokens > 0).then_some(self.route.context_window.tokens)
     }
 
     /// Boxing breaks recursive future types; the future still borrows this
@@ -335,6 +357,7 @@ pub(super) struct RlmHostState {
     pub caller: Arc<CapturedRlmCaller>,
     pub run_id: String,
     pub mode: RlmMode,
+    pub prompt_policy: RlmPromptPolicy,
     pub system_prompt: SystemPrompt,
     pub prompt: String,
     pub deadline: Option<tokio::time::Instant>,
@@ -350,12 +373,30 @@ pub(super) struct RlmHostState {
     pub error: Option<String>,
     pub model_rounds: u32,
 }
+impl RlmHostState {
+    pub(super) fn instruction_assembly(
+        &self,
+    ) -> Option<Arc<crate::project_context::InstructionAssembly>> {
+        session_instruction_assembly(&self.caller, self.prompt_policy)
+    }
+}
+
+fn session_instruction_assembly(
+    caller: &CapturedRlmCaller,
+    policy: RlmPromptPolicy,
+) -> Option<Arc<crate::project_context::InstructionAssembly>> {
+    (policy == RlmPromptPolicy::Session)
+        .then(|| caller.instruction_assembly.clone())
+        .flatten()
+}
+
 impl From<RlmHostSetup> for RlmHostState {
     fn from(setup: RlmHostSetup) -> Self {
         Self {
             caller: setup.caller,
             run_id: String::new(),
             mode: setup.invocation.mode,
+            prompt_policy: setup.invocation.prompt_policy,
             system_prompt: setup.system_prompt,
             prompt: setup.invocation.prompt,
             deadline: setup.invocation.deadline,
@@ -405,12 +446,24 @@ impl Engine {
         config.turn_wall_clock = invocation.deadline.map_or(Duration::MAX, |deadline| {
             deadline.saturating_duration_since(tokio::time::Instant::now())
         });
+        let isolated = invocation.prompt_policy == RlmPromptPolicy::IsolatedPlugin;
+        if isolated {
+            anyhow::ensure!(
+                invocation.mode == RlmMode::Completion,
+                "isolated plugin RLM policy is valid only in completion mode"
+            );
+            config.hook_executor = None;
+        }
         config.compaction.runtime_cost_owner = caller.runtime_owner.clone();
-        let system_prompt = crate::rlm::prompt::captured_rlm_prompt(
-            &caller.system,
-            invocation.mode,
-            invocation.task_instructions.as_deref(),
-        )?;
+        let system_prompt = if isolated {
+            crate::rlm::prompt::isolated_plugin_rlm_prompt(invocation.task_instructions.as_deref())?
+        } else {
+            crate::rlm::prompt::captured_rlm_prompt(
+                &caller.system,
+                invocation.mode,
+                invocation.task_instructions.as_deref(),
+            )?
+        };
         let mut kernel = None;
         if invocation.mode != RlmMode::Completion {
             let path = tempfile::TempPath::try_from_path(codewhale_repl::write_context_file(
@@ -450,8 +503,10 @@ impl Engine {
         engine.model_client_injected = caller.injected;
         handle.client_preflight_required = false;
         engine.repl_kernel = kernel;
-        engine.extension_prompt_block = caller.extension_prompt_block.clone();
-        engine.constitution_block = caller.constitution_block.clone();
+        if !isolated {
+            engine.extension_prompt_block = caller.extension_prompt_block.clone();
+            engine.constitution_block = caller.constitution_block.clone();
+        }
         Ok((engine, handle))
     }
 
@@ -609,6 +664,16 @@ impl EngineHostSetup {
         match self {
             Self::Child(setup) => &setup.system_prompt,
             Self::Rlm(setup) => &setup.system_prompt,
+        }
+    }
+    pub(super) fn instruction_assembly(
+        &self,
+    ) -> Option<Arc<crate::project_context::InstructionAssembly>> {
+        match self {
+            Self::Child(_) => None,
+            Self::Rlm(setup) => {
+                session_instruction_assembly(&setup.caller, setup.invocation.prompt_policy)
+            }
         }
     }
     pub(super) fn review_policy(&self) -> Arc<AutoReviewPolicy> {

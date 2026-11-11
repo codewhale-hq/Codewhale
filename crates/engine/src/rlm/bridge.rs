@@ -373,6 +373,7 @@ impl<'call> RlmBridge<'call> {
             .dispatch(crate::core::engine::rlm_host::RlmInvocation {
                 prompt,
                 mode,
+                prompt_policy: crate::core::engine::rlm_host::RlmPromptPolicy::Session,
                 max_tokens,
                 task_instructions: system,
                 deadline: self.deadline,
