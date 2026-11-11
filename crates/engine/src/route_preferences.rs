@@ -325,7 +325,7 @@ pub fn selected_route(path: &Path) -> Result<(String, String, codewhale_config::
 pub fn list_models(
     store: &codewhale_config::ConfigStore,
     filter: Option<ProviderKind>,
-) -> Result<Vec<(ProviderKind, Vec<String>)>> {
+) -> Result<Vec<(String, Vec<String>)>> {
     crate::models_dev_live::maybe_load_persisted_cache();
     let mut config = saved_config(store)?;
     config.base_url_env_receipt = config
@@ -333,42 +333,46 @@ pub fn list_models(
         .map_or(BaseUrlEnvReceipt::NoOwner, |identity| {
             BaseUrlEnvReceipt::Route(identity.provider, identity.key.to_string())
         });
+    let mut custom_routes: Vec<String> = config
+        .providers
+        .as_ref()
+        .map(|providers| providers.custom.keys().cloned().collect())
+        .unwrap_or_default();
+    custom_routes.sort();
     let providers = filter
         .as_ref()
         .map_or(ProviderKind::all(), std::slice::from_ref);
     let mut catalogs = Vec::with_capacity(providers.len());
     for provider in providers {
-        if *provider == ProviderKind::Custom
-            && config
-                .providers
-                .as_ref()
-                .and_then(|providers| providers.custom_provider_config(provider.as_str()))
-                .is_none()
-        {
-            continue;
-        }
-        let identity = config
-            .legacy_selection_identity(provider.as_str())
-            .map_err(anyhow::Error::msg)?;
-        let mut route_config = config.clone();
-        route_config
-            .scope_to_provider_identity(&identity)
-            .map_err(anyhow::Error::msg)?;
-        let mut models = crate::provider_lake::configured_catalog_models_for_route(
-            &route_config,
-            identity.provider,
-            identity.key.as_str(),
-            &route_config.active_route_base_url(),
-        );
-        if identity.provider != ProviderKind::OpenaiCodex {
-            let default_model = route_config.default_model();
-            if !default_model.is_empty() && !default_model.eq_ignore_ascii_case("auto") {
-                models.push(default_model);
+        let routes = if *provider == ProviderKind::Custom {
+            custom_routes.clone()
+        } else {
+            vec![provider.as_str().to_string()]
+        };
+        for route in routes {
+            let identity = config
+                .legacy_selection_identity(&route)
+                .map_err(anyhow::Error::msg)?;
+            let mut route_config = config.clone();
+            route_config
+                .scope_to_provider_identity(&identity)
+                .map_err(anyhow::Error::msg)?;
+            let mut models = crate::provider_lake::configured_catalog_models_for_route(
+                &route_config,
+                identity.provider,
+                identity.key.as_str(),
+                &route_config.active_route_base_url(),
+            );
+            if identity.provider != ProviderKind::OpenaiCodex {
+                let default_model = route_config.default_model();
+                if !default_model.is_empty() && !default_model.eq_ignore_ascii_case("auto") {
+                    models.push(default_model);
+                }
+                models.sort();
+                models.dedup();
             }
-            models.sort();
-            models.dedup();
+            catalogs.push((route, models));
         }
-        catalogs.push((*provider, models));
     }
     Ok(catalogs)
 }
@@ -418,10 +422,12 @@ pub fn resolve_model(
                 .into(),
             );
         }
-        codewhale_agent::ModelRegistry::default().resolve(
-            model.filter(|model| *model != "auto"),
-            Some(identity.provider),
-        )?;
+        if !crate::provider_catalog_live::provider_owns_live_catalog(identity.provider, base_url) {
+            codewhale_agent::ModelRegistry::default().resolve(
+                model.filter(|model| *model != "auto"),
+                Some(identity.provider),
+            )?;
+        }
     }
     Ok(route?.candidate)
 }
