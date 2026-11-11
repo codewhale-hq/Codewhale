@@ -5,7 +5,7 @@ import {
   getDocsHooks, getDocsMcp, getDocsModes, getDocsPet, getDocsReview,
   getDocsRuntimeApi, getDocsSandbox, getDocsSkills, getDocsSubagents,
   getDocsTroubleshooting, getDocsTrust, getDocsWeb, getDocsWork,
-  getDocsGuide, getDocsVocabulary, getConstitution, getChrome, getHome, fill, pickText, pickTextLocale,
+  getDocsGuide, getDocsVocabulary, getConstitution, getChrome, getHome, fill, pickText,
 } from "./i18n/dictionaries";
 import type { DocsBlock, DocsPageDict } from "./i18n/dictionaries/types";
 import { GETTING_STARTED_STEPS } from "./content/getting-started";
