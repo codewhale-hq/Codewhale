@@ -649,7 +649,7 @@ a plugin's trust shows it:
 | You | the Plugins page, `/plugin trust`, or an approval card | every project |
 | The agent, in Full Access or Auto-Review | the agent's plugin tool, bound to the token of the review composed for that call and to the thread, turn and tool call that made it | only the project named in the record |
 | The agent, from a shell command | `codewhale plugins trust … --yes` run by a process that carries the agent's mark | only the project named in the record |
-| The command line | `codewhale plugins trust … --yes` without the mark: no review was shown there | every project |
+| The command line | `codewhale plugins trust … --yes` without the mark: no review was shown there, so it grants no service | every project |
 
 The agent's mark is a label on the agent's shell commands, not a lock: in Full
 Access the agent can remove it, and the record then says "the command line".
@@ -658,6 +658,10 @@ and its code does not run in the host process of the plugins you reviewed:
 until it has a host of its own, its native code is refused with a diagnostic
 that asks you to review it. Your own review replaces the agent's record. Who
 turned a plugin on is recorded the same way, separately from who approved it.
+The agent approves or turns on only a plugin in its own project's
+`.codewhale/plugins` folder, and turns on only one whose record it made for
+that project; any other plugin, including one approved for every project, is
+left to you.
 
 **One process, one rule.** Extensions share one host process and cannot be
 isolated from each other inside it. A service is therefore given to a tool call
