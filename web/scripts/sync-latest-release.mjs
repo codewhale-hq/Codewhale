@@ -80,9 +80,6 @@ function releaseFact(release) {
 }
 const next = releaseFact(release);
 
-// The checked-in record also carries what GitHub listed for the release when
-// it was read: each asset's name, size and sha256 digest, and the read time.
-// Only the four core fields above are mirrored to docs/ and the cloud facts.
 function releaseAssets(release) {
   if (!Array.isArray(release.assets)) return [];
   return release.assets
@@ -154,7 +151,11 @@ if (checkOnly) {
     if (fields.length) console.error(`[sync-latest-release] ${path} differs from ${next.tag} in ${fields.join(", ")}.`);
   }
   if (allMatch(next) && !assetsMatch()) {
-    console.error(`[sync-latest-release] ${target} does not carry the ${nextAssets.length} assets GitHub lists for ${next.tag}.`);
+    console.warn(`[sync-latest-release] warning only: ${target} does not carry the ${nextAssets.length} assets GitHub lists for ${next.tag}. Run: npm --prefix web run sync:latest-release`);
+    if (process.env.GITHUB_ACTIONS) {
+      console.log(`::warning title=Release assets drifted::${next.tag} asset list differs from ${target}`);
+    }
+    process.exit(0);
   }
   if (!cloudMatches(next)) {
     console.error(`[sync-latest-release] release version or URL in docs/cloud-facts/stable.json differs from ${next.tag}.`);

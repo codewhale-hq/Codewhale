@@ -131,7 +131,7 @@ function factLines(facts: RepoFacts): string[] {
   const release = facts.latestPublishedRelease;
   const lines = [
     release
-      ? `- Latest published release: v${release.version}, published ${release.publishedAt.slice(0, 10)} (${release.url}). The install commands above install this release.`
+      ? `- Latest published release: v${release.version}, published ${release.publishedAt.slice(0, 10)}${release.readAt ? `, read ${release.readAt.slice(0, 10)}` : ""} (${release.url}). The install commands above install this release.`
       : "- Latest published release: unknown at build time; see https://github.com/codewhale-hq/CodeWhale/releases.",
   ];
   if (facts.license) lines.push(`- License: ${facts.license} (${REPO_URL}/blob/main/LICENSE). Free to use; you pay your model provider directly, and local models need no key.`);

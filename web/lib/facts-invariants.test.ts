@@ -103,6 +103,7 @@ describe("the version a visitor gets on install", () => {
 
     const llms = buildLlmsTxt();
     expect(llms).toContain(`Latest published release: v${published.version}, published ${published.publishedAt.slice(0, 10)}`);
+    expect(llms).toContain(`read ${published.readAt.slice(0, 10)}`);
     expect(llms).toContain("The install commands above install this release.");
     if (FACTS.version !== published.version) {
       expect(llms.split("\n").filter((line) => line.includes("install this release")).join("\n")).not.toContain(`v${FACTS.version}`);

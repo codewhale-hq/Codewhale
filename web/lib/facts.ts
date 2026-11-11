@@ -17,12 +17,6 @@ export interface BuildProvenance {
   generatedAt?: string | null;
 }
 
-/**
- * The build stamps revision, commit time and generation time in one step
- * (next.config.ts). They are applied together or not at all, so a fresh
- * revision never sits beside the tracked file's older date, and a partial
- * stamp leaves the tracked snapshot's own consistent trio untouched.
- */
 export function withBuildProvenance(base: RepoFacts, stamp: BuildProvenance): RepoFacts {
   const { revision, committedAt, generatedAt } = stamp;
   if (
