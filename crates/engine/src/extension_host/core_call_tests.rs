@@ -1818,10 +1818,12 @@ async fn dsh_broker_tickets_bind_plugin_service_and_session_and_every_refusal_is
     let echo: &[(DshService, super::dsh_broker::Arm)] =
         &[(DshService::Workspace, echo_arm as super::dsh_broker::Arm)];
 
-    for service in DshService::ALL
-        .into_iter()
-        .filter(|s| *s != DshService::Network && *s != DshService::Remote)
-    {
+    for service in DshService::ALL.into_iter().filter(|s| {
+        !matches!(
+            s,
+            DshService::Network | DshService::Remote | DshService::Terminal
+        )
+    }) {
         let ticket = &tickets_a[service.name()];
         let result = f
             .broker(
@@ -2095,7 +2097,10 @@ async fn dsh_broker_services_are_granted_by_one_check_and_an_ungranted_service_i
                 service.name()
             );
         }
-        if service != DshService::Network && service != DshService::Remote {
+        if !matches!(
+            service,
+            DshService::Network | DshService::Remote | DshService::Terminal
+        ) {
             let result = f
                 .broker(
                     TABLE,
@@ -2741,6 +2746,284 @@ async fn dsh_remote_broker_pairs_through_the_host_and_refuses_foreign_stale_and_
         Err(RemoteDenial::Unknown)
     );
     drop(guard_a2);
+    drop(guard_b);
+    assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
+}
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+fn terminal_asked(f: &Fixture) -> usize {
+    f.server.asked.load(Ordering::SeqCst)
+}
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+#[tokio::test]
+async fn dsh_terminal_arm_runs_through_the_gate_in_the_plugins_own_thread_owned_terminals() {
+    use super::dsh_broker::{TABLE, TestGrants};
+    use super::dsh_terminal::MAX_TERMINALS;
+    use super::protocol::DshService;
+    use crate::tools::terminal_session;
+    use codewhale_agent_contract::worker_profile::ShellPolicy;
+    use codewhale_sandbox::SandboxPolicy;
+
+    let _grants = TestGrants::only(&[DshService::Workspace, DshService::Terminal]);
+    let mut f = fixture(true);
+    let workspace = f.context.workspace.clone();
+    let specs = crate::tools::registry::ToolRegistryBuilder::new()
+        .with_file_tools()
+        .with_terminal_tools()
+        .build(ToolContext::new(&workspace))
+        .all();
+    f.gate = f.gate.clone().for_extension(f.caller(), specs);
+    f.context.elevated_sandbox_policy = Some(SandboxPolicy::DangerFullAccess);
+    f.context.state_namespace = "thread-a".into();
+    f.in_session("terminal-session-a");
+    let guard_a = f.begin(7, &f.owner);
+    let terminal = broker_ticket(&guard_a, "terminal").unwrap();
+    let other_service = broker_ticket(&guard_a, "workspace").unwrap();
+    let run = json!({"command": "printf 'dsh-%s' terminal", "session": "build"});
+
+    let unknown = f
+        .broker(TABLE, &f.owner, &terminal, "terminal", "spawn", json!({}))
+        .await;
+    assert_eq!(
+        dsh_refusal(&unknown),
+        (error_code::INVALID_PARAMS, "unknown_method".into())
+    );
+    let escaped = f
+        .broker(
+            TABLE,
+            &f.owner,
+            &terminal,
+            "terminal",
+            "run",
+            json!({"command": "true", "session": "../term-1"}),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&escaped),
+        (error_code::INVALID_PARAMS, "invalid_input".into())
+    );
+    for (owner, ticket) in [
+        (&f.other, terminal.as_str()),
+        (&f.owner, other_service.as_str()),
+        (&f.owner, guard_a.ticket()),
+    ] {
+        let result = f
+            .broker(TABLE, owner, ticket, "terminal", "run", run.clone())
+            .await;
+        assert_eq!(
+            dsh_refusal(&result),
+            (error_code::REFUSED, "ticket_refused".into())
+        );
+    }
+    let (cx, _violations, host_cancel) = HostRequestContext::for_test(51);
+    host_cancel.cancel();
+    let cancelled = f
+        .broker_in(
+            cx,
+            TABLE,
+            &f.owner,
+            &terminal,
+            "terminal",
+            "run",
+            run.clone(),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&cancelled),
+        (error_code::CANCELLED, "cancelled".into())
+    );
+    assert_eq!(terminal_asked(&f), 0, "nothing refused reached the gate");
+    assert!(
+        terminal_session::owned_sessions(&workspace, "thread-a")
+            .unwrap()
+            .is_empty(),
+        "nothing refused started a shell"
+    );
+
+    let empty = f
+        .broker(TABLE, &f.owner, &terminal, "terminal", "list", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(empty["terminals"], json!([]));
+    assert_eq!(empty["instance"], terminal_session::instance_id());
+    assert_eq!(terminal_asked(&f), 0, "a listing asks no card");
+
+    let ran = f
+        .broker(TABLE, &f.owner, &terminal, "terminal", "run", run.clone())
+        .await
+        .unwrap();
+    assert_eq!(ran["ok"], true, "{ran}");
+    assert_eq!(ran["session"], "build");
+    assert!(
+        ran["output"].as_str().unwrap().contains("dsh-terminal"),
+        "{ran}"
+    );
+    assert_eq!(terminal_asked(&f), 1, "the command went through the gate");
+    let terminal_id = ran["terminal_id"].as_str().unwrap().to_string();
+    let owned = terminal_session::owned_sessions(&workspace, "thread-a").unwrap();
+    assert_eq!(owned.len(), 1);
+    assert_eq!(owned[0].name, "dsh:a:build");
+    assert_eq!(owned[0].id, terminal_id);
+    let shell = terminal_session::lookup(&workspace, Some("thread-a"), &terminal_id)
+        .expect("the thread's own terminal routes reach the shell the broker started");
+    terminal_session::resize_session(&shell.lock().unwrap(), 30, 100).unwrap();
+    assert!(terminal_session::lookup(&workspace, Some("thread-b"), &terminal_id).is_none());
+    let receipts = guard_a.receipts().expect("the terminal call is receipted");
+    assert_eq!(receipts["total"], 1, "{receipts}");
+    assert!(receipts.to_string().contains("terminal/run"), "{receipts}");
+
+    terminal_session::get_or_create(
+        "thread-a",
+        "term-1",
+        &workspace,
+        SandboxPolicy::DangerFullAccess,
+        &f.context.shell_manager,
+    )
+    .unwrap();
+    for method in ["send", "wait", "cancel", "reset"] {
+        let mut input = json!({"session": "term-1"});
+        if method == "send" {
+            input["text"] = json!("exit\n");
+        }
+        let result = f
+            .broker(TABLE, &f.owner, &terminal, "terminal", method, input)
+            .await;
+        assert_eq!(
+            dsh_refusal(&result),
+            (error_code::INVALID_PARAMS, "invalid_input".into()),
+            "{method}: the model's own shell is not the plugin's"
+        );
+    }
+    let listed = f
+        .broker(TABLE, &f.owner, &terminal, "terminal", "list", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(listed["terminals"].as_array().unwrap().len(), 1, "{listed}");
+    assert_eq!(listed["terminals"][0]["session"], "build");
+    assert_eq!(listed["terminals"][0]["terminal_id"], terminal_id.as_str());
+    assert_eq!(listed["terminals"][0]["running"], true);
+    assert_eq!(terminal_asked(&f), 1);
+
+    let allowed = f.context.clone();
+    for (denied_tools, policy, list_code) in [
+        (vec!["terminal/run".to_string()], ShellPolicy::Full, None),
+        (
+            vec!["terminal/wait".to_string()],
+            ShellPolicy::Full,
+            Some("refused"),
+        ),
+        (Vec::new(), ShellPolicy::ReadOnly, None),
+        (Vec::new(), ShellPolicy::None, Some("refused")),
+    ] {
+        f.context = allowed.clone().with_shell_policy(policy);
+        f.context.disallowed_tools = denied_tools.clone();
+        let narrowed = f.begin(7, &f.owner);
+        let ticket = broker_ticket(&narrowed, "terminal").unwrap();
+        if denied_tools != ["terminal/wait"] {
+            let result = f
+                .broker(TABLE, &f.owner, &ticket, "terminal", "run", run.clone())
+                .await;
+            assert_eq!(
+                dsh_refusal(&result),
+                (error_code::REFUSED, "refused".into()),
+                "{denied_tools:?} {policy:?}"
+            );
+        }
+        let listing = f
+            .broker(TABLE, &f.owner, &ticket, "terminal", "list", json!({}))
+            .await;
+        match list_code {
+            Some(code) => assert_eq!(dsh_refusal(&listing), (error_code::REFUSED, code.into())),
+            None => assert!(listing.is_ok(), "{listing:?}"),
+        }
+        drop(narrowed);
+    }
+    f.context = allowed;
+    assert_eq!(
+        terminal_asked(&f),
+        1,
+        "a caller that may not use the tool never reaches the gate"
+    );
+
+    for n in 1..MAX_TERMINALS {
+        terminal_session::get_or_create(
+            "thread-a",
+            &format!("dsh:a:n{n}"),
+            &workspace,
+            SandboxPolicy::DangerFullAccess,
+            &f.context.shell_manager,
+        )
+        .unwrap();
+    }
+    let over = f
+        .broker(
+            TABLE,
+            &f.owner,
+            &terminal,
+            "terminal",
+            "run",
+            json!({"command": "true", "session": "one-too-many"}),
+        )
+        .await;
+    assert_eq!(dsh_refusal(&over), (error_code::REFUSED, "refused".into()));
+    assert_eq!(
+        terminal_asked(&f),
+        1,
+        "the limit is checked before the card"
+    );
+
+    f.context.state_namespace = "thread-b".into();
+    f.in_session("terminal-session-b");
+    let guard_b = f.begin(7, &f.owner);
+    let terminal_b = broker_ticket(&guard_b, "terminal").unwrap();
+    let elsewhere = f
+        .broker(TABLE, &f.owner, &terminal_b, "terminal", "list", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        elsewhere["terminals"],
+        json!([]),
+        "another session sees none"
+    );
+    let foreign = f
+        .broker(
+            TABLE,
+            &f.owner,
+            &terminal_b,
+            "terminal",
+            "wait",
+            json!({"session": "build"}),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&foreign),
+        (error_code::INVALID_PARAMS, "invalid_input".into())
+    );
+    drop(guard_a);
+    let stale = f
+        .broker(TABLE, &f.owner, &terminal, "terminal", "list", json!({}))
+        .await;
+    assert_eq!(
+        dsh_refusal(&stale),
+        (error_code::REFUSED, "ticket_refused".into())
+    );
+
+    assert_eq!(
+        terminal_session::kill_owner_sessions(&workspace, "thread-a").unwrap(),
+        MAX_TERMINALS + 1,
+        "deleting the thread ends the plugin's shells with the thread's own"
+    );
+    assert!(terminal_session::lookup(&workspace, Some("thread-a"), &terminal_id).is_none());
+
+    f.manager.shared.core_calls.revoke_owner("a");
+    let revoked = f
+        .broker(TABLE, &f.owner, &terminal_b, "terminal", "list", json!({}))
+        .await;
+    assert_eq!(
+        dsh_refusal(&revoked),
+        (error_code::REFUSED, "ticket_refused".into())
+    );
     drop(guard_b);
     assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
 }
