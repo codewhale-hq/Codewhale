@@ -557,6 +557,7 @@ pub struct AgentQuotaSetting {
 
 pub const AGENT_QUOTA_KEY_PREFIX: &str = "agents.quota.";
 const MAX_AGENT_ID_CHARS: usize = 64;
+const MAX_AGENT_QUOTA_ENTRIES: usize = 32;
 
 impl AgentSettings {
     pub fn is_empty(&self) -> bool {
@@ -581,6 +582,11 @@ impl AgentSettings {
         if !valid_id {
             anyhow::bail!(
                 "Failed to update setting: `{key}` does not name an agent. Expected agents.quota.<agent> or agents.quota.<agent>.consent with a lowercase agent id."
+            );
+        }
+        if !self.quota.contains_key(agent_id) && self.quota.len() >= MAX_AGENT_QUOTA_ENTRIES {
+            anyhow::bail!(
+                "Failed to update setting: `{key}` would exceed {MAX_AGENT_QUOTA_ENTRIES} agent quota entries. Turn one off first."
             );
         }
         let mut entry = self.quota(agent_id);
@@ -3546,6 +3552,45 @@ mod tests {
 
         let err = settings.set("focus_texture", "static").unwrap_err();
         assert!(err.to_string().contains("off, scrim, or grain"));
+    }
+
+    #[test]
+    fn agent_quota_keys_validate_cap_and_never_echo_the_value() {
+        let mut settings = Settings::default();
+        settings.set("agents.quota.claude", "on").unwrap();
+        settings
+            .set("agents.quota.claude.consent", "granted")
+            .unwrap();
+        assert!(settings.agents.quota("claude").enabled);
+        assert!(settings.agents.quota("claude").consented_at.is_some());
+
+        let secret = "sk-do-not-echo";
+        for (key, value) in [
+            ("agents.quota.claude", secret),
+            ("agents.quota.claude.consent", secret),
+            ("agents.quota.Claude", "on"),
+            ("agents.quota.", "on"),
+        ] {
+            let err = settings.set(key, value).unwrap_err().to_string();
+            assert!(!err.contains(secret), "{err}");
+        }
+
+        settings.set("agents.quota.claude", "off").unwrap();
+        settings
+            .set("agents.quota.claude.consent", "revoked")
+            .unwrap();
+        assert!(settings.agents.is_empty(), "a default entry is removed");
+
+        for index in 0..MAX_AGENT_QUOTA_ENTRIES {
+            settings
+                .set(&format!("agents.quota.agent-{index}"), "on")
+                .unwrap();
+        }
+        let err = settings.set("agents.quota.one-more", "on").unwrap_err();
+        assert!(err.to_string().contains("would exceed"), "{err}");
+        settings.set("agents.quota.agent-0", "off").unwrap();
+        settings.set("agents.quota.one-more", "on").unwrap();
+        assert_eq!(settings.agents.quota.len(), MAX_AGENT_QUOTA_ENTRIES);
     }
 
     #[test]

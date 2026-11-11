@@ -329,12 +329,18 @@ async fn agent_quota_report(agents: &AgentSettings) -> Value {
 }
 
 pub(super) async fn get_external_agent_quota() -> Json<Value> {
-    let agents = tokio::task::spawn_blocking(Settings::load_read_only)
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .map(|settings| settings.agents)
-        .unwrap_or_default();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    let agents = tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        Settings::load_read_only()
+    })
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .map(|settings| settings.agents)
+    .unwrap_or_default();
     Json(agent_quota_report(&agents).await)
 }
 
