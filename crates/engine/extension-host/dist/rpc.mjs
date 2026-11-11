@@ -39,6 +39,7 @@ var METHODS = [
   { name: "subagent/start", direction: "host_to_core", request: true, params: "SubagentStartParams", tiers: ["plugin", "builtin"] },
   { name: "subagent/result", direction: "host_to_core", request: true, params: "SubagentHandleParams", tiers: ["plugin", "builtin"] },
   { name: "subagent/dispose", direction: "host_to_core", request: true, params: "SubagentHandleParams", tiers: ["plugin", "builtin"] },
+  { name: "dsh/broker", direction: "host_to_core", request: true, params: "DshBrokerParams", tiers: ["plugin", "builtin"] },
   { name: "proc/launch", direction: "host_to_core", request: true, params: "ProcLaunchParams", tiers: ["builtin"] },
   { name: "proc/read", direction: "host_to_core", request: true, params: "ProcSessionParams", tiers: ["builtin"] },
   { name: "proc/write", direction: "host_to_core", request: true, params: "ProcWriteParams", tiers: ["builtin"] },
@@ -78,6 +79,16 @@ var SHAPES = {
     strict: false,
     required: { owner: { ref: "OwnerRef" } },
     optional: { entry: { ref: "EntryRef" } }
+  },
+  DshBrokerParams: {
+    strict: true,
+    required: { owner: { ref: "OwnerRef" }, ticket: "string", service: "string", method: "string", input: "json" },
+    optional: {}
+  },
+  DshBrokerTicketWire: {
+    strict: true,
+    required: { service: "string", ticket: "string" },
+    optional: {}
   },
   EmptyParams: {
     strict: true,
@@ -242,7 +253,7 @@ var SHAPES = {
   ToolCallParams: {
     strict: false,
     required: { handle: "uint", call_id: "string", input: "json", deadline_ms: "uint" },
-    optional: { workspace: "string", ticket: "string", checkpoint_ticket: "string", question_ticket: "string", subagent_ticket: "string", caller_tools: { items: "string" }, session_id: "string", agent_id: "string", origin_turn_id: "string" }
+    optional: { workspace: "string", ticket: "string", checkpoint_ticket: "string", question_ticket: "string", subagent_ticket: "string", broker_tickets: { items: { ref: "DshBrokerTicketWire" } }, caller_tools: { items: "string" }, session_id: "string", agent_id: "string", origin_turn_id: "string" }
   },
   UnregisterParams: {
     strict: true,

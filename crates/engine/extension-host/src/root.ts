@@ -142,6 +142,7 @@ export interface ToolInvocation {
   agent: object | undefined
   questionTicket: string | undefined
   subagentTicket: string | undefined
+  brokerTickets: ReadonlyMap<string, string>
   callerTools: readonly string[]
   delegated: boolean
   ticket: string | undefined
@@ -565,6 +566,12 @@ export class HostRoot {
           : undefined
       },
       log: (level, message, owner) => host.log(level, message, owner),
+      broker: async (ctx, service, method, input) => {
+        const invocation = adapterHost.liveInvocation(ctx)
+        const ticket = invocation?.brokerTickets.get(service)
+        if (invocation === undefined || ticket === undefined) throw new RpcError(ErrorCode.NotAvailable, `the ${String(service).slice(0, 64)} broker is only available to a live tool invocation the core gave a ticket for it`)
+        return rpc.request<unknown>('dsh/broker', { owner: invocation.owner.ref, ticket, service, method, input }, invocation.signal)
+      },
     }
     const shims = new Map<string, new (ctx: any) => Service>([
       ['tools', ToolsShim],
@@ -863,6 +870,7 @@ export class HostRoot {
       agent,
       questionTicket: identity?.question_ticket,
       subagentTicket: identity?.subagent_ticket,
+      brokerTickets: new Map((identity?.broker_tickets ?? []).map(({ service, ticket }) => [service, ticket])),
       callerTools: Object.freeze([...(identity?.caller_tools ?? [])]),
       delegated: identity?.agent_id !== undefined,
       ticket: identity?.checkpoint_ticket,
@@ -933,6 +941,7 @@ export class HostRoot {
 interface InvocationIdentityWire {
   question_ticket?: string
   subagent_ticket?: string
+  broker_tickets?: { service: string, ticket: string }[]
   caller_tools?: string[]
   checkpoint_ticket?: string
   session_id?: string

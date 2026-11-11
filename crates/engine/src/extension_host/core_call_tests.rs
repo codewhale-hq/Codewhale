@@ -1692,3 +1692,298 @@ fn approval_keys_are_scoped_to_the_extension_so_grants_never_cross_origins() {
         "a grant given to the extension never covers the model's call"
     );
 }
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "method", content = "input", deny_unknown_fields)]
+enum EchoMethod {
+    #[serde(rename = "echo")]
+    Echo { text: String },
+}
+
+impl super::dsh_broker::BrokerMethods for EchoMethod {
+    const NAMES: &'static [&'static str] = &["echo"];
+}
+
+fn echo_arm(call: super::dsh_broker::BrokerCall) -> super::dsh_broker::BrokerFuture {
+    Box::pin(async move {
+        let EchoMethod::Echo { text } = super::dsh_broker::decode::<EchoMethod>(&call)?;
+        Ok(json!({
+            "session": call.session_id,
+            "plugin": call.owner.plugin_id,
+            "service": call.service.name(),
+            "text": text,
+        }))
+    })
+}
+
+impl Fixture {
+    fn in_session(&mut self, session: &str) {
+        self.context = self
+            .context
+            .clone()
+            .with_session_objects(crate::rlm::session::SessionObjectSnapshot::new(
+                session.into(),
+                "fixture-model".into(),
+                self.context.workspace.clone(),
+                None,
+                Arc::new(Vec::new()),
+            ))
+            .with_origin_turn_id("broker-turn");
+    }
+
+    async fn broker(
+        &self,
+        table: &[(super::protocol::DshService, super::dsh_broker::Arm)],
+        owner: &OwnerRef,
+        ticket: &str,
+        service: &str,
+        method: &str,
+        input: Value,
+    ) -> Result<Value, RpcErrorWire> {
+        let (cx, _violations, _cancel) = HostRequestContext::for_test(40);
+        self.manager
+            .shared
+            .core_calls
+            .serve_broker_in(
+                table,
+                &self.manager.shared,
+                HostTier::Plugin,
+                7,
+                super::protocol::DshBrokerParams {
+                    owner: owner.clone(),
+                    ticket: ticket.to_string(),
+                    service: service.to_string(),
+                    method: method.to_string(),
+                    input,
+                },
+                cx,
+            )
+            .await
+    }
+}
+
+fn dsh_refusal(result: &Result<Value, RpcErrorWire>) -> (i64, String) {
+    let error = result.as_ref().expect_err("a refusal");
+    let code = error
+        .data
+        .as_ref()
+        .and_then(|data| data["dsh_refusal"].as_str())
+        .unwrap_or_else(|| panic!("untyped refusal: {error:?}"))
+        .to_string();
+    (error.code, code)
+}
+
+#[tokio::test]
+async fn dsh_broker_tickets_bind_plugin_service_and_session_and_every_refusal_is_typed() {
+    use super::dsh_broker::TABLE;
+    use super::protocol::DshService;
+    use std::collections::BTreeMap;
+
+    let mut f = fixture(true);
+    let outside = f.begin(7, &f.owner);
+    assert!(
+        outside.broker_tickets().is_none(),
+        "no session, no broker ticket"
+    );
+    drop(outside);
+
+    f.in_session("broker-session-a");
+    let guard_a = f.begin(7, &f.owner);
+    let tickets_a: BTreeMap<String, String> = guard_a
+        .broker_tickets()
+        .unwrap()
+        .into_iter()
+        .map(|wire| (wire.service, wire.ticket))
+        .collect();
+    assert_eq!(tickets_a.len(), DshService::ALL.len());
+    let echo: &[(DshService, super::dsh_broker::Arm)] =
+        &[(DshService::Workspace, echo_arm as super::dsh_broker::Arm)];
+
+    for service in DshService::ALL {
+        let ticket = &tickets_a[service.name()];
+        let result = f
+            .broker(
+                TABLE,
+                &f.owner,
+                ticket,
+                service.name(),
+                "anything",
+                json!({}),
+            )
+            .await;
+        assert_eq!(
+            dsh_refusal(&result),
+            (error_code::NOT_AVAILABLE, "not_available".into()),
+            "{}",
+            service.name()
+        );
+    }
+
+    let workspace = tickets_a["workspace"].clone();
+    let result = f
+        .broker(TABLE, &f.owner, &workspace, "vault", "read", json!({}))
+        .await;
+    assert_eq!(
+        dsh_refusal(&result),
+        (error_code::INVALID_PARAMS, "unknown_service".into())
+    );
+
+    let result = f
+        .broker(echo, &f.owner, &workspace, "workspace", "write", json!({}))
+        .await;
+    assert_eq!(
+        dsh_refusal(&result),
+        (error_code::INVALID_PARAMS, "unknown_method".into())
+    );
+    let result = f
+        .broker(
+            echo,
+            &f.owner,
+            &workspace,
+            "workspace",
+            "echo",
+            json!({"text": 1}),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&result),
+        (error_code::INVALID_PARAMS, "invalid_input".into())
+    );
+    let result = f
+        .broker(
+            echo,
+            &f.owner,
+            &workspace,
+            "workspace",
+            "echo",
+            json!({"text": "hi"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        json!({"session": "broker-session-a", "plugin": "a", "service": "workspace", "text": "hi"})
+    );
+
+    let wrong_service = f
+        .broker(
+            echo,
+            &f.owner,
+            &tickets_a["llm"],
+            "workspace",
+            "echo",
+            json!({"text": "x"}),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&wrong_service),
+        (error_code::REFUSED, "ticket_refused".into())
+    );
+    let foreign = f
+        .broker(
+            echo,
+            &f.other,
+            &workspace,
+            "workspace",
+            "echo",
+            json!({"text": "x"}),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&foreign),
+        (error_code::REFUSED, "ticket_refused".into())
+    );
+    let core_ticket = f
+        .broker(
+            echo,
+            &f.owner,
+            guard_a.ticket(),
+            "workspace",
+            "echo",
+            json!({"text": "x"}),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&core_ticket),
+        (error_code::REFUSED, "ticket_refused".into())
+    );
+    for message in [&wrong_service, &foreign, &core_ticket]
+        .map(|result| result.as_ref().unwrap_err().message.clone())
+    {
+        assert!(!message.contains("cwt."), "{message}");
+    }
+
+    f.in_session("broker-session-b");
+    let guard_b = f.begin(7, &f.owner);
+    let workspace_b = guard_b
+        .broker_tickets()
+        .unwrap()
+        .into_iter()
+        .find(|wire| wire.service == "workspace")
+        .unwrap()
+        .ticket;
+    let in_b = f
+        .broker(
+            echo,
+            &f.owner,
+            &workspace_b,
+            "workspace",
+            "echo",
+            json!({"text": "b"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(in_b["session"], "broker-session-b");
+    let in_a = f
+        .broker(
+            echo,
+            &f.owner,
+            &workspace,
+            "workspace",
+            "echo",
+            json!({"text": "a"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(in_a["session"], "broker-session-a");
+
+    drop(guard_a);
+    let stale = f
+        .broker(
+            echo,
+            &f.owner,
+            &workspace,
+            "workspace",
+            "echo",
+            json!({"text": "x"}),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&stale),
+        (error_code::REFUSED, "ticket_refused".into())
+    );
+    assert!(
+        f.broker(
+            echo,
+            &f.owner,
+            &workspace_b,
+            "workspace",
+            "echo",
+            json!({"text": "b"})
+        )
+        .await
+        .is_ok(),
+        "session b's invocation is untouched"
+    );
+    drop(guard_b);
+    assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
+
+    for service in DshService::ALL {
+        assert_eq!(
+            TABLE.iter().filter(|(row, _)| *row == service).count(),
+            1,
+            "{} has exactly one broker arm",
+            service.name()
+        );
+    }
+}

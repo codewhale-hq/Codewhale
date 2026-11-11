@@ -25,6 +25,9 @@ export const ErrorCode = {
 
 export type Direction = 'core_to_host' | 'host_to_core'
 
+export const DSH_SERVICES = ['workspace', 'llm', 'network', 'settings', 'catalog', 'terminal', 'remote'] as const
+export type DshService = typeof DSH_SERVICES[number]
+
 /** Every method either side may send, and the trust tiers it is allowed on; nothing else is admitted. */
 export const METHODS = [
   { name: 'host/initialize', direction: 'core_to_host', request: true, params: 'InitializeParams', tiers: ['plugin', 'builtin'] },
@@ -50,6 +53,7 @@ export const METHODS = [
   { name: 'subagent/start', direction: 'host_to_core', request: true, params: 'SubagentStartParams', tiers: ['plugin', 'builtin'] },
   { name: 'subagent/result', direction: 'host_to_core', request: true, params: 'SubagentHandleParams', tiers: ['plugin', 'builtin'] },
   { name: 'subagent/dispose', direction: 'host_to_core', request: true, params: 'SubagentHandleParams', tiers: ['plugin', 'builtin'] },
+  { name: 'dsh/broker', direction: 'host_to_core', request: true, params: 'DshBrokerParams', tiers: ['plugin', 'builtin'] },
   { name: 'proc/launch', direction: 'host_to_core', request: true, params: 'ProcLaunchParams', tiers: ['builtin'] },
   { name: 'proc/read', direction: 'host_to_core', request: true, params: 'ProcSessionParams', tiers: ['builtin'] },
   { name: 'proc/write', direction: 'host_to_core', request: true, params: 'ProcWriteParams', tiers: ['builtin'] },
@@ -110,6 +114,16 @@ export const SHAPES: { readonly [name: string]: Shape } = {
     strict: false,
     required: { owner: { ref: 'OwnerRef' } },
     optional: { entry: { ref: 'EntryRef' } },
+  },
+  DshBrokerParams: {
+    strict: true,
+    required: { owner: { ref: 'OwnerRef' }, ticket: 'string', service: 'string', method: 'string', input: 'json' },
+    optional: {},
+  },
+  DshBrokerTicketWire: {
+    strict: true,
+    required: { service: 'string', ticket: 'string' },
+    optional: {},
   },
   EmptyParams: {
     strict: true,
@@ -274,7 +288,7 @@ export const SHAPES: { readonly [name: string]: Shape } = {
   ToolCallParams: {
     strict: false,
     required: { handle: 'uint', call_id: 'string', input: 'json', deadline_ms: 'uint' },
-    optional: { workspace: 'string', ticket: 'string', checkpoint_ticket: 'string', question_ticket: 'string', subagent_ticket: 'string', caller_tools: { items: 'string' }, session_id: 'string', agent_id: 'string', origin_turn_id: 'string' },
+    optional: { workspace: 'string', ticket: 'string', checkpoint_ticket: 'string', question_ticket: 'string', subagent_ticket: 'string', broker_tickets: { items: { ref: 'DshBrokerTicketWire' } }, caller_tools: { items: 'string' }, session_id: 'string', agent_id: 'string', origin_turn_id: 'string' },
   },
   UnregisterParams: {
     strict: true,
@@ -353,6 +367,19 @@ export interface DeactivateParams {
 export interface DeactivateResult {
   disposed: boolean
   leaked: string[]
+}
+
+export interface DshBrokerParams {
+  owner: OwnerRef
+  ticket: string
+  service: string
+  method: string
+  input: Json
+}
+
+export interface DshBrokerTicketWire {
+  service: string
+  ticket: string
 }
 
 export interface EmptyParams {}
@@ -592,6 +619,7 @@ export interface ToolCallParams {
   checkpoint_ticket?: string
   question_ticket?: string
   subagent_ticket?: string
+  broker_tickets?: DshBrokerTicketWire[]
   caller_tools?: string[]
   session_id?: string
   agent_id?: string

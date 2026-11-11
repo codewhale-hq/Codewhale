@@ -1404,6 +1404,11 @@ pub fn registry_host_request<E: HostEvents + ?Sized>(
             message: "session/checkpoint is not served here".to_string(),
             data: None,
         }),
+        HostRequest::DshBroker(_) => Err(RpcErrorWire {
+            code: error_code::NOT_AVAILABLE,
+            message: "dsh/broker is not served here".to_string(),
+            data: Some(json!({ "dsh_refusal": "not_available" })),
+        }),
         HostRequest::ExecutionRedeem(_)
         | HostRequest::CoreCall(_)
         | HostRequest::ProcLaunch(_)
