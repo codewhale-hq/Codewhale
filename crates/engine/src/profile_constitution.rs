@@ -70,6 +70,10 @@ impl AccountFence {
 }
 
 async fn read_account_epoch(profile: Option<String>) -> Option<AccountEpoch> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(seam) = TEST_ACCOUNT_EPOCH.with(|cell| cell.borrow().clone()) {
+        return seam;
+    }
     tokio::task::spawn_blocking(move || account_epoch(profile.as_deref()))
         .await
         .ok()?
@@ -272,6 +276,43 @@ pub fn fail_account_load_for_test(message: &'static str) -> AccountLoadFailureGu
 }
 
 #[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static TEST_ACCOUNT_EPOCH: std::cell::RefCell<Option<Option<AccountEpoch>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn pin_account_epoch_for_test(account_id: Option<&str>) -> AccountEpochGuard {
+    let guard = AccountEpochGuard;
+    guard.set(account_id);
+    guard
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub struct AccountEpochGuard;
+
+#[cfg(any(test, feature = "test-support"))]
+impl AccountEpochGuard {
+    pub fn set(&self, account_id: Option<&str>) {
+        let epoch = account_id.map(|id| AccountEpoch {
+            api_base: runtime_account_api_base(),
+            state: AccountSessionState::Authenticated,
+            account_id: Some(id.to_owned()),
+            session_id: Some(format!("session_{id}")),
+            signed_out_revision: None,
+        });
+        TEST_ACCOUNT_EPOCH.with(|cell| *cell.borrow_mut() = Some(epoch));
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for AccountEpochGuard {
+    fn drop(&mut self) {
+        TEST_ACCOUNT_EPOCH.with(|cell| *cell.borrow_mut() = None);
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
 pub struct AccountLoadFailureGuard;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -383,5 +424,63 @@ mod tests {
         assert!(document.as_user_constitution().is_err());
         document.notes = "unsafe\0control".into();
         assert!(document.as_user_constitution().is_err());
+    }
+
+    #[tokio::test]
+    async fn desktop_browser_call_is_fenced_to_the_admitting_account() {
+        const BROWSER: &str = "mcp_codewhale-browser_navigate";
+        const OTHER: &str = "mcp_other_navigate";
+        let refused = |result: Result<(), crate::tools::spec::ToolError>| {
+            result.expect_err("call must be refused").to_string()
+        };
+
+        let epoch = pin_account_epoch_for_test(Some("acct_a"));
+        assert!(
+            refused(admit_desktop_browser_call(BROWSER, None).await)
+                .contains("could not confirm which account started this turn")
+        );
+
+        let fence = AccountFence::capture(None).await;
+        admit_desktop_browser_call(BROWSER, Some(&fence))
+            .await
+            .expect("unchanged epoch is admitted");
+        admit_desktop_browser_call(OTHER, Some(&fence))
+            .await
+            .expect("non-browser tool is unaffected");
+        admit_desktop_browser_call("read_file", None)
+            .await
+            .expect("non-browser tool needs no fence");
+
+        epoch.set(Some("acct_b"));
+        assert!(
+            refused(admit_desktop_browser_call(BROWSER, Some(&fence)).await)
+                .contains("account changed after this turn started")
+        );
+        admit_desktop_browser_call(OTHER, Some(&fence))
+            .await
+            .expect("non-browser tool still unaffected after a switch");
+        let fence_b = AccountFence::capture(None).await;
+        admit_desktop_browser_call(BROWSER, Some(&fence_b))
+            .await
+            .expect("a turn admitted under the new account is admitted");
+        epoch.set(Some("acct_a"));
+        assert!(
+            refused(admit_desktop_browser_call(BROWSER, Some(&fence_b)).await)
+                .contains("account changed after this turn started")
+        );
+
+        epoch.set(None);
+        assert!(
+            refused(admit_desktop_browser_call(BROWSER, Some(&fence_b)).await)
+                .contains("could not confirm the signed-in account")
+        );
+        let unconfirmed = AccountFence::capture(None).await;
+        assert!(
+            refused(admit_desktop_browser_call(BROWSER, Some(&unconfirmed)).await)
+                .contains("could not confirm which account started this turn")
+        );
+        admit_desktop_browser_call(OTHER, Some(&unconfirmed))
+            .await
+            .expect("non-browser tool unaffected by an unreadable store");
     }
 }

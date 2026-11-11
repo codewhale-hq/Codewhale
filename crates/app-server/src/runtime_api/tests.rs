@@ -18,6 +18,8 @@ use uuid::Uuid;
 mod command_catalog;
 #[cfg(unix)]
 mod control_socket_selection;
+#[cfg(unix)]
+mod external_agent_options;
 mod headless_catalog;
 #[cfg(unix)]
 mod owner_bootstrap;
@@ -8192,18 +8194,13 @@ fn patch_undo_helper_restores_only_the_dropped_turns_changes() -> Result<()> {
     );
     let snapshot_count = repo.list(usize::MAX)?.len();
     let (preview, paths) =
-        patch_undo_workspace_files_impl(&workspace, std::slice::from_ref(&turn), true, true, None)
+        patch_undo_workspace_files_impl(&workspace, std::slice::from_ref(&turn), true, None)
             .expect("a trusted preview should succeed");
     assert!(!preview.files_restored);
     assert_eq!(paths, vec!["a.txt", "made/new.txt"]);
-    let refused = patch_undo_workspace_files_impl(
-        &workspace,
-        std::slice::from_ref(&turn),
-        true,
-        false,
-        Some(&[]),
-    )
-    .expect_err("an unreviewed file plan must refuse before restoring");
+    let refused =
+        patch_undo_workspace_files_impl(&workspace, std::slice::from_ref(&turn), false, Some(&[]))
+            .expect_err("an unreviewed file plan must refuse before restoring");
     assert_eq!(refused.status, StatusCode::CONFLICT);
     assert_eq!(refused.code, Some("undo_selection_changed"));
 
@@ -8212,7 +8209,7 @@ fn patch_undo_helper_restores_only_the_dropped_turns_changes() -> Result<()> {
     assert_eq!(fs::read_to_string(&other)?, "later work");
     assert_eq!(repo.list(usize::MAX)?.len(), snapshot_count);
 
-    let restored = patch_undo_workspace_files(&workspace, std::slice::from_ref(&turn), true)
+    let restored = patch_undo_workspace_files(&workspace, std::slice::from_ref(&turn))
         .expect("a trusted rollback should succeed");
     assert!(restored.files_restored, "{:?}", restored.summary);
     assert_eq!(fs::read_to_string(&a)?, "before", "both writes are undone");
@@ -8232,7 +8229,7 @@ fn patch_undo_helper_restores_only_the_dropped_turns_changes() -> Result<()> {
     );
 
     // Undoing again finds the files already at their pre-turn state.
-    let again = patch_undo_workspace_files(&workspace, std::slice::from_ref(&turn), true)
+    let again = patch_undo_workspace_files(&workspace, std::slice::from_ref(&turn))
         .expect("already restored is provably nothing to do");
     assert!(!again.files_restored);
     Ok(())
@@ -8266,7 +8263,7 @@ fn patch_undo_helper_refuses_to_overwrite_later_edits() -> Result<()> {
         true,
         shell_turn_receipts(&repo, &pre, &post, "thr_a"),
     );
-    let err = patch_undo_workspace_files(&workspace, &[turn], true)
+    let err = patch_undo_workspace_files(&workspace, &[turn])
         .expect_err("a later edit must not be overwritten");
     assert_eq!(err.status, StatusCode::CONFLICT);
     assert_eq!(err.code, Some(PATCH_UNDO_WORKSPACE_CHANGED));
@@ -8322,7 +8319,7 @@ fn patch_undo_helper_fails_honestly_without_an_owned_restore_point() -> Result<(
         ),
     ];
     for (turn, code) in cases {
-        let err = patch_undo_workspace_files(&workspace, std::slice::from_ref(&turn), true)
+        let err = patch_undo_workspace_files(&workspace, std::slice::from_ref(&turn))
             .expect_err(&turn.turn_id);
         assert_eq!(err.status, StatusCode::CONFLICT, "{}", turn.turn_id);
         assert_eq!(err.code, Some(code), "{}: {}", turn.turn_id, err.message);
@@ -8330,20 +8327,16 @@ fn patch_undo_helper_fails_honestly_without_an_owned_restore_point() -> Result<(
         assert_eq!(fs::read_to_string(&a)?, "after");
     }
 
-    let chat_only = patch_undo_workspace_files(
-        &workspace,
-        &[dropped_turn("chat", false, Vec::new())],
-        false,
-    )
-    .expect("a turn that ran no tools changed no files");
+    let chat_only =
+        patch_undo_workspace_files(&workspace, &[dropped_turn("chat", false, Vec::new())])
+            .expect("a turn that ran no tools changed no files");
     assert!(!chat_only.files_restored);
 
     // A prune that drops the restore point's tree fails closed too.
     let receipts = shell_turn_receipts(&repo, &pre, &post, "thr_a");
     repo.prune_older_than(Duration::ZERO)?;
-    let err =
-        patch_undo_workspace_files(&workspace, &[dropped_turn("pruned", true, receipts)], true)
-            .expect_err("a pruned restore point cannot be restored");
+    let err = patch_undo_workspace_files(&workspace, &[dropped_turn("pruned", true, receipts)])
+        .expect_err("a pruned restore point cannot be restored");
     assert_eq!(err.code, Some(PATCH_UNDO_RESTORE_POINT_PRUNED));
     assert_eq!(fs::read_to_string(&a)?, "after");
     Ok(())
@@ -8387,7 +8380,6 @@ fn patch_undo_helper_survives_a_prune_that_rewrites_commit_ids() -> Result<()> {
             true,
             shell_turn_receipts(&repo, &pre, &post, "thr_a"),
         )],
-        true,
     )
     .expect("the tree still resolves the restore point");
     assert!(restored.files_restored);
@@ -8481,7 +8473,6 @@ fn patch_undo_helper_attributes_changes_to_the_turns_own_tool_spans() -> Result<
         let err = patch_undo_workspace_files(
             &workspace,
             &[dropped_turn("turn_1", true, receipts(gap_writer))],
-            true,
         )
         .expect_err("another writer's change must not be reverted");
         assert_eq!(err.status, StatusCode::CONFLICT);
@@ -8508,12 +8499,9 @@ fn patch_undo_helper_attributes_changes_to_the_turns_own_tool_spans() -> Result<
         None,
         Some(changed_between(&repo, &post_tool, &clean_post)),
     );
-    let restored = patch_undo_workspace_files(
-        &workspace,
-        &[dropped_turn("turn_1", true, clean.clone())],
-        true,
-    )
-    .expect("the turn's own write restores");
+    let restored =
+        patch_undo_workspace_files(&workspace, &[dropped_turn("turn_1", true, clean.clone())])
+            .expect("the turn's own write restores");
     assert!(restored.files_restored, "{:?}", restored.summary);
     assert_eq!(fs::read_to_string(&own)?, "before");
 
@@ -8521,9 +8509,8 @@ fn patch_undo_helper_attributes_changes_to_the_turns_own_tool_spans() -> Result<
     fs::write(&own, "turn")?;
     let mut shell = clean.clone();
     shell[1].write_paths = None;
-    let restored =
-        patch_undo_workspace_files(&workspace, &[dropped_turn("turn_1", true, shell)], true)
-            .expect("an undeclared span owns its changes");
+    let restored = patch_undo_workspace_files(&workspace, &[dropped_turn("turn_1", true, shell)])
+        .expect("an undeclared span owns its changes");
     assert!(restored.files_restored);
     assert_eq!(fs::read_to_string(&own)?, "before");
 
@@ -8531,9 +8518,8 @@ fn patch_undo_helper_attributes_changes_to_the_turns_own_tool_spans() -> Result<
     fs::write(&own, "turn")?;
     let mut unknown = clean;
     unknown[2].changed_paths = None;
-    let err =
-        patch_undo_workspace_files(&workspace, &[dropped_turn("turn_1", true, unknown)], true)
-            .expect_err("an unaccounted span fails closed");
+    let err = patch_undo_workspace_files(&workspace, &[dropped_turn("turn_1", true, unknown)])
+        .expect_err("an unaccounted span fails closed");
     assert_eq!(
         err.code,
         Some(PATCH_UNDO_NO_RESTORE_POINT),
@@ -8594,7 +8580,6 @@ fn patch_undo_helper_refuses_declared_writes_snapshots_cannot_hold() -> Result<(
         let err = patch_undo_workspace_files(
             &workspace,
             &[dropped_turn("turn_1", true, receipts(&[declared]))],
-            true,
         )
         .expect_err(declared);
         assert_eq!(err.status, StatusCode::CONFLICT, "{declared}");
@@ -8609,24 +8594,24 @@ fn patch_undo_helper_refuses_declared_writes_snapshots_cannot_hold() -> Result<(
     // The same declared write from a call recorded as failed wrote nothing.
     let mut failed = dropped_turn("turn_1", true, receipts(&[".env.local"]));
     failed.unrun_tool_calls.insert("call-1".to_string());
-    let result = patch_undo_workspace_files(&workspace, &[failed], true)
-        .expect("a failed call wrote nothing");
+    let result =
+        patch_undo_workspace_files(&workspace, &[failed]).expect("a failed call wrote nothing");
     assert!(!result.files_restored);
     // Declared through the turn's items rather than a receipt.
     let mut from_items = dropped_turn("turn_1", true, receipts(&[]));
     from_items.declared_writes.push(".env.local".to_string());
-    let err = patch_undo_workspace_files(&workspace, &[from_items], true)
+    let err = patch_undo_workspace_files(&workspace, &[from_items])
         .expect_err("an item-declared ignored write refuses too");
     assert_eq!(err.code, Some(PATCH_UNDO_PATH_NOT_SNAPSHOTTED));
     Ok(())
 }
 
-/// The gate the TUI's `/undo` applies, stated as a contract: an untrusted
-/// thread may not roll files back. When there *is* something to roll back the
-/// whole undo aborts — nothing is changed, and the caller must not fork the
-/// conversation either.
+/// Default posture (no trust mode, no Full Access): the Runtime does not
+/// gate on trust at all, because the ownership and later-edit proofs already
+/// decide what may be reverted. A later edit in the same workspace still
+/// refuses and leaves every byte alone.
 #[test]
-fn patch_undo_helper_refuses_an_untrusted_rollback_and_touches_nothing() -> Result<()> {
+fn patch_undo_helper_restores_in_the_default_posture_and_still_refuses_later_edits() -> Result<()> {
     if git_missing() {
         return Ok(());
     }
@@ -8651,66 +8636,17 @@ fn patch_undo_helper_refuses_an_untrusted_rollback_and_touches_nothing() -> Resu
         shell_turn_receipts(&repo, &pre, &post, "thr_a"),
     );
 
-    let err = patch_undo_workspace_files(&workspace, std::slice::from_ref(&turn), false)
-        .expect_err("an untrusted rollback must be refused");
-    assert_eq!(err.status, StatusCode::CONFLICT);
-    assert_eq!(err.code, Some(PATCH_UNDO_UNTRUSTED));
-    assert!(
-        err.message.contains("outside trusted mode"),
-        "got: {}",
-        err.message
-    );
-    assert_eq!(
-        fs::read_to_string(&file)?,
-        "after",
-        "a refusal must leave the workspace exactly as it was"
-    );
+    fs::write(&file, "edited later by the person")?;
+    let refused = patch_undo_workspace_files(&workspace, std::slice::from_ref(&turn))
+        .expect_err("a later edit must not be overwritten");
+    assert_eq!(refused.code, Some(PATCH_UNDO_WORKSPACE_CHANGED));
+    assert_eq!(fs::read_to_string(&file)?, "edited later by the person");
 
-    // The identical call once trusted performs the rollback.
-    let restored = patch_undo_workspace_files(&workspace, &[turn], true)
-        .expect("a trusted rollback should succeed");
+    fs::write(&file, "after")?;
+    let restored = patch_undo_workspace_files(&workspace, &[turn])
+        .expect("the turn's own change restores without trust");
     assert!(restored.files_restored, "{:?}", restored.summary);
     assert_eq!(fs::read_to_string(&file)?, "before");
-    Ok(())
-}
-
-/// ...but with provably nothing to roll back, an untrusted undo is still
-/// allowed: the conversation half needs no trust, and skipping it would make
-/// Undo useless in Ask / Auto-Review for no safety gain.
-#[test]
-fn patch_undo_helper_allows_an_untrusted_undo_with_nothing_to_roll_back() -> Result<()> {
-    if git_missing() {
-        return Ok(());
-    }
-    let _lock = lock_test_env();
-    let root = tempfile::tempdir()?;
-    let home = root.path().join("home");
-    fs::create_dir_all(&home)?;
-    let _home = EnvVarGuard::set("HOME", &home);
-
-    let workspace = root.path().join("workspace");
-    fs::create_dir_all(&workspace)?;
-    let repo = codewhale_snapshot::SnapshotRepo::open_or_init(&workspace)?;
-    let file = workspace.join("a.txt");
-
-    fs::write(&file, "only-state")?;
-    let pre = repo.take_snapshot("pre-turn:1", Some("thr_a"))?;
-    // The turn ran a tool but changed nothing.
-    let post = repo.take_snapshot("post-turn:1", Some("thr_a"))?;
-
-    let result = patch_undo_workspace_files(
-        &workspace,
-        &[dropped_turn(
-            "turn_1",
-            true,
-            shell_turn_receipts(&repo, &pre, &post, "thr_a"),
-        )],
-        false,
-    )
-    .expect("nothing to roll back is not a refusal");
-    assert!(!result.files_restored);
-    assert!(result.summary.is_some());
-    assert_eq!(fs::read_to_string(&file)?, "only-state");
     Ok(())
 }
 
@@ -26506,8 +26442,9 @@ mod thread_snapshot_ownership {
 
     /// An undo that cannot restore files fails honestly: snapshots disabled,
     /// a legacy seeded turn with tool calls and no receipts, a restore point
-    /// pruned from the store, and an untrusted thread. Each is a 409 with a
-    /// code, no fork, and unchanged files.
+    /// pruned from the store. Each is a 409 with a code, no fork, and
+    /// unchanged files. A default-posture thread (no trust, no Full Access)
+    /// with an intact restore point is not among them: it restores.
     #[tokio::test]
     async fn undo_that_cannot_restore_files_is_refused() -> Result<()> {
         let _env = lock_test_env();
@@ -26590,7 +26527,7 @@ mod thread_snapshot_ownership {
         assert_eq!(fx.thread_count().await?, before + 1);
         drop(fx);
 
-        // Snapshots on again: a pruned restore point and an untrusted thread.
+        // Snapshots on again: a pruned restore point, then a default-posture thread.
         let root = test_root("honest-on");
         let _home = EnvVarGuard::set("CODEWHALE_HOME", root.join("home"));
         let Some(fx) = fixture(&root, TestServerOverrides::default()).await? else {
@@ -26612,9 +26549,9 @@ mod thread_snapshot_ownership {
             .await?
             .error_for_status()?;
         let before = fx.thread_count().await?;
-        refused(&fx, untrusted, "restore_requires_trust").await?;
-        assert_eq!(fx.read("u.txt").as_deref(), Some("u"));
-        assert_eq!(fx.thread_count().await?, before);
+        fx.undo_restoring(&untrusted, 0).await?;
+        assert_eq!(fx.read("u.txt"), None);
+        assert_eq!(fx.thread_count().await?, before + 1);
         let _ = &fx.root;
         Ok(())
     }

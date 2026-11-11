@@ -24,14 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Website capabilities:** the website now lists a capability as available only when the published release has it, labels features that exist only in source as not yet released, keeps held features (cloud computers beyond invite-only, other vendors' agents over ACP, and plans) hidden behind committed switches that default to off, and prints provider route, catalog model and tool counts as they are at the published release tag instead of on main. This is not deployed yet.
 - **Installer uninstall lines:** the installers now print the uninstall command, the update-mode sentence and the shell-profile marker sentence only when the Codewhale they just installed reports an `uninstall` command, and older releases such as a pinned v0.10.2 get the manual removal steps instead of a command that would be sent to the model as a prompt. (CW-8029) The installers reach people through the website, so this is not deployed yet.
 - **Installer PATH ending:** when `codewhale` is not on PATH, the installers' last lines are now the copy-paste `export PATH=...; hash -r` command and `codewhale --version`, and when it is on PATH the last line is `Next: codewhale --version`; the Computer Use notice moves above them and shows on macOS only. (CW-8030) The installers reach people through the website, so this is not deployed yet.
+- **Installer PATH setup:** when the install directory is not on PATH, the macOS and Linux installers now add Codewhale's marked three-line PATH block to your shell profile, print exactly which file and lines they added and the command that removes them, and skip this with `--no-modify-path` or `CODEWHALE_NO_MODIFY_PATH=1`; the Windows archive installer adds the directory to your user PATH the same way and skips it with `-NoModifyPath`. Release archives carry this from 0.10.3 on, and the Windows installer has not been run yet. (CW-8036) The website serves install.sh, so this reaches people only when the website is next deployed.
 
 - **Website and docs:** installation now leads to a version check and a verifiable first task, article search finds text and commands with section links, and GitHub star links show the fetched count. The hero reuses the generated drone whale, and control/tool references distinguish the unpublished source candidate from v0.10.2; these website changes still await deployment.
+- **External agent options:** `GET /v1/agents/external/{id}/options?cwd=` returns the models, modes and options an external agent itself offers for a folder, and which Codewhale actions it will not carry. A saved agent model the agent no longer offers is refused with a stable `choice_not_offered` code instead of being ignored, per-turn settings an agent cannot honor are refused as `unsupported_control`, and each agent turn records the context window and tokens the agent reported, with cost shown as unknown (CW-7879). Probing starts a real agent session in the folder, which the agent may keep in its own history. Mode and config choices are listed but cannot yet be chosen through thread creation. Verified on Linux by unit and local HTTP tests against a fixture agent; no real installed agent, macOS, Windows or hosted CI run.
 
 ### Changed
 
 - **Website design:** codewhale.net now uses the desktop app's 5.3 light and dark colour roles and Geist / Geist Mono, replacing the warm-paper palette and Shannon Sans; the vendored design copy is synced to 5.3.0 and the whale-road ocean bands are unchanged.
 
 - ACP: editors can start, list, load, prompt and cancel Codewhale sessions and approve or reject tool permissions through the Runtime; prompts with image or audio blocks and relative session directories are now refused instead of ignored, and edit and read tools report the right kind. Plugins, DSH and MCP tools are not yet attached to ACP-driven sessions. A real-editor journey is not yet proved.
+- Extension host: the `sessions` and `systemPrompt` services now come from a reviewed DSH adapter instead of inline shims, and `sessions.flush` refuses an empty checkpoint ticket. Session reads and events and the `agent/pre-step` hook are still not available to plugins. (CW-7959)
 - Plugin activation now says when a requested service belongs to the Codewhale core and is not exposed to plugins yet. No plugin, provider or installed-app run exercised it; checked by the extension-host tests only.
 - Codex App Server v2 contract record (paused, not part of 0.10.3): the selected Codex v2 contract is frozen as a generated manifest in the protocol crate, with typed Rust and TypeScript shapes checked against the pinned Codex schema. It changes no wire behavior and adds no dispatch, so nothing is reachable through it yet.
 
@@ -43,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Runtime API's `POST /v1/git/push` now pushes exactly one branch at one commit (`<commit>:refs/heads/<branch>`, no follow-tags or submodule recursion), so `push.default`, `remote.<name>.push` and `push.followTags` can no longer publish other branches or tags. Clients can bind a push to a named branch and expected HEAD with `branch` + `expect.head` (advertised as `named_push` in `GET /v1/git`); a stale branch or HEAD answers `409 git_state_changed` and pushes nothing. A bare push from a detached HEAD or an unborn branch is now refused, and the desktop app has not yet adopted the named form. Verified on macOS by unit tests against a local bare remote; no real network remote, Linux, Windows or hosted CI run.
 - Cancelling or timing out a read-only Git tool (git_status, git_diff, git_commit_plan, git_log, git_show, git_blame, git_merge_tree) now stops the git process and anything it started, instead of leaving it running in the background. Verified on macOS by unit tests; Linux, Windows and hosted CI are not yet run, and the filter-override probe is still not contained.
 - TUI: the launch resume confirmation no longer treats Meta+Enter, Meta+Y or Hyper+Enter as "resume"; only a plain Enter/Y or Shift+Y answers it. Verified by the focused unit tests only; not tried in a terminal that sends Meta or Hyper.
+- TUI: mentioning a huge directory or a far-away line range (`@file:N-M`) now stops after a bounded scan and says the result is partial instead of claiming end of file. Verified by the focused `file_mention` unit tests; no real 64 MiB file was tried.
+- Runtime `patch-undo` now restores a turn's own file changes in the default (Ask) posture without trust mode or Full Access; later edits and changes the turn did not make are still refused with nothing changed, and the `restore_requires_trust` error code is gone ([#6970](https://github.com/codewhale-hq/Codewhale/issues/6970)). Verified by app-server and TUI unit tests on Linux; no Windows `/undo` or process-restart run.
 
 ### Experimental
 
@@ -59,11 +64,12 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Work in progress and known limits
 
-This source candidate is not the final 0.10.3 tag. The 2026-11-08 scope
-decision keeps App Server v2, the coarse Engine split and DSH all-33
-compatibility in 0.10.3; the final tag waits for that full list. The near-term
-`0.10.3-beta.2` is a GitHub prerelease for the Boat image and desktop, not this
-tag. Items moved to 0.10.4 by name are marked below.
+This source candidate is not the final 0.10.3 tag. There is no
+`0.10.3-beta.2`: the next release is the full 0.10.3, and its final tag waits
+for the full scope list. Codex App Server v2 is paused and is not part of
+0.10.3; the legacy JSON-RPC dialect is not retired in this release. The coarse
+Engine split and DSH all-33 compatibility stay in 0.10.3, and none of this
+work is declared complete here. Items moved to 0.10.4 by name are marked below.
 
 - **Terminal lifetime (0.10.3 work item):** deleting a conversation now ends the
   terminal sessions and background jobs owned by that Runtime thread. The
@@ -606,7 +612,7 @@ tag. Items moved to 0.10.4 by name are marked below.
 - **Listing installed agent CLIs no longer blocks the runtime.** `GET /v1/agents/external` looks for each binary with `tokio::fs` instead of synchronous file calls on a runtime worker.
 - **A failed custom-provider switch leaves the provider you were on.** When saving a custom provider succeeds but switching to it fails (its identity cannot be resolved, or the engine refuses the route), the next request keeps going to the provider the footer shows instead of the half-configured one.
 - **A zero page size over stdio still advances.** `thread/loaded/list` on the App Server's stdio transport treats a requested limit of `0` as `1`, so a client that sends `0` reaches the next page. `GET /v1/threads` is unchanged.
-- **Anthropic and Messages-compatible routes accept any tool name.** Tool names that Anthropic's pattern rejects, such as `web.run` from a loaded tool group, are encoded on the wire and decoded in replies, as the chat and responses routes already did. Before, one such name made every request fail with "tools.N.custom.name: String should match pattern", which stopped sub-agents that had loaded it.
+- **Anthropic and Messages-compatible routes accept any tool name.** Tool names that Anthropic's pattern rejects, such as `web.run` from a loaded tool group, are encoded on the wire and decoded in replies, as the chat and responses routes already did, including when such a tool is forced through an object-form `tool_choice`. Before, one such name made every request fail with "tools.N.custom.name: String should match pattern", which stopped sub-agents that had loaded it ([#7252](https://github.com/codewhale-hq/Codewhale/issues/7252)). Thanks [@ychu824](https://github.com/ychu824) for the report.
 - **A large sub-agent fan-out no longer exhausts the usage journal.** The per-session limit of live usage receipts rises from 64 to 256, above the workflow ceiling of 128, so a full fan-out keeps its cost receipts instead of running with cost unknown.
 - **A turn that stalls before it starts is now bounded.** The stall watchdog covers the setup before the first model request, so a wedged start is logged, cancelled after 180 seconds with a stated reason, and leaves a stall record instead of waiting silently. A warning names the case where all four blocking-work slots are held. Refs #6184.
 - **One unreadable saved session no longer empties the recent-sessions list.** The launch card and ACP `session/list` show the readable sessions and log the failure. Refs #7095.
@@ -1078,6 +1084,7 @@ tag. Items moved to 0.10.4 by name are marked below.
 - **[@Statter](https://github.com/Statter)** — reported black-on-black text on terminals that do not report their background ([#7043](https://github.com/codewhale-hq/Codewhale/issues/7043)).
 - **[@eugenicum](https://github.com/eugenicum)** — asked for a visible Full Access flag for `serve --acp` ([#6992](https://github.com/codewhale-hq/Codewhale/issues/6992)).
 - **[@luestr](https://github.com/luestr)** — reported file and conversation rollback diverging ([#6970](https://github.com/codewhale-hq/Codewhale/issues/6970)), the Linux multiline send key ([#7093](https://github.com/codewhale-hq/Codewhale/issues/7093)) and session export guidance ([#6996](https://github.com/codewhale-hq/Codewhale/issues/6996)).
+- **[@ychu824](https://github.com/ychu824)** — reported every Anthropic request failing with a 400 once `tool_search` added a tool whose name contains a dot, such as `web.run` ([#7252](https://github.com/codewhale-hq/Codewhale/issues/7252)).
 
 ## [0.10.2] - 2026-10-22
 

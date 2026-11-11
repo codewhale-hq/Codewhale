@@ -42,6 +42,8 @@ pub const MAX_FILE_MENTIONS_PER_MESSAGE: usize = 8;
 pub const MAX_MENTION_FILE_BYTES: u64 = 128 * 1024;
 /// Per-directory entry ceiling when inlining a directory listing.
 pub const MAX_DIRECTORY_MENTION_ENTRIES: usize = 80;
+const MAX_DIRECTORY_MENTION_SCAN: usize = 10_000;
+const MAX_MENTION_RANGE_SCAN_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Maximum file-mention completion candidates to consider per keypress. Caps
 /// the cost of walking large workspaces; subsequent keystrokes narrow further.
@@ -1415,46 +1417,78 @@ fn render_file_mention_context(
 }
 
 fn render_directory_mention_context(raw: &str, path: &Path, display_path: &str) -> String {
-    let entries = match std::fs::read_dir(path) {
-        Ok(entries) => entries,
-        Err(err) => {
-            return format!(
-                "<unreadable-directory mention=\"@{raw}\" path=\"{display_path}\">\n{err}\n</unreadable-directory>"
-            );
+    match directory_listing(
+        path,
+        MAX_DIRECTORY_MENTION_ENTRIES,
+        MAX_DIRECTORY_MENTION_SCAN,
+    ) {
+        Ok((body, false)) => {
+            format!("<directory mention=\"@{raw}\" path=\"{display_path}\">\n{body}\n</directory>")
         }
-    };
+        Ok((body, true)) => format!(
+            "<directory mention=\"@{raw}\" path=\"{display_path}\" truncated=\"true\">\n{body}\n</directory>"
+        ),
+        Err(err) => format!(
+            "<unreadable-directory mention=\"@{raw}\" path=\"{display_path}\">\n{err}\n</unreadable-directory>"
+        ),
+    }
+}
 
-    // Keep only the first MAX entries in sort order while counting the rest:
-    // a max-heap of that size bounds memory to the output instead of
-    // materializing and sorting the whole directory (U07-03).
-    let mut total = 0usize;
-    let mut kept = std::collections::BinaryHeap::with_capacity(MAX_DIRECTORY_MENTION_ENTRIES + 1);
-    for entry in entries.filter_map(|entry| entry.ok()) {
-        total += 1;
+/// The first `keep` entry names of `path` in sort order (directories marked
+/// `/`) and whether enumeration stopped at `scan_limit` with entries left.
+/// A max-heap of `keep` names bounds memory (U07-03); the scan limit bounds
+/// work, so a partial listing's names are the first among those examined.
+fn directory_listing(
+    path: &Path,
+    keep: usize,
+    scan_limit: usize,
+) -> std::io::Result<(String, bool)> {
+    let mut entries = std::fs::read_dir(path)?;
+    let mut scanned = 0usize;
+    let mut kept = std::collections::BinaryHeap::with_capacity(keep.saturating_add(1));
+    let mut partial = false;
+    loop {
+        if scanned == scan_limit {
+            partial = entries.next().is_some();
+            break;
+        }
+        let Some(entry) = entries.next() else {
+            break;
+        };
+        scanned += 1;
+        let Ok(entry) = entry else {
+            continue;
+        };
         let marker = entry
             .file_type()
             .ok()
             .filter(|ty| ty.is_dir())
             .map_or("", |_| "/");
         kept.push(format!("{}{}", entry.file_name().to_string_lossy(), marker));
-        if kept.len() > MAX_DIRECTORY_MENTION_ENTRIES {
+        if kept.len() > keep {
             kept.pop();
         }
     }
     let names = kept.into_sorted_vec();
     let mut body = names.join("\n");
-    if total > MAX_DIRECTORY_MENTION_ENTRIES {
-        let omitted = total - MAX_DIRECTORY_MENTION_ENTRIES;
+    let omitted = scanned.saturating_sub(names.len());
+    if partial {
+        let _ = write!(
+            body,
+            "\n... listing stopped after {scanned} entries; more exist"
+        );
+    } else if omitted > 0 {
         let _ = write!(body, "\n... {omitted} more entries");
     }
-    format!("<directory mention=\"@{raw}\" path=\"{display_path}\">\n{body}\n</directory>")
+    Ok((body, partial))
 }
 
 /// Bounded read of a mention's file content, optionally sliced to a line
 /// range. Returns `(text, truncated, beyond_eof)`: `truncated` mirrors the
 /// full-file byte bound, except for a range that starts past that bound,
 /// where it says whether the streamed range itself was cut; `beyond_eof` is
-/// set only when the requested range starts past the end of the file.
+/// set only when the requested range starts past the end of the file. A range
+/// whose scan budget runs out first is `truncated` with no `beyond_eof`.
 fn read_file_content(
     path: &Path,
     range: Option<FileRange>,
@@ -1474,7 +1508,12 @@ fn read_file_content(
             // The prefix ended, not the file: read the range from the file
             // itself instead of calling it past EOF (U07-04).
             std::io::Seek::rewind(&mut file)?;
-            return read_line_range_past_prefix(file, u64::from(start), u64::from(end));
+            return read_line_range_past_prefix(
+                file,
+                u64::from(start),
+                u64::from(end),
+                MAX_MENTION_RANGE_SCAN_BYTES,
+            );
         }
         return Ok((String::new(), truncated, true));
     }
@@ -1484,19 +1523,26 @@ fn read_file_content(
 
 /// Stream a 1-based inclusive line range that starts beyond the bounded
 /// prefix. Skipped lines are scanned, never stored; the range text itself is
-/// held to the same byte budget as a whole-file mention.
+/// held to the same byte budget as a whole-file mention. At most `scan_limit`
+/// bytes are consumed; running out before the first line yields no text and
+/// `truncated`, and only a real end of file reads as beyond EOF.
 fn read_line_range_past_prefix(
     file: impl Read,
     start: u64,
     end: u64,
+    scan_limit: u64,
 ) -> std::io::Result<(String, bool, bool)> {
     use std::io::BufRead;
     let mut reader = std::io::BufReader::new(file);
     let mut line = 1u64;
+    let mut scanned = 0u64;
     while line < start {
         let buf = reader.fill_buf()?;
         if buf.is_empty() {
             return Ok((String::new(), false, true));
+        }
+        if scanned >= scan_limit {
+            return Ok((String::new(), true, false));
         }
         let consumed = match buf.iter().position(|byte| *byte == b'\n') {
             Some(newline) => {
@@ -1505,6 +1551,7 @@ fn read_line_range_past_prefix(
             }
             None => buf.len(),
         };
+        scanned += consumed as u64;
         reader.consume(consumed);
     }
     if reader.fill_buf()?.is_empty() {
@@ -1522,6 +1569,10 @@ fn read_line_range_past_prefix(
             Some(newline) => (newline + 1, true),
             None => (buf.len(), false),
         };
+        if scanned >= scan_limit {
+            truncated = true;
+            break;
+        }
         let room = budget - buffer.len();
         if take > room {
             buffer.extend_from_slice(&buf[..room]);
@@ -1529,6 +1580,7 @@ fn read_line_range_past_prefix(
             break;
         }
         buffer.extend_from_slice(&buf[..take]);
+        scanned += take as u64;
         reader.consume(take);
         if newline {
             line += 1;
@@ -2165,6 +2217,49 @@ mod tests {
         )
         .expect("range read");
         assert!(beyond_eof, "the file really ends at line 20000");
+    }
+
+    #[test]
+    fn mention_scan_bounds_report_partial_not_eof() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("lines.txt");
+        std::fs::write(&path, "aaaa\nbbbb\ncccc\ndddd\n").expect("write");
+        let open = || std::fs::File::open(&path).expect("open");
+
+        let (text, truncated, beyond_eof) =
+            read_line_range_past_prefix(open(), 4, 4, 7).expect("bounded read");
+        assert!(truncated && !beyond_eof && text.is_empty());
+        let (text, truncated, beyond_eof) =
+            read_line_range_past_prefix(open(), 4, 4, 1 << 20).expect("unbounded read");
+        assert!(!truncated && !beyond_eof);
+        assert_eq!(text, "dddd");
+        let (_, truncated, beyond_eof) =
+            read_line_range_past_prefix(open(), 9, 9, 1 << 20).expect("past the end");
+        assert!(!truncated && beyond_eof);
+        let (text, truncated, beyond_eof) =
+            read_line_range_past_prefix(open(), 1, 4, 12).expect("cut short");
+        assert!(truncated && !beyond_eof, "{text:?}");
+        assert!(text.starts_with("aaaa\nbbbb"), "{text:?}");
+
+        let dir = tmp.path().join("many");
+        std::fs::create_dir(&dir).expect("mkdir");
+        for n in 0..30 {
+            std::fs::write(dir.join(format!("f{n:02}")), "x").expect("write");
+        }
+        let (body, partial) = directory_listing(&dir, 5, 100).expect("listing");
+        assert!(!partial);
+        assert!(body.ends_with("... 25 more entries"), "{body}");
+        let (body, partial) = directory_listing(&dir, 5, 12).expect("listing");
+        assert!(partial);
+        assert!(
+            body.ends_with("listing stopped after 12 entries; more exist"),
+            "{body}"
+        );
+        let (_, partial) = directory_listing(&dir, 5, 30).expect("listing");
+        assert!(
+            !partial,
+            "exactly the scan limit with nothing left is complete"
+        );
     }
 
     #[test]

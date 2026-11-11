@@ -15852,16 +15852,6 @@ var init_prompt = __esm({
   }
 });
 
-// src/dsh/adapters.ts
-var DSH_ADAPTERS;
-var init_adapters = __esm({
-  "src/dsh/adapters.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-    DSH_ADAPTERS = [];
-  }
-});
-
 // src/protocol.generated.ts
 var PROTOCOL_VERSION, MAGIC_ASCII, HEADER_LEN, MAX_FRAME, MAX_INFLIGHT, ErrorCode, METHODS, SHAPES;
 var init_protocol_generated = __esm({
@@ -16432,6 +16422,82 @@ var init_rpc = __esm({
         this.send(error ? { jsonrpc: "2.0", id, error: error.toWire() } : { jsonrpc: "2.0", id, result });
       }
     };
+  }
+});
+
+// src/dsh/session-prompt.ts
+function checkpointCall(host2, ctx, session) {
+  const invocation = host2.liveInvocation(ctx);
+  const ticket = invocation?.ticket;
+  return invocation !== void 0 && typeof ticket === "string" && ticket.length > 0 && session !== void 0 && session === invocation.session ? invocation : void 0;
+}
+var CHILD_ONLY, sessionsAdapter, systemPromptAdapter;
+var init_session_prompt = __esm({
+  "src/dsh/session-prompt.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    CHILD_ONLY = "system prompt sections are only available on a child agent's agent/created context";
+    sessionsAdapter = {
+      service: "sessions",
+      define(host2) {
+        class SessionsService extends Service {
+          constructor(ctx) {
+            super(ctx, "sessions");
+          }
+          async flush(session) {
+            const ctx = this.ctx;
+            const call = checkpointCall(host2, ctx, session);
+            if (call === void 0) throw new RpcError(ErrorCode.NotAvailable, "sessions.flush requires this live tool invocation’s session");
+            const owner = call.owner;
+            const live = () => checkpointCall(host2, ctx, session) === call && !call.signal.aborted;
+            const run = async () => {
+              if (!live()) throw new RpcError(ErrorCode.NotAvailable, "session checkpoint invocation ended");
+              const result2 = await host2.rpc.request("session/checkpoint", { owner: owner.ref, ticket: call.ticket }, call.signal);
+              if (!live()) throw new RpcError(ErrorCode.NotAvailable, "session checkpoint invocation ended");
+              if (typeof result2 !== "boolean") throw new RpcError(ErrorCode.Internal, "invalid session checkpoint receipt");
+              return result2;
+            };
+            const result = call.pending.then(run);
+            call.pending = result.then(() => void 0, () => void 0);
+            return result;
+          }
+        }
+        Object.freeze(SessionsService.prototype);
+        return SessionsService;
+      }
+    };
+    systemPromptAdapter = {
+      service: "systemPrompt",
+      define() {
+        class SystemPromptService extends Service {
+          constructor(ctx) {
+            super(ctx, "systemPrompt");
+          }
+          section() {
+            throw new RpcError(ErrorCode.NotAvailable, CHILD_ONLY);
+          }
+          getSectionOrder() {
+            throw new RpcError(ErrorCode.NotAvailable, CHILD_ONLY);
+          }
+        }
+        Object.freeze(SystemPromptService.prototype);
+        return SystemPromptService;
+      }
+    };
+  }
+});
+
+// src/dsh/adapters.ts
+var DSH_ADAPTERS;
+var init_adapters = __esm({
+  "src/dsh/adapters.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_session_prompt();
+    DSH_ADAPTERS = [sessionsAdapter, systemPromptAdapter];
   }
 });
 
@@ -17483,28 +17549,6 @@ var init_root = __esm({
             return this.api().delete(key);
           }
         }
-        class SessionsShim extends Service {
-          constructor(ctx) {
-            super(ctx, "sessions");
-          }
-          async flush(session) {
-            const invocation = host2.toolInvocations.getStore();
-            const owner = this.ctx[OWNER];
-            const live = () => invocation && invocation.active && !invocation.signal.aborted && invocation.owner === owner && owner?.state === "active" && !owner.disposing && invocation.ticket !== void 0 && session === invocation.session && session !== void 0;
-            if (!live()) throw new RpcError(ErrorCode.NotAvailable, "sessions.flush requires this live tool invocation’s session");
-            const call = invocation;
-            const run = async () => {
-              if (!live()) throw new RpcError(ErrorCode.NotAvailable, "session checkpoint invocation ended");
-              const result2 = await host2.rpc.request("session/checkpoint", { owner: call.owner.ref, ticket: call.ticket }, call.signal);
-              if (!live()) throw new RpcError(ErrorCode.NotAvailable, "session checkpoint invocation ended");
-              if (typeof result2 !== "boolean") throw new RpcError(ErrorCode.Internal, "invalid session checkpoint receipt");
-              return result2;
-            };
-            const result = call.pending.then(run);
-            call.pending = result.then(() => void 0, () => void 0);
-            return result;
-          }
-        }
         class UserQuestionsShim extends Service {
           constructor(ctx) {
             super(ctx, "userQuestions");
@@ -17759,22 +17803,9 @@ var init_root = __esm({
             super(ctx, "agents");
           }
         }
-        class SystemPromptShim extends Service {
-          constructor(ctx) {
-            super(ctx, "systemPrompt");
-          }
-          section() {
-            throw new RpcError(ErrorCode.NotAvailable, "system prompt sections are only available on a child agent's agent/created context");
-          }
-          getSectionOrder() {
-            throw new RpcError(ErrorCode.NotAvailable, "system prompt sections are only available on a child agent's agent/created context");
-          }
-        }
         Object.freeze(SubagentsShim.prototype);
         Object.freeze(AgentsShim.prototype);
-        Object.freeze(SystemPromptShim.prototype);
         Object.freeze(UserQuestionsShim.prototype);
-        Object.freeze(SessionsShim.prototype);
         Object.freeze(StorageShim.prototype);
         const adapterHost = {
           tier,
@@ -17792,11 +17823,9 @@ var init_root = __esm({
           ["commands", CommandsShim],
           ["prompt", PromptShim],
           ["storage", StorageShim],
-          ["sessions", SessionsShim],
           ["userQuestions", UserQuestionsShim],
           ["subagents", SubagentsShim],
           ["agents", AgentsShim],
-          ["systemPrompt", SystemPromptShim],
           ["skills", SkillsShim],
           ["avatars", AvatarsShim],
           ["mcp", McpShim],

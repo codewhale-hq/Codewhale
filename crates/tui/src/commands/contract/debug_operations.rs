@@ -615,12 +615,9 @@ pub(crate) fn restore_undo_range(plan: UndoRangePlan) -> anyhow::Result<String> 
     if plan.turns.iter().all(|turn| !turn.may_change_files) {
         return Ok("Workspace files were left unchanged.".to_string());
     }
-    let result = codewhale_app_server::runtime_api::patch_undo_workspace_files(
-        &plan.workspace,
-        &plan.turns,
-        true,
-    )
-    .map_err(|error| anyhow::anyhow!(error.message))?;
+    let result =
+        codewhale_app_server::runtime_api::patch_undo_workspace_files(&plan.workspace, &plan.turns)
+            .map_err(|error| anyhow::anyhow!(error.message))?;
     Ok(result
         .summary
         .unwrap_or_else(|| "No workspace file changes needed restoring.".to_string()))

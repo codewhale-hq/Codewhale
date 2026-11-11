@@ -7,9 +7,10 @@ Use [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) as the ordered release
 sequence: reconcile the canonical checkout, prepare and land verified slices,
 freeze one SHA, verify Cargo tarballs and exact-SHA hosted CI/RC, obtain Hunter's
 publication approval, tag that SHA, then verify each public destination.
-Agent-owned work stays in `/Volumes/VIXinSSD/CW/codewhale` on `main`; do not
-create release branches, worktrees or nested clones. Contributor PRs still land
-as PRs. Coordinate file ownership and preserve dirty work before any recovery.
+Agent-owned preparation is built in a short-lived agent worktree and lands on
+`main` (CURRENT_DECISIONS §93); do not create release branches or nested clones.
+Freeze, tag and publish from the clean canonical `/Volumes/VIXinSSD/CW/codewhale`
+`main`. Contributor PRs still land as PRs. Coordinate file ownership and preserve dirty work before any recovery.
 Keep evidence in the existing release packet instead of maintaining a second
 release queue here.
 
