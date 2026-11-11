@@ -282,10 +282,7 @@ impl ModelInventory {
                 // vendor-family heuristic) carries the number *and* the fact
                 // that nobody verified it — the auto-router must not read a
                 // guessed window as a route capability.
-                let mut context_window_unverified =
-                    codewhale_config::catalog::reviewed::intrinsic_model(&model)
-                        .and_then(|row| row.context_window)
-                        .is_none();
+                let mut context_window_unverified = true;
                 if let Ok(route) = crate::route_runtime::resolve_runtime_route_for_identity(
                     config,
                     &identity,
