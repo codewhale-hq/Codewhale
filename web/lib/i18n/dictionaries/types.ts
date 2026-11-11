@@ -168,31 +168,27 @@ export interface HomeDict {
   frameLabelEdit: string;
   frameLabelApproval: string;
   frameLabelResult: string;
-  frameLabelReceipt: string;
+  /** One accessible summary for each terminal frame the home shows. */
+  frameSummaryPrompt: string;
+  frameSummaryEdit: string;
+  frameSummaryApproval: string;
+  frameSummaryResult: string;
+  frameSummaryProvider: string;
+  frameSummaryReceipt: string;
   /** Primary action → /install, e.g. "Get Codewhale". */
   getCodewhale: string;
   /** Accessible name for the hero install command and its platform choice. */
   heroInstallAria: string;
-  /** Secondary action → /product, e.g. "Explore the product". */
+  /** Accessible name for a terminal capture's region and for the frame tabs. */
   shotPreview: string;
   /** Screenshot alt text for the current media manifest capture. */
   screenshotAlt: string;
 
-  /** "Latest release {tag}" */
-  proofContributors: string;
-  /** "Source" / "Unreleased" — prepended to `v{version}`. */
-  sourceCandidate: string;
-  /** "released" / "unreleased" — the machine-readable source-state label. */
-  publishedRelease: string;
-
-  /** What a person gains: heading, lede, and three [title, body] rows. */
-  modelsHeading: string;
-  modelsLink: string;
-
-  startHeading: string;
   copy: string;
   copied: string;
-  contribute: string;
+
+  /** `{n}` is the contributor count; pick the form with `pluralText`. */
+  contributorsCount: PluralForms;
 
   belief: string;
   sectionModelHeading: string;

@@ -17,21 +17,19 @@ export const home: HomeDict = {
   frameLabelEdit: "Edició",
   frameLabelApproval: "Aprovació",
   frameLabelResult: "Resultat",
-  frameLabelReceipt: "Rebut",
+  frameSummaryPrompt: "Codewhale en un terminal. S’ha enviat la petició «Add a --json flag to ls.py so the tests pass, then run the tests.», i la línia d’estat mostra Ask i el model scripted-demo.",
+  frameSummaryEdit: "Codewhale en un terminal. Ha llegit ls.py i l’ha canviat, el diff mostra les línies afegides i una targeta pregunta si s’ha d’executar python3 -m unittest -q.",
+  frameSummaryApproval: "Codewhale en un terminal. Es veu el canvi a ls.py, i l’ordre python3 -m unittest -q espera aprovació. La targeta pregunta «Do you want to proceed?» i ofereix permetre-la una vegada, permetre-la en aquesta conversa o no permetre-la.",
+  frameSummaryResult: "Codewhale en un terminal. Després de l’aprovació, l’ordre ha executat 2 proves i ha imprès OK. Codewhale diu que ha afegit --json a ls.py i que les dues proves passen, i que aquesta sessió fa servir un model local amb guió.",
+  frameSummaryProvider: "Codewhale en un terminal. El formulari de proveïdor personalitzat per a un endpoint compatible amb OpenAI, amb el nom scripted_local, un URL base en aquest ordinador, el model per defecte scripted-demo i una variable opcional per a la clau d’API.",
+  frameSummaryReceipt: "Codewhale en un terminal. El rebut de la sessió: 1 fitxer canviat i 1 ordre executada, l’ordre aprovada per tu i el canvi del fitxer fet sense preguntar a Ask, i després una llista del que el rebut no registra.",
   getCodewhale: "Instal·lar Codewhale",
   heroInstallAria: "Ordre d'instal·lació",
   shotPreview: "Vista prèvia del terminal",
   screenshotAlt:
     "Codewhale v{version}: captura del terminal amb la conversa, el camp de missatge i els controls de sessió.",
-  proofContributors: "{count} col·laboradors",
-  sourceCandidate: "Sense publicar",
-  publishedRelease: "publicada",
-  modelsHeading: "Fes servir els models que triïs",
-  modelsLink: "Consulta els models i els proveïdors",
-  startHeading: "Primers passos",
   copy: "Copia",
   copied: "Copiat ✓",
-  contribute: "Contribueix a GitHub",
 
   belief: "El model que fas servir sol ser d’algú altre. El lloges, i canvia sota els teus peus. L’agent és diferent. Llegeix els teus fitxers, executa les teves ordres, guarda el que estàs fent i actua en nom teu, així que hauria de pertànyer-te. Codewhale és aquest agent. És de codi obert, de manera que pots llegir-ne cada línia, o demanar-li que es llegeixi a si mateix per a tu. Funciona amb qualsevol model que triïs, tu decideixes què pot fer sense preguntar, i deixa un registre que pots llegir. Estem construint-lo com un sol lloc on tu i molts agents feu programari junts, des del teu terminal fins a un ordinador al núvol, i continua sent teu tot el camí.",
 
@@ -47,6 +45,11 @@ export const home: HomeDict = {
   sectionOpenBody: "Va començar com una eina de terminal de codi obert per a un sol model i es va convertir en un projecte que centenars de persones, en molts idiomes, construeixen juntes. Pots llegir-ne el codi, canviar-lo o demanar-li que s’expliqui.",
   sectionStartHeading: "Fes teu el teu agent avui.",
   sectionStartBody: "Instal·la Codewhale i executa’l en un repositori amb una clau de model que ja tinguis o un model al teu propi ordinador. No necessites cap compte, i `codewhale update` el manté al dia.",
+
+  contributorsCount: {
+    one: "{n} col·laborador",
+    other: "{n} col·laboradors",
+  },
 
   mapHeading: "Un sol motor",
   mapStateReleased: "Publicat",

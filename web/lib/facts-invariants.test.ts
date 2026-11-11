@@ -8,7 +8,6 @@ import { buildLlmsTxt } from "./llms-txt";
 import { buildSoftwareApplicationJsonLd } from "./software-application-schema";
 import { AVAILABILITY_ROWS } from "./content/availability";
 import { APP_COPY } from "./content/app-page";
-import { PulseStats } from "../components/project-pulse";
 import sitemap from "../app/sitemap";
 import HomePage from "../app/[locale]/page";
 import ContributePage from "../app/[locale]/contribute/page";
@@ -44,14 +43,16 @@ describe("the home page and /contribute with every GitHub call failing", () => {
       expect(html).toContain("<h1");
       const numbers = [...html.matchAll(/class="[^"]*\btabular\b[^"]*"[^>]*>([^<]*)</g)].map((match) => match[1].trim());
       expect(numbers).not.toContain("0");
-      expect(html).toContain(new Intl.NumberFormat(locale === "zh" ? "zh-CN" : "en-US").format(snapshot.stars));
     }
+    const numberLocale = locale === "zh" ? "zh-CN" : "en-US";
+    expect(await render(ContributePage as Page, locale)).toContain(new Intl.NumberFormat(numberLocale).format(snapshot.stars));
+    expect(await render(HomePage as Page, locale)).toContain(`>${new Intl.NumberFormat(numberLocale).format(FACTS.contributorCount)}<`);
   });
 
   it("states the published release, not the source version, on the home page", async () => {
     const html = await render(HomePage as Page);
-    expect(html).toContain(`Latest release v${published.version}`);
-    if (FACTS.version !== published.version) expect(html).not.toContain(`Latest release v${FACTS.version}`);
+    expect(html).toContain(`Version ${published.version} is released, and it needs no account.`);
+    if (FACTS.version !== published.version) expect(html).not.toContain(`Version ${FACTS.version} is released`);
   });
 });
 
@@ -84,13 +85,6 @@ describe("a live number that cannot be read", () => {
       expect(readRepoStatsSnapshot(bad)).toEqual(unknown);
     }
   });
-
-  it("renders no cell for an unknown number", () => {
-    const html = renderToStaticMarkup(PulseStats({ stats: { ...unknown, source: "unknown" } as never, contributors: 12, locale: "en" }));
-    expect(html).toContain("12");
-    expect(html).not.toMatch(/>0</);
-    expect(html.match(/<dd>/g)).toHaveLength(1);
-  });
 });
 
 describe("the version a visitor gets on install", () => {
@@ -113,8 +107,8 @@ describe("the version a visitor gets on install", () => {
 
   it("keeps the source version out of the installed-version copy", () => {
     const home = readFileSync(new URL("../app/[locale]/page.tsx", import.meta.url), "utf8");
-    expect(home).toContain("version: `v${publishedRelease.version}`");
-    expect(home).not.toMatch(/releaseLabel[^\n]*sourceVersion/);
+    expect(home).toContain("fill(d.installNote, { version: release.version })");
+    expect(home).not.toContain("facts.version");
   });
 });
 

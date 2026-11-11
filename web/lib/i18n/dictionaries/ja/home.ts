@@ -17,21 +17,19 @@ export const home: HomeDict = {
   frameLabelEdit: "編集",
   frameLabelApproval: "承認",
   frameLabelResult: "結果",
-  frameLabelReceipt: "レシート",
+  frameSummaryPrompt: "ターミナルで動く Codewhale。依頼「Add a --json flag to ls.py so the tests pass, then run the tests.」が送信済みで、ステータス行には Ask とモデル scripted-demo が表示されています。",
+  frameSummaryEdit: "ターミナルで動く Codewhale。ls.py を読み込んで変更し、差分に追加行が表示され、カードが python3 -m unittest -q を実行するかどうかを尋ねています。",
+  frameSummaryApproval: "ターミナルで動く Codewhale。ls.py への変更が表示され、コマンド python3 -m unittest -q が承認を待っています。カードは「Do you want to proceed?」と尋ね、一度だけ許可する、この会話の間許可する、許可しない、の選択肢を示しています。",
+  frameSummaryResult: "ターミナルで動く Codewhale。承認後、コマンドは 2 件のテストを実行して OK を出力しました。Codewhale は ls.py に --json を追加して両方のテストが通ったこと、このセッションが台本どおりのローカルモデルを使っていることを伝えています。",
+  frameSummaryProvider: "ターミナルで動く Codewhale。OpenAI 互換エンドポイント用のカスタムプロバイダーのフォームで、名前 scripted_local、このコンピューター上のベース URL、既定のモデル scripted-demo、任意の API キー用変数が入力されています。",
+  frameSummaryReceipt: "ターミナルで動く Codewhale。セッションのレシートです。変更したファイルは 1 件、実行したコマンドは 1 件で、コマンドはあなたが承認し、ファイルの変更は Ask の設定で確認なしに行われました。続いて、レシートに記録されない項目の一覧があります。",
   getCodewhale: "Codewhale をインストール",
   heroInstallAria: "インストールコマンド",
   shotPreview: "ターミナルのプレビュー",
   screenshotAlt:
     "Codewhale v{version} のターミナル収録画面。会話、メッセージ入力欄、セッション操作を表示。",
-  proofContributors: "コントリビューター {count} 人",
-  sourceCandidate: "未リリース",
-  publishedRelease: "リリース済み",
-  modelsHeading: "使いたいモデルを選ぶ",
-  modelsLink: "モデルとプロバイダーを見る",
-  startHeading: "使い始める",
   copy: "コピー",
   copied: "コピー済み ✓",
-  contribute: "GitHub で参加",
 
   belief: "あなたが使うモデルは、たいてい他の誰かのものです。借りて使っていて、知らないうちに変わります。エージェントは違います。あなたのファイルを読み、あなたのコマンドを実行し、取り組んでいる内容を保持し、あなたの名前で動くのですから、あなたのものであるべきです。Codewhale はそのエージェントです。オープンソースなので、すべての行を読むことができ、自分自身を読み上げさせることもできます。選んだどのモデルでも動き、確認なしで何をしてよいかはあなたが決め、読める記録を残します。私たちは、あなたと多くのエージェントがいっしょにソフトウェアを作る一つの場所へと育てています。ターミナルからクラウド上のコンピューターまで、最後まであなたのものです。",
 
@@ -47,6 +45,10 @@ export const home: HomeDict = {
   sectionOpenBody: "1 つのモデル向けのオープンソースのターミナルツールとして始まり、多くの言語を話す数百人がいっしょに作るプロジェクトになりました。コードを読み、変更し、自分自身を説明させることができます。",
   sectionStartHeading: "今日、あなたのエージェントをあなたのものにしましょう。",
   sectionStartBody: "Codewhale をインストールし、すでにお持ちのモデルキーか、あなたのコンピューター上のモデルでリポジトリ内で実行してください。アカウントは不要で、`codewhale update` で最新に保てます。",
+
+  contributorsCount: {
+    other: "コントリビューター {n} 人",
+  },
 
   mapHeading: "ひとつのエンジン",
   mapStateReleased: "リリース済み",

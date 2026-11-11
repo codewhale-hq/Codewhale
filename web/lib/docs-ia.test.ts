@@ -360,9 +360,9 @@ describe("navigation parity and accessibility", () => {
 describe("homepage integration", () => {
   const homepage = webText("app/[locale]/page.tsx");
 
-  it("keeps the published release separate from the source candidate", () => {
+  it("names the published release and never the source version", () => {
     expect(homepage).toContain("facts.latestPublishedRelease");
-    expect(homepage).toContain("d.sourceCandidate");
-    expect(getHome("en").sourceCandidate).toBe("Unreleased");
+    expect(homepage).not.toContain("facts.version");
+    expect(getHome("en").installNote).toContain("{version}");
   });
 });

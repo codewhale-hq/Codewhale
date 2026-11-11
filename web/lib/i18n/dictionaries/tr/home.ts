@@ -17,21 +17,19 @@ export const home: HomeDict = {
   frameLabelEdit: "Düzenleme",
   frameLabelApproval: "Onay",
   frameLabelResult: "Sonuç",
-  frameLabelReceipt: "Makbuz",
+  frameSummaryPrompt: "Bir terminalde Codewhale. “Add a --json flag to ls.py so the tests pass, then run the tests.” isteği gönderildi ve durum satırı Ask ayarını ve scripted-demo modelini gösteriyor.",
+  frameSummaryEdit: "Bir terminalde Codewhale. ls.py dosyasını okudu ve değiştirdi, fark eklenen satırları gösteriyor ve bir kart python3 -m unittest -q komutunun çalıştırılıp çalıştırılmayacağını soruyor.",
+  frameSummaryApproval: "Bir terminalde Codewhale. ls.py dosyasındaki değişiklik gösteriliyor ve python3 -m unittest -q komutu onay bekliyor. Kart “Do you want to proceed?” diye soruyor ve bir kez izin vermeyi, bu konuşma için izin vermeyi veya izin vermemeyi öneriyor.",
+  frameSummaryResult: "Bir terminalde Codewhale. Onaydan sonra komut 2 test çalıştırdı ve OK yazdırdı. Codewhale, ls.py dosyasına --json eklediğini ve iki testin de geçtiğini, bu oturumun da senaryolu bir yerel model kullandığını söylüyor.",
+  frameSummaryProvider: "Bir terminalde Codewhale. OpenAI uyumlu bir uç nokta için özel sağlayıcı formu: scripted_local adı, bu bilgisayardaki bir temel URL, varsayılan model scripted-demo ve API anahtarı için isteğe bağlı bir değişken.",
+  frameSummaryReceipt: "Bir terminalde Codewhale. Oturumun makbuzu: 1 dosya değişti ve 1 komut çalıştı, komutu siz onayladınız, dosya değişikliği ise Ask ayarında sorulmadan yapıldı; ardından makbuzun kaydetmediklerinin listesi geliyor.",
   getCodewhale: "Codewhale'i kur",
   heroInstallAria: "Kurulum komutu",
   shotPreview: "Terminal önizlemesi",
   screenshotAlt:
     "Codewhale v{version}: sohbeti, mesaj alanını ve oturum kontrollerini gösteren terminal kaydı.",
-  proofContributors: "{count} katkıda bulunan",
-  sourceCandidate: "Yayımlanmadı",
-  publishedRelease: "yayımlandı",
-  modelsHeading: "Seçtiğin modelleri kullan",
-  modelsLink: "Modellere ve sağlayıcılara göz at",
-  startHeading: "Başlarken",
   copy: "Kopyala",
   copied: "Kopyalandı ✓",
-  contribute: "GitHub’da katkıda bulun",
 
   belief: "Kullandığınız model çoğunlukla başkasınındır. Onu kiralarsınız ve siz bir şey yapmadan değişir. Ajan farklıdır. Dosyalarınızı okur, komutlarınızı çalıştırır, üzerinde çalıştığınız işi tutar ve sizin adınıza hareket eder; bu yüzden size ait olmalıdır. Codewhale bu ajandır. Açık kaynaklıdır; bu yüzden her satırını okuyabilir ya da kendini size okumasını isteyebilirsiniz. Seçtiğiniz her modelle çalışır, sormadan neler yapabileceğine siz karar verirsiniz ve okuyabileceğiniz bir kayıt bırakır. Onu, sizin ve birçok ajanın birlikte yazılım yaptığı tek bir yere dönüştürüyoruz; terminalinizden buluttaki bir bilgisayara kadar, ve yol boyunca sizin kalır.",
 
@@ -47,6 +45,11 @@ export const home: HomeDict = {
   sectionOpenBody: "Tek bir model için açık kaynaklı bir terminal aracı olarak başladı ve birçok dilden yüzlerce insanın birlikte geliştirdiği bir projeye dönüştü. Kodunu okuyabilir, değiştirebilir ya da kendini açıklamasını isteyebilirsiniz.",
   sectionStartHeading: "Ajanınızı bugün kendinizin yapın.",
   sectionStartBody: "Codewhale'i kurun ve zaten sahip olduğunuz bir model anahtarıyla ya da kendi bilgisayarınızdaki bir modelle bir depoda çalıştırın. Hesaba ihtiyacınız yok ve `codewhale update` onu güncel tutar.",
+
+  contributorsCount: {
+    one: "{n} katkıda bulunan",
+    other: "{n} katkıda bulunan",
+  },
 
   mapHeading: "Tek bir motor",
   mapStateReleased: "Yayımlandı",

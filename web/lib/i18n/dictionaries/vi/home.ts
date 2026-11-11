@@ -17,21 +17,19 @@ export const home: HomeDict = {
   frameLabelEdit: "Chỉnh sửa",
   frameLabelApproval: "Phê duyệt",
   frameLabelResult: "Kết quả",
-  frameLabelReceipt: "Biên nhận",
+  frameSummaryPrompt: "Codewhale trong một terminal. Yêu cầu “Add a --json flag to ls.py so the tests pass, then run the tests.” đã được gửi, và dòng trạng thái hiển thị Ask cùng mô hình scripted-demo.",
+  frameSummaryEdit: "Codewhale trong một terminal. Nó đã đọc ls.py và sửa tệp, diff hiển thị các dòng được thêm, và một thẻ hỏi có chạy python3 -m unittest -q hay không.",
+  frameSummaryApproval: "Codewhale trong một terminal. Thay đổi trong ls.py được hiển thị, và lệnh python3 -m unittest -q đang chờ phê duyệt. Thẻ hỏi “Do you want to proceed?” và đề nghị cho phép một lần, cho phép trong cuộc trò chuyện này hoặc không cho phép.",
+  frameSummaryResult: "Codewhale trong một terminal. Sau khi được phê duyệt, lệnh đã chạy 2 bài kiểm thử và in ra OK. Codewhale cho biết nó đã thêm --json vào ls.py và cả hai bài kiểm thử đều đạt, và phiên này dùng một mô hình cục bộ theo kịch bản.",
+  frameSummaryProvider: "Codewhale trong một terminal. Biểu mẫu nhà cung cấp tùy chỉnh cho một endpoint tương thích OpenAI, với tên scripted_local, URL gốc trên máy tính này, mô hình mặc định scripted-demo và một biến tùy chọn cho khóa API.",
+  frameSummaryReceipt: "Codewhale trong một terminal. Biên nhận của phiên: 1 tệp đã thay đổi và 1 lệnh đã chạy, lệnh do bạn phê duyệt còn thay đổi tệp được thực hiện mà không hỏi trong Ask, sau đó là danh sách những gì biên nhận không ghi lại.",
   getCodewhale: "Cài đặt Codewhale",
   heroInstallAria: "Lệnh cài đặt",
   shotPreview: "Xem trước terminal",
   screenshotAlt:
     "Codewhale v{version}: ảnh chụp terminal với cuộc trò chuyện, ô nhập tin nhắn và điều khiển phiên.",
-  proofContributors: "{count} người đóng góp",
-  sourceCandidate: "Chưa phát hành",
-  publishedRelease: "đã phát hành",
-  modelsHeading: "Sử dụng mô hình bạn chọn",
-  modelsLink: "Xem mô hình và nhà cung cấp",
-  startHeading: "Bắt đầu sử dụng",
   copy: "Sao chép",
   copied: "Đã sao chép ✓",
-  contribute: "Đóng góp trên GitHub",
 
   belief: "Mô hình bạn dùng thường là của người khác. Bạn thuê nó, và nó thay đổi mà bạn không quyết định. Agent thì khác. Nó đọc tệp của bạn, chạy lệnh của bạn, giữ lại việc bạn đang làm và hành động nhân danh bạn, nên nó phải thuộc về bạn. Codewhale là agent đó. Nó là mã nguồn mở, nên bạn có thể đọc từng dòng của nó, hoặc nhờ nó tự đọc cho bạn nghe. Nó làm việc với bất kỳ mô hình nào bạn chọn, bạn quyết định nó được làm gì mà không cần hỏi, và nó để lại một bản ghi mà bạn đọc được. Chúng tôi đang xây dựng nó thành một nơi duy nhất để bạn và nhiều agent cùng làm phần mềm, từ terminal của bạn đến một máy tính trên đám mây, và nó vẫn là của bạn suốt chặng đường.",
 
@@ -47,6 +45,10 @@ export const home: HomeDict = {
   sectionOpenBody: "Nó bắt đầu là một công cụ terminal mã nguồn mở cho một mô hình và trở thành dự án mà hàng trăm người bằng nhiều ngôn ngữ cùng xây dựng. Bạn có thể đọc mã của nó, thay đổi nó, hoặc nhờ nó tự giải thích.",
   sectionStartHeading: "Hãy biến agent thành của bạn ngay hôm nay.",
   sectionStartBody: "Cài Codewhale và chạy nó trong một kho mã với khóa mô hình bạn đã có hoặc một mô hình trên máy tính của bạn. Bạn không cần tài khoản, và `codewhale update` giữ nó luôn mới.",
+
+  contributorsCount: {
+    other: "{n} người đóng góp",
+  },
 
   mapHeading: "Một động cơ",
   mapStateReleased: "Đã phát hành",

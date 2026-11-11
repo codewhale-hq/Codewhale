@@ -17,7 +17,12 @@ export const home: HomeDict = {
   frameLabelEdit: "Edit",
   frameLabelApproval: "Approval",
   frameLabelResult: "Result",
-  frameLabelReceipt: "Receipt",
+  frameSummaryPrompt: "Codewhale in a terminal. The request “Add a --json flag to ls.py so the tests pass, then run the tests.” has been sent, and the status line shows Ask and the model scripted-demo.",
+  frameSummaryEdit: "Codewhale in a terminal. It read ls.py and changed it, the diff shows the added lines, and a card asks whether to run python3 -m unittest -q.",
+  frameSummaryApproval: "Codewhale in a terminal. The change to ls.py is shown, and the command python3 -m unittest -q waits for approval. The card asks “Do you want to proceed?” and offers to allow it once, allow it for this conversation or not allow it.",
+  frameSummaryResult: "Codewhale in a terminal. After approval the command ran 2 tests and printed OK. Codewhale says it added --json to ls.py and both tests pass, and that this session uses a scripted local model.",
+  frameSummaryProvider: "Codewhale in a terminal. The Custom provider form for an OpenAI-compatible endpoint, with the name scripted_local, a base URL on this computer, the default model scripted-demo and an optional API key variable.",
+  frameSummaryReceipt: "Codewhale in a terminal. The receipt of the session: 1 file changed and 1 command run, the command approved by you and the file change made without asking under Ask, then a list of what the receipt does not record.",
   getCodewhale: "Install Codewhale",
   heroInstallAria: "Install command",
   shotPreview: "Local terminal demo",
@@ -39,6 +44,11 @@ export const home: HomeDict = {
   sectionStartHeading: "Make your agent yours today.",
   sectionStartBody: "Install Codewhale and run it in a repository with a model key you already have or a model on your own computer. You need no account, and `codewhale update` keeps it current.",
 
+  contributorsCount: {
+    one: "{n} contributor",
+    other: "{n} contributors",
+  },
+
   mapHeading: "One engine",
   mapStateReleased: "Released",
   mapStateDeveloping: "In development, no download",
@@ -57,15 +67,6 @@ export const home: HomeDict = {
   mapOneSession: "One session across them",
   mapOneSessionSentence: "We are building one session that goes with you from the terminal to the desktop, the browser and the cloud, and stays yours the whole way.",
 
-  proofContributors: "{count} contributors",
-  sourceCandidate: "Unreleased",
-  publishedRelease: "released",
-
-  modelsHeading: "Use the models you choose",
-  modelsLink: "Browse models and providers",
-
-  startHeading: "Start with one useful task",
   copy: "Copy",
   copied: "Copied ✓",
-  contribute: "Contribute",
 };

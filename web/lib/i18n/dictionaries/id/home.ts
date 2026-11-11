@@ -17,21 +17,19 @@ export const home: HomeDict = {
   frameLabelEdit: "Edit",
   frameLabelApproval: "Persetujuan",
   frameLabelResult: "Hasil",
-  frameLabelReceipt: "Tanda terima",
+  frameSummaryPrompt: "Codewhale di sebuah terminal. Permintaan “Add a --json flag to ls.py so the tests pass, then run the tests.” sudah dikirim, dan baris status menampilkan Ask serta model scripted-demo.",
+  frameSummaryEdit: "Codewhale di sebuah terminal. Ia membaca ls.py dan mengubahnya, diff menampilkan baris yang ditambahkan, dan sebuah kartu menanyakan apakah python3 -m unittest -q dijalankan.",
+  frameSummaryApproval: "Codewhale di sebuah terminal. Perubahan pada ls.py ditampilkan, dan perintah python3 -m unittest -q menunggu persetujuan. Kartu menanyakan “Do you want to proceed?” dan menawarkan untuk mengizinkannya sekali, mengizinkannya untuk percakapan ini, atau tidak mengizinkannya.",
+  frameSummaryResult: "Codewhale di sebuah terminal. Setelah disetujui, perintah menjalankan 2 pengujian dan mencetak OK. Codewhale mengatakan ia menambahkan --json ke ls.py dan kedua pengujian lulus, dan sesi ini memakai model lokal berskrip.",
+  frameSummaryProvider: "Codewhale di sebuah terminal. Formulir penyedia kustom untuk endpoint yang kompatibel dengan OpenAI, dengan nama scripted_local, URL dasar di komputer ini, model bawaan scripted-demo, dan variabel opsional untuk kunci API.",
+  frameSummaryReceipt: "Codewhale di sebuah terminal. Tanda terima sesi: 1 berkas diubah dan 1 perintah dijalankan, perintah disetujui oleh Anda dan perubahan berkas dilakukan tanpa bertanya dalam Ask, lalu daftar hal yang tidak dicatat tanda terima.",
   getCodewhale: "Instal Codewhale",
   heroInstallAria: "Perintah instalasi",
   shotPreview: "Pratinjau terminal",
   screenshotAlt:
     "Codewhale v{version}: tangkapan terminal berisi percakapan, kolom pesan, dan kontrol sesi.",
-  proofContributors: "{count} kontributor",
-  sourceCandidate: "Belum dirilis",
-  publishedRelease: "dirilis",
-  modelsHeading: "Gunakan model pilihanmu",
-  modelsLink: "Lihat model dan penyedia",
-  startHeading: "Mulai menggunakan",
   copy: "Salin",
   copied: "Tersalin ✓",
-  contribute: "Berkontribusi di GitHub",
 
   belief: "Model yang Anda pakai biasanya milik pihak lain. Anda menyewanya, dan ia berubah tanpa Anda minta. Agen berbeda. Ia membaca berkas Anda, menjalankan perintah Anda, menyimpan apa yang sedang Anda kerjakan, dan bertindak atas nama Anda, sehingga ia seharusnya menjadi milik Anda. Codewhale adalah agen itu. Ia bersumber terbuka, jadi Anda bisa membaca setiap barisnya, atau memintanya membacakan dirinya sendiri kepada Anda. Ia bekerja dengan model apa pun yang Anda pilih, Anda yang menentukan apa yang boleh ia lakukan tanpa bertanya, dan ia meninggalkan catatan yang bisa Anda baca. Kami sedang membangunnya menjadi satu tempat di mana Anda dan banyak agen membuat perangkat lunak bersama, dari terminal Anda sampai komputer di cloud, dan ia tetap milik Anda sepanjang jalan.",
 
@@ -47,6 +45,10 @@ export const home: HomeDict = {
   sectionOpenBody: "Ia bermula sebagai alat terminal sumber terbuka untuk satu model dan menjadi proyek yang dibangun bersama oleh ratusan orang dalam banyak bahasa. Anda dapat membaca kodenya, mengubahnya, atau memintanya menjelaskan dirinya sendiri.",
   sectionStartHeading: "Jadikan agen Anda milik Anda hari ini.",
   sectionStartBody: "Instal Codewhale dan jalankan di repositori dengan kunci model yang sudah Anda miliki atau model di komputer Anda sendiri. Anda tidak memerlukan akun, dan `codewhale update` menjaganya tetap mutakhir.",
+
+  contributorsCount: {
+    other: "{n} kontributor",
+  },
 
   mapHeading: "Satu mesin",
   mapStateReleased: "Dirilis",

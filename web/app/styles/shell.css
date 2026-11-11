@@ -1,5 +1,5 @@
 /* ------------------------------------------------------------------ */
-/*  Site chrome — the header, the mobile sheet, the footer sea          */
+/*  Site chrome — the header, the mobile sheet, the footer              */
 /* ------------------------------------------------------------------ */
 
 /* ---------- header ---------- */
@@ -62,7 +62,6 @@
   -webkit-mask: url("/brand/mark-mono.svg") no-repeat center / contain;
   mask: url("/brand/mark-mono.svg") no-repeat center / contain;
 }
-.site-wordmark-footer .brand-mark { width: 2.5rem; height: 2.5rem; }
 
 .paper-wordmark-logo,
 .wordmark {
@@ -234,35 +233,14 @@
 }
 .mm-action.paper-install-cta { margin-top: 1.5rem; }
 
-/* ---------- footer — the sea below the horizon ---------- */
-/* Every page ends on one horizon: a straight line of light, and below it
-   the sea, settling into deep water within a few rows, in both appearances. */
+/* ---------- footer ---------- */
+/* The footer sits on the page's own ground under one hairline, in both
+   appearances: four short link columns, folded into four disclosures on a
+   phone. */
 .site-footer {
   position: relative;
   color: var(--muted);
-}
-/* A page whose main already ends in the sea (home) runs straight on: no
-   second horizon, and the water continues from its floor colour. */
-main:has(.sea-continues:last-child) + .site-footer .site-footer-sea > .horizon { display: none; }
-main:has(.sea-continues:last-child) + .site-footer .site-footer-sea { background: var(--ocean-floor); }
-.site-footer-sea {
-  position: relative;
-  overflow: hidden;
-  background: var(--sea), var(--ocean-floor);
-}
-.site-footer-sea > .horizon { position: absolute; inset: 0 0 auto; z-index: 1; }
-.sea-texture {
-  position: absolute;
-  inset: 0 0 auto;
-  height: min(22rem, 100%);
-  pointer-events: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='210' height='18'%3E%3Cg stroke='%2390b9ff' stroke-width='1' stroke-linecap='round'%3E%3Cpath d='M4 5h30M60 5h14M112 5h40M170 5h8' stroke-opacity='.12'/%3E%3Cpath d='M30 14h22M88 14h36M140 14h10M186 14h20' stroke-opacity='.08'/%3E%3C/g%3E%3C/svg%3E");
-  background-size: 210px 18px;
-  -webkit-mask-image: linear-gradient(180deg, #000, transparent);
-  mask-image: linear-gradient(180deg, #000, transparent);
-}
-@media (forced-colors: active) {
-  .sea-texture { display: none; }
+  border-top: 1px solid var(--line);
 }
 
 .site-footer-main,
@@ -274,31 +252,26 @@ main:has(.sea-continues:last-child) + .site-footer .site-footer-sea { background
 
 .site-footer-main {
   display: grid;
-  grid-template-columns: minmax(14rem, 1fr) minmax(0, 2fr);
+  grid-template-columns: minmax(12rem, 1fr) minmax(0, 2.5fr);
   gap: var(--space-7);
-  padding-block: 5.5rem var(--space-7);
+  padding-block: var(--space-8) var(--space-7);
 }
 
-.site-footer-brand { display: grid; gap: var(--space-4); align-content: start; }
-.site-footer-brand p {
-  max-width: 26rem;
-  color: var(--muted);
-  font-size: var(--text-ui);
-  line-height: 1.6;
-}
-.site-wordmark-footer { color: var(--text); justify-self: start; gap: var(--space-3); }
+.site-footer-brand { display: grid; align-content: start; }
+.site-wordmark-footer { color: var(--text); justify-self: start; }
 
 .site-footer-links {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--space-5);
 }
+.site-footer-folds { display: none; }
 
 .site-footer-group { display: grid; gap: var(--space-2); align-content: start; }
 
 .site-footer-label {
   color: var(--muted);
-  font-size: var(--text-caption);
+  font-size: var(--text-label);
   font-weight: 500;
 }
 
@@ -317,6 +290,34 @@ main:has(.sea-continues:last-child) + .site-footer .site-footer-sea { background
 }
 .site-footer-list a:hover { background: var(--hover); }
 
+.site-footer-fold { border-bottom: 1px solid var(--line); }
+.site-footer-fold:first-child { border-top: 1px solid var(--line); }
+.site-footer-fold summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 3rem;
+  color: var(--text);
+  font-size: var(--text-body);
+  font-weight: 500;
+  list-style: none;
+  cursor: pointer;
+}
+.site-footer-fold summary::-webkit-details-marker { display: none; }
+.site-footer-fold summary::after {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-inline-end: 0.25rem;
+  border-inline-end: 1.5px solid currentColor;
+  border-block-end: 1.5px solid currentColor;
+  transform: translateY(-25%) rotate(45deg);
+  transition: transform var(--dur-state) var(--ease-out);
+}
+.site-footer-fold[open] summary::after { transform: translateY(25%) rotate(-135deg); }
+.site-footer-fold .site-footer-list { padding-bottom: var(--space-3); }
+.site-footer-fold .site-footer-list a { min-height: 2.75rem; font-size: var(--text-body); }
+
 .site-footer-meta {
   display: flex;
   flex-wrap: wrap;
@@ -326,9 +327,8 @@ main:has(.sea-continues:last-child) + .site-footer .site-footer-sea { background
   padding-block: var(--space-4) var(--space-6);
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: var(--text-caption);
+  font-size: var(--text-label);
 }
-.site-footer-meta p { min-width: 0; max-width: 70ch; overflow-wrap: anywhere; }
 .site-footer-meta a {
   color: var(--text);
   text-decoration: underline;
@@ -336,17 +336,18 @@ main:has(.sea-continues:last-child) + .site-footer .site-footer-sea { background
   text-underline-offset: 0.2em;
 }
 .site-footer-meta a:hover { text-decoration-color: currentColor; }
-.site-footer-meta-links { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); }
 
 @media (max-width: 900px) {
-  .site-footer-main { grid-template-columns: 1fr; gap: var(--space-6); }
+  .site-footer-main { grid-template-columns: 1fr; gap: var(--space-6); padding-block: var(--space-7) var(--space-6); }
+}
+@media (max-width: 640px) {
+  .site-footer-links { display: none; }
+  .site-footer-folds { display: block; }
+  .site-footer-meta { border-top: 0; padding-top: 0; }
 }
 
 @media print {
   .site-footer { color: inherit; border-top: 1px solid currentColor; }
-  .site-footer-sea { background: none; }
-  .site-footer > .waterline,
-  .site-footer-sea > .horizon { display: none; }
 }
 
 /* ---------- usage counting: the privacy page's control ---------- */

@@ -17,21 +17,19 @@ export const home: HomeDict = {
   frameLabelEdit: "편집",
   frameLabelApproval: "승인",
   frameLabelResult: "결과",
-  frameLabelReceipt: "영수증",
+  frameSummaryPrompt: "터미널에서 실행 중인 Codewhale. 요청 “Add a --json flag to ls.py so the tests pass, then run the tests.”이 전송되었고, 상태 줄에 Ask와 모델 scripted-demo가 표시됩니다.",
+  frameSummaryEdit: "터미널에서 실행 중인 Codewhale. ls.py를 읽고 변경했으며, diff에 추가된 줄이 표시되고, 카드가 python3 -m unittest -q를 실행할지 묻습니다.",
+  frameSummaryApproval: "터미널에서 실행 중인 Codewhale. ls.py의 변경 내용이 표시되고, 명령 python3 -m unittest -q가 승인을 기다립니다. 카드는 “Do you want to proceed?”라고 묻고, 한 번 허용, 이 대화 동안 허용, 허용 안 함 중에서 고르게 합니다.",
+  frameSummaryResult: "터미널에서 실행 중인 Codewhale. 승인 후 명령이 테스트 2개를 실행하고 OK를 출력했습니다. Codewhale은 ls.py에 --json을 추가했고 두 테스트가 모두 통과했으며, 이 세션은 대본에 따른 로컬 모델을 사용한다고 알립니다.",
+  frameSummaryProvider: "터미널에서 실행 중인 Codewhale. OpenAI 호환 엔드포인트용 사용자 지정 공급자 양식으로, 이름 scripted_local, 이 컴퓨터의 기본 URL, 기본 모델 scripted-demo, 선택 사항인 API 키 변수가 입력되어 있습니다.",
+  frameSummaryReceipt: "터미널에서 실행 중인 Codewhale. 세션의 영수증입니다. 파일 1개를 변경하고 명령 1개를 실행했으며, 명령은 당신이 승인했고 파일 변경은 Ask 설정에서 묻지 않고 이루어졌습니다. 이어서 영수증에 기록되지 않는 항목의 목록이 나옵니다.",
   getCodewhale: "Codewhale 설치",
   heroInstallAria: "설치 명령",
   shotPreview: "터미널 미리보기",
   screenshotAlt:
     "Codewhale v{version}: 대화, 메시지 입력창, 세션 제어를 보여 주는 실제 터미널 캡처.",
-  proofContributors: "기여자 {count}명",
-  sourceCandidate: "미공개",
-  publishedRelease: "공개됨",
-  modelsHeading: "원하는 모델을 사용하세요",
-  modelsLink: "모델과 제공업체 둘러보기",
-  startHeading: "시작하기",
   copy: "복사",
   copied: "복사됨 ✓",
-  contribute: "GitHub에서 기여하기",
 
   belief: "당신이 쓰는 모델은 대개 다른 누군가의 것입니다. 빌려 쓰는 것이고, 모르는 사이에 바뀝니다. 에이전트는 다릅니다. 에이전트는 당신의 파일을 읽고, 명령을 실행하고, 작업 중인 내용을 기억하며, 당신의 이름으로 행동하므로 당신의 것이어야 합니다. Codewhale이 그런 에이전트입니다. 오픈 소스이므로 모든 줄을 직접 읽을 수 있고, 에이전트에게 자신을 읽어 달라고 할 수도 있습니다. 당신이 고른 어떤 모델과도 작동하고, 묻지 않고 무엇을 해도 되는지는 당신이 정하며, 읽을 수 있는 기록을 남깁니다. 우리는 이것을 당신과 많은 에이전트가 함께 소프트웨어를 만드는 하나의 공간으로 만들고 있습니다. 터미널에서 클라우드의 컴퓨터까지, 끝까지 당신의 것으로 남습니다.",
 
@@ -47,6 +45,10 @@ export const home: HomeDict = {
   sectionOpenBody: "하나의 모델을 위한 오픈 소스 터미널 도구로 시작해, 여러 언어를 쓰는 수백 명이 함께 만드는 프로젝트가 되었습니다. 코드를 읽고, 바꾸고, 스스로 설명해 달라고 할 수 있습니다.",
   sectionStartHeading: "오늘 당신의 에이전트를 당신의 것으로 만드세요.",
   sectionStartBody: "Codewhale을 설치하고, 이미 가진 모델 키나 내 컴퓨터의 모델로 저장소에서 실행하세요. 계정은 필요 없고, `codewhale update`로 최신 상태를 유지합니다.",
+
+  contributorsCount: {
+    other: "기여자 {n}명",
+  },
 
   mapHeading: "하나의 엔진",
   mapStateReleased: "릴리스됨",

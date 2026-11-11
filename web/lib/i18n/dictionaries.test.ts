@@ -146,9 +146,12 @@ const HOME_PROSE_KEYS = [
   "heroInstallAria",
   "shotPreview",
   "screenshotAlt",
-  "modelsHeading",
-  "modelsLink",
-  "startHeading",
+  "frameSummaryPrompt",
+  "frameSummaryEdit",
+  "frameSummaryApproval",
+  "frameSummaryResult",
+  "frameSummaryProvider",
+  "frameSummaryReceipt",
 ] as const satisfies readonly (keyof HomeDict)[];
 
 function templateTokens(value: string): string[] {

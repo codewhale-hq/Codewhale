@@ -22,7 +22,6 @@ import { FEATURE_CATALOGUE, type Feature } from "./features";
 import { FOUNDER_SWITCHES, FOUNDER_SWITCH_VALUES } from "./founder-switches";
 import { PRODUCT_COPY } from "./content/product";
 import ModelsPage from "../app/[locale]/models/page";
-import HomePage from "../app/[locale]/page";
 import { buildLlmsTxt } from "./llms-txt";
 
 vi.mock("next/navigation", () => ({ redirect: vi.fn(), notFound: vi.fn(), usePathname: () => "/en", useRouter: () => ({}) }));
@@ -211,23 +210,15 @@ describe("counts are the counts at the published release tag", () => {
     expect(releaseView({ latestPublishedRelease: null })).toEqual({ providers: [], models: [], counts: null });
   });
 
-  it("leave main-only models out of the models page and the home page", async () => {
+  it("leave main-only models out of the models page", async () => {
     const tagged = new Set(RELEASE_BASELINE!.models.map((model) => model.id));
     const mainOnly = FACTS.models.filter((model) => !tagged.has(model.id));
     expect(mainOnly.length).toBeGreaterThan(0);
     const props = { params: Promise.resolve({ locale: "en" }), searchParams: Promise.resolve({}) } as never;
     const models = renderToStaticMarkup((await ModelsPage(props)) as never);
-    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("network down"); }));
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    const home = renderToStaticMarkup((await HomePage(props)) as never);
-    for (const model of mainOnly) {
-      expect(models, model.id).not.toContain(`>${model.id}<`);
-      expect(home, model.id).not.toContain(`>${model.id}<`);
-    }
+    for (const model of mainOnly) expect(models, model.id).not.toContain(`>${model.id}<`);
     expect(models).toContain(`Show all ${view.counts!.providerRoutes} provider routes`);
     expect(models).not.toMatch(/Show all \d+ providers/);
-    expect(home).toContain(`${view.counts!.providerRoutes} provider routes and ${view.counts!.models} catalog models`);
-    expect(home).not.toMatch(/\d+ providers and/);
   });
 
   it("print provider routes in llms.txt at the tag", () => {

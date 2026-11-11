@@ -17,21 +17,19 @@ export const home: HomeDict = {
   frameLabelEdit: "Änderung",
   frameLabelApproval: "Freigabe",
   frameLabelResult: "Ergebnis",
-  frameLabelReceipt: "Beleg",
+  frameSummaryPrompt: "Codewhale in einem Terminal. Die Anfrage „Add a --json flag to ls.py so the tests pass, then run the tests.“ wurde gesendet, und die Statuszeile zeigt Ask und das Modell scripted-demo.",
+  frameSummaryEdit: "Codewhale in einem Terminal. Es hat ls.py gelesen und geändert, der Diff zeigt die hinzugefügten Zeilen, und eine Karte fragt, ob python3 -m unittest -q ausgeführt werden soll.",
+  frameSummaryApproval: "Codewhale in einem Terminal. Die Änderung an ls.py ist zu sehen, und der Befehl python3 -m unittest -q wartet auf Freigabe. Die Karte fragt „Do you want to proceed?“ und bietet an, ihn einmal zu erlauben, für diese Unterhaltung zu erlauben oder nicht zu erlauben.",
+  frameSummaryResult: "Codewhale in einem Terminal. Nach der Freigabe hat der Befehl 2 Tests ausgeführt und OK ausgegeben. Codewhale meldet, dass es --json zu ls.py hinzugefügt hat und beide Tests bestehen, und dass diese Sitzung ein lokales Modell nach Drehbuch nutzt.",
+  frameSummaryProvider: "Codewhale in einem Terminal. Das Formular für einen eigenen Anbieter mit OpenAI-kompatiblem Endpunkt, mit dem Namen scripted_local, einer Basis-URL auf diesem Computer, dem Standardmodell scripted-demo und einer optionalen Variable für den API-Schlüssel.",
+  frameSummaryReceipt: "Codewhale in einem Terminal. Der Beleg der Sitzung: 1 Datei geändert und 1 Befehl ausgeführt, der Befehl von dir freigegeben und die Dateiänderung unter Ask ohne Nachfrage gemacht, danach eine Liste dessen, was der Beleg nicht festhält.",
   getCodewhale: "Codewhale installieren",
   heroInstallAria: "Installationsbefehl",
   shotPreview: "Terminal-Vorschau",
   screenshotAlt:
     "Codewhale v{version}: eine Terminalaufnahme mit Gespräch, Nachrichteneingabe und Sitzungssteuerung.",
-  proofContributors: "{count} Mitwirkende",
-  sourceCandidate: "Unveröffentlicht",
-  publishedRelease: "veröffentlicht",
-  modelsHeading: "Nutze die Modelle deiner Wahl",
-  modelsLink: "Modelle und Anbieter durchsuchen",
-  startHeading: "Erste Schritte",
   copy: "Kopieren",
   copied: "Kopiert ✓",
-  contribute: "Auf GitHub mitwirken",
 
   belief: "Das Modell, das du nutzt, gehört meist jemand anderem. Du mietest es, und es verändert sich unter dir. Der Agent ist anders. Er liest deine Dateien, führt deine Befehle aus, hält fest, woran du arbeitest, und handelt in deinem Namen, also sollte er dir gehören. Codewhale ist dieser Agent. Er ist quelloffen, sodass du jede Zeile von ihm lesen oder ihn bitten kannst, sich selbst vorzulesen. Er arbeitet mit jedem Modell, das du wählst, du entscheidest, was er ohne Nachfrage tun darf, und er hinterlässt eine Aufzeichnung, die du lesen kannst. Wir bauen ihn zu einem Ort aus, an dem du und viele Agenten gemeinsam Software entwickeln, von deinem Terminal bis zu einem Computer in der Cloud, und er bleibt auf dem ganzen Weg deiner.",
 
@@ -47,6 +45,11 @@ export const home: HomeDict = {
   sectionOpenBody: "Es begann als quelloffenes Terminal-Werkzeug für ein Modell und wurde zu einem Projekt, das Hunderte Menschen in vielen Sprachen gemeinsam bauen. Du kannst den Code lesen, ändern oder Codewhale bitten, sich selbst zu erklären.",
   sectionStartHeading: "Mach deinen Agenten heute zu deinem.",
   sectionStartBody: "Installiere Codewhale und führe es in einem Repository mit einem Modellschlüssel aus, den du schon hast, oder mit einem Modell auf deinem eigenen Computer. Du brauchst kein Konto, und `codewhale update` hält es aktuell.",
+
+  contributorsCount: {
+    one: "{n} mitwirkende Person",
+    other: "{n} Mitwirkende",
+  },
 
   mapHeading: "Eine Engine",
   mapStateReleased: "Veröffentlicht",

@@ -17,21 +17,19 @@ export const home: HomeDict = {
   frameLabelEdit: "التعديل",
   frameLabelApproval: "الموافقة",
   frameLabelResult: "النتيجة",
-  frameLabelReceipt: "الإيصال",
+  frameSummaryPrompt: "Codewhale في طرفية. أُرسل الطلب «Add a --json flag to ls.py so the tests pass, then run the tests.»، ويعرض سطر الحالة الإعداد Ask والنموذج scripted-demo.",
+  frameSummaryEdit: "Codewhale في طرفية. قرأ ls.py وعدّله، ويعرض الفرق الأسطر المضافة، وتسأل بطاقة هل يُشغَّل python3 -m unittest -q.",
+  frameSummaryApproval: "Codewhale في طرفية. يظهر التعديل على ls.py، والأمر python3 -m unittest -q ينتظر الموافقة. تسأل البطاقة «Do you want to proceed?» وتعرض السماح به مرة واحدة، أو السماح به في هذه المحادثة، أو عدم السماح به.",
+  frameSummaryResult: "Codewhale في طرفية. بعد الموافقة شغّل الأمر اختبارين وطبع OK. يقول Codewhale إنه أضاف --json إلى ls.py وإن الاختبارين نجحا، وإن هذه الجلسة تستخدم نموذجًا محليًا مكتوبًا بنص مسبق.",
+  frameSummaryProvider: "Codewhale في طرفية. نموذج المزوّد المخصص لنقطة نهاية متوافقة مع OpenAI، بالاسم scripted_local وعنوان URL أساسي على هذا الحاسوب والنموذج الافتراضي scripted-demo ومتغير اختياري لمفتاح API.",
+  frameSummaryReceipt: "Codewhale في طرفية. إيصال الجلسة: تغيّر ملف واحد ونُفّذ أمر واحد، وافقتَ أنت على الأمر وجرى تعديل الملف دون سؤال في الإعداد Ask، ثم قائمة بما لا يسجله الإيصال.",
   getCodewhale: "ثبّت Codewhale",
   heroInstallAria: "أمر التثبيت",
   shotPreview: "معاينة الطرفية",
   screenshotAlt:
     "Codewhale v{version}: لقطة طرفية تعرض المحادثة وحقل الرسالة وعناصر التحكم في الجلسة.",
-  proofContributors: "{count} مساهمًا",
-  sourceCandidate: "غير منشور",
-  publishedRelease: "منشور",
-  modelsHeading: "استخدم النماذج التي تختارها",
-  modelsLink: "تصفّح النماذج والمزوّدين",
-  startHeading: "ابدأ الاستخدام",
   copy: "انسخ",
   copied: "نُسخ ✓",
-  contribute: "ساهم على GitHub",
 
   belief: "النموذج الذي تستخدمه ملك لغيرك في الغالب. أنت تستأجره، ويتغير من تحتك. أما الوكيل فمختلف. إنه يقرأ ملفاتك، وينفذ أوامرك، ويحتفظ بما تعمل عليه، ويتصرف باسمك، لذلك ينبغي أن يكون ملكًا لك. Codewhale هو هذا الوكيل. إنه مفتوح المصدر، فيمكنك قراءة كل سطر فيه، أو أن تطلب منه أن يقرأ نفسه لك. يعمل مع أي نموذج تختاره، وأنت من يقرر ما يجوز له فعله دون أن يسأل، ويترك سجلًا يمكنك قراءته. نحن نبنيه ليصبح مكانًا واحدًا تصنع فيه أنت وعدة وكلاء البرمجيات معًا، من طرفيتك إلى حاسوب في السحابة، ويبقى ملكًا لك طوال الطريق.",
 
@@ -47,6 +45,15 @@ export const home: HomeDict = {
   sectionOpenBody: "بدأ أداة طرفية مفتوحة المصدر لنموذج واحد، وصار مشروعًا يبنيه معًا مئات الأشخاص بلغات كثيرة. يمكنك قراءة شيفرته أو تغييرها أو أن تطلب منه أن يشرح نفسه.",
   sectionStartHeading: "اجعل وكيلك ملكًا لك اليوم.",
   sectionStartBody: "ثبّت Codewhale وشغّله في مستودع بمفتاح نموذج لديك بالفعل أو بنموذج على حاسوبك. لا تحتاج إلى حساب، و`codewhale update` يبقيه محدّثًا.",
+
+  contributorsCount: {
+    zero: "{n} مساهم",
+    one: "{n} مساهم",
+    two: "{n} مساهمان",
+    few: "{n} مساهمين",
+    many: "{n} مساهمًا",
+    other: "{n} مساهم",
+  },
 
   mapHeading: "محرك واحد",
   mapStateReleased: "منشور",
