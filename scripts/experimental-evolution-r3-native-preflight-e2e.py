@@ -66,10 +66,10 @@ def main():
     (root / "stderr.log").write_text(completed.stderr, encoding="utf-8")
     combined = completed.stdout + completed.stderr
     assert "infeasible experimental budget plan" in combined, combined[-2000:]
-    assert "required 44 model turns, available 37" in combined, combined[-2000:]
+    assert "required 50 model turns, available 37" in combined, combined[-2000:]
     assert not list(workspace.glob(".codewhale/workflow-runs.jsonl")), "Workflow started despite rejected preflight"
     receipt = {"status": "PASS", "checks": 3, "exit_code": completed.returncode,
-               "required_model_turns": 44, "available_model_turns": 37,
+               "required_model_turns": 50, "available_model_turns": 37,
                "credential": "synthetic_local_only", "cli": str(args.codewhale.resolve())}
     (root / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(receipt))
