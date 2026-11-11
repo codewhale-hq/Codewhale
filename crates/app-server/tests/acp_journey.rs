@@ -1,3 +1,6 @@
+mod acp_support;
+
+use acp_support::{Client, fixture_config, text_of, updates};
 use anyhow::{Result, anyhow};
 use codewhale_app_server::acp_server::capture_frontend;
 use codewhale_engine::llm_client::mock::{MockLlmClient, canned};
@@ -5,110 +8,10 @@ use codewhale_engine::runtime_threads::RuntimeTurnStatus;
 use codewhale_engine::runtime_threads::manager::{
     RuntimeThreadManager, RuntimeThreadManagerConfig,
 };
-use codewhale_runtime::config::{Config, ProviderConfig, ProvidersConfig, SnapshotsConfig};
-use serde_json::{Value, json};
-use std::collections::HashMap;
+use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, ReadHalf, WriteHalf};
-
-const STEP: Duration = Duration::from_secs(30);
-
-fn fixture_config() -> Config {
-    let mut config = Config::default();
-    config.provider = Some("acp-fixture".into());
-    config.providers = Some(ProvidersConfig {
-        custom: HashMap::from([(
-            "acp-fixture".into(),
-            ProviderConfig {
-                kind: Some("openai-compatible".into()),
-                base_url: Some("http://127.0.0.1:18181/v1".into()),
-                model: Some("fixture-model".into()),
-                api_key: Some("local-test-key".into()),
-                ..Default::default()
-            },
-        )]),
-        ..Default::default()
-    });
-    config.snapshots = Some(SnapshotsConfig {
-        enabled: false,
-        ..Default::default()
-    });
-    config.set_feature("mcp", false).unwrap();
-    config.set_feature("subagents", false).unwrap();
-    config
-}
-
-struct Client {
-    lines: tokio::io::Lines<BufReader<ReadHalf<DuplexStream>>>,
-    write: WriteHalf<DuplexStream>,
-    next_id: u64,
-}
-
-impl Client {
-    async fn send(&mut self, message: Value) -> Result<()> {
-        let mut line = serde_json::to_vec(&message)?;
-        line.push(b'\n');
-        self.write.write_all(&line).await?;
-        self.write.flush().await?;
-        Ok(())
-    }
-    async fn recv(&mut self) -> Result<Value> {
-        let line = tokio::time::timeout(STEP, self.lines.next_line())
-            .await
-            .map_err(|_| anyhow!("agent produced no frame within {STEP:?}"))??
-            .ok_or_else(|| anyhow!("agent closed the transport"))?;
-        Ok(serde_json::from_str(&line)?)
-    }
-    async fn request(&mut self, method: &str, params: Value) -> Result<(Value, Vec<Value>)> {
-        self.next_id += 1;
-        let id = self.next_id;
-        self.send(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
-            .await?;
-        let mut frames = Vec::new();
-        loop {
-            let frame = self.recv().await?;
-            if frame["id"] == json!(id) && frame.get("method").is_none() {
-                return Ok((frame, frames));
-            }
-            frames.push(frame);
-        }
-    }
-    async fn until_permission(&mut self) -> Result<(Value, Vec<Value>)> {
-        let mut frames = Vec::new();
-        loop {
-            let frame = self.recv().await?;
-            if frame["method"] == "session/request_permission" {
-                return Ok((frame, frames));
-            }
-            frames.push(frame);
-        }
-    }
-    async fn until_response(&mut self, id: u64) -> Result<(Value, Vec<Value>)> {
-        let mut frames = Vec::new();
-        loop {
-            let frame = self.recv().await?;
-            if frame["id"] == json!(id) && frame.get("method").is_none() {
-                return Ok((frame, frames));
-            }
-            frames.push(frame);
-        }
-    }
-}
-
-fn updates<'a>(frames: &'a [Value], kind: &str) -> Vec<&'a Value> {
-    frames
-        .iter()
-        .filter(|frame| frame.pointer("/params/update/sessionUpdate") == Some(&json!(kind)))
-        .collect()
-}
-
-fn text_of(frames: &[Value], kind: &str) -> String {
-    updates(frames, kind)
-        .iter()
-        .filter_map(|frame| frame.pointer("/params/update/content/text")?.as_str())
-        .collect()
-}
+use tokio::io::{AsyncWriteExt, BufReader};
 
 #[test]
 fn editor_drives_a_session_through_permission_cancel_and_load() -> Result<()> {
@@ -177,22 +80,7 @@ async fn journey() -> Result<()> {
         None,
     )?;
 
-    let connect = || {
-        let (client, agent) = tokio::io::duplex(1 << 20);
-        let (agent_read, agent_write) = tokio::io::split(agent);
-        let (client_read, client_write) = tokio::io::split(client);
-        (
-            Client {
-                lines: BufReader::new(client_read).lines(),
-                write: client_write,
-                next_id: 0,
-            },
-            agent_read,
-            agent_write,
-        )
-    };
-
-    let (mut client, agent_read, agent_write) = connect();
+    let (mut client, agent_read, agent_write) = Client::connect(false);
     let first_connection =
         frontend.serve(Box::new(BufReader::new(agent_read)), Box::new(agent_write));
     let first_script = async {
@@ -354,7 +242,7 @@ async fn journey() -> Result<()> {
     assert_eq!(detail.turns[0].status, RuntimeTurnStatus::Completed);
     assert_eq!(detail.turns[1].status, RuntimeTurnStatus::Interrupted);
 
-    let (mut client, agent_read, agent_write) = connect();
+    let (mut client, agent_read, agent_write) = Client::connect(false);
     let second_connection =
         frontend.serve(Box::new(BufReader::new(agent_read)), Box::new(agent_write));
     let second_script = async {

@@ -94,6 +94,7 @@ urlencoding = "2.1"
 webbrowser = "1.0"
 
 [dev-dependencies]
+agent-client-protocol-schema.workspace = true
 rusqlite.workspace = true
 tempfile.workspace = true
 tower = "0.5"

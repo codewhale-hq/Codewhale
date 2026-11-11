@@ -179,6 +179,7 @@ wiremock = { version = "0.6", optional = true }
 codewhale-build-support = { path = "../build-support", version = "0.10.3" }
 
 [dev-dependencies]
+agent-client-protocol-schema.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.3", features = ["schema"] }
 codewhale-skills = { path = "../skills", version = "0.10.3", features = ["test-support"] }
