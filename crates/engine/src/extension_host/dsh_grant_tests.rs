@@ -42,7 +42,7 @@ impl Plugins {
         };
         std::fs::create_dir_all(&config.workspace).unwrap();
         for (name, asks) in plugins {
-            let plugin = config.user_plugins_dir.join(name);
+            let plugin = config.workspace_plugins_dir.join(name);
             std::fs::create_dir_all(plugin.join("native")).unwrap();
             std::fs::write(
                 plugin.join("native/index.mjs"),

@@ -23,7 +23,11 @@ fn config(root: &Path) -> DiscoveryConfig {
 }
 
 fn write_plugin(config: &DiscoveryConfig, name: &str, asks: &[&str], body: &str) {
-    let plugin = config.user_plugins_dir.join(name);
+    write_plugin_in(&config.workspace_plugins_dir, name, asks, body);
+}
+
+fn write_plugin_in(dir: &Path, name: &str, asks: &[&str], body: &str) {
+    let plugin = dir.join(name);
     fs::create_dir_all(plugin.join("native")).unwrap();
     fs::write(plugin.join("native/index.mjs"), body).unwrap();
     let asked = if asks.is_empty() {
@@ -63,6 +67,7 @@ fn agent(config: &DiscoveryConfig, posture: AgentPosture) -> PluginApprover {
 fn approve(registry: &mut PluginRegistry, name: &str, approved_by: PluginApprover) {
     let shown = registry
         .host_service_review_for(name, &approved_by)
+        .filter(|_| approved_by != PluginApprover::CommandLine)
         .map(|review| review.token);
     registry
         .trust_reviewed(
@@ -641,8 +646,15 @@ fn a_command_line_trust_is_recorded_as_such_and_the_agents_mark_makes_it_the_age
     );
 
     let mut registry = discover_with_config(&config);
-    registry.enable_by("alpha", marked.clone()).unwrap();
-    assert_eq!(registry.get("alpha").unwrap().enabled_by, Some(marked));
+    assert!(
+        registry
+            .enable_by("alpha", marked.clone())
+            .unwrap_err()
+            .contains("approved for every project")
+    );
+    registry.disable("beta").unwrap();
+    registry.enable_by("beta", marked.clone()).unwrap();
+    assert_eq!(registry.get("beta").unwrap().enabled_by, Some(marked));
     registry.disable("alpha").unwrap();
     assert_eq!(registry.get("alpha").unwrap().enabled_by, None);
     registry.enable("alpha").unwrap();
@@ -660,6 +672,161 @@ fn a_command_line_trust_is_recorded_as_such_and_the_agents_mark_makes_it_the_age
             .unwrap()
             .active()
     );
+}
+
+#[test]
+fn the_agent_turns_on_only_a_plugin_it_approved_in_its_own_project() {
+    let _policy = TestPolicyGuard::extension_host(true);
+    let tmp = tempfile::tempdir().unwrap();
+    let config = config(tmp.path());
+    write_plugin(&config, "alpha", &[], "export function apply() {}\n");
+    write_plugin(&config, "beta", &[], "export function apply() {}\n");
+    let mut registry = discover_with_config(&config);
+    approve(&mut registry, "alpha", person());
+    approve(
+        &mut registry,
+        "beta",
+        agent(&config, AgentPosture::FullAccess),
+    );
+    registry.disable("alpha").unwrap();
+    registry.disable("beta").unwrap();
+    let by_agent = agent(&config, AgentPosture::FullAccess);
+    let PluginApprover::Agent(fields) = by_agent.clone() else {
+        unreachable!()
+    };
+    let elsewhere = DiscoveryConfig {
+        workspace: tmp.path().join("other-project"),
+        ..config.clone()
+    };
+    let mut other = discover_with_config(&elsewhere);
+    let before = fs::read(&config.state_path).unwrap();
+    let refusals = [
+        (
+            &mut registry,
+            "alpha",
+            by_agent.clone(),
+            "approved for every project",
+        ),
+        (
+            &mut discover_with_config(&config),
+            "beta",
+            PluginApprover::Agent(AgentApproval {
+                workspace: tmp.path().join("elsewhere").to_string_lossy().into_owned(),
+                ..fields.clone()
+            }),
+            "limited to its own project",
+        ),
+        (
+            &mut discover_with_config(&config),
+            "beta",
+            PluginApprover::Agent(AgentApproval {
+                tool_call_id: None,
+                ..fields.clone()
+            }),
+            "must name the thread, turn and tool call",
+        ),
+        (
+            &mut other,
+            "beta",
+            agent(&elsewhere, AgentPosture::FullAccess),
+            "agent of another project",
+        ),
+    ];
+    for (registry, name, enabled_by, says) in refusals {
+        let refused = registry.enable_by(name, enabled_by).unwrap_err();
+        assert!(refused.contains(says), "{name}: {refused}");
+        assert_eq!(fs::read(&config.state_path).unwrap(), before);
+    }
+
+    registry.enable_by("beta", by_agent.clone()).unwrap();
+    let beta = registry.get("beta").unwrap();
+    assert!(beta.active());
+    assert_eq!(beta.enabled_by, Some(by_agent));
+    assert!(
+        !discover_with_config(&elsewhere)
+            .get("beta")
+            .unwrap()
+            .active()
+    );
+}
+
+#[test]
+fn an_agent_approval_covers_only_a_plugin_folder_in_its_own_project() {
+    let _policy = TestPolicyGuard::extension_host(true);
+    let tmp = tempfile::tempdir().unwrap();
+    let config = config(tmp.path());
+    write_plugin_in(
+        &config.user_plugins_dir,
+        "alpha",
+        &[],
+        "export function apply() {}\n",
+    );
+    let mut registry = discover_with_config(&config);
+    approve(&mut registry, "alpha", person());
+    let by_agent = agent(&config, AgentPosture::FullAccess);
+    let before = fs::read(&config.state_path).unwrap();
+    let shown = registry
+        .host_service_review_for("alpha", &by_agent)
+        .map(|review| review.token);
+    let refused = registry
+        .trust_reviewed(
+            "alpha",
+            ReviewApproval {
+                approved_by: by_agent.clone(),
+                host_services: shown,
+            },
+        )
+        .unwrap_err();
+    assert!(
+        refused.contains("only a plugin folder inside its own project"),
+        "{refused}"
+    );
+    assert_eq!(fs::read(&config.state_path).unwrap(), before);
+    registry.disable("alpha").unwrap();
+    let refused = registry.enable_by("alpha", by_agent).unwrap_err();
+    assert!(
+        refused.contains("only a plugin folder inside its own project"),
+        "{refused}"
+    );
+    let alpha = discover_with_config(&config);
+    assert_eq!(alpha.get("alpha").unwrap().approved_by, Some(person()));
+}
+
+#[test]
+fn a_command_line_approval_carries_no_host_service_grant() {
+    let _policy = TestPolicyGuard::extension_host(true);
+    let _offer = TestOffer::only(&[HostService::Network]);
+    let tmp = tempfile::tempdir().unwrap();
+    let config = config(tmp.path());
+    write_plugin(
+        &config,
+        "alpha",
+        &["network"],
+        "export function apply() {}\n",
+    );
+    let mut registry = discover_with_config(&config);
+    let shown = registry
+        .host_service_review_for("alpha", &PluginApprover::CommandLine)
+        .map(|review| review.token);
+    assert!(shown.is_some());
+    let refused = registry
+        .trust_reviewed(
+            "alpha",
+            ReviewApproval {
+                approved_by: PluginApprover::CommandLine,
+                host_services: shown,
+            },
+        )
+        .unwrap_err();
+    assert!(refused.contains("cannot grant host services"), "{refused}");
+    assert!(registry.get("alpha").unwrap().approved_by.is_none());
+
+    approve(&mut registry, "alpha", PluginApprover::CommandLine);
+    assert_eq!(
+        registry.get("alpha").unwrap().approved_by,
+        Some(PluginApprover::CommandLine)
+    );
+    assert_eq!(granted(&config, "alpha").unwrap(), Vec::new());
 }
 
 mod v0_10_2 {

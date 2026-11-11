@@ -15,7 +15,9 @@ use super::managed_policy::{
     ManagedPluginPolicy, ManagedPolicyOutcome, load_managed_policy, resolve_managed_policy_path,
 };
 use super::manifest::PluginInventory;
-use super::types::{LoadedPlugin, PluginDiagnostic, PluginDiagnosticLevel, PluginTrustStatus};
+use super::types::{
+    LoadedPlugin, PluginDiagnostic, PluginDiagnosticLevel, PluginScope, PluginTrustStatus,
+};
 use codewhale_config::{PluginAuthority, PluginId};
 use codewhale_util::path_identity::metadata_is_link_or_reparse;
 #[cfg(windows)]
@@ -158,9 +160,21 @@ fn host_service_review_in(
     )
 }
 
-fn check_approver(approver: &PluginApprover, workspace: &Path, shown: bool) -> Result<(), String> {
-    let PluginApprover::Agent(agent) = approver else {
-        return Ok(());
+fn check_approver(
+    approver: &PluginApprover,
+    scope: PluginScope,
+    workspace: &Path,
+    shown: bool,
+) -> Result<(), String> {
+    let agent = match approver {
+        PluginApprover::Agent(agent) => agent,
+        PluginApprover::CommandLine if shown => {
+            return Err(
+                "An approval from the command line shows no review, so it cannot grant host services"
+                    .to_string(),
+            );
+        }
+        PluginApprover::Person { .. } | PluginApprover::CommandLine => return Ok(()),
     };
     if !shown {
         return Err(
@@ -184,6 +198,12 @@ fn check_approver(approver: &PluginApprover, workspace: &Path, shown: bool) -> R
     if agent.workspace.is_empty() || Path::new(&agent.workspace) != workspace {
         return Err(
             "An approval by the agent is limited to its own project, and this is not that project"
+                .to_string(),
+        );
+    }
+    if scope != PluginScope::Workspace {
+        return Err(
+            "An approval by the agent covers only a plugin folder inside its own project; ask the person to review this one"
                 .to_string(),
         );
     }
@@ -925,6 +945,7 @@ impl PluginRegistry {
         let id = plugin.id.clone();
         check_approver(
             &approval.approved_by,
+            plugin.scope,
             &self.workspace,
             approval.host_services.is_some(),
         )?;
@@ -1030,6 +1051,26 @@ impl PluginRegistry {
                 plugin.name(),
                 plugin.trust_status.as_str()
             ));
+        }
+        if matches!(enabled_by, PluginApprover::Agent(_)) {
+            check_approver(&enabled_by, plugin.scope, &self.workspace, true)?;
+            if plugin
+                .approved_by
+                .as_ref()
+                .and_then(PluginApprover::agent_workspace)
+                .is_none()
+            {
+                return Err(format!(
+                    "Plugin bundle `{}` is approved for every project, so the agent cannot turn it on; ask the person",
+                    plugin.name()
+                ));
+            }
+            if plugin.outside_reach {
+                return Err(format!(
+                    "Plugin bundle `{}` was approved by the agent of another project, so it cannot be turned on here",
+                    plugin.name()
+                ));
+            }
         }
         let snapshot_rejection = match plugin.staged_root.as_deref() {
             None => Some(
