@@ -356,9 +356,11 @@ impl ExecEnv {
 
     pub fn spawn_background_limited(
         &self,
-        mut command: std::process::Command,
+        command: std::process::Command,
         limits: SandboxResourceLimits,
     ) -> std::io::Result<std::process::Child> {
+        #[cfg(unix)]
+        let mut command = command;
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
