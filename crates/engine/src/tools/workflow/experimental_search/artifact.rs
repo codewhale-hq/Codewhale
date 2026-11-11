@@ -247,8 +247,8 @@ impl ArtifactStore {
 
     pub(super) fn reopen_verified(root: &Path, frozen: &Self) -> Result<Self, String> {
         let recorded = fs::read(root.join("baseline.json")).map_err(|error| error.to_string())?;
-        let expected = fs::read(frozen.root.join("baseline.json"))
-            .map_err(|error| error.to_string())?;
+        let expected =
+            fs::read(frozen.root.join("baseline.json")).map_err(|error| error.to_string())?;
         if recorded != expected {
             return Err("resume baseline tree differs from current frozen baseline".to_string());
         }

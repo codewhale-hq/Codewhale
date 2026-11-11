@@ -1473,9 +1473,7 @@ async fn start_workflow(
         Some(
             tokio::task::spawn_blocking(move || {
                 if let Some(checkpoint) = resume_from {
-                    ExperimentalSearch::resume(
-                        &checkpoint, &path, &workspace, &id, &brief, &model,
-                    )
+                    ExperimentalSearch::resume(&checkpoint, &path, &workspace, &id, &brief, &model)
                 } else {
                     ExperimentalSearch::freeze(&path, &workspace, &id, &brief, &model)
                 }

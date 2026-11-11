@@ -693,29 +693,45 @@ impl ExperimentalSearch {
         }
         let selection_path = self.root.join(format!("selection-g{generation}.json"));
         let selection_bytes = fs::read(&selection_path).map_err(|error| error.to_string())?;
-        let selection: Value = serde_json::from_slice(&selection_bytes)
-            .map_err(|error| error.to_string())?;
-        let selections = state["selections"].as_array().ok_or("checkpoint selections missing")?;
-        let all = state["all"].as_array().ok_or("checkpoint population missing")?;
-        let parents = state["parents"].as_array().ok_or("checkpoint parents missing")?;
-        let population = state["config"]["population"].as_u64().ok_or("checkpoint population bound missing")?;
+        let selection: Value =
+            serde_json::from_slice(&selection_bytes).map_err(|error| error.to_string())?;
+        let selections = state["selections"]
+            .as_array()
+            .ok_or("checkpoint selections missing")?;
+        let all = state["all"]
+            .as_array()
+            .ok_or("checkpoint population missing")?;
+        let parents = state["parents"]
+            .as_array()
+            .ok_or("checkpoint parents missing")?;
+        let population = state["config"]["population"]
+            .as_u64()
+            .ok_or("checkpoint population bound missing")?;
         if selections.len() != generation as usize + 1
             || selections.last() != Some(&selection)
             || all.len() != population as usize * (generation as usize + 1)
             || self.evaluated.len() != all.len()
             || self.applied.len() != all.len()
             || parents.iter().map(|item| &item["id"]).collect::<Vec<_>>()
-                != selection["body"]["parent_ids"].as_array()
+                != selection["body"]["parent_ids"]
+                    .as_array()
                     .ok_or("checkpoint parent selection missing")?
-                    .iter().collect::<Vec<_>>()
+                    .iter()
+                    .collect::<Vec<_>>()
         {
             return Err("checkpoint does not match completed generation selection".to_string());
         }
         let mut seen = HashSet::new();
         for item in all {
-            let id = item["id"].as_str().ok_or("checkpoint candidate ID missing")?;
-            let receipt = self.evaluated.get(id).ok_or("checkpoint candidate lacks host receipt")?;
-            if !seen.insert(id) || candidate_generation(id).is_none_or(|value| value > generation)
+            let id = item["id"]
+                .as_str()
+                .ok_or("checkpoint candidate ID missing")?;
+            let receipt = self
+                .evaluated
+                .get(id)
+                .ok_or("checkpoint candidate lacks host receipt")?;
+            if !seen.insert(id)
+                || candidate_generation(id).is_none_or(|value| value > generation)
                 || item["receipt"]["evaluation_id"] != receipt["evaluation_id"]
                 || item["receipt"]["receipt"] != receipt["receipt_path"]
                 || item["policy"] != receipt["shadow_policy"]
@@ -724,8 +740,8 @@ impl ExperimentalSearch {
                 return Err("checkpoint candidate differs from verified host receipt".to_string());
             }
         }
-        let manifest_bytes = fs::read(self.root.join("manifest.json"))
-            .map_err(|error| error.to_string())?;
+        let manifest_bytes =
+            fs::read(self.root.join("manifest.json")).map_err(|error| error.to_string())?;
         let mut body = json!({
             "schema_version": 1, "next_generation": generation + 1,
             "state": state, "manifest_sha256": hash(&manifest_bytes),
@@ -737,7 +753,10 @@ impl ExperimentalSearch {
         let checkpoint_id = hash(&serde_json::to_vec(&body).map_err(|error| error.to_string())?);
         body["checkpoint_id"] = json!(checkpoint_id);
         let path = self.root.join(format!("checkpoint-g{generation}.json"));
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&path)
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
             .map_err(|error| error.to_string())?;
         file.write_all(&serde_json::to_vec_pretty(&body).map_err(|error| error.to_string())?)
             .map_err(|error| error.to_string())?;
@@ -754,38 +773,63 @@ impl ExperimentalSearch {
         brief: &str,
         requested_model: &str,
     ) -> Result<Self, String> {
-        let checkpoint_path = checkpoint_path.canonicalize().map_err(|error| error.to_string())?;
-        let old_root = checkpoint_path.parent().ok_or("resume checkpoint has no parent")?;
+        let checkpoint_path = checkpoint_path
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let old_root = checkpoint_path
+            .parent()
+            .ok_or("resume checkpoint has no parent")?;
         if old_root.parent() != Some(std::env::temp_dir().as_path())
-            || !old_root.file_name().is_some_and(|name| name.to_string_lossy().starts_with("codewhale-evolution-workflow_"))
+            || !old_root.file_name().is_some_and(|name| {
+                name.to_string_lossy()
+                    .starts_with("codewhale-evolution-workflow_")
+            })
         {
             return Err("resume checkpoint is outside the private evaluator root".to_string());
         }
         let fresh = Self::freeze(manifest_path, workspace, run_id, brief, requested_model)?;
-        let old_manifest_bytes = fs::read(old_root.join("manifest.json"))
-            .map_err(|error| error.to_string())?;
-        let mut old_manifest: Value = serde_json::from_slice(&old_manifest_bytes)
-            .map_err(|error| error.to_string())?;
-        let mut new_manifest: Value = serde_json::from_slice(&fs::read(fresh.root.join("manifest.json"))
-            .map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
-        old_manifest.as_object_mut().ok_or("invalid original manifest")?.remove("run_id");
-        new_manifest.as_object_mut().ok_or("invalid fresh manifest")?.remove("run_id");
+        let old_manifest_bytes =
+            fs::read(old_root.join("manifest.json")).map_err(|error| error.to_string())?;
+        let mut old_manifest: Value =
+            serde_json::from_slice(&old_manifest_bytes).map_err(|error| error.to_string())?;
+        let mut new_manifest: Value = serde_json::from_slice(
+            &fs::read(fresh.root.join("manifest.json")).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        old_manifest
+            .as_object_mut()
+            .ok_or("invalid original manifest")?
+            .remove("run_id");
+        new_manifest
+            .as_object_mut()
+            .ok_or("invalid fresh manifest")?
+            .remove("run_id");
         if old_manifest != new_manifest {
-            return Err("resume baseline, oracle, binary, route or policy identity changed".to_string());
+            return Err(
+                "resume baseline, oracle, binary, route or policy identity changed".to_string(),
+            );
         }
         let bytes = fs::read(&checkpoint_path).map_err(|error| error.to_string())?;
-        let mut checkpoint: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-        let claimed_id = checkpoint.as_object_mut().ok_or("invalid resume checkpoint")?
-            .remove("checkpoint_id").and_then(|value| value.as_str().map(str::to_string))
+        let mut checkpoint: Value =
+            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        let claimed_id = checkpoint
+            .as_object_mut()
+            .ok_or("invalid resume checkpoint")?
+            .remove("checkpoint_id")
+            .and_then(|value| value.as_str().map(str::to_string))
             .ok_or("resume checkpoint identity missing")?;
         if checkpoint["schema_version"] != 1
             || checkpoint["manifest_sha256"] != hash(&old_manifest_bytes)
-            || hash(&serde_json::to_vec(&checkpoint).map_err(|error| error.to_string())?) != claimed_id
+            || hash(&serde_json::to_vec(&checkpoint).map_err(|error| error.to_string())?)
+                != claimed_id
         {
             return Err("resume checkpoint or manifest hash changed".to_string());
         }
-        let next = checkpoint["next_generation"].as_u64().ok_or("resume frontier missing")? as u32;
-        if next == 0 || next >= fresh.spec.max_generations
+        let next = checkpoint["next_generation"]
+            .as_u64()
+            .ok_or("resume frontier missing")? as u32;
+        if next == 0
+            || next >= fresh.spec.max_generations
             || checkpoint_path.file_name().and_then(|name| name.to_str())
                 != Some(format!("checkpoint-g{}.json", next - 1).as_str())
             || checkpoint["resume_scope"] != "generation_boundary_only"
@@ -793,20 +837,28 @@ impl ExperimentalSearch {
             return Err("resume frontier is not a completed generation boundary".to_string());
         }
         for entry in fs::read_dir(old_root).map_err(|error| error.to_string())? {
-            let name = entry.map_err(|error| error.to_string())?.file_name()
-                .to_string_lossy().to_string();
+            let name = entry
+                .map_err(|error| error.to_string())?
+                .file_name()
+                .to_string_lossy()
+                .to_string();
             let candidate = name.split('-').next().unwrap_or("");
             if candidate_generation(candidate).is_some_and(|value| value >= next)
-                || name.strip_prefix("checkpoint-g")
+                || name
+                    .strip_prefix("checkpoint-g")
                     .and_then(|tail| tail.strip_suffix(".json"))
                     .and_then(|number| number.parse::<u32>().ok())
                     .is_some_and(|value| value >= next)
-                || name.strip_prefix("selection-g")
+                || name
+                    .strip_prefix("selection-g")
                     .and_then(|tail| tail.strip_suffix(".json"))
                     .and_then(|number| number.parse::<u32>().ok())
                     .is_some_and(|value| value >= next)
             {
-                return Err("resume encountered post-checkpoint work; unknown requests are not replayed".to_string());
+                return Err(
+                    "resume encountered post-checkpoint work; unknown requests are not replayed"
+                        .to_string(),
+                );
             }
         }
         let store = ArtifactStore::reopen_verified(old_root, &fresh.store)?;
@@ -815,22 +867,31 @@ impl ExperimentalSearch {
             return Err("resume state frontier differs from checkpoint".to_string());
         }
         let all = state["all"].as_array().ok_or("resume population missing")?;
-        let selections = state["selections"].as_array().ok_or("resume selections missing")?;
+        let selections = state["selections"]
+            .as_array()
+            .ok_or("resume selections missing")?;
         if selections.len() != next as usize || all.is_empty() {
             return Err("resume generation ledger is incomplete".to_string());
         }
         for (generation, selection) in selections.iter().enumerate() {
             let path = old_root.join(format!("selection-g{generation}.json"));
-            let recorded: Value = serde_json::from_slice(&fs::read(path).map_err(|error| error.to_string())?)
-                .map_err(|error| error.to_string())?;
+            let recorded: Value =
+                serde_json::from_slice(&fs::read(path).map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?;
             if selection != &recorded {
                 return Err("resume selection receipt changed".to_string());
             }
         }
-        let selected_ids = selections.last().and_then(|value| value["body"]["parent_ids"].as_array())
+        let selected_ids = selections
+            .last()
+            .and_then(|value| value["body"]["parent_ids"].as_array())
             .ok_or("resume parent pool missing")?;
-        if state["parents"].as_array().ok_or("resume parents missing")?
-            .iter().map(|item| &item["id"]).collect::<Vec<_>>()
+        if state["parents"]
+            .as_array()
+            .ok_or("resume parents missing")?
+            .iter()
+            .map(|item| &item["id"])
+            .collect::<Vec<_>>()
             != selected_ids.iter().collect::<Vec<_>>()
         {
             return Err("resume parent pool differs from selection".to_string());
@@ -848,8 +909,10 @@ impl ExperimentalSearch {
             {
                 return Err("resume candidate order or identity is invalid".to_string());
             }
-            let receipt: Value = serde_json::from_slice(&fs::read(old_root.join(format!("{id}-evaluation.json"))
-                .map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+            let receipt_bytes = fs::read(old_root.join(format!("{id}-evaluation.json")))
+                .map_err(|error| error.to_string())?;
+            let receipt: Value =
+                serde_json::from_slice(&receipt_bytes).map_err(|error| error.to_string())?;
             let genome: ExperimentalPolicyGenome = serde_json::from_value(item["policy"].clone())
                 .map_err(|error| error.to_string())?;
             genome.validate()?;
@@ -875,71 +938,124 @@ impl ExperimentalSearch {
                 fs::remove_dir_all(&verify_dir).map_err(|error| error.to_string())?;
             }
             verification?;
-            let applied_receipt: Value = serde_json::from_slice(&fs::read(old_root.join(format!("{id}-applied-policy.json"))
-                .map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+            let applied_bytes = fs::read(old_root.join(format!("{id}-applied-policy.json")))
+                .map_err(|error| error.to_string())?;
+            let applied_receipt: Value =
+                serde_json::from_slice(&applied_bytes).map_err(|error| error.to_string())?;
             if applied_receipt["effective_policy_id"] != receipt["policy_id"]
                 || item["appliedStatus"]["receipt"] != applied_receipt
             {
                 return Err("resume applied policy differs from evaluated genome".to_string());
             }
             let events_path = old_root.join(format!("{id}-policy-events.jsonl"));
-            let events = fs::read_to_string(events_path).map_err(|error| error.to_string())?
-                .lines().map(|line| serde_json::from_str::<Value>(line).map_err(|error| error.to_string()))
+            let events = fs::read_to_string(events_path)
+                .map_err(|error| error.to_string())?
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).map_err(|error| error.to_string()))
                 .collect::<Result<Vec<_>, _>>()?;
-            if events != item["appliedStatus"]["events"].as_array()
-                .ok_or("resume applied events missing")?.clone() {
+            if events
+                != item["appliedStatus"]["events"]
+                    .as_array()
+                    .ok_or("resume applied events missing")?
+                    .clone()
+            {
                 return Err("resume model request events differ from checkpoint".to_string());
             }
             let mut planner_calls = 0u8;
             let mut dev_review_calls = 0u8;
             for event in &events {
-                let seq = event["sequence"].as_u64().ok_or("resume event sequence missing")?;
-                let turns = event["max_model_turns"].as_u64().ok_or("resume event budget missing")?;
-                let label = event["label"].as_str().ok_or("resume event label missing")?;
+                let seq = event["sequence"]
+                    .as_u64()
+                    .ok_or("resume event sequence missing")?;
+                let turns = event["max_model_turns"]
+                    .as_u64()
+                    .ok_or("resume event budget missing")?;
+                let label = event["label"]
+                    .as_str()
+                    .ok_or("resume event label missing")?;
                 if !sequences.insert(seq) || turns == 0 || turns > 4 {
                     return Err("resume event sequence or budget is invalid".to_string());
                 }
                 reserved = reserved.saturating_add(turns as u32);
-                if label.starts_with("planner_") { planner_calls += 1; }
-                else if label.starts_with("dev_review_") { dev_review_calls += 1; }
-                else if label == id { admitted += 1; }
-                else { return Err("resume request label differs from candidate".to_string()); }
+                if label.starts_with("planner_") {
+                    planner_calls += 1;
+                } else if label.starts_with("dev_review_") {
+                    dev_review_calls += 1;
+                } else if label == id {
+                    admitted += 1;
+                } else {
+                    return Err("resume request label differs from candidate".to_string());
+                }
             }
-            if planner_calls != item["appliedStatus"]["planner_calls"].as_u64().unwrap_or(u64::MAX) as u8
-                || dev_review_calls != item["appliedStatus"]["dev_review_calls"].as_u64().unwrap_or(u64::MAX) as u8
+            if planner_calls
+                != item["appliedStatus"]["planner_calls"]
+                    .as_u64()
+                    .unwrap_or(u64::MAX) as u8
+                || dev_review_calls
+                    != item["appliedStatus"]["dev_review_calls"]
+                        .as_u64()
+                        .unwrap_or(u64::MAX) as u8
                 || planner_calls != genome.planning_budget
                 || !events.iter().any(|event| event["label"] == id)
             {
                 return Err("resume policy execution counts are incomplete".to_string());
             }
-            if let Some(parent_id) = receipt["lineage"]["parent_ids"].as_array()
-                .and_then(|ids| ids.first()).and_then(Value::as_str) {
-                let parent: &Value = evaluated.get(parent_id).ok_or("resume parent receipt missing")?;
+            if let Some(parent_id) = receipt["lineage"]["parent_ids"]
+                .as_array()
+                .and_then(|ids| ids.first())
+                .and_then(Value::as_str)
+            {
+                let parent: &Value = evaluated
+                    .get(parent_id)
+                    .ok_or("resume parent receipt missing")?;
                 if parent["status"] == "FAIL" {
                     let root = parent["repair_lineage_root"].as_str().unwrap_or(parent_id);
                     *repair_counts.entry(root.to_string()).or_insert(0u8) += 1;
                 }
             }
-            applied.insert(id.to_string(), AppliedPolicy { genome, planner_calls,
-                dev_review_calls, events, receipt: applied_receipt });
+            applied.insert(
+                id.to_string(),
+                AppliedPolicy {
+                    genome,
+                    planner_calls,
+                    dev_review_calls,
+                    events,
+                    receipt: applied_receipt,
+                },
+            );
             evaluated.insert(id.to_string(), receipt);
         }
-        let count = checkpoint["model_requests"].as_u64().ok_or("resume model count missing")?;
+        let count = checkpoint["model_requests"]
+            .as_u64()
+            .ok_or("resume model count missing")?;
         if sequences.len() != count as usize
             || (1..=count).any(|number| !sequences.contains(&number))
-            || reserved as u64 != checkpoint["model_turns_reserved"].as_u64().unwrap_or(u64::MAX)
+            || reserved as u64
+                != checkpoint["model_turns_reserved"]
+                    .as_u64()
+                    .unwrap_or(u64::MAX)
             || admitted as u64 != checkpoint["admitted"].as_u64().unwrap_or(u64::MAX)
             || admitted != evaluated.len() as u32
             || reserved > fresh.spec.max_model_turns
-            || count > u64::from(fresh.spec.max_candidates.saturating_mul(6).saturating_add(2))
+            || count
+                > u64::from(
+                    fresh
+                        .spec
+                        .max_candidates
+                        .saturating_mul(6)
+                        .saturating_add(2),
+                )
         {
             return Err("resume budget or request sequence differs from sealed events".to_string());
         }
-        let wall_elapsed = checkpoint["wall_elapsed_secs"].as_u64().ok_or("resume wall budget missing")?;
+        let wall_elapsed = checkpoint["wall_elapsed_secs"]
+            .as_u64()
+            .ok_or("resume wall budget missing")?;
         if wall_elapsed >= fresh.spec.max_wall_secs {
             return Err("resume wall budget expired".to_string());
         }
-        let started = Instant::now().checked_sub(Duration::from_secs(wall_elapsed))
+        let started = Instant::now()
+            .checked_sub(Duration::from_secs(wall_elapsed))
             .ok_or("resume wall clock cannot be restored")?;
         let mut restored = fresh;
         let generated_root = restored.root.clone();
@@ -958,7 +1074,9 @@ impl ExperimentalSearch {
     }
 
     pub(super) fn resume_state(&self) -> Result<Value, String> {
-        self.resume_state.clone().ok_or("experiment was not resumed")
+        self.resume_state
+            .clone()
+            .ok_or_else(|| "experiment was not resumed".to_string())
     }
 
     fn seed_parent_commit(
