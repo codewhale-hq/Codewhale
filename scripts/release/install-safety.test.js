@@ -11,7 +11,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const repo = path.resolve(__dirname, "../..");
-const bytes = '#!/bin/sh\necho "executed $*" >> "$INSTALL_TEST_EXECUTED"\ncase "$1" in --help) printf \'%s\\n\' "${INSTALL_TEST_HELP:-}" ;; *) echo "codewhale 0.9.11" ;; esac\n';
+const bytes = '#!/bin/sh\necho "executed $*" >> "$INSTALL_TEST_EXECUTED"\n[ "$1" = doctor ] && echo "telemetry=${CODEWHALE_TELEMETRY-unset} update_check=${CODEWHALE_NO_UPDATE_CHECK-unset}" >> "$INSTALL_TEST_DOCTOR_ENV"\ncase "$1" in --help) printf \'%s\\n\' "${INSTALL_TEST_HELP:-}" ;; *) echo "codewhale 0.9.11" ;; esac\n';
 
 function executable(file, body) {
   fs.writeFileSync(file, body, { mode: 0o755 });
@@ -56,6 +56,7 @@ cp "$INSTALL_TEST_ASSETS/$asset" "$output"
     CODEWHALE_VERSION: "v0.9.11", CODEWHALE_INSTALL_DIR: destination,
     PREFIX: path.dirname(destination), INSTALL_TEST_ASSETS: assets,
     INSTALL_TEST_EXECUTED: path.join(root, "executed"),
+    INSTALL_TEST_DOCTOR_ENV: path.join(root, "doctor-env"),
     INSTALL_TEST_DOWNLOADS: path.join(root, "downloads") };
   for (const key of ["CODEWHALE_RELEASE_BASE_URL", "DEEPSEEK_TUI_RELEASE_BASE_URL", "CODEWHALE_SKIP_GLIBC_CHECK", "DEEPSEEK_TUI_SKIP_GLIBC_CHECK", "DEEPSEEK_SKIP_GLIBC_CHECK", "TERMUX_VERSION", "CODEWHALE_HOME", "CODEWHALE_FORCE_REINSTALL", "CODEWHALE_INSTALL_COMPILED_HOST", "SHELL", "ZDOTDIR"]) delete env[key];
   function run(args = []) {
@@ -95,6 +96,20 @@ ${hash}  codew
       assert.ok(downloads.every(url => url.startsWith("https://github.com/codewhale-hq/CodeWhale/releases/download/v0.9.11/")));
     }
     f.untouched();
+  });
+
+  test(`${kind}: the installer's own doctor run is made with usage reporting forced off`, t => {
+    for (const inherited of [undefined, "1"]) {
+      const f = fixture(t, kind);
+      if (inherited !== undefined) f.env.CODEWHALE_TELEMETRY = inherited;
+      else delete f.env.CODEWHALE_TELEMETRY;
+      const result = f.run();
+      assert.equal(result.status, 0, result.stderr);
+      const seen = fs.readFileSync(f.env.INSTALL_TEST_DOCTOR_ENV, "utf8").trim().split("\n");
+      assert.deepEqual(seen, ["telemetry=0 update_check=1"], `inherited=${inherited}`);
+      assert.ok(result.stdout.includes("config set telemetry false"), result.stdout);
+      assert.ok(!result.stdout.includes("telemetry=0"), result.stdout);
+    }
   });
 
   test(`${kind}: the output ends with the PATH command and the verify command`, t => {

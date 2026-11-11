@@ -8763,6 +8763,7 @@ struct TelemetryEnvGuard {
     codewhale: Option<OsString>,
     deepseek: Option<OsString>,
     floor: Option<OsString>,
+    source: Option<OsString>,
     codewhale_endpoint: Option<OsString>,
     deepseek_endpoint: Option<OsString>,
     _lock: std::sync::MutexGuard<'static, ()>,
@@ -8775,6 +8776,7 @@ impl TelemetryEnvGuard {
             codewhale: env::var_os("CODEWHALE_TELEMETRY"),
             deepseek: env::var_os("DEEPSEEK_TELEMETRY"),
             floor: env::var_os(TELEMETRY_FLOOR_ENV),
+            source: env::var_os(TELEMETRY_SOURCE_ENV),
             // The endpoint variables are cleared too. Resolution now has a
             // shipped default, so an ambient endpoint in the developer's or
             // CI's environment is the difference between pinning the default
@@ -8788,6 +8790,7 @@ impl TelemetryEnvGuard {
             env::remove_var("CODEWHALE_TELEMETRY");
             env::remove_var("DEEPSEEK_TELEMETRY");
             env::remove_var(TELEMETRY_FLOOR_ENV);
+            env::remove_var(TELEMETRY_SOURCE_ENV);
             env::remove_var("CODEWHALE_TELEMETRY_ENDPOINT");
             env::remove_var("DEEPSEEK_TELEMETRY_ENDPOINT");
         }
@@ -8808,6 +8811,13 @@ impl TelemetryEnvGuard {
         }
     }
 
+    fn set_source(&self, value: &str) {
+        // Safety: test-only environment mutation guarded by the module mutex.
+        unsafe {
+            env::set_var(TELEMETRY_SOURCE_ENV, value);
+        }
+    }
+
     fn set_floor(&self, value: &str) {
         // Safety: test-only environment mutation guarded by the module mutex.
         unsafe {
@@ -8821,6 +8831,7 @@ impl TelemetryEnvGuard {
             env::remove_var("CODEWHALE_TELEMETRY");
             env::remove_var("DEEPSEEK_TELEMETRY");
             env::remove_var(TELEMETRY_FLOOR_ENV);
+            env::remove_var(TELEMETRY_SOURCE_ENV);
         }
     }
 }
@@ -8840,6 +8851,10 @@ impl Drop for TelemetryEnvGuard {
             match self.floor.take() {
                 Some(value) => env::set_var(TELEMETRY_FLOOR_ENV, value),
                 None => env::remove_var(TELEMETRY_FLOOR_ENV),
+            }
+            match self.source.take() {
+                Some(value) => env::set_var(TELEMETRY_SOURCE_ENV, value),
+                None => env::remove_var(TELEMETRY_SOURCE_ENV),
             }
             match self.codewhale_endpoint.take() {
                 Some(value) => env::set_var("CODEWHALE_TELEMETRY_ENDPOINT", value),
@@ -8992,6 +9007,57 @@ fn telemetry_consent_names_its_source() {
     guard.set("1");
     let (on, source) = resolved_telemetry_consent(None);
     assert!(on);
+    assert_eq!(source, TelemetrySource::Env);
+}
+
+#[test]
+fn dispatched_consent_names_the_dispatchers_source_not_its_hand_off() {
+    let guard = TelemetryEnvGuard::take();
+
+    guard.set("false");
+    guard.set_floor("0");
+    guard.set_source("config");
+    let (on, source) = dispatched_telemetry_consent(Some(false));
+    assert!(!on);
+    assert_eq!(source, TelemetrySource::Config);
+
+    guard.set("false");
+    guard.set_floor("1");
+    guard.set_source("env");
+    let (on, source) = dispatched_telemetry_consent(Some(false));
+    assert!(!on);
+    assert_eq!(source, TelemetrySource::Env);
+
+    guard.set("true");
+    guard.set_floor("0");
+    guard.set_source("default");
+    let (on, source) = dispatched_telemetry_consent(None);
+    assert!(on);
+    assert_eq!(source, TelemetrySource::Default);
+
+    guard.set("false");
+    guard.set_floor("1");
+    guard.set_source("cli");
+    let (on, source) = dispatched_telemetry_consent(None);
+    assert!(!on);
+    assert_eq!(source, TelemetrySource::Cli);
+
+    guard.clear();
+    guard.set("0");
+    guard.set_source("config");
+    let (on, source) = dispatched_telemetry_consent(Some(false));
+    assert!(!on);
+    assert_eq!(
+        source,
+        TelemetrySource::Env,
+        "a source with no dispatcher floor statement is not believed"
+    );
+
+    guard.clear();
+    guard.set("0");
+    guard.set_floor("1");
+    guard.set_source("nonsense");
+    let (_, source) = dispatched_telemetry_consent(None);
     assert_eq!(source, TelemetrySource::Env);
 }
 

@@ -341,7 +341,8 @@ fi
 if [[ -n "$recovery_dir" ]]; then
     echo "Previous files are kept in $recovery_dir for 30 days. Undo: \"$BIN_DIR/codewhale\" doctor --restore $(basename "$recovery_dir")"
 fi
-"$BIN_DIR/codewhale" doctor --installs --brief 2>/dev/null || true
+CODEWHALE_TELEMETRY=0 CODEWHALE_NO_UPDATE_CHECK=1 "$BIN_DIR/codewhale" doctor --installs --brief 2>/dev/null || true
+echo "Usage reporting is on by default (counts only, never your code or conversations). Turn it off: \"$BIN_DIR/codewhale\" config set telemetry false"
 echo "Future updates: \"$BIN_DIR/codewhale\" update"
 if [[ "$supports_uninstall" == 1 ]]; then
     echo "Updates install automatically; turn off with: codewhale config set update.mode notify"

@@ -7867,7 +7867,7 @@ fn doctor_control_socket_posture_line(config: &Config) -> String {
 /// Report the durable opt-out and environment preference without arming or
 /// touching telemetry state. Notice presentation is not a permission gate.
 fn doctor_runtime_telemetry(config: &Config) -> (bool, &'static str) {
-    let (on, source) = codewhale_config::resolved_telemetry_consent(config.telemetry);
+    let (on, source) = codewhale_config::dispatched_telemetry_consent(config.telemetry);
     if !on {
         return (false, source.as_str());
     }
@@ -16558,6 +16558,8 @@ mod doctor_setup_state_tests {
         let _telemetry_alias_env = crate::test_support::EnvVarGuard::remove("DEEPSEEK_TELEMETRY");
         let _telemetry_floor =
             crate::test_support::EnvVarGuard::remove("CODEWHALE_TELEMETRY_FLOOR");
+        let _telemetry_source =
+            crate::test_support::EnvVarGuard::remove("CODEWHALE_TELEMETRY_SOURCE");
         let workspace = tmp.path().join("workspace");
         fs::create_dir_all(&workspace).expect("workspace");
 
@@ -16608,6 +16610,32 @@ mod doctor_setup_state_tests {
         let report = doctor_setup_report_json(&config, &workspace);
         assert_eq!(report["runtime_posture"]["telemetry"]["value"], false);
         assert_eq!(report["runtime_posture"]["telemetry"]["source"], "config");
+
+        {
+            let _handed_down =
+                crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY", "false");
+            let _floor = crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY_FLOOR", "0");
+            let _source =
+                crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY_SOURCE", "config");
+            let line = doctor_runtime_posture_line(&config, &workspace);
+            assert!(
+                line.contains("telemetry=off (config)"),
+                "a saved opt-out the dispatcher handed down is not the environment: {line}"
+            );
+            let report = doctor_setup_report_json(&config, &workspace);
+            assert_eq!(report["runtime_posture"]["telemetry"]["source"], "config");
+        }
+        {
+            let _by_hand = crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY", "0");
+            let _floor = crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY_FLOOR", "1");
+            let _source =
+                crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY_SOURCE", "env");
+            let line = doctor_runtime_posture_line(&config, &workspace);
+            assert!(
+                line.contains("telemetry=off (env)"),
+                "a kill switch the person set is the environment: {line}"
+            );
+        }
     }
 
     #[test]

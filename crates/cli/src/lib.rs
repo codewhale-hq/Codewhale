@@ -117,7 +117,7 @@ struct Cli {
     #[arg(
         long,
         value_name = "BOOL",
-        help = "Control aggregate usage counting (default on; Codewhale + PostHog; \
+        help = "Control usage reporting (default on; Codewhale + PostHog; \
                 durable off: config set telemetry false; CODEWHALE_TELEMETRY=0 always wins)"
     )]
     telemetry: Option<bool>,
@@ -1957,7 +1957,7 @@ enum ConfigCommand {
     Unset {
         key: String,
     },
-    /// Review aggregate usage counting by Codewhale and PostHog (default on).
+    /// Review usage reporting by Codewhale and PostHog (default on).
     Telemetry {
         /// Optional compatibility form: enable future sessions under this policy version.
         #[arg(long, value_name = "VERSION")]
@@ -6792,6 +6792,10 @@ fn apply_tui_env(cli: &Cli, resolved_runtime: &ResolvedRuntimeOptions, passthrou
         codewhale_config::TELEMETRY_FLOOR_ENV,
         if floor { "1" } else { "0" },
     );
+    set_tui_env(
+        codewhale_config::TELEMETRY_SOURCE_ENV,
+        resolved_runtime.telemetry_source.as_str(),
+    );
     if let Some(endpoint) = resolved_runtime.telemetry_endpoint.as_ref() {
         set_tui_env("CODEWHALE_TELEMETRY_ENDPOINT", endpoint);
     }
@@ -7223,6 +7227,30 @@ mod tests {
         assert!(
             std::env::var("DEEPSEEK_YOLO").is_err(),
             "--yolo must not write the retired DEEPSEEK_YOLO alias (#5443)"
+        );
+    }
+
+    #[test]
+    fn dispatcher_hands_the_telemetry_source_to_the_tui() {
+        let _lock = env_lock();
+        let _guards = [
+            ScopedEnvVar::remove("CODEWHALE_TELEMETRY"),
+            ScopedEnvVar::remove("DEEPSEEK_TELEMETRY"),
+            ScopedEnvVar::remove(codewhale_config::TELEMETRY_FLOOR_ENV),
+            ScopedEnvVar::remove(codewhale_config::TELEMETRY_SOURCE_ENV),
+        ];
+
+        let cli = parse_ok(&["codewhale"]);
+        let mut runtime = resolved_runtime_for_test(ProviderKind::NvidiaNim, ProviderSource::Cli);
+        runtime.telemetry = false;
+        runtime.telemetry_source = codewhale_config::TelemetrySource::Config;
+        apply_tui_env(&cli, &runtime, &[]);
+
+        assert_eq!(std::env::var("CODEWHALE_TELEMETRY").as_deref(), Ok("false"));
+        assert!(std::env::var(codewhale_config::TELEMETRY_FLOOR_ENV).is_ok());
+        assert_eq!(
+            std::env::var(codewhale_config::TELEMETRY_SOURCE_ENV).as_deref(),
+            Ok("config")
         );
     }
 
