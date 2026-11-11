@@ -507,12 +507,20 @@ pub fn choose_offline_explore(app: &mut App) {
     app.needs_redraw = true;
 }
 
-/// Clear the offline-explore label once a real route is activated (#3927).
+/// Retire the offline-explore state once a real route is activated (#3927).
 ///
-/// This is the *only* thing that retires the label: it is not time-based and
-/// not cleared by dismissing a screen.
+/// This is the *only* thing that retires the label and the offline queueing it
+/// armed: it is not time-based and not cleared by dismissing a screen. A
+/// message held while offline is returned to the composer so the person can
+/// send it on the route that just became active; any further held messages
+/// drain after that turn completes.
 pub fn clear_offline_explore_on_route_activation(app: &mut App) {
     app.onboarding_explore_offline = false;
+    if app.offline_mode {
+        app.offline_mode = false;
+        app.pop_last_queued_into_draft();
+        app.needs_redraw = true;
+    }
 }
 
 /// Finish first run from the ready screen and land in the real composer,
@@ -699,6 +707,39 @@ mod tests {
 
         clear_offline_explore_on_route_activation(&mut app);
         assert!(!app.onboarding_explore_offline);
+        assert!(!app.offline_mode);
+        assert_eq!(
+            app.decide_submit_disposition(),
+            crate::tui::app::SubmitDisposition::Immediate
+        );
+    }
+
+    #[test]
+    fn route_activation_returns_the_held_message_to_the_composer() {
+        let mut app = test_app_with_locale(Locale::En);
+        app.trust_mode = true;
+        choose_offline_explore(&mut app);
+        app.input.clear();
+        app.queue_message(crate::tui::app::QueuedMessage::new("first task".to_string(), None));
+        assert_eq!(
+            app.decide_submit_disposition(),
+            crate::tui::app::SubmitDisposition::Queue
+        );
+
+        clear_offline_explore_on_route_activation(&mut app);
+
+        assert_eq!(app.input, "first task");
+        assert!(app.queued_messages.is_empty());
+    }
+
+    #[test]
+    fn rejected_key_offline_stays_queued_without_route_activation() {
+        let mut app = test_app_with_locale(Locale::En);
+        app.offline_mode = true;
+        assert_eq!(
+            app.decide_submit_disposition(),
+            crate::tui::app::SubmitDisposition::Queue
+        );
     }
 
     // ── Conditional required steps: the counter ──────────────────────────
