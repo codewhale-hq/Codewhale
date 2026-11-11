@@ -25,6 +25,10 @@
 #   - README locale stamps and links    retranslate; check-readme-translations.py
 #                                       prints the new sha256 stamp to use
 #   - product lexicon (warn-only)      python3 scripts/check-lexicon.py lists each hit
+#   - website generated companions     cd web && npm run prebuild (check-facts.mjs and
+#     (facts, agent docs, features,     check-cloud-facts.mjs); node web/scripts/
+#     release baseline, cloud facts,    check-runtime-routes.mjs --write; skipped with
+#     docs/RUNTIME_ROUTES.md)           a notice when node is not on PATH
 #   - dead-code / blocking-calls         each ratchet's --update, committed in the
 #     (and with --full runtime-contract, same PR with the reason in the PR body
 #     persistence-backlog)
@@ -87,6 +91,13 @@ step "dead-code budget" "python3 scripts/check-dead-code-budget.py --update" \
   python3 scripts/check-dead-code-budget.py
 step "blocking-calls budget" "python3 scripts/check-blocking-calls-budget.py --update" \
   python3 scripts/check-blocking-calls-budget.py
+if command -v node >/dev/null 2>&1; then
+  step "website generated facts" \
+    "cd web && npm ci (if node_modules is missing) && npm run prebuild, then commit web/lib/facts.generated.ts and web/data/*.generated.json (check-facts.mjs names the stale file); for a stale docs/RUNTIME_ROUTES.md run node web/scripts/check-runtime-routes.mjs --write, then node web/scripts/derive-facts.mjs" \
+    bash -c 'rc=0; node web/scripts/check-facts.mjs || rc=1; node web/scripts/check-cloud-facts.mjs || rc=1; node web/scripts/check-runtime-routes.mjs || rc=1; exit "${rc}"'
+else
+  echo "== website generated facts: SKIPPED, node is not on PATH; run cd web && npm run check:facts && node scripts/check-runtime-routes.mjs before pushing" >&2
+fi
 if [[ "${full}" == "1" ]]; then
   step "runtime-contract budget" \
     "python3 scripts/check-runtime-contract-budget.py --update --allow-increase" \

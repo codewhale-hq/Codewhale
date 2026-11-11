@@ -14,7 +14,8 @@ name: Main landing gate
 # This job is deliberately narrow. It runs `scripts/preflight.sh --check`,
 # which is the checked-in local preflight for exactly the class of breakage that
 # reaches `main` unnoticed: rustfmt, the CHANGELOG slice, README locale stamps,
-# the dead-code and blocking-calls budgets, generated-asset drift, and the
+# the dead-code and blocking-calls budgets, generated-asset drift (including
+# the website's generated facts, agent docs and feature registry), and the
 # feature receipts. Measured at 45 s on a warm Linux runner.
 #
 # Since 2026-11-08 (founder) the `full-ci` job also dispatches `ci.yml` on every
@@ -49,6 +50,10 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
 
       - name: Preflight
         env:
