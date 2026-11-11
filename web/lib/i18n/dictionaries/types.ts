@@ -24,18 +24,10 @@
 export interface ChromeDict {
   // --- primary nav labels (components/nav.tsx via lib/i18n/links.ts) ---
   navDocs: string;
-  navStart: string;
-  navInstall: string;
-  navFaq: string;
-  navCommunity: string;
   navContribute: string;
+  navSignIn: string;
+  navDesktop: string;
 
-  /**
-   * The primary strip: Product / Models / Plugins / Docs. The
-   * older six (Start, Install, FAQ, Community, Contribute) stay in the
-   * dictionary for the compact sheet's second group and the footer.
-   */
-  navProduct: string;
   navFeatures: string;
   navModels: string;
   navPlugins: string;
@@ -65,6 +57,7 @@ export interface ChromeDict {
   /** Mobile-menu toggle labels. */
   menuOpen: string;
   menuClose: string;
+  translationMachineDraft: string;
 
   /** Docs theme toggle: the three cycle states. */
   themeAuto: string;
@@ -76,20 +69,17 @@ export interface ChromeDict {
   themeTitle: string;
 
   // --- footer ---
-  footerTagline: string;
   footerProduct: string;
   footerProject: string;
   footerDocs: string;
   footerGuide: string;
   footerInstall: string;
-  footerApps: string;
   footerModels: string;
-  footerRuntime: string;
   footerFaq: string;
-  footerIssues: string;
   footerContribute: string;
   footerRoadmap: string;
   footerLicense: string;
+  footerMerch: string;
   /** Footer link to the terms route, e.g. "Terms". */
   footerTerms: string;
   /** Footer link to the privacy route, e.g. "Privacy". */
@@ -160,12 +150,23 @@ export interface HomeDict {
 
   /** A complete headline that wraps naturally in each locale. */
   heroTitle: string;
+  heroTitleLead: string;
   /**
    * Hero lede. Carries a `{brand}` token so the brand can be typeset in its
    * own span wherever the sentence needs it — the page splits on the token
    * instead of concatenating fragments around it.
    */
   heroIntro: string;
+  readTheCode: string;
+  installNote: string;
+  captionDevelopment: string;
+  captionReleased: string;
+  captureFrameNoPosture: string;
+  frameLabelPrompt: string;
+  frameLabelEdit: string;
+  frameLabelApproval: string;
+  frameLabelResult: string;
+  frameLabelReceipt: string;
   /** Primary action → /install, e.g. "Get Codewhale". */
   getCodewhale: string;
   /** Accessible name for the hero install command and its platform choice. */
@@ -190,6 +191,38 @@ export interface HomeDict {
   copy: string;
   copied: string;
   contribute: string;
+
+  belief: string;
+  sectionModelHeading: string;
+  sectionModelBody: string;
+  sectionControlHeading: string;
+  sectionControlBody: string;
+  sectionAgentsHeading: string;
+  sectionAgentsBody: string;
+  sectionDirectionHeading: string;
+  sectionDirectionBody: string;
+  sectionOpenHeading: string;
+  sectionOpenBody: string;
+  sectionStartHeading: string;
+  sectionStartBody: string;
+
+  mapHeading: string;
+  mapStateReleased: string;
+  mapStateDeveloping: string;
+  mapStateInviteOnly: string;
+  mapStateBeingBuilt: string;
+  mapTerminal: string;
+  mapTerminalSentence: string;
+  mapLocalBrowser: string;
+  mapLocalBrowserSentence: string;
+  mapManyAgents: string;
+  mapManyAgentsSentence: string;
+  mapDesktop: string;
+  mapDesktopSentence: string;
+  mapCloud: string;
+  mapCloudSentence: string;
+  mapOneSession: string;
+  mapOneSessionSentence: string;
 }
 
 /**
@@ -235,10 +268,8 @@ export interface DocsShellDict {
   releaseLabel: string;
   /** "Latest release {tag} · {date}" — date already formatted per locale. */
   releasePublished: string;
-  /** Shown while the source candidate is ahead of the published release. */
-  releaseCandidate: string;
-  /** Shown when the pages describe exactly the published release. */
-  releaseMatches: string;
+  releaseDescribes: string;
+  sourceLead: string;
   /** Link to the /changelog route. */
   releaseChangelog: string;
 
@@ -373,6 +404,12 @@ export interface DocsSection {
   id: string;
   title: string;
   blocks: readonly DocsBlock[];
+  until?: { feature: string; describesCurrentRow?: boolean };
+}
+
+export interface DocsSourceGroup {
+  claim: { feature: string; describesCurrentRow?: boolean };
+  sections: readonly DocsSection[];
 }
 
 /**
@@ -392,6 +429,7 @@ export interface DocsPageDict {
   next: readonly { href: string; label: string; note: string }[];
   /** Maintainer pointer, kept out of the rendered copy. */
   sourceNote: string;
+  sourceGroups?: readonly DocsSourceGroup[];
 }
 
 export type DocsReviewDict = DocsPageDict;
@@ -457,16 +495,6 @@ export interface LegalPrivacyDict {
   updated: string;
   termsLink: string;
   homeLink: string;
-}
-
-export interface DigestDict {
-  metaTitle: string;
-  metaDescription: string;
-  /** Heading shown with the empty state. */
-  emptyTitle: string;
-  emptyBody: string;
-  title: string;
-  lead: string;
 }
 
 /** `app/[locale]/feed/page.tsx`. */
@@ -580,6 +608,7 @@ export interface DocsVocabularyDict {
   executionHeading: string;
   controlHeading: string;
   controlLead: string;
+  sourceControlHeading: string;
   routeHeading: string;
   advisoryHeading: string;
   measurementHeading: string;
@@ -632,34 +661,6 @@ export interface ConstitutionDict {
   illustration: string;
   install: string;
   configuration: string;
-}
-
-/** `app/[locale]/runtime/page.tsx`. */
-export interface RuntimeDict {
-  metaTitle: string;
-  metaDescription: string;
-  kicker: string;
-  /** Page H1. */
-  title: string;
-  /** The H1 again in the other script, set beside it (the bilingual Han title). */
-  titleAside: string;
-  /** BCP 47 language of `titleAside`. */
-  titleAsideLang: string;
-  lede: string;
-  integrationsTitle: string;
-  /** Status label on an experimental integration. */
-  experimental: string;
-  trustTitle: string;
-  factsTitle: string;
-  version: string;
-  toolCount: string;
-  sandboxBackends: string;
-  /** Summary of the maintainer-facing disclosure (crates, source revision). */
-  details: string;
-  sourceRevision: string;
-  docsLead: string;
-  runtimeApiDoc: string;
-  mcpDoc: string;
 }
 
 export type DocsHooksDict = DocsPageDict;

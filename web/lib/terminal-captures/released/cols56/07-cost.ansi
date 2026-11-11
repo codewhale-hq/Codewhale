@@ -1,0 +1,30 @@
+[1m[38;5;221m[48;5;234m▎ [0m[38;5;255m[48;5;234mAdd a --json flag to ls.py so the tests pass, then r…[39m
+                                                       [38;5;239m│
+[1m[38;5;103mNote[0m[48;5;234m [3m[38;5;109mSession Cost:[0m[48;5;234m                                     [38;5;239m│
+[38;5;103m▏    [3m[38;5;109m─────────────────────────────[0m[48;5;234m                     [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mEstimated total: unknown[0m[48;5;234m                          [38;5;239m│
+[38;5;103m▏    [39m                                                  [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mNo turn has an authoritative price in the[0m[48;5;234m         [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mselected currency.[0m[48;5;234m                                [38;5;239m│
+[38;5;103m▏    [39m                                                  [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mThis is an estimate, not a bill: it is computed[0m[48;5;234m   [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mlocally from provider-reported token usage and[0m[48;5;234m    [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mpublished rates, and can differ from your[0m[48;5;234m         [38;5;239m│
+[38;5;103m▏    [3m[38;5;109minvoice.[0m[48;5;234m                                          [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mCovered: 0 of 1 money-metered turn(s) priced.[0m[48;5;234m     [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mExcluded: 1 money-metered turn(s) had no[0m[48;5;234m          [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mauthoritative price (billing basis unknown);[0m[48;5;234m      [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mtheir spend is missing from the total above.[0m[48;5;234m      [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mAudited routes (redacted):[0m[48;5;234m                        [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mprovider=custom identity=scripted_local[0m[48;5;234m           [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mmodel=scripted-demo surface=unclassified endpoint[0m[48;5;234m [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109m_[0m[48;5;234m                                                 [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mfp=fc6e420923bfd229847108c13ac292d5e480427fea945d[0m[48;5;234m [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109m7cb657127eb4933424 billing_mode=unknown[0m[48;5;234m           [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mcurrency=unpriced[0m[48;5;234m                                 [38;5;80m┃
+[38;5;74m[48;5;235m╭──────────────────────────────────────────────────────╮
+│❯[39m [38;5;146mType a message…[39m                                     [38;5;74m│
+│[39m                                                  [38;5;103m[·][39m [38;5;74m│
+╰──────────────────────────────────────────────────────╯
+[39m[48;5;233m [1m[38;5;173m● ask · files: workspace (unenforced)[0m[38;5;103m[48;5;233m   [38;5;74mwork[38;5;103m (Tab)[39m
+ [38;5;146mscripted-demo[38;5;103m   [38;5;109mcontext[39m [38;5;74m5%[39m

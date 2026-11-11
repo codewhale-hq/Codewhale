@@ -1,0 +1,36 @@
+[1m[38;5;103mNote[0m[48;5;234m [1m[38;5;74mReceipt: Add a --json flag to ls.py so[0m[48;5;234m    [38;5;80m┃
+[38;5;103m▏    [1m[38;5;74mthe tests pass, t...[0m[48;5;234m                      [38;5;80m┃
+[38;5;103m▏    ────────────────────────────────────────[39m  [38;5;80m┃
+[38;5;103m▏    [39m                                          [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109msession[0m[48;5;234m                                   [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mcb7d3cbd-c380-4a36-8db2-9fa5ed22027b ·[0m[48;5;234m    [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109m/home/dev/proj · scripted-demo · Ask[0m[48;5;234m      [38;5;80m┃
+[38;5;103m▏    [39m                                          [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mChanged 1 file · ran 1 command · 1[0m[48;5;234m        [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mapproved by you · 1 ran without asking[0m[48;5;234m    [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109munder Ask[0m[48;5;234m                                 [38;5;80m┃
+[38;5;103m▏    [39m                                          [38;5;80m┃
+[38;5;103m▏    [38;5;74m1. [3m[38;5;109mwrote [48;5;17mls.py[0m[48;5;234m                            [38;5;80m┃
+[38;5;103m▏    [38;5;74m2. [3m[38;5;109mran [48;5;17mpython3 -m unittest -q[48;5;234m · approved[0m[48;5;234m  [38;5;80m┃
+[38;5;103m▏    [39m   [3m[38;5;109mby you[0m[48;5;234m                                 [38;5;80m┃
+[38;5;103m▏    [39m                                          [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mNot recorded:[0m[48;5;234m                             [38;5;80m┃
+[38;5;103m▏    [38;5;74m- [3m[38;5;109mExit codes: calls that saved no[0m[48;5;234m         [38;5;80m┃
+[38;5;103m▏    [39m  [3m[38;5;109mstructured result (terminal sessions)[0m[48;5;234m   [38;5;80m┃
+[38;5;103m▏    [39m  [3m[38;5;109mshow pass or fail, not the exit code.[0m[48;5;234m   [38;5;80m┃
+[38;5;103m▏    [38;5;74m- [3m[38;5;109mFiles changed outside file tools come[0m[48;5;234m   [38;5;80m┃
+[38;5;103m▏    [39m  [3m[38;5;109mfrom the workspace snapshots taken[0m[48;5;234m      [38;5;80m┃
+[38;5;103m▏    [39m  [3m[38;5;109mbefore and after each turn, so they[0m[48;5;234m     [38;5;80m┃
+[38;5;103m▏    [39m  [3m[38;5;109minclude anything that wrote to the[0m[48;5;234m      [38;5;80m┃
+[38;5;103m▏    [39m  [3m[38;5;109mworkspace during the turn, not only[0m[48;5;234m     [38;5;80m┃
+[38;5;103m▏    [39m  [3m[38;5;109mCodewhale. They leave out what[0m[48;5;234m          [38;5;80m┃
+[38;5;103m▏    [39m  [3m[38;5;109msnapshots do not track: ignored and[0m[48;5;234m     [38;5;80m┃
+[38;5;103m▏    [39m  [3m[38;5;109mskipped paths (.gitignore entries,[0m[48;5;234m      [38;5;80m┃
+[38;5;103m▏    [39m  [3m[38;5;109m.env, node_modules, target, and the[0m[48;5;234m     [38;5;80m┃
+[38;5;103m▏    [39m  [3m[38;5;109mlike) and anything outside the[0m[48;5;234m          [38;5;80m┃
+[38;5;103m▏    [39m  [3m[38;5;109mworkspace.[0m[48;5;234m                              [38;5;80m┃
+[38;5;103m▏    [38;5;74m- [3m[38;5;109mLine counts: some file changes have no[0m[48;5;234m  [38;5;80m┃
+[38;5;103m▏    [39m  [3m[38;5;109msaved diff, so their +/- counts are not[0m[48;5;234m [38;5;80m┃
+[38;5;103m▏    [39m  [3m[38;5;109mrecorded.[0m[48;5;234m                               [38;5;80m┃
+[38;5;103m▏    [38;5;74m- [3m[38;5;109mTimestamps: a terminal session saves[0m[48;5;234m    [38;5;80m┃
+[38;5;103m▏    [39m  [3m[38;5;109mcalls in order, not when each one ran.[0m[48;5;234m  [38;5;80m┃

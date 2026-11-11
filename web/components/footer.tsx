@@ -7,10 +7,10 @@ import {
   footerProductLinks,
   footerProjectLinks,
 } from "@/lib/i18n/links";
-import { SITE_CONTACT_EMAIL, SITE_SECURITY_EMAIL } from "@/lib/page-meta";
+import { SITE_CONTACT_EMAIL } from "@/lib/page-meta";
+import { reviewState } from "@/lib/i18n/review-state";
 import { USAGE_COUNTING_COPY } from "@/lib/content/usage-counting";
 import { pickText } from "@/lib/i18n/dictionaries";
-import { getStorefrontCopy } from "@/lib/content/merch-storefront";
 
 /**
  * Site footer: the sea below one horizon line, in both appearances.
@@ -23,7 +23,7 @@ export function Footer({ locale = "en" }: { locale?: Locale }) {
   const product = footerProductLinks(locale, chrome);
   const docs = footerDocsLinks(locale, chrome);
   const project = footerProjectLinks(locale, chrome);
-  const legal = footerLegalLinks(locale, chrome);
+  const legal = footerLegalLinks(locale, chrome, pickText(USAGE_COUNTING_COPY.footerLink, locale));
 
   return (
     <footer className="site-footer">
@@ -36,7 +36,6 @@ export function Footer({ locale = "en" }: { locale?: Locale }) {
               <span className="brand-mark" aria-hidden="true" />
               <span className="wordmark" aria-hidden="true" />
             </Link>
-            <p>{chrome.footerTagline}</p>
           </div>
 
           <div className="site-footer-links">
@@ -56,15 +55,12 @@ export function Footer({ locale = "en" }: { locale?: Locale }) {
               <span className="site-footer-label">{chrome.footerProject}</span>
               <div className="site-footer-list">
                 {project.map((item) => <Link key={item.href} href={item.href}>{item.label}</Link>)}
-                <Link href={`/${locale}/merch`}>{getStorefrontCopy(locale).merch}</Link>
               </div>
             </div>
             <div className="site-footer-group">
               <span className="site-footer-label">{chrome.footerLegal}</span>
               <div className="site-footer-list">
                 {legal.map((item) => <Link key={item.href} href={item.href}>{item.label}</Link>)}
-                <Link href={`/${locale}/legal/privacy#usage-counting`}>{pickText(USAGE_COUNTING_COPY.footerLink, locale)}</Link>
-                <a href={`mailto:${SITE_SECURITY_EMAIL}`}>{chrome.footerSecurity}</a>
               </div>
             </div>
           </div>
@@ -78,6 +74,7 @@ export function Footer({ locale = "en" }: { locale?: Locale }) {
             <a href={`mailto:${SITE_CONTACT_EMAIL}`}>{SITE_CONTACT_EMAIL}</a>
           </div>
           <span>© {new Date().getFullYear()} Codewhale</span>
+          {reviewState(locale) === "machine" && <span className="site-footer-review">{chrome.translationMachineDraft}</span>}
         </div>
       </div>
     </footer>

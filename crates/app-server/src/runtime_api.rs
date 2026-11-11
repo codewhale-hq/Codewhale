@@ -114,6 +114,7 @@ mod account;
 mod auth;
 mod automations;
 mod avatars;
+mod builtin_commands;
 mod computer_display;
 mod context;
 mod diagnostics;
@@ -3284,6 +3285,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/skills", get(list_skills))
         .route("/v1/commands", get(list_commands))
         .route("/v1/threads/{id}/commands", post(run_thread_command))
+        .route(
+            "/v1/threads/{id}/commands/builtin",
+            post(builtin_commands::run_builtin_command),
+        )
         .route(
             "/v1/threads/{id}/commands/{operation_key}",
             get(get_thread_command).delete(cancel_thread_command),

@@ -23,9 +23,6 @@ export default defineConfig({
 			triggers.scheduled({
 				schedule: "0 0 * * *",
 			}),
-			triggers.scheduled({
-				schedule: "0 9 * * 1",
-			}),
 		],
 		env: {
 			GITHUB_REPO: bindings.text("codewhale-hq/CodeWhale"),

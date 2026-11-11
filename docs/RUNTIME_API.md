@@ -2604,6 +2604,30 @@ thread deletion.
   respect: a `binding: "host"` row is never submitted as a model prompt, and
   a user command shadowing a builtin name wins that spelling.
 
+- `POST /v1/threads/{id}/commands/builtin` — run one terminal built-in
+  against the thread and return its own answer: `{name, text, is_error,
+  text_only}`. The body is `{name, args?}`, where `name` takes the canonical
+  spelling or an alias, with or without the leading slash.
+
+  Only read-only diagnostics the server can answer from thread state are
+  served (`/system`, `/tokens`, `/cost`); the served set lives in the
+  terminal host and is gated a second time by the data each portable handler
+  declares it needs, so a route cannot widen without the host widening
+  first. Any other name — including one no host knows — answers 404. A
+  thread whose engine is not loaded, or that has no live context estimate
+  yet, answers 409 rather than printing zeros; the route never starts an
+  engine. `/system` reports the effective system prompt the engine sends, and
+  `/tokens` counts the live session transcript. Like every other POST route,
+  it answers 403 to a watch-only device token, so a watch client cannot read
+  `/tokens` or `/cost` through it.
+
+  `text_only` is `false` when the command also asked the terminal host for an
+  action (a balance fetch, a snapshot restore): the text is still what the
+  command answered, but no client can perform that action on the host's
+  behalf. These executions keep no command receipt — every served handler is
+  pure over the snapshot — so a client must not look for one. Anything that
+  mutates the session stays a terminal-side command.
+
 **Hooks**
 - `GET /v1/hooks[?thread_id=...]` — `{workspace, enabled, hooks: [...],
   problems: [...]}`: the hook set Runtime API threads run for that workspace

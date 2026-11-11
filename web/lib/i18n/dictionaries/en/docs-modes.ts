@@ -3,11 +3,11 @@ import type { DocsModesDict } from "../types";
 export const docsModes: DocsModesDict = {
   metaTitle: "Set modes and approvals · Codewhale Docs",
   metaDescription:
-    "Choose Plan or Work and set when Codewhale asks for approval. Compare the published v0.10.2 controls with the 0.10.3 source candidate.",
+    "Choose Plan, Work or Operate and set when Codewhale asks for approval. You decide what it may do without asking.",
   bodyClassName: "text-ink-soft leading-relaxed",
   title: "Set modes and approvals",
   lede:
-    "Plan lets you inspect and agree on an approach before making changes. Work can edit files and run commands within the permissions you choose.",
+    "Plan lets you inspect and agree on an approach before making changes. Work and Operate can edit files and run commands within the permissions you choose. You decide what it may do without asking.",
   sections: [
     {
       id: "versions",
@@ -15,16 +15,14 @@ export const docsModes: DocsModesDict = {
       blocks: [
         { code: "codewhale --version", lang: "Shell" },
         {
-          p: "The latest published release is v0.10.2. In that release, Tab with an empty composer cycles Plan → Work → Operate, and Shift+Tab cycles Ask → Auto-Review → Full Access. Operate coordinates larger tasks with the same permissions as Work; read the [v0.10.2 mode guide](https://github.com/codewhale-hq/CodeWhale/blob/v0.10.2/docs/MODES.md) for that release.",
-        },
-        {
-          note: "The sections below describe the unpublished 0.10.3 source candidate. Installing the latest published release does not give you these new controls.",
+          p: "This page describes the published release named at the top of the page. Behavior that exists only in the project's source is in the labelled section at the end.",
         },
       ],
     },
     {
       id: "modes",
-      title: "Choose Plan or Work in the source candidate",
+      title: "Choose Plan, Work or Operate",
+      until: { feature: "modes", describesCurrentRow: true },
       blocks: [
         {
           rows: [
@@ -36,33 +34,34 @@ export const docsModes: DocsModesDict = {
               "Work",
               "Codewhale reads, edits files and runs commands within the approval, sandbox and policy boundaries you set. It can delegate independent tasks to other agents.",
             ],
+            [
+              "Operate",
+              "The same tools and authority as Work, with more emphasis on delegating multi-part work to parallel agents and on checking results before calling the work done. It does not bypass the approval, sandbox or policy boundaries Work uses.",
+            ],
           ],
         },
         {
-          p: "Open `/mode` to choose a mode, or enter one of these commands. In the source candidate, `/mode operate` remains a compatibility alias for Work and explains that Operate was retired.",
+          p: "With an empty composer, Tab cycles Plan → Work → Operate. Open `/mode` to choose a mode, or enter one of these commands:",
         },
-        { code: "/mode plan\n/mode work", lang: "Codewhale" },
+        { code: "/mode plan\n/mode work\n/mode operate", lang: "Codewhale" },
         {
-          p: "After a successful Plan response, Codewhale asks whether to continue in Work with Ask, Accept Edits or Auto-Review, or to keep planning. Switching to Work sends the approved plan as a follow-up.",
+          p: "After a successful Plan response, Codewhale asks whether to continue in Work with Ask or Auto-Review, or to keep planning. Switching to Work sends the approved plan as a follow-up.",
         },
       ],
     },
     {
       id: "approvals",
-      title: "Set when the source candidate asks",
+      title: "Set when Codewhale asks",
+      until: { feature: "permission-postures", describesCurrentRow: true },
       blocks: [
         {
-          p: "Press Shift+Tab to step one permission dial: Ask → Accept Edits → Plan → Auto-Review → Full Access → Ask. Plan is the Plan mode; every other stop uses Work. Tab only completes commands, file mentions and suggestions; it never changes modes or sends text.",
+          p: "Press Shift+Tab to cycle the permission posture: Ask → Auto-Review → Full Access. A fresh install starts in Ask. The posture is separate from the mode.",
         },
         {
           rows: [
             [
               "Ask",
-              "Codewhale asks before every file edit and command, including edits inside the workspace. Saved approvals and policy rules still apply.",
-            ],
-            [
-              "Accept Edits",
-              "Ordinary file edits inside the workspace's git work tree can run without a prompt. Commands, network and MCP actions still ask, as do sensitive-file edits, edits outside the workspace and edits in a folder without git. ACP sessions treat this setting as Ask.",
+              "The default. Codewhale asks before a command runs. Saved approvals and policy rules still apply.",
             ],
             [
               "Auto-Review",
@@ -75,10 +74,7 @@ export const docsModes: DocsModesDict = {
           ],
         },
         {
-          note: "New source-candidate installs start with Accept Edits when no posture is saved. An explicit saved choice stays in control; managed approval policy can lock the setting. Use [Review what changed](/docs/review) to inspect edits and available restore points.",
-        },
-        {
-          p: "The dial works while a turn is running unless another modal blocks it. A change applies at the agent's next step; a previously approved call runs only if the new posture is equal or broader. Each effective change appears in the transcript.",
+          note: "Use [Review what changed](/docs/review) to inspect edits and available restore points.",
         },
       ],
     },
@@ -115,6 +111,58 @@ export const docsModes: DocsModesDict = {
       ],
     },
   ],
+  sourceGroups: [
+    {
+      claim: { feature: "modes", describesCurrentRow: true },
+      sections: [
+        {
+          id: "source-modes",
+          title: "Plan and Work",
+          blocks: [
+            {
+              p: "Plan and Work are the two modes. `/mode operate` still works as an alias for Work and explains that Operate was retired. Tab only completes commands, file mentions and suggestions; it never changes modes or sends text.",
+            },
+            { code: "/mode plan\n/mode work", lang: "Codewhale" },
+            {
+              p: "After a successful Plan response, Codewhale asks whether to continue in Work with Ask, Accept Edits or Auto-Review, or to keep planning.",
+            },
+          ],
+        },
+      ],
+    },
+    {
+      claim: { feature: "permission-postures", describesCurrentRow: true },
+      sections: [
+        {
+          id: "source-approvals",
+          title: "One permission dial",
+          blocks: [
+            {
+              p: "Shift+Tab steps one permission dial: Ask → Accept Edits → Plan → Auto-Review → Full Access → Ask. Plan is the Plan mode; every other stop uses Work.",
+            },
+            {
+              rows: [
+                [
+                  "Ask",
+                  "Codewhale asks before every file edit and command, including edits inside the workspace. Saved approvals and policy rules still apply.",
+                ],
+                [
+                  "Accept Edits",
+                  "Ordinary file edits inside the workspace's git work tree can run without a prompt. Commands, network and MCP actions still ask, as do sensitive-file edits, edits outside the workspace and edits in a folder without git. ACP sessions treat this setting as Ask.",
+                ],
+              ],
+            },
+            {
+              note: "New installs start with Accept Edits when no posture is saved. An explicit saved choice stays in control; managed approval policy can lock the setting.",
+            },
+            {
+              p: "The dial works while a turn is running unless another modal blocks it. A change applies at the agent's next step; a previously approved call runs only if the new posture is equal or broader. Each effective change appears in the transcript.",
+            },
+          ],
+        },
+      ],
+    },
+  ],
   next: [
     {
       href: "/docs/review",
@@ -132,5 +180,5 @@ export const docsModes: DocsModesDict = {
       note: "Delegate independent tasks and follow each agent's progress.",
     },
   ],
-  sourceNote: "The source-candidate controls follow docs/MODES.md, docs/KEYBINDINGS.md and docs/CONFIGURATION.md. The published-release link points to the v0.10.2 tag.",
+  sourceNote: "Source: docs/MODES.md, docs/KEYBINDINGS.md and docs/CONFIGURATION.md at the published release tag; the in-source section follows main.",
 };

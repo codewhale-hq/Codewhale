@@ -117,7 +117,7 @@
   },
   "docs-skills": {
     "metaTitle": "管理技能 · Codewhale 文档",
-    "metaDescription": "查找、安装并信任 SKILL.md 指令包，控制用户与模型调用，并导入兼容的 Claude Code 技能。",
+    "metaDescription": "查找、安装并信任 SKILL.md 指令包，控制用户与模型调用，并导入其他编码智能体的兼容技能文件夹。",
     "bodyClassName": "text-ink-soft leading-[1.9] tracking-wide",
     "title": "管理可复用技能",
     "lede": "技能是 SKILL.md 指令包。发现兼容文件夹后，先审阅来源与信任设置，再使用技能。",
@@ -173,7 +173,7 @@
     "next": [
       {
         "href": "/docs/claude-code",
-        "label": "从 Claude Code 迁移",
+        "label": "从其他编码智能体带来你的设置",
         "note": "带入兼容技能并审阅设置导入方案。"
       },
       {
@@ -185,10 +185,10 @@
     "sourceNote": "来源：docs/SKILLS.md 与 docs/CLAUDE_PLUGIN_COMPAT.md。"
   },
   "docs-claude-code": {
-    "metaTitle": "从 Claude Code 迁移 · Codewhale 文档",
-    "metaDescription": "把 Codewhale 作为开源 Claude Code 替代方案。保留兼容指令与技能，并审阅设置和 MCP 导入方案。",
+    "metaTitle": "从其他编码智能体带来你的设置 · Codewhale 文档",
+    "metaDescription": "保留你已有的项目说明与技能文件夹，并在应用前审阅设置和 MCP 导入方案。",
     "bodyClassName": "text-ink-soft leading-[1.9] tracking-wide",
-    "title": "从 Claude Code 迁移",
+    "title": "从其他编码智能体带来你的设置",
     "lede": "保留兼容的项目说明与技能文件夹，同时选择你自己的模型连接。应用设置和插件导入前，请先审阅。",
     "sections": [
       {
@@ -196,10 +196,10 @@
         "title": "保留项目说明",
         "blocks": [
           {
-            "p": "AGENTS.md 是项目说明的规范文件。CLAUDE.md 和 .claude/instructions.md 作为兼容回退，不会覆盖 Codewhale 安全控制。"
+            "p": "AGENTS.md 是项目说明的规范文件。如果项目只有 `CLAUDE.md` 或 `.claude/instructions.md`，Codewhale 会把它们作为兼容回退读取；两者都不会覆盖 Codewhale 安全控制。"
           },
           {
-            "p": "普通 .claude/skills/<name>/SKILL.md 文件夹通过常规[技能注册表](/docs/skills)发现，并受工作区信任与调用控制约束。"
+            "p": "普通 `.claude/skills/<name>/SKILL.md` 文件夹通过常规[技能注册表](/docs/skills)发现，并受工作区信任与调用控制约束。"
           }
         ]
       },
@@ -212,7 +212,7 @@
             "lang": "Codewhale"
           },
           {
-            "p": "该命令读取 Claude 设置，生成可审阅报告与尚未应用的配置包。MCP 服务器使用现有的导入同意流程；权限和钩子需要单独审阅。"
+            "p": "该命令读取已有 `.claude` 文件夹中的设置，生成可审阅报告与尚未应用的配置包。MCP 服务器使用现有的导入同意流程；权限和钩子需要单独审阅。"
           },
           {
             "note": "疑似密钥和未知环境变量的值不会被导入或回显。运行方案不会启用服务器，也不会应用权限。"
@@ -228,13 +228,13 @@
             "lang": "Codewhale"
           },
           {
-            "p": "声明式 .claude-plugin/plugin.json 子集支持技能、命令、智能体配置与 MCP 声明。Codewhale 的审阅哈希、显式信任与启用流程仍然适用。"
+            "p": "声明式 `.claude-plugin/plugin.json` 子集支持技能、命令、智能体配置与 MCP 声明。Codewhale 的审阅哈希、显式信任与启用流程仍然适用。"
           },
           {
-            "note": "Codewhale 不会运行 Claude Code 插件运行时。钩子、插件 LSP 声明、构建步骤与 TypeScript 智能体不在该导入器的支持范围内。"
+            "note": "Codewhale 不会运行其他智能体的插件运行时。钩子、插件 LSP 声明、构建步骤与 TypeScript 智能体不在该导入器的支持范围内。"
           },
           {
-            "p": "[阅读兼容性限制](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/CLAUDE_PLUGIN_COMPAT.md)。在[模型设置](/models)中选择凭据与端点。"
+            "p": "[阅读兼容性限制](https://github.com/codewhale-hq/CodeWhale/blob/v0.10.2/docs/CLAUDE_PLUGIN_COMPAT.md)。在[模型设置](/models)中选择凭据与端点。"
           }
         ]
       }
@@ -251,17 +251,14 @@
         "note": "使用你选择的托管模型或本地模型。"
       }
     ],
-    "sourceNote": "来源：docs/CONFIGURATION.md、docs/CLAUDE_PLUGIN_COMPAT.md 与 docs/features.toml 中的 claude-settings-import 条目。"
+    "sourceNote": "来源：docs/CONFIGURATION.md、docs/CLAUDE_PLUGIN_COMPAT.md 与 docs/features.toml 中的 claude-settings-import 条目（均取自已发布版本标签）。"
   },
   "chrome": {
     "navDocs": "文档",
-    "navStart": "指引",
-    "navInstall": "安装",
-    "navFaq": "常见问题",
-    "navCommunity": "社区",
     "navContribute": "贡献",
+    "navSignIn": "登录",
+    "navDesktop": "桌面版",
     "navFeatures": "功能",
-    "navProduct": "产品",
     "navModels": "模型",
     "navPlugins": "插件",
     "skipToContent": "跳转到主要内容",
@@ -271,25 +268,23 @@
     "dateLocale": "zh-CN",
     "menuOpen": "打开菜单",
     "menuClose": "关闭菜单",
+    "translationMachineDraft": "本翻译为机器草稿，尚未经母语者审校。",
     "themeAuto": "自动",
     "themeLight": "浅色",
     "themeDark": "深色",
     "themeAria": "主题：{mode}（点击切换）",
     "themeTitle": "主题 · 自动 / 浅色 / 深色",
-    "footerTagline": "通过一个你读得懂的智能体使用任意模型。",
     "footerProduct": "产品",
     "footerProject": "项目",
     "footerDocs": "文档",
     "footerGuide": "新手指引",
     "footerInstall": "安装",
-    "footerApps": "桌面与网页",
     "footerModels": "模型",
-    "footerRuntime": "运行时",
     "footerFaq": "常见问题",
-    "footerIssues": "议题",
     "footerContribute": "参与贡献",
     "footerRoadmap": "路线图",
     "footerLicense": "MIT 许可证",
+    "footerMerch": "周边商品",
     "footerTerms": "服务条款",
     "footerPrivacy": "隐私政策",
     "footerChangelog": "更新日志",
@@ -318,10 +313,21 @@
     "downloadSigned": "已签名并经过公证"
   },
   "home": {
-    "metaTitle": "Codewhale · 通过一个你读得懂的智能体使用任意模型",
-    "metaDescription": "Codewhale 是你和任意模型之间的开源智能体。阅读它的代码，或让它自己解释。来自世界各地的社区让它在每个版本中变得更好。",
-    "heroTitle": "通过一个你读得懂的智能体使用任意模型",
-    "heroIntro": "{brand} 是你和模型之间的开源智能体。你可以阅读它的代码，也可以让它读自己的代码并解释它在做什么。来自世界各地的社区让它在每个版本中变得更好。",
+    "metaTitle": "Codewhale · 模型可以是任何人的。智能体应当属于你。",
+    "metaDescription": "Codewhale 正在成为一个开放的环境：你可以在自己的电脑上和云端，使用任意模型，与许多智能体一起构建软件。今天，它从你的终端和浏览器开始，开源，代码任你阅读。",
+    "heroTitle": "模型可以是任何人的。智能体应当属于你。",
+    "heroTitleLead": "模型可以是任何人的。",
+    "heroIntro": "{brand} 正在成为一个开放的环境：你可以在自己的电脑上和云端，使用任意模型，与许多智能体一起构建软件。今天，它从你的终端和浏览器开始，开源，代码任你阅读。",
+    "readTheCode": "阅读代码",
+    "installNote": "版本 {version} 已发布，无需账号。",
+    "captionDevelopment": "开发版本在真实终端中的运行：编辑和测试都是真实执行的，模型是脚本化的演示。",
+    "captionReleased": "真实的终端会话：编辑和测试都是真实执行的，模型是脚本化的演示。",
+    "captureFrameNoPosture": "模型名称和 Ask 设置显示在这一帧之前和之后的画面中。",
+    "frameLabelPrompt": "提示",
+    "frameLabelEdit": "编辑",
+    "frameLabelApproval": "审批",
+    "frameLabelResult": "结果",
+    "frameLabelReceipt": "回执",
     "getCodewhale": "安装 Codewhale",
     "heroInstallAria": "安装命令",
     "shotPreview": "本地终端演示",
@@ -334,7 +340,37 @@
     "startHeading": "从一件有用的任务开始",
     "copy": "复制",
     "copied": "已复制 ✓",
-    "contribute": "参与贡献"
+    "contribute": "参与贡献",
+    "belief": "你使用的模型通常是别人的。你租用它，它会在你不知情时发生变化。智能体则不同。它读取你的文件，运行你的命令，记住你正在做的工作，并以你的名义行事，所以它应当属于你。Codewhale 就是这样的智能体。它是开源的，所以你可以阅读它的每一行代码，也可以让它把自己读给你听。它支持你选择的任意模型，由你决定它可以在不询问的情况下做什么，并且它会留下一份你能读懂的记录。我们正在把它建设成一个地方，让你和许多智能体在这里一起开发软件，从你的终端一直到云端的一台计算机，而且它自始至终都属于你。",
+    "sectionModelHeading": "任何模型都可以通过你的智能体工作。",
+    "sectionModelBody": "使用内置提供商、任意 OpenAI 兼容端点，或你自己机器上的模型，并且可以在两轮对话之间更换模型。Codewhale 在你的仓库中运行，无需账号，而 `codewhale web` 让你在自己机器上的浏览器里使用它。",
+    "sectionControlHeading": "你的智能体对你负责。",
+    "sectionControlBody": "由你决定 Codewhale 可以在不询问的情况下做什么，它的命令可以在 macOS 和 Linux 上的沙箱中运行。每次会话都会留下一份回执，记录它修改的文件、运行的命令，以及每一步由谁批准。",
+    "sectionAgentsHeading": "多个智能体可以与你共同完成一项任务。",
+    "sectionAgentsBody": "Codewhale 把一项工作分给多个智能体，各有探索者、实施者和审查者等角色，你可以查看、检查并停止其中每一个。Fleet 会保存一份账本，所以重启之后，运行可以接着继续。",
+    "sectionDirectionHeading": "这是你的智能体将要去的地方。",
+    "sectionDirectionBody": "Codewhale 正在成为横跨你的终端、桌面应用、浏览器和云端计算机的统一环境，全部由同一个引擎驱动，所以你的工作可以在它们之间转移，并始终属于你。下面每个部分都说明了它今天所处的状态。",
+    "sectionOpenHeading": "Codewhale 由使用它的人公开构建。",
+    "sectionOpenBody": "它起初是一个只支持一种模型的开源终端工具，后来成为数以百计、使用多种语言的人共同构建的项目。你可以阅读它的代码、修改它，或让它自己解释自己。",
+    "sectionStartHeading": "今天就让你的智能体属于你。",
+    "sectionStartBody": "安装 Codewhale，并在一个仓库中使用你已有的模型密钥，或你自己电脑上的模型来运行它。你无需账号，`codewhale update` 会让它保持最新。",
+    "mapHeading": "一个引擎",
+    "mapStateReleased": "已发布",
+    "mapStateDeveloping": "开发中，暂无下载",
+    "mapStateInviteOnly": "仅限邀请",
+    "mapStateBeingBuilt": "建设中",
+    "mapTerminal": "终端应用",
+    "mapTerminalSentence": "在 macOS、Linux 或 Windows 上安装，然后在任意仓库中运行 `codewhale`。",
+    "mapLocalBrowser": "本地浏览器客户端",
+    "mapLocalBrowserSentence": "运行 `codewhale web`，即可在浏览器中阅读对话、发送任务并回应审批；它随终端一起提供，无需账号。",
+    "mapManyAgents": "多个智能体共同完成一项任务",
+    "mapManyAgentsSentence": "子智能体、Fleet 和工作流让多个智能体各司其职，共同完成一项任务。",
+    "mapDesktop": "桌面应用",
+    "mapDesktopSentence": "我们正在基于同一个引擎构建桌面应用，目前还没有公开下载。",
+    "mapCloud": "云端计算机",
+    "mapCloudSentence": "云端计算机仅限邀请，我们正在构建它们，让会话可以在云端的一台机器上持续工作。",
+    "mapOneSession": "跨越它们的同一个会话",
+    "mapOneSessionSentence": "我们正在构建同一个会话，它会随你从终端到桌面、浏览器和云端，并且自始至终都属于你。"
   },
   "docs-guide": {
     "metaTitle": "开始第一个任务 · Codewhale 文档",
@@ -355,8 +391,8 @@
     "installCta": "安装 Codewhale",
     "releaseLabel": "版本",
     "releasePublished": "最新发布 {tag} · {date}",
-    "releaseCandidate": "本站文档描述的是尚未发布的 {version} 源码候选版。",
-    "releaseMatches": "本站文档描述的是已发布的 {tag}。",
+    "releaseDescribes": "本站文档描述的是已发布的 {tag}。",
+    "sourceLead": "本节描述仅存在于项目源码、尚未包含在已发布版本中的行为。可用 `codewhale --version` 查看你使用的版本。",
     "releaseChangelog": "更新日志 →",
     "searchLabel": "搜索文档",
     "searchPlaceholder": "搜索指南与参考",
@@ -448,7 +484,7 @@
             "note": "这个示例只覆盖名称恰好为 `bash` 的工具，不会阻止其他工具、外部客户端或你自行运行的命令。通过子字符串匹配强制推送标志不是 shell 安全边界；更广泛的限制应使用执行策略与操作系统沙箱。"
           },
           {
-            "note": "在 Ask、Accept Edits 和 Auto-Review 下，`ask` 会强制弹出提示。Full Access 不增加审批提示，因此 `ask` 在该设置下不会新增提示。"
+            "note": "只要当前权限设置会询问或审查，`ask` 就会强制弹出提示。Full Access 不增加审批提示，因此 `ask` 在该设置下不会新增提示。"
           }
         ]
       },
@@ -499,7 +535,7 @@
               ],
               [
                 "mode_change",
-                "在 Plan 与 Work 之间切换时。"
+                "切换模式时。"
               ],
               [
                 "subagent_spawn / subagent_complete",
@@ -722,7 +758,7 @@
             "lang": "终端"
           },
           {
-            "p": "此处使用 [Docker 指南](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/DOCKER.md) 中记录的镜像与 v0.10.0 标签，不是 0.10.3 源码候选版本。镜像以非 root 用户运行；请将配置保存在命名卷中，每个项目使用独立卷，不要把密钥写入镜像。"
+            "p": "此处使用 [Docker 指南](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/DOCKER.md) 中记录的镜像与 v0.10.0 标签。镜像以非 root 用户运行；请将配置保存在命名卷中，每个项目使用独立卷，不要把密钥写入镜像。"
           }
         ]
       }
@@ -906,7 +942,7 @@
             "p": "这种声明式写法支持 `agent`、`branch`、`sequence`、`reduce`、`loop_until`、`cond`、`expand` 和 `teacher_review`。它会编译成经过验证的计划，拒绝 `import`、`fetch`、`eval`、`async` 等语法与调用。高级命令式 JavaScript 可在沙箱中通过异步 `task()` 和 `parallel()` 协调工作，但仍不能直接访问文件、shell 或网络；这些操作由智能体按当前策略执行。"
           },
           {
-            "note": "Workflow 默认最多同时运行 16 个智能体；已接纳的工作等待空闲位置。默认不限制累计子智能体数量或计划结构深度，可用正数的 `[workflow] max_children` 或 `max_depth` 设置上限。运行时的智能体接纳和委派限制另行生效。循环必须声明 `max_iterations`。"
+            "note": "Workflow 会限制同时运行的智能体数量；已接纳的工作等待空闲位置。默认不限制累计子智能体数量或计划结构深度，可用正数的 `[workflow] max_children` 或 `max_depth` 设置上限。运行时的智能体接纳和委派限制另行生效。循环必须声明 `max_iterations`。"
           }
         ]
       },
@@ -1208,10 +1244,10 @@
   },
   "docs-modes": {
     "metaTitle": "设置模式与审批 · Codewhale 文档",
-    "metaDescription": "选择 Plan 或 Work，并设置 Codewhale 何时询问审批。比较已发布的 v0.10.2 与 0.10.3 源码候选版本的控制方式。",
+    "metaDescription": "选择 Plan、Work 或 Operate，并设置 Codewhale 何时询问审批。哪些操作可以不经询问，由你决定。",
     "bodyClassName": "text-ink-soft leading-[1.9] tracking-wide",
     "title": "设置模式与审批",
-    "lede": "Plan 让你先检查情况、商定方案，再开始修改。Work 可以在你选择的权限范围内修改文件和运行命令。",
+    "lede": "Plan 让你先检查情况、商定方案，再开始修改。Work 和 Operate 可以在你选择的权限范围内修改文件和运行命令。哪些操作可以不经询问，由你决定。",
     "sections": [
       {
         "id": "versions",
@@ -1222,16 +1258,17 @@
             "lang": "Shell"
           },
           {
-            "p": "最新已发布版本是 v0.10.2。在该版本中，输入框为空时按 Tab，按 Plan → Work → Operate 切换模式；按 Shift+Tab，按 Ask → Auto-Review → Full Access 切换权限。Operate 协调较大的任务，权限与 Work 相同；该版本的详细说明见 [v0.10.2 模式指南](https://github.com/codewhale-hq/CodeWhale/blob/v0.10.2/docs/MODES.md)。"
-          },
-          {
-            "note": "以下各节介绍尚未发布的 0.10.3 源码候选版本。安装最新已发布版本不会获得这些新的控制方式。"
+            "p": "本页描述页面顶部标明的已发布版本。仅存在于项目源码中的行为，列在页面末尾带标注的一节。"
           }
         ]
       },
       {
         "id": "modes",
-        "title": "在源码候选版本中选择 Plan 或 Work",
+        "title": "选择 Plan、Work 或 Operate",
+        "until": {
+          "feature": "modes",
+          "describesCurrentRow": true
+        },
         "blocks": [
           {
             "rows": [
@@ -1242,37 +1279,41 @@
               [
                 "Work",
                 "Codewhale 在你设置的审批、沙箱和策略边界内阅读、修改文件和运行命令，也可以把独立任务交给其他智能体。"
+              ],
+              [
+                "Operate",
+                "工具和权限与 Work 相同，但更倾向于把多部分任务交给并行智能体，并在宣布完成前检查结果。它不会绕过 Work 所用的审批、沙箱或策略边界。"
               ]
             ]
           },
           {
-            "p": "输入 `/mode` 打开模式选择器，或使用以下命令。在源码候选版本中，`/mode operate` 仍是 Work 的兼容别名，并会说明 Operate 模式已退役。"
+            "p": "输入框为空时，按 Tab 按 Plan → Work → Operate 切换模式。输入 `/mode` 打开模式选择器，或使用以下命令："
           },
           {
-            "code": "/mode plan\n/mode work",
+            "code": "/mode plan\n/mode work\n/mode operate",
             "lang": "Codewhale"
           },
           {
-            "p": "Plan 成功回复后，Codewhale 会询问是否切换到带 Ask、Accept Edits 或 Auto-Review 权限的 Work，或者继续规划。选择 Work 会把已批准的计划作为后续消息发送。"
+            "p": "Plan 成功回复后，Codewhale 会询问是否切换到带 Ask 或 Auto-Review 权限的 Work，或者继续规划。选择 Work 会把已批准的计划作为后续消息发送。"
           }
         ]
       },
       {
         "id": "approvals",
-        "title": "设置源码候选版本何时询问你",
+        "title": "设置 Codewhale 何时询问你",
+        "until": {
+          "feature": "permission-postures",
+          "describesCurrentRow": true
+        },
         "blocks": [
           {
-            "p": "按 Shift+Tab 在同一个权限拨盘上逐档切换：Ask → Accept Edits → Plan → Auto-Review → Full Access → Ask。Plan 档使用 Plan 模式，其余各档使用 Work。Tab 只补全命令、文件提及和建议，既不切换模式，也不发送文本。"
+            "p": "按 Shift+Tab 在权限设置间切换：Ask → Auto-Review → Full Access。全新安装从 Ask 开始。权限设置与模式相互独立。"
           },
           {
             "rows": [
               [
                 "Ask",
-                "Codewhale 在每次修改文件或运行命令前询问你，包括工作区内的修改。已保存的批准和策略规则仍然适用。"
-              ],
-              [
-                "Accept Edits",
-                "工作区 Git 工作树内的普通文件修改可以不经提示执行。命令、网络和 MCP 操作仍会询问；修改敏感文件、工作区外的文件或不属于 Git 仓库的文件夹也会询问。ACP 会话将此设置按 Ask 处理。"
+                "默认设置。Codewhale 在运行命令前询问你。已保存的批准和策略规则仍然适用。"
               ],
               [
                 "Auto-Review",
@@ -1285,10 +1326,7 @@
             ]
           },
           {
-            "note": "未保存权限设置时，新安装的源码候选版本从 Accept Edits 开始。明确保存的选择始终优先；托管审批策略可能锁定设置。通过[查看改动](/docs/review)检查修改和可用的恢复点。"
-          },
-          {
-            "p": "只要没有其他弹窗阻挡，回合运行期间也可使用权限拨盘。改动在智能体的下一步生效；已经批准的调用只有在新权限相同或更宽时才会运行。每次有效变化都会写入对话记录。"
+            "note": "通过[查看改动](/docs/review)检查修改和可用的恢复点。"
           }
         ]
       },
@@ -1340,6 +1378,67 @@
         ]
       }
     ],
+    "sourceGroups": [
+      {
+        "claim": {
+          "feature": "modes",
+          "describesCurrentRow": true
+        },
+        "sections": [
+          {
+            "id": "source-modes",
+            "title": "Plan 和 Work",
+            "blocks": [
+              {
+                "p": "Plan 和 Work 是仅有的两种模式。`/mode operate` 仍可作为 Work 的别名使用，并会说明 Operate 已退役。Tab 只补全命令、文件提及和建议，既不切换模式，也不发送文本。"
+              },
+              {
+                "code": "/mode plan\n/mode work",
+                "lang": "Codewhale"
+              },
+              {
+                "p": "Plan 成功回复后，Codewhale 会询问是否切换到带 Ask、Accept Edits 或 Auto-Review 权限的 Work，或者继续规划。"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "claim": {
+          "feature": "permission-postures",
+          "describesCurrentRow": true
+        },
+        "sections": [
+          {
+            "id": "source-approvals",
+            "title": "一个权限拨盘",
+            "blocks": [
+              {
+                "p": "按 Shift+Tab 在同一个权限拨盘上逐档切换：Ask → Accept Edits → Plan → Auto-Review → Full Access → Ask。Plan 档使用 Plan 模式，其余各档使用 Work。"
+              },
+              {
+                "rows": [
+                  [
+                    "Ask",
+                    "Codewhale 在每次修改文件或运行命令前询问你，包括工作区内的修改。已保存的批准和策略规则仍然适用。"
+                  ],
+                  [
+                    "Accept Edits",
+                    "工作区 Git 工作树内的普通文件修改可以不经提示执行。命令、网络和 MCP 操作仍会询问；修改敏感文件、工作区外的文件或不属于 Git 仓库的文件夹也会询问。ACP 会话将此设置按 Ask 处理。"
+                  ]
+                ]
+              },
+              {
+                "note": "未保存权限设置时，新安装从 Accept Edits 开始。明确保存的选择始终优先；托管审批策略可能锁定设置。"
+              },
+              {
+                "p": "只要没有其他弹窗阻挡，回合运行期间也可使用权限拨盘。改动在智能体的下一步生效；已经批准的调用只有在新权限相同或更宽时才会运行。每次有效变化都会写入对话记录。"
+              }
+            ]
+          }
+        ]
+      }
+    ],
     "next": [
       {
         "href": "/docs/review",
@@ -1357,14 +1456,14 @@
         "note": "委派独立任务，并查看每个智能体的进度。"
       }
     ],
-    "sourceNote": "源码候选版本的控制方式依据 docs/MODES.md、docs/KEYBINDINGS.md 和 docs/CONFIGURATION.md。已发布版本的链接指向 v0.10.2 标签。"
+    "sourceNote": "依据已发布版本标签下的 docs/MODES.md、docs/KEYBINDINGS.md 和 docs/CONFIGURATION.md；源码一节依据 main。"
   },
   "docs-runtime-api": {
     "metaTitle": "用 Runtime API 自动化 · Codewhale 文档",
     "metaDescription": "用你自己的脚本和应用驱动 Codewhale：在 CI 中运行一次性任务，或启动本地 HTTP API 来发送回合、接收事件流并回应审批。",
     "bodyClassName": "text-ink-soft leading-[1.9] tracking-wide",
     "title": "用 Runtime API 自动化",
-    "lede": "单次任务可使用 `codewhale exec`；本教程演示如何通过本地 Runtime API 创建线程并读取回合事件流。[完整源码候选版参考](/docs/runtime-reference) 介绍路由、请求字段、事件和兼容性限制。",
+    "lede": "单次任务可使用 `codewhale exec`；本教程演示如何通过本地 Runtime API 创建线程并读取回合事件流。[完整参考](/docs/runtime-reference)（由仓库 main 分支生成）介绍路由、请求字段、事件和兼容性限制。",
     "sections": [
       {
         "id": "exec",
@@ -1387,7 +1486,7 @@
             "p": "请使用具备 `curl`、`jq` 和 `openssl` 的 POSIX shell，以及支持 `app-server --http` 的 Codewhale 构建。在同一个终端中完成所有步骤，才能保留令牌、服务进程 id 和线程 id。"
           },
           {
-            "note": "本教程描述尚未发布的 0.10.3 源码候选版本；请先运行 `codewhale --version` 核对版本。下方回合需要已连接的提供商，并按其正常规则计费；启动服务和检查 `/health` 不发送模型请求。"
+            "note": "本页的命令均存在于已发布版本；请先运行 `codewhale --version` 核对版本。下方回合需要已连接的提供商，并按其正常规则计费；启动服务和检查 `/health` 不发送模型请求。"
           },
           {
             "code": "export CODEWHALE_RUNTIME_TOKEN=\"$(openssl rand -hex 32)\"\ncodewhale app-server --http &\nCODEWHALE_RUNTIME_PID=$!\ncurl --fail --silent --show-error --retry 10 --retry-connrefused   --retry-delay 1 http://127.0.0.1:7878/health",
@@ -1430,7 +1529,7 @@
             ]
           },
           {
-            "p": "[Runtime API 参考](/docs/runtime-reference) 展示规范源码，包括端点表、请求字段、事件封装和版本限制。"
+            "p": "[Runtime API 参考](/docs/runtime-reference) 展示仓库 main 分支的契约，包括端点表、请求字段、事件封装和版本限制。"
           }
         ]
       },
@@ -1554,11 +1653,11 @@
               ],
               [
                 "Linux",
-                "bubblewrap，安装并验证可用后自动启用（退出见下文）。不可用时，命令在没有操作系统沙箱的情况下运行。"
+                "bubblewrap，安装并验证可用后自动启用（退出见下文）。不可用时，命令在没有操作系统沙箱的情况下运行，Codewhale 会把工作区限制显示为未强制执行。"
               ],
               [
                 "Windows",
-                "目前没有操作系统沙箱。你的审批设置和 Windows 自身的权限仍然有效。"
+                "没有操作系统沙箱。Codewhale 会把工作区限制显示为未强制执行，你的审批设置和 Windows 自身的权限仍然有效。"
               ],
               [
                 "外部服务",
@@ -2290,7 +2389,7 @@
     "connectVersion": "Codewhale 0.10.2 内置较旧的 Computer Use 插件，安装目录中的同名条目不会将其升级。请通过 MCP 直接连接已安装的 Mac 助手。",
     "connectLimit": "直接连接 MCP 只添加工具，不包含插件技能。请勿与旧版内置插件同时使用；如果该插件已启用，请先运行 /plugin disable computer-use。",
     "connectRuntime": "应用自带 Node，无需另行安装。如果应用安装在其他位置，请将 APP 设为实际应用包路径。",
-    "connectReload": "在正在运行的终端会话中执行 /mcp reload，切换到 Operate，然后输入：",
+    "connectReload": "在正在运行的终端会话中执行 /mcp reload，然后输入：",
     "connectPrompt": "使用 request_access 检查 Computer Use 权限。不要发送任何输入。",
     "connectExpected": "检查回复中的 via: app、助手版本及缺少的权限。如果找不到助手，请停止并按设置提示操作。此步骤仅检查连接和权限。",
     "connectGuide": "MCP 设置指南",

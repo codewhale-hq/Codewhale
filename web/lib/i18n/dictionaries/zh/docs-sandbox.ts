@@ -36,8 +36,8 @@ export const docsSandbox: DocsSandboxDict = {
         {
           rows: [
             ["macOS", "Seatbelt，启动检查通过后自动启用。命令可以广泛读取，写入范围由沙箱模式限定，只有模式允许时才能联网。"],
-            ["Linux", "bubblewrap，安装并验证可用后自动启用（退出见下文）。不可用时，命令在没有操作系统沙箱的情况下运行。"],
-            ["Windows", "目前没有操作系统沙箱。你的审批设置和 Windows 自身的权限仍然有效。"],
+            ["Linux", "bubblewrap，安装并验证可用后自动启用（退出见下文）。不可用时，命令在没有操作系统沙箱的情况下运行，Codewhale 会把工作区限制显示为未强制执行。"],
+            ["Windows", "没有操作系统沙箱。Codewhale 会把工作区限制显示为未强制执行，你的审批设置和 Windows 自身的权限仍然有效。"],
             ["外部服务", "设置 `sandbox_backend = \"opensandbox\"` 后，shell 命令会在你配置的 OpenSandbox 兼容服务上运行；隔离效果由该服务负责保证。"],
           ],
         },

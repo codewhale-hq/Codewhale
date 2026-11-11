@@ -7,6 +7,7 @@ import { RatatuiQuickstart } from "@/components/ratatui/quickstart";
 import { getRatatuiCopy } from "@/lib/content/ratatui";
 import { buildPageMetadata } from "@/lib/page-meta";
 import { readCatalogue } from "@/lib/ratatui/catalogue";
+import { fallbackAttrs } from "@/lib/i18n/fallback";
 
 const REPOSITORY = "https://github.com/codewhale-hq/codewhale-ratatui";
 
@@ -29,7 +30,7 @@ export default async function RatatuiPage({ params }: { params: Promise<{ locale
   const catalogue = await readCatalogue();
 
   return (
-    <div className="ratatui-page">
+    <div className="ratatui-page" {...fallbackAttrs("/ratatui", locale)}>
       <PageHeader
         title={copy.title}
         lede={copy.intro}

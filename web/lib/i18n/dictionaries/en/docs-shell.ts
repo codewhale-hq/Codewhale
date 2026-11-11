@@ -18,9 +18,9 @@ export const docsShell: DocsShellDict = {
 
   releaseLabel: "Release",
   releasePublished: "Latest release {tag} · {date}",
-  releaseCandidate:
-    "These pages describe the {version} source candidate, which is not published yet.",
-  releaseMatches: "These pages describe {tag}, the published release.",
+  releaseDescribes: "These pages describe {tag}, the published release.",
+  sourceLead:
+    "This section describes behavior that exists in the project's source and is not in the published release. Check which version you have with `codewhale --version`.",
   releaseChangelog: "Changelog →",
 
   searchLabel: "Search the documentation",

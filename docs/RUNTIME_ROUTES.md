@@ -188,6 +188,7 @@ registration index.
 | DELETE | `/v1/threads/{id}/approval-grants/{grant_id}` |
 | POST | `/v1/threads/{id}/commands` |
 | DELETE / GET | `/v1/threads/{id}/commands/{operation_key}` |
+| POST | `/v1/threads/{id}/commands/builtin` |
 | POST | `/v1/threads/{id}/compact` |
 | GET | `/v1/threads/{id}/context` |
 | GET | `/v1/threads/{id}/events` |
@@ -259,4 +260,4 @@ registration index.
 | GET / POST | `/v1/worktrees` |
 | POST | `/v1/worktrees/remove` |
 
-The source contains 239 distinct literal paths in this table.
+The source contains 240 distinct literal paths in this table.

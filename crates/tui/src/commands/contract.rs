@@ -2456,17 +2456,23 @@ pub(crate) struct PresentationAdapter<'a> {
     host: SharedCommandHost<'a>,
 }
 
+/// Resolve one stable key to the current catalog id, in the order every host
+/// adapter must use. Kept in one place so the terminal host and the remote
+/// snapshot-backed adapter cannot answer the same key differently.
+pub(crate) fn resolve_message_id(key: &str) -> Option<MessageId> {
+    key_to_utility_message_id(key)
+        .or_else(|| key_to_project_message_id(key))
+        .or_else(|| key_to_plugin_message_id(key))
+        .or_else(|| key_to_session_message_id(key))
+        .or_else(|| diagnostics_messages::resolve(key))
+        .or_else(|| config_policy_messages::resolve(key))
+        .or_else(|| config_messages::resolve(key))
+        .or_else(|| core_navigation::resolve_message(key))
+}
+
 impl CommandPresentationContext for PresentationAdapter<'_> {
     fn translate(&self, key: &str, replacements: &[(&str, &str)]) -> Result<String, String> {
-        let Some(message_id) = key_to_utility_message_id(key)
-            .or_else(|| key_to_project_message_id(key))
-            .or_else(|| key_to_plugin_message_id(key))
-            .or_else(|| key_to_session_message_id(key))
-            .or_else(|| diagnostics_messages::resolve(key))
-            .or_else(|| config_policy_messages::resolve(key))
-            .or_else(|| config_messages::resolve(key))
-            .or_else(|| core_navigation::resolve_message(key))
-        else {
+        let Some(message_id) = resolve_message_id(key) else {
             return Err("unknown translation key".to_string());
         };
         let locale = self.host.app.borrow().ui_locale;

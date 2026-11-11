@@ -15,14 +15,11 @@ import type { ChromeDict } from "../types";
  */
 export const chrome: ChromeDict = {
   navDocs: "Documentación",
-  navStart: "Empezar",
-  navInstall: "Instalar",
-  navFaq: "Preguntas",
-  navCommunity: "Comunidad",
   navContribute: "Contribuir",
+  navSignIn: "Iniciar sesión",
+  navDesktop: "Escritorio",
 
   navFeatures: "Capacidades",
-  navProduct: "Producto",
   navModels: "Modelos",
   navPlugins: "Plugins",
 
@@ -37,6 +34,7 @@ export const chrome: ChromeDict = {
 
   menuOpen: "Abrir menú",
   menuClose: "Cerrar menú",
+  translationMachineDraft: "Esta traducción es un borrador automático que aún no ha revisado un hablante nativo.",
 
   themeAuto: "auto",
   themeLight: "claro",
@@ -44,20 +42,17 @@ export const chrome: ChromeDict = {
   themeAria: "Tema: {mode} (clic para alternar)",
   themeTitle: "Tema · auto / claro / oscuro",
 
-  footerTagline: "Usa cualquier modelo con un agente que puedes leer.",
   footerProduct: "Producto",
   footerProject: "Proyecto",
   footerDocs: "Documentación",
   footerGuide: "Primeros pasos",
   footerInstall: "Instalación",
-  footerApps: "Escritorio y web",
   footerModels: "Modelos",
-  footerRuntime: "Runtime",
   footerFaq: "Preguntas frecuentes",
-  footerIssues: "Incidencias",
   footerContribute: "Contribuir",
   footerRoadmap: "Hoja de ruta",
   footerLicense: "Licencia MIT",
+  footerMerch: "Merchandising",
   footerTerms: "Términos del servicio",
   footerPrivacy: "Privacidad",
   footerChangelog: "Registro de cambios",

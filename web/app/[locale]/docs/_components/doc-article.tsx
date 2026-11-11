@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { Fragment, type ReactNode } from "react";
 import { InstallCodeBlock } from "@/components/install-code-block";
-import { getDocsShell, getHome } from "@/lib/i18n/dictionaries";
+import { docsCapabilityContext, resolveDocsPage } from "@/lib/docs-release";
+import { getChrome, getDocsShell, getHome } from "@/lib/i18n/dictionaries";
 import type { DocsBlock, DocsPageDict } from "@/lib/i18n/dictionaries/types";
 
 /**
@@ -112,7 +113,7 @@ function Block({
   );
 }
 
-export function DocArticle({
+export async function DocArticle({
   t,
   locale,
   extra,
@@ -123,27 +124,36 @@ export function DocArticle({
   extra?: Record<string, ReactNode>;
 }) {
   const shell = getDocsShell(locale);
+  const { sections, sourceSections } = resolveDocsPage(t, await docsCapabilityContext());
+  const inSource = getChrome(locale).stateInSource;
   return (
     <div className="docs-article space-y-10">
       <header id="overview" className="scroll-mt-32">
         <h1 className="font-display text-3xl mb-1">{t.title}</h1>
         <p className={`${t.bodyClassName} docs-lede mt-3`}>{renderInline(t.lede, locale)}</p>
-        {t.sections.length > 2 && (
+        {sections.length > 2 && (
           <nav className="docs-toc mt-5" aria-label={shell.onThisPage}>
             <ol className="flex flex-wrap gap-x-5 gap-y-1 text-sm">
-              {t.sections.map((section) => (
+              {sections.map((section) => (
                 <li key={section.id}>
                   <a href={`#${section.id}`} className={LINK}>
                     {section.title}
                   </a>
                 </li>
               ))}
+              {sourceSections.length > 0 && (
+                <li>
+                  <a href="#in-source" className={LINK}>
+                    {inSource}
+                  </a>
+                </li>
+              )}
             </ol>
           </nav>
         )}
       </header>
 
-      {t.sections.map((section) => (
+      {sections.map((section) => (
         <section key={section.id} id={section.id} className="scroll-mt-32">
           <h2 className="font-display text-2xl mb-1">{section.title}</h2>
           {section.blocks.map((block, i) => (
@@ -158,6 +168,27 @@ export function DocArticle({
           {extra?.[section.id]}
         </section>
       ))}
+
+      {sourceSections.length > 0 && (
+        <section id="in-source" className="scroll-mt-32" data-release-scope="source">
+          <h2 className="font-display text-2xl mb-1">{inSource}</h2>
+          <p className={`${t.bodyClassName} mt-3`}>{renderInline(shell.sourceLead, locale)}</p>
+          {sourceSections.map((section) => (
+            <div key={section.id} id={section.id} className="scroll-mt-32 mt-6">
+              <h3 className="font-display text-xl mb-1">{section.title}</h3>
+              {section.blocks.map((block, i) => (
+                <Block
+                  key={i}
+                  block={block}
+                  locale={locale}
+                  body={t.bodyClassName}
+                  noteLabel={shell.noteLabel}
+                />
+              ))}
+            </div>
+          ))}
+        </section>
+      )}
 
       {t.next.length > 0 && (
         <section id="next" className="scroll-mt-32">

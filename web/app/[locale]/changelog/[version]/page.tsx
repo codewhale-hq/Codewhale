@@ -4,9 +4,11 @@ import { Icon } from "@/components/icon";
 import { PageHeader } from "@/components/page-header";
 import { RELEASE_NOTES } from "@/lib/release-notes.generated";
 import { changelogAnchor } from "@/scripts/changelog-lib.mjs";
-import { fill, getChangelog, getChrome } from "@/lib/i18n/dictionaries";
+import { fill, getChangelog } from "@/lib/i18n/dictionaries";
 import { REPO_URL } from "@/lib/i18n/links";
 import { buildPageMetadata } from "@/lib/page-meta";
+import { bodyDateLocale } from "@/lib/i18n/fallback";
+import { FallbackRegion } from "@/components/fallback-region";
 
 type PageParams = Promise<{ locale: string; version: string }>;
 
@@ -40,9 +42,8 @@ export default async function ReleaseNotesPage({ params }: { params: PageParams 
     notFound();
   }
   const t = getChangelog(locale);
-  const chrome = getChrome(locale);
   const date = release.date
-    ? new Date(release.date).toLocaleDateString(chrome.dateLocale, {
+    ? new Date(release.date).toLocaleDateString(bodyDateLocale("/changelog", locale), {
         year: "numeric",
         month: "long",
         day: "numeric",
@@ -52,7 +53,7 @@ export default async function ReleaseNotesPage({ params }: { params: PageParams 
   const notesUrl = `${REPO_URL}/blob/main/CHANGELOG.md#${changelogAnchor(release)}`;
 
   return (
-    <>
+    <FallbackRegion path="/changelog" locale={locale}>
       <PageHeader
         kicker={t.versionKicker}
         title={`Codewhale ${release.version}`}
@@ -92,6 +93,6 @@ export default async function ReleaseNotesPage({ params }: { params: PageParams 
           </article>
         </div>
       </div>
-    </>
+    </FallbackRegion>
   );
 }

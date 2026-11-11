@@ -41,7 +41,7 @@ export const computerUse: ComputerUseDict = {
   connectVersion: "Codewhale 0.10.2 eski bir Computer Use eklentisi içerir. Katalog girdisini yüklemek bunu güncellemez. Yüklü Mac yardımcısına MCP üzerinden doğrudan bağlanın.",
   connectLimit: "Doğrudan MCP bağlantısı, eklenti becerileri olmadan araçlar ekler. Eski yerleşik eklentiyle birlikte kullanmayın. Bu eklenti etkinse önce /plugin disable computer-use çalıştırın.",
   connectRuntime: "Uygulama Node içerir; ayrıca yüklemeniz gerekmez. Başka bir konuma yüklendiyse APP değerini gerçek uygulama paketi yoluna ayarlayın.",
-  connectReload: "Açık bir terminal oturumunda /mcp reload çalıştırın, Operate moduna geçin ve şunu isteyin:",
+  connectReload: "Açık bir terminal oturumunda /mcp reload çalıştırın ve şunu isteyin:",
   connectPrompt: "Computer Use izinlerini request_access ile kontrol et. Hiçbir giriş gönderme.",
   connectExpected: "Yanıtta via: app, yardımcı sürümü ve eksik izinleri kontrol edin. Yardımcı bulunamazsa durun ve kurulum ipucunu izleyin. Bu yalnızca bağlantıyı ve izinleri kontrol eder.",
   connectGuide: "MCP kurulum rehberi",

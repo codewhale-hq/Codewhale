@@ -42,7 +42,7 @@ export const computerUse: ComputerUseDict = {
   connectVersion: "Codewhale 0.10.2 inclou un connector Computer Use antic. Instal·lar l’entrada del catàleg no l’actualitza. Connecta directament l’auxiliar de Mac instal·lat mitjançant MCP.",
   connectLimit: "La connexió MCP directa afegeix eines sense les habilitats del connector. No la facis servir alhora que el connector integrat antic. Si està activat, executa primer /plugin disable computer-use.",
   connectRuntime: "L’aplicació inclou Node; no cal instal·lar-lo per separat. Si està instal·lada en una altra ubicació, assigna a APP el camí real del paquet de l’aplicació.",
-  connectReload: "En una sessió de terminal en execució, executa /mcp reload, canvia a Operate i demana:",
+  connectReload: "En una sessió de terminal en execució, executa /mcp reload i demana:",
   connectPrompt: "Comprova els permisos de Computer Use amb request_access. No enviïs cap entrada.",
   connectExpected: "Comprova via: app, la versió de l’auxiliar i els permisos que faltin a la resposta. Si no es troba l’auxiliar, atura’t i segueix la indicació de configuració. Això només comprova la connexió i els permisos.",
   connectGuide: "Guia de configuració MCP",

@@ -14,14 +14,11 @@ import type { ChromeDict } from "../types";
  */
 export const chrome: ChromeDict = {
   navDocs: "ドキュメント",
-  navStart: "はじめに",
-  navInstall: "インストール",
-  navFaq: "よくある質問",
-  navCommunity: "コミュニティ",
   navContribute: "貢献",
+  navSignIn: "ログイン",
+  navDesktop: "デスクトップ",
 
   navFeatures: "機能",
-  navProduct: "製品",
   navModels: "モデル",
   navPlugins: "プラグイン",
 
@@ -36,6 +33,7 @@ export const chrome: ChromeDict = {
 
   menuOpen: "メニューを開く",
   menuClose: "メニューを閉じる",
+  translationMachineDraft: "この翻訳は機械翻訳による下書きで、ネイティブによるレビューはまだありません。",
 
   themeAuto: "自動",
   themeLight: "ライト",
@@ -43,20 +41,17 @@ export const chrome: ChromeDict = {
   themeAria: "テーマ：{mode}（クリックで切り替え）",
   themeTitle: "テーマ · 自動 / ライト / ダーク",
 
-  footerTagline: "中身を読めるエージェントで、どのモデルでも使えます。",
   footerProduct: "製品",
   footerProject: "プロジェクト",
   footerDocs: "ドキュメント",
   footerGuide: "はじめかた",
   footerInstall: "インストール",
-  footerApps: "デスクトップとWeb",
   footerModels: "モデル",
-  footerRuntime: "ランタイム",
   footerFaq: "よくある質問",
-  footerIssues: "Issues",
   footerContribute: "貢献",
   footerRoadmap: "ロードマップ",
   footerLicense: "MIT ライセンス",
+  footerMerch: "グッズ",
   footerTerms: "利用規約",
   footerPrivacy: "プライバシーポリシー",
   footerChangelog: "変更履歴",

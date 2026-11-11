@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { detectLocaleFromHeaders } from "@/lib/i18n/detect";
 import { pathLocale, replacePathLocale } from "@/lib/i18n/path";
+import { routeRedirect } from "@/lib/route-redirects";
 import {
   canonicalPublicAuthPath,
   publicAuthCallbackDestination,
@@ -52,27 +53,21 @@ function canonicalOriginRedirect(req: NextRequest): NextResponse | null {
   return NextResponse.redirect(url, 308);
 }
 
-/**
- * Paths with no page of their own that should land on installation in one
- * hop, bare or localized. `/download` and `/desktop` 404'd (M2) until a dark
- * download hub exists (D11). `/pricing` went bare → `/en/pricing` →
- * `/en/install` (UX-13); public pricing stays off (§0), so it keeps landing on
- * install — `app/[locale]/pricing/page.tsx` still redirects as a backstop.
- * Temporary (307) because each of these may become a real page later.
- */
-const INSTALL_ALIASES = new Set(["download", "desktop", "pricing"]);
-
-function installAliasRedirect(req: NextRequest): NextResponse | null {
+function routeAliasRedirect(req: NextRequest): NextResponse | null {
   const segments = req.nextUrl.pathname.split("/").filter(Boolean);
   const existing = pathLocale(req.nextUrl.pathname);
   const rest = existing ? segments.slice(1) : segments;
-  if (rest.length !== 1 || !INSTALL_ALIASES.has(rest[0].toLowerCase())) return null;
+  if (rest.length !== 1) return null;
+  const target = routeRedirect(rest[0]);
+  if (!target) return null;
   const locale =
     existing ??
     detectLocaleFromHeaders(req.cookies.get(COOKIE)?.value, req.headers.get("accept-language"));
+  const [path, hash] = target.to.split("#");
   const url = req.nextUrl.clone();
-  url.pathname = `/${locale}/install`;
-  const res = NextResponse.redirect(url, 307);
+  url.pathname = `/${locale}${path}`;
+  url.hash = hash ? `#${hash}` : "";
+  const res = NextResponse.redirect(url, target.status);
   res.cookies.set(COOKIE, locale, { path: "/", maxAge: 60 * 60 * 24 * 365 });
   return res;
 }
@@ -111,8 +106,8 @@ export function middleware(req: NextRequest) {
     return applySecurityHeaders(NextResponse.redirect(url, 308));
   }
 
-  const installAlias = installAliasRedirect(req);
-  if (installAlias) return applySecurityHeaders(installAlias);
+  const alias = routeAliasRedirect(req);
+  if (alias) return applySecurityHeaders(alias);
 
   // Check if locale is already in path (`pt-BR` is one segment).
   const existing = pathLocale(pathname);

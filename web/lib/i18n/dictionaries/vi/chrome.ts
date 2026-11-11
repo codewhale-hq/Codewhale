@@ -12,16 +12,13 @@ import type { ChromeDict } from "../types";
  */
 export const chrome: ChromeDict = {
   navDocs: "Tài liệu",
-  navStart: "Bắt đầu",
-  navInstall: "Cài đặt",
   // "Câu hỏi thường gặp" is the full form; the horizontal masthead nav needs
   // the short one. The footer, which stacks vertically, keeps the full form.
-  navFaq: "Hỏi đáp",
-  navCommunity: "Cộng đồng",
   navContribute: "Đóng góp",
+  navSignIn: "Đăng nhập",
+  navDesktop: "Máy tính để bàn",
 
   navFeatures: "Khả năng",
-  navProduct: "Sản phẩm",
   navModels: "Mô hình",
   navPlugins: "Plugin",
 
@@ -36,6 +33,7 @@ export const chrome: ChromeDict = {
 
   menuOpen: "Mở menu",
   menuClose: "Đóng menu",
+  translationMachineDraft: "Bản dịch này là bản nháp do máy dịch và chưa được người bản ngữ xem lại.",
 
   themeAuto: "tự động",
   themeLight: "sáng",
@@ -43,21 +41,18 @@ export const chrome: ChromeDict = {
   themeAria: "Giao diện: {mode} (nhấn để đổi)",
   themeTitle: "Giao diện · tự động / sáng / tối",
 
-  footerTagline: "Dùng bất kỳ mô hình nào qua một agent mà bạn đọc được.",
   footerProduct: "Sản phẩm",
   footerProject: "Dự án",
   footerDocs: "Tài liệu",
   footerGuide: "Hướng dẫn bắt đầu",
   footerInstall: "Cài đặt",
-  footerApps: "Máy tính và web",
   footerModels: "Mô hình",
-  footerRuntime: "Runtime",
   footerFaq: "Câu hỏi thường gặp",
   // The GitHub tracker, named as GitHub names it — the same choice id/ja/pt-BR made.
-  footerIssues: "Issues",
   footerContribute: "Đóng góp",
   footerRoadmap: "Lộ trình",
   footerLicense: "Giấy phép MIT",
+  footerMerch: "Hàng lưu niệm",
   footerTerms: "Điều khoản dịch vụ",
   footerPrivacy: "Quyền riêng tư",
   footerChangelog: "Nhật ký thay đổi",

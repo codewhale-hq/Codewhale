@@ -45,6 +45,7 @@ changelog or release notes, and this contributor record.
 **Contributions**
 
 - **[SamhandsomeLee](https://github.com/SamhandsomeLee)** — drove Responses request, URL and stream behavior from one checked dialect profile table ([#7261](https://github.com/codewhale-hq/Codewhale/pull/7261)).
+- **[gaord](https://github.com/gaord)** — ran the read-only `/system`, `/tokens` and `/cost` builtins over the Runtime API through one gated terminal-host catalog ([#7277](https://github.com/codewhale-hq/Codewhale/pull/7277)).
 
 </details>
 

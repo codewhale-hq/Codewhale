@@ -13,6 +13,8 @@ import {
   buildEnvelope,
   createUsageRecorder,
   emptyCounters,
+  privacySignalActive,
+  privacySignalHeader,
   readUsagePreference,
   resolveInstallId,
   usageCountingEnabled,
@@ -37,7 +39,7 @@ function memoryStorage(seed: Record<string, string> = {}): StorageLike & { data:
   };
 }
 
-function recorderWith(storage: StorageLike, sent: string[] = [], now = () => NOW) {
+function recorderWith(storage: StorageLike, sent: string[] = [], now = () => NOW, blocked?: () => boolean) {
   const timers: (() => void)[] = [];
   const recorder = createUsageRecorder({
     surface: "website",
@@ -45,6 +47,7 @@ function recorderWith(storage: StorageLike, sent: string[] = [], now = () => NOW
     endpoint: "/api/product-telemetry",
     storage,
     now,
+    blocked,
     randomUuid: () => UUID,
     send: async (_endpoint, body) => {
       sent.push(body);
@@ -423,5 +426,125 @@ describe("website funnel contract and delivery", () => {
     expect(sent[0].events.find((event) => event.event === "funnel_usage")!.counters.install_intent).toBe(1);
     const second = sent[1].events.find((event) => event.event === "funnel_usage")!.counters;
     expect(second.install_intent).toBe(0); expect(second.docs_search).toBe(1);
+  });
+});
+
+describe("browser privacy signals", () => {
+  it("reads Global Privacy Control and Do Not Track, including the legacy properties", () => {
+    expect(privacySignalActive({}, {})).toBe(false);
+    expect(privacySignalActive({ globalPrivacyControl: false, doNotTrack: "0" }, { doNotTrack: "unspecified" })).toBe(false);
+    expect(privacySignalActive({ globalPrivacyControl: true }, {})).toBe(true);
+    expect(privacySignalActive({ doNotTrack: "1" }, {})).toBe(true);
+    expect(privacySignalActive({}, { doNotTrack: "1" })).toBe(true);
+    expect(privacySignalActive({}, { doNotTrack: "yes" })).toBe(true);
+    expect(privacySignalActive({ msDoNotTrack: "1" }, {})).toBe(true);
+    expect(privacySignalActive(null, null)).toBe(false);
+  });
+
+  it("reads the same two signals from request headers", () => {
+    expect(privacySignalHeader(new Headers())).toBe(false);
+    expect(privacySignalHeader(new Headers({ "sec-gpc": "0", dnt: "0" }))).toBe(false);
+    expect(privacySignalHeader(new Headers({ "Sec-GPC": "1" }))).toBe(true);
+    expect(privacySignalHeader(new Headers({ DNT: "1" }))).toBe(true);
+  });
+
+  it("counts nothing, reads and writes no install id, and sends nothing while a signal is present", async () => {
+    const storage = memoryStorage();
+    const reads: string[] = [];
+    const watched: StorageLike = {
+      getItem: (key) => (reads.push(key), storage.getItem(key)),
+      setItem: storage.setItem,
+      removeItem: storage.removeItem,
+    };
+    const { recorder, timers, sent } = recorderWith(watched, [], () => NOW, () => true);
+    recorder.record("page_view");
+    recorder.record("install_copy");
+    recorder.recordFunnel("star_exit");
+    await recorder.flush();
+    expect(reads).toEqual([]);
+    expect(storage.data.size).toBe(0);
+    expect(sent).toEqual([]);
+    expect(timers).toEqual([]);
+    expect(recorder.pending()).toEqual(emptyCounters());
+    expect(recorder.pendingFunnel()).toEqual(emptyFunnelCounters());
+  });
+
+  it("clears counts and the install id from an earlier visit but keeps the person's own choice", () => {
+    const choice = usagePreferenceRecord(true, NOW);
+    const storage = memoryStorage({
+      [COUNTERS_STORAGE_KEY]: JSON.stringify({ ...emptyCounters(), page_view: 3 }),
+      [FUNNEL_STORAGE_KEY]: JSON.stringify({ ...emptyFunnelCounters(), home_view: 1 }),
+      [INSTALL_STORAGE_KEY]: JSON.stringify({ id: UUID, createdAt: NOW }),
+      [PREFERENCE_STORAGE_KEY]: choice,
+    });
+    recorderWith(storage, [], () => NOW, () => true);
+    expect([...storage.data.keys()]).toEqual([PREFERENCE_STORAGE_KEY]);
+    expect(storage.data.get(PREFERENCE_STORAGE_KEY)).toBe(choice);
+  });
+
+  it("drops what was queued when a signal appears mid-session, and counts as before without one", async () => {
+    let signal = false;
+    const storage = memoryStorage();
+    const { recorder, sent } = recorderWith(storage, [], () => NOW, () => signal);
+    recorder.record("page_view");
+    expect(recorder.pending().page_view).toBe(1);
+    signal = true;
+    await recorder.flush();
+    expect(sent).toEqual([]);
+    expect(storage.data.size).toBe(0);
+    signal = false;
+    recorder.record("page_view");
+    await recorder.flush();
+    expect(sent).toHaveLength(1);
+    expect(storage.data.has(INSTALL_STORAGE_KEY)).toBe(true);
+  });
+});
+
+describe("forwarder and browser privacy signals", () => {
+  const envelope = buildEnvelope({ counters: { ...emptyCounters(), page_view: 1 }, installId: UUID, appVersion: "0.9.12", surface: "website", now: NOW });
+
+  it.each([["Sec-GPC"], ["DNT"]])("answers %s: 1 as disabled before reading the body and forwards nothing", async (header) => {
+    let bodyRead = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        bodyRead = true;
+        controller.enqueue(new TextEncoder().encode(JSON.stringify(envelope)));
+        controller.close();
+      },
+    }, { highWaterMark: 0 });
+    const request = new Request("http://localhost/api/product-telemetry", {
+      method: "POST",
+      headers: { "content-type": "application/json", [header]: "1" },
+      body,
+      duplex: "half",
+    } as RequestInit);
+    let forwarded = 0;
+    const response = await handleProductTelemetry(request, {
+      ingestUrl: CANONICAL_INGEST_URL,
+      forward: async () => {
+        forwarded += 1;
+        return { ok: true };
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ accepted: false, reason: "disabled" });
+    expect(bodyRead).toBe(false);
+    expect(forwarded).toBe(0);
+  });
+
+  it("still forwards a valid batch when the signals are absent or zero", async () => {
+    for (const headers of [{} as Record<string, string>, { "sec-gpc": "0", dnt: "0" }]) {
+      let forwarded = 0;
+      const response = await handleProductTelemetry(
+        new Request("http://localhost/api/product-telemetry", {
+          method: "POST",
+          headers: { "content-type": "application/json", ...headers },
+          body: JSON.stringify(envelope),
+        }),
+        { ingestUrl: CANONICAL_INGEST_URL, forward: async () => ((forwarded += 1), { ok: true }) },
+      );
+      expect(await response.json()).toEqual({ accepted: true });
+      expect(forwarded).toBe(1);
+    }
   });
 });

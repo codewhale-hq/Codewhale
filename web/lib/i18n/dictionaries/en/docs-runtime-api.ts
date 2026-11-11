@@ -13,7 +13,7 @@ export const docsRuntimeApi: DocsRuntimeApiDict = {
   bodyClassName: "text-ink-soft leading-relaxed",
   title: "Automate with the Runtime API",
   lede:
-    "Use `codewhale exec` for a one-shot job, or follow this tutorial to create a thread and stream a turn through the local Runtime API. The [complete source-candidate reference](/docs/runtime-reference) covers routes, request fields, events and compatibility limits.",
+    "Use `codewhale exec` for a one-shot job, or follow this tutorial to create a thread and stream a turn through the local Runtime API. The [complete reference](/docs/runtime-reference), generated from the repository's main branch, covers routes, request fields, events and compatibility limits.",
   sections: [
     {
       id: "exec",
@@ -35,7 +35,7 @@ codewhale exec --auto --sandbox workspace-write --output-format stream-json "upd
       title: "Start the Runtime API",
       blocks: [
         { p: "Use a POSIX shell with `curl`, `jq` and `openssl`, and a Codewhale build that supports `app-server --http`. Run all steps in the same terminal so the token, server process id and thread id remain available." },
-        { note: "This tutorial follows the unpublished 0.10.3 source candidate; check `codewhale --version` before comparing behavior. Connecting a provider is required for the turn below, and that request uses your provider's normal billing; starting the server and checking `/health` do not send a model request." },
+        { note: "The commands on this page exist in the published release; check `codewhale --version` before comparing behavior. Connecting a provider is required for the turn below, and that request uses your provider's normal billing; starting the server and checking `/health` do not send a model request." },
         {
           code: `export CODEWHALE_RUNTIME_TOKEN="$(openssl rand -hex 32)"
 codewhale app-server --http &
@@ -77,7 +77,7 @@ curl -fN "$API/v1/threads/$THREAD/events?since_seq=0" -H "$AUTH"`,
           ],
         },
         {
-          p: "The [Runtime API reference](/docs/runtime-reference) renders the canonical source contract, including endpoint tables, request fields, event envelopes and version limits.",
+          p: "The [Runtime API reference](/docs/runtime-reference) renders the contract from the repository's main branch, including endpoint tables, request fields, event envelopes and version limits.",
         },
       ],
     },

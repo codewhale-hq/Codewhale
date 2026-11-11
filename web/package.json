@@ -15,7 +15,7 @@
     "sync:latest-release": "node scripts/sync-latest-release.mjs",
     "sync:repo-stats": "node scripts/sync-repo-stats.mjs",
     "check:latest-release": "node scripts/sync-latest-release.mjs --check",
-    "check:docs": "node scripts/check-runtime-routes.mjs && node scripts/derive-install.mjs && node scripts/check-docs.mjs && node scripts/render-terminal-capture.mjs --check",
+    "check:docs": "node scripts/check-runtime-routes.mjs && node scripts/derive-install.mjs && node scripts/check-docs.mjs && node scripts/render-terminal-capture.mjs --check && node scripts/render-released-capture.mjs --check",
     "check:tokens": "python3 ../scripts/export-design-tokens.py --check",
     "check:locales": "node scripts/check-locales.mjs && node scripts/gt-site.mjs check",
     "i18n:gt": "node scripts/gt-site.mjs",

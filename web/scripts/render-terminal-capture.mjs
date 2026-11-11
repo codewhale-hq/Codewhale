@@ -30,6 +30,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { hex, paletteColor } from "./terminal-palette.mjs";
 
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const captureDir = path.join(webRoot, "lib", "terminal-captures");
@@ -49,24 +50,6 @@ const ANY_UNDERLINE = (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 10);
 const DEFAULT_FG = "#f6f2e8";
 const DEFAULT_BG = "#0a1e33";
 
-// xterm 256-colour palette.
-const ANSI16 = [
-  "#000000", "#cd0000", "#00cd00", "#cdcd00", "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
-  "#7f7f7f", "#ff0000", "#00ff00", "#ffff00", "#5c5cff", "#ff00ff", "#00ffff", "#ffffff",
-];
-function hex(r, g, b) {
-  return `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
-}
-function paletteColor(index) {
-  if (index < 16) return ANSI16[index];
-  if (index < 232) {
-    const i = index - 16;
-    const level = (v) => (v === 0 ? 0 : 55 + v * 40);
-    return hex(level(Math.floor(i / 36)), level(Math.floor(i / 6) % 6), level(i % 6));
-  }
-  const v = 8 + (index - 232) * 10;
-  return hex(v, v, v);
-}
 function color(value, fallback) {
   if (value === null || value === undefined) return fallback;
   if (typeof value === "number") return paletteColor(value);
@@ -136,6 +119,7 @@ function generate() {
     out[frame.id] = {
       file: `web/lib/terminal-captures/${frame.file}`,
       state: frame.state,
+      provenance: "development",
       cols: capture.cols,
       rows: capture.rows,
       styles,
@@ -168,6 +152,7 @@ export type TerminalCaptureStyle = {
 export type TerminalCaptureFrame = {
   file: string;
   state: string;
+  provenance: "development" | "released";
   cols: number;
   rows: number;
   styles: TerminalCaptureStyle[];

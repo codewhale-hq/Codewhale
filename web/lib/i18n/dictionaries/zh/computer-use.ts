@@ -41,7 +41,7 @@ export const computerUse: ComputerUseDict = {
   connectVersion: "Codewhale 0.10.2 内置较旧的 Computer Use 插件，安装目录中的同名条目不会将其升级。请通过 MCP 直接连接已安装的 Mac 助手。",
   connectLimit: "直接连接 MCP 只添加工具，不包含插件技能。请勿与旧版内置插件同时使用；如果该插件已启用，请先运行 /plugin disable computer-use。",
   connectRuntime: "应用自带 Node，无需另行安装。如果应用安装在其他位置，请将 APP 设为实际应用包路径。",
-  connectReload: "在正在运行的终端会话中执行 /mcp reload，切换到 Operate，然后输入：",
+  connectReload: "在正在运行的终端会话中执行 /mcp reload，然后输入：",
   connectPrompt: "使用 request_access 检查 Computer Use 权限。不要发送任何输入。",
   connectExpected: "检查回复中的 via: app、助手版本及缺少的权限。如果找不到助手，请停止并按设置提示操作。此步骤仅检查连接和权限。",
   connectGuide: "MCP 设置指南",

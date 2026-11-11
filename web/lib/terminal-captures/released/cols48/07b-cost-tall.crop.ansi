@@ -1,0 +1,17 @@
+[1m[38;5;103mNote[0m[48;5;234m [3m[38;5;109mSession Cost:[0m[48;5;234m                             [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109m─────────────────────────────[0m[48;5;234m             [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mEstimated total: unknown[0m[48;5;234m                  [38;5;80m┃
+[38;5;103m▏    [39m                                          [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mNo turn has an authoritative price in the[0m[48;5;234m [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mselected currency.[0m[48;5;234m                        [38;5;80m┃
+[38;5;103m▏    [39m                                          [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mThis is an estimate, not a bill: it is[0m[48;5;234m    [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mcomputed locally from provider-reported[0m[48;5;234m   [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mtoken usage and published rates, and can[0m[48;5;234m  [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mdiffer from your invoice.[0m[48;5;234m                 [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mCovered: 0 of 1 money-metered turn(s)[0m[48;5;234m     [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mpriced.[0m[48;5;234m                                   [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mExcluded: 1 money-metered turn(s) had no[0m[48;5;234m  [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mauthoritative price (billing basis[0m[48;5;234m        [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109munknown); their spend is missing from the[0m[48;5;234m [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mtotal above.[0m[48;5;234m                              [38;5;80m┃

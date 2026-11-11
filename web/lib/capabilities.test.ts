@@ -21,9 +21,7 @@ import { FACTS } from "./facts.generated";
 import { FEATURE_CATALOGUE, type Feature } from "./features";
 import { FOUNDER_SWITCHES, FOUNDER_SWITCH_VALUES } from "./founder-switches";
 import { PRODUCT_COPY } from "./content/product";
-import { stateLabel } from "./surface-states";
 import ModelsPage from "../app/[locale]/models/page";
-import ProductPage from "../app/[locale]/product/page";
 import HomePage from "../app/[locale]/page";
 import { buildLlmsTxt } from "./llms-txt";
 
@@ -243,29 +241,13 @@ describe("counts are the counts at the published release tag", () => {
   });
 });
 
-describe("the product page labels a source-only permission", () => {
-  it("shows the in-source label beside a claim the published release does not describe", async () => {
-    const context = runtimeCapabilityContext(FACTS);
-    const accept = PRODUCT_COPY.permissions.find((item) => item.title.en === "Accept Edits")!;
-    const availability = claimAvailability(accept.capability!, context);
-    const props = { params: Promise.resolve({ locale: "en" }) } as never;
-    const html = renderToStaticMarkup((await ProductPage(props)) as never);
-    if (availability === "in_source") {
-      expect(html).toContain(stateLabel("in_source", "en"));
-      expect(html).toContain("Accept Edits");
-    } else {
-      expect(html).not.toContain(stateLabel("in_source", "en"));
-    }
-  });
-});
-
 describe("no literal count in copy", () => {
   const COUNT_WORDS = "(?:\\d[\\d,]*\\+?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)";
   const NOUNS = "(?:built-in )?(?:provider routes|providers|models|tools|native tools|locales|languages|routes)";
   const PATTERN = new RegExp(`\\b${COUNT_WORDS} ${NOUNS}\\b`, "i");
   const ZH = /\d+\s*(?:个|条|种)\s*(?:提供商|模型|工具|语言|路由)/;
   const ALLOWED: Record<string, string> = {
-    "lib/content/tools.ts": "fourteen native tools",
+    "lib/content/tools.ts": "native tools for reading, editing",
     "lib/i18n/dictionaries/en/docs-mcp.ts": "listed those two tools",
   };
 

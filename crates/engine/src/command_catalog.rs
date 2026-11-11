@@ -41,6 +41,60 @@ pub trait CommandCatalog: Send + Sync {
     fn answers_to(&self, name: &str) -> bool;
     fn builtins(&self) -> Vec<BuiltinCommand>;
     fn user_commands(&self, workspace: &Path) -> Vec<UserCommand>;
+    /// Whether this host executes `name` remotely at all. Checked before any
+    /// thread state is assembled, so a name outside the remote surface is
+    /// refused exactly like a name no host knows. `false` is the default: a
+    /// host opts in one command at a time, and widening this must widen
+    /// [`Self::execute_builtin`] too.
+    fn serves_builtin(&self, name: &str) -> bool {
+        let _ = name;
+        false
+    }
+    /// Execute one built-in command against a host snapshot. `None` means
+    /// this host does not implement remote execution, or does not answer to
+    /// the name; `Some` carries the command's own answer.
+    fn execute_builtin(
+        &self,
+        name: &str,
+        args: Option<&str>,
+        host: &BuiltinCommandHostSnapshot,
+    ) -> Option<BuiltinCommandExecution> {
+        let _ = (name, args, host);
+        None
+    }
+}
+
+/// The thread state a remote built-in execution reads.
+///
+/// Engine-side so the app-server can assemble it from thread state and the
+/// terminal host can interpret it without either depending on the other. The
+/// projections are the command contract's own data-only types: the host maps
+/// them into the facet envelope, and the capability mask each portable
+/// handler declares decides which commands this snapshot can honestly serve.
+pub struct BuiltinCommandHostSnapshot {
+    pub mode: codewhale_command_contract::types::CommandMode,
+    /// The host's own label for `mode` ("WORK", "PLAN"), the same string the
+    /// terminal footer shows.
+    pub mode_label: String,
+    pub locale: codewhale_localization::Locale,
+    pub model: String,
+    pub system_prompt: codewhale_command_contract::facets::DebugSystemPrompt,
+    /// Published usage telemetry and the host's cost breakdown for the
+    /// thread — the complete data source the portable `/tokens` and `/cost`
+    /// renderers consume.
+    pub tokens: codewhale_command_contract::facets::DebugTokenProjection,
+}
+
+/// One remote built-in execution's outcome.
+pub struct BuiltinCommandExecution {
+    pub name: String,
+    pub text: String,
+    pub is_error: bool,
+    /// `false` when the command also asked the terminal host for an action —
+    /// the text is still what the command answered, but no API client can
+    /// perform that action (a balance fetch, a snapshot restore) on the
+    /// host's behalf.
+    pub text_only: bool,
 }
 
 static CATALOG: OnceLock<Arc<dyn CommandCatalog>> = OnceLock::new();

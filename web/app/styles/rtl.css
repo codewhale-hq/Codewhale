@@ -1,0 +1,17 @@
+:where([dir="rtl"]) :where(p, li, h1, h2, h3, h4, h5, h6, dt, dd, th, td, caption, figcaption, summary, blockquote, label) {
+  unicode-bidi: plaintext;
+  text-align: start;
+}
+
+:where([dir="rtl"]) :where(pre, code, kbd, samp, .code, .code-block, .term-capture, .term-capture-scroll, .plugin-flow-command) {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+:where([dir="rtl"]) :where(pre, .code-block, .term-capture, .term-capture-scroll) {
+  text-align: left;
+}
+
+.locale-fallback {
+  display: contents;
+}

@@ -248,6 +248,41 @@ export function usagePreferenceRecord(granted: boolean, now: number): string {
   return JSON.stringify(record);
 }
 
+export interface PrivacySignalSource {
+  globalPrivacyControl?: unknown;
+  doNotTrack?: unknown;
+  msDoNotTrack?: unknown;
+}
+
+const DO_NOT_TRACK_VALUES = ["1", "yes"];
+
+export function privacySignalActive(
+  navigatorLike: object | null | undefined = typeof navigator === "undefined" ? null : navigator,
+  windowLike: object | null | undefined = typeof window === "undefined" ? null : window,
+): boolean {
+  const nav = navigatorLike as PrivacySignalSource | null | undefined;
+  const win = windowLike as PrivacySignalSource | null | undefined;
+  try {
+    if (nav?.globalPrivacyControl === true) return true;
+    return [nav?.doNotTrack, nav?.msDoNotTrack, win?.doNotTrack, win?.msDoNotTrack]
+      .some((value) => typeof value === "string" && DO_NOT_TRACK_VALUES.includes(value));
+  } catch {
+    return false;
+  }
+}
+
+export function privacySignalHeader(headers: Pick<Headers, "get">): boolean {
+  return headers.get("sec-gpc")?.trim() === "1" || headers.get("dnt")?.trim() === "1";
+}
+
+export function clearUsageState(storage: StorageLike): void {
+  for (const key of [COUNTERS_STORAGE_KEY, FUNNEL_STORAGE_KEY, INSTALL_STORAGE_KEY]) {
+    try {
+      storage.removeItem(key);
+    } catch {}
+  }
+}
+
 // --------------------------------------------------------------- install id
 
 interface InstallRecord {
@@ -346,6 +381,7 @@ export interface RecorderOptions {
   setTimer?: (callback: () => void, delayMs: number) => unknown;
   clearTimer?: (handle: unknown) => void;
   flushDelayMs?: number;
+  blocked?: () => boolean;
 }
 
 export interface UsageRecorder {
@@ -441,13 +477,11 @@ export function createUsageRecorder(options: RecorderOptions): UsageRecorder {
     deliveryController?.abort();
     counters = emptyCounters();
     funnel = emptyFunnelCounters();
-    remove(COUNTERS_STORAGE_KEY);
-    remove(FUNNEL_STORAGE_KEY);
-    remove(INSTALL_STORAGE_KEY);
+    clearUsageState(storage);
   };
 
   const preference = (): UsagePreference => {
-    if (sessionOff) return "off";
+    if (sessionOff || options.blocked?.()) return "off";
     try { return readUsagePreference(storage.getItem(PREFERENCE_STORAGE_KEY)); } catch { return "off"; }
   };
   const enabled = () => usageCountingEnabled(preference());

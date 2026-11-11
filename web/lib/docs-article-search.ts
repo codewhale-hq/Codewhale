@@ -18,10 +18,12 @@ import { CONNECTORS } from "./content/connectors.generated";
 import { CONSTITUTION_LAYERS, CONSTITUTION_SCENES } from "./content/constitution";
 import { getDocsAccount } from "./content/docs-account";
 import type { LocalizedText } from "./content/vocabulary";
-import { TOOLS_COPY } from "./content/tools";
+import { TOOLS_COPY, toolRowsFor } from "./content/tools";
+import { resolveDocsPage } from "./docs-release";
+import { runtimeCapabilityContext } from "./capabilities";
+import { BUILD_FACTS } from "./facts";
 import {
-  ADVISORY_ROLE, CONTROL_MODES, MEASUREMENT_PRINCIPLES, PERMISSION_POSTURES,
-  PRODUCT_TERMS, ROUTE_IDENTITY,
+  ADVISORY_ROLE, MEASUREMENT_PRINCIPLES, PRODUCT_TERMS, ROUTE_IDENTITY, controlTermsFor,
 } from "./content/vocabulary";
 
 const ARTICLES: Record<string, (locale: string) => DocsPageDict> = {
@@ -43,11 +45,13 @@ function blockText(block: DocsBlock): string {
 }
 
 export function getDocSearchSections(locale: string): DocSearchSection[] {
+  const context = runtimeCapabilityContext(BUILD_FACTS);
+  const tools = toolRowsFor(context);
   const sections = Object.entries(ARTICLES).flatMap(([slug, getArticle]) => {
     const article = getArticle(locale);
     return [
       { id: "overview", title: article.title, text: article.lede },
-      ...article.sections.map((section) => ({
+      ...resolveDocsPage(article, context).sections.map((section) => ({
         id: section.id, title: section.title, text: section.blocks.map(blockText).join(" "),
       })),
     ].map((section) => ({
@@ -63,11 +67,11 @@ export function getDocSearchSections(locale: string): DocSearchSection[] {
   })));
   const vocabulary = getDocsVocabulary(locale);
   sections.push(
-    { href: "/docs/tools#overview", pageTitle: pickText(TOOLS_COPY.title, locale), title: pickText(TOOLS_COPY.title, locale), text: [pickText(TOOLS_COPY.lead, locale), ...TOOLS_COPY.rows.flatMap((row) => [row.name, pickText(row.detail, locale)])].join(" ") },
+    { href: "/docs/tools#overview", pageTitle: pickText(TOOLS_COPY.title, locale), title: pickText(TOOLS_COPY.title, locale), text: [pickText(tools.released ? TOOLS_COPY.lead : TOOLS_COPY.leadSource, locale), ...tools.body.flatMap((row) => [row.name, pickText(row.detail, locale)])].join(" ") },
     { href: "/docs/tools#lsp", pageTitle: pickText(TOOLS_COPY.title, locale), title: pickText(TOOLS_COPY.lspTitle, locale), text: pickText(TOOLS_COPY.lspBody, locale) },
     { href: "/docs/tools#compatibility", pageTitle: pickText(TOOLS_COPY.title, locale), title: pickText(TOOLS_COPY.compatibilityTitle, locale), text: pickText(TOOLS_COPY.compatibility, locale) },
     { href: "/docs/vocabulary#execution-nouns", pageTitle: vocabulary.title, title: vocabulary.executionHeading, text: PRODUCT_TERMS.flatMap((row) => [row.term, pickText(row.short, locale), pickText(row.long, locale)]).join(" ") },
-    { href: "/docs/vocabulary#control-nouns", pageTitle: vocabulary.title, title: vocabulary.controlHeading, text: [...CONTROL_MODES, ...PERMISSION_POSTURES].flatMap((row) => [row.term, pickText(row.description, locale)]).join(" ") },
+    { href: "/docs/vocabulary#control-nouns", pageTitle: vocabulary.title, title: vocabulary.controlHeading, text: controlTermsFor(context).body.flatMap((row) => [row.term, pickText(row.description, locale)]).join(" ") },
     { href: "/docs/vocabulary#route-identity", pageTitle: vocabulary.title, title: vocabulary.routeHeading, text: ROUTE_IDENTITY.flatMap((row) => [row.term, pickText(row.description, locale)]).join(" ") },
     { href: "/docs/vocabulary#advisory-role", pageTitle: vocabulary.title, title: vocabulary.advisoryHeading, text: `${ADVISORY_ROLE.term} ${pickText(ADVISORY_ROLE.description, locale)}` },
     { href: "/docs/vocabulary#measurement", pageTitle: vocabulary.title, title: vocabulary.measurementHeading, text: MEASUREMENT_PRINCIPLES.map((row) => pickText(row, locale)).join(" ") },

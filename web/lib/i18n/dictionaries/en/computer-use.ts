@@ -41,7 +41,7 @@ export const computerUse: ComputerUseDict = {
   connectVersion: "Codewhale 0.10.2 includes an older Computer Use plugin. Installing the catalog entry does not upgrade it. Use the installed Mac helper directly over MCP.",
   connectLimit: "Direct MCP adds tools without plugin skills. Do not use it alongside the older built-in plugin. If that plugin is enabled, run /plugin disable computer-use first.",
   connectRuntime: "The app includes Node; no separate Node install is needed. If installed elsewhere, set APP to the actual app bundle path.",
-  connectReload: "In a running terminal session, run /mcp reload, switch to Operate, and ask:",
+  connectReload: "In a running terminal session, run /mcp reload and ask:",
   connectPrompt: "Check Computer Use permissions with request_access. Do not send input.",
   connectExpected: "Check for via: app, the helper version and any missing permissions. If the helper is missing, stop and follow the setup hint. This checks the connection and permissions only.",
   connectGuide: "MCP setup guide",

@@ -26,7 +26,7 @@ export const dynamic = "force-dynamic";
 
 async function checkAuth(req: Request, env: CommunityAgentEnv): Promise<{ ok: boolean; status?: number; error?: string }> {
   if (!env.MAINTAINER_TOKEN) {
-    return { ok: false, status: 503, error: "MAINTAINER_TOKEN not configured" };
+    return { ok: false, status: 503, error: "not configured" };
   }
 
   const cookieHeader = req.headers.get("cookie") ?? "";

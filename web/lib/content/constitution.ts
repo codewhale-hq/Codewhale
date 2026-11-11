@@ -4,13 +4,13 @@ export const CONSTITUTION_LAYERS = [
     name: { en: "Bundled Constitution", zh: "内置宪章" },
     path: { en: "compiled into every binary", zh: "编译进每一个二进制" },
     body: {
-      en: "The base law. Its priority article fixes the authority order for any conflict, so a stale handoff can never outrank a fresh test result by accident.",
-      zh: "基础法。其中的位阶条款为一切冲突固定裁决顺序——过期的交接不会稀里糊涂地压过刚跑出的测试结果。",
+      en: "The base rules. Its priority article fixes the authority order for any conflict, so a stale handoff can never outrank a fresh test result by accident.",
+      zh: "基础规则。其中的位阶条款为一切冲突固定裁决顺序——过期的交接不会稀里糊涂地压过刚跑出的测试结果。",
     },
   },
   {
     n: "02",
-    name: { en: "/constitution — your standing law", zh: "/constitution——你的常备法" },
+    name: { en: "/constitution — your standing rules", zh: "/constitution——你的常备规则" },
     path: { en: "$CODEWHALE_HOME/constitution.json", zh: "$CODEWHALE_HOME/constitution.json" },
     body: {
       en: "Structured data, not a raw prompt editor: guided setup renders it into a model-facing prose block. Drafted with your model's help, ratified by you, and carried across every project.",
@@ -19,7 +19,7 @@ export const CONSTITUTION_LAYERS = [
   },
   {
     n: "03",
-    name: { en: "Your repo's law", zh: "仓库自己的法" },
+    name: { en: "Your repo's rules", zh: "仓库自己的规则" },
     path: { en: ".codewhale/constitution.json", zh: ".codewhale/constitution.json" },
     body: {
       en: "Protected invariants, branch policy, verification requirements, escalation conditions — loaded as a repo-local authority block above project instructions, memory, and handoffs.",

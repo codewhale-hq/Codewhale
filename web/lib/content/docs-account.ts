@@ -80,7 +80,7 @@ const EN: DocsPageDict = {
         {
           rows: [
             ["codewhale account status", "Shows which account this profile is signed in to, or says that it is not signed in."],
-            ["codewhale logout", "Removes this profile's account session."],
+            ["codewhale account logout", "Removes this profile's account session."],
           ],
           codeTerms: true,
         },
@@ -118,12 +118,12 @@ const EN: DocsPageDict = {
         {
           rows: [
             ["Desktop app", "Press Sign out in Settings, Account, or press your name at the bottom of the sidebar and choose Sign out."],
-            ["Terminal", "Run `codewhale logout`."],
+            ["Terminal", "Run `codewhale account logout`."],
             ["Web", "Press Use another account on the signed-in page."],
           ],
         },
         {
-          note: "`codewhale logout --all` goes further: it also removes every saved provider key and login, and asks you to confirm first. Use plain `codewhale logout` to end only the account session.",
+          note: "`codewhale logout` is different: it removes every saved provider key and login, and asks you to confirm first. Use `codewhale account logout` to end only the account session.",
         },
       ],
     },
@@ -167,7 +167,26 @@ const EN: DocsPageDict = {
     },
   ],
   sourceNote:
-    "Source: crates/account-cli (login, status, logout), crates/cli, the desktop app's sign-in flow and Settings, Account · Update docs-map.ts when changing.",
+    "Source: crates/cli (login, account status, account logout, logout) at the published release tag, the desktop app's sign-in flow and Settings, Account · Update docs-map.ts when changing.",
+  sourceGroups: [
+    {
+      claim: { feature: "account-login", describesCurrentRow: true },
+      sections: [
+        {
+          id: "source-account-login",
+          title: "Sign in and out inside the terminal app",
+          blocks: [
+            {
+              p: "`/login` opens account sign-in inside the terminal app with a browser link and code, and `/login status` shows the account. Signing in keeps your selected model and unsent message. An account connection is separate from usable model access.",
+            },
+            {
+              p: "`/logout`, `codewhale logout` and `codewhale account logout` end only the account session and keep local model connections and conversations. `codewhale logout --all` removes every saved provider credential as well, and asks you to confirm first.",
+            },
+          ],
+        },
+      ],
+    },
+  ],
 };
 
 const ZH: DocsPageDict = {
@@ -250,7 +269,7 @@ const ZH: DocsPageDict = {
         {
           rows: [
             ["codewhale account status", "显示这个配置档登录的是哪个账户，或说明尚未登录。"],
-            ["codewhale logout", "移除这个配置档的账户会话。"],
+            ["codewhale account logout", "移除这个配置档的账户会话。"],
           ],
           codeTerms: true,
         },
@@ -288,12 +307,12 @@ const ZH: DocsPageDict = {
         {
           rows: [
             ["桌面应用", "在设置的账户页点击退出登录，或点击侧边栏底部你的名字并选择退出登录。"],
-            ["终端", "运行 `codewhale logout`。"],
+            ["终端", "运行 `codewhale account logout`。"],
             ["网页", "在已登录页面点击使用其他账户。"],
           ],
         },
         {
-          note: "`codewhale logout --all` 范围更大：它还会移除所有已保存的提供商密钥和登录，并会先请你确认。只想结束账户会话时，请用不带参数的 `codewhale logout`。",
+          note: "`codewhale logout` 的作用不同：它会移除所有已保存的提供商密钥和登录，并会先请你确认。只想结束账户会话时，请用 `codewhale account logout`。",
         },
       ],
     },
@@ -337,7 +356,26 @@ const ZH: DocsPageDict = {
     },
   ],
   sourceNote:
-    "来源：crates/account-cli（login、status、logout）、crates/cli、桌面应用的登录流程与设置中的账户页 · 修改时请同步 docs-map.ts。",
+    "来源：已发布版本标签下的 crates/cli（login、account status、account logout、logout）、桌面应用的登录流程与设置中的账户页 · 修改时请同步 docs-map.ts。",
+  sourceGroups: [
+    {
+      claim: { feature: "account-login", describesCurrentRow: true },
+      sections: [
+        {
+          id: "source-account-login",
+          title: "在终端应用内登录与退出",
+          blocks: [
+            {
+              p: "`/login` 在终端应用内发起账户登录，提供浏览器链接和验证码；`/login status` 显示账户状态。登录会保留你选择的模型和尚未发送的消息。账户连接与可用的模型访问是两回事。",
+            },
+            {
+              p: "`/logout`、`codewhale logout` 和 `codewhale account logout` 只结束账户会话，保留本地模型连接和对话。`codewhale logout --all` 还会移除所有已保存的提供商凭据，并会先请你确认。",
+            },
+          ],
+        },
+      ],
+    },
+  ],
 };
 
 export function getDocsAccount(locale: string): DocsPageDict {

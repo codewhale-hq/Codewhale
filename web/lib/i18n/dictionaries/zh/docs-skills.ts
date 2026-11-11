@@ -2,7 +2,7 @@ import type { DocsPageDict } from "../types";
 
 export const docsSkills: DocsPageDict = {
   metaTitle: "管理技能 · Codewhale 文档",
-  metaDescription: "查找、安装并信任 SKILL.md 指令包，控制用户与模型调用，并导入兼容的 Claude Code 技能。",
+  metaDescription: "查找、安装并信任 SKILL.md 指令包，控制用户与模型调用，并导入其他编码智能体的兼容技能文件夹。",
   bodyClassName: "text-ink-soft leading-[1.9] tracking-wide",
   title: "管理可复用技能",
   lede: "技能是 SKILL.md 指令包。发现兼容文件夹后，先审阅来源与信任设置，再使用技能。",
@@ -56,7 +56,7 @@ export const docsSkills: DocsPageDict = {
   next: [
     {
       "href": "/docs/claude-code",
-      "label": "从 Claude Code 迁移",
+      "label": "从其他编码智能体带来你的设置",
       "note": "带入兼容技能并审阅设置导入方案。"
     },
     {
