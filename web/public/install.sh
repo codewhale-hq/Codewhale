@@ -516,6 +516,16 @@ if [ -n "$recovery_dir" ]; then
 fi
 "$install_dir/codewhale" doctor --installs --brief </dev/null 2>/dev/null || true
 
+case "$target" in
+  macos-*)
+    if ! command -v node >/dev/null 2>&1; then
+      say ""
+      say "Computer Use is included and needs Node.js 20 or newer on PATH."
+      say "Install Node.js from https://nodejs.org/, then restart Codewhale to enable Computer Use."
+    fi
+    ;;
+esac
+
 say ""
 say "Use this installation: \"$install_dir/codewhale\""
 say "Future updates: \"$install_dir/codewhale\" update"
@@ -530,16 +540,16 @@ for command_name in codewhale codew; do
     path_selected=0
   fi
 done
-if [ "$path_selected" -eq 0 ]; then
-  # Print the persistent line for the user's login shell. The installer never
-  # edits shell profiles itself; the user runs the line once.
+if [ "$path_selected" -eq 1 ]; then
+  say ""
+  say "Next: codewhale --version"
+else
   path_dir="$install_dir"
   if [ -n "${HOME:-}" ] && [ "$install_dir" = "$(cd -P "$HOME/.local/bin" 2>/dev/null && pwd)" ]; then
     path_dir="\$HOME/.local/bin"
   fi
   shell_name="${SHELL:-}"
   shell_name="${shell_name##*/}"
-  say ""
   case "$path_dir" in
     *[\'\"\`\\\$]*|*"
 "*)
@@ -551,11 +561,21 @@ if [ "$path_selected" -eq 0 ]; then
       fi
       ;;
   esac
+  say ""
+  if [ -z "$(command -v codewhale 2>/dev/null || true)" ]; then
+    say "codewhale is not on your PATH in this shell yet."
+  else
+    say "A different codewhale comes first on your PATH in this shell."
+  fi
   case "$shell_name" in
     fish)
       say "Put $install_dir first on PATH in future shells (run once; this installer does not edit shell profiles):"
       say "  fish_add_path \"$path_dir\""
       say "It takes effect in this fish shell and in new ones (fish 3.2 or newer)."
+      say "PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path"
+      say ""
+      say "Then check it:"
+      say "  codewhale --version"
       ;;
     zsh|bash|sh|dash|ksh|mksh|ash|"")
       case "$shell_name" in
@@ -585,21 +605,23 @@ if [ "$path_selected" -eq 0 ]; then
       else
         say "To undo this later, delete the three lines between and including the marker lines."
       fi
-      say "Then run: . ~/$profile   (or open a new terminal)"
-      say "Or for this shell only:"
+      say "PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path"
+      say ""
+      say "Run this now, in this shell:"
       say "  export PATH=\"$path_dir:\$PATH\"; hash -r"
+      say "Then check it:"
+      say "  codewhale --version"
       ;;
     unsafe-path)
       say "Add $install_dir first to PATH in your shell's startup file; its name contains shell-special characters, so no command line is printed for it."
+      say "PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path"
       ;;
     *)
       say "Add $install_dir first to PATH in your shell's startup file; this installer has no PATH line for $shell_name."
+      say "PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path"
+      say ""
+      say "Until then, run it by its full path:"
+      say "  \"$install_dir/codewhale\" --version"
       ;;
   esac
-  say "Verify: command -v codewhale codew"
-  say "PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path"
-fi
-if ! command -v node >/dev/null 2>&1; then
-  say "Computer Use is included and needs Node.js 20 or newer on PATH."
-  say "Install Node.js from https://nodejs.org/, then restart Codewhale to enable Computer Use."
 fi

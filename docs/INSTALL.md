@@ -195,13 +195,21 @@ Installed checksummed release commands:
   /home/you/.local/bin/codew
 …
 PATH selects no codewhale command; this install is /home/you/.local/bin/codewhale
-…
+
+codewhale is not on your PATH in this shell yet.
 Put /home/you/.local/bin first on PATH in future shells (run once; this installer does not edit shell profiles):
   printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc
 The marker lines let codewhale uninstall remove exactly this block; a bare export line is yours and is never touched.
-Then run: . ~/.bashrc   (or open a new terminal)
-…
+PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path
+
+Run this now, in this shell:
+  export PATH="$HOME/.local/bin:$PATH"; hash -r
+Then check it:
+  codewhale --version
 ```
+
+The PATH block is always the last thing the installer prints. When your PATH already
+selects the install, the last line is `Next: codewhale --version`.
 
 ### macOS notes
 
@@ -227,7 +235,7 @@ prints the matching line from the block below for your `$SHELL` (zsh, bash,
 fish, or a POSIX `sh`; for any other shell, or a directory name with quotes,
 `$`, backticks or backslashes, it tells you to add the directory yourself). It
 never edits a shell profile itself. The `install.sh` inside a release archive
-prints only the current-shell `export` line. On Ubuntu and Debian, `~/.profile` adds
+prints only the current-shell `export` line, also as its last output. On Ubuntu and Debian, `~/.profile` adds
 `~/.local/bin`, but only if the directory existed when you *logged in*. So:
 
 * a new SSH or login shell picks it up automatically;

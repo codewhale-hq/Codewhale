@@ -149,13 +149,21 @@ Installed checksummed release commands:
   /home/you/.local/bin/codew
 …
 PATH selects no codewhale command; this install is /home/you/.local/bin/codewhale
-…
+
+codewhale is not on your PATH in this shell yet.
 Put /home/you/.local/bin first on PATH in future shells (run once; this installer does not edit shell profiles):
   printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc
 The marker lines let codewhale uninstall remove exactly this block; a bare export line is yours and is never touched.
-Then run: . ~/.bashrc   (or open a new terminal)
-…
+PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path
+
+Run this now, in this shell:
+  export PATH="$HOME/.local/bin:$PATH"; hash -r
+Then check it:
+  codewhale --version
 ```
+
+The PATH block is always the last thing the installer prints. When your PATH already
+selects the install, the last line is `Next: codewhale --version`.
 
 ### macOS 说明
 
