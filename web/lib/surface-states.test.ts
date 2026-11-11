@@ -4,6 +4,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ALL_LOCALES } from "./i18n/config";
 import { getChrome } from "./i18n/dictionaries";
+import { NextRequest } from "next/server";
+import { middleware } from "../middleware";
+import { footerDocsLinks, footerLegalLinks, footerProductLinks, footerProjectLinks, navLinks, signInLink } from "./i18n/links";
+import { PERMANENT_ROUTE_REDIRECTS, REDIRECTED_ROUTES } from "./route-redirects";
 import { AVAILABILITY_ROWS, describeRow } from "./content/availability";
 import { DESKTOP_RELEASE, desktopDownload, parseDesktopRelease, type DesktopReleaseFact } from "./desktop-release";
 import { daysLeft, isActiveAt } from "./expiry";
@@ -199,10 +203,9 @@ describe("the desktop download", () => {
     expect(html).toContain(SHA);
   });
 
-  it.each(["en", "zh"])("renders on /app and /product in %s only when the release object is present", async (locale) => {
+  it.each(["en", "zh"])("renders on /app in %s only when the release object is present", async (locale) => {
     const { default: AppPage } = await import("../app/[locale]/app/page");
-    const { default: ProductPage } = await import("../app/[locale]/product/page");
-    for (const page of [AppPage, ProductPage]) {
+    for (const page of [AppPage]) {
       holder.release = null;
       expect(await render(page as Page, locale)).not.toContain(SHA);
       holder.release = fixture;
@@ -216,24 +219,17 @@ describe("the desktop download", () => {
 
 const PAGES: [string, () => Promise<{ default: unknown }>][] = [
   ["", () => import("../app/[locale]/page")],
-  ["product", () => import("../app/[locale]/product/page")],
   ["app", () => import("../app/[locale]/app/page")],
   ["install", () => import("../app/[locale]/install/page")],
   ["signin", () => import("../app/[locale]/signin/page")],
   ["faq", () => import("../app/[locale]/faq/page")],
   ["features", () => import("../app/[locale]/features/page")],
-  ["enterprise", () => import("../app/[locale]/enterprise/page")],
-  ["roadmap", () => import("../app/[locale]/roadmap/page")],
-  ["runtime", () => import("../app/[locale]/runtime/page")],
   ["models", () => import("../app/[locale]/models/page")],
   ["plugins", () => import("../app/[locale]/plugins/page")],
   ["computer-use", () => import("../app/[locale]/computer-use/page")],
-  ["community", () => import("../app/[locale]/community/page")],
   ["contribute", () => import("../app/[locale]/contribute/page")],
-  ["feed", () => import("../app/[locale]/feed/page")],
-  ["digest", () => import("../app/[locale]/digest/page")],
   ["docs", () => import("../app/[locale]/docs/page")],
-  ["constitution", () => import("../app/[locale]/constitution/page")],
+  ["docs/constitution", () => import("../app/[locale]/docs/constitution/page")],
 ];
 
 describe("with both founder switches off, no page offers a download or a request path", () => {
@@ -256,7 +252,7 @@ describe("with both founder switches off, no page offers a download or a request
 
 describe("no page links to a missing or gone route", () => {
   const ROUTE_ROOT = join(WEB, "app/[locale]");
-  const REDIRECTS = new Set(["download", "desktop", "pricing", "signup", "terms", "privacy", "legal"]);
+  const REDIRECTS = new Set([...REDIRECTED_ROUTES, "signup", "terms", "privacy", "legal"]);
 
   function routeExists(path: string): boolean {
     const segments = path.split("/").filter(Boolean);
@@ -274,6 +270,36 @@ describe("no page links to a missing or gone route", () => {
     }
     return existsSync(join(dir, "page.tsx"));
   }
+
+  it.each(["en", "zh"])("answers every header and footer link in %s with a page that exists", (locale) => {
+    const chrome = getChrome(locale);
+    const links = [
+      ...navLinks(locale, chrome, true),
+      signInLink(locale, chrome),
+      ...footerProductLinks(locale, chrome),
+      ...footerDocsLinks(locale, chrome),
+      ...footerProjectLinks(locale, chrome, "Merch"),
+      ...footerLegalLinks(locale, chrome, "Usage"),
+    ];
+    for (const link of links.filter((l) => l.href.startsWith("/"))) {
+      const path = link.href.replace(/#.*$/, "").replace(new RegExp(`^/${locale}`), "");
+      expect(routeExists(path), `${locale} chrome link ${link.href}`).toBe(true);
+      expect(REDIRECTED_ROUTES.includes(path.split("/")[1] ?? ""), `${link.href} is a redirect`).toBe(false);
+    }
+    for (const link of links.filter((l) => !l.href.startsWith("/"))) expect(link.href, link.label).toMatch(/^https:\/\//);
+  });
+
+  it.each(["", "/en", "/zh", "/ar"])("redirects every merged route permanently to a page that exists, under %s", (prefix) => {
+    for (const [segment, target] of Object.entries(PERMANENT_ROUTE_REDIRECTS)) {
+      const res = middleware(new NextRequest(new URL(`https://codewhale.net${prefix}/${segment}`), {
+        headers: new Headers({ host: "codewhale.net", "accept-language": "ar" }),
+      }));
+      const locale = prefix.slice(1) || "ar";
+      expect(res.status, `${prefix}/${segment}`).toBe(308);
+      expect(res.headers.get("location"), `${prefix}/${segment}`).toBe(`https://codewhale.net/${locale}${target}`);
+      expect(routeExists(target.replace(/#.*$/, "")), `${target} exists`).toBe(true);
+    }
+  });
 
   it("never links the hosted app root while its state is not open", async () => {
     expect(surfaceState("hosted-web")).toBe("not_open");

@@ -10,7 +10,8 @@ import { ArrowLabel } from "./arrow-label";
 
 export function MobileMenu({
   links,
-  moreLinks,
+  github,
+  signIn,
   installHref,
   installLabel,
   openLabel,
@@ -18,8 +19,8 @@ export function MobileMenu({
   navAria,
 }: {
   links: ChromeLink[];
-  /** The second group on the sheet: start, install, FAQ, community, contribute. */
-  moreLinks: ChromeLink[];
+  github: { href: string; label: string; count: string | null; aria: string };
+  signIn: ChromeLink;
   installHref: string;
   installLabel: string;
   openLabel: string;
@@ -34,9 +35,7 @@ export function MobileMenu({
   const [closing, setClosing] = useState(false);
   const closeTimer = useRef<number | null>(null);
   const pathname = usePathname();
-  // One link is the page; ancestors are not. See currentNavHref. Both
-  // groups compete for the one current mark.
-  const currentHref = currentNavHref([...links, ...moreLinks], pathname);
+  const currentHref = currentNavHref([...links, signIn], pathname);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -184,7 +183,7 @@ export function MobileMenu({
               "Primary" landmarks would read as duplication. */}
           <nav className="px-6 py-4">
             <ul className="mm-list">
-              {[...links, ...moreLinks].map((l) => {
+              {links.map((l) => {
                 const isActive = l.href === currentHref;
                 return (
                   <li key={l.href}>
@@ -200,6 +199,29 @@ export function MobileMenu({
                   </li>
                 );
               })}
+              <li>
+                <a
+                  href={github.href}
+                  className="mm-link"
+                  aria-label={github.aria}
+                  data-funnel="star_exit"
+                  onClick={() => setOpen(false)}
+                >
+                  <span>{github.label}{github.count !== null && <span className="tabular"> · {github.count}</span>}</span>
+                  <Icon name="chevron-right" className="nav-icon mm-link-chevron icon-flip" />
+                </a>
+              </li>
+              <li>
+                <Link
+                  href={signIn.href}
+                  onClick={() => setOpen(false)}
+                  className="mm-link"
+                  aria-current={signIn.href === currentHref ? "page" : undefined}
+                >
+                  <span>{signIn.label}</span>
+                  <Icon name="chevron-right" className="nav-icon mm-link-chevron icon-flip" />
+                </Link>
+              </li>
             </ul>
 
             <Link

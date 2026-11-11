@@ -6,14 +6,11 @@ import type { ChromeDict } from "../types";
  */
 export const chrome: ChromeDict = {
   navDocs: "Docs",
-  navStart: "Start",
-  navInstall: "Install",
-  navFaq: "FAQ",
-  navCommunity: "Community",
   navContribute: "Contribute",
+  navSignIn: "Sign in",
+  navDesktop: "Desktop",
 
   navFeatures: "Capabilities",
-  navProduct: "Product",
   navModels: "Models",
   navPlugins: "Plugins",
 
@@ -28,6 +25,7 @@ export const chrome: ChromeDict = {
 
   menuOpen: "Open menu",
   menuClose: "Close menu",
+  translationMachineDraft: "This translation is a machine draft with no native review yet.",
 
   themeAuto: "auto",
   themeLight: "light",
@@ -35,17 +33,13 @@ export const chrome: ChromeDict = {
   themeAria: "Theme: {mode} (click to cycle)",
   themeTitle: "Theme · auto / light / dark",
 
-  footerTagline: "Use any model through an agent you can read.",
   footerProduct: "Product",
   footerProject: "Project",
   footerDocs: "Docs",
   footerGuide: "Getting started",
   footerInstall: "Install",
-  footerApps: "Desktop and web",
   footerModels: "Models",
-  footerRuntime: "Runtime",
   footerFaq: "FAQ",
-  footerIssues: "Issues",
   footerContribute: "Contribute",
   footerRoadmap: "Roadmap",
   footerLicense: "MIT license",

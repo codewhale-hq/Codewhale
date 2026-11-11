@@ -24,18 +24,10 @@
 export interface ChromeDict {
   // --- primary nav labels (components/nav.tsx via lib/i18n/links.ts) ---
   navDocs: string;
-  navStart: string;
-  navInstall: string;
-  navFaq: string;
-  navCommunity: string;
   navContribute: string;
+  navSignIn: string;
+  navDesktop: string;
 
-  /**
-   * The primary strip: Product / Models / Plugins / Docs. The
-   * older six (Start, Install, FAQ, Community, Contribute) stay in the
-   * dictionary for the compact sheet's second group and the footer.
-   */
-  navProduct: string;
   navFeatures: string;
   navModels: string;
   navPlugins: string;
@@ -65,6 +57,7 @@ export interface ChromeDict {
   /** Mobile-menu toggle labels. */
   menuOpen: string;
   menuClose: string;
+  translationMachineDraft: string;
 
   /** Docs theme toggle: the three cycle states. */
   themeAuto: string;
@@ -76,17 +69,13 @@ export interface ChromeDict {
   themeTitle: string;
 
   // --- footer ---
-  footerTagline: string;
   footerProduct: string;
   footerProject: string;
   footerDocs: string;
   footerGuide: string;
   footerInstall: string;
-  footerApps: string;
   footerModels: string;
-  footerRuntime: string;
   footerFaq: string;
-  footerIssues: string;
   footerContribute: string;
   footerRoadmap: string;
   footerLicense: string;
@@ -502,16 +491,6 @@ export interface LegalPrivacyDict {
   homeLink: string;
 }
 
-export interface DigestDict {
-  metaTitle: string;
-  metaDescription: string;
-  /** Heading shown with the empty state. */
-  emptyTitle: string;
-  emptyBody: string;
-  title: string;
-  lead: string;
-}
-
 /** `app/[locale]/feed/page.tsx`. */
 export interface FeedDict {
   metaTitle: string;
@@ -675,34 +654,6 @@ export interface ConstitutionDict {
   illustration: string;
   install: string;
   configuration: string;
-}
-
-/** `app/[locale]/runtime/page.tsx`. */
-export interface RuntimeDict {
-  metaTitle: string;
-  metaDescription: string;
-  kicker: string;
-  /** Page H1. */
-  title: string;
-  /** The H1 again in the other script, set beside it (the bilingual Han title). */
-  titleAside: string;
-  /** BCP 47 language of `titleAside`. */
-  titleAsideLang: string;
-  lede: string;
-  integrationsTitle: string;
-  /** Status label on an experimental integration. */
-  experimental: string;
-  trustTitle: string;
-  factsTitle: string;
-  version: string;
-  toolCount: string;
-  sandboxBackends: string;
-  /** Summary of the maintainer-facing disclosure (crates, source revision). */
-  details: string;
-  sourceRevision: string;
-  docsLead: string;
-  runtimeApiDoc: string;
-  mcpDoc: string;
 }
 
 export type DocsHooksDict = DocsPageDict;

@@ -17,14 +17,11 @@ import type { ChromeDict } from "../types";
  */
 export const chrome: ChromeDict = {
   navDocs: "문서",
-  navStart: "시작하기",
-  navInstall: "설치",
-  navFaq: "질의응답",
-  navCommunity: "커뮤니티",
   navContribute: "기여",
+  navSignIn: "로그인",
+  navDesktop: "데스크톱",
 
   navFeatures: "기능",
-  navProduct: "제품",
   navModels: "모델",
   navPlugins: "플러그인",
 
@@ -39,6 +36,7 @@ export const chrome: ChromeDict = {
 
   menuOpen: "메뉴 열기",
   menuClose: "메뉴 닫기",
+  translationMachineDraft: "이 번역은 기계 번역 초안이며 원어민 검토를 아직 받지 않았습니다.",
 
   themeAuto: "자동",
   themeLight: "밝게",
@@ -46,17 +44,13 @@ export const chrome: ChromeDict = {
   themeAria: "테마: {mode} (클릭하면 전환)",
   themeTitle: "테마 · 자동 / 밝게 / 어둡게",
 
-  footerTagline: "직접 읽어 볼 수 있는 에이전트로 어떤 모델이든 사용하세요.",
   footerProduct: "제품",
   footerProject: "프로젝트",
   footerDocs: "문서",
   footerGuide: "시작 가이드",
   footerInstall: "설치",
-  footerApps: "데스크톱 및 웹",
   footerModels: "모델",
-  footerRuntime: "런타임",
   footerFaq: "질의응답",
-  footerIssues: "이슈",
   footerContribute: "기여",
   footerRoadmap: "로드맵",
   footerLicense: "MIT 라이선스",

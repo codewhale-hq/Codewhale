@@ -20,7 +20,6 @@ import {
   EN_CHANGELOG,
   EN_DOCS_SHELL,
   EN_DOCS_TROUBLESHOOTING,
-  EN_DIGEST,
   EN_FEED,
   EN_COMMUNITY,
   EN_FAQ,
@@ -30,7 +29,6 @@ import {
   EN_ROADMAP,
   EN_CONTRIBUTE,
   EN_CONSTITUTION,
-  EN_RUNTIME,
   fill,
   getChrome,
   getDocsGuide,
@@ -53,7 +51,6 @@ import {
   getDocsModes,
   getDocsReview,
   getDocsVocabulary,
-  getDigest,
   getFeed,
   getCommunity,
   getFaq,
@@ -63,7 +60,6 @@ import {
   getRoadmap,
   getContribute,
   getConstitution,
-  getRuntime,
   pickText,
   pickTextLocale,
   splitToken,
@@ -84,15 +80,14 @@ const NON_PROSE_KEYS = new Set([
 const CHROME_PROSE_KEYS = [
   "skipToContent",
   "navDocs",
-  "navProduct",
-  "navCommunity",
+  "navSignIn",
+  "translationMachineDraft",
   "navPrimaryAria",
   "navHomeAria",
   "menuOpen",
   "menuClose",
   "themeAria",
   "themeTitle",
-  "footerTagline",
   "footerProduct",
   "footerProject",
   "footerGuide",
@@ -109,9 +104,7 @@ const CHROME_PROSE_KEYS = [
  * is deliberate and visible. German "Community" matches the TUI pack
  * (crates/tui/locales/de.json: "Community & Mitwirken").
  */
-const CHROME_LOANWORDS: Record<string, readonly string[]> = {
-  de: ["navCommunity"],
-};
+const CHROME_LOANWORDS: Record<string, readonly string[]> = {};
 
 /** Home keys that are real sentences and must be translated. */
 const HOME_PROSE_KEYS = [
@@ -301,14 +294,12 @@ describe("website dictionaries", () => {
       ["changelog", getChangelog, EN_CHANGELOG],
       ["legal-terms", getLegalTerms, EN_LEGAL_TERMS],
       ["legal-privacy", getLegalPrivacy, EN_LEGAL_PRIVACY],
-      ["digest", getDigest, EN_DIGEST],
       ["feed", getFeed, EN_FEED],
       ["community", getCommunity, EN_COMMUNITY],
       ["faq", getFaq, EN_FAQ],
       ["roadmap", getRoadmap, EN_ROADMAP],
       ["contribute", getContribute, EN_CONTRIBUTE],
       ["constitution", getConstitution, EN_CONSTITUTION],
-      ["runtime", getRuntime, EN_RUNTIME],
     ] as const) {
       const enKeys = Object.keys(reference).sort();
       for (const locale of [...DICTIONARY_LOCALES, "fr", "und"]) {

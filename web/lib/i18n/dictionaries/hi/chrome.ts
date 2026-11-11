@@ -17,14 +17,11 @@ import type { ChromeDict } from "../types";
  */
 export const chrome: ChromeDict = {
   navDocs: "दस्तावेज़ीकरण",
-  navStart: "शुरुआत",
-  navInstall: "इंस्टॉल",
-  navFaq: "सामान्य प्रश्न",
-  navCommunity: "समुदाय",
   navContribute: "योगदान",
+  navSignIn: "साइन इन",
+  navDesktop: "डेस्कटॉप",
 
   navFeatures: "क्षमताएँ",
-  navProduct: "उत्पाद",
   navModels: "मॉडल",
   navPlugins: "प्लगइन",
 
@@ -39,6 +36,7 @@ export const chrome: ChromeDict = {
 
   menuOpen: "मेनू खोलें",
   menuClose: "मेनू बंद करें",
+  translationMachineDraft: "यह अनुवाद मशीन द्वारा बनाया गया मसौदा है और इसकी अभी किसी मूल भाषी द्वारा समीक्षा नहीं हुई है।",
 
   themeAuto: "ऑटो",
   themeLight: "लाइट",
@@ -46,17 +44,13 @@ export const chrome: ChromeDict = {
   themeAria: "थीम: {mode} (बदलने के लिए क्लिक करें)",
   themeTitle: "थीम · ऑटो / लाइट / डार्क",
 
-  footerTagline: "किसी भी मॉडल का उपयोग ऐसे एजेंट से करें जिसे आप पढ़ सकते हैं.",
   footerProduct: "उत्पाद",
   footerProject: "प्रोजेक्ट",
   footerDocs: "दस्तावेज़ीकरण",
   footerGuide: "शुरुआत कैसे करें",
   footerInstall: "इंस्टॉल",
-  footerApps: "डेस्कटॉप और वेब",
   footerModels: "मॉडल",
-  footerRuntime: "Runtime",
   footerFaq: "सामान्य प्रश्न",
-  footerIssues: "Issues",
   footerContribute: "योगदान दें",
   footerRoadmap: "रोडमैप",
   footerLicense: "MIT लाइसेंस",

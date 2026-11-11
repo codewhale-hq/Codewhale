@@ -19,14 +19,11 @@ import type { ChromeDict } from "../types";
  */
 export const chrome: ChromeDict = {
   navDocs: "Documentació",
-  navStart: "Començar",
-  navInstall: "Instal·lar",
-  navFaq: "PMF",
-  navCommunity: "Comunitat",
   navContribute: "Col·laborar",
+  navSignIn: "Inicia la sessió",
+  navDesktop: "Escriptori",
 
   navFeatures: "Capacitats",
-  navProduct: "Producte",
   navModels: "Models",
   navPlugins: "Plugins",
 
@@ -41,6 +38,7 @@ export const chrome: ChromeDict = {
 
   menuOpen: "Obre el menú",
   menuClose: "Tanca el menú",
+  translationMachineDraft: "Aquesta traducció és un esborrany automàtic que encara no ha revisat cap parlant nadiu.",
 
   themeAuto: "auto",
   themeLight: "clar",
@@ -48,17 +46,13 @@ export const chrome: ChromeDict = {
   themeAria: "Tema: {mode} (fes clic per canviar)",
   themeTitle: "Tema · auto / clar / fosc",
 
-  footerTagline: "Fes servir qualsevol model amb un agent que pots llegir.",
   footerProduct: "Producte",
   footerProject: "Projecte",
   footerDocs: "Documentació",
   footerGuide: "Primers passos",
   footerInstall: "Instal·lació",
-  footerApps: "Escriptori i web",
   footerModels: "Models",
-  footerRuntime: "Runtime",
   footerFaq: "PMF",
-  footerIssues: "Issues",
   footerContribute: "Col·laborar",
   footerRoadmap: "Full de ruta",
   footerLicense: "Llicència MIT",

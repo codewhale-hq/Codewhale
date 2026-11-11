@@ -29,7 +29,7 @@ describe("public legal routes and retired pricing", () => {
   });
 
   it("aliases /privacy and /terms onto the legal paths instead of inventing a second policy", () => {
-    expect(footerLegalLinks("en", getChrome("en")).map((l) => l.href)).toEqual([
+    expect(footerLegalLinks("en", getChrome("en"), "Usage data").map((l) => l.href).slice(0, 2)).toEqual([
       "/en/legal/terms",
       "/en/legal/privacy",
     ]);
