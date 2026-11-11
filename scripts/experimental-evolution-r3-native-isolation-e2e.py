@@ -41,7 +41,7 @@ def sse_tool(name, arguments, call_id):
                    )) + "data: [DONE]\n\n"
 
 
-def make_handler(program, requests):
+def make_handler(program, requests, on_dev_review=None):
     class Handler(BaseHTTPRequestHandler):
         writer_calls = 0
 
@@ -64,6 +64,11 @@ def make_handler(program, requests):
             if "Independent read-only review" in messages or "Review this verified coding patch" in messages:
                 category = "final_review"
                 response = sse_text('{"verdict":"pass","reasons":["local isolation fixture"]}')
+            elif "Review the DEV candidate's complete changed files" in messages:
+                category = "dev_review"
+                if on_dev_review is not None:
+                    on_dev_review()
+                response = sse_text('{"verdict":"pass","reasons":["local DEV fixture"]}')
             elif "Plan one bounded implementation step" in messages:
                 category = "planner"
                 response = sse_text('{"plan":"Read starter, then write the bounded probe."}')
