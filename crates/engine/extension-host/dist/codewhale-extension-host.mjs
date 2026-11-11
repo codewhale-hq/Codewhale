@@ -7371,14 +7371,14 @@ function requireDumper() {
     let hasFoldableLine = false;
     const shouldTrackWidth = lineWidth !== -1;
     let previousLineBreak = -1;
-    let plain = isPlainSafeFirst(codePointAt(string, 0)) && isPlainSafeLast(codePointAt(string, string.length - 1));
+    let plain2 = isPlainSafeFirst(codePointAt(string, 0)) && isPlainSafeLast(codePointAt(string, string.length - 1));
     if (singleLineOnly || forceQuotes) {
       for (i2 = 0; i2 < string.length; char >= 65536 ? i2 += 2 : i2++) {
         char = codePointAt(string, i2);
         if (!isPrintable(char)) {
           return STYLE_DOUBLE;
         }
-        plain = plain && isPlainSafe(char, prevChar, inblock);
+        plain2 = plain2 && isPlainSafe(char, prevChar, inblock);
         prevChar = char;
       }
     } else {
@@ -7394,13 +7394,13 @@ function requireDumper() {
         } else if (!isPrintable(char)) {
           return STYLE_DOUBLE;
         }
-        plain = plain && isPlainSafe(char, prevChar, inblock);
+        plain2 = plain2 && isPlainSafe(char, prevChar, inblock);
         prevChar = char;
       }
       hasFoldableLine = hasFoldableLine || shouldTrackWidth && (i2 - previousLineBreak - 1 > lineWidth && string[previousLineBreak + 1] !== " ");
     }
     if (!hasLineBreak && !hasFoldableLine) {
-      if (plain && !forceQuotes && !testAmbiguousType(string)) {
+      if (plain2 && !forceQuotes && !testAmbiguousType(string)) {
         return STYLE_PLAIN;
       }
       return quotingType === QUOTING_TYPE_DOUBLE ? STYLE_DOUBLE : STYLE_SINGLE;
@@ -16501,6 +16501,167 @@ var init_session_prompt = __esm({
   }
 });
 
+// src/dsh/agents.ts
+function plain(value, allowed, what) {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new RpcError(ErrorCode.InvalidParams, `expected a plain ${what} object`);
+  const result = /* @__PURE__ */ Object.create(null);
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (typeof key !== "string" || !allowed.includes(key) || !("value" in descriptor)) throw new RpcError(ErrorCode.NotAvailable, `unsupported ${what} property ${String(key)}`);
+    if (descriptor.value !== void 0) result[key] = descriptor.value;
+  }
+  return result;
+}
+function defineSubagents(host2) {
+  class SubagentsShim extends Service {
+    constructor(ctx) {
+      super(ctx, "subagents");
+    }
+    getProvider(name) {
+      return name === "spawn" ? SPAWN_PROVIDER : void 0;
+    }
+    async startActivation(request) {
+      const owner = host2.ownerOf(this.ctx);
+      const input = plain(request, ["provider", "label", "childId", "request", "signal", "delivery"], "activation");
+      if (input.provider !== "spawn") throw new RpcError(ErrorCode.NotAvailable, "only the spawn provider is available");
+      const spawn = plain(input.request, ["parent", "prompt", "agentOptions"], "spawn request");
+      const options = spawn.agentOptions === void 0 ? {} : plain(spawn.agentOptions, ["model"], "agentOptions");
+      if (options.model !== void 0 && typeof options.model !== "string") throw new RpcError(ErrorCode.InvalidParams, "agentOptions.model must be a string");
+      const delivery = input.delivery === void 0 ? "parent" : input.delivery;
+      if (delivery !== "caller" && delivery !== "parent") throw new RpcError(ErrorCode.InvalidParams, "delivery must be caller or parent");
+      const childId = input.childId;
+      if (typeof childId !== "string" || !/^[A-Za-z0-9_.:-]{1,128}$/.test(childId)) throw new RpcError(ErrorCode.InvalidParams, "childId must be 1-128 letters, digits, or _.:-");
+      if (!Array.isArray(spawn.prompt) || spawn.prompt.length === 0) throw new RpcError(ErrorCode.InvalidParams, "prompt must be a non-empty content array");
+      const prompt = spawn.prompt.map((block) => {
+        const item = plain(block, ["type", "text"], "prompt block");
+        if (item.type !== "text" || typeof item.text !== "string") throw new RpcError(ErrorCode.NotAvailable, "only text prompt blocks are supported");
+        return item.text;
+      }).join("");
+      if (input.signal !== void 0 && !(input.signal instanceof AbortSignal)) throw new RpcError(ErrorCode.InvalidParams, "signal must be an AbortSignal");
+      const invocation = host2.liveInvocation(this.ctx);
+      if (!invocation || invocation.agent === void 0 || spawn.parent !== invocation.agent) {
+        throw new RpcError(ErrorCode.NotAvailable, "startActivation requires the exact live calling agent as parent");
+      }
+      if (invocation.owner !== owner) throw new RpcError(ErrorCode.NotAvailable, "subagents service owner is no longer current");
+      if (invocation.delegated || invocation.subagentTicket === void 0) throw new RpcError(ErrorCode.NotAvailable, "child agents are only available to a root tool invocation");
+      const signal = input.signal === void 0 ? invocation.signal : AbortSignal.any([invocation.signal, input.signal]);
+      signal.throwIfAborted();
+      let persona;
+      const denied2 = /* @__PURE__ */ new Set();
+      let open2 = true;
+      const sealed = () => {
+        if (!open2) throw new RpcError(ErrorCode.NotAvailable, "the child creation window has closed");
+      };
+      const child = Object.freeze({
+        id: childId,
+        ctx: Object.freeze({
+          systemPrompt: Object.freeze({
+            getSectionOrder(name) {
+              sealed();
+              if (name !== "DEPLOYMENT_PERSONA_PREFIX") throw new RpcError(ErrorCode.NotAvailable, "only the deployment persona slot is available");
+              return PERSONA_ORDER;
+            },
+            section(section) {
+              sealed();
+              const value = plain(section, ["name", "order", "text"], "system prompt section");
+              if (value.name !== PERSONA_PREFIX_SECTION || value.order !== PERSONA_ORDER || typeof value.text !== "string") {
+                throw new RpcError(ErrorCode.NotAvailable, "only the child deployment persona section is supported");
+              }
+              if (persona !== void 0) throw new RpcError(ErrorCode.InvalidParams, "the child persona is already set");
+              if (Buffer.byteLength(value.text) > 32 * 1024) throw new RpcError(ErrorCode.InvalidParams, "child persona exceeds 32768 bytes");
+              persona = value.text;
+              return () => void 0;
+            }
+          }),
+          tools: Object.freeze({
+            restrict(filter) {
+              sealed();
+              const value = plain(filter, ["deny"], "tool filter");
+              if (!Array.isArray(value.deny) || value.deny.some((name) => typeof name !== "string" || name === "")) throw new RpcError(ErrorCode.InvalidParams, "deny must be a list of tool names");
+              for (const name of value.deny) denied2.add(name);
+              return () => void 0;
+            }
+          })
+        })
+      });
+      const listeners = (this.ctx.root?.events?._hooks?.["agent/created"] ?? []).filter((hook) => !hook.global && hook.ctx !== void 0 && host2.ownerOf(hook.ctx) === owner).map((hook) => hook.callback);
+      try {
+        await Promise.all(listeners.map(async (callback) => callback({ agent: child })));
+      } finally {
+        open2 = false;
+      }
+      signal.throwIfAborted();
+      const call = invocation;
+      const rpc2 = (method, params, abort) => host2.rpc.request(method, { owner: call.owner.ref, ticket: call.subagentTicket, child_id: childId, ...params }, abort);
+      const started = await rpc2("subagent/start", {
+        prompt,
+        ...options.model === void 0 ? {} : { model: options.model },
+        ...persona === void 0 ? {} : { persona },
+        denied_tools: [...denied2],
+        delivery
+      }, signal);
+      if (started === null || typeof started !== "object" || started.child_id !== childId || typeof started.message_id !== "string") {
+        throw new RpcError(ErrorCode.Internal, "invalid child activation receipt");
+      }
+      let result;
+      let disposed;
+      return Object.freeze({
+        childId,
+        messageId: started.message_id,
+        get result() {
+          result ??= rpc2("subagent/result", {}, call.signal).then((value) => {
+            if (value === null || typeof value !== "object" || typeof value.stop_reason !== "string" || !Array.isArray(value.output)) {
+              throw new RpcError(ErrorCode.Internal, "invalid child result receipt");
+            }
+            return Object.freeze({
+              stopReason: value.stop_reason,
+              output: Object.freeze(value.output.map((block) => Object.freeze({ type: "text", text: String(block.text) }))),
+              ...value.omitted_blocks > 0 ? { diagnostic: `${value.omitted_blocks} non-text output block(s) are not supported` } : {}
+            });
+          });
+          return result;
+        },
+        dispose() {
+          disposed ??= rpc2("subagent/dispose", {}, call.signal).then(() => void 0);
+          return disposed;
+        }
+      });
+    }
+  }
+  Object.freeze(SubagentsShim.prototype);
+  return SubagentsShim;
+}
+function defineAgents() {
+  class AgentsShim extends Service {
+    constructor(ctx) {
+      super(ctx, "agents");
+    }
+  }
+  Object.freeze(AgentsShim.prototype);
+  return AgentsShim;
+}
+var SPAWN_PROVIDER, PERSONA_ORDER, DSH_AGENT_ADAPTERS;
+var init_agents = __esm({
+  "src/dsh/agents.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    init_dsh_message_compat();
+    SPAWN_PROVIDER = Object.freeze({
+      name: "spawn",
+      inheritsParentContext: false,
+      capabilities: Object.freeze({ persona: true, toolFilter: true, agentOptions: true })
+    });
+    PERSONA_ORDER = 0;
+    DSH_AGENT_ADAPTERS = Object.freeze([
+      { service: "subagents", define: defineSubagents },
+      { service: "agents", define: defineAgents }
+    ]);
+  }
+});
+
 // src/dsh/adapters.ts
 var DSH_ADAPTERS;
 var init_adapters = __esm({
@@ -16508,7 +16669,8 @@ var init_adapters = __esm({
     "use strict";
     init_define_BUILTIN_MODULE_DIGESTS();
     init_session_prompt();
-    DSH_ADAPTERS = [sessionsAdapter, systemPromptAdapter];
+    init_agents();
+    DSH_ADAPTERS = [sessionsAdapter, systemPromptAdapter, ...DSH_AGENT_ADAPTERS];
   }
 });
 
@@ -17678,144 +17840,6 @@ var init_root = __esm({
             return Promise.race([result, cancelled]).finally(() => signal.removeEventListener("abort", cancel));
           }
         }
-        const SPAWN_PROVIDER = Object.freeze({
-          name: "spawn",
-          inheritsParentContext: false,
-          capabilities: Object.freeze({ persona: true, toolFilter: true, agentOptions: true })
-        });
-        const PERSONA_ORDER = 0;
-        class SubagentsShim extends Service {
-          constructor(ctx) {
-            super(ctx, "subagents");
-          }
-          getProvider(name) {
-            return name === "spawn" ? SPAWN_PROVIDER : void 0;
-          }
-          async startActivation(request) {
-            const invocation = host2.toolInvocations.getStore();
-            const owner = this.ctx[OWNER];
-            const plain = (value, allowed, what) => {
-              if (value === null || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new RpcError(ErrorCode.InvalidParams, `expected a plain ${what} object`);
-              const result2 = /* @__PURE__ */ Object.create(null);
-              for (const key of Reflect.ownKeys(value)) {
-                const descriptor = Object.getOwnPropertyDescriptor(value, key);
-                if (typeof key !== "string" || !allowed.includes(key) || !("value" in descriptor)) throw new RpcError(ErrorCode.NotAvailable, `unsupported ${what} property ${String(key)}`);
-                if (descriptor.value !== void 0) result2[key] = descriptor.value;
-              }
-              return result2;
-            };
-            const input = plain(request, ["provider", "label", "childId", "request", "signal", "delivery"], "activation");
-            if (input.provider !== "spawn") throw new RpcError(ErrorCode.NotAvailable, "only the spawn provider is available");
-            const spawn = plain(input.request, ["parent", "prompt", "agentOptions"], "spawn request");
-            const options = spawn.agentOptions === void 0 ? {} : plain(spawn.agentOptions, ["model"], "agentOptions");
-            if (options.model !== void 0 && typeof options.model !== "string") throw new RpcError(ErrorCode.InvalidParams, "agentOptions.model must be a string");
-            const delivery = input.delivery === void 0 ? "parent" : input.delivery;
-            if (delivery !== "caller" && delivery !== "parent") throw new RpcError(ErrorCode.InvalidParams, "delivery must be caller or parent");
-            const childId = input.childId;
-            if (typeof childId !== "string" || !/^[A-Za-z0-9_.:-]{1,128}$/.test(childId)) throw new RpcError(ErrorCode.InvalidParams, "childId must be 1-128 letters, digits, or _.:-");
-            if (!Array.isArray(spawn.prompt) || spawn.prompt.length === 0) throw new RpcError(ErrorCode.InvalidParams, "prompt must be a non-empty content array");
-            const prompt = spawn.prompt.map((block) => {
-              const item = plain(block, ["type", "text"], "prompt block");
-              if (item.type !== "text" || typeof item.text !== "string") throw new RpcError(ErrorCode.NotAvailable, "only text prompt blocks are supported");
-              return item.text;
-            }).join("");
-            if (input.signal !== void 0 && !(input.signal instanceof AbortSignal)) throw new RpcError(ErrorCode.InvalidParams, "signal must be an AbortSignal");
-            if (!invocation || !invocation.active || invocation.signal.aborted || invocation.agent === void 0 || spawn.parent !== invocation.agent) {
-              throw new RpcError(ErrorCode.NotAvailable, "startActivation requires the exact live calling agent as parent");
-            }
-            if (invocation.owner !== owner || owner?.state !== "active" || owner.disposing) throw new RpcError(ErrorCode.NotAvailable, "subagents service owner is no longer current");
-            if (invocation.delegated || invocation.subagentTicket === void 0) throw new RpcError(ErrorCode.NotAvailable, "child agents are only available to a root tool invocation");
-            const signal = input.signal === void 0 ? invocation.signal : AbortSignal.any([invocation.signal, input.signal]);
-            signal.throwIfAborted();
-            let persona;
-            const denied2 = /* @__PURE__ */ new Set();
-            let open2 = true;
-            const sealed = () => {
-              if (!open2) throw new RpcError(ErrorCode.NotAvailable, "the child creation window has closed");
-            };
-            const child = Object.freeze({
-              id: childId,
-              ctx: Object.freeze({
-                systemPrompt: Object.freeze({
-                  getSectionOrder(name) {
-                    sealed();
-                    if (name !== "DEPLOYMENT_PERSONA_PREFIX") throw new RpcError(ErrorCode.NotAvailable, "only the deployment persona slot is available");
-                    return PERSONA_ORDER;
-                  },
-                  section(section) {
-                    sealed();
-                    const value = plain(section, ["name", "order", "text"], "system prompt section");
-                    if (value.name !== PERSONA_PREFIX_SECTION || value.order !== PERSONA_ORDER || typeof value.text !== "string") {
-                      throw new RpcError(ErrorCode.NotAvailable, "only the child deployment persona section is supported");
-                    }
-                    if (persona !== void 0) throw new RpcError(ErrorCode.InvalidParams, "the child persona is already set");
-                    if (Buffer.byteLength(value.text) > 32 * 1024) throw new RpcError(ErrorCode.InvalidParams, "child persona exceeds 32768 bytes");
-                    persona = value.text;
-                    return () => void 0;
-                  }
-                }),
-                tools: Object.freeze({
-                  restrict(filter) {
-                    sealed();
-                    const value = plain(filter, ["deny"], "tool filter");
-                    if (!Array.isArray(value.deny) || value.deny.some((name) => typeof name !== "string" || name === "")) throw new RpcError(ErrorCode.InvalidParams, "deny must be a list of tool names");
-                    for (const name of value.deny) denied2.add(name);
-                    return () => void 0;
-                  }
-                })
-              })
-            });
-            const listeners = (host2.root.events?._hooks?.["agent/created"] ?? []).filter((hook) => !hook.global && hook.ctx?.[OWNER] === owner).map((hook) => hook.callback);
-            try {
-              await Promise.all(listeners.map(async (callback) => callback({ agent: child })));
-            } finally {
-              open2 = false;
-            }
-            signal.throwIfAborted();
-            const call = invocation;
-            const rpc3 = (method, params, abort) => host2.rpc.request(method, { owner: call.owner.ref, ticket: call.subagentTicket, child_id: childId, ...params }, abort);
-            const started = await rpc3("subagent/start", {
-              prompt,
-              ...options.model === void 0 ? {} : { model: options.model },
-              ...persona === void 0 ? {} : { persona },
-              denied_tools: [...denied2],
-              delivery
-            }, signal);
-            if (started === null || typeof started !== "object" || started.child_id !== childId || typeof started.message_id !== "string") {
-              throw new RpcError(ErrorCode.Internal, "invalid child activation receipt");
-            }
-            let result;
-            let disposed;
-            return Object.freeze({
-              childId,
-              messageId: started.message_id,
-              get result() {
-                result ??= rpc3("subagent/result", {}, call.signal).then((value) => {
-                  if (value === null || typeof value !== "object" || typeof value.stop_reason !== "string" || !Array.isArray(value.output)) {
-                    throw new RpcError(ErrorCode.Internal, "invalid child result receipt");
-                  }
-                  return Object.freeze({
-                    stopReason: value.stop_reason,
-                    output: Object.freeze(value.output.map((block) => Object.freeze({ type: "text", text: String(block.text) }))),
-                    ...value.omitted_blocks > 0 ? { diagnostic: `${value.omitted_blocks} non-text output block(s) are not supported` } : {}
-                  });
-                });
-                return result;
-              },
-              dispose() {
-                disposed ??= rpc3("subagent/dispose", {}, call.signal).then(() => void 0);
-                return disposed;
-              }
-            });
-          }
-        }
-        class AgentsShim extends Service {
-          constructor(ctx) {
-            super(ctx, "agents");
-          }
-        }
-        Object.freeze(SubagentsShim.prototype);
-        Object.freeze(AgentsShim.prototype);
         Object.freeze(UserQuestionsShim.prototype);
         Object.freeze(StorageShim.prototype);
         const adapterHost = {
@@ -17841,8 +17865,6 @@ var init_root = __esm({
           ["prompt", PromptShim],
           ["storage", StorageShim],
           ["userQuestions", UserQuestionsShim],
-          ["subagents", SubagentsShim],
-          ["agents", AgentsShim],
           ["skills", SkillsShim],
           ["avatars", AvatarsShim],
           ["mcp", McpShim],

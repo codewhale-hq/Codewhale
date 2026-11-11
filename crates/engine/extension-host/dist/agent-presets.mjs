@@ -5452,14 +5452,14 @@ function requireDumper() {
     let hasFoldableLine = false;
     const shouldTrackWidth = lineWidth !== -1;
     let previousLineBreak = -1;
-    let plain2 = isPlainSafeFirst(codePointAt(string, 0)) && isPlainSafeLast(codePointAt(string, string.length - 1));
+    let plain3 = isPlainSafeFirst(codePointAt(string, 0)) && isPlainSafeLast(codePointAt(string, string.length - 1));
     if (singleLineOnly || forceQuotes) {
       for (i2 = 0; i2 < string.length; char >= 65536 ? i2 += 2 : i2++) {
         char = codePointAt(string, i2);
         if (!isPrintable(char)) {
           return STYLE_DOUBLE;
         }
-        plain2 = plain2 && isPlainSafe(char, prevChar, inblock);
+        plain3 = plain3 && isPlainSafe(char, prevChar, inblock);
         prevChar = char;
       }
     } else {
@@ -5475,13 +5475,13 @@ function requireDumper() {
         } else if (!isPrintable(char)) {
           return STYLE_DOUBLE;
         }
-        plain2 = plain2 && isPlainSafe(char, prevChar, inblock);
+        plain3 = plain3 && isPlainSafe(char, prevChar, inblock);
         prevChar = char;
       }
       hasFoldableLine = hasFoldableLine || shouldTrackWidth && (i2 - previousLineBreak - 1 > lineWidth && string[previousLineBreak + 1] !== " ");
     }
     if (!hasLineBreak && !hasFoldableLine) {
-      if (plain2 && !forceQuotes && !testAmbiguousType(string)) {
+      if (plain3 && !forceQuotes && !testAmbiguousType(string)) {
         return STYLE_PLAIN;
       }
       return quotingType === QUOTING_TYPE_DOUBLE ? STYLE_DOUBLE : STYLE_SINGLE;
@@ -13553,11 +13553,23 @@ var init_composition = __esm({
 });
 
 // src/protocol.generated.ts
-var MAGIC_ASCII;
+var MAGIC_ASCII, ErrorCode;
 var init_protocol_generated = __esm({
   "src/protocol.generated.ts"() {
     "use strict";
     MAGIC_ASCII = "CWX1";
+    ErrorCode = {
+      ParseError: -32700,
+      InvalidRequest: -32600,
+      MethodNotFound: -32601,
+      InvalidParams: -32602,
+      Internal: -32603,
+      ExecutionFailed: -32e3,
+      NotAvailable: -32001,
+      Refused: -32002,
+      Denied: -32003,
+      Cancelled: -32800
+    };
   }
 });
 
@@ -13573,27 +13585,88 @@ var init_protocol = __esm({
 });
 
 // src/rpc.ts
+var RpcError;
 var init_rpc = __esm({
   "src/rpc.ts"() {
     "use strict";
     init_protocol();
+    RpcError = class extends Error {
+      constructor(code, message, data2) {
+        super(message);
+        this.code = code;
+        this.data = data2;
+        this.name = "RpcError";
+      }
+      code;
+      data;
+      toWire() {
+        return this.data === void 0 ? { code: this.code, message: this.message } : { code: this.code, message: this.message, data: this.data };
+      }
+    };
   }
 });
 
 // src/dsh/session-prompt.ts
+function checkpointCall(host, ctx, session) {
+  const invocation = host.liveInvocation(ctx);
+  const ticket = invocation?.ticket;
+  return invocation !== void 0 && typeof ticket === "string" && ticket.length > 0 && session !== void 0 && session === invocation.session ? invocation : void 0;
+}
+var CHILD_ONLY, sessionsAdapter, systemPromptAdapter;
 var init_session_prompt = __esm({
   "src/dsh/session-prompt.ts"() {
     "use strict";
+    init_lib2();
     init_protocol();
     init_rpc();
-  }
-});
-
-// src/dsh/adapters.ts
-var init_adapters = __esm({
-  "src/dsh/adapters.ts"() {
-    "use strict";
-    init_session_prompt();
+    CHILD_ONLY = "system prompt sections are only available on a child agent's agent/created context";
+    sessionsAdapter = {
+      service: "sessions",
+      define(host) {
+        class SessionsService extends Service {
+          constructor(ctx) {
+            super(ctx, "sessions");
+          }
+          async flush(session) {
+            const ctx = this.ctx;
+            const call = checkpointCall(host, ctx, session);
+            if (call === void 0) throw new RpcError(ErrorCode.NotAvailable, "sessions.flush requires this live tool invocation’s session");
+            const owner = call.owner;
+            const live = () => checkpointCall(host, ctx, session) === call && !call.signal.aborted;
+            const run = async () => {
+              if (!live()) throw new RpcError(ErrorCode.NotAvailable, "session checkpoint invocation ended");
+              const result2 = await host.rpc.request("session/checkpoint", { owner: owner.ref, ticket: call.ticket }, call.signal);
+              if (!live()) throw new RpcError(ErrorCode.NotAvailable, "session checkpoint invocation ended");
+              if (typeof result2 !== "boolean") throw new RpcError(ErrorCode.Internal, "invalid session checkpoint receipt");
+              return result2;
+            };
+            const result = call.pending.then(run);
+            call.pending = result.then(() => void 0, () => void 0);
+            return result;
+          }
+        }
+        Object.freeze(SessionsService.prototype);
+        return SessionsService;
+      }
+    };
+    systemPromptAdapter = {
+      service: "systemPrompt",
+      define() {
+        class SystemPromptService extends Service {
+          constructor(ctx) {
+            super(ctx, "systemPrompt");
+          }
+          section() {
+            throw new RpcError(ErrorCode.NotAvailable, CHILD_ONLY);
+          }
+          getSectionOrder() {
+            throw new RpcError(ErrorCode.NotAvailable, CHILD_ONLY);
+          }
+        }
+        Object.freeze(SystemPromptService.prototype);
+        return SystemPromptService;
+      }
+    };
   }
 });
 
@@ -14225,11 +14298,12 @@ var init_lib3 = __esm({
 });
 
 // src/dsh/dsh-message-compat.js
-var HarnessError, UserQuestionError;
+var PERSONA_PREFIX_SECTION, HarnessError, UserQuestionError;
 var init_dsh_message_compat = __esm({
   "src/dsh/dsh-message-compat.js"() {
     "use strict";
     init_lib3();
+    PERSONA_PREFIX_SECTION = "deployment:persona-prefix";
     HarnessError = class extends Error {
       code;
       constructor(message, code, options) {
@@ -14246,6 +14320,177 @@ var init_dsh_message_compat = __esm({
     };
     Object.defineProperty(HarnessError, "name", { value: "HarnessError" });
     Object.defineProperty(UserQuestionError, "name", { value: "UserQuestionError" });
+  }
+});
+
+// src/dsh/agents.ts
+function plain(value, allowed, what) {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new RpcError(ErrorCode.InvalidParams, `expected a plain ${what} object`);
+  const result = /* @__PURE__ */ Object.create(null);
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (typeof key !== "string" || !allowed.includes(key) || !("value" in descriptor)) throw new RpcError(ErrorCode.NotAvailable, `unsupported ${what} property ${String(key)}`);
+    if (descriptor.value !== void 0) result[key] = descriptor.value;
+  }
+  return result;
+}
+function defineSubagents(host) {
+  class SubagentsShim extends Service {
+    constructor(ctx) {
+      super(ctx, "subagents");
+    }
+    getProvider(name) {
+      return name === "spawn" ? SPAWN_PROVIDER : void 0;
+    }
+    async startActivation(request) {
+      const owner = host.ownerOf(this.ctx);
+      const input = plain(request, ["provider", "label", "childId", "request", "signal", "delivery"], "activation");
+      if (input.provider !== "spawn") throw new RpcError(ErrorCode.NotAvailable, "only the spawn provider is available");
+      const spawn = plain(input.request, ["parent", "prompt", "agentOptions"], "spawn request");
+      const options = spawn.agentOptions === void 0 ? {} : plain(spawn.agentOptions, ["model"], "agentOptions");
+      if (options.model !== void 0 && typeof options.model !== "string") throw new RpcError(ErrorCode.InvalidParams, "agentOptions.model must be a string");
+      const delivery = input.delivery === void 0 ? "parent" : input.delivery;
+      if (delivery !== "caller" && delivery !== "parent") throw new RpcError(ErrorCode.InvalidParams, "delivery must be caller or parent");
+      const childId = input.childId;
+      if (typeof childId !== "string" || !/^[A-Za-z0-9_.:-]{1,128}$/.test(childId)) throw new RpcError(ErrorCode.InvalidParams, "childId must be 1-128 letters, digits, or _.:-");
+      if (!Array.isArray(spawn.prompt) || spawn.prompt.length === 0) throw new RpcError(ErrorCode.InvalidParams, "prompt must be a non-empty content array");
+      const prompt = spawn.prompt.map((block) => {
+        const item = plain(block, ["type", "text"], "prompt block");
+        if (item.type !== "text" || typeof item.text !== "string") throw new RpcError(ErrorCode.NotAvailable, "only text prompt blocks are supported");
+        return item.text;
+      }).join("");
+      if (input.signal !== void 0 && !(input.signal instanceof AbortSignal)) throw new RpcError(ErrorCode.InvalidParams, "signal must be an AbortSignal");
+      const invocation = host.liveInvocation(this.ctx);
+      if (!invocation || invocation.agent === void 0 || spawn.parent !== invocation.agent) {
+        throw new RpcError(ErrorCode.NotAvailable, "startActivation requires the exact live calling agent as parent");
+      }
+      if (invocation.owner !== owner) throw new RpcError(ErrorCode.NotAvailable, "subagents service owner is no longer current");
+      if (invocation.delegated || invocation.subagentTicket === void 0) throw new RpcError(ErrorCode.NotAvailable, "child agents are only available to a root tool invocation");
+      const signal = input.signal === void 0 ? invocation.signal : AbortSignal.any([invocation.signal, input.signal]);
+      signal.throwIfAborted();
+      let persona;
+      const denied = /* @__PURE__ */ new Set();
+      let open = true;
+      const sealed = () => {
+        if (!open) throw new RpcError(ErrorCode.NotAvailable, "the child creation window has closed");
+      };
+      const child = Object.freeze({
+        id: childId,
+        ctx: Object.freeze({
+          systemPrompt: Object.freeze({
+            getSectionOrder(name) {
+              sealed();
+              if (name !== "DEPLOYMENT_PERSONA_PREFIX") throw new RpcError(ErrorCode.NotAvailable, "only the deployment persona slot is available");
+              return PERSONA_ORDER;
+            },
+            section(section) {
+              sealed();
+              const value = plain(section, ["name", "order", "text"], "system prompt section");
+              if (value.name !== PERSONA_PREFIX_SECTION || value.order !== PERSONA_ORDER || typeof value.text !== "string") {
+                throw new RpcError(ErrorCode.NotAvailable, "only the child deployment persona section is supported");
+              }
+              if (persona !== void 0) throw new RpcError(ErrorCode.InvalidParams, "the child persona is already set");
+              if (Buffer.byteLength(value.text) > 32 * 1024) throw new RpcError(ErrorCode.InvalidParams, "child persona exceeds 32768 bytes");
+              persona = value.text;
+              return () => void 0;
+            }
+          }),
+          tools: Object.freeze({
+            restrict(filter) {
+              sealed();
+              const value = plain(filter, ["deny"], "tool filter");
+              if (!Array.isArray(value.deny) || value.deny.some((name) => typeof name !== "string" || name === "")) throw new RpcError(ErrorCode.InvalidParams, "deny must be a list of tool names");
+              for (const name of value.deny) denied.add(name);
+              return () => void 0;
+            }
+          })
+        })
+      });
+      const listeners = (this.ctx.root?.events?._hooks?.["agent/created"] ?? []).filter((hook) => !hook.global && hook.ctx !== void 0 && host.ownerOf(hook.ctx) === owner).map((hook) => hook.callback);
+      try {
+        await Promise.all(listeners.map(async (callback) => callback({ agent: child })));
+      } finally {
+        open = false;
+      }
+      signal.throwIfAborted();
+      const call = invocation;
+      const rpc = (method, params, abort) => host.rpc.request(method, { owner: call.owner.ref, ticket: call.subagentTicket, child_id: childId, ...params }, abort);
+      const started = await rpc("subagent/start", {
+        prompt,
+        ...options.model === void 0 ? {} : { model: options.model },
+        ...persona === void 0 ? {} : { persona },
+        denied_tools: [...denied],
+        delivery
+      }, signal);
+      if (started === null || typeof started !== "object" || started.child_id !== childId || typeof started.message_id !== "string") {
+        throw new RpcError(ErrorCode.Internal, "invalid child activation receipt");
+      }
+      let result;
+      let disposed;
+      return Object.freeze({
+        childId,
+        messageId: started.message_id,
+        get result() {
+          result ??= rpc("subagent/result", {}, call.signal).then((value) => {
+            if (value === null || typeof value !== "object" || typeof value.stop_reason !== "string" || !Array.isArray(value.output)) {
+              throw new RpcError(ErrorCode.Internal, "invalid child result receipt");
+            }
+            return Object.freeze({
+              stopReason: value.stop_reason,
+              output: Object.freeze(value.output.map((block) => Object.freeze({ type: "text", text: String(block.text) }))),
+              ...value.omitted_blocks > 0 ? { diagnostic: `${value.omitted_blocks} non-text output block(s) are not supported` } : {}
+            });
+          });
+          return result;
+        },
+        dispose() {
+          disposed ??= rpc("subagent/dispose", {}, call.signal).then(() => void 0);
+          return disposed;
+        }
+      });
+    }
+  }
+  Object.freeze(SubagentsShim.prototype);
+  return SubagentsShim;
+}
+function defineAgents() {
+  class AgentsShim extends Service {
+    constructor(ctx) {
+      super(ctx, "agents");
+    }
+  }
+  Object.freeze(AgentsShim.prototype);
+  return AgentsShim;
+}
+var SPAWN_PROVIDER, PERSONA_ORDER, DSH_AGENT_ADAPTERS;
+var init_agents = __esm({
+  "src/dsh/agents.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    init_dsh_message_compat();
+    SPAWN_PROVIDER = Object.freeze({
+      name: "spawn",
+      inheritsParentContext: false,
+      capabilities: Object.freeze({ persona: true, toolFilter: true, agentOptions: true })
+    });
+    PERSONA_ORDER = 0;
+    DSH_AGENT_ADAPTERS = Object.freeze([
+      { service: "subagents", define: defineSubagents },
+      { service: "agents", define: defineAgents }
+    ]);
+  }
+});
+
+// src/dsh/adapters.ts
+var DSH_ADAPTERS;
+var init_adapters = __esm({
+  "src/dsh/adapters.ts"() {
+    "use strict";
+    init_session_prompt();
+    init_agents();
+    DSH_ADAPTERS = [sessionsAdapter, systemPromptAdapter, ...DSH_AGENT_ADAPTERS];
   }
 });
 
@@ -14678,7 +14923,7 @@ var init_composition_inventory = __esm({
 import { createHash as createHash3 } from "node:crypto";
 import { resolve as resolve5, relative as relative3, dirname as dirname4, sep as sep3 } from "node:path";
 import { fileURLToPath as fileURLToPath5, pathToFileURL as pathToFileURL5 } from "node:url";
-function plain(path) {
+function plain2(path) {
   return typeof path === "string" && path.length > 0 && path.length <= 4096 && !/[\\:\u0000-\u001f\u007f]/u.test(path) && !path.startsWith("/") && path.split("/").every((p) => p !== "" && p !== "." && p !== "..");
 }
 function fail(message) {
@@ -14718,7 +14963,7 @@ function containedPackageModule(name, documents, files) {
     entry = value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).some((k) => k.startsWith(".")) ? target(value[subpath]) : subpath === "." ? target(value) : void 0;
   } else if (subpath === ".") entry = typeof data2.main === "string" ? data2.main : "./index.js";
   else entry = subpath;
-  if (typeof entry !== "string" || !entry.startsWith("./") || !plain(entry.slice(2))) return;
+  if (typeof entry !== "string" || !entry.startsWith("./") || !plain2(entry.slice(2))) return;
   const path = `${packageRoot}/${entry.slice(2)}`;
   if (!/\.(mjs|js|mts)$/.test(path) || !SHA.test(files[path] ?? "")) return;
   return { name, path, sha256: files[path] };
@@ -14731,20 +14976,20 @@ async function reviewAgentPresets(input) {
   const baseUrl = pathToFileURL5(`${base}${sep3}`).href;
   function key(path) {
     const inside = relative3(base, path).split(sep3).join("/");
-    if (!plain(inside)) fail("path escapes the admitted source root");
+    if (!plain2(inside)) fail("path escapes the admitted source root");
     return inside;
   }
   const documents = /* @__PURE__ */ new Map();
   let bytes = 0;
   for (const doc of input.documents) {
-    if (!plain(doc.path) || !SHA.test(doc.sha256) || files[doc.path] !== doc.sha256 || hash(doc.source) !== doc.sha256 || documents.has(doc.path)) fail("document changed or is outside the source receipt");
+    if (!plain2(doc.path) || !SHA.test(doc.sha256) || files[doc.path] !== doc.sha256 || hash(doc.source) !== doc.sha256 || documents.has(doc.path)) fail("document changed or is outside the source receipt");
     bytes += Buffer.byteLength(doc.source);
     if (Buffer.byteLength(doc.source) > 1024 * 1024 || bytes > 4 * 1024 * 1024) fail("documents exceed their bound");
     documents.set(doc.path, doc.source);
   }
   const directories = new Set(input.directories);
-  for (const path of directories) if (!plain(path)) fail("invalid source directory");
-  for (const path of Object.keys(files)) if (!plain(path) || !SHA.test(files[path])) fail("invalid source file receipt");
+  for (const path of directories) if (!plain2(path)) fail("invalid source directory");
+  for (const path of Object.keys(files)) if (!plain2(path) || !SHA.test(files[path])) fail("invalid source file receipt");
   const invalid = /* @__PURE__ */ new Set();
   const parsed = /* @__PURE__ */ new Map();
   const io = {
@@ -14809,7 +15054,7 @@ async function reviewAgentPresets(input) {
   }
   if (config.roots !== void 0 && !Array.isArray(config.roots)) fail("roots must be a literal list");
   for (const root of config.roots ?? []) {
-    if (!root || Object.keys(root).some((k) => !["path", "trust"].includes(k)) || !plain(root.path) || !["system", "user"].includes(root.trust)) fail("configured roots must stay inside the admitted package");
+    if (!root || Object.keys(root).some((k) => !["path", "trust"].includes(k)) || !plain2(root.path) || !["system", "user"].includes(root.trust)) fail("configured roots must stay inside the admitted package");
     if (!directories.has(root.path)) fail("configured preset root was not admitted");
     roots.push({ path: resolve5(base, root.path), trust: root.trust });
   }
