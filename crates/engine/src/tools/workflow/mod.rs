@@ -5330,33 +5330,43 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
             .and_then(Value::as_u64)
             .ok_or_else(|| DriverError::Rejected("generation is required".to_string()))?
             as u32;
-        let record = self
-            .task_records
-            .lock()
-            .map_err(|_| {
-                DriverError::Unavailable("workflow task ledger lock poisoned".to_string())
-            })?
-            .values()
-            .find(|record| record.label.as_deref() == Some(&candidate_id))
-            .cloned()
-            .ok_or_else(|| {
-                DriverError::Rejected("candidate task label was not observed".to_string())
-            })?;
-        if record.status != IrWorkflowRunStatus::Succeeded {
-            return Err(DriverError::Rejected(
-                "candidate worker did not complete".to_string(),
-            ));
-        }
+        let replay = action == "replay";
+        let record = if replay {
+            None
+        } else {
+            let record = self
+                .task_records
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("workflow task ledger lock poisoned".to_string())
+                })?
+                .values()
+                .find(|record| record.label.as_deref() == Some(&candidate_id))
+                .cloned()
+                .ok_or_else(|| {
+                    DriverError::Rejected("candidate task label was not observed".to_string())
+                })?;
+            if record.status != IrWorkflowRunStatus::Succeeded {
+                return Err(DriverError::Rejected(
+                    "candidate worker did not complete".to_string(),
+                ));
+            }
+            Some(record)
+        };
         let manager = self.manager.clone();
         let cancel = self.runtime.cancel_token.clone();
         let lineage = request.get("lineage").cloned().unwrap_or(Value::Null);
         let policy = request.get("policy").cloned().unwrap_or(Value::Null);
-        let replay = action == "replay";
         let value = tokio::task::spawn_blocking(move || {
-            let result = manager
-                .blocking_read()
-                .get_result(&record.agent_id)
-                .map_err(|error| error.to_string())?;
+            let result = record
+                .as_ref()
+                .map(|record| {
+                    manager
+                        .blocking_read()
+                        .get_result(&record.agent_id)
+                        .map_err(|error| error.to_string())
+                })
+                .transpose()?;
             experiment
                 .lock()
                 .map_err(|_| "experimental search lock poisoned".to_string())?
@@ -5365,7 +5375,7 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
                     generation,
                     &lineage,
                     &policy,
-                    &result,
+                    result.as_ref(),
                     replay,
                     &cancel,
                 )

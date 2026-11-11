@@ -1805,7 +1805,7 @@ impl ExperimentalSearch {
         generation: u32,
         lineage: &Value,
         policy: &Value,
-        result: &SubAgentResult,
+        result: Option<&SubAgentResult>,
         replay: bool,
         cancel: &CancellationToken,
     ) -> Result<Value, String> {
@@ -1813,7 +1813,8 @@ impl ExperimentalSearch {
             || generation >= self.spec.max_generations
             || self.started.elapsed().as_secs() >= self.spec.max_wall_secs
             || cancel.is_cancelled()
-            || !matches!(result.status, SubAgentStatus::Completed)
+            || (!replay
+                && !result.is_some_and(|worker| matches!(worker.status, SubAgentStatus::Completed)))
         {
             return Err("candidate unavailable, cancelled or outside frozen budget".to_string());
         }
@@ -1993,6 +1994,7 @@ impl ExperimentalSearch {
             }
             artifact
         } else {
+            let result = result.ok_or("fresh evaluation requires a completed worker")?;
             let workspace = result
                 .workspace
                 .as_ref()
@@ -2257,6 +2259,22 @@ impl ExperimentalSearch {
             }))
             .map_err(|error| error.to_string())?,
         );
+        let (route, usage) = if replay {
+            let original = self
+                .evaluated
+                .get(candidate_id)
+                .ok_or("missing original evaluation")?;
+            (
+                original.get("route").cloned(),
+                original.get("usage").cloned(),
+            )
+        } else {
+            let worker = result.ok_or("fresh evaluation requires a completed worker")?;
+            (
+                Some(serde_json::to_value(&worker.child_route).map_err(|error| error.to_string())?),
+                Some(serde_json::to_value(&worker.usage).map_err(|error| error.to_string())?),
+            )
+        };
         let receipt = json!({
             "candidate_id": candidate_id, "generation": generation,
             "status": status, "safety_status": "ADMITTED",
@@ -2278,8 +2296,8 @@ impl ExperimentalSearch {
             "gates": gate_receipts, "test_count": total_tests,
             "public_failure_feedback": public_feedback, "lineage": lineage,
             "repair_lineage_root": repair_lineage_root,
-            "shadow_policy": policy, "route": &result.child_route,
-            "usage": &result.usage, "sandbox_probe": self.sandbox_probe,
+            "shadow_policy": policy, "route": route,
+            "usage": usage, "sandbox_probe": self.sandbox_probe,
             "applied_policy_receipt": applied.receipt.get("receipt_path"),
             "policy_events_path": applied.receipt.get("events_path"),
             "planner_calls": applied.planner_calls,
