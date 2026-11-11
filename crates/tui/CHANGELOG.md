@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Website text for agents:** llms.txt now gives agents the install steps for the released version, the current release and the state of each part of Codewhale, from the same content as the pages. `/docs-markdown/install.md` serves those install steps as a page, and the main-branch documents beside it now say which release they can run ahead of.
 - **Website design:** codewhale.net now uses the desktop app's 5.3 light and dark colour roles and Geist / Geist Mono, replacing the warm-paper palette and Shannon Sans; the vendored design copy is synced to 5.3.0 and the whale-road ocean bands are unchanged.
 
 - ACP: editors can start, list, load, prompt and cancel Codewhale sessions and approve or reject tool permissions through the Runtime; prompts with image or audio blocks and relative session directories are now refused instead of ignored, and edit and read tools report the right kind. Plugins, DSH and MCP tools are not yet attached to ACP-driven sessions. A real-editor journey is not yet proved.
