@@ -162,7 +162,7 @@ fn host_service_review_in(
 
 fn check_approver(
     approver: &PluginApprover,
-    scope: PluginScope,
+    plugin: &LoadedPlugin,
     workspace: &Path,
     shown: bool,
 ) -> Result<(), String> {
@@ -201,11 +201,33 @@ fn check_approver(
                 .to_string(),
         );
     }
-    if scope != PluginScope::Workspace {
+    if plugin.scope == PluginScope::Builtin {
         return Err(
-            "An approval by the agent covers only a plugin folder inside its own project; ask the person to review this one"
+            "A built-in plugin ships with Codewhale, so the agent cannot approve it; ask the person"
                 .to_string(),
         );
+    }
+    if plugin.trusted()
+        && plugin
+            .approved_by
+            .as_ref()
+            .and_then(PluginApprover::agent_workspace)
+            .is_none()
+    {
+        return Err(format!(
+            "Plugin bundle `{}` holds a review for every project, so the agent cannot replace it; ask the person",
+            plugin.name()
+        ));
+    }
+    if plugin.scope == PluginScope::Workspace {
+        let inside = fs::canonicalize(workspace)
+            .is_ok_and(|project| plugin.canonical_root.starts_with(project));
+        if !inside {
+            return Err(format!(
+                "Plugin bundle `{}` is in a project plugin folder that resolves outside this project, so the agent cannot approve it; ask the person",
+                plugin.name()
+            ));
+        }
     }
     Ok(())
 }
@@ -945,7 +967,7 @@ impl PluginRegistry {
         let id = plugin.id.clone();
         check_approver(
             &approval.approved_by,
-            plugin.scope,
+            &plugin,
             &self.workspace,
             approval.host_services.is_some(),
         )?;
@@ -1053,7 +1075,6 @@ impl PluginRegistry {
             ));
         }
         if matches!(enabled_by, PluginApprover::Agent(_)) {
-            check_approver(&enabled_by, plugin.scope, &self.workspace, true)?;
             if plugin
                 .approved_by
                 .as_ref()
@@ -1071,6 +1092,7 @@ impl PluginRegistry {
                     plugin.name()
                 ));
             }
+            check_approver(&enabled_by, &plugin, &self.workspace, true)?;
         }
         let snapshot_rejection = match plugin.staged_root.as_deref() {
             None => Some(

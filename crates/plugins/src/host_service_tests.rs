@@ -23,7 +23,7 @@ fn config(root: &Path) -> DiscoveryConfig {
 }
 
 fn write_plugin(config: &DiscoveryConfig, name: &str, asks: &[&str], body: &str) {
-    write_plugin_in(&config.workspace_plugins_dir, name, asks, body);
+    write_plugin_in(&config.user_plugins_dir, name, asks, body);
 }
 
 fn write_plugin_in(dir: &Path, name: &str, asks: &[&str], body: &str) {
@@ -751,20 +751,111 @@ fn the_agent_turns_on_only_a_plugin_it_approved_in_its_own_project() {
 }
 
 #[test]
-fn an_agent_approval_covers_only_a_plugin_folder_in_its_own_project() {
+fn the_agent_never_replaces_a_review_held_for_every_project() {
     let _policy = TestPolicyGuard::extension_host(true);
+    let _offer = TestOffer::only(&[HostService::Network]);
     let tmp = tempfile::tempdir().unwrap();
-    let config = config(tmp.path());
+    let config = DiscoveryConfig {
+        builtin_plugin_dirs: vec![tmp.path().join("builtin")],
+        ..config(tmp.path())
+    };
+    for name in ["alpha", "beta", "gamma"] {
+        write_plugin(&config, name, &["network"], "export function apply() {}\n");
+    }
     write_plugin_in(
-        &config.user_plugins_dir,
-        "alpha",
+        &config.builtin_plugin_dirs[0],
+        "delta",
         &[],
         "export function apply() {}\n",
     );
     let mut registry = discover_with_config(&config);
     approve(&mut registry, "alpha", person());
+    approve(&mut registry, "beta", PluginApprover::CommandLine);
+    approve(&mut registry, "gamma", person());
+    edit_receipt(&config, "gamma", |receipt| {
+        receipt.as_object_mut().unwrap().remove("version");
+        receipt.as_object_mut().unwrap().remove("approved_by");
+    });
+    let mut registry = discover_with_config(&config);
+    assert_eq!(registry.get("gamma").unwrap().approved_by, None);
+    assert!(registry.get("gamma").unwrap().trusted());
     let by_agent = agent(&config, AgentPosture::FullAccess);
+
     let before = fs::read(&config.state_path).unwrap();
+    for (name, says) in [
+        ("alpha", "holds a review for every project"),
+        ("beta", "holds a review for every project"),
+        ("gamma", "holds a review for every project"),
+        ("delta", "built-in plugin"),
+    ] {
+        let shown = registry
+            .host_service_review_for(name, &by_agent)
+            .map(|review| review.token);
+        let refused = registry
+            .trust_reviewed(
+                name,
+                ReviewApproval {
+                    approved_by: by_agent.clone(),
+                    host_services: shown,
+                },
+            )
+            .unwrap_err();
+        assert!(refused.contains(says), "{name}: {refused}");
+        assert_eq!(fs::read(&config.state_path).unwrap(), before, "{name}");
+    }
+    let refused = registry.enable_by("alpha", by_agent.clone()).unwrap_err();
+    assert!(refused.contains("approved for every project"), "{refused}");
+    let alpha = discover_with_config(&config);
+    let alpha = alpha.get("alpha").unwrap();
+    assert_eq!(alpha.approved_by, Some(person()));
+    assert!(alpha.active());
+    assert_eq!(
+        granted(&config, "alpha").unwrap(),
+        vec![HostService::Network]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_project_plugin_folder_that_resolves_outside_the_project_is_not_the_agents() {
+    let _policy = TestPolicyGuard::extension_host(true);
+    let tmp = tempfile::tempdir().unwrap();
+    let project = |name: &str| {
+        let workspace = tmp.path().join(name);
+        fs::create_dir_all(&workspace).unwrap();
+        DiscoveryConfig {
+            workspace_plugins_dir: workspace.join(".codewhale/plugins"),
+            workspace,
+            ..config(tmp.path())
+        }
+    };
+    let linked = project("linked");
+    let outside = tmp.path().join("outside");
+    fs::create_dir_all(outside.join("plugins")).unwrap();
+    std::os::unix::fs::symlink(&outside, linked.workspace.join(".codewhale")).unwrap();
+    write_plugin_in(
+        &linked.workspace_plugins_dir,
+        "alpha",
+        &[],
+        "export function apply() {}\n",
+    );
+    let own = project("own");
+    write_plugin_in(
+        &own.workspace_plugins_dir,
+        "beta",
+        &[],
+        "export function apply() {}\n",
+    );
+
+    let mut registry = discover_with_config(&linked);
+    let alpha = registry.get("alpha").unwrap();
+    assert_eq!(alpha.scope, super::types::PluginScope::Workspace);
+    assert!(
+        !alpha
+            .canonical_root
+            .starts_with(fs::canonicalize(&linked.workspace).unwrap())
+    );
+    let by_agent = agent(&linked, AgentPosture::FullAccess);
     let shown = registry
         .host_service_review_for("alpha", &by_agent)
         .map(|review| review.token);
@@ -772,24 +863,33 @@ fn an_agent_approval_covers_only_a_plugin_folder_in_its_own_project() {
         .trust_reviewed(
             "alpha",
             ReviewApproval {
-                approved_by: by_agent.clone(),
+                approved_by: by_agent,
                 host_services: shown,
             },
         )
         .unwrap_err();
     assert!(
-        refused.contains("only a plugin folder inside its own project"),
+        refused.contains("resolves outside this project"),
         "{refused}"
     );
-    assert_eq!(fs::read(&config.state_path).unwrap(), before);
-    registry.disable("alpha").unwrap();
-    let refused = registry.enable_by("alpha", by_agent).unwrap_err();
-    assert!(
-        refused.contains("only a plugin folder inside its own project"),
-        "{refused}"
-    );
-    let alpha = discover_with_config(&config);
-    assert_eq!(alpha.get("alpha").unwrap().approved_by, Some(person()));
+    assert!(registry.get("alpha").unwrap().approved_by.is_none());
+
+    let mut registry = discover_with_config(&own);
+    let by_agent = agent(&own, AgentPosture::FullAccess);
+    let shown = registry
+        .host_service_review_for("beta", &by_agent)
+        .map(|review| review.token);
+    registry
+        .trust_reviewed(
+            "beta",
+            ReviewApproval {
+                approved_by: by_agent.clone(),
+                host_services: shown,
+            },
+        )
+        .unwrap();
+    registry.enable_by("beta", by_agent).unwrap();
+    assert!(registry.get("beta").unwrap().active());
 }
 
 #[test]

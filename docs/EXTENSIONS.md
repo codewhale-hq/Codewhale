@@ -658,10 +658,11 @@ and its code does not run in the host process of the plugins you reviewed:
 until it has a host of its own, its native code is refused with a diagnostic
 that asks you to review it. Your own review replaces the agent's record. Who
 turned a plugin on is recorded the same way, separately from who approved it.
-The agent approves or turns on only a plugin in its own project's
-`.codewhale/plugins` folder, and turns on only one whose record it made for
-that project; any other plugin, including one approved for every project, is
-left to you.
+The agent never approves a built-in plugin, never replaces a review that holds
+for every project (yours, the command line's, or one from an earlier version),
+and never approves a project plugin whose folder resolves outside the project.
+It turns on only a plugin whose record it made for this project. Everything
+else is left to you.
 
 **One process, one rule.** Extensions share one host process and cannot be
 isolated from each other inside it. A service is therefore given to a tool call

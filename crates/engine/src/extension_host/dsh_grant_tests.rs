@@ -42,7 +42,7 @@ impl Plugins {
         };
         std::fs::create_dir_all(&config.workspace).unwrap();
         for (name, asks) in plugins {
-            let plugin = config.workspace_plugins_dir.join(name);
+            let plugin = config.user_plugins_dir.join(name);
             std::fs::create_dir_all(plugin.join("native")).unwrap();
             std::fs::write(
                 plugin.join("native/index.mjs"),
@@ -101,6 +101,7 @@ impl Plugins {
     }
 
     fn review_by_agent(&self, name: &str) {
+        self.registry().revoke_trust(name).unwrap();
         let mut registry = self.registry();
         let approver = PluginApprover::Agent(AgentApproval {
             posture: AgentPosture::FullAccess,
