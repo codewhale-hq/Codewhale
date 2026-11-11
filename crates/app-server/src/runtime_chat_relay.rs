@@ -559,6 +559,7 @@ impl RuntimeChatRelayHost {
                 parent_thread_id: None,
                 executor: None,
                 environment: None,
+                agent_preset: None,
                 operation_key: None,
                 model: Some(command.model.clone()),
                 model_provider: Some(command.model_provider.clone()),
@@ -721,6 +722,7 @@ impl RuntimeChatRelayHost {
                     parent_thread_id: None,
                     executor: None,
                     environment: None,
+                    agent_preset: None,
                     dynamic_tools: Vec::new(),
                     environments: Vec::new(),
                 })

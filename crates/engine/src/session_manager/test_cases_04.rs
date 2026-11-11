@@ -346,3 +346,19 @@
             primary.join("sessions")
         );
     }
+
+    #[test]
+    fn saved_session_without_agent_preset_loads_and_round_trips_the_mode() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+        let session = create_saved_session(&[], "test-model", tmp.path(), 0, None);
+        let mut raw = serde_json::to_value(&session).expect("serialize");
+        assert!(raw.get("agent_preset").is_none());
+        let legacy: SavedSession = serde_json::from_value(raw.clone()).expect("legacy load");
+        assert_eq!(legacy.agent_preset, None);
+        raw["agent_preset"] = serde_json::json!("creator");
+        let saved: SavedSession = serde_json::from_value(raw).expect("mode load");
+        manager.save_session(&saved).expect("save");
+        let loaded = manager.load_session(&saved.metadata.id).expect("load");
+        assert_eq!(loaded.agent_preset.as_deref(), Some("creator"));
+    }

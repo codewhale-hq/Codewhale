@@ -9572,6 +9572,7 @@ fn saved_session_with_messages(messages: Vec<Message>) -> SavedSession {
         composer_color: None,
         last_auto_route: None,
         turn_outcomes: Vec::new(),
+        agent_preset: None,
     }
 }
 

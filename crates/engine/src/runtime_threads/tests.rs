@@ -2668,6 +2668,7 @@ fn sample_thread(thread_id: &str) -> ThreadRecord {
         last_read: None,
         executor: None,
         environment: None,
+        agent_preset: None,
     }
 }
 
@@ -19967,6 +19968,7 @@ fn opening_manager_recovers_stale_queued_and_in_progress_work() -> Result<()> {
         last_read: None,
         executor: None,
         environment: None,
+        agent_preset: None,
     };
     manager.store.save_thread(&thread)?;
 
@@ -21758,6 +21760,7 @@ async fn report_store_failure_names_the_item_file_without_terminalizing() -> Res
     Ok(())
 }
 
+mod conversation_modes;
 mod external_agent;
 mod task_ownership;
 

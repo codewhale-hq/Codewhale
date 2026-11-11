@@ -15,6 +15,7 @@ pub mod codex_model_cache;
 pub mod command_catalog;
 pub mod compaction;
 pub mod compaction_archive;
+pub mod conversation_modes;
 pub mod core;
 pub mod cost_status;
 pub mod diagnostics_messages;

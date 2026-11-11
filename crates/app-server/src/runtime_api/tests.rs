@@ -18,6 +18,7 @@ use uuid::Uuid;
 mod command_catalog;
 #[cfg(unix)]
 mod control_socket_selection;
+mod conversation_modes;
 #[cfg(unix)]
 mod external_agent_options;
 #[cfg(unix)]
@@ -423,6 +424,7 @@ fn saved_session_with_blocks(blocks: Vec<codewhale_models::ContentBlock>) -> Sav
         composer_color: None,
         last_auto_route: None,
         turn_outcomes: Vec::new(),
+        agent_preset: None,
     }
 }
 
@@ -563,6 +565,7 @@ fn messages_from_thread_detail_batches_tool_results() {
         last_read: None,
         executor: None,
         environment: None,
+        agent_preset: None,
     };
     let turn = TurnRecord {
         source_usage_origin_turn_id: None,
@@ -795,6 +798,7 @@ fn legacy_exact_thread_export_normalizes_provider_kind_and_id() {
             last_read: None,
             executor: None,
             environment: None,
+            agent_preset: None,
         },
         turns: Vec::new(),
         items: Vec::new(),

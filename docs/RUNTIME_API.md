@@ -1481,6 +1481,7 @@ plus workspace metadata:
   "preview": "The TUI footer should count project MCP servers...",
   "model": "deepseek-v4-pro",
   "mode": "agent",
+  "agent_preset": "standard",
   "branch": "feature/runtime-api",
   "head": "abc1234",
   "dirty": false,
@@ -1517,6 +1518,38 @@ manual compaction that sits between them).
 Thread list and summary responses remain flat in v0.8.40, so clients that need
 a graph should reconstruct it from events instead of assuming list order is a
 complete tree.
+
+### Conversation modes
+
+`GET /v1/modes` lists the conversation modes a client can offer when it starts
+a conversation:
+
+```json
+{
+  "default": "standard",
+  "modes": [
+    {"id": "standard", "name": "Standard", "description": "The everyday Codewhale agent with its normal tools and skills.", "source": "builtin", "available": true},
+    {"id": "creator", "name": "Creator", "description": "Build, inspect and test Codewhale plugins in this conversation, with the plugin authoring tools and guides loaded.", "source": "builtin", "available": false, "reason": "Creator mode is not ready in this build."}
+  ]
+}
+```
+
+`reason` appears only when `available` is `false`; a client lists the row
+disabled and shows it. A thread's mode is its `agent_preset` string. Set it on
+`POST /v1/threads`, or with `PATCH /v1/threads/{id}` while the thread has no
+turn. A thread record with no `agent_preset` is `standard`, and the thread
+record omits the field for `standard`; rows from `GET /v1/threads/summary`
+always carry it. This field stores and reports the mode; what a mode loads is
+not part of it.
+
+Refusals carry `error.code`:
+
+| `error.code` | Status | Meaning |
+| --- | --- | --- |
+| `unknown_mode` | `400` | The id is not in `GET /v1/modes`. Never replaced by `standard`. |
+| `mode_unavailable` | `424` | The row is listed with `available: false`; the message is its `reason`. |
+| `mode_locked` | `409` | The thread already has a turn, so its mode cannot change. |
+| `mode_not_supported_with_executor` | `400` | `agent_preset` with `executor` (another vendor's agent). |
 
 ### Read markers
 
@@ -2256,6 +2289,7 @@ This persisted project decision is separate from a thread’s `trust_mode` / Ful
 - `GET /v1/workspace/files/search?query=<partial>&limit=<1-100>` (see workspace file suggestions above)
 - `GET /v1/workspace/files?path=<dir>&limit=<1-2000>`, `GET /v1/workspace/files/read?path=<file>&offset=&limit=`
   and `PUT /v1/workspace/files` (see workspace files and session artifacts above)
+- `GET /v1/modes` (see Conversation modes)
 - `GET /v1/skills`
 - `GET /v1/skills/{name}` — one skill's routing metadata (`source`,
   `invocation`, `aliases`, `bundled_tier`, `enabled`) plus its full

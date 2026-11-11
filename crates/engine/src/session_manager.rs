@@ -2090,6 +2090,8 @@ pub struct SavedSession {
     /// record resume, export, and the Runtime API read back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub turn_outcomes: Vec<SavedTurnOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_preset: Option<String>,
 }
 impl SavedSession {
     pub fn capture_publication(
@@ -2302,6 +2304,7 @@ impl SavedSession {
             composer_color: None,
             last_auto_route: None,
             turn_outcomes: Vec::new(),
+            agent_preset: None,
         })
     }
 }
@@ -7079,6 +7082,7 @@ fn create_saved_session_inner(
         composer_color: None,
         last_auto_route: None,
         turn_outcomes: Vec::new(),
+        agent_preset: None,
     }
 }
 
