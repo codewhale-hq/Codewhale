@@ -219,6 +219,12 @@ fn check_approver(
             plugin.name()
         ));
     }
+    if plugin.trusted() && plugin.outside_reach {
+        return Err(format!(
+            "Plugin bundle `{}` holds the review of the agent of another project, so this agent cannot replace it; ask the person",
+            plugin.name()
+        ));
+    }
     if plugin.scope == PluginScope::Workspace {
         let inside = fs::canonicalize(workspace)
             .is_ok_and(|project| plugin.canonical_root.starts_with(project));
@@ -978,6 +984,7 @@ impl PluginRegistry {
         stage_bundle(state_path, &plugin, StageIntent::Review)?;
         let names = self.peer_names();
         let cohort = approval.approved_by.cohort();
+        let by_agent = matches!(approval.approved_by, PluginApprover::Agent(_));
         let mut receipt = TrustReceipt {
             content_hash: plugin.content_hash.clone(),
             capability_hash: plugin.capability_hash.clone(),
@@ -988,6 +995,15 @@ impl PluginRegistry {
             host_services: Vec::new(),
         };
         self.commit_state_change(|state| {
+            if by_agent
+                && state.plugins.get(&id).map_or(0, |entry| entry.generation)
+                    != plugin.state_generation
+            {
+                return Err(format!(
+                    "Plugin bundle `{}` state or review changed; refresh plugin state and review it again",
+                    plugin.name()
+                ));
+            }
             if let Some(shown) = approval.host_services.as_deref() {
                 let review = host_service_review_in(state, &plugin, &names, &cohort);
                 if review.token != shown {

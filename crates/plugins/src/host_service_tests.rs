@@ -815,6 +815,86 @@ fn the_agent_never_replaces_a_review_held_for_every_project() {
     );
 }
 
+#[test]
+fn the_agent_cannot_replace_a_review_made_after_its_registry_was_read() {
+    let _policy = TestPolicyGuard::extension_host(true);
+    let _offer = TestOffer::only(&[HostService::Network]);
+    let tmp = tempfile::tempdir().unwrap();
+    let config = config(tmp.path());
+    write_plugin(
+        &config,
+        "alpha",
+        &["network"],
+        "export function apply() {}\n",
+    );
+    let mut stale = discover_with_config(&config);
+    let mut current = discover_with_config(&config);
+    approve(&mut current, "alpha", person());
+    let before = fs::read(&config.state_path).unwrap();
+
+    let by_agent = agent(&config, AgentPosture::FullAccess);
+    let shown = stale
+        .host_service_review_for("alpha", &by_agent)
+        .map(|review| review.token);
+    let refused = stale
+        .trust_reviewed(
+            "alpha",
+            ReviewApproval {
+                approved_by: by_agent,
+                host_services: shown,
+            },
+        )
+        .unwrap_err();
+    assert!(refused.contains("state or review changed"), "{refused}");
+    assert_eq!(fs::read(&config.state_path).unwrap(), before);
+    let now = discover_with_config(&config);
+    let alpha = now.get("alpha").unwrap();
+    assert_eq!(alpha.approved_by, Some(person()));
+    assert!(alpha.active());
+    assert_eq!(
+        granted(&config, "alpha").unwrap(),
+        vec![HostService::Network]
+    );
+}
+
+#[test]
+fn the_agent_of_another_project_cannot_take_over_an_agents_record() {
+    let _policy = TestPolicyGuard::extension_host(true);
+    let tmp = tempfile::tempdir().unwrap();
+    let config = config(tmp.path());
+    write_plugin(&config, "alpha", &[], "export function apply() {}\n");
+    let mut registry = discover_with_config(&config);
+    let home_agent = agent(&config, AgentPosture::FullAccess);
+    approve(&mut registry, "alpha", home_agent.clone());
+    let before = fs::read(&config.state_path).unwrap();
+
+    let elsewhere = DiscoveryConfig {
+        workspace: tmp.path().join("other-project"),
+        ..config.clone()
+    };
+    let mut other = discover_with_config(&elsewhere);
+    assert!(other.get("alpha").unwrap().outside_reach);
+    let other_agent = agent(&elsewhere, AgentPosture::FullAccess);
+    let shown = other
+        .host_service_review_for("alpha", &other_agent)
+        .map(|review| review.token);
+    let refused = other
+        .trust_reviewed(
+            "alpha",
+            ReviewApproval {
+                approved_by: other_agent,
+                host_services: shown,
+            },
+        )
+        .unwrap_err();
+    assert!(refused.contains("agent of another project"), "{refused}");
+    assert_eq!(fs::read(&config.state_path).unwrap(), before);
+    let home = discover_with_config(&config);
+    let alpha = home.get("alpha").unwrap();
+    assert_eq!(alpha.approved_by, Some(home_agent));
+    assert!(alpha.active());
+}
+
 #[cfg(unix)]
 #[test]
 fn a_project_plugin_folder_that_resolves_outside_the_project_is_not_the_agents() {

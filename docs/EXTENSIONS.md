@@ -659,8 +659,9 @@ until it has a host of its own, its native code is refused with a diagnostic
 that asks you to review it. Your own review replaces the agent's record. Who
 turned a plugin on is recorded the same way, separately from who approved it.
 The agent never approves a built-in plugin, never replaces a review that holds
-for every project (yours, the command line's, or one from an earlier version),
-and never approves a project plugin whose folder resolves outside the project.
+for every project (yours, the command line's, or one from an earlier version)
+or one the agent of another project made, and never approves a project plugin
+whose folder resolves outside the project.
 It turns on only a plugin whose record it made for this project. Everything
 else is left to you.
 
