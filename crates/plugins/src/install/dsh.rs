@@ -2686,7 +2686,10 @@ fn native_composition_files(
             "Native Node addons (`.node`) are not supported in DSH bundles.",
         )?;
         require(
-            (dependency || !lower.starts_with('.') || lower == ".agent-presets")
+            (dependency
+                || !lower.starts_with('.')
+                || lower == ".agent-presets"
+                || relative == ".gitignore")
                 && !matches!(
                     lower.as_str(),
                     "credentials"
