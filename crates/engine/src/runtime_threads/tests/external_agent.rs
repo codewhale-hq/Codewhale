@@ -716,10 +716,12 @@ async fn an_abandoned_external_startup_stops_its_agent_inside_the_shutdown_barri
     Ok(())
 }
 
+#[cfg(unix)]
 fn options_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/acp-options-agent.mjs")
 }
 
+#[cfg(unix)]
 fn received(workspace: &Path) -> Vec<Value> {
     std::fs::read_to_string(workspace.join("options-received.jsonl"))
         .unwrap_or_default()
@@ -728,6 +730,7 @@ fn received(workspace: &Path) -> Vec<Value> {
         .collect()
 }
 
+#[cfg(unix)]
 fn pid_alive(pid: u64) -> bool {
     std::process::Command::new("kill")
         .args(["-0", &pid.to_string()])
@@ -736,12 +739,14 @@ fn pid_alive(pid: u64) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+#[cfg(unix)]
 fn refusal_code(error: &anyhow::Error) -> Option<&'static str> {
     error
         .downcast_ref::<crate::fleet::agents::ExecutorUnavailable>()
         .map(|refusal| refusal.code)
 }
 
+#[cfg(unix)]
 fn options_thread_request(workspace: &Path, model: &str) -> CreateThreadRequest {
     let mut request = fixture_thread_request(workspace, "ask");
     request.executor.as_mut().unwrap().config.model = Some(model.to_string());
