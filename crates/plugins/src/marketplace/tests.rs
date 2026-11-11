@@ -818,12 +818,14 @@ fn dsh_market_index_detects_and_keeps_the_highest_version() {
         review.source,
         MarketplaceSourceSpec::Npm { ref package } if package == "@acme/review"
     ));
-    match &review.install_plan {
-        MarketplaceInstallPlan::Unsupported { reason, .. } => {
-            assert!(reason.contains("does not execute npm"), "{reason}");
-        }
-        other => panic!("an npm source must stay unsupported, got {other:?}"),
-    }
+    assert_eq!(
+        review.install_plan,
+        MarketplaceInstallPlan::Supported {
+            spec: "npm:@acme/review@1.10.0".to_string(),
+            source_kind: "npm registry tarball".to_string(),
+        },
+        "an npm source plans the highest version's registry tarball"
+    );
 
     let badge = catalog.candidate_by_name("acme-badge").unwrap();
     assert_eq!(badge.display_name.as_deref(), Some("Badge"));
@@ -942,4 +944,120 @@ fn dsh_index_unknown_fields_and_undeclared_category_are_reported_not_guessed() {
     );
     assert!(plugin.categories.is_empty());
     assert_eq!(plugin.keywords, vec!["k".to_string()]);
+}
+
+#[test]
+fn dsh_index_npm_sources_plan_an_exact_registry_tarball_or_say_why_not() {
+    use super::document::{CatalogInstallResolution, resolve_candidate_install};
+    use super::store::StoredMarketplaceCatalog;
+    use crate::install::PluginInstallSource;
+    use codewhale_skill_install::install::InstallSource;
+
+    let body = r#"{
+      "format": 1,
+      "title": "t",
+      "plugins": [
+        {"name": "@acme/review", "versions": [{"version": "1.10.0", "publishTimestamp": 1,
+          "source": {"type": "npm", "registry": "https://registry.npmjs.org/"}}]},
+        {"name": "@acme/mirrored", "versions": [{"version": "2.0.0-rc.1", "publishTimestamp": 1,
+          "source": {"type": "npm", "registry": "https://registry.example.com/npm/"}}]},
+        {"name": "plain-http", "versions": [{"version": "1.0.0", "publishTimestamp": 1,
+          "source": {"type": "npm", "registry": "http://registry.example.com"}}]},
+        {"name": "with-credentials", "versions": [{"version": "1.0.0", "publishTimestamp": 1,
+          "source": {"type": "npm", "registry": "https://user:s3cret@registry.example.com"}}]},
+        {"name": "tilde~name", "versions": [{"version": "1.0.0", "publishTimestamp": 1,
+          "source": {"type": "npm"}}]},
+        {"name": "typed-registry", "versions": [
+          {"version": "2.0.0", "publishTimestamp": 2, "source": {"type": "npm", "registry": 7}},
+          {"version": "1.0.0", "publishTimestamp": 1, "source": {"type": "npm"}}]}
+      ]
+    }"#;
+    let catalog = parse_dsh("dsh", body, None);
+    assert_eq!(catalog.total_candidates(), 6);
+    let plan = |name: &str| {
+        catalog
+            .candidate_by_name(name)
+            .unwrap()
+            .install_plan
+            .clone()
+    };
+    let supported = |name: &str| match plan(name) {
+        MarketplaceInstallPlan::Supported { spec, source_kind } => {
+            assert_eq!(source_kind, "npm registry tarball", "{name}");
+            spec
+        }
+        other => panic!("`{name}` must be installable, got {other:?}"),
+    };
+    let refused = |name: &str| match plan(name) {
+        MarketplaceInstallPlan::Unsupported { reason, .. } => reason,
+        other => panic!("`{name}` must not be installable, got {other:?}"),
+    };
+
+    let review = supported("@acme/review");
+    assert_eq!(
+        review, "npm:@acme/review@1.10.0",
+        "the default registry, named or not, is the installer's own npm spec"
+    );
+    assert_eq!(
+        PluginInstallSource::parse(&review).unwrap(),
+        PluginInstallSource::Remote(InstallSource::DirectUrl(
+            "https://registry.npmjs.org/@acme/review/-/review-1.10.0.tgz".into()
+        ))
+    );
+    let mirrored = supported("@acme/mirrored");
+    assert_eq!(
+        mirrored, "https://registry.example.com/npm/@acme/mirrored/-/mirrored-2.0.0-rc.1.tgz",
+        "a declared https registry is the one fetched, never the default in its place"
+    );
+
+    let http = refused("plain-http");
+    assert!(http.contains("only over https"), "{http}");
+    let credentials = refused("with-credentials");
+    assert!(credentials.contains("without credentials"), "{credentials}");
+    assert!(
+        !credentials.contains("s3cret"),
+        "a refusal never repeats a credential: {credentials}"
+    );
+    let name = refused("tilde~name");
+    assert!(name.contains("not an exact npm package version"), "{name}");
+
+    let typed = catalog.candidate_by_name("typed-registry").unwrap();
+    assert_eq!(
+        typed.version.as_deref(),
+        Some("1.0.0"),
+        "a version whose registry is not a string is ignored, not fetched from the default registry"
+    );
+    assert!(
+        typed
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "INVALID_REGISTRY")
+    );
+    assert_eq!(supported("typed-registry"), "npm:typed-registry@1.0.0");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let registry = crate::PluginRegistry::empty(tmp.path());
+    let entry = StoredMarketplaceCatalog {
+        added_at: String::new(),
+        source_path: tmp.path().join("index.json").display().to_string(),
+        catalog: catalog.clone(),
+    };
+    for (name, expected) in [("@acme/review", &review), ("@acme/mirrored", &mirrored)] {
+        let candidate = entry.catalog.candidate_by_name(name).unwrap();
+        let CatalogInstallResolution::Supported { spec, .. } =
+            resolve_candidate_install(&entry, candidate, &registry)
+        else {
+            panic!("`{name}` resolves to the reviewed installer")
+        };
+        assert_eq!(&spec, expected);
+        assert!(matches!(
+            PluginInstallSource::parse(&spec).unwrap(),
+            PluginInstallSource::Remote(InstallSource::DirectUrl(_))
+        ));
+    }
+    let candidate = entry.catalog.candidate_by_name("plain-http").unwrap();
+    assert!(matches!(
+        resolve_candidate_install(&entry, candidate, &registry),
+        CatalogInstallResolution::Unsupported { .. }
+    ));
 }

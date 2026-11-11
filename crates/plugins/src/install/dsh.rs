@@ -2903,6 +2903,76 @@ fn valid_plugin_name(name: &str) -> bool {
         && !name.contains("--")
 }
 
+const NPM_REGISTRY: &str = "https://registry.npmjs.org";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NpmInstallPlan {
+    pub spec: String,
+    pub plugin_name: String,
+}
+
+pub fn plan_npm_install(
+    package: &str,
+    version: &str,
+    registry: Option<&str>,
+) -> Result<NpmInstallPlan, String> {
+    let file = package.rsplit('/').next().unwrap_or(package);
+    let tarball = |base: &str| format!("{base}/{package}/-/{file}-{version}.tgz");
+    let remote = |url: String| {
+        super::PluginInstallSource::Remote(
+            codewhale_skill_install::install::InstallSource::DirectUrl(url),
+        )
+    };
+    let exact = format!("npm:{package}@{version}");
+    if super::PluginInstallSource::parse(&exact).ok() != Some(remote(tarball(NPM_REGISTRY))) {
+        return Err(format!(
+            "`{}@{}` is not an exact npm package version Codewhale can fetch: the name must be a lowercase npm name with an optional @scope, and the version exact, canonical SemVer",
+            refusal_text(package),
+            refusal_text(version)
+        ));
+    }
+    let plugin_name = derived_plugin_name(package).ok_or_else(|| {
+        format!(
+            "npm package `{}` cannot form a native plugin name (1–64 lowercase letters/digits with single dots or hyphens), so its bundle could not be imported",
+            refusal_text(package)
+        )
+    })?;
+    let Some(registry) = registry else {
+        return Ok(NpmInstallPlan {
+            spec: exact,
+            plugin_name,
+        });
+    };
+    let url = reqwest::Url::parse(registry)
+        .map_err(|_| "the declared npm registry is not an absolute URL".to_string())?;
+    let host = refusal_text(url.host_str().unwrap_or_default());
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(format!(
+            "npm registry `{host}` must be an https URL without credentials, query or fragment; Codewhale fetches a registry tarball only over https"
+        ));
+    }
+    let base = url.as_str().trim_end_matches('/');
+    if base == NPM_REGISTRY {
+        return Ok(NpmInstallPlan {
+            spec: exact,
+            plugin_name,
+        });
+    }
+    let spec = tarball(base);
+    if super::PluginInstallSource::parse(&spec).ok() != Some(remote(spec.clone())) {
+        return Err(format!(
+            "npm registry `{host}` does not give a tarball address the reviewed installer accepts"
+        ));
+    }
+    Ok(NpmInstallPlan { spec, plugin_name })
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Entry point
 // ─────────────────────────────────────────────────────────────────────────────
