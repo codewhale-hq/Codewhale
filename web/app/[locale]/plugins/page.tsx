@@ -6,6 +6,7 @@ import { PLUGINS_COPY, PLUGIN_KINDS, FEATURED_CONNECTORS, CATALOG_FEATURED, PLUG
 import { CATALOG_PLUGINS, CONNECTORS, type ConnectorAuth } from "@/lib/content/connectors.generated";
 import type { LocalizedText } from "@/lib/content/vocabulary";
 import { pickText } from "@/lib/i18n/dictionaries";
+import { FallbackRegion } from "@/components/fallback-region";
 
 export const revalidate = 300;
 
@@ -39,7 +40,7 @@ export default async function PluginsPage({ params }: { params: Promise<{ locale
   const moreCatalog = CATALOG_PLUGINS.length - CATALOG_FEATURED.length;
 
   return (
-    <>
+    <FallbackRegion path="/plugins" locale={locale}>
       <PageHeader
         titleId="plugins-overview"
         title={t(PLUGINS_COPY.title)}
@@ -177,6 +178,6 @@ export default async function PluginsPage({ params }: { params: Promise<{ locale
           </div>
         </Section>
       </div>
-    </>
+    </FallbackRegion>
   );
 }

@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime `patch-undo` now restores a turn's own file changes in the default (Ask) posture without trust mode or Full Access; later edits and changes the turn did not make are still refused with nothing changed, and the `restore_requires_trust` error code is gone ([#6970](https://github.com/codewhale-hq/Codewhale/issues/6970)). Verified by app-server and TUI unit tests on Linux; no Windows `/undo` or process-restart run.
 - **Website terminal frames:** The site can render terminal frames captured from the released version, and chooses each frame's caption from where it was captured.
 - **Website docs truth:** Documentation pages now describe the released version first and show what exists only in source in a labelled section that switches on when a release carries it.
+- **Website Arabic pages:** On Arabic pages, English text that has no translation yet keeps its own direction and language, so punctuation, commands and dates no longer appear reversed.
 
 ## [0.10.3] - 2026-11-08
 

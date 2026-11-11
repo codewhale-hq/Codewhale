@@ -30,4 +30,5 @@
 @import "./styles/docs-help.css";
 @import "./styles/changelog.css";
 @import "./styles/app.css";
+@import "./styles/rtl.css";
 @import "./styles/overrides.css";

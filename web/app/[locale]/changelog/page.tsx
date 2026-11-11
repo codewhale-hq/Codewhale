@@ -12,6 +12,8 @@ import { compareVersions } from "@/lib/features";
 import { fill, getChangelog, getChrome } from "@/lib/i18n/dictionaries";
 import { REPO_RELEASES_URL, REPO_URL } from "@/lib/i18n/links";
 import { buildPageMetadata } from "@/lib/page-meta";
+import { bodyDateLocale } from "@/lib/i18n/fallback";
+import { FallbackRegion } from "@/components/fallback-region";
 
 // Published releases resolve at request time; the notes are build-time
 // from CHANGELOG.md and link to the complete published history.
@@ -60,7 +62,7 @@ export default async function ChangelogPage({ params }: { params: Promise<{ loca
   const candidateIsPublished = published !== null && candidate !== null && published.version === candidate;
 
   return (
-    <>
+    <FallbackRegion path="/changelog" locale={locale}>
       <PageHeader kicker={t.kicker} title={t.title} lede={t.lead} pose="write">
         <dl className="def-rows changelog-facts">
           <div className="def-row" data-candidate={candidateIsPublished ? "published" : "unreleased"}>
@@ -118,7 +120,7 @@ export default async function ChangelogPage({ params }: { params: Promise<{ loca
           </p>
         </div>
       </div>
-    </>
+    </FallbackRegion>
   );
 }
 
@@ -134,7 +136,6 @@ function Release({
   publishedUrl: string | null;
 }) {
   const t = getChangelog(locale);
-  const chrome = getChrome(locale);
   const heading = release.unreleased ? t.unreleasedHeading : `v${release.version}`;
   const anchor = release.unreleased ? "unreleased" : `v${release.version}`;
   // Every entry here is clipped or capped for the web; this is the in-page
@@ -152,7 +153,7 @@ function Release({
           {heading}
         </h2>
         <div className="changelog-links">
-          {release.date && <span className="tabular">{formatDate(release.date, chrome.dateLocale)}</span>}
+          {release.date && <span className="tabular">{formatDate(release.date, bodyDateLocale("/changelog", locale))}</span>}
           {publishedUrl && (
             <a href={publishedUrl} target="_blank" rel="noreferrer">
               {ext(t.releasePageLink)}

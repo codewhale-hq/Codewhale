@@ -15,7 +15,9 @@ import { Icon } from "@/components/icon";
 import { ModelBadge, ModelsCatalog } from "@/components/models-catalog";
 import { PageHeader, Section } from "@/components/page-header";
 import type { LocalizedText } from "@/lib/content/vocabulary";
-import { fill, getChrome, pickText } from "@/lib/i18n/dictionaries";
+import { fill, pickText } from "@/lib/i18n/dictionaries";
+import { bodyDateLocale } from "@/lib/i18n/fallback";
+import { FallbackRegion } from "@/components/fallback-region";
 
 export const revalidate = 300;
 
@@ -37,7 +39,7 @@ export default async function ModelsPage({ params }: { params: Promise<{ locale:
   const t = (copy: LocalizedText) => fill(pickText(copy, locale), {
     version: facts.latestPublishedRelease?.version ?? "—", model: facts.defaultModel ?? "—", count: released.models.length,
   });
-  const dateLocale = getChrome(locale).dateLocale;
+  const dateLocale = bodyDateLocale("/models", locale);
   const latest = latestFirstPartyModels(released.models);
   const providers = sortProvidersFirstPartyFirst(released.providers);
   const routeEnv = ROUTE_PROVIDERS.flatMap((route) => {
@@ -47,7 +49,7 @@ export default async function ModelsPage({ params }: { params: Promise<{ locale:
   const deepseekEnv = released.providers.find((p) => p.id === "deepseek")?.env;
 
   return (
-    <>
+    <FallbackRegion path="/models" locale={locale}>
       <PageHeader
         titleId="models-overview"
         title={t(MODELS_COPY.title)}
@@ -163,6 +165,6 @@ export default async function ModelsPage({ params }: { params: Promise<{ locale:
           </p>
         </Section>
       </div>
-    </>
+    </FallbackRegion>
   );
 }
