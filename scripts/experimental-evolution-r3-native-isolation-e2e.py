@@ -61,6 +61,8 @@ def make_handler(program, requests, on_dev_review=None, tool_only_dev_requests=0
             length = int(self.headers.get("Content-Length", "0"))
             request = json.loads(self.rfile.read(length))
             messages = json.dumps(request.get("messages", []), ensure_ascii=False)
+            system = "\n".join(str(message.get("content", "")) for message in
+                               request.get("messages", []) if message.get("role") == "system")
             tools = [tool.get("function", {}).get("name") for tool in request.get("tools", [])]
             if "Independent read-only review" in messages or "Review this verified coding patch" in messages:
                 category = "final_review"
@@ -95,6 +97,10 @@ def make_handler(program, requests, on_dev_review=None, tool_only_dev_requests=0
                 response = sse_text("Unexpected model request in local fixture.")
             requests.append({"category": category, "path": self.path,
                              "model": request.get("model"), "tools": tools,
+                             "system_present": bool(system),
+                             "system_no_tools": "No tools are available" in system,
+                             "system_tool_guidance": "Use `read`" in system or "todo_write" in system,
+                             "system_schema": "return exactly one JSON value" in system,
                              "writer_call": Handler.writer_calls,
                              "stream": request.get("stream")})
             payload = response.encode("utf-8")

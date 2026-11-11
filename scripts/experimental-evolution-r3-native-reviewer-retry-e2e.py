@@ -30,8 +30,23 @@ def main():
         for event in workflow.get("events", [])
         if event.get("type") == "task_started" and event.get("label") in expected_labels
     }
+    requests = json.loads((output / "retry_dev_review" / "mock_requests.json").read_text(
+        encoding="utf-8"))
+    reviews = [request for request in requests if request["category"] in
+               ("dev_review", "final_review")]
+    receipt["review_system_contract"] = {
+        "request_count": len(reviews),
+        "all_present": all(request["system_present"] for request in reviews),
+        "all_no_tools": all(request["system_no_tools"] for request in reviews),
+        "none_has_tool_guidance": all(not request["system_tool_guidance"] for request in reviews),
+        "all_schema": all(request["system_schema"] for request in reviews),
+        "none_offers_tools": all(not request["tools"] for request in reviews),
+    }
     receipt["pass"] = receipt["pass"] and all(
         receipt["reviewer_roles"].get(label) == "reviewer" for label in expected_labels)
+    receipt["pass"] = receipt["pass"] and len(reviews) >= 3 and all(
+        value for name, value in receipt["review_system_contract"].items()
+        if name != "request_count")
     (output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n",
                                          encoding="utf-8")
     print(json.dumps(receipt))
