@@ -78,15 +78,18 @@ def main():
             elif "You are one isolated Codewhale coding candidate" in messages:
                 category = "writer"
                 count = Handler.writer_calls.get(candidate, 0)
+                generation = int(candidate.split("_")[1][1:]) if candidate != "NONE" else 0
+                changed_path = "src/probe.py" if generation == 0 else "src/generated_note.txt"
                 if count == 0:
                     response = support["sse_tool"]("read", {"path": "src/probe.py"},
                                                    f"{candidate}-read")
                 elif count == 1:
-                    response = support["sse_tool"]("write", {"path": "src/probe.py",
-                                                       "content": "import json,sys\njson.load(sys.stdin)\nprint(json.dumps({'ok':True}))\n"},
+                    response = support["sse_tool"]("write", {"path": changed_path,
+                                                       "content": ("import json,sys\njson.load(sys.stdin)\nprint(json.dumps({'ok':True}))\n"
+                                                                   if generation == 0 else f"generation={generation} candidate={candidate}\n")},
                                                    f"{candidate}-write")
                 else:
-                    response = support["sse_text"]("CHANGES:\n- src/probe.py\n"
+                    response = support["sse_text"](f"CHANGES:\n- {changed_path}\n"
                                                    "Implemented the bounded probe.")
                 Handler.writer_calls[candidate] = count + 1
             else:
