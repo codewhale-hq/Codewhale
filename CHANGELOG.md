@@ -49,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The install guide's note for a first message that gets no answer now describes v0.10.2: connect a model with `/provider`, and restart if messages stay saved for later after you connect. It described v0.10.0's key screen. The Chinese guide carries the same correction.
 - The pet browser view opens with a one-time code instead of the long-lived owner token, so the token no longer appears in the URL or the launcher command line. The code lasts 30 seconds and works once; the owner token itself is still stored in the cookie and connection file and is not rotated. Not run in a real browser.
 - On Windows with Caps Lock on, Ctrl+E moves to the end of the line again instead of opening the file tree; the file tree now needs an explicit Shift (Ctrl+Shift+E or Cmd+Shift+E), so a terminal that reports an uppercase E with Ctrl but no Shift flag can no longer toggle it. The Caps Lock key event is simulated from the input library source; no native Windows run.
 - External agents installed through npm on Windows (`claude.cmd`, `codex.cmd`, ...) are now found instead of the unrunnable shell shim, `GET /v1/agents/external` says whether an agent answered with an unsupported protocol rather than reporting every failure as no answer, and a hung `--version` or handshake probe no longer leaves the agent's child processes running. Verified on macOS and Linux; the Windows code has never been compiled or run, and no agent row is qualified by this change.

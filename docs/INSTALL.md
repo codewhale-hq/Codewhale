@@ -91,10 +91,11 @@ python3 primes.py – Do you want to proceed?** Press `y` to allow it once. It
 runs the command and reports the output. Press `Ctrl-D` (with an empty input
 box) to quit. It prints the command to resume the session later.
 
-> **If nothing happens after you send your first message,** you have no key
-> configured. v0.10.0 doesn't warn you in that case. Press **F3**. If DeepSeek
-> shows `missing key`, press Enter, paste the key, then pick a model and
-> confirm.
+> **If nothing happens after you send your first message,** you have not
+> connected a model. v0.10.2 shows `no model connected · run /provider` on its
+> first screen and returns your first message to the composer. Type `/provider`,
+> choose a provider or paste a Custom endpoint, then send it again. If messages say
+> they were saved for later after you connect, quit with Ctrl+D and run `codewhale` again.
 
 ---
 

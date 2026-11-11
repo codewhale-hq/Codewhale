@@ -68,7 +68,7 @@ create a Python file primes.py that prints the first 10 primes, run it, and show
 
 Codewhale 会写出文件、给你看 diff，然后询问 **APPROVAL: bash python3 primes.py – Do you want to proceed?**。按 `y` 允许本次执行。它会运行该命令并报告输出。（输入框为空时）按 `Ctrl-D` 退出，它会打印出之后恢复该会话的命令。
 
-> **如果发送第一条消息后没有任何反应，** 说明你还没有配置密钥。v0.10.0 在这种情况下不会给出警告。按 **F3**。如果 DeepSeek 显示 `missing key`，按 Enter，粘贴密钥，然后选择模型并确认。
+> **如果发送第一条消息后没有任何反应，** 说明你还没有连接模型。v0.10.2 会在首屏显示 `no model connected · run /provider`，并把你的第一条消息放回输入框。输入 `/provider`，选择一个提供商或粘贴自定义端点（Custom endpoint），然后重新发送。如果连接之后消息提示已保存、稍后发送，按 Ctrl+D 退出，再重新运行 `codewhale`。
 
 ---
 
