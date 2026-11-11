@@ -38,7 +38,7 @@ pub const MAX_PLUGIN_CONFIG_BYTES: usize = 16 * 1024;
 /// Deepest nesting of tables and arrays accepted.
 const MAX_CONFIG_DEPTH: usize = 16;
 /// How the `toml` crate serializes a date-time (a one-key table).
-const TOML_DATETIME_KEY: &str = "$__toml_private_datetime";
+pub(super) const TOML_DATETIME_KEY: &str = "$__toml_private_datetime";
 
 /// The config one activation is given, and its digest.
 #[derive(Debug, Clone, PartialEq)]
@@ -89,7 +89,7 @@ fn has_datetime(value: &Value) -> bool {
 }
 
 /// One plugin's `[plugins."<name>".config]`, checked.
-fn convert(name: &str, settings: &PluginSettings) -> Result<PluginConfig, String> {
+pub(super) fn convert(name: &str, settings: &PluginSettings) -> Result<PluginConfig, String> {
     let Some(table) = &settings.config else {
         return Ok(PluginConfig::empty());
     };
