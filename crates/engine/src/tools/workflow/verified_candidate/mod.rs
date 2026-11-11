@@ -348,23 +348,37 @@ fn run_isolated(
     })
 }
 
-fn probe_isolation(root: &Path) -> Result<Value, String> {
+fn probe_isolation(root: &Path, denied_paths: &[PathBuf]) -> Result<Value, String> {
     let source = root.join("probe-source");
     let scratch = root.join("probe-scratch");
     fs::create_dir(&source).map_err(|error| error.to_string())?;
     fs::create_dir(&scratch).map_err(|error| error.to_string())?;
     let secret = root.join("probe-secret");
     fs::write(&secret, b"synthetic marker").map_err(|error| error.to_string())?;
-    let code = "import json,os,socket,sys\nsecret=sys.argv[1]\nblocked=False\ntry: open(secret).read()\nexcept (OSError,IOError): blocked=True\nopen('scratch-marker','w').write('ok')\nprint(json.dumps({'secret_blocked':blocked,'network_namespace':os.readlink('/proc/self/ns/net')}))";
+    let code = r#"import json,os,sys
+blocked=[]
+for path in sys.argv[1:]:
+    try:
+        open(path).read()
+        blocked.append(False)
+    except OSError:
+        blocked.append(True)
+open('scratch-marker','w').write('ok')
+print(json.dumps({'secret_blocked':blocked[0],
+                  'oracle_paths_blocked':all(blocked[1:]),
+                  'network_namespace':os.readlink('/proc/self/ns/net')}))
+"#;
+    let mut args = vec![
+        "-c".to_string(),
+        code.to_string(),
+        secret.to_string_lossy().into_owned(),
+    ];
+    args.extend(denied_paths.iter().map(|path| path.to_string_lossy().into_owned()));
     let env = isolated_command(
         &source,
         &scratch,
         "/usr/bin/python3",
-        vec![
-            "-c".to_string(),
-            code.to_string(),
-            secret.to_string_lossy().into_owned(),
-        ],
+        args,
         Duration::from_secs(5),
     )?;
     let run = run_isolated(
@@ -384,6 +398,7 @@ fn probe_isolation(root: &Path) -> Result<Value, String> {
     let host_net = fs::read_link("/proc/self/ns/net").map_err(|error| error.to_string())?;
     if run.exit_code != Some(0)
         || measured.get("secret_blocked") != Some(&Value::Bool(true))
+        || measured.get("oracle_paths_blocked") != Some(&Value::Bool(true))
         || measured.get("network_namespace").and_then(Value::as_str)
             == Some(host_net.to_string_lossy().as_ref())
         || fs::read(scratch.join("scratch-marker")).ok().as_deref() != Some(b"ok")
@@ -402,7 +417,8 @@ fn probe_isolation(root: &Path) -> Result<Value, String> {
         "read_grants": ["/usr", "/lib", "/lib64", "/etc/alternatives", "sealed candidate tree"],
         "writable_grants": ["private scratch", "private /tmp"],
         "network": "unshared", "pid_namespace": "unshared",
-        "secret_blocked": true, "probe_exit": run.exit_code,
+        "secret_blocked": true, "oracle_paths_blocked": true,
+        "probe_exit": run.exit_code,
         "resource_limits": {"address_space_bytes": 512 * 1024 * 1024,
             "file_size_bytes": 1024 * 1024, "open_files": 64,
             "processes_rlimit": 32, "cpu_seconds_per_case": 8},
@@ -473,7 +489,7 @@ impl VerifiedCandidateEvaluator {
         }
         let mut gate_cases = Vec::new();
         let mut case_hashes = Vec::new();
-        for gate in &spec.hard_gates {
+        for gate in &mut spec.hard_gates {
             if gate.candidate_argv.len() != 2
                 || !Path::new(&gate.candidate_argv[0]).is_absolute()
                 || gate.timeout_secs == 0
@@ -508,6 +524,7 @@ impl VerifiedCandidateEvaluator {
             }
             gate_cases.push(cases);
             case_hashes.push(hash(&bytes));
+            gate.cases_path = cases_path;
         }
         let root = std::env::temp_dir().join(format!(
             "codewhale-evaluator-{run_id}-{}",
@@ -524,7 +541,10 @@ impl VerifiedCandidateEvaluator {
         fs::create_dir(&root).map_err(|error| error.to_string())?;
         let frozen = (|| {
             let store = ArtifactStore::freeze(&repo, &root)?;
-            let sandbox_probe = probe_isolation(&root)?;
+            let denied_paths = std::iter::once(spec_path.clone())
+                .chain(spec.hard_gates.iter().map(|gate| gate.cases_path.clone()))
+                .collect::<Vec<_>>();
+            let sandbox_probe = probe_isolation(&root, &denied_paths)?;
             let binary_hash = hash(
                 &fs::read(std::env::current_exe().map_err(|error| error.to_string())?)
                     .map_err(|error| error.to_string())?,
@@ -888,6 +908,7 @@ impl VerifiedCandidateEvaluator {
                 }
                 logs.push(json!({
                     "case": case_index + 1, "stdout": stdout, "stderr": stderr,
+                    "sandbox_argv": env.command,
                     "exit_code": run.exit_code, "stop_reason": run.stop_reason,
                     "wall_ms": run.wall_ms, "passed": passed
                 }));

@@ -77,7 +77,8 @@ process.
 
 Candidate commands run only on Linux with the strict bubblewrap backend.
 The capability probe must establish a private network namespace, inaccessible
-host marker, writable private scratch, and read-only sealed source mount.
+host marker and actual spec/case paths, writable private scratch, and read-only
+sealed source mount.
 The process owner applies CPU, address-space, file-size, descriptor, and process
 limits. The evaluator clears the host environment and closes inherited file
 descriptors before the sandbox starts. Missing bubblewrap or an unsuccessful
@@ -99,8 +100,9 @@ The full sealed artifact records added, modified, deleted, binary, and
 executable-mode changes. Its tree hash is separate from the artifact manifest
 hash. Receipts bind spec, baseline Git SHA and tree identity, case bundle
 hashes, artifact and candidate tree hashes, sandbox probe, and native binary
-SHA256, plus bubblewrap and gate executable hashes. Replays compare these
-against the frozen spec and prior receipt.
+SHA256, plus bubblewrap and gate executable hashes. Per-case receipts include
+the resolved sandbox command, exit/stop reason, and log paths. Replays compare
+identities against the frozen spec and prior receipt.
 Missing or conflicting evidence yields `UNKNOWN`, `REJECTED`, or an explicit
 error, never a PASS.
 

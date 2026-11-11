@@ -107,24 +107,30 @@ export default async function (args) {
     const receipts = [];
     for (let index = 0; index < n; index++) {
       const candidate_id = `candidate_${index + 1}`;
+      let evaluation;
       try {
-        const evaluation = await task.verifyCandidate({
+        evaluation = await task.verifyCandidate({
           action: "evaluate", candidate_id,
         });
-        let replay = null;
-        if (evaluation.status === "PASS") {
-          replay = await task.verifyCandidate({
-            action: "replay", candidate_id,
-          });
-        }
-        receipts.push({ candidate_id, evaluation, replay });
       } catch (error) {
         receipts.push({
           candidate_id,
           evaluation: { status: "UNKNOWN", reason: String(error) },
           replay: null,
         });
+        continue;
       }
+      let replay = null;
+      if (evaluation.status === "PASS") {
+        try {
+          replay = await task.verifyCandidate({
+            action: "replay", candidate_id,
+          });
+        } catch (error) {
+          replay = { status: "UNKNOWN", reason: String(error) };
+        }
+      }
+      receipts.push({ candidate_id, evaluation, replay });
     }
     return {
       scenario: "operate-verified-search",
