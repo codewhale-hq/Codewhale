@@ -268,10 +268,8 @@ export interface DocsShellDict {
   releaseLabel: string;
   /** "Latest release {tag} · {date}" — date already formatted per locale. */
   releasePublished: string;
-  /** Shown while the source candidate is ahead of the published release. */
-  releaseCandidate: string;
-  /** Shown when the pages describe exactly the published release. */
-  releaseMatches: string;
+  releaseDescribes: string;
+  sourceLead: string;
   /** Link to the /changelog route. */
   releaseChangelog: string;
 
@@ -406,6 +404,12 @@ export interface DocsSection {
   id: string;
   title: string;
   blocks: readonly DocsBlock[];
+  until?: { feature: string; describesCurrentRow?: boolean };
+}
+
+export interface DocsSourceGroup {
+  claim: { feature: string; describesCurrentRow?: boolean };
+  sections: readonly DocsSection[];
 }
 
 /**
@@ -425,6 +429,7 @@ export interface DocsPageDict {
   next: readonly { href: string; label: string; note: string }[];
   /** Maintainer pointer, kept out of the rendered copy. */
   sourceNote: string;
+  sourceGroups?: readonly DocsSourceGroup[];
 }
 
 export type DocsReviewDict = DocsPageDict;
@@ -603,6 +608,7 @@ export interface DocsVocabularyDict {
   executionHeading: string;
   controlHeading: string;
   controlLead: string;
+  sourceControlHeading: string;
   routeHeading: string;
   advisoryHeading: string;
   measurementHeading: string;

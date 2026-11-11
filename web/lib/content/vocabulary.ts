@@ -20,6 +20,10 @@
  *   untranslated content retains its English fallback.
  */
 
+import type { CapabilityContext } from "../capabilities";
+import { showsReleasedText, sourcePlacement, type SourcePlacement } from "../docs-release";
+import { FEATURE_CATALOGUE, type Feature } from "../features";
+
 export interface LocalizedText {
   en: string;
   zh: string;
@@ -84,6 +88,63 @@ export interface ControlTerm {
   description: LocalizedText;
 }
 
+export const MODES_CLAIM = { feature: "modes", describesCurrentRow: true } as const;
+export const POSTURES_CLAIM = { feature: "permission-postures", describesCurrentRow: true } as const;
+
+export const RELEASED_CONTROL_MODES: ControlTerm[] = [
+  {
+    term: "Plan",
+    kind: "mode",
+    description: {
+      en: "Plan permits workspace inspection and policy-allowed research, but refuses file mutation and shell execution.",
+      zh: "Plan 允许检查工作区和进行策略许可的研究，但拒绝文件修改与 shell 执行。",
+    },
+  },
+  {
+    term: "Work",
+    kind: "mode",
+    description: {
+      en: "Work uses tools across multiple steps under the active permissions, sandbox and repository rules.",
+      zh: "Work 在当前权限、沙箱和仓库规则下分多步使用工具。",
+    },
+  },
+  {
+    term: "Operate",
+    kind: "mode",
+    description: {
+      en: "Operate has the same tools and authority as Work, and leans toward delegating multi-part work to parallel agents and checking results before the work is called done.",
+      zh: "Operate 的工具和权限与 Work 相同，但更倾向于把多部分任务交给并行智能体，并在宣布完成前检查结果。",
+    },
+  },
+];
+
+export const RELEASED_PERMISSION_POSTURES: ControlTerm[] = [
+  {
+    term: "Ask",
+    kind: "permission-posture",
+    description: {
+      en: "The default. Codewhale asks before a command runs; saved approvals and policy rules still apply.",
+      zh: "默认设置。Codewhale 在运行命令前询问；已保存的批准和策略规则仍然适用。",
+    },
+  },
+  {
+    term: "Auto-Review",
+    kind: "permission-posture",
+    description: {
+      en: "Codewhale reviews eligible tool actions automatically and denies high-risk calls or failed reviews. It can still ask you to resolve a user choice.",
+      zh: "Codewhale 自动审查符合条件的工具操作，并拒绝高风险调用或审查失败的调用。它仍可能请你作出用户选择。",
+    },
+  },
+  {
+    term: "Full Access",
+    kind: "permission-posture",
+    description: {
+      en: "Commands can reach anything on this computer without approval prompts. Repository law and managed policy still apply.",
+      zh: "命令无需审批提示即可访问这台计算机上的任何内容。仓库规则与托管策略仍然适用。",
+    },
+  },
+];
+
 /** Source-candidate TUI modes; Shift+Tab steps the permission dial. */
 export const CONTROL_MODES: ControlTerm[] = [
   {
@@ -119,8 +180,8 @@ export const PERMISSION_POSTURES: ControlTerm[] = [
     term: "Accept Edits",
     kind: "permission-posture",
     description: {
-      en: "Ordinary edits inside a git workspace can run without a prompt; commands and sensitive-file edits still ask. New source-candidate installs use this posture unless a saved choice or managed policy applies.",
-      zh: "Git 工作区内的普通修改可以不经提示执行；命令和敏感文件修改仍会询问。除非已有保存的选择或托管策略，新安装的源码候选版本使用此权限设置。",
+      en: "Ordinary edits inside a git workspace can run without a prompt; commands and sensitive-file edits still ask. In source, new installs use this posture unless a saved choice or managed policy applies.",
+      zh: "Git 工作区内的普通修改可以不经提示执行；命令和敏感文件修改仍会询问。在源码中，除非已有保存的选择或托管策略，新安装使用此权限设置。",
     },
   },
   {
@@ -213,3 +274,18 @@ export const MEASUREMENT_PRINCIPLES: LocalizedText[] = [
     zh: "本站不发布基准排行榜。Codewhale 今后发布任何数字时，都必须同时给出确切的提供商、模型、请求与实际思考档位和测量工具链。",
   },
 ];
+
+export function controlTermsFor(context: CapabilityContext, features: readonly Feature[] = FEATURE_CATALOGUE.features): { body: ControlTerm[]; source: ControlTerm[] } {
+  const inSource = (placement: SourcePlacement) => [
+    ...(sourcePlacement(MODES_CLAIM, context, features) === placement ? CONTROL_MODES : []),
+    ...(sourcePlacement(POSTURES_CLAIM, context, features) === placement ? PERMISSION_POSTURES : []),
+  ];
+  return {
+    body: [
+      ...(showsReleasedText(MODES_CLAIM, context, features) ? RELEASED_CONTROL_MODES : []),
+      ...(showsReleasedText(POSTURES_CLAIM, context, features) ? RELEASED_PERMISSION_POSTURES : []),
+      ...inSource("body"),
+    ],
+    source: inSource("source"),
+  };
+}

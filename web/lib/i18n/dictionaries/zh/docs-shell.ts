@@ -16,8 +16,8 @@ export const docsShell: DocsShellDict = {
 
   releaseLabel: "版本",
   releasePublished: "最新发布 {tag} · {date}",
-  releaseCandidate: "本站文档描述的是尚未发布的 {version} 源码候选版。",
-  releaseMatches: "本站文档描述的是已发布的 {tag}。",
+  releaseDescribes: "本站文档描述的是已发布的 {tag}。",
+  sourceLead: "本节描述仅存在于项目源码、尚未包含在已发布版本中的行为。可用 `codewhale --version` 查看你使用的版本。",
   releaseChangelog: "更新日志 →",
 
   searchLabel: "搜索文档",
