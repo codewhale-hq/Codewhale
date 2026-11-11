@@ -2041,8 +2041,9 @@ async fn dsh_broker_services_are_granted_by_one_check_and_an_ungranted_service_i
     assert!(
         DshService::ALL
             .into_iter()
-            .all(|service| !super::dsh_broker::granted(service))
+            .all(|service| !super::dsh_broker::offered(service))
     );
+    assert!(f.manager.shared.broker_services(&f.owner).is_empty());
     let none = f.begin(7, &f.owner);
     assert!(
         none.broker_tickets().is_none(),
@@ -2132,14 +2133,17 @@ async fn dsh_broker_services_are_granted_by_one_check_and_an_ungranted_service_i
             .await;
         assert_eq!(
             dsh_refusal(&withdrawn),
-            (error_code::NOT_AVAILABLE, "not_available".into()),
+            (error_code::REFUSED, "not_granted".into()),
             "a grant withdrawn after minting refuses {} before the arm runs",
             service.name()
         );
         assert_eq!(
             withdrawn.unwrap_err().message,
-            format!("the {} broker is not available yet", service.name()),
-            "the refusal names no grant"
+            format!(
+                "the {} service is not granted to this plugin",
+                service.name()
+            ),
+            "the refusal names no other plugin and no reason"
         );
         drop(guard);
     }
@@ -2488,6 +2492,15 @@ async fn an_invocations_brokers_share_one_cap_on_nested_core_calls() {
     assert_eq!(
         dsh_refusal(&capped),
         (error_code::REFUSED, "refused".into())
+    );
+    assert_eq!(
+        f.server.asked.load(Ordering::SeqCst),
+        MAX_CALLS_PER_INVOCATION as usize
+    );
+    let (direct, _) = f.serve(HostTier::Plugin, 7, &f.owner, guard.ticket()).await;
+    assert!(
+        refused(&direct),
+        "core/call and the brokers share the one cap: {direct:?}"
     );
     assert_eq!(
         f.server.asked.load(Ordering::SeqCst),

@@ -152,6 +152,8 @@ mod windows;
 
 #[cfg(test)]
 mod core_call_tests;
+#[cfg(test)]
+mod dsh_grant_tests;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 #[cfg(test)]
@@ -540,6 +542,7 @@ struct DesiredOwner {
     plugin_name: String,
     authority: PluginAuthority,
     entries: Vec<(PathBuf, String)>,
+    host_services: Vec<protocol::DshService>,
 }
 
 /// What [`ExtensionHostManager::activate_owner`] activates, on either tier:
@@ -555,6 +558,7 @@ struct Activation {
     /// pinned source digest.
     content_hash: String,
     entries: Vec<(PathBuf, String)>,
+    host_services: Vec<protocol::DshService>,
 }
 
 /// One engine's view: its plugin snapshot and the owners (plugin id →
@@ -1375,7 +1379,15 @@ fn restart_dirty_host_when_idle(
         return false;
     }
     let mut supervision = runtime.supervision.lock().expect("supervision lock");
-    if !supervision.dirty_restart_pending || !host.terminate_if_idle(DIRTY_RESTART_REASON) {
+    let unload = host.tier == HostTier::Plugin
+        && shared
+            .registry
+            .lock()
+            .expect("registry lock")
+            .host_services_await_restart();
+    if !(supervision.dirty_restart_pending || unload)
+        || !host.terminate_if_idle(DIRTY_RESTART_REASON)
+    {
         return false;
     }
     supervision.planned_restart = Some(generation);
@@ -2224,6 +2236,7 @@ impl ExtensionHostManager {
                         authority: Some(want.authority),
                         content_hash,
                         entries: want.entries,
+                        host_services: want.host_services,
                     },
                 )
                 .await;
@@ -2250,6 +2263,14 @@ impl ExtensionHostManager {
             if state.selection.revision == state.plugins.caller_selection() {
                 state.settled = state.selection.revision;
             }
+        }
+        let withheld = shared
+            .registry
+            .lock()
+            .expect("registry lock")
+            .take_withheld_report();
+        if let Some(withheld) = withheld {
+            shared.diagnostic(withheld);
         }
         match (plugins, builtin) {
             (Err(error), Err(other)) => {
@@ -2397,6 +2418,7 @@ impl ExtensionHostManager {
                     authority: None,
                     content_hash: module.source_sha256.to_string(),
                     entries: vec![entry],
+                    host_services: Vec::new(),
                 }),
                 Err(reason) => {
                     let mut registry = shared.registry.lock().expect("registry lock");
@@ -2444,13 +2466,17 @@ impl ExtensionHostManager {
             {
                 Ok(owner.owner.clone())
             } else {
-                registry.begin_owner(
-                    want.tier,
-                    plugin_id,
-                    &want.name,
-                    want.authority.clone(),
-                    &want.content_hash,
-                )
+                registry
+                    .begin_owner(
+                        want.tier,
+                        plugin_id,
+                        &want.name,
+                        want.authority.clone(),
+                        &want.content_hash,
+                    )
+                    .inspect(|owner| {
+                        registry.set_host_services(owner, want.host_services.clone());
+                    })
             }
         };
         let owner = match begun {
@@ -2771,6 +2797,11 @@ impl ExtensionHostManager {
             supervision.planned_restart = None;
             runtime.host_generation.fetch_add(1, Ordering::SeqCst) + 1
         };
+        shared
+            .registry
+            .lock()
+            .expect("registry lock")
+            .host_process_started(tier);
         // At most two launches: under `auto`, before anything is pinned, a
         // Bun that cannot start is reported once and Node is resolved for the
         // rest of the session. An explicit `bun` or `node` never falls back.
@@ -3231,11 +3262,41 @@ fn desired_owners(plugins: &PluginRegistry) -> (BTreeMap<String, DesiredOwner>, 
                 ) {
                     continue;
                 }
-                let owner = desired.entry(plugin_id).or_insert_with(|| DesiredOwner {
-                    plugin_name: source.plugin_name.clone(),
-                    authority: source.authority.clone(),
-                    entries: Vec::new(),
-                });
+                if !desired.contains_key(&plugin_id) {
+                    let record =
+                        codewhale_plugins::registry::reviewed_record(&source.authority).ok();
+                    if record.as_ref().is_some_and(|record| {
+                        record.approved_by.as_ref().is_some_and(|approver| {
+                            approver.cohort()
+                                != codewhale_plugins::host_services::PluginCohort::Reviewed
+                        })
+                    }) {
+                        if broken.insert(plugin_id) {
+                            errors.push(format!(
+                                "Plugin `{}` was approved by the agent, so its code does not run in the host of the plugins you reviewed; review it to run its code",
+                                source.plugin_name
+                            ));
+                        }
+                        continue;
+                    }
+                    desired.insert(
+                        plugin_id.clone(),
+                        DesiredOwner {
+                            plugin_name: source.plugin_name.clone(),
+                            authority: source.authority.clone(),
+                            entries: Vec::new(),
+                            host_services: record
+                                .map(|record| record.host_services)
+                                .unwrap_or_default()
+                                .into_iter()
+                                .filter_map(|service| protocol::DshService::parse(service.name()))
+                                .collect(),
+                        },
+                    );
+                }
+                let Some(owner) = desired.get_mut(&plugin_id) else {
+                    continue;
+                };
                 // The manifest may name one file twice; it is one entry.
                 if !owner.entries.iter().any(|(path, _)| *path == source.path) {
                     owner
@@ -3540,6 +3601,45 @@ impl ManagerShared {
                     && state.selection.includes(plugin_id, hash, scope)
             })
     }
+    pub(super) fn broker_services(&self, owner: &OwnerRef) -> Vec<protocol::DshService> {
+        dsh_broker::granted_services(&self.registry.lock().expect("registry lock"), owner)
+    }
+
+    pub(super) async fn broker_granted(
+        &self,
+        owner: &OwnerRef,
+        service: protocol::DshService,
+    ) -> bool {
+        if let Some(granted) = dsh_broker::test_grants() {
+            return granted.contains(&service);
+        }
+        let authorities = {
+            let registry = self.registry.lock().expect("registry lock");
+            if !dsh_broker::granted(&registry, owner, service) {
+                return false;
+            }
+            registry.plugin_host_authorities()
+        };
+        let Some(wanted) = codewhale_plugins::host_services::HostService::parse(service.name())
+        else {
+            return false;
+        };
+        let policy = activation::extension_host_policy_enabled();
+        #[cfg(any(test, feature = "test-support"))]
+        let env_scope = crate::test_support::env_scope_ticket();
+        tokio::task::spawn_blocking(move || {
+            #[cfg(any(test, feature = "test-support"))]
+            let _env_scope = crate::test_support::join_env_scope(env_scope);
+            let _scope = activation::PolicyScope::propagate(policy);
+            authorities.iter().all(|authority| {
+                codewhale_plugins::registry::granted_host_services(authority)
+                    .is_ok_and(|granted| granted.contains(&wanted))
+            })
+        })
+        .await
+        .unwrap_or(false)
+    }
+
     pub fn check_selection(
         &self,
         selection: Option<codewhale_plugins::composition_scope::SelectionRevision>,

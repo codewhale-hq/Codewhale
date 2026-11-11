@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use super::protocol::{RegisterKind, RegisterParams};
+use super::protocol::{DshService, RegisterKind, RegisterParams};
 use super::tier::HostTier;
 use codewhale_config::PluginAuthority;
 use codewhale_config::{EntryRef, OwnerRef};
@@ -78,8 +78,19 @@ pub struct OwnerEntry {
     /// [`OwnerRegistry::set_config_hash`]). A change of config is a different
     /// activation: reconcile revokes the owner and activates a new generation.
     pub config_hash: String,
+    pub host_services: Vec<DshService>,
     pub state: OwnerState,
     pub scopes: HashMap<EntryRef, OwnerState>,
+}
+
+impl OwnerEntry {
+    fn live(&self) -> bool {
+        matches!(self.state, OwnerState::Activating | OwnerState::Active)
+    }
+
+    fn loaded_in_plugin_host(&self) -> bool {
+        self.tier == HostTier::Plugin && self.live()
+    }
 }
 
 /// Most schema violations one refused call reports back to the model.
@@ -261,6 +272,8 @@ pub struct OwnerRegistry {
     /// process build different native surfaces, and a name that is native
     /// anywhere is refused everywhere.
     native_names: HashSet<String>,
+    plugin_host_departed: bool,
+    withheld_reported: String,
 }
 
 fn mint_token() -> String {
@@ -428,6 +441,7 @@ impl OwnerRegistry {
                 authority,
                 content_hash: content_hash.to_string(),
                 config_hash: String::new(),
+                host_services: Vec::new(),
                 state: OwnerState::Activating,
                 scopes: HashMap::new(),
             },
@@ -442,6 +456,110 @@ impl OwnerRegistry {
         {
             entry.config_hash = hash.to_string();
         }
+    }
+
+    pub fn set_host_services(&mut self, owner: &OwnerRef, services: Vec<DshService>) {
+        if let Some(entry) = self.owners.get_mut(&owner.plugin_id)
+            && entry.owner == *owner
+            && entry.tier == HostTier::Plugin
+            && entry.authority.is_some()
+        {
+            entry.host_services = services;
+        }
+    }
+
+    #[must_use]
+    pub fn host_service_granted(&self, owner: &OwnerRef, service: DshService) -> bool {
+        self.current(owner)
+            .is_some_and(|entry| entry.tier == HostTier::Plugin && entry.authority.is_some())
+            && !self.plugin_host_departed
+            && self
+                .owners
+                .values()
+                .filter(|entry| entry.loaded_in_plugin_host())
+                .all(|entry| entry.host_services.contains(&service))
+    }
+
+    #[must_use]
+    pub fn plugin_host_authorities(&self) -> Vec<PluginAuthority> {
+        self.owners
+            .values()
+            .filter(|entry| entry.loaded_in_plugin_host())
+            .filter_map(|entry| entry.authority.clone())
+            .collect()
+    }
+
+    #[must_use]
+    pub fn host_services_await_restart(&self) -> bool {
+        self.plugin_host_departed
+            && self
+                .owners
+                .values()
+                .any(|entry| entry.loaded_in_plugin_host() && !entry.host_services.is_empty())
+    }
+
+    pub fn host_process_started(&mut self, tier: HostTier) {
+        if tier == HostTier::Plugin {
+            self.plugin_host_departed = false;
+        }
+    }
+
+    pub fn take_withheld_report(&mut self) -> Option<String> {
+        let loaded: Vec<&OwnerEntry> = self
+            .owners
+            .values()
+            .filter(|entry| entry.loaded_in_plugin_host())
+            .collect();
+        let mut held: Vec<DshService> = DshService::ALL
+            .into_iter()
+            .filter(|service| {
+                loaded
+                    .iter()
+                    .any(|entry| entry.host_services.contains(service))
+            })
+            .collect();
+        let report = if held.is_empty() {
+            String::new()
+        } else if self.plugin_host_departed {
+            "host services are off until the plugin host restarts: a plugin that was turned off, changed or failed is still loaded in it".to_string()
+        } else {
+            held.retain(|service| {
+                loaded
+                    .iter()
+                    .any(|entry| !entry.host_services.contains(service))
+            });
+            held.iter()
+                .map(|service| {
+                    let mut without: Vec<&str> = loaded
+                        .iter()
+                        .filter(|entry| !entry.host_services.contains(service))
+                        .map(|entry| entry.plugin_name.as_str())
+                        .collect();
+                    without.sort_unstable();
+                    format!(
+                        "host service `{}` is off: the {} of {} {} not include it",
+                        service.name(),
+                        if without.len() == 1 {
+                            "review"
+                        } else {
+                            "reviews"
+                        },
+                        without
+                            .iter()
+                            .map(|name| format!("`{name}`"))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        if without.len() == 1 { "does" } else { "do" },
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        if report == self.withheld_reported {
+            return None;
+        }
+        self.withheld_reported.clone_from(&report);
+        (!report.is_empty()).then_some(report)
     }
 
     #[must_use]
@@ -482,6 +600,7 @@ impl OwnerRegistry {
         if matches {
             self.remove_registrations_of(&owner.plugin_id);
             if let Some(entry) = self.owners.get_mut(&owner.plugin_id) {
+                self.plugin_host_departed |= entry.loaded_in_plugin_host();
                 entry.state = state;
             }
         }
@@ -1594,7 +1713,8 @@ impl OwnerRegistry {
     pub fn revoke_owner(&mut self, plugin_id: &str) -> Option<OwnerRef> {
         self.remove_registrations_of(plugin_id);
         let entry = self.owners.get_mut(plugin_id)?;
-        let was_live = matches!(entry.state, OwnerState::Activating | OwnerState::Active);
+        let was_live = entry.live();
+        self.plugin_host_departed |= entry.loaded_in_plugin_host();
         entry.state = OwnerState::Revoked;
         was_live.then(|| entry.owner.clone())
     }
@@ -1602,7 +1722,9 @@ impl OwnerRegistry {
     /// Forget an owner entirely (after revocation, when its plugin is gone).
     pub fn forget_owner(&mut self, plugin_id: &str) {
         self.remove_registrations_of(plugin_id);
-        self.owners.remove(plugin_id);
+        if let Some(entry) = self.owners.remove(plugin_id) {
+            self.plugin_host_departed |= entry.loaded_in_plugin_host();
+        }
     }
 
     /// Forget owners that are not live (failed, faulted, revoked) so a new
@@ -1655,6 +1777,7 @@ impl OwnerRegistry {
     /// owners are not touched: they live in another process.
     pub fn host_exited(&mut self, tier: HostTier, reason: &str) {
         self.clear_tier_registrations(tier);
+        self.host_process_started(tier);
         let activating: Vec<_> = self
             .owners
             .values()
@@ -1679,6 +1802,7 @@ impl OwnerRegistry {
             if entry.tier == tier
                 && matches!(entry.state, OwnerState::Activating | OwnerState::Active)
             {
+                self.plugin_host_departed |= entry.tier == HostTier::Plugin;
                 entry.state = OwnerState::Failed(reason.to_string());
             }
         }

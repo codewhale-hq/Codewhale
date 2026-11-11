@@ -130,6 +130,7 @@ pub enum Refusal {
     WrongOwner,
     WrongMethod,
     WrongTarget,
+    Revoked,
 }
 
 impl Refusal {
@@ -158,12 +159,48 @@ pub struct Refused {
 /// [`INVALID_WINDOW`] are a protocol violation.
 pub const INVALID_BURST: usize = 8;
 pub const INVALID_WINDOW: Duration = Duration::from_secs(60);
+pub const REVOKED_GRACE: Duration = Duration::from_secs(10);
+const MAX_REVOKED: usize = 4096;
 
 #[derive(Default)]
 struct State {
     rows: HashMap<String, Row>,
     /// Recent invalid presentations, by host process `(tier, generation)`.
     invalid: HashMap<(HostTier, u64), VecDeque<Instant>>,
+    revoked: VecDeque<(String, Instant)>,
+}
+
+impl State {
+    fn note_revoked(&mut self, ids: impl IntoIterator<Item = String>, now: Instant) {
+        self.revoked.extend(ids.into_iter().map(|id| (id, now)));
+        while self.revoked.len() > MAX_REVOKED
+            || self
+                .revoked
+                .front()
+                .is_some_and(|(_, at)| now.saturating_duration_since(*at) >= REVOKED_GRACE)
+        {
+            self.revoked.pop_front();
+        }
+    }
+
+    fn revoked_just_now(&self, ticket: &str, now: Instant) -> bool {
+        self.revoked
+            .iter()
+            .any(|(id, at)| id == ticket && now.saturating_duration_since(*at) < REVOKED_GRACE)
+    }
+
+    fn revoke_where(&mut self, gone: impl Fn(&Row) -> bool) {
+        let ids: Vec<String> = self
+            .rows
+            .iter()
+            .filter(|(_, row)| gone(row))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &ids {
+            self.rows.remove(id);
+        }
+        self.note_revoked(ids, Instant::now());
+    }
 }
 
 /// Every live ticket, behind one mutex.
@@ -210,7 +247,9 @@ impl TicketTable {
 
     fn redeem_at(&self, presented: &Presented<'_>, now: Instant) -> Result<Value, Refused> {
         let mut state = self.state.lock().expect("ticket lock");
+        let revoked = state.revoked_just_now(presented.ticket, now);
         let verdict = match state.rows.get_mut(presented.ticket) {
+            None if revoked => Err(Refusal::Revoked),
             None => Err(Refusal::Unknown),
             Some(row) => Self::check(row, presented, now).map(|target| {
                 row.uses_left -= 1;
@@ -225,8 +264,8 @@ impl TicketTable {
                 Ok(target)
             }
             Err(reason) => {
-                let violation =
-                    reason != Refusal::Exhausted && Self::note_invalid(&mut state, presented, now);
+                let violation = !matches!(reason, Refusal::Exhausted | Refusal::Revoked)
+                    && Self::note_invalid(&mut state, presented, now);
                 Err(Refused { reason, violation })
             }
         }
@@ -279,11 +318,10 @@ impl TicketTable {
 
     /// Revoke one ticket (its invocation ended). Idempotent.
     pub fn revoke(&self, ticket: &Ticket) {
-        self.state
-            .lock()
-            .expect("ticket lock")
-            .rows
-            .remove(ticket.expose());
+        let mut state = self.state.lock().expect("ticket lock");
+        if state.rows.remove(ticket.expose()).is_some() {
+            state.note_revoked([ticket.expose().to_string()], Instant::now());
+        }
     }
 
     /// Revoke every ticket of `plugin_id` (its owner was revoked).
@@ -291,8 +329,7 @@ impl TicketTable {
         self.state
             .lock()
             .expect("ticket lock")
-            .rows
-            .retain(|_, row| row.owner.plugin_id != plugin_id);
+            .revoke_where(|row| row.owner.plugin_id == plugin_id);
     }
 
     /// Revoke every ticket of one host process and forget its invalid-burst
@@ -474,6 +511,56 @@ mod tests {
     }
 
     #[test]
+    fn a_ticket_revoked_a_moment_ago_does_not_end_the_host() {
+        let table = TicketTable::default();
+        let a = owner("a", "token-a");
+        let ended = table.mint(grant(5));
+        let withdrawn = table.mint(grant(5));
+        table.revoke(&ended);
+        table.revoke_owner("a");
+        let now = Instant::now();
+        for ticket in [&ended, &withdrawn] {
+            for _ in 0..(INVALID_BURST * 3) {
+                assert_eq!(
+                    table.redeem_at(&presented(ticket, &a), now),
+                    Err(Refused {
+                        reason: Refusal::Revoked,
+                        violation: false
+                    })
+                );
+            }
+        }
+        assert_eq!(Refusal::Revoked.describe(), Refusal::Unknown.describe());
+        let guess = Ticket("cwt.guess".to_string());
+        let violations = (0..INVALID_BURST)
+            .filter(|_| {
+                table
+                    .redeem_at(&presented(&guess, &a), now)
+                    .unwrap_err()
+                    .violation
+            })
+            .count();
+        assert_eq!(violations, 1, "a guess still counts");
+
+        let fresh = TicketTable::default();
+        let stale = fresh.mint(grant(5));
+        fresh.revoke(&stale);
+        let later = Instant::now() + REVOKED_GRACE;
+        let outcomes: Vec<Refused> = (0..INVALID_BURST)
+            .map(|_| fresh.redeem_at(&presented(&stale, &a), later).unwrap_err())
+            .collect();
+        assert!(
+            outcomes
+                .iter()
+                .all(|refused| refused.reason == Refusal::Unknown)
+        );
+        assert!(
+            outcomes.last().unwrap().violation,
+            "after the grace it is a forgery again"
+        );
+    }
+
+    #[test]
     fn tickets_are_revoked_with_their_invocation_owner_and_host_and_never_printed() {
         let table = TicketTable::default();
         let a = owner("a", "token-a");
@@ -492,12 +579,12 @@ mod tests {
         table.revoke(&by_call);
         assert_eq!(
             refusal_of(&table, &presented(&by_call, &a)),
-            Refusal::Unknown
+            Refusal::Revoked
         );
         table.revoke_owner("a");
         assert_eq!(
             refusal_of(&table, &presented(&by_owner, &a)),
-            Refusal::Unknown
+            Refusal::Revoked
         );
         assert_eq!(table.live(), 2, "only a's tickets went");
         table.revoke_host(HostTier::Plugin, 9);

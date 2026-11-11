@@ -43,7 +43,8 @@
 //! Full Access still opens their card. Auto-Review and Never refuse them
 //! (`resolve_approval_request_disposition`); explicit denials always win.
 //!
-//! **Caps.** Per invocation: 50 `core/call`s in all (the ticket's uses), 4 at
+//! **Caps.** Per invocation: 50 core tool calls in all, counted together
+//! across `core/call` and the nested calls of broker arms, 4 at
 //! once (code mode's own cap), and one approval card at a time (the turn
 //! loop serves one request at a time). Per host: the channel's 256 in-flight
 //! host requests. A burst of invalid tickets ends the host (`ticket`).
@@ -102,6 +103,7 @@ pub const MAX_CALLS_PER_INVOCATION: u32 = 50;
 /// A backstop only: an invocation ends (and revokes its ticket) long before
 /// this, and its own deadline pauses while a person decides.
 const TICKET_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const GRANT_PROBE: Duration = Duration::from_millis(50);
 /// Receipts attached to an extension tool's result metadata.
 pub const RECEIPTS_ATTACHED: usize = 50;
 
@@ -266,7 +268,7 @@ pub struct Invocation {
     gate: NestedCallGate,
     root_caller: Option<SessionCheckpointCaller>,
     broker: Option<BrokerScope>,
-    broker_core_calls: AtomicU32,
+    nested_calls: AtomicU32,
     tickets: Vec<Ticket>,
     caller_tools: Vec<String>,
     activations: Mutex<
@@ -318,18 +320,13 @@ impl BrokerContext {
                 NestedFailure::Unavailable("the broker call was withdrawn".to_string()),
             ));
         }
-        if self
-            .invocation
-            .broker_core_calls
-            .fetch_add(1, Ordering::SeqCst)
-            >= MAX_CALLS_PER_INVOCATION
-        {
+        if self.invocation.nested_calls.fetch_add(1, Ordering::SeqCst) >= MAX_CALLS_PER_INVOCATION {
             return Err(BrokerRefusal::nested(
                 self.service,
                 NestedFailure::Rejected {
                     decision: NestedDecision::Refused,
                     message: format!(
-                        "an invocation's brokers may make at most {MAX_CALLS_PER_INVOCATION} core tool calls"
+                        "a tool call may make at most {MAX_CALLS_PER_INVOCATION} core tool calls"
                     ),
                 },
             ));
@@ -365,7 +362,7 @@ impl BrokerContext {
             gate,
             root_caller: None,
             broker: None,
-            broker_core_calls: AtomicU32::new(0),
+            nested_calls: AtomicU32::new(0),
             tickets: Vec::new(),
             caller_tools: Vec::new(),
             activations: Mutex::new(HashMap::new()),
@@ -414,6 +411,7 @@ impl CoreCalls {
             gate,
             None,
             String::new(),
+            &dsh_broker::test_grants().unwrap_or_default(),
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -428,6 +426,7 @@ impl CoreCalls {
         gate: &NestedCallGate,
         scope: Option<codewhale_config::EntryRef>,
         content_hash: String,
+        broker_services: &[DshService],
     ) -> Option<InvocationGuard> {
         let (caller, specs) = gate.extension()?;
         if caller != expected {
@@ -517,7 +516,7 @@ impl CoreCalls {
             .flat_map(|session| {
                 DshService::ALL
                     .into_iter()
-                    .filter(|service| dsh_broker::granted(*service))
+                    .filter(|service| tier == HostTier::Plugin && broker_services.contains(service))
                     .map(move |service| {
                         (
                             service,
@@ -566,7 +565,7 @@ impl CoreCalls {
             gate: gate.clone(),
             root_caller,
             broker,
-            broker_core_calls: AtomicU32::new(0),
+            nested_calls: AtomicU32::new(0),
             tickets: std::iter::once(ticket.clone())
                 .chain(checkpoint_ticket.iter().cloned())
                 .chain(question_ticket.iter().cloned())
@@ -703,10 +702,30 @@ impl CoreCalls {
         method: &str,
         cx: &HostRequestContext,
     ) -> Result<Arc<Invocation>, RpcErrorWire> {
-        let refuse = |code, message| RpcErrorWire {
-            code,
-            message,
-            data: None,
+        self.redeem_invocation_or_limit(shared, tier, host_generation, owner, ticket, method, cx)
+            .map_err(|(_, error)| error)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn redeem_invocation_or_limit(
+        &self,
+        shared: &ManagerShared,
+        tier: HostTier,
+        host_generation: u64,
+        owner: &OwnerRef,
+        ticket: &str,
+        method: &str,
+        cx: &HostRequestContext,
+    ) -> Result<Arc<Invocation>, (bool, RpcErrorWire)> {
+        let refuse = |code, message| {
+            (
+                false,
+                RpcErrorWire {
+                    code,
+                    message,
+                    data: None,
+                },
+            )
         };
         let redeemed = self.tickets.redeem(&Presented {
             ticket,
@@ -723,10 +742,8 @@ impl CoreCalls {
                     "too many invalid {method} tickets from one host process"
                 ));
             }
-            return Err(refuse(
-                error_code::REFUSED,
-                refused.reason.describe().to_string(),
-            ));
+            let (_, error) = refuse(error_code::REFUSED, refused.reason.describe().to_string());
+            return Err((refused.reason == super::ticket::Refusal::Exhausted, error));
         }
         // The redemption proved the ticket is live and ours; the owner must
         // still be the current one of this tier.
@@ -1257,7 +1274,7 @@ impl CoreCalls {
         let service = DshService::parse(&params.service)
             .ok_or_else(|| BrokerRefusal::UnknownService(params.service.clone()).wire())?;
         let invocation = self
-            .redeem_invocation(
+            .redeem_invocation_or_limit(
                 shared,
                 tier,
                 host_generation,
@@ -1266,14 +1283,24 @@ impl CoreCalls {
                 dsh_broker::ticket_method(service),
                 &cx,
             )
-            .map_err(|error| dsh_broker::coded(error, dsh_broker::TICKET_REFUSED))?;
+            .map_err(|(limit, mut error)| {
+                if limit {
+                    error.message = format!(
+                        "this tool call's limit for the {} service is used up",
+                        service.name()
+                    );
+                    dsh_broker::coded(error, dsh_broker::LIMIT)
+                } else {
+                    dsh_broker::coded(error, dsh_broker::TICKET_REFUSED)
+                }
+            })?;
         let (session_id, tool) = invocation
             .broker
             .as_ref()
             .map(|scope| (scope.session_id.clone(), Arc::clone(&scope.context)))
             .ok_or_else(|| refused("dsh/broker requires an invocation in a session".into()))?;
-        if !dsh_broker::granted(service) {
-            return Err(BrokerRefusal::NotAvailable(service).wire());
+        if !shared.broker_granted(&params.owner, service).await {
+            return Err(BrokerRefusal::NotGranted(service).wire());
         }
         let arm = dsh_broker::arm_in(table, service)
             .ok_or_else(|| BrokerRefusal::NotAvailable(service).wire())?;
@@ -1292,10 +1319,19 @@ impl CoreCalls {
                 cancel: withdraw.clone(),
             },
         };
+        let withdrawn = async {
+            loop {
+                tokio::time::sleep(GRANT_PROBE).await;
+                if !shared.broker_granted(&params.owner, service).await {
+                    break;
+                }
+            }
+        };
         let outcome = tokio::select! {
             biased;
             () = cx.cancel.cancelled() => return Err(cancelled("dsh/broker was cancelled by its host")),
             () = withdraw.cancelled() => return Err(cancelled("dsh/broker invocation ended")),
+            () = withdrawn => return Err(BrokerRefusal::NotGranted(service).wire()),
             outcome = arm(call) => outcome,
         };
         if shared
@@ -1319,6 +1355,9 @@ impl CoreCalls {
                 invocation.scope.as_ref(),
             )
             .map_err(refused)?;
+        if !shared.broker_granted(&params.owner, service).await {
+            return Err(BrokerRefusal::NotGranted(service).wire());
+        }
         outcome.map_err(BrokerRefusal::wire)
     }
 
@@ -1347,6 +1386,12 @@ impl CoreCalls {
             METHOD,
             &cx,
         )?;
+        if invocation.nested_calls.fetch_add(1, Ordering::SeqCst) >= MAX_CALLS_PER_INVOCATION {
+            return Err(refuse(
+                error_code::REFUSED,
+                super::ticket::Refusal::Exhausted.describe().to_string(),
+            ));
+        }
         // Withdrawn when the host cancels this request, its owner is revoked,
         // the host exits (`cx.cancel`), or the invocation ends.
         let withdraw = invocation.cancel.child_token();

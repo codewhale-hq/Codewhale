@@ -6,6 +6,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::protocol::{DshService, RpcErrorWire, error_code};
+use super::registry::OwnerRegistry;
 use super::{
     dsh_catalog, dsh_llm, dsh_network, dsh_remote, dsh_settings, dsh_terminal, dsh_workspace,
 };
@@ -34,6 +35,7 @@ pub enum BrokerRefusal {
         message: String,
     },
     NotAvailable(DshService),
+    NotGranted(DshService),
     Denied {
         service: DshService,
         message: String,
@@ -52,6 +54,7 @@ impl BrokerRefusal {
             Self::UnknownMethod { .. } => "unknown_method",
             Self::InvalidInput { .. } => "invalid_input",
             Self::NotAvailable(_) => "not_available",
+            Self::NotGranted(_) => "not_granted",
             Self::Denied { .. } => "denied",
             Self::Refused { .. } => "refused",
         }
@@ -83,6 +86,14 @@ impl BrokerRefusal {
             Self::NotAvailable(service) => (
                 error_code::NOT_AVAILABLE,
                 format!("the {} broker is not available yet", service.name()),
+                Value::String(service.name().into()),
+            ),
+            Self::NotGranted(service) => (
+                error_code::REFUSED,
+                format!(
+                    "the {} service is not granted to this plugin",
+                    service.name()
+                ),
                 Value::String(service.name().into()),
             ),
             Self::Denied { service, message } => (
@@ -118,6 +129,7 @@ impl BrokerRefusal {
 }
 
 pub const TICKET_REFUSED: &str = "ticket_refused";
+pub const LIMIT: &str = "limit";
 pub const CANCELLED: &str = "cancelled";
 
 #[must_use]
@@ -138,8 +150,6 @@ pub const TABLE: &[(DshService, Arm)] = &[
     (DshService::Terminal, dsh_terminal::serve as Arm),
     (DshService::Remote, dsh_remote::serve as Arm),
 ];
-
-const GRANTED: &[DshService] = &[];
 
 #[cfg(test)]
 thread_local! {
@@ -165,13 +175,36 @@ impl Drop for TestGrants {
     }
 }
 
+#[cfg(test)]
+pub(super) fn test_grants() -> Option<Vec<DshService>> {
+    TEST_GRANTS.with(|grants| grants.borrow().clone())
+}
+
+#[cfg(not(test))]
+pub(super) fn test_grants() -> Option<Vec<DshService>> {
+    None
+}
+
 #[must_use]
-pub fn granted(service: DshService) -> bool {
-    #[cfg(test)]
-    if let Some(granted) = TEST_GRANTS.with(|grants| grants.borrow().clone()) {
-        return granted.contains(&service);
+pub fn offered(service: DshService) -> bool {
+    use codewhale_plugins::host_services::HostService;
+    HostService::parse(service.name()).is_some_and(codewhale_plugins::host_services::offered)
+}
+
+#[must_use]
+pub fn granted(registry: &OwnerRegistry, owner: &OwnerRef, service: DshService) -> bool {
+    match test_grants() {
+        Some(granted) => granted.contains(&service),
+        None => offered(service) && registry.host_service_granted(owner, service),
     }
-    GRANTED.contains(&service)
+}
+
+#[must_use]
+pub fn granted_services(registry: &OwnerRegistry, owner: &OwnerRef) -> Vec<DshService> {
+    DshService::ALL
+        .into_iter()
+        .filter(|service| granted(registry, owner, *service))
+        .collect()
 }
 
 #[must_use]
