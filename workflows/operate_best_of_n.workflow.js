@@ -250,8 +250,9 @@ export default async function (args) {
               break;
             } catch (error) {
               devReview = { verdict: "unknown", reasons: [String(error)] };
-              if (label.startsWith("dev_review_retry_")
-                || !String(error).includes("Model answered only with a tool call")) break;
+              const toolOnlyFailure = String(error).includes("Model answered only with a tool call")
+                || String(error).includes("Fleet worker stopped after repeated permission denials");
+              if (label.startsWith("dev_review_retry_") || !toolOnlyFailure) break;
             }
           }
         }
@@ -360,8 +361,9 @@ export default async function (args) {
             break;
           } catch (error) {
             review = { verdict: "unknown", reasons: [String(error)] };
-            if (label !== "evolution_reviewer"
-              || !String(error).includes("Model answered only with a tool call")) break;
+            const toolOnlyFailure = String(error).includes("Model answered only with a tool call")
+              || String(error).includes("Fleet worker stopped after repeated permission denials");
+            if (label !== "evolution_reviewer" || !toolOnlyFailure) break;
           }
         }
         review = { ...review,
