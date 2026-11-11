@@ -9,6 +9,9 @@ use super::protocol::{DshService, RpcErrorWire, error_code};
 use super::{
     dsh_catalog, dsh_llm, dsh_network, dsh_remote, dsh_settings, dsh_terminal, dsh_workspace,
 };
+use crate::tools::codemode::{NestedDecision, NestedFailure};
+
+pub use super::core_call::BrokerContext;
 
 pub struct BrokerCall {
     pub owner: OwnerRef,
@@ -16,6 +19,7 @@ pub struct BrokerCall {
     pub service: DshService,
     pub method: String,
     pub input: Value,
+    pub context: BrokerContext,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +34,14 @@ pub enum BrokerRefusal {
         message: String,
     },
     NotAvailable(DshService),
+    Denied {
+        service: DshService,
+        message: String,
+    },
+    Refused {
+        service: DshService,
+        message: String,
+    },
 }
 
 impl BrokerRefusal {
@@ -40,6 +52,8 @@ impl BrokerRefusal {
             Self::UnknownMethod { .. } => "unknown_method",
             Self::InvalidInput { .. } => "invalid_input",
             Self::NotAvailable(_) => "not_available",
+            Self::Denied { .. } => "denied",
+            Self::Refused { .. } => "refused",
         }
     }
 
@@ -71,11 +85,34 @@ impl BrokerRefusal {
                 format!("the {} broker is not available yet", service.name()),
                 Value::String(service.name().into()),
             ),
+            Self::Denied { service, message } => (
+                error_code::DENIED,
+                message,
+                Value::String(service.name().into()),
+            ),
+            Self::Refused { service, message } => (
+                error_code::REFUSED,
+                message,
+                Value::String(service.name().into()),
+            ),
         };
         RpcErrorWire {
             code: rpc,
             message,
             data: Some(json!({ "dsh_refusal": code, "service": service })),
+        }
+    }
+
+    #[must_use]
+    pub fn nested(service: DshService, failure: NestedFailure) -> Self {
+        match failure {
+            NestedFailure::Rejected {
+                decision: NestedDecision::Denied,
+                message,
+            } => Self::Denied { service, message },
+            NestedFailure::Rejected { message, .. } | NestedFailure::Unavailable(message) => {
+                Self::Refused { service, message }
+            }
         }
     }
 }
@@ -101,6 +138,41 @@ pub const TABLE: &[(DshService, Arm)] = &[
     (DshService::Terminal, dsh_terminal::serve as Arm),
     (DshService::Remote, dsh_remote::serve as Arm),
 ];
+
+const GRANTED: &[DshService] = &[];
+
+#[cfg(test)]
+thread_local! {
+    static TEST_GRANTS: std::cell::RefCell<Option<Vec<DshService>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub struct TestGrants(Option<Vec<DshService>>);
+
+#[cfg(test)]
+impl TestGrants {
+    pub fn only(services: &[DshService]) -> Self {
+        Self(TEST_GRANTS.with(|grants| grants.replace(Some(services.to_vec()))))
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestGrants {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        TEST_GRANTS.with(|grants| *grants.borrow_mut() = previous);
+    }
+}
+
+#[must_use]
+pub fn granted(service: DshService) -> bool {
+    #[cfg(test)]
+    if let Some(granted) = TEST_GRANTS.with(|grants| grants.borrow().clone()) {
+        return granted.contains(&service);
+    }
+    GRANTED.contains(&service)
+}
 
 #[must_use]
 pub fn arm_in(table: &[(DshService, Arm)], service: DshService) -> Option<Arm> {

@@ -625,6 +625,7 @@ struct Fixture {
     other: OwnerRef,
     context: ToolContext,
     gate: NestedCallGate,
+    server: Arc<Server>,
 }
 
 fn fixture(uses_server: bool) -> Fixture {
@@ -651,13 +652,15 @@ fn fixture(uses_server: bool) -> Fixture {
     let (tx_event, mut rx_event) = mpsc::channel(8);
     tokio::spawn(async move { while rx_event.recv().await.is_some() {} });
     let (gate, requests) = NestedCallGate::new(None, tx_event, Duration::from_secs(60));
+    let server = Arc::new(Server::default());
     if uses_server {
-        serve(requests, Arc::new(Server::default()));
+        serve(requests, Arc::clone(&server));
     }
     Fixture {
         manager,
         owner,
         other,
+        server,
         context: ToolContext::new(&workspace),
         gate: gate.for_extension(
             ExtensionCaller {
@@ -1741,6 +1744,21 @@ impl Fixture {
         input: Value,
     ) -> Result<Value, RpcErrorWire> {
         let (cx, _violations, _cancel) = HostRequestContext::for_test(40);
+        self.broker_in(cx, table, owner, ticket, service, method, input)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn broker_in(
+        &self,
+        cx: HostRequestContext,
+        table: &[(super::protocol::DshService, super::dsh_broker::Arm)],
+        owner: &OwnerRef,
+        ticket: &str,
+        service: &str,
+        method: &str,
+        input: Value,
+    ) -> Result<Value, RpcErrorWire> {
         self.manager
             .shared
             .core_calls
@@ -1779,6 +1797,7 @@ async fn dsh_broker_tickets_bind_plugin_service_and_session_and_every_refusal_is
     use super::protocol::DshService;
     use std::collections::BTreeMap;
 
+    let _grants = super::dsh_broker::TestGrants::only(&DshService::ALL);
     let mut f = fixture(true);
     let outside = f.begin(7, &f.owner);
     assert!(
@@ -1986,4 +2005,483 @@ async fn dsh_broker_tickets_bind_plugin_service_and_session_and_every_refusal_is
             service.name()
         );
     }
+}
+
+fn broker_ticket(guard: &super::core_call::InvocationGuard, service: &str) -> Option<String> {
+    guard
+        .broker_tickets()?
+        .into_iter()
+        .find(|wire| wire.service == service)
+        .map(|wire| wire.ticket)
+}
+
+fn every_service(
+    arm: super::dsh_broker::Arm,
+) -> Vec<(super::protocol::DshService, super::dsh_broker::Arm)> {
+    super::protocol::DshService::ALL
+        .into_iter()
+        .map(|service| (service, arm))
+        .collect()
+}
+
+#[tokio::test]
+async fn dsh_broker_services_are_granted_by_one_check_and_an_ungranted_service_is_refused() {
+    use super::dsh_broker::{TABLE, TestGrants};
+    use super::protocol::DshService;
+
+    let mut f = fixture(true);
+    f.in_session("grant-session");
+    let echo = every_service(echo_arm);
+
+    assert!(
+        DshService::ALL
+            .into_iter()
+            .all(|service| !super::dsh_broker::granted(service))
+    );
+    let none = f.begin(7, &f.owner);
+    assert!(
+        none.broker_tickets().is_none(),
+        "nothing granted, no broker ticket"
+    );
+    drop(none);
+
+    for service in DshService::ALL {
+        let grants = TestGrants::only(&[service]);
+        let guard = f.begin(7, &f.owner);
+        let tickets = guard.broker_tickets().unwrap();
+        assert_eq!(
+            tickets
+                .iter()
+                .map(|wire| wire.service.as_str())
+                .collect::<Vec<_>>(),
+            vec![service.name()],
+            "only the granted service is ticketed"
+        );
+        let ticket = &tickets[0].ticket;
+        let served = f
+            .broker(
+                &echo,
+                &f.owner,
+                ticket,
+                service.name(),
+                "echo",
+                json!({"text": "ok"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(served["service"], service.name());
+        for other in DshService::ALL
+            .into_iter()
+            .filter(|other| *other != service)
+        {
+            let result = f
+                .broker(
+                    &echo,
+                    &f.owner,
+                    ticket,
+                    other.name(),
+                    "echo",
+                    json!({"text": "x"}),
+                )
+                .await;
+            assert_eq!(
+                dsh_refusal(&result),
+                (error_code::REFUSED, "ticket_refused".into()),
+                "{} with a {} ticket",
+                other.name(),
+                service.name()
+            );
+        }
+        let result = f
+            .broker(
+                TABLE,
+                &f.owner,
+                ticket,
+                service.name(),
+                "echo",
+                json!({"text": "x"}),
+            )
+            .await;
+        assert_eq!(
+            dsh_refusal(&result),
+            (error_code::NOT_AVAILABLE, "not_available".into()),
+            "the landed {} stub still refuses",
+            service.name()
+        );
+
+        drop(grants);
+        let withdrawn = f
+            .broker(
+                &echo,
+                &f.owner,
+                ticket,
+                service.name(),
+                "echo",
+                json!({"text": "x"}),
+            )
+            .await;
+        assert_eq!(
+            dsh_refusal(&withdrawn),
+            (error_code::NOT_AVAILABLE, "not_available".into()),
+            "a grant withdrawn after minting refuses {} before the arm runs",
+            service.name()
+        );
+        assert_eq!(
+            withdrawn.unwrap_err().message,
+            format!("the {} broker is not available yet", service.name()),
+            "the refusal names no grant"
+        );
+        drop(guard);
+    }
+    assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
+}
+
+fn context_arm(call: super::dsh_broker::BrokerCall) -> super::dsh_broker::BrokerFuture {
+    Box::pin(async move {
+        let tool = call.context.tool();
+        Ok::<_, super::dsh_broker::BrokerRefusal>(json!({
+            "session": call.session_id,
+            "plugin": call.owner.plugin_id,
+            "workspace": tool.workspace.display().to_string(),
+            "tool_session": tool.session_objects.as_ref().map(|session| session.session_id.clone()),
+            "approval_mode": format!("{:?}", tool.approval_mode),
+            "trust_mode": tool.trust_mode,
+            "disallowed": tool.disallowed_tools,
+            "nested_gate_visible": tool.nested_call_gate.is_some(),
+        }))
+    })
+}
+
+#[tokio::test]
+async fn a_broker_arm_acts_with_its_invocations_context_whatever_the_plugin_sends() {
+    use super::dsh_broker::TestGrants;
+    use super::protocol::DshService;
+
+    let _grants = TestGrants::only(&[DshService::Workspace]);
+    let table = every_service(context_arm);
+    let mut f = fixture(true);
+    f.in_session("context-a");
+    f.context.approval_mode = codewhale_execpolicy::ApprovalMode::Never;
+    f.context.trust_mode = false;
+    f.context.disallowed_tools = vec!["exec_shell".into()];
+    let workspace_a = f.context.workspace.display().to_string();
+    let guard_a = f.begin(7, &f.owner);
+    let ticket_a = broker_ticket(&guard_a, "workspace").unwrap();
+
+    let other_dir = tempfile::tempdir().unwrap();
+    let mut other = f.context.clone();
+    other.workspace = other_dir.path().to_path_buf();
+    other.approval_mode = codewhale_execpolicy::ApprovalMode::Bypass;
+    other.trust_mode = true;
+    other.disallowed_tools = Vec::new();
+    let saved = std::mem::replace(&mut f.context, other);
+    f.in_session("context-b");
+    let guard_b = f.begin(7, &f.owner);
+    let ticket_b = broker_ticket(&guard_b, "workspace").unwrap();
+    f.context = saved;
+
+    let forged = json!({
+        "workspace": "/etc",
+        "session_id": "context-b",
+        "approval_mode": "Bypass",
+        "trust_mode": true,
+        "owner": {"plugin_id": "b"},
+        "ticket": ticket_b,
+    });
+    let seen_a = f
+        .broker(
+            &table,
+            &f.owner,
+            &ticket_a,
+            "workspace",
+            "anything",
+            forged.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        seen_a,
+        json!({
+            "session": "context-a",
+            "plugin": "a",
+            "workspace": workspace_a,
+            "tool_session": "context-a",
+            "approval_mode": "Never",
+            "trust_mode": false,
+            "disallowed": ["exec_shell"],
+            "nested_gate_visible": false,
+        })
+    );
+    let seen_b = f
+        .broker(&table, &f.owner, &ticket_b, "workspace", "anything", forged)
+        .await
+        .unwrap();
+    assert_eq!(seen_b["session"], "context-b");
+    assert_eq!(seen_b["workspace"], other_dir.path().display().to_string());
+    assert_eq!(seen_b["approval_mode"], "Bypass");
+    assert_eq!(seen_b["trust_mode"], true);
+
+    let foreign = f
+        .broker(
+            &table,
+            &f.other,
+            &ticket_a,
+            "workspace",
+            "anything",
+            json!({}),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&foreign),
+        (error_code::REFUSED, "ticket_refused".into()),
+        "another plugin cannot borrow this invocation's context"
+    );
+    drop(guard_a);
+    drop(guard_b);
+}
+
+static CANCEL_ARM_STARTED: AtomicUsize = AtomicUsize::new(0);
+static CANCEL_ARM_SAW: AtomicUsize = AtomicUsize::new(0);
+
+fn cancel_arm(call: super::dsh_broker::BrokerCall) -> super::dsh_broker::BrokerFuture {
+    let cancel = call.context.cancel().clone();
+    tokio::spawn(async move {
+        cancel.cancelled().await;
+        CANCEL_ARM_SAW.fetch_add(1, Ordering::SeqCst);
+    });
+    Box::pin(async move {
+        assert!(!call.context.cancel().is_cancelled());
+        CANCEL_ARM_STARTED.fetch_add(1, Ordering::SeqCst);
+        std::future::pending::<Result<Value, super::dsh_broker::BrokerRefusal>>().await
+    })
+}
+
+#[tokio::test]
+async fn a_broker_arm_sees_its_call_cancelled_by_the_host_the_invocation_and_the_owner() {
+    use super::dsh_broker::TestGrants;
+    use super::protocol::DshService;
+
+    let _grants = TestGrants::only(&[DshService::Terminal]);
+    let table = every_service(cancel_arm);
+    let mut f = fixture(true);
+    f.in_session("cancel-session");
+
+    let guard = f.begin(7, &f.owner);
+    let ticket = broker_ticket(&guard, "terminal").unwrap();
+    let (cx, _violations, host_cancel) = HostRequestContext::for_test(41);
+    let (result, ()) = tokio::join!(
+        f.broker_in(cx, &table, &f.owner, &ticket, "terminal", "run", json!({})),
+        async {
+            until("the arm to start", || {
+                CANCEL_ARM_STARTED.load(Ordering::SeqCst) == 1
+            })
+            .await;
+            host_cancel.cancel();
+        }
+    );
+    assert_eq!(
+        dsh_refusal(&result),
+        (error_code::CANCELLED, "cancelled".into())
+    );
+    until("the arm to see the host's cancel", || {
+        CANCEL_ARM_SAW.load(Ordering::SeqCst) == 1
+    })
+    .await;
+
+    let (cx, _violations, _host_cancel) = HostRequestContext::for_test(42);
+    let (result, ()) = tokio::join!(
+        f.broker_in(cx, &table, &f.owner, &ticket, "terminal", "run", json!({})),
+        async {
+            until("the arm to start again", || {
+                CANCEL_ARM_STARTED.load(Ordering::SeqCst) == 2
+            })
+            .await;
+            drop(guard);
+        }
+    );
+    assert_eq!(
+        dsh_refusal(&result),
+        (error_code::CANCELLED, "cancelled".into())
+    );
+    until("the arm to see the invocation end", || {
+        CANCEL_ARM_SAW.load(Ordering::SeqCst) == 2
+    })
+    .await;
+
+    let guard = f.begin(7, &f.owner);
+    let ticket = broker_ticket(&guard, "terminal").unwrap();
+    let (cx, _violations, _host_cancel) = HostRequestContext::for_test(43);
+    let (result, ()) = tokio::join!(
+        f.broker_in(cx, &table, &f.owner, &ticket, "terminal", "run", json!({})),
+        async {
+            until("the arm to start a third time", || {
+                CANCEL_ARM_STARTED.load(Ordering::SeqCst) == 3
+            })
+            .await;
+            f.manager.shared.core_calls.revoke_owner("a");
+        }
+    );
+    assert_eq!(
+        dsh_refusal(&result),
+        (error_code::CANCELLED, "cancelled".into())
+    );
+    until("the arm to see the owner revoked", || {
+        CANCEL_ARM_SAW.load(Ordering::SeqCst) == 3
+    })
+    .await;
+    drop(guard);
+    assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "method", content = "input", deny_unknown_fields)]
+enum NestedMethod {
+    #[serde(rename = "core")]
+    Core { name: String, input: Value },
+}
+
+impl super::dsh_broker::BrokerMethods for NestedMethod {
+    const NAMES: &'static [&'static str] = &["core"];
+}
+
+fn nested_arm(call: super::dsh_broker::BrokerCall) -> super::dsh_broker::BrokerFuture {
+    Box::pin(async move {
+        let NestedMethod::Core { name, input } = super::dsh_broker::decode::<NestedMethod>(&call)?;
+        let response = call.context.core_call(&name, input).await?;
+        Ok(json!({ "ok": response.ok, "result": response.result }))
+    })
+}
+
+#[tokio::test]
+async fn a_brokers_nested_core_call_goes_through_the_same_gate_as_a_direct_call() {
+    use super::dsh_broker::TestGrants;
+    use super::protocol::DshService;
+
+    let _grants = TestGrants::only(&[DshService::Workspace]);
+    let table = every_service(nested_arm);
+    let mut f = fixture(true);
+    f.in_session("nested-session");
+    let guard = f.begin(7, &f.owner);
+    let ticket = broker_ticket(&guard, "workspace").unwrap();
+
+    let ran = f
+        .broker(
+            &table,
+            &f.owner,
+            &ticket,
+            "workspace",
+            "core",
+            json!({"name": "read_file", "input": {"path": "x"}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ran["ok"], true, "{ran}");
+    assert_eq!(
+        f.server.asked.load(Ordering::SeqCst),
+        1,
+        "the gate was asked"
+    );
+
+    for refused_name in ["remember", "execute_tools", "tool_search", "mcp__any__tool"] {
+        let result = f
+            .broker(
+                &table,
+                &f.owner,
+                &ticket,
+                "workspace",
+                "core",
+                json!({"name": refused_name, "input": {}}),
+            )
+            .await;
+        assert_eq!(
+            dsh_refusal(&result),
+            (error_code::REFUSED, "refused".into()),
+            "{refused_name}"
+        );
+    }
+    assert_eq!(
+        f.server.asked.load(Ordering::SeqCst),
+        1,
+        "a refused name never reaches the gate, as with core/call"
+    );
+
+    f.server.hold.store(true, Ordering::SeqCst);
+    let (cx, _violations, host_cancel) = HostRequestContext::for_test(44);
+    let (result, ()) = tokio::join!(
+        f.broker_in(
+            cx,
+            &table,
+            &f.owner,
+            &ticket,
+            "workspace",
+            "core",
+            json!({"name": "read_file", "input": {"path": "x"}}),
+        ),
+        async {
+            until("the card to open", || {
+                f.server.asked.load(Ordering::SeqCst) == 2
+            })
+            .await;
+            host_cancel.cancel();
+        }
+    );
+    assert_eq!(
+        dsh_refusal(&result),
+        (error_code::CANCELLED, "cancelled".into())
+    );
+    until("the open card to be withdrawn", || {
+        f.server.withdrawn.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    f.server.hold.store(false, Ordering::SeqCst);
+
+    let receipts = guard.receipts().expect("nested calls are receipted");
+    assert!(receipts["total"].as_u64().unwrap() >= 2, "{receipts}");
+    drop(guard);
+}
+
+#[tokio::test]
+async fn an_invocations_brokers_share_one_cap_on_nested_core_calls() {
+    use super::dsh_broker::TestGrants;
+    use super::protocol::DshService;
+
+    let _grants = TestGrants::only(&[DshService::Workspace, DshService::Terminal]);
+    let table = every_service(nested_arm);
+    let mut f = fixture(true);
+    f.in_session("cap-session");
+    let guard = f.begin(7, &f.owner);
+    let workspace = broker_ticket(&guard, "workspace").unwrap();
+    let terminal = broker_ticket(&guard, "terminal").unwrap();
+    let call = json!({"name": "read_file", "input": {"path": "x"}});
+    for n in 0..MAX_CALLS_PER_INVOCATION {
+        let (ticket, service) = if n % 2 == 0 {
+            (&workspace, "workspace")
+        } else {
+            (&terminal, "terminal")
+        };
+        let ran = f
+            .broker(&table, &f.owner, ticket, service, "core", call.clone())
+            .await
+            .unwrap();
+        assert_eq!(ran["ok"], true);
+    }
+    let capped = f
+        .broker(
+            &table,
+            &f.owner,
+            &workspace,
+            "workspace",
+            "core",
+            call.clone(),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&capped),
+        (error_code::REFUSED, "refused".into())
+    );
+    assert_eq!(
+        f.server.asked.load(Ordering::SeqCst),
+        MAX_CALLS_PER_INVOCATION as usize
+    );
+    drop(guard);
 }
