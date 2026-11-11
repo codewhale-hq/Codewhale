@@ -7080,10 +7080,23 @@ impl App {
     ///
     /// Returns `true` when the composer state was mutated.
     pub fn pop_last_queued_into_draft(&mut self) -> bool {
+        let Some(last) = self.queued_messages.len().checked_sub(1) else {
+            return false;
+        };
+        self.pop_queued_into_draft(last)
+    }
+
+    /// Same as [`Self::pop_last_queued_into_draft`] for the oldest held
+    /// message, so a backlog stays in the order it was typed.
+    pub fn pop_first_queued_into_draft(&mut self) -> bool {
+        self.pop_queued_into_draft(0)
+    }
+
+    fn pop_queued_into_draft(&mut self, index: usize) -> bool {
         if !self.input.is_empty() || self.queued_draft.is_some() {
             return false;
         }
-        let Some(msg) = self.queued_messages.pop_back() else {
+        let Some(msg) = self.remove_queued_message(index) else {
             return false;
         };
         self.held_restored_queue = self.held_restored_queue.min(self.queued_messages.len());
@@ -7096,7 +7109,7 @@ impl App {
     }
 
     /// Stop editing a queued follow-up and put the original queued message back
-    /// at the tail where [`Self::pop_last_queued_into_draft`] took it from.
+    /// at the tail of the queue.
     pub fn cancel_queued_draft_edit(&mut self) -> bool {
         let Some(draft) = self.queued_draft.take() else {
             return false;
