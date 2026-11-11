@@ -35,8 +35,10 @@ use super::chat::REASONING_REPLAY_PLACEHOLDER;
 use super::prepared::WireDialect;
 use super::role_placement::{RolePlacement, role_placement};
 use super::wire::{
-    ERROR_BODY_MAX_BYTES, bounded_error_text, from_api_tool_name, system_to_instructions,
-    to_api_tool_name,
+    ERROR_BODY_MAX_BYTES, TOOL_NAME_LIMIT_64, ToolNameWire, bounded_error_text,
+    check_history_tool_names, documented_tool_name_limit, from_api_tool_name,
+    over_limit_tool_name_message, system_to_instructions, to_api_tool_name,
+    tool_name_exceeds_limit, tool_name_limit,
 };
 use super::wire::{extract_sse_data_value, next_sse_line, push_sse_event_data};
 use crate::llm_client::LlmError;
@@ -135,6 +137,7 @@ pub(super) fn build_responses_wire_body(
         .filter(|text| !text.trim().is_empty())
         .unwrap_or_else(|| "You are a helpful assistant.".to_string());
 
+    let provider_kind = ProviderKind::parse(context.provider_id);
     let mut input = convert_messages_to_responses_input(request, profile, context);
     if profile.request.instructions == InstructionsPlacement::LeadingSystemInput {
         input.insert(
@@ -150,12 +153,26 @@ pub(super) fn build_responses_wire_body(
     }
     body["input"] = json!(input);
 
+    let tool_name_limit = provider_kind.map_or(TOOL_NAME_LIMIT_64, |provider| {
+        tool_name_limit(provider, ToolNameWire::OpenAiCompatible)
+    });
+    check_history_tool_names(
+        request,
+        provider_kind.and_then(|provider| {
+            documented_tool_name_limit(provider, ToolNameWire::OpenAiCompatible)
+        }),
+    )?;
     let mut omitted_tool_names = Vec::new();
     let mut omitted_logical_names = Vec::new();
     // Convert tools to Responses function tools.
     if let Some(tools) = request.tools.as_ref() {
         let mut responses_tools = Vec::new();
         for tool in tools {
+            if tool_name_exceeds_limit(&tool.name, tool_name_limit) {
+                omitted_logical_names.push(tool.name.clone());
+                omitted_tool_names.push(to_api_tool_name(&tool.name));
+                continue;
+            }
             match project_tool_schema(
                 RouteToolProjection::RelaxedNonStrict,
                 &tool.input_schema,
@@ -185,6 +202,9 @@ pub(super) fn build_responses_wire_body(
         if let Some(name) = request.tool_choice.as_ref().and_then(forced_tool_name)
             && omitted_logical_names.iter().any(|omitted| omitted == name)
         {
+            if tool_name_exceeds_limit(name, tool_name_limit) {
+                anyhow::bail!(over_limit_tool_name_message(name, tool_name_limit));
+            }
             anyhow::bail!(
                 "cannot force an omitted tool because its input schema is incompatible with this route"
             );
