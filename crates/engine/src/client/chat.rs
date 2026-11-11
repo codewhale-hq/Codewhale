@@ -41,8 +41,10 @@ use super::reasoning_effort::apply_reasoning_effort;
 use super::role_placement::{RolePlacement, role_placement};
 use super::wire::{
     ERROR_BODY_MAX_BYTES, SSE_BACKPRESSURE_HIGH_WATERMARK, SSE_BACKPRESSURE_SLEEP_MS,
-    SSE_MAX_LINES_PER_CHUNK, acquire_stream_buffer, bounded_error_text, from_api_tool_name,
-    parse_usage, release_stream_buffer, system_to_instructions, to_api_tool_name,
+    SSE_MAX_LINES_PER_CHUNK, ToolNameWire, acquire_stream_buffer, bounded_error_text,
+    check_history_tool_names, documented_tool_name_limit, from_api_tool_name,
+    over_limit_tool_name_message, parse_usage, release_stream_buffer, system_to_instructions,
+    to_api_tool_name, tool_name_exceeds_limit, tool_name_limit,
 };
 use super::wire::{extract_sse_data_value, flush_sse_line, push_sse_event_data, take_sse_line};
 use codewhale_config::route::RouteLimits;
@@ -1208,11 +1210,20 @@ pub fn build_chat_wire_body_with_window(
         body["top_p"] = json!(top_p);
     }
     let mut omitted_tool_names = Vec::new();
+    let tool_name_limit = tool_name_limit(provider, ToolNameWire::OpenAiCompatible);
+    check_history_tool_names(
+        request,
+        documented_tool_name_limit(provider, ToolNameWire::OpenAiCompatible),
+    )?;
     if let Some(tools) = request.tools.as_ref() {
         let route_projection =
             chat_route_tool_projection(provider, base_url, strict_tools_disabled);
         let mut chat_tools = Vec::new();
         for tool in tools {
+            if tool_name_exceeds_limit(&tool.name, tool_name_limit) {
+                omitted_tool_names.push(to_api_tool_name(&tool.name));
+                continue;
+            }
             match project_tool_schema(route_projection, &tool.input_schema, tool.strict) {
                 ToolSchemaProjection::Exact {
                     parameters,
@@ -1247,6 +1258,9 @@ pub fn build_chat_wire_body_with_window(
             .iter()
             .any(|omitted| omitted == name || *omitted == to_api_tool_name(name))
     {
+        if tool_name_exceeds_limit(name, tool_name_limit) {
+            bail!(over_limit_tool_name_message(name, tool_name_limit));
+        }
         bail!(
             "cannot force an omitted tool because its input schema is incompatible with this route"
         );
@@ -6679,8 +6693,8 @@ mod image_block_wire_tests {
     //! message whose `content` is an array of parts, with the image as
     //! `{"type":"image_url","image_url":{"url":…}}`.
     use super::{
-        ProviderKind, build_chat_messages, build_chat_wire_body, map_tool_choice_for_chat,
-        to_api_tool_name,
+        ChatWireBody, ProviderKind, build_chat_messages, build_chat_wire_body,
+        map_tool_choice_for_chat, to_api_tool_name,
     };
     use codewhale_models::Role;
     use codewhale_models::{ContentBlock, ImageUrlContent, Message, MessageRequest, Tool};
@@ -7046,6 +7060,163 @@ mod image_block_wire_tests {
             .filter_map(|tool| tool.pointer("/function/name").and_then(Value::as_str))
             .collect();
         assert!(declared.contains(&"web-x00002E-run"));
+    }
+
+    #[test]
+    fn over_long_encoded_tool_names_are_withheld_by_provider_limit() {
+        let mid = "mcp__tracker__projects.v2.issues.list-by-assignee";
+        let long = format!(
+            "mcp__tracker__{}.v2.issues.list-by-assignee",
+            "a".repeat(70)
+        );
+        let mid_len = to_api_tool_name(mid).len();
+        assert!(mid_len > 64 && mid_len <= 128, "{mid_len}");
+        assert!(to_api_tool_name(&long).len() > 128);
+
+        let build = |provider, base_url: &str, choice: Option<Value>| {
+            let mut request = request_with_image();
+            request.tools = Some(vec![
+                named_tool("read_file"),
+                named_tool(mid),
+                named_tool(&long),
+            ]);
+            request.tool_choice = choice;
+            build_chat_wire_body(&request, provider, base_url, false, None)
+        };
+        let declared = |body: &ChatWireBody| -> Vec<String> {
+            body.body["tools"]
+                .as_array()
+                .expect("tools")
+                .iter()
+                .filter_map(|tool| tool.pointer("/function/name").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        };
+
+        let openai = build(ProviderKind::Openai, "https://api.openai.com/v1", None).expect("body");
+        assert_eq!(declared(&openai), vec!["read_file".to_string()]);
+        assert_eq!(
+            openai.omitted_tool_names,
+            vec![to_api_tool_name(mid), to_api_tool_name(&long)]
+        );
+
+        let deepseek =
+            build(ProviderKind::Deepseek, "https://api.deepseek.com", None).expect("body");
+        assert_eq!(
+            declared(&deepseek),
+            vec!["read_file".to_string(), to_api_tool_name(mid)]
+        );
+        assert_eq!(deepseek.omitted_tool_names, vec![to_api_tool_name(&long)]);
+
+        let forced = json!({"type": "function", "function": {"name": mid}});
+        let error = build(
+            ProviderKind::Openai,
+            "https://api.openai.com/v1",
+            Some(forced),
+        )
+        .err()
+        .expect("forcing a withheld tool is refused");
+        let message = error.to_string();
+        assert!(
+            message.contains(&format!("{mid_len} characters")),
+            "{message}"
+        );
+        assert!(message.contains("at most 64"), "{message}");
+    }
+
+    #[test]
+    fn over_long_tool_name_in_history_is_refused_with_the_limit() {
+        let long = "mcp__tracker__projects.v2.issues.list-by-assignee";
+        let mut request = request_with_image();
+        request.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                execution_id: None,
+                id: "call_1".to_string(),
+                name: long.to_string(),
+                input: json!({}),
+                caller: None,
+                thought_signature: None,
+            }],
+        });
+        let error = build_chat_wire_body(
+            &request,
+            ProviderKind::Openai,
+            "https://api.openai.com/v1",
+            false,
+            None,
+        )
+        .err()
+        .expect("history name over the limit is refused");
+        let message = error.to_string();
+        assert!(
+            message.contains("at most 64") && message.contains(long),
+            "{message}"
+        );
+        build_chat_wire_body(
+            &request,
+            ProviderKind::Deepseek,
+            "https://api.deepseek.com",
+            false,
+            None,
+        )
+        .expect("the same history fits a 128-character route");
+    }
+
+    #[test]
+    fn history_name_of_65_to_128_characters_is_sent_unchanged_on_undocumented_routes() {
+        let long = "mcp__tracker__projects.v2.issues.list-by-assignee";
+        assert!(to_api_tool_name(long).len() > 64);
+        let mut request = request_with_image();
+        request.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                execution_id: None,
+                id: "call_1".to_string(),
+                name: long.to_string(),
+                input: json!({}),
+                caller: None,
+                thought_signature: None,
+            }],
+        });
+        for (provider, base_url) in [
+            (ProviderKind::Ollama, "http://localhost:11434/v1"),
+            (ProviderKind::Custom, "http://localhost:8000/v1"),
+            (ProviderKind::Minimax, "https://api.minimax.io/v1"),
+        ] {
+            build_chat_wire_body(&request, provider, base_url, false, None)
+                .unwrap_or_else(|error| panic!("{provider:?}: {error}"));
+        }
+        let error = build_chat_wire_body(
+            &request,
+            ProviderKind::Openai,
+            "https://api.openai.com/v1",
+            false,
+            None,
+        )
+        .err()
+        .expect("documented 64-character route refuses the history name");
+        assert!(
+            error.to_string().contains("earlier in this session"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_100_character_encoded_name_is_withheld_on_a_chat_wire_route() {
+        let name = "a".repeat(100);
+        let mut request = request_with_image();
+        request.tools = Some(vec![named_tool("read_file"), named_tool(&name)]);
+        let body = build_chat_wire_body(
+            &request,
+            ProviderKind::Minimax,
+            "https://api.minimax.io/v1",
+            false,
+            None,
+        )
+        .expect("wire body");
+        assert_eq!(body.omitted_tool_names, vec![name]);
+        assert_eq!(body.body["tools"].as_array().expect("tools").len(), 1);
     }
 
     fn request_with_image() -> MessageRequest {

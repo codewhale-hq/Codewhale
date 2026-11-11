@@ -1449,9 +1449,10 @@ fn tool_name_scenario() {
     }
     // from tool_name_decode_bare_hex_no_trailing_dash
     {
-        let mangled = "foo_x00002Ebar";
-        let decoded = from_api_tool_name(mangled);
-        assert_eq!(decoded, "foo_.bar");
+        let exact = "foo_x00002Ebar";
+        assert_eq!(from_api_tool_name(exact), exact);
+        let mangled = "foo_.x00002Ebar";
+        assert_eq!(from_api_tool_name(mangled), "foo_..bar");
     }
     // from tool_name_bare_hex_preserves_alnum
     {
