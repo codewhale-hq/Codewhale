@@ -23,7 +23,8 @@
       "prompt",
       "avatars",
       "mcp",
-      "shellHooks"
+      "shellHooks",
+      "remote"
     ]
   },
   "refused_services": [

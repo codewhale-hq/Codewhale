@@ -127,6 +127,7 @@ mod dsh_catalog;
 mod dsh_llm;
 mod dsh_network;
 mod dsh_remote;
+pub use dsh_remote::{RemoteClient, RemoteDenial, RemoteGrants, RemotePairing, remote_grants};
 mod dsh_settings;
 mod dsh_terminal;
 mod dsh_workspace;

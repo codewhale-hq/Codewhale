@@ -921,7 +921,7 @@ var init_lib2 = __esm({
           } else throw new TypeError("Invalid effect");
         }, runner.getOuterStack);
       }
-      effect(execute, label = "anonymous") {
+      effect(execute, label2 = "anonymous") {
         this.assertActive();
         if (this.state === 5) throw new CordisError("INACTIVE_EFFECT");
         const disposables = [];
@@ -939,7 +939,7 @@ var init_lib2 = __esm({
           return disposalTask = task2;
         };
         const meta = {
-          label,
+          label: label2,
           children: []
         };
         const runner = {
@@ -1361,7 +1361,7 @@ var init_lib2 = __esm({
         };
         return dispatch();
       }
-      register(label, name, callback, options) {
+      register(label2, name, callback, options) {
         const method = options.prepend ? "unshift" : "push";
         return this.ctx.fiber.effect(() => {
           (this._hooks[name] ??= [])[method]({
@@ -1370,7 +1370,7 @@ var init_lib2 = __esm({
             ...options
           });
           return () => this.unregister(name, callback);
-        }, label);
+        }, label2);
       }
       unregister(name, callback) {
         const hooks = this._hooks[name];
@@ -1399,8 +1399,8 @@ var init_lib2 = __esm({
         listener = this.ctx.reflect.bind(listener);
         const result = this.bail(this.ctx, "internal/listener", name, listener, options);
         if (result) return result;
-        const label = `ctx.on(${typeof name === "string" ? JSON.stringify(name) : name.toString()})`;
-        return this.register(label, name, listener, options);
+        const label2 = `ctx.on(${typeof name === "string" ? JSON.stringify(name) : name.toString()})`;
+        return this.register(label2, name, listener, options);
       }
       /**
       * Register an event listener that disposes itself after the first call.
@@ -2145,9 +2145,9 @@ var init_lib2 = __esm({
       * @param label — scope label to join; defaults to a fresh unique symbol.
       * @returns a child context whose `name` service resolves in the new scope.
       */
-      isolate(name, label) {
+      isolate(name, label2) {
         const shadow = Object.create(this[symbols.isolate]);
-        shadow[name] = label ?? Symbol(name);
+        shadow[name] = label2 ?? Symbol(name);
         return this.extend({ [symbols.isolate]: shadow });
       }
       intercept(name, config) {
@@ -4543,14 +4543,14 @@ function isolate(ctx) {
   const delims = /* @__PURE__ */ Object.create(null);
   function access2(entry, name, create = false) {
     let realm;
-    const label = entry.options.isolate?.[name];
-    if (!label) return;
-    if (label === true) {
+    const label2 = entry.options.isolate?.[name];
+    if (!label2) return;
+    if (label2 === true) {
       realm = entry.realm ??= new LocalRealm(entry);
     } else if (create) {
-      realm = realms[label] ??= new GlobalRealm(label);
+      realm = realms[label2] ??= new GlobalRealm(label2);
     } else {
-      realm = realms[label];
+      realm = realms[label2];
     }
     return realm?.access(name, create);
   }
@@ -4607,10 +4607,10 @@ function isolate(ctx) {
     }
   });
   ctx.on("loader/partial-dispose", (entry, legacy, active) => {
-    for (const [name, label] of Object.entries(legacy.isolate ?? {})) {
-      if (label === true) continue;
-      if (active && entry.options.isolate?.[name] === label) continue;
-      const realm = realms[label];
+    for (const [name, label2] of Object.entries(legacy.isolate ?? {})) {
+      if (label2 === true) continue;
+      if (active && entry.options.isolate?.[name] === label2) continue;
+      const realm = realms[label2];
       if (!realm) continue;
       for (const entry2 of ctx.loader.entries()) {
         if (entry2.options.isolate?.[name] === realm.label) return;
@@ -4655,9 +4655,9 @@ var init_isolate = __esm({
       }
     };
     GlobalRealm = class extends Realm {
-      constructor(label) {
+      constructor(label2) {
         super();
-        this.label = label;
+        this.label = label2;
       }
       label;
       get suffix() {
@@ -9683,9 +9683,9 @@ var init_acorn = __esm({
     keywordRelationalOperator = /^in(stanceof)?$/;
     nonASCIIidentifierStart = new RegExp("[" + nonASCIIidentifierStartChars + "]");
     nonASCIIidentifier = new RegExp("[" + nonASCIIidentifierStartChars + nonASCIIidentifierChars + "]");
-    TokenType = function TokenType2(label, conf) {
+    TokenType = function TokenType2(label2, conf) {
       if (conf === void 0) conf = {};
-      this.label = label;
+      this.label = label2;
       this.keyword = conf.keyword;
       this.beforeExpr = !!conf.beforeExpr;
       this.startsExpr = !!conf.startsExpr;
@@ -10734,8 +10734,8 @@ var init_acorn = __esm({
     };
     pp$8.parseLabeledStatement = function(node, maybeName, expr, context) {
       for (var i$1 = 0, list2 = this.labels; i$1 < list2.length; i$1 += 1) {
-        var label = list2[i$1];
-        if (label.name === maybeName) {
+        var label2 = list2[i$1];
+        if (label2.name === maybeName) {
           this.raise(expr.start, "Label '" + maybeName + "' is already declared");
         }
       }
@@ -15147,7 +15147,8 @@ var init_compatibility = __esm({
           "prompt",
           "avatars",
           "mcp",
-          "shellHooks"
+          "shellHooks",
+          "remote"
         ]
       },
       refused_services: [
@@ -16662,6 +16663,52 @@ var init_agents = __esm({
   }
 });
 
+// src/dsh/remote.ts
+function label(value) {
+  if (value === void 0) return void 0;
+  if (typeof value !== "string") throw new RpcError(ErrorCode.InvalidParams, "remote.pair label must be a string");
+  return value;
+}
+function grant(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 128) throw new RpcError(ErrorCode.InvalidParams, "remote.revoke needs the grant id remote.pair returned");
+  return value;
+}
+var remoteAdapter;
+var init_remote = __esm({
+  "src/dsh/remote.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    remoteAdapter = {
+      service: "remote",
+      define(host2) {
+        class RemoteService extends Service {
+          constructor(ctx) {
+            super(ctx, "remote");
+          }
+          status() {
+            return host2.broker(this.ctx, "remote", "status", {});
+          }
+          pair(options) {
+            const value = label(options?.label);
+            return host2.broker(this.ctx, "remote", "pair", value === void 0 ? {} : { label: value });
+          }
+          clients() {
+            return host2.broker(this.ctx, "remote", "clients", {});
+          }
+          revoke(id) {
+            return host2.broker(this.ctx, "remote", "revoke", { grant: grant(id) });
+          }
+        }
+        Object.freeze(RemoteService.prototype);
+        return RemoteService;
+      }
+    };
+  }
+});
+
 // src/dsh/adapters.ts
 var DSH_ADAPTERS;
 var init_adapters = __esm({
@@ -16670,7 +16717,8 @@ var init_adapters = __esm({
     init_define_BUILTIN_MODULE_DIGESTS();
     init_session_prompt();
     init_agents();
-    DSH_ADAPTERS = [sessionsAdapter, systemPromptAdapter, ...DSH_AGENT_ADAPTERS];
+    init_remote();
+    DSH_ADAPTERS = [sessionsAdapter, systemPromptAdapter, ...DSH_AGENT_ADAPTERS, remoteAdapter];
   }
 });
 
@@ -17449,10 +17497,10 @@ function describeError2(error) {
   if (error instanceof Error) return `${error.name}: ${error.message}`;
   return String(error);
 }
-function withDeadline(promise, ms, label) {
+function withDeadline(promise, ms, label2) {
   let timer;
   const deadline = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms} ms`)), ms);
+    timer = setTimeout(() => reject(new Error(`${label2} exceeded ${ms} ms`)), ms);
     timer.unref();
   });
   return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));

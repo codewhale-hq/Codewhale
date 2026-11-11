@@ -1820,7 +1820,7 @@ async fn dsh_broker_tickets_bind_plugin_service_and_session_and_every_refusal_is
 
     for service in DshService::ALL
         .into_iter()
-        .filter(|s| *s != DshService::Network)
+        .filter(|s| *s != DshService::Network && *s != DshService::Remote)
     {
         let ticket = &tickets_a[service.name()];
         let result = f
@@ -2095,7 +2095,7 @@ async fn dsh_broker_services_are_granted_by_one_check_and_an_ungranted_service_i
                 service.name()
             );
         }
-        if service != DshService::Network {
+        if service != DshService::Network && service != DshService::Remote {
             let result = f
                 .broker(
                     TABLE,
@@ -2565,6 +2565,182 @@ async fn dsh_network_arm_refuses_foreign_tickets_unknown_methods_and_revoked_own
         dsh_refusal(&revoked),
         (error_code::REFUSED, "ticket_refused".into())
     );
+    drop(guard_b);
+    assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
+}
+
+#[tokio::test]
+async fn dsh_remote_broker_pairs_through_the_host_and_refuses_foreign_stale_and_unknown_calls() {
+    use super::dsh_broker::TABLE;
+    use super::protocol::DshService;
+    use super::{RemoteDenial, remote_grants};
+    use std::collections::BTreeMap;
+
+    let _grants = super::dsh_broker::TestGrants::only(&[DshService::Workspace, DshService::Remote]);
+    let tickets = |guard: &super::core_call::InvocationGuard| -> BTreeMap<String, String> {
+        guard
+            .broker_tickets()
+            .unwrap()
+            .into_iter()
+            .map(|wire| (wire.service, wire.ticket))
+            .collect()
+    };
+    let mut f = fixture(true);
+    f.in_session("remote-session-a");
+    let guard_a = f.begin(7, &f.owner);
+    let a = tickets(&guard_a);
+    let remote = a["remote"].clone();
+
+    let paired = f
+        .broker(
+            TABLE,
+            &f.owner,
+            &remote,
+            "remote",
+            "pair",
+            json!({"label": "phone"}),
+        )
+        .await
+        .unwrap();
+    let grant = paired["grant"].as_str().unwrap().to_string();
+    assert_eq!(paired["state"], "awaiting_host");
+    assert!(!paired.to_string().contains("cwrp_"), "{paired}");
+
+    let presented = remote_grants()
+        .awaiting_host()
+        .into_iter()
+        .find(|row| row.grant == grant)
+        .expect("the host sees the pairing");
+    assert_eq!(
+        (presented.plugin_id.as_str(), presented.session_id.as_str()),
+        ("a", "remote-session-a")
+    );
+    let client = remote_grants().redeem(&presented.secret, "pixel").unwrap();
+    assert_eq!(
+        remote_grants().redeem(&presented.secret, "pixel"),
+        Err(RemoteDenial::Replayed)
+    );
+    assert_eq!(
+        remote_grants().authorize(&client.token, "remote-session-a"),
+        Ok(grant.clone())
+    );
+    assert_eq!(
+        remote_grants().authorize(&client.token, "remote-session-b"),
+        Err(RemoteDenial::ForeignSession)
+    );
+
+    let unknown = f
+        .broker(TABLE, &f.owner, &remote, "remote", "tunnel", json!({}))
+        .await;
+    assert_eq!(
+        dsh_refusal(&unknown),
+        (error_code::INVALID_PARAMS, "unknown_method".into())
+    );
+    let wrong_service = f
+        .broker(
+            TABLE,
+            &f.owner,
+            &a["workspace"],
+            "remote",
+            "status",
+            json!({}),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&wrong_service),
+        (error_code::REFUSED, "ticket_refused".into())
+    );
+    let foreign_plugin = f
+        .broker(
+            TABLE,
+            &f.other,
+            &remote,
+            "remote",
+            "revoke",
+            json!({"grant": grant}),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&foreign_plugin),
+        (error_code::REFUSED, "ticket_refused".into())
+    );
+
+    f.in_session("remote-session-b");
+    let guard_b = f.begin(7, &f.owner);
+    let remote_b = tickets(&guard_b)["remote"].clone();
+    let foreign_session = f
+        .broker(
+            TABLE,
+            &f.owner,
+            &remote_b,
+            "remote",
+            "revoke",
+            json!({"grant": grant}),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&foreign_session),
+        (error_code::INVALID_PARAMS, "invalid_input".into())
+    );
+    let listed_b = f
+        .broker(TABLE, &f.owner, &remote_b, "remote", "clients", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(listed_b, json!({"clients": []}));
+    assert_eq!(
+        remote_grants().authorize(&client.token, "remote-session-a"),
+        Ok(grant.clone())
+    );
+
+    drop(guard_a);
+    let stale = f
+        .broker(
+            TABLE,
+            &f.owner,
+            &remote,
+            "remote",
+            "revoke",
+            json!({"grant": grant}),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&stale),
+        (error_code::REFUSED, "ticket_refused".into())
+    );
+    assert!(
+        remote_grants()
+            .authorize(&client.token, "remote-session-a")
+            .is_ok(),
+        "a paired client outlives the invocation that asked for it"
+    );
+
+    f.in_session("remote-session-a");
+    let guard_a2 = f.begin(7, &f.owner);
+    let remote_a2 = tickets(&guard_a2)["remote"].clone();
+    let listed = f
+        .broker(TABLE, &f.owner, &remote_a2, "remote", "clients", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(listed["clients"][0]["grant"], grant.as_str());
+    assert_eq!(listed["clients"][0]["state"], "paired");
+    assert!(!listed.to_string().contains("cwrc_"), "{listed}");
+    let revoked = f
+        .broker(
+            TABLE,
+            &f.owner,
+            &remote_a2,
+            "remote",
+            "revoke",
+            json!({"grant": grant}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revoked, json!({"grant": grant, "revoked": true}));
+    assert_eq!(
+        remote_grants().authorize(&client.token, "remote-session-a"),
+        Err(RemoteDenial::Unknown)
+    );
+    drop(guard_a2);
     drop(guard_b);
     assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
 }
