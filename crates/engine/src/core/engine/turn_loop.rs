@@ -2044,7 +2044,11 @@ impl Engine {
                 )));
             }
 
-            if blocked_error.is_none() && self.is_acp_turn() && !registry_has_spec {
+            if blocked_error.is_none()
+                && self.is_acp_turn()
+                && !registry_has_spec
+                && !McpPool::is_mcp_tool(&tool_name)
+            {
                 blocked_error = Some(ToolError::not_available(format!(
                     "{tool_name} is outside the ACP foreground tool profile"
                 )));

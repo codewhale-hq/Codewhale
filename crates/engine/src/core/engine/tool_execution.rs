@@ -742,7 +742,10 @@ impl Engine {
             if let Some(context) = context
                 && (context.acp_host.is_some() || context.child_host.is_some())
             {
-                if context.acp_host.is_some() || tool_name != EXECUTE_TOOLS_TOOL_NAME {
+                let acp_mcp_call = context.acp_host.is_some() && McpPool::is_mcp_tool(&tool_name);
+                if !acp_mcp_call
+                    && (context.acp_host.is_some() || tool_name != EXECUTE_TOOLS_TOOL_NAME)
+                {
                     let spec = registry
                         .and_then(|registry| registry.get(&tool_name))
                         .ok_or_else(|| {

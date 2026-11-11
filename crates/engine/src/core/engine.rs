@@ -6242,7 +6242,9 @@ impl Engine {
             };
         }
         if self.is_acp_turn() {
-            return self.acp_tool_build(input_policy, &route, allowed_tools);
+            return self
+                .acp_turn_tool_build(input_policy, &route, allowed_tools, mcp_access)
+                .await;
         }
         if self.rlm_host.is_some() {
             return self.rlm_tool_build(input_policy, &route);

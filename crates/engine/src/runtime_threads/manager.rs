@@ -14568,10 +14568,7 @@ source_usage_records: Default::default(),
                 }
                 manager
             };
-            let mut features = cfg.features();
-            if self.host_profile.is_acp() {
-                features.disable(codewhale_runtime::features::Feature::Mcp);
-            }
+            let features = cfg.features();
             let engine_cfg = EngineConfig {
                 user_input_responder: true,
                 session_checkpoint_backend: Some(

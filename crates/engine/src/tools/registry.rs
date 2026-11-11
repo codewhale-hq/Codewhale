@@ -708,7 +708,8 @@ pub fn enforce_tool_authority(
                 | "context_archive_get"
                 | "context_archive_search"
                 | "present"
-        ) {
+        ) && tool.extension_caller().is_none()
+        {
             return Err(ToolError::not_available(format!(
                 "{name} is outside the ACP foreground tool profile"
             )));
