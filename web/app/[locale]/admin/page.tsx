@@ -88,8 +88,8 @@ export default async function AdminPage({
           titleAs="h1"
           body={
             isZh
-              ? "MAINTAINER_TOKEN 未设置。请在部署前配置此环境变量。"
-              : "MAINTAINER_TOKEN is not set. Configure this secret before deployment."
+              ? "此页面当前不可用。"
+              : "This page is not available right now."
           }
         />
       </div>
@@ -144,8 +144,8 @@ export default async function AdminPage({
           title={isZh ? "暂无草稿" : "No drafts yet"}
           body={
             isZh
-              ? "草稿将在 cron 运行后出现。可在 cloudflare.config.ts 中配置触发时间。"
-              : "Drafts will appear here after cron runs. Configure triggers in cloudflare.config.ts."
+              ? "有新草稿时会显示在这里。"
+              : "New drafts appear here when there are any."
           }
         />
       )}
