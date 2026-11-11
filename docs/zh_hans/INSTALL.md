@@ -179,7 +179,7 @@ PATH 代码块始终是安装器打印的最后内容。如果你的 PATH 已经
 
 ### 把它加入 PATH
 
-如果安装器提示 `PATH selects no codewhale command`，说明 `~/.local/bin` **在当前 shell 里**不在 PATH 上。此时 `codewhale.net/install.sh` 以及发布压缩包内的 `install.sh` 默认会向你的 `$SHELL` 对应的配置文件追加一个带标记的三行块，打印文件名和这三行，并打印移除它们的命令：
+如果安装器提示 `PATH selects no codewhale command`，说明 `~/.local/bin` **在当前 shell 里**不在 PATH 上。此时 `codewhale.net/install.sh` 以及 0.10.3 起发布压缩包内的 `install.sh` 默认会向你的 `$SHELL` 对应的配置文件追加一个带标记的三行块，打印文件名和这三行，并打印移除它们的命令：
 
 | `$SHELL` | 修改的文件 |
 | --- | --- |
@@ -194,6 +194,8 @@ PATH 代码块始终是安装器打印的最后内容。如果你的 PATH 已经
 * 安装目录已经在 `PATH` 上；
 * 配置文件是符号链接、不是可写的普通文件，或其所在目录不存在，此时改为打印命令；
 * 你的 shell 是 fish 或其他它没有对应配置文件的 shell、`$SHELL` 为空，或目录名含有引号、`$`、反引号或反斜杠。安装器会告诉你该自己添加什么（fish 用 `fish_add_path ~/.local/bin`）。
+
+v0.10.2 发布压缩包（`releases/latest` 在 0.10.3 发布前提供的版本）不会这样做：其 `install.sh` 不接受任何选项、从不修改配置文件，只打印当前 shell 用的 `export` 行，其 `install.ps1` 则提示你自行添加目录。请自行把同样的三行（`# >>> codewhale PATH >>>`、`export PATH="$HOME/.local/bin:$PATH"`、`# <<< codewhale PATH <<<`）追加到配置文件末尾。
 
 重复运行安装器不会再加第二个块：它看到标记行就保持文件原样。配置文件的改动不会影响已经打开的 shell，所以安装器的最后几行会给出当前 shell 用的 `export` 命令和 `codewhale --version`。
 
@@ -293,7 +295,7 @@ cd codewhale-linux-x64 && ./install.sh               # -> ~/.local/bin; PREFIX=/
 
 （注意：校验清单是 *bundles*，不是 *artifacts*。）
 
-压缩包里的 `install.sh` 不用 sudo，不动内容不同的已有文件，也不提问；和网页安装器一样，当目录不在 `PATH` 上时它会向 shell 配置文件追加带标记的 PATH 块（`./install.sh --no-modify-path` 可跳过；见[把它加入 PATH](#把它加入-path)）。
+压缩包里的 `install.sh` 不用 sudo，不动内容不同的已有文件，也不提问；0.10.3 起的压缩包与网页安装器一样，当目录不在 `PATH` 上时会向 shell 配置文件追加带标记的 PATH 块（`./install.sh --no-modify-path` 可跳过）。v0.10.2 压缩包不会：其 `install.sh` 不接受任何选项，只打印当前 shell 用的 `export` 行，请自行添加该块（见[把它加入 PATH](#把它加入-path)）。
 
 **升级：** `codewhale update` 对 3a 和 3b 都适用，因为它们都属于"直接二进制"安装。**卸载：** 删除那两个文件（见 §12）。
 
@@ -1053,7 +1055,7 @@ NSIS 安装器目前包含 Windows x64 二进制。Windows ARM64 用户应通过
 
 卸载会移除二进制、`codewhale.bat`、开始菜单快捷方式和用户 `PATH` 条目。
 
-发布压缩包里的 `install.ps1` 默认把 `%USERPROFILE%\bin` 加入**用户** PATH（只写注册表值 `HKCU\Environment\Path`，不动系统 PATH），打印加了什么以及只移除该条目的 PowerShell 命令；目录已在 PATH 上时什么都不做；加 `-NoModifyPath`（或 `CODEWHALE_NO_MODIFY_PATH=1`）可跳过，此时改为打印命令；重复运行不会重复添加。已打开的窗口看不到这个改动，所以最后几行给出当前窗口用的命令和 `codewhale --version`。该路径尚未在 Windows 主机上运行过。
+自 0.10.3 起，发布压缩包里的 `install.ps1` 默认把 `%USERPROFILE%\bin` 加入**用户** PATH（只写注册表值 `HKCU\Environment\Path`，不动系统 PATH），打印加了什么以及只移除该条目的 PowerShell 命令；目录已在 PATH 上时什么都不做；加 `-NoModifyPath`（或 `CODEWHALE_NO_MODIFY_PATH=1`）可跳过，此时改为打印命令；重复运行不会重复添加。已打开的窗口看不到这个改动，所以最后几行给出当前窗口用的命令和 `codewhale --version`。v0.10.2 的 `install.ps1` 不做这些，只提示你自行添加目录。该路径尚未在 Windows 主机上运行过。
 
 **静默安装**（供 IT 管理员、SCCM、Intune 使用）：
 

@@ -241,8 +241,8 @@ Re-checked on macOS 26.1, Apple silicon (`macos-arm64`), with a fresh `HOME`:
 ### Put it on your PATH
 
 If the installer says `PATH selects no codewhale command`, `~/.local/bin` isn't
-on your PATH **in this shell**. The `codewhale.net/install.sh` installer and the
-`install.sh` inside a release archive then add one marked three-line block to
+on your PATH **in this shell**. The `codewhale.net/install.sh` installer and, in release
+archives from 0.10.3 on, the `install.sh` inside the archive then add one marked three-line block to
 the profile of your `$SHELL` by default, print the file and the three lines, and
 print the command that removes them:
 
@@ -265,6 +265,11 @@ no other line is rewritten or reordered. The installer does not edit anything wh
 * your shell is fish or another shell it has no profile for, `$SHELL` is empty, or the
   directory name contains quotes, `$`, backticks or backslashes. The installer says what to
   add yourself (`fish_add_path ~/.local/bin` for fish).
+
+The v0.10.2 release archive (what `releases/latest` serves until 0.10.3 ships) does
+not do this: its `install.sh` takes no options, never edits a profile and only prints the
+current-shell `export` line, and its `install.ps1` tells you to add the directory yourself.
+Run the `printf` line in the block below to add the same three lines by hand.
 
 Running the installer again never adds a second block: it sees the marker line and leaves
 the file as is. A profile change does not reach shells that are already open, so the
@@ -395,9 +400,11 @@ cd codewhale-linux-x64 && ./install.sh               # -> ~/.local/bin; PREFIX=/
 ```
 
 The archive's `install.sh` never uses sudo, leaves differing existing files
-alone and asks nothing. Like the web installer it adds the marked PATH block to your
-shell profile when the directory is not on `PATH` (`./install.sh --no-modify-path` skips
-that; see [Put it on your PATH](#put-it-on-your-path)).
+alone and asks nothing. In archives from 0.10.3 on, like the web installer, it adds the
+marked PATH block to your shell profile when the directory is not on `PATH`
+(`./install.sh --no-modify-path` skips that). The v0.10.2 archive does not: it takes no
+options and only prints an `export` line for the current shell, so add the block yourself
+(see [Put it on your PATH](#put-it-on-your-path)).
 
 **Upgrade:** `codewhale update` works for both 3a and 3b, because they're
 "direct binary" installs. **Uninstall:** delete the two files (see §12).
@@ -1081,7 +1088,7 @@ The `uninstall` command exists in Codewhale 0.10.3 and later. On 0.10.2 or earli
 | Installed with | Remove with |
 |---|---|
 | current Unix installer (§2) | Run the intended executable by its full path with `uninstall` to inspect the plan, then `uninstall --yes` to remove it. |
-| Windows release archive (`install.ps1`) | `"%USERPROFILE%\bin\codewhale.exe" uninstall`, then `uninstall --yes`. Remove `%USERPROFILE%\bin` from your user PATH; `install.ps1` adds it by default (see below). |
+| Windows release archive (`install.ps1`) | `"%USERPROFILE%\bin\codewhale.exe" uninstall`, then `uninstall --yes`. Remove `%USERPROFILE%\bin` from your user PATH; `install.ps1` from 0.10.3 on adds it by default (see below). |
 | Windows setup (NSIS) | Settings > Apps > CodeWhale > Uninstall, or `%LOCALAPPDATA%\Programs\CodeWhale\Uninstall.exe`. `codewhale uninstall` prints this path. |
 | WinGet | `winget uninstall --id HunterBown.CodeWhale` |
 | Scoop | `scoop uninstall codewhale` |
@@ -1101,7 +1108,7 @@ Successful self-update renews an existing command receipt, and writes one for a 
 
 On Windows, `codewhale uninstall --yes` removes `codewhale.exe`, `codew.exe`, `codewhale.bat`, any receipted compiled-host files and the receipt itself. Windows cannot delete a running program, so the running `codewhale.exe` is renamed in place to a `.codewhale-host-recovery-…` name and deleted by a helper once the command exits; the output names that file in case it remains. `codewhale.old-…` files left by an earlier self-update are listed, not deleted. A known legacy directory can adopt matching command bytes into a receipt. Other unreceipted archive copies are preserved; reinstall with the current `install.ps1` to obtain a receipt before automatic removal. Windows removal has been compile-checked but not yet exercised on a Windows host.
 
-The Windows archive's `install.ps1` adds `%USERPROFILE%\bin` to your **user** PATH by default (one registry value, `HKCU\Environment\Path`; it never touches the machine PATH), prints what it added and the PowerShell command that removes just that entry, and does nothing when the directory is already on PATH. Run it with `-NoModifyPath` (or `CODEWHALE_NO_MODIFY_PATH=1`) to skip the edit; it then prints the command to add the entry yourself. Running it again never adds a second entry. Windows terminals that are already open do not see the change, so its last lines give the command for the current window and `codewhale --version`. This path has not been run on a Windows host.
+From 0.10.3 on, the Windows archive's `install.ps1` adds `%USERPROFILE%\bin` to your **user** PATH by default (one registry value, `HKCU\Environment\Path`; it never touches the machine PATH), prints what it added and the PowerShell command that removes just that entry, and does nothing when the directory is already on PATH. Run it with `-NoModifyPath` (or `CODEWHALE_NO_MODIFY_PATH=1`) to skip the edit; it then prints the command to add the entry yourself. Running it again never adds a second entry. Windows terminals that are already open do not see the change, so its last lines give the command for the current window and `codewhale --version`. The v0.10.2 `install.ps1` does none of this and tells you to add the directory yourself. This path has not been run on a Windows host.
 
 Repeating `uninstall` after removal is safe: the removed copy is gone, and any other copy only removes what its own receipt owns. Reinstalling into the same directory afterwards writes a fresh receipt.
 
