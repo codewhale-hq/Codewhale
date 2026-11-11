@@ -784,7 +784,11 @@ impl VerifiedCandidateEvaluator {
                     gates = outcome.receipts;
                     test_count = outcome.test_count;
                     public_feedback = outcome.feedback;
-                    execution_status = if outcome.stopped { "STOPPED" } else { "COMPLETE" };
+                    execution_status = if outcome.stopped {
+                        "STOPPED"
+                    } else {
+                        "COMPLETE"
+                    };
                     reason = outcome.failure;
                     status = if outcome.stopped {
                         "UNKNOWN"
