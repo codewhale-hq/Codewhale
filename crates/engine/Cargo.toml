@@ -73,6 +73,7 @@ path = "src/lib.rs"
 doctest = false
 
 [dependencies]
+agent-client-protocol.workspace = true
 http = "1.5"
 codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.3" }
 codewhale-sanitize = { path = "../sanitize", version = "0.10.3" }

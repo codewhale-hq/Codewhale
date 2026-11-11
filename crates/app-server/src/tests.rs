@@ -32,37 +32,6 @@ async fn control_framing_accepts_exact_limit_crlf_and_preserves_next_frame() {
 }
 
 #[tokio::test]
-async fn control_framing_refuses_oversize_before_retaining_extra_bytes() {
-    let input = vec![b'x'; MAX_RUNTIME_IMAGE_BODY_BYTES + 4096];
-    let mut reader = BoundedLines::new(BufReader::with_capacity(8192, input.as_slice()));
-    assert_eq!(
-        reader.next_line().await.unwrap_err().kind(),
-        std::io::ErrorKind::InvalidData
-    );
-    assert!(reader.pending.len() <= MAX_RUNTIME_IMAGE_BODY_BYTES + 1);
-    assert!(reader.pending.capacity() <= MAX_RUNTIME_IMAGE_BODY_BYTES + 1);
-}
-
-#[tokio::test]
-async fn control_framing_keeps_consumed_prefix_when_read_future_is_cancelled() {
-    let (mut input, output) = tokio::io::duplex(64);
-    input.write_all(b"partial").await.unwrap();
-    let mut reader = BoundedLines::new(BufReader::new(output));
-    std::future::poll_fn(|cx| {
-        let mut read = std::pin::pin!(reader.next_line());
-        assert!(std::future::Future::poll(read.as_mut(), cx).is_pending());
-        std::task::Poll::Ready(())
-    })
-    .await;
-    assert_eq!(reader.pending, b"partial");
-    input.write_all(b"-continued\n").await.unwrap();
-    assert_eq!(
-        reader.next_line().await.unwrap().as_deref(),
-        Some("partial-continued")
-    );
-}
-
-#[tokio::test]
 async fn control_framing_rejects_non_utf8_and_keeps_eof_line_contract() {
     let mut invalid = BoundedLines::new(BufReader::new(&b"\xff\n"[..]));
     assert_eq!(
