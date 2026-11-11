@@ -635,7 +635,7 @@ async fn snapshot_in_owner(
     snapshot_in_runtime(&state.runtime_threads, &state.sessions_dir, id).await
 }
 
-async fn snapshot_in_runtime(
+pub(super) async fn snapshot_in_runtime(
     runtime: &Arc<RuntimeThreadManager>,
     sessions_dir: &Path,
     id: String,
