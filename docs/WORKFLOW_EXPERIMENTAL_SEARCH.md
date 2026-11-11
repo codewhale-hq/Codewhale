@@ -91,10 +91,12 @@ The private run-owned directory (mode 0700 on Unix) is reported as `run_root` an
 `codewhale-evaluator-workflow_*` in the system temporary directory. It retains
 the frozen baseline blobs, sealed artifact manifests and blobs, manifest,
 receipts, and bounded stdout/stderr logs so evidence remains reviewable after
-the writer worktree disappears. Each evaluation's materialized candidate and
-scratch directories use temporary directory ownership and are removed when
-the evaluation ends, including on failure or cancellation. An unsuccessful
-freeze removes the new run directory. After archiving evidence, the operator
+the writer worktree disappears. Fleet/Runtime own writer worktrees and their
+normal cleanup; the evaluator never deletes them. Each evaluation's
+materialized candidate and scratch directories use temporary directory
+ownership and are removed when the evaluation ends, including on failure or
+cancellation. An unsuccessful freeze removes the new run directory. After
+archiving evidence, the operator
 may delete that exact run directory; restart cleanup must identify the
 `manifest.json` run id before removing anything. There is no automatic
 cross-process replay API in this slice.

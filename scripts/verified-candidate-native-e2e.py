@@ -140,6 +140,7 @@ def main():
     parent_secret = workspace / ".codewhale" / "parent-secret"
     parent_secret.parent.mkdir()
     parent_secret.write_text("synthetic parent secret\n")
+    git_common_before = hashlib.sha256((workspace / ".git/config").read_bytes()).hexdigest()
     host_secret = output / "host-secret"
     host_secret.write_text("synthetic host secret\n")
     home_secret = output / "host-home" / "home-secret"
@@ -148,7 +149,8 @@ def main():
     hidden = output / "hidden.json"
     public = output / "public.json"
     targets = {"host": str(host_secret), "sibling": str(sibling / "sibling-secret"),
-               "parent": str(parent_secret), "hidden": str(hidden),
+               "parent": str(parent_secret), "git_common": str(workspace / ".git/config"),
+               "hidden": str(hidden),
                "home": str(home_secret)}
     inherited_fd = os.open(host_secret, os.O_RDONLY)
     os.set_inheritable(inherited_fd, True)
@@ -280,6 +282,8 @@ def main():
         "sibling_secret_untouched": (sibling / "sibling-secret").read_text()
             == "synthetic sibling secret\n",
         "parent_secret_untouched": parent_secret.read_text() == "synthetic parent secret\n",
+        "git_common_untouched": hashlib.sha256(
+            (workspace / ".git/config").read_bytes()).hexdigest() == git_common_before,
         "hidden_unchanged": hashlib.sha256(hidden.read_bytes()).hexdigest()
             == replay.get("replay", {}).get("oracle_sha256", [None, None])[1],
     }
@@ -290,6 +294,7 @@ def main():
         receipt["replay_status"] == "PASS", receipt["replay_tests"] == 3,
         receipt["host_secret_untouched"], receipt["sibling_secret_untouched"],
         receipt["parent_secret_untouched"], receipt["hidden_unchanged"],
+        receipt["git_common_untouched"],
         not receipt["writer_hidden_exposed"],
         receipt["descendants_reaped"],
         len(requests) >= 4,

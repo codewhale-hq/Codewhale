@@ -222,9 +222,7 @@ fn isolated_command(
     #[cfg(not(all(target_os = "linux", not(target_env = "ohos"))))]
     {
         let _ = (source, scratch, program, args, timeout);
-        return Err(
-            "UNSUPPORTED_ISOLATION: candidate gates require Linux bubblewrap".to_string(),
-        );
+        return Err("UNSUPPORTED_ISOLATION: candidate gates require Linux bubblewrap".to_string());
     }
     #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
     {
