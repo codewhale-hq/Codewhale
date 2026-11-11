@@ -3255,11 +3255,25 @@ fn deepseek_base_url_supports_strict_tools(base_url: &str) -> bool {
 
 fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {
     if let Some(choice_str) = choice.as_str() {
-        return Some(json!(choice_str));
+        return Some(match forced_tool_name(choice) {
+            Some(name) => json!({
+                "type": "function",
+                "function": { "name": to_api_tool_name(name) }
+            }),
+            None => json!(choice_str),
+        });
     }
     let Some(choice_type) = choice.get("type").and_then(Value::as_str) else {
         return Some(choice.clone());
     };
+    if choice_type == "function"
+        && let Some(name) = forced_tool_name(choice)
+    {
+        return Some(json!({
+            "type": "function",
+            "function": { "name": to_api_tool_name(name) }
+        }));
+    }
 
     match choice_type {
         "auto" | "none" => Some(json!(choice_type)),
@@ -6664,9 +6678,13 @@ mod image_block_wire_tests {
     //! most of them at once. The shape is fixed by OpenAI's spec: a `user`
     //! message whose `content` is an array of parts, with the image as
     //! `{"type":"image_url","image_url":{"url":…}}`.
-    use super::{ProviderKind, build_chat_messages, build_chat_wire_body};
+    use super::{
+        ProviderKind, build_chat_messages, build_chat_wire_body, map_tool_choice_for_chat,
+        to_api_tool_name,
+    };
     use codewhale_models::Role;
-    use codewhale_models::{ContentBlock, ImageUrlContent, Message, MessageRequest};
+    use codewhale_models::{ContentBlock, ImageUrlContent, Message, MessageRequest, Tool};
+    use serde_json::{Value, json};
 
     const DATA_URL: &str = "data:image/png;base64,QUJD";
 
@@ -6971,6 +6989,63 @@ mod image_block_wire_tests {
                 content_blocks: None,
             }],
         }
+    }
+
+    fn named_tool(name: &str) -> Tool {
+        Tool {
+            tool_type: None,
+            name: name.to_string(),
+            description: "d".to_string(),
+            input_schema: json!({"type": "object", "additionalProperties": false}),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        }
+    }
+
+    #[test]
+    fn function_object_tool_choice_encodes_the_tool_name() {
+        let encoded = to_api_tool_name("web.run");
+        assert_eq!(encoded, "web-x00002E-run");
+        let expected = json!({"type": "function", "function": {"name": encoded}});
+        for choice in [
+            json!({"type": "function", "function": {"name": "web.run"}}),
+            json!({"type": "function", "name": "web.run"}),
+            json!({"type": "tool", "name": "web.run"}),
+            json!("web.run"),
+        ] {
+            assert_eq!(
+                map_tool_choice_for_chat(&choice),
+                Some(expected.clone()),
+                "{choice}"
+            );
+        }
+        assert_eq!(
+            map_tool_choice_for_chat(&json!("required")),
+            Some(json!("required"))
+        );
+
+        let mut request = request_with_image();
+        request.tools = Some(vec![named_tool("read_file"), named_tool("web.run")]);
+        request.tool_choice = Some(json!({"type": "function", "function": {"name": "web.run"}}));
+        let body = build_chat_wire_body(
+            &request,
+            ProviderKind::Openai,
+            "https://api.openai.com/v1",
+            false,
+            None,
+        )
+        .expect("wire body");
+        assert_eq!(body.body["tool_choice"], expected);
+        let declared: Vec<&str> = body.body["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .filter_map(|tool| tool.pointer("/function/name").and_then(Value::as_str))
+            .collect();
+        assert!(declared.contains(&"web-x00002E-run"));
     }
 
     fn request_with_image() -> MessageRequest {
