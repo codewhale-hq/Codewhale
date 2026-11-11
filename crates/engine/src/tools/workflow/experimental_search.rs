@@ -480,7 +480,10 @@ impl ExperimentalSearch {
     ) -> Result<Self, String> {
         let repo = PathBuf::from(git_text(workspace, &["rev-parse", "--show-toplevel"])?);
         let repo = repo.canonicalize().map_err(|error| error.to_string())?;
-        let status = git_text(&repo, &["status", "--porcelain", "--untracked-files=normal"])?;
+        let status = git_text(
+            &repo,
+            &["status", "--porcelain", "--untracked-files=normal"],
+        )?;
         if status.lines().any(|line| line != "?? .codewhale/") {
             return Err("experimental search requires a clean parent checkout".to_string());
         }
