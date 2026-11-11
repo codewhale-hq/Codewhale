@@ -8,13 +8,14 @@ import { Strata } from "@/components/strata";
 import { NativeTerminalGallery } from "@/components/native-terminal-gallery";
 import { LivingHeroWhale } from "@/components/living-hero-whale";
 import { getFacts } from "@/lib/facts";
-import { GitHubStar, FaceWall, MergedList, PulseStats } from "@/components/project-pulse";
+import { GitHubStar, FaceWall, MergedList, PulseStats, statsAsOf } from "@/components/project-pulse";
 import { LiveStarLink } from "@/components/github-live";
 import { loadProjectPulse } from "@/lib/project-pulse";
 import { PROJECT_COPY } from "@/lib/content/project";
 import { HOME_OVERVIEW } from "@/lib/content/home-overview";
 import { PRODUCT_COPY } from "@/lib/content/product";
 import { PARTNER_PROMO } from "@/lib/content/partner-promo";
+import { daysLeft, isActiveAt } from "@/lib/expiry";
 import { fill, getChrome, getComputerUse, getHome, pickText, splitToken } from "@/lib/i18n/dictionaries";
 import { REPO_ISSUES_URL, REPO_URL } from "@/lib/i18n/links";
 import { serializeJsonLd } from "@/lib/json-ld";
@@ -36,9 +37,8 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
   const sourceVersion = facts.version ?? "unknown";
   const publishedRelease = updates.terminal.release;
   const sourceIsPublished = publishedRelease?.version === sourceVersion;
-  const promoLeft = Date.parse(PARTNER_PROMO.endsAt) - Date.now();
-  const promoDays = Math.max(1, Math.ceil(promoLeft / 86_400_000));
-  const showPromo = promoLeft > 0 && PARTNER_PROMO.locales.includes(locale);
+  const promoDays = daysLeft(PARTNER_PROMO.endsAt);
+  const showPromo = isActiveAt(PARTNER_PROMO.endsAt) && PARTNER_PROMO.locales.includes(locale);
   const jsonLd = buildSoftwareApplicationJsonLd(publishedRelease);
   const ledeParts = splitToken(d.heroIntro, "brand");
   const gateways = new Set(["OpenRouter", "Together", "OpenAI Codex"]);
@@ -79,7 +79,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
                 <Link href={`/${locale}/install`} className="btn btn-primary btn-lg">
                   {d.getCodewhale}
                 </Link>
-                <GitHubStar stars={pulse.stats?.stars} locale={locale} />
+                <GitHubStar stars={pulse.stats?.stars ?? undefined} locale={locale} asOf={statsAsOf(pulse.stats, locale)} />
                 <Link href={`/${locale}/contribute`} className="btn btn-ghost btn-lg">
                   {d.contribute}
                   <Icon name="arrow-right" className="icon icon-flip" />
@@ -117,7 +117,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
               ) : (
                 <Link href={`/${locale}/changelog`} className="section-link">{chrome.footerChangelog}</Link>
               )}
-              <LiveStarLink initial={pulse.stats?.stars} label={pickText(PROJECT_COPY.statStars, locale)} href={REPO_URL} numberLocale={chrome.dateLocale} />
+              <LiveStarLink initial={pulse.stats?.stars ?? undefined} label={pickText(PROJECT_COPY.statStars, locale)} href={REPO_URL} numberLocale={chrome.dateLocale} asOf={statsAsOf(pulse.stats, locale)} />
               <Link href={`/${locale}/contribute`} className="section-link">{fill(d.proofContributors, { count: facts.contributorCount })}</Link>
               <span>{facts.license ?? "MIT"}</span>
               <Link href={`/${locale}/roadmap`} className="section-link">{chrome.footerRoadmap}</Link>

@@ -13,6 +13,7 @@
     "check": "npm run check:facts && npm run check:latest-release && npm run prebuild && npm run check:docs && npm run check:tokens && npm run lint && tsc --noEmit && npm run build",
     "check:facts": "node scripts/check-facts.mjs && node scripts/check-cloud-facts.mjs",
     "sync:latest-release": "node scripts/sync-latest-release.mjs",
+    "sync:repo-stats": "node scripts/sync-repo-stats.mjs",
     "check:latest-release": "node scripts/sync-latest-release.mjs --check",
     "check:docs": "node scripts/check-runtime-routes.mjs && node scripts/derive-install.mjs && node scripts/check-docs.mjs && node scripts/render-terminal-capture.mjs --check",
     "check:tokens": "python3 ../scripts/export-design-tokens.py --check",

@@ -331,16 +331,17 @@ impl Client {
         Ok(value)
     }
     pub fn open_browser(&self) -> io::Result<()> {
-        let url = format!(
-            "http://127.0.0.1:{}/#{}",
-            self.descriptor.port, self.descriptor.token
-        );
+        let code = self.post("/v1/pair", &json!({}))?["code"]
+            .as_str()
+            .ok_or_else(|| io::Error::other("Pet pairing code unavailable"))?
+            .to_string();
+        let url = format!("http://127.0.0.1:{}/#{code}", self.descriptor.port);
         #[cfg(all(unix, not(target_os = "macos")))]
         {
             use std::process::{Command as Process, Stdio};
             // `webbrowser` resolves `$BROWSER` and `xdg-open` through the
             // environment and `PATH`, where a workspace could shadow the
-            // launcher and receive this URL's owner token. Use the launcher
+            // launcher and receive this URL's one-time code. Use the launcher
             // from a trusted system prefix only (U06-06).
             let launcher = codewhale_notify::audio::trusted_system_executable("xdg-open")?;
             let mut child = Process::new(launcher)

@@ -541,7 +541,7 @@ Return `{kind:'deny', reason}`, `{kind:'ask', reason?}`, `{kind:'revise', input}
 
 Native hooks run first, then mod listeners in core registration order. Denial always wins; the last accepted input revision wins. Rust re-prepares revised arguments and reruns the existing authority, policy, and approval checks. Input revisions use the existing 32 KiB hook limit; context and reasons use the existing sanitizers. Unloading a fiber removes its listener, and disabling or revoking an owner retires its admitted handles before host teardown. Other workspaces do not receive the call.
 
-This bridge runs on Engine sessions, including model tools, gated code-mode calls, and `exec.core` calls. The standalone ACP execution path has no TypeScript host attachment. Prepend/global listener ordering, DSH runtime/agent handles, around-execution wrappers, and post-result rewriting are not provided. Native `tool_call_after` remains an observer contract.
+This bridge runs on Engine sessions, including model tools, gated code-mode calls, and `exec.core` calls. Plugins, DSH and MCP tools are not yet attached to sessions driven over ACP (`codewhale serve --acp`); the ACP server's capabilities say so. Attaching them is in progress for 0.10.3. Prepend/global listener ordering, DSH runtime/agent handles, around-execution wrappers, and post-result rewriting are not provided. Native `tool_call_after` remains an observer contract.
 
 ## Asking the core to run a tool
 

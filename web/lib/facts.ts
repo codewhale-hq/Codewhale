@@ -1,6 +1,7 @@
 import {
   FACTS as BUILD_TIME_FACTS,
   type PublishedReleaseFact,
+  type ReleaseAssetFact,
   type RepoFacts,
   type ProviderFact,
   type ModelFact,
@@ -8,16 +9,31 @@ import {
 
 const KV_KEY = "facts:current";
 
-export type { PublishedReleaseFact, RepoFacts, ProviderFact, ModelFact };
+export type { PublishedReleaseFact, ReleaseAssetFact, RepoFacts, ProviderFact, ModelFact };
 
-export const BUILD_FACTS: RepoFacts = {
-  ...BUILD_TIME_FACTS,
-  sourceRevision:
-    process.env.NEXT_PUBLIC_CODEWHALE_SOURCE_REVISION || BUILD_TIME_FACTS.sourceRevision,
-  sourceCommittedAt:
-    process.env.NEXT_PUBLIC_CODEWHALE_SOURCE_COMMITTED_AT ||
-    BUILD_TIME_FACTS.sourceCommittedAt,
-};
+export interface BuildProvenance {
+  revision?: string | null;
+  committedAt?: string | null;
+  generatedAt?: string | null;
+}
+
+export function withBuildProvenance(base: RepoFacts, stamp: BuildProvenance): RepoFacts {
+  const { revision, committedAt, generatedAt } = stamp;
+  if (
+    typeof revision !== "string" || !/^[0-9a-f]{40}$/i.test(revision) ||
+    typeof committedAt !== "string" || !Number.isFinite(Date.parse(committedAt)) ||
+    typeof generatedAt !== "string" || !Number.isFinite(Date.parse(generatedAt))
+  ) {
+    return base;
+  }
+  return { ...base, sourceRevision: revision, sourceCommittedAt: committedAt, generatedAt };
+}
+
+export const BUILD_FACTS: RepoFacts = withBuildProvenance(BUILD_TIME_FACTS, {
+  revision: process.env.NEXT_PUBLIC_CODEWHALE_SOURCE_REVISION,
+  committedAt: process.env.NEXT_PUBLIC_CODEWHALE_SOURCE_COMMITTED_AT,
+  generatedAt: process.env.NEXT_PUBLIC_CODEWHALE_FACTS_GENERATED_AT,
+});
 
 interface KVNamespace {
   get(key: string): Promise<string | null>;
@@ -66,7 +82,21 @@ export function isPublishedRelease(value: unknown): value is PublishedReleaseFac
     value.tag === `v${value.version}` &&
     typeof value.publishedAt === "string" &&
     Number.isFinite(Date.parse(value.publishedAt)) &&
-    value.url === `https://github.com/codewhale-hq/CodeWhale/releases/tag/${value.tag}`
+    value.url === `https://github.com/codewhale-hq/CodeWhale/releases/tag/${value.tag}` &&
+    (value.readAt === undefined ||
+      (typeof value.readAt === "string" && Number.isFinite(Date.parse(value.readAt)))) &&
+    (value.assets === undefined ||
+      (Array.isArray(value.assets) &&
+        value.assets.every(
+          (asset) =>
+            isRecord(asset) &&
+            typeof asset.name === "string" &&
+            typeof asset.size === "number" &&
+            Number.isSafeInteger(asset.size) &&
+            asset.size >= 0 &&
+            (asset.sha256 === null ||
+              (typeof asset.sha256 === "string" && /^[0-9a-f]{64}$/.test(asset.sha256))),
+        )))
   );
 }
 

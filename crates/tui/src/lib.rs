@@ -453,6 +453,7 @@ fn parse_cli_args(args: &[impl AsRef<str>]) -> Result<Cli, clap::Error> {
         {
             let command = command.find_subcommand_mut("exec").expect("exec command");
             for word in exec.prompt.iter().take_while(|word| *word != "--") {
+                let word = ascii_flag_spelling(word);
                 let flag = word.split_once('=').map_or(word.as_str(), |(flag, _)| flag);
                 if flag.strip_prefix("--").is_some_and(|name| {
                     command.get_arguments().any(|arg| {
@@ -475,6 +476,25 @@ fn parse_cli_args(args: &[impl AsRef<str>]) -> Result<Cli, clap::Error> {
         }
     }
     Ok(cli)
+}
+
+fn ascii_flag_spelling(word: &str) -> String {
+    let typographic = |c: char| matches!(c, '\u{2010}'..='\u{2015}' | '\u{2212}' | '\u{FF0D}');
+    let folded: String = word
+        .chars()
+        .map(|c| match c {
+            '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
+            c if typographic(c) => '-',
+            c => c,
+        })
+        .collect();
+    let single_typographic = word.chars().next().is_some_and(typographic)
+        && !word.chars().nth(1).is_some_and(typographic);
+    if single_typographic && folded.len() > 1 {
+        format!("-{folded}")
+    } else {
+        folded
+    }
 }
 
 fn headless_exec_args(
@@ -958,7 +978,8 @@ const MAX_EXEC_PROMPT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// The effective exec prompt: argv words, a `--prompt-file`, or piped stdin.
 /// A positional `-` stays literal text. When stdin is not a terminal and no
-/// `--prompt-file` is set, a pipe is the prompt, or is appended to argv.
+/// `--prompt-file` is set, piped stdin is the prompt, or is appended to the
+/// argv prompt when it delivers data within `EXEC_STDIN_GRACE`.
 /// `--parent-death-watch` owns stdin and does not read it as a prompt.
 fn resolve_exec_prompt(args: &ExecArgs) -> Result<String> {
     let Some(path) = &args.prompt_file else {
@@ -990,6 +1011,44 @@ fn resolve_exec_prompt(args: &ExecArgs) -> Result<String> {
     Ok(prompt)
 }
 
+const EXEC_STDIN_GRACE: Duration = Duration::from_secs(2);
+
+fn read_stdin_context(grace: Duration) -> Result<Option<String>> {
+    let (tx, rx) = std::sync::mpsc::channel::<Result<Option<String>, String>>();
+    let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let mut stdin = io::stdin().lock();
+        let mut first = [0u8; 1];
+        let read = loop {
+            match stdin.read(&mut first) {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                other => break other,
+            }
+        };
+        let _ = started_tx.send(());
+        let outcome = match read {
+            Ok(0) => Ok(Some(String::new())),
+            Ok(_) => read_capped_text(
+                io::Cursor::new(first).chain(stdin),
+                MAX_EXEC_PROMPT_BYTES,
+                "exec prompt on stdin",
+            )
+            .map(Some)
+            .map_err(|error| error.to_string()),
+            Err(error) => Err(error.to_string()),
+        };
+        let _ = tx.send(outcome);
+    });
+    if started_rx.recv_timeout(grace).is_err() {
+        return Ok(None);
+    }
+    match rx.recv() {
+        Ok(Ok(piped)) => Ok(piped),
+        Ok(Err(message)) => bail!("{message}"),
+        Err(_) => bail!("stdin reader stopped unexpectedly"),
+    }
+}
+
 fn resolve_argv_or_piped_prompt(args: &ExecArgs) -> Result<String> {
     let argv = join_prompt_parts(&args.prompt);
     if args.parent_death_watch || io::stdin().is_terminal() {
@@ -998,11 +1057,24 @@ fn resolve_argv_or_piped_prompt(args: &ExecArgs) -> Result<String> {
         }
         return Ok(argv);
     }
-    let piped = read_capped_text(
-        io::stdin().lock(),
-        MAX_EXEC_PROMPT_BYTES,
-        "exec prompt on stdin",
-    )?;
+    let piped = if argv.trim().is_empty() {
+        read_capped_text(
+            io::stdin().lock(),
+            MAX_EXEC_PROMPT_BYTES,
+            "exec prompt on stdin",
+        )?
+    } else {
+        match read_stdin_context(EXEC_STDIN_GRACE)? {
+            Some(piped) => piped,
+            None => {
+                eprintln!(
+                    "note: stdin produced no data within {}s; running with the prompt argument alone. To wait for a slow producer, pipe the prompt too: {{ echo \"<prompt>\"; cmd; }} | codewhale exec.",
+                    EXEC_STDIN_GRACE.as_secs()
+                );
+                String::new()
+            }
+        }
+    };
     if argv.trim().is_empty() {
         if piped.trim().is_empty() {
             bail!("exec prompt from stdin is empty");

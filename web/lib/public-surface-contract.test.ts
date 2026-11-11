@@ -152,7 +152,12 @@ describe("public surface contracts", () => {
       version: matrix.latestPublishedRelease.version,
       publishedAt: matrix.latestPublishedRelease.publishedAt,
       url: matrix.latestPublishedRelease.url,
-    }).toEqual(FACTS.latestPublishedRelease);
+    }).toEqual({
+      tag: FACTS.latestPublishedRelease?.tag,
+      version: FACTS.latestPublishedRelease?.version,
+      publishedAt: FACTS.latestPublishedRelease?.publishedAt,
+      url: FACTS.latestPublishedRelease?.url,
+    });
     // The published release may equal the source candidate: that is the normal
     // state in the window between shipping vX.Y.Z and opening the next lane.
     // What must never happen is the site advertising a version that is not

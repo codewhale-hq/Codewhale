@@ -54,7 +54,7 @@ pub async fn run_acp_server(
     .await
 }
 
-pub(crate) struct CapturedAcpFrontend {
+pub struct CapturedAcpFrontend {
     config: Config,
     model: String,
     cwd: PathBuf,
@@ -63,7 +63,7 @@ pub(crate) struct CapturedAcpFrontend {
     config_path: Option<PathBuf>,
     config_profile: Option<String>,
 }
-pub(crate) fn capture_frontend(
+pub fn capture_frontend(
     config: Config,
     model: String,
     cwd: PathBuf,
@@ -84,7 +84,7 @@ pub(crate) fn capture_frontend(
     }))
 }
 impl CapturedAcpFrontend {
-    pub(crate) fn serve<'a>(
+    pub fn serve<'a>(
         &'a self,
         input: Box<dyn AsyncBufRead + Send + Unpin>,
         mut output: Box<dyn AsyncWrite + Send + Unpin + 'a>,
@@ -385,6 +385,11 @@ impl AcpServer {
         if !self.sessions.contains_key(id) {
             return Err(AcpError::invalid_params("unknown sessionId"));
         }
+        if let Some(kind) = unsupported_prompt_block(params.get("prompt")) {
+            return Err(AcpError::invalid_params(format!(
+                "unsupported prompt content block `{kind}`: this agent accepts text, resource and resource_link blocks only"
+            )));
+        }
         let prompt = extract_prompt_text(params.get("prompt"))
             .filter(|text| !text.trim().is_empty())
             .ok_or_else(|| AcpError::invalid_params("prompt must include text content"))?;
@@ -407,11 +412,7 @@ impl AcpServer {
     }
     async fn new_session(&mut self, params: Value) -> std::result::Result<Value, AcpError> {
         validate_mcp_servers(&params)?;
-        let cwd = params
-            .get("cwd")
-            .and_then(Value::as_str)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.default_cwd.clone());
+        let cwd = absolute_cwd(&params, "session/new")?.unwrap_or_else(|| self.default_cwd.clone());
         let identity = self
             .config
             .active_provider_identity()
@@ -506,6 +507,7 @@ impl AcpServer {
 
     async fn load_session(&mut self, params: Value) -> std::result::Result<Value, AcpError> {
         validate_mcp_servers(&params)?;
+        absolute_cwd(&params, "session/load")?;
         let requested = params
             .get("sessionId")
             .and_then(Value::as_str)
@@ -971,7 +973,8 @@ fn tool_call_kind(call: &PendingToolCall) -> &'static str {
             Some("write" | "edit" | "patch") => "edit",
             _ => "read",
         },
-        "apply_patch" => "edit",
+        "apply_patch" | "write" | "edit" | "write_file" | "edit_file" => "edit",
+        "read" | "read_file" => "read",
         "Git" => "read",
         "bash" | "Bash" | "terminal/run" | "terminal/send" | "terminal/wait"
         | "terminal/cancel" | "terminal/reset" => "execute",
@@ -1193,6 +1196,31 @@ fn extract_prompt_text(prompt: Option<&Value>) -> Option<String> {
             (!parts.is_empty()).then(|| parts.join("\n\n"))
         }
         _ => None,
+    }
+}
+
+fn unsupported_prompt_block(prompt: Option<&Value>) -> Option<String> {
+    let Value::Array(blocks) = prompt? else {
+        return None;
+    };
+    blocks.iter().find_map(|block| {
+        let kind = block
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        content_block_text(block)
+            .is_none()
+            .then(|| kind.to_string())
+    })
+}
+
+fn absolute_cwd(params: &Value, method: &str) -> std::result::Result<Option<PathBuf>, AcpError> {
+    match params.get("cwd") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(path)) if Path::new(path).is_absolute() => Ok(Some(PathBuf::from(path))),
+        Some(_) => Err(AcpError::invalid_params(format!(
+            "{method} cwd must be an absolute path"
+        ))),
     }
 }
 

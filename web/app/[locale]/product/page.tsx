@@ -2,6 +2,8 @@ import Link from "next/link";
 import { PageHeader, Section } from "@/components/page-header";
 import { Status } from "@/components/status-badge";
 import { NativeTerminalGallery } from "@/components/native-terminal-gallery";
+import { DesktopDownloadBlock } from "@/components/desktop-download";
+import { describeRow } from "@/lib/content/availability";
 import { PRODUCT_COPY } from "@/lib/content/product";
 import { fill, getChrome, getHome, pickText } from "@/lib/i18n/dictionaries";
 import { buildPageMetadata } from "@/lib/page-meta";
@@ -103,34 +105,38 @@ export default async function ProductPage({ params }: { params: Promise<{ locale
           title={t(PRODUCT_COPY.availabilityHeading)}
         >
           <dl className="ruled-list">
-            {PRODUCT_COPY.availability.map((row) => (
-              <div key={row.id}>
-                <dt>{t(row.surface)}</dt>
-                <dd>
-                  <Status tone={row.tone}>{t(row.status)}</Status>
-                  {t(row.detail)}
-                  {row.href && row.linkLabel && (
-                    <>
-                      {" "}
-                      {row.href.startsWith("http") ? (
-                        <a
-                          href={row.href}
-                          className="link"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          {t(row.linkLabel)}
-                        </a>
-                      ) : (
-                        <Link href={`/${locale}${row.href}`} className="link">
-                          {t(row.linkLabel)}
-                        </Link>
-                      )}
-                    </>
-                  )}
-                </dd>
-              </div>
-            ))}
+            {PRODUCT_COPY.availability.map((row) => {
+              const view = describeRow(row, locale);
+              return (
+                <div key={row.id}>
+                  <dt>{t(row.surface)}</dt>
+                  <dd>
+                    <Status tone={view.tone}>{view.status}</Status>
+                    {view.detail}
+                    {view.download ? <DesktopDownloadBlock download={view.download} locale={locale} /> : null}
+                    {view.link && row.href && row.linkLabel && (
+                      <>
+                        {" "}
+                        {row.href.startsWith("http") ? (
+                          <a
+                            href={row.href}
+                            className="link"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {t(row.linkLabel)}
+                          </a>
+                        ) : (
+                          <Link href={`/${locale}${row.href}`} className="link">
+                            {t(row.linkLabel)}
+                          </Link>
+                        )}
+                      </>
+                    )}
+                  </dd>
+                </div>
+              );
+            })}
           </dl>
         </Section>
       </div>

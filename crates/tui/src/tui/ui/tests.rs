@@ -5878,8 +5878,14 @@ fn file_tree_shortcut_does_not_steal_plain_ctrl_e() {
     assert!(!crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(
         &KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL,)
     ));
-    assert!(crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(
+    assert!(!crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(
         &KeyEvent::new(KeyCode::Char('E'), KeyModifiers::CONTROL,)
+    ));
+    assert!(crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(
+        &KeyEvent::new(
+            KeyCode::Char('E'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        )
     ));
     assert!(crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(
         &KeyEvent::new(

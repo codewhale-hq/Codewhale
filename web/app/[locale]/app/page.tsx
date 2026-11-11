@@ -3,9 +3,11 @@ import Link from "next/link";
 import { Icon } from "@/components/icon";
 import { PageHeader, Section } from "@/components/page-header";
 import { Status } from "@/components/status-badge";
-import { AVAILABILITY_ROWS } from "@/lib/content/availability";
+import { DesktopDownloadBlock } from "@/components/desktop-download";
+import { AVAILABILITY_ROWS, describeRow } from "@/lib/content/availability";
 import { APP_COPY } from "@/lib/content/app-page";
 import { pickText } from "@/lib/i18n/dictionaries";
+import { stateLabel, STATE_TONE, surfaceState } from "@/lib/surface-states";
 import { buildPageMetadata } from "@/lib/page-meta";
 
 export const revalidate = 300;
@@ -30,6 +32,8 @@ export default async function AppPage({ params }: { params: Promise<{ locale: st
   const { locale } = await params;
   const t = (text: { en: string; zh: string }) => pickText(text, locale);
   const rows = AVAILABILITY_ROWS.filter((row) => row.pages.includes("app"));
+  const desktopState = surfaceState("desktop");
+  const hostedState = surfaceState("hosted-web");
 
   return (
     <>
@@ -39,8 +43,8 @@ export default async function AppPage({ params }: { params: Promise<{ locale: st
         pose="think"
         meta={
           <p className="app-status">
-            <Status tone="attention">{t(APP_COPY.status.desktop)}</Status>
-            <Status tone="idle">{t(APP_COPY.status.browser)}</Status>
+            <Status tone={STATE_TONE[desktopState]}>{t(APP_COPY.surfaces.desktop)}: {stateLabel(desktopState, locale)}</Status>
+            <Status tone={STATE_TONE[hostedState]}>{t(APP_COPY.surfaces.browser)}: {stateLabel(hostedState, locale)}</Status>
           </p>
         }
         actions={
@@ -124,15 +128,18 @@ export default async function AppPage({ params }: { params: Promise<{ locale: st
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
+                {rows.map((row) => {
+                  const view = describeRow(row, locale);
+                  return (
                   <tr key={row.id}>
                     <th scope="row">{t(row.surface)}</th>
                     <td>
-                      <Status tone={row.tone}>{t(row.status)}</Status>
+                      <Status tone={view.tone}>{view.status}</Status>
                     </td>
                     <td>
-                      {t(row.detail)}
-                      {row.href && row.linkLabel ? (
+                      {view.detail}
+                      {view.download ? <DesktopDownloadBlock download={view.download} locale={locale} /> : null}
+                      {view.link && row.href && row.linkLabel ? (
                         <>
                           {" "}
                           <Link href={`/${locale}${row.href}`} className="link">
@@ -142,7 +149,8 @@ export default async function AppPage({ params }: { params: Promise<{ locale: st
                       ) : null}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

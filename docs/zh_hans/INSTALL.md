@@ -149,13 +149,20 @@ Installed checksummed release commands:
   /home/you/.local/bin/codew
 …
 PATH selects no codewhale command; this install is /home/you/.local/bin/codewhale
-…
+
+codewhale is not on your PATH in this shell yet.
 Put /home/you/.local/bin first on PATH in future shells (run once; this installer does not edit shell profiles):
   printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc
 The marker lines let codewhale uninstall remove exactly this block; a bare export line is yours and is never touched.
-Then run: . ~/.bashrc   (or open a new terminal)
-…
+PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md#put-it-on-your-path
+
+Run this now, in this shell:
+  export PATH="$HOME/.local/bin:$PATH"; hash -r
+Then check it:
+  codewhale --version
 ```
+
+PATH 代码块始终是安装器打印的最后内容。如果你的 PATH 已经选中了这次安装，最后一行是 `Next: codewhale --version`。
 
 ### macOS 说明
 
@@ -167,7 +174,7 @@ Then run: . ~/.bashrc   (or open a new terminal)
 
 ### 把它加入 PATH
 
-如果安装器提示 `PATH selects no codewhale command`，说明 `~/.local/bin` **在当前 shell 里**不在 PATH 上。此时 `codewhale.net/install.sh` 安装器会根据你的 `$SHELL`（zsh、bash、fish 或 POSIX `sh`），打印下面这个代码块里对应的那一行；对于其他 shell，或者目录名含有引号、`$`、反引号或反斜杠的情况，它会让你自己添加该目录。它自己从不修改 shell 配置文件。发布压缩包内的 `install.sh` 只会打印针对当前 shell 的 `export` 行。在 Ubuntu 和 Debian 上，`~/.profile` 会加入 `~/.local/bin`，但前提是该目录在你*登录*时已经存在。所以：
+如果安装器提示 `PATH selects no codewhale command`，说明 `~/.local/bin` **在当前 shell 里**不在 PATH 上。此时 `codewhale.net/install.sh` 安装器会根据你的 `$SHELL`（zsh、bash、fish 或 POSIX `sh`），打印下面这个代码块里对应的那一行；对于其他 shell，或者目录名含有引号、`$`、反引号或反斜杠的情况，它会让你自己添加该目录。它自己从不修改 shell 配置文件。发布压缩包内的 `install.sh` 只会打印针对当前 shell 的 `export` 行，同样作为它的最后输出。在 Ubuntu 和 Debian 上，`~/.profile` 会加入 `~/.local/bin`，但前提是该目录在你*登录*时已经存在。所以：
 
 * 新开的 SSH 会话或登录 shell 会自动生效；
 * 桌面上新开的终端**窗口**（GNOME Terminal、Ghostty 等）通常不会，要等到你注销再登录。我刚装完就在 Ghostty 里遇到了 `bash: codewhale: command not found`。
@@ -182,7 +189,7 @@ export PATH="$HOME/.local/bin:$PATH"; hash -r
 command -v codewhale codew
 ```
 
-这个三行块带有标记，`codewhale uninstall` 之后可以精确地移除它。你自己加的裸 `export PATH=…`
+这个三行块带有标记，`codewhale uninstall`（0.10.3 及更高版本）之后可以精确地移除它；0.10.2 请自行删除这三行。你自己加的裸 `export PATH=…`
 行归你自己管理：卸载从不改动它，因为 `~/.local/bin` 也被其他工具共用。
 
 ### 选项
@@ -216,8 +223,8 @@ codewhale doctor        # diagnostics; see the note in §8 about what it does NO
 ### 升级 / 卸载
 
 * 升级：此安装会自动更新（见 §7），也可以立即运行 `codewhale update`。
-* 卸载：`~/.local/bin/codewhale uninstall` 预览该安装收据所拥有的文件；加上
-  `--yes` 才会删除。数据的清理见 §12。
+* 卸载（0.10.3 及更高版本）：`~/.local/bin/codewhale uninstall` 预览该安装收据所拥有的文件；加上
+  `--yes` 才会删除。0.10.2 及更早版本没有这个命令（输入它会开启一次对话，并把这个词发给模型），请运行 `rm ~/.local/bin/codewhale ~/.local/bin/codew ~/.local/bin/.codewhale-install.sha256`。数据的清理见 §12。
 
 ---
 
@@ -680,7 +687,7 @@ codewhale auth clear --provider <id>
 
 ### 第 2 步：预览并删除所选安装
 
-先运行 `codewhale doctor --installs` 查看每个副本的路径、所有者和删除方式。
+先运行 `codewhale doctor --installs` 查看每个副本的路径、所有者和删除方式。`uninstall` 命令从 0.10.3 起提供；0.10.2 及更早版本请手动删除文件：`rm <目录>/codewhale <目录>/codew <目录>/.codewhale-install.sha256`。
 使用要移除的程序的完整路径运行 `uninstall` 查看计划，确认后再加 `--yes`。
 普通卸载保留会话、配置和文件快照。
 

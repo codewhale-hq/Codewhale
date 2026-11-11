@@ -74,4 +74,19 @@ export const chrome: ChromeDict = {
   // final consonant is unknown at write time.
   switcherSwitchTo: "{label}(으)로 전환",
   partialBadge: "(일부 번역)",
+
+  stateReleased: "출시됨",
+  stateAvailable: "사용 가능",
+  stateBeta: "베타",
+  stateDev: "개발 빌드",
+  stateOpen: "공개됨",
+  stateInviteOnly: "초대 전용",
+  stateNotOpen: "아직 열리지 않음",
+  stateNotPublic: "비공개",
+  numbersAsOf: "{date} 기준",
+  downloadMacos: "macOS용 다운로드",
+  downloadVersion: "버전 {version}",
+  downloadSize: "크기 {size}",
+  downloadChecksum: "SHA-256 체크섬",
+  downloadSigned: "서명 및 공증 완료",
 };

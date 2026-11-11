@@ -71,11 +71,15 @@ export interface ModelFact {
   addedAt: string | null;
 }
 
+export interface ReleaseAssetFact { name: string; size: number; sha256: string | null }
+
 export interface PublishedReleaseFact {
   tag: string;
   version: string;
   publishedAt: string;
   url: string;
+  readAt?: string;
+  assets?: ReleaseAssetFact[];
 }
 
 export interface RepoFacts {

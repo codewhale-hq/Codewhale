@@ -38,11 +38,12 @@ export interface FeedItem {
 }
 
 export interface RepoStats {
-  stars: number;
-  forks: number;
-  openIssues: number;
-  openPulls: number;
-  contributors: number;
+  stars: number | null;
+  forks: number | null;
+  openIssues: number | null;
+  openPulls: number | null;
+  contributors: number | null;
   latestRelease?: { tag: string; publishedAt: string; url: string };
-  fetchedAt: string;
+  fetchedAt: string | null;
+  source: "live" | "snapshot" | "unknown";
 }
