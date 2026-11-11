@@ -300,6 +300,7 @@ fn start_session_blocking(
     log_root: PathBuf,
     thread_id: String,
     workspace: PathBuf,
+    add_dirs: Vec<PathBuf>,
     launch: ExternalAgentLaunch,
     executor: ExecutorRecord,
     login: Option<&'static str>,
@@ -314,12 +315,18 @@ fn start_session_blocking(
         let identity = client.initialize(SETUP_TIMEOUT)?;
         let (session_id, offer) = match executor.foreign_session_id.as_deref() {
             Some(session_id) => {
-                let offer =
-                    client.reopen_session(&identity, session_id, &workspace, SETUP_TIMEOUT)?;
+                let offer = client.reopen_session(
+                    &identity,
+                    session_id,
+                    &workspace,
+                    &add_dirs,
+                    SETUP_TIMEOUT,
+                )?;
                 (session_id.to_string(), offer)
             }
             None => {
-                let started = client.new_session(&workspace, SETUP_TIMEOUT)?;
+                let started =
+                    client.new_session(&identity, &workspace, &add_dirs, SETUP_TIMEOUT)?;
                 (started.session_id, started.offer)
             }
         };
@@ -363,7 +370,7 @@ fn probe_options_blocking(
     client.abort_requests_on(Some(abandoned));
     let probed = (|| -> Result<AgentOptions> {
         let identity = client.initialize(SETUP_TIMEOUT)?;
-        let started = client.new_session(&workspace, SETUP_TIMEOUT)?;
+        let started = client.new_session(&identity, &workspace, &[], SETUP_TIMEOUT)?;
         Ok(AgentOptions::new(
             &identity,
             &launch.agent_id,
@@ -718,13 +725,14 @@ impl RuntimeThreadManager {
             .context("creating the external agent log directory failed")?;
         let thread_id = thread.id.clone();
         let workspace = thread.workspace.clone();
+        let add_dirs = thread.add_dirs.clone();
         let starting = executor.clone();
         let login = agent.login;
         let abandoned = self.cancel_token.child_token();
         let _abandon = abandoned.clone().drop_guard();
         let (started, _loading) = tokio::task::spawn_blocking(move || {
             let started = start_session_blocking(
-                log_root, thread_id, workspace, launch, starting, login, abandoned,
+                log_root, thread_id, workspace, add_dirs, launch, starting, login, abandoned,
             );
             (started, loading)
         })
@@ -1461,7 +1469,7 @@ impl RuntimeThreadManager {
                         .await?;
                 }
             }
-            Some("plan") => {
+            Some("plan" | "plan_update") => {
                 let mut detail = String::new();
                 for entry in update
                     .get("entries")
@@ -1508,6 +1516,42 @@ impl RuntimeThreadManager {
                     )
                     .await?;
                 }
+            }
+            Some("current_mode_update") => {
+                let mode = bounded_id(update.get("currentModeId").or_else(|| update.get("modeId")));
+                if let Some(mode) = mode {
+                    self.emit_event(
+                        thread_id,
+                        Some(turn_id),
+                        None,
+                        "turn.agent_mode",
+                        json!({ "mode": mode, "source": "agent reported" }),
+                    )
+                    .await?;
+                }
+            }
+            Some("available_commands_update") => {
+                let commands: Vec<Value> = update
+                    .get("availableCommands")
+                    .and_then(Value::as_array)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                    .iter()
+                    .take(64)
+                    .filter_map(|command| {
+                        let name = bounded_id(command.get("name"))?;
+                        let description = label(command.get("description"), "");
+                        Some(json!({ "name": name, "description": description }))
+                    })
+                    .collect();
+                self.emit_event(
+                    thread_id,
+                    Some(turn_id),
+                    None,
+                    "turn.agent_commands",
+                    json!({ "commands": commands, "source": "agent reported" }),
+                )
+                .await?;
             }
             Some("session_info_update") => {
                 if let Some(title) = update.get("title").and_then(Value::as_str) {

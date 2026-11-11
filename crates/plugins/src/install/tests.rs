@@ -1599,6 +1599,76 @@ fn dsh_admission_validates_engines_peer_ranges_and_platforms_and_admits_cjs_and_
 }
 
 #[test]
+fn dsh_native_source_admits_a_top_level_gitignore_and_still_refuses_other_hidden_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let make = |name: &str| -> PathBuf {
+        let dir = tmp.path().join(name);
+        fs::create_dir_all(dir.join("lib")).unwrap();
+        fs::write(
+            dir.join("package.json"),
+            serde_json::json!({
+                "name": format!("@demo/{name}"),
+                "version": "1.0.0",
+                "main": "lib/index.cjs",
+                "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("cordis.patch.yml"),
+            "- insert:\n  - id: entry\n    name: ./lib/index.cjs\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("lib/index.cjs"),
+            "module.exports = { apply() {} };\n",
+        )
+        .unwrap();
+        dir
+    };
+
+    let with_gitignore = make("with-gitignore");
+    fs::write(with_gitignore.join(".gitignore"), "node_modules/\n").unwrap();
+    let out = tmp.path().join("out-with-gitignore");
+    let converted = dsh::convert_package(&with_gitignore, &out).unwrap();
+    assert!(converted.requires_native);
+    assert!(out.join("source/.gitignore").is_file());
+
+    for (name, relative) in [
+        ("nested-gitignore", "lib/.gitignore"),
+        ("other-hidden", ".prettierrc"),
+        ("env-file", ".env"),
+        ("npmrc", ".npmrc"),
+        ("git-dir", ".git/config"),
+    ] {
+        let bundle = make(name);
+        let path = bundle.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "x\n").unwrap();
+        let err = dsh::convert_package(&bundle, &tmp.path().join(format!("out-{name}")))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("credential files or repository metadata"),
+            "{name}: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    {
+        let linked = make("linked-gitignore");
+        fs::write(tmp.path().join("outside-ignore"), "secret\n").unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("outside-ignore"), linked.join(".gitignore"))
+            .unwrap();
+        let err = dsh::convert_package(&linked, &tmp.path().join("out-linked"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("links or reparse points"), "{err}");
+    }
+}
+
+#[test]
 fn dsh_client_closure_is_retained_hashed_and_refuses_ambient_dependencies() {
     let tmp = tempfile::tempdir().unwrap();
     let make = |name: &str, client: &str| -> PathBuf {

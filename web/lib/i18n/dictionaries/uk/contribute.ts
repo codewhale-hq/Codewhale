@@ -19,4 +19,16 @@ export const contribute: ContributeDict = {
   devTitle: "Зберіть і перевірте свою зміну в коді",
   devScope:
     "Для коду на Rust зберіть відповідну частину коду та запустіть її цільові перевірки. Для ширших перевірок, потрібних вашій зміні, дотримуйтеся посібника для учасників.",
+  mergedAccountsCount: {
+    one: "За останні 30 днів прийнято pull request від {n} акаунта GitHub.",
+    few: "За останні 30 днів прийнято pull request від {n} акаунтів GitHub.",
+    many: "За останні 30 днів прийнято pull request від {n} акаунтів GitHub.",
+    other: "За останні 30 днів прийнято pull request від {n} акаунта GitHub.",
+  },
+  mergedPeopleCount: {
+    one: "За останні 30 днів прийнято pull request від {n} людини.",
+    few: "За останні 30 днів прийнято pull request від {n} людей.",
+    many: "За останні 30 днів прийнято pull request від {n} людей.",
+    other: "За останні 30 днів прийнято pull request від {n} людини.",
+  },
 };

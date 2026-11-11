@@ -68,7 +68,7 @@ create a Python file primes.py that prints the first 10 primes, run it, and show
 
 Codewhale 会写出文件、给你看 diff，然后询问 **APPROVAL: bash python3 primes.py – Do you want to proceed?**。按 `y` 允许本次执行。它会运行该命令并报告输出。（输入框为空时）按 `Ctrl-D` 退出，它会打印出之后恢复该会话的命令。
 
-> **如果发送第一条消息后没有任何反应，** 说明你还没有配置密钥。v0.10.0 在这种情况下不会给出警告。按 **F3**。如果 DeepSeek 显示 `missing key`，按 Enter，粘贴密钥，然后选择模型并确认。
+> **如果发送第一条消息后没有任何反应，** 说明你还没有连接模型。v0.10.2 会在首屏显示 `no model connected · run /provider`，并把你的第一条消息放回输入框。输入 `/provider`，选择一个提供商或粘贴自定义端点（Custom endpoint），然后重新发送。如果连接之后消息提示已保存、稍后发送，按 Ctrl+D 退出，再重新运行 `codewhale`。
 
 ---
 
@@ -1055,7 +1055,7 @@ NSIS 安装器目前包含 Windows x64 二进制。Windows ARM64 用户应通过
 
 卸载会移除二进制、`codewhale.bat`、开始菜单快捷方式和用户 `PATH` 条目。
 
-自 0.10.3 起，发布压缩包里的 `install.ps1` 默认把 `%USERPROFILE%\bin` 加入**用户** PATH（只写注册表值 `HKCU\Environment\Path`，不动系统 PATH），打印加了什么以及只移除该条目的 PowerShell 命令；目录已在 PATH 上时什么都不做；加 `-NoModifyPath`（或 `CODEWHALE_NO_MODIFY_PATH=1`）可跳过，此时改为打印命令；重复运行不会重复添加。已打开的窗口看不到这个改动，所以最后几行给出当前窗口用的命令和 `codewhale --version`。v0.10.2 的 `install.ps1` 不做这些，只提示你自行添加目录。该路径尚未在 Windows 主机上运行过。
+自 0.10.3 起，发布压缩包里的 `install.ps1` 默认把 `%USERPROFILE%\bin` 加入**用户** PATH（只写注册表值 `HKCU\Environment\Path`，不动系统 PATH），打印加了什么以及只移除该条目的 PowerShell 命令；目录已在 PATH 上时什么都不做；加 `-NoModifyPath`（或 `CODEWHALE_NO_MODIFY_PATH=1`）可跳过（`install.bat -NoModifyPath` 会把该参数传给它），此时改为打印命令；重复运行不会重复添加。已打开的窗口看不到这个改动，所以最后几行给出当前窗口用的命令和 `codewhale --version`。v0.10.2 的 `install.ps1` 不做这些，只提示你自行添加目录。该路径尚未在 Windows 主机上运行过。
 
 **静默安装**（供 IT 管理员、SCCM、Intune 使用）：
 

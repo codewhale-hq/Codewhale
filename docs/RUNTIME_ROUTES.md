@@ -38,6 +38,7 @@ registration index.
 | POST | `/v1/agent-runs/{run_id}/cancel` |
 | GET | `/v1/agents/external` |
 | GET | `/v1/agents/external/{id}/options` |
+| GET | `/v1/agents/external/quota` |
 | GET | `/v1/approvals` |
 | POST | `/v1/approvals/{approval_id}` |
 | GET | `/v1/apps/avatars` |
@@ -59,6 +60,7 @@ registration index.
 | POST | `/v1/apps/plugins/{selector}/enable` |
 | POST | `/v1/apps/plugins/{selector}/restage` |
 | POST | `/v1/apps/plugins/{selector}/revoke` |
+| ANY | `/v1/apps/plugins/{selector}/routes/{*path}` |
 | POST | `/v1/apps/plugins/{selector}/trust` |
 | GET | `/v1/apps/plugins/{selector}/ui` |
 | GET | `/v1/apps/plugins/{selector}/ui/{*path}` |
@@ -260,4 +262,4 @@ registration index.
 | GET / POST | `/v1/worktrees` |
 | POST | `/v1/worktrees/remove` |
 
-The source contains 240 distinct literal paths in this table.
+The source contains 242 distinct literal paths in this table.

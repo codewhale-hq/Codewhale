@@ -17,7 +17,7 @@
 //! connection rather than being parsed.
 
 use std::io::{BufRead, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -142,6 +142,7 @@ pub struct AgentCapabilities {
     pub resume_session: bool,
     pub fork_session: bool,
     pub list_sessions: bool,
+    pub additional_directories: bool,
     pub prompt_image: bool,
     pub prompt_audio: bool,
     pub prompt_embedded_context: bool,
@@ -702,6 +703,26 @@ impl std::fmt::Debug for AcpClient {
     }
 }
 
+fn session_params(
+    identity: &AgentIdentity,
+    session: Option<&str>,
+    cwd: &Path,
+    add_dirs: &[PathBuf],
+) -> Value {
+    let mut params = json!({"cwd": cwd.display().to_string(), "mcpServers": []});
+    if let Some(session) = session {
+        params["sessionId"] = json!(session);
+    }
+    if identity.capabilities.additional_directories && !add_dirs.is_empty() {
+        params["additionalDirectories"] = add_dirs
+            .iter()
+            .map(|dir| dir.display().to_string())
+            .collect::<Vec<_>>()
+            .into();
+    }
+    params
+}
+
 fn write_line(stdin: &Mutex<std::process::ChildStdin>, message: &Value) -> Result<(), AcpError> {
     write_line_unless_cancelled(stdin, message, None)
 }
@@ -895,11 +916,12 @@ impl AcpClient {
                     } else {
                         PermissionAnswer::Cancelled
                     };
-                    write_line_unless_cancelled(
-                        &self.stdin,
-                        &json!({"jsonrpc": "2.0", "id": request_id, "result": {"outcome": answer.outcome()}}),
-                        cancel,
-                    )?;
+                    let answer = if cancel.is_some_and(CancellationToken::is_cancelled) {
+                        PermissionAnswer::Cancelled
+                    } else {
+                        answer
+                    };
+                    self.write(&json!({"jsonrpc": "2.0", "id": request_id, "result": {"outcome": answer.outcome()}}))?;
                 }
                 ("elicitation/create", Some(request_id)) => {
                     self.write(&json!({"jsonrpc": "2.0", "id": request_id, "result": {"action": "decline"}}))?;
@@ -949,6 +971,7 @@ impl AcpClient {
             resume_session: flag("/sessionCapabilities/resume"),
             fork_session: flag("/sessionCapabilities/fork"),
             list_sessions: flag("/sessionCapabilities/list"),
+            additional_directories: flag("/sessionCapabilities/additionalDirectories"),
             prompt_image: flag("/promptCapabilities/image"),
             prompt_audio: flag("/promptCapabilities/audio"),
             prompt_embedded_context: flag("/promptCapabilities/embeddedContext"),
@@ -976,11 +999,17 @@ impl AcpClient {
         })
     }
 
-    pub fn new_session(&mut self, cwd: &Path, timeout: Duration) -> Result<NewSession, AcpError> {
+    pub fn new_session(
+        &mut self,
+        identity: &AgentIdentity,
+        cwd: &Path,
+        add_dirs: &[PathBuf],
+        timeout: Duration,
+    ) -> Result<NewSession, AcpError> {
         let deadline = Instant::now() + timeout;
         let result = self.request(
             "session/new",
-            json!({"cwd": cwd.display().to_string(), "mcpServers": []}),
+            session_params(identity, None, cwd, add_dirs),
             None,
             deadline,
             &mut DiscardHandler,
@@ -1002,6 +1031,7 @@ impl AcpClient {
         identity: &AgentIdentity,
         session: &str,
         cwd: &Path,
+        add_dirs: &[PathBuf],
         timeout: Duration,
     ) -> Result<SessionOffer, AcpError> {
         let method = if identity.resume_session {
@@ -1016,7 +1046,7 @@ impl AcpClient {
         let deadline = Instant::now() + timeout;
         self.request(
             method,
-            json!({"sessionId": session, "cwd": cwd.display().to_string(), "mcpServers": []}),
+            session_params(identity, Some(session), cwd, add_dirs),
             Some(session),
             deadline,
             &mut DiscardHandler,
@@ -1318,7 +1348,7 @@ mod tests {
         assert!(identity.load_session);
 
         let session = client
-            .new_session(workspace.path(), Duration::from_secs(20))
+            .new_session(&identity, workspace.path(), &[], Duration::from_secs(20))
             .unwrap()
             .session_id;
         let allowed = client
@@ -1368,6 +1398,7 @@ mod tests {
                 &identity,
                 &session,
                 workspace.path(),
+                &[],
                 Duration::from_secs(20),
             )
             .unwrap();
@@ -1461,9 +1492,9 @@ mod tests {
 
         let io = host.take_worker_io("w-acp").expect("duplex io");
         let mut client = AcpClient::new(io);
-        client.initialize(Duration::from_secs(20)).unwrap();
+        let identity = client.initialize(Duration::from_secs(20)).unwrap();
         let session = client
-            .new_session(workspace.path(), Duration::from_secs(20))
+            .new_session(&identity, workspace.path(), &[], Duration::from_secs(20))
             .unwrap()
             .session_id;
         let canceller = client.canceller(&session);

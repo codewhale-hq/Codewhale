@@ -588,15 +588,23 @@ a.dir-row:hover .dir-action { color: var(--text); }
 .code .code-copy:focus-visible { box-shadow: var(--glow-focus); }
 .code .code-copy:hover { background: var(--hover); color: var(--text); }
 .code-copy[data-copied="true"] { color: var(--live); }
-@media (max-width: 30rem) {
-  .code pre.code-block { padding-right: 3rem; }
-  .code .code-copy-label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
+@media (max-width: 35rem) {
+  .code pre.code-block {
+    padding-right: var(--space-4);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .code pre.code-block-single {
+    padding-left: calc(var(--space-4) + 2ch);
+    text-indent: -2ch;
+  }
+  .code .code-seg-pipe { display: block; text-indent: 0; }
+  .code .code-copy {
+    position: static;
+    transform: none;
+    box-shadow: none;
+    display: flex;
+    margin: var(--space-2) 0 0 auto;
   }
 }
 

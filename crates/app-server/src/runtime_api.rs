@@ -3381,6 +3381,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             get(plugins::get_plugin_ui_asset),
         )
         .route(
+            "/v1/apps/plugins/{selector}/routes/{*path}",
+            any(plugins::plugin_route_bridge),
+        )
+        .route(
             "/v1/apps/plugins/{selector}/update",
             post(plugins::update_plugin_api),
         )
@@ -3473,6 +3477,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/v1/agents/external",
             get(external_agents::list_external_agents),
+        )
+        .route(
+            "/v1/agents/external/quota",
+            get(external_agents::get_external_agent_quota),
         )
         .route(
             "/v1/agents/external/{id}/options",

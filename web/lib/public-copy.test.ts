@@ -89,8 +89,7 @@ describe("public website copy contracts", () => {
     expect(homepage).not.toContain("<span>{providerRoutes}</span>");
     expect(homepage).not.toContain("releases/tag/v${version}");
     expect(homepage).not.toMatch(/Codewhale v0\.9\.1|\"v0\.9\.1 \u00b7/);
-    // Installation examples come from the verified guide, never the candidate version.
-    expect(install).toContain('from "@/lib/install-guide.generated"');
+    expect(install).toContain("facts.latestPublishedRelease");
     expect(install).not.toContain("facts.version");
     expect(install).not.toContain('"v0.8.x"');
     expect(install).not.toContain("cnbInstall(facts.version");

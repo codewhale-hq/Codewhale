@@ -19,4 +19,12 @@ export const contribute: ContributeDict = {
   devTitle: "अपने कोड बदलाव को बिल्ड करें और जाँचें",
   devScope:
     "Rust कोड के लिए संबंधित कोड बिल्ड करें और उसकी केंद्रित जाँचें चलाएँ। आपके बदलाव को जिन और जाँचों की ज़रूरत हो, उनके लिए योगदानकर्ता गाइड देखें।",
+  mergedAccountsCount: {
+    one: "पिछले 30 दिनों में {n} GitHub खाते का pull request मर्ज हुआ।",
+    other: "पिछले 30 दिनों में {n} GitHub खातों के pull request मर्ज हुए।",
+  },
+  mergedPeopleCount: {
+    one: "पिछले 30 दिनों में {n} व्यक्ति का pull request मर्ज हुआ।",
+    other: "पिछले 30 दिनों में {n} लोगों के pull request मर्ज हुए।",
+  },
 };

@@ -14,10 +14,11 @@ const PROBE_REAP_TIMEOUT: Duration = Duration::from_secs(2);
 const SILENT_HANDSHAKE: &str = "It did not answer the Agent Client Protocol handshake.";
 
 use codewhale_engine::fleet::agents::{
-    AGENTS, ExecutorUnavailable, ExternalAgent, below_minimum, cli_version, foreign_command,
-    not_installed, resolve,
+    AGENTS, AgentQuota, ExecutorUnavailable, ExternalAgent, QuotaGate, QuotaSource, QuotaUnknown,
+    below_minimum, cli_version, foreign_command, local_signin_quota, not_installed, resolve,
 };
 use codewhale_runtime::process_tree::ProcessTree;
+use codewhale_runtime::settings::{AgentSettings, Settings};
 
 #[derive(Debug)]
 enum Handshake {
@@ -272,6 +273,75 @@ pub(super) async fn list_external_agents() -> Json<Value> {
             .unwrap_or(usize::MAX)
     });
     Json(json!({ "agents": found }))
+}
+
+fn quota_json(quota: &AgentQuota) -> Value {
+    match quota {
+        AgentQuota::Known { source, windows } => json!({
+            "status": "known",
+            "source": source.as_str(),
+            "windows": windows
+                .iter()
+                .map(|window| json!({
+                    "name": window.name,
+                    "used_percent": window.used_percent,
+                    "resets_at": window.resets_at,
+                }))
+                .collect::<Vec<_>>(),
+        }),
+        AgentQuota::Unknown(reason) => json!({
+            "status": "unknown",
+            "reason": reason.as_str(),
+        }),
+    }
+}
+
+async fn agent_quota_report(agents: &AgentSettings) -> Value {
+    let mut entries = Vec::with_capacity(AGENTS.len());
+    for agent in AGENTS {
+        let choice = agents.quota(agent.id);
+        let gate = QuotaGate {
+            enabled: choice.enabled,
+            consented: choice.consented_at.is_some(),
+        };
+        let quota = local_signin_quota(agent, gate).await;
+        entries.push(json!({
+            "id": agent.id,
+            "name": agent.name,
+            "quota": quota_json(&quota),
+        }));
+    }
+    for id in agents
+        .quota
+        .keys()
+        .filter(|id| !AGENTS.iter().any(|agent| agent.id == id.as_str()))
+    {
+        entries.push(json!({
+            "id": id,
+            "name": null,
+            "quota": quota_json(&AgentQuota::Unknown(QuotaUnknown::UnknownAgent)),
+        }));
+    }
+    json!({
+        "default_source": QuotaSource::AgentReported.as_str(),
+        "agents": entries,
+    })
+}
+
+pub(super) async fn get_external_agent_quota() -> Json<Value> {
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    let agents = tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        Settings::load_read_only()
+    })
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .map(|settings| settings.agents)
+    .unwrap_or_default();
+    Json(agent_quota_report(&agents).await)
 }
 
 #[cfg(all(test, unix))]

@@ -19,4 +19,10 @@ export const contribute: ContributeDict = {
   devTitle: "코드 변경을 빌드하고 확인하기",
   devScope:
     "Rust 코드를 수정했다면 관련 코드를 빌드하고 해당 부분에 맞춘 검사를 실행하세요. 변경 내용에 따라 더 넓은 검사가 필요하면 기여 안내를 따르세요.",
+  mergedAccountsCount: {
+    other: "지난 30일 동안 GitHub 계정 {n}개의 pull request가 병합되었습니다.",
+  },
+  mergedPeopleCount: {
+    other: "지난 30일 동안 {n}명의 pull request가 병합되었습니다.",
+  },
 };

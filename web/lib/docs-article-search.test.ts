@@ -1,6 +1,5 @@
 import { readFileSync } from "node:fs";
 import { buildInstallGuide } from "../scripts/install-guide-lib.mjs";
-import { INSTALL_GUIDES } from "./install-guide.generated";
 import { FACTS } from "./facts.generated";
 import { CONSTITUTION_SCENES } from "./content/constitution";
 import { describe, expect, it } from "vitest";
@@ -42,17 +41,12 @@ describe("article section search", () => {
       for (const provider of FACTS.providers) {
         expect(searchDocSections(sections, provider.env)).toEqual(expect.arrayContaining([expect.objectContaining({ href: "/models#providers-title" })]));
       }
-      const installIds = new Set(INSTALL_GUIDES[locale].guide.anchors);
       for (const path of ["install", "models", "plugins", "constitution"]) {
         const source = readFileSync(new URL(`../app/[locale]/${path === "constitution" ? "docs/constitution" : path}/page.tsx`, import.meta.url), "utf8");
         const ids = new Set([...source.matchAll(/(?:id|titleId)="([^"]+)"/g)].map(match => match[1]));
-        if (path === "install") for (const id of installIds) ids.add(id);
         const pageSections = sections.filter(section => section.href.startsWith(`/${path}#`));
         expect(pageSections.length).toBeGreaterThan(0);
         for (const section of pageSections) expect(ids.has(section.href.split("#")[1]), section.href).toBe(true);
-      }
-      for (const section of INSTALL_GUIDES[locale].guide.searchSections) {
-        expect(searchDocSections(sections, section.title)).toEqual(expect.arrayContaining([expect.objectContaining({ href: `/install#${section.id}` })]));
       }
     }
   });

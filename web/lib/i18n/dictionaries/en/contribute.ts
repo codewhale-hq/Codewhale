@@ -18,4 +18,12 @@ export const contribute: ContributeDict = {
   devTitle: "Build and check your code change",
   devScope:
     "For Rust code, build the relevant code and run its focused checks. Follow the contributor guide for any broader checks your change needs.",
+  mergedAccountsCount: {
+    one: "{n} GitHub account had a pull request merged in the last 30 days.",
+    other: "{n} GitHub accounts had pull requests merged in the last 30 days.",
+  },
+  mergedPeopleCount: {
+    one: "{n} person had a pull request merged in the last 30 days.",
+    other: "{n} people had pull requests merged in the last 30 days.",
+  },
 };

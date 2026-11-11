@@ -128,13 +128,6 @@
 .feed-column-head h2 { font-size: var(--text-heading); }
 .feed-items > li + li { border-top: 1px solid var(--line); }
 .feed-empty { padding: var(--space-4); }
-.feed-card { display: grid; gap: var(--space-2); padding: var(--space-3) var(--space-4); }
-.feed-card-meta,
-.feed-card-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); color: var(--muted); font-size: var(--text-caption); }
-.feed-card-time,
-.feed-card-author { margin-inline-start: auto; }
-.feed-card-title { font-size: var(--text-ui); font-weight: 500; line-height: 1.45; overflow-wrap: anywhere; }
-.feed-card-title a:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 0.2em; }
 .feed-action { border: 1px solid var(--line); border-radius: var(--radius-surface); background: color-mix(in srgb, var(--panel) 72%, transparent); }
 
 /* Account and utility pages: one centred column. */
@@ -276,4 +269,8 @@
 .github-star-count { border-inline-start: 1px solid var(--line-strong); padding-inline-start: var(--space-3); font-family: var(--font-mono); }
 
 .onboarding-check { display: grid; gap: var(--space-2); margin-block: var(--space-4); max-inline-size: 100%; }
-.onboarding-check .btn { white-space: normal; max-inline-size: 100%; padding-block: var(--space-2); text-align: start; justify-self: start; }
+.onboarding-check .onboarding-check-btn { all: unset; box-sizing: border-box; cursor: pointer; justify-self: start; max-inline-size: 100%; color: var(--accent); font-size: var(--text-ui); text-decoration: underline; text-underline-offset: 0.2em; border-radius: var(--radius-control); }
+.onboarding-check .onboarding-check-btn:focus-visible { box-shadow: var(--glow-focus); }
+.onboarding-check .onboarding-check-btn:disabled { cursor: default; color: var(--muted); text-decoration: none; }
+.install-channel { margin-block: var(--space-6); }
+.install-channel h3 { margin-top: 0; }

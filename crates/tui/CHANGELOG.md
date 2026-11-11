@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Website and docs:** installation now leads to a version check and a verifiable first task, article search finds text and commands with section links, and GitHub star links show the fetched count. The hero reuses the generated drone whale, and control/tool references distinguish the unpublished source candidate from v0.10.2; these website changes still await deployment.
 - **External agent options:** `GET /v1/agents/external/{id}/options?cwd=` returns the models, modes and options an external agent itself offers for a folder, and which Codewhale actions it will not carry. A saved agent model the agent no longer offers is refused with a stable `choice_not_offered` code instead of being ignored, per-turn settings an agent cannot honor are refused as `unsupported_control`, and each agent turn records the context window and tokens the agent reported, with cost shown as unknown (CW-7879). Probing starts a real agent session in the folder, which the agent may keep in its own history. Mode and config choices are listed but cannot yet be chosen through thread creation. Verified on Linux by unit and local HTTP tests against a fixture agent; no real installed agent, macOS, Windows or hosted CI run.
+- **External agent interrupts:** Interrupting a turn while an external agent waits for approval now answers the agent's permission request as cancelled. (CW-7958)
+- **External agent quota:** The Runtime API route `GET /v1/agents/external/quota` reports each external agent's quota as unknown with a reason (flag off, consent missing, not implemented). The new `agents.quota.<agent>` and `agents.quota.<agent>.consent` settings, saved through `POST /v1/config`, record the opt-in and consent (at most 32 agent entries). No agent credential is read. (CW-7993)
 
 ### Changed
 
@@ -43,9 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Website copy:** The site's headline is now "The model can be anyone's. The agent should be yours.", with its subhead, belief and labelled product map in every language.
 - **Website routes:** Pages that repeated each other now redirect to the one page that does the job, the header and footer list only pages that exist under their current names, the sitemap drops redirected and catalogue pages, and machine-drafted translations say so.
 - **Website privacy:** The website no longer counts anything when your browser sends Global Privacy Control or Do Not Track, and the privacy page says exactly what is counted and how it is keyed.
+- Plugin UI: the Runtime API now serves reviewed DSH client closures on six seats (customize.plugins.detail, conversation.composer.dock, conversation.chat.node, workpane.panel, sidebar.section, command.row) with coded refusals, drops a plugin's UI grants the moment it is disabled, revoked or uninstalled, and adds a plugin route bridge that refuses until a plugin web server exists. No real DSH package has been served end to end yet, and a client that imports `@deepseek-ai/dsh-client-*` modules is still refused. (CW-7956)
 
 ### Fixed
 
+- The install guide's note for a first message that gets no answer now describes v0.10.2: connect a model with `/provider`, and restart if messages stay saved for later after you connect. It described v0.10.0's key screen. The Chinese guide carries the same correction.
+- Project activity on the site now comes from a server-side snapshot with a freshness record, the browser no longer calls GitHub, and count sentences use the right plural form in every language.
+- The install page now gives the exact steps for the released version on every platform, including what the installer adds to PATH, how to turn off usage counting, and how to remove it, and the install command no longer gets cut off on phones.
 - The pet browser view opens with a one-time code instead of the long-lived owner token, so the token no longer appears in the URL or the launcher command line. The code lasts 30 seconds and works once; the owner token itself is still stored in the cookie and connection file and is not rotated. Not run in a real browser.
 - On Windows with Caps Lock on, Ctrl+E moves to the end of the line again instead of opening the file tree; the file tree now needs an explicit Shift (Ctrl+Shift+E or Cmd+Shift+E), so a terminal that reports an uppercase E with Ctrl but no Shift flag can no longer toggle it. The Caps Lock key event is simulated from the input library source; no native Windows run.
 - External agents installed through npm on Windows (`claude.cmd`, `codex.cmd`, ...) are now found instead of the unrunnable shell shim, `GET /v1/agents/external` says whether an agent answered with an unsupported protocol rather than reporting every failure as no answer, and a hung `--version` or handshake probe no longer leaves the agent's child processes running. Verified on macOS and Linux; the Windows code has never been compiled or run, and no agent row is qualified by this change.
@@ -57,6 +63,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Website terminal frames:** The site can render terminal frames captured from the released version, and chooses each frame's caption from where it was captured.
 - **Website docs truth:** Documentation pages now describe the released version first and show what exists only in source in a labelled section that switches on when a release carries it.
 - **Website Arabic pages:** On Arabic pages, English text that has no translation yet keeps its own direction and language, so punctuation, commands and dates no longer appear reversed.
+- A DSH plugin whose package includes a `.gitignore` at its root now installs instead of being refused as a hidden file; nested `.gitignore` files, other hidden files, credential files and links are still refused. (CW-8023)
+- `install.bat` in the Windows release archive now passes its arguments to `install.ps1`, so `install.bat -NoModifyPath` declines the user PATH edit like the PowerShell installer does, and the install guide says so. It has not been run on Windows. The batch file reaches people in the next release archive, and the guide sentence when the website is next deployed, because the site serves the guide but not `install.bat`. (CW-8046)
 
 ### Experimental
 

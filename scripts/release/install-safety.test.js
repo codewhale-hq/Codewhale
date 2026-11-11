@@ -428,6 +428,14 @@ for (const kind of ["website", "archive"]) {
   }
 }
 
+test("archive: install.bat forwards its arguments so -NoModifyPath reaches install.ps1", () => {
+  const bat = fs.readFileSync(path.join(repo, "scripts/release/install.bat"), "utf8");
+  const ps1 = fs.readFileSync(path.join(repo, "scripts/release/install.ps1"), "utf8");
+  assert.match(ps1, /param\(\[switch\]\$NoModifyPath\)/);
+  const call = bat.split(/\r?\n/).find(line => /powershell\.exe/i.test(line));
+  assert.match(call, /-File "%~dp0install\.ps1" %\*\s*$/);
+});
+
 test("website: a checksum mismatch stops before any installation", t => {
   const f = fixture(t, "website");
   fs.writeFileSync(path.join(f.assets, "codewhale-macos-arm64"), "tampered");

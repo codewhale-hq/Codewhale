@@ -20,11 +20,14 @@ mod command_catalog;
 mod control_socket_selection;
 #[cfg(unix)]
 mod external_agent_options;
+#[cfg(unix)]
+mod external_agent_quota;
 mod headless_catalog;
 #[cfg(any(unix, windows))]
 mod member_operations;
 #[cfg(unix)]
 mod owner_bootstrap;
+mod plugin_ui;
 mod profile_constitution;
 #[cfg(any(unix, windows))]
 mod runtime_store_convergence;

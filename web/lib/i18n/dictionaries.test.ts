@@ -20,13 +20,10 @@ import {
   EN_CHANGELOG,
   EN_DOCS_SHELL,
   EN_DOCS_TROUBLESHOOTING,
-  EN_FEED,
-  EN_COMMUNITY,
   EN_FAQ,
   EN_HOME,
   EN_LEGAL_PRIVACY,
   EN_LEGAL_TERMS,
-  EN_ROADMAP,
   EN_CONTRIBUTE,
   EN_CONSTITUTION,
   fill,
@@ -51,13 +48,10 @@ import {
   getDocsModes,
   getDocsReview,
   getDocsVocabulary,
-  getFeed,
-  getCommunity,
   getFaq,
   getHome,
   getLegalPrivacy,
   getLegalTerms,
-  getRoadmap,
   getContribute,
   getConstitution,
   pickText,
@@ -294,10 +288,7 @@ describe("website dictionaries", () => {
       ["changelog", getChangelog, EN_CHANGELOG],
       ["legal-terms", getLegalTerms, EN_LEGAL_TERMS],
       ["legal-privacy", getLegalPrivacy, EN_LEGAL_PRIVACY],
-      ["feed", getFeed, EN_FEED],
-      ["community", getCommunity, EN_COMMUNITY],
       ["faq", getFaq, EN_FAQ],
-      ["roadmap", getRoadmap, EN_ROADMAP],
       ["contribute", getContribute, EN_CONTRIBUTE],
       ["constitution", getConstitution, EN_CONSTITUTION],
     ] as const) {
@@ -309,9 +300,9 @@ describe("website dictionaries", () => {
       // `metaTitle` rather than `overviewTitle` because docs/mcp's heading is
       // the code-owned literal `MCP` and stays in the page.
       expect(get("zh").metaTitle, `zh ${label}`).not.toBe(reference.metaTitle);
-      // Roadmap and Contribute ship in every routed locale; the other page
+      // Contribute ships in every routed locale; the other page
       // dictionaries still render English outside en and zh.
-      const translated = label === "roadmap" || label === "contribute";
+      const translated = label === "contribute";
       for (const locale of ["ja", "fr", "ar"]) {
         if (translated) expect(get(locale).metaTitle, `${locale} ${label}`).not.toBe(reference.metaTitle);
         else expect(get(locale), `${locale} ${label}`).toBe(reference);

@@ -1,5 +1,5 @@
 import { Icon } from "./icon";
-import { LiveMergedList, LivePulseStats, LiveStarCount, type PulseRow } from "./github-live";
+import { LivePulseStats, LiveStarCount, type PulseRow } from "./github-live";
 import { GITHUB_STAR_COPY } from "@/lib/content/github-star";
 import { PROJECT_COPY } from "@/lib/content/project";
 import { formatStars, relativeAge, type Face } from "@/lib/github";
@@ -14,10 +14,14 @@ function age(iso: string, locale: string): string {
   return new Intl.RelativeTimeFormat(getChrome(locale).dateLocale, { numeric: "auto" }).format(value, unit);
 }
 
-export function statsAsOf(stats: RepoStats | null, locale: string): string | undefined {
-  if (!stats?.fetchedAt || !Number.isFinite(Date.parse(stats.fetchedAt))) return undefined;
-  const date = new Intl.DateTimeFormat(getChrome(locale).dateLocale, { dateStyle: "medium", timeZone: "UTC" }).format(new Date(stats.fetchedAt));
+export function readAsOf(readAt: string | null | undefined, locale: string): string | undefined {
+  if (!readAt || !Number.isFinite(Date.parse(readAt))) return undefined;
+  const date = new Intl.DateTimeFormat(getChrome(locale).dateLocale, { dateStyle: "medium", timeZone: "UTC" }).format(new Date(readAt));
   return fill(getChrome(locale).numbersAsOf, { date });
+}
+
+export function statsAsOf(stats: RepoStats | null, locale: string): string | undefined {
+  return readAsOf(stats?.fetchedAt, locale);
 }
 
 export function PulseStats({ stats, contributors, locale }: { stats: RepoStats | null; contributors: number; locale: string }) {
@@ -31,26 +35,14 @@ export function PulseStats({ stats, contributors, locale }: { stats: RepoStats |
   return <LivePulseStats rows={rows} numberLocale={getChrome(locale).dateLocale} />;
 }
 
-export function MergedList({ items, locale, limit = 5 }: { items: FeedItem[]; locale: string; limit?: number }) {
-  if (items.length === 0) {
-    return (
-      <LiveMergedList
-        limit={limit}
-        copy={{
-          heading: pickText(PROJECT_COPY.mergedHeading, locale),
-          mergedAge: pickText(PROJECT_COPY.mergedAge, locale),
-          firstContribution: pickText(PROJECT_COPY.firstContribution, locale),
-          dateLocale: getChrome(locale).dateLocale,
-        }}
-      />
-    );
-  }
+export function MergedList({ items, locale }: { items: FeedItem[]; locale: string; limit?: number }) {
+  if (items.length === 0) return null;
   return (
     <ol className="merged-list" role="list">
       {items.map((item) => (
         <li key={item.number}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={avatar(item.authorAvatar, 80)} alt="" width={40} height={40} loading="lazy" decoding="async" className="face" />
+          <img src={avatar(item.authorAvatar, 80)} alt={item.author} width={40} height={40} loading="lazy" decoding="async" className="face" />
           <div className="merged-text">
             <a href={item.url} className="merged-title">{item.title}</a>
             <p className="merged-meta">
@@ -74,7 +66,7 @@ export function FaceWall({ faces, total, locale }: { faces: Face[]; total: numbe
           <li key={face.login}>
             <a href={`https://github.com/${face.login}`} title={`@${face.login}`} aria-label={`@${face.login}`}>
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={avatar(face.avatar, 96)} alt="" width={44} height={44} loading="lazy" decoding="async" className="face" />
+              <img src={avatar(face.avatar, 96)} alt={face.login} width={44} height={44} loading="lazy" decoding="async" className="face" />
             </a>
           </li>
         ))}
@@ -90,7 +82,7 @@ export function FaceWall({ faces, total, locale }: { faces: Face[]; total: numbe
 export function GitHubStar({ stars, locale, asOf }: { stars?: number; locale: string; asOf?: string }) {
   const label = pickText(GITHUB_STAR_COPY, locale);
   return (
-    <a href={REPO_URL} className="btn btn-secondary github-star" data-funnel="star_exit">
+    <a href={REPO_URL} className="btn btn-secondary github-star">
       <span aria-hidden="true">☆</span>
       <span>{label}</span>
       <LiveStarCount initial={stars} numberLocale={getChrome(locale).dateLocale} asOf={asOf} />

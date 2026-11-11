@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const securityMocks = vi.hoisted(() => ({
   agentChat: vi.fn(),
-  fetchFeed: vi.fn(),
   getAgentEnv: vi.fn(),
   validateSession: vi.fn(),
 }));
@@ -17,16 +16,7 @@ vi.mock("@/lib/community-agent", async (importOriginal) => {
   };
 });
 
-vi.mock("@/lib/github", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./github")>();
-  return {
-    ...actual,
-    fetchFeed: securityMocks.fetchFeed,
-  };
-});
-
 import { POST as adminPost } from "../app/api/admin/post/route";
-import { GET as publicFeed } from "../app/api/github/feed/route";
 import { reviewedBodyHash } from "./community-agent";
 
 class FakeKv {
@@ -67,7 +57,6 @@ function inputUrl(input: string | URL | Request): string {
 
 beforeEach(() => {
   securityMocks.agentChat.mockReset();
-  securityMocks.fetchFeed.mockReset();
   securityMocks.getAgentEnv.mockReset();
   securityMocks.validateSession.mockReset();
   securityMocks.validateSession.mockResolvedValue(true);
@@ -103,17 +92,6 @@ describe("public security boundaries", () => {
     expect(kv.reads).toEqual([]);
     expect(kv.deleted).toEqual([]);
     expect(kv.values.has("agent:state:latest")).toBe(true);
-  });
-
-  it("never forwards an ambient server token through the public feed route", async () => {
-    vi.stubEnv("GITHUB_TOKEN", "server-secret-must-not-cross-public-boundary");
-    securityMocks.fetchFeed.mockResolvedValue([]);
-
-    const response = await publicFeed();
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ items: [] });
-    expect(securityMocks.fetchFeed).toHaveBeenCalledExactlyOnceWith(undefined, 50);
   });
 
   it("posts bodyZh when lang=zh and no editedBody is supplied", async () => {

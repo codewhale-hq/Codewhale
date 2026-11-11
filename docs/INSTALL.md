@@ -91,10 +91,11 @@ python3 primes.py – Do you want to proceed?** Press `y` to allow it once. It
 runs the command and reports the output. Press `Ctrl-D` (with an empty input
 box) to quit. It prints the command to resume the session later.
 
-> **If nothing happens after you send your first message,** you have no key
-> configured. v0.10.0 doesn't warn you in that case. Press **F3**. If DeepSeek
-> shows `missing key`, press Enter, paste the key, then pick a model and
-> confirm.
+> **If nothing happens after you send your first message,** you have not
+> connected a model. v0.10.2 shows `no model connected · run /provider` on its
+> first screen and returns your first message to the composer. Type `/provider`,
+> choose a provider or paste a Custom endpoint, then send it again. If messages say
+> they were saved for later after you connect, quit with Ctrl+D and run `codewhale` again.
 
 ---
 
@@ -1108,7 +1109,7 @@ Successful self-update renews an existing command receipt, and writes one for a 
 
 On Windows, `codewhale uninstall --yes` removes `codewhale.exe`, `codew.exe`, `codewhale.bat`, any receipted compiled-host files and the receipt itself. Windows cannot delete a running program, so the running `codewhale.exe` is renamed in place to a `.codewhale-host-recovery-…` name and deleted by a helper once the command exits; the output names that file in case it remains. `codewhale.old-…` files left by an earlier self-update are listed, not deleted. A known legacy directory can adopt matching command bytes into a receipt. Other unreceipted archive copies are preserved; reinstall with the current `install.ps1` to obtain a receipt before automatic removal. Windows removal has been compile-checked but not yet exercised on a Windows host.
 
-From 0.10.3 on, the Windows archive's `install.ps1` adds `%USERPROFILE%\bin` to your **user** PATH by default (one registry value, `HKCU\Environment\Path`; it never touches the machine PATH), prints what it added and the PowerShell command that removes just that entry, and does nothing when the directory is already on PATH. Run it with `-NoModifyPath` (or `CODEWHALE_NO_MODIFY_PATH=1`) to skip the edit; it then prints the command to add the entry yourself. Running it again never adds a second entry. Windows terminals that are already open do not see the change, so its last lines give the command for the current window and `codewhale --version`. The v0.10.2 `install.ps1` does none of this and tells you to add the directory yourself. This path has not been run on a Windows host.
+From 0.10.3 on, the Windows archive's `install.ps1` adds `%USERPROFILE%\bin` to your **user** PATH by default (one registry value, `HKCU\Environment\Path`; it never touches the machine PATH), prints what it added and the PowerShell command that removes just that entry, and does nothing when the directory is already on PATH. Run it with `-NoModifyPath` (or `CODEWHALE_NO_MODIFY_PATH=1`) to skip the edit, and `install.bat -NoModifyPath` passes the flag through; it then prints the command to add the entry yourself. Running it again never adds a second entry. Windows terminals that are already open do not see the change, so its last lines give the command for the current window and `codewhale --version`. The v0.10.2 `install.ps1` does none of this and tells you to add the directory yourself. This path has not been run on a Windows host.
 
 Repeating `uninstall` after removal is safe: the removed copy is gone, and any other copy only removes what its own receipt owns. Reinstalling into the same directory afterwards writes a fresh receipt.
 

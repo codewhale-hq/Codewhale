@@ -16,4 +16,10 @@ export const contribute: ContributeDict = {
   reviewScope: "把问题、修改理由、测试证据和剩余风险交给审查者。范围越集中，反馈越清楚。",
   devTitle: "构建并验证代码修改",
   devScope: "修改 Rust 代码时，先构建相关代码并运行针对性的检查。按照贡献指南，补充你的修改所需的更完整检查。",
+  mergedAccountsCount: {
+    other: "过去 30 天内有 {n} 个 GitHub 账号的 pull request 被合并。",
+  },
+  mergedPeopleCount: {
+    other: "过去 30 天内有 {n} 人的 pull request 被合并。",
+  },
 };
