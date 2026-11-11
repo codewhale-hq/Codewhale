@@ -6,7 +6,7 @@ import { GET as getTopicMarkdown } from "../app/docs-markdown/[topic]/route";
 import { GET as getFullText } from "../app/llms-full.txt/route";
 import { GET } from "../app/llms.txt/route";
 import robots from "../app/robots";
-import { RELEASE_DOCS } from "./agent-docs";
+import { RELEASE_DOCS } from "./release-docs";
 import { claimAvailability, runtimeCapabilityContext } from "./capabilities";
 import { INSTALL_COMMANDS, INSTALL_COPY, INSTALL_PAGE_COMMANDS } from "./content/install";
 import { PRODUCT_MAP_STATE_KEY, PRODUCT_MAP_TEXT_KEYS, productMap } from "./content/product-map";

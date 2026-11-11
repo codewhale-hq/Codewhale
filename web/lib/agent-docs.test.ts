@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { GET as getTopicMarkdown, generateStaticParams } from "../app/docs-markdown/[topic]/route";
 import { GET as getFullText } from "../app/llms-full.txt/route";
-import { checkReleaseDocs } from "../scripts/release-docs-lib.mjs";
-import { RELEASE_DOCS, buildTopicMarkdown } from "./agent-docs";
+import { checkReleaseDocs, refreshReleaseDocs, releaseDocsIndex } from "../scripts/release-docs-lib.mjs";
+import { RELEASE_DOCS, buildTopicMarkdown } from "./release-docs";
 import { DOC_TOPICS } from "./docs-map";
 import { FACTS } from "./facts.generated";
 import { REPO_URL } from "./i18n/links";
@@ -38,7 +38,7 @@ describe("documents at the released tag", () => {
   it("says plainly when a registered document is not part of the release", () => {
     const topic = RELEASE_DOCS.topics.find((entry) => entry.missing.length > 0)!;
     expect(topic).toBeDefined();
-    expect(buildTopicMarkdown(topic.slug)).toContain(`${topic.missing[0]} does not exist at ${release.tag}`);
+    expect(buildTopicMarkdown(topic.slug)).toContain(`${topic.missing[0]} was added after ${release.tag} and is not part of this release`);
   });
 
   it("answers 404 for a topic that is not in the snapshot", async () => {
@@ -63,5 +63,16 @@ describe("documents at the released tag", () => {
     const dropped = JSON.parse(JSON.stringify(RELEASE_DOCS));
     dropped.topics.pop();
     expect(checkReleaseDocs(dropped, release, DOC_TOPICS, null).join("\n")).toContain("neither in the snapshot");
+  });
+
+  it("fails its check when the topic index disagrees with the snapshot", () => {
+    expect(checkReleaseDocs(RELEASE_DOCS, release, DOC_TOPICS, null, releaseDocsIndex(RELEASE_DOCS))).toEqual([]);
+    const stale = { ...releaseDocsIndex(RELEASE_DOCS), slugs: [] };
+    expect(checkReleaseDocs(RELEASE_DOCS, release, DOC_TOPICS, null, stale).join("\n")).toContain("release-index");
+  });
+
+  it("refuses to generate, and writes nothing, when the tag is missing and the snapshot is for another release", () => {
+    expect(() => refreshReleaseDocs(new URL("..", import.meta.url).pathname, { tag: "v9.9.9", version: "9.9.9" })).toThrow(/v9\.9\.9/);
+    expect(() => refreshReleaseDocs(new URL("..", import.meta.url).pathname, null)).not.toThrow();
   });
 });

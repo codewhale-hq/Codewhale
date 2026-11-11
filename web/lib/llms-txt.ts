@@ -1,4 +1,4 @@
-import released from "../data/agent-docs.release.json";
+import releasedIndex from "../data/agent-docs.release-index.json";
 import { claimAvailability, releaseView, runtimeCapabilityContext } from "./capabilities";
 import { APP_COPY } from "./content/app-page";
 import { INSTALL_COMMANDS, INSTALL_COPY as I, INSTALL_PAGE_COMMANDS as C } from "./content/install";
@@ -249,7 +249,7 @@ export function buildLlmsTxt(input: AgentTextInput = {}): string {
     `- [Public plugin catalog](https://github.com/codewhale-hq/codewhale-plugin-marketplace): Installed CLI releases bundle a dated snapshot; current catalog entries are not proof of installed versions or end-to-end qualification.`,
     "", "## Documentation", "",
   ];
-  for (const topic of DOC_TOPICS.filter((entry) => released.topics.some((document) => document.slug === entry.slug))) {
+  for (const topic of DOC_TOPICS.filter((entry) => releasedIndex.slugs.includes(entry.slug))) {
     lines.push(`- [${topic.label.en}](${SITE_URL}/docs-markdown/${topic.slug}.md): ${topicDescription(topic)}`);
   }
   lines.push("", "## Optional", "");

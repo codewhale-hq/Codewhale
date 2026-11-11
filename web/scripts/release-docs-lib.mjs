@@ -8,6 +8,7 @@ import { readDocTopics } from "./docs-sources-lib.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const RELEASE_DOCS_PATH = resolve(here, "..", "data", "agent-docs.release.json");
+export const RELEASE_DOCS_INDEX_PATH = resolve(here, "..", "data", "agent-docs.release-index.json");
 export const RELEASE_DOCS_FORMAT = "codewhale.release-docs.v1";
 
 function gitShow(tag, path) {
@@ -44,6 +45,15 @@ export function serializeReleaseDocs(snapshot) {
   return `${JSON.stringify(snapshot, null, 2)}\n`;
 }
 
+export function releaseDocsIndex(snapshot) {
+  return { tag: snapshot.tag, slugs: snapshot.topics.map((topic) => topic.slug), omitted: snapshot.omitted.map((topic) => topic.slug) };
+}
+
+export function readCommittedReleaseDocsIndex() {
+  if (!existsSync(RELEASE_DOCS_INDEX_PATH)) return null;
+  try { return JSON.parse(readFileSync(RELEASE_DOCS_INDEX_PATH, "utf8")); } catch { return null; }
+}
+
 export function readCommittedReleaseDocs() {
   if (!existsSync(RELEASE_DOCS_PATH)) return null;
   try { return JSON.parse(readFileSync(RELEASE_DOCS_PATH, "utf8")); } catch { return null; }
@@ -56,15 +66,18 @@ export function refreshReleaseDocs(webDir, release) {
     const note = !release ? "no published release" : committed?.tag === release.tag
       ? `tag ${release.tag} is not available in this checkout, keeping the committed snapshot`
       : `tag ${release.tag} is not available in this checkout and the committed snapshot is for ${committed?.tag ?? "nothing"}`;
+    if (release && committed?.tag !== release.tag) throw new Error(`[release-docs] ${note}`);
     console.warn(`[release-docs] ${note}`);
     return committed;
   }
   const text = serializeReleaseDocs(fresh);
   if (!existsSync(RELEASE_DOCS_PATH) || readFileSync(RELEASE_DOCS_PATH, "utf8") !== text) writeFileSync(RELEASE_DOCS_PATH, text);
+  const indexText = `${JSON.stringify(releaseDocsIndex(fresh), null, 2)}\n`;
+  if (!existsSync(RELEASE_DOCS_INDEX_PATH) || readFileSync(RELEASE_DOCS_INDEX_PATH, "utf8") !== indexText) writeFileSync(RELEASE_DOCS_INDEX_PATH, indexText);
   return fresh;
 }
 
-export function checkReleaseDocs(snapshot, release, registry, derived) {
+export function checkReleaseDocs(snapshot, release, registry, derived, index) {
   const problems = [];
   if (!release) return ["the published release is unknown"];
   if (!snapshot || snapshot.format !== RELEASE_DOCS_FORMAT || !Array.isArray(snapshot.topics) || !Array.isArray(snapshot.omitted)) {
@@ -82,6 +95,9 @@ export function checkReleaseDocs(snapshot, release, registry, derived) {
   const covered = new Set([...snapshot.topics, ...snapshot.omitted].map((topic) => topic.slug));
   for (const topic of registry) {
     if (!covered.has(topic.slug)) problems.push(`docs topic ${topic.slug} is neither in the snapshot nor recorded as omitted`);
+  }
+  if (index !== undefined && JSON.stringify(index) !== JSON.stringify(releaseDocsIndex(snapshot))) {
+    problems.push("data/agent-docs.release-index.json does not match data/agent-docs.release.json; run npm run prebuild");
   }
   if (derived && problems.length === 0 && serializeReleaseDocs(derived) !== serializeReleaseDocs(snapshot)) {
     problems.push(`data/agent-docs.release.json differs from the documents at ${release.tag}; run npm run prebuild`);

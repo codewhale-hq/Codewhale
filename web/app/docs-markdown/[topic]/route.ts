@@ -1,4 +1,4 @@
-import { RELEASE_DOCS, buildTopicMarkdown } from "@/lib/agent-docs";
+import { RELEASE_DOCS, buildTopicMarkdown } from "@/lib/release-docs";
 
 export const dynamic = "force-static";
 export const dynamicParams = false;

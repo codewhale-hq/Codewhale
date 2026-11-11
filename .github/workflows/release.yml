@@ -612,6 +612,7 @@ jobs:
           set -euo pipefail
           node web/scripts/sync-latest-release.mjs
           node web/scripts/derive-facts.mjs
+          node web/scripts/derive-release-docs.mjs
       - name: Prove the record passes the web fact gates
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -620,6 +621,7 @@ jobs:
           node web/scripts/sync-latest-release.mjs --check
           node web/scripts/check-cloud-facts.mjs
           node web/scripts/check-facts.mjs
+          node web/scripts/check-release-docs.mjs
       - name: Propose the record to the default branch
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
@@ -633,6 +635,8 @@ jobs:
             docs/cloud-facts/stable.json
             web/lib/facts.generated.ts
             web/data/agent-docs.generated.json
+            web/data/agent-docs.release.json
+            web/data/agent-docs.release-index.json
             web/data/features.generated.json
           )
           if git diff --quiet -- "${paths[@]}"; then
