@@ -208,6 +208,11 @@ lifecycle_mutation = true
 - `capabilities.network_hosts` 不属于未来才会生效的组件面：它今天就已强制执行，
   且必须与插件包远程 MCP 端点的归一化主机集合完全一致
   （有远程 MCP 端点就必须声明它，没有远程端点就不能声明）。
+- `capabilities.host_services` 列出插件包的原生代码请求使用的宿主服务
+  （`workspace`、`llm`、`network`、`settings`、`catalog`、`terminal`、`remote`）。
+  只有在该列表非空时才计入能力回执的哈希，因此不请求任何服务的插件包无需重新审查。
+  声明本身不授予任何权限：只有展示过这些服务的审查才会授予，而当前版本尚未开放任何服务。
+  参见[宿主服务](../EXTENSIONS.md#host-services)。
 
 环境检查或健康检查通过，永远不等于信任。
 

@@ -143,6 +143,22 @@ WebRTC traffic despite content rules, CSP, an opaque sandboxed frame and a
 restrictive Permissions-Policy; that historical result does not qualify the
 current Electron/Chromium host.
 
+## Host services and grants
+
+DSH services that need the core to act for a plugin (`llm`, `credentials`,
+`settings`, `terminal`, `remote`, the plugin catalog, workspace files) are
+brokered: the Rust core serves them, and only for a plugin whose review granted
+them. See [Host services](EXTENSIONS.md#host-services).
+
+| Behavior | Status |
+| --- | --- |
+| A service is granted only by a review that showed it, recorded with who approved | Verified by focused plugin and Engine tests on Linux |
+| A review recorded before grants existed, or an altered or unreadable record | Grants nothing; verified by focused tests |
+| Plugins share one process: a service is given only while every loaded plugin holds the same grant | Verified by focused Engine tests |
+| Turned off, revoked or reviewed again | Grant withdrawn at once, including a call in flight; verified by focused Engine tests |
+| Services offered by this build | None. Each is switched on separately, after its own review |
+| A real plugin using a granted service end to end | Not verified |
+
 ## Containment
 
 | Behavior | Status |

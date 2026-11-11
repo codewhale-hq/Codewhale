@@ -240,6 +240,13 @@ The accept/reject behavior is deliberately loud, never silent:
 - `capabilities.network_hosts` is not a future surface: it is enforced today,
   and must exactly match the normalized host set of the bundle's remote MCP
   endpoints (so it cannot be declared without them, or omitted with them).
+- `capabilities.host_services` names the host services a bundle's native code
+  asks to use (`workspace`, `llm`, `network`, `settings`, `catalog`,
+  `terminal`, `remote`). It is hashed into the capability receipt only when it
+  is not empty, so bundles that ask for nothing keep their review. Asking
+  grants nothing: only a review that showed the services does, and this
+  version offers none yet. See
+  [Host services](EXTENSIONS.md#host-services).
 
 A successful environment or health check is never treated as trust.
 
