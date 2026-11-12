@@ -4,8 +4,9 @@
 
 在终端中，`/mcp`（也可用 `/mcps`）会打开 **Extensions → MCP**。按 Enter 会对所选服务器执行恢复操作，或打开只读详情。清单为空时会提供服务器建议；浏览这些建议不会安装任何内容。`/mcp status`、`/mcp doctor`、`/mcp login`、`/mcp add` 等显式子命令的行为保持不变。
 
-你添加到 Codewhale 的一切都叫插件。你配置的 MCP 服务器是一个 connector（连接器），列为只添加一个
-connector 的插件，标签为 **Connector**；插件包也可以携带 connector。配置文件、登录和 `/mcp` 命令都不变。
+你添加到 Codewhale 的一切都叫插件。你配置的 MCP 服务器是 **Connector**（连接器）类插件；插件包也可以携带 connector。
+connector 仍在终端的 Extensions → MCP 和桌面端的 Customize › Connectors 管理；把所有种类放在一个插件列表里是
+0.10.3 的计划，当前版本尚无。配置文件、登录和 `/mcp` 命令都不变。
 本页的“连接”（connection）指到服务器的实际链路；作为产品名词，Connection 专指模型提供方或另一个 agent。
 
 Codewhale 可以通过 MCP（Model Context Protocol，模型上下文协议）加载额外工具。MCP 服务器可以是 Codewhale 启动的本地 stdio 进程，也可以是使用 Streamable HTTP（带传统 SSE 回退）的远程基于 URL 的服务器。

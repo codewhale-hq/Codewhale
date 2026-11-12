@@ -57,13 +57,18 @@ code) are inventory-only unless the user has turned on the experimental
    - present these results; the person runs `/plugin enable <plugin-name>`
      to open the content/capability review, reviews it, runs the exact
      `/plugin trust ...` confirmation shown, then enables the bundle
-   - exception: in Full Access, for a plugin you wrote and installed from a
-     folder inside the current project, you may run `codewhale plugins trust`
-     and `codewhale plugins enable` yourself. They are shell commands, so the
+   - exception: in Full Access, for a plugin you wrote yourself, you may
+     trust and enable it without asking the person. Write it in a folder
+     inside the current project, then run, in this order:
+     `codewhale install <folder>`, `codewhale plugins trust <name>` (it prints
+     the review and a review token), `codewhale plugins trust <name>
+     --review-token <token> --yes` with the token from your own run, and
+     `codewhale plugins enable <name>`. These are shell commands, so the
      session's approval applies to them like any other (Ask asks the person,
      Auto-Review's reviewer judges, Full Access runs them). The trust is
-     recorded as approved by the agent, for this project only. Never do this for a plugin you
-     did not write, and never reuse a token the person was shown.
+     recorded as approved by the agent, for this project only. A bundle that
+     was not installed this way from inside the project is refused. Never do
+     this for a plugin you did not write.
 8. Verify `/skills inspect` reports plugin provenance and `/plugin list`
    reports the expected trust and activation state. Trust stages the reviewed
    content but does not activate it. After enablement, follow the host's

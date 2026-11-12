@@ -13,12 +13,16 @@ the trust/enable lifecycle — this document covers how bits get onto disk in
 the first place.
 
 Everything you add to Codewhale is a plugin. A skill, an MCP connector and a hook
-are each a plugin, or part of one, and each shows its kind as a label: Skill,
-Connector, Hook, Command. Skills, connectors and hooks you set up by hand are
-listed as plugins that add one skill, one connector or one hook; their files,
-trust rules and commands (`/skills`, `/mcp`, `/hooks`) do not change.
-"Connection" is the word for a model provider or another agent; it is not a kind
-of plugin.
+are each a plugin, or part of one, and each has a kind: Skill, Connector, Hook,
+Command. A skill you set up by hand is a plugin of the kind Skill, a server you
+configure is a plugin of the kind Connector, and a hook you configure is a plugin
+of the kind Hook. They are still managed where they are today: Extensions →
+Skills, MCP and Hooks in the terminal, and Customize › Skills, Connectors and
+Hooks on the desktop. Their files, trust rules and commands (`/skills`, `/mcp`,
+`/hooks`) do not change. One Plugins list that shows every kind together is
+planned for 0.10.3 and is not in this build; today the kind labels appear on the
+parts inside a plugin bundle's detail. "Connection" is the word for a model
+provider or another agent; it is not a kind of plugin.
 
 ## Choose what to add
 
