@@ -5,7 +5,7 @@
 //! tool suggestions, and the small set of built-in advanced tools that are not
 //! registered by the normal runtime tool registry.
 
-use crate::tools::execution_envelope::tool_call_denied;
+use crate::tools::execution_envelope::{holds_bounded_verification, tool_call_denied_for};
 use codewhale_tools::names::{
     LEGACY_TOOL_SEARCH_BM25_NAME, LEGACY_TOOL_SEARCH_REGEX_NAME, TOOL_SEARCH_NAME,
     is_tool_search_tool,
@@ -625,6 +625,7 @@ pub(super) struct ToolSurfacePolicy {
     pub(super) strict_tool_mode: bool,
     allowed_tools: Option<Vec<String>>,
     disallowed_tools: Option<Vec<String>>,
+    holds_bounded_verification: bool,
     /// Hard per-turn cap on admitted tool calls (#4415). The turn loop copies
     /// this limit into its own admission counter at turn start; `None` means
     /// unlimited (the default), which keeps the admission gate inert.
@@ -645,6 +646,7 @@ impl ToolSurfacePolicy {
         max_tool_calls: Option<u32>,
         tool_mode: ToolMode,
     ) -> Self {
+        let holds_bounded_verification = holds_bounded_verification(registry.context());
         let mut catalog = tools.unwrap_or_default();
         if !catalog.is_empty() {
             ensure_advanced_tooling(&mut catalog, mode, always_load, tool_mode);
@@ -669,10 +671,11 @@ impl ToolSurfacePolicy {
                 .and_then(Value::as_array_mut)
             {
                 actions.retain(|action| {
-                    !tool_call_denied(
+                    !tool_call_denied_for(
                         disallowed_tools.as_deref(),
                         &tool.name,
                         &json!({"action": action}),
+                        holds_bounded_verification,
                     )
                 });
             }
@@ -697,6 +700,7 @@ impl ToolSurfacePolicy {
             strict_tool_mode,
             allowed_tools,
             disallowed_tools,
+            holds_bounded_verification,
             max_tool_calls,
         }
     }
@@ -738,7 +742,12 @@ impl ToolSurfacePolicy {
     }
 
     pub(super) fn denies_call(&self, name: &str, input: &Value) -> bool {
-        tool_call_denied(self.disallowed_tools.as_deref(), name, input)
+        tool_call_denied_for(
+            self.disallowed_tools.as_deref(),
+            name,
+            input,
+            self.holds_bounded_verification,
+        )
     }
 }
 

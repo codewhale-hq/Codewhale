@@ -61,6 +61,7 @@
 use serde_json::Value;
 
 use crate::tools::spec::{ApprovalRequirement, ToolCapability, ToolSpec};
+use codewhale_agent_contract::worker_profile::ShellGrant;
 use codewhale_execpolicy::canonical_action::canonical_action_alias;
 
 /// The execution authority a child actually holds, read off the runtime posture
@@ -477,6 +478,15 @@ pub fn enforce_execution_envelope(
 }
 
 pub fn tool_call_denied(rules: Option<&[String]>, name: &str, input: &Value) -> bool {
+    tool_call_denied_for(rules, name, input, false)
+}
+
+pub fn tool_call_denied_for(
+    rules: Option<&[String]>,
+    name: &str,
+    input: &Value,
+    holds_bounded_verification: bool,
+) -> bool {
     let action = canonical_action_alias(name, input);
     codewhale_execpolicy::tool_rules::tool_denied(rules, name)
         || codewhale_execpolicy::tool_rules::tool_denied(rules, action)
@@ -486,12 +496,37 @@ pub fn tool_call_denied(rules: Option<&[String]>, name: &str, input: &Value) -> 
                 .and_then(Value::as_str)
                 .is_some_and(|url| !url.trim().is_empty())
             && codewhale_execpolicy::tool_rules::tool_denied(rules, "fetch_url"))
-        || (matches!(
-            classify_verification(action, input),
-            Some(VerificationBound::Unbounded)
-        ) && rules.is_some_and(|rules| {
-            codewhale_execpolicy::tool_rules::tool_matches_any_rule(rules, "Bash")
-        }))
+        || (starts_workspace_execution(name, action, input, holds_bounded_verification)
+            && rules.is_some_and(|rules| {
+                codewhale_execpolicy::tool_rules::tool_matches_any_rule(rules, "Bash")
+            }))
+}
+
+fn starts_workspace_execution(
+    name: &str,
+    action: &str,
+    input: &Value,
+    holds_bounded_verification: bool,
+) -> bool {
+    match classify_verification(action, input) {
+        Some(VerificationBound::Unbounded) => true,
+        Some(VerificationBound::Default | VerificationBound::Filter) => !holds_bounded_verification,
+        None => {
+            name.eq_ignore_ascii_case("send_later")
+                && input.get("action").and_then(Value::as_str) == Some("schedule")
+        }
+    }
+}
+
+#[must_use]
+pub fn holds_bounded_verification(context: &crate::tools::spec::ToolContext) -> bool {
+    context
+        .child_host
+        .as_ref()
+        .is_some_and(|child| child.grant.shell == ShellGrant::Verify)
+        || context.tool_authority.as_deref().is_some_and(|authority| {
+            authority.verification == crate::tools::spec::ToolVerificationAuthority::Bounded
+        })
 }
 
 /// Repeat the command ceiling at native dispatch and direct delegation sinks.
@@ -507,7 +542,14 @@ pub fn enforce_tool_denial(
         && context.owner_agent_id.is_some()
         && context.shell_policy == codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly
         && crate::tools::shell::agent_readonly_bash_input(input);
-    if !bounded_child_read && tool_call_denied(Some(&context.disallowed_tools), name, input) {
+    if !bounded_child_read
+        && tool_call_denied_for(
+            Some(&context.disallowed_tools),
+            name,
+            input,
+            holds_bounded_verification(context),
+        )
+    {
         return Err(crate::tools::spec::ToolError::permission_denied(format!(
             "Tool '{name}' or its execution dependency is in the disallowed-tools list"
         )));
