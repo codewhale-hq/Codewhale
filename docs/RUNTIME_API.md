@@ -2693,14 +2693,24 @@ thread deletion.
   `connector`, `hook`, `command`), `name`, `description`, `source`
   (`built_in`, `user`, `project`, `other_app`, `runtime`, `plugin`), `state`
   (`enabled`, `disabled`, `needs_review`, `needs_sign_in`, `unavailable`) and
-  `labels` (what the item adds). A plugin item also has `adds` (`skills`,
-  `connectors`, `hooks`, `commands`, `profiles`: names, not rows), and what a
-  plugin adds is not listed a second time as an item of its own. A built-in
-  switch is a `plugin` item with a `tier`. An owner that fails is named in
+  `labels` (what the item adds: `skill`, `connector`, `hook`, `command`,
+  `tool`, `profile`). A plugin item also has `adds` (`skills`, `connectors`,
+  `hooks`, `commands`, `profiles`: names, not rows), and what a plugin adds is
+  not listed a second time as an item of its own. A built-in switch is a
+  `plugin` item with a `tier` and no labels. `/v1/commands` rows carry
+  `plugin_id` (the same id as `/v1/apps/plugins`, and the `plugin:<id>` item)
+  for a command a plugin adds, and `workspace_sourced` for one read from the
+  project; a command item's `plugin` is that id. An owner that fails is named in
   `unavailable` and the other kinds still list; `problems` carries the owners'
   load warnings. Names under `adds` are file names, so a profile's `id` inside its
   file can differ; a command another plugin registers through the extension host
-  is an item with `source` `plugin`.
+  is an item with `source` `plugin`. For an active plugin `adds.commands` comes
+  from the `/v1/commands` rows; for any other plugin, and for `hooks` and
+  `profiles`, it is the file names found in the bundle, at most 512 per kind,
+  with names holding control characters left out; a cut list is reported
+  under `problems`. A hook's row names no plugin, so `adds.hooks` stays file
+  names. `tool` means the plugin declares native or language-server components;
+  a screen a plugin draws is not labelled yet.
 
 **Hooks**
 - `GET /v1/hooks[?thread_id=...]` — `{workspace, enabled, hooks: [...],

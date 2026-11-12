@@ -296,10 +296,11 @@ impl codewhale_engine::command_catalog::CommandCatalog for CommandTable {
                     takes_arguments: metadata.takes_arguments(),
                     hidden: metadata.hidden,
                     extension: metadata.extension.is_some(),
-                    plugin: metadata
+                    plugin_id: metadata
                         .plugin_authority
                         .as_ref()
-                        .map(|authority| authority.plugin_name.clone()),
+                        .map(|authority| authority.plugin_id.as_str().to_string()),
+                    workspace_sourced: metadata.workspace_sourced,
                     builtin_bindings: bindings.remove(&metadata.name).unwrap_or_default(),
                 })
                 .collect()
