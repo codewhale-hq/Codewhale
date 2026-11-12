@@ -294,16 +294,17 @@ async fn execute_schedule(input: &Value, context: &ToolContext) -> Result<ToolRe
         })?,
     };
 
-    let workspace: Option<PathBuf> = optional_str(input, "workspace")?
-        .map(PathBuf::from)
-        .or_else(|| {
+    let workspace: Option<PathBuf> = match optional_str(input, "workspace")? {
+        Some(raw) => Some(context.resolve_path(raw)?),
+        None => {
             let ws = &context.workspace;
             if ws == std::path::Path::new(".") {
                 None
             } else {
                 Some(ws.clone())
             }
-        });
+        }
+    };
 
     let parent_trigger_id = optional_str(input, "parent_trigger_id")?.map(String::from);
 
@@ -499,6 +500,104 @@ mod tests {
                 automations: Some(shared),
                 ..Default::default()
             })
+    }
+
+    fn make_context_in_workspace(tmp: &TempDir, workspace: &std::path::Path) -> ToolContext {
+        let manager = AutomationManager::open_for_test(tmp.path().to_path_buf()).unwrap();
+        ToolContext::new(workspace)
+            .with_state_namespace("test-session")
+            .with_runtime_services(RuntimeToolServices {
+                automations: Some(Arc::new(Mutex::new(manager))),
+                ..Default::default()
+            })
+    }
+
+    fn stored_triggers(tmp: &TempDir) -> Vec<crate::automation_manager::DelayedTriggerRecord> {
+        AutomationManager::open_for_test(tmp.path().to_path_buf())
+            .unwrap()
+            .list_triggers(None, None)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn schedule_refuses_a_workspace_the_session_cannot_reach() {
+        let store = TempDir::new().unwrap();
+        let workspace = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let ctx = make_context_in_workspace(&store, workspace.path());
+        let tool = SendLaterTool::new("send_later");
+
+        let result = tool
+            .execute(
+                json!({
+                    "action": "schedule",
+                    "delay_minutes": 5,
+                    "message": "look around",
+                    "workspace": outside.path().to_string_lossy()
+                }),
+                &ctx,
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "a directory outside the session workspace must be refused"
+        );
+        assert!(stored_triggers(&store).is_empty(), "nothing is scheduled");
+    }
+
+    #[tokio::test]
+    async fn schedule_stores_a_reachable_workspace_resolved() {
+        let store = TempDir::new().unwrap();
+        let workspace = TempDir::new().unwrap();
+        std::fs::create_dir(workspace.path().join("sub")).unwrap();
+        let ctx = make_context_in_workspace(&store, workspace.path());
+        let tool = SendLaterTool::new("send_later");
+
+        tool.execute(
+            json!({
+                "action": "schedule",
+                "delay_minutes": 5,
+                "message": "work in sub",
+                "workspace": "sub"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        let triggers = stored_triggers(&store);
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(
+            triggers[0]
+                .workspace
+                .as_deref()
+                .map(|p| p.canonicalize().unwrap()),
+            Some(workspace.path().join("sub").canonicalize().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn schedule_allows_any_workspace_in_trust_mode() {
+        let store = TempDir::new().unwrap();
+        let workspace = TempDir::new().unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        let ctx = make_context_in_workspace(&store, workspace.path()).with_trust_mode(true);
+        let tool = SendLaterTool::new("send_later");
+
+        tool.execute(
+            json!({
+                "action": "schedule",
+                "delay_minutes": 5,
+                "message": "trusted",
+                "workspace": elsewhere.path().to_string_lossy()
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(stored_triggers(&store).len(), 1);
     }
 
     #[tokio::test]

@@ -165,7 +165,7 @@ fn generic_summary(locale: Locale, name: &str, input: &Value, workspace: Option<
 fn is_delegated_work_tool(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "task_create" | "automation_create" | "automation_update"
+        "task_create" | "automation_create" | "automation_update" | "send_later"
     )
 }
 
@@ -727,6 +727,13 @@ mod tests {
         );
         assert!(summary.contains("Auto-approve: on"), "{summary}");
         assert!(summary.contains("Workspace: /x"), "{summary}");
+
+        let summary = approval_summary(
+            "send_later",
+            &json!({"action": "schedule", "delay_minutes": 5, "message": "m", "workspace": "/elsewhere"}),
+            None,
+        );
+        assert!(summary.contains("Workspace: /elsewhere"), "{summary}");
 
         let zh = approval_summary_in(
             Locale::ZhHans,
