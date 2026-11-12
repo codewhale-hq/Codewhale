@@ -792,6 +792,30 @@ static WRAPPERS: &[Wrapper] = &[
         long_switches: &["skip-chdir"],
         operands: 1,
     },
+    Wrapper {
+        name: "chpst",
+        short_values: "ubUe/Cnlmdofpc",
+        short_switches: "",
+        long_values: &[],
+        long_switches: &[],
+        operands: 0,
+    },
+    Wrapper {
+        name: "parallel",
+        short_values: "adEIjLnNPsS",
+        short_switches: "",
+        long_values: &["jobs", "arg-file", "sshlogin", "delimiter"],
+        long_switches: &[],
+        operands: 0,
+    },
+    Wrapper {
+        name: "screen",
+        short_values: "ceEhpsStT",
+        short_switches: "",
+        long_values: &[],
+        long_switches: &[],
+        operands: 0,
+    },
 ];
 
 /// Shell reserved words that can lead a simple command without being it:
@@ -1225,7 +1249,7 @@ impl Expander {
                             command_heads(&line.words).heads.iter().any(|&head| {
                                 let name = command_name(&line.words[head]);
                                 SHELL_NAMES.contains(&name.as_str())
-                                    || matches!(name.as_str(), "source" | ".")
+                                    || matches!(name.as_str(), "source" | "." | "at" | "batch")
                             })
                         });
                         for (delimiter, literal, strip_tabs) in heredocs.drain(..) {
@@ -1348,10 +1372,11 @@ impl Expander {
             }
             // A command word (or a wrapper word before it) that the shell
             // rewrites at run time cannot be matched against any rule.
-            if tokens[..=head]
-                .iter()
-                .zip(&dynamic)
-                .any(|(token, dynamic)| *dynamic && !is_env_assignment(token))
+            if tokens[head].starts_with('=')
+                || tokens[..=head]
+                    .iter()
+                    .zip(&dynamic)
+                    .any(|(token, dynamic)| *dynamic && !is_env_assignment(token))
             {
                 self.dynamic = true;
             }
@@ -1377,6 +1402,18 @@ impl Expander {
                         self.code_payload(&tokens[at], dynamic[at], depth);
                     }
                 }
+                "alias" | "hash" => {
+                    for at in head + 1..tokens.len() {
+                        if tokens[at] == "-p" {
+                            if let Some(path) = tokens.get(at + 1) {
+                                self.code_payload(path, dynamic[at + 1], depth);
+                            }
+                        } else if let Some((_, value)) = tokens[at].split_once('=') {
+                            self.code_payload(value, dynamic[at], depth);
+                        }
+                    }
+                }
+                "at" | "batch" => self.dynamic |= !line.heredoc,
                 // These hand the value of `-c` / `--command` to a shell.
                 "su" | "runuser" | "flock" | "script" => {
                     for (payload, payload_dynamic) in
@@ -1385,9 +1422,9 @@ impl Expander {
                         self.code_payload(&payload, payload_dynamic, depth);
                     }
                 }
-                // `watch` and `sg GROUP [-c]` join their operands and hand
-                // them to `sh -c`.
-                "watch" | "sg" => {
+                // `watch`, `parallel` and `sg GROUP [-c]` join their operands
+                // and hand them to `sh -c`.
+                "watch" | "sg" | "parallel" => {
                     for &inner in heads.heads.iter().filter(|&&inner| inner > head) {
                         let inner_dynamic = dynamic[inner..].iter().any(|dynamic| *dynamic);
                         self.code_payload(&tokens[inner..].join(" "), inner_dynamic, depth);

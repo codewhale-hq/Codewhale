@@ -135,6 +135,18 @@ const HIDDEN_RM: &[&str] = &[
     "sg wheel 'rm x'",
     "gtimeout 5 rm x",
     "gnice -n 5 rm x",
+    "alias qq='rm -rf'; eval qq /",
+    "hash -p /bin/rm r; r x",
+    "hash r=/bin/rm; r x",
+    "=rm x",
+    "parallel rm ::: x",
+    "parallel 'rm {}' ::: x",
+    "parallel -j 2 -- rm ::: x",
+    "chpst -u nobody rm x",
+    "screen -dmS s rm x",
+    "at now <<< 'rm x'",
+    "echo 'rm x' | batch",
+    "at now <<EOF\nrm x\nEOF",
 ];
 
 /// Literal spellings that were already denied and must stay denied.
@@ -243,6 +255,9 @@ fn ordinary_commands_stay_allowed_next_to_a_deny_rule() {
             "for ((i = 0; i < 3; i++)); do echo $i; done",
             "echo $(echo \")\")",
             "watch -n 5 ls",
+            "alias ll='ls -la'",
+            "hash -r",
+            "parallel echo ::: a b",
         ] {
             let decision = engine
                 .check(context(command, AskForApproval::Never))
