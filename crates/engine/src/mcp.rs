@@ -3202,6 +3202,22 @@ impl McpConnection {
             {
                 self.catalog_stale = true;
             }
+            if let Some(method) = value.get("method") {
+                if let Some(id) = value.get("id") {
+                    let method = method.as_str().unwrap_or_default();
+                    let reply = if method == "ping" {
+                        serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {}})
+                    } else {
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {"code": -32601, "message": format!("Method not found: {method}")}
+                        })
+                    };
+                    self.send(reply).await?;
+                }
+                continue;
+            }
             if response_id_matches(value.get("id"), &expected_id) {
                 // Marks the connection stale so it is rebuilt, but this is a
                 // reply to the request, so it never qualifies for a replay.

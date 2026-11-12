@@ -3315,6 +3315,35 @@ async fn call_method_skips_notifications_and_unmatched_responses() {
 }
 
 #[tokio::test]
+async fn call_method_answers_server_requests_instead_of_taking_them_as_the_reply() {
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let transport = ScriptedValueTransport {
+        sent: Arc::clone(&sent),
+        responses: VecDeque::from([
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "ping"})),
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": "1", "method": "roots/list"})),
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"ok": true}})),
+        ]),
+    };
+    let mut conn = test_connection(Box::new(transport));
+
+    let result = conn
+        .call_method("tools/call", serde_json::json!({"name": "echo"}), 1)
+        .await
+        .unwrap();
+
+    assert_eq!(result, serde_json::json!({"ok": true}));
+    let sent = sent.lock().unwrap();
+    assert_eq!(sent.len(), 3);
+    assert_eq!(
+        sent[1],
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {}})
+    );
+    assert_eq!(sent[2]["id"], "1");
+    assert_eq!(sent[2]["error"]["code"], -32601);
+}
+
+#[tokio::test]
 async fn call_method_invalid_json_includes_server_output_preview() {
     let sent = Arc::new(Mutex::new(Vec::new()));
     let transport = ScriptedValueTransport {
