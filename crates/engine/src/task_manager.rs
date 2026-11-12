@@ -26,7 +26,7 @@ use crate::runtime_threads::{
     RUNTIME_STORE_FAILURE_EVENT, RuntimeEventRecord, RuntimeProcessOwnerLock, RuntimeTurnStatus,
     manager::CreateThreadRequest, manager::RuntimeThreadManager,
     manager::RuntimeThreadManagerConfig, manager::SharedRuntimeThreadManager,
-    manager::StartTurnRequest,
+    manager::StartTurnRequest, manager::summarize_text,
 };
 use codewhale_runtime::config::Config;
 use codewhale_util::utils::spawn_supervised;
@@ -4175,24 +4175,6 @@ fn resolve_task_id(tasks: &HashMap<String, TaskRecord>, id_or_prefix: &str) -> R
 fn summarize_json(value: &Value) -> Option<String> {
     let text = serde_json::to_string(value).ok()?;
     Some(summarize_text(&text, TIMELINE_SUMMARY_LIMIT))
-}
-
-fn summarize_text(text: &str, limit: usize) -> String {
-    let take = limit.saturating_sub(3);
-    let mut count = 0;
-    let mut out = String::new();
-    for ch in text.chars() {
-        if count >= take {
-            out.push_str("...");
-            return out;
-        }
-        if ch.is_control() && ch != '\n' && ch != '\t' {
-            continue;
-        }
-        out.push(ch);
-        count += 1;
-    }
-    out
 }
 
 fn ensure_safe_storage_id(kind: &str, value: &str) -> Result<()> {
