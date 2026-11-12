@@ -456,7 +456,7 @@ async fn captured_identity_cancel_and_task_bounds_refuse_before_any_provider() {
 
 #[tokio::test]
 async fn dropping_an_actual_dispatched_core_call_keeps_unknown_usage_without_retaining_authority() {
-    struct Pending;
+    struct Pending(Arc<tokio::sync::Notify>);
     impl Replies for Pending {
         fn effective_route_envelope(
             &self,
@@ -478,24 +478,42 @@ async fn dropping_an_actual_dispatched_core_call_keeps_unknown_usage_without_ret
             &self,
             _: MessageRequest,
         ) -> Pin<Box<dyn Future<Output = anyhow::Result<MessageResponse>> + Send + '_>> {
+            self.0.notify_one();
             Box::pin(std::future::pending())
         }
     }
-    let caller = Arc::new(caller_for(Arc::new(Pending), "captured-model"));
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let caller = Arc::new(caller_for(
+        Arc::new(Pending(entered.clone())),
+        "captured-model",
+    ));
     let weak_caller = Arc::downgrade(&caller);
     let usage = RlmUsageAccumulator::new();
-    let result = caller
-        .dispatch(RlmInvocation {
-            prompt: "pending".into(),
-            mode: RlmMode::Completion,
-            max_tokens: None,
-            task_instructions: None,
-            deadline: Some(tokio::time::Instant::now() + Duration::from_millis(100)),
-            gate: None,
-            events: None,
-            usage: usage.clone(),
-        })
-        .await;
+    let mut dispatch = caller.dispatch(RlmInvocation {
+        prompt: "pending".into(),
+        mode: RlmMode::Completion,
+        max_tokens: None,
+        task_instructions: None,
+        deadline: Some(tokio::time::Instant::now() + Duration::from_secs(600)),
+        gate: None,
+        events: None,
+        usage: usage.clone(),
+    });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            biased;
+            () = entered.notified() => {}
+            result = &mut dispatch => panic!(
+                "dropped dispatch never reached the client: {:?}",
+                result.error
+            ),
+        }
+    })
+    .await
+    .expect("the dispatched call must reach the client");
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(601)).await;
+    let result = dispatch.await;
     assert!(
         result
             .error
