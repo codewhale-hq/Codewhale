@@ -1727,9 +1727,10 @@ fn ssh_client_env() -> BTreeMap<String, String> {
         .collect()
 }
 
-fn process_base_env() -> BTreeMap<String, String> {
-    base_env_from(std::env::vars_os())
-}
+const MANAGED_CONFIG_ENV: [&str; 2] = [
+    "CODEWHALE_MANAGED_CONFIG_PATH",
+    "DEEPSEEK_MANAGED_CONFIG_PATH",
+];
 
 /// The worker's inherited environment: the repository's scrubbed child-env
 /// allowlist (`child_env`), so proxy routing, CA bundles, temp directories,
@@ -1742,11 +1743,22 @@ where
     K: AsRef<std::ffi::OsStr>,
     V: AsRef<std::ffi::OsStr>,
 {
+    let parent: Vec<(std::ffi::OsString, std::ffi::OsString)> = parent
+        .into_iter()
+        .map(|(key, value)| (key.as_ref().to_os_string(), value.as_ref().to_os_string()))
+        .collect();
     let mut env: BTreeMap<String, String> =
-        codewhale_runtime::child_env::sanitized_runtime_env_from(parent)
+        codewhale_runtime::child_env::sanitized_runtime_env_from(parent.iter().cloned())
             .into_iter()
             .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
             .collect();
+    for (key, value) in &parent {
+        if MANAGED_CONFIG_ENV.iter().any(|name| key == name)
+            && let (Some(key), Some(value)) = (key.to_str(), value.to_str())
+        {
+            env.insert(key.to_string(), value.to_string());
+        }
+    }
     force_worker_telemetry_off(&mut env);
     env
 }
@@ -1754,7 +1766,7 @@ where
 /// Fleet workers are an implementation detail of the parent session, not
 /// sessions of their own — the parent already accounts for the dispatch.
 ///
-/// The spawn path `env_clear()`s and rebuilds from [`process_base_env`], so an
+/// The spawn path `env_clear()`s and rebuilds from [`base_env_from`], so an
 /// operator's opt-out would otherwise never reach a worker at all. Hard-off
 /// here means a worker can never emit, can never inherit an ambient "on", and
 /// can never write telemetry state into the operator's home.
@@ -1772,8 +1784,24 @@ fn worker_env(
     request_env: &BTreeMap<String, String>,
     allowlist: &BTreeSet<String>,
 ) -> FleetHostResult<BTreeMap<String, String>> {
-    let mut env = process_base_env();
-    env.extend(filtered_env(request_env, allowlist)?);
+    worker_env_from(std::env::vars_os(), request_env, allowlist)
+}
+
+fn worker_env_from<K, V>(
+    parent: impl IntoIterator<Item = (K, V)>,
+    request_env: &BTreeMap<String, String>,
+    allowlist: &BTreeSet<String>,
+) -> FleetHostResult<BTreeMap<String, String>>
+where
+    K: AsRef<std::ffi::OsStr>,
+    V: AsRef<std::ffi::OsStr>,
+{
+    let mut env = base_env_from(parent);
+    let mut requested = filtered_env(request_env, allowlist)?;
+    for key in MANAGED_CONFIG_ENV {
+        requested.remove(key);
+    }
+    env.extend(requested);
     force_worker_telemetry_off(&mut env);
     Ok(env)
 }
@@ -2771,10 +2799,46 @@ mod tests {
     }
 
     #[test]
+    fn worker_env_keeps_the_parent_managed_config_path_and_a_request_cannot_replace_it() {
+        let parent = [
+            ("CODEWHALE_MANAGED_CONFIG_PATH", "/etc/example/managed.toml"),
+            (
+                "DEEPSEEK_MANAGED_CONFIG_PATH",
+                "/etc/deepseek/managed_config.toml",
+            ),
+            ("USER", "fleet"),
+        ];
+        let request_env = BTreeMap::from([
+            (
+                "CODEWHALE_MANAGED_CONFIG_PATH".to_string(),
+                "/nonexistent/managed.toml".to_string(),
+            ),
+            (
+                "DEEPSEEK_MANAGED_CONFIG_PATH".to_string(),
+                "/nonexistent/managed.toml".to_string(),
+            ),
+        ]);
+        let allowlist: BTreeSet<String> = request_env.keys().cloned().collect();
+        let env = worker_env_from(parent, &request_env, &allowlist).expect("worker env");
+        for (key, value) in &parent[..2] {
+            assert_eq!(env.get(*key).map(String::as_str), Some(*value), "{key}");
+        }
+
+        let env =
+            worker_env_from([("USER", "fleet")], &request_env, &allowlist).expect("worker env");
+        for key in MANAGED_CONFIG_ENV {
+            assert!(
+                !env.contains_key(key),
+                "{key} must come only from the parent"
+            );
+        }
+    }
+
+    #[test]
     fn worker_env_forces_telemetry_off_even_when_the_allowlist_says_otherwise() {
         // The spawn path env_clear()s and rebuilds from this map, so anything
         // absent here simply does not exist inside the worker.
-        let base = process_base_env();
+        let base = base_env_from(std::env::vars_os());
         assert_eq!(
             base.get("CODEWHALE_TELEMETRY").map(String::as_str),
             Some("false")
