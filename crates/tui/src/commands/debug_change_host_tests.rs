@@ -579,7 +579,7 @@ fn change_hint_uses_localized_template() {
     let result = change(&mut app, None);
     assert!(!result.is_error);
     let msg = result.message.expect("should have a message");
-    // zh-Hans template: "上一个版本:"
+    // zh-Hans template: "上一个版本："
     assert!(
         msg.contains("上一个版本"),
         "zh-Hans output should contain localized hint: {msg}"
