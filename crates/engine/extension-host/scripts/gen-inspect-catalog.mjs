@@ -27,7 +27,7 @@ const SERVICES = {
     summary: 'Slash commands a person types. A handler runs only when the person types the command.',
     availability: 'always',
     methods: [
-      { name: 'register', signature: 'register(definition: { name: string, description: string, argumentHint?: string, handler(call: { args: string, signal: AbortSignal }): CommandResult }): () => void', summary: 'Register one slash command. Names are lower case letters, digits, _ and -, at most 64 characters, and cannot take a built-in command\'s name or another plugin\'s. Returns an idempotent disposer.' },
+      { name: 'register', signature: 'register(definition: { name: string, description: string, argumentHint?: string, handler(call: { args: string, signal: AbortSignal }): CommandResult }): () => void', summary: 'Register one slash command. Names start with a lower case letter, then lower case letters, digits, _ and -, at most 64 characters; at most 64 commands per plugin. A name that clashes with a built-in command or another plugin\'s gets a namespaced plugin-<name>-<command> alias; an unavailable name is refused with a reason. Returns an idempotent disposer.' },
     ],
   },
   storage: {
@@ -65,8 +65,8 @@ const SERVICES = {
     availability: 'tool-invocation',
     methods: [
       { name: 'getProvider', signature: 'getProvider(id: \'spawn\'): Provider', summary: 'Describe the one provider: a fresh child with no inherited conversation.' },
-      { name: 'startActivation', signature: 'startActivation(options: { provider: \'spawn\', childId: string, request: { parent: Agent, prompt: TextBlock[], agentOptions?: { model?: string } }, signal?: AbortSignal, delivery?: \'caller\' | \'parent\' }): Promise<Activation>', summary: 'Start the child through the Engine\'s approval gate. Prompts are text only; only the model option is accepted. Needs the live calling agent as parent and is not available inside a child.' },
-      { name: 'result', signature: 'activation.result(): Promise<{ text: string, stopReason: string }>', summary: 'Wait for the child to finish and read its text output and stop reason.' },
+      { name: 'startActivation', signature: 'startActivation(options: { provider: \'spawn\', childId: string, request: { parent: Agent, prompt: TextBlock[], agentOptions?: { model?: string } }, signal?: AbortSignal, delivery?: \'caller\' | \'parent\' }): Promise<{ childId: string, messageId: string, result: Promise<ChildResult>, dispose(): Promise<void> }>', summary: 'Start the child through the Engine\'s approval gate. Resolves to the activation handle { childId, messageId, result, dispose }. Prompts are text only; only the model option is accepted. Needs the live calling agent as parent and is not available inside a child.' },
+      { name: 'result', signature: 'activation.result: Promise<{ stopReason: string, output: { type: \'text\', text: string }[], diagnostic?: string }>', summary: 'A getter, not a method: read the property, do not call it. Resolves when the child finishes, with its stop reason and its text output blocks; diagnostic notes dropped non-text blocks.' },
       { name: 'dispose', signature: 'activation.dispose(): Promise<void>', summary: 'Stop that exact child and its own descendants.' },
     ],
   },
@@ -79,7 +79,7 @@ const SERVICES = {
     summary: 'The child agent\'s persona slot, reachable only inside an agent/created listener.',
     availability: 'child-agent-hook',
     methods: [
-      { name: 'section', signature: 'agent.ctx.systemPrompt.section({ name: \'DEPLOYMENT_PERSONA_PREFIX\', order: number, text: string }): () => void', summary: 'Set the child\'s persona text, at most 32 KiB. Called anywhere else it fails. The Engine\'s own system prompt cannot be replaced.' },
+      { name: 'section', signature: 'agent.ctx.systemPrompt.section({ name: \'deployment:persona-prefix\', order: agent.ctx.systemPrompt.getSectionOrder(\'DEPLOYMENT_PERSONA_PREFIX\'), text: string }): () => void', summary: 'Set the child\'s persona text, at most 32 KiB, once. name must be the string deployment:persona-prefix (the PERSONA_PREFIX_SECTION value) and order must be what getSectionOrder(\'DEPLOYMENT_PERSONA_PREFIX\') returns, which is 0. Anything else is refused. Called anywhere else it fails. The Engine\'s own system prompt cannot be replaced.' },
     ],
   },
   logger: {
@@ -129,7 +129,7 @@ const SERVICES = {
     summary: 'Avatar packs for the terminal.',
     availability: 'always',
     methods: [
-      { name: 'registerPack', signature: 'registerPack(definition: { path: string }): () => void', summary: 'Register a reviewed bundle-relative avatar pack.' },
+      { name: 'registerPack', signature: 'registerPack(definition: { path: string }): () => void', summary: 'Register a reviewed bundle-relative avatar pack: a path ending in .json, at most 4 packs per plugin.' },
     ],
   },
   mcp: {
@@ -236,7 +236,7 @@ const ROW_PACKAGES = {
       properties: {
         configPath: { type: 'string', description: 'A regular file inside the bundle, at most 1 MiB, unchanged since review.' },
         pluginRoot: { type: 'string', description: 'Absent, ".", or this reviewed bundle root.' },
-        defaultTimeoutMs: { type: 'integer', minimum: 1000, maximum: 86400000, description: 'Whole seconds, used when a hook sets none; default 600000.' },
+        defaultTimeoutMs: { type: 'integer', minimum: 1000, maximum: 86400000, multipleOf: 1000, description: 'Whole seconds, used when a hook sets none; default 600000.' },
       },
     },
     limits: ['projectDir is refused: each process uses the current workspace.', 'Only command hooks run; non-command and asynchronous hooks fail the row.', 'At most 128 commands per row.'],
@@ -251,7 +251,7 @@ const ROW_PACKAGES = {
       properties: {
         configPath: { type: 'string', description: 'A regular file inside the bundle, at most 1 MiB, unchanged since review.' },
         pluginRoot: { type: 'string', description: 'Absent, ".", or this reviewed bundle root.' },
-        defaultTimeoutMs: { type: 'integer', minimum: 1000, maximum: 86400000, description: 'Whole seconds, used when a hook sets none; default 600000.' },
+        defaultTimeoutMs: { type: 'integer', minimum: 1000, maximum: 86400000, multipleOf: 1000, description: 'Whole seconds, used when a hook sets none; default 600000.' },
       },
     },
     limits: ['projectDir is refused: each process uses the current workspace.', 'Only command hooks run; non-command and asynchronous hooks fail the row.', 'At most 128 commands per row.'],

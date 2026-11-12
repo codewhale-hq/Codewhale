@@ -1,3 +1,4 @@
+import { isJson } from '../json.ts'
 import { assertSupportedJsonSchema, validateJsonSchemaValue } from './dsh-tools-compat.js'
 import catalogData from './inspect-catalog.json' with { type: 'json' }
 
@@ -165,7 +166,7 @@ function toolProvider(sources: InspectSources): Provider | undefined {
     description: 'Tools visible to the requesting agent.',
     methods: [method('listTools', 'Return every tool schema currently callable by this agent.')],
     async run(_name, _input, agent, signal) {
-      return { tools: copy([...await source(agent, signal)]) }
+      return { tools: [...await source(agent, signal)] }
     },
   }
 }
@@ -237,6 +238,7 @@ export function createCordisInspect(sources: InspectSources = {}): CordisInspect
       signal.throwIfAborted()
       const data = await provider.run(methodName, (input ?? {}) as Record<string, JsonValue>, agent, signal)
       signal.throwIfAborted()
+      if (!isJson(data)) throw new Error(`${label(platform)} Cordis inspect ${provider.id}.${found.name} returned a non-JSON value`)
       return copy(data)
     },
   }

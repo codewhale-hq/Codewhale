@@ -52,24 +52,63 @@ test('methods match the compatibility tables where it has them', () => {
   }
 })
 
-test('every curated method exists in the source that implements it', () => {
-  const files = {
-    tools: 'root.ts', commands: 'shims/commands.ts', storage: 'shims/storage.ts', skills: 'shims/skills.ts', prompt: 'shims/prompt.ts',
-    avatars: 'shims/avatars.ts', mcp: 'shims/mcp.ts', shellHooks: 'shims/shell-hooks.ts', remote: 'dsh/remote.ts', sessions: 'dsh/session-prompt.ts',
-    userQuestions: 'root.ts', subagents: 'dsh/agents.ts', systemPrompt: 'dsh/session-prompt.ts',
+const classBody = (source, name) => {
+  const start = source.indexOf(`class ${name} extends Service`)
+  assert.ok(start >= 0, `class ${name}`)
+  const rest = source.slice(start + 1)
+  const next = rest.search(/\n\s*(export )?(class |function )/)
+  return next < 0 ? rest : rest.slice(0, next)
+}
+const defines = (body, name) => new RegExp(`^\\s*(async\\s+)?${name}\\s*\\(`, 'm').test(body)
+
+test('every curated method is defined on the class that serves it', () => {
+  const served = {
+    tools: ['root.ts', 'ToolsShim'], commands: ['shims/commands.ts', 'CommandsShim'], storage: ['root.ts', 'StorageShim'],
+    skills: ['shims/skills.ts', 'SkillsShim'], prompt: ['shims/prompt.ts', 'PromptShim'], avatars: ['shims/avatars.ts', 'AvatarsShim'],
+    mcp: ['shims/mcp.ts', 'McpShim'], shellHooks: ['shims/shell-hooks.ts', 'ShellHooks'], remote: ['dsh/remote.ts', 'RemoteService'],
+    sessions: ['dsh/session-prompt.ts', 'SessionsService'], userQuestions: ['root.ts', 'UserQuestionsShim'],
+    subagents: ['dsh/agents.ts', 'SubagentsShim'], systemPrompt: ['dsh/session-prompt.ts', 'SystemPromptService'],
   }
-  const cordis = { events: 'events', reflect: 'reflect', registry: 'registry' }
+  const cordis = { events: ['events', ['on', 'once', 'emit']], reflect: ['reflect', ['provide', 'get']], registry: ['registry', ['get', 'resolve']] }
+  const agentsSource = text(src('dsh/agents.ts'))
   for (const service of catalog.host.services) {
+    if (service.key === 'logger' || service.key === 'agents') continue
+    if (cordis[service.key]) {
+      const [file, names] = cordis[service.key]
+      const body = text(join(here, '..', 'node_modules', '@deepseek-ai', 'cordis', 'lib', 'types', `${file}.d.ts`))
+      assert.deepEqual(service.methods.map((m) => m.name).sort(), [...names].sort(), service.key)
+      for (const name of names) assert.ok(defines(body, name), `${service.key}.${name}`)
+      continue
+    }
+    const [file, cls] = served[service.key]
+    const body = classBody(text(src(file)), cls)
     for (const m of service.methods) {
-      if (service.key === 'logger') continue
-      let body
-      if (cordis[service.key]) body = text(join(here, '..', 'node_modules', '@deepseek-ai', 'cordis', 'lib', 'types', `${cordis[service.key]}.d.ts`))
-      else if (service.key === 'agents') continue
-      else body = text(src(files[service.key]))
-      const pattern = new RegExp(`\\b${m.name}\\s*[(<]|\\b${m.name}\\s*:\\s*(async\\s*)?(function|\\()`)
-      assert.match(body, pattern, `${service.key}.${m.name}`)
+      if (service.key === 'subagents' && m.name === 'result') assert.match(agentsSource, /^\s*get result\(\)/m, 'subagents.result is a getter')
+      else if (service.key === 'subagents' && m.name === 'dispose') assert.match(agentsSource, /^\s*dispose\(\)/m, 'subagents.dispose')
+      else assert.ok(defines(body, m.name), `${service.key}.${m.name}`)
     }
   }
+  assert.match(agentsSource, /^\s*section\(section: unknown\)/m)
+  assert.match(agentsSource, /^\s*getSectionOrder\(name: unknown\)/m)
+})
+
+test('the catalog states the contracts the host actually enforces', () => {
+  const agentsSource = text(src('dsh/agents.ts'))
+  const personaName = text(src('dsh/dsh-message-compat.js')).match(/PERSONA_PREFIX_SECTION = "([^"]+)"/)[1]
+  const section = catalog.host.services.find((s) => s.key === 'systemPrompt').methods[0]
+  assert.ok(section.signature.includes(`name: '${personaName}'`))
+  assert.ok(section.signature.includes("getSectionOrder('DEPLOYMENT_PERSONA_PREFIX')"))
+  assert.match(agentsSource, /PERSONA_ORDER = 0/)
+  const subagents = catalog.host.services.find((s) => s.key === 'subagents').methods
+  const result = subagents.find((m) => m.name === 'result')
+  assert.match(result.signature, /^activation\.result: Promise<\{ stopReason: string, output: \{ type: 'text', text: string \}\[\]/)
+  assert.ok(!result.signature.includes('result()'))
+  assert.match(subagents.find((m) => m.name === 'startActivation').signature, /Promise<\{ childId: string, messageId: string, result: Promise</)
+})
+
+test('an output that is not JSON is refused as DSH refuses it', async () => {
+  const bad = createCordisInspect({ tools: () => [{ name: 'x', extra: undefined }] })
+  await assert.rejects(bad.query('host', 'Tool', 'listTools', undefined, {}), /returned a non-JSON value/)
 })
 
 test('every slot and its seat equal the Engine seat table', () => {
