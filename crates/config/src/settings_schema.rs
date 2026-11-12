@@ -605,7 +605,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
     def(
         "show_thinking",
         SettingKind::Bool(SHOW_THINKING),
-        "false",
+        "true",
         ui(
             TAB_APPEARANCE,
             "display",

@@ -2230,7 +2230,10 @@ Common settings keys:
   `@`-mention completions are populated. `fuzzy` searches the workspace and
   applies mention frecency. `browser` lists only the immediate children of the
   currently typed directory segment in deterministic alphabetical order.
-- `show_thinking` (on/off)
+- `show_thinking` (on/off, default on): shows model thinking in the transcript,
+  live while it streams and collapsed under a `Thought for …` header once the
+  answer starts. Off hides it; answers and tools stay visible. A value already
+  saved in `settings.toml` is kept.
 - `thinking_default_expanded` (on/off, default off): renders thinking blocks
   expanded initially when `show_thinking` is enabled. Space still toggles the
   selected block, and it decides only the blocks you have not touched: a block
