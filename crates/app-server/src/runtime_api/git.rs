@@ -515,14 +515,14 @@ fn parse_porcelain(porcelain: &str) -> Vec<GitFileEntry> {
         }
         let index = record.as_bytes()[0] as char;
         let worktree = record.as_bytes()[1] as char;
+        let Some(path) = record.get(3..) else {
+            continue;
+        };
         let renamed_or_copied = matches!(index, 'R' | 'C') || matches!(worktree, 'R' | 'C');
         let mut old_path = None;
         if renamed_or_copied {
             old_path = records.next().map(str::to_string);
         }
-        let Some(path) = record.get(3..) else {
-            continue;
-        };
         let path = path.to_string();
         entries.push(GitFileEntry {
             path,
@@ -2920,6 +2920,7 @@ mod tests {
         git(dir, &["config", "user.email", "git-rev@example.test"]);
         git(dir, &["config", "user.name", "Git Rev Test"]);
         git(dir, &["config", "core.autocrlf", "false"]);
+        git(dir, &["config", "status.renames", "true"]);
         fs::write(dir.join("a.txt"), "one\n").unwrap();
         git(dir, &["add", "a.txt"]);
         git(dir, &["commit", "-q", "-m", "initial"]);
