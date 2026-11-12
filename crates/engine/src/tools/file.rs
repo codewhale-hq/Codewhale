@@ -365,8 +365,25 @@ pub fn resolve_guarded_read_path(
     raw: &str,
     tool: &str,
 ) -> Result<PathBuf, ToolError> {
+    guard_read_path(context, raw, tool, ToolContext::resolve_path)
+}
+
+pub fn resolve_guarded_display_path(
+    context: &ToolContext,
+    raw: &str,
+    tool: &str,
+) -> Result<PathBuf, ToolError> {
+    guard_read_path(context, raw, tool, ToolContext::resolve_read_path)
+}
+
+fn guard_read_path(
+    context: &ToolContext,
+    raw: &str,
+    tool: &str,
+    resolve: fn(&ToolContext, &str) -> Result<PathBuf, ToolError>,
+) -> Result<PathBuf, ToolError> {
     enforce_read_denylist(Path::new(raw), tool)?;
-    let path = context.resolve_path(raw)?;
+    let path = resolve(context, raw)?;
     if is_codewhale_credential_path(&path) {
         return Err(ToolError::permission_denied(format!(
             "{tool} cannot expose Codewhale configuration or credential-store files; use `codewhale config list` or `codewhale auth status` for safe inspection"
@@ -848,7 +865,7 @@ impl ReadFileTool {
         // raw spelling still matches by its target; the resolved check after
         // `resolve_path` stays as defense in depth for callers whose process
         // cwd is not the workspace.
-        let file_path = match resolve_guarded_read_path(context, path_str, "read") {
+        let file_path = match resolve_guarded_display_path(context, path_str, "read") {
             Ok(path) => path,
             Err(error @ ToolError::PathEscape { .. }) => {
                 user_attached_image_read_path(context, path_str, "read")
@@ -1027,7 +1044,7 @@ impl ToolSpec for ReadFileTool {
         // S1/F2: raw spelling first, resolved path after — see the matching
         // comment in `execute_contract_read`. Only the raw-spelling denial can
         // promise an error that never names the symlink target's location.
-        let file_path = resolve_guarded_read_path(context, path_str, "read_file")?;
+        let file_path = resolve_guarded_display_path(context, path_str, "read_file")?;
         let pages = optional_str(&input, "pages")?;
 
         if let Some(result) = read_pdf_if_detected(
@@ -3436,7 +3453,7 @@ impl ToolSpec for ListDirTool {
         // raw spelling is checked first (F2) so the refusal names the caller's
         // path, never a symlink target it might resolve to.
         enforce_read_denylist(Path::new(path_str), "list_dir")?;
-        let dir_path = context.resolve_path(path_str)?;
+        let dir_path = context.resolve_read_path(path_str)?;
         enforce_read_denylist(&dir_path, "list_dir")?;
 
         let entries =

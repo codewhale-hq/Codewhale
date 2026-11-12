@@ -247,7 +247,7 @@
     "std_fs": 1
   },
   "crates/engine/src/tools/spec.rs": {
-    "path_canonicalize": 7
+    "path_canonicalize": 8
   },
   "crates/engine/src/tools/speech.rs": {
     "std_fs": 1

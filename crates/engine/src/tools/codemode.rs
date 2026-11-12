@@ -730,6 +730,7 @@ impl CodemodeInvoker {
         extra_refusal: ExtraRefusal,
     ) -> Self {
         context.execution.nested_call_gate = None;
+        context.read_only_roots.clear();
         Self::with_gate(
             specs,
             context,

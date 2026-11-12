@@ -408,6 +408,8 @@ pub struct Session {
     /// boundaries so the next send can compact on last-turn pressure
     /// (#5577). Cleared when history is rewritten (compaction, restore).
     pub latest_parent_input_tokens: Option<u32>,
+
+    pub agent_preset: Option<String>,
 }
 
 /// Cumulative usage statistics for a session.
@@ -481,6 +483,7 @@ impl Session {
             tool_activation_cache: ToolActivationCache::default(),
             messages_revision: 0,
             latest_parent_input_tokens: None,
+            agent_preset: None,
         }
     }
 

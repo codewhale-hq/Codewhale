@@ -701,6 +701,18 @@ impl Fixture {
         owner: &OwnerRef,
         ticket: &str,
     ) -> (Result<Value, RpcErrorWire>, Vec<String>) {
+        self.serve_call(tier, generation, owner, ticket, json!({"path": "x"}))
+            .await
+    }
+
+    async fn serve_call(
+        &self,
+        tier: HostTier,
+        generation: u64,
+        owner: &OwnerRef,
+        ticket: &str,
+        input: Value,
+    ) -> (Result<Value, RpcErrorWire>, Vec<String>) {
         let (cx, mut violations, _cancel) = HostRequestContext::for_test(1);
         let result = self
             .manager
@@ -714,7 +726,7 @@ impl Fixture {
                     owner: owner.clone(),
                     ticket: ticket.to_string(),
                     name: "read_file".to_string(),
-                    input: json!({"path": "x"}),
+                    input,
                 },
                 cx,
             )
@@ -729,6 +741,35 @@ impl Fixture {
 
 fn refused(result: &Result<Value, RpcErrorWire>) -> bool {
     matches!(result, Err(error) if error.code == error_code::REFUSED)
+}
+
+#[tokio::test]
+async fn a_plugin_core_call_never_reads_a_read_only_root() {
+    let mut f = fixture(true);
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let file = root.join("skill.md");
+    std::fs::write(&file, "ROOT-FILE-MARKER").unwrap();
+    f.context = ToolContext::new(f.context.workspace.clone()).with_read_only_roots(vec![root]);
+    let input = json!({"path": file.to_string_lossy()});
+
+    let direct = crate::tools::file::ReadFileTool
+        .execute(input.clone(), &f.context)
+        .await
+        .expect("the session's own read of the root works");
+    assert!(direct.content.contains("ROOT-FILE-MARKER"));
+
+    let guard = f.begin(7, &f.owner);
+    let ticket = guard.ticket().to_string();
+    let (control, _) = f.serve(HostTier::Plugin, 7, &f.owner, &ticket).await;
+    assert!(control.is_ok(), "{control:?}");
+    let (result, _) = f
+        .serve_call(HostTier::Plugin, 7, &f.owner, &ticket, input)
+        .await;
+    assert!(
+        !format!("{result:?}").contains("ROOT-FILE-MARKER"),
+        "{result:?}"
+    );
 }
 
 #[tokio::test]

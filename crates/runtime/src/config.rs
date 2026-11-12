@@ -2706,6 +2706,8 @@ pub struct SkillsConfig {
     /// Otherwise the flat root is visible only to compatible audit.
     #[serde(default)]
     pub flat_workspace_root: Option<bool>,
+    #[serde(skip)]
+    pub creator_skills: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq, Hash, Serialize)]
@@ -10340,6 +10342,7 @@ fn merge_skills_config(
             flat_workspace_root: override_cfg
                 .flat_workspace_root
                 .or(base.flat_workspace_root),
+            creator_skills: false,
         }),
     }
 }

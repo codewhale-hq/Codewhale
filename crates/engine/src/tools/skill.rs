@@ -261,7 +261,7 @@ fn ensure_reviewed_plugin_skill_is_current_for(
 /// cross-reference the system-prompt catalogue. Companion-file paths
 /// land at the bottom under a clearly-named heading so the model can
 /// open them with `read_file` if they're relevant to the task.
-fn format_skill_body(skill: &Skill) -> String {
+pub(crate) fn format_skill_body(skill: &Skill) -> String {
     let mut out = String::new();
     out.push_str(&format!("# Skill: {}\n\n", skill.name));
     if !skill.description.trim().is_empty() {
@@ -317,6 +317,10 @@ fn format_skill_body(skill: &Skill) -> String {
         }
     }
     out
+}
+
+pub(crate) fn bundled_creator_skill_body(name: &str) -> Option<String> {
+    codewhale_skills::bundled_creator_skill(name).map(|skill| format_skill_body(&skill))
 }
 
 /// List sibling files of `SKILL.md` in the skill's own directory.

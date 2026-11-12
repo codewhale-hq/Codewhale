@@ -14665,6 +14665,7 @@ source_usage_records: Default::default(),
                 mcp_oauth_callback_url: cfg.mcp_oauth_callback_url.clone(),
                 skills_dir: cfg.skills_dir(),
                 skills_config: std::sync::Arc::new(cfg.skills_config()),
+                agent_preset: thread.agent_preset.clone(),
                 instructions: if isolated_chat {
                     Vec::new()
                 } else {

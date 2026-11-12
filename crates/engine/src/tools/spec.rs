@@ -660,6 +660,7 @@ pub struct ToolExecutionState {
     /// and refreshed when the user runs `/trust add <path>`. Distinct from
     /// `trust_mode`, which is the all-or-nothing legacy switch (#29).
     pub trusted_external_paths: Vec<PathBuf>,
+    pub read_only_roots: Vec<PathBuf>,
     /// Whether to follow symbolic links during file discovery and tool
     /// operations. When `true`, symlinked directories are traversed and
     /// symlinked paths that resolve outside the workspace are still allowed
@@ -818,6 +819,7 @@ impl ToolContext {
                 state_namespace: "workspace".to_string(),
                 route_context_window: None,
                 trusted_external_paths: Vec::new(),
+                read_only_roots: Vec::new(),
                 follow_symlinks: false,
                 network_policy: None,
                 runtime: RuntimeToolServices::default(),
@@ -999,6 +1001,35 @@ impl ToolContext {
     pub fn with_trusted_external_paths(mut self, paths: Vec<PathBuf>) -> Self {
         self.trusted_external_paths = paths;
         self
+    }
+
+    #[must_use]
+    pub fn with_read_only_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.read_only_roots = roots;
+        self
+    }
+
+    pub fn resolve_read_path(&self, raw: &str) -> Result<PathBuf, ToolError> {
+        let escape = match self.resolve_path(raw) {
+            Err(error @ ToolError::PathEscape { .. }) if !self.read_only_roots.is_empty() => error,
+            other => return other,
+        };
+        self.read_only_root_path(raw).ok_or(escape)
+    }
+
+    fn read_only_root_path(&self, raw: &str) -> Option<PathBuf> {
+        let candidate = resolve_home_path(raw)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| PathBuf::from(raw));
+        if !candidate.is_absolute() {
+            return None;
+        }
+        let canonical = candidate.canonicalize().ok()?;
+        self.read_only_roots
+            .iter()
+            .any(|root| canonical.starts_with(root))
+            .then_some(canonical)
     }
 
     /// Set whether tools should follow symbolic links. When `true`,
