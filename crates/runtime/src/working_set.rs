@@ -1371,6 +1371,9 @@ fn relativize_candidate(
         .map(fs::Metadata::is_dir)
         .unwrap_or_else(|| candidate.ends_with('/'));
 
+    if rel_path.as_os_str().is_empty() {
+        return None;
+    }
     let rel_string = path_to_string(&rel_path)?;
     Some((rel_string, exists, is_dir))
 }
@@ -1653,6 +1656,19 @@ mod tests {
         let entry = ws.entries.get("src/lib.rs").expect("entry");
         assert!(entry.exists);
         assert!(!entry.is_dir);
+    }
+
+    #[test]
+    fn workspace_root_is_not_an_active_path() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonical root");
+        fs::write(root.join("笔记 📝.md"), "旧").expect("write");
+
+        let mut ws = WorkingSet::default();
+        let mention = format!("<file path=\"{}/笔记 📝.md\">", root.display());
+        ws.observe_user_message(&mention, &root);
+
+        assert!(!ws.entries.contains_key(""), "{:?}", ws.entries.keys());
     }
 
     #[test]

@@ -157,7 +157,8 @@ fn session_diff(app: &App) -> std::io::Result<Option<DebugDiffObservation>> {
 /// The workspace repository's own uncommitted changes: what `/diff` shows
 /// before the session has a restore point to compare against.
 fn workspace_git_diff(workspace: &std::path::Path) -> DebugDiffObservation {
-    let git = |args: &[&str]| Git::output(args, workspace);
+    let git =
+        |args: &[&str]| Git::output(&[&["-c", "core.quotePath=false"], args].concat(), workspace);
     // Outside a repository `git diff` prints nothing on stdout, which would
     // read as "no changes".
     match git(&["rev-parse", "--is-inside-work-tree"]) {

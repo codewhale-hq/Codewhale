@@ -1457,6 +1457,7 @@ impl SnapshotRepo {
                 .arg(&self.git_dir)
                 .arg("--work-tree")
                 .arg(&self.work_tree)
+                .args(["-c", "core.quotePath=false"])
                 .args(args);
             let output = run_bounded_git(&mut cmd, subcommand)?;
             if !output.status.success() {
@@ -4890,6 +4891,24 @@ mod tests {
             .expect("changes");
         assert_eq!(none.names, "");
         assert_eq!(none.patch, "");
+    }
+
+    #[test]
+    fn work_tree_changes_since_names_non_ascii_paths_as_written() {
+        let tmp = tempdir().unwrap();
+        let (repo, _home) = make_repo(tmp.path());
+        let ws = repo.work_tree().to_path_buf();
+        std::fs::write(ws.join("笔记 📝.md"), b"old\n").unwrap();
+        let before = repo.snapshot("pre-turn:1").expect("snapshot");
+        git_output(&repo, &["config", "core.quotePath", "true"]);
+        std::fs::write(ws.join("笔记 📝.md"), b"new\n").unwrap();
+
+        let changes = repo
+            .work_tree_changes_since(&before, 1 << 20)
+            .expect("changes");
+        assert_eq!(changes.names, "笔记 📝.md\n");
+        assert!(changes.stat.contains("笔记 📝.md"), "{}", changes.stat);
+        assert!(changes.patch.contains("b/笔记 📝.md"), "{}", changes.patch);
     }
 
     /// A tree the repo no longer holds — the receipt outlived the object —
