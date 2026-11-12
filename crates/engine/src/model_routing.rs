@@ -1852,6 +1852,7 @@ pub struct ValidChoice {
     pub choice: String,
     pub probabilities_bp: BTreeMap<String, u16>,
     pub confidence_bp: u16,
+    pub abstained: bool,
 }
 
 /// Validate one `choice` answer against the offered options. Any violation
@@ -1894,6 +1895,7 @@ pub fn validated_choice(answer: Option<&SystemOneAnswer>, options: &[&str]) -> O
         choice: choice.to_string(),
         probabilities_bp,
         confidence_bp: probability_bp(confidence),
+        abstained: answer.abstained,
     })
 }
 
@@ -1982,6 +1984,7 @@ fn decision_attempt_from_response(
         probabilities_bp: Default::default(),
         confidence_bp: 0,
         min_confidence_bp: inventory.router_min_confidence_bp,
+        abstained_questions: response.abstained_questions(&["tier", "thinking"]),
         cost_saving_kept_fast: false,
         thinking: None,
         provider_reported_cost_usd: response
@@ -2005,17 +2008,18 @@ fn decision_attempt_from_response(
     let min_confidence_bp = inventory.router_min_confidence_bp;
     // An invalid or unsure `thinking` answer drops only the effort.
     let thinking = validated_choice(response.answers.get("thinking"), &DECISION_THINKING_OPTIONS)
-        .filter(|thinking| thinking.confidence_bp >= min_confidence_bp)
+        .filter(|thinking| !thinking.abstained && thinking.confidence_bp >= min_confidence_bp)
         .map(|thinking| thinking.choice);
     let strong_bp = tier.probabilities_bp.get("strong").copied().unwrap_or(0);
     let cost_saving_kept_fast =
         cost_saving && tier.choice == "strong" && strong_bp < COST_SAVING_STRONG_MIN_BP;
-    let acted = tier.confidence_bp >= min_confidence_bp;
+    let acted = !tier.abstained && tier.confidence_bp >= min_confidence_bp;
     attempt.decision = Some(AutoRouteDecisionEvidence {
         choice: tier.choice.clone(),
         probabilities_bp: tier.probabilities_bp,
         confidence_bp: tier.confidence_bp,
         min_confidence_bp,
+        abstained_questions: response.abstained_questions(&["tier", "thinking"]),
         cost_saving_kept_fast: acted && cost_saving_kept_fast,
         thinking: thinking.clone().filter(|_| acted),
         provider_reported_cost_usd: response
@@ -4185,6 +4189,60 @@ mod decision_router_tests {
             balanced.recommendation.expect("acted").model,
             "deepseek-v4-pro"
         );
+    }
+
+    #[test]
+    fn explicit_abstention_survives_decode_and_never_authorizes_auto_at_floor_zero() {
+        let _env = hermetic_env();
+        let mut config = decision_config("https://openrouter.invalid/api/v1", false, 2);
+        config
+            .auto
+            .as_mut()
+            .unwrap()
+            .router
+            .as_mut()
+            .unwrap()
+            .min_confidence = Some(0.0);
+        let inventory = ModelInventory::from_config(&config).unwrap();
+        let attempt = |body: serde_json::Value| {
+            decision_attempt_from_response(false, &inventory, &pair(), None, &parsed(body), 120)
+        };
+        let mut body = answer_body(0.1, 0.9);
+        body["answers"]["thinking"]["abstained"] = true.into();
+        let effort_abstained = attempt(body.clone());
+        let recommendation = effort_abstained
+            .recommendation
+            .expect("valid tier survives effort abstention");
+        assert_eq!(recommendation.model, "deepseek-v4-flash");
+        assert_eq!(recommendation.reasoning_effort, None);
+        assert_eq!(
+            effort_abstained.decision.unwrap().abstained_questions,
+            vec!["thinking"]
+        );
+        body["answers"]["tier"]["abstained"] = true.into();
+        let tier_abstained = attempt(body);
+        assert!(tier_abstained.recommendation.is_none());
+        assert_eq!(
+            tier_abstained.fallback_reason,
+            Some(AutoRouteHeuristicReason::LowConfidence)
+        );
+        assert_eq!(tier_abstained.failure, None);
+        let decision = tier_abstained.decision.unwrap();
+        assert_eq!(decision.abstained_questions, vec!["tier", "thinking"]);
+        assert_eq!(decision.choice, "fast");
+        assert_eq!(
+            decision.provider_reported_cost_usd.as_deref(),
+            Some("0.000019992")
+        );
+    }
+
+    #[test]
+    fn non_boolean_abstention_is_refused_not_ignored() {
+        let mut body = answer_body(0.1, 0.9);
+        body["answers"]["tier"]["abstained"] = "yes".into();
+        let attempt = policy(false, &parsed(body));
+        assert!(attempt.recommendation.is_none());
+        assert_eq!(attempt.failure, Some(AutoRouterFailure::InvalidAnswer));
     }
 
     #[test]
