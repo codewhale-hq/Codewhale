@@ -376,8 +376,11 @@ fn session_tokens(view: &ConfigStatusView, locale: &Messages) -> String {
 }
 
 fn push_row(out: &mut String, locale: &Messages, label: MessageId, value: &str) {
-    let label = format!("{}:", tr(locale, label));
-    let _ = writeln!(out, "  {label:<LABEL_WIDTH$} {value}");
+    let label = codewhale_tui_kit::ui_text::pad_to_display_width(
+        &format!("{}:", tr(locale, label)),
+        LABEL_WIDTH,
+    );
+    let _ = writeln!(out, "  {label} {value}");
 }
 
 fn safety_summary(view: &ConfigStatusView, locale: &Messages) -> Cow<'static, str> {
