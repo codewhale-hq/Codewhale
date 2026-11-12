@@ -4988,14 +4988,16 @@ mod tests {
             Arc::new(MockExecutor),
         )
         .await?;
-        sleep(STORE_IDLE_POLL_INTERVAL + Duration::from_millis(300)).await;
+        settle_queue_fixture(&manager).await?;
+        inspect_settled_workers(&manager).await?;
         manager.fingerprint_reads.store(0, Ordering::Relaxed);
         manager.store_loads.store(0, Ordering::Relaxed);
 
-        let window = Duration::from_secs(3);
-        sleep(window).await;
+        let started = Instant::now();
+        sleep(Duration::from_secs(3)).await;
         let reads = manager.fingerprint_reads.load(Ordering::Relaxed);
         let loads = manager.store_loads.load(Ordering::Relaxed);
+        let window = started.elapsed();
         let ticks = (window.as_millis() / STORE_SETTLED_NAP.as_millis()) as usize + 1;
         assert!(
             reads <= workers * ticks,
