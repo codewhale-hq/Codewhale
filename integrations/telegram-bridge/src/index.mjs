@@ -31,11 +31,14 @@ import {
   admitTurn,
   questionText,
   parseQuestionAnswers,
+  createdByBridge,
   createRuntimeClient,
   listOwnedThreads,
   readJsonSafe,
   readThreadEvents,
+  settleLegacyOwners,
   THREAD_NOT_OWNED_MESSAGE,
+  ThreadOwnershipError,
   ThreadStore as CoreThreadStore,
   ApprovalOwnershipError,
   decideApproval as decideRuntimeApproval,
@@ -85,6 +88,9 @@ const { runtimeJson, authHeaders } = createRuntimeClient({ ...config, runtimeReq
 const botAccountId = config.botToken.split(":")[0];
 let runtimeCapabilities = {};
 
+const TELEGRAM_SYSTEM_PROMPT =
+  "You are being controlled from a Telegram phone chat. Keep status updates concise. Ask for tool approvals when needed; do not assume mobile messages imply blanket approval.";
+
 const threadStore = await ThreadStore.open(config.threadMapPath);
 const activeTurnTasks = new Map();
 let stopping = false;
@@ -113,6 +119,7 @@ try {
 } catch {
   console.warn("Engine recovery capabilities unavailable; uncertain admissions will remain retained.");
 }
+await settleLegacyOwners(threadStore, runtimeJson, (thread) => createdByBridge(thread, { systemPrompt: TELEGRAM_SYSTEM_PROMPT, workspace: config.workspace }));
 await configureBotCommands().catch((error) => {
   console.error("failed to configure Telegram bot command menu", error);
 });
@@ -463,8 +470,7 @@ async function ensureThread(chatId, { forceNew = false, threadRequest } = {}) {
       trust_mode: config.trustMode,
       auto_approve: config.autoApprove,
       archived: false,
-      system_prompt:
-        "You are being controlled from a Telegram phone chat. Keep status updates concise. Ask for tool approvals when needed; do not assume mobile messages imply blanket approval."
+      system_prompt: TELEGRAM_SYSTEM_PROMPT
     }
   });
 
@@ -523,7 +529,7 @@ async function startPromptTurn(chatId, prompt, identity) {
       model: request.model, workspace: config.workspace, mode: request.mode,
       allow_shell: request.allow_shell, trust_mode: request.trust_mode,
       auto_approve: request.auto_approve, archived: false,
-      system_prompt: "You are being controlled from a Telegram phone chat. Keep status updates concise. Ask for tool approvals when needed; do not assume mobile messages imply blanket approval."
+      system_prompt: TELEGRAM_SYSTEM_PROMPT
     }
   } });
   if (!replay) startTrackedTurnStream(chatId);
@@ -1030,8 +1036,12 @@ async function decideApproval(chatId, action, identity) {
     return false;
   }
   try {
-    await decideRuntimeApproval(runtimeJson, { store: threadStore, chatId, actorId: turnActor(identity), approvalId, decision, remember, turnId: action.turnId });
+    await decideRuntimeApproval(runtimeJson, { store: threadStore, chatId, actorId: turnActor(identity), approvalId, decision, remember, turnId: action.turnId, ownsThread: (threadId) => threadStore.ownsThread(chatId, threadId) });
   } catch (error) {
+    if (error instanceof ThreadOwnershipError) {
+      await sendText(chatId, THREAD_NOT_OWNED_MESSAGE);
+      return false;
+    }
     if (!(error instanceof ApprovalOwnershipError)) throw error;
     await sendText(chatId, `Approval ${approvalId} is not waiting in this chat.`);
     return false;

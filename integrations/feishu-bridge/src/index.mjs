@@ -20,11 +20,13 @@ import {
 } from "./lib.mjs";
 import {
   ApprovalOwnershipError,
+  createdByBridge,
   createRuntimeClient,
   decideApproval as decideRuntimeApproval,
   listOwnedThreads,
   readJsonSafe,
   readThreadEvents,
+  settleLegacyOwners,
   THREAD_NOT_OWNED_MESSAGE,
   ThreadOwnershipError,
   ThreadStore as CoreThreadStore
@@ -74,7 +76,11 @@ const wsClient = new Lark.WSClient({
   loggerLevel: Lark.LoggerLevel?.info
 });
 
+const FEISHU_SYSTEM_PROMPT =
+  "You are being controlled from a Feishu/Lark phone chat. Keep status updates concise. Ask for tool approvals when needed; do not assume mobile messages imply blanket approval.";
+
 const threadStore = await ThreadStore.open(config.threadMapPath);
+await settleLegacyOwners(threadStore, runtimeJson, (thread) => createdByBridge(thread, { systemPrompt: FEISHU_SYSTEM_PROMPT, workspace: config.workspace }));
 
 const dispatcher = new Lark.EventDispatcher({}).register({
   "im.message.receive_v1": async (data) => {
@@ -206,8 +212,7 @@ async function ensureThread(chatId, { forceNew = false } = {}) {
       trust_mode: config.trustMode,
       auto_approve: config.autoApprove,
       archived: false,
-      system_prompt:
-        "You are being controlled from a Feishu/Lark phone chat. Keep status updates concise. Ask for tool approvals when needed; do not assume mobile messages imply blanket approval."
+      system_prompt: FEISHU_SYSTEM_PROMPT
     }
   });
 
@@ -525,8 +530,12 @@ async function decideApproval(chatId, action, identity) {
     return;
   }
   try {
-    await decideRuntimeApproval(runtimeJson, { store: threadStore, chatId, actorId: turnActor(identity), approvalId, decision, remember });
+    await decideRuntimeApproval(runtimeJson, { store: threadStore, chatId, actorId: turnActor(identity), approvalId, decision, remember, ownsThread: (threadId) => threadStore.ownsThread(chatId, threadId) });
   } catch (error) {
+    if (error instanceof ThreadOwnershipError) {
+      await sendText(chatId, THREAD_NOT_OWNED_MESSAGE);
+      return;
+    }
     if (!(error instanceof ApprovalOwnershipError)) throw error;
     await sendText(chatId, `Approval ${approvalId} is not waiting in this chat.`);
     return;

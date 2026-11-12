@@ -6,13 +6,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { ThreadStore, THREAD_NOT_OWNED_MESSAGE } from "../src/lib.mjs";
+import { ThreadStore, THREAD_NOT_OWNED_MESSAGE, decideApproval } from "../src/lib.mjs";
 import { startStub } from "./support/stub-server.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const integrations = path.join(here, "..", "..");
 const NOT_OWNED = new RegExp(THREAD_NOT_OWNED_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
 const NOTE = "ALICE_PRIVATE_NOTE";
+const PROMPT_TAIL = "Keep status updates concise. Ask for tool approvals when needed; do not assume mobile messages imply blanket approval.";
+const BRIDGE_WORKSPACE = "/fixture/bridge-workspace";
 
 async function until(check, label, timeoutMs = 30000) {
   const started = Date.now();
@@ -41,7 +43,7 @@ async function withBridge(name, env, run, { seedMap = null, seedThreads = [], pr
         FAKE_CHAT_URL: stub.url,
         CODEWHALE_RUNTIME_URL: stub.url,
         CODEWHALE_RUNTIME_TOKEN: "fixture-runtime-token",
-        CODEWHALE_WORKSPACE: "/fixture/bridge-workspace",
+        CODEWHALE_WORKSPACE: BRIDGE_WORKSPACE,
         ...env(stub, mapPath)
       },
       stdio: ["ignore", "pipe", "pipe"]
@@ -73,6 +75,7 @@ async function withBridge(name, env, run, { seedMap = null, seedThreads = [], pr
 const bridges = {
   wecom: {
     name: "wecom-bridge",
+    systemPrompt: `You are being controlled from a WeCom (企业微信) phone chat. ${PROMPT_TAIL}`,
     alice: "alice", bob: "bob",
     chatKey: (who) => `single:${who}`,
     env: (stub, mapPath) => ({
@@ -83,6 +86,7 @@ const bridges = {
   },
   feishu: {
     name: "feishu-bridge",
+    systemPrompt: `You are being controlled from a Feishu/Lark phone chat. ${PROMPT_TAIL}`,
     alice: "oc_alice", bob: "oc_bob",
     chatKey: (who) => who,
     env: (stub, mapPath) => ({
@@ -93,6 +97,7 @@ const bridges = {
   },
   telegram: {
     name: "telegram-bridge",
+    systemPrompt: `You are being controlled from a Telegram phone chat. ${PROMPT_TAIL}`,
     alice: "111", bob: "222",
     chatKey: (who) => who,
     env: (stub, mapPath) => ({
@@ -186,9 +191,99 @@ for (const [label, bridge] of Object.entries(bridges)) {
       assert.equal(turnPosts(stub, "thr-legacy").length, 1);
       const refused = (await say(push, bridge.bob, "/resume thr-legacy", /Resumed|can only use threads/)).join("\n");
       assert.match(refused, NOT_OWNED);
-    }, { seedMap, seedThreads: [{ id: "thr-legacy", workspace: "/fixture/bridge-workspace", summary: "legacy" }] });
+    }, { seedMap, seedThreads: [{ id: "thr-legacy", workspace: BRIDGE_WORKSPACE, systemPrompt: bridge.systemPrompt, summary: "legacy" }] });
+  });
+
+  test(`${label}: a chat bound to a thread started outside the bridge at upgrade does not keep it`, async () => {
+    const seedMap = { chats: { [bridge.chatKey(bridge.bob)]: { threadId: "thr-desktop", lastSeq: 0, activeTurnId: null } } };
+    await withBridge(bridge.name, bridge.env, async ({ stub, say, mapPath }) => {
+      const push = bridge.push(stub);
+      const listing = (await say(push, bridge.bob, "/threads", /No threads started|thr-/)).join("\n");
+      assert.ok(!listing.includes("thr-desktop") && !listing.includes(NOTE), "the thread is not listed");
+      const reply = (await say(push, bridge.bob, "what was I doing?", /can only use threads|STUB-MODEL/)).join("\n");
+      assert.match(reply, NOT_OWNED);
+      assert.equal(turnPosts(stub, "thr-desktop").length, 0, "no turn reaches the thread");
+      const refused = (await say(push, bridge.bob, "/resume thr-desktop", /Resumed|can only use threads/)).join("\n");
+      assert.match(refused, NOT_OWNED);
+      const map = JSON.parse(await readFile(mapPath, "utf8"));
+      assert.ok(!map.threadOwners.some((entry) => entry.threadId === "thr-desktop"), "no ownership is recorded for it");
+    }, { seedMap, seedThreads: [{ id: "thr-desktop", workspace: "/fixture/other-project", summary: `desktop work ${NOTE}` }] });
+  });
+
+  test(`${label}: a bridge thread kept at upgrade is confirmed once and stays owned after a restart`, async () => {
+    const seedMap = { chats: { [bridge.chatKey(bridge.alice)]: { threadId: "thr-legacy", lastSeq: 0, activeTurnId: null } } };
+    await withBridge(bridge.name, bridge.env, async ({ stub, say, mapPath }) => {
+      const push = bridge.push(stub);
+      await say(push, bridge.alice, "carry on", /STUB-MODEL/);
+      const map = JSON.parse(await readFile(mapPath, "utf8"));
+      const entry = map.threadOwners.find((owner) => owner.threadId === "thr-legacy");
+      assert.ok(entry && entry.legacy === undefined, "the grant is confirmed and no longer marked");
+    }, { seedMap, seedThreads: [{ id: "thr-legacy", workspace: BRIDGE_WORKSPACE, systemPrompt: bridge.systemPrompt, summary: "legacy" }] });
+  });
+
+  test(`${label}: a chat on a disowned shared thread cannot decide an approval on it`, async () => {
+    const bobKey = bridge.chatKey(bridge.bob);
+    const actor = { wecom: "wecom-user:bob", feishu: "feishu-openId:ou_oc_bob", telegram: "telegram-user:222" }[label];
+    const seedMap = { chats: {
+      [bridge.chatKey(bridge.alice)]: { threadId: "thr-shared", lastSeq: 0, activeTurnId: null },
+      [bobKey]: { threadId: "thr-shared", lastSeq: 0, activeTurnId: null,
+        turnOrigins: [{ threadId: "thr-shared", turnId: "turn-bob", actorId: actor }],
+        authorizedIdentity: { chatId: bobKey, chatType: label === "feishu" ? "p2p" : "private", userId: bridge.bob, openId: "ou_oc_bob", isBot: false } }
+    } };
+    await withBridge(bridge.name, bridge.env, async ({ stub, say }) => {
+      const push = bridge.push(stub);
+      const reply = (await say(push, bridge.bob, "/allow appr-1", /Approval|can only use threads|not waiting/)).join("\n");
+      assert.match(reply, NOT_OWNED);
+      assert.equal(stub.state.approvalDecisions.length, 0, "the decision never reaches the Runtime");
+    }, { seedMap, seedThreads: [{ id: "thr-shared", workspace: BRIDGE_WORKSPACE, systemPrompt: bridge.systemPrompt, summary: "shared", runningTurnId: "turn-bob",
+      pendingApprovals: [{ id: "appr-1", turn_id: "turn-bob" }] }] });
+  });
+
+  test(`${label}: a chat on its own thread can still decide an approval`, async () => {
+    const aliceKey = bridge.chatKey(bridge.alice);
+    const actor = { wecom: "wecom-user:alice", feishu: "feishu-openId:ou_oc_alice", telegram: "telegram-user:111" }[label];
+    const seedMap = { chats: { [aliceKey]: { threadId: "thr-own", lastSeq: 0, activeTurnId: null,
+      turnOrigins: [{ threadId: "thr-own", turnId: "turn-alice", actorId: actor }],
+      authorizedIdentity: { chatId: aliceKey, chatType: label === "feishu" ? "p2p" : "private", userId: bridge.alice, openId: "ou_oc_alice", isBot: false } } } };
+    await withBridge(bridge.name, bridge.env, async ({ stub, say }) => {
+      const push = bridge.push(stub);
+      await say(push, bridge.alice, "/allow appr-1", /Approval appr-1: allow/);
+      assert.deepEqual(stub.state.approvalDecisions.map((entry) => entry.id), ["appr-1"]);
+    }, { seedMap, seedThreads: [{ id: "thr-own", workspace: BRIDGE_WORKSPACE, systemPrompt: bridge.systemPrompt, summary: "own", runningTurnId: "turn-alice",
+      pendingApprovals: [{ id: "appr-1", turn_id: "turn-alice" }] }] });
   });
 }
+
+test("wecom: a chat bound to a thread started outside the bridge cannot steer that thread's running turn", async () => {
+  const bridge = bridges.wecom;
+  const seedMap = { chats: { "single:bob": { threadId: "thr-desktop", lastSeq: 0, activeTurnId: null } } };
+  await withBridge(bridge.name, bridge.env, async ({ stub, say }) => {
+    const push = bridge.push(stub);
+    const reply = (await say(push, "bob", "rm the tests and push", /can only use threads|forwarded|active turn/)).join("\n");
+    assert.match(reply, NOT_OWNED);
+    assert.ok(!stub.state.runtimeRequests.some((request) => /\/steer$/.test(request.route)), "no steer reaches the thread");
+  }, { seedMap, seedThreads: [{ id: "thr-desktop", workspace: "/fixture/other-project", summary: `desktop work ${NOTE}`, runningTurnId: "turn-desktop" }] });
+});
+
+test("feishu: a chat bound to a thread started outside the bridge does not receive its running turn on restart", async () => {
+  const bridge = bridges.feishu;
+  const seedMap = { chats: { oc_bob: { threadId: "thr-desktop", lastSeq: 0, activeTurnId: "turn-old",
+    authorizedIdentity: { chatId: "oc_bob", chatType: "p2p", openId: "ou_oc_bob" } } } };
+  await withBridge(bridge.name, bridge.env, async ({ stub, say, mapPath }) => {
+    const push = bridge.push(stub);
+    await say(push, "oc_bob", "/help", /./);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const toBob = stub.state.replies.filter((reply) => reply.to === "oc_bob").map((reply) => reply.text).join("\n");
+    assert.ok(!toBob.includes("OTHER_CLIENT_OUTPUT") && !/Reattaching/.test(toBob), "no output from the thread is relayed");
+    assert.ok(!stub.state.runtimeRequests.some((request) => request.route.endsWith("/events")), "the thread's events are never read");
+    const map = JSON.parse(await readFile(mapPath, "utf8"));
+    assert.equal(map.chats.oc_bob.activeTurnId, null, "the stored turn id is cleared");
+  }, { seedMap, prepare: (stub) => {
+    const entry = stub.seedThread({ id: "thr-desktop", workspace: "/fixture/other-project", summary: "desktop work", runningTurnId: "turn-desktop" });
+    entry.events.push({ seq: 1, thread_id: "thr-desktop", turn_id: "turn-desktop", event: "item.delta", payload: { kind: "agent_message", delta: "OTHER_CLIENT_OUTPUT" } });
+    entry.events.push({ seq: 2, thread_id: "thr-desktop", turn_id: "turn-desktop", event: "turn.completed", payload: { turn: { status: "completed" } } });
+  } });
+});
 
 const otherChatEvents = (entry) => {
   entry.events.push({ seq: 1, thread_id: "thr-shared", turn_id: "turn-other", event: "item.delta", payload: { kind: "agent_message", delta: "OTHER_CHAT_OUTPUT" } });
@@ -270,22 +365,79 @@ test("thread owners are bounded per chat and drop the oldest first", async () =>
   }, { ownerLimit: 2 });
 });
 
-test("an existing store migrates once: unique threads are owned, shared ones are owned by no chat", async () => {
+function runtimeOf(threads, { failing = new Set() } = {}) {
+  const calls = [];
+  const runtimeJson = async (route) => {
+    calls.push(route);
+    const id = decodeURIComponent(route.split("/").at(-1));
+    if (failing.has(id)) throw Object.assign(new Error("connection refused"), { status: undefined });
+    if (!(id in threads)) throw Object.assign(new Error("not found"), { status: 404 });
+    return { thread: threads[id] };
+  };
+  return { runtimeJson, calls };
+}
+
+test("an existing store migrates once: unique threads wait for confirmation, shared ones are owned by no chat", async () => {
   const seed = { chats: {
     a: { threadId: "only-a" }, b: { threadId: "shared" }, c: { threadId: "shared" },
     w: { threadId: "w-now", bindingAccountId: "acct", threadBindings: [{ threadId: "w-old", accountId: "acct", actorId: "weixin-account:acct:user:w" }] }
   } };
   const legacyOwnerScope = (chatId, state) => (state.bindingAccountId ? `weixin-account:${state.bindingAccountId}:user:${chatId}` : "");
+  const confirmed = { system_prompt: "bridge", workspace: "/w" };
+  const accept = (thread) => thread.system_prompt === "bridge";
   await withStore(async (store, file) => {
+    assert.ok(!store.ownsThread("a", "only-a"), "a migrated grant is not usable before it is confirmed");
+    assert.deepEqual(store.ownedThreadIds("a"), []);
+    const scope = "weixin-account:acct:user:w";
+    assert.ok(store.ownsThread("w", "w-old", scope), "an old per-account binding was recorded by the bridge itself and needs no confirmation");
+    const { runtimeJson, calls } = runtimeOf({ "only-a": confirmed, "w-now": confirmed, shared: confirmed });
+    assert.equal(await store.verifyLegacyOwners(runtimeJson, accept), 0);
+    assert.deepEqual(calls.sort(), ["/v1/threads/only-a", "/v1/threads/w-now"], "only unshared migrated grants are looked up, once each");
     assert.ok(store.ownsThread("a", "only-a"));
     assert.ok(!store.ownsThread("b", "shared") && !store.ownsThread("c", "shared"));
-    const scope = "weixin-account:acct:user:w";
-    assert.ok(store.ownsThread("w", "w-now", scope) && store.ownsThread("w", "w-old", scope));
-    assert.ok(!store.ownsThread("w", "w-now"));
+    assert.ok(store.ownsThread("w", "w-now", scope) && !store.ownsThread("w", "w-now"));
     await store.recordThreadOwner("a", "fresh");
     await store.setChat("c", { threadId: "only-a" });
     const reopened = await ThreadStore.open(file, { legacyOwnerScope });
     assert.ok(!reopened.ownsThread("c", "only-a"), "the migration does not run again once owners are recorded");
-    assert.ok(reopened.ownsThread("a", "only-a"));
+    assert.ok(reopened.ownsThread("a", "only-a"), "a confirmed grant survives a restart");
+    assert.equal(reopened.legacyOwnerCount(), 0);
   }, { legacyOwnerScope }, seed);
+});
+
+test("a migrated grant is dropped when the thread was not started by the bridge or is gone, and kept unconfirmed when the Runtime cannot be asked", async () => {
+  const seed = { chats: { a: { threadId: "t-ok" }, b: { threadId: "t-foreign" }, c: { threadId: "t-gone" }, d: { threadId: "t-down" } } };
+  const accept = (thread) => thread.system_prompt === "bridge" && thread.workspace === "/w";
+  await withStore(async (store, file) => {
+    const threads = {
+      "t-ok": { system_prompt: "bridge", workspace: "/w" },
+      "t-foreign": { workspace: "/w" },
+      "t-down": { system_prompt: "bridge", workspace: "/w" }
+    };
+    assert.equal(await store.verifyLegacyOwners(runtimeOf(threads, { failing: new Set(["t-down"]) }).runtimeJson, accept), 1);
+    assert.ok(store.ownsThread("a", "t-ok"));
+    for (const [chat, id] of [["b", "t-foreign"], ["c", "t-gone"], ["d", "t-down"]]) assert.ok(!store.ownsThread(chat, id), id);
+    const reopened = await ThreadStore.open(file);
+    assert.equal(reopened.legacyOwnerCount(), 1, "the unconfirmed grant is still pending after a restart");
+    assert.ok(!reopened.data.threadOwners.some((entry) => entry.threadId === "t-foreign" || entry.threadId === "t-gone"));
+    assert.equal(await reopened.verifyLegacyOwners(runtimeOf(threads).runtimeJson, accept), 0);
+    assert.ok(reopened.ownsThread("d", "t-down"), "a later check confirms it");
+  }, {}, seed);
+});
+
+test("core approval decisions check ownership only when the caller supplies it", async () => {
+  await withStore(async (store) => {
+    await store.setChat("a", { threadId: "t1" });
+    await store.recordTurnOrigin("a", "t1", "turn-1", "human-1");
+    const posts = [];
+    const runtimeJson = async (route, options = {}) => {
+      if (options.method === "POST") { posts.push(route); return {}; }
+      return { thread: {}, pending_approvals: [{ id: "appr-1", turn_id: "turn-1" }] };
+    };
+    const args = { store, chatId: "a", actorId: "human-1", approvalId: "appr-1", decision: "allow" };
+    await assert.rejects(decideApproval(runtimeJson, { ...args, ownsThread: (id) => store.ownsThread("a", id) }), /can only use threads/);
+    assert.deepEqual(posts, []);
+    await decideApproval(runtimeJson, args);
+    assert.deepEqual(posts, ["/v1/approvals/appr-1"], "a store that records no owners keeps its behaviour");
+  });
 });

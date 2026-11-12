@@ -6,6 +6,7 @@ export async function startStub() {
     nextThread: 1,
     nextTurn: 1,
     runtimeRequests: [],
+    approvalDecisions: [],
     replies: [],
     inbound: { wecom: [], feishu: [], telegram: [] },
     nextUpdateId: 1
@@ -15,8 +16,8 @@ export async function startStub() {
     return state.threads.find((entry) => entry.id === id) || null;
   }
 
-  function seedThread({ id, workspace, summary, runningTurnId }) {
-    const entry = { id, workspace, turns: [], events: [], prompts: [], latestSummary: summary || "", createdBy: "seed" };
+  function seedThread({ id, workspace, summary, runningTurnId, systemPrompt = null, pendingApprovals = [] }) {
+    const entry = { id, workspace, systemPrompt, pendingApprovals, turns: [], events: [], prompts: [], latestSummary: summary || "", createdBy: "seed" };
     if (summary) entry.prompts.push(summary);
     if (runningTurnId) entry.turns.push({ id: runningTurnId, status: "in_progress" });
     state.threads.unshift(entry);
@@ -42,7 +43,7 @@ export async function startStub() {
     if (route === "GET /v1/runtime/info") return json(res, 200, { version: "fake", bind_host: "127.0.0.1", port: 0, auth_required: true, capabilities: {} });
     if (route === "GET /v1/workspace/status") return json(res, 200, { workspace: "/fake", git_repo: false });
     if (route === "POST /v1/threads") {
-      const entry = { id: `thr-${state.nextThread++}`, workspace: body?.workspace || "", turns: [], events: [], prompts: [], latestSummary: "", createdBy: "bridge" };
+      const entry = { id: `thr-${state.nextThread++}`, workspace: body?.workspace || "", systemPrompt: body?.system_prompt || null, pendingApprovals: [], turns: [], events: [], prompts: [], latestSummary: "", createdBy: "bridge" };
       state.threads.unshift(entry);
       return json(res, 200, { id: entry.id });
     }
@@ -61,13 +62,18 @@ export async function startStub() {
         }));
       return json(res, 200, rows);
     }
+    const approval = url.pathname.match(/^\/v1\/approvals\/([^/]+)$/);
+    if (approval && req.method === "POST") {
+      state.approvalDecisions.push({ id: decodeURIComponent(approval[1]), body });
+      return json(res, 200, { ok: true });
+    }
     const match = url.pathname.match(/^\/v1\/threads\/([^/]+)(?:\/(.*))?$/);
     if (!match) return json(res, 404, { message: "no route" });
     const entry = thread(decodeURIComponent(match[1]));
     if (!entry) return json(res, 404, { message: "thread not found" });
     const rest = match[2] || "";
     if (req.method === "GET" && rest === "") {
-      return json(res, 200, { id: entry.id, latest_seq: entry.events.length, turns: entry.turns, pending_approvals: [] });
+      return json(res, 200, { id: entry.id, thread: { id: entry.id, workspace: entry.workspace, system_prompt: entry.systemPrompt }, latest_seq: entry.events.length, turns: entry.turns, pending_approvals: entry.pendingApprovals });
     }
     if (req.method === "POST" && rest === "turns") {
       const turn = { id: `turn-${state.nextTurn++}`, thread_id: entry.id, status: "completed" };

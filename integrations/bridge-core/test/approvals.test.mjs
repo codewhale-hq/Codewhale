@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import url from "node:url";
 import {
-  ApprovalOwnershipError, THREAD_NOT_OWNED_MESSAGE, ThreadStore, decideApproval, settleStoredApproval,
+  ApprovalOwnershipError, THREAD_NOT_OWNED_MESSAGE, ThreadOwnershipError, ThreadStore, decideApproval, settleStoredApproval,
   admitTurn, createRuntimeClient, activeTurnBlock, latestRunningTurn, readThreadEvents, readJsonSafe, compactRuntimeError
 } from "../src/lib.mjs";
 import { isAllowed, isGroupChat } from "../../telegram-bridge/src/lib.mjs";
@@ -27,11 +27,11 @@ const actors = {
   "telegram-bridge": "telegram-user:alice", "feishu-bridge": "feishu-openId:alice",
   "wecom-bridge": "wecom-user:alice", "weixin-bridge": "weixin-account:bot-a:user:chat-a"
 };
-async function withStore(fn, options = {}) {
+async function withStore(fn, options = {}, ownerScope = "") {
   const dir = await mkdtemp(path.join(tmpdir(), "bridge-approvals-"));
   try {
     const store = await ThreadStore.open(path.join(dir, "state.json"), { actions: true, messageLimit: 500, ...options });
-    await store.recordThreadOwner(chatId, threadId);
+    await store.recordThreadOwner(chatId, threadId, ownerScope);
     await store.setChat(chatId, { threadId });
     await fn(store);
   } finally { await rm(dir, { recursive: true, force: true }); }
@@ -47,7 +47,7 @@ function extract(source, name) {
 async function shipping(bridge, names, values) {
   const source = await readFile(path.join(root, bridge, "src/index.mjs"), "utf8");
   const functions = [...new Set([
-    ...(bridge === "weixin-bridge" && names.includes("turnActor") ? ["accountIdentity", "weixinActorId"] : []),
+    ...(bridge === "weixin-bridge" && names.includes("turnActor") ? ["accountIdentity", "weixinActorId", "ownsThread"] : []),
     ...(bridge === "telegram-bridge" && (names.includes("runPrompt") || names.includes("startPromptTurn"))
       ? ["recoveryAllowed", "supportsAdmissionRecovery"] : []),
     ...(bridge === "telegram-bridge" && ["runPrompt", "startPromptTurn", "handleCommand"].some((name) => names.includes(name))
@@ -104,8 +104,9 @@ async function withRuntime(fn) {
 }
 function environment(store, runtime, extra = {}) {
   return {
-    threadStore: store, THREAD_NOT_OWNED_MESSAGE, runtimeJson: runtime.runtimeJson, decideRuntimeApproval: decideApproval,
+    threadStore: store, THREAD_NOT_OWNED_MESSAGE, ThreadOwnershipError, runtimeJson: runtime.runtimeJson, decideRuntimeApproval: decideApproval,
     settleStoredApproval, ApprovalOwnershipError, incomingIdentity: wecomIdentity,
+    WECOM_SYSTEM_PROMPT: "fixture prompt", FEISHU_SYSTEM_PROMPT: "fixture prompt", TELEGRAM_SYSTEM_PROMPT: "fixture prompt",
     sendText: async () => {}, replyText: async () => {}, sendTurnText: async () => {},
     parseApprovalDecisionArgs: () => { throw new Error("fixture uses actual parsed approval id"); },
     ensureThread: async () => store.getChat(chatId), activeTurnBlock, latestRunningTurn,
@@ -231,7 +232,7 @@ for (const bridge of Object.keys(identities)) {
       assert.equal(runtime.state.posts.length, 0);
       await consumer(chatId, action, identities[bridge]("alice"));
       assert.deepEqual(runtime.state.posts, [{ route: "/v1/approvals/approval-a", body: { decision: "allow", remember: bridge !== "wecom-bridge" } }]);
-    }));
+    }, {}, bridge === "weixin-bridge" ? actors[bridge] : ""));
   });
 }
 
@@ -252,7 +253,7 @@ test("Weixin shipping decision rejects replacement or missing account identity w
     botAccount.accountId = "bot-a";
     await consumer(chatId, action);
     assert.deepEqual(runtime.state.posts, [{ route: "/v1/approvals/approval-a", body: { decision: "allow", remember: true } }]);
-  }));
+  }, {}, actors["weixin-bridge"]));
 });
 
 test("Weixin shipping decision refuses a legacy origin without bot account provenance after reload", async () => {
@@ -264,7 +265,7 @@ test("Weixin shipping decision refuses a legacy origin without bot account prove
     await consumer(chatId, { decision: "allow", approvalId: "approval-a", remember: true });
     assert.equal(runtime.state.posts.length, 0);
     assert.equal(reopened.turnOrigin(chatId, threadId, turnId).actorId, "weixin-user:chat-a");
-  }));
+  }, {}, actors["weixin-bridge"]));
 });
 
 for (const bridge of ["telegram-bridge", "feishu-bridge", "wecom-bridge"]) {

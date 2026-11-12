@@ -30,9 +30,11 @@ import {
   ApprovalOwnershipError,
   createRuntimeClient,
   decideApproval as decideRuntimeApproval,
+  createdByBridge,
   listOwnedThreads,
   readJsonSafe,
   readThreadEvents,
+  settleLegacyOwners,
   THREAD_NOT_OWNED_MESSAGE,
   ThreadOwnershipError
 } from "../../bridge-core/src/lib.mjs";
@@ -70,7 +72,11 @@ const config = {
 
 const { runtimeJson, authHeaders } = createRuntimeClient(config);
 
+const WECOM_SYSTEM_PROMPT =
+  "You are being controlled from a WeCom (企业微信) phone chat. Keep status updates concise. Ask for tool approvals when needed; do not assume mobile messages imply blanket approval.";
+
 const threadStore = await ThreadStore.open(config.threadMapPath);
+await settleLegacyOwners(threadStore, runtimeJson, (thread) => createdByBridge(thread, { systemPrompt: WECOM_SYSTEM_PROMPT, workspace: config.workspace }));
 
 const client = new WSClient({
   botId: config.botId,
@@ -300,8 +306,7 @@ async function ensureThread(chatId, { forceNew = false } = {}) {
       trust_mode: config.trustMode,
       auto_approve: config.autoApprove,
       archived: false,
-      system_prompt:
-        "You are being controlled from a WeCom (企业微信) phone chat. Keep status updates concise. Ask for tool approvals when needed; do not assume mobile messages imply blanket approval."
+      system_prompt: WECOM_SYSTEM_PROMPT
     }
   });
 
@@ -589,8 +594,12 @@ async function decideApproval(chatId, action, frame) {
     return false;
   }
   try {
-    await decideRuntimeApproval(runtimeJson, { store: threadStore, chatId, actorId: turnActor(incomingIdentity(frame.body)), approvalId, decision, remember });
+    await decideRuntimeApproval(runtimeJson, { store: threadStore, chatId, actorId: turnActor(incomingIdentity(frame.body)), approvalId, decision, remember, ownsThread: (threadId) => threadStore.ownsThread(chatId, threadId) });
   } catch (error) {
+    if (error instanceof ThreadOwnershipError) {
+      await replyText(frame, THREAD_NOT_OWNED_MESSAGE);
+      return false;
+    }
     if (!(error instanceof ApprovalOwnershipError)) throw error;
     await replyText(frame, `Approval ${approvalId} is not waiting in this chat.`);
     return false;

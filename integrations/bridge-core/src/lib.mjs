@@ -241,7 +241,7 @@ export class ThreadStore {
       if (state.threadId) {
         reference(state.threadId, chatId);
         const scope = this.options.legacyOwnerScope(chatId, state);
-        if (typeof scope === "string") own.push({ threadId: state.threadId, chatId, scope });
+        if (typeof scope === "string") own.push({ threadId: state.threadId, chatId, scope, legacy: true });
       }
       candidates.push(...own.slice(-this.options.ownerLimit));
     }
@@ -256,7 +256,36 @@ export class ThreadStore {
 
   ownsThread(chatId, threadId, scope = "") {
     if (!chatId || !threadId) return false;
-    return this.data.threadOwners.some((entry) => entry.threadId === threadId && entry.chatId === chatId && entry.scope === scope);
+    return this.data.threadOwners.some((entry) => entry.legacy !== true && entry.threadId === threadId && entry.chatId === chatId && entry.scope === scope);
+  }
+
+  legacyOwnerCount() {
+    return this.data.threadOwners.filter((entry) => entry.legacy === true).length;
+  }
+
+  async verifyLegacyOwners(runtimeJson, accept, { concurrency = 8 } = {}) {
+    const ids = [...new Set(this.data.threadOwners.filter((entry) => entry.legacy === true).map((entry) => entry.threadId))];
+    const verdicts = new Map();
+    for (let index = 0; index < ids.length; index += concurrency) {
+      await Promise.all(ids.slice(index, index + concurrency).map(async (threadId) => {
+        try {
+          const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(threadId)}`);
+          verdicts.set(threadId, accept(detail?.thread ?? detail) === true);
+        } catch (error) {
+          if (error?.status === 404) verdicts.set(threadId, false);
+        }
+      }));
+    }
+    if (verdicts.size) {
+      this.data.threadOwners = this.data.threadOwners.flatMap((entry) => {
+        if (entry.legacy !== true || !verdicts.has(entry.threadId)) return [entry];
+        if (!verdicts.get(entry.threadId)) return [];
+        const { legacy, ...confirmed } = entry;
+        return [confirmed];
+      });
+      await this.save();
+    }
+    return this.legacyOwnerCount();
   }
 
   requireOwnedThread(chatId, threadId, scope = "") {
@@ -266,7 +295,7 @@ export class ThreadStore {
   ownedThreadIds(chatId, scope = "") {
     if (!chatId) return [];
     return this.data.threadOwners
-      .filter((entry) => entry.chatId === chatId && entry.scope === scope)
+      .filter((entry) => entry.legacy !== true && entry.chatId === chatId && entry.scope === scope)
       .map((entry) => entry.threadId)
       .reverse();
   }
@@ -441,6 +470,16 @@ export class ThreadOwnershipError extends Error {
   }
 }
 
+export async function settleLegacyOwners(store, runtimeJson, accept, { retryMs = 30_000, timeoutMs = 15_000 } = {}) {
+  const bounded = (route) => runtimeJson(route, { signal: AbortSignal.timeout(timeoutMs) });
+  const remaining = await store.verifyLegacyOwners(bounded, accept).catch(() => store.legacyOwnerCount());
+  if (remaining > 0) setTimeout(() => void settleLegacyOwners(store, runtimeJson, accept, { retryMs, timeoutMs }), retryMs).unref();
+}
+
+export function createdByBridge(thread, { systemPrompt, workspace }) {
+  return thread?.system_prompt === systemPrompt && String(thread?.workspace ?? "") === workspace;
+}
+
 export async function listOwnedThreads(store, runtimeJson, chatId, scope = "", limit = 8) {
   const ids = store.ownedThreadIds(chatId, scope);
   if (!ids.length) return [];
@@ -454,11 +493,12 @@ export async function listOwnedThreads(store, runtimeJson, chatId, scope = "", l
  * owns the immutable human who initiated that accepted turn. Admission to a
  * group, a newer sender or a legacy unbound button does not grant this authority.
  */
-export async function decideApproval(runtimeJson, { store, chatId, actorId, approvalId, decision, remember = false, turnId = null }) {
+export async function decideApproval(runtimeJson, { store, chatId, actorId, approvalId, decision, remember = false, turnId = null, ownsThread = null }) {
   if (decision !== "allow" && decision !== "deny") throw new ApprovalOwnershipError("decision must be allow or deny");
   const state = await store.getChat(chatId);
   const threadId = state?.threadId;
   if (!threadId) throw new ApprovalOwnershipError("this chat has no Runtime thread yet");
+  if (typeof ownsThread === "function" && !ownsThread(threadId)) throw new ThreadOwnershipError(THREAD_NOT_OWNED_MESSAGE);
   if (!actorId) throw new ApprovalOwnershipError("missing initiating human");
   if (!approvalId) throw new ApprovalOwnershipError("missing approval id");
   const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(threadId)}`);

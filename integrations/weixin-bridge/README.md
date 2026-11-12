@@ -112,7 +112,11 @@ Engine turn 与微信记录，避免重复执行或重复发送。同一账户�
 
 `/threads` 只显示当前账户与当前聊天拥有的最近对话，`/resume` 只接受该
 账户和聊天已经绑定的对话。创建新对话会保留最多 200 条绑定记录；超出记录
-范围的旧对话或其他聊天的对话不能通过任意线程 ID 接管。归属记录现在与聊天状态分开保存在 `thread-map.json` 的 `threadOwners` 中。
+范围的旧对话或其他聊天的对话不能通过任意线程 ID 接管。归属记录现在与聊天状态
+分开保存在 `thread-map.json` 的 `threadOwners` 中。
+升级时，只有由本 bridge 创建的线程才会保留给聊天：启动时 bridge 会向 runtime
+确认一次当前绑定的线程，由桌面端、TUI 或其他客户端创建的线程会被移除，
+该聊天需要发送 `/new`。
 
 注意：bridge **不读取 `.env` 文件**，手动运行时环境变量必须通过 `export` 传入，
 或使用 `node --env-file=.env src/index.mjs`。

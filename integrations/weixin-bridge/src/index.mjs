@@ -34,7 +34,7 @@ import {
   parseQuestionAnswers,
 } from "./lib.mjs";
 import { renderQrToText } from "./qr.mjs";
-import { ThreadStore as CoreThreadStore, THREAD_NOT_OWNED_MESSAGE, ThreadOwnershipError, listOwnedThreads, readJsonSafe, readThreadEvents, writeFileDurable, ApprovalOwnershipError, decideApproval as decideRuntimeApproval } from "../../bridge-core/src/lib.mjs";
+import { ThreadStore as CoreThreadStore, THREAD_NOT_OWNED_MESSAGE, ThreadOwnershipError, createdByBridge, listOwnedThreads, settleLegacyOwners, readJsonSafe, readThreadEvents, writeFileDurable, ApprovalOwnershipError, decideApproval as decideRuntimeApproval } from "../../bridge-core/src/lib.mjs";
 
 // ============================================================================
 // 账号持久化
@@ -837,8 +837,9 @@ async function decideByCode(chatId, { decision, code }) {
   if (!entry || entry.usedAt) return sendText(chatId, "没有找到等待中的这个批准码。/ No approval is waiting with that code.");
   if (Date.parse(entry.expiresAt) <= Date.now()) return sendText(chatId, "这个批准码已过期，发送 /status 获取新的。/ That code expired; send /status for a new one.");
   try {
-    await decideRuntimeApproval(runtimeJson, { store: threadStore, chatId, actorId: turnActor(chatId), approvalId: entry.approvalId, decision, remember: false });
+    await decideRuntimeApproval(runtimeJson, { store: threadStore, chatId, actorId: turnActor(chatId), approvalId: entry.approvalId, decision, remember: false, ownsThread: (threadId) => ownsThread(chatId, threadId) });
   } catch (error) {
+    if (error instanceof ThreadOwnershipError) return sendText(chatId, THREAD_NOT_OWNED_MESSAGE);
     if (error instanceof ApprovalOwnershipError || error.status === 404) return sendText(chatId, "这个批准已不在等待中。/ That approval is no longer waiting.");
     return sendText(chatId, `Approval failed: ${error.message}`);
   }
@@ -1024,12 +1025,16 @@ async function decideApproval(chatId, action) {
     return;
   }
   try {
-    await decideRuntimeApproval(runtimeJson, { store: threadStore, chatId, actorId: turnActor(chatId), approvalId, decision, remember });
+    await decideRuntimeApproval(runtimeJson, { store: threadStore, chatId, actorId: turnActor(chatId), approvalId, decision, remember, ownsThread: (threadId) => ownsThread(chatId, threadId) });
     await sendText(
       chatId,
       `Approval ${approvalId}: ${decision}${remember ? " and remember" : ""}`
     );
   } catch (error) {
+    if (error instanceof ThreadOwnershipError) {
+      await sendText(chatId, THREAD_NOT_OWNED_MESSAGE);
+      return;
+    }
     if (error instanceof ApprovalOwnershipError) {
       await sendText(chatId, `Approval ${approvalId} is not waiting in this chat.`);
       return;
@@ -1428,6 +1433,7 @@ async function main() {
 
   if (!accountIdentity()) throw new Error("The saved bot account has no stable account identity; pair again before receiving messages.");
   try { runtimeCapabilities = (await runtimeJson("/v1/runtime/info"))?.capabilities || {}; } catch { console.warn("Engine recovery capabilities unavailable; uncertain admissions will remain retained."); }
+  await settleLegacyOwners(threadStore, runtimeJson, (thread) => createdByBridge(thread, { systemPrompt: WEIXIN_SYSTEM_PROMPT, workspace: config.workspace }));
   for (const [chatId, state] of threadStore.listChats()) {
     if (hasPendingWork(state)) startChatRecovery(chatId);
   }

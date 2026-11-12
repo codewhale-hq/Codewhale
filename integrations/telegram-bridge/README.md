@@ -76,12 +76,18 @@ A thread belongs to the chat that created it. The bridge records the owner in
 the thread map when it creates a thread. `/threads` lists only the threads this
 chat created, and `/resume` accepts only an ID this chat created. Any other ID,
 including a thread started from the desktop app, the TUI or another chat, gets
-one fixed reply and is never sent to the Runtime. When an existing thread map is
-first loaded, a thread that only one chat points at stays with that chat; a
-thread that several chats point at is owned by none of them, and those chats send
-`/new` to start a new thread. Review the thread map after upgrading. An existing thread map records only the
-thread each chat is bound to, so threads a chat created earlier and has since
-left with `/new` are no longer listed or resumable.
+one fixed reply and is never sent to the Runtime.
+
+When an existing thread map is first loaded, each chat keeps only the thread it
+is bound to, and only after the bridge asks the Runtime once whether that thread
+was started by this bridge in the configured workspace. A thread started from
+the desktop app, the TUI or another client is dropped from the chat, and so is a
+thread that several chats point at. Those chats send `/new` to start a new
+thread. If the Runtime cannot be reached at start, the bridge retries every 30
+seconds and meanwhile gives the fixed reply. An existing thread map records only
+the thread each chat is bound to, so threads a chat created earlier and has
+since left with `/new` are no longer listed or resumable. Review the thread map
+after upgrading.
 
 ## Restart access checks
 
