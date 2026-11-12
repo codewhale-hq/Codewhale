@@ -10767,6 +10767,60 @@ fn blank_or_unrecognized_env_overrides_do_not_shadow_config_or_legacy_vars() {
     ));
 }
 
+#[test]
+fn blank_primary_env_vars_fall_through_to_their_legacy_aliases() {
+    let _lock = env_lock();
+    let _env = EnvGuard::without_deepseek_runtime_overrides();
+    let names = [
+        "CODEWHALE_FORCE_HTTP1",
+        "DEEPSEEK_FORCE_HTTP1",
+        "CODEWHALE_STREAM_OPEN_TIMEOUT_SECS",
+        "DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS",
+    ];
+    let saved: Vec<(&str, Option<OsString>)> = names
+        .iter()
+        .map(|name| (*name, env::var_os(name)))
+        .collect();
+    // SAFETY: env mutation is serialized by `env_lock` and restored below.
+    unsafe {
+        env::set_var("CODEWHALE_MODEL", "");
+        env::set_var("DEEPSEEK_MODEL", "legacy-model");
+        env::set_var("CODEWHALE_BASE_URL", " ");
+        env::set_var("DEEPSEEK_BASE_URL", "https://legacy.example/v1");
+        env::set_var("MOONSHOT_BASE_URL", "");
+        env::set_var("KIMI_BASE_URL", "https://kimi.example/v1");
+        env::set_var("CODEWHALE_FORCE_HTTP1", "");
+        env::set_var("DEEPSEEK_FORCE_HTTP1", "1");
+        env::set_var("CODEWHALE_STREAM_OPEN_TIMEOUT_SECS", "");
+        env::set_var("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "120");
+    }
+
+    let env_overrides = EnvRuntimeOverrides::load();
+    let force_http1 = crate::stream_timeouts::force_http1_from_env();
+    let open_timeout = crate::stream_timeouts::resolve_stream_open_timeout(None);
+
+    unsafe {
+        for (name, value) in saved {
+            match value {
+                Some(value) => env::set_var(name, value),
+                None => env::remove_var(name),
+            }
+        }
+    }
+
+    assert_eq!(env_overrides.model.as_deref(), Some("legacy-model"));
+    assert_eq!(
+        env_overrides.active_route_base_url.as_deref(),
+        Some("https://legacy.example/v1")
+    );
+    assert_eq!(
+        env_overrides.moonshot_base_url.as_deref(),
+        Some("https://kimi.example/v1")
+    );
+    assert!(force_http1);
+    assert_eq!(open_timeout, std::time::Duration::from_secs(120));
+}
+
 #[cfg(unix)]
 #[test]
 fn failed_legacy_state_copy_leaves_no_partial_primary() {
