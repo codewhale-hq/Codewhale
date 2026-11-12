@@ -76,9 +76,8 @@ jobs:
       - name: Audit website with verified build dependency mitigation
         if: matrix.name == 'web'
         run: npm run audit:dependencies -- --report "${{ runner.temp }}/npm-audit.json"
-      # The VS Code extension's packager toolchain carries one unfixed high
-      # advisory that never runs for users (DEPENDENCY_SECURITY.md at the repo
-      # root). It is admitted by name; anything else fails the job.
+      # The VS Code extension's packager dependency override is recorded in
+      # docs/dependency-maintenance.md; any reported vulnerability fails the job.
       - name: Audit extension with reviewed packager advisory acceptance
         if: matrix.name == 'vscode'
         run: npm run audit:dependencies -- --report "${{ runner.temp }}/npm-audit.json"
