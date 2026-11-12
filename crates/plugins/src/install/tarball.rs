@@ -13,8 +13,9 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use flate2::read::GzDecoder;
-
+use codewhale_skill_install::bounded_tar::{
+    map_stream_limit, open_bounded_tarball, read_body_within,
+};
 use codewhale_skill_install::install::is_safe_path;
 
 use super::PluginInstallError;
@@ -65,14 +66,27 @@ pub(super) fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
     scan_tarball_for_bundle(bytes, max_size, None)
 }
 
+fn oversized_if_stream_limit(err: anyhow::Error, max_size: u64) -> anyhow::Error {
+    map_stream_limit(err, || {
+        PluginInstallError::OversizedBundle { limit: max_size }.into()
+    })
+}
+
 fn scan_tarball_for_bundle(
     bytes: &[u8],
     max_size: u64,
     bundle_path: Option<&str>,
 ) -> Result<TarballScan> {
-    let cursor = std::io::Cursor::new(bytes);
-    let gz = GzDecoder::new(cursor);
-    let mut archive = tar::Archive::new(gz);
+    scan_bundle_entries(bytes, max_size, bundle_path)
+        .map_err(|err| oversized_if_stream_limit(err, max_size))
+}
+
+fn scan_bundle_entries(
+    bytes: &[u8],
+    max_size: u64,
+    bundle_path: Option<&str>,
+) -> Result<TarballScan> {
+    let mut archive = open_bounded_tarball(bytes, max_size);
 
     let mut total_size: u64 = 0;
     let mut manifest_paths: Vec<String> = Vec::new();
@@ -92,11 +106,9 @@ fn scan_tarball_for_bundle(
         if !is_safe_path(&path) {
             return Err(PluginInstallError::PathTraversal(path_str).into());
         }
-        if let Ok(size) = header.size() {
-            total_size = total_size.saturating_add(size);
-            if total_size > max_size {
-                return Err(PluginInstallError::OversizedBundle { limit: max_size }.into());
-            }
+        total_size = total_size.saturating_add(entry.size());
+        if total_size > max_size {
+            return Err(PluginInstallError::OversizedBundle { limit: max_size }.into());
         }
         if header.entry_type().is_file() {
             if path.file_name().is_some_and(|name| {
@@ -167,9 +179,12 @@ fn scan_tarball_for_bundle(
 
 /// Second pass: extract only entries under the scanned bundle root.
 fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) -> Result<()> {
-    let cursor = std::io::Cursor::new(bytes);
-    let gz = GzDecoder::new(cursor);
-    let mut archive = tar::Archive::new(gz);
+    extract_entries(scan, bytes, dest, max_size)
+        .map_err(|err| oversized_if_stream_limit(err, max_size))
+}
+
+fn extract_entries(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) -> Result<()> {
+    let mut archive = open_bounded_tarball(bytes, max_size);
     let mut total_size: u64 = 0;
 
     for entry in archive
@@ -230,14 +245,10 @@ fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) ->
                 fs::create_dir_all(parent)
                     .with_context(|| format!("failed to create dir {}", parent.display()))?;
             }
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .with_context(|| format!("failed to read {}", path.display()))?;
+            let buf = read_body_within(&mut entry, max_size.saturating_sub(total_size))
+                .with_context(|| format!("failed to read {}", path.display()))?
+                .ok_or(PluginInstallError::OversizedBundle { limit: max_size })?;
             total_size = total_size.saturating_add(buf.len() as u64);
-            if total_size > max_size {
-                return Err(PluginInstallError::OversizedBundle { limit: max_size }.into());
-            }
             let mut options = fs::OpenOptions::new();
             options.create_new(true).write(true);
             #[cfg(unix)]

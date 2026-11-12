@@ -38,11 +38,11 @@
 //!   does not execute `plugin.json` plugin runtimes or custom command bundles.
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
+use crate::bounded_tar::{map_stream_limit, open_bounded_tarball, read_body_within, stream_cap};
 use anyhow::{Context, Result, bail};
-use flate2::read::GzDecoder;
 use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1257,7 +1257,7 @@ async fn download_with_cap(
 /// Soft cap on the *compressed* download — well above `max_size` to allow for
 /// highly compressible payloads but still bounded.
 fn compressed_download_cap(max_size: u64) -> usize {
-    usize::try_from(max_size.saturating_mul(4)).unwrap_or(usize::MAX)
+    usize::try_from(stream_cap(max_size)).unwrap_or(usize::MAX)
 }
 
 struct StagedSkill {
@@ -1320,9 +1320,17 @@ struct TarballScan {
 /// reject path-traversal entries and symlinks inside the selected install
 /// subtree. We do not write anything in this pass; that's the second pass's job.
 fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
-    let cursor = std::io::Cursor::new(bytes);
-    let gz = GzDecoder::new(cursor);
-    let mut archive = tar::Archive::new(gz);
+    scan_tarball_entries(bytes, max_size).map_err(|err| oversized_if_stream_limit(err, max_size))
+}
+
+fn oversized_if_stream_limit(err: anyhow::Error, max_size: u64) -> anyhow::Error {
+    map_stream_limit(err, || {
+        InstallError::OversizedTarball { limit: max_size }.into()
+    })
+}
+
+fn scan_tarball_entries(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
+    let mut archive = open_bounded_tarball(bytes, max_size);
 
     let mut total_size: u64 = 0;
     let mut prefix: Option<(String, bool)> = None;
@@ -1351,15 +1359,9 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
             has_claude_plugin_manifest = true;
         }
 
-        // Track total size against `max_size` (uncompressed). We honor `header
-        // .size` rather than streaming-read every file; tar archives are
-        // self-describing so this is reliable for non-malicious inputs and
-        // catches the gzip-bomb case.
-        if let Ok(size) = header.size() {
-            total_size = total_size.saturating_add(size);
-            if total_size > max_size {
-                return Err(InstallError::OversizedTarball { limit: max_size }.into());
-            }
+        total_size = total_size.saturating_add(entry.size());
+        if total_size > max_size {
+            return Err(InstallError::OversizedTarball { limit: max_size }.into());
         }
 
         if entry_type == tar::EntryType::XGlobalHeader {
@@ -1394,10 +1396,9 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
                 .file_name()
                 .is_some_and(|name| name.eq_ignore_ascii_case("SKILL.md"))
         {
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .context("failed to read SKILL.md from archive")?;
+            let buf = read_body_within(&mut entry, max_size)
+                .context("failed to read SKILL.md from archive")?
+                .ok_or(InstallError::OversizedTarball { limit: max_size })?;
             skill_md_files.push((path_str, buf));
         }
     }
@@ -1508,9 +1509,12 @@ fn is_claude_plugin_manifest_path(path: &Path) -> bool {
 }
 
 fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) -> Result<()> {
-    let cursor = std::io::Cursor::new(bytes);
-    let gz = GzDecoder::new(cursor);
-    let mut archive = tar::Archive::new(gz);
+    extract_entries(scan, bytes, dest, max_size)
+        .map_err(|err| oversized_if_stream_limit(err, max_size))
+}
+
+fn extract_entries(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) -> Result<()> {
+    let mut archive = open_bounded_tarball(bytes, max_size);
 
     let mut total_size: u64 = 0;
     let prefix_with_root = if scan.skill_root.is_empty() {
@@ -1583,14 +1587,10 @@ fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) ->
             }
             // Read into a buffer so we can enforce `max_size`. Files inside
             // a SKILL bundle are small; copying through a buffer is fine.
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .with_context(|| format!("failed to read {}", path.display()))?;
+            let buf = read_body_within(&mut entry, max_size.saturating_sub(total_size))
+                .with_context(|| format!("failed to read {}", path.display()))?
+                .ok_or(InstallError::OversizedTarball { limit: max_size })?;
             total_size = total_size.saturating_add(buf.len() as u64);
-            if total_size > max_size {
-                return Err(InstallError::OversizedTarball { limit: max_size }.into());
-            }
             let mut options = fs::OpenOptions::new();
             options.create_new(true).write(true);
             #[cfg(unix)]
@@ -1754,6 +1754,7 @@ fn hex_bytes(bytes: impl AsRef<[u8]>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bounded_tar::test_archives;
 
     fn skill_tarball(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
@@ -1766,6 +1767,55 @@ mod tests {
             builder.append_data(&mut header, path, *body).unwrap();
         }
         builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    const SKILL_MD: &[u8] = b"---\nname: demo\ndescription: test\n---\nbody";
+    const SMALL_CAP: u64 = 64 * 1024;
+    const HUGE_BODY: u64 = 16 * 1024 * 1024;
+
+    fn assert_oversized(err: &anyhow::Error) {
+        assert!(
+            matches!(
+                err.downcast_ref::<InstallError>(),
+                Some(InstallError::OversizedTarball { .. })
+            ),
+            "got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn scan_counts_the_size_a_pax_record_gives_an_entry() {
+        let bytes = test_archives::pax_size_record_archive(("SKILL.md", SKILL_MD), HUGE_BODY);
+        assert_oversized(&scan_tarball(&bytes, SMALL_CAP).err().unwrap());
+        let tmp = tempfile::tempdir().unwrap();
+        assert_oversized(
+            &stage_tarball(&bytes, tmp.path(), SMALL_CAP)
+                .map(|staged| staged.skill_name)
+                .unwrap_err(),
+        );
+    }
+
+    #[test]
+    fn scan_and_extract_bound_the_decoded_stream_for_extension_entries() {
+        let benign = skill_tarball(&[("SKILL.md", SKILL_MD, 0o644)]);
+        let benign_scan = scan_tarball(&benign, SMALL_CAP).unwrap();
+        for kind in [tar::EntryType::GNULongName, tar::EntryType::XHeader] {
+            let bytes =
+                test_archives::extension_body_archive(("SKILL.md", SKILL_MD), kind, HUGE_BODY);
+            assert_oversized(&scan_tarball(&bytes, SMALL_CAP).err().unwrap());
+            let tmp = tempfile::tempdir().unwrap();
+            assert_oversized(
+                &extract_into(&benign_scan, &bytes, tmp.path(), SMALL_CAP).unwrap_err(),
+            );
+        }
+    }
+
+    #[test]
+    fn scan_bounds_the_decoded_stream_for_many_empty_entries() {
+        let bytes = test_archives::empty_entries_archive(("SKILL.md", SKILL_MD), 600);
+        assert_oversized(&scan_tarball(&bytes, SMALL_CAP).err().unwrap());
+        let few = test_archives::empty_entries_archive(("SKILL.md", SKILL_MD), 20);
+        assert_eq!(scan_tarball(&few, SMALL_CAP).unwrap().skill_name, "demo");
     }
 
     #[test]

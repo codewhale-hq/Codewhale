@@ -2,6 +2,7 @@ use super::*;
 // `scan_tarball` lives in the sibling stage-reader module and is not needed
 // by the verbs, so it is not in `super`'s namespace.
 use super::tarball::scan_tarball;
+use codewhale_skill_install::bounded_tar::test_archives;
 
 #[path = "tests/place_recovery.rs"]
 mod place_recovery;
@@ -187,6 +188,55 @@ fn scan_enforces_size_cap() {
         ),
         "got: {err:#}"
     );
+}
+
+const MANIFEST: &[u8] = b"schema_version = 1\n[plugin]\nname = \"demo\"\nversion = \"1.0.0\"\n";
+const SMALL_CAP: u64 = 64 * 1024;
+const HUGE_BODY: u64 = 16 * 1024 * 1024;
+
+fn assert_oversized(err: &anyhow::Error) {
+    assert!(
+        matches!(
+            err.downcast_ref::<PluginInstallError>(),
+            Some(PluginInstallError::OversizedBundle { .. })
+        ),
+        "got: {err:#}"
+    );
+}
+
+#[test]
+fn scan_counts_the_size_a_pax_record_gives_an_entry() {
+    let bytes = test_archives::pax_size_record_archive(("plugin.toml", MANIFEST), HUGE_BODY);
+    assert_oversized(&scan_tarball(&bytes, SMALL_CAP).unwrap_err());
+    let tmp = tempfile::tempdir().unwrap();
+    assert_oversized(
+        &tarball::stage_tarball(&bytes, tmp.path(), SMALL_CAP, None)
+            .map(|staged| staged.name)
+            .unwrap_err(),
+    );
+}
+
+#[test]
+fn scan_and_extract_bound_the_decoded_stream_for_extension_entries() {
+    for kind in [tar::EntryType::GNULongName, tar::EntryType::XHeader] {
+        let bytes =
+            test_archives::extension_body_archive(("plugin.toml", MANIFEST), kind, HUGE_BODY);
+        assert_oversized(&scan_tarball(&bytes, SMALL_CAP).unwrap_err());
+        let tmp = tempfile::tempdir().unwrap();
+        assert_oversized(
+            &tarball::stage_tarball(&bytes, tmp.path(), SMALL_CAP, None)
+                .map(|staged| staged.name)
+                .unwrap_err(),
+        );
+    }
+}
+
+#[test]
+fn scan_bounds_the_decoded_stream_for_many_empty_entries() {
+    let bytes = test_archives::empty_entries_archive(("plugin.toml", MANIFEST), 600);
+    assert_oversized(&scan_tarball(&bytes, SMALL_CAP).unwrap_err());
+    let few = test_archives::empty_entries_archive(("plugin.toml", MANIFEST), 20);
+    assert!(scan_tarball(&few, SMALL_CAP).is_ok());
 }
 
 #[test]
