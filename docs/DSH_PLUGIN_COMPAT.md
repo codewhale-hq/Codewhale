@@ -129,12 +129,19 @@ the `agent/created` hook fires only for children the same plugin starts.
 
 ## Plugin UI (`dsh.client`)
 
-Imported DSH client UIs are not supported. The Engine refuses their client
-descriptor and asset grants when the reviewed conversion report identifies a
-DSH import; the plugin's supported Native and MCP contributions keep their
-existing lifecycle. Code Review 1.0.8's client decorates global command
-candidates through DSH services that the current detail-slot renderer does
-not provide.
+An imported DSH plugin's client UI is served, on the seats the Engine admits.
+The importer retains the reviewed client closure; at serve time the Engine
+re-verifies it byte for byte against the reviewed hashes, maps each declared
+slot key to a seat, and loads one Engine-generated bootstrap built from those
+bytes. A native client is admitted only on `customize.plugins.detail`. A slot
+key with no seat answers `plugin_ui_seat_unsupported`; several keys on one seat
+need the caller to name one (`plugin_ui_dsh_slot_required`). A closure that needs
+a host module the frame does not provide, uses ES module syntax or is not valid
+JSON answers `plugin_ui_unsupported`. Code Review 1.0.8's client decorates
+global command candidates through DSH services that the current detail-slot
+renderer does not provide, so it is not qualified.
+The route that forwards a client's requests to a plugin web server answers
+`plugin_route_not_served` (501): no plugin web server exists yet.
 
 The selected Electron host's reviewed asset transport and isolated frame do
 not establish compatibility with those services. Its real network containment

@@ -1,6 +1,6 @@
 ---
 name: plugin-creator
-description: Scaffold a local Codewhale plugin bundle with a versioned manifest, namespaced Skills, and an explicit trust review.
+description: Scaffold a local Codewhale plugin bundle with a versioned manifest, namespaced Skills, and a trust review that goes through the session's approval.
 ---
 
 # Plugin Creator
@@ -54,9 +54,16 @@ code) are inventory-only unless the user has turned on the experimental
 7. Validate and review without executing bundle content:
    - `/plugin validate <plugin-name>`
    - `/plugin show <plugin-name>`
-   - stop and present these results; the person runs `/plugin enable <plugin-name>`
+   - present these results; the person runs `/plugin enable <plugin-name>`
      to open the content/capability review, reviews it, runs the exact
      `/plugin trust ...` confirmation shown, then enables the bundle
+   - exception: in Full Access, for a plugin you wrote and installed from a
+     folder inside the current project, you may run `codewhale plugins trust`
+     and `codewhale plugins enable` yourself. They are shell commands, so the
+     session's approval applies to them like any other (Ask asks the person,
+     Auto-Review's reviewer judges, Full Access runs them). The trust is
+     recorded as approved by the agent, for this project only. Never do this for a plugin you
+     did not write, and never reuse a token the person was shown.
 8. Verify `/skills inspect` reports plugin provenance and `/plugin list`
    reports the expected trust and activation state. Trust stages the reviewed
    content but does not activate it. After enablement, follow the host's
@@ -65,22 +72,18 @@ code) are inventory-only unless the user has turned on the experimental
 
 Every user and workspace bundle starts untrusted and disabled. Reuse the
 existing `/plugin marketplace`, install, update, review and reload surfaces;
-do not add a parallel installer, registry or automatic trust flow. Catalog
-membership alone never installs, trusts or enables a plugin.
+do not add a parallel installer or registry. Catalog membership alone never
+installs, trusts or enables a plugin.
 
-## Experimental host code
+## Plugins with code or a screen
 
-Only scaffold host code when the person explicitly uses the experimental
-extension-host feature. Start from the tested `hello-extension` example and
-`docs/EXTENSIONS.md` in the Codewhale repository. A typed `.mts` entry may use
-Node's erasable TypeScript syntax; bundle dependencies locally. Register tools
-with a plugin-specific prefix and an object input schema, propagate
-`exec.signal`, and use `ctx.effect` for bounded asynchronous cleanup. The
-current execution context exposes `signal`, `callId` and `args`; it does not
-expose the calling workspace path. Do not change the shared process cwd.
-
-Stop after install, validate and show; never automate the trust token. A
-person reviews, trusts and enables the bundle. `/plugin show <name>` reports
-owner state, live tools and recent attributed diagnostics. Recovery may create
-fresh registrations, but never replays an interrupted tool call. Explain the
-shared-process and current platform sandbox limits without claiming isolation.
+For a plugin that runs code, adds tools of its own, or shows a screen, use the
+`cordis-plugin-development` skill when it is offered: it teaches the format
+that also loads in DeepSeek Harness. Host code runs only under the
+experimental `[features] extension_host` flag; start from the tested
+`hello-extension` example and `docs/EXTENSIONS.md` in the Codewhale repository,
+add a `plugin.json` beside the package for Codewhale's own kinds, and never
+change the shared process cwd. A person reviews and turns on a plugin as step 7
+says. `/plugin show <name>` reports owner state, live tools and recent
+attributed diagnostics. Explain the shared-process and current platform sandbox
+limits without claiming isolation.

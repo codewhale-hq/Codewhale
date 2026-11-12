@@ -42,7 +42,11 @@ use sha2::{Digest, Sha256};
 /// person; the exact generation-16 body allows a safe upgrade.
 /// Generation 18 recognizes previously shipped bodies by SHA-256 as well as by
 /// retained bytes, so an untouched copy from any earlier generation upgrades.
-const BUNDLED_SKILL_VERSION: &str = "21";
+/// Generation 22 shrinks `plugin-creator` to Codewhale's own declarative kinds
+/// with a pointer to `cordis-plugin-development` for code and screens, and
+/// drops its instruction never to trust or enable; the exact generation-19
+/// body, which 0.10.2 shipped, allows a safe upgrade.
+const BUNDLED_SKILL_VERSION: &str = "22";
 
 mod dsh_creator;
 use dsh_creator::{BundledFile, CREATOR_SKILLS};
@@ -175,6 +179,10 @@ const SUPERSEDED_BODIES: &[(&str, &str)] = &[
     (
         "plugin-creator",
         include_str!("../assets/skills/plugin-creator/SKILL.generation-16.md"),
+    ),
+    (
+        "plugin-creator",
+        include_str!("../assets/skills/plugin-creator/SKILL.generation-19.md"),
     ),
     (
         "help",
