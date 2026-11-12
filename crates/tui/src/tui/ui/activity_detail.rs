@@ -1771,6 +1771,7 @@ mod tests {
                 .collect(),
             confidence_bp: 6400,
             min_confidence_bp: 5000,
+            abstained_questions: Vec::new(),
             cost_saving_kept_fast: false,
             thinking: Some("max".to_string()),
             provider_reported_cost_usd: Some("0.000019992".to_string()),
