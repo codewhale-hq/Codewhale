@@ -16,8 +16,8 @@ Everything you add to Codewhale is a plugin. A skill, an MCP connector and a hoo
 are each a plugin, or part of one, and each has a kind: Skill, Connector, Hook,
 Command. A skill you set up by hand is a plugin of the kind Skill, a server you
 configure is a plugin of the kind Connector, and a hook you configure is a plugin
-of the kind Hook. They are still managed where they are today: Extensions →
-Skills, MCP and Hooks in the terminal, and Customize › Skills, Connectors and
+of the kind Hook. They are still managed where they are today: Plugins →
+Skills, Connectors and Hooks in the terminal, and Customize › Skills, Connectors and
 Hooks on the desktop. Their files, trust rules and commands (`/skills`, `/mcp`,
 `/hooks`) do not change. One Plugins list that shows every kind together is
 planned for 0.10.3 and is not in this build; today the kind labels appear on the
@@ -102,7 +102,7 @@ Codewhale is helpful about plugins, not pushy. The rules:
   task needs; a second call fails. Exec, ACP, and runtime-API sessions do not
   get the tool.
 - **Built-ins are never advertised.** Inspect existing bundles in `/plugin list`
-  and Extensions before installing another copy. The published v0.10.2 CLI
+  and Plugins before installing another copy. The published v0.10.2 CLI
   includes Computer Use; its layout differs from the current source candidate.
   See [Computer Use across versions](PLUGIN_MARKETPLACE.md#computer-use-across-versions).
 - **Specific terms only.** Generic words (accessibility, browser, chrome,
@@ -114,7 +114,7 @@ Codewhale is helpful about plugins, not pushy. The rules:
 - **Only what runs here.** Plugins whose `when.os` excludes this OS are not
   offered.
 - **Review before acting.** A model-requested row offers Review. Its button
-  opens the existing Extensions inventory: Plugins for an installed bundle,
+  opens the existing Plugins inventory: Installed for an installed bundle,
   Marketplace for a suggestion that is not installed. Nothing is installed,
   trusted, or enabled by that click. Choose the inventory's explicit action;
   trust still reviews the exact installed content before activation.
@@ -123,7 +123,7 @@ Codewhale is helpful about plugins, not pushy. The rules:
   persisted choice. `/plugin dismissals` lists both kinds, and
   `/plugin dismissals reset [<name>]` lets suggestions offer a plugin again.
 - **Discovery is passive.** Find new plugins in these docs,
-  `/plugin marketplace list`, Extensions, and the browser guide below.
+  `/plugin marketplace list`, Plugins, and the browser guide below.
 
 Codewhale does not invent a remote plugin URL; missing plugins are suggested
 only from available catalogs. On-disk bundle changes still toast

@@ -478,6 +478,8 @@ work is declared complete here. Items moved to 0.10.4 by name are marked below.
 
 ### Changed
 
+- **Terminal Plugins screen:** The terminal's Extensions screen is now called Plugins; its tabs filter by kind (Installed, Skills, Connectors, Hooks, Marketplace), and `/plugin` is listed with the main commands. `/skills`, `/mcp` and `/hooks` work as before.
+
 - **`read` pages in lines only (breaking).** One `read` call returns at
   most 2,000 lines — the default and the maximum `limit` — inside a 50 KiB
   output cap, and a line longer than 2,000 chars comes back truncated with

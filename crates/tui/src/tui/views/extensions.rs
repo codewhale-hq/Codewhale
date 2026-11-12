@@ -63,10 +63,10 @@ impl ExtensionsTab {
     fn label(self, locale: Locale) -> String {
         match self {
             Self::Hooks => tr(locale, MessageId::ExtensionsTabHooks),
-            Self::Plugins => tr(locale, MessageId::ExtensionsTabPlugins),
+            Self::Plugins => tr(locale, MessageId::ExtensionsTabInstalled),
             Self::Marketplace => tr(locale, MessageId::ExtensionsTabMarketplace),
             Self::Skills => tr(locale, MessageId::HelpSkills),
-            Self::Mcp => tr(locale, MessageId::ConfigSectionMcp),
+            Self::Mcp => tr(locale, MessageId::ExtensionsTabConnectors),
         }
         .into_owned()
     }
@@ -2290,20 +2290,41 @@ impl ModalView for ExtensionsView {
         let mut hits = HitAreas::default();
         let mut x = rows[0].x;
         let available = rows[0].right();
-        for tab in ExtensionsTab::ALL {
-            let label = if body.width < 58 && tab == ExtensionsTab::Marketplace {
-                tr(self.locale, MessageId::ExtensionsTabMarketplaceCompact).into_owned()
-            } else {
-                tab.label(self.locale)
-            };
-            // Display cells, not chars: a CJK label is two cells per char,
-            // and the painted tab and its hit rect share this one width.
-            let label_cells =
-                u16::try_from(UnicodeWidthStr::width(label.as_str())).unwrap_or(u16::MAX);
-            let width = label_cells
+        let cells = |label: &str| {
+            u16::try_from(UnicodeWidthStr::width(label))
+                .unwrap_or(u16::MAX)
                 .saturating_add(2)
-                .min(available.saturating_sub(x));
-            if width == 0 {
+        };
+        let mut labels: Vec<(ExtensionsTab, String)> = ExtensionsTab::ALL
+            .iter()
+            .map(|tab| (*tab, tab.label(self.locale)))
+            .collect();
+        let row_cells = available.saturating_sub(x);
+        let total = labels
+            .iter()
+            .fold(0u16, |sum, (_, label)| sum.saturating_add(cells(label)));
+        if total > row_cells {
+            for (tab, label) in &mut labels {
+                if *tab == ExtensionsTab::Marketplace {
+                    *label =
+                        tr(self.locale, MessageId::ExtensionsTabMarketplaceCompact).into_owned();
+                }
+            }
+        }
+        let mut first = 0;
+        if let Some(active_index) = labels.iter().position(|(tab, _)| *tab == self.active_tab) {
+            while first < active_index
+                && labels[first..=active_index]
+                    .iter()
+                    .fold(0u16, |sum, (_, label)| sum.saturating_add(cells(label)))
+                    > row_cells
+            {
+                first += 1;
+            }
+        }
+        for (tab, label) in labels.into_iter().skip(first) {
+            let width = cells(&label);
+            if width > available.saturating_sub(x) {
                 break;
             }
             let tab_area = Rect::new(x, rows[0].y, width, 1);
@@ -2817,6 +2838,88 @@ mod tests {
                 painted.contains(label.as_str()),
                 "{tab:?} label {label:?} clipped: {painted:?}"
             );
+        }
+    }
+
+    fn painted_text(buf: &Buffer, area: Rect) -> String {
+        let mut text = String::new();
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    #[test]
+    fn extensions_screen_is_titled_plugins_with_filter_labels() {
+        for (width, height) in [(80, 24), (120, 32)] {
+            let view = ExtensionsView::from_snapshot_with_locale(
+                ExtensionsSnapshot::default(),
+                ExtensionsTab::Plugins,
+                Locale::En,
+            );
+            let area = Rect::new(0, 0, width, height);
+            let mut buf = Buffer::empty(area);
+            view.render(area, &mut buf);
+            let text = painted_text(&buf, area);
+            assert!(text.contains("Plugins"), "{width}x{height}: {text}");
+            for label in ["Hooks", "Installed", "Marketplace", "Skills", "Connectors"] {
+                assert!(
+                    text.contains(label),
+                    "{width}x{height} is missing the {label} filter: {text}"
+                );
+            }
+            assert!(!text.contains("Extensions"), "{width}x{height}: {text}");
+        }
+    }
+
+    #[test]
+    fn every_pack_keeps_every_painted_filter_whole_and_the_active_one_in_view() {
+        for locale in Locale::shipped_complete() {
+            let compact = format!(
+                " {} ",
+                tr(*locale, MessageId::ExtensionsTabMarketplaceCompact)
+            );
+            for width in [40u16, 60, 80] {
+                for active in ExtensionsTab::ALL {
+                    let view = ExtensionsView::from_snapshot_with_locale(
+                        ExtensionsSnapshot::default(),
+                        active,
+                        *locale,
+                    );
+                    let area = Rect::new(0, 0, width, 24);
+                    let mut buf = Buffer::empty(area);
+                    view.render(area, &mut buf);
+                    let tabs = view.hits.borrow().tabs.clone();
+                    assert!(
+                        tabs.iter().any(|(_, tab)| *tab == active),
+                        "{} at {width}: the active {active:?} filter is not painted",
+                        locale.tag()
+                    );
+                    if width == 80 {
+                        assert_eq!(tabs.len(), ExtensionsTab::ALL.len(), "{}", locale.tag());
+                    }
+                    for (rect, tab) in tabs {
+                        let full = format!(" {} ", tab.label(*locale));
+                        let mut painted = String::new();
+                        let mut x = rect.x;
+                        while x < rect.right() {
+                            let symbol = buf[(x, rect.y)].symbol();
+                            painted.push_str(symbol);
+                            x += u16::try_from(UnicodeWidthStr::width(symbol).max(1)).unwrap_or(1);
+                        }
+                        assert!(
+                            painted == full
+                                || (tab == ExtensionsTab::Marketplace && painted == compact),
+                            "{} at {width}: {tab:?} is clipped: {painted:?}",
+                            locale.tag()
+                        );
+                        assert!(rect.right() < area.right(), "{} at {width}", locale.tag());
+                    }
+                }
+            }
         }
     }
 

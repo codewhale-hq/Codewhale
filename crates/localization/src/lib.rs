@@ -711,10 +711,11 @@ pub enum MessageId {
     ExtensionsStateUnstaged,
     ExtensionsStateUnsupported,
     ExtensionsStateWarning,
+    ExtensionsTabConnectors,
     ExtensionsTabHooks,
+    ExtensionsTabInstalled,
     ExtensionsTabMarketplace,
     ExtensionsTabMarketplaceCompact,
-    ExtensionsTabPlugins,
     ExtensionsTierCommunity,
     ExtensionsTierCurated,
     ExtensionsTierOfficial,
@@ -3495,10 +3496,11 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::ExtensionsStateUnstaged,
     MessageId::ExtensionsStateUnsupported,
     MessageId::ExtensionsStateWarning,
+    MessageId::ExtensionsTabConnectors,
     MessageId::ExtensionsTabHooks,
+    MessageId::ExtensionsTabInstalled,
     MessageId::ExtensionsTabMarketplace,
     MessageId::ExtensionsTabMarketplaceCompact,
-    MessageId::ExtensionsTabPlugins,
     MessageId::ExtensionsTierCommunity,
     MessageId::ExtensionsTierCurated,
     MessageId::ExtensionsTierOfficial,
@@ -7108,7 +7110,7 @@ mod tests {
             .filter(|key| key.starts_with("Extensions"))
             .cloned()
             .collect::<Vec<_>>();
-        assert_eq!(keys.len(), 98, "the complete extensions locale set changed");
+        assert_eq!(keys.len(), 99, "the complete extensions locale set changed");
 
         let prose_keys = [
             "ExtensionsMcpEmpty",

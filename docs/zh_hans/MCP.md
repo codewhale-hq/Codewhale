@@ -2,10 +2,10 @@
 
 > 本文依据英文版 [MCP.md](../MCP.md)，包含 main 候选版本的行为。截至 2026 年 11 月 7 日，最新公开 CLI 为 [v0.10.2](https://github.com/codewhale-hq/Codewhale/releases/tag/v0.10.2)。基本 stdio、HTTP/SSE、直接配置的远程 OAuth 和插件 MCP 已在该版本提供；SDK 默认后端、现代协议、凭据绑定和目录扩展等差异请参阅英文版[版本对照](../MCP.md#version-scope)。使用已安装的 v0.10.2 时，可查阅[对应版本指南](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MCP.md)。
 
-在终端中，`/mcp`（也可用 `/mcps`）会打开 **Extensions → MCP**。按 Enter 会对所选服务器执行恢复操作，或打开只读详情。清单为空时会提供服务器建议；浏览这些建议不会安装任何内容。`/mcp status`、`/mcp doctor`、`/mcp login`、`/mcp add` 等显式子命令的行为保持不变。
+在终端中，`/mcp`（也可用 `/mcps`）会打开 **Plugins → Connectors**。按 Enter 会对所选服务器执行恢复操作，或打开只读详情。清单为空时会提供服务器建议；浏览这些建议不会安装任何内容。`/mcp status`、`/mcp doctor`、`/mcp login`、`/mcp add` 等显式子命令的行为保持不变。
 
 你添加到 Codewhale 的一切都叫插件。你配置的 MCP 服务器是 **Connector**（连接器）类插件；插件包也可以携带 connector。
-connector 仍在终端的 Extensions → MCP 和桌面端的 Customize › Connectors 管理；把所有种类放在一个插件列表里是
+connector 仍在终端的 Plugins → Connectors 和桌面端的 Customize › Connectors 管理；把所有种类放在一个插件列表里是
 0.10.3 的计划，当前版本尚无。配置文件、登录和 `/mcp` 命令都不变。
 本页的“连接”（connection）指到服务器的实际链路；作为产品名词，Connection 专指模型提供方或另一个 agent。
 
@@ -144,7 +144,7 @@ v0.9.10 的产品建议使用这些经过审查的固定版本定义。Plugins �
 
 这种呈现方式遵循了本地 Grokbuild 扩展视图中的同样有用的边界（一个产品插件可以暴露 MCP 或 Skill 组件，同时组件标签页仍可检查）、Kimi 市场的显式显示名称/层级/来源字段，以及 Codex 市场的显式来源和安装策略字段。Codewhale 保持其更严格的规则：来源和外部策略只是显示元数据，绝不会被继承为信任或自动安装。完整的插件包和市场语义请参阅[插件包](./PLUGIN_BUNDLES.md)。
 
-`/mcp validate`（别名 `/mcp doctor`）不带名称时，会在 **Extensions → MCP** 上方的分页器中报告 TUI 最近记录的 MCP 快照里每个服务器的状态。该快照通常是引擎连接池的最新报告，但某些操作（例如 `/mcp import`）会用一次单独的 UI 发现结果替换它，而那次发现也会连接引擎尚未启动的 `lazy` 服务器。validate 还会在不连接的情况下重新读取 MCP 配置文件：先报告配置加载错误，列出快照中尚未观察到的已配置服务器，并在需要 `/mcp reload` 时提示。它不会重新连接任何东西，也不会改变模型拿到的目录；`/mcp reload` 才是全新的探测。
+`/mcp validate`（别名 `/mcp doctor`）不带名称时，会在 **Plugins → Connectors** 上方的分页器中报告 TUI 最近记录的 MCP 快照里每个服务器的状态。该快照通常是引擎连接池的最新报告，但某些操作（例如 `/mcp import`）会用一次单独的 UI 发现结果替换它，而那次发现也会连接引擎尚未启动的 `lazy` 服务器。validate 还会在不连接的情况下重新读取 MCP 配置文件：先报告配置加载错误，列出快照中尚未观察到的已配置服务器，并在需要 `/mcp reload` 时提示。它不会重新连接任何东西，也不会改变模型拿到的目录；`/mcp reload` 才是全新的探测。
 
 `/mcp reload`（别名 `/mcp reconnect`、`/mcp restart`）是热重载路径。它会重新读取 MCP 配置来源，并通过引擎持有的连接池重新连接，因此重建后的目录正是下一个模型回合所用的目录——无需重启 TUI。从 TUI 中做出的配置修改会立即写入，管理器会把快照标记为需要重载，直到你运行它；重载失败会保留之前活跃的连接池不变，并如实说明。
 

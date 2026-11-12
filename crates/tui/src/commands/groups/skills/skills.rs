@@ -243,7 +243,7 @@ fn parse_scope_args(args: &str) -> Result<(Option<SkillTargetScope>, &str), Stri
 pub(in crate::commands) const SKILLS_INFO: CommandInfo = CommandInfo {
     name: "skills",
     aliases: &["jinengliebiao"],
-    usage: "/skills [manage|--remote|sync|inspect|suggest <task>|<prefix>]  (bare opens Extensions)",
+    usage: "/skills [manage|--remote|sync|inspect|suggest <task>|<prefix>]  (bare opens Plugins)",
     description_key: "cmd_skills_description",
 };
 

@@ -410,7 +410,7 @@ default_text_model = "deepseek-v4-pro"
 | `/setup` | 重新打开首次设置流程 |
 | `/compact` | 对话太长时压缩上下文、省 token |
 | `/review` | 让 AI 对代码做结构化审查 |
-| `/skills` | 打开 Extensions → Skills；`/skills manage` 打开技能管理器 |
+| `/skills` | 打开 Plugins → Skills；`/skills manage` 打开技能管理器 |
 | `/status` | 查看当前模型/路由等状态 |
 | `/export` | 导出对话 |
 | `/constitution` | 管理宪章（高级） |

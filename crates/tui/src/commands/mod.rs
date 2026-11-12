@@ -1363,6 +1363,25 @@ mod tests {
     }
 
     #[test]
+    fn plugin_command_is_primary_discovery() {
+        use codewhale_engine::command_catalog::CommandCatalog;
+
+        assert!(!traits::ADVANCED_DISCOVERY_COMMANDS.contains(&"plugin"));
+        let info = registry().get_info("plugin").expect("/plugin registered");
+        assert!(info.show_in_empty_discovery());
+        let row = CommandTable
+            .builtins()
+            .into_iter()
+            .find(|row| row.name == "plugin")
+            .expect("/plugin in the built-in catalog");
+        assert_eq!(
+            row.discovery,
+            codewhale_command_contract::CommandDiscovery::Primary
+        );
+        assert!(row.show_in_empty_discovery);
+    }
+
+    #[test]
     fn command_discovery_tier_lists_use_canonical_registered_names() {
         for (tier_name, names) in [
             ("advanced", traits::ADVANCED_DISCOVERY_COMMANDS),
@@ -2992,7 +3011,7 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join("skills")).unwrap();
         feat022_write_skill(&tmp.path().join("skills"), "demo");
 
-        // Bare /skills opens Extensions; explicit manage retains the mutation surface.
+        // Bare /skills opens Plugins; explicit manage retains the mutation surface.
         let result = execute("/skills", &mut app);
         assert!(!result.is_error, "{result:?}");
         assert!(

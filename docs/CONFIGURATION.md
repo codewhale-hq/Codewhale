@@ -2793,7 +2793,7 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   default pack. Only
   Codewhale-owned roots (`<workspace>/.codewhale/skills` and
   `~/.codewhale/skills`) are writable install/import targets; compatible harness
-  roots stay read-only. Bare `/skills` opens Extensions → Skills (owned-only,
+  roots stay read-only. Bare `/skills` opens Plugins → Skills (owned-only,
   zero network); `/skills manage` opens the manager. See [SKILLS.md](SKILLS.md)
   for the manager, audit statuses, provenance markers, and mutation rules, and
   [CLAUDE_PLUGIN_COMPAT.md](CLAUDE_PLUGIN_COMPAT.md) for the supported boundary

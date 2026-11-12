@@ -8,7 +8,7 @@
 你添加到 Codewhale 的一切都叫插件。skill、MCP connector（连接器）和 hook 各自是一个插件，
 或是插件的一部分，并各有一个种类：Skill、Connector、Hook、Command。你手动设置的 skill 是 Skill 类插件，
 你配置的服务器是 Connector 类插件，你配置的 hook 是 Hook 类插件。它们仍在原处管理：终端的
-Extensions → Skills、MCP、Hooks，桌面端的 Customize › Skills、Connectors、Hooks；文件、
+Plugins → Skills、Connectors、Hooks，桌面端的 Customize › Skills、Connectors、Hooks；文件、
 信任规则和命令（`/skills`、`/mcp`、`/hooks`）都不变。把所有种类放在一个插件列表里是 0.10.3 的计划，
 当前版本尚无；目前种类标签只出现在插件包详情里的各个部分上。“Connection”（连接）一词专指模型提供方或
 另一个 agent，不是插件的一种。
@@ -47,7 +47,7 @@ Codewhale 在插件上只帮忙，不推销。规则如下：
   在交互式 TUI 里，模型每个会话可以调用一次 `request_plugin_install`，
   请你审查任务需要的某个插件；第二次调用会失败。
   Exec、ACP 和 runtime-API 会话拿不到这个工具。
-- **内置插件从不作为推荐出现。** 先在 `/plugin list` 和 Extensions 检查已有插件。
+- **内置插件从不作为推荐出现。** 先在 `/plugin list` 和 Plugins 检查已有插件。
   在 v0.10.2 上，对 Computer Use 执行目录安装只会提示内置包已存在，不会升级它；
   应审查、信任并启用已有包。安装独立 Computer Use 包的方式适用于当前源码候选版的新布局。
 - **只认具体词。** 泛化词（accessibility、browser、chrome、docs、screenshot、
@@ -56,14 +56,14 @@ Codewhale 在插件上只帮忙，不推销。规则如下：
   厂商的插件。有辨识度的名称、短语和域名照常匹配。匹配器和市场的
   `check-marketplace.mjs` 共用同一份停用词表。
 - **只推荐本机跑得起来的。** 插件的 `when.os` 若排除了当前操作系统，就不会被推荐。
-- **审查后再操作。** 模型请求的那一行提供 Review，打开 Extensions 中的插件或市场目录。
+- **审查后再操作。** 模型请求的那一行提供 Review，打开 Plugins 中的插件或市场目录。
   点击本身不会安装、信任或启用；仍需选择目录中的显式操作并审查已安装的内容。
 - **关闭可以撤销。** 按 Esc 时，如果草稿非空，先清空草稿，然后才隐藏这一行，
   而且只对当前会话生效。“Don't suggest again”是你显式做出的选择，
   会被持久保存。`/plugin dismissals` 会列出这两种；
   `/plugin dismissals reset [<name>]` 可以让被关闭的插件重新出现在推荐里。
 - **新插件要靠自己找。** 想找新插件，就看这些文档、`/plugin marketplace list`、
-  Extensions，以及下面的浏览器指南。
+  Plugins，以及下面的浏览器指南。
 
 Codewhale 不会凭空编造远程插件 URL；缺失的插件只会从可用目录里推荐。
 磁盘上的插件包有变化时，发送消息时和回合之间仍会弹出 `/plugin reload` 的 toast。

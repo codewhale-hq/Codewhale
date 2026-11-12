@@ -394,7 +394,7 @@ Codewhale 还可以在 `.codewhale/harness/state.json` 维护一个小型项目�
 - 遵循团队发布检查清单。
 - 使用项目特定的记忆或 wiki 工作流。
 
-在 TUI 里，`/skill <name>` 在可用时激活技能，裸 `/skills` 打开 Extensions → Skills（仅限自有清单，无网络）。`/skills manage` 打开技能管理器。用 `/skills <prefix>`、`/skills inspect`、`/skills --remote`、`/skills suggest <task>` 或 `/skills sync` 走文本/注册表路径。建议会对远程目录排序，但绝不安装或激活任何东西。命令面板也能把技能条目和普通斜杠命令一起展示。
+在 TUI 里，`/skill <name>` 在可用时激活技能，裸 `/skills` 打开 Plugins → Skills（仅限自有清单，无网络）。`/skills manage` 打开技能管理器。用 `/skills <prefix>`、`/skills inspect`、`/skills --remote`、`/skills suggest <task>` 或 `/skills sync` 走文本/注册表路径。建议会对远程目录排序，但绝不安装或激活任何东西。命令面板也能把技能条目和普通斜杠命令一起展示。
 
 好的技能要窄。它们应该告诉模型遵循什么工作流、收集什么证据、避免什么。它们不应该隐藏凭据或取代正常的仓库文档。
 

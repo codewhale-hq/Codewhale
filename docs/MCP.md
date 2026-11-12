@@ -1,13 +1,13 @@
 # MCP (External Tool Servers)
 
-In the terminal, `/mcp` (also `/mcps`) opens **Extensions → MCP**. Enter opens the selected server’s recovery action or read-only details. An empty inventory offers server suggestions; browsing them installs nothing. Explicit subcommands such as `/mcp status`, `/mcp doctor`, `/mcp login`, and `/mcp add` retain their existing behavior.
+In the terminal, `/mcp` (also `/mcps`) opens **Plugins → Connectors**. Enter opens the selected server’s recovery action or read-only details. An empty inventory offers server suggestions; browsing them installs nothing. Explicit subcommands such as `/mcp status`, `/mcp doctor`, `/mcp login`, and `/mcp add` retain their existing behavior.
 
 
 > 阅读简体中文版：[zh_hans/MCP.md](zh_hans/MCP.md)
 
 Everything you add to Codewhale is a plugin. An MCP server you configure is a
 plugin of the kind **Connector**, and a plugin bundle can also carry connectors.
-Connectors are still managed under Extensions → MCP in the terminal and
+Connectors are still managed under Plugins → Connectors in the terminal and
 Customize › Connectors on the desktop; one Plugins list that shows every kind
 together is planned for 0.10.3 and is not in this build. The configuration
 files, sign-in and the `/mcp` commands are unchanged. "Connection" on this page
@@ -249,7 +249,7 @@ bundle and marketplace semantics, see [Plugin bundles](PLUGIN_BUNDLES.md).
 
 `/mcp validate` (alias `/mcp doctor`) with no name reports each server's state
 from the last MCP snapshot the TUI recorded, in a pager over
-**Extensions → MCP**. That snapshot is usually the engine pool's latest report,
+**Plugins → Connectors**. That snapshot is usually the engine pool's latest report,
 but some actions, such as `/mcp import`, replace it with a separate UI
 discovery pass that also connects `lazy` servers the engine has not started.
 Validate also re-reads the MCP config files without connecting: it
