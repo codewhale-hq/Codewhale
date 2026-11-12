@@ -142,11 +142,18 @@ const HIDDEN_RM: &[&str] = &[
     "parallel rm ::: x",
     "parallel 'rm {}' ::: x",
     "parallel -j 2 -- rm ::: x",
+    "echo 'rm x' | parallel",
+    "parallel ::: 'rm x'",
+    "parallel -j 2 ::: ls 'rm x'",
+    "parallel :::: cmds.txt ::: 'rm x'",
     "chpst -u nobody rm x",
     "screen -dmS s rm x",
     "at now <<< 'rm x'",
     "echo 'rm x' | batch",
     "at now <<EOF\nrm x\nEOF",
+    "echo 'rm x' | at -q b now",
+    "echo 'rm x' | at -qb now",
+    "at -f script.sh now",
 ];
 
 /// Literal spellings that were already denied and must stay denied.
@@ -258,6 +265,12 @@ fn ordinary_commands_stay_allowed_next_to_a_deny_rule() {
             "alias ll='ls -la'",
             "hash -r",
             "parallel echo ::: a b",
+            "at -l",
+            "at -q a -l",
+            "at -r 3",
+            "at -d 3",
+            "at -c 3",
+            "batch -l",
         ] {
             let decision = engine
                 .check(context(command, AskForApproval::Never))

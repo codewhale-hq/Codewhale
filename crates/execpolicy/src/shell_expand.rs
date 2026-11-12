@@ -1413,7 +1413,9 @@ impl Expander {
                         }
                     }
                 }
-                "at" | "batch" => self.dynamic |= !line.heredoc,
+                "at" | "batch" => {
+                    self.dynamic |= !line.heredoc && !at_only_manages_jobs(tokens, head, &dynamic);
+                }
                 // These hand the value of `-c` / `--command` to a shell.
                 "su" | "runuser" | "flock" | "script" => {
                     for (payload, payload_dynamic) in
@@ -1422,9 +1424,32 @@ impl Expander {
                         self.code_payload(&payload, payload_dynamic, depth);
                     }
                 }
-                // `watch`, `parallel` and `sg GROUP [-c]` join their operands
-                // and hand them to `sh -c`.
-                "watch" | "sg" | "parallel" => {
+                "parallel" => {
+                    let inner: Vec<usize> = heads
+                        .heads
+                        .iter()
+                        .copied()
+                        .filter(|&inner| inner > head && !is_parallel_separator(&tokens[inner]))
+                        .collect();
+                    if inner.is_empty() {
+                        self.dynamic = true;
+                        let mut code = false;
+                        for at in head + 1..tokens.len() {
+                            if is_parallel_separator(&tokens[at]) {
+                                code = matches!(tokens[at].as_str(), ":::" | ":::+");
+                            } else if code {
+                                self.code_payload(&tokens[at], dynamic[at], depth);
+                            }
+                        }
+                    }
+                    for inner in inner {
+                        let inner_dynamic = dynamic[inner..].iter().any(|dynamic| *dynamic);
+                        self.code_payload(&tokens[inner..].join(" "), inner_dynamic, depth);
+                    }
+                }
+                // `watch` and `sg GROUP [-c]` join their operands and hand
+                // them to `sh -c`.
+                "watch" | "sg" => {
                     for &inner in heads.heads.iter().filter(|&&inner| inner > head) {
                         let inner_dynamic = dynamic[inner..].iter().any(|dynamic| *dynamic);
                         self.code_payload(&tokens[inner..].join(" "), inner_dynamic, depth);
@@ -1599,6 +1624,37 @@ fn command_option_payloads(
         }
     }
     payloads
+}
+
+fn is_parallel_separator(token: &str) -> bool {
+    matches!(token, ":::" | ":::+" | "::::" | "::::+")
+}
+
+fn at_only_manages_jobs(tokens: &[String], head: usize, dynamic: &[bool]) -> bool {
+    let mut at = head + 1;
+    while at < tokens.len() {
+        let token = tokens[at].as_str();
+        if dynamic[at] {
+            return false;
+        }
+        if token == "--" || token.len() < 2 || !token.starts_with('-') {
+            break;
+        }
+        for (offset, flag) in token[1..].char_indices() {
+            match flag {
+                'l' | 'r' | 'd' | 'c' => return true,
+                'q' | 'f' | 't' => {
+                    if token[1 + offset + 1..].is_empty() {
+                        at += 1;
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+        at += 1;
+    }
+    false
 }
 
 /// Mark the operands of an `xargs` that contain its replacement string
