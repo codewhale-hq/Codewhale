@@ -515,11 +515,15 @@ fn parse_porcelain(porcelain: &str) -> Vec<GitFileEntry> {
         }
         let index = record.as_bytes()[0] as char;
         let worktree = record.as_bytes()[1] as char;
-        let path = record[3..].to_string();
+        let renamed_or_copied = matches!(index, 'R' | 'C') || matches!(worktree, 'R' | 'C');
         let mut old_path = None;
-        if matches!(index, 'R' | 'C') {
+        if renamed_or_copied {
             old_path = records.next().map(str::to_string);
         }
+        let Some(path) = record.get(3..) else {
+            continue;
+        };
+        let path = path.to_string();
         entries.push(GitFileEntry {
             path,
             index: index.to_string(),
@@ -3038,6 +3042,51 @@ mod tests {
             .and_then(|row| row.rev.clone())
             .unwrap();
         assert_ne!(after, before);
+    }
+
+    #[test]
+    fn worktree_column_rename_reads_the_original_path() {
+        let tmp = repo();
+        let ws = tmp.path();
+        git(ws, &["mv", "a.txt", "b.txt"]);
+        git(ws, &["reset"]);
+        git(ws, &["add", "-N", "b.txt"]);
+        let detail = collect_git_status_detail(ws).unwrap();
+        assert_eq!(
+            detail.files.len(),
+            1,
+            "the original path must not become a row: {:?}",
+            detail.files.iter().map(|row| &row.path).collect::<Vec<_>>()
+        );
+        let row = &detail.files[0];
+        assert_eq!(row.path, "b.txt");
+        assert_eq!(row.index, " ");
+        assert_eq!(row.worktree, "R");
+        assert_eq!(row.status, "renamed");
+        assert_eq!(row.old_path.as_deref(), Some("a.txt"));
+    }
+
+    #[test]
+    fn worktree_column_rename_with_non_ascii_source_does_not_panic() {
+        let tmp = repo();
+        let ws = tmp.path();
+        fs::write(ws.join("ab说明.md"), "hello\n").unwrap();
+        git(ws, &["add", "ab说明.md"]);
+        git(ws, &["commit", "-q", "-m", "add non-ascii source"]);
+        git(ws, &["mv", "ab说明.md", "new.md"]);
+        git(ws, &["reset"]);
+        git(ws, &["add", "-N", "new.md"]);
+        let detail = collect_git_status_detail(ws).unwrap();
+        assert_eq!(
+            detail.files.len(),
+            1,
+            "the original path must not become a row: {:?}",
+            detail.files.iter().map(|row| &row.path).collect::<Vec<_>>()
+        );
+        let row = &detail.files[0];
+        assert_eq!(row.path, "new.md");
+        assert_eq!(row.status, "renamed");
+        assert_eq!(row.old_path.as_deref(), Some("ab说明.md"));
     }
 
     #[test]
