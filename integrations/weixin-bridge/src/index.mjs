@@ -34,7 +34,7 @@ import {
   parseQuestionAnswers,
 } from "./lib.mjs";
 import { renderQrToText } from "./qr.mjs";
-import { ThreadStore as CoreThreadStore, readJsonSafe, readThreadEvents, writeFileDurable, ApprovalOwnershipError, decideApproval as decideRuntimeApproval } from "../../bridge-core/src/lib.mjs";
+import { ThreadStore as CoreThreadStore, THREAD_NOT_OWNED_MESSAGE, listOwnedThreads, readJsonSafe, readThreadEvents, writeFileDurable, ApprovalOwnershipError, decideApproval as decideRuntimeApproval } from "../../bridge-core/src/lib.mjs";
 
 // ============================================================================
 // 账号持久化
@@ -394,13 +394,13 @@ async function ensureThread(chatId, { forceNew = false, threadRequest } = {}) {
     ...preservedChatStateFields(existing, replacingAccount
       ? ["model", "retiredAccountStates"]
       : ["model", "authorizedIdentity", "contextToken", "contextTokenAccountId", "pendingAdmission", "retiredAccountStates"]),
-    threadBindings: [...threadBindings(chatId, existing), { threadId: thread.id, accountId: accountIdentity(), actorId: turnActor(chatId) }].slice(-threadStore.options.actionLimit),
     threadId: thread.id,
     bindingAccountId: accountIdentity(),
     lastSeq: 0,
     activeTurnId: null,
     updatedAt: new Date().toISOString(),
   };
+  await threadStore.recordThreadOwner(chatId, thread.id, turnActor(chatId));
   await threadStore.setChat(chatId, state);
   return state;
 }
@@ -409,21 +409,17 @@ function accountIdentity() {
   return typeof botAccount?.accountId === "string" ? botAccount.accountId.trim() : "";
 }
 
+function weixinActorId(accountId, chatId) {
+  return accountId && chatId ? `weixin-account:${accountId}:user:${chatId}` : "";
+}
+
 function turnActor(chatId) {
-  return accountIdentity() && chatId ? `weixin-account:${accountIdentity()}:user:${chatId}` : "";
+  return weixinActorId(accountIdentity(), chatId);
 }
 
-function threadBindings(chatId, state) {
-  const bindings = (Array.isArray(state?.threadBindings) ? state.threadBindings : []).filter((entry) => entry?.threadId && entry.accountId && entry.actorId);
-  if (state?.threadId && state.bindingAccountId) {
-    const current = { threadId: state.threadId, accountId: state.bindingAccountId, actorId: `weixin-account:${state.bindingAccountId}:user:${chatId}` };
-    if (!bindings.some((entry) => entry.threadId === current.threadId && entry.accountId === current.accountId && entry.actorId === current.actorId)) bindings.push(current);
-  }
-  return bindings.slice(-threadStore.options.actionLimit);
-}
-
-function ownsThread(chatId, state, threadId) {
-  return threadBindings(chatId, state).some((entry) => entry.threadId === threadId && entry.accountId === accountIdentity() && entry.actorId === turnActor(chatId));
+function ownsThread(chatId, threadId) {
+  const scope = turnActor(chatId);
+  return Boolean(scope) && threadStore.ownsThread(chatId, threadId, scope);
 }
 
 function inboundKey(msg) {
@@ -453,6 +449,7 @@ async function runPrompt(chatId, prompt, { messageKey } = {}) {
     return sendText(chatId, "This chat has a pending turn or retained reply. Use /status or /interrupt.");
   }
   if (current?.threadId && current.bindingAccountId !== accountIdentity()) return sendText(chatId, "This conversation belongs to another or unverified bot account. Use /new to create a new conversation.");
+  if (current?.threadId && !ownsThread(chatId, current.threadId)) return sendText(chatId, THREAD_NOT_OWNED_MESSAGE);
   if (!messageKey || !turnActor(chatId)) throw new Error("A stable incoming message identity is required.");
   const request = {
     prompt, input_summary: prompt.slice(0, 200), model: current?.model || config.model,
@@ -914,17 +911,8 @@ async function sendStatus(chatId) {
 
 async function sendThreads(chatId) {
   try {
-    const state = await threadStore.getChat(chatId);
-    const ownedIds = threadBindings(chatId, state)
-      .filter((entry) => entry.accountId === accountIdentity() && entry.actorId === turnActor(chatId))
-      .map((entry) => entry.threadId);
-    if (!ownedIds.length) {
-      await sendText(chatId, "No recent runtime threads owned by this account and chat.");
-      return;
-    }
-    const query = new URLSearchParams({ limit: "8", include_archived: "true", thread_ids: ownedIds.join(",") });
-    const threads = (await runtimeJson(`/v1/threads/summary?${query}`))
-      .filter((thread) => ownsThread(chatId, state, thread.id));
+    const scope = turnActor(chatId);
+    const threads = scope ? await listOwnedThreads(threadStore, runtimeJson, chatId, scope) : [];
     if (!threads.length) {
       await sendText(chatId, "No recent runtime threads owned by this account and chat.");
       return;
@@ -952,13 +940,12 @@ async function resumeThread(chatId, args) {
   try {
     const existing = await threadStore.getChat(chatId);
     if (hasPendingWork(existing)) throw new Error("This chat still has a pending turn or retained reply. Use /status first.");
-    if (!ownsThread(chatId, existing, threadId)) throw new ApprovalOwnershipError("Thread is not owned by this account and chat");
+    if (!ownsThread(chatId, threadId)) throw new ApprovalOwnershipError("Thread is not owned by this account and chat");
     const detail = await runtimeJson(
       `/v1/threads/${encodeURIComponent(threadId)}`
     );
     await threadStore.setChat(chatId, {
       ...preservedChatStateFields(existing, ["model", "authorizedIdentity", "contextToken", "contextTokenAccountId", "retiredAccountStates"]),
-      threadBindings: threadBindings(chatId, existing),
       threadId,
       bindingAccountId: accountIdentity(),
       lastSeq: Number(detail.latest_seq || 0),
@@ -1385,7 +1372,11 @@ async function main() {
     console.error(error.message);
     process.exit(1);
   }
-  threadStore = await CoreThreadStore.open(config.threadMapPath, { messageLimit: 500, privateMode: true });
+  threadStore = await CoreThreadStore.open(config.threadMapPath, {
+    messageLimit: 500,
+    privateMode: true,
+    legacyOwnerScope: (chatId, state) => (state.bindingAccountId ? weixinActorId(state.bindingAccountId, chatId) : null)
+  });
 
   // 尝试加载已有账号
   botAccount = await loadAccount(config.stateDir);

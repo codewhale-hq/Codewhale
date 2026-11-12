@@ -30,8 +30,11 @@ import {
   ApprovalOwnershipError,
   createRuntimeClient,
   decideApproval as decideRuntimeApproval,
+  listOwnedThreads,
   readJsonSafe,
-  readThreadEvents
+  readThreadEvents,
+  THREAD_NOT_OWNED_MESSAGE,
+  ThreadOwnershipError
 } from "../../bridge-core/src/lib.mjs";
 
 /** Map of chatId -> latest pending approval info for natural-language approval. */
@@ -201,7 +204,12 @@ async function handleIncomingMessage(frame) {
   }
 
   const command = parseCommand(scoped.text);
-  await handleCommand(identity.chatId, command, frame);
+  try {
+    await handleCommand(identity.chatId, command, frame);
+  } catch (error) {
+    if (!(error instanceof ThreadOwnershipError)) throw error;
+    await replyText(frame, THREAD_NOT_OWNED_MESSAGE);
+  }
 }
 
 async function handleEvent(frame) {
@@ -275,7 +283,10 @@ async function handleCommand(chatId, command, frame) {
 
 async function ensureThread(chatId, { forceNew = false } = {}) {
   const existing = await threadStore.getChat(chatId);
-  if (existing?.threadId && !forceNew) return existing;
+  if (existing?.threadId && !forceNew) {
+    threadStore.requireOwnedThread(chatId, existing.threadId);
+    return existing;
+  }
 
   const effectiveModel = existing?.model || config.model;
 
@@ -301,6 +312,7 @@ async function ensureThread(chatId, { forceNew = false } = {}) {
     activeTurnId: null,
     updatedAt: new Date().toISOString()
   };
+  await threadStore.recordThreadOwner(chatId, thread.id);
   await threadStore.setChat(chatId, state);
   return state;
 }
@@ -493,9 +505,9 @@ async function sendStatus(chatId, frame) {
 }
 
 async function sendThreads(chatId, frame) {
-  const threads = await runtimeJson("/v1/threads/summary?limit=8&include_archived=true");
+  const threads = await listOwnedThreads(threadStore, runtimeJson, chatId);
   if (!threads.length) {
-    await replyText(frame, "No runtime threads yet.");
+    await replyText(frame, "No threads started by this chat yet.");
     return;
   }
   await replyText(
@@ -513,6 +525,10 @@ async function resumeThread(chatId, args, frame) {
   const threadId = args.trim();
   if (!threadId) {
     await replyText(frame, "Usage: /resume <thread_id>");
+    return;
+  }
+  if (!threadStore.ownsThread(chatId, threadId)) {
+    await replyText(frame, THREAD_NOT_OWNED_MESSAGE);
     return;
   }
   const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(threadId)}`);
@@ -533,6 +549,7 @@ async function interruptActiveTurn(chatId, frame) {
     await replyText(frame, "No runtime thread recorded for this chat.");
     return;
   }
+  threadStore.requireOwnedThread(chatId, state.threadId);
   const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(state.threadId)}`);
   const runningTurn = latestRunningTurn(detail);
   const turnId = state.activeTurnId || runningTurn?.id;

@@ -75,6 +75,7 @@ security boundaries and adds bridge-specific controls.
 - **Token gate**: All runtime API calls carry `CODEWHALE_RUNTIME_TOKEN`
 - **Chat allowlist**: Only chats/users listed in `WECOM_CHAT_ALLOWLIST` can interact. First-pairing mode (`WECOM_ALLOW_UNLISTED=true`) is meant for onboarding only
 - **Approval required**: Tool calls from WeCom sessions must be approved — either via explicit `/allow <id>` commands or natural-language keywords (`允许`, `yes`, `ok`, etc.)
+- **Thread ownership**: `/threads` and `/resume` cover only the threads the chat itself created; any other thread ID is refused with one fixed reply
 - **No workspace exposure**: Only prompts, status summaries, and approval requests are sent to WeCom. Workspace contents, shell output, and runtime internals stay on the local machine
 
 ### Reporting WeCom Bridge vulnerabilities

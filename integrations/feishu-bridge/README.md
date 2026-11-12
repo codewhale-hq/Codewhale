@@ -69,6 +69,17 @@ messages should start with the Codewhale prefix `/cw`, for example:
 ```
 
 
+## Thread ownership
+
+A thread belongs to the chat that created it. The bridge records the owner in
+the thread map when it creates a thread. `/threads` lists only the threads this
+chat created, and `/resume` accepts only an ID this chat created. Any other ID,
+including a thread started from the desktop app, the TUI or another chat, gets
+one fixed reply and is never sent to the Runtime. When an existing thread map is
+first loaded, a thread that only one chat points at stays with that chat; a
+thread that several chats point at is owned by none of them, and those chats send
+`/new` to start a new thread. Review the thread map after upgrading.
+
 ## Restart access checks
 
 Recovered deliveries require a saved, previously admitted sender identity that

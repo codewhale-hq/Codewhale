@@ -32,8 +32,10 @@ import {
   questionText,
   parseQuestionAnswers,
   createRuntimeClient,
+  listOwnedThreads,
   readJsonSafe,
   readThreadEvents,
+  THREAD_NOT_OWNED_MESSAGE,
   ThreadStore as CoreThreadStore,
   ApprovalOwnershipError,
   decideApproval as decideRuntimeApproval,
@@ -436,7 +438,10 @@ async function ensureThread(chatId, { forceNew = false, threadRequest } = {}) {
   if (forceNew && (existing?.pendingAdmission || existing?.activeTurnId)) {
     throw new Error("This chat has a pending turn or retained reply. Use /status to inspect it before replacing its thread.");
   }
-  if (existing?.threadId && !forceNew) return existing;
+  if (existing?.threadId && !forceNew) {
+    threadStore.requireOwnedThread(chatId, existing.threadId);
+    return existing;
+  }
 
   const effectiveModel = existing?.model || config.model;
   const thread = await runtimeJson("/v1/threads", {
@@ -461,6 +466,7 @@ async function ensureThread(chatId, { forceNew = false, threadRequest } = {}) {
     activeTurnId: null,
     updatedAt: new Date().toISOString()
   };
+  await threadStore.recordThreadOwner(chatId, thread.id);
   await threadStore.setChat(chatId, state);
   return state;
 }
@@ -484,6 +490,10 @@ async function startPromptTurn(chatId, prompt, identity) {
     return;
   }
   if (!prompt.trim()) return sendText(chatId, helpText(), { replyMarkup: controlKeyboard() });
+  if (current?.threadId && !threadStore.ownsThread(chatId, current.threadId)) {
+    await sendText(chatId, THREAD_NOT_OWNED_MESSAGE, { replyMarkup: controlKeyboard() });
+    return;
+  }
   const actorId = turnActor(identity);
   if (!actorId || !identity.messageKey) throw new ApprovalOwnershipError("turn needs its initiating human and message");
   const request = {
@@ -572,6 +582,11 @@ async function runPrompt(chatId, options = {}) {
   if (!recoveryAllowed(chatId, state)) return true;
   let pending = state?.pendingAdmission;
   if (pending) {
+    if (pending.threadId && !pending.submitted && !threadStore.ownsThread(chatId, pending.threadId)) {
+      await threadStore.patchChat(chatId, { pendingAdmission: null });
+      await sendText(chatId, THREAD_NOT_OWNED_MESSAGE);
+      return true;
+    }
     const admission = await admitTurn({
       runtimeJson, pending, capabilities: runtimeCapabilities,
       persistPending: (value) => threadStore.patchChat(chatId, { pendingAdmission: value }),
@@ -878,10 +893,10 @@ async function sendStatus(chatId, identity) {
 async function sendThreads(chatId, identity) {
   const state = await threadStore.getChat(chatId);
   const threads = isGroupChat(identity?.chatType)
-    ? state?.threadId ? [{ id: state.threadId }] : []
-    : await runtimeJson("/v1/threads/summary?limit=8&include_archived=true");
+    ? state?.threadId && threadStore.ownsThread(chatId, state.threadId) ? [{ id: state.threadId }] : []
+    : await listOwnedThreads(threadStore, runtimeJson, chatId);
   if (!threads.length) {
-    await sendText(chatId, "No runtime threads yet.", { replyMarkup: controlKeyboard() });
+    await sendText(chatId, "No threads started by this chat yet.", { replyMarkup: controlKeyboard() });
     return;
   }
   const actions = [];
@@ -915,6 +930,10 @@ async function resumeThread(chatId, args, identity) {
     await sendText(chatId, "Usage: /resume <thread_id>");
     return;
   }
+  if (!threadStore.ownsThread(chatId, threadId)) {
+    await sendText(chatId, THREAD_NOT_OWNED_MESSAGE);
+    return;
+  }
   if (isGroupChat(identity?.chatType) && (threadId !== existing?.threadId ||
       !(existing?.turnOrigins || []).some((origin) => origin.threadId === threadId && origin.actorId === turnActor(identity)))) {
     await sendText(chatId, "Group chats can only resume their own thread through a recorded initiating human.");
@@ -946,6 +965,10 @@ async function interruptActiveTurn(chatId, identity) {
     await sendText(chatId, "No runtime thread recorded for this chat.");
     return;
   }
+  if (!threadStore.ownsThread(chatId, state.threadId)) {
+    await sendText(chatId, THREAD_NOT_OWNED_MESSAGE);
+    return;
+  }
   const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(state.threadId)}`);
   const runningTurn = latestRunningTurn(detail);
   const turnId = state.activeTurnId || runningTurn?.id;
@@ -971,6 +994,11 @@ async function interruptActiveTurn(chatId, identity) {
 }
 
 async function compactThread(chatId) {
+  const current = await threadStore.getChat(chatId);
+  if (current?.threadId && !threadStore.ownsThread(chatId, current.threadId)) {
+    await sendText(chatId, THREAD_NOT_OWNED_MESSAGE);
+    return;
+  }
   const state = await ensureThread(chatId);
   const result = await runtimeJson(`/v1/threads/${encodeURIComponent(state.threadId)}/compact`, {
     method: "POST",

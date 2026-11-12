@@ -5,6 +5,8 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const DEFAULT_ACTION_TTL_MS = 24 * 60 * 60 * 1000;
 
+export const THREAD_NOT_OWNED_MESSAGE = "This chat can only use threads it started. Send /new to start a new thread.";
+
 function normalizeCursorValue(value, fallback = 0) {
   const number = Number(value);
   if (Number.isFinite(number) && number >= 0) return Math.floor(number);
@@ -78,7 +80,9 @@ export class ThreadStore {
       actions: options.actions === true,
       actionLimit: options.actionLimit || 200,
       actionTtlMs: options.actionTtlMs || DEFAULT_ACTION_TTL_MS,
-      privateMode: options.privateMode === true
+      privateMode: options.privateMode === true,
+      ownerLimit: options.ownerLimit || options.actionLimit || 200,
+      legacyOwnerScope: typeof options.legacyOwnerScope === "function" ? options.legacyOwnerScope : () => ""
     };
     this.data = { chats: {} };
     this.saveDirty = false;
@@ -90,6 +94,7 @@ export class ThreadStore {
   ensureShape() {
     if (!this.data || typeof this.data !== "object") this.data = {};
     if (!this.data.chats || typeof this.data.chats !== "object") this.data.chats = {};
+    if (!Array.isArray(this.data.threadOwners)) this.data.threadOwners = [];
     if (this.options.messageLimit > 0 && !Array.isArray(this.data.messages)) {
       this.data.messages = [];
     }
@@ -107,8 +112,11 @@ export class ThreadStore {
   async load() {
     try {
       const raw = await readFile(this.filePath, "utf8");
-      this.data = JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      const unmigrated = !parsed || typeof parsed !== "object" || !Array.isArray(parsed.threadOwners);
+      this.data = parsed;
       this.ensureShape();
+      if (unmigrated) this.data.threadOwners = this.legacyThreadOwners();
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
@@ -213,6 +221,75 @@ export class ThreadStore {
     this.data.chats[chatId] = { ...current, ...patch };
     await this.save();
     return this.data.chats[chatId];
+  }
+
+  /**
+   * Thread ownership: a chat lists and resumes only threads it created. The
+   * record lives beside, not inside, the chat state so replacing a chat's
+   * state never drops it. A store written before ownership was recorded is
+   * migrated once; a thread that more than one chat points at is shared, so
+   * it is owned by none of them.
+   */
+  legacyThreadOwners() {
+    const chatsByThread = new Map();
+    const reference = (threadId, chatId) => {
+      if (!chatsByThread.has(threadId)) chatsByThread.set(threadId, new Set());
+      chatsByThread.get(threadId).add(chatId);
+    };
+    const candidates = [];
+    for (const [chatId, state] of Object.entries(this.data.chats || {})) {
+      if (!state || typeof state !== "object") continue;
+      const own = [];
+      for (const entry of Array.isArray(state.threadBindings) ? state.threadBindings : []) {
+        if (!entry?.threadId || !entry.actorId) continue;
+        reference(entry.threadId, chatId);
+        own.push({ threadId: entry.threadId, chatId, scope: String(entry.actorId) });
+      }
+      if (state.threadId) {
+        reference(state.threadId, chatId);
+        const scope = this.options.legacyOwnerScope(chatId, state);
+        if (typeof scope === "string") own.push({ threadId: state.threadId, chatId, scope });
+      }
+      candidates.push(...own.slice(-this.options.ownerLimit));
+    }
+    const seen = new Set();
+    return candidates.filter((entry) => {
+      const key = JSON.stringify([entry.threadId, entry.chatId, entry.scope]);
+      if (seen.has(key) || chatsByThread.get(entry.threadId).size !== 1) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  ownsThread(chatId, threadId, scope = "") {
+    if (!chatId || !threadId) return false;
+    return this.data.threadOwners.some((entry) => entry.threadId === threadId && entry.chatId === chatId && entry.scope === scope);
+  }
+
+  requireOwnedThread(chatId, threadId, scope = "") {
+    if (!this.ownsThread(chatId, threadId, scope)) throw new ThreadOwnershipError(THREAD_NOT_OWNED_MESSAGE);
+  }
+
+  ownedThreadIds(chatId, scope = "") {
+    if (!chatId) return [];
+    return this.data.threadOwners
+      .filter((entry) => entry.chatId === chatId && entry.scope === scope)
+      .map((entry) => entry.threadId)
+      .reverse();
+  }
+
+  async recordThreadOwner(chatId, threadId, scope = "") {
+    if (!chatId || !threadId) throw new ThreadOwnershipError(THREAD_NOT_OWNED_MESSAGE);
+    const held = this.data.threadOwners.find((entry) => entry.threadId === threadId);
+    if (held) {
+      if (held.chatId === chatId && held.scope === scope) return;
+      throw new ThreadOwnershipError(THREAD_NOT_OWNED_MESSAGE);
+    }
+    const owners = [...this.data.threadOwners, { threadId, chatId, scope }];
+    const mine = owners.filter((entry) => entry.chatId === chatId);
+    const evicted = new Set(mine.slice(0, Math.max(0, mine.length - this.options.ownerLimit)));
+    this.data.threadOwners = owners.filter((entry) => !evicted.has(entry));
+    await this.save();
   }
 
   async finishObservedTurn(chatId, threadId, turnId) {
@@ -362,6 +439,21 @@ export class ApprovalOwnershipError extends Error {
     super(message);
     this.name = "ApprovalOwnershipError";
   }
+}
+
+export class ThreadOwnershipError extends Error {
+  constructor(message = THREAD_NOT_OWNED_MESSAGE) {
+    super(message);
+    this.name = "ThreadOwnershipError";
+  }
+}
+
+export async function listOwnedThreads(store, runtimeJson, chatId, scope = "", limit = 8) {
+  const ids = store.ownedThreadIds(chatId, scope);
+  if (!ids.length) return [];
+  const query = new URLSearchParams({ limit: String(limit), include_archived: "true", thread_ids: ids.join(",") });
+  const rows = await runtimeJson(`/v1/threads/summary?${query}`);
+  return (Array.isArray(rows) ? rows : []).filter((thread) => store.ownsThread(chatId, thread?.id, scope)).slice(0, limit);
 }
 
 /**
