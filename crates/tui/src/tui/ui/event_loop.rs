@@ -7225,14 +7225,16 @@ pub(crate) async fn run_event_loop(
                     continue;
                 }
                 // An idle operator can dismiss the persistent context warning
-                // without affecting vim or attachment handling. While a turn
-                // is active Esc retains its cancellation meaning.
+                // or the account preferences notice without affecting vim or
+                // attachment handling. While a turn is active Esc retains its
+                // cancellation meaning.
                 KeyCode::Esc
                     if !app.is_loading
                         && app.input.is_empty()
                         && !slash_menu_open
                         && !mention_menu_open
-                        && app.dismiss_context_pressure_warning() =>
+                        && (app.dismiss_context_pressure_warning()
+                            || app.dismiss_account_preferences_notice()) =>
                 {
                     continue;
                 }
@@ -9319,14 +9321,10 @@ pub(super) fn apply_engine_status(app: &mut App, message: String) -> bool {
         app.add_message(HistoryCell::System { content: message });
         return true;
     }
-    // The account-profile fallback notice is sent once per engine; keep it in
-    // the transcript so the next turn's status line cannot erase it.
-    let retain = app.tr(MessageId::ProfileConstitutionUnavailableLocal) == message.as_str();
-    if retain {
-        app.add_message(HistoryCell::System {
-            content: message.clone(),
-        });
+    if app.tr(MessageId::ProfileConstitutionUnavailableLocal) == message.as_str() {
+        app.notify_account_preferences_not_loaded();
+        return false;
     }
     app.status_message = Some(message);
-    retain
+    false
 }

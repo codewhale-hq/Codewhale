@@ -25,6 +25,7 @@
   "TerminalDockLive": "稼働中",
   "ExtensionPromptUnavailable": "拡張機能の指示を利用できません。/plugin show で確認してください。",
   "ProfileConstitutionUnavailableLocal": "Codewhale アカウントの設定を読み込めなかったため、このターンはローカル設定を使います。プロバイダーキーはそのまま使えます。アカウント設定を戻すには codewhale login を実行してください。",
+  "AccountPreferencesNotLoaded": "アカウントを読み込めませんでした。{command} を実行してください。プロバイダーキーはそのまま使えます。",
   "ComposerOversizedSubmitHeld": "未送信：メッセージが {limit} 文字を超えており、貼り付けファイルに保存できませんでした（{error}）。全文は入力欄に残っています。短くするか .codewhale/pastes を書き込み可能にしてから、もう一度 Enter を押してください。",
   "ComposerOversizedSubmitHeldShort": "未送信：{limit} 文字超。貼り付けファイルは未保存です。",
   "CmdPluginOwnerReport": "拡張機能ホスト:\n  状態: {state}\n  有効なツール ({count}): {tools}",

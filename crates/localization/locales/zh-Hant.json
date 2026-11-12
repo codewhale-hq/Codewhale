@@ -25,6 +25,7 @@
   "TerminalDockLive": "執行中",
   "ExtensionPromptUnavailable": "擴充功能指令無法使用；請透過 /plugin show 查看。",
   "ProfileConstitutionUnavailableLocal": "無法載入 Codewhale 帳號偏好，本輪改用本機設定。你的服務商金鑰仍可正常使用；執行 codewhale login 可恢復帳號偏好。",
+  "AccountPreferencesNotLoaded": "帳號未載入。請執行 {command}。你的服務商金鑰仍可正常使用。",
   "ComposerOversizedSubmitHeld": "未傳送：訊息超過 {limit} 個字元，無法儲存為貼上文字檔案（{error}）。完整文字仍保留在輸入框中：請縮短內容，或允許寫入 .codewhale/pastes，然後再次按 Enter。",
   "ComposerOversizedSubmitHeldShort": "未傳送：超過 {limit} 個字元；貼上檔案未儲存。",
   "CmdPluginOwnerReport": "擴充功能主機：\n  狀態：{state}\n  活動工具（{count}）：{tools}",

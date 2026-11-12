@@ -25,6 +25,7 @@
   "TerminalDockLive": "live",
   "ExtensionPromptUnavailable": "Extension instructions are unavailable; inspect /plugin show.",
   "ProfileConstitutionUnavailableLocal": "Codewhale account preferences could not be loaded, so this turn uses your local settings. Your provider key still works; run codewhale login to restore account preferences.",
+  "AccountPreferencesNotLoaded": "Account not loaded. Run {command}. Your provider key still works.",
   "ComposerOversizedSubmitHeld": "Not sent: this message is over {limit} characters and could not be saved as a paste file ({error}). The full text is still in the composer: shorten it, or make .codewhale/pastes writable, then press Enter again.",
   "ComposerOversizedSubmitHeldShort": "Not sent: over {limit} characters; paste file not saved.",
   "CmdPluginOwnerReport": "Extension host:\n  State: {state}\n  Live tools ({count}): {tools}",

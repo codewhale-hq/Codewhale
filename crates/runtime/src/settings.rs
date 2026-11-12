@@ -492,6 +492,8 @@ pub struct Settings {
     /// One-time Operate-retirement toast has been shown. Same suppression
     /// contract as `yolo_deprecation_shown`.
     pub operate_deprecation_shown: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_preferences_notice_shown: Option<String>,
     /// Round 3 (2026-09-01) moved the work bar under the composer. Every
     /// settings.toml saved before that carries `work_surface_placement =
     /// "top"` — the old default, persisted verbatim by ordinary saves, not a
@@ -694,6 +696,7 @@ impl Default for Settings {
             feature_intro_shown: false,
             yolo_deprecation_shown: false,
             operate_deprecation_shown: false,
+            account_preferences_notice_shown: None,
             legacy_operate_default: false,
             work_surface_bottom_migrated: false,
             behavioral_tip_impressions: std::collections::BTreeMap::new(),

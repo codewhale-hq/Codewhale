@@ -25,6 +25,7 @@
   "TerminalDockLive": "运行中",
   "ExtensionPromptUnavailable": "扩展指令不可用；请通过 /plugin show 查看。",
   "ProfileConstitutionUnavailableLocal": "无法加载 Codewhale 账号偏好，本轮改用本地设置。你的提供商密钥仍可正常使用；运行 codewhale login 可恢复账号偏好。",
+  "AccountPreferencesNotLoaded": "账号未加载。请运行 {command}。你的提供商密钥仍可正常使用。",
   "ComposerOversizedSubmitHeld": "未发送：消息超过 {limit} 个字符，无法保存为粘贴文本文件（{error}）。完整文本仍保留在输入框中：请缩短内容，或允许写入 .codewhale/pastes，然后再次按 Enter。",
   "ComposerOversizedSubmitHeldShort": "未发送：超过 {limit} 个字符；粘贴文件未保存。",
   "CmdPluginOwnerReport": "扩展宿主：\n  状态：{state}\n  活动工具（{count}）：{tools}",

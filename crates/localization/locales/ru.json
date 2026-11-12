@@ -25,6 +25,7 @@
   "TerminalDockLive": "активен",
   "ExtensionPromptUnavailable": "Инструкции расширений недоступны; проверьте /plugin show.",
   "ProfileConstitutionUnavailableLocal": "Не удалось загрузить настройки аккаунта Codewhale, поэтому этот ход использует локальные настройки. Ключ провайдера продолжает работать; выполните codewhale login, чтобы вернуть настройки аккаунта.",
+  "AccountPreferencesNotLoaded": "Аккаунт не загружен. Выполните {command}. Ключ провайдера продолжает работать.",
   "ComposerOversizedSubmitHeld": "Не отправлено: сообщение длиннее {limit} символов, и его не удалось сохранить в файл вставленного текста ({error}). Полный текст остался в поле ввода: сократите его или разрешите запись в .codewhale/pastes, затем снова нажмите Enter.",
   "ComposerOversizedSubmitHeldShort": "Не отправлено: больше {limit} символов; файл вставки не сохранён.",
   "CmdPluginOwnerReport": "Хост расширений:\n  Состояние: {state}\n  Активные инструменты ({count}): {tools}",

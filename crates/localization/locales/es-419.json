@@ -25,6 +25,7 @@
   "TerminalDockLive": "activo",
   "ExtensionPromptUnavailable": "Las instrucciones de las extensiones no están disponibles; revisa /plugin show.",
   "ProfileConstitutionUnavailableLocal": "No se pudieron cargar las preferencias de la cuenta de Codewhale; este turno usa tu configuración local. Tu clave del proveedor sigue funcionando; ejecuta codewhale login para restaurar las preferencias de la cuenta.",
+  "AccountPreferencesNotLoaded": "Cuenta no cargada. Ejecuta {command}. Tu clave del proveedor sigue funcionando.",
   "ComposerOversizedSubmitHeld": "No se envió: este mensaje supera los {limit} caracteres y no se pudo guardar en un archivo de texto pegado ({error}). El texto completo sigue en el campo de entrada: acórtalo o habilita la escritura en .codewhale/pastes y vuelve a presionar Enter.",
   "ComposerOversizedSubmitHeldShort": "No se envió: supera los {limit} caracteres; no se guardó el archivo pegado.",
   "CmdPluginOwnerReport": "Host de extensiones:\n  Estado: {state}\n  Herramientas activas ({count}): {tools}",

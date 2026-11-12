@@ -1546,6 +1546,12 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
         "false",
         None,
     ),
+    def(
+        "account_preferences_notice_shown",
+        SettingKind::String,
+        "",
+        None,
+    ),
     // Round 3 work-bar placement migration ran once (`top` → `bottom`).
     def(
         "work_surface_bottom_migrated",
