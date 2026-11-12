@@ -1860,7 +1860,7 @@ ones like `-s` or `--porcelain` — a compound, wrapper, interpreter or
 unrecognised command, one with any other option, or one whose arguments are
 what runs or is installed (`go run`, `make`, `git bisect`, package installs)
 is granted as its full normalized command, and a
-shell interact or wait call as the exact call — a patch's file set, a `fetch_url` host, an MCP tool, a `web.run` action kind — for
+shell run given stdin (`stdin`, `input` or `data`), or a shell interact or wait call, as the exact call — a patch's file set, a `fetch_url` host, an MCP tool, a `web.run` action kind — for
 `open`, the hosts it opened). Computer Use consent and `app_script` calls, and
 any tool without a class, are granted for the exact call only. A grant never
 changes the thread's permission posture. Later matching calls on the thread are
