@@ -444,7 +444,7 @@ mod tests {
             ),
             (
                 Locale::ZhHans,
-                "用法: /profile <name>",
+                "用法：/profile <name>",
                 "正在切换到配置文件 'work'...",
             ),
             (
