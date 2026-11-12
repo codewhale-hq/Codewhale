@@ -1104,13 +1104,13 @@ mod screen_mode_tests {
                 Ok(())
             },
             || {
-                Terminal::with_options(
+                Ok(Terminal::with_options(
                     TestBackend::new(20, 6),
                     ratatui::TerminalOptions {
                         viewport: ratatui::Viewport::Inline(3),
                     },
                 )
-                .map_err(|err| io::Error::other(err.to_string()))
+                .expect("inline test terminal"))
             },
         )
         .expect("a successful probe must switch");

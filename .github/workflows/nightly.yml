@@ -73,7 +73,7 @@ jobs:
         id: sccache
         continue-on-error: true
       - name: Enable sccache
-        if: steps.sccache.outcome == 'success'
+        if: steps.sccache.outcome == 'success' && runner.os != 'Windows'
         shell: bash
         run: |
           {
