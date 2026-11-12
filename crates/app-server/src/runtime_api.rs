@@ -129,6 +129,7 @@ mod members;
 mod memory_lens;
 mod mobile;
 mod plans;
+mod plugin_index;
 mod plugins;
 pub(crate) mod review;
 mod secrets;
@@ -3372,6 +3373,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/skills/{name}/audit", get(audit_skill_api))
         .route("/v1/apps/mcp/tools", get(list_mcp_tools))
         .route("/v1/apps/plugins", get(plugins::list_plugins))
+        .route("/v1/apps/plugin-index", get(plugin_index::get_plugin_index))
         .route("/v1/apps/avatars", get(avatars::list_avatars))
         .route(
             "/v1/apps/avatars/{handle}/atlases/{page}",
@@ -5875,6 +5877,8 @@ struct CommandCatalogEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     origin: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    plugin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     registration_id: Option<String>,
 }
 
@@ -5933,6 +5937,7 @@ fn command_catalog(
             shadowed_by,
             shadowed_aliases,
             origin: None,
+            plugin: None,
             registration_id: None,
         });
     }
@@ -5956,6 +5961,7 @@ fn command_catalog(
             shadowed_by: None,
             shadowed_aliases: Vec::new(),
             origin: None,
+            plugin: command.plugin.clone(),
             registration_id: None,
         });
     }
@@ -6038,6 +6044,7 @@ async fn list_commands(
                 shadowed_by: None,
                 shadowed_aliases: Vec::new(),
                 origin: Some(reference.origin.clone()),
+                plugin: None,
                 registration_id: query
                     .thread_id
                     .as_deref()

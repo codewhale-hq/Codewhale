@@ -79,7 +79,7 @@ fn write_native_ui_bundle(dir: &Path, name: &str) -> Result<PathBuf> {
     Ok(bundle)
 }
 
-async fn install_active(
+pub(super) async fn install_active(
     client: &reqwest::Client,
     base: &str,
     source: String,
