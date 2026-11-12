@@ -255,11 +255,12 @@ impl StdioLspTransport {
         let child = Arc::new(AsyncMutex::new(Some(child)));
         let dispatcher_child = child.clone();
         let dispatcher_pending = pending.clone();
+        let dispatcher_outbound = tx_outbound.clone();
         let dispatcher_task = spawn_supervised(
             "lsp-dispatcher",
             std::panic::Location::caller(),
             async move {
-                dispatcher_task(rx_inbound, tx_diag, dispatcher_pending).await;
+                dispatcher_task(rx_inbound, tx_diag, dispatcher_outbound, dispatcher_pending).await;
                 // EOF, malformed frames, or an overflowing diagnostics queue
                 // terminate the producer too, so its pipes cannot stay stuck.
                 if let Some(mut child) = dispatcher_child.lock().await.take() {
@@ -536,15 +537,19 @@ impl LspTransport for StdioLspTransport {
 
 /// Send a JSON value as one Content-Length-framed JSON-RPC message.
 async fn send_message(tx: &mpsc::Sender<Vec<u8>>, value: &Value) -> Result<()> {
+    tx.send(frame_message(value)?)
+        .await
+        .map_err(|_| anyhow!("LSP outbound channel closed"))?;
+    Ok(())
+}
+
+fn frame_message(value: &Value) -> Result<Vec<u8>> {
     let body = serde_json::to_vec(value).context("serialize LSP message")?;
     let header = format!("Content-Length: {}\r\n\r\n", body.len());
     let mut frame = Vec::with_capacity(header.len() + body.len());
     frame.extend_from_slice(header.as_bytes());
     frame.extend_from_slice(&body);
-    tx.send(frame)
-        .await
-        .map_err(|_| anyhow!("LSP outbound channel closed"))?;
-    Ok(())
+    Ok(frame)
 }
 
 /// Background task that drains the outbound queue and writes each frame to
@@ -638,6 +643,7 @@ fn parse_header(buf: &[u8]) -> Result<Option<(usize, usize)>> {
 async fn dispatcher_task(
     mut rx: mpsc::Receiver<Value>,
     tx_diag: mpsc::Sender<DiagnosticMessage>,
+    tx_outbound: mpsc::Sender<Vec<u8>>,
     pending: Arc<AsyncMutex<HashMap<i64, oneshot::Sender<Value>>>>,
 ) {
     while let Some(value) = rx.recv().await {
@@ -650,6 +656,19 @@ async fn dispatcher_task(
                 // dispatcher, giving callers an explicit channel error.
                 if tx_diag.try_send(publication).is_err() {
                     break;
+                }
+            }
+            continue;
+        }
+        if let Some(method) = method {
+            if let Some(id) = value.get("id") {
+                let reply = json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32601, "message": format!("unsupported method {method}")},
+                });
+                if let Ok(frame) = frame_message(&reply) {
+                    let _ = tx_outbound.try_send(frame);
                 }
             }
             continue;
@@ -778,6 +797,31 @@ pub(super) mod tests {
         assert_eq!(diags[0].column, 8);
         assert_eq!(diags[0].severity, Severity::Error);
         assert_eq!(diags[0].message, "missing semicolon");
+    }
+
+    #[tokio::test]
+    async fn server_request_sharing_a_pending_id_is_answered_not_taken_as_the_reply() {
+        let (tx_in, rx_in) = mpsc::channel(4);
+        let (tx_out, mut rx_out) = mpsc::channel::<Vec<u8>>(4);
+        let (tx_diag, _rx_diag) = mpsc::channel(4);
+        let pending = Arc::new(AsyncMutex::new(HashMap::new()));
+        let (reply_tx, reply_rx) = oneshot::channel();
+        pending.lock().await.insert(2, reply_tx);
+        let dispatcher = tokio::spawn(dispatcher_task(rx_in, tx_diag, tx_out, pending));
+        tx_in
+            .send(json!({"jsonrpc":"2.0","id":2,"method":"workspace/configuration","params":{"items":[]}}))
+            .await
+            .unwrap();
+        tx_in
+            .send(json!({"jsonrpc":"2.0","id":2,"result":"definition"}))
+            .await
+            .unwrap();
+        assert_eq!(reply_rx.await.unwrap()["result"], "definition");
+        let answer = next_document(&mut rx_out).await;
+        assert_eq!(answer["id"], 2);
+        assert_eq!(answer["error"]["code"], -32601);
+        drop(tx_in);
+        dispatcher.await.unwrap();
     }
 
     #[test]
@@ -1309,11 +1353,12 @@ while True:
             let (mut producer, reader) = tokio::io::duplex(MAX_LSP_HEADER_BYTES * 2);
             let (tx, rx) = mpsc::channel(8);
             let (diag, _diagnostics) = mpsc::channel(8);
+            let (outbound, _outbound_rx) = mpsc::channel(8);
             let pending = Arc::new(AsyncMutex::new(HashMap::new()));
             let (reply, receiver) = oneshot::channel();
             pending.lock().await.insert(1, reply);
             let read_task = tokio::spawn(reader_task(reader, tx));
-            let dispatch = tokio::spawn(dispatcher_task(rx, diag, pending.clone()));
+            let dispatch = tokio::spawn(dispatcher_task(rx, diag, outbound, pending.clone()));
             producer.write_all(&frame).await.unwrap();
             assert!(
                 timeout(Duration::from_secs(1), receiver)
