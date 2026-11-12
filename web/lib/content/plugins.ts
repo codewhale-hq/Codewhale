@@ -1,15 +1,16 @@
+import { compareVersions } from "../features";
 import type { LocalizedText } from "./vocabulary";
 
 export const PLUGINS_COPY = {
-  metaTitle: { en: "Plugins and connectors · Codewhale", zh: "插件与连接器 · Codewhale" },
+  metaTitle: { en: "Plugins · Codewhale", zh: "插件 · Codewhale" },
   metaDescription: {
-    en: "Skills, commands, agent profiles, hooks and MCP connectors all arrive in Codewhale as reviewed plugins you install, trust and enable.",
-    zh: "技能、命令、代理配置、钩子和 MCP 连接器都以已审阅插件的形式进入 Codewhale：由你安装、信任并启用。",
+    en: "A plugin adds skills, commands, agent profiles, hooks and MCP connectors to Codewhale. You install it, review what it asks for, trust it and enable it. What 0.10.3 adds is labelled as coming.",
+    zh: "插件可为 Codewhale 添加技能、命令、代理配置、钩子和 MCP 连接器。由你安装、审阅其所请求的能力、信任并启用。0.10.3 将带来的内容已标明为即将推出。",
   },
-  title: { en: "Everything is a plugin", zh: "一切皆插件" },
+  title: { en: "Add to Codewhale with plugins", zh: "用插件扩展 Codewhale" },
   lead: {
-    en: "Skills, commands, agent profiles, hooks and MCP connectors all arrive the same way: as a reviewed bundle you install, trust and enable. Nothing runs until you have reviewed it.",
-    zh: "技能、命令、代理配置、钩子和 MCP 连接器都以同一种方式到来：一个经过审阅的插件包，由你安装、信任并启用。审阅之前，什么都不会运行。",
+    en: "A plugin bundle can carry skills, commands, agent profiles, hooks and MCP connectors. You install it, review what it asks for, trust it and enable it, and nothing in it runs before that. A skill, a connector or a hook can also be added on its own with /skills, /mcp or /hooks.",
+    zh: "一个插件包可以携带技能、命令、代理配置、钩子和 MCP 连接器。你安装它，审阅它所请求的能力，信任并启用它，在此之前其中的任何内容都不会运行。技能、连接器或钩子也可以单独添加，分别使用 /skills、/mcp 或 /hooks。",
   },
   marketplaceCta: { en: "Browse the catalog", zh: "浏览目录" },
   docsCta: { en: "Authoring guide", zh: "编写指南" },
@@ -76,7 +77,7 @@ export const PLUGINS_COPY = {
     },
   ],
 
-  kindsTitle: { en: "One format for every extension", zh: "所有扩展，同一种格式" },
+  kindsTitle: { en: "What a plugin can add", zh: "插件能添加什么" },
   originBefore: { en: "The idea comes from ", zh: "这个想法来自 " },
   originName: { en: "DeepSeek Harness", zh: "DeepSeek Harness" },
   originAfter: {
@@ -87,7 +88,7 @@ export const PLUGINS_COPY = {
     en: "Reviewed DeepSeek Harness plugins can run in the experimental extension host. /plugin import dsh previews a bundle, then installs it disabled and untrusted. Services Codewhale owns, such as turns, sessions, approvals and credentials, are refused by name. Update and rollback are not verified, and none of this is a release qualification.",
     zh: "经审阅的 DeepSeek Harness 插件可在实验性扩展宿主中运行。/plugin import dsh 先预览插件包，再以未启用、未信任状态安装。Codewhale 自己持有的服务，如回合、会话、审批和凭据，会按名称拒绝。更新与回滚尚未验证，以上均不代表通过发布验证。",
   },
-  dshLink: { en: "DeepSeek Harness compatibility notes", zh: "DeepSeek Harness 兼容性说明" },
+  dshLink: { en: "DeepSeek Harness compatibility notes (current source, ahead of the release)", zh: "DeepSeek Harness 兼容性说明（当前源码，领先于已发布版本）" },
 
   connectorsTitle: { en: "Connectors: the apps you already use", zh: "连接器：你已在用的应用" },
   connectorsLead: {
@@ -110,6 +111,12 @@ export const PLUGINS_COPY = {
     zh: "这里没有 Gmail 和 Google Calendar 连接器。skills-google 插件提供的工作流使用你已连接的 Gmail 或日历工具。",
   },
   connectorsLink: { en: "MCP setup, authentication and troubleshooting", zh: "MCP 设置、认证与故障排查" },
+
+  comingTitle: { en: "Coming in 0.10.3, not in the current release", zh: "即将在 0.10.3 推出，当前发布版本尚未包含" },
+  comingLead: {
+    en: "These are planned for 0.10.3. They are not in the version you can install today, and the plan can change before the release. Everything above describes the released version.",
+    zh: "以下内容计划在 0.10.3 推出，当前可安装的版本尚未包含，发布前计划也可能调整。上文描述的都是已发布版本。",
+  },
 
   catalogTitle: { en: "Plugins from the catalog", zh: "目录中的插件" },
   catalogLead: {
@@ -160,6 +167,45 @@ export const PLUGIN_KINDS = [
   { title: { en: "Hooks", zh: "钩子" }, detail: { en: "Commands that run on session events.", zh: "在会话事件上运行的命令。" } },
   { title: { en: "MCP connectors", zh: "MCP 连接器" }, detail: { en: "Servers that give the agent tools in other apps.", zh: "为智能体提供其他应用中工具的服务器。" } },
 ];
+
+export const PLUGINS_COMING_VERSION = "0.10.3";
+
+export function pluginsComingApplies(release: { version: string } | null): boolean {
+  if (!release) return true;
+  const order = compareVersions(release.version, PLUGINS_COMING_VERSION);
+  return order === null || order < 0;
+}
+
+export const PLUGINS_COMING = [
+  {
+    title: { en: "One Plugins place", zh: "统一的“插件”页面" },
+    detail: {
+      en: "Everything you add is listed in one Plugins place. Each row says what it adds (Skill, Connector, Hook or Command), where it came from and whether it is on. /skills, /mcp and /hooks keep working and open that place on their own filter.",
+      zh: "你添加的所有内容都会列在同一个“插件”页面。每一行标明它添加了什么（技能、连接器、钩子或命令）、来源以及是否已启用。/skills、/mcp 和 /hooks 仍然可用，并会按各自的筛选条件打开该页面。",
+    },
+  },
+  {
+    title: { en: "Standard mode and Creator mode", zh: "Standard 模式与 Creator 模式" },
+    detail: {
+      en: "You choose a mode for each conversation. In Creator mode the agent can write a plugin for you. A Standard conversation can install or remove a plugin, and the permission mode decides whether it asks you first.",
+      zh: "你为每个对话选择一种模式。在 Creator 模式下，智能体可以为你编写插件。Standard 模式的对话可以安装或移除插件，是否先询问你由权限模式决定。",
+    },
+  },
+  {
+    title: { en: "You decide what turns on", zh: "启用什么由你决定" },
+    detail: {
+      en: "Outside Full Access, turning on a plugin the agent wrote still takes your approval. In Full Access the agent may turn on its own plugin; Codewhale records that the agent did it and shows it wherever plugins are listed. Until you review it once, that plugin works only in its own project.",
+      zh: "在 Full Access 之外，启用智能体编写的插件仍需你的批准。在 Full Access 下，智能体可以启用自己编写的插件；Codewhale 会记录这是智能体所为，并在列出插件的各处显示。在你审阅一次之前，该插件只在它所属的项目中生效。",
+    },
+  },
+  {
+    title: { en: "Permissions", zh: "Permissions（权限）" },
+    detail: {
+      en: "The control that holds Plan and Work and the permission dial is renamed Permissions, with Plan still on it. The new Mode menu holds Standard and Creator.",
+      zh: "包含 Plan、Work 与权限档位的那个控件改名为 Permissions，Plan 仍在其中。新的 Mode 菜单包含 Standard 与 Creator。",
+    },
+  },
+] satisfies { title: LocalizedText; detail: LocalizedText }[];
 
 export const FEATURED_CONNECTORS = [
   "github", "linear", "notion", "stripe", "supabase", "sentry", "figma", "atlassian", "canva", "posthog", "hugging-face", "context7",
