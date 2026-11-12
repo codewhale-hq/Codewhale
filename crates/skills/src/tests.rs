@@ -479,6 +479,12 @@ fn workspace_prompt_omits_disabled_skills_without_configured_directory() {
             .any(|line| line.contains("disabled by config"))
     );
     assert!(
+        status
+            .inspection()
+            .iter()
+            .any(|line| line.contains("Creator mode only"))
+    );
+    assert!(
         super::discover_for_workspace(&workspace, None, &config, None)
             .get("debug")
             .unwrap()
@@ -2941,15 +2947,8 @@ fn workspace_skill_discovery_does_not_follow_links_out_of_the_workspace() {
 }
 
 #[test]
-fn creator_skills_are_hidden_by_default_and_found_when_the_switch_is_on() {
-    struct ResetSwitch;
-    impl Drop for ResetSwitch {
-        fn drop(&mut self) {
-            super::set_creator_skills_enabled(false);
-        }
-    }
+fn creator_skills_are_hidden_by_default_and_found_when_the_input_is_set() {
     let _env_lock = codewhale_runtime::test_support::lock_test_env();
-    let _reset = ResetSwitch;
     let tmpdir = TempDir::new().unwrap();
     let home = tmpdir.path().join("home");
     let workspace = tmpdir.path().join("workspace");
@@ -2962,7 +2961,6 @@ fn creator_skills_are_hidden_by_default_and_found_when_the_switch_is_on() {
         home.join("isolated-product-state"),
     );
     codewhale_runtime::test_support::trust_workspace(&workspace);
-    super::set_creator_skills_enabled(false);
     super::clear_skill_discovery_cache();
 
     let owned = codewhale_runtime::config::owned_skills_dir().unwrap();
@@ -2982,6 +2980,15 @@ fn creator_skills_are_hidden_by_default_and_found_when_the_switch_is_on() {
             "{name} must be hidden by default"
         );
     }
+    let hidden_status = super::bundled_skills_status(&config, &hidden).unwrap();
+    for name in super::CREATOR_SKILL_NAMES {
+        let row = hidden_status
+            .skills
+            .iter()
+            .find(|row| row.name == name)
+            .unwrap();
+        assert_eq!(row.reason, "Creator mode only", "{name}");
+    }
     assert!(hidden.get("plugin-creator").is_some());
     let catalogue = super::render_index(&workspace, None, &config, "en", None, None).unwrap();
     for name in super::CREATOR_SKILL_NAMES {
@@ -2991,15 +2998,18 @@ fn creator_skills_are_hidden_by_default_and_found_when_the_switch_is_on() {
         );
     }
 
-    super::set_creator_skills_enabled(true);
-    let shown = super::discover_for_workspace(&workspace, None, &config, None);
+    let creator = codewhale_runtime::config::SkillsConfig {
+        creator_skills: true,
+        ..Default::default()
+    };
+    let shown = super::discover_for_workspace(&workspace, None, &creator, None);
     for name in super::CREATOR_SKILL_NAMES {
         assert!(
             shown.get(name).is_some(),
             "{name} must be found when enabled"
         );
     }
-    let catalogue = super::render_index(&workspace, None, &config, "en", None, None).unwrap();
+    let catalogue = super::render_index(&workspace, None, &creator, "en", None, None).unwrap();
     assert!(catalogue.contains("cordis-plugin-development"));
 
     let development = shown.get("cordis-plugin-development").unwrap();

@@ -587,6 +587,7 @@ pub async fn run_exec_agent(
         mcp_oauth_callback_url: None,
         skills_dir: execution_config.skills_dir(),
         skills_config: std::sync::Arc::new(execution_config.skills_config()),
+        agent_preset: None,
         instructions: {
             let mut instrs: Vec<codewhale_engine::prompts::InstructionSource> = execution_config
                 .instructions_paths()

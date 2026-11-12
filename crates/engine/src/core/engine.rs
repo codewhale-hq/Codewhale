@@ -340,6 +340,7 @@ pub struct EngineConfig {
     pub skills_dir: PathBuf,
     /// Session-pinned skill discovery, bundle policy and ambient index limits.
     pub skills_config: std::sync::Arc<codewhale_runtime::config::SkillsConfig>,
+    pub agent_preset: Option<String>,
     /// Immutable plugin authority snapshot scoped to `workspace`. Normal App
     /// hosts provide this explicitly; headless/embed callers that leave it
     /// unset receive a fresh workspace-specific snapshot in [`Engine::new`].
@@ -624,6 +625,7 @@ impl Default for EngineConfig {
             mcp_oauth_callback_url: None,
             skills_dir: codewhale_skills::default_skills_dir(),
             skills_config: Default::default(),
+            agent_preset: None,
             plugin_registry: None,
             instructions: Vec::new(),
             project_context_pack_enabled: false,
@@ -1138,6 +1140,8 @@ pub struct Engine {
     /// Immutable contribution snapshot for the running turn. Re-delivery after
     /// compaction uses these same bytes, never a mid-turn host re-sampling.
     extension_prompt_block: Option<String>,
+    creator_available: bool,
+    creator_unavailable_noted: Option<String>,
     constitution_block: Option<String>,
     /// The local-fallback notice for an unavailable account profile is shown
     /// once per engine; later turns only log it.
@@ -2329,6 +2333,7 @@ impl Engine {
         {
             session.id = session_id.to_string();
         }
+        session.agent_preset = config.agent_preset.clone();
         if let Some(attachment) = extension_host.as_ref() {
             attachment.set_identity(
                 Some(session.id.clone()),
@@ -2684,6 +2689,8 @@ impl Engine {
             plugin_registry,
             extension_host,
             extension_prompt_block: None,
+            creator_available: false,
+            creator_unavailable_noted: None,
             constitution_block: None,
             profile_constitution_fallback_noticed: false,
             turn_account_fence: None,
@@ -6682,7 +6689,7 @@ impl Engine {
         // The surface budget belongs to the route the request would go to,
         // which is not necessarily the installed one under auto routing.
         let capability = route.capability_profile();
-        let always_load = self.config.tools_always_load.clone();
+        let always_load = self.effective_tools_always_load();
         self.turn_tool_surface_budget = Some(capability.tool_surface_budget);
         if self.child_host.is_some() {
             tool_registry.remove_tool("create_goal");
@@ -7579,6 +7586,7 @@ impl Engine {
                 goal_status,
             );
         }
+        self.refresh_creator_availability().await;
         self.config.allowed_tools = allowed_tools;
         self.config.hook_executor = hook_executor;
         self.session.reasoning_effort = reasoning_effort;
@@ -7679,6 +7687,7 @@ impl Engine {
             }
 
             self.record_mode_context(mode);
+            self.record_creator_first_turn();
 
             self.session
                 .working_set
@@ -8583,8 +8592,9 @@ impl Engine {
         .with_runtime_services(self.config.runtime_services.clone())
         .with_skills_config(
             self.config.skills_dir.clone(),
-            self.config.skills_config.clone(),
+            self.conversation_skills_config(),
         )
+        .with_read_only_roots(self.conversation_read_only_roots())
         .with_plugin_registry(Arc::clone(&self.plugin_registry))
         .with_session_objects(crate::rlm::session::SessionObjectSnapshot::new(
             self.session.id.clone(),
@@ -9841,6 +9851,101 @@ impl Engine {
         if previous != Some(&message) {
             self.session.add_message(message);
         }
+    }
+
+    fn conversation_loadout(&self) -> crate::conversation_modes::Loadout {
+        if self.creator_available
+            && self.child_host.is_none()
+            && self.rlm_host.is_none()
+            && !self.api_config.runtime_chat_isolated
+        {
+            crate::conversation_modes::loadout(self.session.agent_preset.as_deref())
+        } else {
+            crate::conversation_modes::Loadout::STANDARD
+        }
+    }
+
+    fn effective_tools_always_load(&self) -> HashSet<String> {
+        let mut names = self.config.tools_always_load.clone();
+        names.extend(
+            self.conversation_loadout()
+                .always_load
+                .iter()
+                .map(|name| (*name).to_string()),
+        );
+        names
+    }
+
+    fn conversation_creator_skills(&self) -> bool {
+        if self.child_host.is_some() {
+            self.config.skills_config.creator_skills
+        } else {
+            self.conversation_loadout().creator_skills
+        }
+    }
+
+    fn conversation_skills_config(&self) -> Arc<codewhale_runtime::config::SkillsConfig> {
+        let creator = self.conversation_creator_skills();
+        if self.config.skills_config.creator_skills == creator {
+            return self.config.skills_config.clone();
+        }
+        let mut config = (*self.config.skills_config).clone();
+        config.creator_skills = creator;
+        Arc::new(config)
+    }
+
+    fn conversation_read_only_roots(&self) -> Vec<PathBuf> {
+        if self.conversation_creator_skills() {
+            codewhale_skills::bundled_creator_skill_dirs()
+        } else {
+            Vec::new()
+        }
+    }
+
+    async fn refresh_creator_availability(&mut self) {
+        self.creator_available = false;
+        if self.child_host.is_some()
+            || self.rlm_host.is_some()
+            || self.api_config.runtime_chat_isolated
+            || !crate::conversation_modes::is_creator(self.session.agent_preset.as_deref())
+        {
+            return;
+        }
+        let options = crate::extension_host::ExtensionHostOptions::from_config(
+            self.api_config.extension_host.as_ref(),
+        );
+        match crate::conversation_modes::creator_unavailable_reason(options).await {
+            None => self.creator_available = true,
+            Some(reason) => {
+                if self.creator_unavailable_noted.as_deref() != Some(self.session.id.as_str()) {
+                    self.creator_unavailable_noted = Some(self.session.id.clone());
+                    let _ = self
+                        .send_event(Event::status(format!(
+                            "Creator mode is unavailable, so this conversation runs without its plugin tools and guides: {reason}"
+                        )))
+                        .await;
+                }
+            }
+        }
+    }
+
+    fn record_creator_first_turn(&mut self) {
+        if !self.conversation_loadout().first_turn_event {
+            return;
+        }
+        if self
+            .session
+            .messages
+            .iter()
+            .any(crate::runtime_handoff::is_creator_runtime_message)
+        {
+            return;
+        }
+        let body = crate::tools::skill::bundled_creator_skill_body("cordis-plugin-development");
+        self.session
+            .add_message(crate::runtime_handoff::creator_runtime_message(
+                body.as_deref(),
+            ));
     }
 
     /// Record the current mode and its purpose as a runtime notice (KV-cache

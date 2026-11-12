@@ -710,27 +710,42 @@ fn install_companion_files(skills_dir: &Path, name: &str) -> std::io::Result<()>
     Ok(())
 }
 
-static CREATOR_SKILLS_ENABLED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-pub fn set_creator_skills_enabled(enabled: bool) {
-    CREATOR_SKILLS_ENABLED.store(enabled, std::sync::atomic::Ordering::SeqCst);
-}
-
 #[must_use]
-pub fn creator_skills_enabled() -> bool {
-    CREATOR_SKILLS_ENABLED.load(std::sync::atomic::Ordering::SeqCst)
-}
-
-#[must_use]
-pub(super) fn effective_bundled_policy(policy: &BundledSkillsConfig) -> BundledSkillsConfig {
-    if creator_skills_enabled() {
+pub(super) fn effective_bundled_policy(
+    policy: &BundledSkillsConfig,
+    creator: bool,
+) -> BundledSkillsConfig {
+    if creator {
         return policy.clone();
     }
     let mut effective = policy.clone();
     let disabled = effective.disabled.get_or_insert_with(Vec::new);
     disabled.extend(CREATOR_SKILL_NAMES.iter().map(|name| (*name).to_string()));
     effective
+}
+
+#[must_use]
+pub fn bundled_creator_skill_dirs() -> Vec<PathBuf> {
+    let Some(owned) = codewhale_runtime::config::owned_skills_dir() else {
+        return Vec::new();
+    };
+    CREATOR_SKILL_NAMES
+        .iter()
+        .filter(|name| is_bundled_copy(&owned.join(name).join("SKILL.md"), name, &owned))
+        .filter_map(|name| fs::canonicalize(owned.join(name)).ok())
+        .collect()
+}
+
+#[must_use]
+pub fn bundled_creator_skill(name: &str) -> Option<super::Skill> {
+    if !CREATOR_SKILL_NAMES.contains(&name) {
+        return None;
+    }
+    let owned = codewhale_runtime::config::owned_skills_dir()?;
+    let path = owned.join(name).join("SKILL.md");
+    let body = read_bundled_copy_body(&path, name, &owned)?;
+    let (skill, _) = super::SkillRegistry::parse_verified_content(&path, &body).ok()?;
+    Some(skill)
 }
 
 pub struct BundledSkillLoadContext {
@@ -877,17 +892,20 @@ pub(super) fn bundled_explicit_only(policy: &BundledSkillsConfig, name: &str) ->
     bundled_enabled(policy, name) && listed(&policy.explicit_only, name)
 }
 
-pub fn is_bundled_copy(path: &Path, name: &str, owned: &Path) -> bool {
+fn read_bundled_copy_body(path: &Path, name: &str, owned: &Path) -> Option<String> {
     let expected = owned.join(name).join("SKILL.md");
     if !is_bundled_skill_name(name)
         || !super::roots::paths_refer_to_same_dir(path, &expected)
         || fs::symlink_metadata(owned.join(name).join(".installed-from")).is_ok()
     {
-        return false;
+        return None;
     }
-    codewhale_util::fs_confined::read_to_string(owned, &expected).is_ok_and(|body| {
-        is_exact_bundled_skill(name, &body) || is_superseded_shipped_body(name, &body)
-    })
+    let body = codewhale_util::fs_confined::read_to_string(owned, &expected).ok()?;
+    (is_exact_bundled_skill(name, &body) || is_superseded_shipped_body(name, &body)).then_some(body)
+}
+
+pub fn is_bundled_copy(path: &Path, name: &str, owned: &Path) -> bool {
+    read_bundled_copy_body(path, name, owned).is_some()
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -959,7 +977,7 @@ pub fn bundled_skills_status(
     registry: &super::SkillRegistry,
 ) -> Option<BundledSkillsStatus> {
     let owned = codewhale_runtime::config::owned_skills_dir()?;
-    let policy = &effective_bundled_policy(&config.bundled);
+    let policy = &effective_bundled_policy(&config.bundled, config.creator_skills);
     let marker_generation = codewhale_util::fs_confined::read_to_string(
         &owned,
         &owned.join(".system-installed-version"),
@@ -1011,7 +1029,12 @@ pub fn bundled_skills_status(
             selected.filter(|entry| !super::roots::paths_refer_to_same_dir(&entry.path, &path));
         let reason = if !bundled_enabled(policy, skill.name) {
             status.disabled.push(skill.name);
-            let reason = if listed(&policy.disabled, skill.name) {
+            let reason = if CREATOR_SKILL_NAMES.contains(&skill.name)
+                && !config.creator_skills
+                && !listed(&config.bundled.disabled, skill.name)
+            {
+                "Creator mode only"
+            } else if listed(&policy.disabled, skill.name) {
                 "disabled by config"
             } else {
                 "not selected by config"

@@ -12,6 +12,46 @@ pub const SOURCE_BUILTIN: &str = "builtin";
 pub const CREATOR_LOADS_ITS_OWN_TOOLS: bool = false;
 pub const CREATOR_NOT_READY_REASON: &str = "Creator mode is not ready in this build.";
 
+pub const CREATOR_TOOL_NAMES: [&str; 3] = [
+    "plugin_manager",
+    "cordis_inspect_list",
+    "cordis_inspect_query",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Loadout {
+    pub always_load: &'static [&'static str],
+    pub creator_skills: bool,
+    pub first_turn_event: bool,
+}
+
+impl Loadout {
+    pub const STANDARD: Self = Self {
+        always_load: &[],
+        creator_skills: false,
+        first_turn_event: false,
+    };
+    pub const CREATOR: Self = Self {
+        always_load: &CREATOR_TOOL_NAMES,
+        creator_skills: true,
+        first_turn_event: true,
+    };
+}
+
+#[must_use]
+pub fn loadout(stored: Option<&str>) -> Loadout {
+    if effective_id(stored) == CREATOR {
+        Loadout::CREATOR
+    } else {
+        Loadout::STANDARD
+    }
+}
+
+#[must_use]
+pub fn is_creator(stored: Option<&str>) -> bool {
+    effective_id(stored) == CREATOR
+}
+
 const AVAILABILITY_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -166,7 +206,7 @@ fn probe_host_runtime(options: &ExtensionHostOptions) -> Option<String> {
     }
 }
 
-async fn creator_unavailable_reason(options: ExtensionHostOptions) -> Option<String> {
+pub async fn creator_unavailable_reason(options: ExtensionHostOptions) -> Option<String> {
     #[cfg(any(test, feature = "test-support"))]
     if let Some(forced) = CREATOR_PROBE_OVERRIDE
         .lock()

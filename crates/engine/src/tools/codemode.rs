@@ -734,6 +734,7 @@ impl CodemodeInvoker {
         context.execution.trust_mode = false;
         context.execution.follow_symlinks = false;
         context.execution.trusted_external_paths.clear();
+        context.read_only_roots.clear();
         Self::with_gate(
             specs,
             context,

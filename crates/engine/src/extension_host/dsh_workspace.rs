@@ -556,6 +556,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_workspace_read_of_a_file_outside_the_workspace_is_refused() {
+        let owner = owner();
+        let _overlay = TestOverlay::granted();
+        let outside = tempfile::tempdir().unwrap();
+        let file = outside.path().canonicalize().unwrap().join("skill.md");
+        std::fs::write(&file, "OUTSIDE-MARKER").unwrap();
+        for (method, input) in [
+            ("read", json!({ "path": file.to_string_lossy() })),
+            ("list", json!({ "path": outside.path().to_string_lossy() })),
+        ] {
+            let refusal = serve(call(&owner, method, input)).await.unwrap_err();
+            assert_eq!(refusal.code(), "refused", "{method}");
+            assert!(!refusal.wire().message.contains("OUTSIDE-MARKER"));
+        }
+    }
+
+    #[tokio::test]
     async fn a_write_without_the_reviewed_overlay_grant_is_refused_before_any_path_is_read() {
         let owner = owner();
         let refusal = serve(call(
