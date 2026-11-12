@@ -660,7 +660,11 @@ shell 工具，外加已审查的插件工具（`extension_host` 功能）和 Co
 MCP 服务器的工具（`mcp` 功能），均受同一权限设置约束；这一点见于 0.10.2 之后的 main，0.10.2 本身不含。Shell 同时要求编辑器声明
 terminal 支持、操作者允许 `allow_shell`；指定的外部沙箱不可用时不提供 shell。此接口
 不提供客户端传入的 MCP 服务器、动态工具、任务、PTY、后台 shell、解释器、子智能体
-或 RLM 生命周期。内置工具覆盖会移除整个兼容别名族。
+或 RLM 生命周期。ACP 没有工具搜索，因此每个已连接的 MCP 工具及其 schema 都会随每个请求
+发送，标记为 `lazy = true` 的服务器永不启动；MCP 集合很大时每回合都会消耗令牌，并可能超出
+提供商的工具数量上限。模型在运行时启动的 MCP 服务器不会进入 ACP profile 宿主；但当
+`serve --acp` 附着到正在运行的 Runtime owner 时（见下文），其回合使用该 owner 的 MCP 池，
+其中包含同一工作区其他会话在运行时启动的服务器。内置工具覆盖会移除整个兼容别名族。
 最终派发再次校验 profile；伪造别名、hook 改写或目录中缺失的工具不能绕过限制。
 Full Access 下 Plan 仍只读。Full Access 与普通审批姿态是服务端拥有的只读选项，
 编辑器不能放宽。`approval_policy = "never"` 不是 ACP 审批姿态，服务端会拒绝
@@ -669,7 +673,9 @@ Full Access 下 Plan 仍只读。Full Access 与普通审批姿态是服务端�
 
 工具首先显示 `pending`；只有 Core 到达最终派发才显示 `in_progress`。
 `completed`/`failed` 和类型化图片块来自实际 Core 结果。审批请求的私有 JSON-RPC ID
-绑定同一个 Runtime 铸造的待决审批与 Core 执行 ID。只有精确匹配、仍有效的
+绑定同一个 Runtime 铸造的待决审批与 Core 执行 ID。插件工具通过 `exec.core` 请求核心运行
+需要审批的工具时，请求显示在该插件工具的调用上，写明嵌套工具及其输入，答复释放嵌套调用，嵌套调用在会话的
+权限设置下决定。只有精确匹配、仍有效的
 `allow-once` 响应能释放等待器；错误 ID 被忽略，无效选项拒绝，取消会撤销等待器。
 ACP 不授予记忆权限或 Native 能力。
 
