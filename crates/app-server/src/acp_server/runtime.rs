@@ -47,6 +47,18 @@ impl Drop for TurnClaim {
         }
     }
 }
+fn admitted_call<'a>(
+    calls: &'a HashMap<String, PendingToolCall>,
+    execution: &str,
+) -> Option<(&'a str, &'a PendingToolCall)> {
+    let mut id = execution;
+    loop {
+        if let Some((key, call)) = calls.get_key_value(id) {
+            return Some((key.as_str(), call));
+        }
+        id = id.rsplit_once('.')?.0;
+    }
+}
 fn update(session: &str, update: acp::SessionUpdate) -> Outgoing {
     Outgoing::Update(acp::SessionNotification::new(session.to_string(), update))
 }
@@ -419,27 +431,50 @@ impl PromptRun {
                         && pending.turn_id == turn
                         && pending.tool_call_id.as_deref() == Some(execution)
                 }) {
-                    let call = calls
-                        .get(execution)
+                    let (shown, call) = admitted_call(calls, execution)
                         .ok_or_else(|| anyhow!("Approval projection lacks admitted tool start"))?;
                     let id = uuid::Uuid::new_v4().to_string();
-                    let title = tool_call_title(call);
-                    let text = p
+                    let nested = shown != execution;
+                    let nested_call;
+                    let shown_call = if nested {
+                        nested_call = PendingToolCall {
+                            execution_id: execution.to_string(),
+                            name: p
+                                .get("tool_name")
+                                .and_then(Value::as_str)
+                                .unwrap_or(&call.name)
+                                .to_string(),
+                            input: p.get("input").cloned().unwrap_or(Value::Null),
+                        };
+                        &nested_call
+                    } else {
+                        call
+                    };
+                    let title = tool_call_title(shown_call);
+                    let description = p
                         .get("description")
                         .and_then(Value::as_str)
-                        .filter(|text| !text.trim().is_empty())
-                        .map_or_else(|| title.clone(), str::to_string);
+                        .filter(|text| !text.trim().is_empty());
+                    let summary = p
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .filter(|text| nested && !text.trim().is_empty());
+                    let text = match (summary, description) {
+                        (Some(summary), Some(description)) => format!("{summary}\n{description}"),
+                        (Some(text), None) | (None, Some(text)) => text.to_string(),
+                        (None, None) => title.clone(),
+                    };
+                    let mut fields = acp::ToolCallUpdateFields::new()
+                        .title(title)
+                        .kind(tool_call_kind(shown_call))
+                        .raw_input((!shown_call.input.is_null()).then(|| shown_call.input.clone()))
+                        .content(vec![acp::ToolCallContent::from(text)]);
+                    if !nested {
+                        fields = fields.status(acp::ToolCallStatus::Pending);
+                    }
                     let request = acp::RequestPermissionRequest::new(
                         session.to_string(),
-                        acp::ToolCallUpdate::new(
-                            execution.to_string(),
-                            acp::ToolCallUpdateFields::new()
-                                .title(title)
-                                .kind(tool_call_kind(call))
-                                .status(acp::ToolCallStatus::Pending)
-                                .raw_input((!call.input.is_null()).then(|| call.input.clone()))
-                                .content(vec![acp::ToolCallContent::from(text)]),
-                        ),
+                        acp::ToolCallUpdate::new(shown.to_string(), fields),
                         vec![
                             acp::PermissionOption::new(
                                 "allow-once",
