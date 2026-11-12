@@ -1313,7 +1313,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
     def(
         "telemetry",
         SettingKind::Bool(TELEMETRY),
-        "false",
+        "true",
         ui(
             TAB_TRUST,
             "network",
