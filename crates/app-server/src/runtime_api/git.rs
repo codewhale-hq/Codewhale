@@ -515,9 +515,11 @@ fn parse_porcelain(porcelain: &str) -> Vec<GitFileEntry> {
         }
         let index = record.as_bytes()[0] as char;
         let worktree = record.as_bytes()[1] as char;
-        let path = record[3..].to_string();
+        let Some(path) = record.get(3..).map(str::to_string) else {
+            continue;
+        };
         let mut old_path = None;
-        if matches!(index, 'R' | 'C') {
+        if matches!(index, 'R' | 'C') || matches!(worktree, 'R' | 'C') {
             old_path = records.next().map(str::to_string);
         }
         entries.push(GitFileEntry {
@@ -2906,6 +2908,22 @@ mod tests {
             output.status.success(),
             "git {args:?} failed: {}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn worktree_rename_consumes_its_original_path_record() {
+        let rows = parse_porcelain(" R new.md\0ab说明.md\0 M a.txt\0");
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|row| (row.path.as_str(), row.status, row.old_path.as_deref()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("new.md", "renamed", Some("ab说明.md")),
+                ("a.txt", "modified", None),
+            ]
         );
     }
 
