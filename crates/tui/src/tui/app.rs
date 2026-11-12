@@ -87,6 +87,27 @@ pub(crate) use types::{
     WORKFLOW_DRAFT_INSTRUCTION_PREFIX,
 };
 
+const ACCOUNT_PREFERENCES_NOTICE: &str = "account-preferences-notice";
+
+fn account_sign_in_marker(profile: Option<&str>) -> String {
+    use sha2::{Digest, Sha256};
+    let api_base = codewhale_engine::profile_constitution::runtime_account_api_base();
+    let session = codewhale_secrets::account::AccountSessionStore::new(
+        codewhale_secrets::Secrets::file_backed_read_only(),
+        profile,
+        &api_base,
+    )
+    .runtime_info_at(Utc::now())
+    .ok()
+    .and_then(|info| info.session_id)
+    .unwrap_or_default();
+    Sha256::digest(session.as_bytes())
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 // === Types ===
 
 /// One login owns one mailbox. A cancelled task can only write its abandoned
@@ -3789,6 +3810,38 @@ impl App {
             StatusToastLevel::Info,
             Some(10_000),
         );
+    }
+
+    pub(crate) fn notify_account_preferences_not_loaded(&mut self) {
+        let sign_in = account_sign_in_marker(self.config_profile.as_deref());
+        self.notify_account_preferences_not_loaded_for(&sign_in);
+    }
+
+    fn notify_account_preferences_not_loaded_for(&mut self, sign_in: &str) {
+        let first_for_sign_in = Settings::transact_opt(|settings| {
+            if settings.account_preferences_notice_shown.as_deref() == Some(sign_in) {
+                return Ok(None);
+            }
+            settings.account_preferences_notice_shown = Some(sign_in.to_string());
+            Ok(Some(()))
+        });
+        if matches!(first_for_sign_in, Ok(None)) {
+            return;
+        }
+        let text = self
+            .tr(MessageId::AccountPreferencesNotLoaded)
+            .replace("{command}", "codewhale login");
+        self.push_status_toast_record(StatusToast::standing(
+            text,
+            StatusToastLevel::Warning,
+            ACCOUNT_PREFERENCES_NOTICE,
+        ));
+    }
+
+    pub(crate) fn dismiss_account_preferences_notice(&mut self) -> bool {
+        let before = self.status_toasts.len();
+        self.retire_event_notices(ACCOUNT_PREFERENCES_NOTICE);
+        self.status_toasts.len() != before
     }
 
     /// One-release migration notice for the Shift+Tab/Ctrl+T rebinding: users

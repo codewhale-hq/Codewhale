@@ -25,6 +25,7 @@
   "TerminalDockLive": "सक्रिय",
   "ExtensionPromptUnavailable": "एक्सटेंशन के निर्देश उपलब्ध नहीं हैं; /plugin show से जाँचें।",
   "ProfileConstitutionUnavailableLocal": "Codewhale खाते की प्राथमिकताएँ लोड नहीं हो सकीं, इसलिए यह टर्न आपकी स्थानीय सेटिंग्स का उपयोग करता है। आपकी प्रदाता कुंजी काम करती रहेगी; खाते की प्राथमिकताएँ वापस लाने के लिए codewhale login चलाएँ।",
+  "AccountPreferencesNotLoaded": "खाता लोड नहीं हुआ। {command} चलाएँ। आपकी प्रदाता कुंजी काम करती रहेगी।",
   "ComposerOversizedSubmitHeld": "नहीं भेजा गया: इस संदेश में {limit} से अधिक वर्ण हैं और इसे पेस्ट फ़ाइल के रूप में सहेजा नहीं जा सका ({error})। पूरा पाठ अभी भी इनपुट बॉक्स में है: इसे छोटा करें या .codewhale/pastes में लिखने की अनुमति दें, फिर Enter दबाएँ।",
   "ComposerOversizedSubmitHeldShort": "नहीं भेजा गया: {limit} से अधिक वर्ण; पेस्ट फ़ाइल सहेजी नहीं गई।",
   "CmdPluginOwnerReport": "एक्सटेंशन होस्ट:\n  स्थिति: {state}\n  सक्रिय टूल ({count}): {tools}",

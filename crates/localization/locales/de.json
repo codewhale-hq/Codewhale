@@ -25,6 +25,7 @@
   "TerminalDockLive": "aktiv",
   "ExtensionPromptUnavailable": "Anweisungen von Erweiterungen sind nicht verfügbar; prüfe /plugin show.",
   "ProfileConstitutionUnavailableLocal": "Die Codewhale-Kontoeinstellungen konnten nicht geladen werden; dieser Durchlauf nutzt deine lokalen Einstellungen. Dein Anbieter-Schlüssel funktioniert weiter; führe codewhale login aus, um die Kontoeinstellungen wiederherzustellen.",
+  "AccountPreferencesNotLoaded": "Konto nicht geladen. Führe {command} aus. Dein Anbieter-Schlüssel funktioniert weiter.",
   "ComposerOversizedSubmitHeld": "Nicht gesendet: Diese Nachricht enthält mehr als {limit} Zeichen und konnte nicht als Einfügedatei gespeichert werden ({error}). Der vollständige Text steht noch im Eingabefeld: Kürze ihn oder mache .codewhale/pastes beschreibbar und drücke dann erneut Enter.",
   "ComposerOversizedSubmitHeldShort": "Nicht gesendet: über {limit} Zeichen; Einfügedatei nicht gespeichert.",
   "CmdPluginOwnerReport": "Erweiterungshost:\n  Status: {state}\n  Aktive Werkzeuge ({count}): {tools}",

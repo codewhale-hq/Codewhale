@@ -25,6 +25,7 @@
   "TerminalDockLive": "actiu",
   "ExtensionPromptUnavailable": "Les instruccions de les extensions no estan disponibles; consulta /plugin show.",
   "ProfileConstitutionUnavailableLocal": "No s'han pogut carregar les preferències del compte de Codewhale; aquest torn fa servir la configuració local. La clau del proveïdor continua funcionant; executa codewhale login per recuperar les preferències del compte.",
+  "AccountPreferencesNotLoaded": "Compte no carregat. Executa {command}. La clau del proveïdor continua funcionant.",
   "ComposerOversizedSubmitHeld": "No s’ha enviat: el missatge supera els {limit} caràcters i no s’ha pogut desar en un fitxer de text enganxat ({error}). El text complet continua al camp d’entrada: escurça’l o habilita l’escriptura a .codewhale/pastes i torna a prémer Enter.",
   "ComposerOversizedSubmitHeldShort": "No s’ha enviat: supera els {limit} caràcters; no s’ha desat el fitxer d’enganxat.",
   "CmdPluginOwnerReport": "Amfitrió d’extensions:\n  Estat: {state}\n  Eines actives ({count}): {tools}",
