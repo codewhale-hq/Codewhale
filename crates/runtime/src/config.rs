@@ -3446,15 +3446,10 @@ impl Config {
             return Some("project runtime configuration");
         }
 
-        let managed_path = self
-            .managed_config_path
-            .as_deref()
-            .map(expand_path)
-            .or_else(default_managed_config_path);
-        if let Some(path) = managed_path
-            && path.exists()
-        {
-            match load_single_config_file(&path) {
+        match managed_config_file(self.managed_config_path.as_deref()) {
+            Err(_) => return Some("an unreadable managed runtime configuration"),
+            Ok(None) => {}
+            Ok(Some(path)) => match load_single_config_file(&path) {
                 Ok(managed)
                     if managed.approval_policy.is_some()
                         || managed.sandbox_mode.is_some()
@@ -3464,7 +3459,7 @@ impl Config {
                 }
                 Err(_) => return Some("an unreadable managed runtime configuration"),
                 Ok(_) => {}
-            }
+            },
         }
 
         let env_controls_runtime = || {
@@ -3550,21 +3545,16 @@ impl Config {
             }
         }
 
-        let managed_path = self
-            .managed_config_path
-            .as_deref()
-            .map(expand_path)
-            .or_else(default_managed_config_path);
-        if let Some(path) = managed_path
-            && path.exists()
-        {
-            match load_single_config_file(&path) {
+        match managed_config_file(self.managed_config_path.as_deref()) {
+            Err(_) => return ApprovalPolicyControl::Ambiguous,
+            Ok(None) => {}
+            Ok(Some(path)) => match load_single_config_file(&path) {
                 Ok(managed) if managed.approval_policy.is_some() => {
                     return ApprovalPolicyControl::ManagedConfig;
                 }
                 Err(_) => return ApprovalPolicyControl::Ambiguous,
                 Ok(_) => {}
-            }
+            },
         }
 
         if approval_policy_env_is_set() {
@@ -3630,21 +3620,16 @@ impl Config {
             return ShellAccessControl::ProjectConfig;
         }
 
-        let managed_path = self
-            .managed_config_path
-            .as_deref()
-            .map(expand_path)
-            .or_else(default_managed_config_path);
-        if let Some(path) = managed_path
-            && path.exists()
-        {
-            match load_single_config_file(&path) {
+        match managed_config_file(self.managed_config_path.as_deref()) {
+            Err(_) => return ShellAccessControl::Ambiguous,
+            Ok(None) => {}
+            Ok(Some(path)) => match load_single_config_file(&path) {
                 Ok(managed) if managed.allow_shell.is_some() => {
                     return ShellAccessControl::ManagedConfig;
                 }
                 Err(_) => return ShellAccessControl::Ambiguous,
                 Ok(_) => {}
-            }
+            },
         }
 
         if allow_shell_env_is_set() {
@@ -8932,9 +8917,10 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
     {
         config.sandbox_api_key = Some(value);
     }
-    if let Ok(value) = std::env::var("CODEWHALE_MANAGED_CONFIG_PATH")
-        .or_else(|_| std::env::var("DEEPSEEK_MANAGED_CONFIG_PATH"))
-    {
+    if let Ok(value) = codewhale_env_var(
+        "CODEWHALE_MANAGED_CONFIG_PATH",
+        "DEEPSEEK_MANAGED_CONFIG_PATH",
+    ) {
         config.managed_config_path = Some(value);
     }
     if policy.permits_secret_bearing_values()
@@ -10718,26 +10704,25 @@ fn warn_on_misplaced_top_level_keys(raw: &str) -> Option<String> {
 }
 
 fn apply_managed_overrides(config: &mut Config) -> Result<()> {
-    let path = managed_path_from_env()
-        .or_else(|| config.managed_config_path.as_deref().map(expand_path))
-        .or_else(default_managed_config_path);
-    let Some(path) = path else {
+    let Some(path) = managed_config_file(config.managed_config_path.as_deref())? else {
         return Ok(());
     };
-    if !path.exists() {
-        return Ok(());
-    }
-    let mut managed = load_single_config_file(&path)?;
+    let mut managed = load_single_config_file(&path).with_context(|| {
+        format!(
+            "the managed configuration {} cannot be loaded, and Codewhale does not start without a managed configuration it was told to use",
+            codewhale_config::quote_os_path(&path)
+        )
+    })?;
     strip_external_credential_consent(&mut managed);
     managed.tool_launcher = managed_tool_launcher(&path)?;
     let prior_route = config
         .active_provider_identity()
-        .map_err(anyhow::Error::msg)?;
+        .map_err(|error| managed_route_error(config, &path, error))?;
     let mut merged = merge_config(config.clone(), managed.clone());
     apply_layer_root_model(&mut merged, &managed);
     let merged_route = merged
         .active_provider_identity()
-        .map_err(anyhow::Error::msg)?;
+        .map_err(|error| managed_route_error(&merged, &path, error))?;
     if managed.provider.is_some()
         || managed.default_text_model.is_some()
         || managed.legacy_model.is_some()
@@ -10888,10 +10873,62 @@ fn managed_tool_launcher(path: &Path) -> Result<Option<Vec<String>>> {
 }
 
 fn managed_path_from_env() -> Option<PathBuf> {
-    std::env::var("CODEWHALE_MANAGED_CONFIG_PATH")
-        .or_else(|_| std::env::var("DEEPSEEK_MANAGED_CONFIG_PATH"))
-        .ok()
-        .map(|value| expand_path(&value))
+    codewhale_env_var(
+        "CODEWHALE_MANAGED_CONFIG_PATH",
+        "DEEPSEEK_MANAGED_CONFIG_PATH",
+    )
+    .ok()
+    .map(|value| expand_path(&value))
+}
+
+fn managed_config_file(configured: Option<&str>) -> Result<Option<PathBuf>> {
+    if let Some(path) = managed_path_from_env() {
+        return Ok(Some(path));
+    }
+    let default = default_managed_config_path().filter(|path| {
+        fs::symlink_metadata(path).map_or_else(
+            |error| error.kind() != std::io::ErrorKind::NotFound,
+            |_| true,
+        )
+    });
+    let Some(configured) = configured
+        .filter(|value| !value.trim().is_empty())
+        .map(expand_path)
+    else {
+        return Ok(default);
+    };
+    if let Some(default) = default
+        && default != configured
+    {
+        anyhow::bail!(
+            "`managed_config_path` names {}, but the default managed configuration {} exists, and a config file cannot replace it; name another managed file with CODEWHALE_MANAGED_CONFIG_PATH instead",
+            codewhale_config::quote_os_path(&configured),
+            codewhale_config::quote_os_path(&default)
+        );
+    }
+    Ok(Some(configured))
+}
+
+fn managed_route_error(config: &Config, path: &Path, error: String) -> anyhow::Error {
+    let selected = config.provider.as_deref().unwrap_or_default();
+    let undeclared = !selected.is_empty()
+        && ProviderKind::parse(selected).is_none()
+        && config
+            .providers
+            .as_ref()
+            .and_then(|providers| providers.custom_provider_config(selected))
+            .is_none();
+    if undeclared {
+        anyhow::anyhow!(
+            "provider '{selected}' has no `[providers.{selected}]` table in the configuration, and the managed configuration {} applies: a provider that only a plugin declares cannot be used under a managed configuration. Declare `[providers.{selected}]` in the config file, or select a built-in provider",
+            codewhale_config::quote_os_path(path)
+        )
+    } else {
+        anyhow::anyhow!(
+            "{error} (while applying the managed configuration {})",
+            codewhale_config::quote_os_path(path)
+        )
+    }
 }
 
 fn managed_path_is_named_by_host(path: &Path) -> bool {
