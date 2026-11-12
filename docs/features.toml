@@ -533,7 +533,7 @@ owner = "crates/memory"
 [[feature]]
 id = "skills"
 name = "Skill plugins"
-summary = "A plugin kind: trusted instruction packages with bundle policy, invocation controls and shared, configurable index limits."
+summary = "A plugin kind: trusted instruction packages with bundle policy, invocation controls and configurable index limits."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/SKILLS.md"
@@ -542,7 +542,7 @@ owner = "crates/skills/src"
 [[feature]]
 id = "plugins"
 name = "Plugins"
-summary = "Everything a person adds is a plugin. Installs, reviews and trusts plugin bundles, reports their status, and restores missing reviewed runtime snapshots."
+summary = "Everything you add is a plugin: installs, reviews and trusts bundles, shows status, restores missing reviewed snapshots."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PLUGINS.md"
