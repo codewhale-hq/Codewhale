@@ -1183,7 +1183,7 @@ impl Git {
         overrides: Vec<(String, &'static str)>,
     ) -> anyhow::Result<Command> {
         let mut command = Self::review_base(workspace)?;
-        let mut count = 2;
+        let mut count = 3;
         for (key, value) in overrides {
             // A subsection may contain '='; `-c key=value` would then
             // override a different key. Separate env fields preserve it.
@@ -1195,7 +1195,7 @@ impl Git {
         Ok(command)
     }
 
-    /// Git with fsmonitor, hooks, lazy fetch and replace objects disabled,
+    /// Git with fsmonitor, hooks, lazy fetch, replace objects and path quoting disabled,
     /// running in `workspace`. [`Self::review_command`] adds filter overrides.
     pub fn review_base(workspace: &Path) -> anyhow::Result<Command> {
         use anyhow::Context;
@@ -1257,7 +1257,7 @@ impl Git {
             // Both phases must observe the same effective repository config.
             .env_remove("GIT_CONFIG")
             .env_remove("GIT_CONFIG_PARAMETERS")
-            .env("GIT_CONFIG_COUNT", "2")
+            .env("GIT_CONFIG_COUNT", "3")
             .env("GIT_CONFIG_KEY_0", "core.fsmonitor")
             .env("GIT_CONFIG_VALUE_0", "false")
             .env("GIT_CONFIG_KEY_1", "core.hooksPath")
@@ -1265,6 +1265,8 @@ impl Git {
                 "GIT_CONFIG_VALUE_1",
                 if cfg!(windows) { "NUL" } else { "/dev/null" },
             )
+            .env("GIT_CONFIG_KEY_2", "core.quotePath")
+            .env("GIT_CONFIG_VALUE_2", "false")
             .env("GIT_NO_LAZY_FETCH", "1")
             .env("GIT_NO_REPLACE_OBJECTS", "1");
         Ok(command)
