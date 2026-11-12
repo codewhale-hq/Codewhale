@@ -882,6 +882,8 @@ foreground shell tools, plus reviewed plugin tools (`extension_host` feature) an
 the tools of MCP servers configured in Codewhale (`mcp` feature), under the same
 permission setting. Shell requires both editor terminal support and operator
 `allow_shell`; a requested external sandbox that is unavailable removes shell.
+Plugin tools and configured MCP servers on this transport are on main after
+0.10.2; 0.10.2 itself does not have them.
 Client-supplied MCP servers, dynamic tools, task/PTY/background shell,
 interpreter, subagent and RLM lifecycles are unavailable on this transport.
 Built-in overrides remove the

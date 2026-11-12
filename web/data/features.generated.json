@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "813e021c6bf6804a98fd14716b49727366e9194b4c91bed71c62a3ea88fbe50c"
+    "sha256": "a63042dc25a658f626735cc40e7a7cf4c67eaa51bfbb037dc2820d083d10fe3a"
   },
   "features": [
     {
@@ -672,7 +672,7 @@
     {
       "id": "skills",
       "name": "Skill plugins",
-      "summary": "A plugin kind: trusted instruction packages with bundle policy, invocation controls and shared, configurable index limits.",
+      "summary": "A plugin kind: trusted instruction packages with bundle policy, invocation controls and configurable index limits.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -686,7 +686,7 @@
     {
       "id": "plugins",
       "name": "Plugins",
-      "summary": "Everything a person adds is a plugin. Installs, reviews and trusts plugin bundles, reports their status, and restores missing reviewed runtime snapshots.",
+      "summary": "Everything you add is a plugin: installs, reviews and trusts bundles, shows status, restores missing reviewed snapshots.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",

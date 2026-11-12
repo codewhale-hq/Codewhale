@@ -58,8 +58,11 @@ code) are inventory-only unless the user has turned on the experimental
      to open the content/capability review, reviews it, runs the exact
      `/plugin trust ...` confirmation shown, then enables the bundle
    - exception: in Full Access, for a plugin you wrote yourself, you may
-     trust and enable it without asking the person. Write it in a folder
-     inside the current project, then run, in this order:
+     trust and enable it without asking the person. Write it in an ordinary
+     folder inside the current project (for example
+     `<workspace>/plugins/<plugin-name>/`), not under `.codewhale/plugins/`
+     as in step 1, because `codewhale install` copies it into place and
+     refuses a name that is already in use. Then run, in this order:
      `codewhale install <folder>`, `codewhale plugins trust <name>` (it prints
      the review and a review token), `codewhale plugins trust <name>
      --review-token <token> --yes` with the token from your own run, and
