@@ -1177,7 +1177,11 @@ fn truncate_stdout(stdout: &str, limit: usize) -> String {
         return stdout.to_string();
     }
     let take = limit.saturating_sub(80);
-    let mut out: String = stdout.chars().take(take).collect();
+    let cut = (0..=take)
+        .rev()
+        .find(|&index| stdout.is_char_boundary(index))
+        .unwrap_or(0);
+    let mut out = stdout[..cut].to_string();
     let omitted = stdout.len().saturating_sub(out.len());
     out.push_str(&format!(
         "\n\n[... REPL output truncated: {omitted} bytes omitted ...]\n"
@@ -1860,5 +1864,13 @@ mod tests {
         let out = truncate_stdout(&long, 1024);
         assert!(out.len() < 1500);
         assert!(out.contains("truncated"));
+    }
+
+    #[test]
+    fn truncate_caps_multibyte_output_by_bytes() {
+        let cjk = "中".repeat(2000);
+        let out = truncate_stdout(&cjk, 1024);
+        assert!(out.len() <= 1024, "len: {}", out.len());
+        assert!(out.contains("bytes omitted"));
     }
 }
