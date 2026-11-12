@@ -1851,7 +1851,7 @@ impl SnapshotRepo {
             .duration_since(UNIX_EPOCH)
             .map_err(|e| io_other(format!("clock error: {e}")))?
             .as_secs() as i64;
-        let cutoff = now - max_age.as_secs() as i64;
+        let cutoff = now.saturating_sub(i64::try_from(max_age.as_secs()).unwrap_or(i64::MAX));
 
         let snapshots = self.list(usize::MAX)?;
         if snapshots.is_empty() {
@@ -3947,6 +3947,22 @@ mod tests {
         let list = repo.list(10).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].label, "turn:1");
+    }
+
+    #[test]
+    fn prune_with_an_age_beyond_i64_keeps_every_snapshot() {
+        let tmp = tempdir().unwrap();
+        let (repo, _home) = make_repo(tmp.path());
+        std::fs::write(repo.work_tree().join("f.txt"), "v0").unwrap();
+        repo.snapshot("turn:0").unwrap();
+        std::thread::sleep(Duration::from_millis(1100));
+
+        let removed = repo
+            .prune_older_than(Duration::from_secs(u64::MAX))
+            .unwrap();
+
+        assert_eq!(removed, 0);
+        assert_eq!(repo.list(10).unwrap().len(), 1);
     }
 
     /// The 2026-08-04 regression: with a cut in the MIDDLE of history,
