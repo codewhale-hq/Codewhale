@@ -559,10 +559,9 @@ fn split_by_workspace(
                 inside.push(row);
             }
             None => {
-                let renamed_or_copied = matches!(row.index.as_str(), "R" | "C")
-                    || matches!(row.worktree.as_str(), "R" | "C");
-                if renamed_or_copied && let Some(path) = old_path {
-                    let worktree_side = row.index == " ";
+                let renamed = row.index == "R" || row.worktree == "R";
+                if renamed && let Some(path) = old_path {
+                    let worktree_side = row.worktree == "R";
                     inside.push(GitFileEntry {
                         path,
                         index: if worktree_side {
@@ -3263,6 +3262,26 @@ mod tests {
         assert!(row.old_path.is_none());
         let expect = expect_file("a.txt", row.rev.clone().unwrap());
         assert!(check_preconditions(&ws, &expect).unwrap().is_ok());
+    }
+
+    #[test]
+    fn outgoing_copy_keeps_its_source_inside_the_workspace() {
+        let row = GitFileEntry {
+            path: "outside.txt".to_string(),
+            index: "C".to_string(),
+            worktree: " ".to_string(),
+            staged: true,
+            status: "copied",
+            old_path: Some("sub/a.txt".to_string()),
+            rev: None,
+        };
+        let (inside, outside) = split_by_workspace(vec![row], "sub/");
+        assert!(
+            inside.is_empty(),
+            "a copy leaves its source in place, so it must not read as a deletion: {:?}",
+            inside.iter().map(|row| &row.path).collect::<Vec<_>>()
+        );
+        assert_eq!(outside.len(), 1);
     }
 
     #[test]
