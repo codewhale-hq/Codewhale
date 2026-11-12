@@ -2643,6 +2643,7 @@ pub fn decision_receipt_fixture(source_id: &str) -> RuntimeDecisionReceipt {
             probabilities_bp: Default::default(),
             confidence_bp: 0,
             min_confidence_bp: 5_000,
+            abstained_questions: Vec::new(),
             cost_saving_kept_fast: false,
             thinking: None,
             provider_reported_cost_usd: Some("0.000012054".to_string()),

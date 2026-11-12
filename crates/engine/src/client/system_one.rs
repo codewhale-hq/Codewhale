@@ -138,6 +138,16 @@ pub struct SystemOneResponse {
     pub answers_validated: Option<bool>,
 }
 
+impl SystemOneResponse {
+    pub fn abstained_questions(&self, names: &[&str]) -> Vec<String> {
+        names
+            .iter()
+            .filter(|name| self.answers.get(**name).is_some_and(|a| a.abstained))
+            .map(|name| (*name).to_string())
+            .collect()
+    }
+}
+
 impl<'de> Deserialize<'de> for SystemOneResponse {
     fn deserialize<D: serde::Deserializer<'de>>(
         deserializer: D,
@@ -201,6 +211,8 @@ pub struct SystemOneAnswer {
     pub probabilities: BTreeMap<String, Option<f64>>,
     #[serde(default)]
     pub confidence: Option<f64>,
+    #[serde(default)]
+    pub abstained: bool,
 }
 
 /// Provider usage. OpenRouter adds `cost`; the token-count casing differs
