@@ -6,6 +6,7 @@ vi.mock("@/lib/community-agent", () => mocks);
 import { POST } from "@/app/api/admin/login/route";
 
 const STRONG_TOKEN = "local-fixture-token-0123456789-abcdefghij";
+const LONE_SURROGATES = Array.from({ length: 16 }, (_, index) => String.fromCharCode(0xd800 + index)).join("").repeat(2);
 
 function request(token = "wrong", ip = "127.0.0.1") {
   return new Request("https://codewhale.net/api/admin/login?locale=en", {
@@ -55,7 +56,7 @@ describe("admin login attempt boundary", () => {
   it("refuses to run with a configured token below the minimum length", async () => {
     const weakTokens = [
       "x", "configured", "a".repeat(31), "a".repeat(32), " ".repeat(40), "password".repeat(4),
-      "0123456789".repeat(3) + "01", "\u{1F433}".repeat(16), "L".repeat(600),
+      "0123456".repeat(5), "\u{1F433}".repeat(16), "L".repeat(600), LONE_SURROGATES,
     ];
     for (const weak of weakTokens) {
       mocks.getAgentEnv.mockResolvedValueOnce({ MAINTAINER_TOKEN: weak, ADMIN_LOGIN_LIMITER: { limit: mocks.limit }, CURATED_KV: {} });
@@ -75,6 +76,13 @@ describe("admin login attempt boundary", () => {
     mocks.getAgentEnv.mockResolvedValueOnce({ MAINTAINER_TOKEN: exact, ADMIN_LOGIN_LIMITER: { limit: mocks.limit }, CURATED_KV: {} });
     mocks.safeEqual.mockResolvedValue(true);
     expect((await POST(request(exact))).status).toBe(303);
+  });
+  it("accepts a 32-character hex secret with fewer than 16 distinct characters", async () => {
+    const hex = "3f9a3f9a1c7e1c7e3f9a1c7e5b2d5b2d";
+    expect(new Set(hex).size).toBeLessThan(16);
+    mocks.getAgentEnv.mockResolvedValueOnce({ MAINTAINER_TOKEN: hex, ADMIN_LOGIN_LIMITER: { limit: mocks.limit }, CURATED_KV: {} });
+    mocks.safeEqual.mockResolvedValue(true);
+    expect((await POST(request(hex))).status).toBe(303);
   });
   it("retains the authenticated session and redirect after an allowed attempt", async () => {
     mocks.safeEqual.mockResolvedValue(true);

@@ -1,6 +1,8 @@
 export const MIN_SECRET_CHARS = 32;
 export const MAX_SECRET_CHARS = 512;
-export const MIN_SECRET_DISTINCT_CHARS = 16;
+export const MIN_SECRET_DISTINCT_CHARS = 8;
+
+const LONE_SURROGATE = /\p{Cs}/u;
 
 export const MAINTAINER_TOKEN_UNAVAILABLE =
   `Maintainer sign-in is unavailable: MAINTAINER_TOKEN must be set to a secret of at least ${MIN_SECRET_CHARS} characters ` +
@@ -11,7 +13,7 @@ export const CRON_SECRET_UNAVAILABLE =
   `(at most ${MAX_SECRET_CHARS}, with at least ${MIN_SECRET_DISTINCT_CHARS} distinct characters)`;
 
 export function secretStrongEnough(value: string | undefined): value is string {
-  if (typeof value !== "string" || value.length > MAX_SECRET_CHARS) return false;
+  if (typeof value !== "string" || value.length > MAX_SECRET_CHARS || LONE_SURROGATE.test(value)) return false;
   const chars = [...value];
   return chars.length >= MIN_SECRET_CHARS && new Set(chars).size >= MIN_SECRET_DISTINCT_CHARS;
 }

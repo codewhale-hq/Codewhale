@@ -51,7 +51,8 @@ describe("manual cron trigger attempt boundary", () => {
     expect(mocks.limit).not.toHaveBeenCalled();
   });
   it("stays disabled for a secret below the minimum strength and never consults the limiter or compares", async () => {
-    const weak = ["x", "a".repeat(32), " ".repeat(40), "password".repeat(4), "\u{1F433}".repeat(16), "0123456789".repeat(3) + "01", "L".repeat(600)];
+    const loneSurrogates = Array.from({ length: 16 }, (_, index) => String.fromCharCode(0xd800 + index)).join("").repeat(2);
+    const weak = ["x", "a".repeat(32), " ".repeat(40), "password".repeat(4), "\u{1F433}".repeat(16), "0123456".repeat(5), "L".repeat(600), loneSurrogates];
     for (const secret of weak) {
       mocks.getEnv.mockResolvedValueOnce({ CRON_SECRET: secret, ADMIN_LOGIN_LIMITER: { limit: mocks.limit } });
       const response = await GET(request());
@@ -61,6 +62,12 @@ describe("manual cron trigger attempt boundary", () => {
     }
     expect(mocks.limit).not.toHaveBeenCalled();
     expect(mocks.safeEqual).not.toHaveBeenCalled();
+  });
+  it("accepts a 32-character hex secret with fewer than 16 distinct characters", async () => {
+    const hex = "3f9a3f9a1c7e1c7e3f9a1c7e5b2d5b2d";
+    mocks.getEnv.mockResolvedValueOnce({ CRON_SECRET: hex, ADMIN_LOGIN_LIMITER: { limit: mocks.limit } });
+    mocks.safeEqual.mockResolvedValue(true);
+    expect((await GET(request(hex))).status).toBe(400);
   });
   it("still reaches task validation after an allowed, correct attempt", async () => {
     mocks.safeEqual.mockResolvedValue(true);
