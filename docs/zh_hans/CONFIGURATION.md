@@ -1152,7 +1152,7 @@ codewhale 还把用户偏好存储在：
 - `mention_menu_limit`(整数，默认 `128`)：输入区渲染可见窗口之前保留的 `@`-提及弹出候选最大数。可见行仍取决于终端高度。
 - `mention_walk_depth`(整数，默认 `10`)：`@`-提及补全遍历的最大工作区深度。在深度嵌套的工作区设为 `0` 表示无限深度；在非常大的仓库保持默认，除非需要。
 - `mention_menu_behavior`(`fuzzy`、`browser`；默认 `fuzzy`)：控制 `@`-提及补全如何填充。`fuzzy` 搜索工作区并应用提及 frecency。`browser` 只按确定性字母顺序列出当前输入目录段的直接子项。
-- `show_thinking`(on/off)
+- `show_thinking`（on/off，默认 on）：在对话记录中显示模型思考，流式输出时实时显示，回答开始后折叠到“思考用时 …”标题下。设为 off 则隐藏思考；回答和工具仍然可见。`settings.toml` 中已保存的值保持不变。
 - `thinking_default_expanded`（on/off，默认 off）：启用 `show_thinking` 时，让思考块初始以展开状态渲染。Space 仍可切换所选块，并且它只决定你尚未动过的块：你自己展开或折叠过的块，即使之后更改这个设置，也会保持该状态。这在 Space 绑定可能被拦截的 SSH/tmux 环境中很有用。
 - `thinking_preview_lines`(整数，默认 `2`):**折叠**的已完成思考仍显示多少正文行。`0` 仅头部；`10` 是较旧的完整显示。实时流式预览不变。用 Space 展开块，或设置 `thinking_default_expanded` 打开每个块。
 - `help_expand_groups`(on/off，默认 off)：让帮助/快捷键从每个组展开开始。默认折叠长尾(Grok 风格)；输入过滤仍展开匹配。

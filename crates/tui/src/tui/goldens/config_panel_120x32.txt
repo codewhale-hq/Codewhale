@@ -9,7 +9,7 @@
                     │ Background                         (default)      ✎     │current   terminal                       
                     │ Pet mode                           Off            [ ]   │saved     terminal                       
                     │ Quiet transcript                   On             [x]   │startup   terminal                       
-                    │ Model reasoning in chat            Off            [ ]   │source    settings.toml                  
+                    │ Model reasoning in chat            On             [x]   │source    settings.toml                  
                     │ Thinking Default Expanded          Off            [ ]   │scope     SAVED                          
                     │ Thinking Preview Lines             2              ✎     │apply     applies on save                
                     │ Thinking background highlight      On             [x]   │kind      choice                         

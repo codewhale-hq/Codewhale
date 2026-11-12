@@ -814,7 +814,7 @@ owner = "crates/tui/src/commands/groups/session/export.rs"
 [[feature]]
 id = "live-thinking"
 name = "Live thinking"
-summary = "/verbose toggles live model thinking in the transcript."
+summary = "Model thinking shows live in the transcript, then collapses under a Thought header; /verbose shows it in full."
 status = "stable"
 surfaces = { tui = "stable" }
 owner = "crates/tui/src/commands/groups/config/mod.rs"

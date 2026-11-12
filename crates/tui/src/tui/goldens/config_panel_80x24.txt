@@ -9,7 +9,7 @@
    Background                         (default)                 ✎    SAVED   █  
    Pet mode                           Off                       [ ]  SAVED   █  
    Quiet transcript                   On                        [x]  SAVED   █  
-   Model reasoning in chat            Off                       [ ]  SAVED   █  
+   Model reasoning in chat            On                        [x]  SAVED   █  
    Thinking Default Expanded          Off                       [ ]  SAVED   █  
    Thinking Preview Lines             2                         ✎    SAVED   │  
    Thinking background highlight      On                        [x]  SAVED   │  
