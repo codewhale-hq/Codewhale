@@ -126,6 +126,8 @@ files under the root `target/` directory and untracked files in any
 receipt provenance and are not materialized for replay. Tracked files and
 protected paths are always captured, even in those directories. Other ignored
 files, including out-of-scope writes, remain subject to the normal scope check.
+Excluded generated files still pass file-type and hardlink checks before the
+capture policy omits their content.
 The candidate tree hash covers the included source tree; the artifact manifest
 hash also covers the exclusion list. Receipts bind spec, baseline Git SHA and
 tree identity, case bundle

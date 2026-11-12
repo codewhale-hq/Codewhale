@@ -278,6 +278,7 @@ impl ArtifactStore {
         let mut total = 0u64;
         let mut changed_bytes = 0u64;
         for (relative, path) in found {
+            let file_mode = mode(&path)?;
             if !baseline.contains_key(relative.as_str())
                 && generated_output(&relative)
                 && !protected_paths.iter().any(|root| in_scope(&relative, root))
@@ -289,7 +290,6 @@ impl ArtifactStore {
                 continue;
             }
             let bytes = read_file(&path)?;
-            let file_mode = mode(&path)?;
             total += bytes.len() as u64;
             if total > MAX_TREE_BYTES {
                 return Err("candidate tree exceeds byte limit".to_string());
