@@ -940,6 +940,11 @@ pub enum McpUiAction {
     ImportDecline {
         name: String,
     },
+    ProjectReview,
+    ProjectApprove {
+        digest: String,
+    },
+    ProjectRevoke,
     Validate,
     /// Report this server's last observed state without starting a new pool.
     Diagnose {

@@ -1687,12 +1687,12 @@ direction 为空、等待 lead 计划、缺少凭据或有
 `scripts/auto-merge-pr.py`。不要再发明第二个检查器。
 
 **工作区信任**（持久化的项目决定）
-- `GET /v1/workspace/status` 返回 `workspace_trusted`：服务器工作区是否已在发现的用户配置中被设为可信。项目技能、命令和 MCP 配置会检查这个决定。项目钩子还需要单独批准钩子文件的精确摘要。
+- `GET /v1/workspace/status` 返回 `workspace_trusted`：服务器工作区是否已在发现的用户配置中被设为可信。项目技能和命令会检查这个决定。项目钩子和项目 MCP 配置还需要单独批准对应文件的精确摘要（`/hooks review`、`/mcp review`）。
 - `POST /v1/workspace/trust` 接受 `{"trusted": true|false}`，记录决定并返回 `{workspace, workspace_trusted, config_path, message}`。
 
 处理器复用 `/trust on|off --save` 使用的 `config::set_workspace_trust`，再通过 `is_workspace_trusted` 读回结果。请求不接受路径，只作用于服务器已接纳的工作区。`config_path` 标识实际写入的文档。读写都使用默认配置发现规则，包括已配置的环境变量覆盖；启动运行时的显式 `--config` 参数不会选择这个信任文档。
 
-项目技能和命令会在各自现有的加载或回合边界检查信任。项目钩子还需要单独的摘要批准，并在执行前重新检查权限。重启引擎可重新建立项目 MCP 连接；本请求不会断开已有连接池或中断正在运行的回合。现有上下文加载器会独立于此标志加载 `AGENTS.md` 等项目指令文件和项目规则，因此撤销工作区信任不会移除这些指令或已持久化的历史。
+项目技能和命令会在各自现有的加载或回合边界检查信任。项目钩子和项目 MCP 服务器还需要单独的摘要批准（`.codewhale/mcp.json` 需经 `/mcp approve <digest>` 批准），并在执行前重新检查权限；已获批准时可重启引擎或重载连接池来重新建立项目 MCP 连接，本请求不会断开已有连接池或中断正在运行的回合。现有上下文加载器会独立于此标志加载 `AGENTS.md` 等项目指令文件和项目规则，因此撤销工作区信任不会移除这些指令或已持久化的历史。
 
 这个持久化的项目决定与线程的 `trust_mode` / Full Access，以及 `/trust add <path>` 的外部路径授权分别独立。`/trust on|off --save` 同时修改会话文件工具信任和持久化项目记录；本 HTTP 路由只修改项目记录。POST 使用其他状态变更路由相同的运行时写权限；watch 设备令牌可以读取状态，但不能写入信任。
 

@@ -3428,6 +3428,13 @@ async fn run_async_main_dispatch(
         None
     };
 
+    if let Some(note) = project_mcp_approval_note(&resolve_workspace(&cli)) {
+        startup_notice = Some(match startup_notice {
+            Some(existing) => format!("{existing}\n{note}"),
+            None => note,
+        });
+    }
+
     // Default: Interactive TUI
     // --yolo starts in YOLO mode (auto-approve; shell enabled)
     Box::pin(run_interactive_with_notice(
@@ -5875,6 +5882,20 @@ async fn run_doctor(
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
             codewhale_util::utils::display_path(&project_mcp_config_path)
         );
+        match codewhale_engine::mcp::project_authority::project_mcp_status(workspace) {
+            codewhale_engine::mcp::project_authority::ProjectMcpStatus::Untrusted => {
+                println!("    Not loaded: the workspace is not trusted.")
+            }
+            codewhale_engine::mcp::project_authority::ProjectMcpStatus::Unapproved { .. } => {
+                println!(
+                    "    Not loaded: its exact contents are not approved. Run /mcp review, then /mcp approve <digest>, in a session."
+                )
+            }
+            codewhale_engine::mcp::project_authority::ProjectMcpStatus::Unreadable(error) => {
+                println!("    Not loaded: {error}.")
+            }
+            _ => {}
+        }
     } else {
         println!(
             "  {} Project MCP config not found at {}",
@@ -14614,6 +14635,18 @@ async fn run_interactive(
         plugin_registry,
     ))
     .await
+}
+
+pub(crate) fn project_mcp_approval_note(workspace: &std::path::Path) -> Option<String> {
+    use codewhale_engine::mcp::project_authority::{ProjectMcpStatus, project_mcp_status};
+    match project_mcp_status(workspace) {
+        ProjectMcpStatus::Unapproved { .. } => Some(
+            "Project .codewhale/mcp.json is not approved for these exact contents, so its servers are not loaded. Use /mcp review, then /mcp approve <digest>."
+                .to_string(),
+        ),
+        ProjectMcpStatus::Unreadable(error) => Some(format!("Project MCP servers are not loaded: {error}.")),
+        _ => None,
+    }
 }
 
 /// As [`run_interactive`], but carrying a one-line startup receipt to show in

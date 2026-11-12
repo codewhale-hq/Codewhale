@@ -7992,29 +7992,44 @@ pub fn set_workspace_trust(workspace: &Path, trusted: bool) -> Result<PathBuf> {
     Ok(config_path)
 }
 
-/// Project hook approval lives only in user-owned config, never in the repo.
-pub fn hook_receipt_for_workspace(workspace: &Path) -> Option<String> {
+/// Project file approvals live only in user-owned config, never in the repo.
+pub const HOOKS_RECEIPT_KEY: &str = "hooks_sha256";
+pub const MCP_RECEIPT_KEY: &str = "mcp_sha256";
+
+pub fn project_receipt_for_workspace(workspace: &Path, key: &str) -> Option<String> {
     let raw = fs::read_to_string(default_config_path().ok()?).ok()?;
     let doc = toml::from_str::<toml::Value>(&raw).ok()?;
     doc.get("projects")?
         .get(workspace_config_key(workspace))?
-        .get("hooks_sha256")?
+        .get(key)?
         .as_str()
         .map(str::to_owned)
 }
 
-pub fn save_workspace_hook_receipt(workspace: &Path, digest: &str) -> Result<PathBuf> {
+pub fn save_workspace_project_receipt(
+    workspace: &Path,
+    key: &str,
+    digest: &str,
+) -> Result<PathBuf> {
     let config_path = try_default_config_path()?;
     ensure_parent_dir(&config_path)?;
     let project_key = workspace_config_key(workspace);
     crate::config_persistence::mutate_config_document(&config_path, |doc| {
         crate::config_persistence::set_document_value(
             doc,
-            &["projects", project_key.as_str(), "hooks_sha256"],
+            &["projects", project_key.as_str(), key],
             digest,
         )
     })?;
     Ok(config_path)
+}
+
+pub fn hook_receipt_for_workspace(workspace: &Path) -> Option<String> {
+    project_receipt_for_workspace(workspace, HOOKS_RECEIPT_KEY)
+}
+
+pub fn save_workspace_hook_receipt(workspace: &Path, digest: &str) -> Result<PathBuf> {
+    save_workspace_project_receipt(workspace, HOOKS_RECEIPT_KEY, digest)
 }
 
 fn workspace_trust_level_from_doc<'a>(doc: &'a toml::Value, workspace: &Path) -> Option<&'a str> {

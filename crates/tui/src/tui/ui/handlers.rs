@@ -977,6 +977,9 @@ pub(crate) async fn handle_mcp_ui_action(
                     false
                 }
             };
+            if let Some(note) = crate::project_mcp_approval_note(&app.workspace) {
+                sections.push(note);
+            }
             if app.mcp_reload_required {
                 sections.push(
                     "MCP config changed since the live pool loaded. Run /mcp reload to apply it."
@@ -1001,6 +1004,47 @@ pub(crate) async fn handle_mcp_ui_action(
             return;
         }
         crate::tui::app::McpUiAction::Show => Ok(()),
+        crate::tui::app::McpUiAction::ProjectReview => {
+            use codewhale_engine::mcp::project_authority::review_project_mcp;
+            match review_project_mcp(&app.workspace) {
+                Ok(reviewed) => {
+                    message = Some(format!(
+                        "Project MCP servers start processes and open connections as you. Review this file and any scripts it runs before approval.\n\n{}\n\nTo approve these exact contents: /mcp approve {}",
+                        codewhale_engine::hooks::sanitize_hook_text(
+                            &reviewed.contents,
+                            reviewed.contents.chars().count()
+                        ),
+                        reviewed.digest
+                    ));
+                    Ok(())
+                }
+                Err(error) => Err(anyhow::anyhow!(error)),
+            }
+        }
+        crate::tui::app::McpUiAction::ProjectApprove { digest } => {
+            changed = true;
+            codewhale_engine::mcp::project_authority::approve_project_mcp(
+                &app.workspace,
+                digest.trim(),
+            )
+            .map_err(anyhow::Error::msg)
+            .map(|()| {
+                message = Some(
+                    "Approved these exact project MCP servers. Changes to the file require another review."
+                        .to_string(),
+                );
+            })
+        }
+        crate::tui::app::McpUiAction::ProjectRevoke => {
+            changed = true;
+            codewhale_engine::mcp::project_authority::revoke_project_mcp(&app.workspace)
+                .map_err(anyhow::Error::msg)
+                .map(|()| {
+                    message = Some(
+                        "Project MCP approval revoked. Project servers are unloaded.".to_string(),
+                    );
+                })
+        }
         crate::tui::app::McpUiAction::Init { force } => {
             changed = true;
             match mcp::init_config(&path, force) {

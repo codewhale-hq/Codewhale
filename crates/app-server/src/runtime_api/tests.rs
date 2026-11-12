@@ -25097,6 +25097,10 @@ async fn mcp_management_project_ownership_blocks_global_shadow_mutations() -> Re
     let project = json!({"servers":{"shared":{"command":root.path().join("missing-project-executable")},"project":{"command":root.path().join("missing-project-executable")}}}).to_string();
     fs::write(root.path().join("mcp.json"), &global)?;
     fs::write(workspace.join(".codewhale/mcp.json"), &project)?;
+    let reviewed = codewhale_engine::mcp::project_authority::review_project_mcp(&workspace)
+        .map_err(anyhow::Error::msg)?;
+    codewhale_engine::mcp::project_authority::approve_project_mcp(&workspace, &reviewed.digest)
+        .map_err(anyhow::Error::msg)?;
     let (addr, _, handle) = spawn_test_server_with_root_token_mobile_workspace(
         root.path().to_owned(),
         root.path().join("sessions"),

@@ -32,6 +32,7 @@ mod http;
 pub mod http_client;
 pub mod oauth;
 pub mod process_broker;
+pub mod project_authority;
 pub mod sse;
 mod stdio;
 mod streamable_http;
@@ -7440,7 +7441,7 @@ pub enum McpServerScope {
     /// The user's own config file, shared by every workspace.
     Global,
     /// `<workspace>/.codewhale/mcp.json`, honoured only once the workspace
-    /// is trusted in user-owned config (#417).
+    /// is trusted in user-owned config (#417) and its exact contents are approved.
     Project(PathBuf),
     /// Contributed by an installed plugin bundle. It lives in no config
     /// file, so it is switched off by disabling the plugin that owns it.
@@ -7475,16 +7476,15 @@ pub fn project_server_names(global_path: &Path, workspace: &Path) -> BTreeSet<St
     let Ok(workspace) = checked_workspace_path(workspace) else {
         return BTreeSet::new();
     };
-    if !workspace_allows_project_mcp_config(&workspace) {
-        return BTreeSet::new();
-    }
     let Ok(project_path) = checked_workspace_mcp_config_path(&workspace) else {
         return BTreeSet::new();
     };
     if !project_path.exists() || paths_refer_to_same_config(global_path, &project_path) {
         return BTreeSet::new();
     }
-    load_config(&project_path)
+    project_authority::approved_project_mcp(&workspace)
+        .ok()
+        .and_then(|reviewed| serde_json::from_str::<McpConfig>(&reviewed.contents).ok())
         .map(|config| config.servers.into_keys().collect())
         .unwrap_or_default()
 }
@@ -7492,11 +7492,13 @@ pub fn project_server_names(global_path: &Path, workspace: &Path) -> BTreeSet<St
 #[must_use]
 pub fn resolve_server_scope(global_path: &Path, workspace: &Path, name: &str) -> McpServerScope {
     if let Ok(workspace) = checked_workspace_path(workspace)
-        && workspace_allows_project_mcp_config(&workspace)
         && let Ok(project_path) = checked_workspace_mcp_config_path(&workspace)
         && project_path.exists()
         && !paths_refer_to_same_config(global_path, &project_path)
-        && load_config(&project_path).is_ok_and(|config| config.servers.contains_key(name))
+        && project_authority::approved_project_mcp(&workspace)
+            .ok()
+            .and_then(|reviewed| serde_json::from_str::<McpConfig>(&reviewed.contents).ok())
+            .is_some_and(|config| config.servers.contains_key(name))
     {
         return McpServerScope::Project(project_path);
     }
@@ -7731,15 +7733,20 @@ pub fn load_config_with_workspace_and_plugins(
         return merge_plugin_mcp_servers(merged, plugins);
     }
     // Workspace-local MCP can spawn stdio servers, so it is only honored after
-    // the user has trusted this workspace in user-owned config. Do not accept
-    // project-local legacy trust markers here: a repository could carry those
-    // files itself and silently reintroduce the project-scope `mcp_config_path`
-    // risk denied in #417.
-    if !workspace_allows_project_mcp_config(&workspace) {
+    // the user has trusted this workspace and approved the exact file contents
+    // in user-owned config. Do not accept project-local legacy trust markers
+    // here: a repository could carry those files itself and silently
+    // reintroduce the project-scope `mcp_config_path` risk denied in #417.
+    let Ok(reviewed) = project_authority::approved_project_mcp(&workspace) else {
         return merge_plugin_mcp_servers(merged, plugins);
-    }
+    };
 
-    let mut project = load_config(&project_path)?;
+    let mut project: McpConfig = serde_json::from_str(&reviewed.contents).map_err(|_| {
+        anyhow::anyhow!(
+            "Failed to parse MCP config {}; file contents were omitted",
+            codewhale_config::quote_os_path(&project_path)
+        )
+    })?;
     for server in project.servers.values_mut() {
         server.always_allow_tools.clear();
         if server.command.is_some() && server.url.is_none() {
@@ -7981,10 +7988,6 @@ fn resolve_plugin_mcp_cwd(plugin_path: &Path, cwd: Option<&Path>) -> Result<Path
         anyhow::bail!("reviewed plugin MCP path escaped its staged root");
     }
     Ok(resolved)
-}
-
-fn workspace_allows_project_mcp_config(workspace: &Path) -> bool {
-    codewhale_runtime::config::is_workspace_trusted(workspace)
 }
 
 fn checked_workspace_mcp_config_path(workspace: &Path) -> Result<PathBuf> {
@@ -8308,6 +8311,7 @@ pub fn mutate_config<T>(
         }
         write_atomic(path, rendered.as_bytes())
             .with_context(|| format!("Failed to write MCP config {}", path.display()))?;
+        project_authority::carry_approval_across_product_edit(path, original.as_deref(), &rendered);
         Ok((result, config_revision(Some(&rendered))))
     })
 }

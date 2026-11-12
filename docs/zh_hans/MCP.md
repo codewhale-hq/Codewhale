@@ -285,7 +285,7 @@ Codewhale 同时读取 `servers` 和 `mcpServers`，因此设置页生成的片�
 
 自定义路径必须是绝对路径；相对 `mcp_config_path` 会回退到用户全局路径，不会随启动目录改变。
 
-工作区在用户拥有的配置中获准信任后，Codewhale 还会读取 `<workspace>/.codewhale/mcp.json`。项目中的同名服务器覆盖全局条目；项目文件不能自行授予信任，也不能覆盖全局 `mcp_config_path`。全局或受信任项目中的显式条目优先于身份冲突的插件服务器。项目 stdio 命令默认以工作区为工作目录。main 候选版本中的 `always_allow_tools` 仅接受全局服务器配置，不接受项目或插件声明。
+Codewhale 还会读取 `<workspace>/.codewhale/mcp.json`，但只有在工作区于用户拥有的配置中获准信任、并且你已批准该文件的确切内容之后才会读取。stdio 条目就是一条命令行，未标记 `lazy` 的服务器会在会话启动时运行，所以项目文件与项目 hooks 一样属于可执行配置。用 `/mcp review` 查看该文件及其摘要（digest），再用 `/mcp approve <digest>` 加载这些字节。批准记录保存在用户自有配置中该工作区的 `projects` 条目下（`mcp_sha256`），不在仓库里；符号链接形式的 `.codewhale` 或 `mcp.json` 会被拒绝。之后文件一旦改动（例如拉取代码或切换分支），在你重新审阅并批准之前，其中的服务器一个都不会加载。`/mcp revoke` 会撤销批准。对项目服务器执行 `/mcp disable`、`/mcp enable`、`/mcp remove` 会修改该文件，并保留其批准状态。服务器命令所运行的脚本也请一并审阅：批准只覆盖该文件本身，不覆盖它所指向的文件。`codewhale doctor` 和 `/mcp validate` 会报告正在等待批准的项目文件。项目中的同名服务器覆盖全局条目；项目文件不能自行授予信任或批准，也不能覆盖全局 `mcp_config_path`。全局或已批准项目中的显式条目优先于身份冲突的插件服务器。项目 stdio 命令默认以工作区为工作目录。main 候选版本中的 `always_allow_tools` 仅接受全局服务器配置，不接受项目或插件声明。
 
 `codewhale mcp init`（以及 `codewhale setup --mcp`）会写入这个解析出的路径。
 

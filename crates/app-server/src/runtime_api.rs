@@ -7216,28 +7216,14 @@ fn mcp_management_config(
     .map_err(|e| ApiError::internal(format!("Failed to load MCP config: {e}")))?;
     let global = codewhale_engine::mcp::load_config(&global_path)
         .map_err(|e| ApiError::internal(format!("Failed to load MCP config: {e}")))?;
-    let project_path = codewhale_engine::mcp::workspace_mcp_config_path(&state.workspace);
-    let same_source = project_path == global_path
-        || project_path
-            .canonicalize()
-            .ok()
-            .zip(global_path.canonicalize().ok())
-            .is_some_and(|(project, global)| project == global);
-    let project = if !same_source
-        && codewhale_runtime::config::is_workspace_trusted(&state.workspace)
-    {
-        codewhale_engine::mcp::load_config(&project_path)
-            .map_err(|e| ApiError::internal(format!("Failed to load project MCP config: {e}")))?
-    } else {
-        codewhale_mcp::config::McpConfig::default()
-    };
+    let project = codewhale_engine::mcp::project_server_names(&global_path, &state.workspace);
     let origins = config
         .servers
         .iter()
         .map(|(name, server)| {
             let origin = if server.reviewed_plugin.is_some() {
                 "plugin"
-            } else if project.servers.contains_key(name) {
+            } else if project.contains(name) {
                 "project"
             } else if global.servers.contains_key(name) {
                 "global"

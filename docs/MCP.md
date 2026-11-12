@@ -515,11 +515,24 @@ Overrides:
 Custom paths must be absolute; a relative `mcp_config_path` falls back to the
 user-global path rather than changing with the launch directory.
 
-Codewhale also reads `<workspace>/.codewhale/mcp.json` after the workspace is
-trusted in user-owned configuration. Project entries override same-named global
-servers; project-local files cannot grant that trust themselves or redirect the
-global `mcp_config_path`. Global and trusted-project entries take precedence
-over a colliding plugin-contributed identity. Project stdio commands default
+Codewhale also reads `<workspace>/.codewhale/mcp.json`, but only after the
+workspace is trusted in user-owned configuration **and** you have approved the
+exact contents of that file. A stdio entry is a command line and a server that
+is not `lazy` starts at session start, so the project file is executable
+configuration, like project hooks. Use `/mcp review` to see the file and its
+digest, then `/mcp approve <digest>` to load those bytes. The approval is stored
+in user-owned configuration under the workspace's `projects` entry
+(`mcp_sha256`), never in the repository, and a symlinked `.codewhale` or
+`mcp.json` is refused. Any later change to the file, such as a pull or a branch
+switch, loads none of its servers until you review and approve again.
+`/mcp revoke` removes the approval. `/mcp disable`, `/mcp enable` and
+`/mcp remove` on a project server edit the file and keep its approval. Review
+any scripts a server command runs as well: the approval covers the file, not
+the files it points to. `codewhale doctor` and `/mcp validate` report a project
+file that is waiting for approval. Project entries override same-named global
+servers; project-local files cannot grant trust or approval themselves or
+redirect the global `mcp_config_path`. Global and approved-project entries take
+precedence over a colliding plugin-contributed identity. Project stdio commands default
 their working directory to the workspace. In the main candidate,
 `always_allow_tools` is accepted only from the global server configuration,
 not from project or plugin declarations.

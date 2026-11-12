@@ -76,6 +76,21 @@ fn mark_workspace_trusted(workspace: &Path) -> WorkspaceTrustConfigGuard {
     guard
 }
 
+fn approve_project_mcp_for_test(workspace: &Path) {
+    let reviewed = project_authority::review_project_mcp(workspace).unwrap();
+    project_authority::approve_project_mcp(workspace, &reviewed.digest).unwrap();
+}
+
+fn record_project_mcp_receipt_for_test(workspace: &Path) {
+    let reviewed = project_authority::review_project_mcp(workspace).unwrap();
+    codewhale_runtime::config::save_workspace_project_receipt(
+        &reviewed.workspace,
+        codewhale_runtime::config::MCP_RECEIPT_KEY,
+        &reviewed.digest,
+    )
+    .unwrap();
+}
+
 #[test]
 fn test_mcp_config_defaults() {
     let config = McpConfig::default();
@@ -882,6 +897,7 @@ fn workspace_mcp_config_merges_with_project_overrides() {
         }"#,
     )
     .unwrap();
+    approve_project_mcp_for_test(&workspace);
 
     let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
@@ -922,6 +938,7 @@ fn workspace_manager_snapshot_counts_global_and_project_servers() {
         }"#,
     )
     .unwrap();
+    approve_project_mcp_for_test(&workspace);
 
     let plain = manager_snapshot_from_config(&global_path, false).unwrap();
     let merged =
@@ -2378,6 +2395,220 @@ fn workspace_mcp_config_ignores_project_file_until_workspace_trusted() {
 }
 
 #[test]
+fn workspace_mcp_config_does_not_load_project_file_on_trust_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let global_path = dir.path().join("global-mcp.json");
+    let workspace = dir.path().join("workspace");
+    let project_dir = workspace.join(".codewhale");
+    fs::create_dir_all(&project_dir).unwrap();
+    let _trust = mark_workspace_trusted(&workspace);
+    fs::write(
+        &global_path,
+        r#"{"servers": {"global": {"command": "node", "args": ["global.js"]}}}"#,
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("mcp.json"),
+        r#"{"servers": {"project": {"command": "php", "args": ["artisan", "boost:mcp"]}}}"#,
+    )
+    .unwrap();
+
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+
+    assert!(cfg.servers.contains_key("global"));
+    assert!(!cfg.servers.contains_key("project"));
+}
+
+#[test]
+fn project_mcp_approval_binds_the_exact_file_contents() {
+    let dir = tempfile::tempdir().unwrap();
+    let global_path = dir.path().join("global-mcp.json");
+    let workspace = dir.path().join("workspace");
+    let project_dir = workspace.join(".codewhale");
+    fs::create_dir_all(&project_dir).unwrap();
+    let _trust = mark_workspace_trusted(&workspace);
+    fs::write(&global_path, r#"{"servers": {}}"#).unwrap();
+    let project_path = project_dir.join("mcp.json");
+    let reviewed_bytes = r#"{"servers": {"project": {"command": "node", "args": ["a.js"]}}}"#;
+    fs::write(&project_path, reviewed_bytes).unwrap();
+
+    assert!(matches!(
+        project_authority::project_mcp_status(&workspace),
+        project_authority::ProjectMcpStatus::Unapproved { .. }
+    ));
+    assert!(project_server_names(&global_path, &workspace).is_empty());
+    assert!(matches!(
+        resolve_server_scope(&global_path, &workspace, "project"),
+        McpServerScope::Plugin
+    ));
+    assert!(
+        project_authority::approve_project_mcp(&workspace, "0".repeat(64).as_str()).is_err(),
+        "a digest that does not match the file is refused"
+    );
+
+    approve_project_mcp_for_test(&workspace);
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+    assert!(cfg.servers.contains_key("project"));
+    assert!(project_server_names(&global_path, &workspace).contains("project"));
+    assert!(matches!(
+        resolve_server_scope(&global_path, &workspace, "project"),
+        McpServerScope::Project(_)
+    ));
+
+    fs::write(
+        &project_path,
+        r#"{"servers": {"project": {"command": "node", "args": ["b.js"]}}}"#,
+    )
+    .unwrap();
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+    assert!(
+        !cfg.servers.contains_key("project"),
+        "a changed project file loads nothing until it is approved again"
+    );
+    assert!(project_server_names(&global_path, &workspace).is_empty());
+
+    fs::write(&project_path, reviewed_bytes).unwrap();
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+    assert!(
+        cfg.servers.contains_key("project"),
+        "the approval names bytes, not a moment in time"
+    );
+
+    project_authority::revoke_project_mcp(&workspace).unwrap();
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+    assert!(!cfg.servers.contains_key("project"));
+}
+
+#[test]
+fn project_mcp_approval_cannot_come_from_the_repository_or_another_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let global_path = dir.path().join("global-mcp.json");
+    let workspace = dir.path().join("workspace");
+    let other = dir.path().join("other");
+    fs::create_dir_all(workspace.join(".codewhale")).unwrap();
+    fs::create_dir_all(other.join(".codewhale")).unwrap();
+    let _trust = mark_workspace_trusted(&workspace);
+    fs::write(&global_path, r#"{"servers": {}}"#).unwrap();
+    let body = r#"{"servers": {"project": {"command": "node", "args": ["a.js"]}}}"#;
+    fs::write(workspace.join(".codewhale").join("mcp.json"), body).unwrap();
+    fs::write(other.join(".codewhale").join("mcp.json"), body).unwrap();
+
+    let reviewed = project_authority::review_project_mcp(&workspace).unwrap();
+    let key = workspace.canonicalize().unwrap();
+    let key = key.to_string_lossy().replace('\\', "\\\\");
+    fs::write(
+        workspace.join(".codewhale").join("config.toml"),
+        format!(
+            "mcp_sha256 = \"{d}\"\n[projects.\"{key}\"]\ntrust_level = \"trusted\"\nmcp_sha256 = \"{d}\"\n",
+            d = reviewed.digest
+        ),
+    )
+    .unwrap();
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+    assert!(!cfg.servers.contains_key("project"));
+
+    approve_project_mcp_for_test(&workspace);
+    let cfg = load_config_with_workspace(&global_path, &other).unwrap();
+    assert!(
+        !cfg.servers.contains_key("project"),
+        "an approval is bound to one workspace"
+    );
+    assert!(
+        project_authority::approve_project_mcp(&other, &reviewed.digest).is_err(),
+        "an untrusted workspace cannot be approved"
+    );
+}
+
+#[test]
+fn project_mcp_approval_refuses_invalid_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("workspace");
+    fs::create_dir_all(workspace.join(".codewhale")).unwrap();
+    let _trust = mark_workspace_trusted(&workspace);
+    let path = workspace.join(".codewhale").join("mcp.json");
+
+    fs::write(&path, "{ not json").unwrap();
+    let reviewed = project_authority::review_project_mcp(&workspace).unwrap();
+    assert!(project_authority::approve_project_mcp(&workspace, &reviewed.digest).is_err());
+
+    fs::write(
+        &path,
+        r#"{"servers": {"project": {"command": "node", "cwd": "../outside"}}}"#,
+    )
+    .unwrap();
+    let reviewed = project_authority::review_project_mcp(&workspace).unwrap();
+    let error = project_authority::approve_project_mcp(&workspace, &reviewed.digest).unwrap_err();
+    assert!(error.contains("must stay within workspace"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn project_mcp_approval_refuses_a_symlinked_project_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let global_path = dir.path().join("global-mcp.json");
+    let workspace = dir.path().join("workspace");
+    let project_dir = workspace.join(".codewhale");
+    fs::create_dir_all(&project_dir).unwrap();
+    let _trust = mark_workspace_trusted(&workspace);
+    fs::write(&global_path, r#"{"servers": {}}"#).unwrap();
+    fs::write(
+        project_dir.join("mcp.json"),
+        r#"{"servers": {"project": {"command": "node", "args": ["a.js"]}}}"#,
+    )
+    .unwrap();
+    approve_project_mcp_for_test(&workspace);
+    assert!(
+        load_config_with_workspace(&global_path, &workspace)
+            .unwrap()
+            .servers
+            .contains_key("project")
+    );
+
+    let moved = dir.path().join("moved");
+    fs::rename(&project_dir, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &project_dir).unwrap();
+
+    assert!(project_authority::review_project_mcp(&workspace).is_err());
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+    assert!(!cfg.servers.contains_key("project"));
+}
+
+#[test]
+fn product_edits_of_an_approved_project_file_keep_its_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let global_path = dir.path().join("global-mcp.json");
+    let workspace = dir.path().join("workspace");
+    let project_dir = workspace.join(".codewhale");
+    fs::create_dir_all(&project_dir).unwrap();
+    let _trust = mark_workspace_trusted(&workspace);
+    fs::write(&global_path, r#"{"servers": {}}"#).unwrap();
+    let project_path = project_dir.join("mcp.json");
+    fs::write(
+        &project_path,
+        r#"{"servers": {"project": {"command": "node", "args": ["a.js"]}, "second": {"command": "node", "args": ["b.js"]}}}"#,
+    )
+    .unwrap();
+    approve_project_mcp_for_test(&workspace);
+
+    set_server_enabled(&project_path, "project", false).unwrap();
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+    assert!(!cfg.servers["project"].is_enabled());
+    assert!(cfg.servers.contains_key("second"));
+
+    fs::write(
+        &project_path,
+        r#"{"servers": {"project": {"command": "node", "args": ["evil.js"]}}}"#,
+    )
+    .unwrap();
+    let _ = set_server_enabled(&project_path, "project", true);
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+    assert!(
+        !cfg.servers.contains_key("project"),
+        "an edit on top of unreviewed bytes does not carry the approval"
+    );
+}
+
+#[test]
 fn workspace_mcp_config_ignores_project_local_legacy_trust_marker() {
     let dir = tempfile::tempdir().unwrap();
     let global_path = dir.path().join("global-mcp.json");
@@ -2457,6 +2688,7 @@ fn workspace_mcp_config_resolves_relative_cwd_from_workspace() {
         r#"{"servers": {"project": {"command": "node", "args": ["server.js"], "cwd": "tools/mcp"}}}"#,
     )
     .unwrap();
+    approve_project_mcp_for_test(&workspace);
 
     let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
@@ -2482,6 +2714,7 @@ fn workspace_mcp_config_rejects_project_cwd_escape() {
         r#"{"servers": {"project": {"command": "node", "args": ["server.js"], "cwd": "../outside"}}}"#,
     )
     .unwrap();
+    record_project_mcp_receipt_for_test(&workspace);
 
     let err = load_config_with_workspace(&global_path, &workspace)
         .expect_err("project MCP cwd escape must be rejected");
@@ -2511,6 +2744,7 @@ fn workspace_mcp_config_rejects_symlinked_project_cwd_escape() {
         r#"{"servers": {"project": {"command": "node", "args": ["server.js"], "cwd": "tools"}}}"#,
     )
     .unwrap();
+    record_project_mcp_receipt_for_test(&workspace);
 
     let err = load_config_with_workspace(&global_path, &workspace)
         .expect_err("project MCP symlink cwd escape must be rejected");
@@ -2564,6 +2798,7 @@ async fn workspace_mcp_pool_reload_picks_up_project_config_creation() {
         r#"{"servers": {"project": {"command": "php", "args": ["artisan", "boost:mcp"]}}}"#,
     )
     .unwrap();
+    approve_project_mcp_for_test(&workspace);
 
     assert!(pool.reload_if_config_changed().await.unwrap());
     let names: std::collections::BTreeSet<String> = pool.server_names().into_iter().collect();
@@ -2599,6 +2834,7 @@ async fn workspace_mcp_pool_reload_picks_up_project_config_after_workspace_trust
     assert_eq!(pool.server_names(), vec!["global".to_string()]);
 
     write_workspace_trust_config(&trust_env.config_path, &workspace);
+    approve_project_mcp_for_test(&workspace);
 
     assert!(pool.reload_if_config_changed().await.unwrap());
     let names: std::collections::BTreeSet<String> = pool.server_names().into_iter().collect();
@@ -2627,6 +2863,7 @@ async fn workspace_mcp_pool_reload_drops_project_config_after_workspace_trust_re
         r#"{"servers": {"project": {"command": "php", "args": ["artisan", "boost:mcp"]}}}"#,
     )
     .unwrap();
+    approve_project_mcp_for_test(&workspace);
 
     let mut pool = McpPool::from_config_path_with_workspace(&global_path, &workspace)
         .unwrap()
@@ -2663,6 +2900,7 @@ async fn workspace_mcp_pool_reload_drops_project_config_after_deletion() {
         r#"{"servers": {"project": {"command": "php", "args": ["artisan", "boost:mcp"]}}}"#,
     )
     .unwrap();
+    approve_project_mcp_for_test(&workspace);
 
     let mut pool = McpPool::from_config_path_with_workspace(&global_path, &workspace)
         .unwrap()

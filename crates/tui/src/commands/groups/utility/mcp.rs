@@ -16,7 +16,7 @@ const CONTAINER_USE_SOURCE: &str = "https://github.com/dagger/container-use";
 pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
     name: "mcp",
     aliases: &["mcps"],
-    usage: "/mcp [init|import|import approve <name>|import decline <name>|recommendations|add recommended <id>|add stdio <name> <command> [args...]|add http <name> <url>|enable <name>|disable <name>|remove <name>|retry <name>|doctor|validate|restart|reload]",
+    usage: "/mcp [init|review|approve <digest>|revoke|import|import approve <name>|import decline <name>|recommendations|add recommended <id>|add stdio <name> <command> [args...]|add http <name> <url>|enable <name>|disable <name>|remove <name>|retry <name>|doctor|validate|restart|reload]",
     description_key: "cmd_mcp_description",
 };
 
@@ -60,6 +60,14 @@ fn mcp(presentation: &mut dyn CommandPresentationContext, args: Option<&str>) ->
         "init" => CommandResult::action(AppAction::Mcp(McpUiAction::Init {
             force: parts.any(|part| part == "--force" || part == "-f"),
         })),
+        "review" => CommandResult::action(AppAction::Mcp(McpUiAction::ProjectReview)),
+        "approve" => match parts.next() {
+            Some(digest) => CommandResult::action(AppAction::Mcp(McpUiAction::ProjectApprove {
+                digest: digest.to_string(),
+            })),
+            None => CommandResult::error("Usage: /mcp approve <digest>"),
+        },
+        "revoke" => CommandResult::action(AppAction::Mcp(McpUiAction::ProjectRevoke)),
         "recommend" | "recommended" | "recommendations" => {
             CommandResult::message(recommended_mcp_text(presentation))
         }
@@ -132,7 +140,7 @@ fn mcp(presentation: &mut dyn CommandPresentationContext, args: Option<&str>) ->
             CommandResult::action(AppAction::Mcp(McpUiAction::Reload))
         }
         _ => CommandResult::error(
-            "Usage: /mcp [init|import|recommendations|add recommended <id>|add stdio <name> <command> [args...]|add http <name> <url>|enable <name>|disable <name>|remove <name>|login <name>|logout <name>|retry <name>|doctor|validate|restart|reload]",
+            "Usage: /mcp [init|review|approve <digest>|revoke|import|recommendations|add recommended <id>|add stdio <name> <command> [args...]|add http <name> <url>|enable <name>|disable <name>|remove <name>|login <name>|logout <name>|retry <name>|doctor|validate|restart|reload]",
         ),
     }
 }
