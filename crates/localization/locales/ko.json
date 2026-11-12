@@ -25,6 +25,7 @@
   "TerminalDockLive": "실행 중",
   "ExtensionPromptUnavailable": "확장 기능의 지침을 사용할 수 없습니다. /plugin show에서 확인하세요.",
   "ProfileConstitutionUnavailableLocal": "Codewhale 계정 설정을 불러오지 못해 이번 턴은 로컬 설정을 사용합니다. 공급자 키는 계속 사용할 수 있으며, 계정 설정을 복원하려면 codewhale login을 실행하세요.",
+  "AccountPreferencesNotLoaded": "계정을 불러오지 못했습니다. {command}을 실행하세요. 공급자 키는 계속 사용할 수 있습니다.",
   "ComposerOversizedSubmitHeld": "전송하지 못했습니다. 메시지가 {limit}자를 초과하며 붙여넣기 파일로 저장할 수 없습니다({error}). 전체 텍스트는 입력란에 그대로 있습니다. 내용을 줄이거나 .codewhale/pastes에 쓰기 권한을 부여한 뒤 Enter를 다시 누르세요.",
   "ComposerOversizedSubmitHeldShort": "전송 안 됨: {limit}자 초과, 붙여넣기 파일 저장 실패.",
   "CmdPluginOwnerReport": "확장 호스트:\n  상태: {state}\n  활성 도구 ({count}): {tools}",

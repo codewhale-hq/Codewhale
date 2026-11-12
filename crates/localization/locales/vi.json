@@ -25,6 +25,7 @@
   "TerminalDockLive": "đang chạy",
   "ExtensionPromptUnavailable": "Không thể tải hướng dẫn của tiện ích mở rộng; kiểm tra /plugin show.",
   "ProfileConstitutionUnavailableLocal": "Không thể tải tùy chọn tài khoản Codewhale nên lượt này dùng cài đặt cục bộ. Khóa nhà cung cấp của bạn vẫn hoạt động; chạy codewhale login để khôi phục tùy chọn tài khoản.",
+  "AccountPreferencesNotLoaded": "Chưa tải được tài khoản. Chạy {command}. Khóa nhà cung cấp của bạn vẫn hoạt động.",
   "ComposerOversizedSubmitHeld": "Chưa gửi: tin nhắn vượt quá {limit} ký tự và không thể lưu thành tệp văn bản đã dán ({error}). Toàn bộ nội dung vẫn còn trong ô nhập: hãy rút ngắn hoặc cho phép ghi vào .codewhale/pastes, rồi nhấn Enter lần nữa.",
   "ComposerOversizedSubmitHeldShort": "Chưa gửi: vượt quá {limit} ký tự; chưa lưu tệp dán.",
   "CmdPluginOwnerReport": "Máy chủ tiện ích mở rộng:\n  Trạng thái: {state}\n  Công cụ đang hoạt động ({count}): {tools}",

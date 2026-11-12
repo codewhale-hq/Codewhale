@@ -185,6 +185,46 @@ fn feature_intro_shows_once_persists_then_is_idempotent() {
 }
 
 #[test]
+fn account_preferences_notice_shows_once_per_sign_in_and_can_be_dismissed() {
+    let _env_lock = lock_test_env();
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = tmp.path().join("config.toml");
+    let _env = EnvVarGuard::set(
+        "DEEPSEEK_CONFIG_PATH",
+        config_path.to_string_lossy().as_ref(),
+    );
+    let shown = |app: &App| {
+        let notice = app
+            .tr(MessageId::AccountPreferencesNotLoaded)
+            .replace("{command}", "codewhale login");
+        app.status_toasts
+            .iter()
+            .filter(|toast| toast.text == notice && toast.kind == StatusToastKind::Standing)
+            .count()
+    };
+
+    let mut app = App::new(test_options(false), &Config::default());
+    app.notify_account_preferences_not_loaded_for("first-sign-in");
+    app.notify_account_preferences_not_loaded_for("first-sign-in");
+    assert_eq!(shown(&app), 1);
+    assert_eq!(
+        Settings::load()
+            .expect("settings should load")
+            .account_preferences_notice_shown
+            .as_deref(),
+        Some("first-sign-in")
+    );
+    assert!(app.dismiss_account_preferences_notice());
+    assert_eq!(shown(&app), 0);
+
+    let mut later_session = App::new(test_options(false), &Config::default());
+    later_session.notify_account_preferences_not_loaded_for("first-sign-in");
+    assert_eq!(shown(&later_session), 0, "the same sign-in is told once");
+    later_session.notify_account_preferences_not_loaded_for("second-sign-in");
+    assert_eq!(shown(&later_session), 1, "a later sign-in is told again");
+}
+
+#[test]
 fn initial_input_scenario() {
     // Scenario consolidation of: initial_input_prefill_waits_for_manual_submit, initial_input_submit_marks_startup_dispatch
     // from initial_input_prefill_waits_for_manual_submit

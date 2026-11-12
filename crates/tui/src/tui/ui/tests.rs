@@ -35488,23 +35488,41 @@ fn extension_prompt_origin_keeps_denials_and_other_policy_holds() {
 }
 
 #[test]
-fn account_profile_fallback_notice_stays_in_the_transcript() {
+fn account_profile_fallback_notice_is_a_standing_notice_outside_the_transcript() {
     let _home = SettingsHomeGuard::new();
     let mut app = App::new(create_test_options(), &Config::default());
-    let notice = app
+    let engine_notice = app
         .tr(MessageId::ProfileConstitutionUnavailableLocal)
         .to_string();
     let before = app.history.len();
-    assert!(super::event_loop::apply_engine_status(
+    let status_before = app.status_message.clone();
+    assert!(!super::event_loop::apply_engine_status(
         &mut app,
-        notice.clone()
+        engine_notice
     ));
+    assert_eq!(app.history.len(), before);
+    assert_eq!(app.status_message, status_before);
     assert!(!super::event_loop::apply_engine_status(
         &mut app,
         "Executing tools sequentially".into()
     ));
-    assert_eq!(app.history.len(), before + 1);
-    assert!(matches!(&app.history[before], HistoryCell::System { content } if *content == notice));
+    assert_eq!(app.history.len(), before);
+    let notice = app
+        .tr(MessageId::AccountPreferencesNotLoaded)
+        .replace("{command}", "codewhale login");
+    let standing = |app: &App| {
+        app.status_toasts
+            .iter()
+            .find(|toast| toast.text == notice)
+            .cloned()
+    };
+    app.sync_status_message_to_toasts();
+    let shown = standing(&app).expect("a later routine status does not erase the notice");
+    assert_eq!(shown.level, StatusToastLevel::Warning);
+    assert_eq!(shown.ttl_ms, None);
+    assert!(app.dismiss_account_preferences_notice());
+    assert!(standing(&app).is_none());
+    assert!(!app.dismiss_account_preferences_notice());
 }
 
 #[test]
