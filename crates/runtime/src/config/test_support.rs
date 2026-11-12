@@ -588,12 +588,11 @@ pub fn session_custom_provider_config(name: &str, kind: &str, base_url: &str) ->
 // provider is contacted: the assertions are about which host string a route
 // resolves to, and about the classifications derived from it.
 
-/// A managed-config guard pointing at a path that does not exist, so an
+/// A managed-config guard pointing at an empty managed file, so an
 /// operator-installed managed file on the developer's machine cannot leak into
 /// these route assertions.
 pub fn no_managed_config(root: &std::path::Path) -> EnvVarGuard {
-    EnvVarGuard::set(
-        "DEEPSEEK_MANAGED_CONFIG_PATH",
-        root.join("absent-managed.toml"),
-    )
+    let path = root.join("empty-managed.toml");
+    std::fs::write(&path, "").expect("write empty managed config");
+    EnvVarGuard::set("CODEWHALE_MANAGED_CONFIG_PATH", path)
 }
