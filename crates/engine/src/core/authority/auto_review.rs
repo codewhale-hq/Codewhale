@@ -2152,10 +2152,7 @@ fn git_push_refspec_is_protected(refspec: &str) -> bool {
     // Tag-like names (`v1`, `v0.9.1`): git resolves branch-vs-tag on the
     // server, so treat them as publishes.
     let mut chars = lower.chars();
-    if chars.next() == Some('v') && chars.next().is_some_and(|ch| ch.is_ascii_digit()) {
-        return true;
-    }
-    false
+    chars.next() == Some('v') && chars.next().is_some_and(|ch| ch.is_ascii_digit())
 }
 
 fn git_tag_tokens_are_publish_like(tokens: &[&str]) -> bool {
