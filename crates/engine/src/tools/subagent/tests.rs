@@ -12660,6 +12660,81 @@ fn create_isolated_worktree_creates_branch_checkout_outside_parent_repo() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn isolated_worktree_setup_runs_no_repository_hooks_or_filters() {
+    use std::os::unix::fs::PermissionsExt;
+    let (harness, repo) = git_repo_in_harness();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args([
+                "-c",
+                "user.name=codewhale Tests",
+                "-c",
+                "user.email=tests@example.com",
+            ])
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .expect("git should run");
+        assert!(output.status.success(), "git {args:?} failed");
+    };
+    std::fs::write(repo.join("payload.txt"), "payload\n").expect("payload");
+    std::fs::write(repo.join(".gitattributes"), "*.txt filter=fixture\n").expect("attributes");
+    git(&["add", "payload.txt", ".gitattributes"]);
+    git(&["commit", "-m", "payload"]);
+
+    let seen = harness.path().join("helper-ran");
+    let script = harness.path().join("helper.sh");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\necho ran >> '{}'\ncat\n", seen.display()),
+    )
+    .expect("script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    for hook in ["post-checkout", "reference-transaction"] {
+        let path = repo.join(".git").join("hooks").join(hook);
+        std::fs::create_dir_all(path.parent().expect("hooks dir")).expect("hooks dir");
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\necho {hook} >> '{}'\nexit 0\n", seen.display()),
+        )
+        .expect("hook");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    git(&["config", "filter.fixture.smudge", &script.to_string_lossy()]);
+
+    let path = create_isolated_worktree(
+        &repo,
+        &SubAgentWorktreeRequest {
+            branch: Some("codex/agent-no-helpers".to_string()),
+            path: Some(PathBuf::from("no-helpers")),
+            base_ref: None,
+        },
+        Some("no-helpers"),
+        &FleetRole::Builder,
+    )
+    .expect("worktree should be created");
+
+    assert!(
+        path.join("payload.txt").is_file(),
+        "the checkout is complete"
+    );
+    let observed = std::fs::read_to_string(&seen).unwrap_or_default();
+    assert!(
+        observed.is_empty(),
+        "repository hooks and filters ran during worktree setup: {observed:?}"
+    );
+
+    worktree::remove_unstarted_worktree(&path);
+    assert!(!path.exists(), "cleanup removes the checkout");
+    let observed = std::fs::read_to_string(&seen).unwrap_or_default();
+    assert!(
+        observed.is_empty(),
+        "repository hooks and filters ran during worktree cleanup: {observed:?}"
+    );
+}
+
 #[test]
 fn unchanged_isolated_worktree_is_removed_and_changed_one_is_kept() {
     let (harness, repo) = git_repo_in_harness();

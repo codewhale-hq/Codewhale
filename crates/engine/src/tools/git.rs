@@ -1281,6 +1281,70 @@ mod tests {
         run(&["commit", "-q", "-m", message]);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_status_runs_no_nested_repository_filter_despite_gitmodules_ignore_entry() {
+        use std::os::unix::fs::PermissionsExt;
+        if !git_available() {
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let helpers = tempdir().expect("helpers");
+        let marker = helpers.path().join("ran");
+        let script = helpers.path().join("clean.sh");
+        fs::write(
+            &script,
+            format!("#!/bin/sh\necho ran >> '{}'\ncat\n", marker.display()),
+        )
+        .expect("write script");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let run = |dir: &Path, args: &[&str]| {
+            let status = codewhale_dependencies::Git::status(args, dir).expect("git should spawn");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        let repo = tmp.path().join("repo");
+        let nested = repo.join("nested");
+        fs::create_dir_all(&nested).expect("mkdir");
+        init_git_repo(&repo);
+        init_git_repo(&nested);
+        fs::write(nested.join(".gitattributes"), "*.txt filter=fixture\n").expect("attrs");
+        fs::write(nested.join("tracked.txt"), "one\n").expect("write");
+        commit_all(&nested, "nested");
+        run(
+            &nested,
+            &["config", "filter.fixture.clean", &script.to_string_lossy()],
+        );
+        fs::write(
+            repo.join(".gitmodules"),
+            "[submodule \"nested\"]\n\tpath = nested\n\tignore = none\n",
+        )
+        .expect("gitmodules");
+        commit_all(&repo, "root");
+        fs::write(nested.join("tracked.txt"), "two\n").expect("modify");
+        fs::File::options()
+            .write(true)
+            .open(nested.join("tracked.txt"))
+            .and_then(|file| file.set_modified(std::time::UNIX_EPOCH))
+            .expect("age the file so git re-reads it");
+
+        let control = codewhale_dependencies::Git::output(&["status", "--porcelain"], &repo)
+            .expect("control status");
+        assert!(control.status.success());
+        assert!(marker.exists(), "positive control: nested filter");
+        fs::remove_file(&marker).expect("reset");
+
+        let status = GitStatusTool
+            .execute(json!({}), &ToolContext::new(&repo))
+            .await
+            .expect("git_status");
+        assert!(status.success, "{}", status.content);
+        assert!(
+            !marker.exists(),
+            "git_status ran a nested repository filter: {}",
+            fs::read_to_string(&marker).unwrap_or_default()
+        );
+    }
+
     /// The read-only git tools must not run programs named by the
     /// workspace's own config: `core.fsmonitor` would otherwise execute on
     /// every `git_status`.

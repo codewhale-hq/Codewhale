@@ -459,6 +459,66 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn status_mention_runs_no_nested_repository_filter_despite_gitmodules_ignore_entry() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let marker = outside.path().join("marker");
+        let script = outside.path().join("clean.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho ran >> '{}'\ncat\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let root = dir.path().join("repo");
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        init_repo(&root);
+        init_repo(&nested);
+        std::fs::write(nested.join(".gitattributes"), "*.txt filter=fixture\n").unwrap();
+        std::fs::write(nested.join("tracked.txt"), "one\n").unwrap();
+        commit_all(&nested, "nested");
+        let configured = Command::new("git")
+            .args(["config", "filter.fixture.clean"])
+            .arg(&script)
+            .current_dir(&nested)
+            .status()
+            .unwrap();
+        assert!(configured.success());
+        std::fs::write(
+            root.join(".gitmodules"),
+            "[submodule \"nested\"]\n\tpath = nested\n\tignore = none\n",
+        )
+        .unwrap();
+        commit_all(&root, "root");
+        std::fs::write(nested.join("tracked.txt"), "two\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(nested.join("tracked.txt"))
+            .and_then(|file| file.set_modified(std::time::UNIX_EPOCH))
+            .unwrap();
+
+        let control = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(control.status.success());
+        assert!(marker.exists(), "positive control: nested filter");
+        std::fs::remove_file(&marker).unwrap();
+
+        let payload = resolve_git_mention(GitMentionKind::Status, &root);
+        assert!(payload.unavailable_reason.is_none(), "{}", payload.block);
+        assert!(
+            !marker.exists(),
+            "@git ran a nested repository filter: {}",
+            std::fs::read_to_string(&marker).unwrap_or_default()
+        );
+    }
+
     #[test]
     fn status_reports_branch_and_dirty_paths() {
         let dir = tempfile::tempdir().unwrap();

@@ -2689,6 +2689,7 @@ pub(super) async fn worktree_create(
             std::fs::write(&exclude, format!("{current}{separator}{line}\n"))
                 .map_err(|error| ApiError::internal(format!("update info/exclude: {error}")))?;
         }
+        codewhale_lane::set_git_command(Git::workspace_command);
         codewhale_lane::provision_worktree(&spec)
             .map_err(|error| ApiError::bad_request(format!("{error:#}")))?;
         Ok(())

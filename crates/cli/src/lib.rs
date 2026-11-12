@@ -2178,6 +2178,7 @@ fn install_rustls_crypto_provider() {
 
 pub fn run_cli() -> std::process::ExitCode {
     install_rustls_crypto_provider();
+    codewhale_engine::install_lane_git();
 
     let outcome = run();
     codewhale_app_server::runtime_api::listener::discard_runtime_listener_handoff();

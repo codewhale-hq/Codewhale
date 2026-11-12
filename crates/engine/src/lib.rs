@@ -96,3 +96,7 @@ pub mod work_graph;
 pub(crate) fn platform_client_builder() -> reqwest::ClientBuilder {
     codewhale_net::proxy::install_loopback_proxy(codewhale_release::tls::reqwest_client_builder())
 }
+
+pub fn install_lane_git() {
+    codewhale_lane::set_git_command(codewhale_dependencies::Git::workspace_command);
+}

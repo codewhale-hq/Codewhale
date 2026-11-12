@@ -888,11 +888,9 @@ fn ops_git_candidates() -> Vec<PathBuf> {
 }
 
 fn git_origin_main_sha(repo: &Path) -> Option<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    let output = codewhale_dependencies::Git::review_base(repo)
+        .ok()?
         .args(["rev-parse", "origin/main"])
-        .stdin(Stdio::null())
         .output()
         .ok()?;
     if !output.status.success() {
@@ -926,9 +924,7 @@ pub fn materialize_ops_origin_main() -> Result<PathBuf> {
         return Ok(dest);
     }
     fs::create_dir_all(&dest).with_context(|| format!("Failed to create {}", dest.display()))?;
-    let archive = Command::new("git")
-        .arg("-C")
-        .arg(&repo)
+    let archive = codewhale_dependencies::Git::workspace_command(&repo)?
         .args([
             "archive",
             "origin/main",
@@ -939,7 +935,6 @@ pub fn materialize_ops_origin_main() -> Result<PathBuf> {
             AUTO_MERGE_PR_SCRIPT,
             "agent-workstreams/AUTO_MERGE.toml",
         ])
-        .stdin(Stdio::null())
         .output()
         .context("git archive origin/main")?;
     if !archive.status.success() {

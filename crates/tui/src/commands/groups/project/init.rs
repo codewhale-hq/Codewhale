@@ -8,7 +8,6 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use codewhale_command_contract::handler::CommandContexts;
 
@@ -416,11 +415,9 @@ fn strip_url_credentials(url: &str) -> String {
 /// worktrees where `.git` is a file instead of a directory.
 fn git_root(workspace: &Path) -> Option<PathBuf> {
     let direct_git_marker = workspace.join(".git");
-    let discovered = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(workspace)
-        .output()
+    let discovered = codewhale_dependencies::Git::review_base(workspace)
         .ok()
+        .and_then(|mut command| command.args(["rev-parse", "--show-toplevel"]).output().ok())
         .and_then(|out| {
             if out.status.success() {
                 String::from_utf8(out.stdout)
@@ -440,9 +437,9 @@ fn gather_git_info(workspace: &Path) -> Option<String> {
     let git_root = git_root(workspace)?;
 
     let run = |args: &[&str]| -> Option<String> {
-        Command::new("git")
+        codewhale_dependencies::Git::review_base(&git_root)
+            .ok()?
             .args(args)
-            .current_dir(&git_root)
             .output()
             .ok()
             .and_then(|out| {
@@ -471,14 +468,19 @@ fn gather_git_info(workspace: &Path) -> Option<String> {
     }
 
     // Status summary.
-    let status_output = Command::new("git")
-        .args(["status", "--porcelain=v1", "--untracked-files=no"])
-        // Read-only probe: never take the index lock in the user's repo
-        // (#5617).
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .current_dir(&git_root)
-        .output()
-        .ok();
+    let status_output = codewhale_dependencies::Git::workspace_command(&git_root)
+        .ok()
+        .and_then(|mut command| {
+            command
+                .args([
+                    "status",
+                    "--porcelain=v1",
+                    "--untracked-files=no",
+                    "--ignore-submodules=dirty",
+                ])
+                .output()
+                .ok()
+        });
     if let Some(out) = status_output
         && out.status.success()
     {
@@ -866,6 +868,7 @@ fn init_contextual(contexts: CommandContexts<'_>, _arg: Option<&str>) -> Command
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
     use tempfile::TempDir;
 
     // --- init() integration tests ---
@@ -1104,6 +1107,54 @@ mod tests {
     fn gather_git_info_no_repo_returns_none() {
         let tmpdir = TempDir::new().unwrap();
         assert!(gather_git_info(tmpdir.path()).is_none());
+    }
+
+    #[cfg(unix)]
+    fn repository_with_fsmonitor(
+        seen: &std::path::Path,
+        hooks: &std::path::Path,
+    ) -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = tempfile::TempDir::new().unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .expect("git runs");
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(repo.path().join("tracked.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "first"]);
+        let script = hooks.join("fsmonitor.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho ran >> '{}'\nexit 1\n", seen.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(&["config", "core.fsmonitor", &script.to_string_lossy()]);
+        std::fs::write(repo.path().join("tracked.txt"), "two\n").unwrap();
+        repo
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gather_git_info_runs_no_repository_fsmonitor() {
+        let hooks = tempfile::TempDir::new().unwrap();
+        let seen = hooks.path().join("seen");
+        let repo = repository_with_fsmonitor(&seen, hooks.path());
+        let info = gather_git_info(repo.path()).expect("repository info");
+        assert!(info.contains("Branch: main"), "{info}");
+        let observed = std::fs::read_to_string(&seen).unwrap_or_default();
+        assert!(
+            observed.is_empty(),
+            "a repository fsmonitor ran while gathering git info: {observed:?}"
+        );
     }
 
     #[test]

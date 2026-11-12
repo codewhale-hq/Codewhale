@@ -76,13 +76,9 @@ fn sanitize_branch_name(branch: &str) -> String {
 
 /// Run a git query in `workspace` and return trimmed stdout on success.
 fn git_stdout(workspace: &Path, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(workspace)
+    let output = codewhale_dependencies::Git::workspace_command(workspace)
+        .ok()?
         .args(args)
-        // Read-only probe: never take the index lock in the user's repo
-        // (#5617).
-        .env("GIT_OPTIONAL_LOCKS", "0")
         .output()
         .ok()?;
     if !output.status.success() {
@@ -135,7 +131,11 @@ pub(crate) fn workspace_fingerprint(workspace: &Path) -> String {
     let branch = git_stdout(workspace, &["rev-parse", "--abbrev-ref", "HEAD"])
         .map(|branch| sanitize_branch_name(&branch))
         .filter(|branch| !branch.is_empty());
-    let dirty = git_stdout(workspace, &["status", "--porcelain"]).map(|status| {
+    let dirty = git_stdout(
+        workspace,
+        &["status", "--porcelain", "--ignore-submodules=dirty"],
+    )
+    .map(|status| {
         status
             .lines()
             .filter(|line| !line.trim().is_empty())
@@ -442,6 +442,57 @@ mod tests {
         assert!(
             !fingerprint.contains(&tmp.path().display().to_string()),
             "fingerprint leaked the workspace path: {fingerprint}"
+        );
+    }
+
+    #[cfg(unix)]
+    fn repository_with_fsmonitor(
+        seen: &std::path::Path,
+        hooks: &std::path::Path,
+    ) -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = tempfile::TempDir::new().unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .expect("git runs");
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(repo.path().join("tracked.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "first"]);
+        let script = hooks.join("fsmonitor.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho ran >> '{}'\nexit 1\n", seen.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(&["config", "core.fsmonitor", &script.to_string_lossy()]);
+        std::fs::write(repo.path().join("tracked.txt"), "two\n").unwrap();
+        repo
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_fingerprint_runs_no_repository_fsmonitor() {
+        let hooks = tempfile::TempDir::new().unwrap();
+        let seen = hooks.path().join("seen");
+        let repo = repository_with_fsmonitor(&seen, hooks.path());
+        let fingerprint = workspace_fingerprint(repo.path());
+        assert!(
+            fingerprint.contains("1 dirty files"),
+            "the dirty count is still reported: {fingerprint}"
+        );
+        let observed = std::fs::read_to_string(&seen).unwrap_or_default();
+        assert!(
+            observed.is_empty(),
+            "a repository fsmonitor ran while fingerprinting the workspace: {observed:?}"
         );
     }
 

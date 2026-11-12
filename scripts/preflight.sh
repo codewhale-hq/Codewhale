@@ -91,6 +91,8 @@ step "dead-code budget" "python3 scripts/check-dead-code-budget.py --update" \
   python3 scripts/check-dead-code-budget.py
 step "blocking-calls budget" "python3 scripts/check-blocking-calls-budget.py --update" \
   python3 scripts/check-blocking-calls-budget.py
+step "bare git spawns" "start the command from codewhale_dependencies::Git" \
+  python3 scripts/check-bare-git.py
 if command -v node >/dev/null 2>&1; then
   step "website generated facts" \
     "cd web && npm ci (if node_modules is missing) && npm run prebuild, then commit web/lib/facts.generated.ts and web/data/*.generated.json and web/data/agent-docs.release.json and agent-docs.release-index.json (check-facts.mjs and check-release-docs.mjs name the stale file); for a stale docs/RUNTIME_ROUTES.md run node web/scripts/check-runtime-routes.mjs --write, then node web/scripts/derive-facts.mjs" \

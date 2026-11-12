@@ -3,10 +3,29 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use chrono::DateTime;
+
+pub type GitCommandFn = fn(&Path) -> Result<Command>;
+
+static GIT_COMMAND: OnceLock<GitCommandFn> = OnceLock::new();
+
+pub fn set_git_command(constructor: GitCommandFn) {
+    let _ = GIT_COMMAND.set(constructor);
+}
+
+fn git_command(dir: &Path) -> Result<Command> {
+    #[cfg(test)]
+    let constructor = GIT_COMMAND.get_or_init(|| tests::plain_git_command);
+    #[cfg(not(test))]
+    let constructor = GIT_COMMAND
+        .get()
+        .context("no git command was configured for lane worktrees")?;
+    constructor(dir)
+}
 
 /// Spec for an isolated worktree + branch for a lane.
 #[derive(Debug, Clone)]
@@ -77,8 +96,7 @@ pub fn provision_worktree(spec: &WorktreeProvision) -> Result<ProvisionedWorktre
     // Capture git output instead of inheriting the caller's terminal. Runtime
     // callers include the raw-mode TUI launch screen, where even one inherited
     // progress/error line corrupts the alternate-screen buffer.
-    let output = Command::new("git")
-        .current_dir(&spec.repo_root)
+    let output = git_command(&spec.repo_root)?
         .args([
             "worktree",
             "add",
@@ -157,15 +175,17 @@ pub fn remove_worktree_if_expired(
     }
 
     // Best-effort: git worktree remove --force, then rm -rf.
-    let removed = Command::new("git")
-        .current_dir(&details.repo_root)
-        .args([
-            "worktree",
-            "remove",
-            "--force",
-            &worktree_path.to_string_lossy(),
-        ])
-        .status()
+    let removed = git_command(&details.repo_root)
+        .and_then(|mut command| {
+            Ok(command
+                .args([
+                    "worktree",
+                    "remove",
+                    "--force",
+                    &worktree_path.to_string_lossy(),
+                ])
+                .status()?)
+        })
         .is_ok_and(|status| status.success());
     if !removed && worktree_path.exists() && is_managed_worktree(worktree_path, &details) {
         // Re-verified immediately before the fallback: the directory may have
@@ -176,10 +196,9 @@ pub fn remove_worktree_if_expired(
     if !removed {
         // The directory is gone but git still has it registered, and
         // `git worktree add` refuses a path it already knows about.
-        let _ = Command::new("git")
-            .current_dir(&details.repo_root)
-            .args(["worktree", "prune"])
-            .status();
+        if let Ok(mut command) = git_command(&details.repo_root) {
+            let _ = command.args(["worktree", "prune"]).status();
+        }
     }
     if let Some(branch) = details.branch.as_deref() {
         delete_lane_branch(&details.repo_root, branch);
@@ -199,8 +218,8 @@ struct WorktreeDetails {
 }
 
 fn worktree_details(worktree_path: &Path) -> Option<WorktreeDetails> {
-    let listing = Command::new("git")
-        .current_dir(worktree_path)
+    let listing = git_command(worktree_path)
+        .ok()?
         .args(["worktree", "list", "--porcelain"])
         .output()
         .ok()
@@ -214,11 +233,14 @@ fn worktree_details(worktree_path: &Path) -> Option<WorktreeDetails> {
     // The main worktree is listed first, so its path is the repository root.
     let repo_root = worktrees.first().cloned()?;
 
-    let branch = Command::new("git")
-        .current_dir(worktree_path)
-        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
-        .output()
+    let branch = git_command(worktree_path)
         .ok()
+        .and_then(|mut command| {
+            command
+                .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+                .output()
+                .ok()
+        })
         .filter(|output| output.status.success())
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
         .filter(|branch| !branch.is_empty());
@@ -291,10 +313,8 @@ fn is_managed_worktree(worktree_path: &Path, details: &WorktreeDetails) -> bool 
 /// not a mandate to throw it away — that one is kept, and the name stays taken
 /// until a human decides otherwise.
 fn delete_lane_branch(repo_root: &Path, branch: &str) {
-    let output = Command::new("git")
-        .current_dir(repo_root)
-        .args(["branch", "-d", branch])
-        .output();
+    let output = git_command(repo_root)
+        .and_then(|mut command| Ok(command.args(["branch", "-d", branch]).output()?));
     match output {
         Ok(output) if output.status.success() => {}
         Ok(output) => {
@@ -314,6 +334,12 @@ pub(crate) mod tests {
     use super::*;
     use std::process::Command;
     use tempfile::tempdir;
+
+    pub(super) fn plain_git_command(dir: &Path) -> Result<Command> {
+        let mut command = Command::new("git");
+        command.current_dir(dir);
+        Ok(command)
+    }
 
     pub(crate) fn init_repo(root: &Path) {
         assert!(

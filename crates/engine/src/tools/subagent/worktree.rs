@@ -130,6 +130,7 @@ pub(super) fn create_isolated_worktree(
     ensure_worktree_path_unlinked(&repo_root, &worktree_path)?;
     // One worktree implementation: the Runtime lane's (#4176). It creates the
     // parent directory and captures git output instead of inheriting the TUI.
+    crate::install_lane_git();
     codewhale_lane::provision_worktree(&codewhale_lane::WorktreeProvision {
         repo_root: repo_root.clone(),
         branch,
@@ -193,6 +194,7 @@ pub(super) fn remove_unchanged_worktree(
     if !pristine {
         return false;
     }
+    crate::install_lane_git();
     if let Err(err) = codewhale_lane::remove_worktree_if_expired(worktree, Some(0), None) {
         tracing::debug!(
             "kept unchanged sub-agent worktree {}: {err:#}",
@@ -211,6 +213,7 @@ pub(super) fn remove_unchanged_worktree(
 /// through the lane implementation, which deletes only a path git lists as a
 /// linked worktree, and the branch only when merged.
 pub(super) fn remove_unstarted_worktree(worktree: &Path) {
+    crate::install_lane_git();
     let outcome = codewhale_lane::remove_worktree_if_expired(worktree, Some(0), None);
     if outcome.is_err() || worktree.exists() {
         tracing::warn!(

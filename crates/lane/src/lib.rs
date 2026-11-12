@@ -26,6 +26,6 @@ pub use runtime::{
     TmuxRuntime, backend_for, resolve_backend, run_lane_log_proxy,
 };
 pub use worktree::{
-    ProvisionedWorktree, WorktreeProvision, provision_worktree, reject_linked_below,
-    remove_worktree_if_expired,
+    GitCommandFn, ProvisionedWorktree, WorktreeProvision, provision_worktree, reject_linked_below,
+    remove_worktree_if_expired, set_git_command,
 };

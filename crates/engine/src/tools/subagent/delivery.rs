@@ -41,24 +41,14 @@ struct GitDeliveryBaseline {
     dirty: BTreeMap<String, String>,
 }
 
-fn git_command(root: &Path) -> Command {
-    let mut command = Command::new("git");
-    command
-        .arg("-C")
-        .arg(root)
-        .args([
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.untrackedCache=false",
-        ])
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_NO_LAZY_FETCH", "1");
-    command
+fn git_command(root: &Path) -> Option<Command> {
+    let mut command = codewhale_dependencies::Git::workspace_command(root).ok()?;
+    command.args(["-c", "core.untrackedCache=false"]);
+    Some(command)
 }
 
 fn git_output(root: &Path, args: &[&str]) -> Option<std::process::Output> {
-    git_command(root).args(args).output().ok()
+    git_command(root)?.args(args).output().ok()
 }
 
 fn git(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
@@ -83,6 +73,7 @@ fn git_captured_paths(root: &Path, args: &[&str], paths: &[&str]) -> Result<Stri
     use std::io::Write as _;
     use std::process::Stdio;
     let mut child = git_command(root)
+        .ok_or_else(|| "git spawn failed".to_string())?
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -123,7 +114,13 @@ fn first_line_lossy(bytes: &[u8], max_chars: usize) -> String {
 fn status_paths(root: &Path) -> Option<BTreeSet<String>> {
     let output = git(
         root,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=dirty",
+        ],
     )?;
     let mut entries = output
         .split(|byte| *byte == 0)
@@ -336,6 +333,22 @@ impl DeliveryEvidence {
         if owned.is_empty() {
             return Clean;
         }
+        match codewhale_dependencies::Git::defines_repository_filters(&baseline.root) {
+            Ok(false) => {}
+            Ok(true) => {
+                return Failed {
+                    reason: "the repository defines its own git filters, which this checkpoint does not run; nothing was staged"
+                        .to_string(),
+                };
+            }
+            Err(_) => {
+                return Failed {
+                    reason:
+                        "the repository's git filters could not be inspected; nothing was staged"
+                            .to_string(),
+                };
+            }
+        }
         // `update-index` takes literal paths and stages every status shape:
         // edits, new files (`--add`), and deletions or rename sources whose
         // file is gone (`--remove`), where `git add <path>` would fail.
@@ -361,6 +374,8 @@ impl DeliveryEvidence {
             &baseline.root,
             &[
                 "--literal-pathspecs",
+                "-c",
+                "commit.gpgsign=false",
                 "-c",
                 "user.name=Codewhale Subagent",
                 "-c",

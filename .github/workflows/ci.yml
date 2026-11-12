@@ -606,6 +606,11 @@ jobs:
         run: |
           python3 scripts/test_check_reqwest_builders.py
           python3 scripts/check-reqwest-builders.py
+      - name: Check git spawns
+        if: needs.changes.outputs.heavy == 'true'
+        run: |
+          python3 scripts/test_check_bare_git.py
+          python3 scripts/check-bare-git.py
       # Clippy above runs with `--all-targets` (see the clippy step), so the
       # gap this ratchet covers is not "tests keep it alive" but suppression
       # itself: it refuses to let dead-code suppression rise (#4785), counting

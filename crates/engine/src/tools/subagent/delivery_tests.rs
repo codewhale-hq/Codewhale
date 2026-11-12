@@ -82,6 +82,82 @@ fn complete(manager: &mut SubAgentManager, id: &str, report: &str) -> AgentRunVe
     manager.worker_records[id].verification.clone()
 }
 
+#[cfg(unix)]
+#[test]
+fn checkpoint_commits_nothing_when_the_repository_defines_filters() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    repository(root);
+    fs::write(root.join(".gitattributes"), "secrets/* filter=crypt\n").unwrap();
+    git(root, &["config", "filter.crypt.clean", "sed 's/^/ENC:/'"]);
+    git(root, &["config", "filter.crypt.smudge", "sed 's/^ENC://'"]);
+    fs::create_dir_all(root.join("secrets")).unwrap();
+    fs::write(root.join("secrets/key.txt"), "api_key=old\n").unwrap();
+    git(root, &["add", "--", ".gitattributes", "secrets/key.txt"]);
+    git(root, &["commit", "--quiet", "-m", "encrypted"]);
+    let before = git_lines(root, &["rev-list", "--all"]);
+
+    let evidence = DeliveryEvidence::capture_for_handle(root, true);
+    fs::write(root.join("secrets/key.txt"), "api_key=PLAINTEXT\n").unwrap();
+    let changed = evidence.changed_paths(root).expect("inventory");
+    assert!(changed.contains("secrets/key.txt"), "{changed:?}");
+
+    match evidence.checkpoint_uncommitted(&changed, "worker", "wall_time_budget", true) {
+        delivery::BudgetCheckpointOutcome::Failed { reason } => {
+            assert!(reason.contains("filters"), "{reason}");
+        }
+        _ => panic!("a checkpoint was made without running the repository's filters"),
+    }
+    assert_eq!(git_lines(root, &["rev-list", "--all"]), before);
+    assert_eq!(
+        fs::read_to_string(root.join("secrets/key.txt")).unwrap(),
+        "api_key=PLAINTEXT\n"
+    );
+    assert!(
+        git_lines(root, &["diff", "--cached", "--name-only"]).is_empty(),
+        "nothing was staged"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn delivery_baseline_runs_no_repository_clean_filter() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir().unwrap();
+    let hooks = tempdir().unwrap();
+    let root = dir.path();
+    repository(root);
+    fs::write(root.join(".gitattributes"), "*.txt filter=fixture\n").unwrap();
+    fs::write(root.join("tracked.txt"), "one\n").unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "--quiet", "-m", "attributes"]);
+    let seen = hooks.path().join("seen");
+    let script = hooks.path().join("clean.sh");
+    fs::write(
+        &script,
+        format!("#!/bin/sh\necho ran >> '{}'\ncat\n", seen.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    git(
+        root,
+        &["config", "filter.fixture.clean", &script.to_string_lossy()],
+    );
+    fs::write(root.join("tracked.txt"), "two\n").unwrap();
+
+    let evidence = DeliveryEvidence::capture_for_handle(root, true);
+
+    assert!(
+        evidence.changed_paths(root).is_some(),
+        "the baseline was still captured"
+    );
+    let observed = fs::read_to_string(&seen).unwrap_or_default();
+    assert!(
+        observed.is_empty(),
+        "a repository clean filter ran during the delivery baseline: {observed:?}"
+    );
+}
+
 #[test]
 fn declared_deliverables_exclude_git_metadata_by_the_shared_rule() {
     let mut refused = vec![".GIT/config", "sub/.Git/HEAD"];
