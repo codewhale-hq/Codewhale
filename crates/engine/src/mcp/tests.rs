@@ -3343,6 +3343,51 @@ async fn call_method_answers_server_requests_instead_of_taking_them_as_the_reply
     assert_eq!(sent[2]["error"]["code"], -32601);
 }
 
+struct ReplyRefusingTransport {
+    sent: Arc<Mutex<Vec<serde_json::Value>>>,
+    responses: VecDeque<Vec<u8>>,
+}
+
+#[async_trait::async_trait]
+impl McpTransport for ReplyRefusingTransport {
+    async fn send(&mut self, msg: Vec<u8>) -> Result<()> {
+        let msg: serde_json::Value = serde_json::from_slice(&msg)?;
+        anyhow::ensure!(msg.get("method").is_some(), "status=405 Method Not Allowed");
+        self.sent.lock().unwrap().push(msg);
+        Ok(())
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>> {
+        self.responses
+            .pop_front()
+            .context("scripted transport exhausted")
+    }
+}
+
+#[tokio::test]
+async fn call_method_keeps_its_reply_when_answering_a_server_request_fails() {
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let transport = ReplyRefusingTransport {
+        sent: Arc::clone(&sent),
+        responses: VecDeque::from([
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "ping"})),
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"ok": true}})),
+        ]),
+    };
+    let mut conn = test_connection(Box::new(transport));
+
+    let result = conn
+        .call_method("tools/call", serde_json::json!({"name": "echo"}), 1)
+        .await
+        .unwrap();
+
+    assert_eq!(result, serde_json::json!({"ok": true}));
+    assert_eq!(conn.state, ConnectionState::Ready);
+    let sent = sent.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["method"], "tools/call");
+}
+
 #[tokio::test]
 async fn call_method_invalid_json_includes_server_output_preview() {
     let sent = Arc::new(Mutex::new(Vec::new()));
@@ -6797,6 +6842,60 @@ async fn custom_headers_applied_to_get_preflight() {
         header_seen.load(AtomicOrdering::SeqCst),
         "GET preflight must include user-configured custom headers"
     );
+}
+
+#[tokio::test]
+async fn refused_reply_to_a_server_request_does_not_fall_back_to_sse() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let _env = crate::test_support::lock_test_env();
+    let _lock = lock_mcp_loopback_tests().await;
+    let _no_proxy = crate::test_support::EnvVarGuard::set("NO_PROXY", "*,127.0.0.1");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let requests_srv = Arc::clone(&requests);
+
+    let server = tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = socket.read(&mut buf).await.unwrap();
+            let request_line = String::from_utf8_lossy(&buf[..n])
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            requests_srv.lock().unwrap().push(request_line);
+            socket
+                .write_all(
+                    b"HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        }
+    });
+
+    let url = format!("http://{addr}/mcp");
+    let mut transport = HttpTransport::new(
+        test_mcp_http_client(&url),
+        url,
+        tokio_util::sync::CancellationToken::new(),
+        Duration::from_secs(2),
+    );
+
+    let result = transport
+        .send_reply(json_frame(
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {}}),
+        ))
+        .await;
+
+    server.abort();
+    assert!(result.is_err(), "a refused reply reports the refusal");
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1, "requests seen: {requests:?}");
+    assert!(requests[0].starts_with("POST "), "{requests:?}");
 }
 
 // === add_runtime_server_config conflict tests ===

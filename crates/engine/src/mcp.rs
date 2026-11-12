@@ -1669,6 +1669,10 @@ pub trait McpTransport: Send + Sync {
 
     async fn recv(&mut self) -> Result<Vec<u8>>;
 
+    async fn send_reply(&mut self, msg: Vec<u8>) -> Result<()> {
+        self.send(msg).await
+    }
+
     /// Record the protocol revision negotiated at `initialize`. Only the
     /// Streamable HTTP transport uses it (the `MCP-Protocol-Version` header on
     /// subsequent requests); stdio and legacy SSE have no header channel, so
@@ -3125,6 +3129,30 @@ impl McpConnection {
         result
     }
 
+    async fn answer_server_request(&mut self, reply: &serde_json::Value) {
+        let result = match serde_json::to_vec(reply) {
+            Ok(bytes) => {
+                let cancel_token = self.cancel_token.clone();
+                tokio::select! {
+                    biased;
+                    _ = cancel_token.cancelled() => {
+                        Err(anyhow::anyhow!("MCP connection was cancelled"))
+                    }
+                    result = self.transport.send_reply(bytes) => result,
+                }
+            }
+            Err(err) => Err(err.into()),
+        };
+        if let Err(err) = result {
+            tracing::debug!(
+                target: "mcp",
+                server = %self.name,
+                error = %err,
+                "could not answer an MCP server request"
+            );
+        }
+    }
+
     /// Handshake and discovery receive: each frame wait is bounded by the read
     /// knob, and a server that stays silent past it is treated as dead.
     async fn recv(&mut self, expected_id: String) -> Result<serde_json::Value> {
@@ -3214,7 +3242,7 @@ impl McpConnection {
                             "error": {"code": -32601, "message": format!("Method not found: {method}")}
                         })
                     };
-                    self.send(reply).await?;
+                    self.answer_server_request(&reply).await;
                 }
                 continue;
             }
