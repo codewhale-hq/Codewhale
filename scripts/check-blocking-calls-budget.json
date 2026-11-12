@@ -12,6 +12,9 @@
   "crates/app-server-protocol/src/bin/export.rs": {
     "std_fs": 3
   },
+  "crates/app-server/src/daemon_client.rs": {
+    "path_canonicalize": 1
+  },
   "crates/app-server/src/mcp_server.rs": {
     "std_fs": 1
   },
