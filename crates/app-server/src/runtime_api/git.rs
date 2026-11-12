@@ -559,14 +559,23 @@ fn split_by_workspace(
                 inside.push(row);
             }
             None => {
-                if row.index == "R"
-                    && let Some(path) = old_path
-                {
+                let renamed_or_copied = matches!(row.index.as_str(), "R" | "C")
+                    || matches!(row.worktree.as_str(), "R" | "C");
+                if renamed_or_copied && let Some(path) = old_path {
+                    let worktree_side = row.index == " ";
                     inside.push(GitFileEntry {
                         path,
-                        index: "D".to_string(),
-                        worktree: " ".to_string(),
-                        staged: true,
+                        index: if worktree_side {
+                            " ".to_string()
+                        } else {
+                            "D".to_string()
+                        },
+                        worktree: if worktree_side {
+                            "D".to_string()
+                        } else {
+                            " ".to_string()
+                        },
+                        staged: !worktree_side,
                         status: "deleted",
                         old_path: None,
                         rev: None,
@@ -3230,6 +3239,30 @@ mod tests {
         // The projected row can unstage the in-workspace deletion.
         git(&ws, &["restore", "--staged", "--", "a.txt"]);
         assert_ne!(index_token(&ws), detail.index_token.unwrap());
+    }
+
+    #[test]
+    fn review_outgoing_worktree_rename_exposes_source_deletion() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::create_dir(root.join("sub")).unwrap();
+        git(root, &["mv", "a.txt", "sub/a.txt"]);
+        git(root, &["commit", "-q", "-m", "inside"]);
+        git(root, &["mv", "sub/a.txt", "outside.txt"]);
+        git(root, &["reset"]);
+        git(root, &["add", "-N", "outside.txt"]);
+        let ws = root.join("sub");
+        let detail = collect_git_status_detail(&ws).unwrap();
+        assert_eq!(detail.files.len(), 1);
+        let row = &detail.files[0];
+        assert_eq!(row.path, "a.txt");
+        assert_eq!(row.index, " ");
+        assert_eq!(row.worktree, "D");
+        assert_eq!(row.status, "deleted");
+        assert!(!row.staged);
+        assert!(row.old_path.is_none());
+        let expect = expect_file("a.txt", row.rev.clone().unwrap());
+        assert!(check_preconditions(&ws, &expect).unwrap().is_ok());
     }
 
     #[test]
