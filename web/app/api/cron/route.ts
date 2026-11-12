@@ -4,6 +4,7 @@ import type { AgentEnv } from "@/lib/community-agent-tasks";
 import { runFactsDrift } from "@/lib/facts-drift";
 import { runLinkCheck, runSemanticDrift } from "@/lib/content-watch";
 import { safeEqual } from "@/lib/community-agent";
+import { CRON_SECRET_UNAVAILABLE, secretStrongEnough } from "@/lib/maintainer-token";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,14 @@ export async function GET(req: Request) {
     return NextResponse.json(
       { error: "manual trigger disabled in production" },
       { status: 503 }
+    );
+  }
+
+  if (!secretStrongEnough(env.CRON_SECRET)) {
+    console.warn(CRON_SECRET_UNAVAILABLE);
+    return NextResponse.json(
+      { error: CRON_SECRET_UNAVAILABLE },
+      { status: 503, headers: { "Cache-Control": "no-store" } }
     );
   }
 

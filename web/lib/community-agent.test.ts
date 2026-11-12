@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { logUsage, validateSession } from "./community-agent";
+import { createSession, logUsage, validateSession } from "./community-agent";
 
 describe("validateSession", () => {
   let mockKV: {
@@ -20,65 +20,88 @@ describe("validateSession", () => {
 
   const VALID_SID = "a".repeat(40);
   const SESSION_PREFIX = "session:admin:";
+  const TOKEN = "local-fixture-token-0123456789-abcdefghij";
+  const ROTATED = "rotated-fixture-token-9876543210-zyxwvutsrq";
 
   it("should return false if kv is undefined", async () => {
-    const result = await validateSession(undefined, VALID_SID);
+    const result = await validateSession(undefined, VALID_SID, TOKEN);
     expect(result).toBe(false);
   });
 
   it("should return false if sid is undefined or null", async () => {
     const kv = mockKV as unknown as Parameters<typeof validateSession>[0];
-    expect(await validateSession(kv, undefined)).toBe(false);
-    expect(await validateSession(kv, null)).toBe(false);
+    expect(await validateSession(kv, undefined, TOKEN)).toBe(false);
+    expect(await validateSession(kv, null, TOKEN)).toBe(false);
   });
 
   it("should return false if sid is empty", async () => {
     const kv = mockKV as unknown as Parameters<typeof validateSession>[0];
-    expect(await validateSession(kv, "")).toBe(false);
+    expect(await validateSession(kv, "", TOKEN)).toBe(false);
   });
 
   it("should return false if sid length is less than 40", async () => {
     const kv = mockKV as unknown as Parameters<typeof validateSession>[0];
-    expect(await validateSession(kv, "a".repeat(39))).toBe(false);
+    expect(await validateSession(kv, "a".repeat(39), TOKEN)).toBe(false);
   });
 
   it("should return false if sid length is greater than 64", async () => {
     const kv = mockKV as unknown as Parameters<typeof validateSession>[0];
-    expect(await validateSession(kv, "a".repeat(65))).toBe(false);
+    expect(await validateSession(kv, "a".repeat(65), TOKEN)).toBe(false);
   });
 
   it("should return false if sid contains invalid characters", async () => {
     const kv = mockKV as unknown as Parameters<typeof validateSession>[0];
     // Length 40 but contains invalid char '!'
-    expect(await validateSession(kv, "a".repeat(39) + "!")).toBe(false);
+    expect(await validateSession(kv, "a".repeat(39) + "!", TOKEN)).toBe(false);
   });
 
   it("should return false if session is not found in KV", async () => {
     const kv = mockKV as unknown as Parameters<typeof validateSession>[0];
     mockKV.get.mockResolvedValue(null);
 
-    const result = await validateSession(kv, VALID_SID);
+    const result = await validateSession(kv, VALID_SID, TOKEN);
     expect(result).toBe(false);
     expect(mockKV.get).toHaveBeenCalledWith(SESSION_PREFIX + VALID_SID);
   });
 
-  it("should return true if session is found in KV", async () => {
-    const kv = mockKV as unknown as Parameters<typeof validateSession>[0];
-    mockKV.get.mockResolvedValue(JSON.stringify({ createdAt: Date.now() }));
-
-    const result = await validateSession(kv, VALID_SID);
-    expect(result).toBe(true);
-    expect(mockKV.get).toHaveBeenCalledWith(SESSION_PREFIX + VALID_SID);
+  it("should return true for a session minted under the configured token", async () => {
+    const store = new Map<string, string>();
+    const kv = {
+      get: async (key: string) => store.get(key) ?? null,
+      put: async (key: string, value: string) => { store.set(key, value); },
+    } as unknown as Parameters<typeof validateSession>[0];
+    const sid = await createSession(kv, TOKEN);
+    expect(sid).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(await validateSession(kv, sid, TOKEN)).toBe(true);
   });
 
-  it("should work with a 64 character sid", async () => {
-    const kv = mockKV as unknown as Parameters<typeof validateSession>[0];
-    mockKV.get.mockResolvedValue("{}");
+  it("should refuse the same session once the configured token changes", async () => {
+    const store = new Map<string, string>();
+    const kv = {
+      get: async (key: string) => store.get(key) ?? null,
+      put: async (key: string, value: string) => { store.set(key, value); },
+    } as unknown as Parameters<typeof validateSession>[0];
+    const sid = await createSession(kv, TOKEN);
+    expect(await validateSession(kv, sid, ROTATED)).toBe(false);
+    expect(await validateSession(kv, sid, "short")).toBe(false);
+    expect(await validateSession(kv, sid, undefined)).toBe(false);
+    expect(await validateSession(kv, sid, TOKEN)).toBe(true);
+  });
 
-    const sid = "b".repeat(64);
-    const result = await validateSession(kv, sid);
-    expect(result).toBe(true);
-    expect(mockKV.get).toHaveBeenCalledWith(SESSION_PREFIX + sid);
+  it("should refuse a stored record with no token fingerprint or unparseable content", async () => {
+    const kv = mockKV as unknown as Parameters<typeof validateSession>[0];
+    for (const raw of [JSON.stringify({ createdAt: Date.now() }), "{}", "not json", JSON.stringify({ tokenFingerprint: 7 })]) {
+      mockKV.get.mockResolvedValue(raw);
+      expect(await validateSession(kv, VALID_SID, TOKEN)).toBe(false);
+    }
+  });
+
+  it("should not mint a session under a weak token", async () => {
+    const kv = mockKV as unknown as Parameters<typeof createSession>[0];
+    for (const weak of [undefined, "", "short", "a".repeat(32)]) {
+      expect(await createSession(kv, weak)).toBeNull();
+    }
+    expect(mockKV.put).not.toHaveBeenCalled();
   });
 });
 

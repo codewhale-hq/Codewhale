@@ -53,7 +53,11 @@ describe("admin login attempt boundary", () => {
     expect(mocks.createSession).not.toHaveBeenCalled();
   });
   it("refuses to run with a configured token below the minimum length", async () => {
-    for (const weak of ["x", "configured", "a".repeat(31)]) {
+    const weakTokens = [
+      "x", "configured", "a".repeat(31), "a".repeat(32), " ".repeat(40), "password".repeat(4),
+      "0123456789".repeat(3) + "01", "\u{1F433}".repeat(16), "L".repeat(600),
+    ];
+    for (const weak of weakTokens) {
       mocks.getAgentEnv.mockResolvedValueOnce({ MAINTAINER_TOKEN: weak, ADMIN_LOGIN_LIMITER: { limit: mocks.limit }, CURATED_KV: {} });
       mocks.safeEqual.mockResolvedValue(true);
       const response = await POST(request(weak));
@@ -66,9 +70,11 @@ describe("admin login attempt boundary", () => {
     expect(mocks.createSession).not.toHaveBeenCalled();
   });
   it("accepts a token of exactly the minimum length", async () => {
-    mocks.getAgentEnv.mockResolvedValueOnce({ MAINTAINER_TOKEN: "a".repeat(32), ADMIN_LOGIN_LIMITER: { limit: mocks.limit }, CURATED_KV: {} });
+    const exact = "abcdefghijklmnopqrstuvwxyz012345";
+    expect(exact).toHaveLength(32);
+    mocks.getAgentEnv.mockResolvedValueOnce({ MAINTAINER_TOKEN: exact, ADMIN_LOGIN_LIMITER: { limit: mocks.limit }, CURATED_KV: {} });
     mocks.safeEqual.mockResolvedValue(true);
-    expect((await POST(request("a".repeat(32)))).status).toBe(303);
+    expect((await POST(request(exact))).status).toBe(303);
   });
   it("retains the authenticated session and redirect after an allowed attempt", async () => {
     mocks.safeEqual.mockResolvedValue(true);

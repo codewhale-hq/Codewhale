@@ -4,7 +4,7 @@ import { ConnectionBanner } from "@/components/connection-banner";
 import { EmptyState, ErrorState } from "@/components/surface-state";
 import { WhalePose } from "@/components/whale-pose";
 import { getAgentEnv, listDrafts, validateSession, type AgentDraft } from "@/lib/community-agent";
-import { maintainerTokenUsable } from "@/lib/maintainer-token";
+import { MAINTAINER_TOKEN_UNAVAILABLE, maintainerTokenUsable } from "@/lib/maintainer-token";
 import { AdminClient } from "./admin-client";
 
 export const dynamic = "force-dynamic";
@@ -79,6 +79,7 @@ export default async function AdminPage({
   const env = await getAgentEnv();
 
   if (!maintainerTokenUsable(env.MAINTAINER_TOKEN)) {
+    if (env.MAINTAINER_TOKEN) console.warn(MAINTAINER_TOKEN_UNAVAILABLE);
     return (
       <div className="route-state">
         <ConnectionBanner locale={locale} />
@@ -99,7 +100,7 @@ export default async function AdminPage({
 
   const cookieStore = await cookies();
   const sid = cookieStore.get("mt_sid")?.value;
-  const authed = await validateSession(env.CURATED_KV, sid);
+  const authed = await validateSession(env.CURATED_KV, sid, env.MAINTAINER_TOKEN);
 
   if (!authed) {
     return <LoginForm locale={locale} error={err === "1"} />;

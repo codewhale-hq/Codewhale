@@ -57,9 +57,9 @@ describe("admin login with real credential and session helpers", () => {
     const sid = response.cookies.get("mt_sid")?.value;
     expect(sid).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(sessions.size).toBe(1);
-    expect(await validateSession(sessionKv, sid)).toBe(true);
+    expect(await validateSession(sessionKv, sid, FIXTURE_TOKEN)).toBe(true);
     expect(safeEqual).toHaveBeenCalledExactlyOnceWith(FIXTURE_TOKEN, FIXTURE_TOKEN);
-    expect(createSession).toHaveBeenCalledExactlyOnceWith(sessionKv);
+    expect(createSession).toHaveBeenCalledExactlyOnceWith(sessionKv, FIXTURE_TOKEN);
     const cookie = response.headers.get("Set-Cookie")?.toLowerCase();
     expect(cookie).toContain("httponly");
     expect(cookie).toContain("secure");
@@ -69,7 +69,13 @@ describe("admin login with real credential and session helpers", () => {
       expect.any(String), expect.any(String), { expirationTtl: 86400 },
     ]);
     sessions.clear();
-    expect(await validateSession(sessionKv, sid)).toBe(false);
+    expect(await validateSession(sessionKv, sid, FIXTURE_TOKEN)).toBe(false);
+  });
+
+  it("stops honouring a session after the maintainer token is rotated", async () => {
+    const sid = (await POST(request())).cookies.get("mt_sid")?.value;
+    expect(await validateSession(sessionKv, sid, FIXTURE_TOKEN)).toBe(true);
+    expect(await validateSession(sessionKv, sid, "rotated-integration-fixture-9876543210")).toBe(false);
   });
 
   it("rejects a wrong credential without creating a session", async () => {

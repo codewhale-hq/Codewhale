@@ -15,7 +15,7 @@ function request(secret = "wrong", ip = "127.0.0.1") {
 
 beforeEach(() => {
   vi.resetAllMocks();
-  mocks.getEnv.mockResolvedValue({ CRON_SECRET: "configured-cron-secret", ADMIN_LOGIN_LIMITER: { limit: mocks.limit } });
+  mocks.getEnv.mockResolvedValue({ CRON_SECRET: "configured-cron-secret-0123456789-abcdef", ADMIN_LOGIN_LIMITER: { limit: mocks.limit } });
   mocks.limit.mockResolvedValue({ success: true });
   mocks.safeEqual.mockResolvedValue(false);
 });
@@ -35,11 +35,11 @@ describe("manual cron trigger attempt boundary", () => {
   });
   it("does not compare the secret after refusal", async () => {
     mocks.limit.mockResolvedValue({ success: false });
-    expect((await GET(request("configured-cron-secret"))).status).toBe(429);
+    expect((await GET(request("configured-cron-secret-0123456789-abcdef"))).status).toBe(429);
     expect(mocks.safeEqual).not.toHaveBeenCalled();
   });
   it("fails closed if the binding is missing or unavailable", async () => {
-    mocks.getEnv.mockResolvedValueOnce({ CRON_SECRET: "configured-cron-secret" });
+    mocks.getEnv.mockResolvedValueOnce({ CRON_SECRET: "configured-cron-secret-0123456789-abcdef" });
     expect((await GET(request())).status).toBe(503);
     mocks.limit.mockRejectedValue(new Error("binding unavailable"));
     expect((await GET(request())).status).toBe(503);
@@ -50,8 +50,20 @@ describe("manual cron trigger attempt boundary", () => {
     expect((await GET(request())).status).toBe(503);
     expect(mocks.limit).not.toHaveBeenCalled();
   });
+  it("stays disabled for a secret below the minimum strength and never consults the limiter or compares", async () => {
+    const weak = ["x", "a".repeat(32), " ".repeat(40), "password".repeat(4), "\u{1F433}".repeat(16), "0123456789".repeat(3) + "01", "L".repeat(600)];
+    for (const secret of weak) {
+      mocks.getEnv.mockResolvedValueOnce({ CRON_SECRET: secret, ADMIN_LOGIN_LIMITER: { limit: mocks.limit } });
+      const response = await GET(request());
+      expect(response.status).toBe(503);
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(JSON.stringify(await response.json())).toContain("at least 32 characters");
+    }
+    expect(mocks.limit).not.toHaveBeenCalled();
+    expect(mocks.safeEqual).not.toHaveBeenCalled();
+  });
   it("still reaches task validation after an allowed, correct attempt", async () => {
     mocks.safeEqual.mockResolvedValue(true);
-    expect((await GET(request("configured-cron-secret"))).status).toBe(400);
+    expect((await GET(request("configured-cron-secret-0123456789-abcdef"))).status).toBe(400);
   });
 });

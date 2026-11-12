@@ -9,7 +9,6 @@ import { readBoundedBody, BodyReadError } from "../bounded-body";
 import { getAgentEnv, validateSession, type CommunityAgentEnv } from "../community-agent";
 import { isValidLocale } from "../i18n/config";
 import { getEnv, type KVNamespace } from "../kv";
-import { maintainerTokenUsable } from "@/lib/maintainer-token";
 import { MERCH_INTEREST_ITEMS, MERCH_INTEREST_PRICE_CHOICES, type MerchInterestPriceChoice, type MerchInterestCurrency } from "./interest-options";
 
 const PREFIX = "private:merch-interest:v1:";
@@ -139,7 +138,7 @@ export async function handleMerchInterest(request: Request, env?: MerchInterestE
 }
 async function requireAdmin(request: Request, auth: CommunityAgentEnv) {
   const sid = request.headers.get("cookie")?.split(";").map(cookie => cookie.trim()).find(cookie => cookie.startsWith("mt_sid="))?.slice(7);
-  if (!maintainerTokenUsable(auth.MAINTAINER_TOKEN) || !await validateSession(auth.CURATED_KV, sid)) throw new InterestError(401, "unauthorized", "Maintainer sign-in is required.");
+  if (!await validateSession(auth.CURATED_KV, sid, auth.MAINTAINER_TOKEN)) throw new InterestError(401, "unauthorized", "Maintainer sign-in is required.");
 }
 export async function handleAdminMerchInterest(request: Request, env?: MerchInterestEnv, authEnv?: CommunityAgentEnv): Promise<Response> {
   try {

@@ -156,7 +156,7 @@ describe("durable merch interest registration", () => {
 describe("private merch interest list and deletion", () => {
   async function signedIn(): Promise<{ auth: CommunityAgentEnv; headers: Record<string, string> }> {
     const auth = { CURATED_KV: env.CURATED_KV, MAINTAINER_TOKEN: "local-fixture-token-0123456789-abcdefghij" };
-    const sid = await createSession(auth.CURATED_KV);
+    const sid = await createSession(auth.CURATED_KV, auth.MAINTAINER_TOKEN);
     return { auth, headers: { Cookie: "mt_sid=" + sid } };
   }
   it("requires a real stored maintainer session for reading or deleting contacts", async () => {
@@ -165,9 +165,9 @@ describe("private merch interest list and deletion", () => {
     expect(list).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
   });
-  it("refuses an existing session while the configured maintainer token is below the minimum length", async () => {
+  it.each(["short", "rotated-fixture-token-9876543210-zyxwvutsrq"])("refuses an existing session once the configured maintainer token changes to %s", async (replacement) => {
     const { auth, headers } = await signedIn();
-    const response = await handleAdminMerchInterest(new Request("https://codewhale.net/api/admin/merch/interest", { headers }), env, { ...auth, MAINTAINER_TOKEN: "short" });
+    const response = await handleAdminMerchInterest(new Request("https://codewhale.net/api/admin/merch/interest", { headers }), env, { ...auth, MAINTAINER_TOKEN: replacement });
     expect(response.status).toBe(401);
     expect(list).not.toHaveBeenCalled();
   });

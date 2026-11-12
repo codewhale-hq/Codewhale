@@ -20,10 +20,10 @@ Env (mirrors `.env.example`):
 | `DEEPSEEK_API_KEY`          | DeepSeek platform key (`sk-...`)                                 | only for the `/api/cron` tasks (summarization + community agent) |
 | `GITHUB_TOKEN`              | Fine-grained PAT, public-repo read scope                         | optional (raises rate limit 60 → 5000 req/h) |
 | `GITHUB_REPO`               | Defaults to `codewhale-hq/CodeWhale`                                   | optional             |
-| `CRON_SECRET`               | Shared secret for manual `/api/cron` invocation                  | optional (Cloudflare cron triggers don't need it) |
+| `CRON_SECRET`               | Shared secret for manual `/api/cron` invocation (32-512 characters, 16+ distinct)| optional (Cloudflare cron triggers don't need it) |
 | `DEEPSEEK_MODEL`            | Defaults to `deepseek-flash`                                     | optional             |
 | `DEEPSEEK_BASE_URL`         | Defaults to `https://api.deepseek.com`                           | optional             |
-| `MAINTAINER_TOKEN`          | Admin panel auth (32+ characters); enter it in the `/admin` login form | only for `/admin`    |
+| `MAINTAINER_TOKEN`          | Admin panel auth (32-512 characters, 16+ distinct; changing it signs out sessions); enter it in the `/admin` login form | only for `/admin`    |
 | `MAINTAINER_GITHUB_PAT`     | PAT with `issues:write`, for posting comments via `/admin`       | only for `/admin` posting |
 | `NEXT_PUBLIC_GITEE_ENABLED` | Set to `1` once the Gitee mirror exists; blank hides Gitee links | optional             |
 
