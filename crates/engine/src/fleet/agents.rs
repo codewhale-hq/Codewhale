@@ -187,6 +187,19 @@ pub const AGENTS: &[ExternalAgent] = &[
         adapter_binary: None,
         adapter_cli_env: None,
     },
+    ExternalAgent {
+        id: "copilot",
+        name: "GitHub Copilot CLI",
+        binary: "copilot",
+        acp_args: Some(&["--acp", "--stdio"]),
+        website: "https://docs.github.com/copilot/reference/copilot-cli-reference/acp-server",
+        min_version: None,
+        upgrade: Some("copilot update"),
+        login: Some("copilot login"),
+        adapter: None,
+        adapter_binary: None,
+        adapter_cli_env: None,
+    },
 ];
 
 const FIXTURE_AGENT: ExternalAgent = ExternalAgent {
