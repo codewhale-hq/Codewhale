@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "4c4dfe17cea716328253c687d9d0665e1b24fc3b59d00f2a81cf1157dfea7072"
+    "sha256": "a63042dc25a658f626735cc40e7a7cf4c67eaa51bfbb037dc2820d083d10fe3a"
   },
   "features": [
     {
@@ -1070,7 +1070,7 @@
     {
       "id": "live-thinking",
       "name": "Live thinking",
-      "summary": "/verbose toggles live model thinking in the transcript.",
+      "summary": "Model thinking shows live in the transcript, then collapses under a Thought header; /verbose shows it in full.",
       "status": "stable",
       "surfaces": {
         "tui": "stable"
