@@ -14,7 +14,7 @@ vi.mock("@/lib/community-agent", async (importOriginal) => {
 import { POST } from "@/app/api/admin/login/route";
 import { createSession, safeEqual, validateSession } from "@/lib/community-agent";
 
-const FIXTURE_TOKEN = "local-admin-integration-fixture";
+const FIXTURE_TOKEN = "local-admin-integration-fixture-0123456789";
 const sessions = new Map<string, string>();
 const kv = {
   put: vi.fn(async (key: string, value: string) => { sessions.set(key, value); }),

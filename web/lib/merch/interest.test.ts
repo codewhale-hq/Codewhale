@@ -155,7 +155,7 @@ describe("durable merch interest registration", () => {
 
 describe("private merch interest list and deletion", () => {
   async function signedIn(): Promise<{ auth: CommunityAgentEnv; headers: Record<string, string> }> {
-    const auth = { CURATED_KV: env.CURATED_KV, MAINTAINER_TOKEN: "local-maintainer-fixture" };
+    const auth = { CURATED_KV: env.CURATED_KV, MAINTAINER_TOKEN: "local-fixture-token-0123456789-abcdefghij" };
     const sid = await createSession(auth.CURATED_KV);
     return { auth, headers: { Cookie: "mt_sid=" + sid } };
   }
@@ -164,6 +164,12 @@ describe("private merch interest list and deletion", () => {
     expect(response.status).toBe(401);
     expect(list).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
+  });
+  it("refuses an existing session while the configured maintainer token is below the minimum length", async () => {
+    const { auth, headers } = await signedIn();
+    const response = await handleAdminMerchInterest(new Request("https://codewhale.net/api/admin/merch/interest", { headers }), env, { ...auth, MAINTAINER_TOKEN: "short" });
+    expect(response.status).toBe(401);
+    expect(list).not.toHaveBeenCalled();
   });
   it("paginates only the private prefix and deletes an opaque id with same-origin CSRF", async () => {
     await handleMerchInterest(request(), env);

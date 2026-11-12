@@ -73,7 +73,7 @@ describe("public security boundaries", () => {
     kv.values.set("agent:state:latest", JSON.stringify({ state: "running" }));
     securityMocks.getAgentEnv.mockResolvedValue({
       CURATED_KV: kv,
-      MAINTAINER_TOKEN: "configured",
+      MAINTAINER_TOKEN: "local-fixture-token-0123456789-abcdefghij",
     });
 
     const response = await adminPost(new Request("https://codewhale.net/api/admin/post", {
@@ -121,7 +121,7 @@ describe("public security boundaries", () => {
 
     securityMocks.getAgentEnv.mockResolvedValue({
       CURATED_KV: kv,
-      MAINTAINER_TOKEN: "configured",
+      MAINTAINER_TOKEN: "local-fixture-token-0123456789-abcdefghij",
       MAINTAINER_GITHUB_PAT: "ghp_test",
       GITHUB_REPO: "codewhale-hq/CodeWhale",
     });

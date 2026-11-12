@@ -32,6 +32,7 @@ export async function readBoundedKvJson(kv: KVStreamNamespace | undefined, key: 
 interface CloudflareEnv extends MerchEnv {
   DRAFT_CLAIM_LOCK?: DraftClaimLockNamespace;
   CURATED_KV?: KVNamespace & KVStreamNamespace;
+  ADMIN_LOGIN_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
   MERCH_INTEREST_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
   MERCH_INTEREST_SITE_ORIGIN?: string;
   DEEPSEEK_API_KEY?: string;

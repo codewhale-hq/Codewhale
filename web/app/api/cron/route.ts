@@ -30,9 +30,25 @@ export async function GET(req: Request) {
     );
   }
 
+  try {
+    if (!env.ADMIN_LOGIN_LIMITER) throw new Error("Missing cron limiter");
+    const { success } = await env.ADMIN_LOGIN_LIMITER.limit({ key: "codewhale-web:cron-secret" });
+    if (!success) {
+      return NextResponse.json(
+        { error: "too many attempts" },
+        { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": "60" } }
+      );
+    }
+  } catch {
+    return NextResponse.json(
+      { error: "manual trigger temporarily unavailable" },
+      { status: 503, headers: { "Cache-Control": "no-store", "Retry-After": "60" } }
+    );
+  }
+
   const auth = req.headers.get("x-cron-secret") ?? "";
   if (!(await safeEqual(auth, env.CRON_SECRET))) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: "unauthorized" }, { status: 401, headers: { "Cache-Control": "no-store" } });
   }
 
   const { searchParams } = new URL(req.url);

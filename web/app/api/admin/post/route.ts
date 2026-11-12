@@ -1,5 +1,6 @@
 import { revalidatePath } from "next/cache";
 import { NextResponse } from "next/server";
+import { maintainerTokenUsable } from "@/lib/maintainer-token";
 import { BodyReadError, readBoundedBody } from "@/lib/bounded-body";
 import {
   approveDigestRecord,
@@ -25,7 +26,7 @@ import {
 export const dynamic = "force-dynamic";
 
 async function checkAuth(req: Request, env: CommunityAgentEnv): Promise<{ ok: boolean; status?: number; error?: string }> {
-  if (!env.MAINTAINER_TOKEN) {
+  if (!maintainerTokenUsable(env.MAINTAINER_TOKEN)) {
     return { ok: false, status: 503, error: "not configured" };
   }
 

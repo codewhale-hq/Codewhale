@@ -5,6 +5,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/community-agent", () => mocks);
 import { POST } from "@/app/api/admin/login/route";
 
+const STRONG_TOKEN = "local-fixture-token-0123456789-abcdefghij";
+
 function request(token = "wrong", ip = "127.0.0.1") {
   return new Request("https://codewhale.net/api/admin/login?locale=en", {
     method: "POST",
@@ -14,7 +16,7 @@ function request(token = "wrong", ip = "127.0.0.1") {
 }
 beforeEach(() => {
   vi.resetAllMocks();
-  mocks.getAgentEnv.mockResolvedValue({ MAINTAINER_TOKEN: "configured", ADMIN_LOGIN_LIMITER: { limit: mocks.limit }, CURATED_KV: {} });
+  mocks.getAgentEnv.mockResolvedValue({ MAINTAINER_TOKEN: STRONG_TOKEN, ADMIN_LOGIN_LIMITER: { limit: mocks.limit }, CURATED_KV: {} });
   mocks.limit.mockResolvedValue({ success: true });
   mocks.safeEqual.mockResolvedValue(false);
   mocks.createSession.mockResolvedValue("session-id");
@@ -35,7 +37,7 @@ describe("admin login attempt boundary", () => {
   });
   it("does not parse or compare credentials after refusal", async () => {
     mocks.limit.mockResolvedValue({ success: false });
-    const req = request("configured");
+    const req = request(STRONG_TOKEN);
     const read = vi.spyOn(req, "text");
     expect((await POST(req)).status).toBe(429);
     expect(read).not.toHaveBeenCalled();
@@ -43,16 +45,34 @@ describe("admin login attempt boundary", () => {
     expect(mocks.createSession).not.toHaveBeenCalled();
   });
   it("fails closed if the binding is missing or unavailable", async () => {
-    mocks.getAgentEnv.mockResolvedValueOnce({ MAINTAINER_TOKEN: "configured" });
+    mocks.getAgentEnv.mockResolvedValueOnce({ MAINTAINER_TOKEN: STRONG_TOKEN });
     expect((await POST(request())).status).toBe(503);
     mocks.limit.mockRejectedValue(new Error("binding unavailable"));
     expect((await POST(request())).status).toBe(503);
     expect(mocks.safeEqual).not.toHaveBeenCalled();
     expect(mocks.createSession).not.toHaveBeenCalled();
   });
+  it("refuses to run with a configured token below the minimum length", async () => {
+    for (const weak of ["x", "configured", "a".repeat(31)]) {
+      mocks.getAgentEnv.mockResolvedValueOnce({ MAINTAINER_TOKEN: weak, ADMIN_LOGIN_LIMITER: { limit: mocks.limit }, CURATED_KV: {} });
+      mocks.safeEqual.mockResolvedValue(true);
+      const response = await POST(request(weak));
+      expect(response.status).toBe(503);
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(await response.text()).toContain("at least 32 characters");
+    }
+    expect(mocks.limit).not.toHaveBeenCalled();
+    expect(mocks.safeEqual).not.toHaveBeenCalled();
+    expect(mocks.createSession).not.toHaveBeenCalled();
+  });
+  it("accepts a token of exactly the minimum length", async () => {
+    mocks.getAgentEnv.mockResolvedValueOnce({ MAINTAINER_TOKEN: "a".repeat(32), ADMIN_LOGIN_LIMITER: { limit: mocks.limit }, CURATED_KV: {} });
+    mocks.safeEqual.mockResolvedValue(true);
+    expect((await POST(request("a".repeat(32)))).status).toBe(303);
+  });
   it("retains the authenticated session and redirect after an allowed attempt", async () => {
     mocks.safeEqual.mockResolvedValue(true);
-    const response = await POST(request("configured"));
+    const response = await POST(request(STRONG_TOKEN));
     expect(response.status).toBe(303);
     expect(response.headers.get("Location")).toBe("https://codewhale.net/en/admin");
     const cookie = response.headers.get("Set-Cookie");

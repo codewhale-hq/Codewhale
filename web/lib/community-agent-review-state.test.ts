@@ -144,7 +144,7 @@ function stubAdminEnv(kv: FakeKv, lock?: FakeDraftClaimLock) {
   mocks.getAgentEnv.mockResolvedValue({
     CURATED_KV: kv,
     ...(lock ? { DRAFT_CLAIM_LOCK: lock } : {}),
-    MAINTAINER_TOKEN: "configured",
+    MAINTAINER_TOKEN: "local-fixture-token-0123456789-abcdefghij",
     MAINTAINER_GITHUB_PAT: "ghp_test",
     GITHUB_REPO: "codewhale-hq/CodeWhale",
   });

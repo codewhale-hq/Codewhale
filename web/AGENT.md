@@ -87,8 +87,8 @@ form. The form posts to `/api/admin/login`; the token never goes in the URL.
 |---|---|---|
 | `DEEPSEEK_API_KEY` | Yes | DeepSeek API key for the community agent |
 | `GITHUB_TOKEN` | Optional | Fine-grained PAT for GitHub API (raises rate limit) |
-| `CRON_SECRET` | Optional | Shared secret for manual cron invocation |
-| `MAINTAINER_TOKEN` | Optional | Auth token for /admin panel |
+| `CRON_SECRET` | Optional | Shared secret for manual cron invocation; attempts are rate limited (5 per minute per location) |
+| `MAINTAINER_TOKEN` | Optional | Auth token for /admin panel; at least 32 characters, otherwise sign-in stays disabled |
 | `MAINTAINER_GITHUB_PAT` | Optional | GitHub PAT with `issues:write` scope for posting comments |
 
 ## Initial deployment

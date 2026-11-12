@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAgentEnv, safeEqual, createSession } from "@/lib/community-agent";
+import { MAINTAINER_TOKEN_UNAVAILABLE, maintainerTokenUsable } from "@/lib/maintainer-token";
 import { FormBodyError, readBoundedUrlEncodedForm } from "@/lib/bounded-form";
 
 export const dynamic = "force-dynamic";
@@ -18,8 +19,8 @@ export async function POST(req: Request) {
   const url = new URL(req.url);
   const localeFromQuery = pickLocale(url.searchParams.get("locale"));
 
-  if (!env.MAINTAINER_TOKEN) {
-    return new NextResponse("Not configured", {
+  if (!maintainerTokenUsable(env.MAINTAINER_TOKEN)) {
+    return new NextResponse(MAINTAINER_TOKEN_UNAVAILABLE, {
       status: 503,
       headers: { "Cache-Control": "no-store" },
     });

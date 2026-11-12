@@ -23,7 +23,7 @@ Env (mirrors `.env.example`):
 | `CRON_SECRET`               | Shared secret for manual `/api/cron` invocation                  | optional (Cloudflare cron triggers don't need it) |
 | `DEEPSEEK_MODEL`            | Defaults to `deepseek-flash`                                     | optional             |
 | `DEEPSEEK_BASE_URL`         | Defaults to `https://api.deepseek.com`                           | optional             |
-| `MAINTAINER_TOKEN`          | Admin panel auth; enter it in the `/admin` login form            | only for `/admin`    |
+| `MAINTAINER_TOKEN`          | Admin panel auth (32+ characters); enter it in the `/admin` login form | only for `/admin`    |
 | `MAINTAINER_GITHUB_PAT`     | PAT with `issues:write`, for posting comments via `/admin`       | only for `/admin` posting |
 | `NEXT_PUBLIC_GITEE_ENABLED` | Set to `1` once the Gitee mirror exists; blank hides Gitee links | optional             |
 

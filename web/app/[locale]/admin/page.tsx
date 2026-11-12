@@ -4,6 +4,7 @@ import { ConnectionBanner } from "@/components/connection-banner";
 import { EmptyState, ErrorState } from "@/components/surface-state";
 import { WhalePose } from "@/components/whale-pose";
 import { getAgentEnv, listDrafts, validateSession, type AgentDraft } from "@/lib/community-agent";
+import { maintainerTokenUsable } from "@/lib/maintainer-token";
 import { AdminClient } from "./admin-client";
 
 export const dynamic = "force-dynamic";
@@ -77,7 +78,7 @@ export default async function AdminPage({
 
   const env = await getAgentEnv();
 
-  if (!env.MAINTAINER_TOKEN) {
+  if (!maintainerTokenUsable(env.MAINTAINER_TOKEN)) {
     return (
       <div className="route-state">
         <ConnectionBanner locale={locale} />
