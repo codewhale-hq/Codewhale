@@ -1,6 +1,11 @@
 # Hooks
 > 阅读简体中文版：[zh_hans/HOOKS.md](zh_hans/HOOKS.md)
 
+Everything you add to Codewhale is a plugin. A hook in `config.toml` or a
+project `hooks.toml` is listed as a plugin that adds one hook, with the label
+**Hook**; a plugin bundle can also carry hooks. Configuration and the `/hooks`
+commands are unchanged.
+
 Hooks run a shell command when the Codewhale **TUI** reaches a lifecycle
 point. They are plain processes: they receive context through environment
 variables, some receive a JSON payload on stdin, and three of them can steer

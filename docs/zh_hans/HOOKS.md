@@ -3,6 +3,9 @@
 > 英文原文：[HOOKS.md](../HOOKS.md)。
 > 最后与英文同步日期（last synced with English revision）：2026-09-29。
 
+你添加到 Codewhale 的一切都叫插件。`config.toml` 或项目 `hooks.toml` 里的 hook 会列为只添加一个 hook 的插件，
+标签为 **Hook**；插件包也可以携带 hook。配置和 `/hooks` 命令都不变。
+
 Hooks 会在 Codewhale **TUI** 到达生命周期节点时运行一条 shell 命令。它们是普通进程：通过环境变量接收上下文，其中一些会在 stdin 上收到 JSON 载荷，还有三个可以引导 Codewhale 接下来做什么。
 
 本页是当前已实现内容的权威参考。与 `config.toml` 其余部分重叠的配置语法见 [CONFIGURATION.md](CONFIGURATION.md)；本文件是逐事件的约定说明。

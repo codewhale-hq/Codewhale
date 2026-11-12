@@ -12,13 +12,21 @@ format (`plugin.json`, compatible `kimi.plugin.json` or
 the trust/enable lifecycle — this document covers how bits get onto disk in
 the first place.
 
-## Choose a plugin, skill, or MCP connection
+Everything you add to Codewhale is a plugin. A skill, an MCP connector and a hook
+are each a plugin, or part of one, and each shows its kind as a label: Skill,
+Connector, Hook, Command. Skills, connectors and hooks you set up by hand are
+listed as plugins that add one skill, one connector or one hook; their files,
+trust rules and commands (`/skills`, `/mcp`, `/hooks`) do not change.
+"Connection" is the word for a model provider or another agent; it is not a kind
+of plugin.
+
+## Choose what to add
 
 | What you need | Use | Starting point |
 | --- | --- | --- |
-| Reusable instructions that work through your existing tools | A skill | `/skills`, then `/skill <name>`; [Skills](SKILLS.md) |
-| A reviewed bundle of workflows, tools, commands or agent profiles | A plugin | `/plugin marketplace list`; [first-party catalog](https://github.com/codewhale-hq/codewhale-plugin-marketplace) |
-| Tools or context from a particular local process or remote service | A direct MCP connection | `/mcp`; [MCP setup](MCP.md) |
+| Reusable instructions that work through your existing tools | A plugin that adds a skill | `/skills`, then `/skill <name>`; [Skills](SKILLS.md) |
+| A reviewed bundle of workflows, tools, commands or agent profiles | A plugin bundle | `/plugin marketplace list`; [first-party catalog](https://github.com/codewhale-hq/codewhale-plugin-marketplace) |
+| Tools or context from a particular local process or remote service | A plugin that adds an MCP connector | `/mcp`; [MCP setup](MCP.md) |
 
 A plugin can combine skills, Markdown commands, Fleet agent profiles, hooks,
 MCP servers and AI-provider declarations. Tools come from an MCP server or an
@@ -26,12 +34,12 @@ experimental native extension; there is no generic application-UI component in
 the bundle manifest. Computer Use's Mac helper and Chromewhale's browser
 extension have their own setup after plugin review.
 
-MCP has two connection kinds: a local process over stdio, or a remote URL over
+An MCP connector is one of two kinds: a local process over stdio, or a remote URL over
 Streamable HTTP. Legacy SSE is available when the server still supports it.
 User-configured remote servers can use environment-backed credentials or the
 host's OAuth login. Plugin-contributed remote servers require explicit
 environment-backed credentials when authentication is needed; their interactive
-OAuth path is not supported. Installing a skill or plugin does not connect an
+OAuth path is not supported. Installing a plugin does not connect an
 account or establish that a service works.
 
 A local stdio server runs with your operating-system user's access. Requested
@@ -63,7 +71,7 @@ Native TypeScript extensions require `extension_host = true` under `[features]`
 and fresh capability review. LSP, requested filesystem roots and lifecycle mutation
 remain inventory-only. Current DSH adapters include work beyond the published
 v0.10.2 CLI; third-party DSH plugins' complete workflows are not established by
-an import succeeding. DSH plugin UI is unsupported. Other applications' plugin
+an import succeeding. An imported DSH plugin's UI is served only on the seats the Engine admits ([details](DSH_PLUGIN_COMPAT.md#plugin-ui-dshclient)). Other applications' plugin
 directories and credentials are not borrowed.
 
 `/plugin suggest <task>` is a local, read-only companion: it ranks already

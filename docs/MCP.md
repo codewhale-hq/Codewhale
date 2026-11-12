@@ -5,6 +5,13 @@ In the terminal, `/mcp` (also `/mcps`) opens **Extensions → MCP**. Enter opens
 
 > 阅读简体中文版：[zh_hans/MCP.md](zh_hans/MCP.md)
 
+Everything you add to Codewhale is a plugin. An MCP server you configure is a
+connector, listed as a plugin that adds one connector with the label
+**Connector**; a plugin bundle can also carry connectors. The configuration
+files, sign-in and the `/mcp` commands are unchanged. "Connection" on this page
+means the live link to a server; as a product noun it is the word for a model
+provider or another agent.
+
 Codewhale can load additional tools via MCP (Model Context Protocol). MCP servers can be local stdio processes that Codewhale starts, or remote URL-based servers that speak Streamable HTTP with legacy SSE fallback.
 
 ## Version scope
