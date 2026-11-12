@@ -359,11 +359,21 @@ impl NetworkPolicy {
 /// `host_matches` can detect the wildcard intent).
 fn normalize_host(host: &str) -> String {
     let trimmed = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    if let Some(rest) = trimmed.strip_prefix("*.") {
-        format!(".{rest}")
-    } else {
-        trimmed
+    let (wildcard, name) = match trimmed.strip_prefix("*.") {
+        Some(rest) => (".", rest),
+        None => match trimmed.strip_prefix('.') {
+            Some(rest) => (".", rest),
+            None => ("", trimmed.as_str()),
+        },
+    };
+    if name.is_ascii() {
+        return format!("{wildcard}{name}");
     }
+    let ascii = reqwest::Url::parse(&format!("http://{name}/"))
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| name.to_string());
+    format!("{wildcard}{ascii}")
 }
 
 /// Match a single allow/deny entry against an already-normalized host.
@@ -802,6 +812,19 @@ mod tests {
             proxy: Vec::new(),
             proxy_fake_ip_cidrs: Vec::new(),
             audit: false,
+        }
+    }
+
+    #[test]
+    fn deny_entries_match_internationalized_domain_names() {
+        let policy = mk(Decision::Allow, &[], &["例子.com", "*.中国", "BÜCHER.de"]);
+        for url in [
+            "https://例子.com/",
+            "https://www.例子.中国/",
+            "https://bücher.de/",
+        ] {
+            let host = host_from_url(url).expect("host");
+            assert_eq!(policy.decide(&host), Decision::Deny, "{url}");
         }
     }
 
