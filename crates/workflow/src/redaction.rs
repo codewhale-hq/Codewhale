@@ -34,41 +34,7 @@ const PATH_PLACEHOLDER: &str = "<path>";
 /// Placeholder substituted for a removed secret-shaped token.
 const SECRET_PLACEHOLDER: &str = "<redacted>";
 
-/// Case-insensitive substrings that mark an identifier as secret-bearing.
-const SECRET_NAME_MARKERS: &[&str] = &[
-    "api_key",
-    "apikey",
-    "secret",
-    "token",
-    "password",
-    "passwd",
-    "credential",
-    "authorization",
-    "auth_token",
-    "access_key",
-    "private_key",
-    "session_key",
-];
-
-/// Prefixes that are themselves a credential, whatever they are attached to.
-///
-/// Every entry here must be *unambiguously* a credential prefix. A prefix that
-/// is also an ordinary English word — `bearer`, `asia` — belongs nowhere near
-/// this list: it would redact prose and, worse, would report a `secret`
-/// redaction kind on a receipt that removed nothing but a word. The AWS key ids
-/// that motivated `asia`/`akia` are handled by
-/// [`looks_like_aws_access_key`], which requires the full shape.
-const SECRET_VALUE_PREFIXES: &[&str] = &[
-    "sk-",
-    "sk_",
-    "ghp_",
-    "gho_",
-    "ghs_",
-    "github_pat_",
-    "xoxb-",
-    "xoxp-",
-    "xapp-",
-];
+const EXTRA_SECRET_NAME_MARKERS: &[&str] = &["credential", "session_key"];
 
 /// HTTP authorization scheme keywords, in their canonical HTTP capitalization.
 ///
@@ -98,15 +64,6 @@ const AUTH_SCHEMES: &[&str] = &["Bearer", "Basic", "Digest", "Token"];
 /// syntax by shape; ordinary prose says "bearer", and lowercase never arms on
 /// its own.
 const SELF_EVIDENT_AUTH_SCHEME: &str = "Bearer";
-
-/// AWS access-key-id prefixes. Matched case-sensitively and only against the
-/// full 20-character shape, so the word `Asia` is prose and `ASIA…` is a key.
-const AWS_KEY_ID_PREFIXES: &[&str] = &[
-    "AKIA", "ASIA", "AGPA", "AIDA", "AROA", "ANPA", "ANVA", "ASCA", "ABIA", "ACCA",
-];
-
-/// Minimum length of an AWS access key id (`AKIA` + 16).
-const AWS_KEY_ID_LEN: usize = 20;
 
 /// Minimum length before a bare token is treated as a credential value.
 const CREDENTIAL_VALUE_MIN_LEN: usize = 16;
@@ -227,12 +184,17 @@ pub fn redact_for_disclosure(input: &str) -> Redaction {
     let tokens: Vec<&str> = input.split(' ').collect();
     let mut out: Vec<String> = Vec::with_capacity(tokens.len());
     let mut arm = CredentialArm::None;
+    let mut pending_name: Option<&str> = None;
+    let mut index = 0;
 
-    for (index, token) in tokens.iter().enumerate() {
+    while index < tokens.len() {
+        let token = tokens[index];
         if token.is_empty() {
             out.push(String::new());
+            index += 1;
             continue;
         }
+        let name = pending_name.take();
         if arm.is_armed() {
             // `Authorization: Bearer <token>` — the scheme keyword is not the
             // secret, so it survives and the arming carries past it. A
@@ -243,7 +205,8 @@ pub fn redact_for_disclosure(input: &str) -> Redaction {
                 if is_canonical_auth_scheme(token) {
                     arm = CredentialArm::Certain;
                 }
-                out.push((*token).to_string());
+                out.push(token.to_string());
+                index += 1;
                 continue;
             }
             // Weak arming still defers to shape, so an `authorization:` that
@@ -254,10 +217,47 @@ pub fn redact_for_disclosure(input: &str) -> Redaction {
                 kinds.insert(REDACTION_SECRET.to_string());
                 out.push(SECRET_PLACEHOLDER.to_string());
                 arm = CredentialArm::None;
+                index += 1;
                 continue;
             }
             // Fall through: the token is judged on its own merits, and the
             // arming state is replaced wholesale by `redact_token` below.
+        }
+
+        if let Some(end) = private_key_span(&tokens, index) {
+            kinds.insert(REDACTION_SECRET.to_string());
+            out.push(SECRET_PLACEHOLDER.to_string());
+            arm = CredentialArm::None;
+            index = end;
+            continue;
+        }
+
+        if let Some(name) = name
+            && let Some(rest) = token.strip_prefix(['=', ':'])
+        {
+            let separator = &token[..1];
+            let weak = name.eq_ignore_ascii_case("authorization");
+            if rest.is_empty() {
+                arm = if weak {
+                    CredentialArm::IfShaped
+                } else {
+                    CredentialArm::Certain
+                };
+                out.push(token.to_string());
+            } else if is_auth_scheme(rest) {
+                arm = if is_canonical_auth_scheme(rest) {
+                    CredentialArm::Certain
+                } else {
+                    CredentialArm::IfShaped
+                };
+                out.push(token.to_string());
+            } else {
+                kinds.insert(REDACTION_SECRET.to_string());
+                arm = CredentialArm::None;
+                out.push(format!("{separator}{SECRET_PLACEHOLDER}"));
+            }
+            index += 1;
+            continue;
         }
 
         let next = tokens[index + 1..]
@@ -266,13 +266,49 @@ pub fn redact_for_disclosure(input: &str) -> Redaction {
             .find(|candidate| !candidate.is_empty());
         let outcome = redact_token(token, next, &mut kinds);
         arm = outcome.arm;
-        out.push(outcome.text.unwrap_or_else(|| (*token).to_string()));
+        if outcome.text.is_none() && !arm.is_armed() && is_secret_name(unwrap_token(token)) {
+            pending_name = Some(unwrap_token(token));
+        }
+        out.push(outcome.text.unwrap_or_else(|| token.to_string()));
+        index += 1;
     }
 
     Redaction {
         text: out.join(" "),
         kinds,
     }
+}
+
+fn is_secret_name(name: &str) -> bool {
+    if codewhale_sanitize::redact::is_sensitive_key(name) {
+        return true;
+    }
+    let lowered = name.to_ascii_lowercase().replace('-', "_");
+    EXTRA_SECRET_NAME_MARKERS
+        .iter()
+        .any(|marker| lowered.contains(marker))
+}
+
+fn private_key_span(tokens: &[&str], start: usize) -> Option<usize> {
+    if !unwrap_token(tokens[start]).starts_with("-----BEGIN") {
+        return None;
+    }
+    let header = tokens[start..tokens.len().min(start + 6)].join(" ");
+    if !header.contains("PRIVATE KEY-----") {
+        return None;
+    }
+    let Some(offset) = tokens[start + 1..]
+        .iter()
+        .position(|token| token.contains("-----END"))
+    else {
+        return Some(tokens.len());
+    };
+    let footer = start + 1 + offset;
+    let end = tokens[footer..tokens.len().min(footer + 4)]
+        .iter()
+        .position(|token| token.ends_with("KEY-----"))
+        .map_or(footer + 1, |closing| footer + closing + 1);
+    Some(end)
 }
 
 /// Redact one whitespace-free token, recording what was removed.
@@ -286,11 +322,7 @@ fn redact_token(token: &str, next: Option<&str>, kinds: &mut BTreeSet<String>) -
         let Some((name, value)) = token.split_once(separator) else {
             continue;
         };
-        let lowered = name.to_ascii_lowercase();
-        let secret_name = SECRET_NAME_MARKERS
-            .iter()
-            .any(|marker| lowered.contains(marker));
-        if secret_name {
+        if is_secret_name(name) {
             // `Authorization:Bearer` carries no secret of its own; the
             // credential is the next token. Canonical capitalization on the
             // scheme makes that certain; `authorization:bearer` does not.
@@ -308,10 +340,17 @@ fn redact_token(token: &str, next: Option<&str>, kinds: &mut BTreeSet<String>) -
             // follows — the scheme token itself decides, on the next pass,
             // whether its capitalization upgrades it.
             if value.is_empty() {
-                return if next
-                    .is_some_and(|next| is_auth_scheme(next) || looks_like_credential_value(next))
-                {
-                    TokenOutcome::keep_and_arm(CredentialArm::IfShaped)
+                let authorization = name.eq_ignore_ascii_case("authorization");
+                return if authorization {
+                    if next.is_some_and(|next| {
+                        is_auth_scheme(next) || looks_like_credential_value(next)
+                    }) {
+                        TokenOutcome::keep_and_arm(CredentialArm::IfShaped)
+                    } else {
+                        TokenOutcome::keep()
+                    }
+                } else if next.is_some() {
+                    TokenOutcome::keep_and_arm(CredentialArm::Certain)
                 } else {
                     TokenOutcome::keep()
                 };
@@ -338,19 +377,19 @@ fn redact_token(token: &str, next: Option<&str>, kinds: &mut BTreeSet<String>) -
         return TokenOutcome::keep_and_arm(CredentialArm::IfShaped);
     }
 
-    let lowered = token.to_ascii_lowercase();
-    if SECRET_VALUE_PREFIXES
-        .iter()
-        .any(|prefix| lowered.starts_with(prefix))
-        || looks_like_aws_access_key(token)
-    {
-        kinds.insert(REDACTION_SECRET.to_string());
-        return TokenOutcome::replace(SECRET_PLACEHOLDER.to_string());
-    }
+    let secret = codewhale_sanitize::redact::mask_bare_secret_tokens(token, SECRET_PLACEHOLDER);
 
     if let Some(kind) = classify_path(token) {
         kinds.insert(kind.to_string());
+        if secret.is_some() {
+            kinds.insert(REDACTION_SECRET.to_string());
+        }
         return TokenOutcome::replace(PATH_PLACEHOLDER.to_string());
+    }
+
+    if let Some(masked) = secret {
+        kinds.insert(REDACTION_SECRET.to_string());
+        return TokenOutcome::replace(masked);
     }
 
     TokenOutcome::keep()
@@ -392,6 +431,9 @@ fn is_canonical_auth_scheme(token: &str) -> bool {
 /// keeps `bearer of responsibility` out of the redactor.
 fn looks_like_credential_value(token: &str) -> bool {
     let value = unwrap_token(token);
+    if codewhale_sanitize::redact::contains_bare_secret_token(value) {
+        return true;
+    }
     if value.chars().count() < CREDENTIAL_VALUE_MIN_LEN {
         return false;
     }
@@ -407,27 +449,6 @@ fn looks_like_credential_value(token: &str) -> bool {
         }
     }
     has_digit && has_alpha
-}
-
-/// Whether a token is an AWS access key id.
-///
-/// Requires the exact uppercase prefix *and* the full length, so `Asia` and
-/// `ASIA` (the continent, in prose or in a shouted heading) are left alone
-/// while `ASIA` + 16 key characters is removed.
-fn looks_like_aws_access_key(token: &str) -> bool {
-    let value = unwrap_token(token);
-    if value.len() < AWS_KEY_ID_LEN {
-        return false;
-    }
-    if !AWS_KEY_ID_PREFIXES
-        .iter()
-        .any(|prefix| value.starts_with(prefix))
-    {
-        return false;
-    }
-    value
-        .chars()
-        .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
 }
 
 /// Whether a token is an absolute or home-relative filesystem path.
@@ -916,6 +937,81 @@ mod tests {
     fn an_extension_less_directory_is_the_known_residual() {
         let redaction = redact_for_disclosure("look in crates/tui/src");
         assert!(!redaction.redacted());
+    }
+
+    const BODY: &str = "Z7qX4mNb2Vc9Lk3PwR8t";
+
+    fn reported_credential_rows() -> Vec<(String, String)> {
+        let jwt = ["eyJhbGciOiJIUzI1NiJ9", ".eyJzdWIiOiIxIn0", ".c2lnbmF0dXJl"].concat();
+        let pem = "-----BEGIN PRIVATE KEY----- MIIEvQIBADANBgkqhkiG9w0BAQEFAASC -----END PRIVATE KEY-----";
+        vec![
+            (format!("OPENAI_KEY=sk-proj-{BODY}"), BODY.to_string()),
+            (format!("GITHUB_PAT=ghp_{BODY}"), BODY.to_string()),
+            (format!("key=sk-live-{BODY}"), BODY.to_string()),
+            (format!("(ghp_{BODY})"), BODY.to_string()),
+            (format!("'sk-live-{BODY}'"), BODY.to_string()),
+            (format!("--api-key={BODY}A"), BODY.to_string()),
+            (format!("X-Api-Key: {BODY}AB"), BODY.to_string()),
+            (format!("use {jwt} now"), jwt.clone()),
+            (format!("glpat-{BODY}"), BODY.to_string()),
+            (format!("hf_{BODY}"), BODY.to_string()),
+            (format!("AIzaSy{BODY}"), BODY.to_string()),
+            (
+                "ZAI_API_KEY = zk8Q2mX7vB4nL9pR3tYc".to_string(),
+                "zk8Q2mX7vB4nL9pR3tYc".to_string(),
+            ),
+            ("password: hunter2".to_string(), "hunter2".to_string()),
+            (format!("xai-{BODY}"), BODY.to_string()),
+            (pem.to_string(), "MIIEvQIBADANBgkq".to_string()),
+            (
+                format!("{{\"token_value\":\"ghp_{BODY}\"}}"),
+                BODY.to_string(),
+            ),
+            (format!("密钥：sk-live-{BODY}"), BODY.to_string()),
+        ]
+    }
+
+    #[test]
+    fn credentials_in_every_reported_spelling_are_removed_and_disclosed() {
+        for (input, leaked) in reported_credential_rows() {
+            let redaction = redact_for_disclosure(&input);
+            assert!(
+                !redaction.text().contains(&leaked),
+                "{input} leaked: {}",
+                redaction.text()
+            );
+            assert_eq!(
+                redaction.kinds(),
+                vec![REDACTION_SECRET.to_string()],
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn token_counts_are_not_secrets() {
+        for text in ["max_tokens=8192", "TOKEN_LIMIT=4096", "tokenizer=bpe"] {
+            let redaction = redact_for_disclosure(text);
+            assert_eq!(redaction.text(), text);
+            assert!(redaction.kinds().is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_routing_payload_carries_none_of_the_reported_credentials() {
+        for (input, leaked) in reported_credential_rows() {
+            let payload = crate::fleet_reasoning::bounded_routing_payload(&format!(
+                "fix the deploy script\n{input}\nthen rerun"
+            ));
+            assert!(
+                !payload.text().contains(&leaked),
+                "{input} reached the router: {}",
+                payload.text()
+            );
+            assert!(payload.disclosure().redacted, "{input}");
+            assert!(payload.text().starts_with("fix the deploy script"));
+            assert!(payload.text().ends_with("then rerun"), "{}", payload.text());
+        }
     }
 
     #[test]

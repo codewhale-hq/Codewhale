@@ -176,9 +176,9 @@ pub fn redact_secrets_with(input: &str, policy: RedactionPolicy) -> String {
             }
             continue;
         }
-        if is_private_key_block_start(trimmed) {
-            in_private_key_block = true;
-            out.push_str(line);
+        if let Some(redacted) = redact_private_key_line(line) {
+            in_private_key_block = redacted.opens_block;
+            out.push_str(&redacted.text);
             continue;
         }
         out.push_str(&redact_line(line, policy));
@@ -188,6 +188,42 @@ pub fn redact_secrets_with(input: &str, policy: RedactionPolicy) -> String {
 
 fn is_private_key_block_start(trimmed: &str) -> bool {
     trimmed.starts_with("-----BEGIN") && trimmed.contains("PRIVATE KEY")
+}
+
+struct PrivateKeyLine {
+    text: String,
+    opens_block: bool,
+}
+
+const PRIVATE_KEY_HEADER_END: &str = "PRIVATE KEY-----";
+const PRIVATE_KEY_FOOTER: &str = "-----END";
+
+fn redact_private_key_line(line: &str) -> Option<PrivateKeyLine> {
+    let (body, newline) = match line.strip_suffix('\n') {
+        Some(rest) => (rest, "\n"),
+        None => (line, ""),
+    };
+    let begin = body.find("-----BEGIN")?;
+    let header_len = body[begin..].find(PRIVATE_KEY_HEADER_END)?;
+    let header_end = begin + header_len + PRIVATE_KEY_HEADER_END.len();
+    let block_start = is_private_key_block_start(body.trim());
+    let footer = body[header_end..]
+        .find(PRIVATE_KEY_FOOTER)
+        .map(|idx| header_end + idx);
+    if footer.is_none() && !block_start {
+        return None;
+    }
+    let key_body_end = footer.unwrap_or(body.len());
+    let tail = &body[key_body_end..];
+    let text = if body[header_end..key_body_end].trim().is_empty() {
+        line.to_string()
+    } else {
+        format!("{}{REDACTED}{tail}{newline}", &body[..header_end])
+    };
+    Some(PrivateKeyLine {
+        text,
+        opens_block: footer.is_none(),
+    })
 }
 
 /// Redact a single line (which may include a trailing newline).
@@ -315,15 +351,16 @@ impl SpacedAssignment {
 /// sees the whole document as one word whose first separator belongs to a
 /// harmless key. Split such a word on its structure and offer every member to
 /// the same keyed and bare-token checks; the delimiters are kept byte-exact.
+const STRUCTURAL_DELIMITERS: [char; 7] = ['{', '}', '[', ']', ',', '&', '?'];
+
 fn redact_structured_word(word: &str, policy: RedactionPolicy) -> Option<String> {
-    const DELIMITERS: [char; 7] = ['{', '}', '[', ']', ',', '&', '?'];
-    if !word.contains(DELIMITERS) {
+    if !word.contains(STRUCTURAL_DELIMITERS) {
         return None;
     }
     let mut out = String::with_capacity(word.len());
     let mut changed = false;
     let mut start = 0;
-    for (idx, ch) in word.match_indices(DELIMITERS) {
+    for (idx, ch) in word.match_indices(STRUCTURAL_DELIMITERS) {
         changed |= push_structured_segment(&mut out, &word[start..idx], policy);
         out.push_str(ch);
         start = idx + ch.len();
@@ -474,7 +511,10 @@ fn key_matches_sensitive_hint(key_norm: &str, hint: &str) -> bool {
     }
     // Single-word hints must be a whole identifier segment so `token`
     // redacts `token` / `api_token` and not English `tokens`.
-    key_norm.split(['_', '-']).any(|segment| segment == hint)
+    if key_norm.split(['_', '-']).any(|segment| segment == hint) {
+        return true;
+    }
+    matches!(hint, "secret" | "password" | "passwd") && key_norm.ends_with(hint)
 }
 
 fn redact_inline_keyed_assignment(word: &str, policy: RedactionPolicy) -> Option<String> {
@@ -485,7 +525,10 @@ fn redact_inline_keyed_assignment(word: &str, policy: RedactionPolicy) -> Option
         return None;
     }
     if !key_is_sensitive(raw_key) {
-        return None;
+        if word.contains(STRUCTURAL_DELIMITERS) {
+            return None;
+        }
+        return mask_bare_secret_tokens(word, REDACTED);
     }
     match policy {
         RedactionPolicy::KeyBased => Some(format!("{}{}{}", raw_key, &rest[..1], REDACTED)),
@@ -544,6 +587,7 @@ const CREDENTIAL_VALUE_PREFIXES: &[&str] = &[
     "xoxs-",
     "npm_",
     "ya29.",
+    "xapp-",
 ];
 
 /// Whether a keyed value looks like credential material rather than code,
@@ -768,6 +812,71 @@ fn is_aws_access_key_id(word: &str) -> bool {
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
 }
 
+/// Whether `raw` names a credential (`api_key`, `X-Api-Key`, `DBPASSWORD`)
+/// rather than a usage metric (`max_tokens`).
+#[must_use]
+pub fn is_sensitive_key(raw: &str) -> bool {
+    key_is_sensitive(raw)
+}
+
+/// Whether `text` holds a provider credential on its own, wherever it sits:
+/// after `NAME=`, inside quotes, brackets or JSON, or next to non-ASCII text.
+#[must_use]
+pub fn contains_bare_secret_token(text: &str) -> bool {
+    mask_bare_secret_tokens(text, REDACTED).is_some()
+}
+
+/// Replace every standalone provider credential in `text` with
+/// `placeholder`, keeping the surrounding bytes. Returns `None` when `text`
+/// holds none.
+#[must_use]
+pub fn mask_bare_secret_tokens(text: &str, placeholder: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut changed = false;
+    for piece in text.split_inclusive(is_token_delimiter) {
+        let (body, tail) = match piece.chars().next_back() {
+            Some(last) if is_token_delimiter(last) => piece.split_at(piece.len() - last.len_utf8()),
+            _ => (piece, ""),
+        };
+        match secret_token_core(body) {
+            Some(core) => {
+                changed = true;
+                out.push_str(&body.replacen(core, placeholder, 1));
+            }
+            None => out.push_str(body),
+        }
+        out.push_str(tail);
+    }
+    changed.then_some(out)
+}
+
+fn is_token_delimiter(c: char) -> bool {
+    !c.is_ascii()
+        || c.is_ascii_whitespace()
+        || matches!(
+            c,
+            '"' | '\''
+                | '`'
+                | ','
+                | ';'
+                | '('
+                | ')'
+                | '{'
+                | '}'
+                | '['
+                | ']'
+                | '<'
+                | '>'
+                | '&'
+                | '?'
+                | '*'
+                | '|'
+                | '\\'
+                | '='
+                | ':'
+        )
+}
+
 #[cfg(test)]
 mod model_bound_json_tests {
     use super::*;
@@ -881,5 +990,106 @@ mod bare_token_tests {
             let line = format!("call {word} now");
             assert_eq!(redact_secrets(&line), line, "{word}");
         }
+    }
+}
+
+#[cfg(test)]
+mod assigned_secret_tests {
+    use super::*;
+
+    const BODY: &str = "Z7qX4mNb2Vc9Lk3PwR8t";
+
+    fn both_policies(input: &str) -> [String; 2] {
+        [redact_secrets(input), redact_model_bound_secrets(input)]
+    }
+
+    #[test]
+    fn a_credential_assigned_to_an_unremarkable_name_is_masked_under_both_policies() {
+        let openai = format!("sk-proj-{BODY}");
+        let github = format!("ghp_{BODY}");
+        let live = format!("sk-live-{BODY}");
+        for (input, expected) in [
+            (format!("OPENAI_KEY={openai}"), "OPENAI_KEY=[redacted]"),
+            (format!("GITHUB_PAT={github}"), "GITHUB_PAT=[redacted]"),
+            (format!("key={live}"), "key=[redacted]"),
+            (format!("GH_PAT:{github}"), "GH_PAT:[redacted]"),
+            (
+                format!("export GH_PAT='{github}'"),
+                "export GH_PAT='[redacted]'",
+            ),
+            (
+                format!("{{\"key\":\"{live}\",\"n\":1}}"),
+                "{\"key\":\"[redacted]\",\"n\":1}",
+            ),
+        ] {
+            for out in both_policies(&input) {
+                assert_eq!(out, expected, "{input}");
+            }
+        }
+    }
+
+    #[test]
+    fn counts_and_plain_assignments_stay_visible() {
+        for input in [
+            "max_tokens=8192",
+            "TOKEN_LIMIT=4096",
+            "mode=fast region=us-east-1",
+            "url=https://example.test/a?b=c",
+            "path:/usr/local/bin",
+        ] {
+            for out in both_policies(input) {
+                assert_eq!(out, input);
+            }
+        }
+    }
+
+    #[test]
+    fn a_private_key_written_on_one_line_is_masked() {
+        let one_line = "-----BEGIN PRIVATE KEY----- MIIEvQIBADANBgkqhkiG9w0BAQEFAASC -----END PRIVATE KEY-----";
+        let json_line = "{\"k\":\"-----BEGIN RSA PRIVATE KEY-----\\nMIIEowIBAAKCAQEA\\n-----END RSA PRIVATE KEY-----\\n\"}";
+        for out in both_policies(one_line) {
+            assert_eq!(
+                out,
+                "-----BEGIN PRIVATE KEY-----[redacted]-----END PRIVATE KEY-----"
+            );
+        }
+        for out in both_policies(json_line) {
+            assert!(!out.contains("MIIEowIBAAKCAQEA"), "{out}");
+            assert!(out.contains("-----END RSA PRIVATE KEY-----"), "{out}");
+        }
+        let open_block =
+            "-----BEGIN PRIVATE KEY----- MIIEvQIBADANBgkq\nmore\n-----END PRIVATE KEY-----\n";
+        for out in both_policies(open_block) {
+            assert_eq!(
+                out,
+                "-----BEGIN PRIVATE KEY-----[redacted]\n[redacted]\n-----END PRIVATE KEY-----\n"
+            );
+        }
+    }
+
+    #[test]
+    fn names_written_without_separators_are_sensitive_but_prose_is_not() {
+        for name in [
+            "DBPASSWORD",
+            "MYSECRET",
+            "dbpasswd",
+            "X-Api-Key",
+            "--api-key",
+        ] {
+            assert!(key_is_sensitive(name), "{name}");
+        }
+        for name in [
+            "passwordless",
+            "secretary",
+            "max_tokens",
+            "tokenizer",
+            "mode",
+        ] {
+            assert!(!key_is_sensitive(name), "{name}");
+        }
+        assert_eq!(
+            redact_secrets("DBPASSWORD=hunter2"),
+            "DBPASSWORD=[redacted]"
+        );
     }
 }
