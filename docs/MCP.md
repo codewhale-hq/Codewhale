@@ -6,8 +6,10 @@ In the terminal, `/mcp` (also `/mcps`) opens **Extensions → MCP**. Enter opens
 > 阅读简体中文版：[zh_hans/MCP.md](zh_hans/MCP.md)
 
 Everything you add to Codewhale is a plugin. An MCP server you configure is a
-connector, listed as a plugin that adds one connector with the label
-**Connector**; a plugin bundle can also carry connectors. The configuration
+plugin of the kind **Connector**, and a plugin bundle can also carry connectors.
+Connectors are still managed under Extensions → MCP in the terminal and
+Customize › Connectors on the desktop; one Plugins list that shows every kind
+together is planned for 0.10.3 and is not in this build. The configuration
 files, sign-in and the `/mcp` commands are unchanged. "Connection" on this page
 means the live link to a server; as a product noun it is the word for a model
 provider or another agent.
