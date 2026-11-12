@@ -252,6 +252,8 @@ DSH 的 `allow` 被视为不干预，每个所有者提示一次；不能预先�
 调用。编辑器通过 ACP（`codewhale serve --acp`）驱动的会话获得同一个扩展宿主，并受相同的
 `[features]` 开关（`extension_host`、`mcp`）约束：已审查的插件工具（TypeScript 与 DSH）和
 Codewhale 中配置的 MCP 服务器会作为 ACP 工具调用出现，并通过会话的权限设置询问；Plan 保持只读。
+插件工具通过 `exec.core` 请求核心执行需要审批的工具时，审批请求显示在该插件
+工具的调用上，并写明嵌套工具及其输入。
 ACP 服务器的能力声明会说明这一点（`agentCapabilities._meta.codewhale`）。ACP 客户端在
 `mcpServers` 中传入的服务器和已配置的 shell hooks 不会挂载。`prepend`/`global` 顺序
 覆盖、包裹实际执行的中间件、DSH 运行时句柄和执行后结果改写均不支持。Native
