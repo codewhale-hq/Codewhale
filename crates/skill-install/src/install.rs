@@ -1325,7 +1325,8 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
     let mut archive = tar::Archive::new(gz);
 
     let mut total_size: u64 = 0;
-    let mut prefix: Option<String> = None;
+    let mut prefix: Option<(String, bool)> = None;
+    let mut skill_md_files: Vec<(String, Vec<u8>)> = Vec::new();
     let mut skill_md_relative: Option<(SkillMdCandidate, Vec<u8>)> = None;
     let mut skill_md_candidate_count: usize = 0;
     let mut has_claude_plugin_manifest = false;
@@ -1361,26 +1362,22 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
             }
         }
 
-        // Detect prefix from the first entry. GitHub archives wrap everything
-        // in `<repo>-<branch>/`; direct tarballs may have no prefix. We treat
-        // the first path component as the prefix iff the archive has more than
-        // one entry under it, but for SKILL.md detection we just strip the
-        // first component if every entry shares it.
-        if prefix.is_none() {
-            if let Some(Component::Normal(first)) = path.components().next() {
-                let candidate = first.to_string_lossy().into_owned();
-                // Only treat the first component as a prefix if it's a
-                // directory-like (no extension and the path has more
-                // components). Otherwise leave prefix empty.
-                if path.components().count() > 1 {
-                    prefix = Some(candidate);
-                } else {
-                    prefix = Some(String::new());
-                }
-            } else {
-                prefix = Some(String::new());
-            }
+        if entry_type == tar::EntryType::XGlobalHeader {
+            continue;
         }
+        let mut components = path.components();
+        let first = match components.next() {
+            Some(Component::Normal(first)) => Some(first.to_string_lossy().into_owned()),
+            _ => None,
+        };
+        let wraps = entry_type.is_dir() || components.next().is_some();
+        prefix = match (prefix, first) {
+            (None, Some(first)) => Some((first, wraps)),
+            (Some((current, nested)), Some(first)) if current == first => {
+                Some((current, nested && wraps))
+            }
+            _ => Some((String::new(), false)),
+        };
 
         if entry_type.is_symlink() || entry_type.is_hard_link() {
             link_paths.push(path_str);
@@ -1392,28 +1389,37 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
         //   * `<prefix>/SKILL.md`
         //   * `<prefix>/*/skills/<name>/SKILL.md`
         //   * `<prefix>/<name>/SKILL.md`
-        if entry_type.is_file() {
-            let stripped = strip_prefix(&path_str, prefix.as_deref().unwrap_or(""));
-            if let Some(candidate) = skill_md_candidate(&stripped) {
-                skill_md_candidate_count += 1;
-                let mut buf = Vec::new();
-                entry
-                    .read_to_end(&mut buf)
-                    .context("failed to read SKILL.md from archive")?;
-                // Prefer the most explicit match: repo-root SKILL.md first,
-                // then known skill-directory layouts, then a single nested
-                // `<name>/SKILL.md` repository.
-                let replace = skill_md_relative
-                    .as_ref()
-                    .is_none_or(|(current, _)| candidate.rank < current.rank);
-                if replace {
-                    skill_md_relative = Some((candidate, buf));
-                }
-            }
+        if entry_type.is_file()
+            && path
+                .file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("SKILL.md"))
+        {
+            let mut buf = Vec::new();
+            entry
+                .read_to_end(&mut buf)
+                .context("failed to read SKILL.md from archive")?;
+            skill_md_files.push((path_str, buf));
         }
     }
 
-    let prefix = prefix.unwrap_or_default();
+    let prefix = match prefix {
+        Some((prefix, true)) => prefix,
+        _ => String::new(),
+    };
+    for (path, buf) in skill_md_files {
+        if let Some(candidate) = skill_md_candidate(&strip_prefix(&path, &prefix)) {
+            skill_md_candidate_count += 1;
+            // Prefer the most explicit match: repo-root SKILL.md first,
+            // then known skill-directory layouts, then a single nested
+            // `<name>/SKILL.md` repository.
+            let replace = skill_md_relative
+                .as_ref()
+                .is_none_or(|(current, _)| candidate.rank < current.rank);
+            if replace {
+                skill_md_relative = Some((candidate, buf));
+            }
+        }
+    }
     if has_claude_plugin_manifest && skill_md_candidate_count > 1 {
         return Err(InstallError::ClaudePluginBundle.into());
     }
@@ -1760,6 +1766,65 @@ mod tests {
             builder.append_data(&mut header, path, *body).unwrap();
         }
         builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[test]
+    fn archive_prefix_comes_from_every_entry_not_the_first_one() {
+        let body = b"---\nname: demo\ndescription: test\n---\nbody";
+        let nested = b"---\nname: nested\ndescription: test\n---\nbody";
+        let wrapped = |files: &[(&str, &[u8])]| {
+            let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            let mut builder = tar::Builder::new(encoder);
+            let mut global = tar::Header::new_ustar();
+            global.set_entry_type(tar::EntryType::XGlobalHeader);
+            global.set_size(0);
+            global.set_cksum();
+            builder
+                .append_data(&mut global, "pax_global_header", &b""[..])
+                .unwrap();
+            let mut dir = tar::Header::new_gnu();
+            dir.set_entry_type(tar::EntryType::Directory);
+            dir.set_size(0);
+            dir.set_mode(0o755);
+            dir.set_cksum();
+            builder
+                .append_data(&mut dir, "repo-main/", &b""[..])
+                .unwrap();
+            for (path, data) in files {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(data.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                builder.append_data(&mut header, path, *data).unwrap();
+            }
+            builder.into_inner().unwrap().finish().unwrap()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+
+        let named_dir = wrapped(&[
+            ("repo-main/README.md", b"readme"),
+            ("repo-main/demo/SKILL.md", body),
+        ]);
+        let staged = stage_tarball(&named_dir, tmp.path(), DEFAULT_MAX_SIZE_BYTES).unwrap();
+        assert_eq!(staged.skill_name, "demo");
+        assert!(staged.staged_path.join("SKILL.md").is_file());
+        fs::remove_dir_all(&staged.staged_path).unwrap();
+
+        let root_and_bundle = wrapped(&[
+            ("repo-main/SKILL.md", body),
+            ("repo-main/skills/nested/SKILL.md", nested),
+        ]);
+        let staged = stage_tarball(&root_and_bundle, tmp.path(), DEFAULT_MAX_SIZE_BYTES).unwrap();
+        assert_eq!(staged.skill_name, "demo");
+        fs::remove_dir_all(&staged.staged_path).unwrap();
+
+        let flat = skill_tarball(&[
+            ("scripts/run.sh", b"echo hi", 0o755),
+            ("SKILL.md", body, 0o644),
+        ]);
+        let staged = stage_tarball(&flat, tmp.path(), DEFAULT_MAX_SIZE_BYTES).unwrap();
+        assert!(staged.staged_path.join("SKILL.md").is_file());
+        assert!(staged.staged_path.join("scripts/run.sh").is_file());
     }
 
     #[test]
