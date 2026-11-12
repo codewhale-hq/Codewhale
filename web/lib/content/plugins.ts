@@ -4,13 +4,13 @@ import type { LocalizedText } from "./vocabulary";
 export const PLUGINS_COPY = {
   metaTitle: { en: "Plugins · Codewhale", zh: "插件 · Codewhale" },
   metaDescription: {
-    en: "A plugin adds skills, commands, agent profiles, hooks and MCP connectors to Codewhale. You install it, review what it asks for, trust it and enable it. What 0.10.3 adds is labelled as coming.",
-    zh: "插件可为 Codewhale 添加技能、命令、代理配置、钩子和 MCP 连接器。由你安装、审阅其所请求的能力、信任并启用。0.10.3 将带来的内容已标明为即将推出。",
+    en: "A plugin adds skills, commands, agent profiles, hooks and MCP connectors to Codewhale. You install it, review what it asks for, trust it and enable it.",
+    zh: "插件可为 Codewhale 添加技能、命令、代理配置、钩子和 MCP 连接器。由你安装、审阅其所请求的能力、信任并启用。",
   },
   title: { en: "Add to Codewhale with plugins", zh: "用插件扩展 Codewhale" },
   lead: {
-    en: "A plugin bundle can carry skills, commands, agent profiles, hooks and MCP connectors. You install it, review what it asks for, trust it and enable it, and nothing in it runs before that. A skill, a connector or a hook can also be added on its own with /skills, /mcp or /hooks.",
-    zh: "一个插件包可以携带技能、命令、代理配置、钩子和 MCP 连接器。你安装它，审阅它所请求的能力，信任并启用它，在此之前其中的任何内容都不会运行。技能、连接器或钩子也可以单独添加，分别使用 /skills、/mcp 或 /hooks。",
+    en: "A plugin bundle can carry skills, commands, agent profiles, hooks and MCP connectors. You install it, review what it asks for, trust it and enable it, and nothing in it runs before that. A skill, a connector or a hook can also be added on its own with /skill install, /mcp add or /hooks add.",
+    zh: "一个插件包可以携带技能、命令、代理配置、钩子和 MCP 连接器。你安装它，审阅它所请求的能力，信任并启用它，在此之前其中的任何内容都不会运行。技能、连接器或钩子也可以单独添加，分别使用 /skill install、/mcp add 或 /hooks add。",
   },
   marketplaceCta: { en: "Browse the catalog", zh: "浏览目录" },
   docsCta: { en: "Authoring guide", zh: "编写指南" },
@@ -114,8 +114,8 @@ export const PLUGINS_COPY = {
 
   comingTitle: { en: "Coming in 0.10.3, not in the current release", zh: "即将在 0.10.3 推出，当前发布版本尚未包含" },
   comingLead: {
-    en: "These are planned for 0.10.3. They are not in the version you can install today, and the plan can change before the release. Everything above describes the released version.",
-    zh: "以下内容计划在 0.10.3 推出，当前可安装的版本尚未包含，发布前计划也可能调整。上文描述的都是已发布版本。",
+    en: "These are planned for 0.10.3. They are not in the version you can install today, and the plan can change before the release. The rest of this page describes the released version.",
+    zh: "以下内容计划在 0.10.3 推出，当前可安装的版本尚未包含，发布前计划也可能调整。本页其余内容描述的都是已发布版本。",
   },
 
   catalogTitle: { en: "Plugins from the catalog", zh: "目录中的插件" },
@@ -192,10 +192,10 @@ export const PLUGINS_COMING = [
     },
   },
   {
-    title: { en: "You decide what turns on", zh: "启用什么由你决定" },
+    title: { en: "Your permission mode decides what turns on", zh: "启用什么由权限模式决定" },
     detail: {
-      en: "Outside Full Access, turning on a plugin the agent wrote still takes your approval. In Full Access the agent may turn on its own plugin; Codewhale records that the agent did it and shows it wherever plugins are listed. Until you review it once, that plugin works only in its own project.",
-      zh: "在 Full Access 之外，启用智能体编写的插件仍需你的批准。在 Full Access 下，智能体可以启用自己编写的插件；Codewhale 会记录这是智能体所为，并在列出插件的各处显示。在你审阅一次之前，该插件只在它所属的项目中生效。",
+      en: "Turning on a plugin the agent wrote is treated like any other action: Ask asks you, Auto-Review's reviewer model judges it, Plan refuses it, and in Full Access the agent may turn it on. Codewhale records that the agent did it and shows it wherever plugins are listed. Until you review it once, that plugin works only in its own project.",
+      zh: "启用智能体编写的插件与其他操作一样处理：Ask 会询问你，Auto-Review 由审阅模型判断，Plan 会拒绝，在 Full Access 下智能体可以直接启用。Codewhale 会记录这是智能体所为，并在列出插件的各处显示。在你审阅一次之前，该插件只在它所属的项目中生效。",
     },
   },
   {
