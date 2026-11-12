@@ -119,8 +119,22 @@ impl ProviderOffer {
     }
 
     pub(crate) fn render(&self, locale: Locale, area: Rect, buf: &mut Buffer) -> Rect {
+        self.render_if(crate::tui::orca_offer::available(locale), locale, area, buf)
+    }
+
+    fn render_if(&self, available: bool, locale: Locale, area: Rect, buf: &mut Buffer) -> Rect {
         self.clear();
-        if area.height < 4 || area.width < 20 || !crate::tui::orca_offer::available(locale) {
+        if area.height < 4 || area.width < 20 || !available {
+            return area;
+        }
+        let disclosure = wrap_to_width(
+            &tr(locale, MessageId::OrcaRouterOfferDisclosure),
+            usize::from(area.width),
+        );
+        let rows = u16::try_from(disclosure.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(1);
+        if rows > area.height.saturating_sub(3) {
             return area;
         }
         let chord = crate::tui::shell_key_routing::display_chord(
@@ -143,8 +157,49 @@ impl ProviderOffer {
                 Style::default().fg(palette::WHALE_ACTION).underlined()
             })
             .render(row, buf);
-        Rect::new(area.x, area.y + 1, area.width, area.height - 1)
+        for (index, line) in disclosure.into_iter().enumerate() {
+            let y = area.y + 1 + u16::try_from(index).unwrap_or(0);
+            Paragraph::new(line)
+                .style(Style::default().fg(palette::TEXT_MUTED))
+                .render(Rect::new(area.x, y, area.width, 1), buf);
+        }
+        Rect::new(area.x, area.y + rows, area.width, area.height - rows)
     }
+}
+
+fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthChar;
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut line_width = 0;
+    let mut last_space: Option<usize> = None;
+    for ch in text.chars() {
+        let w = ch.width().unwrap_or(0);
+        if line_width + w > width {
+            if let Some(at) = last_space {
+                let rest = line.split_off(at);
+                lines.push(line.trim_end().to_owned());
+                line = rest.trim_start().to_owned();
+            } else {
+                lines.push(std::mem::take(&mut line));
+            }
+            line_width = unicode_width::UnicodeWidthStr::width(line.as_str());
+            last_space = None;
+        }
+        if ch == ' ' {
+            if line.is_empty() {
+                continue;
+            }
+            last_space = Some(line.len());
+        }
+        line.push(ch);
+        line_width += w;
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 const DS4_PROVIDER_ID: &str = "ds4";
@@ -5888,6 +5943,61 @@ mod tests {
             .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn featured_offer_row_is_followed_by_its_disclosure_in_every_locale_and_width() {
+        for locale in Locale::shipped_complete() {
+            let disclosure = tr(*locale, MessageId::OrcaRouterOfferDisclosure).into_owned();
+            let label = tr(*locale, MessageId::OrcaRouterOfferRecommended).into_owned();
+            for width in [100u16, 56, 48, 30] {
+                let area = Rect::new(0, 0, width, 24);
+                let mut buf = Buffer::empty(area);
+                let offer = ProviderOffer::default();
+                let rest = offer.render_if(true, *locale, area, &mut buf);
+                let lines: Vec<String> = (0..24)
+                    .map(|y| {
+                        (0..width)
+                            .map(|x| buf[(x, y)].symbol())
+                            .collect::<String>()
+                            .trim_end()
+                            .to_owned()
+                    })
+                    .collect();
+                let squash = |text: &str| text.split_whitespace().collect::<String>();
+                assert!(
+                    squash(&lines[0]).starts_with(&squash(&label)),
+                    "{} {width}: {:?}",
+                    locale.tag(),
+                    lines[0]
+                );
+                let shown = lines[1..usize::from(rest.y)].concat();
+                assert_eq!(
+                    squash(&shown),
+                    squash(&disclosure),
+                    "{} {width}",
+                    locale.tag()
+                );
+                assert!(
+                    lines[usize::from(rest.y)..].iter().all(String::is_empty),
+                    "{} {width}: list area overprinted",
+                    locale.tag()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn featured_offer_shows_neither_row_nor_disclosure_when_unavailable() {
+        let area = Rect::new(0, 0, 100, 24);
+        let mut buf = Buffer::empty(area);
+        let offer = ProviderOffer::default();
+        assert_eq!(offer.render(Locale::ZhHans, area, &mut buf), area);
+        assert_eq!(offer.render_if(false, Locale::En, area, &mut buf), area);
+        assert!(
+            (0..24).all(|y| (0..100).all(|x| buf[(x, y)].symbol() == " ")),
+            "nothing may be drawn"
+        );
     }
 
     #[test]
