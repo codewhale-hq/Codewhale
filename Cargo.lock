@@ -1509,6 +1509,7 @@ dependencies = [
  "codewhale-protocol",
  "codewhale-sanitize",
  "serde_json",
+ "unicode-width",
 ]
 
 [[package]]

@@ -8,6 +8,7 @@ use codewhale_command_contract::outcome::ConfigStatusCommandResult as CommandRes
 use codewhale_command_contract::types::{CommandApprovalMode, CommandMode};
 use std::borrow::Cow;
 use std::fmt::Write as _;
+use unicode_width::UnicodeWidthStr;
 
 pub const CAPABILITIES: CommandCapabilities =
     CommandCapabilities::CONFIG_STATUS.union(CommandCapabilities::PRESENTATION);
@@ -376,11 +377,9 @@ fn session_tokens(view: &ConfigStatusView, locale: &Messages) -> String {
 }
 
 fn push_row(out: &mut String, locale: &Messages, label: MessageId, value: &str) {
-    let label = codewhale_tui_kit::ui_text::pad_to_display_width(
-        &format!("{}:", tr(locale, label)),
-        LABEL_WIDTH,
-    );
-    let _ = writeln!(out, "  {label} {value}");
+    let label = format!("{}:", tr(locale, label));
+    let padding = LABEL_WIDTH.saturating_sub(UnicodeWidthStr::width(label.as_str()));
+    let _ = writeln!(out, "  {label}{:padding$} {value}", "");
 }
 
 fn safety_summary(view: &ConfigStatusView, locale: &Messages) -> Cow<'static, str> {
