@@ -4,15 +4,31 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 
-use super::{git, normalized_path};
+use super::{git, in_scope, normalized_path, protected_git_path, protected_test_path};
 
 const MAX_FILES: usize = 4096;
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_TREE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CHANGE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_SCANNED_FILES: usize = 36_864;
+
+fn generated_output(path: &str) -> bool {
+    in_scope(path, "target") || path.split('/').any(|part| part == "__pycache__")
+}
+
+pub(super) fn capture_policy() -> Value {
+    json!({
+        "version": 1,
+        "excluded_untracked_root": "target",
+        "excluded_untracked_component": "__pycache__",
+        "tracked_and_protected_included": true,
+        "max_scanned_files": MAX_SCANNED_FILES,
+    })
+}
 
 #[derive(Clone, Deserialize, Serialize)]
 pub(super) struct FileEntry {
@@ -40,6 +56,7 @@ pub(super) struct Artifact {
     pub entries: Vec<Change>,
     pub parent_artifact_ids: Vec<String>,
     pub candidate_id: String,
+    pub excluded_generated_paths: Vec<String>,
 }
 
 pub(super) struct ArtifactStore {
@@ -149,7 +166,7 @@ fn walk(root: &Path) -> Result<BTreeMap<String, PathBuf>, String> {
             if metadata.is_dir() {
                 visit(root, &path, found)?;
             } else if metadata.is_file() {
-                if found.insert(relative, path).is_some() || found.len() > MAX_FILES {
+                if found.insert(relative, path).is_some() || found.len() > MAX_SCANNED_FILES {
                     return Err("artifact file count or path uniqueness limit exceeded".to_string());
                 }
             } else {
@@ -247,6 +264,7 @@ impl ArtifactStore {
         workspace: &Path,
         candidate_id: &str,
         parent_artifact_ids: Vec<String>,
+        protected_paths: &[String],
     ) -> Result<Artifact, String> {
         let found = walk(workspace)?;
         let baseline = self
@@ -256,9 +274,20 @@ impl ArtifactStore {
             .collect::<BTreeMap<_, _>>();
         let mut tree = Vec::new();
         let mut changes = Vec::new();
+        let mut excluded_generated_paths = Vec::new();
         let mut total = 0u64;
         let mut changed_bytes = 0u64;
         for (relative, path) in found {
+            if !baseline.contains_key(relative.as_str())
+                && generated_output(&relative)
+                && !protected_paths.iter().any(|root| in_scope(&relative, root))
+                && !protected_test_path(&relative)
+                && !protected_git_path(&relative)
+                && !relative.split('/').any(|part| part == ".codewhale")
+            {
+                excluded_generated_paths.push(relative);
+                continue;
+            }
             let bytes = read_file(&path)?;
             let file_mode = mode(&path)?;
             total += bytes.len() as u64;
@@ -314,13 +343,14 @@ impl ArtifactStore {
         changes.sort_by(|a, b| a.path.cmp(&b.path));
         let candidate_tree_hash = canonical_hash(&tree)?;
         let artifact = Artifact {
-            schema_version: 1,
+            schema_version: 2,
             artifact_id: candidate_tree_hash.clone(),
             baseline_id: self.baseline_id.clone(),
             candidate_tree_hash,
             entries: changes,
             parent_artifact_ids,
             candidate_id: candidate_id.to_string(),
+            excluded_generated_paths,
         };
         let target = self
             .root
@@ -346,7 +376,7 @@ impl ArtifactStore {
         .map_err(|error| error.to_string())?;
         let artifact: Artifact =
             serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-        if artifact.schema_version != 1
+        if artifact.schema_version != 2
             || artifact.candidate_id != candidate_id
             || artifact.baseline_id != self.baseline_id
         {

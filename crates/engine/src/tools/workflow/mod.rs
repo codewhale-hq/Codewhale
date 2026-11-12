@@ -57,7 +57,7 @@ use crate::work_graph::{
 };
 use codewhale_agent_contract::role::{FleetRole, public_role_label};
 use codewhale_util::utils::spawn_supervised;
-use verified_candidate::VerifiedCandidateEvaluator;
+use verified_candidate::{VerifiedCandidateEvaluator, authorized_workflow_source};
 
 /// Keep promoted artifacts compact without clipping ordinary evidence reports.
 /// A 900-character cap cut six-line source receipts in half during live Fleet
@@ -1427,8 +1427,7 @@ async fn start_workflow(
     let run_id = format!("workflow_{}", &Uuid::new_v4().to_string()[..8]);
     let evaluator = if let Some(request) = args.get("evaluator") {
         if args.get("strategy").and_then(Value::as_str) != Some("search")
-            || source.source
-                != include_str!("../../../../../workflows/operate_best_of_n.workflow.js")
+            || !authorized_workflow_source(&source.source)
         {
             return Err(ToolError::invalid_input(
                 "verified evaluator requires the checked-in search Workflow",

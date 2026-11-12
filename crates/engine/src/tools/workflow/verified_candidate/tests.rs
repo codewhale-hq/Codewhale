@@ -131,6 +131,14 @@ fn bwrap_available() -> bool {
 }
 
 #[test]
+fn checked_in_workflow_identity_is_exact() {
+    let source = include_str!("../../../../../../workflows/operate_best_of_n.workflow.js");
+    assert_eq!(hash(source.as_bytes()), AUTHORIZED_WORKFLOW_SHA256);
+    assert!(authorized_workflow_source(source));
+    assert!(!authorized_workflow_source(&format!("{source}\n")));
+}
+
+#[test]
 fn declared_baseline_and_case_identity_fail_closed() {
     let fixture = Fixture::new();
     fixture.edit_spec(|spec| spec["baseline_sha"] = json!("0".repeat(40)));
@@ -184,7 +192,7 @@ fn sealed_artifact_survives_deleted_worktree_and_rejects_tampering() {
     )
     .unwrap();
     let artifact = store
-        .capture(&fixture.worktree, "sealed_1", Vec::new())
+        .capture(&fixture.worktree, "sealed_1", Vec::new(), &[])
         .unwrap();
     let tree = fixture.temp.path().join("materialized");
     git(
@@ -242,7 +250,7 @@ fn artifact_rejects_links_traversal_and_protected_paths() {
     )
     .unwrap();
     let artifact = store
-        .capture(&fixture.worktree, "protected", Vec::new())
+        .capture(&fixture.worktree, "protected", Vec::new(), &[])
         .unwrap();
     assert!(
         validate_scope(
@@ -262,10 +270,97 @@ fn artifact_rejects_links_traversal_and_protected_paths() {
         .unwrap();
         assert!(
             store
-                .capture(&fixture.worktree, "link", Vec::new())
+                .capture(&fixture.worktree, "link", Vec::new(), &[])
                 .is_err()
         );
     }
+}
+
+#[test]
+fn generated_outputs_are_recorded_without_hiding_source_or_protected_changes() {
+    let fixture = Fixture::new();
+    git(
+        &fixture.repo,
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            fixture.worktree.to_str().unwrap(),
+        ],
+    );
+    fs::write(
+        fixture.repo.join(".gitignore"),
+        "target/\n__pycache__/\noutside/\n",
+    )
+    .unwrap();
+    fs::create_dir(fixture.repo.join("target")).unwrap();
+    fs::write(fixture.repo.join("target/tracked.rs"), "baseline").unwrap();
+    git(&fixture.repo, &["add", ".gitignore"]);
+    git(&fixture.repo, &["add", "-f", "target/tracked.rs"]);
+    git(
+        &fixture.repo,
+        &[
+            "-c",
+            "user.name=Evaluator Test",
+            "-c",
+            "user.email=evaluator@example.invalid",
+            "commit",
+            "-qm",
+            "baseline with ignored tracked file",
+        ],
+    );
+    git(
+        &fixture.repo,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            fixture.worktree.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    let root = fixture.temp.path().join("store");
+    let store = ArtifactStore::freeze(&fixture.repo, &root).unwrap();
+    fs::write(fixture.worktree.join("target/tracked.rs"), "changed").unwrap();
+    fs::write(fixture.worktree.join("target/build.o"), b"generated").unwrap();
+    fs::create_dir(fixture.worktree.join("__pycache__")).unwrap();
+    fs::write(fixture.worktree.join("__pycache__/candidate.pyc"), b"generated").unwrap();
+    fs::write(fixture.worktree.join("helper.py"), "def helper(): pass\n").unwrap();
+    fs::create_dir_all(fixture.worktree.join("tests/__pycache__")).unwrap();
+    fs::write(fixture.worktree.join("tests/__pycache__/poison.pyc"), b"protected").unwrap();
+    fs::create_dir(fixture.worktree.join("outside")).unwrap();
+    fs::write(fixture.worktree.join("outside/ignored.txt"), b"out of scope").unwrap();
+    assert_eq!(
+        git(&fixture.worktree, &["check-ignore", "target/build.o"]),
+        "target/build.o"
+    );
+    let protected = ["tests".to_owned()];
+    let artifact = store
+        .capture(&fixture.worktree, "generated", Vec::new(), &protected)
+        .unwrap();
+    let changed = artifact
+        .entries
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect::<Vec<_>>();
+    assert!(changed.contains(&"target/tracked.rs"));
+    assert!(changed.contains(&"helper.py"));
+    assert!(changed.contains(&"tests/__pycache__/poison.pyc"));
+    assert!(changed.contains(&"outside/ignored.txt"));
+    assert!(!changed.contains(&"target/build.o"));
+    assert!(!changed.contains(&"__pycache__/candidate.pyc"));
+    assert_eq!(
+        artifact.excluded_generated_paths,
+        ["__pycache__/candidate.pyc", "target/build.o"]
+    );
+    assert!(
+        validate_scope(
+            &artifact,
+            &["candidate.py".to_owned(), "helper.py".to_owned(), "target/tracked.rs".to_owned()],
+            &protected,
+        )
+        .is_err()
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -281,6 +376,7 @@ fn trusted_oracle_beats_candidate_claim_and_replay_uses_seal() {
     )
     .unwrap();
     let mut evaluator = fixture.freeze("claim");
+    assert_eq!(evaluator.sandbox_probe["resource_limits"]["processes_rlimit"], 4096);
     let failed = evaluator
         .evaluate(
             "claim_1",
@@ -354,32 +450,110 @@ fn missing_evidence_incomplete_worker_and_changed_oracle_are_rejected() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn timeout_and_cancellation_do_not_leave_descendants() {
+fn evaluation_deadline_begins_after_generation_delay() {
     if !bwrap_available() {
         return;
     }
     let fixture = Fixture::new();
-    let marker = fixture.temp.path().join("descendant-marker");
-    let code = format!(
-        "import subprocess,time\nsubprocess.Popen(['/usr/bin/python3','-c','import time; time.sleep(2); open({:?},\"w\").write(\"leak\")'])\ntime.sleep(20)\n",
-        marker.to_str().unwrap()
-    );
-    fs::write(fixture.worktree.join("candidate.py"), code).unwrap();
-    fixture.edit_spec(|spec| {
-        spec["hard_gates"][0]["timeout_secs"] = json!(1);
-    });
-    let mut evaluator = fixture.freeze("descendants");
-    let timed = evaluator
-        .evaluate("timed", &fixture.worktree, true, &CancellationToken::new())
+    fixture.correct_candidate();
+    fixture.edit_spec(|spec| spec["max_wall_secs"] = json!(4));
+    let mut evaluator = fixture.freeze("delayed_generation");
+    std::thread::sleep(Duration::from_secs(5));
+    let receipt = evaluator
+        .evaluate(
+            "delayed_candidate",
+            &fixture.worktree,
+            true,
+            &CancellationToken::new(),
+        )
         .unwrap();
-    assert_eq!(timed["status"], "UNKNOWN");
-    std::thread::sleep(std::time::Duration::from_secs(3));
-    assert!(!marker.exists());
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    assert!(
-        evaluator
-            .evaluate("cancelled", &fixture.worktree, true, &cancelled)
-            .is_err()
+    assert_eq!(receipt["status"], "PASS", "{receipt}");
+    assert!(receipt["evaluation_started_at_ms"].as_u64().is_some());
+    assert!(receipt["execution_deadline_at_ms"].as_u64().is_some());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn timeout_and_cancellation_reap_descendants_inside_writable_sandbox() {
+    if !bwrap_available() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    fs::create_dir(&source).unwrap();
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    let code = format!(
+        "import subprocess,sys,time\nsubprocess.Popen([sys.executable,'-c',\"import time; time.sleep(2); open('marker','w').write('leak')\",{token:?}])\nopen('ready','w').write('spawned')\ntime.sleep(10)\n"
     );
+    let run = |label: &str, timeout: Duration, cancel: Option<&CancellationToken>| {
+        let scratch = root.path().join(label);
+        fs::create_dir(&scratch).unwrap();
+        let env = isolated_command(
+            &source,
+            &scratch,
+            "/usr/bin/python3",
+            vec!["-c".to_owned(), code.clone()],
+            timeout,
+        )
+        .unwrap();
+        let outcome = run_isolated(
+            &env,
+            b"",
+            &root.path().join(format!("{label}.stdout")),
+            &root.path().join(format!("{label}.stderr")),
+            timeout,
+            cancel,
+        )
+        .unwrap();
+        (scratch, outcome)
+    };
+    let (control, control_run) = run("control", Duration::from_secs(4), None);
+    assert_eq!(control_run.stop_reason.as_deref(), Some("timeout"));
+    assert_eq!(fs::read(control.join("marker")).unwrap(), b"leak");
+    let (timed, timed_run) = run("timed", Duration::from_secs(1), None);
+    assert_eq!(timed_run.stop_reason.as_deref(), Some("timeout"));
+    assert!(timed.join("ready").exists());
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(!timed.join("marker").exists());
+    let cancelled = CancellationToken::new();
+    let scratch = root.path().join("cancelled");
+    fs::create_dir(&scratch).unwrap();
+    let env = isolated_command(
+        &source,
+        &scratch,
+        "/usr/bin/python3",
+        vec!["-c".to_owned(), code],
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    std::thread::scope(|scope| {
+        let handle = scope.spawn(|| {
+            run_isolated(
+                &env,
+                b"",
+                &root.path().join("cancelled.stdout"),
+                &root.path().join("cancelled.stderr"),
+                Duration::from_secs(5),
+                Some(&cancelled),
+            )
+            .unwrap()
+        });
+        let started = Instant::now();
+        while !scratch.join("ready").exists() && started.elapsed() < Duration::from_secs(4) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(scratch.join("ready").exists());
+        cancelled.cancel();
+        assert_eq!(handle.join().unwrap().stop_reason.as_deref(), Some("cancelled"));
+    });
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(!scratch.join("marker").exists());
+    let survivors = fs::read_dir("/proc")
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().parse::<u32>().is_ok())
+        .filter_map(|entry| fs::read(entry.path().join("cmdline")).ok())
+        .filter(|cmdline| cmdline.windows(token.len()).any(|window| window == token.as_bytes()))
+        .count();
+    assert_eq!(survivors, 0);
 }

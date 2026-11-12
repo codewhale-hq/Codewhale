@@ -19,6 +19,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
+const AUTHORIZED_WORKFLOW_SHA256: &str =
+    "55d5544578f0f6f5d7e046221a4e11f36fd97b28f94996e640daec271144ca36";
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Gate {
@@ -61,7 +64,9 @@ pub(super) struct VerifiedCandidateEvaluator {
     sandbox_probe: Value,
     root: PathBuf,
     repo: PathBuf,
-    started: Instant,
+    started: Option<Instant>,
+    started_at_ms: Option<u64>,
+    evaluation_elapsed: Duration,
     evaluated: HashMap<String, Value>,
 }
 
@@ -104,6 +109,10 @@ fn hash(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+pub(super) fn authorized_workflow_source(source: &str) -> bool {
+    hash(source.as_bytes()) == AUTHORIZED_WORKFLOW_SHA256
 }
 
 fn git(cwd: &Path, args: &[&str]) -> Result<std::process::Output, String> {
@@ -217,7 +226,7 @@ struct GateExecution {
     test_count: u64,
     failure: Option<String>,
     feedback: String,
-    stopped: bool,
+    stop_reason: Option<String>,
 }
 
 fn isolated_command(
@@ -230,7 +239,7 @@ fn isolated_command(
     #[cfg(not(all(target_os = "linux", not(target_env = "ohos"))))]
     {
         let _ = (source, scratch, program, args, timeout);
-        return Err("UNSUPPORTED_ISOLATION: candidate gates require Linux bubblewrap".to_string());
+        Err("UNSUPPORTED_ISOLATION: candidate gates require Linux bubblewrap".to_string())
     }
     #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
     {
@@ -319,7 +328,7 @@ fn run_isolated(
                 address_space_bytes: 512 * 1024 * 1024,
                 file_size_bytes: 1024 * 1024,
                 open_files: 64,
-                processes: 32,
+                processes: 4096,
                 cpu_seconds: timeout.as_secs().clamp(1, 8),
             },
         )
@@ -433,7 +442,7 @@ print(json.dumps({'secret_blocked':blocked[0],
         "probe_exit": run.exit_code,
         "resource_limits": {"address_space_bytes": 512 * 1024 * 1024,
             "file_size_bytes": 1024 * 1024, "open_files": 64,
-            "processes_rlimit": 32, "cpu_seconds_per_case": 8},
+            "processes_rlimit": 4096, "cpu_seconds_per_case": 8},
     }))
 }
 
@@ -588,6 +597,7 @@ impl VerifiedCandidateEvaluator {
                 "isolation_backend": spec.isolation_backend,
                 "allowed_write_roots": spec.allowed_write_roots,
                 "protected_paths": spec.protected_paths,
+                "capture_policy": artifact::capture_policy(),
                 "review_only": true,
             });
             let manifest_bytes =
@@ -613,7 +623,9 @@ impl VerifiedCandidateEvaluator {
                 sandbox_probe,
                 root: root.clone(),
                 repo,
-                started: Instant::now(),
+                started: None,
+                started_at_ms: None,
+                evaluation_elapsed: Duration::ZERO,
                 evaluated: HashMap::new(),
             })
         })();
@@ -656,6 +668,9 @@ impl VerifiedCandidateEvaluator {
             "baseline_id": self.store.baseline_id(),
             "spec_sha256": self.spec_hash,
             "sandbox_probe": self.sandbox_probe,
+            "capture_policy": artifact::capture_policy(),
+            "evaluation_started_at_ms": self.started_at_ms,
+            "evaluation_elapsed_ms": self.evaluation_elapsed.as_millis(),
             "review_only": true
         })
     }
@@ -698,13 +713,21 @@ impl VerifiedCandidateEvaluator {
         if common_dir(&worktree)? != common_dir(&self.repo)? {
             return Err("candidate worktree does not belong to frozen repository".to_string());
         }
-        let artifact = self.store.capture(&worktree, id, Vec::new())?;
-        let receipt = self.run_candidate(id, &artifact, false, cancel)?;
-        self.evaluated.insert(id.to_string(), receipt.clone());
-        Ok(receipt)
+        self.begin_evaluation()?;
+        let result = (|| {
+            let artifact = self
+                .store
+                .capture(&worktree, id, Vec::new(), &self.spec.protected_paths)?;
+            self.run_candidate(id, &artifact, false, cancel)
+        })();
+        self.finish_evaluation();
+        if let Ok(receipt) = &result {
+            self.evaluated.insert(id.to_string(), receipt.clone());
+        }
+        result
     }
 
-    pub(super) fn replay(&self, id: &str, cancel: &CancellationToken) -> Result<Value, String> {
+    pub(super) fn replay(&mut self, id: &str, cancel: &CancellationToken) -> Result<Value, String> {
         candidate_id(id)?;
         if cancel.is_cancelled() {
             return Err("evaluation cancelled".to_string());
@@ -752,7 +775,27 @@ impl VerifiedCandidateEvaluator {
                     .to_string(),
             );
         }
-        self.run_candidate(id, &artifact, true, cancel)
+        self.begin_evaluation()?;
+        let result = self.run_candidate(id, &artifact, true, cancel);
+        self.finish_evaluation();
+        result
+    }
+
+    fn begin_evaluation(&mut self) -> Result<(), String> {
+        self.started_at_ms = Some(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_millis() as u64,
+        );
+        self.started = Some(Instant::now());
+        Ok(())
+    }
+
+    fn finish_evaluation(&mut self) {
+        if let Some(started) = self.started.take() {
+            self.evaluation_elapsed += started.elapsed();
+        }
     }
 
     fn run_candidate(
@@ -777,6 +820,7 @@ impl VerifiedCandidateEvaluator {
         let mut gates = Vec::new();
         let mut test_count = 0u64;
         let mut public_feedback = String::new();
+        let mut stop_reason = None;
         if scope.is_ok() {
             let execution = self.execute_gates(id, artifact, replay, cancel);
             match execution {
@@ -784,13 +828,14 @@ impl VerifiedCandidateEvaluator {
                     gates = outcome.receipts;
                     test_count = outcome.test_count;
                     public_feedback = outcome.feedback;
-                    execution_status = if outcome.stopped {
+                    stop_reason = outcome.stop_reason;
+                    execution_status = if stop_reason.is_some() {
                         "STOPPED"
                     } else {
                         "COMPLETE"
                     };
-                    reason = outcome.failure;
-                    status = if outcome.stopped {
+                    reason = outcome.failure.or_else(|| stop_reason.clone());
+                    status = if stop_reason.is_some() {
                         "UNKNOWN"
                     } else if reason.is_none() && test_count > 0 {
                         "PASS"
@@ -817,6 +862,7 @@ impl VerifiedCandidateEvaluator {
             "candidate_id": id,
             "status": status,
             "execution_status": execution_status,
+            "stop_reason": stop_reason,
             "reason": reason,
             "spec_sha256": self.spec_hash,
             "frozen_manifest_sha256": self.manifest_hash,
@@ -830,6 +876,8 @@ impl VerifiedCandidateEvaluator {
             "executable_sha256": self.executable_hashes,
             "sandbox_probe": self.sandbox_probe,
             "changed_paths": artifact.entries.iter().map(|entry| &entry.path).collect::<Vec<_>>(),
+            "excluded_generated_paths": artifact.excluded_generated_paths,
+            "capture_policy": artifact::capture_policy(),
             "gates": gates,
             "test_count": test_count,
             "public_failure_feedback": public_feedback,
@@ -837,6 +885,9 @@ impl VerifiedCandidateEvaluator {
             "review_material_bytes": material.as_ref().map(String::len),
             "review_material": material,
             "review_complete": review_complete,
+            "evaluation_started_at_ms": self.started_at_ms,
+            "evaluation_elapsed_ms": self.evaluation_elapsed.as_millis() + self.started.map_or(0, |started| started.elapsed().as_millis()),
+            "execution_deadline_at_ms": self.started_at_ms.map(|started| started + Duration::from_secs(self.spec.max_wall_secs).saturating_sub(self.evaluation_elapsed).as_millis() as u64),
             "receipt_path": receipt_path,
             "observed_at_ms": now,
             "review_only": true,
@@ -869,7 +920,8 @@ impl VerifiedCandidateEvaluator {
         let mut test_count = 0u64;
         let mut failure = None;
         let mut feedback = String::new();
-        let mut stopped = false;
+        let mut stop_reason = None;
+        let overall_started = self.started.ok_or("evaluation clock was not started")?;
         for (gate_index, gate) in self.spec.hard_gates.iter().enumerate() {
             if gate.holdout && !replay {
                 continue;
@@ -879,17 +931,25 @@ impl VerifiedCandidateEvaluator {
             let mut observed_count = 0u64;
             let mut logs = Vec::new();
             for (case_index, case) in self.gate_cases[gate_index].iter().enumerate() {
-                let remaining = Duration::from_secs(gate.timeout_secs)
-                    .saturating_sub(started.elapsed())
-                    .min(
-                        Duration::from_secs(self.spec.max_wall_secs)
-                            .saturating_sub(self.started.elapsed()),
-                    );
-                if remaining.is_zero() || cancel.is_cancelled() {
-                    stopped = true;
-                    failure.get_or_insert_with(|| "gate timeout or cancellation".to_string());
+                let gate_remaining =
+                    Duration::from_secs(gate.timeout_secs).saturating_sub(started.elapsed());
+                let overall_remaining = Duration::from_secs(self.spec.max_wall_secs)
+                    .saturating_sub(self.evaluation_elapsed + overall_started.elapsed());
+                let reason = if cancel.is_cancelled() {
+                    Some("cancelled")
+                } else if overall_remaining.is_zero() {
+                    Some("aggregate_evaluation_deadline")
+                } else if gate_remaining.is_zero() {
+                    Some("gate_timeout")
+                } else {
+                    None
+                };
+                if let Some(reason) = reason {
+                    stop_reason = Some(reason.to_string());
+                    failure.get_or_insert_with(|| reason.to_string());
                     break;
                 }
+                let remaining = gate_remaining.min(overall_remaining);
                 let scratch = owned
                     .path()
                     .join(format!("scratch-{gate_index}-{case_index}"));
@@ -942,7 +1002,20 @@ impl VerifiedCandidateEvaluator {
                     "wall_ms": run.wall_ms, "passed": passed
                 }));
                 if run.stop_reason.is_some() {
-                    stopped = true;
+                    stop_reason = Some(match run.stop_reason.as_deref() {
+                        Some("timeout")
+                            if self.evaluation_elapsed + overall_started.elapsed()
+                                >= Duration::from_secs(self.spec.max_wall_secs) =>
+                        {
+                            "aggregate_evaluation_deadline".to_string()
+                        }
+                        Some("timeout") if started.elapsed() >= Duration::from_secs(gate.timeout_secs) => {
+                            "gate_timeout".to_string()
+                        }
+                        Some("timeout") => "case_timeout".to_string(),
+                        Some(reason) => reason.to_string(),
+                        None => unreachable!(),
+                    });
                     break;
                 }
             }
@@ -973,7 +1046,7 @@ impl VerifiedCandidateEvaluator {
             test_count,
             failure,
             feedback,
-            stopped,
+            stop_reason,
         })
     }
 }
