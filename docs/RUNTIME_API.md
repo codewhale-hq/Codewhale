@@ -2683,6 +2683,25 @@ thread deletion.
   pure over the snapshot — so a client must not look for one. Anything that
   mutates the session stays a terminal-side command.
 
+**Plugin index**
+- `GET /v1/apps/plugin-index` — `{workspace, items: [...], unavailable: [...],
+  problems: [...]}`: one list across every plugin, skill, connector, hook and
+  hand-written command. It is a projection: each item's `row` is the row its
+  owner's own route returns (`/v1/apps/plugins`, `/v1/apps/plugins/catalog`,
+  `/v1/skills`, `/v1/apps/mcp/servers`, `/v1/hooks`, `/v1/commands`), and
+  `owner` names that route. Per item: `id`, `kind` (`plugin`, `skill`,
+  `connector`, `hook`, `command`), `name`, `description`, `source`
+  (`built_in`, `user`, `project`, `other_app`, `runtime`, `plugin`), `state`
+  (`enabled`, `disabled`, `needs_review`, `needs_sign_in`, `unavailable`) and
+  `labels` (what the item adds). A plugin item also has `adds` (`skills`,
+  `connectors`, `hooks`, `commands`, `profiles`: names, not rows), and what a
+  plugin adds is not listed a second time as an item of its own. A built-in
+  switch is a `plugin` item with a `tier`. An owner that fails is named in
+  `unavailable` and the other kinds still list; `problems` carries the owners'
+  load warnings. Names under `adds` are file names, so a profile's `id` inside its
+  file can differ; a command another plugin registers through the extension host
+  is an item with `source` `plugin`.
+
 **Hooks**
 - `GET /v1/hooks[?thread_id=...]` — `{workspace, enabled, hooks: [...],
   problems: [...]}`: the hook set Runtime API threads run for that workspace

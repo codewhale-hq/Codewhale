@@ -29,6 +29,7 @@ mod headless_catalog;
 mod member_operations;
 #[cfg(unix)]
 mod owner_bootstrap;
+mod plugin_index;
 mod plugin_ui;
 mod profile_constitution;
 #[cfg(any(unix, windows))]
