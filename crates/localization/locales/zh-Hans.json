@@ -1691,7 +1691,7 @@
   "PhaseIdle": "空闲",
   "PhaseDraft": "草稿",
   "PhaseWorking": "工作中",
-  "PhaseReasoning": "推理中",
+  "PhaseReasoning": "思考中",
   "PhaseReading": "读取中",
   "PhaseUsingTool": "使用工具中",
   "PhaseSubagents": "智能体工作中",

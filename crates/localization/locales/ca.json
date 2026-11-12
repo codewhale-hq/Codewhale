@@ -1668,7 +1668,7 @@
   "PhaseIdle": "inactiu",
   "PhaseDraft": "esborrany",
   "PhaseWorking": "treballant",
-  "PhaseReasoning": "raonant",
+  "PhaseReasoning": "pensant",
   "PhaseReading": "llegint",
   "PhaseUsingTool": "usant una eina",
   "PhaseSubagents": "subagents en execució",
