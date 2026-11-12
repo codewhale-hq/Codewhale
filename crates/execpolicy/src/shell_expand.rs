@@ -792,6 +792,30 @@ static WRAPPERS: &[Wrapper] = &[
         long_switches: &["skip-chdir"],
         operands: 1,
     },
+    Wrapper {
+        name: "chpst",
+        short_values: "ubUe/Cnlmdofpc",
+        short_switches: "",
+        long_values: &[],
+        long_switches: &[],
+        operands: 0,
+    },
+    Wrapper {
+        name: "parallel",
+        short_values: "adEIjLnNPsS",
+        short_switches: "",
+        long_values: &["jobs", "arg-file", "sshlogin", "delimiter"],
+        long_switches: &[],
+        operands: 0,
+    },
+    Wrapper {
+        name: "screen",
+        short_values: "ceEhpsStT",
+        short_switches: "",
+        long_values: &[],
+        long_switches: &[],
+        operands: 0,
+    },
 ];
 
 /// Shell reserved words that can lead a simple command without being it:
@@ -1225,7 +1249,7 @@ impl Expander {
                             command_heads(&line.words).heads.iter().any(|&head| {
                                 let name = command_name(&line.words[head]);
                                 SHELL_NAMES.contains(&name.as_str())
-                                    || matches!(name.as_str(), "source" | ".")
+                                    || matches!(name.as_str(), "source" | "." | "at" | "batch")
                             })
                         });
                         for (delimiter, literal, strip_tabs) in heredocs.drain(..) {
@@ -1348,10 +1372,11 @@ impl Expander {
             }
             // A command word (or a wrapper word before it) that the shell
             // rewrites at run time cannot be matched against any rule.
-            if tokens[..=head]
-                .iter()
-                .zip(&dynamic)
-                .any(|(token, dynamic)| *dynamic && !is_env_assignment(token))
+            if tokens[head].starts_with('=')
+                || tokens[..=head]
+                    .iter()
+                    .zip(&dynamic)
+                    .any(|(token, dynamic)| *dynamic && !is_env_assignment(token))
             {
                 self.dynamic = true;
             }
@@ -1377,12 +1402,49 @@ impl Expander {
                         self.code_payload(&tokens[at], dynamic[at], depth);
                     }
                 }
+                "alias" | "hash" => {
+                    for at in head + 1..tokens.len() {
+                        if tokens[at] == "-p" {
+                            if let Some(path) = tokens.get(at + 1) {
+                                self.code_payload(path, dynamic[at + 1], depth);
+                            }
+                        } else if let Some((_, value)) = tokens[at].split_once('=') {
+                            self.code_payload(value, dynamic[at], depth);
+                        }
+                    }
+                }
+                "at" | "batch" => {
+                    self.dynamic |= !line.heredoc && !at_only_manages_jobs(tokens, head, &dynamic);
+                }
                 // These hand the value of `-c` / `--command` to a shell.
                 "su" | "runuser" | "flock" | "script" => {
                     for (payload, payload_dynamic) in
                         command_option_payloads(tokens, head, &dynamic)
                     {
                         self.code_payload(&payload, payload_dynamic, depth);
+                    }
+                }
+                "parallel" => {
+                    let inner: Vec<usize> = heads
+                        .heads
+                        .iter()
+                        .copied()
+                        .filter(|&inner| inner > head && !is_parallel_separator(&tokens[inner]))
+                        .collect();
+                    if inner.is_empty() {
+                        self.dynamic = true;
+                        let mut code = false;
+                        for at in head + 1..tokens.len() {
+                            if is_parallel_separator(&tokens[at]) {
+                                code = matches!(tokens[at].as_str(), ":::" | ":::+");
+                            } else if code {
+                                self.code_payload(&tokens[at], dynamic[at], depth);
+                            }
+                        }
+                    }
+                    for inner in inner {
+                        let inner_dynamic = dynamic[inner..].iter().any(|dynamic| *dynamic);
+                        self.code_payload(&tokens[inner..].join(" "), inner_dynamic, depth);
                     }
                 }
                 // `watch` and `sg GROUP [-c]` join their operands and hand
@@ -1562,6 +1624,37 @@ fn command_option_payloads(
         }
     }
     payloads
+}
+
+fn is_parallel_separator(token: &str) -> bool {
+    matches!(token, ":::" | ":::+" | "::::" | "::::+")
+}
+
+fn at_only_manages_jobs(tokens: &[String], head: usize, dynamic: &[bool]) -> bool {
+    let mut at = head + 1;
+    while at < tokens.len() {
+        let token = tokens[at].as_str();
+        if dynamic[at] {
+            return false;
+        }
+        if token == "--" || token.len() < 2 || !token.starts_with('-') {
+            break;
+        }
+        for (offset, flag) in token[1..].char_indices() {
+            match flag {
+                'l' | 'r' | 'd' | 'c' => return true,
+                'q' | 'f' | 't' => {
+                    if token[1 + offset + 1..].is_empty() {
+                        at += 1;
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+        at += 1;
+    }
+    false
 }
 
 /// Mark the operands of an `xargs` that contain its replacement string
