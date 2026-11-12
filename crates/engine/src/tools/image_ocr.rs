@@ -10,7 +10,6 @@
 //! `exec_shell`.
 
 use std::ffi::OsString;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -80,6 +79,8 @@ pub fn ocr_available() -> bool {
 const OCR_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_OCR_TEXT: usize = 16 * 1024 * 1024;
 const MAX_OCR_DIAGNOSTIC: usize = 32 * 1024;
+const MIN_IMAGE_BYTES: usize = 12;
+const NOT_AN_IMAGE: &str = "image_ocr: the file is not a PNG, JPEG, TIFF, BMP, GIF or WebP image";
 const NO_BACKEND: &str = "image_ocr: no local OCR backend is available. On macOS, update to a version with the Vision framework; on Linux/Windows install tesseract and restart codewhale.";
 
 /// Private bounded image snapshot staged before Host startup. Paths, image bytes,
@@ -88,10 +89,25 @@ const NO_BACKEND: &str = "image_ocr: no local OCR backend is available. On macOS
 pub struct CapturedOcr {
     path: PathBuf,
     captured_sha256: String,
-    _staged: Option<tempfile::NamedTempFile>,
+    _staged: Option<StagedInput>,
     #[cfg(all(test, unix))]
     overrides: Option<TestOverrides>,
 }
+
+struct StagedInput {
+    _root: tempfile::TempDir,
+    work_dir: PathBuf,
+}
+
+fn is_ocr_image(bytes: &[u8]) -> bool {
+    bytes.len() >= MIN_IMAGE_BYTES
+        && (crate::image_attach::sniff_media_type(bytes).is_some()
+            || matches!(
+                crate::image_attach::detect_rejected_format(bytes),
+                Some("BMP" | "TIFF")
+            ))
+}
+
 impl CapturedOcr {
     async fn capture(
         path: &Path,
@@ -128,23 +144,30 @@ impl CapturedOcr {
                     ))
                 })?;
             let bytes = crate::tools::file::read_contract_source(&mut source, cancel.as_ref())?;
+            if !is_ocr_image(&bytes) {
+                return Err(ToolError::invalid_input(NOT_AN_IMAGE));
+            }
             let captured_sha256 = codewhale_runtime::hashing::sha256_hex(&bytes);
-            // Reuse the fetched PDF staging contract. The temporary is private
-            // and retained by the input through Native and Tesseract work.
-            let mut staged = tempfile::NamedTempFile::new().map_err(|error| {
+            let stage_error = |error: std::io::Error| {
                 ToolError::execution_failed(format!("Failed to stage image OCR input: {error}"))
-            })?;
-            staged
-                .write_all(&bytes)
-                .and_then(|()| staged.flush())
-                .map_err(|error| {
-                    ToolError::execution_failed(format!("Failed to stage image OCR input: {error}"))
-                })?;
+            };
+            let root = tempfile::Builder::new()
+                .prefix("codewhale-ocr-")
+                .tempdir()
+                .map_err(stage_error)?;
+            let work_dir = root.path().join("work");
+            std::fs::create_dir(&work_dir).map_err(stage_error)?;
+            let staged_path = root.path().join("input");
+            std::fs::write(&staged_path, &bytes).map_err(stage_error)?;
+            let staged = StagedInput {
+                _root: root,
+                work_dir,
+            };
             if cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
                 return Err(ToolError::cancelled("Image OCR was cancelled"));
             }
             Ok(Self {
-                path: staged.path().to_path_buf(),
+                path: staged_path,
                 captured_sha256,
                 _staged: Some(staged),
                 #[cfg(all(test, unix))]
@@ -255,6 +278,9 @@ impl OcrNativeStep {
             let mut command=tokio::process::Command::new(binary);
             codewhale_util::utils::suppress_tokio_console_window(&mut command);
             command.arg(&self.input.path).arg("-");
+            if let Some(staged) = &self.input._staged {
+                command.current_dir(&staged.work_dir);
+            }
             codewhale_runtime::child_env::apply_to_tokio_command(&mut command,std::iter::empty::<(&str,&str)>());
             let stop=async { tokio::select! {biased;()=wait_cancel(cancel)=>{},()=tokio::time::sleep_until(deadline)=>{},} };
             let run=codewhale_runtime::process_tree::contained_output_with_input_bounded(&mut command,Vec::new(),MAX_OCR_TEXT,MAX_OCR_DIAGNOSTIC,stop).await
@@ -693,6 +719,35 @@ mod tests {
             assert!(
                 matches!(err, ToolError::PermissionDenied { .. }),
                 "{path}: {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn image_ocr_refuses_files_without_an_image_signature() {
+        let tmp = tempdir().expect("tempdir");
+        let outside = tmp.path().join("elsewhere.png");
+        fs::copy(ocr_fixture_path(), &outside).unwrap();
+        let list = format!("{}\n", outside.display());
+        let mut png_prefix = fs::read(ocr_fixture_path()).unwrap();
+        png_prefix.truncate(11);
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("diagram.png", list.into_bytes()),
+            ("short.png", b"BMelsewher".to_vec()),
+            ("tiny.png", png_prefix),
+            ("empty.png", Vec::new()),
+            ("text.png", b"just some words in a file".to_vec()),
+        ];
+        for (name, bytes) in cases {
+            fs::write(tmp.path().join(name), bytes).unwrap();
+            let ctx = ToolContext::new(tmp.path().to_path_buf());
+            let err = ImageOcrTool
+                .execute(json!({ "path": name }), &ctx)
+                .await
+                .expect_err("a file without an image signature must be refused");
+            assert!(
+                err.to_string().contains("is not a PNG, JPEG, TIFF"),
+                "{name}: {err}"
             );
         }
     }
