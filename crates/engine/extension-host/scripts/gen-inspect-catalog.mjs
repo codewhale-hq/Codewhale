@@ -27,7 +27,7 @@ const SERVICES = {
     summary: 'Slash commands a person types. A handler runs only when the person types the command.',
     availability: 'always',
     methods: [
-      { name: 'register', signature: 'register(definition: { name: string, description: string, argumentHint?: string, handler(call: { args: string, signal: AbortSignal }): CommandResult }): () => void', summary: 'Register one slash command. Names start with a lower case letter, then lower case letters, digits, _ and -, at most 64 characters; at most 64 commands per plugin. A name that clashes with a built-in command or another plugin\'s gets a namespaced plugin-<name>-<command> alias; an unavailable name is refused with a reason. Returns an idempotent disposer.' },
+      { name: 'register', signature: 'register(definition: { name: string, description: string, argumentHint?: string, handler(call: { args: string, signal: AbortSignal }): CommandResult }): () => void', summary: 'Register one slash command. Names start with a lower case letter, then lower case letters, digits, _ and -, at most 64 characters; at most 64 commands per plugin. A name that clashes with a built-in command gets the alias plugin-<plugin-slug>-<command>, and is refused if that alias is invalid or also taken. A name another plugin already registered is refused, so pick a plugin-specific name. Returns an idempotent disposer.' },
     ],
   },
   storage: {
