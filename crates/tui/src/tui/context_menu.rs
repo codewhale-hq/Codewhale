@@ -284,8 +284,8 @@ impl ContextMenuView {
         if start > 0 {
             rows.push(MenuRow::MoreAbove(start));
         }
-        for idx in start..end {
-            if idx > start && self.entries[idx].section_start {
+        for (idx, entry) in self.entries.iter().enumerate().take(end).skip(start) {
+            if idx > start && entry.section_start {
                 rows.push(MenuRow::Divider);
             }
             rows.push(MenuRow::Entry(idx));
