@@ -3216,6 +3216,7 @@ async fn run_async_main_dispatch(
                         workspace,
                         skills_dir,
                         skills_config,
+                        config.tool_launcher.is_some(),
                     )
                     .await
                 } else if http_selected {
