@@ -886,6 +886,13 @@ Plugin tools and configured MCP servers on this transport are on main after
 0.10.2; 0.10.2 itself does not have them.
 Client-supplied MCP servers, dynamic tools, task/PTY/background shell,
 interpreter, subagent and RLM lifecycles are unavailable on this transport.
+ACP has no tool search, so every connected MCP tool and its schema is sent with
+every request, and a server marked `lazy = true` never starts. A large MCP set
+therefore costs tokens on each turn and can exceed a provider's tool limit.
+MCP servers a model starts at run time stay out of an ACP-profile host. When
+`serve --acp` instead attaches to a running Runtime owner (see below), its turns
+use that owner's MCP pool, which includes servers started at run time in other
+sessions of the same workspace.
 Built-in overrides remove the
 whole compatibility alias family. Final dispatch rechecks the profile, so a
 fabricated alias, hook rewrite or omitted catalog entry cannot bypass it. Plan
@@ -906,7 +913,11 @@ produced.
 Tool updates begin `pending`. `in_progress` means Core reached final dispatch;
 `completed`/`failed` and typed image blocks come from the actual Core result.
 `session/request_permission` correlates a private JSON-RPC ID to the same
-Runtime-minted pending approval and Core execution ID. Only an exact live
+Runtime-minted pending approval and Core execution ID. When a plugin tool asks
+the core to run a tool that needs approval (`exec.core`), the request is shown
+on the plugin tool's call, names the nested tool and carries its input, and the
+answer releases the nested call; the nested call is decided under the session's
+permission setting. Only an exact live
 `allow-once` response can release that waiter; wrong IDs are ignored, invalid
 options deny, and cancellation withdraws it. ACP grants neither remembered
 permissions nor Native capabilities. Core typed rules, strict hooks, repo law,
