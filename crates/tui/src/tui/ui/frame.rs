@@ -1564,7 +1564,10 @@ pub(crate) fn commit_streaming_display_tick(
         updated = true;
     }
 
-    if app.streaming_state.has_pending_stream_text(0) {
+    if streaming_thinking::render_owed_revision(app, now) {
+        updated = true;
+    }
+    if app.streaming_state.has_pending_stream_text(0) || app.thinking_revision_owed {
         stream_display_clock.note_delta(now);
     }
 

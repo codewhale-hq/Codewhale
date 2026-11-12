@@ -1142,6 +1142,7 @@ impl App {
             streaming_thinking_active_entry: None,
             pending_thinking_translation_cells: HashMap::new(),
             thinking_revision_last_bump_at: None,
+            thinking_revision_owed: false,
             streaming_state: StreamingState::new(),
             streaming_output_token_estimate: 0,
             reasoning_buffer: String::new(),

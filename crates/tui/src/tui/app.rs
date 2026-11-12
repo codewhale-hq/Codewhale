@@ -2469,6 +2469,7 @@ pub struct App {
     /// re-render per character. `None` means "no bump since the last
     /// finalize" so the first chunk of a block always renders immediately.
     pub thinking_revision_last_bump_at: Option<Instant>,
+    pub(crate) thinking_revision_owed: bool,
     /// Newline-gated streaming collector state.
     pub streaming_state: StreamingState,
     /// Live approximate output tokens for the current assistant stream.
