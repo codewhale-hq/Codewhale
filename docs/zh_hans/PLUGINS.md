@@ -3,6 +3,13 @@
 > 英文原文：[PLUGINS.md](../PLUGINS.md)。
 > 最后与英文同步日期（last synced with English revision）：2026-09-26。
 > 2026-11-07 定点更正：版本范围、目录与固定来源、信任确认、本地更新；未做全文重译。
+> 2026-11-12 定点更正：一律称“插件”；未做全文重译。
+
+你添加到 Codewhale 的一切都叫插件。skill、MCP connector（连接器）和 hook 各自是一个插件，
+或是插件的一部分，并以标签显示其种类：Skill、Connector、Hook、Command。你手动设置的 skill、
+connector 和 hook 会列为只添加一个 skill、一个 connector 或一个 hook 的插件；它们的文件、
+信任规则和命令（`/skills`、`/mcp`、`/hooks`）都不变。“Connection”（连接）一词专指模型提供方或
+另一个 agent，不是插件的一种。
 
 想做一个插件包，先从[编写你的第一个 Codewhale 插件](./PLUGIN_AUTHORING.md)
 和里面可运行的 Skills 示例入手。

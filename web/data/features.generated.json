@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "43e71c6bf051e8b515cc0635288909f465e36b828b8970d4de8cecc79303e7cb"
+    "sha256": "a6329d84877d44857f3a441044efb51a4c793faa979b808a76404ea45b312070"
   },
   "features": [
     {
@@ -138,8 +138,8 @@
     },
     {
       "id": "mcp-client",
-      "name": "MCP client",
-      "summary": "Connects MCP servers, exposes permitted tools and records connection status for the model.",
+      "name": "MCP connectors",
+      "summary": "A plugin kind: connects MCP servers, exposes permitted tools and records connection status for the model.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -671,8 +671,8 @@
     },
     {
       "id": "skills",
-      "name": "Skills",
-      "summary": "Trusted instruction packages with bundle policy, invocation controls and shared, configurable index limits.",
+      "name": "Skill plugins",
+      "summary": "A plugin kind: trusted instruction packages with bundle policy, invocation controls and shared, configurable index limits.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -686,7 +686,7 @@
     {
       "id": "plugins",
       "name": "Plugins",
-      "summary": "Installs, reviews and trusts plugin bundles, reports their status, and restores missing reviewed runtime snapshots.",
+      "summary": "Everything a person adds is a plugin. Installs, reviews and trusts plugin bundles, reports their status, and restores missing reviewed runtime snapshots.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -752,8 +752,8 @@
     },
     {
       "id": "hooks",
-      "name": "Hooks",
-      "summary": "Runs user commands on session and tool events, with an execution receipt after shell tools.",
+      "name": "Hook plugins",
+      "summary": "A plugin kind: runs user commands on session and tool events, with an execution receipt after shell tools.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",

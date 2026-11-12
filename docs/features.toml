@@ -141,8 +141,8 @@ owner = "crates/engine/src/tools/apply_patch.rs"
 
 [[feature]]
 id = "mcp-client"
-name = "MCP client"
-summary = "Connects MCP servers, exposes permitted tools and records connection status for the model."
+name = "MCP connectors"
+summary = "A plugin kind: connects MCP servers, exposes permitted tools and records connection status for the model."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 since = "0.1.0"
@@ -532,8 +532,8 @@ owner = "crates/memory"
 
 [[feature]]
 id = "skills"
-name = "Skills"
-summary = "Trusted instruction packages with bundle policy, invocation controls and shared, configurable index limits."
+name = "Skill plugins"
+summary = "A plugin kind: trusted instruction packages with bundle policy, invocation controls and shared, configurable index limits."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/SKILLS.md"
@@ -542,7 +542,7 @@ owner = "crates/skills/src"
 [[feature]]
 id = "plugins"
 name = "Plugins"
-summary = "Installs, reviews and trusts plugin bundles, reports their status, and restores missing reviewed runtime snapshots."
+summary = "Everything a person adds is a plugin. Installs, reviews and trusts plugin bundles, reports their status, and restores missing reviewed runtime snapshots."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PLUGINS.md"
@@ -585,8 +585,8 @@ owner = "crates/net/src/import_claude.rs"
 
 [[feature]]
 id = "hooks"
-name = "Hooks"
-summary = "Runs user commands on session and tool events, with an execution receipt after shell tools."
+name = "Hook plugins"
+summary = "A plugin kind: runs user commands on session and tool events, with an execution receipt after shell tools."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/HOOKS.md"
