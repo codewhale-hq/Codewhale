@@ -1779,12 +1779,9 @@ mod tests {
         );
     }
 
-    /// Creating a task from a session runs it on the posture that session
-    /// holds: `auto_approve` is a legacy bit the engine only reads when no
-    /// posture is given, so a task cannot talk itself into more authority than
-    /// the session that asked for it was granted.
-    #[tokio::test]
-    async fn create_pins_the_session_posture_on_the_task() {
+    async fn noop_task_manager(
+        workspace: &std::path::Path,
+    ) -> crate::task_manager::SharedTaskManager {
         struct NoopExecutor;
 
         #[async_trait::async_trait]
@@ -1804,12 +1801,11 @@ mod tests {
             }
         }
 
-        let workspace = tempfile::tempdir().expect("workspace");
-        let manager = crate::task_manager::TaskManager::start_with_executor(
+        crate::task_manager::TaskManager::start_with_executor(
             crate::task_manager::TaskManagerConfig {
-                data_dir: workspace.path().to_path_buf(),
+                data_dir: workspace.to_path_buf(),
                 worker_count: 1,
-                default_workspace: workspace.path().to_path_buf(),
+                default_workspace: workspace.to_path_buf(),
                 default_model: "deepseek-v4-pro".to_string(),
                 default_mode: "agent".to_string(),
                 allow_shell: false,
@@ -1820,7 +1816,42 @@ mod tests {
             std::sync::Arc::new(NoopExecutor),
         )
         .await
-        .expect("task manager");
+        .expect("task manager")
+    }
+
+    #[tokio::test]
+    async fn create_carries_the_session_deny_rules_onto_the_task_and_its_thread() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let manager = noop_task_manager(workspace.path()).await;
+        let mut context = ToolContext::new(workspace.path());
+        context.shell_policy = codewhale_agent_contract::worker_profile::ShellPolicy::None;
+        context.disallowed_tools = vec!["mcp_secret_*".to_string()];
+        context.runtime.task_manager = Some(manager.clone());
+
+        TasksTool::new("tasks")
+            .execute(json!({"action": "create", "prompt": "probe"}), &context)
+            .await
+            .expect("create accepted");
+
+        let queued = manager.list_tasks(Some(1)).await.expect("queued task");
+        let created = manager.get_task(&queued[0].id).await.expect("created task");
+        let record = serde_json::to_value(&created).expect("record json");
+        assert_eq!(record["disallowed_tools"], json!(["mcp_secret_*"]));
+        let thread = serde_json::to_value(
+            crate::task_manager::ExecutionTask::from(&created).thread_request(),
+        )
+        .expect("thread request json");
+        assert_eq!(thread["disallowed_tools"], json!(["mcp_secret_*"]));
+    }
+
+    /// Creating a task from a session runs it on the posture that session
+    /// holds: `auto_approve` is a legacy bit the engine only reads when no
+    /// posture is given, so a task cannot talk itself into more authority than
+    /// the session that asked for it was granted.
+    #[tokio::test]
+    async fn create_pins_the_session_posture_on_the_task() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let manager = noop_task_manager(workspace.path()).await;
 
         let mut context = ToolContext::new(workspace.path());
         context.approval_mode = codewhale_execpolicy::ApprovalMode::Auto;

@@ -1824,6 +1824,85 @@ mod recovery {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn thread_deny_rules_persist_and_reach_the_engine_that_runs_the_thread() -> Result<()> {
+        let _env = crate::test_support::lock_test_env();
+        let dir = tempfile::tempdir()?;
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", dir.path());
+        let workspace = dir.path().join("workspace");
+        fs::create_dir(&workspace)?;
+        let manager = RuntimeThreadManager::open(
+            config(),
+            workspace,
+            test_manager_config(dir.path().join("runtime")),
+        )?;
+        let mock = Arc::new(MockLlmClient::new(vec![
+            canned::simple_text_turn("open"),
+            canned::simple_text_turn("restricted"),
+        ]));
+        manager.set_test_model_client(mock.clone());
+        let rules = vec!["file".to_string()];
+        let tool_names = |request: &codewhale_models::MessageRequest| -> Vec<String> {
+            request
+                .tools
+                .iter()
+                .flatten()
+                .map(|tool| tool.name.clone())
+                .collect()
+        };
+
+        let open = manager
+            .create_thread(CreateThreadRequest::default())
+            .await?;
+        let first = manager
+            .start_turn(
+                &open.id,
+                StartTurnRequest {
+                    prompt: "list".into(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        wait_for_terminal_turn(&manager, &first.id).await?;
+
+        let restricted: CreateThreadRequest =
+            serde_json::from_value(json!({ "disallowed_tools": ["file"] }))?;
+        let restricted = manager.create_thread(restricted).await?;
+        assert_eq!(
+            serde_json::to_value(manager.get_thread(&restricted.id).await?)?["disallowed_tools"],
+            json!(["file"])
+        );
+        let second = manager
+            .start_turn(
+                &restricted.id,
+                StartTurnRequest {
+                    prompt: "list".into(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        wait_for_terminal_turn(&manager, &second.id).await?;
+
+        let requests = mock.captured_requests();
+        assert_eq!(requests.len(), 2);
+        let denied = |names: &[String]| {
+            names
+                .iter()
+                .any(|name| codewhale_execpolicy::tool_rules::tool_denied(Some(&rules), name))
+        };
+        assert!(
+            denied(&tool_names(&requests[0])),
+            "the control thread must expose a tool the rule covers"
+        );
+        assert!(
+            !denied(&tool_names(&requests[1])),
+            "{:?}",
+            tool_names(&requests[1])
+        );
+        close_engines(&manager).await?;
+        Ok(())
+    }
+
     async fn control_case(interrupt: bool, follow_up: bool) -> Result<()> {
         let _env = crate::test_support::lock_test_env();
         let dir = tempfile::tempdir()?;

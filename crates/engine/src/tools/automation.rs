@@ -751,6 +751,70 @@ mod tests {
     use crate::tools::spec::ToolSpec;
 
     #[tokio::test]
+    async fn stored_automation_carries_the_creating_session_deny_rules() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let manager = crate::automation_manager::AutomationManager::open_for_test(
+            workspace.path().join("automations"),
+        )
+        .expect("automation manager");
+        let shared = std::sync::Arc::new(tokio::sync::Mutex::new(manager));
+        let tool = AutomationTool::new("automation");
+        let mut restricted = ToolContext::new(workspace.path());
+        restricted.runtime.automations = Some(shared.clone());
+        restricted.disallowed_tools = vec!["mcp_secret_*".to_string()];
+        let mut open = ToolContext::new(workspace.path());
+        open.runtime.automations = Some(shared.clone());
+        let create = |name: &str| {
+            json!({
+                "action": "create",
+                "name": name,
+                "prompt": "summarise the day",
+                "rrule": "FREQ=HOURLY",
+                "paused": true
+            })
+        };
+
+        let created = tool
+            .execute(create("restricted"), &restricted)
+            .await
+            .expect("create accepted");
+        let record: Value = serde_json::from_str(&created.content).expect("record json");
+        assert_eq!(
+            record["disallowed_tools"],
+            json!(["mcp_secret_*"]),
+            "{record}"
+        );
+        let restricted_id = record["id"].as_str().expect("id").to_string();
+
+        let created = tool
+            .execute(create("open"), &open)
+            .await
+            .expect("create accepted");
+        let record: Value = serde_json::from_str(&created.content).expect("record json");
+        assert!(record.get("disallowed_tools").is_none(), "{record}");
+        let open_id = record["id"].as_str().expect("id").to_string();
+
+        tool.execute(
+            json!({"action": "update", "automation_id": restricted_id, "prompt": "again"}),
+            &restricted,
+        )
+        .await
+        .expect("a session may edit what runs under its own rules");
+        for action in ["update", "resume"] {
+            let refused = tool
+                .execute(
+                    json!({"action": action, "automation_id": open_id, "prompt": "inject"}),
+                    &restricted,
+                )
+                .await;
+            assert!(
+                refused.is_err(),
+                "{action}: an automation without the session's deny rules is out of reach"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn create_and_update_cap_requested_authority_at_the_session() {
         let workspace = tempfile::tempdir().expect("workspace");
         let manager = crate::automation_manager::AutomationManager::open_for_test(
