@@ -156,6 +156,9 @@ fn strip_ansi_impl(s: &str, out: &mut impl FnMut(&str), keep_sgr: bool) {
                             j += 1;
                             break;
                         }
+                        if !(0x20..=0x3f).contains(&b) {
+                            break;
+                        }
                         j += 1;
                     }
                     if keep_sgr
@@ -184,9 +187,16 @@ fn strip_ansi_impl(s: &str, out: &mut impl FnMut(&str), keep_sgr: bool) {
                     i = j;
                     continue;
                 }
-                // Standalone two-byte ESC sequence (RIS, charset selection, etc.)
+                // Other ESC sequences: intermediates, then a final byte (RIS, charset selection)
                 _ => {
-                    i += 2;
+                    let mut j = i + 1;
+                    while j < bytes.len() && (0x20..=0x2f).contains(&bytes[j]) {
+                        j += 1;
+                    }
+                    if j < bytes.len() && (0x30..=0x7e).contains(&bytes[j]) {
+                        j += 1;
+                    }
+                    i = j;
                     continue;
                 }
             }
@@ -532,6 +542,24 @@ mod tests {
         let mut out = String::new();
         strip_ansi_into("a\u{1b}[31mred\u{1b}[0m b", &mut out);
         assert_eq!(out, "ared b");
+    }
+
+    #[test]
+    fn strip_ansi_consumes_whole_escape_sequences_and_keeps_following_text() {
+        for (input, expected) in [
+            ("\u{1b}(Bok\u{1b}[m", "ok"),
+            ("\u{1b}#8x", "x"),
+            ("a\u{1b}\u{1b}[31mb", "ab"),
+            ("\u{1b}[中文", "中文"),
+            ("\u{1b}中", "中"),
+        ] {
+            let mut out = String::new();
+            strip_ansi_into(input, &mut out);
+            assert_eq!(out, expected, "{input:?}");
+        }
+        let mut kept = String::new();
+        strip_ansi_keep_sgr_into("\u{1b}[\u{1b}(0m\u{1b}[1mx", &mut kept);
+        assert_eq!(kept, "m\u{1b}[1mx");
     }
 
     #[test]
