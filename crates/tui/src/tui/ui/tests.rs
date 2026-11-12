@@ -31870,6 +31870,8 @@ fn six_worker_progress_storm_keeps_input_render_and_cancel_live() {
     .expect("send key event");
     let input = TerminalInputPump {
         rx,
+        retired_rx: Default::default(),
+        child_windows: Default::default(),
         stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -31928,6 +31930,8 @@ fn queued_terminal_events_keep_receipt_gap_for_late_unbracketed_submit() {
 
     let input = TerminalInputPump {
         rx,
+        retired_rx: Default::default(),
+        child_windows: Default::default(),
         stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -31969,6 +31973,9 @@ fn queued_terminal_events_keep_receipt_gap_for_late_unbracketed_submit() {
 
 #[tokio::test]
 async fn terminal_input_child_pause_drains_codewhale_events_before_editor_handoff() {
+    let _serialized = CHILD_TERMINAL_GATE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let (tx, rx) = std::sync::mpsc::channel();
     tx.send(TerminalInputMessage::Event(ObservedTerminalEvent::new(
         Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
@@ -31985,6 +31992,8 @@ async fn terminal_input_child_pause_drains_codewhale_events_before_editor_handof
 
     let input = TerminalInputPump {
         rx,
+        retired_rx: Default::default(),
+        child_windows: Default::default(),
         stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -32021,6 +32030,9 @@ async fn terminal_input_child_pause_drains_codewhale_events_before_editor_handof
 
 #[tokio::test]
 async fn terminal_input_handoff_preserves_pending_cancellation_keys() {
+    let _serialized = CHILD_TERMINAL_GATE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let (tx, rx) = std::sync::mpsc::channel();
     tx.send(TerminalInputMessage::Event(ObservedTerminalEvent::new(
         Event::Key(KeyEvent::new(KeyCode::Char('\u{3}'), KeyModifiers::NONE)),
@@ -32029,6 +32041,8 @@ async fn terminal_input_handoff_preserves_pending_cancellation_keys() {
     .expect("send raw Ctrl+C");
     let input = TerminalInputPump {
         rx,
+        retired_rx: Default::default(),
+        child_windows: Default::default(),
         stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -32067,9 +32081,10 @@ async fn terminal_input_handoff_preserves_pending_cancellation_keys() {
     input.resume_after_child_terminal();
 }
 
-/// `CHILD_TERMINAL_GATE` is process-global — one stdin, one pump. Any test
-/// that publishes or reads it must hold this, including the restart test,
-/// which publishes through `install_parts`.
+/// `CHILD_TERMINAL_GATE` and the child terminal window registry are
+/// process-global — one stdin, one pump. Any test that publishes or reads the
+/// gate, or opens, closes or classifies a child terminal window, must hold
+/// this, including the restart test, which publishes through `install_parts`.
 static CHILD_TERMINAL_GATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// #6165: `/hooks edit` handed the terminal to `$EDITOR` with the pump still
@@ -32179,6 +32194,8 @@ fn input_pump_restart_detaches_wedged_thread_and_installs_fresh_parts() {
     let old_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut pump = TerminalInputPump {
         rx: old_rx,
+        retired_rx: Default::default(),
+        child_windows: Default::default(),
         stop: std::sync::Arc::clone(&old_stop),
         paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -32236,14 +32253,301 @@ fn input_pump_restart_detaches_wedged_thread_and_installs_fresh_parts() {
         "restarted pump must deliver events from the replacement channel"
     );
 
-    // The old channel is orphaned by the swap: a wedged thread that finally
-    // wakes fails its send and exits instead of feeding stale events.
+    old_tx
+        .send(TerminalInputMessage::Heartbeat)
+        .expect("retired channel stays open for a wedged reader");
+    old_tx
+        .send(TerminalInputMessage::Error(std::io::Error::other(
+            "retired reader failed",
+        )))
+        .expect("retired channel stays open for a wedged reader");
+    old_tx
+        .send(TerminalInputMessage::Event(ObservedTerminalEvent::new(
+            Event::Key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE)),
+            Instant::now(),
+        )))
+        .expect("retired channel stays open for a wedged reader");
+    new_tx
+        .send(TerminalInputMessage::Event(ObservedTerminalEvent::new(
+            Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+            Instant::now(),
+        )))
+        .expect("send event on replacement channel");
+    let mut pending = VecDeque::new();
+    let woken = try_next_terminal_event(&pump, &mut pending)
+        .expect("a retired heartbeat or error is not surfaced")
+        .expect("the woken reader's keystroke is delivered");
     assert!(
-        old_tx.send(TerminalInputMessage::Heartbeat).is_err(),
-        "old pump channel must be disconnected after restart"
+        matches!(woken.event, Event::Key(key) if key.code == KeyCode::Char('w')),
+        "the key the detached reader consumed must not be lost"
+    );
+    let fresh = next_terminal_event(&pump, &mut pending, Duration::from_millis(50))
+        .expect("replacement channel readable")
+        .expect("then the fresh reader's key");
+    assert!(matches!(fresh.event, Event::Key(key) if key.code == KeyCode::Char('n')));
+
+    let (second_tx, second_rx) = std::sync::mpsc::channel();
+    pump.install_parts(TerminalInputPumpParts {
+        rx: second_rx,
+        stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        handle: std::thread::spawn(|| {}),
+    });
+    old_tx
+        .send(TerminalInputMessage::Event(ObservedTerminalEvent::new(
+            Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+            Instant::now(),
+        )))
+        .expect("first retired reader is still kept after a second restart");
+    second_tx
+        .send(TerminalInputMessage::Event(ObservedTerminalEvent::new(
+            Event::Key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE)),
+            Instant::now(),
+        )))
+        .expect("send on second replacement channel");
+    let first = try_next_terminal_event(&pump, &mut pending)
+        .expect("retired channel readable")
+        .expect("the first retired reader's key survives a second restart");
+    assert!(matches!(first.event, Event::Key(key) if key.code == KeyCode::Char('a')));
+    let second = try_next_terminal_event(&pump, &mut pending)
+        .expect("replacement channel readable")
+        .expect("then the current reader's key");
+    assert!(matches!(second.event, Event::Key(key) if key.code == KeyCode::Char('b')));
+
+    let started = Instant::now();
+    drop(pump);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "dropping the pump must not wait on a wedged retired reader"
     );
 
     drop(block_tx); // release the wedged stand-in thread
+}
+
+fn restarted_pump_with_senders() -> (
+    TerminalInputPump,
+    std::sync::mpsc::Sender<TerminalInputMessage>,
+    std::sync::mpsc::Sender<TerminalInputMessage>,
+) {
+    let (old_tx, old_rx) = std::sync::mpsc::channel();
+    let mut pump = TerminalInputPump {
+        rx: old_rx,
+        retired_rx: Default::default(),
+        child_windows: Default::default(),
+        stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        handle: None,
+        last_alive_at: std::cell::Cell::new(Instant::now()),
+    };
+    let (new_tx, new_rx) = std::sync::mpsc::channel();
+    pump.install_parts(TerminalInputPumpParts {
+        rx: new_rx,
+        stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        handle: std::thread::spawn(|| {}),
+    });
+    (pump, old_tx, new_tx)
+}
+
+fn key_message(c: char, observed_at: Instant) -> TerminalInputMessage {
+    TerminalInputMessage::Event(ObservedTerminalEvent::new(
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+        observed_at,
+    ))
+}
+
+fn key_char(observed: &ObservedTerminalEvent) -> Option<char> {
+    match observed.event {
+        Event::Key(KeyEvent {
+            code: KeyCode::Char(c),
+            ..
+        }) => Some(c),
+        _ => None,
+    }
+}
+
+#[test]
+fn blocked_wait_delivers_the_retired_key_before_the_fresh_one() {
+    let _serialized = CHILD_TERMINAL_GATE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (pump, old_tx, new_tx) = restarted_pump_with_senders();
+    let sender = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(30));
+        old_tx
+            .send(key_message('h', Instant::now()))
+            .expect("retired send");
+        std::thread::sleep(Duration::from_millis(30));
+        new_tx
+            .send(key_message('i', Instant::now()))
+            .expect("fresh send");
+        (old_tx, new_tx)
+    });
+    let mut pending = VecDeque::new();
+    let first = next_terminal_event(&pump, &mut pending, Duration::from_millis(400))
+        .expect("readable")
+        .expect("an event");
+    let _keep = sender.join().expect("sender");
+    assert_eq!(key_char(&first), Some('h'));
+    let second = next_terminal_event(&pump, &mut pending, Duration::from_millis(400))
+        .expect("readable")
+        .expect("the held fresh event");
+    assert_eq!(key_char(&second), Some('i'));
+}
+
+#[test]
+fn blocked_wait_returns_a_lone_retired_key_promptly() {
+    let _serialized = CHILD_TERMINAL_GATE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (pump, old_tx, new_tx) = restarted_pump_with_senders();
+    let sender = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(30));
+        old_tx
+            .send(key_message('h', Instant::now()))
+            .expect("retired send");
+        (old_tx, new_tx)
+    });
+    let mut pending = VecDeque::new();
+    let started = Instant::now();
+    let got = next_terminal_event(&pump, &mut pending, Duration::from_secs(5))
+        .expect("readable")
+        .expect("the retired key ends the wait");
+    let elapsed = started.elapsed();
+    let _keep = sender.join().expect("sender");
+    assert_eq!(key_char(&got), Some('h'));
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "returned after {elapsed:?}"
+    );
+}
+
+#[test]
+fn retired_reader_key_taken_while_a_child_owned_the_terminal_is_discarded() {
+    let _serialized = CHILD_TERMINAL_GATE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (pump, old_tx, new_tx) = restarted_pump_with_senders();
+    let before_child = Instant::now();
+    std::thread::sleep(Duration::from_millis(5));
+    let child_start = Instant::now();
+    let child_window = super::terminal_input::child_terminal_window_begin();
+    std::thread::sleep(Duration::from_millis(5));
+    let during_child = Instant::now();
+    std::thread::sleep(Duration::from_millis(5));
+    super::terminal_input::child_terminal_window_end(child_window);
+    std::thread::sleep(Duration::from_millis(5));
+    let after_child = Instant::now();
+    assert!(before_child < child_start && child_start < during_child);
+
+    old_tx
+        .send(key_message('v', during_child))
+        .expect("retired send");
+    old_tx
+        .send(key_message('p', before_child))
+        .expect("retired send");
+    old_tx
+        .send(key_message('q', after_child))
+        .expect("retired send");
+    let mut pending = VecDeque::new();
+    let first = try_next_terminal_event(&pump, &mut pending)
+        .expect("readable")
+        .expect("pre-handoff key is kept");
+    let second = try_next_terminal_event(&pump, &mut pending)
+        .expect("readable")
+        .expect("post-handoff key is kept");
+    assert_eq!(key_char(&first), Some('p'));
+    assert_eq!(key_char(&second), Some('q'));
+    assert!(
+        try_next_terminal_event(&pump, &mut pending)
+            .expect("readable")
+            .is_none(),
+        "the key the child's session consumed must not reach the composer"
+    );
+    drop((old_tx, new_tx));
+}
+
+#[test]
+fn unmatched_resume_cannot_close_an_outer_child_window() {
+    let _serialized = CHILD_TERMINAL_GATE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (pump, old_tx, new_tx) = restarted_pump_with_senders();
+    let outer = super::terminal_input::child_terminal_window_begin();
+    pump.resume_after_child_terminal();
+    pump.resume_after_child_terminal();
+    old_tx
+        .send(key_message('v', Instant::now()))
+        .expect("retired send");
+    let mut pending = VecDeque::new();
+    assert!(
+        try_next_terminal_event(&pump, &mut pending)
+            .expect("readable")
+            .is_none(),
+        "a resume with no pause of its own must not close an outer child's window"
+    );
+    super::terminal_input::child_terminal_window_end(outer);
+    drop((old_tx, new_tx));
+}
+
+#[test]
+fn completed_child_windows_are_bounded_after_close_without_evicting_open_windows() {
+    let _serialized = CHILD_TERMINAL_GATE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (pump, old_tx, new_tx) = restarted_pump_with_senders();
+    let outer = super::terminal_input::child_terminal_window_begin();
+    let observed_at = Instant::now();
+    std::thread::sleep(Duration::from_millis(1));
+    for _ in 0..8 {
+        let inner = super::terminal_input::child_terminal_window_begin();
+        super::terminal_input::child_terminal_window_end(inner);
+    }
+    old_tx
+        .send(key_message('v', observed_at))
+        .expect("retired send");
+    let mut pending = VecDeque::new();
+    assert!(
+        try_next_terminal_event(&pump, &mut pending)
+            .expect("readable")
+            .is_none()
+    );
+    super::terminal_input::child_terminal_window_end(outer);
+    old_tx
+        .send(key_message('q', observed_at))
+        .expect("retired send");
+    let retained = try_next_terminal_event(&pump, &mut pending)
+        .expect("readable")
+        .expect("oldest completed window was evicted at close");
+    assert_eq!(key_char(&retained), Some('q'));
+    drop((old_tx, new_tx));
+}
+
+#[test]
+fn closing_one_child_window_twice_leaves_a_newer_one_open() {
+    let _serialized = CHILD_TERMINAL_GATE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (pump, old_tx, new_tx) = restarted_pump_with_senders();
+    let outer = super::terminal_input::child_terminal_window_begin();
+    let inner = super::terminal_input::child_terminal_window_begin();
+    super::terminal_input::child_terminal_window_end(outer);
+    super::terminal_input::child_terminal_window_end(outer);
+    old_tx
+        .send(key_message('v', Instant::now()))
+        .expect("retired send");
+    let mut pending = VecDeque::new();
+    assert!(
+        try_next_terminal_event(&pump, &mut pending)
+            .expect("readable")
+            .is_none(),
+        "closing one window twice must leave the still-open one owning the terminal"
+    );
+    super::terminal_input::child_terminal_window_end(inner);
+    drop((old_tx, new_tx));
 }
 
 #[test]
@@ -33437,6 +33741,8 @@ fn a_scroll_burst_is_folded_into_one_frame() {
     .expect("send key");
     let input = TerminalInputPump {
         rx,
+        retired_rx: Default::default(),
+        child_windows: Default::default(),
         stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -33482,6 +33788,8 @@ fn idle_input_pump() -> TerminalInputPump {
     let (_tx, rx) = std::sync::mpsc::channel();
     TerminalInputPump {
         rx,
+        retired_rx: Default::default(),
+        child_windows: Default::default(),
         stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -35243,6 +35551,8 @@ fn g3_scroll_burst_preserves_the_first_non_scroll_before_later_input() {
     let (tx, rx) = std::sync::mpsc::channel();
     let input = TerminalInputPump {
         rx,
+        retired_rx: Default::default(),
+        child_windows: Default::default(),
         stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -35860,5 +36170,91 @@ fn issue_7123_reasoning_after_prose_stays_in_the_thinking_cell() {
     assert_eq!(
         prose, "answer text",
         "the assistant cell must not absorb reasoning text"
+    );
+}
+
+#[tokio::test]
+async fn nested_editor_handoff_closes_every_child_window() {
+    let _serialized = CHILD_TERMINAL_GATE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (old_tx, old_rx) = std::sync::mpsc::channel();
+    let mut pump = TerminalInputPump {
+        rx: old_rx,
+        retired_rx: Default::default(),
+        child_windows: Default::default(),
+        stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        handle: None,
+        last_alive_at: std::cell::Cell::new(Instant::now()),
+    };
+    let (new_tx, new_rx) = std::sync::mpsc::channel();
+    pump.install_parts(TerminalInputPumpParts {
+        rx: new_rx,
+        stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        handle: std::thread::spawn(|| {}),
+    });
+    pump.pause_for_child_terminal().await.expect("pump pause");
+    let guard = pause_terminal_input_for_child().expect("gate pause");
+    drop(guard);
+    pump.resume_after_child_terminal();
+    std::thread::sleep(Duration::from_millis(5));
+    old_tx
+        .send(TerminalInputMessage::Event(ObservedTerminalEvent::new(
+            Event::Key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE)),
+            Instant::now(),
+        )))
+        .expect("retired send");
+    let mut pending = VecDeque::new();
+    let got = try_next_terminal_event(&pump, &mut pending).expect("readable");
+    drop((old_tx, new_tx));
+    assert!(
+        got.is_some(),
+        "a retired key observed after the composer editor closed must reach the composer"
+    );
+}
+
+#[tokio::test]
+async fn single_pump_handoff_closes_its_child_window() {
+    let _serialized = CHILD_TERMINAL_GATE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (old_tx, old_rx) = std::sync::mpsc::channel();
+    let mut pump = TerminalInputPump {
+        rx: old_rx,
+        retired_rx: Default::default(),
+        child_windows: Default::default(),
+        stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        handle: None,
+        last_alive_at: std::cell::Cell::new(Instant::now()),
+    };
+    let (new_tx, new_rx) = std::sync::mpsc::channel();
+    pump.install_parts(TerminalInputPumpParts {
+        rx: new_rx,
+        stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        handle: std::thread::spawn(|| {}),
+    });
+    pump.pause_for_child_terminal().await.expect("pump pause");
+    pump.resume_after_child_terminal();
+    std::thread::sleep(Duration::from_millis(5));
+    old_tx
+        .send(TerminalInputMessage::Event(ObservedTerminalEvent::new(
+            Event::Key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE)),
+            Instant::now(),
+        )))
+        .expect("retired send");
+    let mut pending = VecDeque::new();
+    let got = try_next_terminal_event(&pump, &mut pending).expect("readable");
+    drop((old_tx, new_tx));
+    assert!(
+        got.is_some(),
+        "control: one handoff, key after resume is delivered"
     );
 }

@@ -1,6 +1,6 @@
 //! Terminal input ingestion and fairness controls for the TUI event loop.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::io;
 use std::sync::{
     Arc, Mutex,
@@ -19,6 +19,9 @@ pub(super) const TERMINAL_INPUT_STALL_TIMEOUT: Duration = Duration::from_secs(5)
 pub(super) const TERMINAL_INPUT_RECOVERY_COOLDOWN: Duration = Duration::from_secs(10);
 const TERMINAL_INPUT_CHILD_PAUSE_TIMEOUT: Duration = Duration::from_millis(500);
 const TERMINAL_INPUT_CHILD_PAUSE_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const MAX_RETIRED_INPUT_READERS: usize = 4;
+const RETIRED_INPUT_POLL_SLICE: Duration = Duration::from_millis(25);
+const MAX_CHILD_TERMINAL_WINDOWS: usize = 8;
 /// Upper bound on engine events processed before yielding to terminal input.
 pub(super) const MAX_ENGINE_EVENTS_PER_DRAIN: usize = 16;
 /// Wall-clock budget for one engine drain batch (#1830 / #2317 input fairness).
@@ -30,7 +33,10 @@ pub(super) enum TerminalInputMessage {
     Error(io::Error),
 }
 
-/// A terminal event paired with the instant the dedicated input thread read it.
+/// A terminal event paired with the instant the input thread's `event::read`
+/// returned. That is read completion, not the instant the key arrived and not
+/// what the user meant it for: crossterm hands back a buffered key only on the
+/// next read.
 ///
 /// The event loop can lag behind this thread under load. Keeping receipt time
 /// prevents that backlog from collapsing a deliberate pause between a raw
@@ -62,6 +68,72 @@ impl ObservedTerminalEvent {
 /// pending queue, so they stay with [`super::prepare_terminal_input_handoff`]
 /// at the call sites that have them.
 static CHILD_TERMINAL_GATE: Mutex<Option<ChildTerminalGate>> = Mutex::new(None);
+
+#[derive(Clone, Copy)]
+pub(super) struct ChildTerminalWindow(u64);
+
+struct ChildTerminalWindowRecord {
+    id: u64,
+    start: Instant,
+    end: Option<Instant>,
+}
+
+struct ChildTerminalWindows {
+    next_id: u64,
+    windows: Vec<ChildTerminalWindowRecord>,
+}
+
+static CHILD_TERMINAL_WINDOWS: Mutex<ChildTerminalWindows> = Mutex::new(ChildTerminalWindows {
+    next_id: 0,
+    windows: Vec::new(),
+});
+
+pub(super) fn child_terminal_window_begin() -> Option<ChildTerminalWindow> {
+    let mut registry = CHILD_TERMINAL_WINDOWS.lock().ok()?;
+    let id = registry.next_id;
+    registry.next_id += 1;
+    registry.windows.push(ChildTerminalWindowRecord {
+        id,
+        start: Instant::now(),
+        end: None,
+    });
+    Some(ChildTerminalWindow(id))
+}
+
+pub(super) fn child_terminal_window_end(window: Option<ChildTerminalWindow>) {
+    let Some(ChildTerminalWindow(id)) = window else {
+        return;
+    };
+    if let Ok(mut registry) = CHILD_TERMINAL_WINDOWS.lock()
+        && let Some(record) = registry
+            .windows
+            .iter_mut()
+            .find(|record| record.id == id && record.end.is_none())
+    {
+        record.end = Some(Instant::now());
+        let mut completed = registry
+            .windows
+            .iter()
+            .filter(|window| window.end.is_some())
+            .count();
+        registry.windows.retain(|window| {
+            if completed > MAX_CHILD_TERMINAL_WINDOWS && window.end.is_some() {
+                completed -= 1;
+                false
+            } else {
+                true
+            }
+        });
+    }
+}
+
+fn child_owned_terminal_at(observed_at: Instant) -> bool {
+    CHILD_TERMINAL_WINDOWS.lock().is_ok_and(|registry| {
+        registry.windows.iter().any(|record| {
+            observed_at >= record.start && record.end.is_none_or(|end| observed_at <= end)
+        })
+    })
+}
 
 #[derive(Clone)]
 struct ChildTerminalGate {
@@ -98,6 +170,7 @@ fn retract_child_terminal_gate(paused: &Arc<AtomicBool>) {
 /// child that failed to spawn or a panic unwinding through it.
 pub(crate) struct ChildTerminalInputPause {
     gate: Option<ChildTerminalGate>,
+    window: Option<ChildTerminalWindow>,
 }
 
 /// Stop the process's terminal input pump before a child takes the tty.
@@ -113,7 +186,10 @@ pub(crate) fn pause_terminal_input_for_child() -> io::Result<ChildTerminalInputP
         .ok()
         .and_then(|gate| gate.clone())
     else {
-        return Ok(ChildTerminalInputPause { gate: None });
+        return Ok(ChildTerminalInputPause {
+            gate: None,
+            window: None,
+        });
     };
     gate.paused.store(true, Ordering::Release);
     let deadline = Instant::now() + TERMINAL_INPUT_CHILD_PAUSE_TIMEOUT;
@@ -133,11 +209,16 @@ pub(crate) fn pause_terminal_input_for_child() -> io::Result<ChildTerminalInputP
         // reachable from here and would not change what the thread does.
         thread::sleep(TERMINAL_INPUT_CHILD_PAUSE_POLL_INTERVAL);
     }
-    Ok(ChildTerminalInputPause { gate: Some(gate) })
+    let window = child_terminal_window_begin();
+    Ok(ChildTerminalInputPause {
+        gate: Some(gate),
+        window,
+    })
 }
 
 impl Drop for ChildTerminalInputPause {
     fn drop(&mut self) {
+        child_terminal_window_end(self.window.take());
         if let Some(gate) = self.gate.take() {
             gate.paused_ack.store(false, Ordering::Release);
             gate.paused.store(false, Ordering::Release);
@@ -147,11 +228,19 @@ impl Drop for ChildTerminalInputPause {
 
 pub(crate) struct TerminalInputPump {
     pub(super) rx: std::sync::mpsc::Receiver<TerminalInputMessage>,
+    pub(super) retired_rx: RefCell<RetiredInputReaders>,
+    pub(super) child_windows: RefCell<Vec<ChildTerminalWindow>>,
     pub(super) stop: Arc<AtomicBool>,
     pub(super) paused: Arc<AtomicBool>,
     pub(super) paused_ack: Arc<AtomicBool>,
     pub(super) handle: Option<JoinHandle<()>>,
     pub(super) last_alive_at: Cell<Instant>,
+}
+
+#[derive(Default)]
+pub(super) struct RetiredInputReaders {
+    receivers: Vec<std::sync::mpsc::Receiver<TerminalInputMessage>>,
+    stash: Option<ObservedTerminalEvent>,
 }
 
 pub(super) struct TerminalInputPumpParts {
@@ -168,6 +257,8 @@ impl TerminalInputPump {
         publish_child_terminal_gate(&parts.paused, &parts.paused_ack);
         Ok(Self {
             rx: parts.rx,
+            retired_rx: RefCell::default(),
+            child_windows: RefCell::default(),
             stop: parts.stop,
             paused: parts.paused,
             paused_ack: parts.paused_ack,
@@ -244,29 +335,86 @@ impl TerminalInputPump {
         })
     }
 
+    fn has_retired_readers(&self) -> bool {
+        !self.retired_rx.borrow().receivers.is_empty()
+    }
+
+    fn take_retired_event(&self) -> Option<ObservedTerminalEvent> {
+        let mut retired = self.retired_rx.borrow_mut();
+        let mut found = None;
+        retired.receivers.retain(|receiver| {
+            if found.is_some() {
+                return true;
+            }
+            loop {
+                match receiver.try_recv() {
+                    Ok(TerminalInputMessage::Event(event)) => {
+                        if child_owned_terminal_at(event.observed_at) {
+                            continue;
+                        }
+                        found = Some(event);
+                        return true;
+                    }
+                    Ok(TerminalInputMessage::Heartbeat | TerminalInputMessage::Error(_)) => {}
+                    Err(std::sync::mpsc::TryRecvError::Empty) => return true,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => return false,
+                }
+            }
+        });
+        found
+    }
+
+    fn take_ready_event(&self) -> Option<ObservedTerminalEvent> {
+        self.take_retired_event()
+            .or_else(|| self.retired_rx.borrow_mut().stash.take())
+    }
+
+    fn deliver_fresh(&self, event: ObservedTerminalEvent) -> ObservedTerminalEvent {
+        match self.take_retired_event() {
+            Some(retired) => {
+                self.retired_rx.borrow_mut().stash = Some(event);
+                retired
+            }
+            None => event,
+        }
+    }
+
     pub(super) fn recv_timeout(
         &self,
         timeout: Duration,
     ) -> io::Result<Option<ObservedTerminalEvent>> {
         let deadline = Instant::now() + timeout;
         loop {
+            if let Some(event) = self.take_ready_event() {
+                self.mark_alive();
+                return Ok(Some(event));
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
-            match self.rx.recv_timeout(remaining) {
+            let wait = if self.has_retired_readers() {
+                remaining.min(RETIRED_INPUT_POLL_SLICE)
+            } else {
+                remaining
+            };
+            match self.rx.recv_timeout(wait) {
                 Ok(TerminalInputMessage::Event(event)) => {
                     self.mark_alive();
-                    return Ok(Some(event));
+                    return Ok(Some(self.deliver_fresh(event)));
                 }
                 Ok(TerminalInputMessage::Heartbeat) => {
                     self.mark_alive();
                     if remaining.is_zero() {
-                        return Ok(None);
+                        return Ok(self.take_ready_event());
                     }
                 }
                 Ok(TerminalInputMessage::Error(err)) => {
                     self.mark_alive();
                     return Err(err);
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Ok(None),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if Instant::now() >= deadline {
+                        return Ok(self.take_ready_event());
+                    }
+                }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(io::Error::new(
                         io::ErrorKind::BrokenPipe,
@@ -279,10 +427,14 @@ impl TerminalInputPump {
 
     pub(super) fn try_recv(&self) -> io::Result<Option<ObservedTerminalEvent>> {
         loop {
+            if let Some(event) = self.take_ready_event() {
+                self.mark_alive();
+                return Ok(Some(event));
+            }
             match self.rx.try_recv() {
                 Ok(TerminalInputMessage::Event(event)) => {
                     self.mark_alive();
-                    return Ok(Some(event));
+                    return Ok(Some(self.deliver_fresh(event)));
                 }
                 Ok(TerminalInputMessage::Heartbeat) => {
                     self.mark_alive();
@@ -312,6 +464,7 @@ impl TerminalInputPump {
         self.paused.store(true, Ordering::Release);
         if self.handle.is_none() {
             self.paused_ack.store(true, Ordering::Release);
+            self.claim_child_terminal_window();
             self.mark_alive();
             return Ok(());
         }
@@ -328,11 +481,20 @@ impl TerminalInputPump {
             }
             tokio::time::sleep(TERMINAL_INPUT_CHILD_PAUSE_POLL_INTERVAL).await;
         }
+        self.claim_child_terminal_window();
         self.mark_alive();
         Ok(())
     }
 
+    fn claim_child_terminal_window(&self) {
+        if let Some(window) = child_terminal_window_begin() {
+            self.child_windows.borrow_mut().push(window);
+        }
+    }
+
     pub(super) fn resume_after_child_terminal(&self) {
+        let window = self.child_windows.borrow_mut().pop();
+        child_terminal_window_end(window);
         self.paused_ack.store(false, Ordering::Release);
         self.paused.store(false, Ordering::Release);
         self.mark_alive();
@@ -344,12 +506,24 @@ impl TerminalInputPump {
     /// `event::read` (a stalled Windows console poll, or a Unix tty that
     /// stopped delivering bytes), so it can never be joined. Instead it is
     /// detached: `stop` is flagged and the `JoinHandle` dropped, so if the
-    /// thread ever wakes it exits on its own (its send fails once `rx` is
-    /// replaced, and the stop flag covers the poll loop).
+    /// thread ever wakes its loop observes `stop` and exits on its own.
     ///
-    /// Known limitation (U03-10): stop is flagged before the replacement is
-    /// spawned, but a thread already inside `event::read` cannot be stopped.
-    /// If it ever wakes, the one event it read has no receiver and is lost.
+    /// A thread already inside `event::read` cannot be stopped and holds
+    /// crossterm's reader lock, so the one event it returns when the tty wakes
+    /// is the user's next input. The replaced channel is therefore kept as a
+    /// retired receiver. While one exists, waits run in short slices and every
+    /// slice, and every fresh event, checks the retired receivers first, so a
+    /// retired event is normally delivered ahead of the fresh reader's and without
+    /// waiting out the caller's deadline; a fresh event read in the meantime
+    /// is held and delivered next. Retired heartbeats and errors describe a
+    /// reader that no longer owns input and are ignored, and a retired event
+    /// whose read completed inside a child terminal window is discarded. That
+    /// test is read completion, not the moment the key arrived: a composer key
+    /// the reader had already buffered when the handoff began is discarded if
+    /// its read completed inside the window, and a key the child's session
+    /// consumed is still delivered to the composer if the reader only returned
+    /// after the window closed. At most `MAX_RETIRED_INPUT_READERS` are kept,
+    /// oldest dropped first, and a receiver whose thread has exited is pruned.
     pub(super) fn restart_detached(&mut self) -> io::Result<()> {
         self.detach_current_thread();
         let parts = Self::spawn_parts()?;
@@ -365,10 +539,16 @@ impl TerminalInputPump {
         retract_child_terminal_gate(&self.paused);
     }
 
-    /// Adopt freshly spawned pump parts and reset the liveness clock.
+    /// Adopt freshly spawned pump parts and reset the liveness clock; see
+    /// [`Self::restart_detached`].
     pub(super) fn install_parts(&mut self, parts: TerminalInputPumpParts) {
         publish_child_terminal_gate(&parts.paused, &parts.paused_ack);
-        self.rx = parts.rx;
+        let replaced = std::mem::replace(&mut self.rx, parts.rx);
+        let retired = &mut self.retired_rx.get_mut().receivers;
+        retired.push(replaced);
+        if retired.len() > MAX_RETIRED_INPUT_READERS {
+            retired.remove(0);
+        }
         self.stop = parts.stop;
         self.paused = parts.paused;
         self.paused_ack = parts.paused_ack;
@@ -386,6 +566,9 @@ impl Drop for TerminalInputPump {
         // (or its send fails because `rx` was dropped) and exits on its own.
         self.stop.store(true, Ordering::Release);
         let _ = self.handle.take();
+        for window in self.child_windows.get_mut().drain(..) {
+            child_terminal_window_end(Some(window));
+        }
         retract_child_terminal_gate(&self.paused);
     }
 }
