@@ -715,9 +715,9 @@ impl VerifiedCandidateEvaluator {
         }
         self.begin_evaluation()?;
         let result = (|| {
-            let artifact = self
-                .store
-                .capture(&worktree, id, Vec::new(), &self.spec.protected_paths)?;
+            let artifact =
+                self.store
+                    .capture(&worktree, id, Vec::new(), &self.spec.protected_paths)?;
             self.run_candidate(id, &artifact, false, cancel)
         })();
         self.finish_evaluation();
@@ -1009,7 +1009,9 @@ impl VerifiedCandidateEvaluator {
                         {
                             "aggregate_evaluation_deadline".to_string()
                         }
-                        Some("timeout") if started.elapsed() >= Duration::from_secs(gate.timeout_secs) => {
+                        Some("timeout")
+                            if started.elapsed() >= Duration::from_secs(gate.timeout_secs) =>
+                        {
                             "gate_timeout".to_string()
                         }
                         Some("timeout") => "case_timeout".to_string(),

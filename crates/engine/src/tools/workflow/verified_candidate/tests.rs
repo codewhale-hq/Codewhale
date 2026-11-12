@@ -324,12 +324,24 @@ fn generated_outputs_are_recorded_without_hiding_source_or_protected_changes() {
     fs::write(fixture.worktree.join("target/tracked.rs"), "changed").unwrap();
     fs::write(fixture.worktree.join("target/build.o"), b"generated").unwrap();
     fs::create_dir(fixture.worktree.join("__pycache__")).unwrap();
-    fs::write(fixture.worktree.join("__pycache__/candidate.pyc"), b"generated").unwrap();
+    fs::write(
+        fixture.worktree.join("__pycache__/candidate.pyc"),
+        b"generated",
+    )
+    .unwrap();
     fs::write(fixture.worktree.join("helper.py"), "def helper(): pass\n").unwrap();
     fs::create_dir_all(fixture.worktree.join("tests/__pycache__")).unwrap();
-    fs::write(fixture.worktree.join("tests/__pycache__/poison.pyc"), b"protected").unwrap();
+    fs::write(
+        fixture.worktree.join("tests/__pycache__/poison.pyc"),
+        b"protected",
+    )
+    .unwrap();
     fs::create_dir(fixture.worktree.join("outside")).unwrap();
-    fs::write(fixture.worktree.join("outside/ignored.txt"), b"out of scope").unwrap();
+    fs::write(
+        fixture.worktree.join("outside/ignored.txt"),
+        b"out of scope",
+    )
+    .unwrap();
     assert_eq!(
         git(&fixture.worktree, &["check-ignore", "target/build.o"]),
         "target/build.o"
@@ -356,7 +368,11 @@ fn generated_outputs_are_recorded_without_hiding_source_or_protected_changes() {
     assert!(
         validate_scope(
             &artifact,
-            &["candidate.py".to_owned(), "helper.py".to_owned(), "target/tracked.rs".to_owned()],
+            &[
+                "candidate.py".to_owned(),
+                "helper.py".to_owned(),
+                "target/tracked.rs".to_owned()
+            ],
             &protected,
         )
         .is_err()
@@ -376,7 +392,10 @@ fn trusted_oracle_beats_candidate_claim_and_replay_uses_seal() {
     )
     .unwrap();
     let mut evaluator = fixture.freeze("claim");
-    assert_eq!(evaluator.sandbox_probe["resource_limits"]["processes_rlimit"], 4096);
+    assert_eq!(
+        evaluator.sandbox_probe["resource_limits"]["processes_rlimit"],
+        4096
+    );
     let failed = evaluator
         .evaluate(
             "claim_1",
@@ -544,7 +563,10 @@ fn timeout_and_cancellation_reap_descendants_inside_writable_sandbox() {
         }
         assert!(scratch.join("ready").exists());
         cancelled.cancel();
-        assert_eq!(handle.join().unwrap().stop_reason.as_deref(), Some("cancelled"));
+        assert_eq!(
+            handle.join().unwrap().stop_reason.as_deref(),
+            Some("cancelled")
+        );
     });
     std::thread::sleep(Duration::from_secs(3));
     assert!(!scratch.join("marker").exists());
@@ -553,7 +575,11 @@ fn timeout_and_cancellation_reap_descendants_inside_writable_sandbox() {
         .filter_map(Result::ok)
         .filter(|entry| entry.file_name().to_string_lossy().parse::<u32>().is_ok())
         .filter_map(|entry| fs::read(entry.path().join("cmdline")).ok())
-        .filter(|cmdline| cmdline.windows(token.len()).any(|window| window == token.as_bytes()))
+        .filter(|cmdline| {
+            cmdline
+                .windows(token.len())
+                .any(|window| window == token.as_bytes())
+        })
         .count();
     assert_eq!(survivors, 0);
 }
