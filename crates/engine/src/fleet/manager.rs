@@ -1748,11 +1748,7 @@ impl FleetManager {
                 return Err(start_error);
             }
         };
-        if !started {
-            return Ok(false);
-        }
-
-        Ok(true)
+        Ok(started)
     }
 
     fn start_leased_workers(
