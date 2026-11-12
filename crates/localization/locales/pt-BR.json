@@ -1691,7 +1691,7 @@
   "PhaseIdle": "ocioso",
   "PhaseDraft": "rascunho",
   "PhaseWorking": "trabalhando",
-  "PhaseReasoning": "raciocinando",
+  "PhaseReasoning": "pensando",
   "PhaseReading": "lendo",
   "PhaseUsingTool": "usando ferramenta",
   "PhaseSubagents": "subagentes em andamento",
