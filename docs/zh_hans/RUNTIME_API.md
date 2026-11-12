@@ -1993,6 +1993,19 @@ POST 前保留预期指纹，并在响应及按键 GET 恢复时核对，之后�
   保留命令回执——每个提供的处理器对快照都是纯函数——因此客户端不应寻找回执。
   任何会修改会话的操作仍是终端侧命令。
 
+**插件索引**
+- `GET /v1/apps/plugin-index` — `{workspace, items: [...], unavailable: [...],
+  problems: [...]}`：跨所有插件、技能、连接器、钩子和手写命令的统一列表。它只是投影：每个条目的
+  `row` 就是其所属路由（`/v1/apps/plugins`、`/v1/apps/plugins/catalog`、`/v1/skills`、
+  `/v1/apps/mcp/servers`、`/v1/hooks`、`/v1/commands`）返回的那一行，`owner` 给出该路由。
+  每个条目有 `id`、`kind`（`plugin`、`skill`、`connector`、`hook`、`command`）、`name`、
+  `description`、`source`（`built_in`、`user`、`project`、`other_app`、`runtime`、`plugin`）、
+  `state`（`enabled`、`disabled`、`needs_review`、`needs_sign_in`、`unavailable`）和
+  `labels`（它添加的内容）。插件条目另有 `adds`（`skills`、`connectors`、`hooks`、`commands`、
+  `profiles`：只含名称），插件所添加的内容不会再作为独立条目重复列出。内置开关是带 `tier` 的
+  `plugin` 条目。某个所属路由失败时记入 `unavailable`，其余种类照常列出；`problems`
+  汇总各所属路由的加载警告。`adds` 中的名称是文件名，因此档案文件内部的 `id` 可能不同；通过扩展宿主注册的命令是 `source` 为 `plugin` 的条目。
+
 **钩子**
 - `GET /v1/hooks[?thread_id=...]` — `{workspace, enabled, hooks: [...],
   problems: [...]}`：Runtime API 线程为该工作区运行的钩子集合

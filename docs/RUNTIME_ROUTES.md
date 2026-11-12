@@ -54,6 +54,7 @@ registration index.
 | POST | `/v1/apps/mcp/servers/{name}/enable` |
 | POST | `/v1/apps/mcp/servers/{name}/reconnect` |
 | GET | `/v1/apps/mcp/tools` |
+| GET | `/v1/apps/plugin-index` |
 | GET | `/v1/apps/plugins` |
 | DELETE / GET | `/v1/apps/plugins/{selector}` |
 | POST | `/v1/apps/plugins/{selector}/disable` |
@@ -263,4 +264,4 @@ registration index.
 | GET / POST | `/v1/worktrees` |
 | POST | `/v1/worktrees/remove` |
 
-The source contains 243 distinct literal paths in this table.
+The source contains 244 distinct literal paths in this table.
