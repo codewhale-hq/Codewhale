@@ -27343,7 +27343,7 @@ fn turn_inspector_switches_isolated_full_turn_pages_with_tagged_reasoning_and_ou
 
     let latest = pager.body_text();
     assert!(latest.contains("SECOND-PROMPT"), "{latest}");
-    assert!(latest.contains("[∿ reasoning 1/1 · running]"), "{latest}");
+    assert!(latest.contains("[∿ thinking 1/1 · running]"), "{latest}");
     assert!(latest.contains("SECOND-THOUGHT"), "{latest}");
     assert!(latest.contains("[◆ · running]"), "{latest}");
     assert!(latest.contains("SECOND-ANSWER"), "{latest}");
@@ -27355,7 +27355,7 @@ fn turn_inspector_switches_isolated_full_turn_pages_with_tagged_reasoning_and_ou
     for expected in [
         "FIRST-PROMPT",
         "keep this input line",
-        "[∿ reasoning 1/1 · Done]",
+        "[∿ thinking 1/1 · Done]",
         "FIRST-THOUGHT",
         "full reasoning tail",
         "[⚙ using tool]",

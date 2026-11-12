@@ -1557,7 +1557,7 @@
   "PhaseIdle": "diam",
   "PhaseDraft": "draf",
   "PhaseWorking": "bekerja",
-  "PhaseReasoning": "menalar",
+  "PhaseReasoning": "berpikir",
   "PhaseReading": "membaca",
   "PhaseUsingTool": "memakai tool",
   "PhaseSubagents": "subagen berjalan",

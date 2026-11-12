@@ -1576,7 +1576,7 @@
   "PhaseIdle": "유휴",
   "PhaseDraft": "초안",
   "PhaseWorking": "작업 중",
-  "PhaseReasoning": "추론 중",
+  "PhaseReasoning": "생각 중",
   "PhaseReading": "읽는 중",
   "PhaseUsingTool": "도구 사용 중",
   "PhaseSubagents": "서브에이전트 실행 중",

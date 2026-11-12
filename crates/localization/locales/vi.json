@@ -1576,7 +1576,7 @@
   "PhaseIdle": "rảnh",
   "PhaseDraft": "nháp",
   "PhaseWorking": "đang xử lý",
-  "PhaseReasoning": "đang suy luận",
+  "PhaseReasoning": "đang suy nghĩ",
   "PhaseReading": "đang đọc",
   "PhaseUsingTool": "đang dùng công cụ",
   "PhaseSubagents": "đang chạy tác tử con",
