@@ -357,6 +357,7 @@ impl AutomationTool {
             trust_mode,
             auto_approve,
             delivery_mode: optional_delivery_mode(input)?,
+            disallowed_tools: context.disallowed_tools.clone(),
             status: Some(
                 if input
                     .get("paused")
@@ -568,6 +569,15 @@ fn require_within_session_authority(
     automation: &AutomationRecord,
     verb: &str,
 ) -> Result<(), ToolError> {
+    if !crate::task_manager::deny_rules_cover(
+        &automation.disallowed_tools,
+        &context.disallowed_tools,
+    ) {
+        return Err(ToolError::permission_denied(format!(
+            "automation: cannot {verb} `{}`: it was created without every tool deny rule this session runs under. Ask the user to {verb} it from a session that holds that access.",
+            automation.id,
+        )));
+    }
     let stored = [
         ("allow_shell", automation.allow_shell),
         ("trust_mode", automation.trust_mode),

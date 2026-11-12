@@ -342,6 +342,8 @@ pub struct TaskRecord {
     /// posture from that bit exactly as it always did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_posture: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
     pub status: TaskStatus,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
@@ -485,6 +487,8 @@ pub struct NewTaskRequest {
     /// Posture for the thread this task runs on. Takes precedence over
     /// `auto_approve`, which the runtime only reads when no posture is given.
     pub permission_posture: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
     pub owner_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination_thread_id: Option<String>,
@@ -505,6 +509,7 @@ impl NewTaskRequest {
             trust_mode: Some(task.trust_mode),
             auto_approve: Some(task.auto_approve),
             permission_posture: task.permission_posture.clone(),
+            disallowed_tools: task.disallowed_tools.clone(),
             owner_session_id: task.owner_session_id.clone(),
             destination_thread_id: task.destination_thread_id.clone(),
         }
@@ -525,6 +530,7 @@ impl NewTaskRequest {
             trust_mode: None,
             auto_approve: Some(true),
             permission_posture: None,
+            disallowed_tools: Vec::new(),
             owner_session_id: None,
             destination_thread_id: None,
         }
@@ -852,6 +858,7 @@ pub struct ExecutionTask {
     trust_mode: bool,
     auto_approve: bool,
     permission_posture: Option<String>,
+    disallowed_tools: Vec<String>,
     destination_thread_id: Option<String>,
 }
 
@@ -869,6 +876,7 @@ impl From<&TaskRecord> for ExecutionTask {
             trust_mode: task.trust_mode,
             auto_approve: task.auto_approve,
             permission_posture: task.permission_posture.clone(),
+            disallowed_tools: task.disallowed_tools.clone(),
             destination_thread_id: task.destination_thread_id.clone(),
         }
     }
@@ -886,6 +894,7 @@ impl ExecutionTask {
             trust_mode: Some(self.trust_mode),
             auto_approve: Some(self.auto_approve),
             permission_posture: self.permission_posture.clone(),
+            disallowed_tools: self.disallowed_tools.clone(),
             task_id: Some(self.id.clone()),
             ..Default::default()
         }
@@ -1067,6 +1076,22 @@ impl TaskExecutor for EngineTaskExecutor {
             return TaskExecutionResult::from_reason(TaskTerminalReason::Canceled, None);
         }
         let (thread_id, turn) = if let Some(destination) = task.destination_thread_id.clone() {
+            if !task.disallowed_tools.is_empty() {
+                match self.runtime_threads.get_thread(&destination).await {
+                    Ok(thread)
+                        if deny_rules_cover(&thread.disallowed_tools, &task.disallowed_tools) => {}
+                    Ok(_) => {
+                        return TaskExecutionResult::failed(format!(
+                            "Destination thread {destination} does not run under the deny rules this task was created with"
+                        ));
+                    }
+                    Err(err) => {
+                        return TaskExecutionResult::failed(format!(
+                            "Destination thread {destination} cannot take this turn: {err}"
+                        ));
+                    }
+                }
+            }
             let deadline = Instant::now() + self.limits.wall_time;
             let turn = loop {
                 match self
@@ -2378,6 +2403,7 @@ impl TaskManager {
             // (GHSA-72w5-pf8h-xfp4).
             auto_approve: req.auto_approve.unwrap_or(false),
             permission_posture: req.permission_posture,
+            disallowed_tools: normalize_deny_rules(req.disallowed_tools),
             status: TaskStatus::Queued,
             created_at: Utc::now(),
             started_at: None,
@@ -3904,6 +3930,34 @@ fn read_bound_task_file(path: &Path, task_id: &str) -> Result<Option<TaskRecord>
     Ok(Some(task))
 }
 
+pub fn normalize_deny_rules(rules: Vec<String>) -> Vec<String> {
+    let mut seen = Vec::with_capacity(rules.len());
+    for rule in rules {
+        let rule = rule.trim();
+        if !rule.is_empty() && !seen.iter().any(|existing: &String| existing == rule) {
+            seen.push(rule.to_string());
+        }
+    }
+    seen
+}
+
+fn deny_rule_covers(held: &str, required: &str) -> bool {
+    let held = held.to_ascii_lowercase();
+    let required = required.to_ascii_lowercase();
+    match (held.strip_suffix('*'), required.strip_suffix('*')) {
+        (Some(held_prefix), Some(required_prefix)) => required_prefix.starts_with(held_prefix),
+        (Some(held_prefix), None) => required.starts_with(held_prefix),
+        (None, Some(_)) => false,
+        (None, None) => held == required,
+    }
+}
+
+pub fn deny_rules_cover(held: &[String], required: &[String]) -> bool {
+    required
+        .iter()
+        .all(|rule| held.iter().any(|held| deny_rule_covers(held, rule)))
+}
+
 pub fn validate_bound_task_request(task: &TaskRecord, request: &NewTaskRequest) -> Result<()> {
     if task.prompt != request.prompt.trim()
         || task.owner_session_id != request.owner_session_id
@@ -3933,6 +3987,7 @@ pub fn validate_bound_task_request(task: &TaskRecord, request: &NewTaskRequest) 
             .as_deref()
             .is_some_and(|value| Some(value) != task.permission_posture.as_deref())
         || task.auto_approve != request.auto_approve.unwrap_or(false)
+        || task.disallowed_tools != normalize_deny_rules(request.disallowed_tools.clone())
     {
         bail!("Task admission replay does not match the bound request");
     }
@@ -4281,6 +4336,33 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::time::Duration;
+
+    #[test]
+    fn deny_rules_cover_only_when_every_required_rule_is_held() {
+        let rules = |items: &[&str]| items.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert!(deny_rules_cover(&[], &[]));
+        assert!(!deny_rules_cover(&[], &rules(&["mcp_secret_*"])));
+        assert!(deny_rules_cover(
+            &rules(&["MCP_secret_*", "Bash"]),
+            &rules(&["mcp_secret_*"])
+        ));
+        assert!(deny_rules_cover(
+            &rules(&["mcp_*"]),
+            &rules(&["mcp_secret_*", "mcp_secret_read"])
+        ));
+        assert!(!deny_rules_cover(
+            &rules(&["mcp_secret_read"]),
+            &rules(&["mcp_secret_*"])
+        ));
+        assert!(!deny_rules_cover(
+            &rules(&["mcp_secret_*"]),
+            &rules(&["mcp_*"])
+        ));
+        assert_eq!(
+            normalize_deny_rules(rules(&[" a ", "", "a", "b*"])),
+            rules(&["a", "b*"])
+        );
+    }
 
     struct MockExecutor;
 
@@ -5761,6 +5843,7 @@ mod tests {
                 summary: "Task started".to_string(),
                 detail_path: None,
             }],
+            disallowed_tools: Vec::new(),
         };
         fs::write(
             tasks_dir.join(format!("{task_id}.json")),
@@ -5929,6 +6012,7 @@ mod tests {
             auto_approve: None,
             permission_posture: None,
             owner_session_id: None,
+            disallowed_tools: Vec::new(),
         };
         let task = manager.add_task(req).await?;
 
@@ -6459,6 +6543,7 @@ mod tests {
             github_events: Vec::new(),
             tool_calls: Vec::new(),
             timeline: Vec::new(),
+            disallowed_tools: Vec::new(),
         }
     }
 
@@ -7076,6 +7161,34 @@ mod tests {
             .await?;
             assert_eq!(task.result_summary.as_deref(), Some(expected), "{status}");
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn task_with_deny_rules_refuses_a_destination_thread_that_lacks_them() -> Result<()> {
+        let runtime = Arc::new(test_runtime_manager().await?);
+        let open = runtime
+            .create_thread(CreateThreadRequest::default())
+            .await?;
+        let mut record = sample_task_record();
+        record.destination_thread_id = Some(open.id.clone());
+        record.disallowed_tools = vec!["mcp_secret_*".to_string()];
+        let (tx, rx) = mpsc::channel(64);
+        tokio::spawn(drain_task_events(rx));
+        let executor =
+            EngineTaskExecutor::new(runtime, TaskExecutionLimits::short_for_tests(), false);
+        let result = executor
+            .execute(ExecutionTask::from(&record), tx, CancellationToken::new())
+            .await;
+        assert_eq!(result.status, TaskStatus::Failed);
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("deny rules")),
+            "{:?}",
+            result.error
+        );
         Ok(())
     }
 

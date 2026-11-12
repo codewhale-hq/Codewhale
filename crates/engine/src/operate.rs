@@ -1300,6 +1300,7 @@ pub fn upsert_keepalive(
             next_run_at: None,
             last_run_at: None,
             revision: 0,
+            disallowed_tools: Vec::new(),
         });
         record.schema_version = crate::automation_manager::CURRENT_AUTOMATION_SCHEMA_VERSION;
         if record.execution_scope.is_none() {

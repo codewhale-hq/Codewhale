@@ -3042,6 +3042,7 @@ async fn apply_command_result_inner(
                             .to_string(),
                     ),
                     owner_session_id: Some(owner_session_id),
+                    disallowed_tools: Vec::new(),
                 };
                 match task_manager.add_task(request).await {
                     Ok(task) => {

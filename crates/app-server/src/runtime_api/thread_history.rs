@@ -1588,6 +1588,7 @@ async fn mutate_in_owner(
         create.model_provider_id = thread.model_provider_id.clone();
         create.reasoning_effort = thread.reasoning_effort.clone();
         create.allowed_tools = thread.allowed_tools.clone();
+        create.disallowed_tools = thread.disallowed_tools.clone();
         create.mode = Some(thread.mode.clone());
         create.permission_posture = thread.permission_posture.clone();
         create.allow_shell = Some(thread.allow_shell);

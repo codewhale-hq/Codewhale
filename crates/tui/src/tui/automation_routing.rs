@@ -617,6 +617,7 @@ mod tests {
             next_run_at: None,
             last_run_at: None,
             revision: 0,
+            disallowed_tools: Vec::new(),
         }
     }
 
@@ -878,6 +879,7 @@ mod tests {
                 auto_approve: None,
                 delivery_mode: None,
                 status: Some(AutomationStatus::Active),
+                disallowed_tools: Vec::new(),
             })
             .expect("automation");
         let manager = Arc::new(Mutex::new(manager));
@@ -928,6 +930,7 @@ mod tests {
                 auto_approve: None,
                 delivery_mode: None,
                 status: Some(AutomationStatus::Paused),
+                disallowed_tools: Vec::new(),
             })
             .expect("automation");
         let now = Utc::now();

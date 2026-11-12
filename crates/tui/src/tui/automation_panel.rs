@@ -334,6 +334,7 @@ mod tests {
             next_run_at: None,
             last_run_at: None,
             revision: 0,
+            disallowed_tools: Vec::new(),
         }
     }
 

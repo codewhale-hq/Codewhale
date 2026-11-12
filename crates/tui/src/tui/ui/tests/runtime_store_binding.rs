@@ -215,6 +215,7 @@ fn runtime_store_binding_survives_launch_snapshot_and_resume() -> anyhow::Result
                 auto_approve: Some(false),
                 delivery_mode: None,
                 status: Some(AutomationStatus::Paused),
+                disallowed_tools: Vec::new(),
             })?;
             tasks.shutdown_and_wait().await?;
             drop(app);
@@ -863,6 +864,7 @@ fn adoptable_empty_store_refuses_a_scope_pinned_automation() -> anyhow::Result<(
         auto_approve: Some(false),
         delivery_mode: None,
         status: Some(AutomationStatus::Paused),
+        disallowed_tools: Vec::new(),
     })?;
     automations.edit_automation(&created.id, |record| {
         let mut record = record.ok_or_else(|| anyhow::anyhow!("fresh automation must exist"))?;

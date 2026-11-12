@@ -321,6 +321,7 @@ async fn execute_schedule(input: &Value, context: &ToolContext) -> Result<ToolRe
         workspace,
         owner_session_id: Some(context.state_namespace.clone()),
         parent_trigger_id,
+        disallowed_tools: context.disallowed_tools.clone(),
     };
 
     let record = {
@@ -1005,6 +1006,7 @@ mod tests {
                 workspace: None,
                 owner_session_id: None,
                 parent_trigger_id: None,
+                disallowed_tools: Vec::new(),
             })
             .unwrap();
 
@@ -1084,6 +1086,7 @@ mod tests {
             workspace: None,
             owner_session_id: Some("session-a".to_string()),
             parent_trigger_id: None,
+            disallowed_tools: Vec::new(),
         };
         let record = manager.create_trigger(req).unwrap();
         let due = manager.collect_due_triggers(chrono::Utc::now()).unwrap();

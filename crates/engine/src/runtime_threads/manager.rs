@@ -831,6 +831,7 @@ pub(super) fn thread_execution_state_matches(left: &ThreadRecord, right: &Thread
         && left.model_provider_id == right.model_provider_id
         && left.reasoning_effort == right.reasoning_effort
         && left.allowed_tools == right.allowed_tools
+        && left.disallowed_tools == right.disallowed_tools
         && left.workspace == right.workspace
         && left.mode == right.mode
         && left.permission_posture == right.permission_posture
@@ -1438,6 +1439,12 @@ pub struct CreateThreadRequest {
     /// An empty array intentionally disables every model-visible tool.
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
+    #[serde(
+        default,
+        alias = "disallowedTools",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub disallowed_tools: Vec<String>,
     /// Extra directories the file tools may read and write outside the
     /// workspace. Each path must exist and be a directory.
     #[serde(default, alias = "addDirs")]
@@ -8010,6 +8017,7 @@ impl RuntimeThreadManager {
             model_provider_id,
             reasoning_effort,
             allowed_tools: req.allowed_tools,
+            disallowed_tools: crate::task_manager::normalize_deny_rules(req.disallowed_tools),
             add_dirs,
             workspace,
             mode,
@@ -8060,6 +8068,9 @@ impl RuntimeThreadManager {
             });
             if let Some(preset) = thread.agent_preset.as_ref() {
                 fingerprint_body["agent_preset"] = json!(preset);
+            }
+            if !thread.disallowed_tools.is_empty() {
+                fingerprint_body["disallowed_tools"] = json!(thread.disallowed_tools);
             }
             let request_fingerprint =
                 codewhale_runtime::hashing::sha256_hex(serde_json::to_vec(&fingerprint_body)?);
@@ -15523,7 +15534,8 @@ source_usage_records: Default::default(),
                     cfg.reasoning_only_reprompt_message().to_string(),
                 ),
                 allowed_tools: isolated_chat.then(Vec::new),
-                disallowed_tools: None,
+                disallowed_tools: (!thread.disallowed_tools.is_empty())
+                    .then(|| thread.disallowed_tools.clone()),
                 max_tool_calls: None,
                 hook_executor: Some(Arc::clone(&thread_hooks)),
                 locale_tag: codewhale_localization::resolve_locale(&settings.locale)

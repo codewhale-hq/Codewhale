@@ -568,6 +568,7 @@ fn messages_from_thread_detail_batches_tool_results() {
         executor: None,
         environment: None,
         agent_preset: None,
+        disallowed_tools: Vec::new(),
     };
     let turn = TurnRecord {
         source_usage_origin_turn_id: None,
@@ -801,6 +802,7 @@ fn legacy_exact_thread_export_normalizes_provider_kind_and_id() {
             executor: None,
             environment: None,
             agent_preset: None,
+            disallowed_tools: Vec::new(),
         },
         turns: Vec::new(),
         items: Vec::new(),

@@ -561,6 +561,7 @@ impl TasksTool {
             permission_posture: Some(
                 codewhale_runtime::runtime_policy::approval_wire(context.approval_mode).to_string(),
             ),
+            disallowed_tools: context.disallowed_tools.clone(),
             owner_session_id: Some(context.state_namespace.clone()),
         };
         let task_id = crate::task_manager::TaskManager::new_task_id();

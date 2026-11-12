@@ -887,6 +887,7 @@ mod tests {
             next_run_at: Some(at),
             last_run_at: None,
             revision: 0,
+            disallowed_tools: Vec::new(),
         }
     }
 

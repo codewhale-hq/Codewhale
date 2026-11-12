@@ -2748,6 +2748,7 @@ fn sample_thread(thread_id: &str) -> ThreadRecord {
         executor: None,
         environment: None,
         agent_preset: None,
+        disallowed_tools: Vec::new(),
     }
 }
 
@@ -20048,6 +20049,7 @@ fn opening_manager_recovers_stale_queued_and_in_progress_work() -> Result<()> {
         executor: None,
         environment: None,
         agent_preset: None,
+        disallowed_tools: Vec::new(),
     };
     manager.store.save_thread(&thread)?;
 
@@ -23913,6 +23915,7 @@ mod adoption_refusal {
             auto_approve: Some(false),
             delivery_mode: None,
             status: Some(AutomationStatus::Paused),
+            disallowed_tools: Vec::new(),
         })?;
         automations.edit_automation(&created.id, |record| {
             let mut record =

@@ -8477,6 +8477,7 @@ async fn create_trigger(
         owner_session_id: Some(owner_session_id),
         parent_trigger_id: None,
         destination_thread_id: destination,
+        disallowed_tools: Vec::new(),
     };
     automation_mutation(
         &state,

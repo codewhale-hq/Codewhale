@@ -108,6 +108,8 @@ pub struct DelayedTriggerRecord {
     pub owner_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination_thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
     pub status: DelayedTriggerStatus,
     pub created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -143,6 +145,7 @@ pub struct CreateDelayedTriggerRequest {
     /// Optional parent trigger id for re-arm lineage tracking.
     pub parent_trigger_id: Option<String>,
     pub destination_thread_id: Option<String>,
+    pub disallowed_tools: Vec<String>,
 }
 
 // ── End delayed-trigger types ──────────────────────────────────────────────
@@ -298,6 +301,8 @@ pub struct AutomationRecord {
     pub delivery_mode: Option<AutomationDeliveryMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination_thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
     pub status: AutomationStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -415,6 +420,8 @@ pub struct CreateAutomationRequest {
     pub delivery_mode: Option<AutomationDeliveryMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination_thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
     #[serde(default)]
     pub status: Option<AutomationStatus>,
 }
@@ -1466,6 +1473,7 @@ impl AutomationManager {
             auto_approve: req.auto_approve,
             delivery_mode: req.delivery_mode,
             destination_thread_id: normalize_optional_string(req.destination_thread_id),
+            disallowed_tools: crate::task_manager::normalize_deny_rules(req.disallowed_tools),
             status,
             created_at: now,
             updated_at: now,
@@ -2560,6 +2568,7 @@ impl AutomationManager {
             workspace: req.workspace,
             owner_session_id: req.owner_session_id,
             destination_thread_id: normalize_optional_string(req.destination_thread_id),
+            disallowed_tools: crate::task_manager::normalize_deny_rules(req.disallowed_tools),
             status: DelayedTriggerStatus::Pending,
             created_at: now,
             fired_at: None,
@@ -2859,6 +2868,7 @@ fn automation_task_request(automation: &AutomationRecord) -> NewTaskRequest {
         trust_mode: Some(automation.task_trust_mode()),
         auto_approve: Some(automation.task_auto_approve()),
         permission_posture: Some(automation_posture(automation.task_auto_approve())),
+        disallowed_tools: automation.disallowed_tools.clone(),
         owner_session_id: None,
         destination_thread_id: automation.destination_thread_id.clone(),
     }
@@ -3302,6 +3312,7 @@ where
                             trust_mode: Some(false),
                             auto_approve: Some(false),
                             permission_posture: Some(automation_posture(false)),
+                            disallowed_tools: current.disallowed_tools.clone(),
                             owner_session_id: current.owner_session_id.clone(),
                             destination_thread_id: current.destination_thread_id.clone(),
                         },
@@ -4218,6 +4229,7 @@ mod tests {
                 workspace: None,
                 owner_session_id: Some("fixture-owner".into()),
                 parent_trigger_id: None,
+                disallowed_tools: Vec::new(),
             })?;
             trigger.fire_at = Utc::now() - Duration::minutes(1);
             trigger.created_at = Utc::now() - Duration::minutes(index);
@@ -4636,6 +4648,7 @@ mod tests {
             next_run_at: None,
             last_run_at: None,
             revision: 0,
+            disallowed_tools: Vec::new(),
         }
     }
 
@@ -5038,6 +5051,7 @@ mod tests {
                 auto_approve: None,
                 delivery_mode: None,
                 status: Some(AutomationStatus::Active),
+                disallowed_tools: Vec::new(),
             })
             .expect("create");
         assert_eq!(created.model.as_deref(), Some("scheduled-model"));
@@ -5084,6 +5098,7 @@ mod tests {
                 auto_approve: None,
                 delivery_mode: None,
                 status: Some(AutomationStatus::Active),
+                disallowed_tools: Vec::new(),
             })
             .expect("create");
 
@@ -5610,6 +5625,7 @@ model = "private-model"
             workspace: None,
             owner_session_id: Some("session-a".to_string()),
             parent_trigger_id: None,
+            disallowed_tools: Vec::new(),
         })?;
         owned.fire_at = Utc::now() - Duration::minutes(1);
         manager.save_trigger(&owned)?;
@@ -5621,6 +5637,7 @@ model = "private-model"
             workspace: None,
             owner_session_id: None,
             parent_trigger_id: None,
+            disallowed_tools: Vec::new(),
         })?;
         legacy.fire_at = Utc::now() - Duration::minutes(1);
         manager.save_trigger(&legacy)?;
@@ -5992,6 +6009,7 @@ model = "private-model"
                 auto_approve: None,
                 delivery_mode: None,
                 status: Some(AutomationStatus::Active),
+                disallowed_tools: Vec::new(),
             })
             .expect("create");
         let shared: SharedAutomationManager = Arc::new(Mutex::new(manager));
