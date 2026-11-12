@@ -1179,7 +1179,6 @@ dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-schema",
  "anyhow",
- "arboard",
  "async-stream",
  "async-trait",
  "axum",
