@@ -44,6 +44,7 @@ changelog or release notes, and this contributor record.
 
 **Contributions**
 
+- **[MannXo](https://github.com/MannXo)** — added Qwen Code to the external agent registry so an installed Qwen Code CLI runs as a session over ACP ([#7293](https://github.com/codewhale-hq/Codewhale/pull/7293)).
 - **[SamhandsomeLee](https://github.com/SamhandsomeLee)** — drove Responses request, URL and stream behavior from one checked dialect profile table ([#7261](https://github.com/codewhale-hq/Codewhale/pull/7261)).
 - **[gaord](https://github.com/gaord)** — ran the read-only `/system`, `/tokens` and `/cost` builtins over the Runtime API through one gated terminal-host catalog ([#7277](https://github.com/codewhale-hq/Codewhale/pull/7277)).
 
