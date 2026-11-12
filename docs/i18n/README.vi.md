@@ -1,22 +1,23 @@
-<!-- source: README.md sha256:a9ec5fb3f3dd -->
+<!-- source: README.md sha256:fd76d718e3a2 -->
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="../../brand/wordmark-inverted.svg">
-  <img src="../../brand/wordmark.svg" alt="Codewhale" width="320">
+  <source media="(prefers-color-scheme: dark)" srcset="../../brand/mark-reversed.svg">
+  <img src="../../brand/mark-mono.svg" alt="Codewhale" width="72" height="72">
 </picture>
 
-**Tác nhân lập trình mã nguồn mở chạy trong terminal, hoạt động với mọi mô hình.**
+<h1>Mô hình có thể là của bất kỳ ai. Agent nên là của bạn.</h1>
 
-Giao cho Codewhale một tác vụ, nó sẽ đọc kho mã, chỉnh sửa tệp và chạy lệnh cho
-đến khi tác vụ hoàn thành hoặc cần bạn cung cấp thêm thông tin. Codewhale hoạt
-động với hơn 40 nhà cung cấp tích hợp sẵn, mặc định là DeepSeek V4.1 Flash, và
-với các mô hình chạy trên chính máy của bạn. `/receipts` liệt kê các tệp nó đã thay đổi,
-các lệnh nó đã chạy, cùng các lệnh gọi web và MCP nó đã thực hiện.
+Codewhale là một agent lập trình mã nguồn mở cho terminal của bạn, được viết bằng Rust. Nó làm việc với bất kỳ mô hình nào, có thể chia một nhiệm vụ cho nhiều agent, và bạn có thể đọc từng dòng mã của nó.
 
-[![CI](https://github.com/codewhale-hq/CodeWhale/actions/workflows/ci.yml/badge.svg)](https://github.com/codewhale-hq/CodeWhale/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/codewhale-cli?label=crates.io)](https://crates.io/crates/codewhale-cli)
-[![npm](https://img.shields.io/npm/v/codewhale?label=npm)](https://www.npmjs.com/package/codewhale)
+```bash
+curl -fsSL https://codewhale.net/install.sh | sh
+```
+
+Lệnh này cài bản phát hành mới nhất trên macOS hoặc Linux và không cần tài khoản. [Windows, npm và Cargo](#cài-đặt) ở bên dưới.
+
+[![Latest release](https://img.shields.io/github/v/release/codewhale-hq/Codewhale?label=release)](https://github.com/codewhale-hq/Codewhale/releases/latest)
+[![CI](https://github.com/codewhale-hq/Codewhale/actions/workflows/ci.yml/badge.svg)](https://github.com/codewhale-hq/Codewhale/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](../../LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/37gfS3ksug)
 
@@ -24,263 +25,141 @@ các lệnh nó đã chạy, cùng các lệnh gọi web và MCP nó đã thực
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja-JP.md) · [Bahasa Indonesia](README.id.md) · [한국어](README.ko-KR.md) · [Español](README.es-419.md) · [Português](README.pt-BR.md) · [Русский](README.ru.md) · [Українська](README.uk.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [繁體中文](README.zh-TW.md) · [हिन्दी](README.hi.md) · [Türkçe](README.tr.md) · [Italiano](README.it.md) · [Polski](README.pl.md) · [العربية](README.ar.md) · [Català](README.ca.md)
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" alt="Một phiên terminal của Codewhale" width="760">
+<sub>Bản dịch này là bản nháp do máy dịch và chưa được người bản ngữ xem lại.</sub>
 
-<sub>Một bản dựng phát triển 0.10.2 với mô hình thử nghiệm chạy theo kịch bản, ở chế độ Full Access trong một không gian làm việc dùng một lần. Thao tác chỉnh sửa, ba bài kiểm thử và lượt đánh giá của tác nhân phụ đều chạy thật.</sub>
+<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="Codewhale trong terminal sau một nhiệm vụ demo. Nó báo đã thêm cờ --json vào export.py, cả 3 bài kiểm thử cục bộ đều đạt và bài review được ủy quyền không tìm thấy vấn đề. Danh sách nhiệm vụ bên dưới có ba bước đã hoàn thành, và dòng trạng thái hiển thị Full Access cùng nhà cung cấp cục bộ website-demo.">
+
+<sub>Một bản dựng phát triển của 0.10.3, phiên bản chưa phát hành, với mô hình kiểm thử theo kịch bản, chạy ở Full Access trong một workspace dùng một lần. Phần chỉnh sửa, ba bài kiểm thử và một lần review của sub-agent đều chạy thật.</sub>
 
 </div>
 
-<p align="center">
-  <a href="https://www.orcarouter.ai/redeem/1a6250545fdc4e0aaccb0a4470159e67" rel="sponsored">
-    <img src="../../web/public/codewhale-x-orcarouter.webp" alt="Codewhale × OrcaRouter — thêm 30% dung lượng sử dụng DeepSeek v4.1 Flash" width="760">
-  </a>
-</p>
-
-[Xem ưu đãi Codewhale × OrcaRouter](https://www.orcarouter.ai/redeem/1a6250545fdc4e0aaccb0a4470159e67). Codewhale nhận phí giới thiệu từ OrcaRouter.
-
 ## Cài đặt
 
-macOS và Linux:
+Lệnh ở trên đặt `codewhale` đã kiểm tra checksum và bí danh ngắn `codew` vào `~/.local/bin`. Nếu shell sau đó báo `command not found`, hãy làm theo ghi chú PATH mà trình cài đặt in ra ([chi tiết](../INSTALL.md#put-it-on-your-path)). `codewhale update` sẽ nâng cấp nó.
 
 ```bash
-curl -fsSL https://codewhale.net/install.sh | sh
+winget install --id HunterBown.CodeWhale --exact --source winget  # Windows x64
+npm install -g codewhale                                          # wraps the same release binaries
+cargo install codewhale-cli --locked                              # builds from source; can trail GitHub Releases
 ```
 
-Trình cài đặt đặt `codewhale` và bí danh ngắn `codew` của nó, đã được xác minh
-checksum, vào `~/.local/bin`. Nếu sau đó shell báo `command not found`, hãy chạy
-dòng PATH mà trình cài đặt in ra
-([chi tiết](../INSTALL.md#put-it-on-your-path)). Dùng `codewhale update` để
-nâng cấp. Các lệnh này cài bản phát hành mới nhất. Trang này theo nhánh `main`,
-nên một tính năng được đánh dấu phiên bản sẽ có mặt trong bản phát hành đó;
-[nhật ký thay đổi](../../CHANGELOG.md) liệt kê những gì mỗi bản phát hành bổ sung.
-
-<details>
-<summary><b>Windows, npm, Cargo và các cách cài khác</b></summary>
-
-```bash
-winget install HunterBown.CodeWhale  # Windows x64 (or Scoop, or the installer from GitHub Releases)
-npm install -g codewhale            # wraps the same release binaries
-cargo install codewhale-cli --locked  # crates.io; can trail GitHub Releases
-```
-
-Có sẵn tệp nhị phân dựng sẵn cho Linux, macOS và Windows trên x64 và arm64. Nix,
-Homebrew trên Linux, Android/Termux (bản xem trước) và tải thủ công được trình
-bày trong [hướng dẫn cài đặt](../INSTALL.md), còn container thì ở
-[Docker](../DOCKER.md). Mỗi máy chỉ nên dùng một cách cài đặt; nếu không, hai
-bản sẽ cùng nằm trên `PATH` và bản nào đứng trước sẽ được dùng.
-
-</details>
+Bản nhị phân dựng sẵn có cho Linux, macOS và Windows trên x64 và arm64. Scoop, Nix, Homebrew trên Linux, Android và Termux (bản xem trước) cùng cách tải thủ công có trong [hướng dẫn cài đặt](../INSTALL.md), còn container có trong [Docker](../DOCKER.md). Mỗi máy chỉ nên dùng một cách cài; nếu không, hai bản sẽ cùng nằm trên `PATH` và bản nào đứng trước sẽ được dùng.
 
 ## Bắt đầu nhanh
 
-1. Commit hoặc stash công việc của bạn, rồi chạy `codewhale` từ thư mục gốc của
-   một kho git. Theo mặc định, nó (**Accept Edits**) chỉnh sửa tệp trong kho mà không hỏi
-   và hỏi trước mỗi lệnh; `Shift+Tab` chuyển từng nấc quyền khi bạn muốn nó hỏi nhiều hơn hoặc ít hơn.
-2. Chạy `/provider` (hoặc nhấn `F3`), chọn một nhà cung cấp, dán khóa API của
-   nhà cung cấp đó và chọn một mô hình. DeepSeek là nhà cung cấp mặc định. Nếu
-   không có khóa, hãy chọn một runtime cục bộ. Nếu chưa cấu hình nhà cung cấp
-   nào và Ollama đang phục vụ sẵn một mô hình trò chuyện, Codewhale sẽ tự động
-   dùng mô hình đó; từ 0.10.2, nó sẽ đề xuất mô hình đó khi bạn gửi tin nhắn đầu
-   tiên.
-3. Nhập một tác vụ:
+1. Commit hoặc stash công việc của bạn, rồi chạy `codewhale` từ thư mục gốc của một kho git. Mặc định, nó áp dụng các chỉnh sửa tệp trong kho mà không hỏi, và hỏi trước mỗi lệnh shell không chỉ đọc.
+2. Chạy `/provider` (hoặc nhấn `F3`), chọn một nhà cung cấp, dán khóa API và chọn mô hình. Nhà cung cấp mặc định là DeepSeek. Ở lần khởi chạy đầu tiên khi chưa có khóa, Codewhale hỏi nhà cung cấp khi bạn gửi tin nhắn đầu tiên, và đề xuất một mô hình cục bộ khi máy chủ Ollama cục bộ phản hồi.
+3. Nhập một nhiệm vụ:
 
 ```text
 Fix the failing tests and explain what changed.
 ```
 
-Các lệnh chỉ đọc chạy ngay. Với mọi lệnh shell khác, Codewhale hỏi trước: `y`
-chạy lệnh một lần, `a` cho phép các lệnh tương tự trong phần còn lại của cuộc
-trò chuyện, `n` từ chối. `/undo` hoàn tác yêu cầu gần nhất của bạn cùng các thay
-đổi tệp của nó. `/help` liệt kê các lệnh
-và phím tắt.
+Lệnh chỉ đọc chạy ngay. Với mọi lệnh shell khác, Codewhale hỏi trước: `y` chạy một lần, `a` cho phép các lệnh tương tự trong phần còn lại của cuộc trò chuyện, và `n` từ chối. `/undo` hoàn tác yêu cầu cuối cùng cùng các thay đổi tệp của nó, và `/help` liệt kê lệnh và phím.
 
-Với script và CI, `codewhale exec` chạy một tác vụ mà không cần giao diện. Theo
-mặc định, `--auto` dùng Full Access: công cụ chạy mà không hỏi, lệnh shell
-không bị sandbox của Codewhale giới hạn, và chế độ tin cậy cho phép công cụ
-tệp ghi ra ngoài không gian làm việc. Thêm `--sandbox workspace-write` để giữ
-sandbox cho shell và giới hạn công cụ tệp trong không gian làm việc, đồng thời
-tắt chế độ tin cậy:
+Với script và CI, `codewhale exec` chạy một nhiệm vụ mà không cần giao diện. Hãy đọc [chạy không giao diện](../INSTALL.md#headless-scripts-ci) trước khi cho nó công cụ bằng `--auto`, vì `--auto` dùng Full Access trừ khi bạn thêm sandbox.
 
-```bash
-codewhale exec --auto --sandbox workspace-write "fix the failing tests and explain what changed"
-```
+## Nó làm gì
 
-## Chế độ và quyền
+Giao cho Codewhale một nhiệm vụ, nó sẽ đọc kho mã, chỉnh sửa tệp và chạy lệnh cho đến khi xong hoặc cần bạn nhập thêm. [Ghi chú phát hành mới nhất](https://github.com/codewhale-hq/Codewhale/releases/latest) liệt kê các thay đổi mới nhất, và [nhật ký thay đổi](../../CHANGELOG.md) có mọi phiên bản.
 
-Bản cài đặt mới khởi động ở chế độ Work với quyền Accept Edits. Một nút xoay duy nhất chuyển cả hai: `Shift+Tab` lần lượt chuyển Ask → Accept Edits → Plan → Auto-Review → Full Access.
+### Bất kỳ mô hình nào
 
-| | Chuyển bằng | Tùy chọn |
-| --- | --- | --- |
-| Chế độ | nấc Plan trên `Shift+Tab`, hoặc `/mode` | **Plan** đọc và tìm kiếm nhưng không thay đổi gì. **Work** (mọi nấc khác) chỉnh sửa tệp và chạy lệnh; hãy bắt đầu một mục tiêu với `/goal` khi yêu cầu cần nhiều hơn một lượt. |
-| Quyền | `Shift+Tab` | **Ask** hỏi trước mỗi chỉnh sửa tệp và trước mọi lệnh shell không phải chỉ đọc. **Accept Edits** áp dụng các chỉnh sửa tệp trong kho git của bạn mà không hỏi và vẫn hỏi trước khi chạy lệnh. **Auto-Review** để các quy tắc và một mô hình đánh giá phê duyệt các lệnh gọi thông thường, và từ chối các lệnh gọi rủi ro cao; hãy chuyển sang Ask để tự phê duyệt những lệnh gọi đó. **Full Access** không bao giờ hỏi, và lệnh có thể truy cập mọi thứ trên máy tính này; các quy tắc của kho mã và chính sách được quản lý vẫn được áp dụng. |
+Hơn 40 nhà cung cấp được tích hợp sẵn, gồm Anthropic, OpenAI, DeepSeek, Google, Mistral, Moonshot, OpenRouter và xAI. Mọi endpoint tương thích OpenAI đều dùng được, và cả mô hình cục bộ qua Ollama, vLLM hoặc SGLang. Mô hình mặc định là `deepseek-flash` của DeepSeek, hiện do DeepSeek V4.1 Flash phục vụ ([chi tiết](../PROVIDERS.md#deepseek-v41-flash)).
 
-Xem chi tiết trong [hướng dẫn về chế độ và quyền](../MODES.md).
-
-## Codewhale làm được gì
-
-### Có gì mới trong 0.10.2
-
-- `/pet on` biến terminal của bạn thành một chú cá voi chuyển động cho thấy tác
-  nhân đang làm gì, trong khi ô nhập tin nhắn vẫn dùng được. 980 hạt của nó ghép
-  thành bước hiện tại bằng tiếng Anh, tiếng Trung hoặc tiếng Nhật.
-- `/workbar terminal` hiển thị các shell mà tác nhân đang chạy ngay trong lúc
-  chúng chạy. Bạn có thể gõ vào một shell, hoặc nhấn `Ctrl+N` để mở shell của
-  riêng bạn (macOS và Linux).
-- `/undo` hoàn tác toàn bộ yêu cầu gần nhất của bạn trong một bước, gồm mọi tệp
-  mà yêu cầu đó đã thay đổi, và `/diff` hoạt động cả trong thư mục không dùng Git.
-- Khi một kế hoạch đã sẵn sàng, Codewhale hỏi bạn muốn bắt
-  đầu Work với Ask hay Auto-Review, hay tiếp tục lập kế hoạch.
-- `/color` đặt cho mỗi cuộc trò chuyện một màu ô soạn thảo riêng, được lưu cùng
-  phiên.
-- `web_search` có thể dùng Search API mới của DeepSeek: đặt
-  `[search] provider = "deepseek"` cùng với một khóa DeepSeek.
-- Ngoài Full Access, một lệnh `curl` hoặc `wget` có thể tải lên thông tin xác thực
-  sẽ không bao giờ chạy khi chưa có sự phê duyệt của bạn, và một lệnh che giấu ký
-  tự Unicode vô hình sẽ bị từ chối. `write` không còn thay thế một tệp mà tác
-  nhân chưa đọc, hoặc một tệp đã thay đổi sau khi tác nhân đọc nó.
-
-### Mô hình
-
-Hơn 40 nhà cung cấp được tích hợp sẵn, gồm Anthropic, OpenAI, DeepSeek, Google,
-Mistral, Moonshot, OpenRouter và xAI. Mọi endpoint tương thích OpenAI đều dùng
-được, mô hình cục bộ qua Ollama, vLLM hoặc SGLang cũng vậy. Mặc định là
-`deepseek-flash` của DeepSeek, mô hình mà DeepSeek đã chuyển sang
-DeepSeek-V4.1-Flash-1017 vào ngày 2026-10-17; 0.10.1 chạy được mô hình này mà
-không cần cập nhật ([chi tiết](../PROVIDERS.md#deepseek-v41-flash)).
-
-`/model` đổi mô hình giữa các lượt, còn `/model auto` chọn một mô hình cho từng
-lượt (`/router` thiết lập cách chọn). `/turn inspect` cho biết một lượt đã dùng
-mô hình nào, tốn bao nhiêu chi phí và mất bao lâu. `codewhale auth chatgpt` cho
-phép bạn dùng gói ChatGPT thay cho khóa API (thử nghiệm). Xem
-[Nhà cung cấp](../PROVIDERS.md).
+`/model` đổi mô hình giữa các lượt, và `/model auto` chọn một mô hình cho mỗi lượt (`/router` thiết lập cách chọn). `/turn inspect` cho biết một lượt đã dùng mô hình nào, tốn bao nhiêu và mất bao lâu. Xem [Nhà cung cấp](../PROVIDERS.md).
 
 ### Biên nhận và hoàn tác
 
-`/receipts`, hoặc `codewhale receipts --last` sau khi bạn thoát, liệt kê các tệp
-đã thay đổi, các lệnh đã chạy, các lệnh gọi web và MCP, các tác nhân đã khởi
-chạy, các phê duyệt và người đã phê duyệt, cùng các lần thất bại. `/undo` hoàn tác yêu cầu gần nhất của bạn và những tệp mà yêu cầu đó đã thay đổi trong một bước, không cần chế độ tin cậy. `/restore` đưa toàn bộ không gian làm việc về một
-snapshot trước đó; vì thao tác này ghi đè các chỉnh sửa sau đó, nó cần
-`/trust on` hoặc Full Access. Xem [Biên nhận](../RECEIPTS.md).
+`/receipts`, hoặc `codewhale receipts --last` sau khi thoát, liệt kê các tệp một phiên đã thay đổi, các lệnh đã chạy, các lời gọi web và MCP, các agent đã khởi động, mỗi lần phê duyệt và người phê duyệt, và những gì thất bại. `/undo` hoàn tác yêu cầu cuối cùng cùng các tệp nó đã thay đổi trong một bước. `/restore` đưa toàn bộ workspace về một snapshot trước đó, và vì việc này ghi đè các chỉnh sửa sau đó nên cần `/trust on` hoặc Full Access. Xem [Biên nhận](../RECEIPTS.md).
 
-Các lần chạy exec có sẵn công cụ đều được lưu ở mọi định dạng đầu ra,
-vì vậy `codewhale receipts --last` dùng được sau `exec --auto`, kể cả khi dùng
-`--json`. Các lần chạy chỉ trả lời bằng văn bản hoặc `--json` chỉ được lưu khi
-tiếp tục cuộc trò chuyện hoặc khi bắt đầu nén cuộc trò chuyện; dùng
-`--output-format stream-json` để luôn lưu chúng cho biên nhận hoặc
-`exec --continue`.
+### Nhiều agent trên một nhiệm vụ
 
-### Công việc dài hơi
-
-`/goal` đặt một mục tiêu được giữ qua các lượt. Codewhale có thể chia việc cho
-các [tác nhân phụ](../SUBAGENTS.md), chạy một [nhóm tác nhân](../FLEET.md),
-hoặc làm theo một [workflow](../WORKFLOW_AUTHORING.md) đã được commit vào kho
-mã.
-
-### Chuyển từ tác nhân khác
-
-Codewhale tự đọc `AGENTS.md`. Các tệp chỉ dẫn viết cho công cụ khác, như
-`CLAUDE.md`, `.cursorrules` hoặc `.github/copilot-instructions.md`, chỉ được nạp
-khi bạn chủ động bật bằng `project_instruction_imports = ["claude"]` (hoặc
-`"cursor"`, `"cline"`, `"windsurf"`, `"copilot"`, `"all"`) trong cấu hình; xem
-[config.example.toml](../../config.example.toml). Codewhale sẽ cảnh báo khi tìm thấy
-một tệp như vậy mà nó không nạp.
-
-`/import-claude` chuẩn bị việc nhập cài đặt Claude Code và các máy chủ MCP của
-bạn để bạn xem lại. `/plugin install` chấp nhận các plugin Claude Code chứa
-skill, lệnh, hồ sơ tác nhân và máy chủ MCP, và từ chối các plugin cần hook hoặc
-máy chủ LSP ([chi tiết](../CLAUDE_PLUGIN_COMPAT.md)).
+`/goal` đặt một mục tiêu kéo dài qua nhiều lượt. Codewhale có thể chia việc cho các [sub-agent](../SUBAGENTS.md), chạy một [Fleet](../FLEET.md) gồm các agent với vai trò và mô hình riêng, hoặc làm theo một [quy trình làm việc](../WORKFLOW_AUTHORING.md) được commit trong kho.
 
 ### Tiện ích mở rộng
 
-Kết nối [máy chủ MCP](../MCP.md), thêm [skill](../SKILLS.md) và
-[plugin](../PLUGINS.md), và chạy [hook](../HOOKS.md) theo sự kiện phiên và
-công cụ. Chế độ code (thử nghiệm, bật theo mặc định) cho phép mô hình viết một
-chương trình `execute_tools` gọi nhiều công cụ MCP và plugin; mỗi lệnh gọi vẫn
-tuân theo quy tắc phê duyệt của bạn và vẫn có biên nhận riêng. Plugin Computer
-Use được cài đặt riêng (thử nghiệm, chỉ có trên macOS) có thể quan
-sát và điều khiển các ứng dụng khác. Plugin này luôn tắt cho đến khi bạn xem lại
-quyền truy cập của nó và bật nó lên
-([hướng dẫn](https://github.com/codewhale-hq/codewhale-cu-plugin)).
+Kết nối [máy chủ MCP](../MCP.md), thêm [kỹ năng](../SKILLS.md) và [plugin](../PLUGINS.md), và chạy [hook](../HOOKS.md) trên các sự kiện phiên và công cụ. Chế độ mã (thử nghiệm, bật mặc định) cho phép mô hình viết một chương trình `execute_tools` gọi nhiều công cụ MCP và plugin; mỗi lời gọi vẫn tuân theo quy tắc phê duyệt của bạn và giữ biên nhận. Plugin Computer Use đi kèm v0.10.2 (thử nghiệm, chỉ macOS) có thể quan sát và điều khiển các ứng dụng khác, và nó luôn tắt cho đến khi bạn xem lại quyền truy cập và bật nó ([hướng dẫn](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)). Sắp có trong 0.10.3: plugin này được [phát hành riêng](https://github.com/codewhale-hq/codewhale-cu-plugin).
 
-## Các cách chạy
+### Các cách chạy
 
-| Lệnh | Chức năng |
+| Lệnh | Tác dụng |
 | --- | --- |
 | `codewhale` | Ứng dụng terminal tương tác |
-| `codewhale exec "…"` | Một tác vụ không có giao diện. Khi không kèm cờ, nó trả lời mà không dùng công cụ; `--auto` bật công cụ với Full Access theo mặc định, `--sandbox workspace-write` giới hạn chúng, còn `--output-format stream-json` phát trực tiếp các sự kiện dưới dạng JSON |
-| `codewhale web` | Giao diện web cục bộ tại `127.0.0.1` ([hướng dẫn](../WEB.md)) |
-| `codewhale review --pr N` | Đánh giá mang tính tham khảo cho một pull request trên GitHub. [Thiết lập bot GitHub](../GITHUB_ACTION.md#set-up-your-own-bot) tạo một workflow được ghim phiên bản cho các đánh giá tự động và `@codewhale review`, dùng khóa mô hình của riêng bạn và danh tính App tùy chọn |
-| `codewhale app-server --http` | [Runtime API](../RUNTIME_API.md), một API HTTP cục bộ cho thread, sự kiện, phê duyệt và các thay đổi tệp của từng lượt |
-| `codewhale serve --acp` | Agent Client Protocol qua stdio, dành cho các trình soạn thảo như Zed |
+| `codewhale exec "…"` | Một nhiệm vụ không cần giao diện, cho script và CI ([chạy không giao diện](../INSTALL.md#headless-scripts-ci)) |
+| `codewhale web` | Một ứng dụng web cục bộ trên `127.0.0.1` ([hướng dẫn](../WEB.md)) |
+| `codewhale review --pr N` | Một bài review mang tính tư vấn cho pull request trên GitHub; [cài đặt bot GitHub](../GITHUB_ACTION.md#set-up-your-own-bot) chạy nó bằng khóa mô hình của chính bạn |
+| `codewhale app-server --http` | [Runtime API](../RUNTIME_API.md), một HTTP API cục bộ cho luồng, sự kiện, phê duyệt và thay đổi tệp của từng lượt |
+| `codewhale serve --acp` | Agent Client Protocol qua stdio, cho các trình soạn thảo như Zed |
 
-Ứng dụng terminal, `exec`, `web` và Runtime API dùng chung một engine
-([kiến trúc](../ARCHITECTURE.md)). Một
-[tiện ích mở rộng VS Code](https://marketplace.visualstudio.com/items?itemName=HengQuWorld.brotherwhale-vscode)
-do cộng đồng duy trì kết nối với engine này từ thanh bên
-([mã nguồn](https://github.com/HengQuWorld/CodeWhale-VSCode)). Một ứng dụng
-desktop native xây dựng trên Runtime API đang được phát triển; hiện chưa có bản
-tải xuống công khai.
+Ứng dụng terminal, `exec`, `web` và Runtime API dùng chung một động cơ ([kiến trúc](../ARCHITECTURE.md)). Một [tiện ích VS Code](https://marketplace.visualstudio.com/items?itemName=HengQuWorld.brotherwhale-vscode) do cộng đồng duy trì kết nối với nó từ thanh bên ([mã nguồn](https://github.com/HengQuWorld/CodeWhale-VSCode)).
 
-## Chi phí và tài khoản
+## Cách nó giữ an toàn
 
-Codewhale miễn phí và được cấp phép theo MIT. Khi dùng khóa API của riêng mình,
-bạn trả tiền trực tiếp cho nhà cung cấp; mô hình cục bộ không cần khóa. Thanh
-dưới cùng và `/cost` hiển thị chi phí của một phiên khi biết giá, còn giá chưa
-biết được hiển thị là chưa biết, không bao giờ là miễn phí.
+Hai công tắc quyết định Codewhale được tự làm bao nhiêu. Khi ô nhập trống, `Tab` đổi chế độ: **Plan** chỉ đọc và tìm kiếm, không thay đổi gì, **Work** chỉnh sửa tệp và chạy lệnh, còn **Operate** có cùng quyền như Work và tiếp tục cho đến khi mục tiêu được xác minh hoặc cần đến bạn. `Shift+Tab` đổi quyền. **Ask**, mặc định, áp dụng chỉnh sửa tệp trong kho mà không hỏi và hỏi trước các lệnh shell không chỉ đọc. **Auto-Review** để các quy tắc và một mô hình duyệt phê duyệt các lệnh gọi thông thường và từ chối lệnh rủi ro cao; chuyển sang Ask để tự phê duyệt chúng. **Full Access** không bao giờ hỏi và tắt sandbox của Codewhale, dù quy tắc của kho và chính sách quản lý vẫn áp dụng. [Hướng dẫn v0.10.2](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md) có chi tiết.
 
-Bạn không cần tài khoản. Các khóa bạn thêm bằng `/provider` được lưu trên máy
-của bạn.
+Sắp có trong 0.10.3: `Shift+Tab` trở thành một núm xoay qua Ask, Accept Edits, Plan, Auto-Review và Full Access, `Tab` không còn đổi chế độ, và Operate bị loại bỏ. Ask sẽ hỏi trước cả mỗi chỉnh sửa tệp, còn mặc định mới, Accept Edits, sẽ áp dụng chỉnh sửa trong kho git và vẫn hỏi trước các lệnh. [Hướng dẫn hiện tại](../MODES.md) mô tả điều này.
 
-## An toàn và quyền riêng tư
+Ở Ask và Auto-Review, lệnh chạy trong sandbox của hệ điều hành nếu hệ thống có: Seatbelt trên macOS, và bubblewrap trên Linux khi đã cài. Windows chưa có sandbox hệ điều hành, và Full Access tắt sandbox. Bên trong sandbox, lệnh shell và phiên terminal không thể đọc các kho thông tin xác thực như `~/.ssh`, `~/.aws` và tệp `.env`. `/preview-request` hiển thị bản xem trước đã che thông tin nhạy cảm của yêu cầu tiếp theo mà không gửi nó.
 
-Ở Ask và Auto-Review, lệnh chạy trong sandbox của hệ điều hành nếu hệ thống có:
-Seatbelt trên macOS, và bubblewrap trên Linux khi đã được cài đặt. Windows hiện
-chưa có sandbox của hệ điều hành, và Full Access tắt sandbox. Bên trong sandbox,
-lệnh shell không thể đọc các kho thông tin xác thực như `~/.ssh`, `~/.aws` và các
-tệp `.env`; từ 0.10.2, quy tắc này cũng áp dụng cho các phiên terminal và nhiều
-công cụ tệp hơn. `/preview-request` hiển thị bản xem trước của yêu cầu tiếp theo, đã che thông
-tin nhạy cảm, mà không gửi yêu cầu đó đi.
+Bạn không cần tài khoản, và khóa bạn thêm bằng `/provider` ở lại trên máy của bạn. Với khóa API của riêng bạn, bạn trả tiền trực tiếp cho nhà cung cấp, còn mô hình cục bộ không cần khóa. Chân trang và `/cost` cho biết một phiên đã tốn bao nhiêu khi biết giá, và giá chưa biết được hiển thị là chưa biết, không bao giờ là miễn phí.
 
-Telemetry được bật theo mặc định. Nó gửi các số liệu tổng hợp (phiên bản và nền
-tảng, thời lượng và kết quả của phiên, các nhà cung cấp tích hợp sẵn mà bạn đã
-dùng, số đếm tính năng và lỗi) kèm một ID cài đặt ngẫu nhiên được thay mới sau
-mỗi 90 ngày, và không bao giờ gửi cuộc trò chuyện, mã nguồn, prompt, tên mô hình,
-tên tệp hay tên kho mã, hoặc thông tin xác thực.
-`codewhale config set telemetry false` sẽ tắt telemetry. Khi khởi động,
-Codewhale cũng kiểm tra GitHub xem có bản phát hành mới không; đặt
-`CODEWHALE_NO_UPDATE_CHECK=1` để bỏ qua bước này. Xem thêm tại
-[thứ tự cấp quyền](../AUTHORIZATION_ORDER.md), [sandbox](../SANDBOX.md) và
-[telemetry](../TELEMETRY.md).
+Telemetry được bật mặc định. Nó gửi các số liệu tổng hợp (phiên bản và nền tảng, độ dài và kết quả phiên, các nhà cung cấp tích hợp bạn đã dùng, số lần dùng tính năng và số lỗi) kèm một ID cài đặt ngẫu nhiên đổi mỗi 90 ngày, và không bao giờ gửi cuộc trò chuyện, mã, prompt, tên mô hình, tên tệp hay tên kho, hoặc thông tin xác thực. Lệnh này tắt nó:
+
+```bash
+codewhale config set telemetry false
+```
+
+Khi khởi động, Codewhale cũng kiểm tra GitHub để tìm bản phát hành mới; đặt `CODEWHALE_NO_UPDATE_CHECK=1` để bỏ qua. Xem thêm [thứ tự cấp quyền](../AUTHORIZATION_ORDER.md), [sandbox](../SANDBOX.md) và [telemetry](../TELEMETRY.md).
+
+## Hướng đi sắp tới
+
+Codewhale đang trở thành một môi trường duy nhất trải khắp terminal, ứng dụng máy tính, trình duyệt và máy tính đám mây của bạn, tất cả chạy bằng một động cơ. Mỗi phần bên dưới cho biết hôm nay nó đang ở đâu.
+
+| Phần | Trạng thái | Hôm nay |
+| --- | --- | --- |
+| Ứng dụng terminal | Đã phát hành | Cài trên macOS, Linux hoặc Windows và chạy `codewhale` trong bất kỳ kho mã nào. |
+| Ứng dụng khách trình duyệt cục bộ | Đã phát hành | Chạy `codewhale web` để đọc cuộc trò chuyện, gửi nhiệm vụ và trả lời yêu cầu phê duyệt ngay trong trình duyệt; nó đi kèm terminal và không cần tài khoản. |
+| Nhiều agent trên một nhiệm vụ | Đã phát hành | Sub-agent, Fleet và quy trình làm việc cho phép nhiều agent chia sẻ một nhiệm vụ, mỗi agent một vai trò. |
+| Ứng dụng máy tính | Đang phát triển, chưa có bản tải | Chúng tôi đang xây dựng một ứng dụng máy tính trên cùng động cơ, và nó chưa có bản tải công khai. |
+| Máy tính đám mây | Chỉ theo lời mời | Máy tính đám mây chỉ dành cho người được mời, và chúng tôi đang xây dựng chúng để một phiên có thể tiếp tục làm việc trên một máy trong đám mây. |
+| Một phiên xuyên suốt tất cả | Đang xây dựng | Chúng tôi đang xây dựng một phiên đi cùng bạn từ terminal đến máy tính, trình duyệt và đám mây, và vẫn là của bạn suốt chặng đường. |
+
+[Lộ trình](../ROADMAP.md) cho biết mỗi bản phát hành bao gồm những gì và bạn có thể giúp ở đâu.
+
+## Chuyển từ agent khác sang
+
+Codewhale tự đọc `AGENTS.md`. Các tệp hướng dẫn viết cho công cụ khác, như `CLAUDE.md`, `.cursorrules` hoặc `.github/copilot-instructions.md`, chỉ được nạp khi bạn chủ động bật bằng `project_instruction_imports = ["claude"]` (hoặc `"cursor"`, `"cline"`, `"windsurf"`, `"copilot"`, `"all"`) trong cấu hình; xem [config.example.toml](../../config.example.toml). Codewhale cảnh báo khi tìm thấy một tệp như vậy mà nó không nạp.
+
+`/import-claude` chuẩn bị việc nhập cài đặt Claude Code và máy chủ MCP của bạn để bạn xem lại. `/plugin install` chấp nhận plugin Claude Code chứa kỹ năng, lệnh, hồ sơ agent và máy chủ MCP, và từ chối plugin cần hook hoặc máy chủ LSP ([chi tiết](../CLAUDE_PLUGIN_COMPAT.md)).
 
 ## Tài liệu
 
+Các hướng dẫn này đi theo nhánh chính và có thể mô tả những thay đổi chưa có trong bản phát hành mới nhất.
+
 | Bắt đầu tại đây | Tham khảo |
 | --- | --- |
-| [Cài đặt](../INSTALL.md) | [Cấu hình](../CONFIGURATION.md) |
-| [Nhà cung cấp và mô hình cục bộ](../PROVIDERS.md) | [Kiến trúc](../ARCHITECTURE.md) |
-| [Chế độ và quyền](../MODES.md) | [Runtime API](../RUNTIME_API.md) |
-| [Phím tắt](../KEYBINDINGS.md) | [Viết plugin](../PLUGIN_AUTHORING.md) |
-| [Đánh giá PR trên GitHub](../GITHUB_ACTION.md) | [Toàn bộ tài liệu](../README.md) |
+| [Hướng dẫn sử dụng](../GUIDE.md) | [Cấu hình](../CONFIGURATION.md) |
+| [Cài đặt](../INSTALL.md) | [Kiến trúc](../ARCHITECTURE.md) |
+| [Nhà cung cấp và mô hình cục bộ](../PROVIDERS.md) | [Runtime API](../RUNTIME_API.md) |
+| [Chế độ và quyền](../MODES.md) | [Viết plugin](../PLUGIN_AUTHORING.md) |
+| [Phím tắt](../KEYBINDINGS.md) | [Biên nhận](../RECEIPTS.md) |
+| [Review pull request trên GitHub](../GITHUB_ACTION.md) | [Toàn bộ tài liệu](../README.md) |
 
-## Cộng đồng
+## Đóng góp
 
-Codewhale có được như hôm nay là nhờ cộng đồng, và mọi phản hồi đều được chào đón: một lỗi, một ý tưởng, hay một chỗ trông hoặc dùng chưa ổn.
-Hãy [mở issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) cho bất kỳ điều nào trong số đó; issue cũng là nơi tốt nhất để bắt đầu một tính năng mới.
-Pull request được chào đón cho các bản sửa lỗi, bản dịch, nhà cung cấp và công việc đã lên kế hoạch.
-[Hướng dẫn đóng góp](../../CONTRIBUTING.md) cho biết mỗi kiểu đóng góp nên gửi về đâu, còn [lộ trình](../ROADMAP.md) cho biết dự án đang hướng tới đâu.
-Người đóng góp được ghi nhận cho phần việc được hợp nhất, và [bố cục kho mã](../../CONTRIBUTING.md#project-structure) cho biết mọi thứ nằm ở đâu.
+Codewhale được xây dựng công khai bởi những người dùng nó, bằng nhiều ngôn ngữ.
 
-Trò chuyện trên [Discord](https://discord.gg/37gfS3ksug), hoặc thêm người duy
-trì dự án, Hunter, trên WeChat (`hunterbown`) và xin vào nhóm Whale Brothers. Mọi người đều được chào đón.
+<a href="../CONTRIBUTORS.md#everyone"><img src="../assets/contributors.png" width="760" alt="Bức tường người đóng góp của Codewhale: mỗi người có mã, commit đồng tác giả, pull request được tiếp nối hoặc báo cáo được ghi công trong Codewhale có một ảnh đại diện, với tổng số người ở trên cùng."></a>
+
+[Bức tường người đóng góp](../CONTRIBUTORS.md) tính mọi người có mã, commit đồng tác giả, pull request được tiếp nối hoặc báo cáo được ghi công trong Codewhale, kể cả những người mà danh sách người đóng góp của chính GitHub bỏ sót. `scripts/contributor-wall.py` tạo lại hình và danh sách từ lịch sử git và GitHub.
+
+Mọi phản hồi đều được hoan nghênh: một lỗi, một ý tưởng, hoặc điều gì đó trông hay dùng thấy không ổn. [Mở một issue](https://github.com/codewhale-hq/Codewhale/issues/new/choose) cho bất kỳ điều nào trong số đó; issue cũng là nơi tốt nhất để bắt đầu một tính năng mới. Pull request được hoan nghênh cho bản sửa lỗi, bản dịch, nhà cung cấp và công việc đã lên kế hoạch. Câu hỏi hãy gửi lên [Discussions](https://github.com/codewhale-hq/Codewhale/discussions). [Hướng dẫn đóng góp](../../CONTRIBUTING.md) cho biết mỗi kiểu giúp đỡ nên đi đâu, công việc của bạn được hợp nhất mang tên bạn như thế nào, và [mọi thứ nằm ở đâu](../../CONTRIBUTING.md#project-structure).
+
+Trò chuyện trên [Discord](https://discord.gg/37gfS3ksug), hoặc thêm người bảo trì, Hunter, trên WeChat (`hunterbown`) và xin vào nhóm Whale Brothers. Mọi người đều được chào đón.
 
 ## Lịch sử và giấy phép
 
-Codewhale khởi đầu là `deepseek-tui` và vẫn đọc cấu hình cùng các phiên của dự
-án đó. Dự án được duy trì độc lập và không liên kết với DeepSeek hay bất kỳ nhà
-cung cấp mô hình nào khác. Cảm ơn
-[mọi người đã đóng góp](../CONTRIBUTORS.md).
+Codewhale bắt đầu với tên `deepseek-tui` và vẫn đọc được cấu hình và phiên của dự án đó. Nó được duy trì độc lập và không liên kết với DeepSeek hay bất kỳ nhà cung cấp mô hình nào khác.
 
-[![Codewhale contributors](../assets/contributors.png)](../CONTRIBUTORS.md#everyone)
-
-[MIT](../../LICENSE). Mã được điều chỉnh từ các dự án mã nguồn mở khác được liệt kê
-trong [thông báo bên thứ ba](../THIRD_PARTY_NOTICES.md).
+[MIT](../../LICENSE). Mã được điều chỉnh từ các dự án mã nguồn mở khác được liệt kê trong thông báo bên thứ ba cho [mã nguồn được đưa vào](../../THIRD_PARTY_NOTICES.md) và [thiết kế được tham khảo](../THIRD_PARTY_NOTICES.md).
