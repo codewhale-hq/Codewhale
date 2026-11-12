@@ -244,20 +244,36 @@ pub async fn capture(
     if let Some(snapshot) = supplied {
         return snapshot.render().map(Some);
     }
-    // Unit tests never read an operator's account credentials. Transport tests
-    // exercise load_from with an explicitly isolated store instead.
-    #[cfg(not(any(test, feature = "test-support")))]
-    if let Some(snapshot) = load(profile).await? {
-        return snapshot.render().map(Some);
-    }
     #[cfg(any(test, feature = "test-support"))]
     {
-        let _ = profile;
         if let Some(message) = TEST_ACCOUNT_LOAD_FAILURE.get() {
             anyhow::bail!(message);
         }
+        if !account_api_base_is_loopback() {
+            return Ok(crate::prompts::load_user_constitution_block());
+        }
+    }
+    if let Some(snapshot) = load(profile).await? {
+        return snapshot.render().map(Some);
     }
     Ok(crate::prompts::load_user_constitution_block())
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn account_api_base_is_loopback() -> bool {
+    std::env::var(codewhale_secrets::account::ACCOUNT_API_BASE_ENV)
+        .ok()
+        .and_then(|value| normalize_runtime_account_api_base(&value))
+        .and_then(|base| reqwest::Url::parse(&base).ok())
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        })
 }
 
 #[cfg(any(test, feature = "test-support"))]
