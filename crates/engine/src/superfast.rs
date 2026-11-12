@@ -451,6 +451,11 @@ async fn evaluate(
                             .map_or_else(Default::default, |v| v.probabilities_bp.clone()),
                         confidence_bp: intent.as_ref().map_or(0, |v| v.confidence_bp),
                         min_confidence_bp: 5_000,
+                        abstained_questions: response.abstained_questions(&[
+                            "intent",
+                            "needs_tool",
+                            "answerable_from_context",
+                        ]),
                         cost_saving_kept_fast: false,
                         thinking: None,
                         provider_reported_cost_usd: response
@@ -521,7 +526,7 @@ fn unit_interval(value: Option<f64>) -> Option<f64> {
 /// fast route.
 fn read_noul(response: &SystemOneResponse, key: &str) -> Option<f64> {
     let answer = response.answers.get(key)?;
-    (answer.kind == "noul")
+    (answer.kind == "noul" && !answer.abstained)
         .then_some(answer.noul)
         .and_then(unit_interval)
 }
@@ -548,7 +553,9 @@ fn derive_route(response: &SystemOneResponse) -> Route {
         response.answers.get("intent"),
         &["code_change", "code_question", "command", "chat", "other"],
     )
-    .is_some_and(|intent| intent.choice == "chat" && intent.confidence_bp >= 5_000);
+    .is_some_and(|intent| {
+        !intent.abstained && intent.choice == "chat" && intent.confidence_bp >= 5_000
+    });
     if intent_is_calibrated_chat && needs_tool.is_some_and(|nt| nt <= 0.2) {
         return Route::PlainChat;
     }
@@ -563,6 +570,23 @@ mod tests {
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
     const TYPESAFE_TEST_KEY: &str = "sf-typesafe-test-key-0123456789";
+
+    #[test]
+    fn explicit_abstention_never_authorizes_a_shadow_route() {
+        let mut value = json!({"answers":{
+            "intent":{"type":"choice","choice":"chat","confidence":0.9,
+                "probabilities":{"chat":0.9,"code_change":0.1,"code_question":0.0,"command":0.0,"other":0.0}},
+            "needs_tool":{"type":"noul","noul":0.1},
+            "answerable_from_context":{"type":"noul","noul":0.1}}});
+        let decoded =
+            |value: Value| serde_json::from_value::<SystemOneResponse>(value).expect("response");
+        assert_eq!(derive_route(&decoded(value.clone())), Route::PlainChat);
+        value["answers"]["intent"]["abstained"] = true.into();
+        assert_eq!(derive_route(&decoded(value.clone())), Route::Unknown);
+        value["answers"]["needs_tool"]["noul"] = 0.95.into();
+        value["answers"]["needs_tool"]["abstained"] = true.into();
+        assert_eq!(derive_route(&decoded(value)), Route::Unknown);
+    }
 
     /// Fields drop in declaration order: restore the environment before the
     /// lock is released, or another test observes our overrides.
