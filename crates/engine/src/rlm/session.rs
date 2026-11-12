@@ -422,8 +422,8 @@ pub fn derive_session_name(source_hint: Option<&str>) -> String {
         .unwrap_or("context");
     let mut out = String::new();
     for ch in hint.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
+        if ch.is_alphanumeric() {
+            out.extend(ch.to_lowercase());
         } else if !out.ends_with('_') {
             out.push('_');
         }
@@ -454,6 +454,8 @@ mod tests {
             derive_session_name(Some("src/Big File.rs")),
             "big_file_rs".to_string()
         );
+        assert_eq!(derive_session_name(Some("docs/报告.txt")), "报告_txt");
+        assert_eq!(derive_session_name(Some("docs/总结.txt")), "总结_txt");
     }
 
     #[test]
