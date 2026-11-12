@@ -31,7 +31,7 @@
     "std_fs": 4
   },
   "crates/app-server/src/runtime_api/git.rs": {
-    "std_fs": 6
+    "std_fs": 8
   },
   "crates/app-server/src/runtime_api/jobs.rs": {
     "std_fs": 3

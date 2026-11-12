@@ -221,7 +221,7 @@ pub fn resolve_git_mention(kind: GitMentionKind, cwd: &Path) -> GitMentionPayloa
 /// `git status` plus the branch line, so the model does not have to infer the
 /// branch from a porcelain listing.
 fn git_status_payload(cwd: &Path) -> Result<String, &'static str> {
-    git_output(&["status", "--short", "--branch"], cwd)
+    run_git(Git::status_command(cwd), &["--short", "--branch"], "status")
 }
 
 /// Run git and return stdout, or the `<git-unavailable>` reason when the
@@ -231,7 +231,19 @@ fn git_status_payload(cwd: &Path) -> Result<String, &'static str> {
 /// Runs under [`Git::review_command`], so repository-configured filters,
 /// fsmonitor and hooks do not execute while reading the working tree.
 fn git_output(args: &[&str], cwd: &Path) -> Result<String, &'static str> {
-    let mut command = Git::review_command(cwd).map_err(|err| {
+    run_git(
+        Git::review_command(cwd),
+        args,
+        args.first().copied().unwrap_or("git"),
+    )
+}
+
+fn run_git(
+    command: anyhow::Result<std::process::Command>,
+    args: &[&str],
+    subcommand: &str,
+) -> Result<String, &'static str> {
+    let mut command = command.map_err(|err| {
         if err
             .chain()
             .filter_map(|cause| cause.downcast_ref::<io::Error>())
@@ -243,7 +255,6 @@ fn git_output(args: &[&str], cwd: &Path) -> Result<String, &'static str> {
         }
     })?;
     command.args(args);
-    let subcommand = args.first().copied().unwrap_or("git");
     let output = run_bounded_git_with_timeout(&mut command, subcommand, GIT_MENTION_TIMEOUT)
         .map_err(|err| match err.kind() {
             io::ErrorKind::TimedOut => GIT_COMMAND_TIMED_OUT,
@@ -386,6 +397,66 @@ mod tests {
         );
         assert!(diff.block.contains("+changed"), "{}", diff.block);
         assert!(status.block.contains("a.txt"), "{}", status.block);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_mention_runs_no_nested_repository_filter() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let marker = outside.path().join("marker");
+        let script = outside.path().join("helper.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho ran >> '{}'\ncat\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        init_repo(dir.path());
+        init_repo(&sub);
+        std::fs::write(sub.join(".gitattributes"), "* filter=evil\n").unwrap();
+        std::fs::write(sub.join("f.txt"), "a\n").unwrap();
+        commit_all(&sub, "sub");
+        commit_all(dir.path(), "top");
+        for (cwd, key, value) in [
+            (
+                sub.as_path(),
+                "filter.evil.clean",
+                script.display().to_string(),
+            ),
+            (dir.path(), "submodule.sub.ignore", "none".to_string()),
+        ] {
+            let status = Command::new("git")
+                .args(["config", key, &value])
+                .current_dir(cwd)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        std::fs::File::options()
+            .write(true)
+            .open(sub.join("f.txt"))
+            .and_then(|file| file.set_modified(std::time::UNIX_EPOCH))
+            .unwrap();
+
+        let control = Command::new("git")
+            .args(["status", "--short"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(control.status.success());
+        assert!(marker.exists(), "positive control: nested filter");
+        std::fs::remove_file(&marker).unwrap();
+
+        let payload = resolve_git_mention(GitMentionKind::Status, dir.path());
+        assert!(payload.unavailable_reason.is_none(), "{}", payload.block);
+        assert!(
+            !marker.exists(),
+            "the status mention ran a nested repository filter"
+        );
     }
 
     #[test]

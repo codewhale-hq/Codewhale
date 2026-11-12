@@ -2795,9 +2795,10 @@ LFS, keep working.
     16 MiB carry a display-only size-and-mtime token (`s-…`). Those tokens
     cannot guard writes. Unreadable paths, paths beneath symlinked
     directories, special files and broken nested repositories have `rev: null`;
-    other rows retain their tokens. If a broken tracked submodule aborts
-    porcelain, ordinary rows are recovered without submodule recursion and
-    the unreadable submodule is shown with `status: "unknown"`, `worktree: "?"`
+    other rows retain their tokens. Status never looks inside a submodule, so
+    a row for one reports only a changed commit, not dirty contents; an
+    unreadable tracked submodule is shown with `status: "unknown"`,
+    `worktree: "?"`
   - `revision` — the whole tree: `head_oid`, `index_token`, every row's
     `rev`, including the working-tree state of rows outside a subdirectory
     workspace. `null` when any row is stat-only or unreadable, a repository
@@ -2874,8 +2875,11 @@ guard. It is not an OS-wide process reservation.
 
 Diffs and precondition token reads run through the hardened review command
 (filters, fsmonitor, hooks, lazy fetches and replace-objects neutralized).
-Porcelain status uses normal Git, matching the workspace counts and filters;
-writes run through the non-interactive command path
+Porcelain status runs through the hardened status command: fsmonitor, hooks
+and the filter programs the repository itself configures are neutralized
+(the user's own global filters, such as Git LFS, keep working), and
+submodules compare by commit without a status inside them; writes run through
+the non-interactive command path
 (`GIT_TERMINAL_PROMPT=0`, BatchMode ssh) so a credential or host-key prompt
 can never hang a request. Path lists are workspace-relative under the same
 confinement as the file routes (traversal → 400, `.git` → 403), passed after

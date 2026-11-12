@@ -358,10 +358,7 @@ fn read_workspace_head(workspace: &FsPath) -> Option<GitHead> {
 /// and submodules are compared without a child status inside them. `None`
 /// means git could not be read, never a clean tree.
 fn run_status(workspace: &FsPath) -> Option<String> {
-    run_git(
-        Git::status_command(workspace),
-        &["status", "--porcelain=v1", "--ignore-submodules=dirty"],
-    )
+    run_git(Git::status_command(workspace), &["--porcelain=v1"])
 }
 
 fn run_git(command: anyhow::Result<std::process::Command>, args: &[&str]) -> Option<String> {

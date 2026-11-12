@@ -105,20 +105,18 @@ async fn git_status(input: Value, context: ToolContext) -> Result<ToolResult, To
     let path = optional_str(&input, "path")?.map(str::to_string);
     let git_ctx = on_blocking_pool(move || resolve_git_context(&context, path.as_deref())).await?;
 
-    let mut args = vec![
-        "-c".to_string(),
-        "core.quotepath=false".to_string(),
-        "status".to_string(),
-        "--porcelain=v1".to_string(),
-        "-b".to_string(),
-    ];
+    let mut args = vec!["--porcelain=v1".to_string(), "-b".to_string()];
     if let Some(pathspec) = &git_ctx.pathspec {
         args.push("--".to_string());
         args.push(pathspec.display().to_string());
     }
 
-    let command_str = format_command(&git_ctx.working_dir, &args);
-    let output = run_git_command_async(git_ctx.working_dir.clone(), args).await?;
+    let mut shown = ["status", "--ignore-submodules=dirty"]
+        .map(String::from)
+        .to_vec();
+    shown.extend(args.iter().cloned());
+    let command_str = format_command(&git_ctx.working_dir, &shown);
+    let output = run_git_status_async(git_ctx.working_dir.clone(), args).await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -506,8 +504,9 @@ fn pathspec_from(working_dir: &Path, resolved: &Path) -> PathBuf {
     }
 }
 
-/// Build the git command for the read-only workspace tools (`git_status`,
-/// `git_diff`, `git_log`, `git_show`, `git_blame`, `verify`). It goes through
+/// Build the git command for the read-only workspace tools (`git_diff`,
+/// `git_log`, `git_show`, `git_blame`, `verify`; `git_status` goes through
+/// [`codewhale_dependencies::Git::status_command`]). It goes through
 /// [`codewhale_dependencies::Git::review_command`], so fsmonitor, hooks and
 /// clean/process filters from the workspace's own config do not run.
 pub(super) fn read_only_git_command(
@@ -547,8 +546,32 @@ pub(super) async fn run_git_command_async(
     working_dir: PathBuf,
     args: Vec<String>,
 ) -> Result<std::process::Output, ToolError> {
+    run_prepared_git_async(working_dir, args, read_only_git_command).await
+}
+
+pub(super) async fn run_git_status_async(
+    working_dir: PathBuf,
+    args: Vec<String>,
+) -> Result<std::process::Output, ToolError> {
+    run_prepared_git_async(working_dir, args, |dir| {
+        if !codewhale_dependencies::Git::available() {
+            return Err(ToolError::not_available(
+                "git is not installed or not in PATH",
+            ));
+        }
+        codewhale_dependencies::Git::status_command(dir)
+            .map_err(|e| ToolError::execution_failed(format!("Failed to prepare git: {e:#}")))
+    })
+    .await
+}
+
+async fn run_prepared_git_async(
+    working_dir: PathBuf,
+    args: Vec<String>,
+    prepare: fn(&Path) -> Result<std::process::Command, ToolError>,
+) -> Result<std::process::Output, ToolError> {
     let prepare_dir = working_dir.clone();
-    let command = on_blocking_pool(move || read_only_git_command(&prepare_dir)).await?;
+    let command = on_blocking_pool(move || prepare(&prepare_dir)).await?;
     let mut command = tokio::process::Command::from(command);
     command.args(&args).current_dir(&working_dir);
     codewhale_runtime::process_tree::contained_output(&mut command)
@@ -1350,7 +1373,7 @@ mod tests {
                 .as_ref()
                 .and_then(|m| m.get("command"))
                 .and_then(Value::as_str)
-                .is_some_and(|command| command.contains("-c core.quotepath=false"))
+                .is_some_and(|command| command.contains("status --ignore-submodules=dirty"))
         );
         assert!(result.content.contains("中文-данные.txt"));
         assert!(!result.content.contains("\\344"));
@@ -2004,6 +2027,66 @@ Binary files a/image.png and b/image.png differ
             .expect("git_blame");
         no_marker("git_blame");
         assert!(blame.success, "{}", blame.content);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_status_runs_no_nested_repository_filter() {
+        use std::os::unix::fs::PermissionsExt;
+        if !git_available() {
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let marker = tmp.path().join("marker");
+        let clean = tmp.path().join("clean.sh");
+        fs::write(
+            &clean,
+            format!("#!/bin/sh\necho ran >> '{}'\ncat\n", marker.display()),
+        )
+        .expect("write script");
+        fs::set_permissions(&clean, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let git = |dir: &Path, args: &[&str]| {
+            let status = codewhale_dependencies::Git::status(args, dir).expect("git should spawn");
+            assert!(status.success(), "git {args:?} failed");
+        };
+
+        let repo = tmp.path().join("repo");
+        let sub = repo.join("sub");
+        for dir in [&repo, &sub] {
+            fs::create_dir_all(dir).expect("mkdir");
+            init_git_repo(dir);
+        }
+        fs::write(sub.join(".gitattributes"), "* filter=evil\n").expect("attrs");
+        fs::write(sub.join("f.txt"), "a\n").expect("write");
+        commit_all(&sub, "sub");
+        commit_all(&repo, "top");
+        git(
+            &sub,
+            &["config", "filter.evil.clean", &clean.display().to_string()],
+        );
+        git(&repo, &["config", "submodule.sub.ignore", "none"]);
+        fs::File::options()
+            .write(true)
+            .open(sub.join("f.txt"))
+            .and_then(|file| file.set_modified(std::time::UNIX_EPOCH))
+            .expect("age the file so git re-reads it");
+
+        let control =
+            codewhale_dependencies::Git::output(&["status", "--porcelain"], &repo).expect("status");
+        assert!(control.status.success());
+        assert!(marker.exists(), "positive control: nested filter");
+        fs::remove_file(&marker).expect("reset");
+
+        let status = GitStatusTool
+            .execute(json!({}), &ToolContext::new(&repo))
+            .await
+            .expect("git_status");
+        assert!(status.success, "{}", status.content);
+        assert!(
+            !marker.exists(),
+            "git_status ran a nested repository filter: {}",
+            fs::read_to_string(&marker).unwrap_or_default()
+        );
     }
 
     #[cfg(unix)]

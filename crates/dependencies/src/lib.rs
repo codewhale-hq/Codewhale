@@ -1164,18 +1164,19 @@ impl Git {
         Self::with_filter_overrides(workspace, overrides)
     }
 
-    /// Like [`Self::review_command`] for status reads, which must keep the
-    /// user's own filters (Git LFS in global or system config) working so
-    /// files they manage do not look modified. Only filter drivers that
-    /// repository-controlled config (local or worktree scope, including files
-    /// it includes) defines are neutralized. If the scoped probe fails, this
-    /// falls back to neutralizing every driver.
+    /// Returns `git status --ignore-submodules=dirty`; callers append output
+    /// options and pathspecs. Like [`Self::review_command`] it keeps the
+    /// user's own global or system filters (such as Git LFS) working and
+    /// neutralizes only repository-controlled filter drivers, falling back to
+    /// neutralizing every driver if the scoped probe fails.
     pub fn status_command(workspace: &Path) -> anyhow::Result<Command> {
         let overrides = match Self::filter_overrides(workspace, true) {
             Ok(overrides) => overrides,
             Err(_) => Self::review_filter_overrides(workspace)?,
         };
-        Self::with_filter_overrides(workspace, overrides)
+        let mut command = Self::with_filter_overrides(workspace, overrides)?;
+        command.args(["status", "--ignore-submodules=dirty"]);
+        Ok(command)
     }
 
     fn with_filter_overrides(
@@ -2481,6 +2482,83 @@ mod tests {
         let seen = std::fs::read_to_string(&marker).expect("fsmonitor hook ran");
         assert!(seen.contains("leak=unset"), "{seen}");
         assert!(!seen.contains("git-secret-value"), "{seen}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_command_runs_no_repository_or_nested_filter() {
+        use std::os::unix::fs::PermissionsExt;
+        if !Git::available() {
+            return;
+        }
+        let _env_lock = codewhale_runtime::test_support::lock_test_env();
+        let work = tempfile::tempdir().expect("work");
+        let outside = tempfile::tempdir().expect("outside");
+        let helper = outside.path().join("filter.sh");
+        std::fs::write(&helper, "#!/bin/sh\nprintf touched >> \"$1\"\ncat\n").expect("helper");
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let top_marker = outside.path().join("top-ran");
+        let sub_marker = outside.path().join("sub-ran");
+        let git = |dir: &Path, args: &[&str]| {
+            let output = Git::output(args, dir).expect("git spawns");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        let init = |dir: &Path| {
+            std::fs::create_dir_all(dir).expect("mkdir");
+            git(dir, &["init", "-q"]);
+            git(dir, &["config", "user.email", "test@example.com"]);
+            git(dir, &["config", "user.name", "Test User"]);
+            git(dir, &["config", "commit.gpgsign", "false"]);
+        };
+        let age = |path: &Path| {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .and_then(|file| {
+                    file.set_modified(std::time::SystemTime::now() - Duration::from_secs(7200))
+                })
+                .expect("age file");
+        };
+        let top = work.path().join("top");
+        let sub = top.join("sub");
+        init(&top);
+        init(&sub);
+        std::fs::write(top.join(".gitattributes"), "a.md filter=poc\n").expect("attrs");
+        std::fs::write(top.join("a.md"), "one\n").expect("a.md");
+        std::fs::write(sub.join(".gitattributes"), "b.md filter=poc\n").expect("attrs");
+        std::fs::write(sub.join("b.md"), "two\n").expect("b.md");
+        git(&sub, &["add", "."]);
+        git(&sub, &["commit", "-q", "-m", "sub"]);
+        git(&top, &["add", "."]);
+        git(&top, &["commit", "-q", "-m", "top"]);
+        for (dir, marker) in [(&top, &top_marker), (&sub, &sub_marker)] {
+            let clean = format!("{} {}", helper.display(), marker.display());
+            git(dir, &["config", "filter.poc.clean", &clean]);
+        }
+        git(&top, &["config", "submodule.sub.ignore", "none"]);
+        age(&top.join("a.md"));
+        age(&sub.join("b.md"));
+
+        let control = Git::output(&["status", "--porcelain"], &top).expect("status");
+        assert!(control.status.success());
+        assert!(top_marker.exists(), "positive control: repository filter");
+        assert!(sub_marker.exists(), "positive control: nested filter");
+        std::fs::remove_file(&top_marker).expect("reset");
+        std::fs::remove_file(&sub_marker).expect("reset");
+
+        let output = Git::status_command(&top)
+            .expect("status command")
+            .arg("--porcelain=v1")
+            .output()
+            .expect("status");
+        assert!(output.status.success());
+        assert!(output.stdout.is_empty(), "{:?}", output.stdout);
+        assert!(!top_marker.exists(), "status ran the repository filter");
+        assert!(!sub_marker.exists(), "status ran the nested filter");
     }
 
     #[test]

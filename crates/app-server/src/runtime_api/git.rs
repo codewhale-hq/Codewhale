@@ -113,8 +113,31 @@ struct GitRun {
 /// content filters, hooks, lazy fetches and replace-objects cannot run inside
 /// an HTTP read either.
 async fn git_read(workspace: &FsPath, args: &[&str]) -> Result<GitRun, ApiError> {
+    run_prepared_read(Git::review_command, workspace, args).await
+}
+
+async fn git_status_read(workspace: &FsPath, args: &[&str]) -> Result<GitRun, ApiError> {
+    run_prepared_read(Git::status_command, workspace, args).await
+}
+
+async fn git_status_read_ok(workspace: &FsPath, args: &[&str]) -> Result<String, ApiError> {
+    let run = git_status_read(workspace, args).await?;
+    if !run.status_success {
+        return Err(ApiError::internal(format!(
+            "git status failed: {}",
+            run.stderr.trim()
+        )));
+    }
+    Ok(run.stdout)
+}
+
+async fn run_prepared_read(
+    prepare: fn(&FsPath) -> anyhow::Result<std::process::Command>,
+    workspace: &FsPath,
+    args: &[&str],
+) -> Result<GitRun, ApiError> {
     let workspace = workspace.to_path_buf();
-    let command = tokio::task::spawn_blocking(move || Git::review_command(&workspace))
+    let command = tokio::task::spawn_blocking(move || prepare(&workspace))
         .await
         .map_err(|_| ApiError::internal("git read setup failed"))?
         .map_err(|error| ApiError::internal(format!("git is unavailable: {error}")))?;
@@ -232,8 +255,7 @@ fn status_sync(workspace: &FsPath, args: &[&str]) -> Result<String, ApiError> {
         .map_err(|error| ApiError::internal(format!("failed to run git: {error}")))?;
     if !output.status.success() {
         return Err(ApiError::internal(format!(
-            "git {} failed: {}",
-            args.first().copied().unwrap_or(""),
+            "git status failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
@@ -254,7 +276,7 @@ struct GitFileEntry {
     /// True when the index column records a change.
     staged: bool,
     /// Leading human state: modified / added / deleted / renamed /
-    /// typechange / untracked / conflicted / ignored / unknown (unreadable submodule).
+    /// typechange / untracked / conflicted / ignored / unknown.
     status: &'static str,
     /// Rename/copy source, when it lies inside the workspace.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -409,61 +431,50 @@ fn collect_git_status_detail(workspace: &FsPath) -> Result<GitStatusDetailRespon
     Ok(detail)
 }
 
-/// Preserve normal filters and untracked mode. Only a collapsed row naming
-/// the workspace itself needs expansion to give clients addressable paths.
+/// Preserve the user's own filters and untracked mode; submodules compare by
+/// commit. Only a collapsed row naming the workspace itself needs expansion
+/// to give clients addressable paths.
 fn status_rows(
     workspace: &FsPath,
     frame: &RepoFrame,
 ) -> Result<(Vec<GitFileEntry>, bool), ApiError> {
     let mut complete = true;
-    let mut rows = match status_sync(workspace, &["status", "--porcelain=v1", "-z"]) {
-        Ok(porcelain) => parse_porcelain(&porcelain),
-        Err(_) => {
-            // One broken submodule can abort all of Git's porcelain output.
-            // Recover ordinary rows, then inspect gitlinks individually so
-            // only the unreadable submodule is shown as unknown/unguardable.
-            let porcelain = status_sync(
-                workspace,
-                &["status", "--porcelain=v1", "-z", "--ignore-submodules=all"],
-            )?;
-            let mut rows = parse_porcelain(&porcelain);
-            for (path, records) in IndexSnapshot::read(frame)?.by_path {
-                if !records
-                    .split(|byte| *byte == 0)
-                    .any(|record| record.starts_with(b"160000 "))
-                {
-                    continue;
-                }
-                rows.retain(|row| normalized_row_path(&row.path) != path);
-                match status_sync(
-                    &frame.toplevel,
-                    &[
-                        "--literal-pathspecs",
-                        "status",
-                        "--porcelain=v1",
-                        "-z",
-                        "--",
-                        &path,
-                    ],
-                ) {
-                    Ok(porcelain) => rows.extend(parse_porcelain(&porcelain)),
-                    Err(_) => {
-                        complete = false;
-                        rows.push(GitFileEntry {
-                            path,
-                            index: " ".to_string(),
-                            worktree: "?".to_string(),
-                            staged: false,
-                            status: "unknown",
-                            old_path: None,
-                            rev: None,
-                        });
-                    }
-                }
-            }
-            rows
+    let mut rows = parse_porcelain(&status_sync(workspace, &["--porcelain=v1", "-z"])?);
+    for (path, records) in IndexSnapshot::read(frame)?.by_path {
+        if !records
+            .split(|byte| *byte == 0)
+            .any(|record| record.starts_with(b"160000 "))
+        {
+            continue;
         }
-    };
+        if rows
+            .iter()
+            .any(|row| normalized_row_path(&row.path) == path)
+        {
+            continue;
+        }
+        let sub = frame.toplevel.join(&path);
+        let git_entry = sub.join(".git");
+        let unreadable = !has_linked_ancestor(&frame.toplevel, &path)
+            && std::fs::symlink_metadata(&sub).is_ok_and(|metadata| metadata.is_dir())
+            && if git_entry.exists() {
+                submodule_head_oid(&sub).is_err()
+            } else {
+                std::fs::symlink_metadata(&git_entry).is_ok()
+            };
+        if unreadable {
+            complete = false;
+            rows.push(GitFileEntry {
+                path,
+                index: " ".to_string(),
+                worktree: "?".to_string(),
+                staged: false,
+                status: "unknown",
+                old_path: None,
+                rev: None,
+            });
+        }
+    }
     if let Some(position) = rows
         .iter()
         .position(|row| row.status == "untracked" && row.path == frame.prefix)
@@ -654,6 +665,13 @@ impl RepoFrame {
                 .to_string(),
         })
     }
+}
+
+/// Resolve HEAD inside `sub` only after verifying `sub/.git` itself resolves
+/// without walking up to a parent repository.
+fn submodule_head_oid(sub: &FsPath) -> Result<Option<String>, ApiError> {
+    review_sync_ok(sub, &["rev-parse", "--resolve-git-dir", ".git"])?;
+    head_oid(sub)
 }
 
 /// Full HEAD commit id, `None` on an unborn branch.
@@ -887,15 +905,12 @@ fn worktree_fingerprint(workspace: &FsPath, path: &str, mode: RevMode) -> Result
         // Dirty submodule contents are summarized by status, not recursively
         // hashed: ordinary add/checkout do not write those contents.
         if full.join(".git").exists() {
-            let head = head_oid(&full)?;
-            let status = review_sync_ok(
-                &full,
-                &["status", "--porcelain=v1", "-z", "--ignore-submodules=none"],
-            )?;
+            let head = submodule_head_oid(&full)?;
+            let status = status_sync(&full, &["--porcelain=v1", "-z"])?;
             return Ok(format!(
                 "gitlink:{}:{}",
                 head.as_deref().unwrap_or("unborn"),
-                content_revision(&status)
+                content_revision(status.as_bytes())
             ));
         }
         return Ok("dir".into());
@@ -2770,11 +2785,8 @@ pub(super) async fn worktree_remove(
         ));
     }
     if !row.prunable {
-        let status = git_read_ok(
-            &path,
-            &["status", "--porcelain", "--untracked-files=normal"],
-        )
-        .await?;
+        let status =
+            git_status_read_ok(&path, &["--porcelain", "--untracked-files=normal"]).await?;
         if !status.trim().is_empty() {
             let mut extra = serde_json::Map::new();
             extra.insert(
@@ -3465,6 +3477,47 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_submodule_is_reported() {
+        for breakage in ["nohead", "garbage", "badgitdir"] {
+            let tmp = repo();
+            let ws = tmp.path();
+            let nested = ws.join("vendor");
+            fs::create_dir(&nested).unwrap();
+            git(&nested, &["init", "-q", "-b", "main"]);
+            git(&nested, &["config", "user.email", "git-rev@example.test"]);
+            git(&nested, &["config", "user.name", "Git Rev Test"]);
+            fs::write(nested.join("lib.txt"), "library\n").unwrap();
+            git(&nested, &["add", "lib.txt"]);
+            git(&nested, &["commit", "-q", "-m", "nested"]);
+            git(ws, &["add", "vendor"]);
+            git(ws, &["commit", "-q", "-m", "gitlink"]);
+            if breakage == "nohead" {
+                fs::remove_file(nested.join(".git/HEAD")).unwrap();
+            } else {
+                fs::remove_dir_all(nested.join(".git")).unwrap();
+                let content = if breakage == "badgitdir" {
+                    "gitdir: /nonexistent\n"
+                } else {
+                    "garbage\n"
+                };
+                fs::write(nested.join(".git"), content).unwrap();
+            }
+            let detail = collect_git_status_detail(ws).unwrap();
+            assert!(
+                detail.revision.is_none(),
+                "{breakage}: whole-tree revision offered with an unreadable submodule"
+            );
+            assert!(
+                detail
+                    .files
+                    .iter()
+                    .any(|row| normalized_row_path(&row.path) == "vendor"),
+                "{breakage}: unreadable submodule has no row"
+            );
+        }
+    }
+
+    #[test]
     fn broken_nested_repo_only_withholds_affected_row() {
         for tracked in [false, true] {
             let tmp = repo();
@@ -3537,6 +3590,64 @@ mod tests {
         git(ws, &["add", "a.txt"]);
         assert_eq!(run_git_sync(ws, &["show", ":a.txt"]).unwrap(), "TWO\n");
         assert_conflict(ws, &expect);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_runs_no_nested_repository_filter() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = repo();
+        let ws = tmp.path();
+        let outside = tempfile::tempdir().unwrap();
+        let marker = outside.path().join("marker");
+        let clean = outside.path().join("clean.sh");
+        fs::write(
+            &clean,
+            format!("#!/bin/sh\necho ran >> '{}'\ncat\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&clean, fs::Permissions::from_mode(0o755)).unwrap();
+        let sub = ws.join("vendor");
+        fs::create_dir(&sub).unwrap();
+        git(&sub, &["init", "-q", "-b", "main"]);
+        git(&sub, &["config", "user.email", "git-rev@example.test"]);
+        git(&sub, &["config", "user.name", "Git Rev Test"]);
+        fs::write(sub.join(".gitattributes"), "* filter=evil\n").unwrap();
+        fs::write(sub.join("lib.txt"), "library\n").unwrap();
+        git(&sub, &["add", "."]);
+        git(&sub, &["commit", "-q", "-m", "nested"]);
+        git(ws, &["add", "vendor"]);
+        git(ws, &["commit", "-q", "-m", "gitlink"]);
+        git(
+            &sub,
+            &["config", "filter.evil.clean", clean.to_str().unwrap()],
+        );
+        git(ws, &["config", "submodule.vendor.ignore", "none"]);
+        fs::File::options()
+            .write(true)
+            .open(sub.join("lib.txt"))
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH)
+            .unwrap();
+
+        let control = Git::output(&["status", "--porcelain"], ws).unwrap();
+        assert!(control.status.success());
+        assert!(marker.exists(), "positive control: nested filter");
+        fs::remove_file(&marker).unwrap();
+
+        let detail = collect_git_status_detail(ws).unwrap();
+        assert!(detail.files.is_empty(), "{:?}", detail.files);
+        assert!(
+            !marker.exists(),
+            "status ran a nested repository filter: {}",
+            fs::read_to_string(&marker).unwrap_or_default()
+        );
+        let counts = collect_workspace_status(ws);
+        assert!(!counts.status_unavailable);
+        assert!(
+            !marker.exists(),
+            "workspace status ran a nested repository filter"
+        );
     }
 
     #[test]
