@@ -5877,7 +5877,9 @@ struct CommandCatalogEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     origin: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    plugin: Option<String>,
+    plugin_id: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    workspace_sourced: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     registration_id: Option<String>,
 }
@@ -5937,7 +5939,8 @@ fn command_catalog(
             shadowed_by,
             shadowed_aliases,
             origin: None,
-            plugin: None,
+            plugin_id: None,
+            workspace_sourced: false,
             registration_id: None,
         });
     }
@@ -5961,7 +5964,8 @@ fn command_catalog(
             shadowed_by: None,
             shadowed_aliases: Vec::new(),
             origin: None,
-            plugin: command.plugin.clone(),
+            plugin_id: command.plugin_id.clone(),
+            workspace_sourced: command.workspace_sourced,
             registration_id: None,
         });
     }
@@ -6044,7 +6048,8 @@ async fn list_commands(
                 shadowed_by: None,
                 shadowed_aliases: Vec::new(),
                 origin: Some(reference.origin.clone()),
-                plugin: None,
+                plugin_id: Some(reference.plugin_id.clone()),
+                workspace_sourced: false,
                 registration_id: query
                     .thread_id
                     .as_deref()

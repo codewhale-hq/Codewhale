@@ -28,7 +28,8 @@ fn user(name: &str) -> UserCommand {
         takes_arguments: false,
         hidden: false,
         extension: false,
-        plugin: None,
+        plugin_id: None,
+        workspace_sourced: false,
         builtin_bindings: vec![name.to_string()],
     }
 }

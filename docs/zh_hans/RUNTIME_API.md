@@ -2001,10 +2001,10 @@ POST 前保留预期指纹，并在响应及按键 GET 恢复时核对，之后�
   每个条目有 `id`、`kind`（`plugin`、`skill`、`connector`、`hook`、`command`）、`name`、
   `description`、`source`（`built_in`、`user`、`project`、`other_app`、`runtime`、`plugin`）、
   `state`（`enabled`、`disabled`、`needs_review`、`needs_sign_in`、`unavailable`）和
-  `labels`（它添加的内容）。插件条目另有 `adds`（`skills`、`connectors`、`hooks`、`commands`、
-  `profiles`：只含名称），插件所添加的内容不会再作为独立条目重复列出。内置开关是带 `tier` 的
-  `plugin` 条目。某个所属路由失败时记入 `unavailable`，其余种类照常列出；`problems`
-  汇总各所属路由的加载警告。`adds` 中的名称是文件名，因此档案文件内部的 `id` 可能不同；通过扩展宿主注册的命令是 `source` 为 `plugin` 的条目。
+  `labels`（它添加的内容：`skill`、`connector`、`hook`、`command`、`tool`、`profile`）。插件条目另有 `adds`（`skills`、`connectors`、`hooks`、`commands`、
+  `profiles`：只含名称），插件所添加的内容不会再作为独立条目重复列出。内置开关是带 `tier`、无 `labels` 的
+  `plugin` 条目。`/v1/commands` 的行对插件添加的命令带有 `plugin_id`（与 `/v1/apps/plugins` 的 id 相同，即 `plugin:<id>` 条目），对从项目读取的命令带有 `workspace_sourced`；命令条目的 `plugin` 即该 id。某个所属路由失败时记入 `unavailable`，其余种类照常列出；`problems`
+  汇总各所属路由的加载警告。`adds` 中的名称是文件名，因此档案文件内部的 `id` 可能不同；通过扩展宿主注册的命令是 `source` 为 `plugin` 的条目。对已启用的插件，`adds.commands` 取自 `/v1/commands` 的行；其他插件以及 `hooks`、`profiles` 取自包内的文件名，每类最多 512 个，含控制字符的名称被略去，列表被截断时在 `problems` 中说明。钩子的行不带插件名，因此 `adds.hooks` 仍是文件名。`tool` 表示插件声明了原生或语言服务器组件；插件绘制的界面暂无标签。
 
 **钩子**
 - `GET /v1/hooks[?thread_id=...]` — `{workspace, enabled, hooks: [...],
