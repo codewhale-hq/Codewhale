@@ -499,7 +499,6 @@ const SUBAGENT_TRANSCRIPT_ARTIFACT_DIR: &str = "subagent-transcripts";
 const SUBAGENT_STATE_SCHEMA_VERSION: u32 = 1;
 const SUBAGENT_STATE_FILE: &str = "subagents.v3.json";
 const LEGACY_SUBAGENT_STATE_FILE: &str = "subagents.v1.json";
-const SUBAGENT_STATE_LOCK_FILE: &str = "subagents.v1.lock";
 const SUBAGENT_RESTART_REASON: &str = "Interrupted by process restart";
 const SUBAGENT_SESSION_CLOSED_REASON: &str = "Interrupted: parent session closed";
 #[cfg(test)]
@@ -3933,12 +3932,6 @@ impl SubAgent {
     }
 }
 
-/// Manager for active sub-agents.
-struct CoordinationProcessLock {
-    release: Option<std::sync::mpsc::SyncSender<()>>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
 /// Marker prefix retained for presentation compatibility with same-process
 /// handover notes from earlier hosts. It does not control lock acquisition
 /// or retry.
@@ -3953,123 +3946,6 @@ pub const COORDINATION_LOCK_TIMEOUT_MARKER: &str =
     "timed out acquiring delegated coordination lock";
 
 pub const SESSION_PRIVATE_COORDINATION: &str = "another Codewhale session still uses this folder's older delegated-agent store, so its upgrade waits; sub-agents in this session keep private state that other sessions do not see and that is not saved, and the store upgrades when a session starts after the other one exits";
-
-#[derive(Debug)]
-struct SubAgentCutoverBlocked(anyhow::Error);
-
-impl std::fmt::Display for SubAgentCutoverBlocked {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::error::Error for SubAgentCutoverBlocked {}
-
-impl CoordinationProcessLock {
-    fn acquire(state_root: &Path, exclusive: bool) -> Result<Self> {
-        let requested_root = normalize_subagent_workspace(state_root);
-        // Root and path for the lock. A non-home workspace keeps itself as the
-        // root, so a repository-supplied `.codewhale` link is walked and
-        // refused before `create_dir_all` could follow it into the target. A
-        // home workspace resolves its own junction once and still walks
-        // everything below it.
-        let (walk_root, lock_path) = codewhale_util::files::workspace_state_path(
-            &requested_root,
-            &Path::new("state").join(SUBAGENT_STATE_LOCK_FILE),
-        );
-        let lock_dir = lock_path
-            .parent()
-            .map_or_else(|| walk_root.clone(), Path::to_path_buf);
-        // Refuse a linked `.codewhale` or `state` before creating anything:
-        // `create_dir_all` follows links and would populate the target.
-        reject_root_relative_symlinks(&walk_root, &lock_path)?;
-        fs::create_dir_all(&lock_dir)?;
-        let ignore = lock_dir.join(".gitignore");
-        let ignored = reject_root_relative_symlinks(&walk_root, &ignore).and_then(|()| {
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&ignore)
-            {
-                Ok(mut file) => file.write_all(b"*\n").map_err(Into::into),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-                Err(error) => Err(error.into()),
-            }
-        });
-        if let Err(error) = ignored {
-            tracing::warn!(target: "subagent", %error, "could not write {}", ignore.display());
-        }
-        // Creating a missing root can change its canonical spelling on
-        // Windows (for example by adding a `\\?\` prefix). Re-resolve both
-        // sides before checking containment.
-        let state_root = normalize_subagent_workspace(state_root);
-        let (walk_root, lock_path) = codewhale_util::files::workspace_state_path(
-            &state_root,
-            &Path::new("state").join(SUBAGENT_STATE_LOCK_FILE),
-        );
-        reject_root_relative_symlinks(&walk_root, &lock_path)?;
-        let lock_file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&lock_path)?;
-        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
-        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
-        let thread = std::thread::spawn(move || {
-            let mut lock = fd_lock::RwLock::new(lock_file);
-            let acquired = if exclusive {
-                lock.try_write().map(|guard| {
-                    let _ = ready_tx.send(Ok::<(), String>(()));
-                    let _guard = guard;
-                    let _ = release_rx.recv();
-                })
-            } else {
-                lock.try_read().map(|guard| {
-                    let _ = ready_tx.send(Ok::<(), String>(()));
-                    let _guard = guard;
-                    let _ = release_rx.recv();
-                })
-            };
-            match acquired {
-                Ok(()) => {}
-                Err(error) => {
-                    let _ = ready_tx.send(Err(error.to_string()));
-                }
-            }
-        });
-        match ready_rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(Ok(())) => Ok(Self {
-                release: Some(release_tx),
-                thread: Some(thread),
-            }),
-            Ok(Err(error)) => {
-                let _ = thread.join();
-                Err(anyhow!(
-                    "delegated coordination lock is unavailable for {}: {error}; close any other running or suspended Codewhale session using this workspace, then restart this Runtime if admission was refused",
-                    state_root.display()
-                ))
-            }
-            Err(error) => {
-                drop(release_tx);
-                let _ = thread.join();
-                Err(anyhow!(
-                    "{COORDINATION_LOCK_TIMEOUT_MARKER} for {}: {error}",
-                    state_root.display()
-                ))
-            }
-        }
-    }
-}
-
-impl Drop for CoordinationProcessLock {
-    fn drop(&mut self) {
-        self.release.take();
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
 
 /// Only the captured Runtime owner admits roots. Held handles are not serialized;
 /// a restored attributed claim must be re-admitted before it can authorize work.
@@ -4106,19 +3982,12 @@ pub struct SubAgentManager {
     worker_origins: HashMap<String, WorkerOrigin>,
     worker_origin_schema: u32,
     workspace: PathBuf,
-    /// Root that owns the delegated-agent ledger, complete transcript
-    /// artifacts and coordination lock. Defaults to `workspace`; embedders may
+    /// Root that owns the delegated-agent ledger and complete transcript
+    /// artifacts. Defaults to `workspace`; embedders may
     /// isolate it without changing child execution cwd or file authority.
     state_root: PathBuf,
     state_path: Option<PathBuf>,
     state_unreachable_warned: bool,
-    coordination_process_lock: std::sync::Mutex<Option<Arc<CoordinationProcessLock>>>,
-    coordination_process_lock_required: bool,
-    coordination_exclusive: bool,
-    coordination_snapshot_read_only: bool,
-    store_cutover_blocked: bool,
-    session_private: bool,
-    workspace_writer_locks: HashMap<PathBuf, Arc<CoordinationProcessLock>>,
     /// Configured default per-child model-turn budget (`[subagents]
     /// default_max_steps`, #5324). `None` keeps the unbounded Fleet default;
     /// an explicit spawn `max_steps` still wins. Zero means unbounded.
@@ -4759,13 +4628,6 @@ impl SubAgentManager {
             state_root,
             state_path: None,
             state_unreachable_warned: false,
-            coordination_process_lock: std::sync::Mutex::new(None),
-            coordination_process_lock_required: false,
-            coordination_exclusive: false,
-            coordination_snapshot_read_only: false,
-            store_cutover_blocked: false,
-            session_private: false,
-            workspace_writer_locks: HashMap::new(),
             max_steps: None,
             wall_time: None,
             max_agents,
@@ -4831,22 +4693,6 @@ impl SubAgentManager {
         return Err("coordination workspace identity is unsupported on this platform".into());
         #[cfg(any(unix, windows))]
         {
-            if self.coordination_exclusive
-                && !self.coordination_snapshot_read_only
-                && normalize_subagent_workspace(&lexical)
-                    != normalize_subagent_workspace(&self.state_root)
-                && !self.workspace_writer_locks.contains_key(&canonical_root)
-            {
-                match CoordinationProcessLock::acquire(&lexical, true) {
-                    Ok(lock) => {
-                        self.workspace_writer_locks
-                            .insert(canonical_root.clone(), Arc::new(lock));
-                    }
-                    Err(error) => {
-                        tracing::warn!(target: "subagent", %error, "admitted coordination workspace without its writer lock; shared-workspace writers there stay refused until it is free");
-                    }
-                }
-            }
             let receipt = CoordinationClaimScope {
                 canonical_root,
                 platform: platform.into(),
@@ -4866,44 +4712,61 @@ impl SubAgentManager {
         }
     }
 
-    fn ensure_origin_writer_lock(&mut self, origin: &WorkerOrigin) -> Result<(), String> {
-        let (Some(selected), Some(scope)) = (&origin.selected_workspace, &origin.scope) else {
+    fn refuse_live_selected_store_writers(&self, origin: &WorkerOrigin) -> Result<(), String> {
+        let (Some(selected), Some(_)) = (&origin.selected_workspace, &origin.scope) else {
             return Ok(());
         };
-        if !self.coordination_exclusive
-            || normalize_subagent_workspace(selected)
-                == normalize_subagent_workspace(&self.state_root)
-            || self
-                .workspace_writer_locks
-                .contains_key(&scope.canonical_root)
+        if normalize_subagent_workspace(selected) == normalize_subagent_workspace(&self.state_root)
         {
             return Ok(());
         }
-        let lock =
-            CoordinationProcessLock::acquire(selected, true).map_err(|error| error.to_string())?;
-        self.workspace_writer_locks
-            .insert(scope.canonical_root.clone(), Arc::new(lock));
+        let path = default_state_path(selected).map_err(|error| error.to_string())?;
+        let unreadable = |error: std::io::Error| {
+            format!(
+                "cannot check {} for another open Codewhale session ({error}); shared-workspace writers there stay refused, or launch the builder in an isolated worktree",
+                selected.display()
+            )
+        };
+        let directory = path
+            .parent()
+            .ok_or_else(|| "delegated store has no parent".to_string())?;
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(unreadable(error)),
+        };
+        for entry in entries {
+            let name = entry.map_err(unreadable)?.file_name();
+            let Some(writer) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix("subagents.v3.writer."))
+                .and_then(|name| name.strip_suffix(".lock"))
+            else {
+                continue;
+            };
+            if valid_store_writer(writer) && store_writer_is_live(&path, writer) {
+                return Err(format!(
+                    "another Codewhale session ({writer}) has {} open; shared-workspace writers there stay refused until it exits, or launch the builder in an isolated worktree",
+                    selected.display()
+                ));
+            }
+        }
         Ok(())
     }
 
-    fn ensure_worker_coordination_locks(
-        &mut self,
+    fn admit_worker_shared_writes(
+        &self,
         spec: &AgentWorkerSpec,
         origin: &WorkerOrigin,
     ) -> Result<(), String> {
-        let claim = worker_coordination_claim(spec)?;
-        if claim.as_ref().is_some_and(|(_, isolated)| *isolated) {
-            return Ok(());
+        match worker_coordination_claim(spec)? {
+            Some((_, false)) => self.refuse_live_selected_store_writers(origin),
+            _ => Ok(()),
         }
-        self.ensure_coordination_process_lock()?;
-        if claim.is_some() {
-            self.ensure_origin_writer_lock(origin)?;
-        }
-        Ok(())
     }
 
     pub fn ensure_registered_worker_coordination_locks(
-        &mut self,
+        &self,
         worker_id: &str,
     ) -> Result<(), String> {
         let spec = self
@@ -4918,7 +4781,7 @@ impl SubAgentManager {
             .cloned()
             .ok_or_else(|| "worker origin is missing from the owner journal".to_string())?;
         self.validate_worker_origin(&origin)?;
-        self.ensure_worker_coordination_locks(&spec, &origin)
+        self.admit_worker_shared_writes(&spec, &origin)
     }
 
     fn admitted_coordination_root(&self, workspace: &Path) -> Option<&AdmittedCoordinationRoot> {
@@ -5316,7 +5179,6 @@ impl SubAgentManager {
                 .map_err(|error| error.to_string());
         }
 
-        self.ensure_coordination_process_lock()?;
         if let Some(root) = self.admitted_coordination_root(workspace) {
             root.validate()?;
         }
@@ -5395,7 +5257,6 @@ impl SubAgentManager {
                 .map_err(|error| error.to_string());
         }
 
-        self.ensure_coordination_process_lock()?;
         self.coordination
             .update_decision_status(decision_id, status, owner, expected_version)
     }
@@ -5442,7 +5303,6 @@ impl SubAgentManager {
                 .map_err(|error| error.to_string());
         }
 
-        self.ensure_coordination_process_lock()?;
         let expected_owner = self.nearest_common_fan_in_owner(&input_decisions)?;
         if owner != expected_owner {
             return Err(format!(
@@ -5714,19 +5574,13 @@ impl SubAgentManager {
             },
             bounded: true,
             limit,
-            process_lock_held: !self.session_private && {
-                // Retry acquire on each projection so a session that lost the
-                // flock at construction recovers once the previous owner exits.
-                let _ = self.coordination_process_lock_status();
-                self.holds_coordination_process_lock()
-            },
-            process_lock_note: if self.session_private {
-                Some(SESSION_PRIVATE_COORDINATION.to_string())
-            } else if self.holds_coordination_process_lock() {
-                None
-            } else {
-                self.coordination_process_lock_status().err()
-            },
+            process_lock_held: self.state_path.is_none() || self.store_authority.is_some(),
+            process_lock_note: (self.state_path.is_some() && self.store_authority.is_none()).then(
+                || {
+                    "delegated store admission failed; it is retried on the next delegated write"
+                        .to_string()
+                },
+            ),
         }
     }
 
@@ -5861,7 +5715,6 @@ impl SubAgentManager {
                 .and_then(|outcome| outcome);
         }
 
-        self.ensure_coordination_process_lock()?;
         let Some(existing) = self
             .coordination
             .write_claims
@@ -5948,7 +5801,6 @@ impl SubAgentManager {
                 .map_err(|error| error.to_string());
         }
 
-        self.ensure_coordination_process_lock()?;
         let active = self.active_coordination_owners();
         let released = self
             .coordination
@@ -6073,107 +5925,10 @@ impl SubAgentManager {
         match SubAgentStoreAuthority::open(&self.state_root, &path, &self.current_session_boot_id) {
             Ok(authority) => self.store_authority = Some(authority),
             Err(error) => {
-                self.coordination_snapshot_read_only = true;
-                self.store_cutover_blocked = error
-                    .chain()
-                    .any(|cause| cause.is::<SubAgentCutoverBlocked>());
-                tracing::warn!(target: "subagent", %error, "delegated store admission failed; writable state remains refused");
+                tracing::warn!(target: "subagent", %error, "delegated store admission failed; it is retried on the next delegated write");
             }
         }
         self
-    }
-
-    fn into_session_private(mut self) -> Self {
-        self.state_path = None;
-        self.store_authority = None;
-        self.coordination_snapshot_read_only = false;
-        self.coordination_process_lock_required = false;
-        self.session_private = true;
-        tracing::warn!(target: "subagent", "{SESSION_PRIVATE_COORDINATION}");
-        self
-    }
-
-    fn require_coordination_process_lock(mut self) -> Self {
-        self.coordination_process_lock_required = true;
-        if self.store_authority.is_none()
-            && let Some(path) = self.state_path.as_ref()
-        {
-            match SubAgentStoreAuthority::open(
-                &self.state_root,
-                path,
-                &self.current_session_boot_id,
-            ) {
-                Ok(authority) => self.store_authority = Some(authority),
-                Err(error) => {
-                    self.coordination_snapshot_read_only = true;
-                    tracing::warn!(target: "subagent", %error, "delegated store migration or admission failed; no durable writes are admitted");
-                    return self;
-                }
-            }
-        }
-        let acquired =
-            CoordinationProcessLock::acquire(&self.state_root, self.coordination_exclusive)
-                .ok()
-                .map(Arc::new);
-        if acquired.is_none() {
-            return self.into_session_private();
-        }
-        *self
-            .coordination_process_lock
-            .get_mut()
-            .expect("coordination lock slot poisoned") = acquired;
-        self
-    }
-
-    /// Terminal sessions retry failed acquisition when the previous owner
-    /// exits. A Runtime loaded without its writer lock must restart rather
-    /// than publish its stale snapshot. The flock is held on an open fd —
-    /// deleting the lock file does not release it (#5036).
-    fn ensure_coordination_process_lock(&self) -> Result<(), String> {
-        if self.coordination_snapshot_read_only {
-            return Err(
-                "Runtime coordination was opened without its writer lock; stop and restart this Runtime process after the other session exits"
-                    .into(),
-            );
-        }
-        if !self.coordination_process_lock_required {
-            return Ok(());
-        }
-        let mut slot = self
-            .coordination_process_lock
-            .lock()
-            .expect("coordination lock slot poisoned");
-        if slot.is_some() {
-            return Ok(());
-        }
-        match CoordinationProcessLock::acquire(&self.state_root, self.coordination_exclusive) {
-            Ok(lock) => {
-                *slot = Some(Arc::new(lock));
-                Ok(())
-            }
-            Err(error) => Err(error.to_string()),
-        }
-    }
-
-    /// Whether this process currently owns the workspace coordination flock.
-    /// Read-only inspection of the in-process slot — does not attempt acquire.
-    #[must_use]
-    pub fn holds_coordination_process_lock(&self) -> bool {
-        if !self.coordination_process_lock_required {
-            // Tests and non-durable managers do not require the flock.
-            return true;
-        }
-        self.coordination_process_lock
-            .lock()
-            .expect("coordination lock slot poisoned")
-            .is_some()
-    }
-
-    /// Probe lock ownership for UI/inspect surfaces. Retries acquire when the
-    /// slot is empty so a terminal session can recover after the previous
-    /// owner exits (#2.6 / #5036); read-only Runtime snapshots require restart.
-    pub fn coordination_process_lock_status(&self) -> Result<(), String> {
-        self.ensure_coordination_process_lock()
     }
 
     #[must_use]
@@ -6223,18 +5978,31 @@ impl SubAgentManager {
                 .is_some_and(|authority| authority.owned.lock().contains(id))
     }
 
+    fn admitted_store_authority(&mut self) -> Result<Option<Arc<SubAgentStoreAuthority>>> {
+        let Some(path) = self.state_path.as_ref() else {
+            return Ok(None);
+        };
+        if let Some(authority) = self.store_authority.as_ref() {
+            return Ok(Some(authority.clone()));
+        }
+        let authority =
+            SubAgentStoreAuthority::open(&self.state_root, path, &self.current_session_boot_id)
+                .map_err(|error| {
+                    anyhow!(
+                        "delegated durable store admission failed ({error:#}); it is retried on the next delegated write"
+                    )
+                })?;
+        self.store_authority = Some(authority.clone());
+        Ok(Some(authority))
+    }
+
     pub(crate) fn with_store_transaction<T>(
         &mut self,
         operation: impl FnOnce(&mut Self) -> Result<T>,
     ) -> Result<T> {
-        if self.state_path.is_none() {
+        let Some(authority) = self.admitted_store_authority()? else {
             return operation(self);
-        }
-        self.ensure_coordination_process_lock()
-            .map_err(anyhow::Error::msg)?;
-        let authority = self.store_authority.clone().ok_or_else(|| {
-            anyhow!("delegated durable store admission failed; inspect before retrying")
-        })?;
+        };
         if authority.is_current_transaction() {
             return operation(self);
         }
@@ -6435,8 +6203,6 @@ impl SubAgentManager {
         worker_id: &str,
         payload: PersistedSubAgentState,
     ) -> Result<Option<AgentWorkerRecord>> {
-        self.ensure_coordination_process_lock()
-            .map_err(anyhow::Error::msg)?;
         if self.state_path.is_none() {
             return Ok(None);
         }
@@ -6534,8 +6300,6 @@ impl SubAgentManager {
     /// completes.  Callers may `.join()` for synchronous semantics or drop it
     /// for fire-and-forget.
     fn persist_state(&self) -> Result<std::thread::JoinHandle<()>> {
-        self.ensure_coordination_process_lock()
-            .map_err(anyhow::Error::msg)?;
         let Some((_, payload)) = self.build_persist_payload()? else {
             return Ok(std::thread::spawn(|| {}));
         };
@@ -6543,16 +6307,7 @@ impl SubAgentManager {
             .store_authority
             .clone()
             .ok_or_else(|| anyhow!("delegated store authority is unavailable"))?;
-        let writer_locks = self
-            .coordination_process_lock
-            .lock()
-            .expect("coordination lock slot poisoned")
-            .iter()
-            .cloned()
-            .chain(self.workspace_writer_locks.values().cloned())
-            .collect::<Vec<_>>();
         Ok(std::thread::spawn(move || {
-            let _writer_locks = writer_locks;
             if let Err(error) = authority.publish(&payload, None, None) {
                 tracing::warn!(target: "subagent", %error, "failed to persist sub-agent checkpoint");
             }
@@ -6560,8 +6315,6 @@ impl SubAgentManager {
     }
 
     fn persist_state_synchronously(&self) -> Result<()> {
-        self.ensure_coordination_process_lock()
-            .map_err(anyhow::Error::msg)?;
         let Some((_, payload)) = self.build_persist_payload()? else {
             return Ok(());
         };
@@ -6624,8 +6377,6 @@ impl SubAgentManager {
     /// Unlike `persist_state`, this performs disk I/O **synchronously** to
     /// guarantee data is flushed before the process exits.
     pub fn flush_pending_persist(&mut self) -> Result<()> {
-        self.ensure_coordination_process_lock()
-            .map_err(anyhow::Error::msg)?;
         if self.persist_pending {
             self.persist_state_synchronously()?;
             self.last_persist_at = Some(Instant::now());
@@ -6848,8 +6599,7 @@ impl SubAgentManager {
     }
 
     pub fn finalize_session_close_for_session(&mut self, active_session_id: &str) -> Result<usize> {
-        if !self.coordination_snapshot_read_only
-            && (self.state_path.is_none() || self.store_authority.is_some())
+        if (self.state_path.is_none() || self.store_authority.is_some())
             && !self.agents.values().any(|agent| {
                 self.owns_store_record(&agent.id)
                     && self.agent_is_owned_by_session(agent, active_session_id)
@@ -7108,10 +6858,9 @@ impl SubAgentManager {
         let Some((claim, isolated_worktree)) = worker_coordination_claim(spec)? else {
             return Ok(());
         };
-        // Isolated-worktree builders mutate their own checkout, not the
-        // shared workspace, so they must not contend for the per-workspace
-        // coordination process lock (#5036).
-        self.ensure_worker_coordination_locks(spec, origin)?;
+        if !isolated_worktree {
+            self.refuse_live_selected_store_writers(origin)?;
+        }
         let claim = self.namespace_write_claim(&origin_workspace, isolated_worktree, claim)?;
         let scope = if isolated_worktree {
             None
@@ -7191,11 +6940,7 @@ impl SubAgentManager {
         let previous_origins = self.worker_origins.clone();
         let previous_schema = self.worker_origin_schema;
         let claim = worker_coordination_claim(&spec)?;
-        // Same isolation rule as `preflight_worker_coordination` (#5036).
-        let isolated_worktree = claim
-            .as_ref()
-            .is_some_and(|(_, isolated_worktree)| *isolated_worktree);
-        self.ensure_worker_coordination_locks(&spec, &origin)?;
+        self.admit_worker_shared_writes(&spec, &origin)?;
         let previous_worker_records = self.worker_records.clone();
         let previous_coordination = self.coordination.clone();
         let persisted_claim = claim
@@ -7247,18 +6992,6 @@ impl SubAgentManager {
         let worker_id_for_log = spec.worker_id.clone();
         self.register_worker_for_session(spec, &origin.owner_session_id, None);
         self.install_worker_origin(&worker_id_for_log, origin);
-        if isolated_worktree && self.ensure_coordination_process_lock().is_err() {
-            // This process does not own the durable coordination state and an
-            // isolated-worktree builder must not be blocked on it: register
-            // in memory only and leave the durable ledger to the lock owner.
-            // The persist-layer lock check stays intact (#5036).
-            tracing::warn!(
-                target: "subagent",
-                worker = %worker_id_for_log,
-                "registered isolated-worktree worker in memory only; delegated coordination lock is owned elsewhere"
-            );
-            return Ok(());
-        }
         if let Err(error) = self.persist_state_synchronously() {
             self.worker_records = previous_worker_records;
             self.coordination = previous_coordination;
@@ -7684,7 +7417,6 @@ impl SubAgentManager {
                 .map_err(|error| error.to_string());
         }
 
-        self.ensure_coordination_process_lock()?;
         let worker_id = spec.worker_id.clone();
         let previous = self
             .worker_records
@@ -10327,20 +10059,9 @@ impl SubAgentManager {
                 ));
             }
         }
-        if write_capable {
-            // Isolated-worktree children mutate their own checkout, so they
-            // do not contend for the shared-workspace process lock (#5036).
-            if !options.isolated_worktree {
-                self.ensure_coordination_process_lock()
-                    .map_err(anyhow::Error::msg)?;
-                self.ensure_origin_writer_lock(&origin)
-                    .map_err(anyhow::Error::msg)?;
-            }
-            if self.coordination_process_lock_required && self.state_path.is_none() {
-                return Err(anyhow!(
-                    "write-capable sub-agent launch requires a durable coordination state path"
-                ));
-            }
+        if write_capable && !options.isolated_worktree {
+            self.refuse_live_selected_store_writers(&origin)
+                .map_err(anyhow::Error::msg)?;
         }
         let runtime_origin_turn_id = if runtime.context.runtime.active_thread_id.as_deref()
             == Some(runtime.context.state_namespace.as_str())
@@ -10574,7 +10295,9 @@ impl SubAgentManager {
                 self.resume_targets.insert(source.clone(), agent_id.clone());
             }
             self.agents.insert(agent_id.clone(), agent);
-            let persist_result = self.persist_state_synchronously();
+            let persist_result = self
+                .admitted_store_authority()
+                .and_then(|_| self.persist_state_synchronously());
             agent = self
                 .agents
                 .remove(&agent_id)
@@ -10887,8 +10610,6 @@ impl SubAgentManager {
         identity: &ChildActivationIdentity,
     ) -> Result<impl FnOnce() -> Result<()> + Send + 'static + use<>> {
         self.exact_activation(identity)?;
-        self.ensure_coordination_process_lock()
-            .map_err(anyhow::Error::msg)?;
         let (path, payload) = self
             .build_persist_payload()?
             .ok_or_else(|| anyhow!("child activation has no durable worker store"))?;
@@ -10913,16 +10634,7 @@ impl SubAgentManager {
             .clone()
             .ok_or_else(|| anyhow!("child activation has no store authority"))?;
         let identity = identity.clone();
-        let writer_locks = self
-            .coordination_process_lock
-            .lock()
-            .expect("coordination lock slot poisoned")
-            .iter()
-            .cloned()
-            .chain(self.workspace_writer_locks.values().cloned())
-            .collect::<Vec<_>>();
         Ok(move || {
-            let _writer_locks = writer_locks;
             store_authority.publish(&payload, None, None)?;
             let persisted = read_durable_subagent_store(&state_root, &path)?.state;
             let worker = persisted
@@ -11509,13 +11221,10 @@ impl SubAgentManager {
             }
         }
         // Deliberately NOT here: a pass that terminalized every Running agent
-        // without a live task handle whenever this process lacked the
-        // coordination flock (#2.6). Two Codewhale sessions in one workspace is
-        // ordinary usage, and failure to append to a shared bookkeeping ledger
-        // is not evidence that live work has stopped. Liveness is decided by
-        // the heartbeat above — which is actual evidence — never by who owns
-        // the flock (owner report, 2026-08-04). See `docs/architecture/
-        // delegated-coordination.md` for what lock loss legitimately costs.
+        // without a live task handle because another session shares the
+        // workspace (#2.6). Two Codewhale sessions in one workspace is ordinary
+        // usage, and liveness is decided by the heartbeat above — which is
+        // actual evidence (owner report, 2026-08-04).
 
         // The retained lineage owns continuation lookup and descendant
         // control. Keep the agents projection while live work references it.
@@ -11645,11 +11354,12 @@ impl SubAgentManager {
     }
 
     /// #3803: whether the next sidebar refresh should attempt cleanup.
-    /// Read-only managers without a process lock only render their refusal.
-    /// Other managers use the last attempt's interval to bound cleanup locking.
+    /// A manager whose durable store is not admitted only renders its refusal;
+    /// admission is retried on the next delegated write. Other managers use the
+    /// last attempt's interval to bound cleanup locking.
     #[must_use]
     pub fn cleanup_due(&self, min_interval: Duration) -> bool {
-        (!self.coordination_snapshot_read_only || self.holds_coordination_process_lock())
+        (self.state_path.is_none() || self.store_authority.is_some())
             && self
                 .last_cleanup_at
                 .is_none_or(|last| last.elapsed() >= min_interval)
@@ -13790,22 +13500,6 @@ fn ensure_subagent_store_cutover(root: &Path, path: &Path) -> Result<()> {
         let _ = codewhale_config::private_directory::PrivateDirectory::inspect(&legacy)?;
         return Ok(());
     }
-    let _migration = if legacy.is_dir() {
-        None
-    } else {
-        Some(
-            CoordinationProcessLock::acquire(root, true)
-                .map_err(|error| anyhow::Error::new(SubAgentCutoverBlocked(error)))?,
-        )
-    };
-    if path.exists() {
-        read_durable_subagent_store(root, path)?;
-        anyhow::ensure!(
-            legacy.is_dir(),
-            "delegated migration did not retain its legacy-write tombstone"
-        );
-        return Ok(());
-    }
     let staging = parent.join("subagents.v1.cutover");
     let backup_name = "legacy.json";
     let original_name = "original.json";
@@ -13882,6 +13576,20 @@ fn ensure_subagent_store_cutover(root: &Path, path: &Path) -> Result<()> {
     write_json_atomic(root, path, &DurableSubAgentStore::from_legacy(state))
 }
 
+fn write_state_gitignore(root: &Path, path: &Path) -> Result<()> {
+    let ignore = checked_subagent_state_path(root, &path.with_file_name(".gitignore"))?;
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&ignore)
+    {
+        Ok(mut file) => file.write_all(b"*\n")?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 fn store_writer_is_live(path: &Path, writer: &str) -> bool {
     if !valid_store_writer(writer) {
         return true;
@@ -13954,6 +13662,9 @@ impl SubAgentStoreAuthority {
         let _opening = acquire_store_transaction(root, path)?;
         ensure_subagent_store_cutover(root, path)?;
         let image = read_durable_subagent_store(root, path)?;
+        if let Err(error) = write_state_gitignore(root, path) {
+            tracing::warn!(target: "subagent", %error, "could not ignore the delegated state directory");
+        }
         sync_subagent_store_directory(
             path.parent()
                 .ok_or_else(|| anyhow!("delegated store has no parent"))?,
@@ -14494,24 +14205,16 @@ pub fn new_shared_subagent_manager_with_timeout(
     )
 }
 
-pub fn new_shared_runtime_subagent_manager(
-    workspace: PathBuf,
-    workers: usize,
-) -> Result<SharedSubAgentManager> {
-    new_runtime_subagent_manager(workspace, workers, false)
-}
-
 pub fn new_exclusive_runtime_subagent_manager(
     workspace: PathBuf,
     workers: usize,
 ) -> Result<SharedSubAgentManager> {
-    new_runtime_subagent_manager(workspace, workers, true)
+    new_shared_runtime_subagent_manager(workspace, workers)
 }
 
-fn new_runtime_subagent_manager(
+pub fn new_shared_runtime_subagent_manager(
     workspace: PathBuf,
     workers: usize,
-    exclusive: bool,
 ) -> Result<SharedSubAgentManager> {
     type RuntimeManagerRegistry =
         parking_lot::Mutex<HashMap<PathBuf, (usize, std::sync::Weak<RwLock<SubAgentManager>>)>>;
@@ -14536,12 +14239,6 @@ fn new_runtime_subagent_manager(
         .with_admission_limit(workers)
         .with_launch_concurrency(workers)
         .with_state_path(state_path);
-    manager.coordination_exclusive = exclusive;
-    manager = manager.require_coordination_process_lock();
-    if let Err(error) = manager.ensure_coordination_process_lock() {
-        manager.coordination_snapshot_read_only = true;
-        tracing::warn!(target: "subagent", %error, "Runtime coordination is read-only; stop and restart this Runtime process after the other session exits to load current state and regain delegated writes");
-    }
     manager.load_state()?;
     let manager = Arc::new(RwLock::new(manager));
     managers.insert(key, (workers, Arc::downgrade(&manager)));
@@ -14551,7 +14248,7 @@ fn new_runtime_subagent_manager(
 /// Create a shared sub-agent manager with an explicit control-plane state root.
 ///
 /// `workspace` remains the child execution and file-authority root. The worker
-/// ledger, complete transcript artifacts and coordination lock live under
+/// ledger and complete transcript artifacts live under
 /// `state_root/.codewhale/state`. Distinct state roots intentionally do not
 /// share write claims; an embedding host that runs them against the same
 /// workspace must provide any required cross-session write coordination.
@@ -14594,25 +14291,8 @@ pub fn new_shared_subagent_manager_with_state_root_and_timeout(
     if let Some(state_path) = state_path {
         manager = manager.with_state_path(state_path);
     }
-    manager = if manager.store_cutover_blocked {
-        manager.into_session_private()
-    } else {
-        manager.require_coordination_process_lock()
-    };
-    if let Err(error) = manager.ensure_coordination_process_lock() {
-        tracing::warn!(target: "subagent", %error, "this session cannot append to the shared coordination ledger");
-    }
-    // Loading is a read. It was previously gated behind the *write* flock,
-    // which left a second session in the same workspace blind to every
-    // decision and write claim already recorded — and holding a default,
-    // empty ledger that would be written straight over the real one the
-    // moment the first session exited and the flock became acquirable
-    // (owner report, 2026-08-04). Read unconditionally; the write gate on
-    // `persist_state`/`persist_state_synchronously` still checks this
-    // manager's coordinator admission before publishing.
     if let Err(err) = manager.load_state() {
-        manager.coordination_snapshot_read_only = true;
-        tracing::warn!(target: "subagent", ?err, "failed to load sub-agent state; durable writes remain refused");
+        tracing::warn!(target: "subagent", ?err, "failed to load sub-agent state");
     }
     Arc::new(RwLock::new(manager))
 }
@@ -23153,10 +22833,29 @@ mod owner_scoped_coordination_tests {
         let mut manager = authority.try_write().unwrap();
         admit(&mut manager, &original);
         admit(&mut manager, &selected);
-        let independent =
-            SubAgentManager::new(selected.clone(), 2).require_coordination_process_lock();
-        assert!(independent.session_private);
-        assert!(independent.ensure_coordination_process_lock().is_ok());
+        let independent = SubAgentManager::new(selected.clone(), 2)
+            .with_state_path(default_state_path(&selected).unwrap());
+        assert!(independent.store_authority.is_some());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let state_directory = default_state_path(&selected)
+                .unwrap()
+                .parent()
+                .unwrap()
+                .to_path_buf();
+            let mode = fs::metadata(&state_directory).unwrap().permissions().mode();
+            fs::set_permissions(&state_directory, fs::Permissions::from_mode(0o000)).unwrap();
+            let unreadable =
+                manager.preflight_worker_coordination(&writer("selected", &selected, "src"));
+            fs::set_permissions(&state_directory, fs::Permissions::from_mode(mode)).unwrap();
+            assert!(unreadable.is_err(), "an unlistable store must fail closed");
+        }
+        let refused = manager
+            .preflight_worker_coordination(&writer("selected", &selected, "src"))
+            .unwrap_err();
+        assert!(refused.contains("another Codewhale session"), "{refused}");
+        drop(independent);
         manager
             .preflight_worker_coordination(&writer("original", &original, "src"))
             .unwrap();

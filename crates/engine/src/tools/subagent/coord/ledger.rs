@@ -326,9 +326,10 @@ pub struct CoordinationDetailProjection {
     pub metrics: CoordinationDetailMetrics,
     pub bounded: bool,
     pub limit: usize,
-    /// Whether this process currently holds the workspace coordination flock.
-    /// When false, durable ledger writes are skipped and the UI must say so —
-    /// a counter must never tick on a turn the engine has already settled.
+    /// Whether this manager's durable store is admitted. When false, durable
+    /// ledger writes are refused until admission is retried and the UI must
+    /// say so — a counter must never tick on a turn the engine has already
+    /// settled.
     #[serde(default = "default_process_lock_held")]
     pub process_lock_held: bool,
     /// Human-readable reason when [`Self::process_lock_held`] is false.

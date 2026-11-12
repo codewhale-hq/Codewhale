@@ -11615,10 +11615,9 @@ async fn compact_thread_receipt_keeps_exact_named_custom_identity() -> Result<()
 
 #[tokio::test]
 async fn compact_thread_with_real_engine_reaches_terminal_status() -> Result<()> {
-    // A real engine takes the workspace coordination lock exclusively, and
     // nextest runs tests in parallel processes with this crate as their working
     // directory. A `"."` workspace would therefore be the crate directory
-    // itself, and two exclusive holders of it cannot both start.
+    // itself, shared by every test process.
     let workspace = tempfile::tempdir()?;
     let manager = RuntimeThreadManager::open(
         {

@@ -660,7 +660,7 @@ work is declared complete here. Items moved to 0.10.4 by name are marked below.
 - **Windows uninstall removes the receipt and update leftovers.** The installer's uninstaller also deletes `.codewhale-install.sha256` and `codewhale.old-*`/`codew.old-*` left by a self-update, so `bin` can be removed. Refs #7091.
 - **Windows `/undo` matches recorded file paths regardless of case.** A write recorded under a different drive-letter or directory case, or a `\\?\` prefix, is no longer dropped from the restore plan. Refs #6970.
 - **Windows: Fleet and metrics read live files again.** Replaying a Fleet ledger and reading audit or receipt records no longer fail with a sharing violation while their writer is still open; the same regular-file, link and identity checks apply. Plugin enablement now says which snapshot check refused (stage root, content identity or final check) instead of one generic message. Generated protocol and SDK exports keep LF line endings in Windows checkouts.
-- **A held coordination lock no longer makes a new session read-only.** When another session owns the delegated-agent store, the new session starts on private state and says so, instead of refusing every sub-agent with “Failed to clean up sub-agents”.
+- **Sessions in one folder no longer leave each other's sub-agents read-only or private:** a second session works beside another one, stale or suspended included, the older sub-agent store upgrades right away, and a store that cannot be opened is retried on the next sub-agent change instead of needing a restart. While another Codewhale session, a suspended one included, is open in a folder the desktop app or `serve` was asked to work in (other than the folder it started in), that Runtime still refuses sub-agents that would edit the folder directly; isolated worktrees are unaffected. A sub-agent store that cannot be opened shows its refusal once instead of repeating cleanup warnings on every sidebar refresh. Restart any session started with Codewhale 0.10.2 or older: once the folder upgrades it can no longer save sub-agent state (Refs #7232).
 - **A dev server can outlive the turn in an interactive session.** `persist:true` now works in the TUI and desktop when the thread has Full Access; restricted postures and Fleet/sub-agents still refuse it.
 - **`codewhale exec --add-dir <path>`** (repeatable) and `addDirs` on `POST /v1/threads` let the file tools read and write a sibling directory, a second checkout or a shared scratch root without turning on Full Access.
 - **Unsettled usage is persisted in production, not only in tests.** The interactive sink now records a legacy usage receipt when a provider response has no settlement, so children and turns stop reporting settlement failure.
@@ -697,12 +697,6 @@ work is declared complete here. Items moved to 0.10.4 by name are marked below.
   composer. Real Pinyin input on macOS and Windows is not yet confirmed.
   Thanks [@cmdcorp6534](https://github.com/cmdcorp6534) for the report
   (Refs #2323).
-- **Sub-agents beside an older session:** while a Codewhale 0.10.2 session
-  still uses a folder's older delegated-agent store, a 0.10.3 session in the
-  same folder keeps working sub-agents with private state that is not saved,
-  instead of refusing every sub-agent action. The older session's files are
-  left untouched, and the store upgrades when a session starts after the older
-  one exits (Refs #7232).
 - **Fleet members:** a replayed member start now matches only within its own
   session, so two sessions that reuse an operation key no longer receive each
   other's agent.
@@ -731,12 +725,6 @@ work is declared complete here. Items moved to 0.10.4 by name are marked below.
   bare self-package exports resolve inside the selected package directory.
   Invalid or incompatible ranges and paths outside the reviewed package still
   refuse. Real published-plugin activation remains unqualified.
-- **Coordination lock diagnostics (#7232):** stale lock-file contents no longer
-  identify an owner PID. A refused legacy admission keeps its reason in Work
-  and shows one notice per cause instead of repeating cleanup warnings on
-  every sidebar refresh. Legacy migration still requires the actual holder to
-  exit and the refused owning Runtime to restart; locks and retained state
-  remain protected.
 - **A local proxy that stops mid-session no longer strands the session (#7231):** the model, catalog, search, vision, finance, MCP-registry, profile and remote-control clients watch a loopback proxy port and go direct while it refuses connections, then resume proxying when it returns. Only a definite refusal from every resolved address changes the route; remote proxies, `NO_PROXY` matches, credentials and the existing precedence are unchanged. Set `CODEWHALE_LOCAL_PROXY_FALLBACK=0` to keep the old build-time snapshot.
 - **Proxy diagnostic privacy ([#7233](https://github.com/codewhale-hq/codewhale/issues/7233)):** malformed MCP proxy warnings omit configured values; local-proxy log labels mask userinfo and omit URL paths, queries and fragments. Routing is unchanged. All 23 existing proxy tests passed on macOS; runtime log capture and other platforms remain unqualified. Thanks [@SparkofSpike](https://github.com/SparkofSpike) for the report.
 - **Fork, undo and retry work after a workspace drift notice (#7234):** the history-boundary walks now treat a whole `<context_update>` envelope as engine-owned, so a session that received one can be cut at every saved turn. A person quoting a notice or a truncated envelope still counts as their own prompt.
