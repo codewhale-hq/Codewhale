@@ -30,6 +30,7 @@ DeepSeek 仍是默认提供商，但 `ProviderKind::ALL` 中的每个条目都�
 | Wafer | `https://pass.wafer.ai/v1` | `GLM-5.3`（默认）、`GLM-5.2`、`Kimi-K3`、`DeepSeek-V4-Pro` | `WAFER_API_KEY` |
 | Runcrate | `https://api.runcrate.ai/v1` | `deepseek-ai/DeepSeek-V4.1-Flash`、`zai-org/GLM-5.3`、`openai/gpt-oss-120b` | `RUNCRATE_API_KEY` |
 | Opper | `https://api.opper.ai/v3/compat` | `claude-sonnet-4-6`、`gpt-5.4-mini`（池名称）；`anthropic/claude-sonnet-4-6` | `OPPER_API_KEY` |
+| UberLLM | `https://api.uberllm.dev/v1` | `deepseek/deepseek-v4-flash`、`openai/gpt-5.4-mini`、`anthropic/claude-sonnet-4.6` | `UBERLLM_API_KEY` |
 | 腾讯 TokenHub | `https://tokenhub-intl.tencentcloudmaas.com/v1` | `hy4` | `TENCENT_API_KEY` |
 
 Tinker 的 OpenAI 兼容 API 和无服务器推理均为测试版。在 `/provider` 中选择 Tinker，或按英文文档配置 `[providers.tinker]`。其他公开的无服务器模型 ID 包括 `thinkingmachines/Inkling-Small:peft:262144:sampling-nvfp4` 和 `thinkingmachines/Inkling:peft:262144:sampling-nvfp4`；请手动输入所需 ID，也可以使用自己的 sampler checkpoint 路径。Codewhale 不会通过模型列表发现此路由或验证密钥；已配置模型会出现在选择器中，费用显示为未知。此通用路由目前不发送推理强度，Tinker 文档所述默认值为 0.9。实际对话、工具调用和图像输入尚未在 Codewhale 中验证。参见 [API 文档](https://tinker-docs.thinkingmachines.ai/tinker/compatible-apis/openai/)和[模型列表](https://tinker-docs.thinkingmachines.ai/tinker/models/models_and_pricing/)。
@@ -43,6 +44,7 @@ Wafer 是 OpenAI 兼容的无服务器目录。Chat Completions 发往 `https://
 
 Runcrate 是 OpenAI 兼容网关，一个密钥即可使用来自多家实验室的模型。模型 ID 区分大小写，形如 `deepseek-ai/DeepSeek-V4.1-Flash`。模型列表以 `GET https://api.runcrate.ai/v1/models` 的结果为准。配置好 Runcrate 后，运行 `codewhale models --update --provider runcrate` 即可匿名刷新。推理仍需要 `RUNCRATE_API_KEY`，公开列表无法验证密钥。文档见 <https://www.runcrate.ai/docs/getting-started/quickstart>。
 Opper 是托管在欧盟的 OpenAI 兼容网关，一个密钥即可使用来自 50 多家提供商的 700 多个模型。`claude-sonnet-4-6` 这类不带前缀的池名称由 Opper 按请求选择路由；`anthropic/claude-sonnet-4-6` 这类 `provider/model` ID 则固定使用单条路由。Token 价格即模型提供商的价格，不加价。以带密钥请求 `GET https://api.opper.ai/v3/compat/models` 的结果为准，文档见 <https://docs.opper.ai/build/gateway/drop-in-sdks>。
+UberLLM 是 OpenAI 兼容网关，一个密钥即可使用 OpenAI、Anthropic、Google、DeepSeek、Qwen、GLM、Kimi 等厂商的模型。模型 ID 形如 `vendor/model`，例如 `deepseek/deepseek-v4-flash`（默认）或 `anthropic/claude-sonnet-4.6`。模型列表以公开的 `GET https://api.uberllm.dev/v1/models` 为准，其中也列出各模型价格（<https://uberllm.dev/models>）。推理需要 `UBERLLM_API_KEY`；公开列表不能验证密钥。在 <https://uberllm.dev/signup> 创建密钥。文档见 <https://uberllm.dev/docs/quickstart>。
 
 使用 `/provider tencent` 选择腾讯 TokenHub 国际端点，模型 ID 为 `hy4`，密钥环境变量为 `TENCENT_API_KEY`。腾讯文档给出的上下文为 1M，最大输入为 960K，最大输出为 64K，并支持图像、工具和推理。可用模型以认证后的 `/v1/models` 为准；若列表未提供限制信息，仍使用兼容路由的保守默认值，可将 `providers.tencent.model_context_windows.hy4` 显式设为 `1000000`，不影响同一网关上的其他模型。直连价格未经核验，不会套用 OpenRouter 的价格。OpenRouter 上的正式版 ID 是 `tencent/hy4`，支持 1,048,576 上下文、65,536 最大输出及 `none`、`low`、`high` 推理级别。预览版和现有 HY3 选择保持不变。文档见 <https://www.tencentcloud.com/document/product/1300/80695>。
 OpenCode Zen 和 OpenCode Go 是一等提供商路由，配置方式与下文其他提供商相同；它们不在上表之列。在 `/provider` 中，直接输入即可筛选列表（未绑定行操作的字母）；`Ctrl+T` 探测所选行的 `/models`，只记录可达性（2xx 并不代表模型可用）。
