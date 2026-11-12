@@ -8,8 +8,11 @@ argument, its existing Best-of-N generation and reviewer path runs as before.
 ## Verified candidate slice
 
 The version 1 JSON spec freezes a clean Git HEAD, objective, write scope,
-protected paths, trusted case bundles, Linux bubblewrap policy, and wall-time
-bound. Keep the spec and case bundles outside the candidate repository. A case
+protected paths, trusted case bundles, Linux bubblewrap policy, and aggregate
+evaluation wall-time bound. The clock counts candidate capture, gate execution,
+and sealed replay. It pauses during model generation between candidates. Each
+receipt records its execution start, remaining-budget deadline and stop reason.
+Keep the spec and case bundles outside the candidate repository. A case
 bundle is an array of `{"input": ..., "expected": ...}` objects. At least one
 public and one held-out gate must each require a nonzero number of cases.
 
@@ -43,9 +46,17 @@ public and one held-out gate must each require a nonzero number of cases.
 
 Invoke the existing `workflow` tool, or use the CLI `workflow-tool --input-json`
 equivalent. For `source_path`, place the checked-in Workflow file inside the
-active workspace or `~/.codewhale/workflows`; the host checks its exact content
-against the bundled recipe. Alternatively, pass that file's exact text as
+active workspace or `~/.codewhale/workflows`; the host hashes the actual loaded
+script bytes and compares them with the checked-in authorized SHA-256 constant.
+Alternatively, pass that file's exact text as
 `script`, as the native E2E below does.
+
+When the checked-in Workflow changes, calculate
+`sha256sum workflows/operate_best_of_n.workflow.js`, update
+`AUTHORIZED_WORKFLOW_SHA256` in `verified_candidate/mod.rs`, and run the
+repository-script identity test plus `cargo package -p codewhale-engine --locked`.
+The repository script path appears only in the test source, which is excluded
+from the published crate.
 
 ```json
 {
@@ -82,8 +93,15 @@ Candidate commands run only on Linux with the strict bubblewrap backend.
 The capability probe must establish a private network namespace, inaccessible
 host marker and actual spec/case paths, writable private scratch, and read-only
 sealed source mount.
-The process owner applies CPU, address-space, file-size, descriptor, and process
-limits. The evaluator clears the host environment and closes inherited file
+The process owner applies CPU, address-space, file-size, descriptor and process
+limits. The evaluator sets `RLIMIT_NPROC` to 4096, which the maintainer verified
+with about 180 existing tasks for the ordinary user. Linux counts the user's
+tasks outside the sandbox, so the previous value of 32 prevented bubblewrap
+from creating its namespaces. This is a per-evaluator value, not a sandbox-local
+process count. PID namespace isolation, `--die-with-parent`, cancellation and
+timeout retain the descendant boundary. The probe reports `processes_rlimit:
+4096` for the evaluator policy.
+The evaluator clears the host environment and closes inherited file
 descriptors before the sandbox starts. Missing bubblewrap or an unsuccessful
 probe rejects the run.
 
@@ -101,9 +119,16 @@ may delete that exact run directory; restart cleanup must identify the
 `manifest.json` run id before removing anything. There is no automatic
 cross-process replay API in this slice.
 
-The full sealed artifact records added, modified, deleted, binary, and
-executable-mode changes. Its tree hash is separate from the artifact manifest
-hash. Receipts bind spec, baseline Git SHA and tree identity, case bundle
+The sealed artifact records added, modified, deleted, binary, and
+executable-mode source changes. Its frozen capture policy excludes untracked
+files under the root `target/` directory and untracked files in any
+`__pycache__/` directory; these generated paths are listed in artifact and
+receipt provenance and are not materialized for replay. Tracked files and
+protected paths are always captured, even in those directories. Other ignored
+files, including out-of-scope writes, remain subject to the normal scope check.
+The candidate tree hash covers the included source tree; the artifact manifest
+hash also covers the exclusion list. Receipts bind spec, baseline Git SHA and
+tree identity, case bundle
 hashes, artifact and candidate tree hashes, sandbox probe, and native binary
 SHA256, plus bubblewrap and gate executable hashes. Per-case receipts include
 the resolved sandbox command, exit/stop reason, and log paths. Replays compare
@@ -112,7 +137,8 @@ Missing or conflicting evidence yields `UNKNOWN`, `REJECTED`, or an explicit
 error, never a PASS.
 
 Limits are 4 MiB per file, 64 MiB for the baseline or candidate tree, 8 MiB
-of changed content, 4,096 files, 256 cases per gate, and at most 12 gates.
+of changed content, 4,096 included files, 36,864 scanned files, 256 cases per
+gate, and at most 12 gates.
 The sandbox has per-process and per-case bounds; there is no aggregate scratch
 or host-memory quota. Windows, macOS, and Linux hosts without working
 bubblewrap are unsupported for this evaluator. A candidate can run only an
