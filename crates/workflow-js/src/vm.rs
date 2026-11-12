@@ -1864,6 +1864,7 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
     "__workflow_task",
     "__workflow_log",
     "__workflow_every_slot_failed",
+    "__workflow_slot_dropped",
     "__workflow_phase",
     "__workflow_budget_total",
     "__workflow_budget_spent",
