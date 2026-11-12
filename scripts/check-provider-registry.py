@@ -538,6 +538,9 @@ def report_huggingface_coverage(
 def report_env_lookup_order(
     label: str, source: str, expected_order: list[str], context: str
 ) -> list[str]:
+    non_blank_chain = "env_non_blank(&[" + ", ".join(f'"{name}"' for name in expected_order) + "])"
+    if non_blank_chain in source:
+        return []
     lookup_needles = [f'std::env::var("{name}")' for name in expected_order]
     return report_string_order(label, source, lookup_needles, context)
 
