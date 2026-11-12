@@ -29,7 +29,8 @@ pub struct UserCommand {
     pub takes_arguments: bool,
     pub hidden: bool,
     pub extension: bool,
-    pub plugin: Option<String>,
+    pub plugin_id: Option<String>,
+    pub workspace_sourced: bool,
     pub builtin_bindings: Vec<String>,
 }
 

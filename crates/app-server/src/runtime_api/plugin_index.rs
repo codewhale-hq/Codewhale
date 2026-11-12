@@ -54,12 +54,16 @@ struct PluginAdds {
 }
 
 impl PluginAdds {
-    fn labels(&self) -> Vec<&'static str> {
+    fn labels(&self, entry: &PluginSummaryEntry) -> Vec<&'static str> {
         [
             ("skill", !self.skills.is_empty()),
             ("connector", !self.connectors.is_empty()),
             ("hook", !self.hooks.is_empty()),
             ("command", !self.commands.is_empty()),
+            (
+                "tool",
+                entry.inventory.native > 0 || entry.inventory.lsp > 0,
+            ),
             ("profile", !self.profiles.is_empty()),
         ]
         .into_iter()
@@ -121,6 +125,7 @@ async fn component_names(
     paths: &[PathBuf],
     extension: Option<&str>,
     lowercase: bool,
+    omitted: &mut bool,
 ) -> Vec<String> {
     let mut names = BTreeSet::new();
     for path in paths {
@@ -136,6 +141,7 @@ async fn component_names(
             while let Ok(Some(entry)) = entries.next_entry().await {
                 seen += 1;
                 if seen > MAX_ADDED_NAMES {
+                    *omitted = true;
                     break;
                 }
                 if entry.file_type().await.is_ok_and(|kind| kind.is_file()) {
@@ -144,13 +150,21 @@ async fn component_names(
             }
         }
         if names.len() >= MAX_ADDED_NAMES {
+            *omitted = true;
             break;
         }
+    }
+    if names.iter().any(|name| name.chars().any(char::is_control)) {
+        *omitted = true;
+        names.retain(|name| !name.chars().any(char::is_control));
     }
     names.into_iter().take(MAX_ADDED_NAMES).collect()
 }
 
-async fn plugin_adds(plugin: &codewhale_plugins::types::LoadedPlugin) -> PluginAdds {
+async fn plugin_adds(
+    plugin: &codewhale_plugins::types::LoadedPlugin,
+    omitted: &mut bool,
+) -> PluginAdds {
     let mut skills: Vec<String> = plugin
         .skill_snapshots
         .iter()
@@ -167,19 +181,29 @@ async fn plugin_adds(plugin: &codewhale_plugins::types::LoadedPlugin) -> PluginA
     PluginAdds {
         skills,
         connectors,
-        hooks: component_names(&plugin.components.hooks, None, false).await,
-        commands: component_names(&plugin.components.commands, Some("md"), true).await,
-        profiles: component_names(&plugin.components.agents, Some("toml"), false).await,
+        hooks: component_names(&plugin.components.hooks, None, false, omitted).await,
+        commands: component_names(&plugin.components.commands, Some("md"), true, omitted).await,
+        profiles: component_names(&plugin.components.agents, Some("toml"), false, omitted).await,
     }
 }
 
-async fn plugin_adds_by_id(state: &RuntimeApiState) -> HashMap<String, PluginAdds> {
+async fn plugin_adds_by_id(
+    state: &RuntimeApiState,
+    omitted: &mut BTreeSet<String>,
+) -> HashMap<String, PluginAdds> {
     let registry = state
         .plugin_discovery
         .registry_for_workspace(&state.workspace);
     let mut adds = HashMap::new();
     for plugin in registry.list() {
-        adds.insert(plugin.id.as_str().to_string(), plugin_adds(plugin).await);
+        let mut cut = false;
+        adds.insert(
+            plugin.id.as_str().to_string(),
+            plugin_adds(plugin, &mut cut).await,
+        );
+        if cut {
+            omitted.insert(plugin.name().to_string());
+        }
     }
     adds
 }
@@ -201,10 +225,6 @@ fn skill_source(
     }
 }
 
-/// `GET /v1/apps/plugin-index`: one list across every kind of plugin. Each
-/// row embeds the row its owner's own route returns, so a field an owner adds
-/// reaches this route without a second edit; an owner that fails is named
-/// under `unavailable` and the rest still list.
 pub(super) async fn get_plugin_index(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<PluginIndexResponse>, ApiError> {
@@ -212,9 +232,35 @@ pub(super) async fn get_plugin_index(
     let mut unavailable = Vec::new();
     let mut problems = Vec::new();
 
+    let commands = super::list_commands(
+        State(state.clone()),
+        Query(CommandsQuery { thread_id: None }),
+    )
+    .await;
+    let mut plugin_commands: HashMap<String, BTreeSet<String>> = HashMap::new();
+    if let Ok(Json(response)) = &commands {
+        for command in &response.commands {
+            if let (Some(plugin_id), "user") = (command.plugin_id.as_ref(), command.kind) {
+                plugin_commands
+                    .entry(plugin_id.clone())
+                    .or_default()
+                    .insert(command.name.clone());
+            }
+        }
+    }
+
     match plugins::list_plugins(State(state.clone())).await {
         Ok(Json(response)) => {
-            let mut adds_by_id = plugin_adds_by_id(&state).await;
+            let mut omitted = BTreeSet::new();
+            let mut adds_by_id = plugin_adds_by_id(&state, &mut omitted).await;
+            for name in &omitted {
+                problems.push(IndexNote {
+                    kind: "plugin",
+                    message: format!(
+                        "plugin '{name}' adds more files than are listed, or a file name with control characters; some names are left out of `adds`"
+                    ),
+                });
+            }
             for diagnostic in &response.registry_diagnostics {
                 problems.push(IndexNote {
                     kind: "plugin",
@@ -222,7 +268,16 @@ pub(super) async fn get_plugin_index(
                 });
             }
             for entry in &response.plugins {
-                let adds = adds_by_id.remove(&entry.id);
+                let mut adds = adds_by_id.remove(&entry.id);
+                if entry.state == "active"
+                    && commands.is_ok()
+                    && let Some(adds) = adds.as_mut()
+                {
+                    adds.commands = plugin_commands
+                        .remove(&entry.id)
+                        .map(|names| names.into_iter().collect())
+                        .unwrap_or_default();
+                }
                 items.push(IndexItem {
                     id: format!("plugin:{}", entry.id),
                     kind: "plugin",
@@ -233,7 +288,10 @@ pub(super) async fn get_plugin_index(
                     description: entry.description.clone(),
                     source: plugin_source(entry.origin),
                     state: plugin_state(entry),
-                    labels: adds.as_ref().map(PluginAdds::labels).unwrap_or_default(),
+                    labels: adds
+                        .as_ref()
+                        .map(|adds| adds.labels(entry))
+                        .unwrap_or_default(),
                     plugin: None,
                     adds,
                     tier: None,
@@ -393,18 +451,14 @@ pub(super) async fn get_plugin_index(
         Err(error) => note_failure(&mut unavailable, "hook", &error),
     }
 
-    match super::list_commands(
-        State(state.clone()),
-        Query(CommandsQuery { thread_id: None }),
-    )
-    .await
-    {
+    match commands {
         Ok(Json(response)) => {
             for command in &response.commands {
-                let (source, plugin) = match (command.kind, command.plugin.as_ref()) {
+                let (source, plugin) = match (command.kind, command.plugin_id.as_ref()) {
                     ("builtin", _) => continue,
-                    (_, Some(_)) if command.kind == "user" => continue,
-                    ("extension", _) => ("plugin", command.origin.clone()),
+                    ("user", Some(_)) => continue,
+                    ("extension", plugin_id) => ("plugin", plugin_id.cloned()),
+                    _ if command.workspace_sourced => ("project", None),
                     _ => ("user", None),
                 };
                 items.push(IndexItem {
