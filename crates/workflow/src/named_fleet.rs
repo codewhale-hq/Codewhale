@@ -487,6 +487,21 @@ fn strip_toml_comment(line: &str) -> &str {
     line
 }
 
+fn toml_string_value(value: &str) -> String {
+    if let Some(literal) = value
+        .strip_prefix('\'')
+        .and_then(|rest| rest.strip_suffix('\''))
+    {
+        return literal.to_string();
+    }
+    if value.starts_with('"')
+        && let Ok(basic) = serde_json::from_str::<String>(value)
+    {
+        return basic;
+    }
+    value.trim_matches('"').to_string()
+}
+
 fn parse_fleet_toml_minimal(text: &str) -> Result<NamedFleet, NamedFleetError> {
     let mut name = None;
     let mut description = None;
@@ -505,7 +520,7 @@ fn parse_fleet_toml_minimal(text: &str) -> Result<NamedFleet, NamedFleetError> {
             continue;
         };
         let key = key.trim();
-        let value = value.trim().trim_matches('"').to_string();
+        let value = toml_string_value(value.trim());
         match section {
             "" => match key {
                 "name" => name = Some(value),
@@ -625,6 +640,17 @@ release_lead = "manager"
         assert_eq!(fleet.resolve("reviewer").unwrap(), "reviewer");
         assert_eq!(fleet.resolve("test").unwrap(), "verifier");
         assert_eq!(fleet.resolve("release_lead").unwrap(), "manager");
+    }
+
+    #[test]
+    fn literal_and_escaped_toml_strings_lose_their_quotes() {
+        let fleet = parse_named_fleet(
+            "name = 'stopship' # literal\ndescription = \"a \\\"quoted\\\" fleet\"\n[roles]\nexplore = 'scout'\n",
+        )
+        .expect("parse");
+        assert_eq!(fleet.name, "stopship");
+        assert_eq!(fleet.description.as_deref(), Some("a \"quoted\" fleet"));
+        assert_eq!(fleet.resolve("explore").unwrap(), "scout");
     }
 
     #[test]
