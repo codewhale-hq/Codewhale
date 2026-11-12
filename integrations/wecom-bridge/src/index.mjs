@@ -236,7 +236,7 @@ async function handleCommand(chatId, command, frame) {
       await sendThreads(chatId, frame);
       return;
     case "new_thread": {
-      const state = await ensureThread(chatId);
+      const state = await ensureThread(chatId, { forceNew: true });
       await replyText(frame, `Created thread ${state.threadId}`);
       return;
     }

@@ -34,7 +34,7 @@ import {
   parseQuestionAnswers,
 } from "./lib.mjs";
 import { renderQrToText } from "./qr.mjs";
-import { ThreadStore as CoreThreadStore, THREAD_NOT_OWNED_MESSAGE, listOwnedThreads, readJsonSafe, readThreadEvents, writeFileDurable, ApprovalOwnershipError, decideApproval as decideRuntimeApproval } from "../../bridge-core/src/lib.mjs";
+import { ThreadStore as CoreThreadStore, THREAD_NOT_OWNED_MESSAGE, ThreadOwnershipError, listOwnedThreads, readJsonSafe, readThreadEvents, writeFileDurable, ApprovalOwnershipError, decideApproval as decideRuntimeApproval } from "../../bridge-core/src/lib.mjs";
 
 // ============================================================================
 // 账号持久化
@@ -356,6 +356,7 @@ async function ensureThread(chatId, { forceNew = false, threadRequest } = {}) {
   if (forceNew && hasPendingWork(existing) && !replacingAccount) throw new Error("This chat still has a pending turn or retained reply. Use /status first.");
   if (existing?.threadId && !forceNew) {
     if (existing.bindingAccountId !== accountIdentity()) throw new Error("This thread belongs to another or unverified bot account. Use /new to create an explicit binding.");
+    if (!ownsThread(chatId, existing.threadId)) throw new ThreadOwnershipError();
     return existing;
   }
 
@@ -472,6 +473,11 @@ async function reconcileAdmission(chatId) {
   let state = await threadStore.getChat(chatId);
   let pending = state?.pendingAdmission;
   if (!pending || !ownsRecovery(chatId, state)) return;
+  if (pending.threadId && !pending.submitted && !ownsThread(chatId, pending.threadId)) {
+    await threadStore.patchChat(chatId, { pendingAdmission: null });
+    await sendText(chatId, THREAD_NOT_OWNED_MESSAGE);
+    return;
+  }
   if (!pending.threadId) {
     const thread = await ensureThread(chatId, { threadRequest: pending.threadRequest });
     // ensureThread replaces chat state only for a new thread; retain the admission.
@@ -1003,7 +1009,7 @@ async function compactThread(chatId) {
       `Compaction started: ${result.turn?.id || "unknown turn"}`
     );
   } catch (error) {
-    await sendText(chatId, `Compact failed: ${error.message}`);
+    await sendText(chatId, error instanceof ThreadOwnershipError ? THREAD_NOT_OWNED_MESSAGE : `Compact failed: ${error.message}`);
   }
 }
 

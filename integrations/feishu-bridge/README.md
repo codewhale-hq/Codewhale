@@ -78,7 +78,9 @@ including a thread started from the desktop app, the TUI or another chat, gets
 one fixed reply and is never sent to the Runtime. When an existing thread map is
 first loaded, a thread that only one chat points at stays with that chat; a
 thread that several chats point at is owned by none of them, and those chats send
-`/new` to start a new thread. Review the thread map after upgrading.
+`/new` to start a new thread. Review the thread map after upgrading. An existing thread map records only the
+thread each chat is bound to, so threads a chat created earlier and has since
+left with `/new` are no longer listed or resumable.
 
 ## Restart access checks
 

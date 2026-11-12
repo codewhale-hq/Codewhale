@@ -19,7 +19,7 @@ function incoming(id, text, user = "alice", contextToken = "context-fixture") {
 }
 async function fixture(t, options = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "weixin-runtime-"));
-  const state = { polls: 0, batches: [], posts: [], sent: [], summaryQueries: [], lookups: 0, threadCreates: 0, threadReads: [], streams: new Set(), turns: [], items: [], seq: 0, approvals: [], decisions: [], logs: "" };
+  const state = { polls: 0, batches: [], posts: [], sent: [], summaryQueries: [], lookups: 0, threadCreates: 0, compacts: 0, threadReads: [], streams: new Set(), turns: [], items: [], seq: 0, approvals: [], decisions: [], logs: "" };
   const json = (response, body, status = 200) => { response.writeHead(status, { "Content-Type": "application/json" }); response.end(JSON.stringify(body)); };
   const server = http.createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
@@ -49,6 +49,7 @@ async function fixture(t, options = {}) {
       state.threadReads.push(url.pathname);
       return json(res, { id: url.pathname.split("/").at(-1), latest_seq: state.seq, turns: state.turns, items: state.items, pending_approvals: state.approvals });
     }
+    if (url.pathname.endsWith("/compact")) { state.compacts++; return json(res, { turn: { id: "turn-compact" } }); }
     if (url.pathname === "/v1/threads/thread-1/turns") {
       state.posts.push(body);
       const turn = { id: "turn-1", thread_id: "thread-1", status: "in_progress" };
@@ -368,4 +369,32 @@ test("restart between durable thread binding and admission update keeps the froz
   await until(() => f.streams.size, "durable thread binding lost its pending prompt on restart");
   assert.equal(f.threadCreates, 0); assert.equal(f.posts.length, 1); assert.deepEqual(f.posts[0], request);
   assert.equal((await f.disk()).chats.alice.turnDelivery.messageKey, key);
+});
+
+const NOT_OWNED = "This chat can only use threads it started. Send /new to start a new thread.";
+const sharedMap = (extra = {}) => JSON.stringify({ chats: {
+  alice: { threadId: "thread-1", bindingAccountId: "bot-A" },
+  bob: { threadId: "thread-1", bindingAccountId: "bot-A", ...extra },
+}, messages: [], inflight: {} });
+
+test("a chat on a thread shared in an existing thread map cannot compact it", async (t) => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.dir, "thread-map.json"), sharedMap());
+  f.batches.push([incoming(1, "/compact", "bob")]); f.start();
+  await until(() => f.sent.length === 1, "the compact request was not answered");
+  assert.equal(f.sent[0].item_list[0].text_item.text, NOT_OWNED);
+  assert.equal(f.compacts, 0, "compaction never reaches the shared thread");
+});
+
+test("an unsent admission aimed at a thread the chat does not own is dropped", async (t) => {
+  const f = await fixture(t); const key = JSON.stringify(["bot-A", "bob", "1"]);
+  const request = { prompt: "queued", input_summary: "queued", model: "m", mode: "agent", allow_shell: false, trust_mode: false, auto_approve: false, operation_key: "queued-operation" };
+  await fs.writeFile(path.join(f.dir, "thread-map.json"), sharedMap({ pendingAdmission: {
+    accountId: "bot-A", actorId: "weixin-account:bot-A:user:bob", messageKey: key, request,
+    operationKey: request.operation_key, threadId: "thread-1", submitted: false, sinceSeq: null,
+  } }));
+  f.start();
+  await until(() => f.sent.some((msg) => msg.item_list[0].text_item.text === NOT_OWNED), "the admission was neither sent nor dropped");
+  assert.equal(f.posts.length, 0, "no turn reaches the shared thread");
+  assert.equal((await f.disk()).chats.bob.pendingAdmission, null);
 });

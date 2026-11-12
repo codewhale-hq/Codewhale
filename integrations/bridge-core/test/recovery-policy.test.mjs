@@ -23,6 +23,7 @@ for(const platform of ['telegram','feishu']) {
     const dir=await fs.mkdtemp(path.join(os.tmpdir(),'bridge-recovery-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
     const file=path.join(dir,'thread-map.json');
     const writer=await ThreadStore.open(file,{messageLimit:200});
+    await writer.recordThreadOwner('chat','thread');
     await writer.setChat('chat',{threadId:'thread',activeTurnId:'turn',lastSeq:7,authorizedIdentity:identity,replyToMessageId:'original'});
     const threadStore=await ThreadStore.open(file,{messageLimit:200});
     const calls={runtime:[],sent:[],stream:[],commands:[]};

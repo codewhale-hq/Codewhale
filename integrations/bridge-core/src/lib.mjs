@@ -223,13 +223,6 @@ export class ThreadStore {
     return this.data.chats[chatId];
   }
 
-  /**
-   * Thread ownership: a chat lists and resumes only threads it created. The
-   * record lives beside, not inside, the chat state so replacing a chat's
-   * state never drops it. A store written before ownership was recorded is
-   * migrated once; a thread that more than one chat points at is shared, so
-   * it is owned by none of them.
-   */
   legacyThreadOwners() {
     const chatsByThread = new Map();
     const reference = (threadId, chatId) => {

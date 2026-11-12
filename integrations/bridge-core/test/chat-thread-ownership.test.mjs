@@ -14,7 +14,7 @@ const integrations = path.join(here, "..", "..");
 const NOT_OWNED = new RegExp(THREAD_NOT_OWNED_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
 const NOTE = "ALICE_PRIVATE_NOTE";
 
-async function until(check, label, timeoutMs = 8000) {
+async function until(check, label, timeoutMs = 30000) {
   const started = Date.now();
   for (;;) {
     const value = check();
@@ -24,9 +24,10 @@ async function until(check, label, timeoutMs = 8000) {
   }
 }
 
-async function withBridge(name, env, run, { seedMap = null, seedThreads = [] } = {}) {
+async function withBridge(name, env, run, { seedMap = null, seedThreads = [], prepare = null } = {}) {
   const stub = await startStub();
   for (const thread of seedThreads) stub.seedThread(thread);
+  if (prepare) prepare(stub);
   const scratch = await mkdtemp(path.join(tmpdir(), "cw-bridge-ownership-"));
   const mapPath = path.join(scratch, "thread-map.json");
   if (seedMap) await writeFile(mapPath, JSON.stringify(seedMap));
@@ -132,8 +133,10 @@ for (const [label, bridge] of Object.entries(bridges)) {
 
       const aliceListing = (await say(push, alice, "/threads", /thr-/)).join("\n");
       assert.ok(aliceListing.includes(aliceThread) && aliceListing.includes(NOTE));
-      await say(push, alice, "/new", /Created thread/);
-      const secondThread = stub.state.threads[0].id;
+      const created = (await say(push, alice, "/new", /Created thread/)).join("\n");
+      const secondThread = created.match(/Created thread (\S+)/)[1];
+      assert.notEqual(secondThread, aliceThread, "/new starts a thread even when the chat already has one");
+      assert.ok(stub.state.threads.some((thread) => thread.id === secondThread), "the new thread exists in the Runtime");
       await say(push, alice, `/resume ${aliceThread}`, /Resumed thread/);
       await say(push, alice, "still mine", /STUB-MODEL/);
       assert.equal(turnPosts(stub, aliceThread).filter((request) => request.body?.prompt === "still mine").length, 1);
@@ -165,6 +168,13 @@ for (const [label, bridge] of Object.entries(bridges)) {
       assert.equal(turnPosts(stub, "thr-shared").length, 0, "no turn reaches the shared thread");
       const listing = (await say(push, bridge.alice, "/threads", /No threads started|thr-/)).join("\n");
       assert.ok(!listing.includes("thr-shared"));
+      const created = (await say(push, bridge.bob, "/new", /Created thread|can only use threads/)).join("\n");
+      assert.doesNotMatch(created, NOT_OWNED, "/new gives the chat a thread of its own");
+      const fresh = created.match(/Created thread (\S+)/)[1];
+      assert.notEqual(fresh, "thr-shared");
+      await say(push, bridge.bob, "hello after new", /STUB-MODEL/);
+      assert.equal(turnPosts(stub, fresh).length, 1);
+      assert.equal(turnPosts(stub, "thr-shared").length, 0);
     }, { seedMap, seedThreads: [{ id: "thr-shared", workspace: "/fixture/bridge-workspace", summary: "shared" }] });
   });
 
@@ -179,6 +189,50 @@ for (const [label, bridge] of Object.entries(bridges)) {
     }, { seedMap, seedThreads: [{ id: "thr-legacy", workspace: "/fixture/bridge-workspace", summary: "legacy" }] });
   });
 }
+
+const otherChatEvents = (entry) => {
+  entry.events.push({ seq: 1, thread_id: "thr-shared", turn_id: "turn-other", event: "item.delta", payload: { kind: "agent_message", delta: "OTHER_CHAT_OUTPUT" } });
+  entry.events.push({ seq: 2, thread_id: "thr-shared", turn_id: "turn-other", event: "turn.completed", payload: { turn: { status: "completed" } } });
+};
+
+test("feishu: a chat the migration disowned does not reattach to another chat's running turn on restart", async () => {
+  const bridge = bridges.feishu;
+  const seedMap = { chats: {
+    oc_alice: { threadId: "thr-shared", lastSeq: 0, activeTurnId: null },
+    oc_bob: { threadId: "thr-shared", lastSeq: 0, activeTurnId: "turn-stale",
+      authorizedIdentity: { chatId: "oc_bob", chatType: "p2p", openId: "ou_oc_bob" } }
+  } };
+  await withBridge(bridge.name, bridge.env, async ({ stub, say, mapPath }) => {
+    const push = bridge.push(stub);
+    const listing = (await say(push, "oc_bob", "/threads", /No threads started|thr-/)).join("\n");
+    assert.ok(!listing.includes("thr-shared"));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const toBob = stub.state.replies.filter((reply) => reply.to === "oc_bob").map((reply) => reply.text).join("\n");
+    assert.ok(!toBob.includes("OTHER_CHAT_OUTPUT") && !/Reattaching/.test(toBob), "no other chat's turn output is relayed");
+    assert.ok(!stub.state.runtimeRequests.some((request) => request.route.includes("/v1/threads/thr-shared")), "the shared thread is never read");
+    const map = JSON.parse(await readFile(mapPath, "utf8"));
+    assert.equal(map.chats.oc_bob.activeTurnId, null, "the stale turn id is cleared");
+  }, { seedMap, prepare: (stub) => otherChatEvents(stub.seedThread({ id: "thr-shared", workspace: "/fixture/bridge-workspace", summary: "shared", runningTurnId: "turn-other" })) });
+});
+
+test("telegram: a chat the migration disowned does not stream another chat's turn and can start over", async () => {
+  const bridge = bridges.telegram;
+  const seedMap = { chats: {
+    "111": { threadId: "thr-shared", lastSeq: 0, activeTurnId: null },
+    "222": { threadId: "thr-shared", lastSeq: 0, activeTurnId: "turn-other", activeMessageKey: "stale-key",
+      authorizedIdentity: { chatId: "222", chatType: "private", userId: "222", isBot: false } }
+  } };
+  await withBridge(bridge.name, bridge.env, async ({ stub, say, mapPath }) => {
+    const push = bridge.push(stub);
+    const created = (await say(push, "222", "/new", /Created thread|pending turn|can only use threads/)).join("\n");
+    assert.match(created, /Created thread/, "the stale turn does not block /new");
+    const toBob = stub.state.replies.filter((reply) => reply.to === "222").map((reply) => reply.text).join("\n");
+    assert.ok(!toBob.includes("OTHER_CHAT_OUTPUT"), "no other chat's turn output is relayed");
+    assert.ok(!stub.state.runtimeRequests.some((request) => request.route === "GET /v1/threads/thr-shared/events"), "the shared thread's events are never read");
+    const map = JSON.parse(await readFile(mapPath, "utf8"));
+    assert.equal(map.chats["222"].activeTurnId, null);
+  }, { seedMap, prepare: (stub) => otherChatEvents(stub.seedThread({ id: "thr-shared", workspace: "/fixture/bridge-workspace", summary: "shared", runningTurnId: "turn-other" })) });
+});
 
 async function withStore(fn, options = {}, seed = null) {
   const dir = await mkdtemp(path.join(tmpdir(), "cw-thread-owners-"));

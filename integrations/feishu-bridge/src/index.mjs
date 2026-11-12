@@ -299,7 +299,10 @@ async function reattachActiveTurns() {
         !["p2p", "group"].includes(identity.chatType) ||
         (identity.chatType !== "p2p" && !config.allowGroups) ||
         !isAllowed(identity, config.allowlist, config.allowUnlisted)) continue;
-
+    if (!threadStore.ownsThread(chatId, state.threadId)) {
+      await threadStore.patchChat(chatId, { activeTurnId: null, updatedAt: new Date().toISOString() });
+      continue;
+    }
 
     const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(state.threadId)}`);
     const runningTurn = latestRunningTurn(detail);

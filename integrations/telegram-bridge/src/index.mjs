@@ -248,7 +248,16 @@ async function isReplayCallbackUpdate(update) {
   return threadStore.recordMessage(`callback:${update.update_id}`);
 }
 
+async function releaseUnownedRecovery(chatId) {
+  const state = await threadStore.getChat(chatId);
+  if (!state?.threadId || threadStore.ownsThread(chatId, state.threadId)) return state;
+  if (!state.pendingAdmission && !state.activeTurnId && !state.pendingQuestion) return state;
+  await clearActiveTurn(chatId);
+  return threadStore.patchChat(chatId, { pendingAdmission: null });
+}
+
 async function handleCommand(chatId, command, identity) {
+  await releaseUnownedRecovery(chatId);
   const action = commandAction(command);
   if (["new_thread", "resume", "compact"].includes(action.kind)) {
     const state = await threadStore.getChat(chatId);
@@ -553,7 +562,7 @@ function startTrackedTurnStream(chatId) {
   activeTurnTasks.set(chatId, task);
   void (async () => {
     while (!stopping && !controller.signal.aborted) {
-      const state = await threadStore.getChat(chatId);
+      const state = await releaseUnownedRecovery(chatId);
       if (!recoveryAllowed(chatId, state)) return;
       if (!state?.pendingAdmission && !state?.activeTurnId) return;
       try {
@@ -578,7 +587,7 @@ function turnActor(identity) {
 }
 
 async function runPrompt(chatId, options = {}) {
-  let state = await threadStore.getChat(chatId);
+  let state = await releaseUnownedRecovery(chatId);
   if (!recoveryAllowed(chatId, state)) return true;
   let pending = state?.pendingAdmission;
   if (pending) {

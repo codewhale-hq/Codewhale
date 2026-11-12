@@ -49,7 +49,9 @@ async function shipping(bridge, names, values) {
   const functions = [...new Set([
     ...(bridge === "weixin-bridge" && names.includes("turnActor") ? ["accountIdentity", "weixinActorId"] : []),
     ...(bridge === "telegram-bridge" && (names.includes("runPrompt") || names.includes("startPromptTurn"))
-      ? ["recoveryAllowed", "supportsAdmissionRecovery"] : []), ...names
+      ? ["recoveryAllowed", "supportsAdmissionRecovery"] : []),
+    ...(bridge === "telegram-bridge" && ["runPrompt", "startPromptTurn", "handleCommand"].some((name) => names.includes(name))
+      ? ["releaseUnownedRecovery", "clearActiveTurn"] : []), ...names
   ])];
   return new Function(...Object.keys(values), functions.map((name) => extract(source, name)).join("\n") +
     `\nreturn { ${names.join(", ")} };`)(...Object.values(values));
@@ -357,7 +359,7 @@ test("Telegram and Feishu actual dispatch passes the admitted human to prompt an
     const lib = await import(`../../${bridge}/src/lib.mjs`);
     const calls = [];
     const identity = identities[bridge]("alice");
-    const values = { ...lib, sendText: async () => {},
+    const values = { ...lib, sendText: async () => {}, threadStore: { getChat: async () => null },
       decideApproval: async (...args) => calls.push(args),
       startPromptTurn: (...args) => calls.push(args),
       runPrompt: async (...args) => calls.push(args) };
