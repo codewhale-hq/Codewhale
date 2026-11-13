@@ -23,6 +23,7 @@
 .install-guide ul { list-style: disc; }
 .install-guide ol { list-style: decimal; }
 .install-guide li { margin-block: var(--space-1); }
+.install-guide li > .code { margin-block: var(--space-3); }
 .install-guide ::marker { color: var(--muted); }
 .install-guide a:not(.btn) { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent); text-underline-offset: 0.2em; }
 .install-guide a:not(.btn):hover { text-decoration-color: var(--accent); }

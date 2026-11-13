@@ -1441,7 +1441,7 @@ fn prose_cells_fill_full_width_on_ultrawide_by_default() {
     let mut cache = TranscriptViewCache::new();
     cache.ensure_filtered(&refs, &revisions, 220, options, &HashMap::new(), None, None);
 
-    for (idx, cell) in cache.per_cell[..3].iter().enumerate() {
+    for (idx, cell) in cache.per_cell.iter().enumerate().take(3) {
         let width = max_line_width(&cell.lines);
         assert!(
             width > RETIRED_RAIL_MEASURE,
@@ -1495,7 +1495,7 @@ fn transcript_prose_measure_caps_prose_but_not_tools() {
     let mut cache = TranscriptViewCache::new();
     cache.ensure_filtered(&refs, &revisions, 220, options, &HashMap::new(), None, None);
 
-    for (idx, cell) in cache.per_cell[..3].iter().enumerate() {
+    for (idx, cell) in cache.per_cell.iter().enumerate().take(3) {
         let width = max_line_width(&cell.lines);
         assert!(
             width > 105,

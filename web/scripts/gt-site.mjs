@@ -49,6 +49,7 @@ const STEMS = {
   "docs-web": { exportName: "docsWeb", typeName: "DocsWebDict" },
   "docs-auth": { exportName: "docsAuth", typeName: "DocsAuthDict" },
   "docs-trust": { exportName: "docsTrust", typeName: "DocsTrustDict" },
+  "docs-first-time": { exportName: "docsFirstTime", typeName: "DocsFirstTimeDict" },
   states: { exportName: "states", typeName: "StatesDict" },
   changelog: { exportName: "changelog", typeName: "ChangelogDict" },
   "computer-use": { exportName: "computerUse", typeName: "ComputerUseDict" },

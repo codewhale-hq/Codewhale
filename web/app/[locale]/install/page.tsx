@@ -97,6 +97,30 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
         <div lang={copyLocale}>
           {locale === "zh" ? mirrors : null}
 
+          <Block id="install-new-to-terminal" title={t(INSTALL_COPY.newTitle)}>
+            {p(INSTALL_COPY.newLead)}
+            <Channel id="install-new-macos" title={t(INSTALL_COPY.newMacTitle)}>
+              <ol>
+                <li><Rich text={t(INSTALL_COPY.newMac1)} /></li>
+                <li><Rich text={t(INSTALL_COPY.newMac2)} />{code(INSTALL_COMMANDS.shell)}</li>
+                <li><Rich text={t(INSTALL_COPY.newMac3)} /></li>
+              </ol>
+            </Channel>
+            <Channel id="install-new-windows" title={t(INSTALL_COPY.newWinTitle)}>
+              <ol>
+                <li><Rich text={t(INSTALL_COPY.newWin1)} /></li>
+                <li><Rich text={t(INSTALL_COPY.newWin2)} />{code(INSTALL_COMMANDS.windows)}</li>
+                <li><Rich text={t(INSTALL_COPY.newWin3)} /></li>
+              </ol>
+            </Channel>
+            <p>
+              <Link href={`/${locale}/docs/first-time`} className="section-link">
+                {t(INSTALL_COPY.newNext)}
+                <Icon name="arrow-right" className="icon icon-flip" />
+              </Link>
+            </p>
+          </Block>
+
           <Block id="install-path" title={t(INSTALL_COPY.pathTitle)}>
             {p(INSTALL_COPY.pathPlaces)}
             <ul>
