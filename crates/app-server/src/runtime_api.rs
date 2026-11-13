@@ -387,7 +387,7 @@ impl RuntimeWorkspaceScopes {
         let owner = self.clone();
         codewhale_runtime::runtime_control::owner_work(move || {
             let (canonical, directory) =
-                codewhale_util::workspace_dir::open_workspace_directory(&lexical)?;
+                codewhale_util::workspace_dir::open_pinned_workspace_directory(&lexical)?;
             let directory = Arc::new(directory);
             let mut scopes = owner.scopes.lock();
             if let Some(scope) = scopes.get(&lexical) {

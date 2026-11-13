@@ -1202,15 +1202,15 @@ async fn real_owner_two_workspace_services_share_scope_caches_and_settle_global_
     {
         let error = fs::rename(&selected_workspace, &retired_workspace)
             .expect_err("a live Runtime owner must prevent workspace replacement");
-        assert_eq!(error.raw_os_error(), Some(5), "{error}");
+        assert_eq!(error.raw_os_error(), Some(32), "{error}");
         assert!(!retired_workspace.exists());
     }
     manager.shutdown_and_wait().await?;
     #[cfg(windows)]
     {
         let error = fs::rename(&selected_workspace, &retired_workspace)
-            .expect_err("Engine shutdown must retain the Runtime owner's workspace lock");
-        assert_eq!(error.raw_os_error(), Some(5), "{error}");
+            .expect_err("Engine shutdown must retain the Runtime owner's pinned workspace");
+        assert_eq!(error.raw_os_error(), Some(32), "{error}");
         assert!(!retired_workspace.exists());
         assert!(Arc::ptr_eq(
             &scopes.admit(selected_workspace.clone()).await?,

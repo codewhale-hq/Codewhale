@@ -29,7 +29,7 @@ resolved values are persisted in their launch manifest.
 
 By default, delegated control-plane state remains workspace-scoped at
 `<workspace>/.codewhale/state`: the worker ledger, complete transcript
-artifacts, and coordination lock share that root. An embedding host may set
+artifacts, and store locks share that root. An embedding host may set
 `EngineConfig::subagent_state_root` to keep those files under a session-owned
 root without changing child cwd, tool path authority, or the execution
 workspace recorded in receipts.
@@ -124,19 +124,32 @@ cannot replace a newer one, and a terminal receipt cannot be resurrected as
 Running by a checkpoint. An explicit terminal retry accepts only the same
 winning outcome; authoritative newer accounting metadata is retained.
 
-Normal interactive/exec/Fleet/background sessions continue to share the
-existing admission flock. The explicit exclusive Runtime constructor retains
-its host admission policy; it is not the mechanism that conserves shared
-snapshots. No manager holds the transaction lock while a child executes or
-while it waits for a provider or channel capacity. Conflicting lock contention
-returns a bounded retry error. Unsupported locking or failed store admission
-refuses durable writes rather than silently creating an empty writable ledger.
+There is no workspace-wide session lock. Interactive, exec, Fleet, background
+and Runtime managers in one folder are ordinary neighbours: each holds only its
+own boot lease and takes the transaction lock per operation. The Runtime
+constructor keeps one manager per state path inside its process. No manager
+holds the transaction lock while a child executes or while it waits for a
+provider or channel capacity. Conflicting lock contention returns a bounded
+retry error. Unsupported locking or failed store admission refuses durable
+writes rather than silently creating an empty writable ledger, and admission is
+retried on the next delegated write instead of staying refused for the life of
+the process.
+
+A Runtime that admits a selected workspace other than its own state root keeps
+that workspace's claims in its own store. Before it admits a shared-workspace
+writer there, and each time it leases such a writer, it refuses while any
+session holds a live boot lease in the selected workspace's own store, and it
+refuses when that store's directory cannot be listed. Only sessions that hold
+a boot lease are seen: a Codewhale 0.10.2 or older session holds none. A
+session that opens in that workspace later does not see the Runtime's claims,
+and its lease refuses the Runtime's next shared-workspace writer there; give
+writers isolated worktrees when both are expected.
 
 Each writer holds its own boot lease. Other managers preserve its live records
 and use its active claims during admission. An existing unlocked lease can
 establish that its writer ended; a missing, invalid or unreadable lease is
-uncertain and fails closed. Local task handles and a failed admission flock do
-not establish that another process's work stopped. Parked and headless
+uncertain and fails closed. Local task handles do not establish that another
+process's work stopped. Parked and headless
 WaitingForUser claim rules retain their existing lifecycle meaning; they do not
 transfer a still-live writer's record ownership to a different boot.
 
@@ -216,10 +229,15 @@ terminal receipt or claim that a remote effect was undone.
 
 ### Legacy cutover and recovery
 
-The first current-format admission takes the legacy admission lock exclusively
-only for migration, after previous holders have left. It retains the original
+The first current-format admission migrates under the short transaction lock.
+It does not wait for older sessions that still hold the retired
+`subagents.v1.lock`. It retains the original
 legacy bytes and a validated recovery copy, then leaves
 `subagents.v1.json` as a private directory containing that recovery material.
+An older session still open in that folder can no longer save its delegated
+state once the directory replaces its file; restart it. If it publishes its
+file between the two cutover renames, the cutover stops at a retained-file
+refusal until a person inspects both files; nothing is deleted.
 The current format3 file is published under the same short transaction lock.
 Interrupted cutover states are validated and resumed without replacing a later
 current-format revision with the old backup. Future or malformed envelopes
