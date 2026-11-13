@@ -342,7 +342,7 @@ fn auto_review_scenario_2() {
         let (decision, audit) = auto_review_plan_decision(
             &crate::core::authority::auto_review::AutoReviewPolicy::default(),
             "exec_shell",
-            &json!({"command": "rm -rf /"}),
+            &json!({"command": "dd if=/dev/zero of=/dev/sda"}),
             crate::core::authority::auto_review::RunOrigin::Interactive,
             ApprovalMode::Auto,
             true,
@@ -357,6 +357,25 @@ fn auto_review_scenario_2() {
         );
         assert_eq!(audit["decision"], "ask_user");
         assert_eq!(audit["risk"], "destructive");
+
+        let (root_decision, root_audit) = auto_review_plan_decision(
+            &crate::core::authority::auto_review::AutoReviewPolicy::default(),
+            "exec_shell",
+            &json!({"command": "rm -rf /"}),
+            crate::core::authority::auto_review::RunOrigin::Interactive,
+            ApprovalMode::Auto,
+            true,
+            None,
+        );
+
+        assert_eq!(
+            root_decision,
+            AutoReviewPlanDecision::ForcePrompt(
+                "Built-in safety gate requires approval: deleting the filesystem root requires explicit confirmation".to_string()
+            )
+        );
+        assert_eq!(root_audit["decision"], "hold_for_review");
+        assert_eq!(root_audit["critical_path_delete"], true);
     }
     // from auto_review_routes_mcp_mutations_or_secret_tools_to_reviewer
     {

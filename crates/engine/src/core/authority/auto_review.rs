@@ -37,6 +37,7 @@ pub struct AutoReviewDecision {
     pub rule_id: Option<String>,
     /// Lets the UI name the non-bypassable built-in gate honestly.
     pub built_in_safety_gate: bool,
+    pub force_prompt_in_auto: bool,
 }
 
 impl AutoReviewDecision {
@@ -46,6 +47,7 @@ impl AutoReviewDecision {
             reason: reason.into(),
             rule_id: None,
             built_in_safety_gate: false,
+            force_prompt_in_auto: false,
         }
     }
 
@@ -55,6 +57,14 @@ impl AutoReviewDecision {
             reason: reason.into(),
             rule_id: None,
             built_in_safety_gate: true,
+            force_prompt_in_auto: false,
+        }
+    }
+
+    fn safety_prompt(reason: impl Into<String>) -> Self {
+        Self {
+            force_prompt_in_auto: true,
+            ..Self::safety_gate(reason)
         }
     }
 
@@ -444,6 +454,7 @@ pub struct AutoReviewContext<'a> {
     /// untracked, or changed since they were last staged. Empty for every
     /// non-write call (D-2).
     pub unrecoverable_deletes: Vec<String>,
+    critical_path_delete: Option<CriticalPathKind>,
     hidden_unicode: Vec<(ExecutionInput, usize, char)>,
     credential_uploads: Vec<String>,
 }
@@ -563,6 +574,9 @@ impl<'a> AutoReviewContext<'a> {
                         .unwrap_or(deletes)
                 }
             },
+            critical_path_delete: (approval_mode == ApprovalMode::Auto)
+                .then(|| critical_path_delete_for_call(name, params, workspace))
+                .flatten(),
             hidden_unicode: execution_texts(name, params)
                 .into_iter()
                 .flat_map(|(input, text)| {
@@ -739,6 +753,7 @@ impl AutoReviewPolicy {
             "write_targets_bounded": ctx.write_targets_bounded,
             "outbound_web_request": ctx.outbound_web_request,
             "unrecoverable_deletes": ctx.unrecoverable_deletes.len(),
+            "critical_path_delete": ctx.critical_path_delete.is_some(),
             "hidden_unicode": ctx.hidden_unicode.len(),
             "credential_uploads": ctx.credential_uploads.len(),
             "decision": match (decision.built_in_safety_gate, decision.action) {
@@ -765,6 +780,17 @@ fn deterministic_fallback(
             ch,
             ctx.hidden_unicode.len(),
         ));
+    }
+
+    if ctx.approval_mode == ApprovalMode::Auto
+        && let Some(kind) = ctx.critical_path_delete
+    {
+        return match ctx.run_origin {
+            RunOrigin::Interactive => AutoReviewDecision::safety_prompt(kind.reason()),
+            RunOrigin::Background | RunOrigin::Headless => {
+                AutoReviewDecision::safety_block(kind.reason())
+            }
+        };
     }
 
     // A native session can also kill a neighboring npm launcher's Node process.
@@ -2049,6 +2075,942 @@ fn strictly_inside(workspace: Option<&std::path::Path>, target: &str) -> bool {
     below(&lexical) && below(&resolved)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CriticalPathKind {
+    FilesystemRoot,
+    HomeFolder,
+    WorkspaceOrAncestor,
+    GitMetadata,
+    UnresolvedTarget,
+}
+
+impl CriticalPathKind {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::FilesystemRoot => "deleting the filesystem root requires explicit confirmation",
+            Self::HomeFolder => "deleting the home folder requires explicit confirmation",
+            Self::WorkspaceOrAncestor => {
+                "deleting the project folder or an ancestor requires explicit confirmation"
+            }
+            Self::GitMetadata => "deleting a .git folder requires explicit confirmation",
+            Self::UnresolvedTarget => {
+                "deleting a target whose path cannot be verified safely requires explicit confirmation"
+            }
+        }
+    }
+}
+
+fn critical_path_delete_for_call(
+    tool_name: &str,
+    params: &Value,
+    workspace: Option<&std::path::Path>,
+) -> Option<CriticalPathKind> {
+    critical_path_delete_with_home(
+        tool_name,
+        params,
+        workspace,
+        codewhale_paths::user_home().as_deref(),
+        cfg!(windows),
+    )
+}
+
+fn critical_path_delete_with_home(
+    tool_name: &str,
+    params: &Value,
+    workspace: Option<&std::path::Path>,
+    home: Option<&std::path::Path>,
+    windows_mode: bool,
+) -> Option<CriticalPathKind> {
+    for (input, text) in execution_texts(tool_name, params) {
+        if input == ExecutionInput::Command
+            && let Some(kind) = critical_path_in_shell_command(&text, workspace, home, windows_mode)
+        {
+            return Some(kind);
+        }
+    }
+    critical_path_in_file_tool(tool_name, params, workspace, home, windows_mode)
+}
+
+#[derive(Debug, Clone)]
+enum ShellCwd {
+    Known(std::path::PathBuf),
+    Unset,
+    Tainted,
+}
+
+fn critical_path_in_shell_command(
+    command: &str,
+    workspace: Option<&std::path::Path>,
+    home: Option<&std::path::Path>,
+    windows_mode: bool,
+) -> Option<CriticalPathKind> {
+    use codewhale_execpolicy::command_safety::{
+        command_invocations, destroyer_floor_invocations, is_literal_rm_invocation,
+    };
+
+    let Some(invocations) = command_invocations(command) else {
+        return Some(CriticalPathKind::UnresolvedTarget);
+    };
+    let scoped_cwd = command.contains(['(', '`']);
+    if let Some(kind) =
+        eval_shell_invocations(&invocations, scoped_cwd, workspace, home, windows_mode)
+    {
+        return Some(kind);
+    }
+    if !is_literal_rm_invocation(command) {
+        let Some(floor_invocations) = destroyer_floor_invocations(command) else {
+            return Some(CriticalPathKind::UnresolvedTarget);
+        };
+        if let Some(kind) = eval_shell_invocations(
+            &floor_invocations,
+            scoped_cwd,
+            workspace,
+            home,
+            windows_mode,
+        ) {
+            return Some(kind);
+        }
+    }
+    None
+}
+
+fn eval_shell_invocations(
+    invocations: &[Vec<String>],
+    scoped_cwd: bool,
+    workspace: Option<&std::path::Path>,
+    home: Option<&std::path::Path>,
+    windows_mode: bool,
+) -> Option<CriticalPathKind> {
+    let changes_cwd = invocations.iter().any(|argv| {
+        argv.first()
+            .is_some_and(|cmd| matches!(normalize_command_name(cmd).as_str(), "cd" | "pushd"))
+    });
+    let mut cwd = if changes_cwd && scoped_cwd {
+        ShellCwd::Tainted
+    } else {
+        workspace
+            .map(std::path::Path::to_path_buf)
+            .map_or(ShellCwd::Unset, ShellCwd::Known)
+    };
+    for argv in invocations {
+        let Some((raw_cmd, args)) = argv.split_first() else {
+            continue;
+        };
+        let cmd = normalize_command_name(raw_cmd);
+        match cmd.as_str() {
+            "cd" | "pushd" => {
+                cwd = advance_shell_cwd(&cwd, args, home, windows_mode);
+            }
+            "xargs" | "parallel" => {
+                if args.iter().any(|arg| {
+                    matches!(
+                        normalize_command_name(arg).as_str(),
+                        "rm" | "rmdir" | "unlink" | "rd" | "remove-item"
+                    )
+                }) {
+                    return Some(CriticalPathKind::UnresolvedTarget);
+                }
+            }
+            "popd" => {
+                cwd = ShellCwd::Tainted;
+            }
+            "rm" | "rmdir" | "unlink" => {
+                if let Some(kind) =
+                    classify_rm_or_rmdir_args(&cmd, args, &cwd, workspace, home, windows_mode)
+                {
+                    return Some(kind);
+                }
+            }
+            "rd" | "remove-item" | "ri" if windows_mode => {
+                if let Some(kind) =
+                    classify_rm_or_rmdir_args(&cmd, args, &cwd, workspace, home, windows_mode)
+                {
+                    return Some(kind);
+                }
+            }
+            "find" => {
+                if let Some(kind) =
+                    classify_find_delete_args(args, &cwd, workspace, home, windows_mode)
+                {
+                    return Some(kind);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn normalize_command_name(cmd: &str) -> String {
+    let lower = cmd.trim_start_matches(['(', '{']).to_ascii_lowercase();
+    lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
+}
+
+fn advance_shell_cwd(
+    current: &ShellCwd,
+    args: &[String],
+    home: Option<&std::path::Path>,
+    windows_mode: bool,
+) -> ShellCwd {
+    let mut after_double_dash = false;
+    let mut dest: Option<&str> = None;
+    for arg in args {
+        if !after_double_dash && arg == "--" {
+            after_double_dash = true;
+            continue;
+        }
+        if !after_double_dash && arg.starts_with('-') && arg.len() > 1 {
+            continue;
+        }
+        dest = Some(arg.as_str());
+        break;
+    }
+    let Some(dest) = dest else {
+        return current.clone();
+    };
+    if dest == "-" {
+        return ShellCwd::Tainted;
+    }
+    let current_path = match current {
+        ShellCwd::Known(path) => Some(path.as_path()),
+        ShellCwd::Unset => None,
+        ShellCwd::Tainted => return ShellCwd::Tainted,
+    };
+    match resolve_shell_path_target(dest, current_path, home, windows_mode) {
+        Some(ResolvedTarget::Concrete(path)) if path.is_dir() => ShellCwd::Known(path),
+        _ => ShellCwd::Tainted,
+    }
+}
+
+fn classify_rm_or_rmdir_args(
+    cmd: &str,
+    args: &[String],
+    cwd: &ShellCwd,
+    workspace: Option<&std::path::Path>,
+    home: Option<&std::path::Path>,
+    windows_mode: bool,
+) -> Option<CriticalPathKind> {
+    let mut after_double_dash = false;
+    let windows_slash_switches = windows_mode && matches!(cmd, "rd" | "rmdir");
+    let powershell_path_flags = cmd == "remove-item" || cmd == "ri";
+    let mut operands = Vec::new();
+    for arg in args {
+        if !after_double_dash && arg == "--" {
+            after_double_dash = true;
+            continue;
+        }
+        if !after_double_dash && matches!(arg.as_str(), "-h" | "--help" | "--version") {
+            return None;
+        }
+        if !after_double_dash && arg.starts_with('-') && arg.len() > 1 {
+            if powershell_path_flags
+                && let Some(val) = arg
+                    .strip_prefix("-Path:")
+                    .or_else(|| arg.strip_prefix("-path:"))
+                    .or_else(|| arg.strip_prefix("-LiteralPath:"))
+                    .or_else(|| arg.strip_prefix("-literalpath:"))
+            {
+                operands.push(val);
+            }
+            continue;
+        }
+        if !after_double_dash && windows_slash_switches && is_windows_slash_switch(arg) {
+            continue;
+        }
+        operands.push(arg.as_str());
+    }
+    for operand in operands {
+        if let Some(kind) = classify_target_operand(operand, cwd, workspace, home, windows_mode) {
+            return Some(kind);
+        }
+    }
+    None
+}
+
+fn is_windows_slash_switch(arg: &str) -> bool {
+    let Some(rest) = arg.strip_prefix('/') else {
+        return false;
+    };
+    !rest.is_empty()
+        && rest.len() <= 3
+        && rest
+            .bytes()
+            .all(|byte| byte.is_ascii_alphabetic() || byte == b'?')
+        && !rest.eq_ignore_ascii_case("git")
+}
+
+fn classify_find_delete_args(
+    args: &[String],
+    cwd: &ShellCwd,
+    workspace: Option<&std::path::Path>,
+    home: Option<&std::path::Path>,
+    windows_mode: bool,
+) -> Option<CriticalPathKind> {
+    let expr_start = args
+        .iter()
+        .position(|arg| {
+            (arg.starts_with('-') && arg.len() > 1) || matches!(arg.as_str(), "!" | "(" | ")" | ",")
+        })
+        .unwrap_or(args.len());
+    let starts = &args[..expr_start];
+    let expr = &args[expr_start..];
+    if !find_expr_can_delete(expr) {
+        return None;
+    }
+
+    let narrowed = find_expr_safely_narrowed(expr);
+    let default_starts = [".".to_string()];
+    let candidates = if starts.is_empty() {
+        &default_starts[..]
+    } else {
+        starts
+    };
+    for start in candidates {
+        let Some(kind) = classify_target_operand(start, cwd, workspace, home, windows_mode) else {
+            continue;
+        };
+        if kind == CriticalPathKind::WorkspaceOrAncestor
+            && narrowed
+            && is_exact_workspace_root_target(start, cwd, workspace, home, windows_mode)
+        {
+            continue;
+        }
+        return Some(kind);
+    }
+    None
+}
+
+fn find_expr_can_delete(expr: &[String]) -> bool {
+    let mut index = 0;
+    while index < expr.len() {
+        let token = expr[index].as_str();
+        if token == "-delete" {
+            return true;
+        }
+        if matches!(token, "-exec" | "-execdir" | "-ok" | "-okdir")
+            && let Some(exec_cmd) = expr.get(index + 1)
+        {
+            let name = std::path::Path::new(exec_cmd)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(normalize_command_name)
+                .unwrap_or_else(|| normalize_command_name(exec_cmd));
+            if matches!(
+                name.as_str(),
+                "rm" | "rmdir"
+                    | "rd"
+                    | "unlink"
+                    | "remove-item"
+                    | "sh"
+                    | "bash"
+                    | "zsh"
+                    | "dash"
+                    | "cmd"
+                    | "powershell"
+                    | "pwsh"
+                    | "python"
+                    | "python3"
+                    | "perl"
+            ) {
+                return true;
+            }
+        }
+        index += 1;
+    }
+    false
+}
+
+fn find_expr_safely_narrowed(expr: &[String]) -> bool {
+    if expr.iter().any(|token| {
+        matches!(
+            token.as_str(),
+            "!" | "-not" | "-o" | "-or" | "," | "-L" | "-follow"
+        )
+    }) {
+        return false;
+    }
+    let mut index = 0;
+    while index + 1 < expr.len() {
+        let flag = expr[index].as_str();
+        let pattern = expr[index + 1].as_str();
+        match flag {
+            "-name" | "-iname" => {
+                if !pattern.contains(['$', '`'])
+                    && !glob_matches_critical_name(pattern, flag == "-iname")
+                {
+                    return true;
+                }
+            }
+            "-path" | "-ipath" => {
+                let trimmed = pattern.trim_start_matches("./").trim_start_matches(".\\");
+                if !pattern.contains(['$', '`'])
+                    && !trimmed.is_empty()
+                    && trimmed.split(['/', '\\']).next().is_some_and(|first| {
+                        !first.is_empty() && !glob_matches_critical_name(first, flag == "-ipath")
+                    })
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    false
+}
+
+fn glob_matches_critical_name(pattern: &str, case_insensitive: bool) -> bool {
+    let Ok(glob) = globset::GlobBuilder::new(pattern)
+        .case_insensitive(case_insensitive)
+        .build()
+    else {
+        return true;
+    };
+    let matcher = glob.compile_matcher();
+    matcher.is_match(".")
+        || matcher.is_match("..")
+        || matcher.is_match(".git")
+        || matcher.is_match(".GIT")
+}
+
+fn critical_path_in_file_tool(
+    tool_name: &str,
+    params: &Value,
+    workspace: Option<&std::path::Path>,
+    home: Option<&std::path::Path>,
+    windows_mode: bool,
+) -> Option<CriticalPathKind> {
+    let cwd = workspace
+        .map(std::path::Path::to_path_buf)
+        .map_or(ShellCwd::Unset, ShellCwd::Known);
+    file_write_delete_paths(tool_name, params, workspace)
+        .iter()
+        .find_map(|target| classify_target_operand(target, &cwd, workspace, home, windows_mode))
+}
+
+enum ResolvedTarget {
+    HomeRoot,
+    Concrete(std::path::PathBuf),
+    Unresolved,
+}
+
+fn resolve_shell_path_target(
+    raw: &str,
+    cwd: Option<&std::path::Path>,
+    home: Option<&std::path::Path>,
+    windows_mode: bool,
+) -> Option<ResolvedTarget> {
+    let trimmed = shell_token_trim(raw);
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(rest) = strip_home_token(trimmed, windows_mode) {
+        let rest_clean = rest.trim_start_matches(['/', '\\']);
+        if rest_clean.is_empty() {
+            return Some(ResolvedTarget::HomeRoot);
+        }
+        let Some(home_dir) = home else {
+            return Some(ResolvedTarget::Unresolved);
+        };
+        if has_unknown_shell_expansion(rest_clean, windows_mode) {
+            return Some(ResolvedTarget::Unresolved);
+        }
+        let joined = join_path_str(home_dir, rest_clean, windows_mode);
+        return Some(ResolvedTarget::Concrete(std::path::PathBuf::from(joined)));
+    }
+    if trimmed.starts_with('~') {
+        return Some(ResolvedTarget::Unresolved);
+    }
+    if has_unknown_shell_expansion(trimmed, windows_mode) {
+        return Some(ResolvedTarget::Unresolved);
+    }
+    if is_abs_target(trimmed, windows_mode) {
+        return Some(ResolvedTarget::Concrete(std::path::PathBuf::from(trimmed)));
+    }
+    match cwd {
+        Some(base) => Some(ResolvedTarget::Concrete(std::path::PathBuf::from(
+            join_path_str(base, trimmed, windows_mode),
+        ))),
+        None => Some(ResolvedTarget::Concrete(std::path::PathBuf::from(trimmed))),
+    }
+}
+
+fn strip_home_token(token: &str, windows_mode: bool) -> Option<&str> {
+    if token == "~" {
+        return Some("");
+    }
+    if let Some(rest) = token.strip_prefix("~/") {
+        return Some(rest);
+    }
+    if let Some(rest) = token.strip_prefix("~\\") {
+        return Some(rest);
+    }
+    for prefix in ["$HOME", "${HOME}"] {
+        if let Some(rest) = token.strip_prefix(prefix)
+            && (rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\'))
+        {
+            return Some(rest);
+        }
+    }
+    if windows_mode || token.contains(['%', ':']) {
+        let lower = token.to_ascii_lowercase();
+        for prefix in [
+            "%userprofile%",
+            "%home%",
+            "$env:userprofile",
+            "$env:home",
+            "${env:userprofile}",
+            "${env:home}",
+        ] {
+            if lower.starts_with(prefix) {
+                let rest = &token[prefix.len()..];
+                if rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\') {
+                    return Some(rest);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn has_unknown_shell_expansion(token: &str, windows_mode: bool) -> bool {
+    if token.contains(['$', '`']) {
+        return true;
+    }
+    if windows_mode && has_percent_env_var(token) {
+        return true;
+    }
+    false
+}
+
+fn has_percent_env_var(token: &str) -> bool {
+    let mut chars = token.split('%');
+    let _before = chars.next();
+    let Some(middle) = chars.next() else {
+        return false;
+    };
+    chars.next().is_some() && !middle.is_empty()
+}
+
+fn has_glob_or_brace(component: &str) -> bool {
+    if component.contains(['*', '?', '[']) {
+        return true;
+    }
+    if let Some(start) = component.find('{')
+        && let Some(end_rel) = component[start + 1..].find('}')
+    {
+        let inner = &component[start + 1..start + 1 + end_rel];
+        return inner.contains(',') || inner.contains("..");
+    }
+    false
+}
+
+fn is_abs_target(token: &str, windows_mode: bool) -> bool {
+    if token.starts_with('/') {
+        return true;
+    }
+    if windows_mode {
+        return token.starts_with('\\')
+            || token.as_bytes().get(1).is_some_and(|b| *b == b':')
+                && token
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphabetic);
+    }
+    false
+}
+
+fn join_path_str(base: &std::path::Path, rel: &str, windows_mode: bool) -> String {
+    let base_str = base.to_string_lossy();
+    let sep = if windows_mode { '\\' } else { '/' };
+    let clean_base = base_str.trim_end_matches(['/', '\\']);
+    let clean_rel = rel.trim_start_matches(['/', '\\']);
+    if clean_base.is_empty() && base_str.starts_with('/') {
+        format!("/{clean_rel}")
+    } else if clean_rel.is_empty() {
+        base_str.into_owned()
+    } else {
+        format!("{clean_base}{sep}{clean_rel}")
+    }
+}
+
+fn classify_target_operand(
+    raw: &str,
+    cwd: &ShellCwd,
+    workspace: Option<&std::path::Path>,
+    home: Option<&std::path::Path>,
+    windows_mode: bool,
+) -> Option<CriticalPathKind> {
+    let trimmed = shell_token_trim(raw);
+    if trimmed.is_empty() {
+        return None;
+    }
+    if matches!(cwd, ShellCwd::Tainted)
+        && !is_abs_target(trimmed, windows_mode)
+        && strip_home_token(trimmed, windows_mode).is_none()
+    {
+        return Some(CriticalPathKind::UnresolvedTarget);
+    }
+    let cwd_path = match cwd {
+        ShellCwd::Known(p) => Some(p.as_path()),
+        ShellCwd::Unset | ShellCwd::Tainted => None,
+    };
+    let resolved_target = match resolve_shell_path_target(trimmed, cwd_path, home, windows_mode)? {
+        ResolvedTarget::HomeRoot => return Some(CriticalPathKind::HomeFolder),
+        ResolvedTarget::Unresolved => return Some(CriticalPathKind::UnresolvedTarget),
+        ResolvedTarget::Concrete(path) => path,
+    };
+    let target_str = resolved_target.to_string_lossy();
+    if let Some(kind) = check_glob_target(&target_str, workspace, home, windows_mode) {
+        return Some(kind);
+    }
+    let lex_norm = normalize_compare_str(&target_str, windows_mode);
+    if let Some(kind) = classify_normalized_str(&lex_norm, workspace, home, windows_mode) {
+        return Some(kind);
+    }
+    if is_abs_target(&target_str, windows_mode) {
+        for candidate in [
+            resolve_physical_preserving_tail(&resolved_target),
+            resolve_physical_preserving_tail(std::path::Path::new(&lex_norm)),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let phys_norm = normalize_compare_str(&candidate.to_string_lossy(), windows_mode);
+            if let Some(kind) = classify_normalized_str(&phys_norm, workspace, home, windows_mode) {
+                return Some(kind);
+            }
+        }
+    }
+    None
+}
+
+fn check_glob_target(
+    target_str: &str,
+    workspace: Option<&std::path::Path>,
+    home: Option<&std::path::Path>,
+    windows_mode: bool,
+) -> Option<CriticalPathKind> {
+    if !target_str.contains(['*', '?', '[', '{']) {
+        return None;
+    }
+    let seps: &[char] = if windows_mode { &['/', '\\'] } else { &['/'] };
+    let parts: Vec<&str> = target_str.split(seps).collect();
+    for (idx, part) in parts.iter().enumerate() {
+        if !has_glob_or_brace(part) {
+            continue;
+        }
+        if part.contains(['{', '}']) {
+            return Some(CriticalPathKind::UnresolvedTarget);
+        }
+        if glob_matches_critical_name(part, windows_mode) {
+            return Some(CriticalPathKind::GitMetadata);
+        }
+        let parent_str = parts[..idx].join("/");
+        if parent_str.is_empty() && target_str.starts_with(seps) {
+            return Some(CriticalPathKind::FilesystemRoot);
+        }
+        let parent_norm = normalize_compare_str(&parent_str, windows_mode);
+        let Some(parent_kind) =
+            classify_normalized_str(&parent_norm, workspace, home, windows_mode)
+        else {
+            continue;
+        };
+        if matches!(
+            parent_kind,
+            CriticalPathKind::FilesystemRoot | CriticalPathKind::GitMetadata
+        ) {
+            return Some(parent_kind);
+        }
+        if let Some(ws) = workspace {
+            for ws_norm in path_compare_variants(ws, windows_mode) {
+                if path_is_strict_ancestor(&parent_norm, &ws_norm, windows_mode)
+                    && let Some(next_comp) = ws_norm[parent_norm.len()..]
+                        .trim_start_matches('/')
+                        .split('/')
+                        .next()
+                    && glob_matches_name(part, next_comp, windows_mode)
+                {
+                    return Some(CriticalPathKind::WorkspaceOrAncestor);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn glob_matches_name(pattern: &str, candidate: &str, case_insensitive: bool) -> bool {
+    let Ok(glob) = globset::GlobBuilder::new(pattern)
+        .case_insensitive(case_insensitive)
+        .build()
+    else {
+        return true;
+    };
+    glob.compile_matcher().is_match(candidate)
+}
+
+fn classify_normalized_str(
+    norm_path: &str,
+    workspace: Option<&std::path::Path>,
+    home: Option<&std::path::Path>,
+    windows_mode: bool,
+) -> Option<CriticalPathKind> {
+    if norm_path.is_empty() {
+        return Some(CriticalPathKind::WorkspaceOrAncestor);
+    }
+    if is_filesystem_root_str(norm_path, windows_mode) {
+        return Some(CriticalPathKind::FilesystemRoot);
+    }
+    if let Some(home_dir) = home {
+        let home_variants = path_compare_variants(home_dir, windows_mode);
+        if home_variants
+            .iter()
+            .any(|h| same_compare_path(norm_path, h, windows_mode))
+        {
+            return Some(CriticalPathKind::HomeFolder);
+        }
+    }
+    if norm_path == "." || norm_path == ".." || norm_path.starts_with("../") {
+        return Some(CriticalPathKind::WorkspaceOrAncestor);
+    }
+    let mut matched_ws_prefix: Option<String> = None;
+    if let Some(ws) = workspace {
+        for ws_norm in path_compare_variants(ws, windows_mode) {
+            if same_compare_path(norm_path, &ws_norm, windows_mode)
+                || path_is_strict_ancestor(norm_path, &ws_norm, windows_mode)
+            {
+                return Some(CriticalPathKind::WorkspaceOrAncestor);
+            }
+            if matched_ws_prefix.is_none() && path_has_prefix(norm_path, &ws_norm, windows_mode) {
+                matched_ws_prefix = Some(ws_norm);
+            }
+        }
+    }
+    let rel_for_git = match matched_ws_prefix.as_deref() {
+        Some(ws_norm) if norm_path.len() > ws_norm.len() => {
+            norm_path[ws_norm.len()..].trim_start_matches('/')
+        }
+        _ => norm_path,
+    };
+    if rel_for_git.split('/').any(|comp| {
+        !comp.is_empty() && codewhale_util::git_metadata::git_metadata_name(comp, windows_mode)
+    }) {
+        return Some(CriticalPathKind::GitMetadata);
+    }
+    None
+}
+
+fn is_exact_workspace_root_target(
+    raw: &str,
+    cwd: &ShellCwd,
+    workspace: Option<&std::path::Path>,
+    home: Option<&std::path::Path>,
+    windows_mode: bool,
+) -> bool {
+    let Some(ws) = workspace else {
+        return false;
+    };
+    let cwd_path = match cwd {
+        ShellCwd::Known(p) => Some(p.as_path()),
+        ShellCwd::Unset | ShellCwd::Tainted => None,
+    };
+    let Some(ResolvedTarget::Concrete(resolved)) =
+        resolve_shell_path_target(raw, cwd_path, home, windows_mode)
+    else {
+        return false;
+    };
+    let lex_norm = normalize_compare_str(&resolved.to_string_lossy(), windows_mode);
+    let ws_variants = path_compare_variants(ws, windows_mode);
+    if ws_variants
+        .iter()
+        .any(|w| same_compare_path(&lex_norm, w, windows_mode))
+    {
+        return true;
+    }
+    if let Some(phys) = resolve_physical_preserving_tail(&resolved) {
+        let phys_norm = normalize_compare_str(&phys.to_string_lossy(), windows_mode);
+        return ws_variants
+            .iter()
+            .any(|w| same_compare_path(&phys_norm, w, windows_mode));
+    }
+    false
+}
+
+fn resolve_physical_preserving_tail(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut current = Some(path);
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    while let Some(candidate) = current {
+        if let Ok(canon) = candidate.canonicalize() {
+            let mut out = canon;
+            for part in tail.iter().rev() {
+                out.push(part);
+            }
+            return Some(out);
+        }
+        let Some(name) = candidate.file_name() else {
+            break;
+        };
+        tail.push(name.to_os_string());
+        current = candidate.parent();
+    }
+    None
+}
+
+fn path_compare_variants(path: &std::path::Path, windows_mode: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    let lex = normalize_compare_str(&path.to_string_lossy(), windows_mode);
+    if !lex.is_empty() {
+        out.push(lex);
+    }
+    if let Ok(canon) = path.canonicalize() {
+        let c = normalize_compare_str(&canon.to_string_lossy(), windows_mode);
+        if !c.is_empty()
+            && !out
+                .iter()
+                .any(|existing| same_compare_path(existing, &c, windows_mode))
+        {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn normalize_compare_str(raw: &str, windows_mode: bool) -> String {
+    let s = if windows_mode {
+        strip_windows_verbatim(raw).replace('\\', "/")
+    } else {
+        raw.to_string()
+    };
+    let s = s.trim();
+    if s.is_empty() {
+        return String::new();
+    }
+    let (prefix, rest) = split_compare_prefix(s, windows_mode);
+    let has_root = !prefix.is_empty();
+    let mut stack: Vec<&str> = Vec::new();
+    for seg in rest.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                if stack.last().is_some_and(|last| *last != "..") {
+                    stack.pop();
+                } else if !has_root {
+                    stack.push("..");
+                }
+            }
+            other => stack.push(other),
+        }
+    }
+    if has_root {
+        if stack.is_empty() {
+            prefix.to_string()
+        } else if prefix.ends_with('/') {
+            format!("{prefix}{}", stack.join("/"))
+        } else {
+            format!("{prefix}/{}", stack.join("/"))
+        }
+    } else if stack.is_empty() {
+        ".".to_string()
+    } else {
+        stack.join("/")
+    }
+}
+
+fn strip_windows_verbatim(raw: &str) -> std::borrow::Cow<'_, str> {
+    let normalized = raw.replace('\\', "/");
+    if let Some(rest) = normalized
+        .strip_prefix("//?/UNC/")
+        .or_else(|| normalized.strip_prefix("//?/unc/"))
+    {
+        return std::borrow::Cow::Owned(format!("//{rest}"));
+    }
+    if let Some(rest) = normalized.strip_prefix("//?/") {
+        return std::borrow::Cow::Owned(rest.to_string());
+    }
+    std::borrow::Cow::Owned(normalized)
+}
+
+fn split_compare_prefix(s: &str, windows_mode: bool) -> (String, &str) {
+    if windows_mode {
+        if let Some(after_unc) = s.strip_prefix("//") {
+            let mut parts = after_unc.splitn(3, '/');
+            if let (Some(server), Some(share)) = (parts.next(), parts.next())
+                && !server.is_empty()
+                && !share.is_empty()
+            {
+                let rest = parts.next().unwrap_or("");
+                return (format!("//{server}/{share}/"), rest);
+            }
+            return ("/".to_string(), after_unc);
+        }
+        let bytes = s.as_bytes();
+        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+            let drive = format!("{}:/", bytes[0].to_ascii_lowercase() as char);
+            let rest = &s[2..];
+            return (drive, rest.trim_start_matches('/'));
+        }
+    }
+    if s.starts_with('/') {
+        return ("/".to_string(), s.trim_start_matches('/'));
+    }
+    (String::new(), s)
+}
+
+fn is_filesystem_root_str(norm_path: &str, windows_mode: bool) -> bool {
+    if norm_path == "/" {
+        return true;
+    }
+    if windows_mode {
+        let bytes = norm_path.as_bytes();
+        if bytes.len() == 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && bytes[2] == b'/'
+        {
+            return true;
+        }
+        if let Some(after_unc) = norm_path.strip_prefix("//") {
+            let mut parts = after_unc.split('/');
+            let server = parts.next().unwrap_or("");
+            let share = parts.next().unwrap_or("");
+            let tail = parts.next().unwrap_or("");
+            return !server.is_empty()
+                && !share.is_empty()
+                && tail.is_empty()
+                && parts.next().is_none();
+        }
+    }
+    false
+}
+
+fn same_compare_path(a: &str, b: &str, windows_mode: bool) -> bool {
+    if windows_mode {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
+}
+
+fn path_has_prefix(path: &str, prefix: &str, windows_mode: bool) -> bool {
+    if same_compare_path(path, prefix, windows_mode) {
+        return true;
+    }
+    let starts = if windows_mode {
+        path.len() > prefix.len() && path[..prefix.len()].eq_ignore_ascii_case(prefix)
+    } else {
+        path.starts_with(prefix)
+    };
+    if !starts {
+        return false;
+    }
+    prefix.ends_with('/') || path.as_bytes().get(prefix.len()) == Some(&b'/')
+}
+
+fn path_is_strict_ancestor(candidate: &str, child: &str, windows_mode: bool) -> bool {
+    !same_compare_path(candidate, child, windows_mode)
+        && path_has_prefix(child, candidate, windows_mode)
+}
+
 fn shell_tokens_are_publish_like(tokens: &[&str]) -> bool {
     if git_tag_tokens_are_publish_like(tokens) {
         return true;
@@ -2152,10 +3114,7 @@ fn git_push_refspec_is_protected(refspec: &str) -> bool {
     // Tag-like names (`v1`, `v0.9.1`): git resolves branch-vs-tag on the
     // server, so treat them as publishes.
     let mut chars = lower.chars();
-    if chars.next() == Some('v') && chars.next().is_some_and(|ch| ch.is_ascii_digit()) {
-        return true;
-    }
-    false
+    chars.next() == Some('v') && chars.next().is_some_and(|ch| ch.is_ascii_digit())
 }
 
 fn git_tag_tokens_are_publish_like(tokens: &[&str]) -> bool {
@@ -4256,5 +5215,338 @@ mod tests {
             context["deterministic_observations"]["credentials_masked"],
             true
         );
+    }
+
+    #[test]
+    fn critical_path_deletions_hold_interactive_and_block_unattended_even_with_allow_rules() {
+        use crate::core::engine::{AutoReviewPlanDecision, auto_review_plan_decision_for_context};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ws = temp.path().join("project");
+        std::fs::create_dir_all(ws.join(".git")).expect("create .git");
+        std::fs::create_dir_all(ws.join("sub")).expect("create sub");
+        let ws_name = ws
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("workspace name");
+
+        let permissive_policy = AutoReviewPolicy {
+            allow_rules: vec![
+                AutoReviewRule::allow("allow-all", "delete everything")
+                    .action_kind(ToolActionKind::Shell),
+                AutoReviewRule::allow("allow-write", "delete everything")
+                    .action_kind(ToolActionKind::Write),
+                AutoReviewRule::allow("allow-rm", "delete everything").tool_name("exec_shell"),
+                AutoReviewRule::allow("allow-patch", "delete everything").tool_name("apply_patch"),
+            ],
+            ..Default::default()
+        };
+
+        let cases = [
+            ("exec_shell", json!({"command": "rm -rf ~"})),
+            ("exec_shell", json!({"command": "rm -rf \"$HOME\""})),
+            ("exec_shell", json!({"command": "rm -rf /"})),
+            ("exec_shell", json!({"command": "rm -rf ."})),
+            ("exec_shell", json!({"command": "rm -rf .."})),
+            ("exec_shell", json!({"command": "rm -rf .git"})),
+            ("exec_shell", json!({"command": "rmdir .git"})),
+            ("exec_shell", json!({"command": "find . -delete"})),
+            ("exec_shell", json!({"command": "find -delete"})),
+            ("exec_shell", json!({"command": "find / -delete"})),
+            (
+                "exec_shell",
+                json!({"command": "find ~ -name '*.tmp' -delete"}),
+            ),
+            (
+                "exec_shell",
+                json!({"command": "find .. -name '*.tmp' -delete"}),
+            ),
+            ("exec_shell", json!({"command": "find .git -delete"})),
+            ("exec_shell", json!({"command": "find . -type f -delete"})),
+            ("exec_shell", json!({"command": "find . -name '*' -delete"})),
+            (
+                "exec_shell",
+                json!({"command": "find . -name '.*' -delete"}),
+            ),
+            ("exec_shell", json!({"command": "rm -rf sub/../.."})),
+            (
+                "exec_shell",
+                json!({"command": format!("cd .. && rm -rf {ws_name}")}),
+            ),
+            (
+                "exec_shell",
+                json!({"command": "cd $UNKNOWN_DIR && rm -rf build"}),
+            ),
+            ("exec_shell", json!({"command": "rm -rf $TARGET_DIR"})),
+            ("exec_shell", json!({"command": "rm -rf .*"})),
+            ("exec_shell", json!({"command": "ls | xargs rm -rf"})),
+            (
+                "exec_shell",
+                json!({"command": "(cd sub && true); rm -rf ."}),
+            ),
+            ("exec_shell", json!({"command": "cd missing; rm -rf ."})),
+            ("exec_shell", json!({"command": "rm -rf /*"})),
+            (
+                "apply_patch",
+                json!({"patch": "*** Begin Patch\n*** Delete File: .\n*** End Patch"}),
+            ),
+        ];
+
+        for (tool, params) in &cases {
+            let interactive_ctx = AutoReviewContext::from_tool_call(
+                tool,
+                params,
+                RunOrigin::Interactive,
+                ApprovalMode::Auto,
+                true,
+                Some(&ws),
+            );
+            let decision = permissive_policy.evaluate(&interactive_ctx);
+            assert_eq!(
+                decision.action,
+                AutoReviewAction::AskUser,
+                "{tool} {params}"
+            );
+            assert!(decision.built_in_safety_gate, "{tool} {params}");
+            assert!(decision.force_prompt_in_auto, "{tool} {params}");
+            let (plan, audit) =
+                auto_review_plan_decision_for_context(&permissive_policy, &interactive_ctx);
+            assert!(
+                matches!(plan, AutoReviewPlanDecision::ForcePrompt(_)),
+                "expected ForcePrompt for interactive {tool} {params}, got {plan:?}"
+            );
+            assert_eq!(audit["decision"], "hold_for_review", "{tool} {params}");
+            assert_eq!(audit["critical_path_delete"], true, "{tool} {params}");
+
+            for unattended in [RunOrigin::Background, RunOrigin::Headless] {
+                let unattended_ctx = AutoReviewContext::from_tool_call(
+                    tool,
+                    params,
+                    unattended,
+                    ApprovalMode::Auto,
+                    true,
+                    Some(&ws),
+                );
+                let unattended_decision = permissive_policy.evaluate(&unattended_ctx);
+                assert_eq!(
+                    unattended_decision.action,
+                    AutoReviewAction::Block,
+                    "{unattended:?} {tool} {params}"
+                );
+                assert!(unattended_decision.built_in_safety_gate, "{tool} {params}");
+                let (plan, audit) =
+                    auto_review_plan_decision_for_context(&permissive_policy, &unattended_ctx);
+                assert!(
+                    matches!(plan, AutoReviewPlanDecision::Block(_)),
+                    "expected Block for {unattended:?} {tool} {params}, got {plan:?}"
+                );
+                assert_eq!(audit["critical_path_delete"], true, "{tool} {params}");
+            }
+        }
+    }
+
+    #[test]
+    fn critical_path_catches_symlink_hops_and_windows_roots() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ws = temp.path().join("repo");
+        std::fs::create_dir_all(ws.join(".git")).expect("create .git");
+        let fake_home = temp.path().join("home_dir");
+        std::fs::create_dir_all(&fake_home).expect("create fake_home");
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(std::path::Path::new("/"), ws.join("link_root"))
+                .expect("symlink root");
+            std::os::unix::fs::symlink(&fake_home, ws.join("link_home")).expect("symlink home");
+            std::os::unix::fs::symlink(&ws, ws.join("link_ws")).expect("symlink ws");
+            std::os::unix::fs::symlink(temp.path(), ws.join("link_parent"))
+                .expect("symlink parent");
+            std::os::unix::fs::symlink(ws.join(".git"), ws.join("link_git")).expect("symlink git");
+
+            for (cmd, expected) in [
+                ("rm -rf link_root", CriticalPathKind::FilesystemRoot),
+                ("rm -rf link_home", CriticalPathKind::HomeFolder),
+                ("rm -rf link_ws", CriticalPathKind::WorkspaceOrAncestor),
+                ("rm -rf link_parent", CriticalPathKind::WorkspaceOrAncestor),
+                ("rm -rf link_git", CriticalPathKind::GitMetadata),
+            ] {
+                let got = critical_path_delete_with_home(
+                    "exec_shell",
+                    &json!({"command": cmd}),
+                    Some(&ws),
+                    Some(&fake_home),
+                    false,
+                );
+                assert_eq!(got, Some(expected), "{cmd}");
+            }
+        }
+
+        let win_ws = std::path::Path::new(r"C:\work\repo");
+        let win_home = std::path::Path::new(r"C:\Users\alice");
+        for (cmd, expected) in [
+            ("rm -rf C:\\", CriticalPathKind::FilesystemRoot),
+            ("rm -rf C:/", CriticalPathKind::FilesystemRoot),
+            ("rm -rf C:", CriticalPathKind::FilesystemRoot),
+            ("rm -rf \\", CriticalPathKind::FilesystemRoot),
+            (r"rm -rf \\server\share\", CriticalPathKind::FilesystemRoot),
+            ("rd /s /q C:\\", CriticalPathKind::FilesystemRoot),
+            (
+                "rmdir /s /q C:\\work",
+                CriticalPathKind::WorkspaceOrAncestor,
+            ),
+            ("rm -rf %USERPROFILE%", CriticalPathKind::HomeFolder),
+            ("rm -rf $env:USERPROFILE", CriticalPathKind::HomeFolder),
+            (r"rm -rf C:\Users\alice", CriticalPathKind::HomeFolder),
+            (r"rm -rf C:\work\repo\.git", CriticalPathKind::GitMetadata),
+            (r"rm -rf C:\work\repo\.GIT.", CriticalPathKind::GitMetadata),
+        ] {
+            let got = critical_path_delete_with_home(
+                "exec_shell",
+                &json!({"command": cmd}),
+                Some(win_ws),
+                Some(win_home),
+                true,
+            );
+            assert_eq!(got, Some(expected), "{cmd}");
+        }
+        assert_eq!(
+            critical_path_delete_with_home(
+                "exec_shell",
+                &json!({"command": "rd /s /q build"}),
+                Some(win_ws),
+                Some(win_home),
+                true,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn critical_path_skips_ordinary_deletes_and_non_empty_writes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ws = temp.path().join("repo");
+        std::fs::create_dir_all(ws.join("target")).expect("target dir");
+        let fake_home = temp.path().join("home_dir");
+        std::fs::create_dir_all(&fake_home).expect("fake home");
+
+        for (tool, params) in [
+            ("exec_shell", json!({"command": "rm -rf target"})),
+            ("exec_shell", json!({"command": "rm -rf build"})),
+            ("exec_shell", json!({"command": "rm -rf ~/sub"})),
+            ("exec_shell", json!({"command": "cd target && rm -rf tmp"})),
+            ("exec_shell", json!({"command": "find target -delete"})),
+            (
+                "exec_shell",
+                json!({"command": "find . -name '*.tmp' -delete"}),
+            ),
+            ("exec_shell", json!({"command": "echo 'rm -rf /'"})),
+            (
+                "write_file",
+                json!({"path": ".git/config", "content": "[core]\n"}),
+            ),
+        ] {
+            assert_eq!(
+                critical_path_delete_with_home(tool, &params, Some(&ws), Some(&fake_home), false),
+                None,
+                "{tool} {params}"
+            );
+        }
+    }
+
+    #[test]
+    fn critical_path_leaves_non_auto_review_modes_unchanged() {
+        use crate::core::engine::{AutoReviewPlanDecision, auto_review_plan_decision_for_context};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ws = temp.path().join("repo");
+        std::fs::create_dir_all(ws.join(".git")).expect("create .git");
+        let policy = AutoReviewPolicy::default();
+
+        for (tool, params, expected_suggest, expected_accept_edits, expected_bypass) in [
+            (
+                "exec_shell",
+                json!({"command": "rm -rf /"}),
+                AutoReviewPlanDecision::NoChange,
+                AutoReviewPlanDecision::NoChange,
+                AutoReviewPlanDecision::NoChange,
+            ),
+            (
+                "exec_shell",
+                json!({"command": "rm -rf .git"}),
+                AutoReviewPlanDecision::NoChange,
+                AutoReviewPlanDecision::NoChange,
+                AutoReviewPlanDecision::NoChange,
+            ),
+            (
+                "exec_shell",
+                json!({"command": "rm -rf ~"}),
+                AutoReviewPlanDecision::NoChange,
+                AutoReviewPlanDecision::NoChange,
+                AutoReviewPlanDecision::NoChange,
+            ),
+            (
+                "exec_shell",
+                json!({"command": "rm -rf \"$HOME\""}),
+                AutoReviewPlanDecision::NoChange,
+                AutoReviewPlanDecision::NoChange,
+                AutoReviewPlanDecision::NoChange,
+            ),
+            (
+                "exec_shell",
+                json!({"command": "rm -rf ."}),
+                AutoReviewPlanDecision::NoChange,
+                AutoReviewPlanDecision::NoChange,
+                AutoReviewPlanDecision::NoChange,
+            ),
+            (
+                "exec_shell",
+                json!({"command": "rm -rf .."}),
+                AutoReviewPlanDecision::NoChange,
+                AutoReviewPlanDecision::NoChange,
+                AutoReviewPlanDecision::NoChange,
+            ),
+            (
+                "apply_patch",
+                json!({"patch": "*** Begin Patch\n*** Delete File: .\n*** End Patch"}),
+                AutoReviewPlanDecision::NoChange,
+                AutoReviewPlanDecision::NoChange,
+                AutoReviewPlanDecision::NoChange,
+            ),
+        ] {
+            for (mode, expected) in [
+                (ApprovalMode::Suggest, expected_suggest),
+                (ApprovalMode::AcceptEdits, expected_accept_edits),
+                (ApprovalMode::Bypass, expected_bypass),
+            ] {
+                let ctx = AutoReviewContext::from_tool_call(
+                    tool,
+                    &params,
+                    RunOrigin::Interactive,
+                    mode,
+                    true,
+                    Some(&ws),
+                );
+                assert_eq!(ctx.critical_path_delete, None, "{mode:?} {tool} {params}");
+                let decision = policy.evaluate(&ctx);
+                assert!(!decision.force_prompt_in_auto, "{mode:?} {tool} {params}");
+                let (plan, audit) = auto_review_plan_decision_for_context(&policy, &ctx);
+                assert_eq!(plan, expected, "{mode:?} {tool} {params}");
+                assert_eq!(audit["critical_path_delete"], false);
+            }
+
+            let auto_ctx = AutoReviewContext::from_tool_call(
+                tool,
+                &params,
+                RunOrigin::Interactive,
+                ApprovalMode::Auto,
+                true,
+                Some(&ws),
+            );
+            let (auto_plan, _) = auto_review_plan_decision_for_context(&policy, &auto_ctx);
+            assert!(
+                matches!(auto_plan, AutoReviewPlanDecision::ForcePrompt(_)),
+                "Auto control must hold {tool} {params}: {auto_plan:?}"
+            );
+        }
     }
 }

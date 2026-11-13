@@ -1666,3 +1666,115 @@ async fn eight_identical_sequential_reads_all_execute_before_final_answer() {
     handle.send(Op::Shutdown).await.expect("shutdown engine");
     task.await.expect("engine task");
 }
+
+#[tokio::test]
+async fn auto_review_critical_path_deletion_never_calls_reviewer_even_with_user_consent_and_stub_allow() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use codewhale_models::{ContentBlock, Message};
+
+    let cases = [
+        ("call-del-home-tilde", "exec_shell", r#"{"command":"rm -rf ~"}"#),
+        ("call-del-home-var", "exec_shell", r#"{"command":"rm -rf \"$HOME\""}"#),
+        ("call-del-root", "exec_shell", r#"{"command":"rm -rf /"}"#),
+        ("call-del-ws", "exec_shell", r#"{"command":"rm -rf ."}"#),
+        ("call-del-parent", "exec_shell", r#"{"command":"rm -rf .."}"#),
+        ("call-del-git", "exec_shell", r#"{"command":"rm -rf .git"}"#),
+        (
+            "call-del-ws-patch",
+            "apply_patch",
+            r#"{"patch":"*** Begin Patch\n*** Delete File: .\n*** End Patch"}"#,
+        ),
+    ];
+
+    for (call_id, tool_name, tool_args) in cases {
+        let workspace = tempdir().expect("tempdir");
+        std::fs::create_dir_all(workspace.path().join(".git")).expect("create .git");
+        let survivor = workspace.path().join("keep.txt");
+        fs::write(&survivor, "keep\n").expect("write survivor");
+
+        let mock = std::sync::Arc::new(MockLlmClient::new(vec![
+            canned::tool_call_turn(call_id, tool_name, tool_args),
+            canned::simple_text_turn("Stopped before deleting a critical path."),
+        ]));
+        mock.push_message_response(guardian_fixture_response(
+            r#"{"risk_level":"low","decision":"allow","reason":"user said delete everything"}"#,
+        ));
+        let client: crate::core::model_client::SharedModelClient = mock.clone();
+        let mut config = deterministic_engine_config(workspace.path());
+        config.auto_review_policy =
+            crate::core::authority::auto_review::AutoReviewPolicy::from_config(&{
+                let mut cfg = Config::default();
+                cfg.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+                    allow: vec![
+                        {
+                            let mut rule = codewhale_runtime::config::AutoReviewRuleConfig::default();
+                            rule.id = Some("allow-shell".to_string());
+                            rule.tool = Some("exec_shell".to_string());
+                            rule.reason = Some("delete everything".to_string());
+                            rule
+                        },
+                        {
+                            let mut rule = codewhale_runtime::config::AutoReviewRuleConfig::default();
+                            rule.id = Some("allow-patch".to_string());
+                            rule.tool = Some("apply_patch".to_string());
+                            rule.reason = Some("delete everything".to_string());
+                            rule
+                        },
+                    ],
+                    ..Default::default()
+                });
+                cfg
+            });
+        let (mut engine, handle) = Engine::new_with_model_client(config, &Config::default(), client);
+        engine.session.auto_approve = false;
+        engine.session.approval_mode = ApprovalMode::Auto;
+        engine.session.add_message(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "delete everything".to_string(),
+                cache_control: None,
+            }],
+        });
+        let registry = crate::tools::ToolRegistryBuilder::new()
+            .with_patch_tools()
+            .build(engine.build_tool_context(engine.current_mode, engine.session.auto_approve));
+        let policy = test_tool_surface(
+            &engine,
+            registry,
+            Some(vec![catalog_tool("exec_shell"), catalog_tool("apply_patch")]),
+            AppMode::Agent,
+        );
+        let mut turn = crate::core::turn::TurnContext::new(4);
+        let (status, error) = tokio::time::timeout(
+            Duration::from_secs(30),
+            engine.run_turn(&mut turn, policy, None, None),
+        )
+        .await
+        .expect("turn completes without stalling");
+
+        assert_eq!(status, TurnOutcomeStatus::Completed, "{call_id}: {error:?}");
+        assert_eq!(mock.call_count(), 2, "{call_id}: reviewer must never be called");
+        assert!(survivor.exists(), "{call_id}: critical path delete must not execute");
+        let mut saw_refusal = false;
+        {
+            let mut rx = handle.rx_event.write().await;
+            for event in std::iter::from_fn(|| rx.try_recv().ok()) {
+                if let Event::ToolCallComplete {
+                    model_call: Some(call),
+                    result,
+                    ..
+                } = event
+                    && call.provider_id == call_id
+                {
+                    let refused = match &result {
+                        Ok(output) => !output.success,
+                        Err(_) => true,
+                    };
+                    assert!(refused, "{call_id}: expected refusal, got {result:?}");
+                    saw_refusal = true;
+                }
+            }
+        }
+        assert!(saw_refusal, "expected refused tool result for {call_id}");
+    }
+}

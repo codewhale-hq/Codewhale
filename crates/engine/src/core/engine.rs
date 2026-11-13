@@ -10744,13 +10744,13 @@ pub fn auto_review_plan_decision_for_context(
                     "Built-in safety gate requires approval: {}",
                     decision.reason
                 );
-                if matches!(
-                    context.approval_mode,
-                    ApprovalMode::Auto | ApprovalMode::Never
-                ) {
-                    // Auto-Review and Never are non-interactive for approval
-                    // holds, so the floor fails closed instead of stranding
-                    // the call on a modal neither posture opens.
+                if context.approval_mode == ApprovalMode::Never
+                    || (context.approval_mode == ApprovalMode::Auto
+                        && !decision.force_prompt_in_auto)
+                {
+                    // Auto-Review and Never are non-interactive for most
+                    // approval holds, so the floor fails closed instead of
+                    // stranding the call on a modal neither posture opens.
                     AutoReviewPlanDecision::Block(reason)
                 } else {
                     AutoReviewPlanDecision::ForcePrompt(reason)
