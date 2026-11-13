@@ -86,6 +86,7 @@ use codewhale_skill_install::install::{
 pub mod dsh;
 mod place;
 mod stage;
+mod summary;
 mod tarball;
 
 #[cfg(test)]
@@ -93,6 +94,7 @@ mod tests;
 
 use place::{ensure_target_within_plugins_dir, finalize_install, plugin_target_path};
 use stage::stage_local_copy;
+pub use summary::{PluginSummary, PreviousInstall, SummaryClause, SummaryInput, build_summary};
 use tarball::stage_tarball;
 
 /// Default per-bundle size cap. Mirrors the skill installer; the runtime
