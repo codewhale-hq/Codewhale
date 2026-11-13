@@ -293,11 +293,17 @@ fn dispatch_and_read_telemetry_with_endpoint(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => panic!("read telemetry dry-run sink: {error}"),
     };
-    let pending = match fs::read_to_string(telemetry_dir.join("buffer.jsonl")) {
-        Ok(contents) => Some(contents),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => panic!("read telemetry pending buffer: {error}"),
-    };
+    let pending = fs::read_dir(telemetry_dir.join("spool"))
+        .ok()
+        .and_then(|entries| {
+            let bodies: Vec<String> = entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+                .filter_map(|path| fs::read_to_string(path).ok())
+                .collect();
+            (!bodies.is_empty()).then(|| bodies.join("\n"))
+        });
     DispatchEvidence {
         telemetry_dir_exists: telemetry_dir.exists(),
         dry_run,
