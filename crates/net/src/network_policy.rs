@@ -366,12 +366,18 @@ fn normalize_host(host: &str) -> String {
             None => ("", trimmed.as_str()),
         },
     };
-    if name.is_ascii() {
+    // Only a bare host goes through the URL parser: an entry with URL syntax
+    // in it would otherwise turn into a different host (`例子.com@evil.com`
+    // into `evil.com`), so it keeps matching nothing, as it did before.
+    if name.is_ascii() || name.contains(['@', '/', '\\', '?', '#', ':']) {
         return format!("{wildcard}{name}");
     }
     let ascii = reqwest::Url::parse(&format!("http://{name}/"))
         .ok()
-        .and_then(|url| url.host_str().map(str::to_owned))
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| host.trim_end_matches('.').to_owned())
+        })
         .unwrap_or_else(|| name.to_string());
     format!("{wildcard}{ascii}")
 }
@@ -825,6 +831,27 @@ mod tests {
         ] {
             let host = host_from_url(url).expect("host");
             assert_eq!(policy.decide(&host), Decision::Deny, "{url}");
+        }
+
+        // A full stop typed with an IME still names the same host.
+        let policy = mk(Decision::Allow, &[], &["例子.com。"]);
+        let host = host_from_url("https://例子.com/").expect("host");
+        assert_eq!(policy.decide(&host), Decision::Deny);
+
+        // An entry with URL syntax in it must not turn into another host.
+        for entry in [
+            "例子.com@evil.com",
+            "evil.com/例",
+            "evil.com#例",
+            "evil.com?例",
+            "evil.com\\例",
+            "例子.com:8080",
+        ] {
+            let policy = mk(Decision::Prompt, &[entry], &[]);
+            for url in ["https://evil.com/", "https://例子.com/"] {
+                let host = host_from_url(url).expect("host");
+                assert_eq!(policy.decide(&host), Decision::Prompt, "{entry} {url}");
+            }
         }
     }
 
