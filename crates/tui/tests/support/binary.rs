@@ -51,6 +51,13 @@ fn resolve(
         directory
             .parent()
             .ok_or("test deps directory has no parent")?
+    } else if directory.ends_with("out") {
+        directory
+            .ancestors()
+            .skip(1)
+            .find(|ancestor| ancestor.ends_with("build"))
+            .and_then(Path::parent)
+            .unwrap_or(directory)
     } else {
         directory
     };
@@ -197,6 +204,29 @@ mod tests {
                 None => cache.join("debug/deps/integration-hash"),
             };
             // The requested cross target must not select coexisting host output.
+            assert_eq!(resolve(None, None, &test, &target).unwrap(), canonical);
+        }
+    }
+
+    #[test]
+    fn per_unit_build_layout_resolves_the_final_target_and_cross_profile() {
+        let root = tempfile::TempDir::new().unwrap();
+        let target = root.path().join("final target");
+        for triple in [None, Some("aarch64-unknown-linux-gnu")] {
+            let final_profile = match triple {
+                Some(triple) => target.join(triple).join("debug"),
+                None => target.join("debug"),
+            };
+            std::fs::create_dir_all(&final_profile).unwrap();
+            let canonical =
+                final_profile.join(format!("codewhale{}", std::env::consts::EXE_SUFFIX));
+            std::fs::write(&canonical, b"canonical").unwrap();
+            let test = final_profile
+                .join("build")
+                .join("codewhale-tui")
+                .join("0123456789abcdef")
+                .join("out")
+                .join("integration-hash");
             assert_eq!(resolve(None, None, &test, &target).unwrap(), canonical);
         }
     }
