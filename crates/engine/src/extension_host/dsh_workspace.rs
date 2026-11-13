@@ -203,10 +203,13 @@ impl Drop for TestOverlay {
 
 fn overlay_granted() -> bool {
     #[cfg(test)]
-    if TEST_OVERLAY.with(std::cell::Cell::get) {
-        return true;
+    {
+        TEST_OVERLAY.with(std::cell::Cell::get)
     }
-    false
+    #[cfg(not(test))]
+    {
+        false
+    }
 }
 
 fn caller(call: &BrokerCall, tool_name: &'static str) -> Result<ToolContext, BrokerRefusal> {
