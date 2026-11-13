@@ -25,7 +25,7 @@ export const ErrorCode = {
 
 export type Direction = 'core_to_host' | 'host_to_core'
 
-export const DSH_SERVICES = ['workspace', 'llm', 'network', 'settings', 'catalog', 'terminal', 'remote'] as const
+export const DSH_SERVICES = ['workspace', 'llm', 'network', 'settings', 'catalog', 'terminal', 'remote', 'plugins'] as const
 export type DshService = typeof DSH_SERVICES[number]
 
 /** Every method either side may send, and the trust tiers it is allowed on; nothing else is admitted. */

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - **Plugin index hooks:** hooks with the same name and event now have distinct row IDs, so clients can keep every configured hook visible.
+- **Extension service approvals:** plugin service acts use the session permission gate and retain their approved or refused act records when a tool call fails. Closing a call seals its broker-act record so a late approval cannot authorize an unrecorded act. Ordinary nested-call receipts may still show an in-flight outcome when cancellation ends the call early.
 
 - **Renaming sessions with Chinese titles:** the session picker no longer rejects a Chinese, Japanese, Korean or emoji title of more than about 33 characters as "Title must be 1–100 characters". It now counts characters, as the message says and as `/rename` and the Runtime API already did, so any title up to 100 characters is accepted. Thanks [@luochen211](https://github.com/luochen211) (PR 7322).
 - **Non-ASCII file names:** `/diff`, the `@git` and `@diff` mentions and the Runtime API workspace diff now show paths with Chinese, emoji and other non-ASCII characters as written instead of as quoted octal escapes, and the turn context no longer lists the workspace root as an empty "Active paths" entry. Thanks [@luochen211](https://github.com/luochen211) (PR 7317).

@@ -691,6 +691,25 @@ extension is turned off, changed or fails, every service stays off until the
 host process has restarted, which Codewhale does by itself once the host is
 idle.
 
+**Using a service.** A grant says a plugin may ask; the session's permission
+mode decides each act, like any other action the agent takes. An act that
+changes something or reaches outside the session is asked through the normal
+approval card in Ask and Accept Edits, judged by the reviewer model in
+Auto-Review, run in Full Access, denied in Never, and refused in Plan. In a
+sub-agent such an act is never delegated with the sub-agent's file writes: it
+needs that same decision, and the sub-agent's shell permission, plus write
+permission for a change or network permission for a reach. A read runs without
+a card. Acts a service makes through a core tool (a file read, a terminal
+command) pass that tool's own gate instead. When the tool call ends, every act,
+allowed or not, is recorded in the result's `core_calls` metadata under
+`broker_acts` (the first 50, with the total). A tool call that fails after
+making an act returns a failed result with the error text and that record. Acts
+count toward the tool call's one limit of 50 nested calls, shared with its
+`core/call`s, and at most four wait on the gate at once; a further act waits
+for a slot. The `plugins` service is never granted by a review: only
+Codewhale's own built-in creator module holds it, and only for the session's
+own agent, not a sub-agent.
+
 **What a refused call receives.** `REFUSED` with `data.dsh_refusal`:
 `not_granted` (the same answer whether your own review lacks the service or
 another extension's does), `limit` (this tool call used up its calls to that

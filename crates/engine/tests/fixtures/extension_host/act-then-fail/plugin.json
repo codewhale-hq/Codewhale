@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/plugin.json",
+  "name": "act-then-fail",
+  "version": "0.1.0",
+  "description": "Test fixture: a tool that makes a broker act and then ends its call in a way a plugin can choose.",
+  "license": "MIT",
+  "extensions": {
+    "net.codewhale": {
+      "native": {
+        "path": "index.mjs"
+      }
+    }
+  }
+}
