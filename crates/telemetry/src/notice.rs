@@ -25,7 +25,9 @@ Codewhale counts: which version you run, OS and CPU family, session
 duration and outcome, and aggregate feature and error counters.
 
 It also counts the providers and public catalog models you use, their
-token totals, and how often each built-in tool runs.
+token totals, request counts, time spent waiting on the model and
+prompt-size ranges, how often each built-in tool runs, how an exec
+session was started, and a coarse install-age range.
 
 It never collects your conversations, code, prompts, files, repo or
 branch names, model content, or credentials — and it never sends a
@@ -41,7 +43,7 @@ Usage reporting is on by default. Codewhale and PostHog process these
 counts when delivery is configured. No IP is collected.";
 
 /// Concise disclosure for every armed runtime surface, including headless CLI.
-pub const STARTUP_DISCLOSURE: &str = "Usage reporting is on by default: Codewhale and PostHog process aggregate version/platform, session, feature, error, model/token and built-in tool counts when delivery is configured. No content or IP. Turn off: codewhale config set telemetry false. Details: codewhale config telemetry";
+pub const STARTUP_DISCLOSURE: &str = "Usage reporting is on by default: Codewhale and PostHog process aggregate version/platform, session, feature, error, model/token/request/wait-time/prompt-size, exec-start, install-age range and built-in tool counts when delivery is configured. No content or IP. Turn off: codewhale config set telemetry false. Details: codewhale config telemetry";
 
 /// Present the policy once per revision without recording human acceptance.
 /// Failure to save the display marker only causes a later repeat disclosure.

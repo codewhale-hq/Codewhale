@@ -73,6 +73,7 @@ include!("tests/test_cases_18.rs");
 include!("tests/test_cases_19.rs");
 
 mod admission_gates;
+mod model_turn_telemetry;
 mod redacted_thinking;
 mod runtime_state;
 mod sse_turn_recovery;

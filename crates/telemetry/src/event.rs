@@ -33,10 +33,10 @@ use serde::{Deserialize, Serialize};
 
 /// Wire schema version. Bumped on any field add, remove, or retype; never
 /// reused. `crates/telemetry/tests/golden/v1.json` pins what v1 was.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// Default-on policy disclosure version. This is not human consent.
-pub const NOTICE_VERSION: u32 = 6;
+pub const NOTICE_VERSION: u32 = 8;
 
 /// Which product surface produced a batch.
 ///
@@ -277,6 +277,12 @@ pub enum SessionSource {
     /// Started under CI (`CI` or `GITHUB_ACTIONS` set), including the GitHub
     /// Action, so automation is never counted as a person.
     Ci,
+    /// `exec` started by Codewhale's own fleet dispatcher.
+    FleetWorker,
+    /// `exec` started from inside an agent's shell command.
+    Agent,
+    /// `exec` whose stdin or stdout is not a terminal.
+    Scripted,
 }
 
 impl SessionSource {
@@ -288,6 +294,9 @@ impl SessionSource {
         Self::Api,
         Self::Unknown,
         Self::Ci,
+        Self::FleetWorker,
+        Self::Agent,
+        Self::Scripted,
     ];
 
     /// The wire spelling.
@@ -300,6 +309,37 @@ impl SessionSource {
             Self::Api => "api",
             Self::Unknown => "unknown",
             Self::Ci => "ci",
+            Self::FleetWorker => "fleet_worker",
+            Self::Agent => "agent",
+            Self::Scripted => "scripted",
+        }
+    }
+}
+
+/// How long this install has existed, as a coarse bucket. The first-seen date
+/// itself never leaves the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallAge {
+    /// First seen on the current UTC day.
+    NewToday,
+    /// First seen 1 to 6 UTC days ago.
+    UnderWeek,
+    /// First seen 7 or more UTC days ago, or before the date was recorded.
+    Older,
+}
+
+impl InstallAge {
+    /// Every value, for exhaustive iteration.
+    pub const ALL: &'static [Self] = &[Self::NewToday, Self::UnderWeek, Self::Older];
+
+    /// The wire spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NewToday => "new_today",
+            Self::UnderWeek => "under_week",
+            Self::Older => "older",
         }
     }
 }
@@ -366,11 +406,20 @@ pub enum ExitClass {
     Panic,
     /// Exited non-successfully without a signal or a panic.
     Error,
+    /// The process ended without its shutdown report; its aggregates were
+    /// recovered from a local checkpoint at a later start.
+    Unclean,
 }
 
 impl ExitClass {
     /// Every value, for exhaustive iteration.
-    pub const ALL: &'static [Self] = &[Self::Clean, Self::Signal, Self::Panic, Self::Error];
+    pub const ALL: &'static [Self] = &[
+        Self::Clean,
+        Self::Signal,
+        Self::Panic,
+        Self::Error,
+        Self::Unclean,
+    ];
 
     /// The wire spelling.
     #[must_use]
@@ -380,6 +429,7 @@ impl ExitClass {
             Self::Signal => "signal",
             Self::Panic => "panic",
             Self::Error => "error",
+            Self::Unclean => "unclean",
         }
     }
 
@@ -391,6 +441,7 @@ impl ExitClass {
             Self::Signal => 1,
             Self::Panic => 2,
             Self::Error => 3,
+            Self::Unclean => 4,
         }
     }
 
@@ -401,6 +452,7 @@ impl ExitClass {
             1 => Self::Signal,
             2 => Self::Panic,
             3 => Self::Error,
+            4 => Self::Unclean,
             _ => Self::Clean,
         }
     }
@@ -639,6 +691,9 @@ pub enum Event {
     SessionStart {
         /// How it was started.
         source: SessionSource,
+        /// Coarse install age. `null` when the local state cannot be read.
+        #[serde(default)]
+        install_age: Option<InstallAge>,
     },
     /// A session ended. Everything the session accumulated ships here, once.
     SessionEnd {
@@ -696,6 +751,9 @@ pub enum Event {
         counters: ModelCounters,
         /// Turn wall-clock buckets for these turns.
         turn_wall: TurnWall,
+        /// Requests by input size.
+        #[serde(default)]
+        context: ContextSize,
     },
     /// One session's calls of one tool.
     ToolUsage {
@@ -725,6 +783,16 @@ pub struct ModelCounters {
     pub cache_read_tokens: u64,
     /// Input tokens written to the provider's prompt cache.
     pub cache_write_tokens: u64,
+    /// Provider requests on the session's own route for this model.
+    #[serde(default)]
+    pub requests: u32,
+    /// Reasoning tokens as the provider reports them; a subset of
+    /// `output_tokens`, which is not reduced.
+    #[serde(default)]
+    pub reasoning_tokens: u64,
+    /// Whole seconds spent waiting on the model, summed over the session.
+    #[serde(default)]
+    pub generation_secs: u32,
 }
 
 impl ModelCounters {
@@ -737,7 +805,42 @@ impl ModelCounters {
         "output_tokens",
         "cache_read_tokens",
         "cache_write_tokens",
+        "requests",
+        "reasoning_tokens",
+        "generation_secs",
     ];
+}
+
+/// Per-session count of model requests by input size, in tokens including
+/// cache reads. Half-open intervals; K is 1024. A histogram, never a
+/// per-request series.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSize {
+    /// Requests with `[0, 32768)` input tokens.
+    pub lt_32k: u32,
+    /// Requests with `[32768, 131072)` input tokens.
+    #[serde(rename = "32k_128k")]
+    pub k32_to_k128: u32,
+    /// Requests with `[131072, 262144)` input tokens.
+    #[serde(rename = "128k_256k")]
+    pub k128_to_k256: u32,
+    /// Requests with 262144 or more input tokens.
+    pub gte_256k: u32,
+}
+
+impl ContextSize {
+    /// Field names in wire spelling, in declaration order.
+    pub const FIELDS: &'static [&'static str] = &["lt_32k", "32k_128k", "128k_256k", "gte_256k"];
+
+    /// Record one request with `tokens` input tokens.
+    pub fn observe(&mut self, tokens: u64) {
+        match tokens {
+            0..32_768 => self.lt_32k = self.lt_32k.saturating_add(1),
+            32_768..131_072 => self.k32_to_k128 = self.k32_to_k128.saturating_add(1),
+            131_072..262_144 => self.k128_to_k256 = self.k128_to_k256.saturating_add(1),
+            _ => self.gte_256k = self.gte_256k.saturating_add(1),
+        }
+    }
 }
 
 /// First-party tool names reported by `tool_usage`. Any other name is

@@ -10,7 +10,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::event::{Counters, Errors, Event, ModelCounters, TurnWall};
+use crate::event::{ContextSize, Counters, Errors, Event, ModelCounters, TurnWall};
 
 /// One session's accumulated counts.
 #[derive(Debug, Default)]
@@ -48,6 +48,7 @@ struct ModelSlot {
     model: String,
     counters: ModelCounters,
     turn_wall: TurnWall,
+    context: ContextSize,
 }
 
 /// At most this many distinct provider and model pairs per session; later
@@ -186,6 +187,7 @@ impl SessionCounters {
                     model,
                     counters: ModelCounters::default(),
                     turn_wall: TurnWall::default(),
+                    context: ContextSize::default(),
                 });
                 models.len() - 1
             }
@@ -238,6 +240,7 @@ impl SessionCounters {
                 model: slot.model.clone(),
                 counters: slot.counters,
                 turn_wall: slot.turn_wall,
+                context: slot.context,
             }));
         }
         if let Ok(tools) = self.tools.lock() {

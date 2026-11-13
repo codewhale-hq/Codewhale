@@ -20,23 +20,27 @@ import {
   BATCH_MAX_BYTES,
   BATCH_MAX_EVENTS,
   COLD_START_BUCKETS,
+  CONTEXT_FIELDS,
   COUNTER_FIELDS,
   DURATION_BUCKETS,
   ENVELOPE_FIELDS,
   ERROR_FIELDS,
-  EVENT_FIELDS,
   EVENT_NAMES,
-  EXIT_CLASSES,
+  INSTALL_AGES,
   INSTALL_KINDS,
   LIBCS,
   MAX_BODY_BYTES,
   OSES,
   PRODUCT_COUNTER_FIELDS,
   OPERATIONS_FIELDS,
-  SCHEMA_VERSION,
-  SESSION_SOURCES,
   SURFACES,
   TURN_WALL_FIELDS,
+  V6_EVENT_FIELDS as EVENT_FIELDS,
+  V6_EXIT_CLASSES as EXIT_CLASSES,
+  V6_MODEL_COUNTER_FIELDS,
+  V6_NOTICE_VERSION,
+  V6_SCHEMA_VERSION as SCHEMA_VERSION,
+  V6_SESSION_SOURCES as SESSION_SOURCES,
 } from "../src/schema";
 import { DOC, goldenBatch } from "./support";
 
@@ -168,6 +172,16 @@ describe("the doc and the validator publish the same fields", () => {
     expect([...documentedKeys(BLOCKS[3])].sort()).toEqual(expected);
   });
 
+  it("agrees on the model_usage field set, nested objects included", () => {
+    const expected = [
+      ...EVENT_FIELDS.model_usage,
+      ...V6_MODEL_COUNTER_FIELDS,
+      ...TURN_WALL_FIELDS,
+      ...CONTEXT_FIELDS,
+    ].sort();
+    expect([...documentedKeys(BLOCKS[7])].sort()).toEqual([...new Set(expected)].sort());
+  });
+
   it("agrees on the panic field set", () => {
     expect([...documentedKeys(BLOCKS[4])].sort()).toEqual(
       [...EVENT_FIELDS.panic].sort(),
@@ -216,6 +230,7 @@ describe("the doc and the validator publish the same enums", () => {
     ["session source", SESSION_SOURCES],
     ["duration bucket", DURATION_BUCKETS],
     ["exit class", EXIT_CLASSES],
+    ["install age", INSTALL_AGES],
     ["cold start bucket", COLD_START_BUCKETS],
   ] as const)("publishes every %s value it accepts", (_label, values) => {
     for (const value of values) {
@@ -232,6 +247,8 @@ describe("the doc and the validator publish the same limits", () => {
     expect(match).not.toBeNull();
     expect(Number((match as RegExpMatchArray)[1])).toBe(SCHEMA_VERSION);
     expect(goldenBatch().schema_version).toBe(1); // preserved legacy golden
+    const notice = DOC.match(/`notice_version\s*=\s*(\d+)`/);
+    expect(Number((notice as RegExpMatchArray)[1])).toBe(V6_NOTICE_VERSION);
   });
 
   it("agrees on the per-batch caps", () => {

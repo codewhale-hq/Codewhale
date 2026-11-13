@@ -4,7 +4,7 @@
 
 **Usage analytics are on by default in the current source.** The first
 interactive launch gives a localized, nonblocking disclosure naming **Codewhale
-and PostHog**, with a direct route to turn counting off. Notice version `6`
+and PostHog**, with a direct route to turn counting off. Notice version `8`
 describes this policy; displaying it is not recorded as human acceptance.
 Missing an older acceptance record does not turn a fresh installation off.
 Existing explicit opt-outs remain off across upgrades, and unreadable privacy
@@ -162,10 +162,14 @@ most once per flush point and never grows a queue.
 
 ## Event schema
 
-`SCHEMA_VERSION = 4`. `notice_version = 6` identifies the disclosed default-on
-policy; it does not assert human consent or that a notice was seen. Schema 4
-adds the `model_usage` and `tool_usage` events and the `ci` session source.
-Schema-3 batches with `notice_version = 5` are still accepted without them, which
+`SCHEMA_VERSION = 6`. `notice_version = 8` identifies the disclosed default-on
+policy; it does not assert human consent or that a notice was seen. Schema 6
+adds, to `model_usage`, the request count, reasoning tokens, whole seconds spent
+waiting on the model and a four-bucket input-size histogram; adds a coarse
+install age and three exec start labels to `session_start`; and adds the
+`unclean` exit class. Schema 4 added the `model_usage` and `tool_usage` events
+and the `ci` session source. Schema-4 and schema-3 batches are still accepted
+without the schema-6 fields. Schema-3 batches with `notice_version = 5` are still accepted without them, which
 is what the web and desktop control-plane relay sends. The closed
 v2 contract still accepts only `consent_version = 4`, retaining its original
 explicit opt-in meaning. Fields cannot be mixed between versions. The unchanged
@@ -178,8 +182,8 @@ new fields, surfaces, and `product_usage` events.
 
 ```jsonc
 {
-  "schema_version": 4,
-  "notice_version": 6,
+  "schema_version": 6,
+  "notice_version": 8,
   "sent_at":     "2026-08-03T18:04:11Z",   // RFC3339 UTC, second precision
   "install_id":  "3f2a…",                  // uuid v4, rotates every 90 days
   "app_version": "0.9.12",
@@ -196,7 +200,7 @@ new fields, surfaces, and `product_usage` events.
 | Field | Type | Source anchor | Rule |
 |---|---|---|---|
 | `schema_version` | `u32` | const in `crates/telemetry/src/event.rs` | Bumped on any field add/remove/retype. Never reused. Pinned by a golden snapshot test. |
-| `notice_version` | `u32` | policy constant in `crates/telemetry/src/event.rs` | Exactly `6` for schema 4; identifies the disclosed opt-out policy, not a human acceptance record. |
+| `notice_version` | `u32` | policy constant in `crates/telemetry/src/event.rs` | Exactly `8` for schema 6; identifies the disclosed opt-out policy, not a human acceptance record. |
 | `sent_at` | RFC3339 | `chrono::Utc::now()` | Second precision. Per-**batch** only — events carry no timestamps at all. |
 | `install_id` | uuid v4 | `crates/telemetry/src/envelope.rs` | Random, never derived, rotated every 90 days. See "Where it lives" above. |
 | `app_version` | string | `env!("CARGO_PKG_VERSION")`, as at `crates/telemetry/src/lib.rs:112` | Must match `^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$`. |
@@ -284,13 +288,26 @@ Emitted once when `state.json`'s `last_version` differs from `app_version`.
 ### Event: `session_start`
 
 ```jsonc
-{ "event": "session_start", "source": "interactive" }
+{ "event": "session_start", "source": "interactive", "install_age": "older" }
 ```
 
-`source` is `SessionSource` (`crates/state/src/lib.rs:34-41`) stringified by `session_source_to_str` (`:1909-1917`): `interactive | resume | fork | api | unknown | ci`.
+`source` is `SessionSource` (`crates/telemetry/src/event.rs`), a closed enum declared in the telemetry crate: `interactive | resume | fork | api | unknown | ci | fleet_worker | agent | scripted`.
 `ci` replaces the others whenever `CI` or `GITHUB_ACTIONS` is set to a true
 value, including the Codewhale GitHub Action, so automated runs are never
 counted as people. Only that boolean environment fact is read.
+
+`fleet_worker`, `agent` and `scripted` separate automated `exec` sessions from
+people. `fleet_worker` is an `exec` that Codewhale's own fleet dispatcher
+started, `agent` is an `exec` started from inside an agent's shell command (only
+the presence of a Codewhale-owned environment variable is read, never its
+value), and `scripted` is an `exec` whose standard input or output is not a
+terminal. When more than one applies the order is `fleet_worker`, `agent`, `ci`,
+`scripted`. Other surfaces are unchanged.
+
+`install_age` is `new_today | under_week | older | null`: a coarse bucket of how
+long this installation has existed. It is computed on your device and only the
+bucket leaves it; the date it comes from is stored only in the local state file
+and never leaves the device. `null` means the local state could not be read.
 
 ### Event: `session_end`
 
@@ -317,11 +334,11 @@ The workhorse. Everything a session accumulated ships here, once.
 
 **`duration_bucket`** — `chrono` delta from `app.session_started_at` (`crates/tui/src/tui/app.rs:1889`). Half-open, seconds: `lt_1m` (`d < 60`), `1m_10m` (`60 ≤ d < 600`), `10m_60m` (`600 ≤ d < 3600`), `gt_60m` (`d ≥ 3600`).
 
-**`exit_class`** — `clean | signal | panic | error`. **Derived from an explicit `AtomicU8`, never from an exit code.** `RunTerminationReason::Canceled` maps to exit 130 (`crates/engine/src/core/runtime_contract/termination.rs:53`), the same value the signal task uses (`crates/tui/src/lib.rs:682`, 128+SIGINT), so a code-based derivation would report every Esc-cancelled turn as a signal. The atomic is set by the panic hook (`crates/tui/src/lib.rs:1582`), by the signal task (`:678-696`) before `std::process::exit`, and on the clean path from `RunTerminationReason::is_success()` (`crates/engine/src/core/runtime_contract/termination.rs:44-46`) — `error` otherwise. Exit codes remain insufficient: an approval-required exit (3) and a terminal exec failure (1) need their actual termination classification.
+**`exit_class`** — `clean | signal | panic | error | unclean`. `unclean` means the process ended without its own shutdown report and its totals were recovered from a local checkpoint at a later start. **Derived from an explicit `AtomicU8`, never from an exit code.** `RunTerminationReason::Canceled` maps to exit 130 (`crates/engine/src/core/runtime_contract/termination.rs:53`), the same value the signal task uses (`crates/tui/src/lib.rs:682`, 128+SIGINT), so a code-based derivation would report every Esc-cancelled turn as a signal. The atomic is set by the panic hook (`crates/tui/src/lib.rs:1582`), by the signal task (`:678-696`) before `std::process::exit`, and on the clean path from `RunTerminationReason::is_success()` (`crates/engine/src/core/runtime_contract/termination.rs:44-46`) — `error` otherwise. Exit codes remain insufficient: an approval-required exit (3) and a terminal exec failure (1) need their actual termination classification.
 
 **`cold_start_bucket`** — from `startup_trace::elapsed_ms()`, which reads `PROCESS_START` directly and is independent of the startup summary's buffer clear (`crates/runtime/src/startup_trace.rs:39-45`). Boundaries: `lt_250`, `250_1000`, `1000_3000`, `gte_3000`. Absent on non-TUI surfaces.
 
-**`providers`** — sorted, deduplicated array of `ProviderKind::as_str()` (`crates/config/src/provider_kind.rs:295`, a `&'static str` from a closed enum; `Custom` yields the literal `"custom"`). **The API takes `ProviderKind` by value, never `&str`.** Do not call `ProviderKind::parse` or `parse_config_identity` (`:300`, `:330`) — those are for config-table resolution. **Do not read** `provider_identity_for_persistence()` (`crates/tui/src/tui/app.rs:5049`), `provider_id_for_persistence()` (`:5058`), `ExecStreamMeta.provider_id` (`crates/app-server/src/exec_agent.rs`), or `PlannedTurnRoute.effective_provider_label` (`crates/engine/src/turn_route_plan.rs:189-193`) — all four return the customer's own `[providers.<name>]` table key when the route is Custom. This is the single most likely leak in the feature: it is one field away from the natural seam and `/status` already prints it (`crates/tui/src/commands/groups/config/status.rs:24-28`). **No model id is ever sent, for any provider** — `crates/runtime/src/safe_label.rs:11-15` documents that a model id can be a path, a URL, or a deployment id that is itself a credential.
+**`providers`** — sorted, deduplicated array of `ProviderKind::as_str()` (`crates/config/src/provider_kind.rs:295`, a `&'static str` from a closed enum; `Custom` yields the literal `"custom"`). **The API takes `ProviderKind` by value, never `&str`.** Do not call `ProviderKind::parse` or `parse_config_identity` (`:300`, `:330`) — those are for config-table resolution. **Do not read** `provider_identity_for_persistence()` (`crates/tui/src/tui/app.rs:5049`), `provider_id_for_persistence()` (`:5058`), `ExecStreamMeta.provider_id` (`crates/app-server/src/exec_agent.rs`), or `PlannedTurnRoute.effective_provider_label` (`crates/engine/src/turn_route_plan.rs:189-193`) — all four return the customer's own `[providers.<name>]` table key when the route is Custom. This is the single most likely leak in the feature: it is one field away from the natural seam and `/status` already prints it (`crates/tui/src/commands/groups/config/status.rs:24-28`). **No model id outside the bundled public catalog is ever sent, for any provider** — `crates/runtime/src/safe_label.rs:11-15` documents that a model id can be a path, a URL, or a deployment id that is itself a credential. Those are sent as `other`; see `model_usage`.
 
 **`counters`** — closed field set. Every bump happens at the **call site**, never inside a conditionally-entered handler:
 
@@ -443,9 +460,13 @@ to make defaults, and whether prompt caching is working.
     "input_tokens": 418230,
     "output_tokens": 9120,
     "cache_read_tokens": 380001,
-    "cache_write_tokens": 0
+    "cache_write_tokens": 0,
+    "requests": 27,
+    "reasoning_tokens": 2310,
+    "generation_secs": 412
   },
-  "turn_wall": { "lt_5s": 3, "5_30s": 8, "30_120s": 2, "gte_120s": 0 }
+  "turn_wall": { "lt_5s": 3, "5_30s": 8, "30_120s": 2, "gte_120s": 0 },
+  "context": { "lt_32k": 9, "32k_128k": 11, "128k_256k": 5, "gte_256k": 2 }
 }
 ```
 
@@ -457,6 +478,25 @@ provider's own usage numbers for the main conversation; `input_tokens` includes
 cache reads. Turn counts are by outcome, and `turn_wall` buckets each turn's
 wall time as `session_end` does. A session reports at most 16 provider and model
 pairs; later pairs are counted under `other`. No per-turn timeline is sent.
+
+Schema 6 adds four aggregates to each row:
+
+- `requests` counts the model requests this session made on its own route for
+  that provider and model.
+- `reasoning_tokens` is the part of `output_tokens` the provider reports as
+  reasoning. `output_tokens` is not reduced, and the value is `0` when the
+  provider does not report it.
+- `generation_secs` is the total whole seconds the session spent waiting on the
+  model for those requests. It is one sum for the session; no per-request
+  duration is ever sent.
+- `context` counts requests by input size, in tokens including cache reads:
+  `lt_32k` is under 32768, `32k_128k` is 32768 up to 131072, `128k_256k` is
+  131072 up to 262144, and `gte_256k` is 262144 or more. The four buckets add up
+  to `requests`. Each edge belongs to the higher bucket. No per-request size is
+  sent.
+
+Until a client fills them these values are `0`. A schema-4 row carries none of
+these fields.
 
 ### Event: `tool_usage`
 
@@ -508,7 +548,7 @@ configured ingest may forward validated schema-v3 / notice-v5 batches and
 legacy schema-v2 / consent-v4 batches to
 PostHog's [batch capture API](https://posthog.com/docs/api/capture). The only
 permitted origins are `https://us.i.posthog.com` and `https://eu.i.posthog.com`.
-Schema-v1 and schema-v4 batches cannot reach that path in this source. PostHog receives the same bounded
+Schema-v1, schema-v4 and schema-v6 batches cannot reach that path in this source. PostHog receives the same bounded
 envelope and event fields, the batch timestamp as its event timestamp, and
 `codewhale:<install_id>` as its anonymous `distinct_id`. Events are named
 `codewhale_install_or_upgrade`, `codewhale_session_start`,
@@ -558,7 +598,7 @@ It prints the daily series, a 7-day trend over complete UTC days, the freshness 
 
 ### What is never collected — the public red-line list
 
-Prompts; completions; tool arguments; diffs; patches; file contents; filenames; absolute or relative paths; git remotes; repo names; branch names; workspace commit SHAs; memory entries; chat history; API keys, tokens, cookies, or `Authorization` headers (including any boolean asserting a key exists); model ids that are not in Codewhale's bundled public model catalog (custom, local, fine-tuned or private model names are sent only as `other`); custom provider table names; MCP server names, commands, URLs, or tool names; plugin and configured tool names; approval rule text; error message bodies; panic message text; per-event timestamps; keystrokes; clipboard; screenshots; microphone; camera; location; and any third-party ad or analytics SDK — there are none in the runtime binary and none may be added.
+Prompts; completions; tool arguments; diffs; patches; file contents; filenames; absolute or relative paths; git remotes; repo names; branch names; workspace commit SHAs; memory entries; chat history; API keys, tokens, cookies, or `Authorization` headers (including any boolean asserting a key exists); model ids that are not in Codewhale's bundled public model catalog (custom, local, fine-tuned or private model names are sent only as `other`); custom provider table names; MCP server names, commands, URLs, or tool names; plugin and configured tool names; approval rule text; error message bodies; panic message text; per-event timestamps; per-request durations or sizes; environment variable values; CI vendor or job names; parent process names; hostnames; container ids; the date an installation was first seen (only the install-age bucket leaves the device); keystrokes; clipboard; screenshots; microphone; camera; location; and any third-party ad or analytics SDK — there are none in the runtime binary and none may be added.
 
 Two named traps for the implementer. `crates/state/src/lib.rs` persists `git_sha`, `git_branch`, `git_origin_url`, `cwd`, and `path` on the threads table (`:93, :399, :653`): a payload builder that accepts a `Thread` or `ThreadMeta` and derives `Serialize` breaches the contract in one line. **Never derive `Serialize` over an existing state type** — build every telemetry struct from scratch with explicit fields. And `crates/core/src/lib.rs:1389-1398` is the one place in the tree where the word `telemetry` sits inside a JSON object next to `prompt`, `base_url`, and `has_api_key`. It is the object someone will copy. Do not.
 
@@ -567,7 +607,7 @@ Two named traps for the implementer. `crates/state/src/lib.rs` persists `git_sha
 ## Website funnel aggregates in the source candidate
 
 The website extension uses `FUNNEL_SCHEMA_VERSION = 5` and notice version `7`.
-The Rust runtime remains on `SCHEMA_VERSION = 4`, notice `6`; existing browser
+The Rust runtime is on `SCHEMA_VERSION = 6`, notice `8`; existing browser
 schema `3`, notice `5`, and legacy schemas `1` and `2` retain their original
 contracts. Displaying a newer notice never overrides an opt-out or establishes
 human acceptance. Schema 5 is first-party only and does not activate PostHog.

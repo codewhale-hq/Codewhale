@@ -121,11 +121,12 @@ fn every_event() -> Vec<Event> {
             previous_version: Some("0.9.3-rc.1".to_string()),
         },
         Event::SessionStart {
-            source: SessionSource::Resume,
+            source: SessionSource::FleetWorker,
+            install_age: Some(InstallAge::UnderWeek),
         },
         Event::SessionEnd {
             duration_bucket: DurationBucket::OneToTen,
-            exit_class: ExitClass::Panic,
+            exit_class: ExitClass::Unclean,
             cold_start_bucket: Some(ColdStartBucket::Mid),
             providers: vec!["custom".to_string(), "deepseek".to_string()],
             counters: Counters {
@@ -183,12 +184,21 @@ fn every_event() -> Vec<Event> {
                 output_tokens: 9_120,
                 cache_read_tokens: 380_001,
                 cache_write_tokens: 0,
+                requests: 27,
+                reasoning_tokens: 2_310,
+                generation_secs: 412,
             },
             turn_wall: TurnWall {
                 lt_5s: 3,
                 five_to_thirty: 8,
                 thirty_to_onetwenty: 2,
                 gte_120s: 0,
+            },
+            context: ContextSize {
+                lt_32k: 9,
+                k32_to_k128: 11,
+                k128_to_k256: 5,
+                gte_256k: 2,
             },
         },
         Event::ToolUsage {
@@ -269,6 +279,7 @@ fn closed_enum_values() -> Vec<String> {
     values.extend(Libc::ALL.iter().map(|v| v.as_str().to_string()));
     values.extend(InstallKind::ALL.iter().map(|v| v.as_str().to_string()));
     values.extend(SessionSource::ALL.iter().map(|v| v.as_str().to_string()));
+    values.extend(InstallAge::ALL.iter().map(|v| v.as_str().to_string()));
     values.extend(DurationBucket::ALL.iter().map(|v| v.as_str().to_string()));
     values.extend(ExitClass::ALL.iter().map(|v| v.as_str().to_string()));
     values.extend(ColdStartBucket::ALL.iter().map(|v| v.as_str().to_string()));
@@ -1226,6 +1237,7 @@ fn probe_threshold_cannot_hide_an_over_cap_buffer() {
     // only safe if `MAX_EVENTS` lines cannot fit under it.
     let shortest = serde_json::to_string(&Event::SessionStart {
         source: SessionSource::Api,
+        install_age: None,
     })
     .expect("serialize");
     let floor = (shortest.len() as u64 + 1) * buffer::MAX_EVENTS as u64;
@@ -1446,6 +1458,7 @@ fn record_blocking_is_a_noop_when_unarmed() {
     });
     crate::record(Event::SessionStart {
         source: SessionSource::Interactive,
+        install_age: None,
     });
     crate::set_exit_class(ExitClass::Panic);
     assert_eq!(crate::exit_class(), ExitClass::Clean);
@@ -1659,6 +1672,7 @@ fn no_public_api_accepts_a_bare_bool() {
 
 const TELEMETRY_DOC: &str = include_str!("../../../docs/TELEMETRY.md");
 const GOLDEN_V4: &str = include_str!("../tests/golden/v4.json");
+const GOLDEN_V6: &str = include_str!("../tests/golden/v6.json");
 
 /// Extract the fenced ```jsonc blocks from the schema doc, in order.
 fn jsonc_blocks(doc: &str) -> Vec<String> {
@@ -1864,13 +1878,12 @@ fn event_field_names_match_documented_schema() {
 }
 
 #[test]
-fn golden_payload_v4() {
+fn golden_payload_v6() {
     assert_eq!(NOTICE_VERSION.to_string(), TELEMETRY_NOTICE_VERSION);
-    // `crates/telemetry/tests/golden/v4.json` is one fully-populated instance of
-    // the envelope and every event. Any field add, remove, or retype fails here
-    // until the developer re-blesses it under a bumped `SCHEMA_VERSION` — and it
-    // is also the artifact a future receiver author reads to know exactly what
-    // v1 was.
+    // `crates/telemetry/tests/golden/v6.json` is one fully-populated instance of
+    // the envelope and every event, and the batch the collector's own tests
+    // post. Any field add, remove, or retype fails here until the developer
+    // re-blesses it under a bumped `SCHEMA_VERSION`.
     //
     // Re-bless with: `CODEWHALE_BLESS_TELEMETRY_GOLDEN=1 cargo test -p codewhale-telemetry`
     let batch = every_field_batch();
@@ -1878,20 +1891,79 @@ fn golden_payload_v4() {
         batch.schema_version, SCHEMA_VERSION,
         "the fixture must be built at the current schema version"
     );
+    assert_eq!(SCHEMA_VERSION, 6);
     let mut rendered = serde_json::to_string_pretty(&batch).expect("serialize");
     rendered.push('\n');
 
     if std::env::var("CODEWHALE_BLESS_TELEMETRY_GOLDEN").is_ok() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/v4.json");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/v6.json");
         std::fs::create_dir_all(path.parent().expect("parent")).expect("create golden dir");
         std::fs::write(&path, &rendered).expect("write golden");
         return;
     }
 
     assert_eq!(
-        rendered, GOLDEN_V4,
-        "the v4 payload changed; bump SCHEMA_VERSION and re-bless the golden file"
+        rendered, GOLDEN_V6,
+        "the v6 payload changed; bump SCHEMA_VERSION and re-bless the golden file"
     );
+}
+
+#[test]
+fn the_schema_4_golden_still_reads_back_with_the_new_fields_defaulted() {
+    let legacy: Batch = serde_json::from_str(GOLDEN_V4).expect("v4 golden parses");
+    assert_eq!(legacy.schema_version, 4);
+    for event in &legacy.events {
+        match event {
+            Event::SessionStart { install_age, .. } => assert_eq!(*install_age, None),
+            Event::ModelUsage {
+                counters, context, ..
+            } => {
+                assert_eq!(counters.requests, 0);
+                assert_eq!(counters.reasoning_tokens, 0);
+                assert_eq!(counters.generation_secs, 0);
+                assert_eq!(*context, ContextSize::default());
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn context_buckets_are_half_open_at_32k_128k_and_256k() {
+    let mut size = ContextSize::default();
+    for tokens in [
+        0,
+        32_767,
+        32_768,
+        131_071,
+        131_072,
+        262_143,
+        262_144,
+        u64::MAX,
+    ] {
+        size.observe(tokens);
+    }
+    assert_eq!(
+        size,
+        ContextSize {
+            lt_32k: 2,
+            k32_to_k128: 2,
+            k128_to_k256: 2,
+            gte_256k: 2,
+        }
+    );
+    let json = serde_json::to_value(size).expect("serialize");
+    let keys: Vec<&str> = json
+        .as_object()
+        .expect("object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let mut expected: Vec<&str> = ContextSize::FIELDS.to_vec();
+    expected.sort_unstable();
+    let mut got = keys;
+    got.sort_unstable();
+    assert_eq!(got, expected);
 }
 
 #[test]
@@ -2013,8 +2085,14 @@ fn reported_model_id_resolves_aliases_and_spellings() {
     assert_eq!(reported_model_id("deepseek-v4-pro"), "deepseek-v4-pro");
     assert_eq!(reported_model_id("  DeepSeek-V4-Pro "), "deepseek-v4-pro");
     assert_eq!(reported_model_id("deepseek-v4pro"), "deepseek-v4-pro");
-    assert_eq!(reported_model_id("deepseek-ai/deepseek-v4-pro"), "deepseek-v4-pro");
-    assert_eq!(reported_model_id("deepseek/deepseek-v4pro"), "deepseek-v4-pro");
+    assert_eq!(
+        reported_model_id("deepseek-ai/deepseek-v4-pro"),
+        "deepseek-v4-pro"
+    );
+    assert_eq!(
+        reported_model_id("deepseek/deepseek-v4pro"),
+        "deepseek-v4-pro"
+    );
     assert_eq!(reported_model_id("pro"), "deepseek-v4-pro");
     assert_eq!(reported_model_id("flash"), "deepseek-flash");
     assert_eq!(reported_model_id("auto"), "other");
@@ -2041,7 +2119,10 @@ fn reported_model_id_never_leaves_the_catalog() {
     for spelling in spellings {
         let reported = reported_model_id(spelling);
         assert!(is_reported_model_id(&reported), "{spelling} -> {reported}");
-        assert!(model_id_is_collector_shaped(&reported), "{spelling} -> {reported}");
+        assert!(
+            model_id_is_collector_shaped(&reported),
+            "{spelling} -> {reported}"
+        );
     }
     for hostile in ["", "x/../y", "deepseek-v4-pro\n", "Ünï", &"a".repeat(300)] {
         let reported = reported_model_id(hostile);
@@ -2074,7 +2155,8 @@ fn every_listed_model_and_provider_default_maps_to_a_catalogued_id() {
 
     let descriptors: Value = serde_json::from_str(
         &std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../config/assets/provider_descriptors.json"),
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../config/assets/provider_descriptors.json"),
         )
         .expect("provider descriptors"),
     )
@@ -2088,5 +2170,9 @@ fn every_listed_model_and_provider_default_maps_to_a_catalogued_id() {
             check(&format!("default for {id}"), default);
         }
     }
-    assert!(missing.is_empty(), "ids the catalog does not name:\n{}", missing.join("\n"));
+    assert!(
+        missing.is_empty(),
+        "ids the catalog does not name:\n{}",
+        missing.join("\n")
+    );
 }

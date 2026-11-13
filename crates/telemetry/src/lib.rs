@@ -57,9 +57,9 @@ pub use decision::{
 };
 pub use envelope::reduce_panic_site;
 pub use event::{
-    Arch, Batch, ColdStartBucket, Counters, DurationBucket, Errors, Event, ExitClass, InstallKind,
-    Libc, ModelCounters, NOTICE_VERSION, Os, ProductCounters, SCHEMA_VERSION, SessionSource,
-    Surface, TurnWall,
+    Arch, Batch, ColdStartBucket, ContextSize, Counters, DurationBucket, Errors, Event, ExitClass,
+    InstallAge, InstallKind, Libc, ModelCounters, NOTICE_VERSION, Os, ProductCounters,
+    SCHEMA_VERSION, SessionSource, Surface, TurnWall,
 };
 
 /// How long the shutdown flush may hold the process.

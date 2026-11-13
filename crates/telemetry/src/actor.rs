@@ -344,6 +344,7 @@ mod tests {
         };
         handle.record(Event::SessionStart {
             source: crate::SessionSource::Unknown,
+            install_age: None,
         });
         let waiter = std::thread::spawn(move || handle.persist_local());
         assert!(matches!(rx.try_recv(), Ok(Message::Event(_))));
