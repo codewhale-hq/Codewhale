@@ -1,0 +1,56 @@
+name: RU01 RU08 candidate images
+on:
+  push:
+    branches: [ci/codex-image-probe-CW-8205]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  image:
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: release
+            arch: amd64
+            runner: ubuntu-24.04
+          - image: release
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - image: devcontainer
+            arch: amd64
+            runner: ubuntu-24.04
+          - image: devcontainer
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      CANDIDATE_SHA: 2d1ba71ed7f4919f7baed5ec7b1dc99fccf6cd38
+      IMAGE_KIND: ${{ matrix.image }}
+      IMAGE_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003
+      - name: Qualify exact candidate container
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p receipts candidate
+          git archive "$CANDIDATE_SHA" | tar -x -C candidate
+          printf 'workflow_sha=%s\ncandidate_sha=%s\nimage=%s\narchitecture=%s\n' "$GITHUB_SHA" "$CANDIDATE_SHA" "$IMAGE_KIND" "$IMAGE_ARCH" | tee receipts/identity.txt
+          uname -m | tee -a receipts/identity.txt
+          docker version > receipts/docker-version.txt
+          python3 scripts/ci/qualify-candidate-image.py 2>&1 | tee receipts/qualification.log
+          if grep -E "syncing channel updates for .stable|downloading toolchain .stable" receipts/qualification.log; then
+            exit 1
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: candidate-image-${{ matrix.image }}-${{ matrix.arch }}
+          path: receipts/
+          if-no-files-found: error
