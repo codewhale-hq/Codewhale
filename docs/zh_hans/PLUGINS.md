@@ -85,7 +85,8 @@ Codewhale 不会凭空编造远程插件 URL；缺失的插件只会从可用目
 
 `/plugin install <spec>` 的常用来源如下。完整来源和限制见
 [英文来源说明](../PLUGINS.md#sources)，包括指定版本的 GitHub 与 npm tarball；
-`codewhale install <spec>` 是使用同一安装器的 shell 入口，不需要模型凭据。
+`codewhale install <spec>` 和 `codewhale plugins install <spec>` 是使用同一安装器的
+shell 入口，不需要模型凭据。
 
 ```text
 /plugin install ./path/to/bundle            # local directory (copied)
@@ -163,6 +164,28 @@ Claude 的 `http` 传输映射为 Streamable HTTP。
   该步骤仅适用于安装器管理的用户级插件，卸载前应保留原来源与本地修改。
 - `uninstall` 拒绝卸载已启用的插件（先停用），删除插件包目录，
   并移除它持久化的信任/启用记录。
+
+## 命令行（Shell CLI）
+
+无需启动会话，也可在命令行完成插件的完整生命周期管理：
+
+```sh
+codewhale plugins install <spec> [--json]
+codewhale plugins show <name> [--json]
+codewhale plugins status [name] [--json]
+codewhale plugins trust <name> [--review-token TOKEN --yes] [--json]
+codewhale plugins enable <name> [--json]
+codewhale plugins disable <name> [--json]
+codewhale plugins update <name> [--json]
+codewhale plugins uninstall <name> [--yes] [--json]
+codewhale plugins revoke <name> [--json]
+codewhale plugins restage <name> [--json]
+```
+
+- `install` 与 `codewhale install <spec>` 使用同一安装器，安装后保持停用且未受信任。
+- `show` 打印与 `trust` 相同的能力审查内容，从不询问确认，也不会授予信任。
+- `update` 会重读记录的来源，并报告 `updated to <version>` 或 `already current`（若主机需要审批，则按 `install` 同样的方式提示网络审批错误）。
+- `uninstall` 会先停用已启用的插件，再卸载它。在终端中未传 `--yes` 时会询问 `Remove <name> <version>? [y/N]`；非终端或使用 `--json` 时必须传入 `--yes`。
 
 ## 安全规则
 

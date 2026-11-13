@@ -278,6 +278,42 @@ fn report(
     Ok(())
 }
 
+fn block_on_mutation<F: std::future::Future>(future: F) -> Result<F::Output> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => Ok(handle.block_on(future)),
+        Err(_) => Ok(tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(future)),
+    }
+}
+
+fn manifest_version_at(path: &Path) -> Option<String> {
+    let manifest_path = codewhale_plugins::agent_plugin::resolve_manifest_path(path)?;
+    codewhale_plugins::manifest::PluginManifest::validate_from_path(&manifest_path)
+        .ok()
+        .map(|validated| validated.manifest.plugin.version)
+}
+
+pub(crate) fn show(
+    registry: &PluginRegistry,
+    locale: Locale,
+    name: &str,
+    json: bool,
+    console: &mut dyn Console,
+) -> Result<()> {
+    let marked = console.agent_marked();
+    let plugin = find(registry, locale, name)?;
+    if json {
+        console.print(&serde_json::to_string_pretty(&review_json(
+            registry, plugin, locale, marked,
+        ))?);
+    } else {
+        console.print(&review_text(registry, plugin, locale, marked));
+    }
+    Ok(())
+}
+
 pub(crate) struct TrustRequest {
     pub name: String,
     pub review_token: Option<String>,
@@ -315,13 +351,10 @@ pub(crate) fn trust(
                 "`--yes` only skips the confirmation prompt. Trust also needs --review-token, the bundle review token that names the exact content to trust; to see it, {review_again}"
             );
         }
+        show(registry, locale, &name, json, console)?;
         if json {
-            console.print(&serde_json::to_string_pretty(&review_json(
-                registry, plugin, locale, marked,
-            ))?);
             return Ok(());
         }
-        console.print(&review_text(registry, plugin, locale, marked));
         if !console.interactive() {
             console.print(&format!(
                 "\nNot trusted. The bundle review token ties trust to exactly the content shown above; it does not record that anyone read this review. A trust made with it is recorded as {}. To trust, run:\n  {}",
@@ -358,7 +391,7 @@ pub(crate) fn trust(
                 "Trust needs confirmation: pass --yes with the bundle review token, or run in a terminal to be shown the review and asked"
             );
         }
-        console.print(&review_text(registry, plugin, locale, marked));
+        show(registry, locale, &name, false, console)?;
         if !console.confirm("\nTrust this bundle with exactly the capabilities above?") {
             console.print("Not trusted.");
             return Ok(());
@@ -368,6 +401,150 @@ pub(crate) fn trust(
 
     trust_as(registry, locale, &name, approver)?;
     report(registry, locale, &name, "trusted", json, console)
+}
+
+pub(crate) fn update(
+    registry: &mut Arc<PluginRegistry>,
+    locale: Locale,
+    name: &str,
+    network: &codewhale_net::network_policy::NetworkPolicy,
+    json: bool,
+    console: &mut dyn Console,
+) -> Result<()> {
+    use codewhale_plugins::mutation::{
+        PluginMutationContext, PluginMutationOutcome, PluginMutationRequest, check_network_outcome,
+        execute,
+    };
+    let before = find(registry, locale, name)?.clone();
+    let selector = before.name().to_string();
+    let ctx = PluginMutationContext {
+        network,
+        max_size: codewhale_plugins::install::DEFAULT_MAX_SIZE_BYTES,
+    };
+    let receipt = block_on_mutation(execute(
+        PluginMutationRequest::Update { selector },
+        &ctx,
+        Arc::make_mut(registry),
+    ))?
+    .map_err(|error| failed(locale, &format!("{error:#}")))?;
+    check_network_outcome(&receipt.outcome)?;
+    match receipt.outcome {
+        PluginMutationOutcome::Updated => {
+            *registry = registry.rediscover_for_workspace(registry.workspace());
+            let version = registry
+                .get(&receipt.name)
+                .map(|plugin| plugin.manifest.plugin.version.clone())
+                .or_else(|| receipt.path.as_deref().and_then(manifest_version_at))
+                .unwrap_or_default();
+            if json {
+                let mut record = registry
+                    .get(&receipt.name)
+                    .map(crate::plugin_cli_record)
+                    .unwrap_or_else(|| {
+                        serde_json::json!({
+                            "name": text(&receipt.name),
+                            "version": text(&version),
+                            "path": receipt.path.as_ref().map(|p| text(&p.to_string_lossy())),
+                            "content_hash": receipt.installed_content_hash.or(receipt.content_hash),
+                        })
+                    });
+                if let Some(object) = record.as_object_mut() {
+                    object.insert("action".to_string(), "updated".into());
+                }
+                console.print(&serde_json::to_string_pretty(&record)?);
+            } else {
+                let action = if version.is_empty() {
+                    "updated".to_string()
+                } else {
+                    format!("updated to {}", text(&version))
+                };
+                console.print(
+                    &tr(locale, MessageId::CmdPluginBundleMutationSuccess)
+                        .replace("{name}", &text(&receipt.name))
+                        .replace("{action}", &action),
+                );
+            }
+            Ok(())
+        }
+        PluginMutationOutcome::NoChange => {
+            if json {
+                let mut record = crate::plugin_cli_record(&before);
+                if let Some(object) = record.as_object_mut() {
+                    object.insert("action".to_string(), "already_current".into());
+                }
+                console.print(&serde_json::to_string_pretty(&record)?);
+            } else {
+                console.print(
+                    &tr(locale, MessageId::CmdPluginBundleMutationSuccess)
+                        .replace("{name}", &text(&receipt.name))
+                        .replace("{action}", "already current"),
+                );
+            }
+            Ok(())
+        }
+        _ => bail!("Unexpected plugin update outcome"),
+    }
+}
+
+pub(crate) fn uninstall(
+    registry: &mut Arc<PluginRegistry>,
+    locale: Locale,
+    name: &str,
+    yes: bool,
+    json: bool,
+    console: &mut dyn Console,
+) -> Result<()> {
+    use codewhale_plugins::mutation::{PluginMutationContext, PluginMutationRequest, execute};
+    use codewhale_plugins::types::PluginScope;
+    let plugin = find(registry, locale, name)?.clone();
+    let plugin_name = plugin.name().to_string();
+    let version = plugin.manifest.plugin.version.clone();
+    if !yes {
+        if json || !console.interactive() {
+            bail!("Uninstall needs confirmation: pass --yes, or run in a terminal to be asked");
+        }
+        let prompt = if version.is_empty() {
+            format!("Remove {}?", text(&plugin_name))
+        } else {
+            format!("Remove {} {}?", text(&plugin_name), text(&version))
+        };
+        if !console.confirm(&prompt) {
+            console.print("Not removed.");
+            return Ok(());
+        }
+    }
+    if plugin.scope == PluginScope::User && plugin.enabled {
+        Arc::make_mut(registry)
+            .disable(&plugin_name)
+            .map_err(|error| failed(locale, &error))?;
+    }
+    let network = codewhale_net::network_policy::NetworkPolicy::default();
+    let ctx = PluginMutationContext {
+        network: &network,
+        max_size: codewhale_plugins::install::DEFAULT_MAX_SIZE_BYTES,
+    };
+    let receipt = block_on_mutation(execute(
+        PluginMutationRequest::Uninstall {
+            selector: plugin_name,
+        },
+        &ctx,
+        Arc::make_mut(registry),
+    ))?
+    .map_err(|error| failed(locale, &format!("{error:#}")))?;
+    if json {
+        console.print(&serde_json::to_string_pretty(&serde_json::json!({
+            "name": text(&receipt.name),
+            "version": text(&version),
+            "action": "uninstalled",
+        }))?);
+    } else {
+        console.print(
+            &tr(locale, MessageId::CmdPluginBundleMutationSuccess)
+                .replace("{name}", &text(&receipt.name))
+                .replace("{action}", "uninstalled"),
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn enable(
