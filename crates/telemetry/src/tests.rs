@@ -1435,6 +1435,21 @@ fn completed_wipe_blocks_identity_and_state_recreation() {
 // ------------------------------------------------------------ unarmed gate --
 
 #[test]
+fn termination_reporting_is_a_noop_when_unarmed() {
+    assert!(!crate::is_armed());
+    crate::record_session_end();
+    crate::record_session_end_blocking(ExitClass::Signal);
+    assert_eq!(
+        crate::report_termination(ExitClass::Signal, Duration::from_millis(10)),
+        crate::FlushOutcome::Empty
+    );
+    assert_eq!(
+        crate::flush_for_termination(Duration::from_millis(10)),
+        crate::FlushOutcome::Empty
+    );
+}
+
+#[test]
 fn record_blocking_is_a_noop_when_unarmed() {
     // The process panic hook is installed before the command line is parsed, so
     // this is the state the hook runs in for every user who never opted in.

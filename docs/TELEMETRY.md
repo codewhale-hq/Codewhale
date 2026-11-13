@@ -126,7 +126,7 @@ claim one.
 ## When anything is sent, and where
 
 Nothing is collected or sent when a persistent opt-out or run-scoped kill
-switch is in force, or when privacy state is unreadable. TUI and `exec` sessions have exactly one network flush point: an attempt
+switch is in force, or when privacy state is unreadable. TUI and `exec` sessions have one network flush point at a normal end: an attempt
 during shutdown, bounded at three seconds. Short CLI commands such as `config`,
 `doctor`, and `auth` do not wait for that network request. They record
 `session_end`, seal the event to the local buffer with a much shorter bound, and
@@ -134,10 +134,21 @@ return; a configured endpoint sends those buffered events with the next
 interactive shutdown flush. An explicitly empty endpoint finalizes its local
 dry-run batch immediately.
 
+A session that is ended early makes one more bounded attempt, so its usage is
+not lost with it. When a terminating signal (interrupt, terminate, hang-up, or
+console close) reaches a TUI, `exec` or `serve` session, and when `exec` ends
+because the program reading its output has closed the pipe, the session records
+`session_end` with exit class `signal`, then makes one send attempt bounded at
+one and a half seconds, alongside the process's own shutdown work. A second
+signal ends the process at once without waiting. This is the same single `POST`
+of the same fields, never retried. Short CLI commands stay local-only on this
+path too.
+
 There is no startup flush, mid-session flush, per-turn flush, or per-tool-call
-flush. Every network shutdown flush re-resolves your setting from disk
+flush. Every network flush re-resolves your setting from disk
 immediately beforehand, so `codewhale config set telemetry false` written from
-another terminal stops the flush of a session that is already running.
+another terminal stops the flush of a session that is already running, including
+one that is being terminated.
 
 A flush is **one `POST`** to the resolved endpoint — by default
 `https://telemetry.codewhale.net/v1/telemetry`. The request carries a
@@ -317,7 +328,7 @@ The workhorse. Everything a session accumulated ships here, once.
 
 **`duration_bucket`** — `chrono` delta from `app.session_started_at` (`crates/tui/src/tui/app.rs:1889`). Half-open, seconds: `lt_1m` (`d < 60`), `1m_10m` (`60 ≤ d < 600`), `10m_60m` (`600 ≤ d < 3600`), `gt_60m` (`d ≥ 3600`).
 
-**`exit_class`** — `clean | signal | panic | error`. **Derived from an explicit `AtomicU8`, never from an exit code.** `RunTerminationReason::Canceled` maps to exit 130 (`crates/engine/src/core/runtime_contract/termination.rs:53`), the same value the signal task uses (`crates/tui/src/lib.rs:682`, 128+SIGINT), so a code-based derivation would report every Esc-cancelled turn as a signal. The atomic is set by the panic hook (`crates/tui/src/lib.rs:1582`), by the signal task (`:678-696`) before `std::process::exit`, and on the clean path from `RunTerminationReason::is_success()` (`crates/engine/src/core/runtime_contract/termination.rs:44-46`) — `error` otherwise. Exit codes remain insufficient: an approval-required exit (3) and a terminal exec failure (1) need their actual termination classification.
+**`exit_class`** — `clean | signal | panic | error`. **Derived from an explicit `AtomicU8`, never from an exit code.** `RunTerminationReason::Canceled` maps to exit 130 (`crates/engine/src/core/runtime_contract/termination.rs:53`), the same value the signal task uses (`crates/tui/src/lib.rs:682`, 128+SIGINT), so a code-based derivation would report every Esc-cancelled turn as a signal. The atomic is set by the panic hook (`crates/tui/src/lib.rs:1582`), by the signal task when the first signal arrives, by `exec` when its output pipe closes, and on the clean path from `RunTerminationReason::is_success()` (`crates/engine/src/core/runtime_contract/termination.rs:44-46`) — `error` otherwise. Exit codes remain insufficient: an approval-required exit (3) and a terminal exec failure (1) need their actual termination classification.
 
 **`cold_start_bucket`** — from `startup_trace::elapsed_ms()`, which reads `PROCESS_START` directly and is independent of the startup summary's buffer clear (`crates/runtime/src/startup_trace.rs:39-45`). Boundaries: `lt_250`, `250_1000`, `1000_3000`, `gte_3000`. Absent on non-TUI surfaces.
 
