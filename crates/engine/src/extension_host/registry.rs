@@ -51,6 +51,8 @@ const RESERVED_NAMES: &[&str] = &[
     "js_execution",
     "request_user_input",
     "multi_tool_use.parallel",
+    "dsh_broker_act",
+    "dsh_broker_reach",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

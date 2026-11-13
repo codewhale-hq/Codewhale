@@ -540,6 +540,7 @@ pub enum DshService {
     Catalog,
     Terminal,
     Remote,
+    Plugins,
 }
 
 impl DshService {
@@ -553,6 +554,19 @@ impl DshService {
         Self::Remote,
     ];
 
+    pub const BUILTIN_ONLY: [Self; 1] = [Self::Plugins];
+
+    pub const EVERY: [Self; 8] = [
+        Self::Workspace,
+        Self::Llm,
+        Self::Network,
+        Self::Settings,
+        Self::Catalog,
+        Self::Terminal,
+        Self::Remote,
+        Self::Plugins,
+    ];
+
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -563,12 +577,20 @@ impl DshService {
             Self::Catalog => "catalog",
             Self::Terminal => "terminal",
             Self::Remote => "remote",
+            Self::Plugins => "plugins",
         }
     }
 
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|service| service.name() == name)
+        Self::EVERY
+            .into_iter()
+            .find(|service| service.name() == name)
+    }
+
+    #[must_use]
+    pub fn builtin_only(self) -> bool {
+        Self::BUILTIN_ONLY.contains(&self)
     }
 }
 

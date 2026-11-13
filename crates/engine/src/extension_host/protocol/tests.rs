@@ -196,7 +196,7 @@ fn render() -> String {
         let _ = writeln!(out, "  {name}: {code},");
     }
     out.push_str("} as const\n\nexport type Direction = 'core_to_host' | 'host_to_core'\n");
-    let services: Vec<String> = DshService::ALL
+    let services: Vec<String> = DshService::EVERY
         .iter()
         .map(|service| quote(service.name()))
         .collect();
@@ -676,7 +676,7 @@ fn dsh_broker_is_one_strict_envelope_and_names_only_the_closed_service_list() {
         unknown["params"]["service"] = json!("vault");
         assert!(parse_host_message(unknown, tier).is_ok());
     }
-    let names: Vec<&str> = DshService::ALL
+    let names: Vec<&str> = DshService::EVERY
         .iter()
         .map(|service| service.name())
         .collect();
@@ -689,10 +689,17 @@ fn dsh_broker_is_one_strict_envelope_and_names_only_the_closed_service_list() {
             "settings",
             "catalog",
             "terminal",
-            "remote"
+            "remote",
+            "plugins"
         ]
     );
-    for service in DshService::ALL {
+    assert_eq!(DshService::BUILTIN_ONLY, [DshService::Plugins]);
+    assert!(
+        DshService::ALL
+            .iter()
+            .all(|service| !service.builtin_only())
+    );
+    for service in DshService::EVERY {
         assert_eq!(DshService::parse(service.name()), Some(service));
     }
     assert_eq!(DshService::parse("Workspace"), None);
