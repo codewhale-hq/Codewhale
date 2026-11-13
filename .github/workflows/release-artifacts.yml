@@ -88,9 +88,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.platform }}
-    # Both cold macOS artifact builds on 0.10.1 exhausted 90 minutes inside
-    # compilation. Keep the full CI build budget; packaging stays capped below.
-    timeout-minutes: 210
+    timeout-minutes: ${{ startsWith(matrix.os, 'macos-') && 360 || 210 }}
     # FreeBSD is a source-build target with no prebuilt asset, no npm binary and no CI check
     # (see packaging/freebsd/README.md and docs/INSTALL.md#freebsd).
     strategy:
@@ -175,10 +173,11 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        if: runner.os == 'Linux'
         id: sccache
         continue-on-error: true
       - name: Enable sccache
-        if: steps.sccache.outcome == 'success' && runner.os != 'Windows'
+        if: steps.sccache.outcome == 'success' && runner.os == 'Linux'
         shell: bash
         run: |
           {
