@@ -1223,21 +1223,18 @@ fn coordination_hot_paths_count_only_active_authoritative_owners() {
 }
 
 #[test]
-fn runtime_mount_coordination_lock_is_shared_with_parallel_sessions() {
+fn runtime_mount_and_parallel_sessions_both_append_durably() {
     let tmp = tempdir().expect("tempdir");
     let runtime_authority = new_shared_runtime_subagent_manager(tmp.path().to_path_buf(), 8)
         .expect("admit TUI runtime writer");
-    let session =
-        SubAgentManager::new(tmp.path().to_path_buf(), 8).require_coordination_process_lock();
-    session
-        .ensure_coordination_process_lock()
-        .expect("a second session appends beside the runtime");
-    assert!(!session.coordination_snapshot_read_only);
+    let session = SubAgentManager::new(tmp.path().to_path_buf(), 8)
+        .with_state_path(default_state_path(tmp.path()).expect("state path"));
+    assert!(session.store_authority.is_some());
     session
         .persist_state_synchronously()
         .expect("session append");
     let runtime = runtime_authority.try_write().expect("runtime lock");
-    assert!(!runtime.coordination_snapshot_read_only);
+    assert!(runtime.store_authority.is_some());
     runtime
         .persist_state_synchronously()
         .expect("runtime append");
@@ -1363,10 +1360,9 @@ fn headless_worker_registration_enforces_live_claims_and_projects_context() {
             .iter()
             .any(|record| record.owner_session_id == "owner-worker-c")
     );
-    let independent =
-        SubAgentManager::new(tmp.path().to_path_buf(), 8).require_coordination_process_lock();
-    assert!(independent.session_private);
-    assert!(independent.ensure_coordination_process_lock().is_ok());
+    let independent = SubAgentManager::new(tmp.path().to_path_buf(), 8)
+        .with_state_path(default_state_path(tmp.path()).expect("state path"));
+    assert!(independent.store_authority.is_some());
     drop(independent);
     drop(authority_a);
     drop(authority_b);
@@ -1575,25 +1571,21 @@ fn prior_session_owners_never_count_as_active_coordination_owners() {
 }
 
 #[test]
-fn isolated_worktree_workers_skip_the_coordination_process_lock() {
+fn parallel_sessions_admit_shared_and_isolated_writers_durably() {
     let tmp = tempdir().expect("tempdir");
     let workspace = tmp.path().canonicalize().expect("canonical workspace");
+    let state_path = default_state_path(&workspace).expect("state path");
 
-    let holder = SubAgentManager::new(workspace.clone(), 4).require_coordination_process_lock();
-    holder
-        .ensure_coordination_process_lock()
-        .expect("holder owns the lock");
+    let holder = SubAgentManager::new(workspace.clone(), 4).with_state_path(state_path.clone());
+    assert!(holder.store_authority.is_some());
 
-    let mut contender =
-        SubAgentManager::new(workspace.clone(), 4).require_coordination_process_lock();
-    contender
-        .ensure_coordination_process_lock()
-        .expect("second manager now also owns shared lock (coexistence)");
+    let mut contender = SubAgentManager::new(workspace.clone(), 4).with_state_path(state_path);
+    assert!(contender.store_authority.is_some());
 
     let shared = make_write_worker_spec("shared-writer", workspace.clone(), "src/shared");
     contender
         .preflight_worker_coordination(&shared)
-        .expect("shared-workspace writer proceeds with shared lock");
+        .expect("shared-workspace writer proceeds beside another session");
 
     let mut isolated = make_write_worker_spec("isolated-writer", workspace.clone(), "src/iso");
     isolated
@@ -1603,69 +1595,64 @@ fn isolated_worktree_workers_skip_the_coordination_process_lock() {
         .worktree = true;
     contender
         .preflight_worker_coordination(&isolated)
-        .expect("isolated-worktree writer preflights without the lock");
+        .expect("isolated-worktree writer preflights beside another session");
     contender
         .register_worker_with_coordination(isolated)
-        .expect("isolated-worktree writer registers without the lock");
-
-    // Once the previous owner exits, a manager that failed earlier must
-    // acquire the lock on retry instead of replaying a memoized failure.
+        .expect("isolated-worktree writer registers durably");
     drop(holder);
     contender
-        .ensure_coordination_process_lock()
-        .expect("lock acquisition retries after the holder exits");
-    contender
         .preflight_worker_coordination(&shared)
-        .expect("shared-workspace writer proceeds once the lock is held");
+        .expect("shared-workspace writer proceeds after the other session exits");
 }
 
 #[test]
-fn coordination_detail_projection_reports_process_lock_ownership() {
+fn coordination_detail_projection_reports_store_admission_and_its_retry() {
     let tmp = tempdir().expect("tempdir");
     let workspace = tmp.path().canonicalize().expect("canonical workspace");
+    let state_path = default_state_path(&workspace).expect("state path");
 
-    let holder = SubAgentManager::new(workspace.clone(), 4).require_coordination_process_lock();
-    holder
-        .ensure_coordination_process_lock()
-        .expect("holder owns the lock");
+    let holder = SubAgentManager::new(workspace.clone(), 4).with_state_path(state_path.clone());
     let held = holder.coordination_detail_projection(None, 8);
-    assert!(
-        held.process_lock_held,
-        "holder projection must report lock held"
-    );
+    assert!(held.process_lock_held);
     assert!(held.process_lock_note.is_none());
 
-    let contender = SubAgentManager::new(workspace, 4).require_coordination_process_lock();
+    let contender = SubAgentManager::new(workspace.clone(), 4).with_state_path(state_path.clone());
     let shared = contender.coordination_detail_projection(None, 8);
-    // With shared locks both holders coexist — contender reports held and no note.
+    assert!(shared.process_lock_held);
+    assert!(shared.process_lock_note.is_none());
+
+    let committed = std::fs::read(&state_path).expect("committed store");
+    std::fs::write(&state_path, b"{").expect("corrupt store");
+    let mut refused = SubAgentManager::new(workspace, 4).with_state_path(state_path.clone());
+    let projection = refused.coordination_detail_projection(None, 8);
+    assert!(!projection.process_lock_held);
+    assert!(projection.process_lock_note.is_some());
+    assert!(!refused.cleanup_due(Duration::ZERO));
+    assert!(refused.release_stale_write_claims(None).is_err());
+    assert!(!refused.cleanup_due(Duration::ZERO));
+
+    std::fs::write(&state_path, committed).expect("restore store");
+    refused
+        .release_stale_write_claims(None)
+        .expect("admission is retried once the store is readable");
     assert!(
-        shared.process_lock_held,
-        "contender projection must report lock held with shared locks"
+        refused
+            .coordination_detail_projection(None, 8)
+            .process_lock_held
     );
-    assert!(
-        shared.process_lock_note.is_none(),
-        "shared projection carries no note"
-    );
+    assert!(refused.cleanup_due(Duration::ZERO));
 }
 
-/// A second Codewhale session in the same workspace is ordinary usage. Losing
-/// the coordination flock means "I cannot append to the shared ledger" — it
-/// must never mean "my agents are dead". Bookkeeping failure and liveness are
-/// separate concerns (owner report, 2026-08-04).
+/// A second Codewhale session in the same workspace is ordinary usage and
+/// must never mean "my agents are dead". Bookkeeping and liveness are separate
+/// concerns (owner report, 2026-08-04).
 #[test]
-fn a_second_session_without_the_lock_keeps_its_running_agents_live() {
+fn a_second_session_keeps_its_running_agents_live() {
     let tmp = tempdir().expect("tempdir");
     let workspace = tmp.path().canonicalize().expect("canonical workspace");
 
-    let holder = SubAgentManager::new(workspace.clone(), 4).require_coordination_process_lock();
-    holder
-        .ensure_coordination_process_lock()
-        .expect("holder owns the lock");
-
-    let mut contender = SubAgentManager::new(workspace, 4).require_coordination_process_lock();
-    contender
-        .ensure_coordination_process_lock()
-        .expect("contender now also owns shared lock");
+    let _first = SubAgentManager::new(workspace.clone(), 4);
+    let mut contender = SubAgentManager::new(workspace, 4);
 
     let (input_tx, _input_rx) = mpsc::unbounded_channel();
     let mut agent = SubAgent::new(
@@ -1680,9 +1667,6 @@ fn a_second_session_without_the_lock_keeps_its_running_agents_live() {
         PathBuf::from("."),
         contender.session_boot_id().to_string(),
     );
-    // Fresh, well inside the heartbeat window: nothing about this agent is
-    // stale. The only thing "wrong" with it is that this process cannot write
-    // the shared ledger.
     agent.last_activity_at = Instant::now();
     let agent_id = agent.id.clone();
     contender.agents.insert(agent_id.clone(), agent);
@@ -1692,7 +1676,7 @@ fn a_second_session_without_the_lock_keeps_its_running_agents_live() {
         .expect("durable worker operation");
     assert_eq!(
         cancelled, 0,
-        "lock loss alone must not terminalize anything"
+        "another session alone must not terminalize anything"
     );
     let snap = contender
         .get_result(&agent_id)
@@ -1700,26 +1684,21 @@ fn a_second_session_without_the_lock_keeps_its_running_agents_live() {
     assert_eq!(
         snap.status,
         SubAgentStatus::Running,
-        "a live agent stays Running when this session cannot write the ledger: {:?}",
+        "a live agent stays Running beside another session: {:?}",
         snap.status
     );
 }
 
-/// A second session shares the workspace coordination read-lock and must load
-/// the existing ledger before it persists any of its own state. That preserves
-/// prior decisions instead of replacing them with an empty ledger.
+/// A second session must load the existing ledger before it persists any of
+/// its own state. That preserves prior decisions instead of replacing them
+/// with an empty ledger.
 #[test]
-fn a_second_session_with_the_shared_lock_loads_the_workspace_ledger() {
+fn a_second_session_loads_the_workspace_ledger() {
     let tmp = tempdir().expect("tempdir");
     let workspace = tmp.path().canonicalize().expect("canonical workspace");
     let state_path = default_state_path(&workspace).expect("state path");
 
-    let mut first = SubAgentManager::new(workspace.clone(), 4)
-        .with_state_path(state_path.clone())
-        .require_coordination_process_lock();
-    first
-        .ensure_coordination_process_lock()
-        .expect("first session owns the lock");
+    let mut first = SubAgentManager::new(workspace.clone(), 4).with_state_path(state_path.clone());
     first
         .record_coordination_decision(DecisionRecord {
             decision_id: "shared-decision".to_string(),
@@ -1737,20 +1716,15 @@ fn a_second_session_with_the_shared_lock_loads_the_workspace_ledger() {
         .persist_state_synchronously()
         .expect("first session persists the ledger");
 
-    // Second session in the same workspace while the first still holds the
-    // shared flock. It coexists and must see the workspace ledger.
     let second = new_shared_subagent_manager(workspace.clone(), 4);
     {
         let guard = second.blocking_read();
-        assert!(
-            guard.holds_coordination_process_lock(),
-            "test premise: the second session joins the shared flock"
-        );
+        assert!(guard.store_authority.is_some());
         let ledger = guard.coordination_snapshot();
         assert_eq!(
             ledger.decisions.len(),
             1,
-            "second session must load the workspace ledger it cannot write"
+            "second session must load the workspace ledger"
         );
         assert_eq!(ledger.decisions[0].decision_id, "shared-decision");
     }
@@ -1760,11 +1734,8 @@ fn a_second_session_with_the_shared_lock_loads_the_workspace_ledger() {
     {
         let guard = second.blocking_write();
         guard
-            .ensure_coordination_process_lock()
-            .expect("shared lock remains available after the first session exits");
-        guard
             .persist_state_synchronously()
-            .expect("second session persists once it owns the lock");
+            .expect("second session persists after the first exits");
     }
     let mut replayed = SubAgentManager::new(workspace, 4).with_state_path(state_path);
     replayed.load_state().expect("reload the workspace ledger");
@@ -1776,23 +1747,15 @@ fn a_second_session_with_the_shared_lock_loads_the_workspace_ledger() {
 }
 
 /// The complement of the test above: an orphan still terminalizes, but only on
-/// heartbeat evidence. Lock ownership is not part of the decision either way.
+/// heartbeat evidence. Another session is not part of the decision either way.
 #[test]
-fn cleanup_terminalizes_orphans_on_heartbeat_evidence_not_on_lock_ownership() {
+fn cleanup_terminalizes_orphans_on_heartbeat_evidence_not_on_other_sessions() {
     let tmp = tempdir().expect("tempdir");
     let workspace = tmp.path().canonicalize().expect("canonical workspace");
 
-    let holder = SubAgentManager::new(workspace.clone(), 4).require_coordination_process_lock();
-    holder
-        .ensure_coordination_process_lock()
-        .expect("holder owns the lock");
-
-    let mut contender = SubAgentManager::new(workspace, 4)
-        .with_running_heartbeat_timeout(Duration::from_secs(30))
-        .require_coordination_process_lock();
-    contender
-        .ensure_coordination_process_lock()
-        .expect("contender now also owns shared lock");
+    let _first = SubAgentManager::new(workspace.clone(), 4);
+    let mut contender =
+        SubAgentManager::new(workspace, 4).with_running_heartbeat_timeout(Duration::from_secs(30));
 
     let insert_orphan = |manager: &mut SubAgentManager, name: &str, idle: Duration| {
         let (input_tx, _input_rx) = mpsc::unbounded_channel();
@@ -1832,7 +1795,7 @@ fn cleanup_terminalizes_orphans_on_heartbeat_evidence_not_on_lock_ownership() {
             .expect("fresh orphan still listed")
             .status,
         SubAgentStatus::Running,
-        "a fresh orphan is not terminalized just because the flock is elsewhere"
+        "a fresh orphan is not terminalized just because another session is open"
     );
     assert!(
         matches!(
@@ -11351,7 +11314,7 @@ async fn write_capable_agent_does_not_launch_when_durable_registration_fails() {
         .expect_err("writer must fail before spawn when its durable claim cannot commit")
         .to_string();
     assert!(
-        error.contains("durably register") || error.contains("writer lock"),
+        error.contains("durably register") || error.contains("store admission failed"),
         "{error}"
     );
 
@@ -12230,7 +12193,10 @@ fn persist_state_rejects_state_path_outside_state_root() {
         .persist_state()
         .expect_err("outside state path should fail");
 
-    assert!(format!("{err:#}").contains("without its writer lock"));
+    assert!(
+        format!("{err:#}").contains("must stay within state root"),
+        "{err:#}"
+    );
 }
 
 /// A user who keeps application state on another volume makes the workspace's
@@ -12405,9 +12371,7 @@ fn explicit_state_roots_isolate_managers_for_the_same_execution_workspace() {
         let mut manager = manager.try_write().expect("manager write lock");
         assert_eq!(manager.workspace.as_path(), workspace.as_path());
         assert_eq!(manager.state_root.as_path(), expected_root.as_path());
-        manager
-            .ensure_coordination_process_lock()
-            .expect("independent state-root coordination lock");
+        assert!(manager.store_authority.is_some());
         manager.register_worker(make_worker_spec(worker_id, workspace.clone()));
         manager
             .persist_state_synchronously()
@@ -12462,31 +12426,21 @@ fn persist_state_rejects_symlinked_state_directory() {
     );
 }
 
-/// A linked `.codewhale` must be refused before anything is created: the
-/// coordination lock used to `create_dir_all` through the link first.
 #[cfg(unix)]
 #[test]
-fn coordination_lock_refuses_linked_codewhale_without_writing_through_it() {
+fn a_linked_codewhale_admission_writes_no_gitignore_through_it() {
     let tmp = tempdir().expect("tempdir");
-    let workspace = tmp.path().join("workspace");
-    let outside = tmp.path().join("outside");
+    let root = tmp.path().canonicalize().expect("canonical root");
+    let workspace = root.join("workspace");
+    let outside = root.join("outside");
     std::fs::create_dir_all(&workspace).expect("mkdir workspace");
     std::fs::create_dir_all(&outside).expect("mkdir outside");
     std::os::unix::fs::symlink(&outside, workspace.join(".codewhale")).expect("link .codewhale");
-
-    let Err(err) = CoordinationProcessLock::acquire(&workspace, false) else {
-        panic!("a linked .codewhale must be refused");
-    };
-    let message = format!("{err:#}");
+    let manager = new_shared_subagent_manager(workspace, 4);
+    assert!(manager.blocking_read().store_authority.is_none());
     assert!(
-        message.contains("must not traverse symlinks")
-            || message.contains("must stay within state root"),
-        "{message}"
-    );
-    assert_eq!(
-        std::fs::read_dir(&outside).expect("read outside").count(),
-        0,
-        "nothing may be created through the link"
+        !outside.join("state").join(".gitignore").exists(),
+        "a refused admission writes no .gitignore through the link"
     );
 }
 
@@ -20874,24 +20828,66 @@ fn write_json_atomic_survives_concurrent_writers() {
     assert!(leftover.is_empty(), "temp files leaked: {leftover:?}");
 }
 
+fn two_process_decision(id: &str) -> DecisionRecord {
+    DecisionRecord {
+        decision_id: id.to_string(),
+        subject: id.to_string(),
+        status: DecisionStatus::Accepted,
+        owner: "root".to_string(),
+        scope: vec!["src".to_string()],
+        constraints: Vec::new(),
+        evidence_handles: Vec::new(),
+        version: 1,
+        sequence: 0,
+    }
+}
+
+fn wait_for_two_process_file(path: &Path, child: &mut std::process::Child, what: &str) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if !path.exists() {
+        let _ = child.kill();
+        panic!("{what} never became ready");
+    }
+}
+
 #[test]
-fn coordination_process_lock_rejects_second_process() {
-    const ROLE_ENV: &str = "CODEWHALE_TEST_COORDINATION_LOCK_ROLE";
-    const WORKSPACE_ENV: &str = "CODEWHALE_TEST_COORDINATION_LOCK_WORKSPACE";
+fn a_stale_session_never_makes_a_new_session_read_only() {
+    const ROLE_ENV: &str = "CODEWHALE_TEST_COORDINATION_ROLE";
+    const WORKSPACE_ENV: &str = "CODEWHALE_TEST_COORDINATION_WORKSPACE";
     const TEST_NAME: &str =
-        "tools::subagent::tests::coordination_process_lock_rejects_second_process";
+        "tools::subagent::tests::a_stale_session_never_makes_a_new_session_read_only";
 
     if let Some(role) = std::env::var_os(ROLE_ENV) {
         let workspace = PathBuf::from(std::env::var_os(WORKSPACE_ENV).expect("workspace env"));
-        if role == "legacy-holder" {
-            let _legacy_session = CoordinationProcessLock::acquire(&workspace, false)
-                .expect("an older session holds the shared lock");
-            std::fs::write(workspace.join("holder.ready"), b"ready").unwrap();
-            let deadline = Instant::now() + Duration::from_secs(10);
+        let wait_for_release = || {
+            let deadline = Instant::now() + Duration::from_secs(60);
             while !workspace.join("holder.release").exists() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
             }
             assert!(workspace.join("holder.release").exists(), "release timeout");
+        };
+        if role == "legacy-holder" {
+            let lock_file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(
+                    workspace
+                        .join(".codewhale")
+                        .join("state")
+                        .join("subagents.v1.lock"),
+                )
+                .expect("open legacy lock");
+            let legacy = fd_lock::RwLock::new(lock_file);
+            let _guard = legacy
+                .try_read()
+                .expect("an older session holds the legacy lock");
+            std::fs::write(workspace.join("holder.ready"), b"ready").unwrap();
+            wait_for_release();
             return;
         }
         let manager = new_shared_subagent_manager_with_timeout(
@@ -20901,78 +20897,82 @@ fn coordination_process_lock_rejects_second_process() {
             Duration::from_secs(30),
             4,
         );
+        let mut guard = manager.try_write().unwrap();
+        assert!(guard.store_authority.is_some(), "{role:?} store admitted");
+        assert!(
+            guard
+                .coordination_detail_projection(None, 8)
+                .process_lock_held
+        );
+        let name = role.to_string_lossy().into_owned();
+        guard
+            .record_coordination_decision(two_process_decision(&format!("{name}-decision")))
+            .expect("record a decision beside the other session");
+        guard.register_worker(make_worker_spec(
+            &format!("{name}-worker"),
+            workspace.clone(),
+        ));
+        guard
+            .persist_state_synchronously()
+            .expect("publish beside the other session");
         if role == "holder" {
-            manager
-                .try_read()
-                .unwrap()
-                .ensure_coordination_process_lock()
-                .expect("holder owns lock");
             std::fs::write(workspace.join("holder.ready"), b"ready").unwrap();
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while !workspace.join("holder.release").exists() && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            assert!(workspace.join("holder.release").exists(), "release timeout");
+            wait_for_release();
         } else {
-            manager
-                .try_read()
-                .unwrap()
-                .ensure_coordination_process_lock()
-                .expect("second process now also succeeds with shared lock");
+            assert!(
+                guard
+                    .coordination_snapshot()
+                    .decisions
+                    .iter()
+                    .any(|decision| decision.decision_id == "holder-decision"),
+                "the new session merges the open session's ledger"
+            );
         }
         return;
     }
 
-    let dir = tempdir().expect("tempdir");
-    let workspace = dir.path().canonicalize().expect("canonical workspace");
     let test_binary = std::env::current_exe().expect("test binary");
-    let mut holder = std::process::Command::new(&test_binary)
-        .arg("--exact")
-        .arg(TEST_NAME)
-        .arg("--nocapture")
-        .env(ROLE_ENV, "holder")
-        .env(WORKSPACE_ENV, &workspace)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawn lock holder");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !workspace.join("holder.ready").exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    if !workspace.join("holder.ready").exists() {
-        let _ = holder.kill();
-        let output = holder.wait_with_output().expect("holder output");
-        panic!(
-            "holder never acquired lock:\nstdout:\n{}\nstderr:\n{}",
+    let spawn = |role: &str, workspace: &Path| {
+        std::process::Command::new(&test_binary)
+            .arg("--exact")
+            .arg(TEST_NAME)
+            .arg("--nocapture")
+            .env(ROLE_ENV, role)
+            .env(WORKSPACE_ENV, workspace)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn session process")
+    };
+    let finish = |child: std::process::Child, what: &str| {
+        let output = child.wait_with_output().expect("session output");
+        assert!(
+            output.status.success(),
+            "{what} failed:\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-    }
+    };
 
-    let contender = std::process::Command::new(&test_binary)
-        .arg("--exact")
-        .arg(TEST_NAME)
-        .arg("--nocapture")
-        .env(ROLE_ENV, "contender")
-        .env(WORKSPACE_ENV, &workspace)
-        .output()
-        .expect("spawn lock contender");
-    assert!(
-        contender.status.success(),
-        "contender failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&contender.stdout),
-        String::from_utf8_lossy(&contender.stderr)
-    );
-
+    let dir = tempdir().expect("tempdir");
+    let workspace = dir.path().canonicalize().expect("canonical workspace");
+    let mut holder = spawn("holder", &workspace);
+    wait_for_two_process_file(&workspace.join("holder.ready"), &mut holder, "open session");
+    finish(spawn("contender", &workspace), "new session");
     std::fs::write(workspace.join("holder.release"), b"release").unwrap();
-    let output = holder.wait_with_output().expect("holder output");
-    assert!(
-        output.status.success(),
-        "holder failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    finish(holder, "open session");
+    let workers = load_persisted_agent_worker_records_with_state_root(&workspace, &workspace)
+        .expect("read merged store");
+    for id in ["holder-worker", "contender-worker"] {
+        assert!(
+            workers.iter().any(|record| record.spec.worker_id == id),
+            "{id} survives the other session's publication"
+        );
+    }
+    let mut replayed = SubAgentManager::new(workspace.clone(), 4)
+        .with_state_path(default_state_path(&workspace).unwrap());
+    replayed.load_state().expect("reload merged ledger");
+    assert_eq!(replayed.coordination.decisions.len(), 2);
 
     let legacy_dir = tempdir().expect("tempdir");
     let legacy_workspace = legacy_dir
@@ -20988,75 +20988,42 @@ fn coordination_process_lock_rejects_second_process() {
     )
     .unwrap();
     let legacy_bytes = std::fs::read(&legacy_file).unwrap();
-    let mut legacy_holder = std::process::Command::new(&test_binary)
-        .arg("--exact")
-        .arg(TEST_NAME)
-        .arg("--nocapture")
-        .env(ROLE_ENV, "legacy-holder")
-        .env(WORKSPACE_ENV, &legacy_workspace)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawn legacy lock holder");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !legacy_workspace.join("holder.ready").exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    if !legacy_workspace.join("holder.ready").exists() {
-        let _ = legacy_holder.kill();
-        let output = legacy_holder
-            .wait_with_output()
-            .expect("legacy holder output");
-        panic!(
-            "legacy holder never acquired lock:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    let private = new_shared_subagent_manager(legacy_workspace.clone(), 4);
+    let mut legacy_holder = spawn("legacy-holder", &legacy_workspace);
+    wait_for_two_process_file(
+        &legacy_workspace.join("holder.ready"),
+        &mut legacy_holder,
+        "older session",
+    );
+    let upgraded = new_shared_subagent_manager(legacy_workspace.clone(), 4);
     {
-        let guard = private.blocking_read();
+        let mut guard = upgraded.blocking_write();
         assert!(
-            guard.ensure_coordination_process_lock().is_ok(),
-            "a session beside an older one keeps working sub-agents"
+            guard.store_authority.is_some(),
+            "a stale older session must not leave the new one read-only"
         );
         let projection = guard.coordination_detail_projection(None, 8);
-        assert!(!projection.process_lock_held);
         assert!(
-            projection
-                .process_lock_note
-                .as_deref()
-                .is_some_and(|note| note.starts_with(SESSION_PRIVATE_COORDINATION)),
+            projection.process_lock_held,
             "{:?}",
             projection.process_lock_note
         );
+        assert!(projection.process_lock_note.is_none());
+        guard
+            .record_coordination_decision(two_process_decision("upgraded-decision"))
+            .expect("the new session writes while the older one is still open");
+        assert!(guard.cleanup_due(Duration::from_secs(3600)));
     }
-    assert_eq!(
-        std::fs::read(&legacy_file).unwrap(),
-        legacy_bytes,
-        "the older session's store stays untouched"
-    );
-    assert!(
-        !state_dir.join(SUBAGENT_STATE_FILE).exists(),
-        "no forced cutover while the older session runs"
-    );
-    std::fs::write(legacy_workspace.join("holder.release"), b"release").unwrap();
-    let output = legacy_holder
-        .wait_with_output()
-        .expect("legacy holder output");
-    assert!(
-        output.status.success(),
-        "legacy holder failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let upgraded = new_shared_subagent_manager(legacy_workspace, 4);
     assert!(
         state_dir.join(SUBAGENT_STATE_FILE).exists() && legacy_file.is_dir(),
-        "the next session upgrades the store once the older one exits"
+        "the store upgrades without waiting for the older session to exit"
     );
-    assert!(upgraded.blocking_read().holds_coordination_process_lock());
-    drop(private);
+    assert_eq!(
+        std::fs::read(legacy_file.join("legacy.json")).unwrap(),
+        legacy_bytes,
+        "the older store is retained byte for byte"
+    );
+    std::fs::write(legacy_workspace.join("holder.release"), b"release").unwrap();
+    finish(legacy_holder, "older session");
 }
 
 // === agent(action="wait") + peek throttling (#4097) ===
@@ -24171,35 +24138,32 @@ fn validate_resume_from_source(
 }
 
 /// Owner report 2026-08-04: a model/provider switch spawns the new engine's
-/// manager while the old engine still holds the workspace coordination flock
-/// in this same process. That losing acquisition must classify itself as a
-/// same-process handover (not "another Codewhale process"), and must
-/// self-heal via the projection retry once the previous owner drops.
+/// manager while the old engine's manager is still open in this same process.
+/// Both stay admitted, and the new one keeps writing after the old one drops.
 #[test]
-fn coordination_lock_loss_to_own_process_reads_as_handover_and_self_heals() {
+fn a_same_process_engine_handover_keeps_both_managers_admitted() {
     let tmp = tempdir().expect("tempdir");
+    let state_path = default_state_path(tmp.path()).expect("state path");
     let first =
-        SubAgentManager::new(tmp.path().to_path_buf(), 1).require_coordination_process_lock();
+        SubAgentManager::new(tmp.path().to_path_buf(), 1).with_state_path(state_path.clone());
+    let second = SubAgentManager::new(tmp.path().to_path_buf(), 1).with_state_path(state_path);
     assert!(
-        first.holds_coordination_process_lock(),
-        "first manager must own the flock"
+        first
+            .coordination_detail_projection(None, 8)
+            .process_lock_held
     );
-
-    let second =
-        SubAgentManager::new(tmp.path().to_path_buf(), 1).require_coordination_process_lock();
     assert!(
-        second.holds_coordination_process_lock(),
-        "second manager now also holds shared flock (coexistence)"
+        second
+            .coordination_detail_projection(None, 8)
+            .process_lock_held
     );
-    let note = second.coordination_process_lock_status();
-    assert!(note.is_ok(), "shared lock should not error: {note:?}");
-
+    first
+        .persist_state_synchronously()
+        .expect("old engine publishes");
     drop(first);
-    assert!(
-        second.coordination_process_lock_status().is_ok(),
-        "retry must acquire once the previous engine dropped the flock"
-    );
-    assert!(second.holds_coordination_process_lock());
+    second
+        .persist_state_synchronously()
+        .expect("new engine publishes after the old one drops");
 }
 
 // -- resume-from-checkpoint tests (checkpoint-based continuation) --
