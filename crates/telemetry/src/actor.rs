@@ -23,6 +23,7 @@ use crate::client::{self, SendOutcome};
 use crate::decision::{self, TelemetryDecision};
 use crate::envelope;
 use crate::event::{Batch, Event, SCHEMA_VERSION, Surface};
+use crate::spool::{self, SpoolContext};
 
 /// Events per batch.
 pub const BATCH_MAX_EVENTS: usize = 200;
@@ -64,6 +65,19 @@ pub(crate) struct Context {
     pub app_version: String,
     pub git_sha: Option<String>,
     pub tty: bool,
+    pub spool: PathBuf,
+    pub nonce: String,
+}
+
+impl Context {
+    fn header(&self) -> SpoolContext {
+        SpoolContext::new(
+            self.surface,
+            self.app_version.clone(),
+            self.git_sha.clone(),
+            self.tty,
+        )
+    }
 }
 
 /// A handle to the writer thread.
@@ -209,8 +223,7 @@ fn append(context: &Context, event: &Event) {
     let Ok(line) = serde_json::to_string(event) else {
         return;
     };
-    let path = buffer::buffer_path(&context.root);
-    let _ = buffer::append(&context.root, &path, &line);
+    let _ = buffer::append(&context.root, &context.spool, &line);
 }
 
 /// Seal every event queued before this message without reaching the network.
@@ -219,7 +232,7 @@ fn append(context: &Context, event: &Event) {
 /// runs. Re-deciding here preserves the same mid-session opt-out boundary as a
 /// full flush. An explicitly empty endpoint is the local dry-run sink and can
 /// therefore be finalized immediately; a configured endpoint leaves the
-/// events in `buffer.jsonl` for the next interactive flush.
+/// events in this process's spool for a later start to send.
 fn persist_local(context: &Context) -> FlushOutcome {
     match decision::re_decide(context.config_path.as_deref(), context.surface) {
         TelemetryDecision::Enabled(_) => {}
@@ -233,7 +246,10 @@ fn persist_local(context: &Context) -> FlushOutcome {
     if context.endpoint.is_none() {
         return flush(context);
     }
-    if buffer::read_lines(&buffer::buffer_path(&context.root)).is_empty() {
+    if buffer::read_lines(&context.spool)
+        .iter()
+        .all(|line| spool::is_header_line(line))
+    {
         FlushOutcome::Empty
     } else {
         FlushOutcome::Buffered
@@ -257,7 +273,7 @@ fn flush(context: &Context) -> FlushOutcome {
         return FlushOutcome::Suppressed;
     }
 
-    let lines = buffer::drain(&context.root);
+    let lines = spool::take_own(&context.root, &context.spool);
     if lines.is_empty() {
         return FlushOutcome::Empty;
     }
@@ -277,26 +293,92 @@ fn flush(context: &Context) -> FlushOutcome {
     // attempts at most once per interval rather than on every launch.
     let _ = envelope::write_state(&context.root, &state);
 
+    deliver(
+        &context.root,
+        context.endpoint.as_deref(),
+        &context.header(),
+        install.install_id,
+        events,
+    )
+}
+
+fn deliver(
+    root: &std::path::Path,
+    endpoint: Option<&str>,
+    header: &SpoolContext,
+    install_id: String,
+    events: Vec<Event>,
+) -> FlushOutcome {
     let batch = Batch {
-        schema_version: SCHEMA_VERSION,
-        notice_version: crate::event::NOTICE_VERSION,
+        schema_version: header.schema_version,
+        notice_version: header.notice_version,
         sent_at: envelope::now_rfc3339(),
-        install_id: install.install_id,
-        app_version: context.app_version.clone(),
-        git_sha: context.git_sha.clone(),
-        surface: context.surface,
+        install_id,
+        app_version: header.app_version.clone(),
+        git_sha: header.git_sha.clone(),
+        surface: header.surface,
         os: envelope::current_os(),
         arch: envelope::current_arch(),
         libc: envelope::current_libc(),
-        tty: context.tty,
+        tty: header.tty,
         events,
     };
-
-    match client::send(&context.root, context.endpoint.as_deref(), &batch) {
+    match client::send(root, endpoint, &batch) {
         SendOutcome::DryRun => FlushOutcome::DryRun,
         SendOutcome::Accepted => FlushOutcome::Sent,
         SendOutcome::Dropped => FlushOutcome::Dropped,
     }
+}
+
+/// Send what dead processes left behind, once each, on their own thread so a
+/// slow request never holds up this session's writer.
+///
+/// Consent and the tombstone are decided before anything is read, and again by
+/// the sender for every batch. Each spool is deleted before its request.
+pub(crate) fn spawn_recovery(context: Context) {
+    if !matches!(
+        context.surface,
+        Surface::Tui | Surface::Exec | Surface::Serve
+    ) {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("codewhale-telemetry-recover".to_string())
+        .spawn(move || {
+            let _ = catch_unwind(AssertUnwindSafe(|| recover(&context)));
+        });
+}
+
+pub(crate) fn recover(context: &Context) -> Vec<FlushOutcome> {
+    match decision::re_decide(context.config_path.as_deref(), context.surface) {
+        TelemetryDecision::Enabled(_) => {}
+        TelemetryDecision::OptedOut | TelemetryDecision::ForcedOff => return Vec::new(),
+    }
+    send_dead(context)
+}
+
+pub(crate) fn send_dead(context: &Context) -> Vec<FlushOutcome> {
+    if buffer::tombstone_present(&context.root) {
+        return Vec::new();
+    }
+    let Ok(install) = envelope::read_or_create_install_id(&context.root) else {
+        return Vec::new();
+    };
+    spool::take_dead(&context.root, &context.nonce, std::time::SystemTime::now())
+        .into_iter()
+        .filter_map(|recovered| {
+            let events = parse_events(&recovered.lines);
+            (!events.is_empty()).then(|| {
+                deliver(
+                    &context.root,
+                    context.endpoint.as_deref(),
+                    &recovered.context,
+                    install.install_id.clone(),
+                    events,
+                )
+            })
+        })
+        .collect()
 }
 
 /// Parse drained lines into events, capped at [`BATCH_MAX_EVENTS`] and

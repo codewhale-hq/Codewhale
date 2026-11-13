@@ -65,11 +65,11 @@ codewhale --telemetry false              # the same kill switch, for one command
 **`telemetry = false` in the config file is the opt-out.** It is a floor:
 `--telemetry true` and `CODEWHALE_TELEMETRY=1` both lose to it, because a
 setting you can undo by accident from a wrapper script is not a setting. It
-deletes the random install id, truncates every buffered event and every dry-run
+deletes the random install id, deletes every spool, truncates every dry-run
 record, and writes a tombstone. Appends, identity/state writes, and delivery all
 share the wipe's ordering lock, so once opt-out returns no pre-opt-out write or
 POST remains in flight. If any part of that wipe fails, the tombstone is still
-there and the buffer is undrainable — a failed wipe fails closed. Every later
+there and no spool can be sent — a failed wipe fails closed. Every later
 run re-asserts the same tombstone for as long as the setting stands, so it
 survives. Turning telemetry back on in `/settings` records that explicit preference
 in both existing privacy registers; a fresh launch can then clear the tombstone. Nothing buffered before that point is
@@ -101,17 +101,21 @@ Everything is under `$CODEWHALE_HOME/telemetry/` (`0700`), every file `0600`:
 
 | file | role |
 |---|---|
-| `buffer.jsonl` | pending events, one JSON object per line |
+| `spool/<nonce>.jsonl` | one running process's pending events: a header line (schema, notice and app version, release sha, surface, whether a terminal), then one JSON object per line |
+| `spool/<nonce>.lock` | held by that process while it runs; a spool whose lock is free belongs to a process that has ended |
 | `buffer.jsonl.lock` | the sibling ordering lock shared by writes, delivery, arming, and wipe |
+| `buffer.jsonl` | left over from older versions; only ever emptied, never written or sent |
 | `dryrun.jsonl` | where batches go when the endpoint is configured empty |
 | `state.json` | the last app version seen and the last flush attempt |
 | `install_id.json` | the random install id and when it was minted |
 | `disabled` | the tombstone; present means nothing is appended or sent |
 
-Both `buffer.jsonl` and `dryrun.jsonl` are rings capped at 512 records or
-256 KiB, whichever comes first, with the oldest dropped. The documented
-footprint ceiling for the whole directory is therefore **512 KiB plus a few
-hundred bytes of metadata**.
+The nonce is random, names a file on your disk and is never sent. Each spool and
+`dryrun.jsonl` is a ring capped at 512 records (the header counts as one) or
+256 KiB, whichever comes first, with the oldest events dropped. The documented
+footprint ceiling is therefore **256 KiB for each running process, 256 KiB for
+`dryrun.jsonl`, and at most four leftover spools of ended processes kept after
+each TUI, `exec` or `serve` start**, plus a few hundred bytes of metadata.
 
 The install id is a random v4 UUID. It is never derived from your hostname,
 MAC address, `machine-id`, home directory, username, or executable path — a
@@ -127,12 +131,13 @@ claim one.
 
 Nothing is collected or sent when a persistent opt-out or run-scoped kill
 switch is in force, or when privacy state is unreadable. TUI and `exec` sessions have one network flush point at a normal end: an attempt
-during shutdown, bounded at three seconds. Short CLI commands such as `config`,
-`doctor`, and `auth` do not wait for that network request. They record
-`session_end`, seal the event to the local buffer with a much shorter bound, and
-return; a configured endpoint sends those buffered events with the next
-interactive shutdown flush. An explicitly empty endpoint finalizes its local
-dry-run batch immediately.
+during shutdown, bounded at three seconds. That flush sends only the process's
+own spool, under that process's own surface and version, and deletes it before
+the request is made. Short CLI commands such as `config`, `doctor`, and `auth`
+do not wait for that network request. They record `session_end`, seal the event
+to their own spool with a much shorter bound, and return; the next TUI, `exec`
+or `serve` start sends what they left (below). An explicitly empty endpoint
+finalizes its local dry-run batch immediately.
 
 A session that is ended early makes one more bounded attempt, so its usage is
 not lost with it. When a terminating signal (interrupt, terminate, hang-up, or
@@ -144,7 +149,20 @@ signal ends the process at once without waiting. This is the same single `POST`
 of the same fields, never retried. Short CLI commands stay local-only on this
 path too.
 
-There is no startup flush, mid-session flush, per-turn flush, or per-tool-call
+A session that ends without any report (killed outright, a power loss, a crash
+before the handler runs) leaves its spool behind. When a later TUI, `exec` or
+`serve` session starts, it sends the leftovers once: at most four, newest first,
+one `POST` per leftover session, each carrying that session's own surface and
+app version and this installation's current install id and send time. Each
+leftover is deleted before its request is made and is never retried. A leftover
+older than seven days, one beyond the newest four, one written by a build with a
+different schema or notice version, and any line that fails the schema bounds is
+deleted without being sent. Consent and the opt-out tombstone are checked
+before anything is read and again before each request, and the request runs on
+its own thread so it never delays your session. Opting out deletes every spool.
+Opting back in starts without any spool from before.
+
+There is no mid-session flush, per-turn flush, or per-tool-call
 flush. Every network flush re-resolves your setting from disk
 immediately beforehand, so `codewhale config set telemetry false` written from
 another terminal stops the flush of a session that is already running, including
@@ -217,7 +235,7 @@ new fields, surfaces, and `product_usage` events.
 | `arch` | enum | `std::env::consts::ARCH` | `x86_64 \| aarch64 \| other`. |
 | `libc` | enum | `cfg!(target_env)` — **compile time** | `gnu \| musl \| none`. Runtime detection reads distro vendor strings; compile-time is free and leaks nothing. |
 | `tty` | bool | `std::io::IsTerminal`, as at `crates/telemetry/src/envelope.rs:196` | `stdin().is_terminal() && stdout().is_terminal()`. |
-| `events` | array | the drained buffer | Every element is one of the six events below and nothing else. Capped at 200 events or 64 KiB per batch; a batch that would exceed either cap leaves the remainder buffered for the next flush. |
+| `events` | array | the process's spool | Every element is one of the six events below and nothing else. Capped at 200 events or 64 KiB per batch; events beyond either cap are dropped with the spool, never carried to a later flush. |
 
 **`os_major` is not collected.** Reading it costs unsafe FFI on two platforms plus a file parser on a third, in the one crate whose entire value is being small enough to audit — and `os`, `arch`, and `libc` are free and answer the platform question. It may be reconsidered if the stored data ever shows that the OS-version cut is what triage is missing; a hunch is not that evidence.
 
@@ -552,7 +570,7 @@ is established by this source change.
 
 `install_id` rotates client-side every 90 days (`rotated_at` in `install_id.json`), so no single identifier spans a long history. This costs longitudinal accuracy and the docs say so: **no count derived from `install_id` is a user count.** It is a lower bound on distinct machine-installs in a window, and it undercounts a returning user across a rotation.
 
-**Turning it off deletes what was kept locally, not what was already sent.** `codewhale config set telemetry false` erases the install id, the buffer, and the dry-run records on your machine, and stops anything further. Rows already accepted by the endpoint are keyed only by a rotating random id that is now gone; first-party rows age out with the three-month window. If PostHog processing is activated, already-delivered processor records follow that project’s configured retention. The client has no remote deletion API and does not claim that local opt-out erases delivered records.
+**Turning it off deletes what was kept locally, not what was already sent.** `codewhale config set telemetry false` erases the install id, every spool, and the dry-run records on your machine, and stops anything further. Rows already accepted by the endpoint are keyed only by a rotating random id that is now gone; first-party rows age out with the three-month window. If PostHog processing is activated, already-delivered processor records follow that project’s configured retention. The client has no remote deletion API and does not claim that local opt-out erases delivered records.
 
 ### What the owner reads back — observed active installs
 

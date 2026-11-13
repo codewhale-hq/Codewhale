@@ -1074,7 +1074,7 @@ fn failed_wipe_fails_closed() {
         assert!(result.is_err(), "a failed truncate must be reported");
     }
     assert!(
-        buffer::drain(&root).is_empty(),
+        crate::spool::take_own(&root, &buffer_path).is_empty(),
         "a tombstoned buffer must never drain, wipe failure or not"
     );
     assert!(
@@ -1262,14 +1262,14 @@ fn drain_skips_a_torn_trailing_line() {
             .expect("open");
         file.write_all(b"{\"event\":\"pan").expect("tear");
     }
-    let drained = buffer::drain(&root);
+    let drained = crate::spool::take_own(&root, &path);
     assert_eq!(drained.len(), 3, "the drain returns raw lines");
     let parsed: Vec<Event> = drained
         .iter()
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect();
     assert_eq!(parsed.len(), 2, "the torn line must not reach a batch");
-    assert!(buffer::read_lines(&path).is_empty(), "drain truncates");
+    assert!(!path.exists(), "taking a spool deletes it");
 }
 
 #[test]
@@ -1320,21 +1320,25 @@ fn a_tombstoned_buffer_never_appends_or_drains() {
 
     assert!(buffer::append(&root, &buffer::buffer_path(&root), &line(2)).is_none());
     assert!(buffer::append_locked(&root, &buffer::dryrun_path(&root), "{}").is_none());
-    assert!(buffer::drain(&root).is_empty());
+    assert!(crate::spool::take_own(&root, &buffer::buffer_path(&root)).is_empty());
 }
 
 #[test]
-fn arming_truncates_a_pre_consent_buffer() {
+fn arming_after_a_tombstone_deletes_spools_and_truncates_the_legacy_buffer() {
     let home = temp_home();
     let root = root_of(&home);
     buffer::ensure_dir(&root).expect("create root");
     buffer::append(&root, &buffer::buffer_path(&root), &line(1)).expect("append");
     buffer::wipe(&root).expect("wipe");
+    std::fs::create_dir_all(crate::spool::dir(&root)).expect("spool dir");
+    let planted = crate::spool::dir(&root).join(format!("{}.jsonl", "a".repeat(32)));
+    std::fs::write(&planted, "{}\n").expect("plant");
 
     let generation = buffer::tombstone_generation(&root).expect("read wipe generation");
     buffer::arm(&root, generation.as_ref(), || true).expect("arm");
     assert!(!buffer::tombstone_present(&root));
     assert!(buffer::read_lines(&buffer::buffer_path(&root)).is_empty());
+    assert!(!planted.exists(), "re-enabling must not inherit old spools");
 }
 
 #[test]
@@ -2008,4 +2012,310 @@ fn the_notice_summarizes_what_the_schema_collects_and_states_every_red_line() {
     assert!(body.contains("codewhale config set telemetry false"));
     assert!(!body.contains("CODEWHALE_TELEMETRY=0"));
     assert!(body.contains("docs/TELEMETRY.md"));
+}
+
+// ------------------------------------------------------------- the spools --
+
+mod spools {
+    use super::*;
+    use crate::actor::{Context, send_dead};
+    use crate::spool::{self, SpoolContext};
+
+    fn header(surface: Surface, version: &str) -> SpoolContext {
+        SpoolContext::new(
+            surface,
+            version.to_string(),
+            Some("abcdef123456".to_string()),
+            true,
+        )
+    }
+
+    fn event_line(source: SessionSource) -> String {
+        serde_json::to_string(&Event::SessionStart { source }).expect("serialize")
+    }
+
+    fn plant(root: &Path, nonce: char, header_line: &str, events: &[String]) -> PathBuf {
+        std::fs::create_dir_all(spool::dir(root)).expect("spool dir");
+        let path = spool::dir(root).join(format!("{}.jsonl", nonce.to_string().repeat(32)));
+        let mut body = format!("{header_line}\n");
+        for event in events {
+            body.push_str(event);
+            body.push('\n');
+        }
+        std::fs::write(&path, body).expect("plant spool");
+        path
+    }
+
+    fn header_line(surface: Surface, version: &str) -> String {
+        serde_json::to_string(&header(surface, version)).expect("serialize header")
+    }
+
+    fn current(root: &Path) -> Context {
+        let header = header(Surface::Tui, "0.10.3");
+        let (spool, nonce) = spool::open(root, &header);
+        Context {
+            root: root.to_path_buf(),
+            endpoint: None,
+            surface: Surface::Tui,
+            config_path: None,
+            app_version: "0.10.3".to_string(),
+            git_sha: None,
+            tty: false,
+            spool,
+            nonce,
+        }
+    }
+
+    fn dryrun_batches(root: &Path) -> Vec<Batch> {
+        buffer::read_lines(&buffer::dryrun_path(root))
+            .iter()
+            .map(|line| serde_json::from_str(line).expect("a dry-run batch"))
+            .collect()
+    }
+
+    #[test]
+    fn a_dead_spool_is_recovered_with_its_own_surface_and_version() {
+        let home = temp_home();
+        let root = root_of(&home);
+        let context = current(&root);
+        let path = plant(
+            &root,
+            'b',
+            &header_line(Surface::Serve, "0.9.9"),
+            &[event_line(SessionSource::Interactive)],
+        );
+
+        let outcomes = send_dead(&context);
+
+        assert_eq!(outcomes, vec![crate::FlushOutcome::DryRun]);
+        let batches = dryrun_batches(&root);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].surface, Surface::Serve);
+        assert_eq!(batches[0].app_version, "0.9.9");
+        assert_eq!(batches[0].git_sha.as_deref(), Some("abcdef123456"));
+        assert_eq!(batches[0].events.len(), 1);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_dead_spool_is_never_sent_twice() {
+        let home = temp_home();
+        let root = root_of(&home);
+        let context = current(&root);
+        plant(
+            &root,
+            'b',
+            &header_line(Surface::Exec, "0.10.3"),
+            &[event_line(SessionSource::Interactive)],
+        );
+        assert_eq!(send_dead(&context).len(), 1);
+        assert!(send_dead(&context).is_empty());
+        assert_eq!(dryrun_batches(&root).len(), 1);
+    }
+
+    #[test]
+    fn a_live_locked_spool_is_untouched() {
+        let home = temp_home();
+        let root = root_of(&home);
+        let live = header(Surface::Serve, "0.10.3");
+        let (live_path, live_nonce) = spool::open(&root, &live);
+        buffer::append(&root, &live_path, &event_line(SessionSource::Interactive)).expect("append");
+
+        let taken = spool::take_dead(&root, &"c".repeat(32), std::time::SystemTime::now());
+
+        assert!(taken.is_empty());
+        assert_eq!(buffer::read_lines(&live_path).len(), 2);
+        assert!(
+            spool::dir(&root)
+                .join(format!("{live_nonce}.lock"))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn the_running_process_never_recovers_its_own_spool() {
+        let home = temp_home();
+        let root = root_of(&home);
+        let context = current(&root);
+        buffer::append(
+            &root,
+            &context.spool,
+            &event_line(SessionSource::Interactive),
+        )
+        .expect("append");
+        assert!(send_dead(&context).is_empty());
+        assert_eq!(buffer::read_lines(&context.spool).len(), 2);
+    }
+
+    #[test]
+    fn a_tombstone_blocks_recovery_and_append() {
+        let home = temp_home();
+        let root = root_of(&home);
+        let context = current(&root);
+        buffer::wipe(&root).expect("wipe");
+        let planted = plant(
+            &root,
+            'b',
+            &header_line(Surface::Serve, "0.10.3"),
+            &[event_line(SessionSource::Interactive)],
+        );
+
+        assert!(send_dead(&context).is_empty());
+        assert!(dryrun_batches(&root).is_empty());
+        assert!(
+            planted.exists(),
+            "nothing is read or sent under a tombstone"
+        );
+        assert!(buffer::append(&root, &context.spool, "{}").is_none());
+    }
+
+    #[test]
+    fn wipe_removes_every_spool() {
+        let home = temp_home();
+        let root = root_of(&home);
+        let context = current(&root);
+        plant(
+            &root,
+            'b',
+            &header_line(Surface::Serve, "0.10.3"),
+            &[event_line(SessionSource::Interactive)],
+        );
+        buffer::wipe(&root).expect("wipe");
+        assert!(!spool::dir(&root).exists());
+        assert!(!context.spool.exists());
+    }
+
+    #[test]
+    fn a_hostile_context_drops_the_whole_spool_unsent() {
+        let home = temp_home();
+        let root = root_of(&home);
+        let context = current(&root);
+        let good = event_line(SessionSource::Interactive);
+        let hostile_headers = [
+            header_line(Surface::Serve, "/Users/victim/secret"),
+            header_line(Surface::Serve, "0.10.3").replace("abcdef123456", "ZZZZZZZZZZZZ"),
+            header_line(Surface::Serve, "0.10.3").replace("\"spool\":1", "\"spool\":2"),
+            header_line(Surface::Serve, "0.10.3")
+                .replace("\"schema_version\":", "\"x\":9,\"schema_version\":"),
+            header_line(Surface::Serve, "0.10.3").replace("\"serve\"", "\"not-a-surface\""),
+            format!(
+                "{{\"schema_version\":{},\"notice_version\":{},\"app_version\":\"0.10.3\"}}",
+                SCHEMA_VERSION + 1,
+                NOTICE_VERSION
+            ),
+            good.clone(),
+        ];
+        for (index, hostile) in hostile_headers.iter().enumerate() {
+            let nonce = char::from(b'1' + index as u8);
+            let path = plant(&root, nonce, hostile, std::slice::from_ref(&good));
+            assert!(send_dead(&context).is_empty(), "{hostile}");
+            assert!(!path.exists(), "{hostile}");
+        }
+        let mut stale = header(Surface::Serve, "0.10.3");
+        stale.schema_version = SCHEMA_VERSION + 1;
+        plant(
+            &root,
+            'f',
+            &serde_json::to_string(&stale).expect("serialize"),
+            std::slice::from_ref(&good),
+        );
+        assert!(send_dead(&context).is_empty());
+        assert!(dryrun_batches(&root).is_empty());
+    }
+
+    #[test]
+    fn a_hostile_event_in_a_dead_spool_is_dropped_and_the_rest_sent() {
+        let home = temp_home();
+        let root = root_of(&home);
+        let context = current(&root);
+        plant(
+            &root,
+            'b',
+            &header_line(Surface::Serve, "0.10.3"),
+            &[
+                r#"{"event":"panic","site":"/Users/victim/src/secret-repo/main.rs"}"#.to_string(),
+                event_line(SessionSource::Interactive),
+            ],
+        );
+        assert_eq!(send_dead(&context).len(), 1);
+        let batches = dryrun_batches(&root);
+        assert_eq!(batches[0].events.len(), 1);
+        assert!(!serde_json::to_string(&batches).unwrap().contains("victim"));
+    }
+
+    #[test]
+    fn the_count_and_age_caps_hold() {
+        let home = temp_home();
+        let root = root_of(&home);
+        let context = current(&root);
+        let now = std::time::SystemTime::now();
+        let mut paths = Vec::new();
+        for (index, nonce) in ['1', '2', '3', '4', '5', '6'].into_iter().enumerate() {
+            let path = plant(
+                &root,
+                nonce,
+                &header_line(Surface::Serve, "0.10.3"),
+                &[event_line(SessionSource::Interactive)],
+            );
+            let age = Duration::from_secs(60 * (index as u64 + 1));
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .expect("open")
+                .set_modified(now - age)
+                .expect("set mtime");
+            paths.push(path);
+        }
+        let stale = plant(
+            &root,
+            '7',
+            &header_line(Surface::Serve, "0.10.3"),
+            &[event_line(SessionSource::Interactive)],
+        );
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .expect("open")
+            .set_modified(now - Duration::from_secs(8 * 24 * 60 * 60))
+            .expect("set mtime");
+
+        assert_eq!(send_dead(&context).len(), spool::MAX_RECOVERED);
+        assert_eq!(dryrun_batches(&root).len(), spool::MAX_RECOVERED);
+        for path in paths.iter().chain([&stale]) {
+            assert!(!path.exists(), "{} must be gone", path.display());
+        }
+    }
+
+    #[test]
+    fn two_processes_never_mix_lines() {
+        let home = temp_home();
+        let root = root_of(&home);
+        let (tui_path, _) = spool::open(&root, &header(Surface::Tui, "0.10.3"));
+        let (exec_path, _) = spool::open(&root, &header(Surface::Exec, "0.10.3"));
+        assert_ne!(tui_path, exec_path);
+        buffer::append(&root, &tui_path, &event_line(SessionSource::Interactive)).expect("append");
+        buffer::append(&root, &exec_path, &event_line(SessionSource::Ci)).expect("append");
+
+        let tui = spool::take_own(&root, &tui_path);
+        assert!(tui.iter().any(|l| l.contains("interactive")));
+        assert!(
+            tui.iter()
+                .all(|l| !l.contains("\"ci\"") && !l.contains("exec"))
+        );
+        assert!(exec_path.exists(), "taking one spool leaves the other");
+    }
+
+    #[test]
+    fn the_ring_keeps_the_header() {
+        let home = temp_home();
+        let root = root_of(&home);
+        let (path, _) = spool::open(&root, &header(Surface::Serve, "0.10.3"));
+        for n in 0..700 {
+            buffer::append(&root, &path, &line(n)).expect("append");
+        }
+        let lines = buffer::read_lines(&path);
+        assert!(lines.len() <= buffer::MAX_EVENTS);
+        assert!(spool::is_header_line(&lines[0]));
+        assert!(lines.last().unwrap().contains(&line(699)));
+    }
 }

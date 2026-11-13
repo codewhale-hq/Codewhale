@@ -21,8 +21,8 @@
 //! construction empty until resolution completes. A disabled user's panic
 //! therefore writes nothing and creates no directory.
 //!
-//! Arming also **truncates** any stale buffer before a newly permitted process
-//! begins recording.
+//! Arming also gives the process its own spool file and, when the machine was
+//! opted out until now, deletes every spool left from before.
 //!
 //! # Failure posture
 //!
@@ -41,6 +41,7 @@ pub mod decision;
 pub mod envelope;
 pub mod event;
 pub mod notice;
+pub mod spool;
 
 #[cfg(test)]
 mod tests;
@@ -85,6 +86,7 @@ static COLD_START_MS: AtomicU64 = AtomicU64::new(COLD_START_UNSET);
 struct Armed {
     handle: actor::Handle,
     root: std::path::PathBuf,
+    spool: std::path::PathBuf,
     surface: Surface,
     started: Instant,
     exit_class: AtomicU8,
@@ -122,6 +124,14 @@ pub fn init(consent: TelemetryConsent) {
 
     notice::show_startup_disclosure(consent.surface());
 
+    let header = spool::SpoolContext::new(
+        consent.surface(),
+        env!("CARGO_PKG_VERSION").to_string(),
+        envelope::release_build_sha(),
+        envelope::current_tty(),
+    );
+    let (spool_path, nonce) = spool::open(&root, &header);
+
     let context = actor::Context {
         root: root.clone(),
         endpoint: consent.endpoint().map(str::to_string),
@@ -130,11 +140,15 @@ pub fn init(consent: TelemetryConsent) {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         git_sha: envelope::release_build_sha(),
         tty: envelope::current_tty(),
+        spool: spool_path.clone(),
+        nonce,
     };
+    actor::spawn_recovery(context.clone());
 
     let _ = ARMED.set(Armed {
         handle: actor::Handle::spawn(context),
         root: root.clone(),
+        spool: spool_path,
         surface: consent.surface(),
         started: Instant::now(),
         exit_class: AtomicU8::new(ExitClass::Clean.as_u8()),
@@ -259,8 +273,7 @@ pub fn record_blocking(event: Event) {
     let Ok(line) = serde_json::to_string(&event) else {
         return;
     };
-    let path = buffer::buffer_path(&armed.root);
-    let _ = buffer::append(&armed.root, &path, &line);
+    let _ = buffer::append(&armed.root, &armed.spool, &line);
 }
 
 /// Record how this process is ending.

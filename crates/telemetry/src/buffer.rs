@@ -5,8 +5,10 @@
 //!
 //! | file | role |
 //! |---|---|
-//! | `buffer.jsonl` | one JSON event per line, awaiting a flush |
-//! | `buffer.jsonl.lock` | a **sibling** lock file; never the data file |
+//! | `spool/<nonce>.jsonl` | one process's header line, then one JSON event per line, awaiting its flush |
+//! | `spool/<nonce>.lock` | held exclusively by that process while it lives |
+//! | `buffer.jsonl` | the pre-spool sink, only ever truncated now |
+//! | `buffer.jsonl.lock` | the **privacy** lock, a sibling file; never a data file |
 //! | `dryrun.jsonl` | the sink when the endpoint resolves empty, same ring policy |
 //! | `state.json` | last version seen and last flush attempt |
 //! | `install_id.json` | the random install id |
@@ -218,6 +220,39 @@ fn append_under_lock(root: &Path, path: &Path, buf: &[u8]) -> Result<bool> {
     Ok(true)
 }
 
+/// Write a spool header line, while the caller holds the blocking privacy lock.
+pub(crate) fn append_header(root: &Path, path: &Path, line: &str) -> Result<bool> {
+    let mut buf = Vec::with_capacity(line.len() + 1);
+    buf.extend_from_slice(line.as_bytes());
+    buf.push(b'\n');
+    append_under_lock(root, path, &buf)
+}
+
+/// Re-attach the spool header that a ring cut dropped, keeping the newest events.
+fn keep_spool_header(path: &Path, mut lines: Vec<String>) -> Vec<String> {
+    use std::io::BufRead as _;
+    let Ok(file) = File::open(path) else {
+        return lines;
+    };
+    let mut first = String::new();
+    if std::io::BufReader::new(file.take(MAX_LINE_BYTES as u64 + 2))
+        .read_line(&mut first)
+        .is_err()
+    {
+        return lines;
+    }
+    let first = first.trim_end().to_string();
+    if first.is_empty() || !crate::spool::is_header_line(&first) || lines.first() == Some(&first) {
+        return lines;
+    }
+    lines.insert(0, first);
+    let size = |lines: &[String]| lines.iter().map(|l| l.len() as u64 + 1).sum::<u64>();
+    while lines.len() > 1 && (lines.len() > MAX_EVENTS || size(&lines) > MAX_BYTES) {
+        lines.remove(1);
+    }
+    lines
+}
+
 /// Keep the newest [`MAX_EVENTS`] lines and at most [`MAX_BYTES`], under the
 /// compaction lock. On lock contention this cycle is skipped: the next append
 /// tries again, and the cap is a ceiling on disk footprint, not an invariant
@@ -243,7 +278,7 @@ fn enforce_ring(root: &Path, path: &Path) {
         if len < PROBE_BYTES {
             return Ok(());
         }
-        let lines = read_ring_tail(path)?;
+        let lines = keep_spool_header(path, read_ring_tail(path)?);
         let mut body = lines.join("\n");
         if !body.is_empty() {
             body.push('\n');
@@ -371,33 +406,6 @@ pub fn read_lines(path: &Path) -> Vec<String> {
     read_ring_tail(path).unwrap_or_default()
 }
 
-/// Take every buffered line and truncate the buffer, under the compaction lock.
-///
-/// Returns an empty vector when the tombstone is present or the lock is held
-/// elsewhere. Truncates rather than unlinks — `crates/engine/src/fleet/ledger.rs`
-/// documents the rule: replacing the file leaves appenders holding the old
-/// inode.
-#[must_use]
-pub fn drain(root: &Path) -> Vec<String> {
-    if tombstone_present(root) {
-        return Vec::new();
-    }
-    let path = buffer_path(root);
-    let drained = try_with_lock(root, || {
-        // Re-check under the lock: a wipe may have landed between the check
-        // above and the acquisition.
-        if tombstone_present(root) {
-            return Ok(Vec::new());
-        }
-        let lines = read_lines(&path);
-        if !lines.is_empty() {
-            truncate(&path)?;
-        }
-        Ok(lines)
-    });
-    drained.ok().flatten().unwrap_or_default()
-}
-
 /// Truncate a file to zero length, leaving the inode in place. A missing file
 /// is not an error.
 pub fn truncate(path: &Path) -> Result<()> {
@@ -420,7 +428,7 @@ pub fn truncate(path: &Path) -> Result<()> {
 /// 1. take the blocking lock — this is not an exit path;
 /// 2. write the tombstone **first**, and never remove it here;
 /// 3. truncate `buffer.jsonl` and `dryrun.jsonl` — do **not** unlink them, and
-///    never unlink the lock file;
+///    never unlink the privacy lock file — and delete every spool;
 /// 4. remove `install_id.json` and `state.json`.
 ///
 /// If any step after the tombstone fails, the error is returned and the caller
@@ -466,6 +474,11 @@ pub fn wipe(root: &Path) -> Result<()> {
                 );
             }
         }
+        if let Err(error) = fs::remove_dir_all(crate::spool::dir(root))
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            failure.get_or_insert(anyhow::Error::new(error).context("failed to remove the spools"));
+        }
         match failure {
             Some(error) => Err(error),
             None => Ok(()),
@@ -473,8 +486,8 @@ pub fn wipe(root: &Path) -> Result<()> {
     })
 }
 
-/// Clear the tombstone and drop anything buffered before this process was
-/// permitted.
+/// Clear the tombstone, deleting every spool when there was one, and truncate
+/// the pre-spool buffer.
 ///
 /// Called by `init` on every arming. Both the exact tombstone generation and a
 /// fresh durable permission check must still match while the wipe lock is held.
@@ -496,6 +509,7 @@ pub(crate) fn arm(
         }
         let tombstone = tombstone_path(root);
         if tombstone.exists() {
+            let _ = fs::remove_dir_all(crate::spool::dir(root));
             fs::remove_file(&tombstone)
                 .with_context(|| format!("failed to remove {}", tombstone.display()))?;
         }
