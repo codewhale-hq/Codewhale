@@ -174,7 +174,7 @@ PATH 代码块始终是安装器打印的最后内容。如果你的 PATH 已经
 在 macOS 26.1、Apple silicon（`macos-arm64`）上，用全新的 `HOME` 重新检查过：
 
 * 安装器打印了 `Installing Codewhale for macos-arm64`，用系统自带工具校验了校验和，并在 4.3 秒内装好了 `codewhale` 和 `codew`（各 64 MiB，Mach-O arm64）。两者都报告 `codewhale 0.10.0 (1be1a703b975)`。运行时没有弹出 Gatekeeper 提示。
-* 当 `PATH` 上没有 Node 时，它还会打印 `Computer Use is included and needs Node.js 20 or newer on PATH.`。核心 TUI 没有 Node 也能用，但在 `PATH` 上有 Node 之前，Computer Use 和 JavaScript 执行工具（`js_execution`）不可用。
+* 核心 TUI 没有 Node 也能用；JavaScript 执行工具（`js_execution`）需要 `PATH` 上有 Node。
 * `codewhale doctor` 的行为与 Linux 相同（退出码 0；没有密钥时输出 `All checks complete!`；文件型密钥存储位于 `~/.codewhale/secrets/`），只是它会报告 `✓ sandbox available: macos-seatbelt`。
 
 ### 把它加入 PATH
@@ -440,7 +440,7 @@ Run `brew trust --formula hmbown/deepseek-tui/codewhale` or `brew trust hmbown/d
 
 先运行 `brew trust hmbown/deepseek-tui`，或者使用上面的完整名称。
 
-用 Homebrew 7.0.6 对照 v0.10.0 的 tap formula 测试过：安装用了 73 秒。tap formula 跟踪最新发布并下载官方发布二进制，所以不需要编译。它**同时**提供 `codewhale` 和 `codew`。`Hmbown/deepseek-tui` 这个 tap 的 formula 还依赖 `node`，在 Linux 上拉了 31 个 bottle（约 560 MB）。这个 `node` 依赖只属于该 tap formula。核心 TUI 没有 Node 也能运行；Computer Use 和 JS 执行工具在 PATH 上有 Node 时会使用它。
+用 Homebrew 7.0.6 对照 v0.10.0 的 tap formula 测试过：安装用了 73 秒。tap formula 跟踪最新发布并下载官方发布二进制，所以不需要编译。它**同时**提供 `codewhale` 和 `codew`。`Hmbown/deepseek-tui` 这个 tap 的 formula 还依赖 `node`，在 Linux 上拉了 31 个 bottle（约 560 MB）。这个 `node` 依赖只属于该 tap formula。核心 TUI 没有 Node 也能运行；JS 执行工具在 PATH 上有 Node 时会使用它。
 
 * **升级：** `brew upgrade codewhale`。（`codewhale update` 会拒绝，并建议迁移。）
 * **卸载：** `brew uninstall codewhale && brew untap Hmbown/deepseek-tui`。这也会自动移除该 tap 的 node 依赖以及它拉进来的其他东西。Homebrew 的下载缓存（`~/.cache/Homebrew`，约 330 MB）会保留，直到运行 `brew cleanup --prune=all`。

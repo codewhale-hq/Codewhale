@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fd76d718e3a2 -->
+<!-- source: README.md sha256:c66c04179a4e -->
 <div align="center">
 
 <picture>
@@ -79,7 +79,7 @@ Lebih dari 40 penyedia sudah terpasang, termasuk Anthropic, OpenAI, DeepSeek, Go
 
 ### Ekstensi
 
-Hubungkan [server MCP](../MCP.md), tambahkan [skill](../SKILLS.md) dan [plugin](../PLUGINS.md), dan jalankan [hook](../HOOKS.md) pada peristiwa sesi dan alat. Mode kode (eksperimental, aktif secara bawaan) memungkinkan model menulis satu program `execute_tools` yang memanggil beberapa alat MCP dan plugin; setiap panggilan tetap mengikuti aturan persetujuan Anda dan menyimpan tanda terimanya. Plugin Computer Use yang dibundel dengan v0.10.2 (eksperimental, hanya macOS) dapat mengamati dan mengoperasikan aplikasi lain, dan tetap mati sampai Anda meninjau aksesnya dan mengaktifkannya ([panduan](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)). Hadir di 0.10.3: plugin ini [dirilis terpisah](https://github.com/codewhale-hq/codewhale-cu-plugin).
+Hubungkan [server MCP](../MCP.md), tambahkan [skill](../SKILLS.md) dan [plugin](../PLUGINS.md), dan jalankan [hook](../HOOKS.md) pada peristiwa sesi dan alat. Mode kode (eksperimental, aktif secara bawaan) memungkinkan model menulis satu program `execute_tools` yang memanggil beberapa alat MCP dan plugin; setiap panggilan tetap mengikuti aturan persetujuan Anda dan menyimpan tanda terimanya. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) adalah plugin terpisah yang dirilis sendiri (eksperimental, hanya macOS), dan tetap mati sampai Anda meninjau aksesnya dan mengaktifkannya.
 
 ### Cara menjalankannya
 

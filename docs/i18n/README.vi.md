@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fd76d718e3a2 -->
+<!-- source: README.md sha256:c66c04179a4e -->
 <div align="center">
 
 <picture>
@@ -79,7 +79,7 @@ Hơn 40 nhà cung cấp được tích hợp sẵn, gồm Anthropic, OpenAI, Dee
 
 ### Tiện ích mở rộng
 
-Kết nối [máy chủ MCP](../MCP.md), thêm [kỹ năng](../SKILLS.md) và [plugin](../PLUGINS.md), và chạy [hook](../HOOKS.md) trên các sự kiện phiên và công cụ. Chế độ mã (thử nghiệm, bật mặc định) cho phép mô hình viết một chương trình `execute_tools` gọi nhiều công cụ MCP và plugin; mỗi lời gọi vẫn tuân theo quy tắc phê duyệt của bạn và giữ biên nhận. Plugin Computer Use đi kèm v0.10.2 (thử nghiệm, chỉ macOS) có thể quan sát và điều khiển các ứng dụng khác, và nó luôn tắt cho đến khi bạn xem lại quyền truy cập và bật nó ([hướng dẫn](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)). Sắp có trong 0.10.3: plugin này được [phát hành riêng](https://github.com/codewhale-hq/codewhale-cu-plugin).
+Kết nối [máy chủ MCP](../MCP.md), thêm [kỹ năng](../SKILLS.md) và [plugin](../PLUGINS.md), và chạy [hook](../HOOKS.md) trên các sự kiện phiên và công cụ. Chế độ mã (thử nghiệm, bật mặc định) cho phép mô hình viết một chương trình `execute_tools` gọi nhiều công cụ MCP và plugin; mỗi lời gọi vẫn tuân theo quy tắc phê duyệt của bạn và giữ biên nhận. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) là một plugin riêng được phát hành độc lập (thử nghiệm, chỉ macOS) và luôn tắt cho đến khi bạn xem lại quyền truy cập và bật nó.
 
 ### Các cách chạy
 

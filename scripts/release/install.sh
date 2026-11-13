@@ -347,11 +347,6 @@ echo "Future updates: \"$BIN_DIR/codewhale\" update"
 if [[ "$supports_uninstall" == 1 ]]; then
     echo "Updates install automatically; turn off with: codewhale config set update.mode notify"
 fi
-if [[ "$(uname -s)" == Darwin ]] && ! command -v node >/dev/null 2>&1; then
-    echo ""
-    echo "Computer Use is included and needs Node.js 20 or newer on PATH."
-    echo "Install Node.js from https://nodejs.org/, then restart Codewhale to enable Computer Use."
-fi
 path_selected=1
 for bin in codewhale codew; do
     resolved="$(command -v "$bin" || true)"

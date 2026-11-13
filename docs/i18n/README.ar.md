@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fd76d718e3a2 -->
+<!-- source: README.md sha256:c66c04179a4e -->
 <div align="center">
 
 <picture>
@@ -79,7 +79,7 @@ Fix the failing tests and explain what changed.
 
 ### الإضافات
 
-صِل [خوادم MCP](../MCP.md)، وأضف [المهارات](../SKILLS.md) و[الإضافات البرمجية](../PLUGINS.md)، وشغّل [الخطافات](../HOOKS.md) عند أحداث الجلسة والأدوات. يتيح وضع الشيفرة (تجريبي، ومفعّل افتراضيًا) للنموذج كتابة برنامج `execute_tools` واحد يستدعي عدة أدوات MCP وأدوات إضافات؛ ويظل كل استدعاء خاضعًا لقواعد الموافقة لديك ويحتفظ بإيصاله. إضافة Computer Use المضمّنة في v0.10.2 (تجريبية، على macOS فقط) تستطيع مراقبة التطبيقات الأخرى وتشغيلها، وتبقى معطّلة حتى تراجع صلاحياتها وتفعّلها ([الدليل](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)). قادم في 0.10.3: تصدر الإضافة [بشكل منفصل](https://github.com/codewhale-hq/codewhale-cu-plugin).
+صِل [خوادم MCP](../MCP.md)، وأضف [المهارات](../SKILLS.md) و[الإضافات البرمجية](../PLUGINS.md)، وشغّل [الخطافات](../HOOKS.md) عند أحداث الجلسة والأدوات. يتيح وضع الشيفرة (تجريبي، ومفعّل افتراضيًا) للنموذج كتابة برنامج `execute_tools` واحد يستدعي عدة أدوات MCP وأدوات إضافات؛ ويظل كل استدعاء خاضعًا لقواعد الموافقة لديك ويحتفظ بإيصاله. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) إضافة منفصلة تصدر بشكل مستقل (تجريبية، على macOS فقط)، وتبقى معطّلة حتى تراجع صلاحياتها وتفعّلها.
 
 ### طرق التشغيل
 

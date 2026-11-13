@@ -231,10 +231,8 @@ Re-checked on macOS 26.1, Apple silicon (`macos-arm64`), with a fresh `HOME`:
   checksums with the system tools, and installed `codewhale` and `codew`
   (64 MiB each, Mach-O arm64) in 4.3 s. Both report
   `codewhale 0.10.0 (1be1a703b975)`. They ran without a Gatekeeper prompt.
-* When Node isn't on `PATH`, it also prints `Computer Use is included and needs
-  Node.js 20 or newer on PATH.` The core TUI works without Node, but Computer Use
-  and the JavaScript execution tool (`js_execution`) stay unavailable until Node
-  is on `PATH`.
+* The core TUI works without Node; the JavaScript execution tool
+  (`js_execution`) needs Node on `PATH`.
 * `codewhale doctor` behaves as on Linux (exit 0, `All checks complete!` with no
   key, file-based secret store under `~/.codewhale/secrets/`), except that it
   reports `✓ sandbox available: macos-seatbelt`.
@@ -602,8 +600,8 @@ Tested with Homebrew 7.0.6 against the v0.10.0 tap formula: the install took
 release binaries, so there's no compile. It provides **both** `codewhale` and
 `codew`. The `Hmbown/deepseek-tui` tap formula also depends on `node`, which
 pulled in 31 bottles (~560 MB) on Linux. That `node` dependency belongs to
-this tap formula only. The core TUI runs without Node; Computer Use and the JS
-execution tool use it when it is on PATH.
+this tap formula only. The core TUI runs without Node; the JS execution tool
+uses it when it is on PATH.
 
 * **Upgrade:** `brew upgrade codewhale`. (`codewhale update` refuses, and
   suggests migrating.)

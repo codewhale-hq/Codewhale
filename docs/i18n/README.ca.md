@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fd76d718e3a2 -->
+<!-- source: README.md sha256:c66c04179a4e -->
 <div align="center">
 
 <picture>
@@ -79,7 +79,7 @@ Porta més de 40 proveïdors integrats, entre ells Anthropic, OpenAI, DeepSeek, 
 
 ### Extensions
 
-Connecta [servidors MCP](../MCP.md), afegeix [skills](../SKILLS.md) i [connectors](../PLUGINS.md), i executa [hooks](../HOOKS.md) en esdeveniments de sessió i d’eines. El mode codi (experimental, activat per defecte) permet que el model escrigui un programa `execute_tools` que crida diverses eines MCP i de connectors; cada crida continua respectant les teves regles d’aprovació i en conserva el rebut. El connector Computer Use inclòs a v0.10.2 (experimental, només macOS) pot observar i fer servir altres aplicacions, i resta apagat fins que en revises l’accés i l’actives ([guia](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)). Arriba amb 0.10.3: el connector es publica [per separat](https://github.com/codewhale-hq/codewhale-cu-plugin).
+Connecta [servidors MCP](../MCP.md), afegeix [skills](../SKILLS.md) i [connectors](../PLUGINS.md), i executa [hooks](../HOOKS.md) en esdeveniments de sessió i d’eines. El mode codi (experimental, activat per defecte) permet que el model escrigui un programa `execute_tools` que crida diverses eines MCP i de connectors; cada crida continua respectant les teves regles d’aprovació i en conserva el rebut. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) és un connector separat publicat pel seu compte (experimental, només macOS), i resta apagat fins que en revises l’accés i l’actives.
 
 ### Maneres d’executar-lo
 

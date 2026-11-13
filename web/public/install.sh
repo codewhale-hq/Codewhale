@@ -551,16 +551,6 @@ fi
 CODEWHALE_TELEMETRY=0 CODEWHALE_NO_UPDATE_CHECK=1 "$install_dir/codewhale" doctor --installs --brief </dev/null 2>/dev/null || true
 say "Usage reporting is on by default (counts only, never your code or conversations). Turn it off: \"$install_dir/codewhale\" config set telemetry false"
 
-case "$target" in
-  macos-*)
-    if ! command -v node >/dev/null 2>&1; then
-      say ""
-      say "Computer Use is included and needs Node.js 20 or newer on PATH."
-      say "Install Node.js from https://nodejs.org/, then restart Codewhale to enable Computer Use."
-    fi
-    ;;
-esac
-
 say ""
 say "Use this installation: \"$install_dir/codewhale\""
 say "Future updates: \"$install_dir/codewhale\" update"
