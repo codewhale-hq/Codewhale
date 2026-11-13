@@ -25,6 +25,7 @@
 pub mod rate_limit;
 
 use anyhow::Result;
+use codewhale_command_contract::metrics::format_duration;
 use codewhale_models::{MessageRequest, MessageResponse, StreamEvent};
 use codewhale_runtime::config::{RateLimitRetryPolicy, RetryPolicy};
 use serde_json::Value;
@@ -457,31 +458,11 @@ pub enum LlmError {
     Other(String),
 }
 
-fn human_duration(d: &Duration) -> String {
-    let secs = d.as_secs();
-    if secs < 60 {
-        return format!("{secs} s");
-    }
-    if secs < 3600 {
-        let minutes = secs / 60;
-        let rest = secs % 60;
-        return if rest == 0 {
-            format!("{minutes} min")
-        } else {
-            format!("{minutes} min {rest} s")
-        };
-    }
-    let hours = secs / 3600;
-    let minutes = (secs % 3600) / 60;
-    if minutes == 0 {
-        format!("{hours} h")
-    } else {
-        format!("{hours} h {minutes} min")
-    }
-}
-
 fn opencode_go_hint(message: &str) -> &'static str {
     let lowered = message.to_lowercase();
+    if lowered.contains("codewhale auth set") {
+        return "";
+    }
     if lowered.contains("opencode go") || lowered.contains("opencode.ai/go") {
         " OpenCode Go is a separate provider with its own key; run: codewhale auth set --provider opencode-go"
     } else {
@@ -502,7 +483,7 @@ impl std::fmt::Display for LlmError {
                     Some(d) => write!(
                         f,
                         "Rate limit exceeded: {message}; quota window resets in {}; automatic retry stopped{hint}",
-                        human_duration(d)
+                        format_duration(*d)
                     ),
                     None => write!(
                         f,
