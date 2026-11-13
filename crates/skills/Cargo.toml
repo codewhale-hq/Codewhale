@@ -28,9 +28,11 @@ codewhale-plugins = { path = "../plugins", version = "0.10.3" }
 codewhale-runtime = { path = "../runtime", version = "0.10.3" }
 codewhale-skill-install = { path = "../skill-install", version = "0.10.3" }
 codewhale-util = { path = "../util", version = "0.10.3" }
+flate2 = "1.1"
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
 sha2.workspace = true
+tar = "0.4"
 tempfile.workspace = true
 tokio.workspace = true
 toml.workspace = true
