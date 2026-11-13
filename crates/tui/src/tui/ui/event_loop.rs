@@ -6429,30 +6429,23 @@ pub(crate) async fn run_event_loop(
                         onboarding::finish_ready_and_open_composer(app);
                         open_theme_picker(app);
                     }
-                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('1')
-                        if app.onboarding == OnboardingState::TrustDirectory =>
-                    {
-                        if let Err(err) = complete_trust_directory_onboarding(app, config) {
-                            app.status_message = Some(format!("Failed to trust workspace: {err}"));
+                    _ if app.onboarding == OnboardingState::TrustDirectory => {
+                        match onboarding::trust_directory::choice_for_key(key.code, key.modifiers) {
+                            Some(onboarding::trust_directory::TrustChoice::Trust) => {
+                                if let Err(err) = complete_trust_directory_onboarding(app, config) {
+                                    app.status_message =
+                                        Some(format!("Failed to trust workspace: {err}"));
+                                }
+                            }
+                            Some(onboarding::trust_directory::TrustChoice::ContinueUntrusted) => {
+                                continue_without_trusting_directory(app);
+                            }
+                            Some(onboarding::trust_directory::TrustChoice::Quit) => {
+                                let _ = engine_handle.send(Op::Shutdown).await;
+                                return Ok(());
+                            }
+                            None => {}
                         }
-                    }
-                    // Number keys mirror the footer's reading order (1 trust,
-                    // 2 continue untrusted, 3 quit) so the displayed digits
-                    // are sequential instead of 1/3/2.
-                    KeyCode::Char('u') | KeyCode::Char('U') | KeyCode::Char('2')
-                        if app.onboarding == OnboardingState::TrustDirectory =>
-                    {
-                        continue_without_trusting_directory(app);
-                    }
-                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('3')
-                        if app.onboarding == OnboardingState::TrustDirectory =>
-                    {
-                        let _ = engine_handle.send(Op::Shutdown).await;
-                        return Ok(());
-                    }
-                    KeyCode::Esc if app.onboarding == OnboardingState::TrustDirectory => {
-                        let _ = engine_handle.send(Op::Shutdown).await;
-                        return Ok(());
                     }
                     _ => {}
                 }

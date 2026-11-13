@@ -1039,7 +1039,7 @@
   "OnboardTrustLocationPrefix": "ワークスペース  ",
   "OnboardTrustRiskHint": "信頼できないファイルは、プロンプトインジェクションでエージェントを誘導しようとする場合があります。",
   "OnboardTrustEffectHint": "信頼はこの Codewhale インストールに記録され、ワークスペースのツールとフックが有効になります。",
-  "OnboardTrustEnterHint": "1 または Y で信頼、2 または U で信頼せずに続行、3・N・Esc で Codewhale を終了します。",
+  "OnboardTrustEnterHint": "1 で信頼、2 で信頼せずに続行、3 または Esc で Codewhale を終了します。",
   "OnboardTrustUntrustedNotice": "ワークスペースを信頼せずに続行します — ツールとフックは制限されたままです。",
   "RedactionGateActionConfirm": "確認して無効化",
   "RedactionGateActionKeep": "秘匿化を維持",

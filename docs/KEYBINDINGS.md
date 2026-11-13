@@ -317,8 +317,9 @@ then `Enter` to submit or `Esc` to return to the options without sending.
 | `Esc`                | Step back one screen                                |
 | `1`–`9`              | Pick a language (Language step)                    |
 | `0`–`9`              | Pick a provider (Provider step; SGLang, vLLM, and Ollama are keyless by default) |
-| `y` / `Y`            | Trust the workspace (Trust step)                   |
-| `n` / `N`            | Skip the trust prompt                              |
+| `1`                  | Trust the workspace (Trust step)                   |
+| `2`                  | Continue without trusting (Trust step)             |
+| `3` / `Esc`          | Quit Codewhale (Trust step); letters do nothing there |
 
 ## v0.8.29 audit notes
 

@@ -1039,7 +1039,7 @@
   "OnboardTrustLocationPrefix": "工作区  ",
   "OnboardTrustRiskHint": "不受信任的文件可能会通过提示词注入来误导智能体。",
   "OnboardTrustEffectHint": "信任状态会记录到此 Codewhale 安装中，并启用工作区工具与钩子。",
-  "OnboardTrustEnterHint": "按 1 或 Y 信任，按 2 或 U 在不信任的情况下继续，按 3、N 或 Esc 退出 Codewhale。",
+  "OnboardTrustEnterHint": "按 1 信任，按 2 在不信任的情况下继续，按 3 或 Esc 退出 Codewhale。",
   "OnboardTrustUntrustedNotice": "在未信任工作区的情况下继续 — 工具与钩子保持受限。",
   "RedactionGateActionConfirm": "确认并关闭",
   "RedactionGateActionKeep": "保持脱敏开启",

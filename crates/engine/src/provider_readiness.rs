@@ -544,7 +544,7 @@ pub enum ResolvedProviderReadiness {
 impl ResolvedProviderReadiness {
     pub fn label(&self) -> Cow<'static, str> {
         match self {
-            Self::MissingKey => Cow::Borrowed("missing key"),
+            Self::MissingKey => Cow::Borrowed("needs key"),
             Self::MissingLogin => Cow::Borrowed("missing login"),
             Self::ExternalConsentPendingSelection => {
                 Cow::Borrowed("external consent · select to check")

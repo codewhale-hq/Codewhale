@@ -152,7 +152,7 @@ codewhale auth set --provider moonshot --api-key "你的中国区Kimi API key"
 
 **第三步：在 Codewhale 里切换**
 
-1. 输入 `/provider` 打开提供商选择器 → 选 **moonshot**（可能显示 missing key，不用管，继续选）
+1. 输入 `/provider` 打开提供商选择器 → 选 **moonshot**（可能显示 needs key，不用管，继续选）
 2. 如果提示输入 key，就粘贴你的中国区 key
 3. 选模型：`/model kimi-k3`（最强，1M 上下文）或 `/model kimi-k2.7-code`（默认稳定）
 4. 发一条测试消息，能正常回复就说明切换成功
