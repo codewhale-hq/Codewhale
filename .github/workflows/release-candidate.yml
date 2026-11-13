@@ -68,6 +68,8 @@ jobs:
 
           echo "sha=${actual}" >> "${GITHUB_OUTPUT}"
           echo "version=${workspace_version}" >> "${GITHUB_OUTPUT}"
+      - name: Check the first-party catalog snapshot is current
+        run: ./scripts/refresh-first-party-marketplace.sh --check
       - name: Check version and OHOS release contracts
         # --require-dated-release, as auto-tag.yml and release.yml run it:
         # release.yml only accepts an RC receipt for the exact tag SHA, so an
