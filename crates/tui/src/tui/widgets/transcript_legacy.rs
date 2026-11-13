@@ -855,9 +855,11 @@ impl Renderable for ChatWidget {
         let regions = codewhale_tui_kit::osc8::link_regions_for_lines(link_area, &self.line_links);
         codewhale_tui_kit::osc8::set_frame_links(regions);
 
-        if let Some(scrollbar) = self.scrollbar {
+        if let Some(scrollbar) = self.scrollbar
+            && scrollbar.total > scrollbar.visible
+        {
             let scrollable_range = scrollbar.total.saturating_sub(scrollbar.visible);
-            let mut state = ScrollbarState::new(scrollable_range)
+            let mut state = ScrollbarState::new(scrollable_range.saturating_add(1))
                 .position(scrollbar.top.min(scrollable_range))
                 .viewport_content_length(scrollbar.visible);
             Scrollbar::new(ScrollbarOrientation::VerticalRight)

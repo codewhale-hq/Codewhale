@@ -218,10 +218,6 @@ fn action_lines(actions: &[KeyHint], width: u16, theme: &Theme) -> Vec<Line<'sta
             result.push(Line::from(std::mem::take(&mut current)));
             used = 0;
         }
-        if !current.is_empty() {
-            current.push(Span::raw(" "));
-            used += 1;
-        }
         let key_role = if action.enabled {
             Role::Accent
         } else {
@@ -232,11 +228,22 @@ fn action_lines(actions: &[KeyHint], width: u16, theme: &Theme) -> Vec<Line<'sta
         } else {
             Role::Dim
         };
-        current.push(Span::styled(
-            format!(" {key} "),
-            theme.fg(key_role).add_modifier(Modifier::BOLD),
-        ));
-        current.push(Span::styled(label, theme.fg(label_role)));
+        let spans = [
+            Span::styled(
+                format!(" {key} "),
+                theme.fg(key_role).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(label, theme.fg(label_role)),
+        ];
+        if needed > usize::from(width) {
+            result.extend(super::hints::wrap_spans(&spans, width));
+            continue;
+        }
+        if !current.is_empty() {
+            current.push(Span::raw(" "));
+            used += 1;
+        }
+        current.extend(spans);
         used += needed;
     }
     if !current.is_empty() {

@@ -55,7 +55,7 @@ pub struct Panel<'a> {
     /// Muted text at the right of the title row: a count, "changed 2 min ago".
     pub aside: Option<Cow<'a, str>>,
     pub depth: Depth,
-    /// Light the edge in `Primary`: this panel has the keyboard.
+    /// Light the edge or gutter in `Primary`: this panel has the keyboard.
     pub focused: bool,
     pub hints: Option<&'a KeyHints>,
 }
@@ -214,13 +214,19 @@ impl<'a> Panel<'a> {
                     horizontal_bottom: "-",
                 }
             } else {
-                border::PLAIN
+                border::ROUNDED
             };
             Block::default()
                 .borders(Borders::ALL)
                 .border_set(set)
                 .border_style(theme.fg(edge_role).patch(ground))
                 .render(area, buf);
+        } else if self.focused && area.width >= 8 {
+            for y in area.y..area.bottom() {
+                buf[(area.x, y)]
+                    .set_symbol(glyphs::pick("▏", theme.ascii()))
+                    .set_style(theme.fg(Role::Accent).patch(ground));
+            }
         }
 
         if let (Some(title), Some(row)) = (&self.title, layout.title_row) {
@@ -335,8 +341,8 @@ fn fit_axis(total: u16, preferred: u16, margin: u16, floor: u16) -> u16 {
 
 /// A decision, centered over everything else: confirmations, approvals,
 /// destructive actions. Always edged in `BorderStrong`, so it stays legible
-/// where grounds do not paint (16 colors, `NO_COLOR`), with no shadow and no
-/// rounded corners. Replaces the engine's modal surface with its shadow and
+/// where grounds do not paint (16 colors, `NO_COLOR`), with rounded corners
+/// and no shadow. Replaces the engine's modal surface with its shadow and
 /// the hand-rolled `Clear` blocks.
 ///
 /// ```
@@ -728,7 +734,7 @@ mod tests {
                 let buf = render(12, 4, |area, buf| {
                     Panel::new(Depth::Raised).draw(area, buf, &theme);
                 });
-                let edged = text(&buf).starts_with(['┌', '+']);
+                let edged = text(&buf).starts_with(['╭', '+']);
                 let grounded = theme.grounds_differ(Role::Surface, Role::Background);
                 assert!(
                     edged || grounded,

@@ -1,9 +1,9 @@
 {
-  "repository": "https://github.com/Hmbown/codewhale-ratatui",
+  "repository": "https://github.com/codewhale-hq/codewhale-ratatui",
   "commit": "2ad795b37782990844fd9cc2d78bac460929365a",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "upstream_version": "0.1.0",
-  "version_note": "version identifies the current vendored Cargo package; upstream_version and files retain the original snapshot provenance. Publish 0.1.2 only from the frozen Engine candidate directory, including its local patches.",
+  "version_note": "version identifies the current Engine vendored Cargo package. The top-level commit/files and earlier update records retain historical snapshot provenance. runtime_update records the selected current upstream behavior and retained Engine adaptations; this is not a whole-repository mirror.",
   "license": "MIT",
   "files": {
     "BENCHMARKS.md": "e9512637752467a627d1d15b3d3b6e23af72741ef713a243862ac600cbd6b9b7",
@@ -257,6 +257,48 @@
       "src/tui_palettes.rs": "25c7c0b6f6769b41c6f0eed98e834787df4551a724b2e8db7be755ae65be8f38",
       "src/whale.rs": "a4fef5f4a8e86336c45b971f7a91c0137984bdcfc9e3f727c54571088b33e2dd",
       "vendor/codewhale-design/tokens.rs": "bf1edf64929baee4732b4898a997619a1e91babd7edf787f31e32304220193e3"
+    }
+  },
+  "runtime_update": {
+    "commit": "1d061703691c9130724f58eebfe7060a5fc019ca",
+    "scope": "Selected generic widget fixes, measured ocean themes and caller-clock water drift from standalone; chart, roles and theme verified already matching. Standalone tooling, gallery export and repository-only tests are outside this source synchronization.",
+    "files": {
+      "src/components/instrument.rs": "468280c9c5be4d1244ef1601784d11d9956b2e1d36c9f671618404fbb010c77a",
+      "src/components/list.rs": "8f4b8d7220202b49e6a6fb17e4d587123e538ce90d03fbe0c16c3776765a0e34",
+      "src/components/transcript.rs": "df1e5c67f689eb53634e9968668b77afa7ce6211a6e83718e1e0c26502033420",
+      "src/components/progress.rs": "d79d98ee993fba068f35ad89fff881a7b5eadc8a67b52ba6eeb2dc3ce1d9b8e2",
+      "src/components/segmented.rs": "a148c79c1d6d214c6b28ed0ac5ab7f669805d0d6a41250efc56632da9b39eb62",
+      "src/components/tabs.rs": "2e18bc604786f5403e1491e50322e0bf771fa70389ef34347528ae8bef6afa44",
+      "src/components/surface.rs": "fcdec44734d0bdc2db69dad41dd9c88f018003b128927f9d59c4d7536cb9e6c0",
+      "src/ocean.rs": "194a7ade34b6fac7d8ad471f4bfcb04d3ae88a9c4f63f51bc4627c5edfc0183e",
+      "src/ombre.rs": "7356cc1c7b9af444f8272817d57cbaaa8133bfd2689220a1a794dfaf0d897fda",
+      "src/components/chart.rs": "77759af13c4d2b7ffadee5dae8e4849ec3ed637741cf9dd29764edcff625cc82",
+      "src/gallery/chart.rs": "98e3c20e26e06744e09750209bc627b3c21204d6fb9022883ac5b5f856953175",
+      "examples/data.rs": "633ee3f3786ec5053b98a50cc72b2b44d68ba41a9eedba56a58504f04881670a",
+      "src/roles.rs": "2ac8760785aa0a83daeb89c32e7dec259dbae358e9a80426900c83e606f8fa79",
+      "src/theme.rs": "ac3851f676511b494bfb3a9e680d016daff1c85a20ced8ff4b4eba6f115f9f21"
+    },
+    "retained_engine_adaptations": {
+      "src/components/workbar.rs": {
+        "reason": "Terminal panel and nine-item order",
+        "sha256": "2fd780b1cb80a04de8b999c5c182a9a7ff86a8c431f9606eb41f5adb3d31970d"
+      },
+      "src/components/posture.rs": {
+        "reason": "Update metric and hover styling",
+        "sha256": "dd5f4bcf0c40739f72ffa540bc5acf62a6cc2d6bd905395d0ec44dac725fd51c"
+      },
+      "src/components/native_chrome.rs": {
+        "reason": "u64 total",
+        "sha256": "f0d43491f7ccfdb1f625db2f6a73bb5cad2dfe99435dbc0704004e68f9f95dea"
+      },
+      "src/components/native_composer.rs": {
+        "reason": "public paint and full available height without a menu",
+        "sha256": "c3d536c6c86faac5c81733790ec856d0e2169e4fdcc0b26d194a2d9e88bc9d97"
+      },
+      "Cargo.toml": {
+        "reason": "Engine package 0.2.0 and local protocol dependency",
+        "sha256": "fe27335251c06037cabdab9866e0ca5fa7c320e384d965fc4e65a95c141a8902"
+      }
     }
   }
 }
