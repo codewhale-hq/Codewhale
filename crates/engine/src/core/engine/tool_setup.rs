@@ -110,6 +110,7 @@ impl Engine {
             // the ToolContext carries ShellPolicy::None.
             .with_file_tools()
             .with_present_tool()
+            .with_show_data_tool()
             // Foreground-only shell registration: never add terminal/*
             // lifecycle tools to Plan merely to keep the `bash` identity
             // stable across modes.

@@ -26,7 +26,7 @@ use ratatui::{
 };
 
 use crate::tui::app::App;
-use crate::tui::history::{HistoryCell, history_cells_from_message};
+use crate::tui::history::{HistoryCell, history_cells_from_message_with_results};
 use codewhale_engine::tools::subagent::SubAgentStatus;
 use codewhale_localization::MessageId;
 use codewhale_models::Message;
@@ -191,7 +191,7 @@ fn cells_for_messages(messages: &[Message], receipts: &[(String, String)]) -> Ve
     }
     let mut cells = Vec::new();
     for message in messages {
-        cells.extend(history_cells_from_message(message));
+        cells.extend(history_cells_from_message_with_results(message, messages));
         for block in &message.content {
             let Some(key) = block.tool_call_key() else {
                 continue;

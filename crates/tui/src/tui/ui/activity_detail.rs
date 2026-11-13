@@ -562,6 +562,13 @@ pub(crate) fn detail_target_label(app: &App, cell_index: usize) -> Option<String
             Some(format!("image {}", image.path.display()))
         }
         HistoryCell::Tool(ToolCell::WebSearch(search)) => Some(format!("search {}", search.query)),
+        HistoryCell::Tool(ToolCell::DataDisplay(data)) => Some(match &data.display {
+            Ok(display) => format!(
+                "show_data {}",
+                codewhale_ratatui::text::display_safe(display.label())
+            ),
+            Err(_) => "show_data".to_string(),
+        }),
         HistoryCell::Tool(ToolCell::Generic(generic)) => Some(
             crate::tui::widgets::tool_card::tool_activity_label_for_name(
                 &generic.name,
@@ -1214,6 +1221,18 @@ fn timeline_tool_summary(app: &App, idx: usize, tool: &ToolCell) -> (&'static st
             truncate_line_to_width(&image.path.display().to_string(), 88),
         ),
         ToolCell::WebSearch(search) => ("web search", truncate_line_to_width(&search.query, 88)),
+        ToolCell::DataDisplay(data) => (
+            "show_data",
+            match &data.display {
+                Ok(display) => truncate_line_to_width(
+                    &codewhale_ratatui::text::display_safe(display.label()),
+                    88,
+                ),
+                Err(error) => {
+                    truncate_line_to_width(&codewhale_ratatui::text::display_safe(error), 88)
+                }
+            },
+        ),
         ToolCell::Generic(generic) => {
             let mut label =
                 detail_target_label(app, idx).unwrap_or_else(|| generic.name.replace('_', " "));

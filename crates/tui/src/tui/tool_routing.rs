@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::app::{App, ToolDetailRecord, ToolEvidence};
+use crate::tui::history::DataDisplayCell;
 use crate::tui::history::ExecCell;
 use crate::tui::history::ExecSource;
 use crate::tui::history::ExecWait;
@@ -162,6 +163,20 @@ pub(super) fn handle_tool_call_started(
                 interaction: None,
                 output_summary: None,
             })),
+        );
+        return;
+    }
+
+    if semantic_name == "show_data" {
+        push_active_tool_cell(
+            app,
+            &id,
+            name,
+            input,
+            HistoryCell::Tool(ToolCell::DataDisplay(DataDisplayCell::from_input(
+                input,
+                ToolStatus::Running,
+            ))),
         );
         return;
     }
@@ -1002,6 +1017,20 @@ pub(super) fn handle_tool_call_complete(
                 }
                 app.mark_history_updated();
             }
+            HistoryCell::Tool(ToolCell::DataDisplay(data)) => {
+                data.status = status;
+                match result.as_ref() {
+                    Ok(tool_result) if !tool_result.success => {
+                        data.display = Err(tool_result.content.clone());
+                    }
+                    Err(err) => data.display = Err(err.to_string()),
+                    Ok(_) => {}
+                }
+                if data.display.is_err() {
+                    data.status = ToolStatus::Failed;
+                }
+                app.mark_history_updated();
+            }
             HistoryCell::Tool(ToolCell::WebSearch(search)) => {
                 search.status = status;
                 match result.as_ref() {
@@ -1516,6 +1545,7 @@ fn history_cell_has_running_tool(cell: &HistoryCell) -> bool {
         ToolCell::Mcp(mcp) => mcp.status == ToolStatus::Running,
         ToolCell::ViewImage(_) => false,
         ToolCell::WebSearch(search) => search.status == ToolStatus::Running,
+        ToolCell::DataDisplay(data) => data.status == ToolStatus::Running,
         ToolCell::Generic(generic) => generic.status == ToolStatus::Running,
     }
 }
