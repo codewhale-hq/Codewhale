@@ -16,25 +16,18 @@ ignore = [
 ]
 
 [bans]
-# Duplicate-version ratchet (Epic #5249, issue #5248): keep the gate in
-# warn/dry-run until Hunter approves enforcement. Each entry below is a
-# duplicate that survives the 0.9.5 shrink and is blocked on an upstream
-# crate that has not yet released a compatible version. Adding a new
-# duplicate without extending this list will surface as a new `cargo deny`
-# warning, so the ratchet is warm but not yet blocking CI.
-# Surviving duplicates after the 708 -> 679 shrink (see PR body):
-# - reqwest 0.12 vs 0.13 — blocked on oauth2 5.0.0 which still depends on reqwest 0.12
-# - sha2 0.10 vs 0.11 — blocked on oauth2 (0.10) vs schemaui 0.12 (0.11)
-# - thiserror 1 vs 2 — blocked on portable-pty 0.9 via filedescriptor 0.8 (v1) vs workspace v2
-# - toml 0.8 vs 1.1 + toml_edit 0.22 vs 0.25 + winnow 0.7 vs 1.0 — blocked on rust-i18n 4.2 (0.8 stack) vs workspace 1.1
-# - strum 0.27 vs 0.28 — ratatui-widgets 0.3.0 (via ratatui 0.30.0) pins 0.27
-#   while ratatui-core 0.1.2 uses 0.28; unifies once widgets moves forward
+# Duplicate versions warn without failing CI. Each skip below is a duplicate
+# that survives because an upstream crate has not released a compatible
+# version; a duplicate that is not listed surfaces as a new `cargo deny`
+# warning. Remove a skip when the warning "skip was not encountered" or
+# "applied to a crate with only one version" appears.
+# - sha2 0.10 vs 0.11: oauth2 (0.10) vs schemaui 0.12 (0.11)
+# - thiserror 1 vs 2: portable-pty 0.9 via filedescriptor 0.8 (v1) vs workspace v2
+# - toml 0.8 vs 1.x, toml_edit 0.22 vs 0.25, winnow 0.7 vs 1.0, serde_spanned 0.6
+#   vs 1.x: rust-i18n 4.2 (0.8 stack) vs workspace 1.x
 multiple-versions = "warn"
 wildcards = "deny"
-# Explicitly allow the surviving duplicates so `cargo deny` does not warn
-# on them again, but will warn on any *new* duplicate crate.
 skip = [
-    { name = "reqwest", version = "0.12.28" },
     { name = "sha2", version = "0.10.9" },
     { name = "thiserror", version = "1.0.69" },
     { name = "thiserror-impl", version = "1.0.69" },
@@ -46,8 +39,6 @@ skip = [
     { name = "core-foundation", version = "0.9.4" },
     { name = "itertools", version = "0.13.0" },
     { name = "security-framework", version = "2.11.1" },
-    { name = "strum", version = "0.28.0" },
-    { name = "strum_macros", version = "0.28.0" },
     # Pinned to the versions actually in Cargo.lock so a NEW duplicate in this
     # family is flagged instead of skipped silently.
     { name = "windows-sys", version = "0.52.0" },
