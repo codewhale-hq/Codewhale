@@ -15,9 +15,9 @@ hostname is the only way in.
 
 The current Engine source defaults usage analytics on under notice version 6, with a
 clear opt-out. Prior explicit declines remain off; a missing acceptance record
-is not treated as consent. Schema 4 carries `notice_version: 6`; schema 3
+is not treated as consent. Schema 6 carries `notice_version: 8` and schema 4 carries `notice_version: 6`; schema 3
 uses notice 5, and legacy schema 2 retains its original explicit
-`consent_version: 4` contract. Schema 1 and schema 4 batches are first-party
+`consent_version: 4` contract. Schema 1, 4 and 6 batches are first-party
 only in this source. Local validation is not proof this updated Worker has been deployed. A user who wants
 to contact nobody sets `telemetry_endpoint = ""`, which writes batches to
 `$CODEWHALE_HOME/telemetry/dryrun.jsonl` instead.
@@ -38,7 +38,7 @@ require separate operator approval; none is established by the local tests.
 
 Validated schema 3 batches carrying `notice_version: 5` and legacy schema 2
 batches carrying explicit `consent_version: 4` can reach the processor. Schema 1
-and schema 4 batches remain first-party only. Capture uses
+and schema 4 and 6 batches remain first-party only. Capture uses
 `/batch/`, fixed anonymous/no-geo controls, no incoming headers, no cookies,
 no redirects, no response parsing, no retries, and a 1.5-second timeout.
 PostHog failure is isolated from the successful Analytics Engine write.
@@ -143,20 +143,21 @@ take the next free slot.
 | `blob8` | `tty` — `'true'` \| `'false'` |
 | `blob9` | `install_kind` (`install_or_upgrade` only) |
 | `blob10` | `previous_version` (`install_or_upgrade` only) |
-| `blob11` | `session_source` (`session_start` only) |
-| `blob12` | `duration_bucket` (`session_end` only) |
-| `blob13` | `exit_class` (`session_end` only) |
+| `blob11` | `session_source` (`session_start` only; schema 6 adds `fleet_worker`, `agent`, `scripted`) |
+| `blob12` | `duration_bucket` (`session_end`); `install_age` (`session_start`, schema 6 only: `new_today`, `under_week`, `older`, `''` for null or older schemas) |
+| `blob13` | `exit_class` (`session_end` only; schema 6 adds `unclean`) |
 | `blob14` | `cold_start_bucket` (`session_end` only; `''` on surfaces that do not measure it) |
 | `blob15` | `providers`, comma-joined, already sorted and deduplicated; the one `provider` on `model_usage` |
 | `blob16` | `panic_site` (`panic`) — a `crates/…` path or the literal `<dep>`; `model` (`model_usage`); `tool` (`tool_usage`) |
 | `blob17` | `sent_at` — the *batch* timestamp. Events carry none. |
 | `blob18` | `aggregate_counters` — closed JSON counts, for `product_usage` or `operations_summary` |
 | `blob19` | `schema_version` |
-| `blob20` | `privacy_version`: notice6 for v4, notice5 for v3, consent4 for v2, empty for v1; `blob19` keeps their meanings distinct |
+| `blob20` | `privacy_version`: notice8 for v6, notice7 for the v5 website funnel, notice6 for v4, notice5 for v3, consent4 for v2, empty for v1; `blob19` keeps their meanings distinct |
 | `double1..10` | `counters`: `turns`, `tool_calls`, `fleet_dispatch`, `workflow_run`, `subagent_spawn`, `mcp_server_connected`, `memory_search`, `approval_modal_shown`, `approval_auto_allowed`, `command_palette_open` |
 | `double11..16` | `errors`: `auth_preflight_failed`, `provider_http_4xx`, `provider_http_5xx`, `tool_denied_by_policy`, `tool_timeout`, `network_error` |
 | `double17..20` | `turn_wall`: `lt_5s`, `5_30s`, `30_120s`, `gte_120s` |
 | `double1..11` on `model_usage` | `turns_ok`, `turns_failed`, `turns_interrupted`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, then `turn_wall` `lt_5s`, `5_30s`, `30_120s`, `gte_120s` |
+| `double12..18` on `model_usage` | schema 6 only, `0` on v4 rows (`blob19` tells them apart): `requests`, `reasoning_tokens`, `generation_secs` (whole seconds, session sum), then input-size request counts `lt_32k`, `32k_128k`, `128k_256k`, `gte_256k` |
 | `double1..2` on `tool_usage` | `calls`, `errors` |
 
 Columns not relevant to an event are `''` / `0`. `tty` is a blob because the 20

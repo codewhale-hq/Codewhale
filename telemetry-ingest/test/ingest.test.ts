@@ -4,8 +4,8 @@ import { describe, expect, it } from "vitest";
 
 import worker from "../src/index";
 import { INGEST_PATH } from "../src/route";
-import { BLOB_COLUMNS, DOUBLE_COLUMNS } from "../src/datapoint";
-import { MAX_BODY_BYTES, SURFACES } from "../src/schema";
+import { BLOB_COLUMNS, DOUBLE_COLUMNS, MODEL_USAGE_DOUBLE_COLUMNS } from "../src/datapoint";
+import { MAX_BODY_BYTES, SURFACES, validateBatch } from "../src/schema";
 import { goldenBatch, harness, post, postJson } from "./support";
 
 describe("method and route", () => {
@@ -471,5 +471,150 @@ describe("failing closed and quiet", () => {
       const response = await worker.fetch(request, env);
       expect(await response.text()).toBe("");
     }
+  });
+});
+
+describe("schema 6", () => {
+  const golden = (version: number): Record<string, any> =>
+    JSON.parse(
+      readFileSync(
+        new URL(`../../crates/telemetry/tests/golden/v${version}.json`, import.meta.url),
+        "utf8",
+      ),
+    );
+  const event = (batch: Record<string, any>, name: string) =>
+    batch.events.find((item: Record<string, any>) => item.event === name);
+
+  it("accepts every historical golden and the v6 golden", () => {
+    for (const version of [1, 2, 3, 4, 6]) {
+      expect(validateBatch(golden(version)).ok, `v${version}`).toBe(true);
+    }
+  });
+
+  it("answers 204 to the v4 and v6 goldens", async () => {
+    for (const version of [4, 6]) {
+      const { env, written } = harness();
+      expect((await worker.fetch(postJson(golden(version)), env)).status).toBe(204);
+      expect(written).toHaveLength(golden(version).events.length);
+    }
+  });
+
+  it("requires notice 8 on v6 and refuses the v4 notice", () => {
+    const batch = golden(6);
+    batch.notice_version = 6;
+    expect(validateBatch(batch).ok).toBe(false);
+    expect(validateBatch({ ...golden(4), notice_version: 8 }).ok).toBe(false);
+  });
+
+  it("refuses a v4 batch carrying any v6 key or value", () => {
+    const mutations: Array<(batch: Record<string, any>) => void> = [
+      (batch) => { event(batch, "model_usage").context = event(golden(6), "model_usage").context; },
+      (batch) => { event(batch, "model_usage").counters.requests = 1; },
+      (batch) => { event(batch, "model_usage").counters.reasoning_tokens = 1; },
+      (batch) => { event(batch, "model_usage").counters.generation_secs = 1; },
+      (batch) => { event(batch, "session_start").install_age = "older"; },
+      (batch) => { event(batch, "session_start").source = "fleet_worker"; },
+      (batch) => { event(batch, "session_start").source = "agent"; },
+      (batch) => { event(batch, "session_start").source = "scripted"; },
+      (batch) => { event(batch, "session_end").exit_class = "unclean"; },
+    ];
+    for (const [index, mutate] of mutations.entries()) {
+      const batch = golden(4);
+      mutate(batch);
+      expect(validateBatch(batch).ok, `mutation ${index}`).toBe(false);
+    }
+  });
+
+  it("refuses a v6 batch missing or adding a key", () => {
+    const mutations: Array<(batch: Record<string, any>) => void> = [
+      (batch) => { delete event(batch, "model_usage").context; },
+      (batch) => { delete event(batch, "model_usage").context["32k_128k"]; },
+      (batch) => { event(batch, "model_usage").context.gte_512k = 0; },
+      (batch) => { delete event(batch, "model_usage").counters.requests; },
+      (batch) => { delete event(batch, "model_usage").counters.reasoning_tokens; },
+      (batch) => { delete event(batch, "model_usage").counters.generation_secs; },
+      (batch) => { event(batch, "model_usage").counters.generation_ms = 1; },
+      (batch) => { event(batch, "model_usage").model_family = "x"; },
+      (batch) => { delete event(batch, "session_start").install_age; },
+      (batch) => { event(batch, "session_start").extra = "x"; },
+      (batch) => { event(batch, "session_end").counters.requests = 1; },
+    ];
+    for (const [index, mutate] of mutations.entries()) {
+      const batch = golden(6);
+      mutate(batch);
+      expect(validateBatch(batch).ok, `mutation ${index}`).toBe(false);
+    }
+  });
+
+  it("refuses open values where v6 has a closed set or a count", () => {
+    const mutations: Array<(batch: Record<string, any>) => void> = [
+      (batch) => { event(batch, "session_start").install_age = "2026-11-01"; },
+      (batch) => { event(batch, "session_start").install_age = "OLDER"; },
+      (batch) => { event(batch, "session_start").source = "github-actions"; },
+      (batch) => { event(batch, "session_end").exit_class = "killed"; },
+      (batch) => { event(batch, "model_usage").counters.requests = 4294967296; },
+      (batch) => { event(batch, "model_usage").counters.requests = 1.5; },
+      (batch) => { event(batch, "model_usage").counters.generation_secs = -1; },
+      (batch) => { event(batch, "model_usage").counters.reasoning_tokens = "7"; },
+      (batch) => { event(batch, "model_usage").context.lt_32k = 4294967296; },
+      (batch) => { event(batch, "model_usage").context.lt_32k = "1"; },
+      (batch) => { event(batch, "model_usage").model = "/Users/someone/model"; },
+    ];
+    for (const [index, mutate] of mutations.entries()) {
+      const batch = golden(6);
+      mutate(batch);
+      expect(validateBatch(batch).ok, `mutation ${index}`).toBe(false);
+    }
+  });
+
+  it("accepts a null install_age and every v6 source and exit class", () => {
+    for (const source of ["interactive", "resume", "fork", "api", "unknown", "ci", "fleet_worker", "agent", "scripted"]) {
+      for (const age of ["new_today", "under_week", "older", null]) {
+        const batch = golden(6);
+        event(batch, "session_start").source = source;
+        event(batch, "session_start").install_age = age;
+        expect(validateBatch(batch).ok, `${source}/${age}`).toBe(true);
+      }
+    }
+    for (const exit of ["clean", "signal", "panic", "error", "unclean"]) {
+      const batch = golden(6);
+      event(batch, "session_end").exit_class = exit;
+      expect(validateBatch(batch).ok, exit).toBe(true);
+    }
+  });
+
+  it("writes v6 model_usage after the unchanged eleven doubles, and leaves v4 rows zero there", async () => {
+    expect(MODEL_USAGE_DOUBLE_COLUMNS).toHaveLength(18);
+    const v6 = harness();
+    await worker.fetch(postJson(golden(6)), v6.env);
+    const row = v6.written.find((point) => point.blobs[0] === "model_usage")!;
+    expect(row.doubles).toEqual([
+      12, 1, 0, 418230, 9120, 380001, 0,
+      3, 8, 2, 0,
+      27, 2310, 412,
+      9, 11, 5, 2,
+      0, 0,
+    ]);
+    expect(row.blobs[BLOB_COLUMNS.indexOf("schema_version")]).toBe("6");
+
+    const v4 = harness();
+    await worker.fetch(postJson(golden(4)), v4.env);
+    const old = v4.written.find((point) => point.blobs[0] === "model_usage")!;
+    expect(old.doubles).toEqual([
+      12, 1, 0, 418230, 9120, 380001, 0,
+      3, 8, 2, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+  });
+
+  it("writes install_age to blob12 of session_start rows only", async () => {
+    const { env, written } = harness();
+    await worker.fetch(postJson(golden(6)), env);
+    const start = written.find((point) => point.blobs[0] === "session_start")!;
+    expect(start.blobs[BLOB_COLUMNS.indexOf("session_source")]).toBe("fleet_worker");
+    expect(start.blobs[BLOB_COLUMNS.indexOf("duration_bucket")]).toBe("under_week");
+    const end = written.find((point) => point.blobs[0] === "session_end")!;
+    expect(end.blobs[BLOB_COLUMNS.indexOf("exit_class")]).toBe("unclean");
+    expect(end.blobs[BLOB_COLUMNS.indexOf("duration_bucket")]).toBe("1m_10m");
   });
 });
