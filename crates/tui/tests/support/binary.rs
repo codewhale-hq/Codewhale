@@ -44,16 +44,7 @@ fn resolve(
     if let Some(path) = qa.or(cargo) {
         return require_file(path);
     }
-    let directory = test_executable
-        .parent()
-        .ok_or("test executable has no parent")?;
-    let directory = if directory.ends_with("deps") {
-        directory
-            .parent()
-            .ok_or("test deps directory has no parent")?
-    } else {
-        directory
-    };
+    let directory = profile_directory(test_executable)?;
     let name = format!("codewhale{}", std::env::consts::EXE_SUFFIX);
     let adjacent = directory.join(&name);
     if adjacent.is_file() {
@@ -74,6 +65,22 @@ fn resolve(
         }
     }
     require_file(target_directory.join(profile).join(&name))
+}
+
+fn profile_directory(test_executable: &Path) -> Result<&Path, String> {
+    let parent = test_executable
+        .parent()
+        .ok_or("test executable has no parent")?;
+    parent
+        .ancestors()
+        .find(|ancestor| {
+            ancestor
+                .file_name()
+                .is_some_and(|name| name == "deps" || name == "build")
+        })
+        .and_then(Path::parent)
+        .or(Some(parent))
+        .ok_or_else(|| "test profile directory is unavailable".to_string())
 }
 
 // This synchronous resolver belongs only to Cargo acceptance test binaries.
@@ -197,6 +204,30 @@ mod tests {
                 None => cache.join("debug/deps/integration-hash"),
             };
             // The requested cross target must not select coexisting host output.
+            assert_eq!(resolve(None, None, &test, &target).unwrap(), canonical);
+        }
+    }
+
+    #[test]
+    fn per_unit_build_layout_resolves_the_final_profile_binary() {
+        let root = tempfile::TempDir::new().unwrap();
+        let target = root.path().join("target");
+        let cache = root.path().join("build cache");
+        for triple in [None, Some("aarch64-unknown-linux-gnu")] {
+            let profile = match triple {
+                Some(triple) => target.join(triple).join("debug"),
+                None => target.join("debug"),
+            };
+            let build_profile = match triple {
+                Some(triple) => cache.join(triple).join("debug"),
+                None => cache.join("debug"),
+            };
+            let unit = build_profile.join("build/codewhale-tui/0123456789abcdef/out");
+            std::fs::create_dir_all(&unit).unwrap();
+            std::fs::create_dir_all(&profile).unwrap();
+            let canonical = profile.join(format!("codewhale{}", std::env::consts::EXE_SUFFIX));
+            std::fs::write(&canonical, b"canonical").unwrap();
+            let test = unit.join("integration-hash");
             assert_eq!(resolve(None, None, &test, &target).unwrap(), canonical);
         }
     }
