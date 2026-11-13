@@ -227,7 +227,7 @@ fn the_session_source_distinguishes_resume_and_fork_from_a_fresh_launch() {
 
 #[test]
 fn a_session_end_built_without_arming_writes_nothing() {
-    let event = telemetry_session_end();
+    let event = codewhale_telemetry::session_end_event();
     assert!(matches!(
         event,
         codewhale_telemetry::Event::SessionEnd { .. }

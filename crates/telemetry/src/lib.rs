@@ -46,8 +46,8 @@ pub mod notice;
 mod tests;
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 pub use actor::{BATCH_MAX_BYTES, BATCH_MAX_EVENTS, FlushOutcome};
 pub use counters::{Counter, ErrorCounter, SessionCounters, TurnOutcome, TurnTokens};
@@ -69,11 +69,26 @@ pub use event::{
 /// handshake would hold a user's terminal past exit.
 pub const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// How long the send attempt on a terminating signal or a broken pipe may hold
+/// the process.
+///
+/// Shorter than [`SHUTDOWN_FLUSH_TIMEOUT`] so that, run alongside the runtime's
+/// two second signal drain, it fits inside the two second grace a supervisor
+/// gives SIGTERM before it escalates.
+pub const SIGNAL_FLUSH_TIMEOUT: Duration = Duration::from_millis(1500);
+
+const COLD_START_UNSET: u64 = u64::MAX;
+
+static COLD_START_MS: AtomicU64 = AtomicU64::new(COLD_START_UNSET);
+
 /// Everything a write path needs once the process is armed.
 struct Armed {
     handle: actor::Handle,
     root: std::path::PathBuf,
+    surface: Surface,
+    started: Instant,
     exit_class: AtomicU8,
+    session_end_recorded: AtomicBool,
 }
 
 /// The one gate. Unset means every write path is a hard no-op.
@@ -120,7 +135,10 @@ pub fn init(consent: TelemetryConsent) {
     let _ = ARMED.set(Armed {
         handle: actor::Handle::spawn(context),
         root: root.clone(),
+        surface: consent.surface(),
+        started: Instant::now(),
         exit_class: AtomicU8::new(ExitClass::Clean.as_u8()),
+        session_end_recorded: AtomicBool::new(false),
     });
 
     record_install_or_upgrade(&root);
@@ -264,6 +282,105 @@ pub fn exit_class() -> ExitClass {
     ARMED.get().map_or(ExitClass::Clean, |armed| {
         ExitClass::from_u8(armed.exit_class.load(Ordering::Relaxed))
     })
+}
+
+/// Report how long the interactive event loop took to start. The terminal UI is
+/// the only caller; every other surface leaves the cold-start bucket absent.
+pub fn set_cold_start_ms(millis: u64) {
+    let _ = COLD_START_MS.compare_exchange(
+        COLD_START_UNSET,
+        millis,
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+}
+
+/// Build `session_end` from what this process actually accumulated.
+///
+/// The exit class is read from the process-wide atomic and never derived from
+/// an exit code. Building the event writes nothing; an unarmed process reports a
+/// zero duration and nothing reaches a sink.
+#[must_use]
+pub fn session_end_event() -> Event {
+    let counters = session_counters();
+    let cold_start = COLD_START_MS.load(Ordering::Relaxed);
+    Event::SessionEnd {
+        duration_bucket: DurationBucket::from_secs(
+            ARMED
+                .get()
+                .map_or(0, |armed| armed.started.elapsed().as_secs()),
+        ),
+        exit_class: exit_class(),
+        cold_start_bucket: (cold_start != COLD_START_UNSET)
+            .then(|| ColdStartBucket::from_millis(cold_start)),
+        providers: counters.providers(),
+        counters: counters.counters(),
+        errors: counters.errors(),
+        turn_wall: counters.turn_wall(),
+    }
+}
+
+/// Queue this session's usage rows and `session_end` once.
+///
+/// Whichever of the clean path, the signal path or a broken pipe gets here
+/// first reports; later callers do nothing, so one session never ends twice.
+/// A no-op when unarmed.
+pub fn record_session_end() {
+    let Some(armed) = ARMED.get() else {
+        return;
+    };
+    if armed.session_end_recorded.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    for event in session_counters().usage_events() {
+        record(event);
+    }
+    record(session_end_event());
+}
+
+/// Close the session synchronously, for a path that cannot wait for the writer.
+///
+/// States `class`, then appends the usage rows and `session_end` to the local
+/// buffer with the same lock-free-for-the-caller write as [`record_blocking`].
+/// A no-op when unarmed, and a no-op for the events when the session already
+/// ended.
+pub fn record_session_end_blocking(class: ExitClass) {
+    let Some(armed) = ARMED.get() else {
+        return;
+    };
+    set_exit_class(class);
+    if armed.session_end_recorded.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    for event in session_counters().usage_events() {
+        record_blocking(event);
+    }
+    record_blocking(session_end_event());
+}
+
+/// One bounded network attempt for a process that is being terminated.
+///
+/// Runs the ordinary flush, so consent, the opt-out tombstone and the run kill
+/// switch are re-checked immediately beforehand and a person who has opted out
+/// sends nothing. Short CLI commands stay disk-only. Never retried, and the
+/// caller is released after `deadline` whether or not the request finished.
+#[must_use]
+pub fn flush_for_termination(deadline: Duration) -> FlushOutcome {
+    let Some(armed) = ARMED.get() else {
+        return FlushOutcome::Empty;
+    };
+    if armed.surface == Surface::Cli {
+        return FlushOutcome::Buffered;
+    }
+    armed.handle.shutdown(deadline)
+}
+
+/// Record the session end and make the one bounded send attempt, for a process
+/// that is about to be ended by a signal. Returns [`FlushOutcome::Empty`] when
+/// unarmed.
+pub fn report_termination(class: ExitClass, deadline: Duration) -> FlushOutcome {
+    record_session_end_blocking(class);
+    flush_for_termination(deadline)
 }
 
 /// Final flush, then stop the writer thread.

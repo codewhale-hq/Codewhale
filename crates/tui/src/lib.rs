@@ -862,6 +862,10 @@ fn spawn_signal_cleanup_task() {
     let mut signals = TerminatingSignals::register();
     tokio::spawn(async move {
         let exit_code = signals.wait().await;
+        codewhale_telemetry::record_session_end_blocking(codewhale_telemetry::ExitClass::Signal);
+        let telemetry_send = tokio::task::spawn_blocking(|| {
+            codewhale_telemetry::flush_for_termination(codewhale_telemetry::SIGNAL_FLUSH_TIMEOUT)
+        });
         // Persistence and a serving Runtime API share a bounded window to
         // flush queued saves and end open streams with a typed `stream.end`.
         // A second signal skips both waits.
@@ -870,6 +874,9 @@ fn spawn_signal_cleanup_task() {
                 tokio::join!(
                     codewhale_app_server::runtime_api::drain_for_signal_exit(),
                     crate::tui::persistence_actor::flush_for_signal_exit(),
+                    async {
+                        let _ = telemetry_send.await;
+                    },
                 )
             } => {}
             _ = signals.wait() => {}
@@ -885,64 +892,9 @@ fn spawn_signal_cleanup_task() {
             #[cfg(unix)]
             codewhale_runtime::process_tree::kill_contained_trees_for_exit();
             crate::tui::ui::emergency_restore_terminal();
-            // Nothing async survives the `exit` below, so this is the last
-            // chance to say how the session ended. `record_blocking` is one
-            // `O_APPEND` write with no lock: taking the compaction lock here
-            // would let a second Codewhale process sharing CODEWHALE_HOME hang
-            // Ctrl-C, and the second-signal short-circuit below has to stay
-            // reachable. A no-op unless this process was armed.
-            //
-            // The class is stated, not derived: `RunTerminationReason::Canceled`
-            // also exits 130, so `exit_code` cannot tell a signal from an
-            // Esc-cancelled turn.
-            record_signal_session_end();
         }
         std::process::exit(exit_code);
     });
-}
-
-/// When this process's armed telemetry session began. Set once, at arming, and
-/// read from both the ordinary teardown and the signal path.
-static TELEMETRY_SESSION_START: std::sync::OnceLock<std::time::Instant> =
-    std::sync::OnceLock::new();
-
-/// Build `session_end` from what this process actually accumulated.
-///
-/// The exit class is read from the process-wide atomic and never derived from
-/// an exit code: `RunTerminationReason::Canceled` maps to 130, the same value
-/// the SIGINT path uses, so a code-based derivation would report every
-/// Esc-cancelled turn as a signal.
-///
-/// The cold-start bucket is `None` unless the interactive event loop actually
-/// began, which is what keeps it absent rather than invented on the surfaces
-/// that have no event loop.
-fn telemetry_session_end() -> codewhale_telemetry::Event {
-    let counters = codewhale_telemetry::session_counters();
-    codewhale_telemetry::Event::SessionEnd {
-        duration_bucket: codewhale_telemetry::DurationBucket::from_secs(
-            TELEMETRY_SESSION_START
-                .get()
-                .map_or(0, |start| start.elapsed().as_secs()),
-        ),
-        exit_class: codewhale_telemetry::exit_class(),
-        cold_start_bucket: codewhale_runtime::startup_trace::cold_start_ms()
-            .map(codewhale_telemetry::ColdStartBucket::from_millis),
-        providers: counters.providers(),
-        counters: counters.counters(),
-        errors: counters.errors(),
-        turn_wall: counters.turn_wall(),
-    }
-}
-
-/// Close the session synchronously, from the signal handler.
-///
-/// A no-op unless this process was armed.
-fn record_signal_session_end() {
-    codewhale_telemetry::set_exit_class(codewhale_telemetry::ExitClass::Signal);
-    for event in codewhale_telemetry::session_counters().usage_events() {
-        codewhale_telemetry::record_blocking(event);
-    }
-    codewhale_telemetry::record_blocking(telemetry_session_end());
 }
 
 /// Terminating-signal streams, registered up front and awaited later.
@@ -2514,7 +2466,6 @@ fn arm_telemetry_with_setup(
         return;
     };
     codewhale_telemetry::init(consent.with_config_path(Some(store.path().to_path_buf())));
-    let _ = TELEMETRY_SESSION_START.set(std::time::Instant::now());
     codewhale_telemetry::record(codewhale_telemetry::Event::SessionStart { source });
 }
 
@@ -2580,10 +2531,7 @@ async fn finish_telemetry(outcome: &Result<()>, surface: codewhale_telemetry::Su
     {
         codewhale_telemetry::set_exit_class(codewhale_telemetry::ExitClass::Error);
     }
-    for event in codewhale_telemetry::session_counters().usage_events() {
-        codewhale_telemetry::record(event);
-    }
-    codewhale_telemetry::record(telemetry_session_end());
+    codewhale_telemetry::record_session_end();
     if surface == codewhale_telemetry::Surface::Cli {
         let persistence = codewhale_telemetry::persist_local_blocking();
         logging::info(format!(

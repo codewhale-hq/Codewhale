@@ -1418,6 +1418,9 @@ pub async fn run_tui(
     // than through it. Only this path calls it, which is what keeps the
     // cold-start bucket absent on surfaces with no event loop.
     codewhale_runtime::startup_trace::mark_cold_start();
+    if let Some(millis) = codewhale_runtime::startup_trace::cold_start_ms() {
+        codewhale_telemetry::set_cold_start_ms(millis);
+    }
     let result = run_event_loop(
         &mut terminal,
         &mut app,

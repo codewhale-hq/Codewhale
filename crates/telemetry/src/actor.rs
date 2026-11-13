@@ -373,4 +373,39 @@ mod tests {
         };
         assert_eq!(handle.persist_local(), FlushOutcome::TimedOut);
     }
+
+    #[test]
+    fn a_hung_writer_cannot_hold_a_termination_send_past_its_deadline() {
+        let (tx, rx) = sync_channel::<Message>(buffer::MAX_EVENTS + 1);
+        let handle = Handle {
+            tx,
+            pending: Arc::new(AtomicUsize::new(0)),
+            closing: AtomicBool::new(false),
+        };
+        let started = Instant::now();
+        let outcome = handle.shutdown(Duration::from_millis(50));
+        assert_eq!(outcome, FlushOutcome::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(matches!(rx.try_recv(), Ok(Message::Shutdown(_))));
+    }
+
+    #[test]
+    fn a_second_termination_send_does_not_wait() {
+        let (tx, _rx) = sync_channel::<Message>(buffer::MAX_EVENTS + 1);
+        let handle = Handle {
+            tx,
+            pending: Arc::new(AtomicUsize::new(0)),
+            closing: AtomicBool::new(false),
+        };
+        assert_eq!(
+            handle.shutdown(Duration::from_millis(20)),
+            FlushOutcome::TimedOut
+        );
+        let started = Instant::now();
+        assert_eq!(
+            handle.shutdown(Duration::from_secs(30)),
+            FlushOutcome::TimedOut
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 }

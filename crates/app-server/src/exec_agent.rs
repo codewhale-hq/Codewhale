@@ -3115,6 +3115,10 @@ fn write_exec_stdout(text: &str) -> Result<()> {
         .and_then(|()| stdout.flush())
     {
         Err(err) if err.kind() == io::ErrorKind::BrokenPipe => {
+            let _ = codewhale_telemetry::report_termination(
+                codewhale_telemetry::ExitClass::Signal,
+                codewhale_telemetry::SIGNAL_FLUSH_TIMEOUT,
+            );
             // SAFETY: restores the default disposition and re-raises the
             // signal the write would have delivered without SIG_IGN.
             #[cfg(unix)]
