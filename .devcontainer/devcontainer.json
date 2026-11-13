@@ -4,7 +4,7 @@
     "context": "..",
     "dockerfile": "Dockerfile",
     "args": {
-      "RUST_VERSION": "1.88"
+      "RUST_VERSION": "1.100.0"
     }
   },
   "customizations": {

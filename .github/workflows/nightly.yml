@@ -67,7 +67,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: 1.100.0
           targets: ${{ matrix.target }}
       - uses: mozilla-actions/sccache-action@v0.0.11
         id: sccache
@@ -99,7 +99,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y binutils musl-tools
-          rustup target add --toolchain stable aarch64-unknown-linux-musl
+          rustup target add aarch64-unknown-linux-musl
       - name: Build
         shell: bash
         # Nightly artifacts are disposable smoke binaries (14-day retention),

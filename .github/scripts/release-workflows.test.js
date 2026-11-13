@@ -248,7 +248,7 @@ assert.match(nightly, /startsWith\(matrix\.target, 'aarch64-'\).*runner\.arch ==
 const nightlyArmMuslSetup = namedStep(nightly, "Install Linux ARM64 musl toolchain");
 assert.match(nightlyArmMuslSetup, /matrix\.target == 'aarch64-unknown-linux-musl'/);
 assert.match(nightlyArmMuslSetup, /apt-get install -y binutils musl-tools/);
-assert.match(nightlyArmMuslSetup, /rustup target add --toolchain stable aarch64-unknown-linux-musl/);
+assert.match(nightlyArmMuslSetup, /rustup target add aarch64-unknown-linux-musl/);
 const nightlyArmStaticSmoke = namedStep(
   nightly,
   "Verify static Linux ARM64 binary and launch",
@@ -373,7 +373,7 @@ assert.deepEqual([...new Set(valuesForKey(artifacts, "target"))].sort(), expecte
 const releaseMuslBuild = namedStep(artifacts, "Build static Linux binaries (musl)");
 assert.match(releaseMuslBuild, /endsWith\(matrix\.target, '-unknown-linux-musl'\)/);
 assert.match(releaseMuslBuild, /apt-get install -y binutils musl-tools/);
-assert.match(releaseMuslBuild, /rustup target add --toolchain stable \$\{\{ matrix\.target \}\}/);
+assert.match(releaseMuslBuild, /rustup target add \$\{\{ matrix\.target \}\}/);
 assert.match(
   releaseMuslBuild,
   /cargo build --profile dist --locked --target \$\{\{ matrix\.target \}\} -p codewhale-cli/,
@@ -933,6 +933,76 @@ assert.ok(
   jobTimeout(parityWorkflow, "parity") >= jobTimeout(ci, "test"),
   "release parity must allow the full CI suite's cold-build budget",
 );
+
+const pinnedToolchain = read("rust-toolchain.toml").match(/^channel\s*=\s*"([^"]+)"/m)[1];
+assert.match(pinnedToolchain, /^\d+\.\d+\.\d+$/, "rust-toolchain.toml must pin an exact Rust release");
+const msrv = read("Cargo.toml").match(/^rust-version\s*=\s*"([^"]+)"/m)[1];
+assert.match(msrv, /^\d+\.\d+$/, "Cargo.toml must declare a minor MSRV");
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const stripWorkflowComments = (source) =>
+  source
+    .split("\n")
+    .map((line) => line.replace(/(^|\s)#.*$/, ""))
+    .join("\n");
+const workflowDir = path.join(repoRoot, ".github", "workflows");
+const workflowSources = new Map();
+for (const file of fs.readdirSync(workflowDir).filter((name) => /\.ya?ml$/.test(name)).sort()) {
+  workflowSources.set(file, stripWorkflowComments(read(`.github/workflows/${file}`)));
+}
+const ciSource = workflowSources.get("ci.yml");
+const msrvHeader = /^  msrv:[ \t]*$/m.exec(ciSource);
+assert.ok(msrvHeader, "ci.yml must keep an MSRV job");
+const msrvStart = msrvHeader.index;
+const afterMsrvHeader = msrvStart + msrvHeader[0].length;
+const nextJob = /^  \S/m.exec(ciSource.slice(afterMsrvHeader));
+const msrvEnd = nextJob ? afterMsrvHeader + nextJob.index : ciSource.length;
+const selectorValue = (value) => value.trim().replace(/^(["'])(.*)\1$/, "$2");
+const inMsrvJob = (index) => index >= msrvStart && index < msrvEnd;
+for (const [file, source] of workflowSources) {
+  const selectors = [
+    ...[...source.matchAll(/dtolnay\/rust-toolchain@([^\s]+)/g)].map((m) => ["action ref", m[1], m.index]),
+    ...[...source.matchAll(/^[ \t]+toolchain:[ \t]*([^\r\n]*)$/gm)].map((m) => ["toolchain input", selectorValue(m[1]), m.index]),
+    ...[...source.matchAll(/^[ \t]+rust-version:[ \t]*([^\r\n]*)$/gm)].map((m) => ["rust-version input", selectorValue(m[1]), m.index]),
+    ...[...source.matchAll(/^[ \t]+RUSTUP_TOOLCHAIN:[ \t]*([^\r\n]*)$/gm)].map((m) => ["RUSTUP_TOOLCHAIN", selectorValue(m[1]), m.index]),
+    ...[...source.matchAll(/\bcargo\s+\+\s*["']?([^\s"']+)/g)].map((m) => ["cargo + selector", m[1], m.index]),
+  ];
+  for (const [kind, value, index] of selectors) {
+    if (kind === "action ref" && (/^[0-9a-f]{40}$/.test(value) || value === "master")) continue;
+    const expected = file === "ci.yml" && inMsrvJob(index) ? msrv : pinnedToolchain;
+    assert.equal(value, expected, `${file}: ${kind} ${value} must equal ${expected}`);
+  }
+  assert.doesNotMatch(source, /rustup (?:target|component) add --toolchain/, `${file}: rustup adds must follow rust-toolchain.toml`);
+}
+const msrvJob = ciSource.slice(msrvStart, msrvEnd);
+assert.match(msrvJob, new RegExp(`RUSTUP_TOOLCHAIN: "${escapeRegExp(msrv)}"`), "the MSRV job must override rust-toolchain.toml for every step");
+assert.match(msrvJob, new RegExp(`toolchain: "?${escapeRegExp(msrv)}"?`));
+assert.match(msrvJob, new RegExp(`cargo \\+${escapeRegExp(msrv)} check --workspace --locked`));
+assert.doesNotMatch(msrvJob, new RegExp(`\\b${escapeRegExp(pinnedToolchain)}\\b`), "the MSRV job must not select the pinned release toolchain");
+
+const rootDockerfile = read("Dockerfile");
+const devcontainerDockerfile = read(".devcontainer/Dockerfile");
+const devcontainerConfig = read(".devcontainer/devcontainer.json");
+const tencentCnb = read("deploy/tencent-lighthouse/cnb/cnb.yml.example");
+const pinnedTag = `${pinnedToolchain}-bookworm`;
+for (const [label, source] of [
+  ["Dockerfile", rootDockerfile],
+  [".devcontainer/Dockerfile", devcontainerDockerfile],
+]) {
+  assert.match(source, new RegExp(`^ARG RUST_VERSION=${escapeRegExp(pinnedToolchain)}$`, "m"), `${label} must default RUST_VERSION to the pinned toolchain`);
+  assert.match(source, /^FROM .*\brust:\$\{RUST_VERSION\}/m, `${label} must build from the RUST_VERSION image`);
+}
+assert.match(devcontainerConfig, new RegExp(`"RUST_VERSION":\\s*"${escapeRegExp(pinnedToolchain)}"`), ".devcontainer/devcontainer.json must pass the pinned RUST_VERSION build arg");
+for (const [label, source] of [
+  [".cnb.yml", cnb],
+  ["deploy/tencent-lighthouse/cnb/cnb.yml.example", tencentCnb],
+]) {
+  const tags = [...stripWorkflowComments(source).matchAll(/^[ \t]*image:[ \t]*([^\r\n]*)$/gm)]
+    .map((m) => selectorValue(m[1]))
+    .filter((value) => value.startsWith("rust:"))
+    .map((value) => value.slice("rust:".length));
+  assert.ok(tags.length > 0, `${label} must declare a Rust build image`);
+  assert.deepEqual([...new Set(tags)], [pinnedTag], `${label}: Rust build images must match rust-toolchain.toml`);
+}
 
 console.log(
   "Workflow contracts OK: 6-target/12-asset single-runtime nightly and exact-head 8-target/38-asset release candidate.",

@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Source-build toolchain:** Rust 1.100.0 is pinned consistently across local source builds, CI, Docker, Dev Containers and CNB recipes. The minimum supported Rust version remains 1.89.
 - **Plugin index hooks:** hooks with the same name and event now have distinct row IDs, so clients can keep every configured hook visible.
 
 - **Renaming sessions with Chinese titles:** the session picker no longer rejects a Chinese, Japanese, Korean or emoji title of more than about 33 characters as "Title must be 1–100 characters". It now counts characters, as the message says and as `/rename` and the Runtime API already did, so any title up to 100 characters is accepted. Thanks [@luochen211](https://github.com/luochen211) (PR 7322).

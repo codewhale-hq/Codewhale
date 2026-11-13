@@ -28,7 +28,7 @@ cargo build --release --locked -p codewhale-cli
 target/release/codewhale --version
 ```
 
-构建前置条件见下文 Cargo 章节；使用仓库选定的 stable Rust，最低声明版本
+构建前置条件见下文 Cargo 章节；使用仓库固定的 Rust 1.100.0，最低声明版本
 为 1.89。首次构建可能耗时较长。Windows 的可执行文件为
 `target/release/codewhale.exe`，并需要 MSVC 工具链。开发构建不等于已签名发布包。
 
@@ -404,15 +404,15 @@ cargo install --path crates/cli --locked      # installs ~/.cargo/bin/codewhale
 
 需要知道的事（实际观察到的）：
 
-* 仓库里有 `rust-toolchain.toml`（`channel = "stable"`）。在检出目录里运行的第一条 `cargo` 命令，无论你的默认工具链是什么，都会**悄悄下载最新的 stable 工具链**（约 250 MB）。
-* workspace 把所有编译器警告都当作错误。用 Rust 1.89 时，构建会在大约 11 分钟后**失败**，在 `codewhale-tui` 中出现 8 个 `error: this lint expectation is unfulfilled`。请使用仓库选定的 stable 工具链，不要传入更旧的 `+toolchain`。
+* 仓库里有 `rust-toolchain.toml`（`channel = "1.100.0"`）。使用 rustup 时，如果本机没有 Rust 1.100.0，在检出目录里运行的第一条 `cargo` 命令，无论你的默认工具链是什么，都会**悄悄下载 Rust 1.100.0**（约 250 MB）。
+* workspace 把所有编译器警告都当作错误。声明的最低版本是 Rust 1.89，CI 的 MSRV 任务会检查它；但发布二进制和仓库自身的检查使用 1.100.0。不使用 rustup 时，请使用 1.89 或更新的 rustc。
 * workspace 的 release profile 使用 thin LTO。在 4 vCPU / 15 GB 的虚拟机上，仅 `codewhale-tui` 这一个 crate 就编译了一个多小时，内存峰值 6–8 GB。请准备 16 GB 或更多内存，并预期这是迄今最慢的安装路径。`target/` 增长超过了 1.2 GB。
 
-测试结果：用仓库选定的 stable Rust（1.98.1）**可行**。
+测试结果：用 Rust 1.98.1（测量时仓库选定的版本）**可行**。
 * `Finished release profile … in 83m 12s`。其间大部分时间有一个 Nix 构建在争抢 CPU 和内存，所以请把它当作上限。
 * `target/` 最终达到 **3.1 GB**。之后用 `cargo clean` 删除。
 * 该二进制报告 `codewhale 0.10.0 (dev)`，`exec` 可用。
-* Cargo 会打印 `warning: default toolchain implicitly overridden with stable-x86_64-unknown-linux-gnu by rustup toolchain file`，这是无害的。
+* Cargo 会打印 `warning: default toolchain implicitly overridden with 1.100.0-x86_64-unknown-linux-gnu by rustup toolchain file`，这是无害的。
 * **Cargo 构建不提供 `codew`。**
 
 **升级：** 重新运行同样的 `cargo install … --force`（对 crates.io 可以加 `--version X.Y.Z`）。`codewhale update` 会拒绝处理 Cargo 安装。**卸载：** `cargo uninstall codewhale-cli`，然后见 §12。
