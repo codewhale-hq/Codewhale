@@ -502,16 +502,18 @@ jobs:
           toolchain: stable
       - uses: mozilla-actions/sccache-action@v0.0.11
         id: sccache
-        # The GitHub Actions cache backend is main-only, mirroring
-        # rust-cache's save-if: PR runs wrote thousands of refs/pull/N
-        # entries that pushed the repo past its 10 GiB cache cap.
-        if: github.ref == 'refs/heads/main'
+        # Every run reads the cache main wrote; only main writes it
+        # (SCCACHE_GHA_RW_MODE in Enable sccache), mirroring rust-cache's
+        # save-if. PR runs once wrote thousands of refs/pull/N entries that
+        # pushed the repo past its 10 GiB cache cap.
         continue-on-error: true
       - name: Enable sccache
         if: steps.sccache.outcome == 'success'
         shell: bash
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
+          if [ "${GITHUB_REF}" = refs/heads/main ]; then rw=READ_WRITE; else rw=READ_ONLY; fi
+          echo "SCCACHE_GHA_RW_MODE=${rw}" >> "${GITHUB_ENV}"
           echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
           echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "${GITHUB_ENV}"
       - name: Install Linux system dependencies
@@ -566,13 +568,15 @@ jobs:
         # Cache bootstrap failures (e.g. GitHub 504s fetching the sccache
         # binary) degrade to an uncached build instead of failing product CI.
         continue-on-error: true
-        # Main-only GitHub Actions cache backend; see the Safety gate job.
-        if: needs.changes.outputs.heavy == 'true' && github.ref == 'refs/heads/main'
+        # Every run reads the GitHub Actions cache main wrote; only main writes (see Enable sccache).
+        if: needs.changes.outputs.heavy == 'true'
       - name: Enable sccache
         if: needs.changes.outputs.heavy == 'true' && steps.sccache.outcome == 'success'
         shell: bash
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
+          if [ "${GITHUB_REF}" = refs/heads/main ]; then rw=READ_WRITE; else rw=READ_ONLY; fi
+          echo "SCCACHE_GHA_RW_MODE=${rw}" >> "${GITHUB_ENV}"
           echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
           echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "${GITHUB_ENV}"
       - name: Install Linux system dependencies
@@ -826,14 +830,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@v0.0.11
         id: sccache
-        # Main-only GitHub Actions cache backend; see the Safety gate job.
-        if: github.ref == 'refs/heads/main'
+        # Every run reads the GitHub Actions cache main wrote; only main writes (see Enable sccache).
         continue-on-error: true
       - name: Enable sccache
         if: steps.sccache.outcome == 'success'
         shell: bash
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
+          if [ "${GITHUB_REF}" = refs/heads/main ]; then rw=READ_WRITE; else rw=READ_ONLY; fi
+          echo "SCCACHE_GHA_RW_MODE=${rw}" >> "${GITHUB_ENV}"
           echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
           echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "${GITHUB_ENV}"
       - uses: Swatinem/rust-cache@v2
@@ -862,13 +867,14 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.11
         id: sccache
         continue-on-error: true
-        # Main-only GitHub Actions cache backend; see the Safety gate job.
-        if: github.ref == 'refs/heads/main'
+        # Every run reads the GitHub Actions cache main wrote; only main writes (see Enable sccache).
       - name: Enable sccache
         if: steps.sccache.outcome == 'success'
         shell: bash
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
+          if [ "${GITHUB_REF}" = refs/heads/main ]; then rw=READ_WRITE; else rw=READ_ONLY; fi
+          echo "SCCACHE_GHA_RW_MODE=${rw}" >> "${GITHUB_ENV}"
           echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
           echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "${GITHUB_ENV}"
       - name: Install Linux system dependencies
@@ -1081,13 +1087,14 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.11
         id: sccache
         continue-on-error: true
-        # Main-only GitHub Actions cache backend; see the Safety gate job.
-        if: github.ref == 'refs/heads/main'
+        # Every run reads the GitHub Actions cache main wrote; only main writes (see Enable sccache).
       - name: Enable sccache
         if: steps.sccache.outcome == 'success'
         shell: bash
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
+          if [ "${GITHUB_REF}" = refs/heads/main ]; then rw=READ_WRITE; else rw=READ_ONLY; fi
+          echo "SCCACHE_GHA_RW_MODE=${rw}" >> "${GITHUB_ENV}"
           echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
           echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "${GITHUB_ENV}"
       - name: Install Linux system dependencies
@@ -1294,13 +1301,15 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.11
         id: sccache
         continue-on-error: true
-        # Main-only GitHub Actions cache backend; see the Safety gate job.
-        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') && github.ref == 'refs/heads/main'
+        # Every run reads the GitHub Actions cache main wrote; only main writes (see Enable sccache).
+        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
       - name: Enable sccache
         if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') && steps.sccache.outcome == 'success' && matrix.os != 'windows-latest'
         shell: bash
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
+          if [ "${GITHUB_REF}" = refs/heads/main ]; then rw=READ_WRITE; else rw=READ_ONLY; fi
+          echo "SCCACHE_GHA_RW_MODE=${rw}" >> "${GITHUB_ENV}"
           echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
           echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "${GITHUB_ENV}"
       - uses: actions/setup-node@v7.1.0
@@ -1357,14 +1366,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@v0.0.11
         id: sccache
-        # Main-only GitHub Actions cache backend; see the Safety gate job.
-        if: github.ref == 'refs/heads/main'
+        # Every run reads the GitHub Actions cache main wrote; only main writes (see Enable sccache).
         continue-on-error: true
       - name: Enable sccache
         if: steps.sccache.outcome == 'success'
         shell: bash
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
+          if [ "${GITHUB_REF}" = refs/heads/main ]; then rw=READ_WRITE; else rw=READ_ONLY; fi
+          echo "SCCACHE_GHA_RW_MODE=${rw}" >> "${GITHUB_ENV}"
           echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
           echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "${GITHUB_ENV}"
       - name: Install Linux system dependencies

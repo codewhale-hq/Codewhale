@@ -280,13 +280,20 @@ const npmSmokeCases = [
   ["light main", "push", false, "ubuntu-latest", true, true, false, false, false],
   ["schedule", "schedule", true, "ubuntu-latest", true, true, false, false, false],
 ];
-// The sccache GitHub Actions backend is main-only, mirroring rust-cache's
-// save-if: pull requests never install or enable it (cache bloat, PLAN D).
+// The sccache GitHub Actions backend is read-only off main: every run reads
+// main's cache, and only main writes it (SCCACHE_GHA_RW_MODE), mirroring
+// rust-cache's save-if (cache bloat, PLAN D).
+for (const [name, source] of [["ci.yml", ci], ["ci-test-suite.yml", ciSuite]]) {
+  const enabled = source.match(/SCCACHE_GHA_ENABLED=true/g) ?? [];
+  const modes = source.match(/if \[ "\$\{GITHUB_REF\}" = refs\/heads\/main \]; then rw=READ_WRITE; else rw=READ_ONLY; fi\n\s+echo "SCCACHE_GHA_RW_MODE=\$\{rw\}"/g) ?? [];
+  assert.ok(enabled.length > 0, `${name} must enable sccache`);
+  assert.equal(modes.length, enabled.length, `${name}: every sccache enable must be read-only off main`);
+  assert.doesNotMatch(source, /sccache-action[^\n]*\n(?:[^\n]*\n){0,4}\s+if: [^\n]*github\.ref == 'refs\/heads\/main'/, `${name}: sccache must install on every run`);
+}
 const sccacheInstallStep = "mozilla-actions/sccache-action@v0.0.11";
 for (const [label, event, heavy, os, trusted, cache, execute, linuxDeps, cnb] of npmSmokeCases) {
   const ref = event === "pull_request" ? "refs/pull/1/merge" : "refs/heads/main";
-  const onMain = ref === "refs/heads/main";
-  const installed = execute && onMain;
+  const installed = execute;
   const context = {
     needs: { changes: { outputs: { heavy: String(heavy), trusted: String(trusted), scoped: "false" } } },
     github: { event_name: event, ref },

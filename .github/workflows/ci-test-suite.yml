@@ -81,13 +81,14 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.11
         id: sccache
         continue-on-error: true
-        # Main-only GitHub Actions cache backend; see the Safety gate job.
-        if: github.ref == 'refs/heads/main'
+        # Every run reads the GitHub Actions cache main wrote; only main writes (see Enable sccache).
       - name: Enable sccache
         if: steps.sccache.outcome == 'success'
         shell: bash
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
+          if [ "${GITHUB_REF}" = refs/heads/main ]; then rw=READ_WRITE; else rw=READ_ONLY; fi
+          echo "SCCACHE_GHA_RW_MODE=${rw}" >> "${GITHUB_ENV}"
           echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
           echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "${GITHUB_ENV}"
       - name: Install Linux system dependencies
