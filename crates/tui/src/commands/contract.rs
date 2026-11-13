@@ -421,12 +421,9 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
         app.session_turn_outcomes = session.turn_outcomes.clone();
         app.session_artifacts = session.artifacts.clone();
         app.session_context_references = session.context_references.clone();
-        app.extend_history(
-            session
-                .messages
-                .iter()
-                .flat_map(crate::tui::history::history_cells_from_message),
-        );
+        app.extend_history(session.messages.iter().flat_map(|message| {
+            crate::tui::history::history_cells_from_message_with_results(message, &session.messages)
+        }));
         app.scroll_to_bottom();
         Ok(SessionBranchOutcome {
             leaf_display,

@@ -24,6 +24,7 @@ mod archived_context;
 mod automation;
 mod checklist;
 mod constants;
+mod data_display;
 mod file_mutation;
 mod latex_render;
 mod message;
@@ -40,6 +41,7 @@ use checklist::{
     parse_checklist_snapshot, parse_update_prefix, render_checklist_card,
     render_checklist_change_card,
 };
+pub use data_display::DataDisplayCell;
 
 #[cfg(test)]
 use checklist::{ChecklistChange, ChecklistItemSnapshot, ChecklistSnapshot};
@@ -747,6 +749,13 @@ impl HistoryCell {
 /// Convert a message into history cells for rendering.
 #[must_use]
 pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
+    history_cells_from_message_with_results(msg, &[])
+}
+
+pub fn history_cells_from_message_with_results(
+    msg: &Message,
+    messages: &[Message],
+) -> Vec<HistoryCell> {
     // Model-facing Operate contract; the live receipt is the goal line.
     if codewhale_engine::runtime_handoff::is_operate_contract_message(msg) {
         return Vec::new();
@@ -897,6 +906,11 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
                     status: ToolStatus::Success,
                 })));
             }
+            ContentBlock::ToolUse { name, input, .. } if name == "show_data" => {
+                cells.push(HistoryCell::Tool(ToolCell::DataDisplay(
+                    DataDisplayCell::from_history(block, input, messages),
+                )));
+            }
             _ => {}
         }
     }
@@ -917,6 +931,7 @@ pub enum ToolCell {
     Mcp(McpToolCell),
     ViewImage(ViewImageCell),
     WebSearch(WebSearchCell),
+    DataDisplay(DataDisplayCell),
     Generic(GenericToolCell),
 }
 
@@ -945,6 +960,7 @@ impl ToolCell {
             ToolCell::Review(cell) => Some(cell.status),
             ToolCell::Mcp(cell) => Some(cell.status),
             ToolCell::WebSearch(cell) => Some(cell.status),
+            ToolCell::DataDisplay(cell) => Some(cell.status),
             ToolCell::Generic(cell) => Some(cell.status),
             ToolCell::ViewImage(_) => Some(ToolStatus::Success),
         }
@@ -977,6 +993,7 @@ impl ToolCell {
                     | ToolCell::PatchSummary(_)
                     | ToolCell::Review(_)
                     | ToolCell::PlanUpdate(_)
+                    | ToolCell::DataDisplay(_)
             )
             || matches!(self, ToolCell::Generic(cell) if tool_run::generic_tool_name_is_collapse_guard(&cell.name) || cell.is_diff)
     }
@@ -1043,6 +1060,9 @@ impl ToolCell {
                 cell.lines_with_motion_and_locale(width, low_motion, locale)
             }
             ToolCell::WebSearch(cell) => {
+                cell.lines_with_motion_and_locale(width, low_motion, locale)
+            }
+            ToolCell::DataDisplay(cell) => {
                 cell.lines_with_motion_and_locale(width, low_motion, locale)
             }
             ToolCell::Generic(cell) => {

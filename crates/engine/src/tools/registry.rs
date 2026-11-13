@@ -1043,6 +1043,11 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(PresentTool))
     }
 
+    #[must_use]
+    pub fn with_show_data_tool(self) -> Self {
+        self.with_tool(Arc::new(super::show_data::ShowDataTool))
+    }
+
     /// Include shell execution tools.
     ///
     /// New turns expose lowercase `bash`; uppercase `Bash` remains a hidden
@@ -1540,6 +1545,7 @@ impl ToolRegistryBuilder {
         let builder = self
             .with_file_tools()
             .with_present_tool()
+            .with_show_data_tool()
             .with_note_tool()
             .with_search_tools()
             .with_user_input_tool(user_input_limits)

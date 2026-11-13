@@ -492,6 +492,15 @@ since = "unreleased"
 owner = "crates/engine/src/tools/present.rs"
 
 [[feature]]
+id = "show-data"
+name = "Charts in the transcript"
+summary = "Read-only show_data tool: the model shows a sparkline, labelled bars or a trend, painted by the terminal kit with the same facts in words."
+status = "experimental"
+surfaces = { tui = "preview", api = "partial" }
+since = "unreleased"
+owner = "crates/engine/src/tools/show_data.rs"
+
+[[feature]]
 id = "read-media"
 name = "read_media"
 summary = "Reads and preprocesses images for vision-capable models with size and privacy guards."

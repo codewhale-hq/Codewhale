@@ -4718,7 +4718,8 @@ pub(crate) fn apply_loaded_session_with_goal(
     };
     replay_outcomes_through(app, 0, messages.is_empty());
     for (message_index, msg) in messages.iter().enumerate() {
-        let mut cells = history_cells_from_message(msg);
+        let mut cells =
+            crate::tui::history::history_cells_from_message_with_results(msg, &messages);
         if msg.role == "user"
             && session
                 .context_references
