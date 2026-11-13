@@ -2213,6 +2213,7 @@ pub struct App {
     pub yolo: bool,
     /// One-shot YOLO→Act+Bypass migration notice for this session (#0.8.68 M6).
     yolo_compat_notified: bool,
+    permission_receipt_deferred: bool,
     /// One-shot notice for a settings file that still names the retired
     /// Operate mode, so the mode change is explained instead of silent.
     operate_retired_notified: bool,
@@ -3508,8 +3509,7 @@ impl App {
         if previous_mode == mode && !self.yolo {
             return false;
         }
-        let permission_before = self.effective_permission_label();
-        let permission_pair_before = self.permission_pair();
+        let permission_before = self.permission_receipt_label();
 
         self.mode = mode;
         // Mode chip lives in the header — skip redundant status/toast copy.
@@ -3536,7 +3536,7 @@ impl App {
         self.approval_mode = policy.approval_mode;
         self.yolo = matches!(policy.approval_mode, ApprovalMode::Bypass);
 
-        self.finish_mode_change(previous_mode, &permission_before, permission_pair_before);
+        self.finish_mode_change(previous_mode, &permission_before);
         true
     }
 
@@ -3552,8 +3552,7 @@ impl App {
             return false;
         }
         let previous_mode = self.mode;
-        let permission_before = self.effective_permission_label();
-        let permission_pair_before = self.permission_pair();
+        let permission_before = self.permission_receipt_label();
         // Same baseline-refresh rule as a mode hop: the elevation must not
         // bleed into the restored Agent surface.
         if previous_mode.uses_agent_baseline() && !self.yolo {
@@ -3574,7 +3573,7 @@ impl App {
         self.approval_mode = ApprovalMode::Bypass;
         self.yolo = true;
         self.notify_yolo_compat_once();
-        self.finish_mode_change(previous_mode, &permission_before, permission_pair_before);
+        self.finish_mode_change(previous_mode, &permission_before);
         true
     }
 
@@ -3609,12 +3608,7 @@ impl App {
     /// id, workspace, model, and token total as every other event — it used
     /// to omit `DEEPSEEK_SESSION_ID` entirely, which made mode transitions
     /// uncorrelatable with the session they belonged to.
-    fn finish_mode_change(
-        &mut self,
-        previous_mode: AppMode,
-        permission_before: &str,
-        permission_pair_before: ApprovalMode,
-    ) {
+    fn finish_mode_change(&mut self, previous_mode: AppMode, permission_before: &str) {
         let context = self
             .base_hook_context()
             .with_mode(self.mode.hook_label())
@@ -3622,18 +3616,8 @@ impl App {
         if let Err(error) = self.submit_hooks(HookEvent::ModeChange, context) {
             self.surface_observer_hook_submission_failure(error);
         }
-        if self.permission_pair() != permission_pair_before {
-            self.record_permission_change(permission_before);
-        }
+        self.record_permission_change(permission_before);
         self.needs_redraw = true;
-    }
-
-    fn permission_pair(&self) -> ApprovalMode {
-        if self.mode == AppMode::Plan {
-            self.mode_prefs.agent_approval_mode
-        } else {
-            self.approval_mode
-        }
     }
 
     /// Apply a *user-facing* mode selection: change the live session mode and
@@ -3977,6 +3961,8 @@ impl App {
         } else {
             self.approval_mode
         };
+        let permission_before = self.permission_receipt_label();
+        self.permission_receipt_deferred = true;
         let mut step = DialStep::default();
         if mode != self.mode {
             step.mode_changed = self.select_mode(mode) == SettingSelection::Changed;
@@ -3996,6 +3982,8 @@ impl App {
                 step.mode_changed = self.select_mode(AppMode::Plan) == SettingSelection::Changed;
             }
         }
+        self.permission_receipt_deferred = false;
+        self.record_permission_change(&permission_before);
         step
     }
 
@@ -4236,7 +4224,7 @@ impl App {
     /// an independently enabled trust baseline in other posture transitions.
     /// Plan remains read-only.
     pub fn set_agent_approval_posture(&mut self, next: ApprovalMode) {
-        let permission_before = self.effective_permission_label();
+        let permission_before = self.permission_receipt_label();
         let trust_mode = if next == ApprovalMode::Bypass {
             true
         } else if self.mode_prefs.agent_approval_mode == ApprovalMode::Bypass {
@@ -4253,8 +4241,17 @@ impl App {
         crate::tui::underwater::permission_label(self).into_owned()
     }
 
+    fn permission_receipt_label(&self) -> String {
+        crate::tui::underwater::dial_chip_for(self.ui_locale, self.mode, self.approval_mode)
+            .0
+            .into_owned()
+    }
+
     fn record_permission_change(&mut self, before: &str) {
-        let after = self.effective_permission_label();
+        if self.permission_receipt_deferred {
+            return;
+        }
+        let after = self.permission_receipt_label();
         if after == before {
             return;
         }

@@ -1039,6 +1039,7 @@ impl App {
             lifecycle_outbox,
             yolo: yolo_compat,
             yolo_compat_notified: false,
+            permission_receipt_deferred: false,
             operate_retired_notified: false,
             startup_defaults: Default::default(),
             keybinding_migration_notified: false,
