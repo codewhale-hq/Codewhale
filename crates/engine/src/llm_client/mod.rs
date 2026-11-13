@@ -25,6 +25,7 @@
 pub mod rate_limit;
 
 use anyhow::Result;
+use codewhale_command_contract::metrics::format_duration;
 use codewhale_models::{MessageRequest, MessageResponse, StreamEvent};
 use codewhale_runtime::config::{RateLimitRetryPolicy, RetryPolicy};
 use serde_json::Value;
@@ -457,6 +458,18 @@ pub enum LlmError {
     Other(String),
 }
 
+fn opencode_go_hint(message: &str) -> &'static str {
+    let lowered = message.to_lowercase();
+    if lowered.contains("codewhale auth set") {
+        return "";
+    }
+    if lowered.contains("opencode go") || lowered.contains("opencode.ai/go") {
+        " OpenCode Go is a separate provider with its own key; run: codewhale auth set --provider opencode-go"
+    } else {
+        ""
+    }
+}
+
 impl std::fmt::Display for LlmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -464,11 +477,25 @@ impl std::fmt::Display for LlmError {
                 message,
                 retry_after,
                 ..
-            } => write!(
+            } => {
+                let hint = opencode_go_hint(message);
+                match retry_after {
+                    Some(d) => write!(
+                        f,
+                        "Rate limit exceeded: {message}; quota window resets in {}; automatic retry stopped{hint}",
+                        format_duration(*d)
+                    ),
+                    None => write!(
+                        f,
+                        "Rate limit exceeded: {message}; automatic retry stopped{hint}"
+                    ),
+                }
+            }
+            LlmError::RateLimited { message, .. } => write!(
                 f,
-                "Rate limit exceeded: {message}; quota window reset in {retry_after:?}; automatic retry stopped"
+                "Rate limit exceeded: {message}{}",
+                opencode_go_hint(message)
             ),
-            LlmError::RateLimited { message, .. } => write!(f, "Rate limit exceeded: {message}"),
             LlmError::QuotaExhausted(error) => {
                 write!(f, "Provider plan quota exhausted: {}", error.message)
             }
