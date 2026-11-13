@@ -960,7 +960,7 @@
   "OnboardTrustLocationPrefix": "Workspace  ",
   "OnboardTrustRiskHint": "File tak tepercaya dapat mencoba mengalihkan agen lewat prompt injection.",
   "OnboardTrustEffectHint": "Kepercayaan dicatat untuk instalasi Codewhale ini dan mengaktifkan alat serta hook workspace.",
-  "OnboardTrustEnterHint": "Tekan 1 atau Y untuk mempercayai, 2 atau U untuk lanjut tanpa mempercayai, atau 3, N, atau Esc untuk keluar dari Codewhale.",
+  "OnboardTrustEnterHint": "Tekan 1 untuk mempercayai, 2 untuk lanjut tanpa mempercayai, atau 3 atau Esc untuk keluar dari Codewhale.",
   "OnboardTrustUntrustedNotice": "Melanjutkan tanpa kepercayaan workspace — alat dan hook tetap dibatasi.",
   "RedactionGateActionConfirm": "konfirmasi dan nonaktifkan",
   "RedactionGateActionKeep": "pertahankan penyembunyian",

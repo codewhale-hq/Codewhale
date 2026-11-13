@@ -138,12 +138,9 @@ fn action_hints(app: &App) -> Vec<ActionHint> {
             ActionHint::new("Esc", app.tr(MessageId::OnboardActionBack).to_string()),
         ],
         OnboardingState::TrustDirectory => vec![
-            ActionHint::new(
-                "1/Y",
-                app.tr(MessageId::OnboardTrustActionTrust).to_string(),
-            ),
-            ActionHint::new("2/U", app.tr(MessageId::OnboardTrustActionSkip).to_string()),
-            ActionHint::new("3/N", app.tr(MessageId::OnboardTrustActionQuit).to_string()),
+            ActionHint::new("1", app.tr(MessageId::OnboardTrustActionTrust).to_string()),
+            ActionHint::new("2", app.tr(MessageId::OnboardTrustActionSkip).to_string()),
+            ActionHint::new("3", app.tr(MessageId::OnboardTrustActionQuit).to_string()),
         ],
         OnboardingState::Ready => vec![
             // Only keys this screen handles: a `/rc` hint here could not be

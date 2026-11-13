@@ -979,7 +979,7 @@
   "OnboardTrustLocationPrefix": "Workspace  ",
   "OnboardTrustRiskHint": "Untrusted files can try to redirect the agent through prompt injection.",
   "OnboardTrustEffectHint": "Trust is recorded for this Codewhale installation and enables workspace tools and hooks.",
-  "OnboardTrustEnterHint": "Press 1 or Y to trust, 2 or U to continue without trusting, or 3, N, or Esc to quit Codewhale.",
+  "OnboardTrustEnterHint": "Press 1 to trust, 2 to continue without trusting, or 3 or Esc to quit Codewhale.",
   "OnboardTrustUntrustedNotice": "Continuing without workspace trust — tools and hooks stay restricted.",
   "RedactionGateActionConfirm": "confirm and disable",
   "RedactionGateActionKeep": "keep masking on",
