@@ -177,6 +177,13 @@ known limitations and publication approval. These proofs are separate.
       calls and customer acceptance need separate receipts; provider spend still
       requires authorization. Required unproven acceptance blocks release;
       disclose an explicitly accepted limitation as such.
+- [ ] A `ci/*` release-candidate run counts only when its SHA equals the tag SHA.
+- [ ] The `ci.yml` npm wrapper smoke (windows) also needs sccache off.
+- [ ] The telemetry publication gate holds: the served ingest accepts the tagged
+      build's schema before publication.
+- [ ] Every security fix scheduled for this release has landed with two
+      independent reviews. Record the count only; keep detail confidential
+      until publication is approved.
 - [ ] If source changes or `main` moves before tagging, deliberately choose the
       new candidate and replace affected proofs. Tag only a SHA with its exact
       CI/RC evidence. Do not duplicate hosted exhaustive gates locally.
