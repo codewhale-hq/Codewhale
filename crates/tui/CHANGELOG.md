@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Dependencies:** updated the TLS, HTTP/2 and crypto libraries (h2 0.4.20, hyper 1.12.0, tokio 1.54.1, aws-lc-rs 1.19.0 with aws-lc-sys 0.47.0, rustls-native-certs 0.8.5 and rustls-platform-verifier 0.7.1) to their current patch releases.
 - **Windows clipboard:** Codewhale now uses clipboard-win 5.4.3 (with arboard 3.7.0) for copy and paste on Windows, replacing 5.4.1, which its author withdrew from crates.io.
 - **Renaming sessions with Chinese titles:** the session picker no longer rejects a Chinese, Japanese, Korean or emoji title of more than about 33 characters as "Title must be 1–100 characters". It now counts characters, as the message says and as `/rename` and the Runtime API already did, so any title up to 100 characters is accepted. Thanks [@luochen211](https://github.com/luochen211) (PR 7322).
 - **Non-ASCII file names:** `/diff`, the `@git` and `@diff` mentions and the Runtime API workspace diff now show paths with Chinese, emoji and other non-ASCII characters as written instead of as quoted octal escapes, and the turn context no longer lists the workspace root as an empty "Active paths" entry. Thanks [@luochen211](https://github.com/luochen211) (PR 7317).
