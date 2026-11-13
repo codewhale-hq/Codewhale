@@ -141,12 +141,6 @@ impl PathRestoreAction {
     }
 }
 
-/// The safety snapshot a path restore writes first, or one already taken.
-enum RestoreBackup<'a> {
-    Take(&'a str),
-    Existing(&'a SnapshotId),
-}
-
 /// Report of what `SnapshotRepo::restore_paths` did to one path.
 #[derive(Debug, Clone)]
 pub struct PathRestoreOutcome {
@@ -1256,51 +1250,15 @@ impl SnapshotRepo {
         prune_emptied_dirs: bool,
         preflight: impl FnOnce() -> io::Result<()>,
     ) -> io::Result<Vec<PathRestoreOutcome>> {
-        self.restore_path_plan_backed_up(
-            plan,
-            RestoreBackup::Take(backup_label),
-            prune_emptied_dirs,
-            preflight,
-        )
-    }
-
-    /// [`Self::restore_path_plan`] with a safety snapshot the caller already
-    /// took (`backup`, a commit id) instead of a new one. `preflight` must
-    /// prove every planned path is still as `backup` holds it, so the backup
-    /// is as good as one taken now; reusing it keeps a second snapshot, and
-    /// the prune that comes with it, out of the window between planning and
-    /// the first write.
-    pub fn restore_path_plan_with_backup(
-        &self,
-        plan: &[(PathBuf, SnapshotId)],
-        backup: &SnapshotId,
-        prune_emptied_dirs: bool,
-        preflight: impl FnOnce() -> io::Result<()>,
-    ) -> io::Result<Vec<PathRestoreOutcome>> {
-        self.restore_path_plan_backed_up(
-            plan,
-            RestoreBackup::Existing(backup),
-            prune_emptied_dirs,
-            preflight,
-        )
-    }
-
-    fn restore_path_plan_backed_up(
-        &self,
-        plan: &[(PathBuf, SnapshotId)],
-        backup: RestoreBackup<'_>,
-        prune_emptied_dirs: bool,
-        preflight: impl FnOnce() -> io::Result<()>,
-    ) -> io::Result<Vec<PathRestoreOutcome>> {
         self.with_write_lock(|| {
-            self.restore_path_plan_locked(plan, backup, prune_emptied_dirs, preflight)
+            self.restore_path_plan_locked(plan, backup_label, prune_emptied_dirs, preflight)
         })
     }
 
     fn restore_path_plan_locked(
         &self,
         plan: &[(PathBuf, SnapshotId)],
-        backup: RestoreBackup<'_>,
+        backup_label: &str,
         prune_emptied_dirs: bool,
         preflight: impl FnOnce() -> io::Result<()>,
     ) -> io::Result<Vec<PathRestoreOutcome>> {
@@ -1318,10 +1276,7 @@ impl SnapshotRepo {
 
         // A durable backup is required for this destructive API. Ignored
         // files cannot be removed/overwritten if the snapshot cannot retain them.
-        let backup = match backup {
-            RestoreBackup::Take(label) => self.snapshot_with_session(label, None)?,
-            RestoreBackup::Existing(id) => id.clone(),
-        };
+        let backup = self.snapshot_with_session(backup_label, None)?;
         for (rel, _, _, in_work) in &pre_state {
             if *in_work && !self.snapshot_contains_regular_file(&backup, rel)? {
                 return Err(io_other(

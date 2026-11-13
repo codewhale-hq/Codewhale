@@ -1664,7 +1664,7 @@ fn cleaned_turn_text(text: &str, detail: ResultDetail, max_width: usize) -> Stri
     }
 
     let mut cleaned = String::with_capacity(text.len());
-    codewhale_tui_kit::osc8::strip_ansi_into(text, &mut cleaned);
+    codewhale_sanitize::sanitize::strip_ansi_into(text, &mut cleaned);
     cleaned.trim().to_string()
 }
 

@@ -115,7 +115,7 @@ impl RouteShape {
 /// Which endpoint this request would be POSTed to, as typed facts.
 ///
 /// `url` is the real, unredacted target: production needs it to send. Every
-/// display surface must go through [`codewhale_secrets::sanitize::redact_url_for_display`] rather
+/// display surface must go through [`codewhale_sanitize::sanitize::redact_url_for_display`] rather
 /// than printing it, and the manifest only ever publishes the redacted
 /// scheme/host and a fingerprint — never the path, which can itself carry a
 /// deployment secret.

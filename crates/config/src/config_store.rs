@@ -99,7 +99,7 @@ pub fn toml_error_location(source: Option<&str>, err: &toml::de::Error) -> Strin
         .and_then(|rest| rest.strip_prefix("\nin `"))
         .and_then(|rest| rest.strip_suffix("`\n"))
         .filter(|keys| !keys.is_empty())
-        .map(|keys| format!("in `{}`", codewhale_secrets::redact::redact_secrets(keys)));
+        .map(|keys| format!("in `{}`", codewhale_sanitize::redact::redact_secrets(keys)));
     match (position, key_path) {
         (Some(position), Some(keys)) => format!("{position}, {keys}"),
         (Some(position), None) => position,

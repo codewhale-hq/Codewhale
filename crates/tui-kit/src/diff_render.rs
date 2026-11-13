@@ -1095,7 +1095,7 @@ fn needs_normalization(text: &str) -> bool {
     }
     text.len() > crate::ui_text::MAX_DISPLAY_GRAPHEME_BYTES
         || text.chars().any(|ch| {
-            codewhale_secrets::sanitize::is_bidi_control(ch)
+            codewhale_sanitize::sanitize::is_bidi_control(ch)
                 || ch.is_control()
                 || matches!(ch, '\u{2028}' | '\u{2029}')
         })
