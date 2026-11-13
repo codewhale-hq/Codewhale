@@ -1507,3 +1507,258 @@ fn headless_marked_trust_needs_an_install_from_a_folder_in_the_project() {
         Some(PluginApprover::command_line(Some(registry.workspace())))
     );
 }
+
+fn install_temp_home_plugin(
+    root: &Path,
+    name: &str,
+    version: &str,
+) -> (
+    std::path::PathBuf,
+    std::sync::Arc<codewhale_plugins::PluginRegistry>,
+) {
+    let source = root.join("src").join(name);
+    fs::create_dir_all(source.join("skills/hello")).unwrap();
+    fs::write(
+        source.join("plugin.toml"),
+        format!(
+            "schema_version = 1\n[plugin]\nname = {name:?}\nversion = {version:?}\n[skills]\npath = \"skills\"\n"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        source.join("skills/hello/SKILL.md"),
+        "---\nname: hello\ndescription: hi\n---\nbody\n",
+    )
+    .unwrap();
+    let (app, _temp) = create_test_app(root);
+    let mut registry = app.plugin_registry.clone();
+    let network = codewhale_net::network_policy::NetworkPolicy::default();
+    let ctx = codewhale_plugins::mutation::PluginMutationContext {
+        network: &network,
+        max_size: codewhale_plugins::install::DEFAULT_MAX_SIZE_BYTES,
+    };
+    let parsed = codewhale_plugins::install::PluginInstallSource::parse(
+        source.to_str().expect("utf-8 path"),
+    )
+    .unwrap();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(codewhale_plugins::mutation::execute(
+            codewhale_plugins::mutation::PluginMutationRequest::Install { source: parsed },
+            &ctx,
+            std::sync::Arc::make_mut(&mut registry),
+        ))
+        .unwrap();
+    let registry = registry.rediscover_for_workspace(registry.workspace());
+    (source, registry)
+}
+
+#[test]
+fn headless_show_prints_review_without_prompting_or_trusting() {
+    let _lock = crate::test_support::lock_test_env();
+    let root = TempDir::new().unwrap();
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path().join("home"));
+    write_mcp_review_bundle(root.path());
+    let (mut app, _temp) = create_test_app(root.path());
+    let Some(AppAction::OpenCommandReview { content, .. }) =
+        plugins_with_kimi_home_override(&mut app, Some("trust review-mcp"), None).action
+    else {
+        panic!("trust opens a confirmation control");
+    };
+    let registry = app.plugin_registry.clone();
+    let token = registry.get("review-mcp").unwrap().review_token();
+
+    let mut interactive = ScriptedConsole {
+        interactive: true,
+        answer: true,
+        ..ScriptedConsole::default()
+    };
+    headless::show(&registry, Locale::En, "review-mcp", false, &mut interactive).unwrap();
+    assert!(interactive.prompts.is_empty());
+    assert!(interactive.printed[0].starts_with(&content));
+    assert!(interactive.printed[0].ends_with(&format!("Bundle review token: {token}")));
+    assert!(!registry.get("review-mcp").unwrap().trusted());
+
+    let mut json_console = ScriptedConsole::default();
+    headless::show(&registry, Locale::En, "review-mcp", true, &mut json_console).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json_console.printed[0]).unwrap();
+    assert_eq!(parsed["action"], "review");
+    assert_eq!(parsed["trusted_by_this_command"], false);
+    assert_eq!(parsed["bundle_review_token"], token);
+}
+
+#[test]
+fn headless_update_reports_current_or_new_version_and_network_approval() {
+    let _lock = crate::test_support::lock_test_env();
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home);
+    let (source, mut registry) = install_temp_home_plugin(root.path(), "demo", "1.0.0");
+    let network = codewhale_net::network_policy::NetworkPolicy::default();
+
+    let mut console = ScriptedConsole::default();
+    headless::update(
+        &mut registry,
+        Locale::En,
+        "demo",
+        &network,
+        false,
+        &mut console,
+    )
+    .unwrap();
+    assert!(
+        console.printed.last().unwrap().contains("already current"),
+        "{:?}",
+        console.printed
+    );
+
+    fs::write(
+        source.join("plugin.toml"),
+        "schema_version = 1\n[plugin]\nname = \"demo\"\nversion = \"1.1.0\"\n[skills]\npath = \"skills\"\n",
+    )
+    .unwrap();
+    headless::update(
+        &mut registry,
+        Locale::En,
+        "demo",
+        &network,
+        false,
+        &mut console,
+    )
+    .unwrap();
+    assert!(
+        console.printed.last().unwrap().contains("updated to 1.1.0"),
+        "{:?}",
+        console.printed
+    );
+    assert_eq!(
+        registry.get("demo").unwrap().manifest.plugin.version,
+        "1.1.0"
+    );
+
+    fs::write(
+        home.join("plugins/demo/.installed-from"),
+        serde_json::json!({
+            "version": 2,
+            "spec": "https://example.com/demo.tar.gz",
+            "source_checksum": "",
+            "content_hash": "",
+            "plugin_name": "demo"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let err = headless::update(
+        &mut registry,
+        Locale::En,
+        "demo",
+        &network,
+        false,
+        &mut console,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains(
+            "Network approval required for example.com; use /network allow example.com, then retry"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn headless_uninstall_disables_enabled_plugin_first_and_removes_it() {
+    let _lock = crate::test_support::lock_test_env();
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home);
+    let (_source, mut registry) = install_temp_home_plugin(root.path(), "demo", "1.0.0");
+    let token = registry.get("demo").unwrap().review_token();
+    let mut console = ScriptedConsole::default();
+    headless_trust_named(
+        &mut registry,
+        "demo",
+        Some(&token),
+        true,
+        false,
+        &mut console,
+    )
+    .unwrap();
+    headless::enable(&mut registry, Locale::En, "demo", false, &mut console).unwrap();
+    assert!(registry.get("demo").unwrap().enabled);
+    let installed_dir = home.join("plugins/demo");
+    assert!(installed_dir.exists());
+
+    let piped_err = headless::uninstall(
+        &mut registry,
+        Locale::En,
+        "demo",
+        false,
+        false,
+        &mut console,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(piped_err.contains("--yes"), "{piped_err}");
+    assert!(installed_dir.exists());
+
+    let mut json_interactive = ScriptedConsole {
+        interactive: true,
+        answer: true,
+        ..ScriptedConsole::default()
+    };
+    let json_err = headless::uninstall(
+        &mut registry,
+        Locale::En,
+        "demo",
+        false,
+        true,
+        &mut json_interactive,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(json_err.contains("--yes"), "{json_err}");
+    assert!(json_interactive.prompts.is_empty());
+    assert!(installed_dir.exists());
+
+    let mut declined = ScriptedConsole {
+        interactive: true,
+        answer: false,
+        ..ScriptedConsole::default()
+    };
+    headless::uninstall(
+        &mut registry,
+        Locale::En,
+        "demo",
+        false,
+        false,
+        &mut declined,
+    )
+    .unwrap();
+    assert_eq!(declined.prompts.len(), 1);
+    assert_eq!(declined.prompts[0].0, "Remove demo 1.0.0?");
+    assert!(installed_dir.exists());
+    assert!(registry.get("demo").unwrap().enabled);
+
+    let mut accepted = ScriptedConsole {
+        interactive: true,
+        answer: true,
+        ..ScriptedConsole::default()
+    };
+    headless::uninstall(
+        &mut registry,
+        Locale::En,
+        "demo",
+        false,
+        false,
+        &mut accepted,
+    )
+    .unwrap();
+    assert_eq!(accepted.prompts.len(), 1);
+    assert_eq!(accepted.prompts[0].0, "Remove demo 1.0.0?");
+    assert!(!installed_dir.exists());
+    let rediscovered = registry.rediscover_for_workspace(registry.workspace());
+    assert!(rediscovered.get("demo").is_none());
+}

@@ -145,7 +145,8 @@ None of these is offered to you proactively. Add the one that fits the job.
 
 ## Sources
 
-`codewhale install <spec>` and `/plugin install <spec>` use the same installer.
+`codewhale install <spec>`, `codewhale plugins install <spec>`, and
+`/plugin install <spec>` use the same installer.
 The shell entry does not start a model or require model credentials. Both keep
 bundles disabled and untrusted until you explicitly review and enable them.
 
@@ -247,6 +248,34 @@ matching and the plugin goes inactive until you review again.
   [Changing an installed pin](PLUGIN_MARKETPLACE.md#changing-an-installed-pin).
 - `uninstall` refuses enabled plugins (disable first), deletes the bundle
   directory, and removes its persisted trust/enablement entry.
+
+## Shell CLI
+
+Run the full plugin lifecycle from a shell without starting a session:
+
+```sh
+codewhale plugins install <spec> [--json]
+codewhale plugins show <name> [--json]
+codewhale plugins status [name] [--json]
+codewhale plugins trust <name> [--review-token TOKEN --yes] [--json]
+codewhale plugins enable <name> [--json]
+codewhale plugins disable <name> [--json]
+codewhale plugins update <name> [--json]
+codewhale plugins uninstall <name> [--yes] [--json]
+codewhale plugins revoke <name> [--json]
+codewhale plugins restage <name> [--json]
+```
+
+- `install` uses the same installer as `codewhale install <spec>` and leaves the
+  bundle disabled and untrusted.
+- `show` prints the same capability review as `trust` without prompting or
+  changing trust state.
+- `update` re-reads the recorded source and reports `updated to <version>` or
+  `already current` (or the network-approval message when a host needs
+  approval).
+- `uninstall` disables an enabled plugin first, then removes it. In a terminal
+  it asks `Remove <name> <version>? [y/N]` unless `--yes` is given; without a
+  terminal or with `--json`, `--yes` is required.
 
 ## Safety rules
 

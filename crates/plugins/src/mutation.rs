@@ -95,11 +95,21 @@ pub async fn execute(
     }
 }
 
-pub async fn install_from_cli(
+pub fn check_network_outcome(outcome: &PluginMutationOutcome) -> Result<()> {
+    match outcome {
+        PluginMutationOutcome::NeedsApproval(host) => {
+            bail!("Network approval required for {host}; use /network allow {host}, then retry")
+        }
+        PluginMutationOutcome::NetworkDenied(host) => bail!("Network access denied for {host}"),
+        _ => Ok(()),
+    }
+}
+
+pub async fn install_from_cli_receipt(
     source: String,
     config: codewhale_runtime::config::Config,
     mut registry: PluginRegistry,
-) -> Result<()> {
+) -> Result<PluginMutationReceipt> {
     let runtime = tokio::runtime::Handle::current();
     let policy = crate::activation::extension_host_policy_enabled();
     let receipt = tokio::task::spawn_blocking(move || {
@@ -119,6 +129,16 @@ pub async fn install_from_cli(
         ))
     })
     .await??;
+    check_network_outcome(&receipt.outcome)?;
+    Ok(receipt)
+}
+
+pub async fn install_from_cli(
+    source: String,
+    config: codewhale_runtime::config::Config,
+    registry: PluginRegistry,
+) -> Result<()> {
+    let receipt = install_from_cli_receipt(source, config, registry).await?;
     match receipt.outcome {
         PluginMutationOutcome::Installed => {
             println!("Installed {} (disabled, untrusted).", receipt.name);
@@ -128,10 +148,6 @@ pub async fn install_from_cli(
             );
             Ok(())
         }
-        PluginMutationOutcome::NeedsApproval(host) => {
-            bail!("Network approval required for {host}; use /network allow {host}, then retry")
-        }
-        PluginMutationOutcome::NetworkDenied(host) => bail!("Network access denied for {host}"),
         _ => bail!("Unexpected plugin install outcome"),
     }
 }

@@ -147,7 +147,9 @@ enum Commands {
     SessionDiagnostics(SessionDiagnosticsArgs),
     #[command(about = "Install a local, GitHub or version-pinned npm plugin bundle")]
     Install { source: String },
-    #[command(about = "Inspect, review, trust, enable, disable or revoke plugin bundles")]
+    #[command(
+        about = "Install, inspect, review, trust, enable, disable, update, uninstall or revoke plugin bundles"
+    )]
     Plugins {
         #[command(subcommand)]
         command: PluginsCommand,
@@ -276,6 +278,40 @@ enum PluginsCommand {
         #[arg(value_name = "NAME")]
         name: Option<String>,
         #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Show a plugin's capability review without prompting or trusting")]
+    Show {
+        #[arg(value_name = "NAME", help = "Plugin bundle name")]
+        name: String,
+        #[arg(long, help = "Print the review as JSON")]
+        json: bool,
+    },
+    #[command(
+        about = "Install a local, GitHub or version-pinned npm plugin bundle without trusting or enabling it"
+    )]
+    Install {
+        #[arg(value_name = "SPEC")]
+        spec: String,
+        #[arg(long, help = "Print the result as JSON")]
+        json: bool,
+    },
+    #[command(about = "Update an installed user-scope plugin bundle from its recorded source")]
+    Update {
+        #[arg(value_name = "NAME", help = "Plugin bundle name")]
+        name: String,
+        #[arg(long, help = "Print the result as JSON")]
+        json: bool,
+    },
+    #[command(
+        about = "Uninstall an installed user-scope plugin bundle (disables it first if enabled)"
+    )]
+    Uninstall {
+        #[arg(value_name = "NAME", help = "Plugin bundle name")]
+        name: String,
+        #[arg(long, short = 'y', help = "Skip the confirmation prompt")]
+        yes: bool,
+        #[arg(long, help = "Print the result as JSON; requires --yes")]
         json: bool,
     },
     #[command(about = "Restore an eligible reviewed plugin snapshot")]
@@ -2468,7 +2504,7 @@ fn telemetry_command_is_read_only(command: Option<&Commands>) -> bool {
         || matches!(
             command,
             Some(Commands::Plugins {
-                command: PluginsCommand::Status { .. }
+                command: PluginsCommand::Status { .. } | PluginsCommand::Show { .. }
             })
         )
 }
@@ -2803,15 +2839,37 @@ async fn run_async_main_dispatch(
                 )
                 .await
             }
-            Commands::Plugins { command } => tokio::task::spawn_blocking(move || {
-                let _config = load_structural_config_from_cli(&cli)?;
-                let workspace = crate::commands::groups::plugins::headless::agent_project()
-                    .unwrap_or_else(|| resolve_workspace(&cli));
-                let registry = plugin_discovery.inspect_registry_for_workspace(&workspace);
-                run_plugins_cli(command, registry)
-            })
-            .await
-            .context("Plugin command failed to finish")?,
+            Commands::Plugins { command } => match command {
+                PluginsCommand::Install { spec, json } => {
+                    let config = load_config_from_cli(&cli)?;
+                    let default_workspace = resolve_workspace(&cli);
+                    let workspace = crate::commands::groups::plugins::headless::agent_project()
+                        .unwrap_or_else(|| default_workspace.clone());
+                    let registry = if workspace == default_workspace {
+                        (*plugin_registry).clone()
+                    } else {
+                        (*plugin_discovery.inspect_registry_for_workspace(&workspace)).clone()
+                    };
+                    run_plugins_install_cli(
+                        spec,
+                        json,
+                        config,
+                        registry,
+                        &plugin_discovery,
+                        &workspace,
+                    )
+                    .await
+                }
+                command => tokio::task::spawn_blocking(move || {
+                    let config = load_structural_config_from_cli(&cli)?;
+                    let workspace = crate::commands::groups::plugins::headless::agent_project()
+                        .unwrap_or_else(|| resolve_workspace(&cli));
+                    let registry = plugin_discovery.inspect_registry_for_workspace(&workspace);
+                    run_plugins_cli(command, registry, &config)
+                })
+                .await
+                .context("Plugin command failed to finish")?,
+            },
             Commands::Setup(args) => {
                 let config = load_config_from_cli(&cli)?;
                 let workspace = resolve_workspace(&cli);
@@ -9433,9 +9491,47 @@ fn print_plugin_cli_diagnostic(diagnostic: &codewhale_plugins::types::PluginDiag
     );
 }
 
+async fn run_plugins_install_cli(
+    spec: String,
+    json: bool,
+    config: Config,
+    registry: codewhale_plugins::PluginRegistry,
+    plugin_discovery: &Arc<codewhale_plugins::PluginDiscoveryContext>,
+    workspace: &Path,
+) -> Result<()> {
+    if !json {
+        return codewhale_plugins::mutation::install_from_cli(spec, config, registry).await;
+    }
+    let receipt =
+        codewhale_plugins::mutation::install_from_cli_receipt(spec, config, registry).await?;
+    let refreshed = plugin_discovery.inspect_registry_for_workspace(workspace);
+    let record = refreshed
+        .get(&receipt.name)
+        .map(|plugin| {
+            let mut value = plugin_cli_record(plugin);
+            if let Some(object) = value.as_object_mut() {
+                object.insert("action".to_string(), "installed".into());
+            }
+            value
+        })
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "name": plugin_cli_text(&receipt.name),
+                "action": "installed",
+                "path": receipt.path.as_ref().map(|p| plugin_cli_text(&p.to_string_lossy())),
+                "content_hash": receipt.installed_content_hash.or(receipt.content_hash),
+                "trust": "untrusted",
+                "enabled": false,
+            })
+        });
+    println!("{}", serde_json::to_string_pretty(&record)?);
+    Ok(())
+}
+
 fn run_plugins_cli(
     command: PluginsCommand,
     mut registry: Arc<codewhale_plugins::PluginRegistry>,
+    config: &Config,
 ) -> Result<()> {
     use crate::commands::groups::plugins::headless;
     use codewhale_localization::{MessageId, resolve_locale, tr};
@@ -9525,6 +9621,39 @@ fn run_plugins_cli(
                 }
             }
         }
+        PluginsCommand::Show { name, json } => headless::show(
+            &registry,
+            locale,
+            &name,
+            json,
+            &mut headless::ProcessConsole,
+        )?,
+        PluginsCommand::Install { .. } => {
+            unreachable!("plugins install is dispatched before spawn_blocking")
+        }
+        PluginsCommand::Update { name, json } => {
+            let network = config
+                .network
+                .clone()
+                .map(codewhale_net::network_policy::NetworkPolicy::from)
+                .unwrap_or_default();
+            headless::update(
+                &mut registry,
+                locale,
+                &name,
+                &network,
+                json,
+                &mut headless::ProcessConsole,
+            )?;
+        }
+        PluginsCommand::Uninstall { name, yes, json } => headless::uninstall(
+            &mut registry,
+            locale,
+            &name,
+            yes,
+            json,
+            &mut headless::ProcessConsole,
+        )?,
         PluginsCommand::Trust {
             name,
             review_token,
@@ -21016,6 +21145,72 @@ mod mcp_add_arg_tests {
 
 #[cfg(test)]
 mod config_stay_tests;
+
+#[cfg(test)]
+mod plugins_cli_tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn plugins_cli_parses_install_uninstall_update_and_show() {
+        let install = Cli::try_parse_from([
+            "codewhale",
+            "plugins",
+            "install",
+            "github:example/plugin",
+            "--json",
+        ])
+        .expect("parse plugins install");
+        assert!(matches!(
+            install.command,
+            Some(Commands::Plugins {
+                command: PluginsCommand::Install {
+                    ref spec,
+                    json: true,
+                }
+            }) if spec == "github:example/plugin"
+        ));
+
+        let uninstall =
+            Cli::try_parse_from(["codewhale", "plugins", "uninstall", "demo", "-y", "--json"])
+                .expect("parse plugins uninstall");
+        assert!(matches!(
+            uninstall.command,
+            Some(Commands::Plugins {
+                command: PluginsCommand::Uninstall {
+                    ref name,
+                    yes: true,
+                    json: true,
+                }
+            }) if name == "demo"
+        ));
+
+        let update = Cli::try_parse_from(["codewhale", "plugins", "update", "demo", "--json"])
+            .expect("parse plugins update");
+        assert!(matches!(
+            update.command,
+            Some(Commands::Plugins {
+                command: PluginsCommand::Update {
+                    ref name,
+                    json: true,
+                }
+            }) if name == "demo"
+        ));
+
+        let show = Cli::try_parse_from(["codewhale", "plugins", "show", "demo", "--json"])
+            .expect("parse plugins show");
+        assert!(matches!(
+            show.command,
+            Some(Commands::Plugins {
+                command: PluginsCommand::Show {
+                    ref name,
+                    json: true,
+                }
+            }) if name == "demo"
+        ));
+        assert!(telemetry_command_is_read_only(show.command.as_ref()));
+    }
+}
 
 #[cfg(test)]
 mod doctor_secret_scan_tests {
