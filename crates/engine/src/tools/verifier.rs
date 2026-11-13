@@ -515,6 +515,7 @@ impl ToolSpec for RunVerifiersTool {
 
 /// Run quick auto verifier gates after a successful workflow completion (#4013).
 pub async fn run_workflow_completion_gates(context: &ToolContext) -> Result<Value, ToolError> {
+    crate::tools::execution_envelope::enforce_tool_denial(context, "run_verifiers", &json!({}))?;
     let gates = build_gate_plan(
         context,
         VerifierProfile::Auto,

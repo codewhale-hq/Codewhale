@@ -512,8 +512,11 @@ fn starts_workspace_execution(
         Some(VerificationBound::Unbounded) => true,
         Some(VerificationBound::Default | VerificationBound::Filter) => !holds_bounded_verification,
         None => {
-            name.eq_ignore_ascii_case("send_later")
-                && input.get("action").and_then(Value::as_str) == Some("schedule")
+            (name.eq_ignore_ascii_case("send_later")
+                && input.get("action").and_then(Value::as_str) == Some("schedule"))
+                || (name.eq_ignore_ascii_case("workflow")
+                    && input.get("verify").and_then(Value::as_bool) == Some(true)
+                    && !holds_bounded_verification)
         }
     }
 }

@@ -777,7 +777,20 @@ fn shell_denial_covers_every_code_executing_action_or_names_an_exemption() {
             "rlm/open",
             "loads content into a context; running code in it is rlm/eval, and a url is gated by fetch_url",
         ),
+        (
+            "workflow/start",
+            "runs sub-agents that inherit this deny list; the verify input is denied by the flag list below",
+        ),
+        (
+            "workflow/run",
+            "runs sub-agents that inherit this deny list; the verify input is denied by the flag list below",
+        ),
+        (
+            "workflow/cancel",
+            "stops a workflow run and starts nothing",
+        ),
     ];
+    const EXECUTING_FLAGS: &[(&str, &str)] = &[("workflow", "verify")];
 
     let tmp = tempdir().expect("tempdir");
     let mut options = crate::tools::AgentToolSurfaceOptions::new(ShellPolicy::Full);
@@ -787,10 +800,25 @@ fn shell_denial_covers_every_code_executing_action_or_names_an_exemption() {
     let pool = std::sync::Arc::new(tokio::sync::Mutex::new(crate::mcp::McpPool::new(
         codewhale_mcp::config::McpConfig::default(),
     )));
+    let client = CodewhaleClient::new(
+        &Config::default().with_legacy_root(Some("test-key".to_string()), None),
+    )
+    .expect("stub client");
+    let manager = crate::tools::subagent::new_shared_subagent_manager(tmp.path().to_path_buf(), 4);
+    let runtime = SubAgentRuntime::new(
+        client.clone(),
+        "sweep-model".to_string(),
+        crate::tools::ToolContext::new(tmp.path().to_path_buf()),
+        true,
+        None,
+        manager.clone(),
+    );
     let registry = crate::tools::ToolRegistryBuilder::new()
-        .with_agent_runtime_surface(
-            None,
+        .with_full_agent_surface_options(
+            Some(client),
             "sweep-model".to_string(),
+            manager,
+            runtime,
             options,
             crate::tools::todo::new_shared_todo_list(),
             crate::tools::plan::new_shared_plan_state(),
@@ -801,6 +829,30 @@ fn shell_denial_covers_every_code_executing_action_or_names_an_exemption() {
         .build(crate::tools::ToolContext::new(tmp.path().to_path_buf()));
 
     let rules = vec!["Bash".to_string()];
+    for name in ["workflow", "agent", "Run"] {
+        assert!(
+            registry.all().iter().any(|tool| tool.name() == name),
+            "the sweep surface lacks {name}"
+        );
+    }
+    for (name, flag) in EXECUTING_FLAGS {
+        let tool = registry
+            .all()
+            .into_iter()
+            .find(|tool| tool.name() == *name)
+            .unwrap_or_else(|| panic!("{name} is not registered"));
+        assert_eq!(
+            tool.input_schema()
+                .pointer(&format!("/properties/{flag}/type"))
+                .and_then(Value::as_str),
+            Some("boolean"),
+            "{name} no longer declares a boolean {flag}"
+        );
+        assert!(
+            tool_call_denied(Some(&rules), name, &json!({"action":"run", (*flag): true})),
+            "{name} with {flag} starts workspace code and a Bash rule does not deny it"
+        );
+    }
     let mut swept = 0usize;
     let mut unaccounted = Vec::new();
     let mut stale = Vec::new();
@@ -898,6 +950,9 @@ fn shell_denial_keeps_only_the_bounded_verifier_its_default_gate() {
         assert!(enforce_tool_denial(&operator, "Run", &input).is_err(), "{input}");
         assert!(enforce_tool_denial(&verifier, "Run", &input).is_err(), "{input}");
     }
+    let workflow_verify = json!({"action":"run", "script":"return 1;", "verify":true});
+    assert!(enforce_tool_denial(&operator, "workflow", &workflow_verify).is_err());
+    assert!(enforce_tool_denial(&verifier, "workflow", &workflow_verify).is_ok());
 
     let surface = ToolSurfacePolicy::new(
         crate::tools::ToolRegistry::new(verifier.clone()),
@@ -915,6 +970,35 @@ fn shell_denial_keeps_only_the_bounded_verifier_its_default_gate() {
     assert!(surface.denies_call(
         "Run",
         &json!({"action":"verifiers", "commands":[{"program":"sh"}]})
+    ));
+}
+
+#[test]
+fn shell_denial_covers_workflow_completion_verification_but_not_plain_runs() {
+    use crate::tools::execution_envelope::tool_call_denied;
+    let rules = vec!["Bash".to_string()];
+    for input in [
+        json!({"verify":true}),
+        json!({"action":"start", "verify":true}),
+        json!({"action":"spawn", "verify":true, "script":"return 1;"}),
+        json!({"action":"run", "verify":true, "script":"return 1;"}),
+        json!({"action":"wait", "verify":true}),
+        json!({"action":" RUN ", "verify":true}),
+    ] {
+        assert!(tool_call_denied(Some(&rules), "workflow", &input), "{input}");
+    }
+    for input in [
+        json!({"action":"run", "script":"return 1;"}),
+        json!({"action":"run", "verify":false}),
+        json!({"action":"status", "run_id":"workflow_1"}),
+        json!({"action":"cancel", "run_id":"workflow_1"}),
+    ] {
+        assert!(!tool_call_denied(Some(&rules), "workflow", &input), "{input}");
+    }
+    assert!(!tool_call_denied(
+        None,
+        "workflow",
+        &json!({"action":"run", "verify":true})
     ));
 }
 

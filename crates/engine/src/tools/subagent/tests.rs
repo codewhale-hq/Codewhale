@@ -22736,6 +22736,80 @@ fn read_only_with_shell_registry() -> (tempfile::TempDir, ChildCoreProbe) {
 }
 
 #[test]
+fn the_in_process_verifier_keeps_its_default_runs_under_its_raw_shell_denial() {
+    use crate::tools::execution_envelope::{enforce_tool_denial, holds_bounded_verification};
+    let (_tmp, registry) = read_only_with_shell_registry();
+    let context = registry.registry.context().clone();
+    assert!(context.disallowed_tools.iter().any(|rule| rule == "Bash"));
+    assert!(holds_bounded_verification(&context));
+    for input in [
+        json!({"action":"tests"}),
+        json!({"action":"tests", "args":"-p fixture selected"}),
+        json!({"action":"verifiers"}),
+    ] {
+        assert!(
+            enforce_tool_denial(&context, "Run", &input).is_ok(),
+            "{input}"
+        );
+    }
+    assert!(
+        enforce_tool_denial(
+            &context,
+            "workflow",
+            &json!({"action":"run", "verify":true})
+        )
+        .is_ok()
+    );
+    for input in [
+        json!({"action":"tests", "args":"--config build.rustc=x"}),
+        json!({"action":"verifiers", "commands":[{"program":"sh"}]}),
+    ] {
+        assert!(
+            enforce_tool_denial(&context, "Run", &input).is_err(),
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn a_verifier_spawned_under_a_parent_shell_denial_holds_no_bounded_verification() {
+    use crate::tools::execution_envelope::{enforce_tool_denial, holds_bounded_verification};
+    for parent_rule in ["Bash", "bash", "exec_shell*"] {
+        let tmp = tempdir().expect("tempdir");
+        let authority = codewhale_agent_contract::role::ChildAuthority::from_runtime_role(
+            "verifier",
+            codewhale_protocol::fleet::PermissionCeiling::preset("full").expect("preset"),
+        );
+        let mut runtime =
+            stub_runtime().with_agent_tool_surface_options(enabled_agent_surface_options());
+        runtime.context = ToolContext::new(tmp.path().to_path_buf());
+        runtime.context.disallowed_tools = vec![parent_rule.to_string()];
+        runtime.allow_shell = true;
+        runtime.worker_profile = WorkerRuntimeProfile::for_role(FleetRole::Verifier);
+        runtime.worker_profile.denied_tools = authority.disallowed_tools.clone();
+        let registry = ChildCoreProbe::new(
+            runtime,
+            FleetRole::Verifier,
+            authority.allowed_tools.clone(),
+            Arc::new(Mutex::new(TodoList::new())),
+            Arc::new(Mutex::new(PlanState::default())),
+        );
+        let context = registry.registry.context().clone();
+        assert!(!holds_bounded_verification(&context), "{parent_rule}");
+        for (name, input) in [
+            ("Run", json!({"action":"tests"})),
+            ("Run", json!({"action":"verifiers"})),
+            ("workflow", json!({"action":"run", "verify":true})),
+        ] {
+            assert!(
+                enforce_tool_denial(&context, name, &input).is_err(),
+                "{parent_rule} {name} {input}"
+            );
+        }
+    }
+}
+
+#[test]
 fn shell_denial_from_parent_is_not_a_read_only_role_exception() {
     for role in [FleetRole::Scout, FleetRole::Reviewer, FleetRole::Planner] {
         for explicit_rule in [None, Some("Bash"), Some("exec_shell*")] {

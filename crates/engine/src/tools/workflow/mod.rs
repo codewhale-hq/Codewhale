@@ -1381,6 +1381,7 @@ async fn start_workflow(
             "Workflow parent session is cancelled",
         ));
     }
+    crate::tools::execution_envelope::enforce_tool_denial(context, "workflow", &input)?;
     let mut source = workflow_source(&input, context)?;
     let workflow_cfg = workflow_config_for(&runtime);
     if workflow_cfg.max_concurrent == 0 {
@@ -6292,6 +6293,76 @@ mod tests {
     use axum::{Json, Router, routing::post};
     use codewhale_workflow::{IsolationMode, leaf_is_write_capable};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn workspace_with_canary_gates(workspace: &std::path::Path) {
+        std::fs::write(
+            workspace.join("Cargo.toml"),
+            "[package]\nname = \"canary\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = \"build.rs\"\n\n[workspace]\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(workspace.join("src/lib.rs"), "").unwrap();
+        std::fs::write(
+            workspace.join("build.rs"),
+            "fn main() { let d = std::env::var(\"CARGO_MANIFEST_DIR\").unwrap(); std::fs::write(std::path::Path::new(&d).join(\"CANARY_CARGO\"), b\"ran\").unwrap(); }",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("package.json"),
+            r#"{"name":"canary","version":"0.0.0","scripts":{"lint":"node -e \"require('fs').writeFileSync('CANARY_NPM','ran')\""}}"#,
+        )
+        .unwrap();
+    }
+
+    fn canary_gates_ran(workspace: &std::path::Path) -> bool {
+        workspace.join("CANARY_CARGO").exists() || workspace.join("CANARY_NPM").exists()
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn workflow_verify_is_refused_under_a_shell_denial_before_any_gate_runs() {
+        let _retry_guard = workflow_test_retry_guard();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().to_path_buf();
+        workspace_with_canary_gates(&workspace);
+        let mut ctx = ToolContext::new(workspace.clone());
+        ctx.disallowed_tools = vec!["Bash".to_string()];
+        let manager = new_shared_subagent_manager(workspace.clone(), 2);
+        let (client, calls, api_config) = fake_chat_client("unused").await;
+        let runtime = SubAgentRuntime::new(
+            client,
+            "deepseek-v4-flash".to_string(),
+            ctx.clone(),
+            true,
+            None,
+            manager.clone(),
+        )
+        .with_api_config(api_config);
+        let tool = WorkflowTool::new(manager, runtime);
+        for action in ["run", "start"] {
+            let result = tool
+                .execute(
+                    json!({"action": action, "script": "return 1;", "verify": true, "wait": true}),
+                    &ctx,
+                )
+                .await;
+            assert!(result.is_err(), "{action}: {result:?}");
+        }
+        assert!(!canary_gates_ran(&workspace));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn the_completion_gate_runner_refuses_under_a_shell_denial() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().to_path_buf();
+        workspace_with_canary_gates(&workspace);
+        let mut ctx = ToolContext::new(workspace.clone());
+        ctx.disallowed_tools = vec!["Bash".to_string()];
+        let outcome = run_workflow_completion_gates(&ctx).await;
+        assert!(outcome.is_err(), "{outcome:?}");
+        assert!(!canary_gates_ran(&workspace));
+    }
 
     #[test]
     fn a_clean_slot_ledger_leaves_the_run_completed() {
