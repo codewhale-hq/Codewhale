@@ -52,7 +52,7 @@ describe("manual cron trigger attempt boundary", () => {
   });
   it("stays disabled for a secret below the minimum strength and never consults the limiter or compares", async () => {
     const loneSurrogates = Array.from({ length: 16 }, (_, index) => String.fromCharCode(0xd800 + index)).join("").repeat(2);
-    const weak = ["x", "a".repeat(32), " ".repeat(40), "password".repeat(4), "\u{1F433}".repeat(16), "0123456".repeat(5), "L".repeat(600), loneSurrogates];
+    const weak = ["x", "a".repeat(32), " ".repeat(40), "password".repeat(4), "Password1".repeat(4), "\u{1F433}".repeat(16), "0123456".repeat(5), "L".repeat(600), loneSurrogates];
     for (const secret of weak) {
       mocks.getEnv.mockResolvedValueOnce({ CRON_SECRET: secret, ADMIN_LOGIN_LIMITER: { limit: mocks.limit } });
       const response = await GET(request());

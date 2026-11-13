@@ -53,10 +53,10 @@ describe("admin login attempt boundary", () => {
     expect(mocks.safeEqual).not.toHaveBeenCalled();
     expect(mocks.createSession).not.toHaveBeenCalled();
   });
-  it("refuses to run with a configured token below the minimum length", async () => {
+  it("refuses to run with a configured token below the minimum strength", async () => {
     const weakTokens = [
       "x", "configured", "a".repeat(31), "a".repeat(32), " ".repeat(40), "password".repeat(4),
-      "0123456".repeat(5), "\u{1F433}".repeat(16), "L".repeat(600), LONE_SURROGATES,
+      "Password1".repeat(4), "0123456".repeat(5), "\u{1F433}".repeat(16), "L".repeat(600), LONE_SURROGATES,
     ];
     for (const weak of weakTokens) {
       mocks.getAgentEnv.mockResolvedValueOnce({ MAINTAINER_TOKEN: weak, ADMIN_LOGIN_LIMITER: { limit: mocks.limit }, CURATED_KV: {} });

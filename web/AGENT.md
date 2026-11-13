@@ -87,8 +87,8 @@ form. The form posts to `/api/admin/login`; the token never goes in the URL.
 |---|---|---|
 | `DEEPSEEK_API_KEY` | Yes | DeepSeek API key for the community agent |
 | `GITHUB_TOKEN` | Optional | Fine-grained PAT for GitHub API (raises rate limit) |
-| `CRON_SECRET` | Optional | Shared secret for manual cron invocation (32 to 512 characters, at least 8 distinct, otherwise the trigger stays disabled); attempts are rate limited (5 per minute per location) |
-| `MAINTAINER_TOKEN` | Optional | Auth token for /admin panel; 32 to 512 characters with at least 8 distinct, otherwise sign-in stays disabled; changing it signs out open sessions |
+| `CRON_SECRET` | Optional | Shared secret for manual cron invocation (32 to 512 characters, at least 8 distinct, and a shorter value repeated is refused; otherwise the trigger stays disabled); attempts are rate limited (5 per minute per location) |
+| `MAINTAINER_TOKEN` | Optional | Auth token for /admin panel; 32 to 512 characters with at least 8 distinct, and a shorter value repeated is refused (otherwise sign-in stays disabled); changing it signs out open sessions |
 | `MAINTAINER_GITHUB_PAT` | Optional | GitHub PAT with `issues:write` scope for posting comments |
 
 ## Initial deployment
@@ -105,7 +105,7 @@ One-time setup before the first `npm run deploy`:
 
 2. **Set secrets:** generate `MAINTAINER_TOKEN` and `CRON_SECRET` with
    `openssl rand -base64 33` (any random value of 32 to 512 characters with at
-   least 8 distinct works; `openssl rand -hex 32` is fine).
+   least 8 distinct and not a shorter value repeated works; `openssl rand -hex 32` is fine).
    ```bash
    npx wrangler secret put DEEPSEEK_API_KEY
    npx wrangler secret put MAINTAINER_TOKEN

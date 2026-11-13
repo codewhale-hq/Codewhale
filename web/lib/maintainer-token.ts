@@ -6,16 +6,20 @@ const LONE_SURROGATE = /\p{Cs}/u;
 
 export const MAINTAINER_TOKEN_UNAVAILABLE =
   `Maintainer sign-in is unavailable: MAINTAINER_TOKEN must be set to a secret of at least ${MIN_SECRET_CHARS} characters ` +
-  `(at most ${MAX_SECRET_CHARS}, with at least ${MIN_SECRET_DISTINCT_CHARS} distinct characters).`;
+  `(at most ${MAX_SECRET_CHARS}, with at least ${MIN_SECRET_DISTINCT_CHARS} distinct characters; a shorter value repeated is refused).`;
 
 export const CRON_SECRET_UNAVAILABLE =
   `manual trigger disabled: CRON_SECRET must be a secret of at least ${MIN_SECRET_CHARS} characters ` +
-  `(at most ${MAX_SECRET_CHARS}, with at least ${MIN_SECRET_DISTINCT_CHARS} distinct characters)`;
+  `(at most ${MAX_SECRET_CHARS}, with at least ${MIN_SECRET_DISTINCT_CHARS} distinct characters; a shorter value repeated is refused)`;
 
 export function secretStrongEnough(value: string | undefined): value is string {
   if (typeof value !== "string" || value.length > MAX_SECRET_CHARS || LONE_SURROGATE.test(value)) return false;
   const chars = [...value];
-  return chars.length >= MIN_SECRET_CHARS && new Set(chars).size >= MIN_SECRET_DISTINCT_CHARS;
+  if (chars.length < MIN_SECRET_CHARS || new Set(chars).size < MIN_SECRET_DISTINCT_CHARS) return false;
+  for (let period = 1; period <= value.length / 2; period++) {
+    if (value.slice(period) === value.slice(0, value.length - period)) return false;
+  }
+  return true;
 }
 
 export const maintainerTokenUsable = secretStrongEnough;
