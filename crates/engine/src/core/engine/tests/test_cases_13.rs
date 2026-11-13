@@ -1058,6 +1058,7 @@ async fn unchanged_compaction_config_is_acknowledged_silently() {
             model: current.model.clone(),
             workspace: tmp.path().to_path_buf(),
             mode: AppMode::Agent,
+            agent_preset: None,
         })
         .await
         .expect("sync restored session");
@@ -1253,6 +1254,7 @@ async fn sync_session_restores_current_mode() {
             model: "deepseek-v4-pro".to_string(),
             workspace: tmp.path().to_path_buf(),
             mode: AppMode::Plan,
+            agent_preset: None,
         })
         .await
         .expect("sync session");
@@ -1335,6 +1337,7 @@ async fn sync_session_without_prompt_repins_full_system_prompt_on_next_turn() {
             model: codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string(),
             workspace: workspace.path().to_path_buf(),
             mode: AppMode::Agent,
+            agent_preset: None,
         })
         .await
         .expect("sync fresh session without a persisted prompt");
@@ -1436,6 +1439,7 @@ async fn sync_session_same_id_does_not_finalize_live_worker() {
             model: "deepseek-v4-pro".to_string(),
             workspace: workspace.clone(),
             mode: AppMode::Agent,
+            agent_preset: None,
         })
         .await
         .expect("install session");
@@ -1458,6 +1462,7 @@ async fn sync_session_same_id_does_not_finalize_live_worker() {
             model: "deepseek-v4-pro".to_string(),
             workspace: workspace.clone(),
             mode: AppMode::Agent,
+            agent_preset: None,
         })
         .await
         .expect("re-sync same session");
@@ -1501,6 +1506,7 @@ async fn sync_session_different_id_finalizes_live_worker() {
             model: "deepseek-v4-pro".to_string(),
             workspace: workspace.clone(),
             mode: AppMode::Agent,
+            agent_preset: None,
         })
         .await
         .expect("install session-a");
@@ -1526,6 +1532,7 @@ async fn sync_session_different_id_finalizes_live_worker() {
             model: "deepseek-v4-pro".to_string(),
             workspace: workspace.clone(),
             mode: AppMode::Agent,
+            agent_preset: None,
         })
         .await
         .expect("switch to session-b");
@@ -1584,6 +1591,7 @@ async fn sync_session_migrates_one_checkpoint_and_strips_its_system_carrier() {
                 model: "deepseek-v4-pro".to_string(),
                 workspace: tmp.path().to_path_buf(),
                 mode: AppMode::Agent,
+                agent_preset: None,
             })
             .await
             .expect("sync compacted session");

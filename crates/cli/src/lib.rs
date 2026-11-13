@@ -156,6 +156,10 @@ struct Cli {
     session_id: Option<String>,
     #[arg(short = 'p', long = "prompt", value_name = "PROMPT")]
     prompt_flag: Option<String>,
+    /// Conversation mode for a new interactive session (for example
+    /// `creator`). With `--resume` or `--continue` it must match the saved mode.
+    #[arg(long = "conversation-mode", value_name = "MODE")]
+    conversation_mode: Option<String>,
     /// Per-run config override (`KEY=VALUE`), repeatable, never saved.
     /// Runtime keys: provider, model/default_text_model, verbosity,
     /// approval_policy, sandbox_mode, telemetry. Dedicated flags win;
@@ -2968,6 +2972,10 @@ fn root_tui_passthrough(cli: &Cli) -> Result<Vec<String>> {
     if let Some(session_id) = resume_session_id {
         forwarded.push("--resume".to_string());
         forwarded.push(session_id.to_string());
+    }
+    if let Some(mode) = cli.conversation_mode.as_deref() {
+        forwarded.push("--conversation-mode".to_string());
+        forwarded.push(mode.to_string());
     }
 
     let prompt =
@@ -13375,6 +13383,24 @@ verbosity = "concise"
         .expect("native workspace path parses");
         assert_eq!(cli.runtime_options.workspace, Some(path));
         assert!(root_tui_passthrough(&cli).unwrap().is_empty());
+    }
+
+    #[test]
+    fn top_level_conversation_mode_is_forwarded_and_is_not_prompt_text() {
+        let cli = parse_ok(&["codewhale", "--conversation-mode", "creator"]);
+
+        assert_eq!(cli.conversation_mode.as_deref(), Some("creator"));
+        assert!(cli.prompt.is_empty());
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--conversation-mode", "creator"]
+        );
+
+        let cli = parse_ok(&["codewhale", "--conversation-mode", "creator", "hello"]);
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--conversation-mode", "creator", "--prompt", "hello"]
+        );
     }
 
     #[test]

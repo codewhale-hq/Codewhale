@@ -1064,6 +1064,8 @@ impl App {
             backtrack: crate::tui::backtrack::BacktrackState::new(),
             undo_selection: false,
             current_session_id: None,
+            conversation_mode: None,
+            conversation_mode_unavailable: None,
             session_write_receipt: None,
             session_write_owner: None,
             offline_queue_lease: None,

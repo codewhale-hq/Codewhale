@@ -70,6 +70,7 @@ fn sync_snapshot(
         model: snapshot.model.clone(),
         workspace: snapshot.workspace.clone(),
         mode: AppMode::parse(&snapshot.mode).unwrap(),
+        agent_preset: snapshot.agent_preset.clone(),
     }
 }
 
@@ -477,6 +478,7 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
             model: app.model.clone(),
             workspace: app.workspace.clone(),
             mode: app.mode,
+            agent_preset: app.agent_preset(),
         };
         for action in [restore, AppAction::SendMessage("after reopen".into())] {
             apply_command_result(

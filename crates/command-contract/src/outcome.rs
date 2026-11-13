@@ -141,6 +141,9 @@ pub enum ConfigAction {
     // Views and pickers.
     OpenConfigView,
     OpenModePicker,
+    SetConversationMode {
+        id: String,
+    },
     OpenThemePicker,
     OpenStatusPicker,
     OpenProviderPicker,

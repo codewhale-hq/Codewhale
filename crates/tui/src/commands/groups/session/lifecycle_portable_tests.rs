@@ -260,15 +260,29 @@ fn load_composes_exact_baseline_outcomes() {
 fn new_composes_exact_baseline_outcomes() {
     // Unknown argument usage.
     let mut canned = CannedLifecycle::default();
-    let result = super::new::new_portable(&mut canned, Some("bogus"));
+    let result = super::new::new_portable(&mut canned, Some("--bogus"));
     assert!(result.is_error);
     assert!(
         result
             .message
             .as_deref()
             .unwrap_or_default()
-            .contains("Unknown argument: bogus"),
+            .contains("Unknown argument: --bogus"),
         "{result:?}"
+    );
+    let result = super::new::new_portable(&mut canned, Some("creator standard"));
+    assert!(result.is_error);
+    assert!(
+        result
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Unknown argument: standard"),
+        "{result:?}"
+    );
+    assert!(
+        canned.fresh_modes.is_empty(),
+        "a bad argument asks the host nothing"
     );
     assert_eq!(
         canned.transition_checks.get(),
@@ -313,7 +327,20 @@ fn new_composes_exact_baseline_outcomes() {
         Some(SessionAction::NewSession { sync: codewhale_command_contract::facets::SessionSyncPayload { session_id: Some(ref id), .. }, force: true }) if id == "new-123"
     ));
     assert_eq!(canned.fresh_forces, [true]);
+    assert_eq!(canned.fresh_modes, [None]);
     assert_eq!(canned.transition_checks.get(), 1);
+
+    let mut canned = CannedLifecycle {
+        fresh: Ok(SessionNewReceipt {
+            truncated_id: "new-456".to_string(),
+            sync: sync_payload("new-456"),
+        }),
+        ..CannedLifecycle::default()
+    };
+    let result = super::new::new_portable(&mut canned, Some("--force creator"));
+    assert!(!result.is_error, "{result:?}");
+    assert_eq!(canned.fresh_forces, [true]);
+    assert_eq!(canned.fresh_modes, [Some("creator".to_string())]);
 
     // Host blocker error passes through.
     let mut canned = CannedLifecycle {

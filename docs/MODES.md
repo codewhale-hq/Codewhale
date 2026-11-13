@@ -40,6 +40,23 @@ Run `/mode` to open the mode picker, or switch directly with `/mode work` or
 `/mode plan`. `operate` and its spellings still parse, as Work, and say that
 Operate was retired, so an older setting or script never errors.
 
+The picker has two groups. **Conversation mode** lists the modes the Engine
+offers, Standard mode and Creator mode, each with a one-line description; a
+mode that cannot be used yet is listed, disabled, with its reason. **Permissions**
+holds Work and Plan, still on `1` and `2`; the conversation modes have no
+number keys. A conversation's mode is chosen before its first message and is
+fixed after it: `/mode creator` or the picker's first group changes a blank
+conversation in place, and after the first message the picker shows the group
+as locked and `/mode creator` is refused with a note to start a new
+conversation. `/new` starts a Standard conversation, `/new creator` starts a
+Creator mode conversation (`--force` still combines). Resume, `/load`, `/fork`
+and `/clear` keep the conversation's saved mode, and the mode name appears in the
+footer when it is not Standard. A mode never changes a permission: Creator
+mode in Plan is still Plan. `codewhale` and `codewhale exec` take
+`--conversation-mode <MODE>` to start a new session in a mode; with `--resume`,
+`--session-id` or `--continue` it must match the session's saved mode, or the
+run exits with code 2 before any model call.
+
 - **Plan**: design-first prompting. The stable primitive names remain familiar, but the runtime centrally refuses file mutation and shell execution. Read-only inspection and policy-allowed research, including deferred Web search/fetch, remain available. When a Plan turn successfully finishes a nonempty response, including a prose-only plan, the TUI asks how to continue: Work (Ask), Work (Accept Edits), Work (Auto-Review), or keep planning. Work sends the exact approved response as a normal follow-up and preserves that turn's existing To-dos, or adds one pending plan item without replacing unrelated work.
 - **Work** (internally `agent`): ordinary multi-step execution. The first-turn toolbox includes `read`, `write`, `edit`, `file_search`, `grep_files`, `bash`, `agent`, `todo_write`, `present`, and `load_skill`, plus `create_goal`, `get_goal`, `update_goal`, and `task_shell_wait` so goal and background-shell controls are available without discovery. The agent calls `create_goal` when a request is a durable objective; the host never infers a goal from wording, and the contract must not tell the model otherwise. Approval, sandbox, repository law, and managed policy decide what may execute.
 - **Operate is retired.** It was Work with an orchestration contract, and that contract now lives in every session's constitution: make a goal of a durable request, keep the plan visible, fan independent work out to parallel sub-agents, and have an independent reviewer try to refute a non-trivial change. A saved `default_mode = "operate"` loads as Work and says so once; a Runtime API request with `mode: "operate"` runs as `agent` with the default posture (Accept Edits) and logs one notice per process, never an error. Agents forked from an older Operate conversation do not inherit its contract. Multi-agent work stays on `agent`, `workflow` and `/fleet` in every mode.

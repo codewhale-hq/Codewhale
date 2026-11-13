@@ -997,6 +997,9 @@ pub enum ViewEvent {
     ModeSelected {
         mode: codewhale_config::AppMode,
     },
+    ConversationModeSelected {
+        id: String,
+    },
     /// Emitted by the `/statusline` picker every time the user toggles an
     /// item (live preview) and once more on Enter (final). The handler
     /// updates `app.status_items` immediately and persists on `final_save`

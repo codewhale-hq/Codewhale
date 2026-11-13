@@ -2333,10 +2333,14 @@ impl CommandSessionLifecycleContext for FakeLifecycle {
             .clone()
             .ok_or_else(|| format!("unexpected fork_from({id}) on empty fake"))?
     }
-    fn fresh_session(&mut self, force: bool) -> Result<SessionNewReceipt, String> {
-        self.fresh
-            .clone()
-            .ok_or_else(|| format!("unexpected fresh_session({force}) on empty fake"))?
+    fn fresh_session(
+        &mut self,
+        force: bool,
+        conversation_mode: Option<&str>,
+    ) -> Result<SessionNewReceipt, String> {
+        self.fresh.clone().ok_or_else(|| {
+            format!("unexpected fresh_session({force}, {conversation_mode:?}) on empty fake")
+        })?
     }
     fn load_session(&mut self, path: &str) -> Result<PathBuf, String> {
         self.load
@@ -2376,6 +2380,7 @@ fn lifecycle_sync_payload(session_id: Option<&str>) -> SessionSyncPayload {
         model: "lifecycle-model".to_string(),
         workspace: PathBuf::from("/workspace/lifecycle"),
         mode: CommandMode::Plan,
+        agent_preset: None,
     }
 }
 
@@ -2455,7 +2460,7 @@ fn lifecycle_facet_is_object_safe_and_transports_every_outcome() {
         explicit.sync.workspace,
         PathBuf::from("/workspace/lifecycle")
     );
-    let fresh = fake.fresh_session(true).expect("fresh ok");
+    let fresh = fake.fresh_session(true, None).expect("fresh ok");
     assert_eq!(fresh.truncated_id, "new-id");
     assert_eq!(fresh.sync.messages.len(), 1);
     let loaded = fake.load_session("loaded.json").expect("load ok");

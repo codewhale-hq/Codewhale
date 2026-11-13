@@ -875,3 +875,49 @@ fn statusline_full_frame_context_reading_updates_below_and_at_warning() {
         }
     }
 }
+
+#[test]
+fn conversation_mode_label_shows_creator_and_nothing_for_standard() {
+    for (width, height) in [(80u16, 24u16), (120, 32)] {
+        let mut standard = frame_app();
+        let standard_rows = draw(&mut standard, width, height);
+        assert!(
+            standard_rows
+                .iter()
+                .all(|row| !row.contains("Creator mode") && !row.contains("Standard mode")),
+            "{width}x{height}: Standard shows nothing new:\n{}",
+            standard_rows.join("\n")
+        );
+
+        let mut creator = frame_app();
+        creator.install_conversation_mode(Some("creator".to_string()), None);
+        let rows = draw(&mut creator, width, height);
+        println!(
+            "--- footer, Creator mode, {width}x{height}\n{}",
+            rows.iter()
+                .map(|row| row.trim_end())
+                .filter(|row| !row.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        assert_eq!(
+            count_rows_containing(&rows, "Creator mode"),
+            1,
+            "{width}x{height}: the mode name paints once, as text:\n{}",
+            rows.join("\n")
+        );
+
+        let mut unavailable = frame_app();
+        unavailable.install_conversation_mode(
+            Some("creator".to_string()),
+            Some("Not ready yet in this version.".to_string()),
+        );
+        let rows = draw(&mut unavailable, width, height);
+        assert_eq!(
+            count_rows_containing(&rows, "Creator mode (unavailable)"),
+            1,
+            "{width}x{height}:\n{}",
+            rows.join("\n")
+        );
+    }
+}

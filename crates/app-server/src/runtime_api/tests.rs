@@ -7659,6 +7659,7 @@ async fn session_save_without_an_id_keeps_the_conversation_that_owns_the_snapsho
                     system_prompt: None,
                     instruction_assembly: None,
                     mode: "agent".to_string(),
+                    agent_preset: None,
                 };
                 if let Some(tx) = tx.lock().ok().and_then(|mut guard| guard.take()) {
                     let _ = tx.send(snapshot);

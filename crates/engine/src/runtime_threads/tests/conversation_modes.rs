@@ -1,5 +1,7 @@
 use super::*;
 use crate::conversation_modes::{CREATOR, CreatorAvailabilityGuard, ModeRefusal, STANDARD};
+use crate::core::engine::Engine;
+use crate::llm_client::mock::MockLlmClient;
 
 fn refusal_code(error: &anyhow::Error) -> &'static str {
     error
@@ -130,5 +132,60 @@ async fn creator_is_listed_unavailable_until_it_loads_its_tools() -> Result<()> 
         .await
         .expect_err("not ready");
     assert_eq!(refusal_code(&refused), ModeRefusal::MODE_UNAVAILABLE);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_runtime_thread_sync_keeps_its_conversation_mode() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let manager = test_manager(tmp.path().to_path_buf())?;
+    let _available = CreatorAvailabilityGuard::set(None);
+    let thread = manager.create_thread(create_request(Some(CREATOR))).await?;
+    let mock = Arc::new(MockLlmClient::new(Vec::new()));
+    let (engine, handle) = Engine::new_with_model_client(
+        EngineConfig {
+            workspace: tmp.path().to_path_buf(),
+            model: thread.model.clone(),
+            subagents_enabled: false,
+            snapshots_enabled: false,
+            memory_enabled: false,
+            terminal_chrome_enabled: false,
+            ..Default::default()
+        },
+        &Config::default(),
+        mock,
+    );
+    manager
+        .install_test_engine(&thread.id, handle.clone())
+        .await?;
+    let run = tokio::spawn(engine.run());
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "first".to_string(),
+            cache_control: None,
+        }],
+    }];
+    let session = crate::session_manager::create_saved_session(
+        &messages,
+        &thread.model,
+        &thread.workspace,
+        0,
+        None,
+    );
+    manager
+        .synchronize_history_operation(&thread.id, &session)
+        .await?;
+    let observed = handle.get_session_snapshot().await?;
+    assert_eq!(observed.agent_preset.as_deref(), Some(CREATOR));
+    manager
+        .synchronize_history_operation(&thread.id, &session)
+        .await?;
+    assert_eq!(
+        handle.get_session_snapshot().await?.agent_preset.as_deref(),
+        Some(CREATOR)
+    );
+    handle.send(Op::Shutdown).await?;
+    tokio::time::timeout(Duration::from_secs(10), run).await??;
     Ok(())
 }

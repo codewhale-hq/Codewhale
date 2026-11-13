@@ -58,6 +58,7 @@ pub fn clear(app: &mut App) -> CommandResult {
             model: app.model.clone(),
             workspace: app.workspace.clone(),
             mode: app.mode,
+            agent_preset: app.agent_preset(),
         },
     )
 }

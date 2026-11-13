@@ -2331,6 +2331,7 @@ pub(crate) async fn handle_view_events(
                                 model: app.model.clone(),
                                 workspace: app.workspace.clone(),
                                 mode: app.mode,
+                                agent_preset: app.agent_preset(),
                             })
                             .await;
                         let _ = engine_handle
@@ -3065,11 +3066,9 @@ pub(crate) async fn handle_view_events(
             }
             ViewEvent::SetupOpenModeRequested => {
                 if app.view_stack.top_kind() != Some(ModalKind::ModePicker) {
-                    app.view_stack
-                        .push(crate::tui::views::mode_picker::ModePickerView::new(
-                            app.mode,
-                            app.ui_locale,
-                        ));
+                    let view =
+                        crate::tui::views::mode_picker::ModePickerView::for_app(app, config).await;
+                    app.view_stack.push(view);
                     app.status_message =
                         Some("Work mode picker opened from /setup runtime posture.".to_string());
                 }
@@ -3502,6 +3501,19 @@ pub(crate) async fn handle_view_events(
                     sync_mode_update(app, engine_handle).await;
                 }
                 app.add_message(HistoryCell::System { content: msg });
+            }
+            ViewEvent::ConversationModeSelected { id } => {
+                let content = match crate::tui::conversation_mode::set_in_place(
+                    app,
+                    config,
+                    engine_handle,
+                    &id,
+                )
+                .await
+                {
+                    Ok(message) | Err(message) => message,
+                };
+                app.add_message(HistoryCell::System { content });
             }
             ViewEvent::BacktrackStep { direction } => {
                 app.backtrack.step(direction);

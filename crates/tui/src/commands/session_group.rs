@@ -94,6 +94,7 @@ pub(in crate::commands) fn host_result(result: SessionCommandResult) -> CommandR
             model: sync.model,
             workspace: sync.workspace,
             mode: super::contract::from_command_mode(sync.mode),
+            agent_preset: sync.agent_preset,
         },
     });
     CommandResult {

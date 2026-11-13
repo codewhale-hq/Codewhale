@@ -1190,6 +1190,7 @@ pub(crate) async fn apply_provider_fallback_switch(
                 model: app.model.clone(),
                 workspace: app.workspace.clone(),
                 mode: app.mode,
+                agent_preset: app.agent_preset(),
             })
             .await;
     }
@@ -1725,6 +1726,7 @@ async fn apply_command_result_inner(
                         model: app.model.clone(),
                         workspace: app.workspace.clone(),
                         mode: app.mode,
+                        agent_preset: app.agent_preset(),
                     })
                     .await;
                 let _ = engine_handle
@@ -1764,6 +1766,7 @@ async fn apply_command_result_inner(
                 model,
                 workspace,
                 mode,
+                agent_preset,
             } => {
                 let mut session_id = session_id;
                 let is_full_reset = messages.is_empty() && system_prompt.is_none();
@@ -1844,6 +1847,7 @@ async fn apply_command_result_inner(
                         model,
                         workspace,
                         mode,
+                        agent_preset,
                     })
                     .await;
                 let _ = engine_handle
@@ -1963,6 +1967,7 @@ async fn apply_command_result_inner(
                             model: app.model.clone(),
                             workspace: app.workspace.clone(),
                             mode: app.mode,
+                            agent_preset: app.agent_preset(),
                         })
                         .await;
                 }
@@ -2810,12 +2815,23 @@ async fn apply_command_result_inner(
             }
             AppAction::OpenModePicker => {
                 if app.view_stack.top_kind() != Some(ModalKind::ModePicker) {
-                    app.view_stack
-                        .push(crate::tui::views::mode_picker::ModePickerView::new(
-                            app.mode,
-                            app.ui_locale,
-                        ));
+                    let view =
+                        crate::tui::views::mode_picker::ModePickerView::for_app(app, config).await;
+                    app.view_stack.push(view);
                 }
+            }
+            AppAction::SetConversationMode { id } => {
+                let content = match crate::tui::conversation_mode::set_in_place(
+                    app,
+                    config,
+                    engine_handle,
+                    &id,
+                )
+                .await
+                {
+                    Ok(message) | Err(message) => message,
+                };
+                app.add_message(HistoryCell::System { content });
             }
             AppAction::OpenStatusPicker => {
                 if app.view_stack.top_kind() != Some(ModalKind::StatusPicker) {
@@ -3190,6 +3206,7 @@ async fn apply_command_result_inner(
                                     model: app.model.clone(),
                                     workspace: app.workspace.clone(),
                                     mode: app.mode,
+                                    agent_preset: app.agent_preset(),
                                 })
                                 .await;
                         }
@@ -4805,6 +4822,22 @@ pub(crate) fn apply_loaded_session_with_goal(
     if let Some(mode) = session.metadata.mode.as_deref().and_then(AppMode::parse) {
         app.set_mode(mode);
     }
+    let saved_mode_unavailable = match session.agent_preset.clone() {
+        Some(stored) => {
+            let table = crate::tui::conversation_mode::current_table_blocking(Some(config));
+            let reason = crate::tui::conversation_mode::unavailable_reason(
+                Some(&stored),
+                &table,
+                app.ui_locale,
+            );
+            app.install_conversation_mode(Some(stored), reason.clone());
+            reason
+        }
+        None => {
+            app.install_conversation_mode(None, None);
+            None
+        }
+    };
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
     app.session.displayed_cost_high_water = 0.0;
@@ -4867,6 +4900,20 @@ pub(crate) fn apply_loaded_session_with_goal(
     app.workspace_context_refreshed_at = None;
     app.system_prompt = session.system_prompt.map(SystemPrompt::Text);
     app.retire_event_notices(super::event_loop::STARTUP_NOTICE_TOAST);
+    if let Some(reason) = saved_mode_unavailable {
+        let name = crate::tui::conversation_mode::name_for_stored(
+            app.ui_locale,
+            app.conversation_mode.as_deref(),
+            None,
+        );
+        app.add_message(HistoryCell::System {
+            content: crate::tui::conversation_mode::saved_unavailable_notice(
+                app.ui_locale,
+                &name,
+                &reason,
+            ),
+        });
+    }
     app.scroll_to_bottom();
     Ok(())
 }

@@ -2300,6 +2300,8 @@ pub struct App {
     pub undo_selection: bool,
     /// Current session ID for auto-save updates
     pub current_session_id: Option<String>,
+    pub(crate) conversation_mode: Option<String>,
+    pub(crate) conversation_mode_unavailable: Option<String>,
     pub(crate) session_write_receipt:
         Option<codewhale_engine::session_manager::SessionWriteReceipt>,
     pub(crate) session_write_owner: Option<codewhale_engine::session_manager::SessionWriteOwner>,
@@ -5640,6 +5642,37 @@ impl App {
         self.session_write_owner =
             Some(codewhale_engine::session_manager::SessionWriteOwner::Control(id.clone()));
         id
+    }
+
+    pub(crate) fn agent_preset(&self) -> Option<String> {
+        self.conversation_mode.clone()
+    }
+
+    pub(crate) fn conversation_mode_locked(&self) -> bool {
+        !self.api_messages.is_empty()
+            || self.is_loading
+            || !self.queued_messages.is_empty()
+            || self.queued_draft.is_some()
+            || self.pending_fresh_session.is_some()
+    }
+
+    pub(crate) fn install_conversation_mode(
+        &mut self,
+        stored: Option<String>,
+        unavailable: Option<String>,
+    ) {
+        self.conversation_mode = stored;
+        self.conversation_mode_unavailable = unavailable;
+        self.needs_redraw = true;
+    }
+
+    pub(crate) fn conversation_mode_label(&self) -> Option<String> {
+        crate::tui::conversation_mode::label(
+            self.ui_locale,
+            self.conversation_mode.as_deref(),
+            self.conversation_mode_unavailable.as_deref(),
+            None,
+        )
     }
 
     pub(crate) fn set_current_session_id(&mut self, session_id: Option<String>) {

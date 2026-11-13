@@ -215,6 +215,7 @@ fn session_sync_payload(app: &App) -> SessionSyncPayload {
         model: app.model.clone(),
         workspace: app.workspace.clone(),
         mode: super::to_command_mode(app.mode),
+        agent_preset: app.agent_preset(),
     }
 }
 

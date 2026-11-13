@@ -58,6 +58,7 @@ use crate::tui::selection::{SelectionAutoscroll, TranscriptSelectionPoint};
 use codewhale_models::Role;
 use tempfile::TempDir;
 
+mod conversation_mode;
 mod conversation_undo;
 mod model_picker_actions;
 mod plan_handoff;
@@ -34496,6 +34497,7 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
             system_prompt: None,
             instruction_assembly: None,
             mode: "agent".into(),
+            agent_preset: None,
         });
         let (reply, mut answer) = tokio::sync::oneshot::channel();
         let request = codewhale_engine::core::events::SessionCheckpointRequest::new(

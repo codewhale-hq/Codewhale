@@ -117,6 +117,8 @@ pub struct SessionSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instruction_assembly: Option<serde_json::Value>,
     pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_preset: Option<String>,
 }
 
 /// Live context-window posture for one thread, computed where the session
@@ -468,6 +470,7 @@ pub enum Op {
         model: String,
         workspace: PathBuf,
         mode: AppMode,
+        agent_preset: Option<String>,
     },
 
     /// Rewind only the exact conversation observed by the caller. The Engine

@@ -1361,6 +1361,7 @@ pub struct SessionSyncPayload {
     pub model: String,
     pub workspace: PathBuf,
     pub mode: CommandMode,
+    pub agent_preset: Option<String>,
 }
 
 /// `/branch` success projection (`session/branch.rs`). The handler composes
@@ -1486,10 +1487,15 @@ pub trait CommandSessionLifecycleContext {
     /// `/fork <session_id|prefix>`: explicit-source fork.
     fn fork_from(&mut self, session_id_or_prefix: &str) -> Result<SessionForkFromReceipt, String>;
 
-    /// `/new [--force]`: fresh-session transition. The caller has already
-    /// parsed the argument and applied the transition-blocked gate; blocker,
-    /// busy-work-state, and success handling match the baseline.
-    fn fresh_session(&mut self, force: bool) -> Result<SessionNewReceipt, String>;
+    /// `/new [<mode>] [--force]`: fresh-session transition. The caller has
+    /// already parsed the arguments and applied the transition-blocked gate;
+    /// `conversation_mode` is the id the person named, absent for Standard.
+    /// The host validates it against the Engine's mode table.
+    fn fresh_session(
+        &mut self,
+        force: bool,
+        conversation_mode: Option<&str>,
+    ) -> Result<SessionNewReceipt, String>;
 
     /// `/load <path>`: resolve the path (separator-bearing direct vs
     /// workspace-relative) and validate the saved-session shape without
