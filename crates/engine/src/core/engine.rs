@@ -314,8 +314,8 @@ pub struct EngineConfig {
     pub session_id: Option<String>,
     /// Optional host-owned root for delegated-agent runtime state.
     ///
-    /// When unset, the worker ledger, complete transcript artifacts and
-    /// coordination lock retain their historical location under
+    /// When unset, the worker ledger and complete transcript artifacts
+    /// retain their historical location under
     /// `workspace/.codewhale/state`. Embedders may set a session-scoped root
     /// to separate that control-plane state from the execution workspace.
     /// Child cwd and file authority still derive from `workspace`; hosts using
