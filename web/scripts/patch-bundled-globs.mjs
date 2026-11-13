@@ -11,7 +11,7 @@ const upstreamFixes = [
 const reviewed = [
   {
     "package": "next",
-    "version": "16.4.1",
+    "version": "16.4.6",
     "file": "dist/compiled/@vercel/nft/index.js",
     "original": "e436d398b2263fb87a2d8ee3d9dab8db2544c684ba9bc1c0d4ab4e67acbab207",
     "patched": "3acafac86a359647efceec23f1a838103911dadd5ab63ee3a5b8afa661d20a37",
@@ -108,10 +108,10 @@ const reviewed = [
   },
   {
     "package": "wrangler",
-    "version": "4.147.0",
+    "version": "4.161.0",
     "file": "wrangler-dist/cli.js",
-    "original": "f2ec95b41d7f7665a42b75fc9631100e95ea6c0dbabc09eb65ae7f772dbc2fed",
-    "patched": "ec5c069ff0bd70c9678a1e499f41bff15d94d5c09b7bacee4d9166ab30bcc63b",
+    "original": "26835ab3b89181c37f97c99330ed17bbc7ec4d3ad3014175f6ffb2118c998f86",
+    "patched": "9a9fea2dcbdfba59d67006d55e413071ca53a22467782a67256eabdf2deb341b",
     "edits": [
       {
         "before": "firstPhasePreProcess(globParts) {\n        let didSomething = false;",
