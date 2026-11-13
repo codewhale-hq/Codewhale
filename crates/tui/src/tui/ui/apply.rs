@@ -35,7 +35,6 @@ pub(crate) fn apply_agent_spawned_status_and_observer(
     prompt_summary: &str,
 ) {
     let label = app.ensure_agent_label(agent_id);
-    codewhale_telemetry::session_counters().bump(codewhale_telemetry::Counter::SubagentSpawn);
     app.push_status_toast_record(
         StatusToast::new(
             format!(

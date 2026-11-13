@@ -23585,6 +23585,43 @@ async fn runtime_surface_hardening_resume_from_requires_descendant_control() {
     assert_eq!(manager.read().await.agents.len(), 2);
 }
 
+#[tokio::test]
+async fn spawn_counts_one_subagent_spawn_for_telemetry() {
+    let tmp = tempdir().unwrap();
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 4);
+    let counters = codewhale_telemetry::session_counters();
+    let before = counters.counters().subagent_spawn;
+
+    let (result, _) = spawn_subagent_from_input(
+        json!({"prompt": "inspect the workspace"}),
+        manager.clone(),
+        runtime.clone(),
+        false,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("spawn succeeds");
+    assert!(!result.agent_id.is_empty());
+    assert_eq!(counters.counters().subagent_spawn, before + 1);
+
+    let _ = spawn_subagent_from_input(
+        json!({"prompt": "x", "resume_from": "missing-agent"}),
+        manager,
+        runtime,
+        false,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect_err("a refused spawn is not counted");
+    assert_eq!(counters.counters().subagent_spawn, before + 1);
+}
+
 #[test]
 fn resume_from_rejects_running_source() {
     let tmp = tempdir().expect("tempdir");

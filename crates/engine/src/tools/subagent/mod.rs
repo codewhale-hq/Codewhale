@@ -16367,6 +16367,7 @@ async fn spawn_subagent_from_input(
         Err(error) => ToolError::execution_failed(format!("Failed to spawn sub-agent: {error}")),
     })?;
 
+    codewhale_telemetry::session_counters().bump(codewhale_telemetry::Counter::SubagentSpawn);
     Ok((result, spawn_metadata))
 }
 
