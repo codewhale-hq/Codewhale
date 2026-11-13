@@ -2693,7 +2693,7 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   audit logging is enabled. Future PreToolUse/PostToolUse hooks can add
   observer input around this layer, but the configured auto-review policy is
   evaluated before a tool call is allowed to proceed.
-- `managed_config_path` (string, optional): managed config file loaded after user/env config.
+- `managed_config_path` (string, optional): managed config file loaded after user/env config. `CODEWHALE_MANAGED_CONFIG_PATH` outranks it. A named file that is missing or unreadable is a load error, and it cannot replace an existing file at the default managed path.
 - `requirements_path` (string, optional): requirements file used to enforce allowed approval/sandbox values.
 - `max_subagents` (int, optional): defaults to `64` and is clamped to `1..=128`.
 - `subagents.*` (optional compatibility table): manual per-role model pins

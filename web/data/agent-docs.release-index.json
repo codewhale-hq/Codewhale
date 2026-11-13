@@ -1,6 +1,7 @@
 {
   "tag": "v0.10.2",
   "slugs": [
+    "first-time",
     "install",
     "guide",
     "auth",

@@ -177,6 +177,21 @@ impl McpTransport for HttpTransport {
         }
     }
 
+    async fn send_reply(&mut self, msg: Vec<u8>) -> Result<()> {
+        match &mut self.mode {
+            HttpTransportMode::Streamable(transport) => {
+                transport.send(msg).await.map_err(|err| match err {
+                    StreamableSendError::Incompatible(detail)
+                    | StreamableSendError::StaleSession(detail) => anyhow::anyhow!(
+                        "MCP Streamable HTTP refused a reply to a server request: {detail}"
+                    ),
+                    StreamableSendError::Other(err) => err,
+                })
+            }
+            HttpTransportMode::Sse(transport) => transport.send(msg).await,
+        }
+    }
+
     async fn recv(&mut self) -> Result<Vec<u8>> {
         match &mut self.mode {
             HttpTransportMode::Streamable(transport) => transport.recv().await,

@@ -145,20 +145,27 @@ The key is read only from the managed configuration file named by
 Linux, and only when neither that file nor any directory above it can be
 changed by the Engine's own user. A managed file at any other path (for
 example one a user config points at through `managed_config_path`) is refused.
-In a user `config.toml` or a profile the key is a load error. The managed file must also set `sandbox_mode` itself; a sandboxed mode
-from a user config does not count. Without the key, nothing on this page
-changes.
+In a user `config.toml` or a profile the key is a load error. The managed
+file must also set `sandbox_mode` itself; a sandboxed mode from a user config
+does not count. Without the key, nothing on this page changes.
 
-A host that relies on the launcher puts the managed file at the default
-managed path, owned by root, and also sets `CODEWHALE_MANAGED_CONFIG_PATH` to
-that same path for the Engine's service. The variable stops a user config from
-pointing `managed_config_path` at a missing file; the default path is needed
-because a Fleet local worker (a child `codewhale exec`) is started with a
-cleaned environment and does not get the variable; it reads the user config's
-`managed_config_path` and then the default path, so a user config can still
-point a worker at a missing file. A file in another ordinary user's home also
-passes the "Engine's user cannot change it" check, so the file should be
-root-owned. Check `sandbox.tool_launcher` in `GET /v1/runtime/info`: the route
+A host that relies on the launcher puts the managed file in a root-owned
+place and sets `CODEWHALE_MANAGED_CONFIG_PATH` to it for the Engine's service.
+The variable outranks a user config's `managed_config_path`, and a Fleet local
+worker (a child `codewhale exec`) gets the parent's variable even though its
+environment is otherwise cleaned; a worker request cannot replace it. Any
+other `codewhale` process sees a file named only by the variable when it is
+started with the variable. An MCP server entry that runs `codewhale serve
+--mcp` is started with a cleaned environment and does not get it. A host that
+relies on the launcher therefore also keeps the file at the default managed
+path, or sets the variable in every such entry. A file named by the variable
+or by `managed_config_path` that is missing or cannot be read is a load error,
+not "no managed layer", and a user config cannot point `managed_config_path`
+away from an existing file at the default managed path.
+Only a missing file at the default path, with nothing naming another, means no
+managed layer. A file in another ordinary user's home also passes the
+"Engine's user cannot change it" check, so the file should be root-owned.
+Check `sandbox.tool_launcher` in `GET /v1/runtime/info`: the route
 reads the live configuration, but a check made once at start does not cover a
 later reload, so ask again after a reload.
 
@@ -193,18 +200,24 @@ With a launcher configured:
 
 Limits: only commands the sandbox manager prepares (shell commands, terminal
 sessions, workspace runners) go through the launcher. In-process file tools,
-MCP servers, hooks, LSP servers, the extension host, Fleet local workers,
-external ACP agents and the Engine's own `git`, formatter and diagnostic
-helpers still run as the Engine's user. `codewhale serve --mcp` builds its own
-shell manager with no launcher and no deny list, so do not expose `exec_shell`
-there. With `sandbox_backend = "opensandbox"` a shell command goes to the
-remote backend before the launcher is consulted, so a launcher host pins
+MCP servers, hooks, LSP servers, the extension host, external ACP agents and
+the Engine's own `git`, formatter and diagnostic helpers still run as the
+Engine's user. A Fleet local worker is its own Engine, so its shell commands
+go through the launcher only because it loads the same managed file.
+`codewhale serve --mcp` does not run commands through the launcher. When the
+managed file it loads sets a launcher, it does not expose `shell` or
+`exec_shell`, whatever its own `expose_tools` lists; its file tools use the
+built-in read deny list only. Model-written Python in the session REPL kernel
+(` ```repl ` blocks and the `rlm` tool) runs in a local interpreter as the
+Engine's user. With `sandbox_backend = "opensandbox"` a shell command goes to
+the remote backend before the launcher is consulted, so a launcher host pins
 `sandbox_backend = "none"`, `prefer_bwrap = true` and `sandbox_network_access`
 in the managed file. A `tool_launcher` in a project config stops an
 interactive launch with an error; `serve` and `exec` do not read project
-config, so there the key is ignored. Deny-list exceptions are not applied under a launcher. Search
-rights come from mode bits and group membership, not ACLs. Processes keep
-running after the Engine itself dies, until bubblewrap's parent exits.
+config, so there the key is ignored. Deny-list exceptions are not applied
+under a launcher. Search rights come from mode bits and group membership, not
+ACLs. Processes keep running after the Engine itself dies, until bubblewrap's
+parent exits.
 
 ## Windows: no advertised OS sandbox
 

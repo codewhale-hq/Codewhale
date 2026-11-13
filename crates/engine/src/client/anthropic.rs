@@ -44,8 +44,9 @@ use super::CodewhaleClient;
 use super::prepared::WireDialect;
 use super::role_placement::{RolePlacement, role_placement};
 use super::wire::{
-    extract_sse_data_value, from_api_tool_name, next_sse_line, push_sse_event_data,
-    to_api_tool_name,
+    ToolNameWire, check_history_tool_names, documented_tool_name_limit, extract_sse_data_value,
+    from_api_tool_name, next_sse_line, over_limit_tool_name_message, push_sse_event_data,
+    to_api_tool_name, tool_name_exceeds_limit, tool_name_limit,
 };
 
 /// Maximum `cache_control` breakpoints Anthropic accepts per request.
@@ -103,6 +104,11 @@ impl CodewhaleClient {
         repair_dangling_tool_uses(&mut messages);
         body["messages"] = Value::Array(messages);
 
+        let tool_name_limit = tool_name_limit(self.api_provider, ToolNameWire::AnthropicMessages);
+        check_history_tool_names(
+            request,
+            documented_tool_name_limit(self.api_provider, ToolNameWire::AnthropicMessages),
+        )?;
         let mut omitted_tool_names = Vec::new();
         let mut omitted_logical_names = Vec::new();
         if let Some(tools) = request.tools.as_ref()
@@ -113,6 +119,11 @@ impl CodewhaleClient {
             };
             let mut wire_tools = Vec::new();
             for tool in tools {
+                if tool_name_exceeds_limit(&tool.name, tool_name_limit) {
+                    omitted_logical_names.push(tool.name.clone());
+                    omitted_tool_names.push(to_api_tool_name(&tool.name));
+                    continue;
+                }
                 match project_tool_schema(route_projection, &tool.input_schema, tool.strict) {
                     ToolSchemaProjection::Exact {
                         parameters,
@@ -155,6 +166,9 @@ impl CodewhaleClient {
             if let Some(name) = forced_tool_name(tool_choice)
                 && omitted_logical_names.iter().any(|omitted| omitted == name)
             {
+                if tool_name_exceeds_limit(name, tool_name_limit) {
+                    anyhow::bail!(over_limit_tool_name_message(name, tool_name_limit));
+                }
                 anyhow::bail!(
                     "cannot force an omitted tool because its input schema is incompatible with this route"
                 );
@@ -1303,6 +1317,75 @@ mod tests {
                 assert_eq!(message.usage.input_tokens, 3);
             }
         }
+    }
+
+    #[test]
+    fn over_long_encoded_tool_names_are_withheld_at_128() {
+        let client = anthropic_test_client(None);
+        let tool = |name: &str| Tool {
+            tool_type: None,
+            name: name.to_string(),
+            description: "d".to_string(),
+            input_schema: json!({"type": "object", "additionalProperties": false}),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        };
+        let mid = "mcp__tracker__projects.v2.issues.list-by-assignee";
+        let long = format!(
+            "mcp__tracker__{}.v2.issues.list-by-assignee",
+            "a".repeat(70)
+        );
+        assert!(to_api_tool_name(mid).len() > 64 && to_api_tool_name(mid).len() <= 128);
+        assert!(to_api_tool_name(&long).len() > 128);
+
+        let mut request = request_with("claude-sonnet-4-6", None, None, None);
+        request.tools = Some(vec![tool("read_file"), tool(mid), tool(&long)]);
+        let (body, omitted) = client
+            .build_anthropic_wire_body(&request, true)
+            .expect("body builds");
+        let sent: Vec<&str> = body["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert_eq!(sent, vec!["read_file".to_string(), to_api_tool_name(mid)]);
+        assert_eq!(omitted, vec![to_api_tool_name(&long)]);
+
+        request.tool_choice = Some(json!({"type": "tool", "name": long}));
+        let error = client
+            .build_anthropic_wire_body(&request, true)
+            .expect_err("forcing a withheld tool is refused");
+        assert!(error.to_string().contains("at most 128"), "{error}");
+    }
+
+    #[test]
+    fn a_100_character_encoded_name_is_offered_on_an_anthropic_wire_route_without_a_documented_limit()
+     {
+        let tool = |name: &str| Tool {
+            tool_type: None,
+            name: name.to_string(),
+            description: "d".to_string(),
+            input_schema: json!({"type": "object", "additionalProperties": false}),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        };
+        let name = "a".repeat(100);
+        assert_eq!(to_api_tool_name(&name).len(), 100);
+        let client = minimax_test_client();
+        let mut request = request_with("MiniMax-M2", None, None, None);
+        request.tools = Some(vec![tool(&name)]);
+        let (body, omitted) = client
+            .build_anthropic_wire_body(&request, true)
+            .expect("body builds");
+        assert_eq!(body["tools"][0]["name"], name);
+        assert!(omitted.is_empty());
     }
 
     fn request_with(

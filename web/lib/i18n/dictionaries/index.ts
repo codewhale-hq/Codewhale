@@ -37,6 +37,7 @@ import type {
   DocsSubagentsDict,
   DocsTroubleshootingDict,
   DocsTrustDict,
+  DocsFirstTimeDict,
   DocsWebDict,
   DocsWorkDict,
   DocsPetDict,
@@ -100,6 +101,8 @@ import { docsAuth as enDocsAuth } from "./en/docs-auth";
 import { docsAuth as zhDocsAuth } from "./zh/docs-auth";
 import { docsTrust as enDocsTrust } from "./en/docs-trust";
 import { docsTrust as zhDocsTrust } from "./zh/docs-trust";
+import { docsFirstTime as enDocsFirstTime } from "./en/docs-first-time";
+import { docsFirstTime as zhDocsFirstTime } from "./zh/docs-first-time";
 import { docsReview as enDocsReview } from "./en/docs-review";
 import { docsReview as zhDocsReview } from "./zh/docs-review";
 import { docsVocabulary as enDocsVocabulary } from "./en/docs-vocabulary";
@@ -337,6 +340,10 @@ const DOCS_TRUST: Record<string, DocsTrustDict> = {
   zh: zhDocsTrust,
 };
 
+const DOCS_FIRST_TIME: Record<string, DocsFirstTimeDict> = {
+  zh: zhDocsFirstTime,
+};
+
 const DOCS_REVIEW: Record<string, DocsReviewDict> = {
   zh: zhDocsReview,
 };
@@ -492,6 +499,10 @@ export function getDocsTrust(locale: string): DocsTrustDict {
   return DOCS_TRUST[locale] ?? enDocsTrust;
 }
 
+export function getDocsFirstTime(locale: string): DocsFirstTimeDict {
+  return DOCS_FIRST_TIME[locale] ?? enDocsFirstTime;
+}
+
 export function getDocsReview(locale: string): DocsReviewDict {
   return DOCS_REVIEW[locale] ?? enDocsReview;
 }
@@ -574,6 +585,7 @@ export const EN_DOCS_WORK = enDocsWork;
 export const EN_DOCS_PET = enDocsPet;
 export const EN_DOCS_AUTH = enDocsAuth;
 export const EN_DOCS_TRUST = enDocsTrust;
+export const EN_DOCS_FIRST_TIME = enDocsFirstTime;
 export const EN_DOCS_REVIEW = enDocsReview;
 export const EN_DOCS_VOCABULARY = enDocsVocabulary;
 export const EN_COMPUTER_USE = enComputerUse;

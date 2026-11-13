@@ -140,48 +140,17 @@ impl EnvRuntimeOverrides {
         Self {
             provider,
             provider_source,
-            model: std::env::var("CODEWHALE_MODEL")
-                .or_else(|_| std::env::var("DEEPSEEK_MODEL"))
-                .or_else(|_| std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            volcengine_model: std::env::var("VOLCENGINE_MODEL")
-                .or_else(|_| std::env::var("VOLCENGINE_ARK_MODEL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            wanjie_ark_model: std::env::var("WANJIE_ARK_MODEL")
-                .or_else(|_| std::env::var("WANJIE_MODEL"))
-                .or_else(|_| std::env::var("WANJIE_MAAS_MODEL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            openrouter_model: std::env::var("OPENROUTER_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            orcarouter_model: std::env::var("ORCAROUTER_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            moonshot_model: std::env::var("MOONSHOT_MODEL")
-                .or_else(|_| std::env::var("KIMI_MODEL_NAME"))
-                .or_else(|_| std::env::var("KIMI_MODEL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            xiaomi_mimo_model: std::env::var("XIAOMI_MIMO_MODEL")
-                .or_else(|_| std::env::var("MIMO_MODEL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            xiaomi_mimo_mode: std::env::var("XIAOMI_MIMO_MODE")
-                .or_else(|_| std::env::var("MIMO_MODE"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            novita_model: std::env::var("NOVITA_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            fireworks_model: std::env::var("FIREWORKS_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            arcee_model: std::env::var("ARCEE_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
+            model: env_non_blank(&["CODEWHALE_MODEL", "DEEPSEEK_MODEL", "DEEPSEEK_DEFAULT_TEXT_MODEL"]),
+            volcengine_model: env_non_blank(&["VOLCENGINE_MODEL", "VOLCENGINE_ARK_MODEL"]),
+            wanjie_ark_model: env_non_blank(&["WANJIE_ARK_MODEL", "WANJIE_MODEL", "WANJIE_MAAS_MODEL"]),
+            openrouter_model: env_non_blank(&["OPENROUTER_MODEL"]),
+            orcarouter_model: env_non_blank(&["ORCAROUTER_MODEL"]),
+            moonshot_model: env_non_blank(&["MOONSHOT_MODEL", "KIMI_MODEL_NAME", "KIMI_MODEL"]),
+            xiaomi_mimo_model: env_non_blank(&["XIAOMI_MIMO_MODEL", "MIMO_MODEL"]),
+            xiaomi_mimo_mode: env_non_blank(&["XIAOMI_MIMO_MODE", "MIMO_MODE"]),
+            novita_model: env_non_blank(&["NOVITA_MODEL"]),
+            fireworks_model: env_non_blank(&["FIREWORKS_MODEL"]),
+            arcee_model: env_non_blank(&["ARCEE_MODEL"]),
             verbosity: env_non_blank(&["CODEWHALE_VERBOSITY", "DEEPSEEK_VERBOSITY"]),
             auth_mode: env_non_blank(&["CODEWHALE_AUTH_MODE", "DEEPSEEK_AUTH_MODE"]),
             log_level: env_non_blank(&["CODEWHALE_LOG_LEVEL", "DEEPSEEK_LOG_LEVEL"]),
@@ -216,9 +185,7 @@ impl EnvRuntimeOverrides {
                         None
                     }
                 }),
-            http_headers: std::env::var("CODEWHALE_HTTP_HEADERS")
-                .or_else(|_| std::env::var("DEEPSEEK_HTTP_HEADERS"))
-                .ok()
+            http_headers: env_non_blank(&["CODEWHALE_HTTP_HEADERS", "DEEPSEEK_HTTP_HEADERS"])
                 .and_then(|value| match parse_http_headers(&value) {
                     Ok(h) => Some(h),
                     Err(_) => {
@@ -227,290 +194,85 @@ impl EnvRuntimeOverrides {
                     }
                 })
                 .filter(|headers| !headers.is_empty()),
-            active_route_base_url: std::env::var("CODEWHALE_BASE_URL")
-                .or_else(|_| std::env::var("DEEPSEEK_BASE_URL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            deepseek_anthropic_base_url: std::env::var("DEEPSEEK_ANTHROPIC_BASE_URL")
-                .or_else(|_| std::env::var("DEEPSEEK_CLAUDE_BASE_URL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            nvidia_base_url: std::env::var("NVIDIA_NIM_BASE_URL")
-                .or_else(|_| std::env::var("NIM_BASE_URL"))
-                .or_else(|_| std::env::var("NVIDIA_BASE_URL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            openai_base_url: std::env::var("OPENAI_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            atlascloud_base_url: std::env::var("ATLASCLOUD_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            volcengine_base_url: std::env::var("VOLCENGINE_BASE_URL")
-                .or_else(|_| std::env::var("VOLCENGINE_ARK_BASE_URL"))
-                .or_else(|_| std::env::var("ARK_BASE_URL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            wanjie_ark_base_url: std::env::var("WANJIE_ARK_BASE_URL")
-                .or_else(|_| std::env::var("WANJIE_BASE_URL"))
-                .or_else(|_| std::env::var("WANJIE_MAAS_BASE_URL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            openrouter_base_url: std::env::var("OPENROUTER_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            orcarouter_base_url: std::env::var("ORCAROUTER_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            xiaomi_mimo_base_url: std::env::var("XIAOMI_MIMO_BASE_URL")
-                .or_else(|_| std::env::var("MIMO_BASE_URL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            novita_base_url: std::env::var("NOVITA_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            fireworks_base_url: std::env::var("FIREWORKS_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            siliconflow_base_url: std::env::var("SILICONFLOW_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            siliconflow_model: std::env::var("SILICONFLOW_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            arcee_base_url: std::env::var("ARCEE_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            moonshot_base_url: std::env::var("MOONSHOT_BASE_URL")
-                .or_else(|_| std::env::var("KIMI_BASE_URL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            sglang_base_url: std::env::var("SGLANG_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            vllm_base_url: std::env::var("VLLM_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            ollama_base_url: std::env::var("OLLAMA_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            ollama_cloud_base_url: std::env::var("OLLAMA_CLOUD_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            ollama_cloud_model: std::env::var("OLLAMA_CLOUD_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            huggingface_base_url: std::env::var("HUGGINGFACE_BASE_URL")
-                .or_else(|_| std::env::var("HF_BASE_URL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            huggingface_model: std::env::var("HUGGINGFACE_MODEL")
-                .or_else(|_| std::env::var("HF_MODEL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            modelscope_base_url: std::env::var("MODELSCOPE_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            modelscope_model: std::env::var("MODELSCOPE_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            together_base_url: std::env::var("TOGETHER_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            together_model: std::env::var("TOGETHER_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            qianfan_base_url: std::env::var("QIANFAN_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-                .or_else(|| {
-                    std::env::var("BAIDU_QIANFAN_BASE_URL")
-                        .ok()
-                        .filter(|v| !v.trim().is_empty())
-                }),
-            qianfan_model: std::env::var("QIANFAN_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-                .or_else(|| {
-                    std::env::var("BAIDU_QIANFAN_MODEL")
-                        .ok()
-                        .filter(|v| !v.trim().is_empty())
-                }),
-            openai_codex_base_url: std::env::var("OPENAI_CODEX_BASE_URL")
-                .or_else(|_| std::env::var("CODEX_BASE_URL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            openai_codex_model: std::env::var("OPENAI_CODEX_MODEL")
-                .or_else(|_| std::env::var("CODEX_MODEL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            anthropic_base_url: std::env::var("ANTHROPIC_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            anthropic_model: std::env::var("ANTHROPIC_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            openmodel_base_url: std::env::var("OPENMODEL_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            openmodel_model: std::env::var("OPENMODEL_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            zai_base_url: std::env::var("ZAI_BASE_URL")
-                .or_else(|_| std::env::var("Z_AI_BASE_URL"))
-                .or_else(|_| std::env::var("ZHIPU_BASE_URL"))
-                .or_else(|_| std::env::var("ZHIPUAI_BASE_URL"))
-                .or_else(|_| std::env::var("BIGMODEL_BASE_URL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            zai_model: std::env::var("ZAI_MODEL")
-                .or_else(|_| std::env::var("Z_AI_MODEL"))
-                .or_else(|_| std::env::var("ZHIPU_MODEL"))
-                .or_else(|_| std::env::var("ZHIPUAI_MODEL"))
-                .or_else(|_| std::env::var("BIGMODEL_MODEL"))
-                .or_else(|_| std::env::var("GLM_MODEL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            stepfun_base_url: std::env::var("STEPFUN_BASE_URL")
-                .or_else(|_| std::env::var("STEP_BASE_URL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            stepfun_model: std::env::var("STEPFUN_MODEL")
-                .or_else(|_| std::env::var("STEP_MODEL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            minimax_base_url: std::env::var("MINIMAX_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            minimax_anthropic_base_url: std::env::var("MINIMAX_ANTHROPIC_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            minimax_model: std::env::var("MINIMAX_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            deepinfra_base_url: std::env::var("DEEPINFRA_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            deepinfra_model: std::env::var("DEEPINFRA_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            sakana_base_url: std::env::var("SAKANA_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            sakana_model: std::env::var("SAKANA_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            longcat_base_url: std::env::var("LONGCAT_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            longcat_model: std::env::var("LONGCAT_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            opencode_go_base_url: std::env::var("OPENCODE_GO_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            opencode_go_model: std::env::var("OPENCODE_GO_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            opencode_zen_base_url: std::env::var("OPENCODE_ZEN_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            opencode_zen_model: std::env::var("OPENCODE_ZEN_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            meta_base_url: std::env::var("META_MODEL_API_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-                .or_else(|| {
-                    std::env::var("MODEL_API_BASE_URL")
-                        .ok()
-                        .filter(|v| !v.trim().is_empty())
-                }),
-            meta_model: std::env::var("META_MODEL_API_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-                .or_else(|| {
-                    std::env::var("MODEL_API_MODEL")
-                        .ok()
-                        .filter(|v| !v.trim().is_empty())
-                }),
-            xai_base_url: std::env::var("XAI_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            xai_model: std::env::var("XAI_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            google_base_url: std::env::var("GOOGLE_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-                .or_else(|| {
-                    std::env::var("GEMINI_BASE_URL")
-                        .ok()
-                        .filter(|v| !v.trim().is_empty())
-                }),
-            google_model: std::env::var("GOOGLE_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-                .or_else(|| {
-                    std::env::var("GEMINI_MODEL")
-                        .ok()
-                        .filter(|v| !v.trim().is_empty())
-                }),
-            mistral_base_url: std::env::var("MISTRAL_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            mistral_model: std::env::var("MISTRAL_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            telecomjs_base_url: std::env::var("TELECOMJS_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            telecomjs_model: std::env::var("TELECOMJS_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            edenai_base_url: std::env::var("EDENAI_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            edenai_model: std::env::var("EDENAI_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            zenmux_base_url: std::env::var("ZENMUX_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            zenmux_model: std::env::var("ZENMUX_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            csdn_base_url: std::env::var("CSDN_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            csdn_model: std::env::var("CSDN_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            concentrate_base_url: std::env::var("CONCENTRATE_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            concentrate_model: std::env::var("CONCENTRATE_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
+            active_route_base_url: env_non_blank(&["CODEWHALE_BASE_URL", "DEEPSEEK_BASE_URL"]),
+            deepseek_anthropic_base_url: env_non_blank(&["DEEPSEEK_ANTHROPIC_BASE_URL", "DEEPSEEK_CLAUDE_BASE_URL"]),
+            nvidia_base_url: env_non_blank(&["NVIDIA_NIM_BASE_URL", "NIM_BASE_URL", "NVIDIA_BASE_URL"]),
+            openai_base_url: env_non_blank(&["OPENAI_BASE_URL"]),
+            atlascloud_base_url: env_non_blank(&["ATLASCLOUD_BASE_URL"]),
+            volcengine_base_url: env_non_blank(&["VOLCENGINE_BASE_URL", "VOLCENGINE_ARK_BASE_URL", "ARK_BASE_URL"]),
+            wanjie_ark_base_url: env_non_blank(&["WANJIE_ARK_BASE_URL", "WANJIE_BASE_URL", "WANJIE_MAAS_BASE_URL"]),
+            openrouter_base_url: env_non_blank(&["OPENROUTER_BASE_URL"]),
+            orcarouter_base_url: env_non_blank(&["ORCAROUTER_BASE_URL"]),
+            xiaomi_mimo_base_url: env_non_blank(&["XIAOMI_MIMO_BASE_URL", "MIMO_BASE_URL"]),
+            novita_base_url: env_non_blank(&["NOVITA_BASE_URL"]),
+            fireworks_base_url: env_non_blank(&["FIREWORKS_BASE_URL"]),
+            siliconflow_base_url: env_non_blank(&["SILICONFLOW_BASE_URL"]),
+            siliconflow_model: env_non_blank(&["SILICONFLOW_MODEL"]),
+            arcee_base_url: env_non_blank(&["ARCEE_BASE_URL"]),
+            moonshot_base_url: env_non_blank(&["MOONSHOT_BASE_URL", "KIMI_BASE_URL"]),
+            sglang_base_url: env_non_blank(&["SGLANG_BASE_URL"]),
+            vllm_base_url: env_non_blank(&["VLLM_BASE_URL"]),
+            ollama_base_url: env_non_blank(&["OLLAMA_BASE_URL"]),
+            ollama_cloud_base_url: env_non_blank(&["OLLAMA_CLOUD_BASE_URL"]),
+            ollama_cloud_model: env_non_blank(&["OLLAMA_CLOUD_MODEL"]),
+            huggingface_base_url: env_non_blank(&["HUGGINGFACE_BASE_URL", "HF_BASE_URL"]),
+            huggingface_model: env_non_blank(&["HUGGINGFACE_MODEL", "HF_MODEL"]),
+            modelscope_base_url: env_non_blank(&["MODELSCOPE_BASE_URL"]),
+            modelscope_model: env_non_blank(&["MODELSCOPE_MODEL"]),
+            together_base_url: env_non_blank(&["TOGETHER_BASE_URL"]),
+            together_model: env_non_blank(&["TOGETHER_MODEL"]),
+            qianfan_base_url: env_non_blank(&["QIANFAN_BASE_URL", "BAIDU_QIANFAN_BASE_URL"]),
+            qianfan_model: env_non_blank(&["QIANFAN_MODEL", "BAIDU_QIANFAN_MODEL"]),
+            openai_codex_base_url: env_non_blank(&["OPENAI_CODEX_BASE_URL", "CODEX_BASE_URL"]),
+            openai_codex_model: env_non_blank(&["OPENAI_CODEX_MODEL", "CODEX_MODEL"]),
+            anthropic_base_url: env_non_blank(&["ANTHROPIC_BASE_URL"]),
+            anthropic_model: env_non_blank(&["ANTHROPIC_MODEL"]),
+            openmodel_base_url: env_non_blank(&["OPENMODEL_BASE_URL"]),
+            openmodel_model: env_non_blank(&["OPENMODEL_MODEL"]),
+            zai_base_url: env_non_blank(&["ZAI_BASE_URL", "Z_AI_BASE_URL", "ZHIPU_BASE_URL", "ZHIPUAI_BASE_URL", "BIGMODEL_BASE_URL"]),
+            zai_model: env_non_blank(&["ZAI_MODEL", "Z_AI_MODEL", "ZHIPU_MODEL", "ZHIPUAI_MODEL", "BIGMODEL_MODEL", "GLM_MODEL"]),
+            stepfun_base_url: env_non_blank(&["STEPFUN_BASE_URL", "STEP_BASE_URL"]),
+            stepfun_model: env_non_blank(&["STEPFUN_MODEL", "STEP_MODEL"]),
+            minimax_base_url: env_non_blank(&["MINIMAX_BASE_URL"]),
+            minimax_anthropic_base_url: env_non_blank(&["MINIMAX_ANTHROPIC_BASE_URL"]),
+            minimax_model: env_non_blank(&["MINIMAX_MODEL"]),
+            deepinfra_base_url: env_non_blank(&["DEEPINFRA_BASE_URL"]),
+            deepinfra_model: env_non_blank(&["DEEPINFRA_MODEL"]),
+            sakana_base_url: env_non_blank(&["SAKANA_BASE_URL"]),
+            sakana_model: env_non_blank(&["SAKANA_MODEL"]),
+            longcat_base_url: env_non_blank(&["LONGCAT_BASE_URL"]),
+            longcat_model: env_non_blank(&["LONGCAT_MODEL"]),
+            opencode_go_base_url: env_non_blank(&["OPENCODE_GO_BASE_URL"]),
+            opencode_go_model: env_non_blank(&["OPENCODE_GO_MODEL"]),
+            opencode_zen_base_url: env_non_blank(&["OPENCODE_ZEN_BASE_URL"]),
+            opencode_zen_model: env_non_blank(&["OPENCODE_ZEN_MODEL"]),
+            meta_base_url: env_non_blank(&["META_MODEL_API_BASE_URL", "MODEL_API_BASE_URL"]),
+            meta_model: env_non_blank(&["META_MODEL_API_MODEL", "MODEL_API_MODEL"]),
+            xai_base_url: env_non_blank(&["XAI_BASE_URL"]),
+            xai_model: env_non_blank(&["XAI_MODEL"]),
+            google_base_url: env_non_blank(&["GOOGLE_BASE_URL", "GEMINI_BASE_URL"]),
+            google_model: env_non_blank(&["GOOGLE_MODEL", "GEMINI_MODEL"]),
+            mistral_base_url: env_non_blank(&["MISTRAL_BASE_URL"]),
+            mistral_model: env_non_blank(&["MISTRAL_MODEL"]),
+            telecomjs_base_url: env_non_blank(&["TELECOMJS_BASE_URL"]),
+            telecomjs_model: env_non_blank(&["TELECOMJS_MODEL"]),
+            edenai_base_url: env_non_blank(&["EDENAI_BASE_URL"]),
+            edenai_model: env_non_blank(&["EDENAI_MODEL"]),
+            zenmux_base_url: env_non_blank(&["ZENMUX_BASE_URL"]),
+            zenmux_model: env_non_blank(&["ZENMUX_MODEL"]),
+            csdn_base_url: env_non_blank(&["CSDN_BASE_URL"]),
+            csdn_model: env_non_blank(&["CSDN_MODEL"]),
+            concentrate_base_url: env_non_blank(&["CONCENTRATE_BASE_URL"]),
+            concentrate_model: env_non_blank(&["CONCENTRATE_MODEL"]),
             // `CODEWHALE_API_BASE` is a trust boundary, not a plain string:
             // an origin this route would refuse to send a bearer to is
             // dropped here rather than resolved into a route.
             codewhale_base_url: provider::codewhale_api_base_from_env(),
-            codewhale_model: std::env::var("CODEWHALE_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            modelstudio_token_plan_base_url: std::env::var("MODELSTUDIO_TOKEN_PLAN_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            modelstudio_token_plan_model: std::env::var("MODELSTUDIO_TOKEN_PLAN_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            modelstudio_coding_plan_base_url: std::env::var("MODELSTUDIO_CODING_PLAN_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            modelstudio_coding_plan_model: std::env::var("MODELSTUDIO_CODING_PLAN_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
+            codewhale_model: env_non_blank(&["CODEWHALE_MODEL"]),
+            modelstudio_token_plan_base_url: env_non_blank(&["MODELSTUDIO_TOKEN_PLAN_BASE_URL"]),
+            modelstudio_token_plan_model: env_non_blank(&["MODELSTUDIO_TOKEN_PLAN_MODEL"]),
+            modelstudio_coding_plan_base_url: env_non_blank(&["MODELSTUDIO_CODING_PLAN_BASE_URL"]),
+            modelstudio_coding_plan_model: env_non_blank(&["MODELSTUDIO_CODING_PLAN_MODEL"]),
         }
     }
 

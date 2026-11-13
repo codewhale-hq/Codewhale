@@ -1441,8 +1441,8 @@ fn prose_cells_fill_full_width_on_ultrawide_by_default() {
     let mut cache = TranscriptViewCache::new();
     cache.ensure_filtered(&refs, &revisions, 220, options, &HashMap::new(), None, None);
 
-    for idx in 0..3 {
-        let width = max_line_width(&cache.per_cell[idx].lines);
+    for (idx, cell) in cache.per_cell.iter().enumerate().take(3) {
+        let width = max_line_width(&cell.lines);
         assert!(
             width > RETIRED_RAIL_MEASURE,
             "prose cell {idx} wrapped to {width} columns — still on the retired \
@@ -1495,8 +1495,8 @@ fn transcript_prose_measure_caps_prose_but_not_tools() {
     let mut cache = TranscriptViewCache::new();
     cache.ensure_filtered(&refs, &revisions, 220, options, &HashMap::new(), None, None);
 
-    for idx in 0..3 {
-        let width = max_line_width(&cache.per_cell[idx].lines);
+    for (idx, cell) in cache.per_cell.iter().enumerate().take(3) {
+        let width = max_line_width(&cell.lines);
         assert!(
             width > 105,
             "prose cell {idx} wrapped to {width} columns — still on the retired \

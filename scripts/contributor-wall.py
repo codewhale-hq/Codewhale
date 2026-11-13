@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Everyone whose work landed in or is credited by Codewhale, on one wall.
 
-GitHub's contributor list counts only commit authors whose email is linked to
-an account. Harvested pull requests, co-author trailers, unlinked commit
-emails and credited bug reports never reach it, so it shows about half of the
-people who built Codewhale.
+GitHub's contributor count takes only commit authors and co-author trailers
+whose email is linked to an account. Harvested pull requests without a trailer,
+unlinked commit emails and credited bug reports never reach it, so it shows
+about half of the people who built Codewhale.
 
   refresh  rebuild docs/contributors.json from git history, the CHANGELOG,
            docs/CONTRIBUTORS.md and GitHub (needs `gh`)
@@ -202,8 +202,8 @@ def render() -> None:
         "<!-- contributor-wall:start -->\n## Everyone\n\n"
         f"[![{total} people built Codewhale](assets/contributors.png)](#everyone)\n\n"
         f"{total} people have code, co-authored commits, carried-forward pull requests or credited reports in Codewhale. "
-        "GitHub's contributor list shows only commit authors whose email is linked to their account, so it counts "
-        f"{data['github_contributor_list']} of them. If your commits are missing there, add your commit email to your "
+        "GitHub's contributor count includes only commit authors and co-authors whose email is linked to their "
+        "account, so it misses many of them. If your commits are missing there, add your commit email to your "
         "GitHub account and they will link.\n\n"
         f"{links}\n\nAlso with us, from commits whose email is not linked to an account: {' · '.join(extra)}.\n"
         "<!-- contributor-wall:end -->\n"

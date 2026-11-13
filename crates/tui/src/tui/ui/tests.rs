@@ -8950,10 +8950,9 @@ fn setup_runtime_presets_preserve_environment_authority_and_state() {
         "DEEPSEEK_SANDBOX_MODE",
     ]
     .map(EnvVarGuard::remove);
-    let _managed = EnvVarGuard::set(
-        "CODEWHALE_MANAGED_CONFIG_PATH",
-        home._tmp.path().join("absent-managed.toml"),
-    );
+    let empty_managed = home._tmp.path().join("empty-managed.toml");
+    std::fs::write(&empty_managed, "").expect("empty managed config");
+    let _managed = EnvVarGuard::set("CODEWHALE_MANAGED_CONFIG_PATH", &empty_managed);
     let _requirements = EnvVarGuard::set(
         "CODEWHALE_REQUIREMENTS_PATH",
         home._tmp.path().join("absent-requirements.toml"),

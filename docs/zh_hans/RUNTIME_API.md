@@ -652,13 +652,15 @@ Codewhale 0.10.2 的 ACP v1 支持不完整。`session/new` 和 `session/load`
 会在创建、恢复或返回缓存会话之前拒绝非空 `mcpServers`，返回 `-32602`。
 该字段可省略或为 `[]`；null 与其他非数组值无效。验证不会执行所提供的命令。
 [ACP v1 要求 stdio MCP 支持](https://agentclientprotocol.com/protocol/v1/session-setup#mcp-servers)；HTTP/SSE 能力为 false 并不代表完整合规。
-需要 MCP 的集成请用完整 Runtime API。下列工具限制来自 Codewhale host profile，
+需要这类集成请用完整 Runtime API 及其现有 MCP 管理。下列工具限制来自 Codewhale host profile，
 不是 ACP 协议本身的限制。
 
 受信任的本地 ACP profile 将 Core 收窄到文件/搜索/git/patch，以及获准的前台
-shell 工具。Shell 同时要求编辑器声明 terminal 支持、操作者允许 `allow_shell`；
-指定的外部沙箱不可用时不提供 shell。此接口不提供 MCP、动态工具、任务、PTY、
-后台 shell、解释器、子智能体或 RLM 生命周期。内置工具覆盖会移除整个兼容别名族。
+shell 工具，外加已审查的插件工具（`extension_host` 功能）和 Codewhale 中配置的
+MCP 服务器的工具（`mcp` 功能），均受同一权限设置约束；这一点见于 0.10.2 之后的 main，0.10.2 本身不含。Shell 同时要求编辑器声明
+terminal 支持、操作者允许 `allow_shell`；指定的外部沙箱不可用时不提供 shell。此接口
+不提供客户端传入的 MCP 服务器、动态工具、任务、PTY、后台 shell、解释器、子智能体
+或 RLM 生命周期。内置工具覆盖会移除整个兼容别名族。
 最终派发再次校验 profile；伪造别名、hook 改写或目录中缺失的工具不能绕过限制。
 Full Access 下 Plan 仍只读。Full Access 与普通审批姿态是服务端拥有的只读选项，
 编辑器不能放宽。`approval_policy = "never"` 不是 ACP 审批姿态，服务端会拒绝

@@ -161,6 +161,17 @@ separately from the #6953 reporter-observed exports; the x64 profile now allows
 468 pairs. The candidate still has to pass the import check against its final
 executable bytes, and neither addition is a 14393 or installer run.
 
+Release candidate run 43186389246 on source `f5a3dda975` then stopped the same
+check on three more pairs, `GetSidIdentifierAuthority`, `GetSidSubAuthority` and
+`GetSidSubAuthorityCount` from advapi32.dll, on both 64-bit targets. Probe run
+43197611105 (Windows 11 ARM64 build 26200.9725) resolved all 447 imports of
+that candidate's ARM64 executables, and the 3 pairs were added. For x64 the 3
+pairs are documented Microsoft API contracts (Windows XP minimum on each
+function's reference page), labelled apart from the #6953 reporter-observed
+exports; the x64 profile now allows 471 pairs and the ARM64 profile 473. The
+same limit applies: the candidate still has to pass the import check against
+its final executable bytes, and neither addition is a 14393 or installer run.
+
 At this snapshot, startup/installation of the final release bytes on an actual
 1607 machine and the candidate's generated uninstaller were still unqualified.
 The final frozen source, release import dumps, archive/native/npm installation,

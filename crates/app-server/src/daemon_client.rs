@@ -41,6 +41,34 @@ mod platform {
         tokio::io::WriteHalf<Connection>,
     >;
 
+    fn resolved_store_form(path: PathBuf) -> Option<PathBuf> {
+        let checked = codewhale_engine::runtime_threads::checked_runtime_store_root(path).ok()?;
+        let mut tail = Vec::new();
+        let mut probe = checked.as_path();
+        loop {
+            match probe.canonicalize() {
+                Ok(real) => {
+                    return Some(tail.iter().rev().fold(real, |acc, part| acc.join(part)));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    tail.push(probe.file_name()?.to_owned());
+                    probe = probe.parent()?;
+                }
+                Err(_) => return None,
+            }
+        }
+    }
+
+    fn resolved_store_form_of(path: &std::path::Path) -> PathBuf {
+        resolved_store_form(path.to_path_buf()).unwrap_or_else(|| path.to_path_buf())
+    }
+
+    fn same_store_path(left: &std::path::Path, right: &std::path::Path) -> bool {
+        left == right
+            || (cfg!(any(target_os = "macos", windows))
+                && left.to_string_lossy().to_lowercase() == right.to_string_lossy().to_lowercase())
+    }
+
     fn same_socket_selection(left: &std::path::Path, right: &std::path::Path) -> bool {
         if left == right {
             return true;
@@ -228,15 +256,13 @@ mod platform {
             Ok(())
         }
         fn discard_if_store_gone_blocking(&self, selected_store: PathBuf) -> Result<bool> {
-            let gone =
-                codewhale_engine::runtime_threads::checked_runtime_store_root(selected_store)
-                    .is_ok_and(|selected| {
-                        selected == self.receipt().data_dir
-                            && matches!(
-                                selected.symlink_metadata(),
-                                Err(error) if error.kind() == std::io::ErrorKind::NotFound
-                            )
-                    });
+            let gone = resolved_store_form(selected_store).is_some_and(|selected| {
+                same_store_path(&selected, &resolved_store_form_of(&self.receipt().data_dir))
+                    && matches!(
+                        selected.symlink_metadata(),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+                    )
+            });
             if !gone || !matches!(self.revalidate_receipt(), Ok(true)) {
                 return Ok(false);
             }

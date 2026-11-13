@@ -6,6 +6,10 @@
 
 在终端中，`/skills` 会打开 **Extensions → Skills**。在某个 skill 上按 Enter 会打开专用管理器（也可直接用 `/skills manage` 打开），用于现有 skill 的安装、更新、移除和信任操作。`/skill <name>` 仍然用于激活 skill，显式的检查、远程、同步和建议子命令也仍然可用。
 
+你添加到 Codewhale 的一切都叫插件：你手动设置的 skill 是 **Skill** 类插件；
+插件包里的 skill 属于该插件。skill 仍在 Extensions → Skills 和 Customize › Skills 管理；把所有种类放在一个
+插件列表里是 0.10.3 的计划，当前版本尚无。本页用“skill”指这一种类；文件、信任和 `/skills` 命令都不变。
+
 Skills 是可复用的 `SKILL.md` 指令包。Codewhale 从多个根目录发现它们，但**只有 Codewhale 拥有的目录可写**。统一的 `/skills manage` 管理器是审计与变更的交互界面；斜杠别名共享同一条写入路径。
 
 关于 Claude Code 插件边界，参见 [CLAUDE_PLUGIN_COMPAT.md](./CLAUDE_PLUGIN_COMPAT.md)。

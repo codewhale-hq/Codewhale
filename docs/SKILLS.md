@@ -5,6 +5,13 @@ In the terminal, `/skills` opens **Extensions → Skills**. Enter on a skill ope
 
 > 阅读简体中文版：[zh_hans/SKILLS.md](zh_hans/SKILLS.md)
 
+Everything you add to Codewhale is a plugin: a skill you set up by hand is a
+plugin of the kind **Skill**, and a skill inside a plugin bundle belongs to that
+plugin. Skills are still managed here, under Extensions → Skills and Customize ›
+Skills; one Plugins list that shows every kind together is planned for 0.10.3 and
+is not in this build. This page keeps the word "skill" for the kind; files, trust
+and the `/skills` commands are unchanged.
+
 Skills are reusable `SKILL.md` instruction packs. Codewhale discovers them from
 several roots, but **only Codewhale-owned directories are writable**. The unified
 `/skills manage` manager is the interactive surface for audit and mutation; slash

@@ -33,6 +33,8 @@ pub const LEGACY_CLI_API_KEY_SOURCE_ENV: &str = "DEEPSEEK_API_KEY_SOURCE";
 /// [`CLI_API_KEY_SOURCE_ENV`]. Set to `1`/`0` on every delegated run.
 pub const TELEMETRY_FLOOR_ENV: &str = "CODEWHALE_TELEMETRY_FLOOR";
 
+pub const TELEMETRY_SOURCE_ENV: &str = "CODEWHALE_TELEMETRY_SOURCE";
+
 /// Whether an environment-level kill switch forces telemetry off here.
 ///
 /// A floor is *not* the same as "telemetry resolved to false": off is the
@@ -91,6 +93,32 @@ impl TelemetrySource {
             Self::Config => "config",
             Self::Default => "default",
         }
+    }
+
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "cli" => Some(Self::Cli),
+            "env" => Some(Self::Env),
+            "config" => Some(Self::Config),
+            "default" => Some(Self::Default),
+            _ => None,
+        }
+    }
+}
+
+#[must_use]
+pub fn dispatched_telemetry_source() -> Option<TelemetrySource> {
+    parse_bool(&std::env::var(TELEMETRY_FLOOR_ENV).ok()?).ok()?;
+    TelemetrySource::from_label(&std::env::var(TELEMETRY_SOURCE_ENV).ok()?)
+}
+
+#[must_use]
+pub fn dispatched_telemetry_consent(file_telemetry: Option<bool>) -> (bool, TelemetrySource) {
+    let (on, source) = resolved_telemetry_consent(file_telemetry);
+    match (source, dispatched_telemetry_source()) {
+        (TelemetrySource::Env, Some(declared)) => (on, declared),
+        _ => (on, source),
     }
 }
 

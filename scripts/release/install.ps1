@@ -164,7 +164,10 @@ try {
         }
         Write-Host "Upgraded the earlier Codewhale. Previous files are kept in $recovery for 30 days. Undo: `"$destination\codewhale.exe`" doctor --restore $(Split-Path -Leaf $recovery)"
     }
-    try { & (Join-Path $destination 'codewhale.exe') doctor --installs --brief 2>$null } catch { }
+    $priorTelemetry = $env:CODEWHALE_TELEMETRY; $priorUpdateCheck = $env:CODEWHALE_NO_UPDATE_CHECK
+    $env:CODEWHALE_TELEMETRY = '0'; $env:CODEWHALE_NO_UPDATE_CHECK = '1'
+    try { & (Join-Path $destination 'codewhale.exe') doctor --installs --brief 2>$null } catch { } finally { $env:CODEWHALE_TELEMETRY = $priorTelemetry; $env:CODEWHALE_NO_UPDATE_CHECK = $priorUpdateCheck }
+    Write-Host "Usage reporting is on by default (counts only, never your code or conversations). Turn it off: `"$destination\codewhale.exe`" config set telemetry false"
     Write-Host "Updates install automatically; turn off with: codewhale config set update.mode notify"
     $onPath = @($env:Path -split ';' | Where-Object { $_ -and (Path-Key $_) -eq (Path-Key $destination) }).Count -gt 0
     try { Ensure-UserPath $destination } catch { Write-Warning "Could not update your user PATH: $($_.Exception.Message). Add $destination to it yourself." }
