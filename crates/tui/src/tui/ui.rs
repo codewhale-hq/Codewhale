@@ -18,7 +18,6 @@ use codewhale_core::ContextReference;
 use codewhale_error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_release::InstallMethod;
-use codewhale_runtime::resource_telemetry::estimate_output_tokens_from_text;
 // On Windows the push/pop helpers write the escapes directly; crossterm's
 // PushKeyboardEnhancementFlags / PopKeyboardEnhancementFlags commands are
 // never referenced, so the imports are gated to avoid -D warnings failures.

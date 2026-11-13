@@ -19615,7 +19615,7 @@ fn a_failed_turn_reason_is_persisted_and_replayed_on_resume() {
     );
     assert_eq!(
         outcome.error,
-        codewhale_secrets::redact::redact_secrets(&shown),
+        codewhale_sanitize::redact::redact_secrets(&shown),
         "the record is what the live transcript showed"
     );
 

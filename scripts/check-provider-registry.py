@@ -8,7 +8,7 @@ the stable identifiers and default strings that are easy for docs to drift from:
 - provider TOML tables
 - descriptor-owned released presentation identities
 - shipped-provider table rows
-- static ModelRegistry provider rows
+- reviewed catalog provider selection rows
 - default provider model/base URL constants
 """
 
@@ -29,7 +29,6 @@ TUI_CONFIG_RS = ROOT / "crates" / "runtime" / "src" / "config.rs"
 # Default provider model/base-URL constants were split out of config.rs into
 # this leaf module (#3311); read them from there for the default-string check.
 PROVIDER_DATA = ROOT / "crates" / "config" / "assets" / "provider_descriptors.json"
-AGENT_RS = ROOT / "crates" / "agent" / "src" / "lib.rs"
 PROVIDERS_MD = ROOT / "docs" / "PROVIDERS.md"
 CONFIGURATION_MD = ROOT / "docs" / "CONFIGURATION.md"
 WEB_FACTS_LIB = ROOT / "web" / "scripts" / "facts-lib.mjs"
@@ -424,9 +423,9 @@ def static_registry_provider_rows(providers_md: str) -> set[str]:
     return set(re.findall(r"^\|\s*`([^`]+)`\s*\|", table, flags=re.MULTILINE))
 
 
-def model_registry_providers(agent_rs: str, variant_to_id: dict[str, str]) -> set[str]:
-    # ModelRegistry is now a compatibility projection of the reviewed catalog.
-    # Reading tests or caller literals cannot reconstruct its shipping roster.
+def model_registry_providers(variant_to_id: dict[str, str]) -> set[str]:
+    # The reviewed catalog selections are the only shipping model roster.
+    # Reading tests or caller literals cannot reconstruct it.
     data = json.loads(read(ROOT / "crates/config/assets/catalog_corrections.json"))
     reviewed = data.get("reviewed")
     if not isinstance(reviewed, dict) or not reviewed.get("revision"):
@@ -437,8 +436,6 @@ def model_registry_providers(agent_rs: str, variant_to_id: dict[str, str]) -> se
     ids = {row.get("provider") for row in rows if isinstance(row, dict)}
     if None in ids or ids - set(variant_to_id.values()):
         raise ValueError("reviewed catalog uses missing/unknown provider identity")
-    if not re.search(r"bundled_reviewed\(\)\s*\.selections", agent_rs):
-        raise ValueError("ModelRegistry must project the shared reviewed selection rows")
     return ids
 
 
@@ -578,7 +575,6 @@ def main() -> int:
         config_rs = "\n".join(read(path) for path in sorted(CONFIG_RS.parent.glob("*.rs")) if path.name != "tests.rs")
         provider_kind_rs = read(PROVIDER_KIND_RS)
         tui_config_rs = read(TUI_CONFIG_RS)
-        agent_rs = read(AGENT_RS)
         providers_md = read(PROVIDERS_MD)
         configuration_md = read(CONFIGURATION_MD)
         web_facts_lib = read(WEB_FACTS_LIB)
@@ -646,8 +642,8 @@ def main() -> int:
             shipped_provider_tables(providers_md),
         )
         errors += report_set(
-            "static ModelRegistry rows",
-            model_registry_providers(agent_rs, variant_to_id),
+            "reviewed catalog selection rows",
+            model_registry_providers(variant_to_id),
             static_registry_provider_rows(providers_md),
         )
 

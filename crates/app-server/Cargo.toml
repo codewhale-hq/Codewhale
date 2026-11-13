@@ -32,7 +32,6 @@ codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true
-codewhale-agent = { path = "../agent", version = "0.10.3" }
 codewhale-config = { path = "../config", version = "0.10.3" }
 codewhale-core = { path = "../core", version = "0.10.3" }
 codewhale-hooks = { path = "../hooks", version = "0.10.3" }

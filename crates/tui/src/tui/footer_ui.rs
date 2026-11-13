@@ -120,7 +120,7 @@ pub(crate) fn friendly_subagent_progress(
 
 pub(crate) fn one_line_summary(text: &str, max_width: usize) -> String {
     let mut cleaned = String::with_capacity(text.len());
-    codewhale_tui_kit::osc8::strip_ansi_into(text, &mut cleaned);
+    codewhale_sanitize::sanitize::strip_ansi_into(text, &mut cleaned);
     truncate_line_to_width(
         &cleaned.split_whitespace().collect::<Vec<_>>().join(" "),
         max_width,

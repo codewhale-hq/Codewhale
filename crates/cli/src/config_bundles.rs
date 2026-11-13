@@ -379,7 +379,7 @@ fn url_carries_credential(text: &str) -> bool {
     // `***`; count masks rather than compare bytes, because it re-encodes the
     // query and would otherwise flag benign URLs.
     let masks = |value: &str| value.matches("***").count();
-    if masks(&codewhale_secrets::sanitize::redact_url_for_display(text)) > masks(text) {
+    if masks(&codewhale_sanitize::sanitize::redact_url_for_display(text)) > masks(text) {
         return true;
     }
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();

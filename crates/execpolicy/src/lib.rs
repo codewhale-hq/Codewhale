@@ -43,16 +43,6 @@ pub struct Ruleset {
 }
 
 impl Ruleset {
-    /// Creates an empty ruleset at the builtin default priority layer.
-    pub fn builtin_default() -> Self {
-        Self {
-            layer: RulesetLayer::BuiltinDefault,
-            trusted_prefixes: vec![],
-            denied_prefixes: vec![],
-            ask_rules: vec![],
-        }
-    }
-
     /// Creates an agent-layer ruleset with the given trusted and denied prefixes.
     pub fn agent(trusted: Vec<String>, denied: Vec<String>) -> Self {
         Self {
@@ -366,15 +356,6 @@ impl ExecPolicyEngine {
             approved_for_session: HashSet::new(),
             arity_dict: BashArityDict::new(),
         }
-    }
-
-    /// Add a ruleset layer (re-sorts internally).
-    pub fn add_ruleset(&mut self, ruleset: Ruleset) {
-        let mut guard = Self::lock_rulesets(&self.rulesets);
-        let mut updated = guard.clone();
-        updated.push(ruleset);
-        updated.sort_by_key(|r| r.layer);
-        *guard = updated;
     }
 
     /// Replace the ruleset at one priority layer without clearing approvals

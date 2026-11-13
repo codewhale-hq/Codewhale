@@ -2009,7 +2009,7 @@ impl SavedTurnOutcome {
     /// Build the persisted record for a failed turn. Redacts before bounding
     /// so a cut can never leave half a secret behind.
     pub fn failed(error: &str, after_message_count: usize) -> Self {
-        let redacted = codewhale_secrets::redact::redact_secrets(error.trim());
+        let redacted = codewhale_sanitize::redact::redact_secrets(error.trim());
         let error = if redacted.chars().count() > MAX_SAVED_TURN_OUTCOME_ERROR_CHARS {
             let mut cut: String = redacted
                 .chars()
@@ -4307,23 +4307,6 @@ impl SessionManager {
     #[cfg(any(test, feature = "test-support"))]
     pub fn save_session_bounded(&self, session: SavedSession) -> std::io::Result<PathBuf> {
         self.save_session_inner(session, JournalPrune::Excess, true)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn commit_completed_session(&self, session: SavedSession) -> io::Result<io::Result<()>> {
-        let session_id = session.metadata.id.clone();
-        let exec_mode = session.metadata.mode.as_deref() == Some("exec");
-        let clear = self
-            .with_session_write_admission(&session_id, || {
-                let persisted = self.load_session_write_metadata(&session_id)?;
-                self.write_session_admitted(session, JournalPrune::Excess, true, &persisted)?;
-                Ok(self.clear_session_checkpoint_admitted(&session_id))
-            })?
-            .ok_or_else(Self::retired_session_write_error)?;
-        if let Err(error) = self.cleanup_old_sessions_for_mode(None, Some(exec_mode)) {
-            tracing::warn!(session_id = %session_id, %error, "completion was committed but retention could not be inspected");
-        }
-        Ok(clear)
     }
 
     /// Make a saved document whose file exceeds the full-history transport

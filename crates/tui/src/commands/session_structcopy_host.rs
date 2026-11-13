@@ -9,7 +9,7 @@ use codewhale_command_contract::facets::*;
 #[cfg(test)]
 use codewhale_command_contract::outcome::StructcopyCommandResult;
 use codewhale_models::ContentBlock;
-use codewhale_secrets::sanitize::is_internal_role;
+use codewhale_sanitize::sanitize::is_internal_role;
 use std::path::Path;
 
 pub(super) struct SessionStructcopyAdapter<'a> {

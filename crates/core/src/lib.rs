@@ -1,12 +1,9 @@
 pub mod context_reference;
 pub mod fragments;
-pub mod ids;
-pub mod journal;
 pub mod prefix_cache;
 pub mod request;
 pub mod role;
 pub mod secret_eq;
-pub mod session;
 pub mod tool_parser;
 
 pub use context_reference::{
@@ -15,10 +12,9 @@ pub use context_reference::{
 };
 
 use codewhale_config::{ConfigToml, ProviderKind};
-use codewhale_hooks::HookDispatcher;
 use codewhale_state::StateStore;
 
-/// Compatibility configuration and hooks.
+/// Compatibility configuration.
 ///
 /// Conversation execution and durable history belong to the held canonical
 /// RuntimeThreadManager/Engine. Legacy State data is retained for read-only
@@ -26,16 +22,11 @@ use codewhale_state::StateStore;
 pub struct Runtime {
     pub config: ConfigToml,
     state: StateStore,
-    pub hooks: HookDispatcher,
 }
 
 impl Runtime {
-    pub fn new(config: ConfigToml, state: StateStore, hooks: HookDispatcher) -> Self {
-        Self {
-            config,
-            state,
-            hooks,
-        }
+    pub fn new(config: ConfigToml, state: StateStore) -> Self {
+        Self { config, state }
     }
 
     /// Existing compatibility data and receipts; no transcript controller.
@@ -103,7 +94,7 @@ mod tests {
     fn runtime_bookkeeping_keeps_the_legacy_store_read_only() {
         let store = temp_core_state("read-only-runtime");
         let before = store.list_threads(Default::default()).unwrap();
-        let mut runtime = Runtime::new(ConfigToml::default(), store, HookDispatcher::default());
+        let mut runtime = Runtime::new(ConfigToml::default(), store);
         runtime.update_config(ConfigToml::default());
         assert_eq!(
             runtime
@@ -113,11 +104,7 @@ mod tests {
                 .len(),
             before.len()
         );
-        let reopened = Runtime::new(
-            runtime.config.clone(),
-            runtime.state_store().clone(),
-            HookDispatcher::default(),
-        );
+        let reopened = Runtime::new(runtime.config.clone(), runtime.state_store().clone());
         assert!(
             reopened
                 .state_store()
