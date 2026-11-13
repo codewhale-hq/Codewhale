@@ -248,7 +248,7 @@ assert.match(nightly, /startsWith\(matrix\.target, 'aarch64-'\).*runner\.arch ==
 const nightlyArmMuslSetup = namedStep(nightly, "Install Linux ARM64 musl toolchain");
 assert.match(nightlyArmMuslSetup, /matrix\.target == 'aarch64-unknown-linux-musl'/);
 assert.match(nightlyArmMuslSetup, /apt-get install -y binutils musl-tools/);
-assert.match(nightlyArmMuslSetup, /rustup target add --toolchain stable aarch64-unknown-linux-musl/);
+assert.match(nightlyArmMuslSetup, /rustup target add aarch64-unknown-linux-musl/);
 const nightlyArmStaticSmoke = namedStep(
   nightly,
   "Verify static Linux ARM64 binary and launch",
@@ -373,7 +373,7 @@ assert.deepEqual([...new Set(valuesForKey(artifacts, "target"))].sort(), expecte
 const releaseMuslBuild = namedStep(artifacts, "Build static Linux binaries (musl)");
 assert.match(releaseMuslBuild, /endsWith\(matrix\.target, '-unknown-linux-musl'\)/);
 assert.match(releaseMuslBuild, /apt-get install -y binutils musl-tools/);
-assert.match(releaseMuslBuild, /rustup target add --toolchain stable \$\{\{ matrix\.target \}\}/);
+assert.match(releaseMuslBuild, /rustup target add \$\{\{ matrix\.target \}\}/);
 assert.match(
   releaseMuslBuild,
   /cargo build --profile dist --locked --target \$\{\{ matrix\.target \}\} -p codewhale-cli/,
@@ -903,6 +903,33 @@ assert.ok(
   jobTimeout(parityWorkflow, "parity") >= jobTimeout(ci, "test"),
   "release parity must allow the full CI suite's cold-build budget",
 );
+
+const pinnedToolchain = read("rust-toolchain.toml").match(/^channel\s*=\s*"([^"]+)"/m)[1];
+assert.match(pinnedToolchain, /^\d+\.\d+\.\d+$/, "rust-toolchain.toml must pin an exact Rust release");
+const msrv = read("Cargo.toml").match(/^rust-version\s*=\s*"([^"]+)"/m)[1];
+const workflowDir = path.join(repoRoot, ".github", "workflows");
+for (const file of fs.readdirSync(workflowDir).filter((name) => /\.ya?ml$/.test(name)).sort()) {
+  const source = read(`.github/workflows/${file}`)
+    .split("\n")
+    .map((line) => line.replace(/(^|\s)#.*$/, ""))
+    .join("\n");
+  const selectors = [
+    ...[...source.matchAll(/dtolnay\/rust-toolchain@([^\s]+)/g)].map((m) => ["action ref", m[1]]),
+    ...[...source.matchAll(/^\s+toolchain:\s*["']?([^"'\s]+)["']?\s*$/gm)].map((m) => ["toolchain input", m[1]]),
+    ...[...source.matchAll(/^\s+rust-version:\s*["']?([^"'\s]+)["']?\s*$/gm)].map((m) => ["rust-version input", m[1]]),
+  ];
+  for (const [kind, value] of selectors) {
+    if (/^[0-9a-f]{40}$/.test(value) || value === "master") continue;
+    const expected = file === "ci.yml" && value === msrv ? msrv : pinnedToolchain;
+    assert.equal(value, expected, `${file}: ${kind} ${value} must equal the pinned toolchain ${pinnedToolchain}`);
+  }
+  assert.doesNotMatch(source, /rustup (?:target|component) add --toolchain/, `${file}: rustup adds must follow rust-toolchain.toml`);
+  assert.doesNotMatch(source, new RegExp(`\\bcargo \\+(?!${msrv.replace(".", "\\.")}\\b)\\S+`), `${file}: only the MSRV may select a toolchain with cargo +`);
+}
+const msrvJob = ci.slice(ci.indexOf("\n  msrv:"), ci.indexOf("\n  workflow-rlm-cache:"));
+assert.match(msrvJob, new RegExp(`RUSTUP_TOOLCHAIN: "${msrv.replace(".", "\\.")}"`), "the MSRV job must override rust-toolchain.toml for every step");
+assert.match(msrvJob, new RegExp(`toolchain: "${msrv.replace(".", "\\.")}"`));
+assert.match(msrvJob, new RegExp(`cargo \\+${msrv.replace(".", "\\.")} check --workspace --locked`));
 
 console.log(
   "Workflow contracts OK: 6-target/12-asset single-runtime nightly and exact-head 8-target/38-asset release candidate.",

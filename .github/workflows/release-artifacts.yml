@@ -172,7 +172,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-07-18
         with:
-          toolchain: stable
+          toolchain: 1.100.0
           targets: ${{ matrix.target }}
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
         id: sccache
@@ -216,7 +216,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y binutils musl-tools
-          rustup target add --toolchain stable ${{ matrix.target }}
+          rustup target add ${{ matrix.target }}
           cargo build --profile dist --locked --target ${{ matrix.target }} -p codewhale-cli
       - name: Configure Android NDK linker
         if: matrix.target == 'aarch64-linux-android' && runner.os == 'Linux'

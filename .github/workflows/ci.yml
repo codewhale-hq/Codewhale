@@ -203,7 +203,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
@@ -428,7 +428,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: 1.100.0
       - uses: mozilla-actions/sccache-action@v0.0.11
         id: sccache
         # The GitHub Actions cache backend is main-only, mirroring
@@ -487,7 +487,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         if: needs.changes.outputs.heavy == 'true'
         with:
-          toolchain: stable
+          toolchain: 1.100.0
           components: rustfmt, clippy
       - uses: mozilla-actions/sccache-action@v0.0.11
         id: sccache
@@ -728,6 +728,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.heavy == 'true'
     timeout-minutes: 45
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: "1.89"
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
@@ -751,7 +753,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
       - uses: mozilla-actions/sccache-action@v0.0.11
         id: sccache
         # Main-only GitHub Actions cache backend; see the Safety gate job.
@@ -825,11 +827,11 @@ jobs:
         if: needs.changes.outputs.heavy == 'true' && matrix.os == 'windows-latest'
         shell: pwsh
         run: ./scripts/installer/installer-path-regression.tests.ps1 -AllowUserPathMutation
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
         if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
       - name: Install macOS LLVM tools
         if: needs.changes.outputs.heavy == 'true' && matrix.os == 'macos-latest'
-        run: rustup component add llvm-tools --toolchain stable
+        run: rustup component add llvm-tools
       - name: Omit macOS build debug metadata
         if: needs.changes.outputs.heavy == 'true' && matrix.os == 'macos-latest'
         shell: bash
@@ -1222,7 +1224,7 @@ jobs:
         if: needs.changes.outputs.heavy == 'true'
         shell: pwsh
         run: ./scripts/installer/update-user-path.tests.ps1
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
         if: needs.changes.outputs.heavy == 'true'
       - name: Check every workspace target compiles on Windows
         if: needs.changes.outputs.heavy == 'true'
@@ -1267,7 +1269,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
       - uses: Swatinem/rust-cache@v2
         with:
           cache-bin: false
@@ -1305,7 +1307,7 @@ jobs:
         run: echo "No executable Rust changes detected; preserving required npm wrapper smoke context."
       - uses: actions/checkout@v7
         if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
         if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
       - uses: mozilla-actions/sccache-action@v0.0.11
         id: sccache
@@ -1364,7 +1366,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
       - uses: mozilla-actions/sccache-action@v0.0.11
         id: sccache
         # Main-only GitHub Actions cache backend; see the Safety gate job.
@@ -1423,7 +1425,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |

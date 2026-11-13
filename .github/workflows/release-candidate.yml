@@ -35,7 +35,7 @@ jobs:
           package-manager-cache: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable 2026-07-18
         with:
-          toolchain: stable
+          toolchain: 1.100.0
       - name: Match dispatch to the requested commit
         id: source
         shell: bash

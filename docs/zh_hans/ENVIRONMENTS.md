@@ -16,7 +16,7 @@
   子智能体（subagent）工作树）。这些被拉起的 shell 只有在 `/workspace` 内部
   才能看到仓库的 `rust-toolchain.toml` 覆盖设置，所以没有全局默认值时，
   它们会以“rustup could not choose a version of rustc to run”失败。
-  更新脚本会运行 `rustup default stable` 来修复这一点。
+  更新脚本会运行 `rustup default 1.100.0` 来修复这一点。
 - **`/workspace` 上已知的环境相关测试失败（不是代码缺陷）：** 因为检出目录
   直接位于 `/` 之下，有两个 `codewhale-tui` 子智能体测试会在这里失败——
   `git_repo_root_reports_attempted_paths_when_no_repo_found`（无法在不可写的
