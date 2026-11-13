@@ -737,7 +737,15 @@ impl ProviderDashboardRow {
                     billing_presentation:
                         codewhale_engine::route_billing::BillingPresentation::Unknown,
                     maturity: ProviderMaturity::for_provider(provider),
-                    messages: vec![format!("provider admission failed: {error}")],
+                    messages: if provider == ProviderKind::Custom
+                        && !is_active
+                        && configured.is_none()
+                        && provider_descriptor(&provider_id).is_none()
+                    {
+                        Vec::new()
+                    } else {
+                        vec![format!("provider admission failed: {error}")]
+                    },
                     external_credential_status: None,
                     is_active,
                     has_key: false,
@@ -1140,6 +1148,9 @@ impl ProviderDashboardRow {
     /// repeats. One owner so the renderer and the tests cannot disagree about
     /// what a provider's state reads as.
     fn detail_state_line(&self) -> String {
+        if self.is_custom_placeholder() {
+            return "needs endpoint".to_string();
+        }
         let auth = match self.auth_status {
             ProviderAuthStatus::Missing | ProviderAuthStatus::Configured => String::new(),
             status => format!(" | {}", status.label()),
@@ -1164,7 +1175,7 @@ impl ProviderDashboardRow {
     fn list_row_hint(&self, view: ProviderListView) -> String {
         match view {
             // `readiness` already reads as prose ("key saved · not checked",
-            // "missing key"); `auth_status` said the same thing again in
+            // "needs key"); `auth_status` said the same thing again in
             // machine spelling ("key:configured", "key:not-set").
             ProviderListView::Configured => self.readiness.label().to_string(),
             ProviderListView::Catalog => {
@@ -6242,6 +6253,40 @@ mod tests {
     }
 
     #[test]
+    fn fresh_install_custom_slot_reads_needs_endpoint_without_legacy_or_error() {
+        let picker = ProviderPickerView::new(ProviderKind::Custom, &Config::default());
+        let row = picker
+            .rows
+            .iter()
+            .find(|row| row.provider_id == ProviderKind::Custom.as_str())
+            .expect("custom slot");
+        assert!(row.is_custom_placeholder());
+        assert_eq!(row.detail_state_line(), "needs endpoint");
+        assert!(!row.detail_state_line().contains("legacy"));
+        assert!(row.messages.is_empty(), "{:?}", row.messages);
+    }
+
+    #[test]
+    fn selected_custom_route_without_an_endpoint_keeps_its_admission_error() {
+        let mut config = Config::default();
+        config.provider = Some("custom".to_string());
+        let picker = ProviderPickerView::new(ProviderKind::Custom, &config);
+        let row = picker
+            .rows
+            .iter()
+            .find(|row| row.provider_id == ProviderKind::Custom.as_str())
+            .expect("custom slot");
+        assert!(!row.is_custom_placeholder());
+        assert!(
+            row.messages
+                .iter()
+                .any(|m| m.contains("provider admission failed")),
+            "{:?}",
+            row.messages
+        );
+    }
+
+    #[test]
     fn default_view_shows_only_configured_providers() {
         // #3830: with nothing but the active provider set up, the default
         // list view excludes the unconfigured catalog noise — even though
@@ -8223,9 +8268,9 @@ mod tests {
 
         assert_eq!(row.auth_status, ProviderAuthStatus::Missing);
         assert_eq!(row.readiness, ResolvedProviderReadiness::MissingKey);
-        assert_eq!(row.readiness.label(), "missing key");
+        assert_eq!(row.readiness.label(), "needs key");
         let hint = row.detail_state_line();
-        assert!(hint.contains("missing key"));
+        assert!(hint.contains("needs key"));
         assert!(!hint.contains("key:not-set"));
         assert!(!hint.contains("needs-auth"));
         assert!(!hint.contains("auth:missing"));

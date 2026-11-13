@@ -979,7 +979,7 @@
   "OnboardTrustLocationPrefix": "작업 공간  ",
   "OnboardTrustRiskHint": "신뢰할 수 없는 파일은 프롬프트 주입으로 에이전트를 다른 방향으로 유도할 수 있습니다.",
   "OnboardTrustEffectHint": "신뢰는 이 Codewhale 설치에 기록되며 작업 공간 도구와 훅을 활성화합니다.",
-  "OnboardTrustEnterHint": "1 또는 Y로 신뢰, 2 또는 U로 신뢰 없이 계속, 3·N·Esc로 Codewhale을 종료합니다.",
+  "OnboardTrustEnterHint": "1로 신뢰, 2로 신뢰 없이 계속, 3 또는 Esc로 Codewhale을 종료합니다.",
   "OnboardTrustUntrustedNotice": "작업 공간을 신뢰하지 않고 계속합니다 — 도구와 훅은 제한된 상태로 유지됩니다.",
   "RedactionGateActionConfirm": "확인 후 끄기",
   "RedactionGateActionKeep": "마스킹 유지",
