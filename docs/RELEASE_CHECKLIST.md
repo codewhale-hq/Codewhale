@@ -178,7 +178,7 @@ known limitations and publication approval. These proofs are separate.
       requires authorization. Required unproven acceptance blocks release;
       disclose an explicitly accepted limitation as such.
 - [ ] A `ci/*` release-candidate run counts only when its SHA equals the tag SHA.
-- [ ] The `ci.yml` npm wrapper smoke (windows) also needs sccache off.
+- [ ] The `ci.yml` npm wrapper smoke on Windows runs with sccache off (today the job enables `RUSTC_WRAPPER=sccache`; the fix is not yet made).
 - [ ] The telemetry publication gate holds: the served ingest accepts the tagged
       build's schema before publication.
 - [ ] Every security fix scheduled for this release has landed with two
