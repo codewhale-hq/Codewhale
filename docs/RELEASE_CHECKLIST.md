@@ -151,9 +151,10 @@ known limitations and publication approval. These proofs are separate.
       gh workflow run release-candidate.yml --ref main -f expected_sha="${candidate_sha}"
       ```
 - [ ] Both runs resolve to that SHA and all required jobs execute and succeed.
-      A green workflow badge alone is insufficient: ordinary main-push CI can
-      delegate Linux work to CNB and omit some smoke coverage. Manual full CI
-      forces the release gates on Linux, macOS and Windows.
+      A green workflow badge alone is insufficient: confirm that the required
+      jobs ran for the exact candidate SHA. `main-landing.yml` dispatches full
+      exact-SHA CI on every push to `main`; a landing or pull-request CI receipt
+      does not replace release-candidate acceptance.
 - [ ] The candidate's Parity job succeeds, and its artifact jobs report all eight
       targets and the complete 38-file asset inventory, including Android
       arm64, Windows arm64, native HarmonyOS arm64, `codew`, the NSIS installer,
@@ -178,12 +179,12 @@ known limitations and publication approval. These proofs are separate.
       requires authorization. Required unproven acceptance blocks release;
       disclose an explicitly accepted limitation as such.
 - [ ] A `ci/*` release-candidate run counts only when its SHA equals the tag SHA.
-- [ ] The `ci.yml` npm wrapper smoke on Windows runs with sccache off (today the job enables `RUSTC_WRAPPER=sccache`; the fix is not yet made).
+- [ ] The `ci.yml` npm wrapper smoke on Windows runs with sccache off.
 - [ ] The telemetry publication gate holds: the served ingest accepts the tagged
       build's schema before publication.
 - [ ] Every security fix scheduled for this release has landed with two
-      independent reviews. Record the count only; keep detail confidential
-      until publication is approved.
+      independent reviews. Record confidential counts only in the private
+      release record; keep detail confidential until publication is approved.
 - [ ] If source changes or `main` moves before tagging, deliberately choose the
       new candidate and replace affected proofs. Tag only a SHA with its exact
       CI/RC evidence. Do not duplicate hosted exhaustive gates locally.
