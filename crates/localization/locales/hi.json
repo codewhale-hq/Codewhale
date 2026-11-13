@@ -1016,7 +1016,7 @@
   "OnboardTrustLocationPrefix": "वर्कस्पेस  ",
   "OnboardTrustRiskHint": "अविश्वसनीय फ़ाइलें प्रॉम्प्ट इंजेक्शन से एजेंट को भटका सकती हैं।",
   "OnboardTrustEffectHint": "ट्रस्ट इस Codewhale इंस्टॉलेशन के लिए दर्ज होता है और वर्कस्पेस टूल व हुक सक्षम करता है।",
-  "OnboardTrustEnterHint": "विश्वास के लिए 1 या Y, बिना विश्वास के जारी रखने के लिए 2 या U, या Codewhale बंद करने के लिए 3, N या Esc दबाएँ।",
+  "OnboardTrustEnterHint": "विश्वास के लिए 1, बिना विश्वास के जारी रखने के लिए 2, या Codewhale बंद करने के लिए 3 या Esc दबाएँ।",
   "OnboardTrustUntrustedNotice": "वर्कस्पेस ट्रस्ट के बिना जारी — टूल और हुक प्रतिबंधित रहेंगे।",
   "RedactionGateActionConfirm": "पुष्टि करें और अक्षम करें",
   "RedactionGateActionKeep": "मास्किंग बनाए रखें",

@@ -1016,7 +1016,7 @@
   "OnboardTrustLocationPrefix": "Espai de treball  ",
   "OnboardTrustRiskHint": "Els fitxers no confiables poden intentar redirigir l'agent mitjançant injecció de prompts.",
   "OnboardTrustEffectHint": "La confiança es registra per a aquesta instal·lació de Codewhale i habilita les eines i els hooks de l'espai de treball.",
-  "OnboardTrustEnterHint": "Prem 1 o Y per confiar-hi, 2 o U per continuar sense confiar-hi, o 3, N o Esc per sortir de Codewhale.",
+  "OnboardTrustEnterHint": "Prem 1 per confiar-hi, 2 per continuar sense confiar-hi, o 3 o Esc per sortir de Codewhale.",
   "OnboardTrustUntrustedNotice": "S'ha continuat sense confiança a l'espai de treball — les eines i els hooks continuen restringits.",
   "RedactionGateActionConfirm": "confirmar i desactivar",
   "RedactionGateActionKeep": "mantenir l'emmascarament",
