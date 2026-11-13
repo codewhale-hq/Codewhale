@@ -160,17 +160,16 @@ pub fn redact_model_bound_secrets(input: &str) -> String {
 pub fn redact_secrets_with(input: &str, policy: RedactionPolicy) -> String {
     let mut out = String::with_capacity(input.len());
     let mut in_private_key_block = false;
-    let mut lines = input.split_inclusive('\n').peekable();
-    while let Some(line) = lines.next() {
-        // split_inclusive keeps the newline on the previous chunk, so we do
-        // not need to re-add separators here.
+    let mut offset = 0;
+    for line in input.split_inclusive('\n') {
+        offset += line.len();
+        let rest_of_input = &input[offset..];
         let body = line.strip_suffix('\n').unwrap_or(line);
         let trimmed = body.trim();
-        let next_is_body = lines.peek().is_some_and(|next| looks_like_pem_body(next));
         if in_private_key_block {
             if trimmed.contains(PRIVATE_KEY_FOOTER) {
                 in_private_key_block = false;
-                if let Some(redacted) = redact_private_key_line(line, policy, next_is_body) {
+                if let Some(redacted) = redact_private_key_line(line, policy, rest_of_input) {
                     in_private_key_block = redacted.opens_block;
                     out.push_str(&redacted.text);
                 } else {
@@ -184,7 +183,7 @@ pub fn redact_secrets_with(input: &str, policy: RedactionPolicy) -> String {
             }
             continue;
         }
-        if let Some(redacted) = redact_private_key_line(line, policy, next_is_body) {
+        if let Some(redacted) = redact_private_key_line(line, policy, rest_of_input) {
             in_private_key_block = redacted.opens_block;
             out.push_str(&redacted.text);
             continue;
@@ -204,6 +203,7 @@ const PRIVATE_KEY_LABEL: &str = "PRIVATE KEY";
 const PRIVATE_KEY_LABEL_WINDOW: usize = 48;
 const PRIVATE_KEY_FOOTER: &str = "-----END";
 const PEM_DASHES: &str = "-----";
+const MAX_PEM_LOOKAHEAD_LINES: usize = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum UnclosedPrivateKey {
@@ -236,12 +236,13 @@ fn mask_private_key_spans(
     text: &str,
     placeholder: &str,
     unclosed: UnclosedPrivateKey,
-    next_is_body: bool,
+    rest_of_input: &str,
 ) -> Option<(String, bool)> {
     let mut out = String::with_capacity(text.len());
     let mut cursor = 0;
     let mut changed = false;
     let mut opens_block = false;
+    let mut upcoming_body: Option<bool> = None;
     while let Some(found) = text[cursor..].find(PRIVATE_KEY_HEADER_START) {
         let begin = cursor + found;
         let Some(header_end) = private_key_header_end(text, begin) else {
@@ -264,9 +265,16 @@ fn mask_private_key_spans(
             }
             None => {
                 let before = text[..begin].trim();
-                let opens_line = before.is_empty()
-                    || before.ends_with(PEM_DASHES)
-                    || (next_is_body && ends_after_header(&text[header_end..]));
+                let after = &text[header_end..];
+                let mut opens_line =
+                    before.is_empty() || before.ends_with(PEM_DASHES) || looks_like_pem_body(after);
+                if !opens_line
+                    && unclosed == UnclosedPrivateKey::OpensBlock
+                    && ends_after_header(after)
+                {
+                    opens_line =
+                        *upcoming_body.get_or_insert_with(|| has_upcoming_pem_body(rest_of_input));
+                }
                 if unclosed == UnclosedPrivateKey::ToEnd || opens_line {
                     let key_body = &text[header_end..];
                     if key_body.trim().is_empty() {
@@ -297,7 +305,7 @@ fn looks_like_pem_body(line: &str) -> bool {
     for c in line.chars() {
         if c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=') {
             run += 1;
-            if run >= 40 {
+            if run >= 24 {
                 return true;
             }
         } else {
@@ -307,12 +315,87 @@ fn looks_like_pem_body(line: &str) -> bool {
     false
 }
 
+fn has_upcoming_pem_body(rest: &str) -> bool {
+    for line in rest.split_inclusive('\n').take(MAX_PEM_LOOKAHEAD_LINES) {
+        if looks_like_pem_body(line) {
+            return true;
+        }
+        if !is_pem_preamble_line(line) {
+            return false;
+        }
+    }
+    false
+}
+
+fn is_pem_preamble_line(line: &str) -> bool {
+    let line = line.trim_end_matches(['\n', '\r']);
+    if line.contains(PRIVATE_KEY_HEADER_START) || line.contains(PRIVATE_KEY_FOOTER) {
+        return false;
+    }
+    let mut s = line.trim_start();
+    if let Some((num, rest)) = s.split_once('│')
+        && num.len() <= 12
+        && !num.trim().is_empty()
+        && num.trim().chars().all(|c| c.is_ascii_digit())
+    {
+        s = rest.trim_start();
+    } else if let Some((num, rest)) = s.split_once('\t')
+        && !num.is_empty()
+        && num.chars().all(|c| c.is_ascii_digit())
+    {
+        s = rest.trim_start();
+    } else if let Some(first_space) = s.find(char::is_whitespace).or(Some(s.len()))
+        && let Some((file, rest)) = s[..first_space].split_once(':')
+        && !file.is_empty()
+        && let Some((digits, _)) = rest.split_once(':')
+        && !digits.is_empty()
+        && digits.chars().all(|c| c.is_ascii_digit())
+    {
+        let consumed = file.len() + 1 + digits.len() + 1;
+        s = s[consumed..].trim_start();
+    }
+    if let Some(rest) = s.strip_prefix(['+', '-', '>', '#']) {
+        s = rest.trim_start();
+    }
+    let rest = s.trim_matches(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '\\'));
+    if rest.is_empty() {
+        return true;
+    }
+    let Some((key, _)) = rest.split_once(':') else {
+        return false;
+    };
+    !rest.contains("://")
+        && !rest.ends_with(['{', ';'])
+        && !key.is_empty()
+        && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && !key.chars().all(|c| c.is_ascii_digit())
+}
+
 fn ends_after_header(rest: &str) -> bool {
     let mut chars = rest.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '\\' && matches!(chars.peek(), Some('n' | 'r')) {
-            chars.next();
-            continue;
+        if c == '/' && chars.peek() == Some(&'/') || c == '#' {
+            return true;
+        }
+        if c == '\\' {
+            match chars.peek() {
+                Some('n' | 'r') => {
+                    chars.next();
+                    continue;
+                }
+                Some('u') => {
+                    chars.next();
+                    let hex: String = chars.by_ref().take(4).collect();
+                    if hex.len() == 4
+                        && hex.chars().all(|h| h.is_ascii_hexdigit())
+                        && matches!(hex.to_ascii_lowercase().as_str(), "000a" | "000d")
+                    {
+                        continue;
+                    }
+                    return false;
+                }
+                _ => {}
+            }
         }
         if c.is_ascii_alphanumeric() {
             return false;
@@ -324,14 +407,21 @@ fn ends_after_header(rest: &str) -> bool {
 fn redact_private_key_line(
     line: &str,
     policy: RedactionPolicy,
-    next_is_body: bool,
+    rest_of_input: &str,
 ) -> Option<PrivateKeyLine> {
+    if !line.contains(PRIVATE_KEY_HEADER_START) {
+        return None;
+    }
     let (body, newline) = match line.strip_suffix('\n') {
         Some(rest) => (rest, "\n"),
         None => (line, ""),
     };
-    let (masked, opens_block) =
-        mask_private_key_spans(body, REDACTED, UnclosedPrivateKey::OpensBlock, next_is_body)?;
+    let (masked, opens_block) = mask_private_key_spans(
+        body,
+        REDACTED,
+        UnclosedPrivateKey::OpensBlock,
+        rest_of_input,
+    )?;
     Some(PrivateKeyLine {
         text: redact_line(&format!("{masked}{newline}"), policy),
         opens_block,
@@ -344,7 +434,7 @@ fn redact_private_key_line(
 /// footer masks everything after it.
 #[must_use]
 pub fn mask_private_keys(text: &str, placeholder: &str) -> Option<String> {
-    mask_private_key_spans(text, placeholder, UnclosedPrivateKey::ToEnd, false)
+    mask_private_key_spans(text, placeholder, UnclosedPrivateKey::ToEnd, "")
         .map(|(masked, _)| masked)
 }
 
@@ -376,10 +466,12 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
                 continue;
             }
             spaced = SpacedAssignment::None;
+            let core = credential_word_core(trimmed);
+            let target = if core.is_empty() { trimmed } else { core };
             if !trimmed.starts_with('-')
-                && (policy == RedactionPolicy::KeyBased || value_looks_like_credential(trimmed))
+                && (policy == RedactionPolicy::KeyBased || value_looks_like_credential(target))
             {
-                masked.push(word.replace(trimmed, REDACTED));
+                masked.push(word.replacen(target, REDACTED, 1));
                 changed = true;
                 continue;
             }
@@ -398,12 +490,13 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
                     // Only a credential-shaped value is hidden, and only that
                     // word: the rest of the line stays quotable. An auth scheme
                     // word (`Bearer`) keeps the assignment open for its token.
-                    if is_auth_scheme_word(trimmed) {
+                    let core = credential_word_core(trimmed);
+                    if is_auth_scheme_word(core) {
                         masked.push(word.to_string());
                         continue;
                     }
-                    if value_looks_like_credential(trimmed) {
-                        masked.push(word.replace(trimmed, REDACTED));
+                    if value_looks_like_credential(core) {
+                        masked.push(word.replacen(core, REDACTED, 1));
                         changed = true;
                     } else if let Some(redacted) = mask_bare_secret_tokens(word, REDACTED) {
                         masked.push(redacted);
@@ -464,7 +557,8 @@ impl SpacedAssignment {
         if trimmed.is_empty() {
             return self;
         }
-        if matches!(trimmed, "=" | ":") {
+        let chunk = last_escaped_chunk(trimmed);
+        if matches!(chunk, "=" | ":") {
             return if self == Self::SensitiveKey {
                 Self::AwaitingValue
             } else {
@@ -474,24 +568,58 @@ impl SpacedAssignment {
         // `api_key=` / `api_key:` with the value in the next word. A word whose
         // separator is *not* final was already offered to
         // `redact_inline_keyed_assignment`, so it is not an assignment we own.
-        if let Some(key) = trimmed
-            .strip_suffix('=')
-            .or_else(|| trimmed.strip_suffix(':'))
-        {
-            return if key_is_sensitive(key) {
+        if let Some(key) = chunk.strip_suffix('=').or_else(|| chunk.strip_suffix(':')) {
+            return if !key.contains(['=', ':']) && key_is_sensitive(key) {
                 Self::AwaitingValue
             } else {
                 Self::None
             };
         }
-        if key_is_sensitive(trimmed) {
-            return if trimmed.starts_with('-') {
+        if !chunk.contains(['=', ':']) && key_is_sensitive(chunk) {
+            return if chunk.starts_with('-') {
                 Self::FlagValue
             } else {
                 Self::SensitiveKey
             };
         }
         Self::None
+    }
+}
+
+fn last_escaped_chunk(text: &str) -> &str {
+    let mut chunk_start = 0;
+    let mut cursor = 0;
+    while let Some(rel) = text[cursor..].find('\\') {
+        let idx = cursor + rel;
+        if let Some(delim_end) = escape_delimiter_end(text, idx) {
+            chunk_start = delim_end;
+            cursor = delim_end;
+        } else if text[idx + 1..].starts_with('\\') {
+            cursor = idx + 2;
+        } else {
+            cursor = idx + 1;
+        }
+    }
+    &text[chunk_start..]
+}
+
+fn credential_word_core(mut s: &str) -> &str {
+    loop {
+        let next = s.trim_matches(|c| matches!(c, '(' | '[' | '{' | ')' | ']' | '}' | ',' | ';'));
+        let next = next
+            .strip_prefix("\\\"")
+            .or_else(|| next.strip_prefix("\\'"))
+            .or_else(|| next.strip_prefix(['"', '\'']))
+            .unwrap_or(next);
+        let next = next
+            .strip_suffix("\\\"")
+            .or_else(|| next.strip_suffix("\\'"))
+            .or_else(|| next.strip_suffix(['"', '\'']))
+            .unwrap_or(next);
+        if next.len() == s.len() {
+            return next;
+        }
+        s = next;
     }
 }
 
@@ -521,7 +649,7 @@ fn redact_structured_word(word: &str, policy: RedactionPolicy) -> Option<String>
 fn push_structured_segment(out: &mut String, segment: &str, policy: RedactionPolicy) -> bool {
     // A value an earlier pass already masked (`?token=***`) stays as it is.
     let already_masked = segment.split_once(['=', ':']).is_some_and(|(_, value)| {
-        let (core, _) = strip_value_quotes(value);
+        let (core, _, _) = split_value_quotes(value);
         !core.is_empty() && core.chars().all(|c| c == '*')
     });
     if segment.is_empty() || already_masked {
@@ -532,7 +660,7 @@ fn push_structured_segment(out: &mut String, segment: &str, policy: RedactionPol
         out.push_str(&redacted);
         return true;
     }
-    let (core, _) = strip_value_quotes(segment);
+    let (core, _, _) = split_value_quotes(segment);
     let core = core.trim_end_matches(['"', '\'']);
     if !core.is_empty() && (looks_like_secret_token(core) || is_jwt_shaped(core)) {
         out.push_str(&segment.replacen(core, REDACTED, 1));
@@ -586,7 +714,8 @@ fn key_is_sensitive(raw: &str) -> bool {
 /// Punctuation and case transitions become `_`, so `oauth.token`,
 /// `accessToken`, and `APIKey` share the same matching surface as
 /// `oauth_token`, `access_token`, and `api_key`.
-pub(crate) fn normalize_sensitive_key(raw: &str) -> String {
+#[must_use]
+pub fn normalize_sensitive_key(raw: &str) -> String {
     let mut normalized = String::with_capacity(raw.len());
     let mut chars = raw.chars().peekable();
     let mut previous = None;
@@ -670,29 +799,126 @@ fn key_matches_sensitive_hint(key_norm: &str, hint: &str) -> bool {
     matches!(hint, "secret" | "password" | "passwd") && key_norm.ends_with(hint)
 }
 
-fn redact_inline_keyed_assignment(word: &str, policy: RedactionPolicy) -> Option<String> {
+fn redact_single_keyed_assignment(word: &str, policy: RedactionPolicy) -> Option<String> {
     let sep_idx = word.find(['=', ':'])?;
     let (raw_key, rest) = word.split_at(sep_idx);
     let raw_value = &rest[1..];
-    if raw_value.is_empty() {
+    if raw_value.is_empty() || !key_is_sensitive(raw_key) {
         return None;
     }
-    if !key_is_sensitive(raw_key) {
-        if word.contains(STRUCTURAL_DELIMITERS) {
-            return None;
-        }
-        return mask_bare_secret_tokens(word, REDACTED);
-    }
+    let (core, lead_quote, trail_quote) = split_value_quotes(raw_value);
     match policy {
-        RedactionPolicy::KeyBased => Some(format!("{}{}{}", raw_key, &rest[..1], REDACTED)),
+        RedactionPolicy::KeyBased => {
+            if lead_quote.is_empty() && !trail_quote.is_empty() {
+                Some(format!(
+                    "{}{}{}{}",
+                    raw_key,
+                    &rest[..1],
+                    REDACTED,
+                    trail_quote
+                ))
+            } else {
+                Some(format!("{}{}{}", raw_key, &rest[..1], REDACTED))
+            }
+        }
         RedactionPolicy::CredentialShaped => {
-            let (core, quote) = strip_value_quotes(raw_value);
             if !value_looks_like_credential(core) {
                 return None;
             }
-            Some(format!("{}{}{quote}{REDACTED}{quote}", raw_key, &rest[..1]))
+            Some(format!(
+                "{}{}{lead_quote}{REDACTED}{trail_quote}",
+                raw_key,
+                &rest[..1]
+            ))
         }
     }
+}
+
+fn escape_delimiter_end(text: &str, idx: usize) -> Option<usize> {
+    let after = text.get(idx + 1..)?;
+    if after.starts_with(['n', 'r', 't', 'b', 'f']) {
+        return Some(idx + 2);
+    }
+    if let Some(rest) = after.strip_prefix('\\')
+        && rest.starts_with(['n', 'r', 't', 'b', 'f'])
+    {
+        return Some(idx + 3);
+    }
+    if let Some(rest) = after.strip_prefix('u')
+        && let Some(hex) = rest.get(..4)
+        && hex.chars().all(|c| c.is_ascii_hexdigit())
+        && hex[..2] == *"00"
+        && u8::from_str_radix(&hex[2..4], 16).is_ok_and(|b| b <= 0x20)
+    {
+        return Some(idx + 6);
+    }
+    None
+}
+
+fn redact_backslash_assignments(text: &str, policy: RedactionPolicy) -> Option<String> {
+    let mut out = String::new();
+    let mut changed = false;
+    let mut chunk_start = 0;
+    let mut cursor = 0;
+    while let Some(rel) = text[cursor..].find('\\') {
+        let idx = cursor + rel;
+        if let Some(delim_end) = escape_delimiter_end(text, idx) {
+            let chunk = &text[chunk_start..idx];
+            if !changed {
+                if let Some(redacted) = redact_single_keyed_assignment(chunk, policy) {
+                    out.reserve(text.len());
+                    out.push_str(&text[..chunk_start]);
+                    out.push_str(&redacted);
+                    out.push_str(&text[idx..delim_end]);
+                    changed = true;
+                }
+            } else {
+                if let Some(redacted) = redact_single_keyed_assignment(chunk, policy) {
+                    out.push_str(&redacted);
+                } else {
+                    out.push_str(chunk);
+                }
+                out.push_str(&text[idx..delim_end]);
+            }
+            chunk_start = delim_end;
+            cursor = delim_end;
+        } else if text[idx + 1..].starts_with('\\') {
+            cursor = idx + 2;
+        } else {
+            cursor = idx + 1;
+        }
+    }
+    if chunk_start == 0 {
+        return None;
+    }
+    let tail = &text[chunk_start..];
+    if let Some(redacted) = redact_single_keyed_assignment(tail, policy) {
+        if !changed {
+            out.reserve(text.len());
+            out.push_str(&text[..chunk_start]);
+        }
+        out.push_str(&redacted);
+        changed = true;
+    } else if changed {
+        out.push_str(tail);
+    }
+    changed.then_some(out)
+}
+
+fn redact_inline_keyed_assignment(word: &str, policy: RedactionPolicy) -> Option<String> {
+    if word.contains('\\')
+        && !word.contains(STRUCTURAL_DELIMITERS)
+        && let Some(redacted) = redact_backslash_assignments(word, policy)
+    {
+        return mask_bare_secret_tokens(&redacted, REDACTED).or(Some(redacted));
+    }
+    if let Some(redacted) = redact_single_keyed_assignment(word, policy) {
+        return Some(redacted);
+    }
+    if word.contains(STRUCTURAL_DELIMITERS) {
+        return None;
+    }
+    mask_bare_secret_tokens(word, REDACTED)
 }
 
 /// Whether a word announces an HTTP auth scheme whose credential follows.
@@ -704,19 +930,41 @@ fn is_auth_scheme_word(word: &str) -> bool {
 }
 
 /// Split a matching pair of surrounding quotes off a value, returning the
-/// inner text and the quote to restore (empty when unquoted or unbalanced).
-fn strip_value_quotes(value: &str) -> (&str, &str) {
-    for quote in ['"', '\''] {
-        if value.len() >= 2 && value.starts_with(quote) && value.ends_with(quote) {
-            return (&value[1..value.len() - 1], &value[..1]);
+/// inner text and the quotes to restore (empty when unquoted or unbalanced).
+fn split_value_quotes(value: &str) -> (&str, &str, &str) {
+    for quote in ["\\\"", "\\'", "\"", "'"] {
+        if value.len() >= quote.len() * 2 && value.starts_with(quote) && value.ends_with(quote) {
+            return (&value[quote.len()..value.len() - quote.len()], quote, quote);
+        }
+    }
+    for esc in ["\\\"", "\\'"] {
+        let outer = &esc[1..];
+        if value.len() > esc.len() + outer.len()
+            && value.starts_with(esc)
+            && value.ends_with(outer)
+            && value[..value.len() - 1].ends_with(esc)
+        {
+            return (
+                &value[esc.len()..value.len() - esc.len() - 1],
+                esc,
+                &value[value.len() - esc.len() - 1..],
+            );
         }
     }
     // A leading quote without its partner (the word pass strips the outer
     // punctuation of `"x",` to `"x`): treat the remainder as the value.
-    if let Some(inner) = value.strip_prefix(['"', '\'']) {
-        return (inner, "");
+    for quote in ["\\\"", "\\'", "\"", "'"] {
+        if let Some(inner) = value.strip_prefix(quote) {
+            return (inner, "", "");
+        }
     }
-    (value, "")
+    if !value.ends_with("\\\"")
+        && !value.ends_with("\\'")
+        && let Some(inner) = value.strip_suffix(['"', '\''])
+    {
+        return (inner, "", &value[inner.len()..]);
+    }
+    (value, "", "")
 }
 
 /// Extra bare prefixes that mark a value as a credential even though they are
@@ -862,7 +1110,7 @@ fn redact_keyed_assignment(body: &str, policy: RedactionPolicy) -> Option<String
         let trailing_ws = &value_rest[value_core.len()..];
         let literal = value_core.trim_end_matches([',', ';']);
         let trailer = &value_core[literal.len()..];
-        let (core, quote) = strip_value_quotes(literal);
+        let (core, lead_quote, trail_quote) = split_value_quotes(literal);
         // A value of more than one word (beyond an auth scheme and its
         // token) is not one credential: `-H 'Authorization: Bearer sk-…'
         // https://host && rm -rf x` would otherwise mask the whole rest of
@@ -878,7 +1126,7 @@ fn redact_keyed_assignment(body: &str, policy: RedactionPolicy) -> Option<String
             return None;
         }
         return Some(format!(
-            "{raw_key}{sep}{value_lead_ws}{quote}{REDACTED}{quote}{trailer}{trailing_ws}"
+            "{raw_key}{sep}{value_lead_ws}{lead_quote}{REDACTED}{trail_quote}{trailer}{trailing_ws}"
         ));
     }
 
@@ -1485,5 +1733,87 @@ mod assigned_secret_tests {
             redact_secrets("DBPASSWORD=hunter2"),
             "DBPASSWORD=[redacted]"
         );
+    }
+
+    #[test]
+    fn gutter_pem_variants_and_escaped_json_assignments_are_masked() {
+        let b64_64 = "MIIEpAIBAAKCAQEAz7qX4mNb2Vc9Lk3PwR8tMIIEpAIBAAKCAQEAz7qX4mNb2Vc9";
+        let b64_32_a = "MIIEpAIBAAKCAQEAz7qX4mNb2Vc9Lk3P";
+        let b64_32_b = "wR8tMIIEpAIBAAKCAQEAz7qX4mNb2Vc9";
+        for (input, secret) in [
+            (
+                format!(
+                    "     1│ -----BEGIN RSA PRIVATE KEY-----\n     2│ Proc-Type: 4,ENCRYPTED\n     3│ DEK-Info: AES-128-CBC,1234567890ABCDEF1234567890ABCDEF\n     4│ \n     5│ {b64_64}\n     6│ -----END RSA PRIVATE KEY-----\n"
+                ),
+                b64_64,
+            ),
+            (
+                format!(
+                    "     1│ -----BEGIN PGP PRIVATE KEY BLOCK-----\n     2│ Version: GnuPG v2\n     3│ \n     4│ {b64_64}\n     5│ -----END PGP PRIVATE KEY BLOCK-----\n"
+                ),
+                b64_64,
+            ),
+            (
+                format!(
+                    "     1│ -----BEGIN PRIVATE KEY-----\n     2│ \n     3│ {b64_64}\n     4│ -----END PRIVATE KEY-----\n"
+                ),
+                b64_64,
+            ),
+            (
+                format!(
+                    "     1│ -----BEGIN PRIVATE KEY-----\n     2│ {b64_32_a}\n     3│ {b64_32_b}\n     4│ -----END PRIVATE KEY-----\n"
+                ),
+                b64_32_a,
+            ),
+            (
+                format!("     1│ -----BEGIN RSA PRIVATE KEY----- {b64_64}\n"),
+                b64_64,
+            ),
+            (
+                format!(
+                    "     1│ -----BEGIN RSA PRIVATE KEY----- {b64_64}\n     2│ {b64_64}\n     3│ -----END RSA PRIVATE KEY-----\n"
+                ),
+                b64_64,
+            ),
+            (
+                format!(
+                    "const key = \"-----BEGIN RSA PRIVATE KEY-----\\u000a\" +\n  \"{b64_64}\\u000a\" +\n  \"-----END RSA PRIVATE KEY-----\\u000a\";\n"
+                ),
+                b64_64,
+            ),
+            (
+                format!(
+                    "const key = \"-----BEGIN RSA PRIVATE KEY-----\\n\" + // key\n  \"{b64_64}\\n\" +\n  \"-----END RSA PRIVATE KEY-----\";\n"
+                ),
+                b64_64,
+            ),
+            (
+                format!("{{\\\"model\\\":\\\"gpt\\\",\\\"api_key\\\":\\\"{HEX}\\\"}}"),
+                HEX,
+            ),
+            (
+                format!("{{\\\"model\\\": \\\"gpt\\\", \\\"api_key\\\": \\\"{HEX}\\\"}}"),
+                HEX,
+            ),
+            (
+                format!(
+                    "{{\"payload\":\"{{\\\"model\\\":\\\"gpt\\\",\\\"api_key\\\":\\\"{HEX}\\\"}}\"}}"
+                ),
+                HEX,
+            ),
+            (format!("{{\"stdout\":\"ok\\nAPI_KEY={HEX}\"}}"), HEX),
+        ] {
+            assert_masked(&input, secret);
+        }
+        let stdout_pw = "{\"stdout\":\"ok\\npassword=Hunter2Xyzzy99\"}";
+        assert!(!redact_secrets(stdout_pw).contains("Hunter2Xyzzy99"));
+        assert_masked(
+            "{\"stdout\":\"ok\\npassword=Hunter2Xyzzy99Abc123\"}",
+            "Hunter2Xyzzy99Abc123",
+        );
+
+        let inline_short = "run --api-key=short claude-3-5-sonnet-20241022";
+        assert_eq!(redact_model_bound_secrets(inline_short), inline_short);
+        assert_eq!(redact_secrets(inline_short), "run --api-key=[redacted]");
     }
 }

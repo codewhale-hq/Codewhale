@@ -50,18 +50,50 @@ const SECRET_NAME_MARKERS: &[&str] = &[
 ];
 
 const TOKEN_METRIC_NAMES: &[&str] = &[
-    "tokens",
     "tokenizer",
+    "tokenization",
+    "tokenized",
+    "max_tokens",
+    "maxtokens",
+    "min_tokens",
+    "mintokens",
+    "input_tokens",
+    "inputtokens",
+    "output_tokens",
+    "outputtokens",
+    "prompt_tokens",
+    "prompttokens",
+    "completion_tokens",
+    "completiontokens",
+    "total_tokens",
+    "totaltokens",
+    "num_tokens",
+    "numtokens",
+    "cache_tokens",
+    "cached_tokens",
+    "reasoning_tokens",
+    "thought_tokens",
+    "context_tokens",
+    "billable_tokens",
+    "tokens_used",
+    "tokens_left",
+    "tokens_remaining",
+    "tokens_limit",
     "token_count",
     "tokencount",
+    "token_counts",
     "token_limit",
     "tokenlimit",
+    "token_limits",
     "token_budget",
     "tokenbudget",
+    "token_budgets",
     "token_usage",
     "token_used",
     "token_total",
+    "token_totals",
     "token_window",
+    "token_windows",
 ];
 
 /// HTTP authorization scheme keywords, in their canonical HTTP capitalization.
@@ -214,7 +246,7 @@ pub fn redact_for_disclosure(input: &str) -> Redaction {
         kinds.insert(REDACTION_SECRET.to_string());
     }
     let input = masked_keys.as_deref().unwrap_or(input);
-    let tokens: Vec<&str> = input.split(' ').collect();
+    let (tokens, seps) = split_whitespace_preserving(input);
     let mut out: Vec<String> = Vec::with_capacity(tokens.len());
     let mut arm = CredentialArm::None;
     let mut pending_name: Option<(&str, CredentialArm)> = None;
@@ -222,13 +254,29 @@ pub fn redact_for_disclosure(input: &str) -> Redaction {
 
     while index < tokens.len() {
         let token = tokens[index];
-        if token.is_empty() {
-            out.push(String::new());
-            index += 1;
-            continue;
+        if seps[index].contains(['\n', '\r']) {
+            pending_name = None;
         }
         let name = pending_name.take();
         if arm.is_armed() {
+            if token.contains(['[', '{', '('])
+                && token
+                    .chars()
+                    .all(|c| matches!(c, '[' | '{' | '(' | '"' | '\''))
+            {
+                out.push(token.to_string());
+                index += 1;
+                continue;
+            }
+            if token
+                .chars()
+                .all(|c| matches!(c, ']' | '}' | ')' | ',' | ';' | '"' | '\''))
+            {
+                arm = CredentialArm::None;
+                out.push(token.to_string());
+                index += 1;
+                continue;
+            }
             // `Authorization: Bearer <token>` — the scheme keyword is not the
             // secret, so it survives and the arming carries past it. A
             // canonically capitalized keyword also *upgrades* the arming: the
@@ -302,54 +350,88 @@ pub fn redact_for_disclosure(input: &str) -> Redaction {
             continue;
         }
 
-        let next = tokens[index + 1..]
-            .iter()
-            .copied()
-            .find(|candidate| !candidate.is_empty());
+        let next = tokens.get(index + 1).copied();
         let outcome = redact_token(token, next, &mut kinds);
         arm = outcome.arm;
         if outcome.text.is_none() && !arm.is_armed() {
             let candidate = unwrap_token(token);
-            let sensitivity = name_sensitivity(candidate);
-            if sensitivity.is_armed() {
-                pending_name = Some((candidate, sensitivity));
+            if !candidate.contains(['=', ':']) {
+                let sensitivity = name_sensitivity(candidate);
+                if sensitivity.is_armed() {
+                    pending_name = Some((candidate, sensitivity));
+                }
             }
         }
         out.push(outcome.text.unwrap_or_else(|| token.to_string()));
         index += 1;
     }
 
-    Redaction {
-        text: out.join(" "),
-        kinds,
+    let mut text = String::with_capacity(input.len());
+    text.push_str(seps[0]);
+    for (idx, piece) in out.iter().enumerate() {
+        text.push_str(piece);
+        text.push_str(seps[idx + 1]);
     }
+    Redaction { text, kinds }
+}
+
+fn split_whitespace_preserving(input: &str) -> (Vec<&str>, Vec<&str>) {
+    let mut tokens = Vec::new();
+    let mut seps = Vec::new();
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let ws_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        seps.push(&input[ws_start..i]);
+        if i == bytes.len() {
+            return (tokens, seps);
+        }
+        let tok_start = i;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        tokens.push(&input[tok_start..i]);
+    }
+    seps.push("");
+    (tokens, seps)
+}
+
+fn is_token_metric_name(norm: &str) -> bool {
+    TOKEN_METRIC_NAMES.iter().any(|metric| {
+        norm == *metric
+            || norm
+                .strip_suffix(metric)
+                .is_some_and(|prefix| prefix.ends_with('_'))
+            || norm
+                .strip_prefix(metric)
+                .is_some_and(|suffix| suffix.starts_with('_'))
+    })
 }
 
 fn name_sensitivity(name: &str) -> CredentialArm {
     if codewhale_sanitize::redact::names_a_credential(name) {
         return CredentialArm::Certain;
     }
-    let lowered = name.to_ascii_lowercase().replace('-', "_");
-    let mut saw_demoted_token = false;
-    for marker in SECRET_NAME_MARKERS {
-        if !lowered.contains(marker) {
-            continue;
+    let norm = codewhale_sanitize::redact::normalize_sensitive_key(name);
+    if SECRET_NAME_MARKERS
+        .iter()
+        .any(|marker| *marker != "token" && norm.contains(marker))
+    {
+        return CredentialArm::Certain;
+    }
+    if norm.contains("token") {
+        if norm == "tokens" {
+            return CredentialArm::IfShaped;
         }
-        if *marker == "token"
-            && TOKEN_METRIC_NAMES
-                .iter()
-                .any(|metric| lowered.contains(metric))
-        {
-            saw_demoted_token = true;
-            continue;
+        if is_token_metric_name(&norm) {
+            return CredentialArm::None;
         }
         return CredentialArm::Certain;
     }
-    if saw_demoted_token {
-        CredentialArm::IfShaped
-    } else {
-        CredentialArm::None
-    }
+    CredentialArm::None
 }
 
 const STRUCTURAL_DELIMITERS: [char; 9] = [',', '(', ')', '[', ']', '{', '}', '&', '?'];
@@ -534,8 +616,8 @@ fn redact_token(token: &str, next: Option<&str>, kinds: &mut BTreeSet<String>) -
 /// Strip the punctuation a token picks up from surrounding prose.
 fn unwrap_token(token: &str) -> &str {
     token
-        .trim_start_matches(['(', '[', '"', '\'', '<'])
-        .trim_end_matches([',', '.', ';', ':', ')', ']', '"', '\'', '>', '!', '?'])
+        .trim_start_matches(['(', '[', '{', '"', '\'', '<'])
+        .trim_end_matches([',', '.', ';', ':', ')', ']', '}', '"', '\'', '>', '!', '?'])
 }
 
 /// Whether a token is an HTTP authorization scheme keyword (and nothing else),
@@ -1168,6 +1250,35 @@ mod tests {
             (format!("{{\"html\":\"\\u003cghs_{BODY}\\u003e\"}}"), BODY.to_string()),
             (format!("{{\"log\":\"key\\nsk-ant-api03-{BODY}\"}}"), BODY.to_string()),
             (format!("printf 'a\\nsk-live-{BODY}'"), BODY.to_string()),
+            ("API_TOKENS=hunter2".to_string(), "hunter2".to_string()),
+            (
+                "ACCESS_TOKENS=my_short_secret".to_string(),
+                "my_short_secret".to_string(),
+            ),
+            (
+                "ACCESS_TOKENS=secret_token_without_digits".to_string(),
+                "secret_token_without_digits".to_string(),
+            ),
+            (
+                format!("{{\"api_tokens\": \"{HEX}\"}}"),
+                HEX.to_string(),
+            ),
+            (
+                format!("{{\"api_tokens\": [ \"{HEX}\" ]}}"),
+                HEX.to_string(),
+            ),
+            (
+                "{\"authorization\":\"basic dXNlcjpIdW50ZXIyWHl6enk5OQ==\"}".to_string(),
+                "dXNlcjpIdW50ZXIyWHl6enk5OQ==".to_string(),
+            ),
+            (
+                "{\"b\":\"Authorization: Basic dXNlcjpIdW50ZXIyWHl6enk5OQ==\"}".to_string(),
+                "dXNlcjpIdW50ZXIyWHl6enk5OQ==".to_string(),
+            ),
+            (
+                format!("FOO=\"bar\nbaz\"\nAPI_KEY={HEX}"),
+                HEX.to_string(),
+            ),
         ]
     }
 
@@ -1231,13 +1342,24 @@ mod tests {
             "--token-limit 5",
             "TOKEN_LIMIT=4096",
             "tokenizer=bpe",
+            "tokenizer=sentencepiece-v2",
             "output_tokens=512",
             "set --max-tokens 4096 --token-limit 5",
+            "run --max-tokens=8192 claude-3-5-sonnet-20241022",
+            "eval --tokens=5 deadbeef12345678",
         ] {
             let redaction = redact_for_disclosure(text);
             assert_eq!(redaction.text(), text);
             assert!(redaction.kinds().is_empty(), "{text}");
         }
+
+        let rel = redact_for_disclosure("set --tokenizer=bpe crates/engine/src/v2.rs");
+        assert_eq!(rel.text(), "set --tokenizer=bpe <path>");
+        assert_eq!(rel.kinds(), vec![REDACTION_RELATIVE_PATH.to_string()]);
+
+        let abs = redact_for_disclosure("run --token-limit=4096 /Users/alice/src/v2");
+        assert_eq!(abs.text(), "run --token-limit=4096 <path>");
+        assert_eq!(abs.kinds(), vec![REDACTION_ABSOLUTE_PATH.to_string()]);
     }
 
     #[test]
