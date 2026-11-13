@@ -826,6 +826,7 @@ fn record_agent_current_activity(app: &mut App, message: &MailboxMessage) {
             previous.as_ref().and_then(|activity| activity.step),
         ),
         MailboxMessage::TokenUsage { .. } => unreachable!("token usage handled above"),
+        MailboxMessage::FileWrites { .. } => return,
         MailboxMessage::WorkState { .. } => unreachable!("work state handled above"),
     };
 
