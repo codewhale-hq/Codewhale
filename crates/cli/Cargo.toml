@@ -38,6 +38,7 @@ codewhale-workflow = { path = "../workflow", version = "0.10.3" }
 codewhale-execpolicy = { path = "../execpolicy", version = "0.10.3" }
 codewhale-paths = { path = "../paths", version = "0.10.3" }
 codewhale-release = { path = "../release", version = "0.10.3" }
+codewhale-sanitize = { path = "../sanitize", version = "0.10.3" }
 codewhale-secrets = { path = "../secrets", version = "0.10.3" }
 codewhale-state = { path = "../state", version = "0.10.3" }
 codewhale-telemetry = { path = "../telemetry", version = "0.10.3" }

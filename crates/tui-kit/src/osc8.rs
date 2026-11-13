@@ -236,10 +236,10 @@ pub fn take_frame_links() -> Vec<LinkRegion> {
 /// Strip ANSI/OSC/control sequences from `s` into `out`.
 ///
 /// Delegates to the single shared implementation in
-/// [`codewhale_secrets::sanitize`] (FEAT-025 D4) so `/export`, `/structcopy`,
+/// [`codewhale_sanitize::sanitize`] (FEAT-025 D4) so `/export`, `/structcopy`,
 /// and the renderer cannot drift.
 pub fn strip_ansi_into(s: &str, out: &mut String) {
-    codewhale_secrets::sanitize::strip_ansi_into(s, out);
+    codewhale_sanitize::sanitize::strip_ansi_into(s, out);
 }
 
 /// Like [`strip_ansi_into`], but SGR sequences (`ESC [ … m`: colour, bold,
@@ -248,16 +248,16 @@ pub fn strip_ansi_into(s: &str, out: &mut String) {
 /// (including OSC 8 hyperlink wrappers), cursor movement, DCS, lone control
 /// bytes — is still removed; only the styling survives.
 pub fn strip_ansi_keep_sgr_into(s: &str, out: &mut String) {
-    codewhale_secrets::sanitize::strip_ansi_keep_sgr_into(s, out);
+    codewhale_sanitize::sanitize::strip_ansi_keep_sgr_into(s, out);
 }
 
 /// Length in bytes of the UTF-8 sequence that starts with `lead`. Falls back
 /// to `1` for continuation bytes / invalid leads so callers always make
 /// forward progress.
 ///
-/// Delegates to the shared implementation in [`codewhale_secrets::sanitize`].
+/// Delegates to the shared implementation in [`codewhale_sanitize::sanitize`].
 fn utf8_seq_len(lead: u8) -> usize {
-    codewhale_secrets::sanitize::utf8_seq_len(lead)
+    codewhale_sanitize::sanitize::utf8_seq_len(lead)
 }
 
 /// Strip OSC 8 escape sequences from `s` into `out`, preserving the visible

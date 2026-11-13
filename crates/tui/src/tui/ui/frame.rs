@@ -1437,8 +1437,8 @@ pub(crate) fn build_session_snapshot(
 }
 
 /// The stream sanitizer lives with the other output sanitizers in
-/// `codewhale-secrets`; the event loop reaches it through this module.
-pub(crate) use codewhale_secrets::sanitize::sanitize_stream_chunk;
+/// `codewhale-sanitize`; the event loop reaches it through this module.
+pub(crate) use codewhale_sanitize::sanitize::sanitize_stream_chunk;
 
 /// Ensure an in-flight streaming Assistant cell exists in history and return
 /// its index. Thinking cells go through `streaming_thinking::ensure_active_entry`
@@ -1489,6 +1489,15 @@ pub(crate) fn append_streaming_text(app: &mut App, index: usize, text: &str) {
             to_revision,
             content_len,
         });
+    }
+}
+
+fn estimate_output_tokens_from_text(text: &str) -> u64 {
+    let chars = text.chars().count() as u64;
+    if chars == 0 {
+        0
+    } else {
+        chars.saturating_add(3) / 4
     }
 }
 
@@ -2562,9 +2571,18 @@ pub(crate) fn workflow_tool_is_running(app: &App) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        drain_text_block, register_info_interaction_targets, render_info_row, short_title_truncate,
+        drain_text_block, estimate_output_tokens_from_text, register_info_interaction_targets,
+        render_info_row, short_title_truncate,
     };
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn estimated_streaming_tokens_round_up_from_text_chars() {
+        assert_eq!(estimate_output_tokens_from_text(""), 0);
+        assert_eq!(estimate_output_tokens_from_text("abc"), 1);
+        assert_eq!(estimate_output_tokens_from_text("abcd"), 1);
+        assert_eq!(estimate_output_tokens_from_text("abcde"), 2);
+    }
 
     /// #7123: the text drain must never take a reasoning block. A reasoning
     /// tail handed to the assistant cell would appear as prose, which is the

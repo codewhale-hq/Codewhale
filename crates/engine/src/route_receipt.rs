@@ -11,7 +11,7 @@
 //! - the provider enum and the non-secret configured route key,
 //! - the canonical wire model id,
 //! - a **normalized, redacted** endpoint identity (URL userinfo and sensitive
-//!   query values masked by [`codewhale_secrets::sanitize::redact_url_for_display`]),
+//!   query values masked by [`codewhale_sanitize::sanitize::redact_url_for_display`]),
 //! - a one-way credential *generation* digest that is never rendered.
 //!
 //! The credential generation is deliberately taken over the endpoint **and** the
@@ -47,7 +47,7 @@ pub fn endpoint_identity(base_url: &str) -> String {
     if reqwest::Url::parse(trimmed).is_err() {
         return OPAQUE_ENDPOINT.to_string();
     }
-    codewhale_secrets::sanitize::redact_url_for_display(trimmed)
+    codewhale_sanitize::sanitize::redact_url_for_display(trimmed)
         .trim_end_matches('/')
         .to_string()
 }

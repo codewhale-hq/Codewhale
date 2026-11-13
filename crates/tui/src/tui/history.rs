@@ -1518,7 +1518,7 @@ impl ExecCell {
 
     fn description_text(&self) -> Option<String> {
         let mut plain = String::new();
-        codewhale_tui_kit::osc8::strip_ansi_into(self.description.as_deref()?, &mut plain);
+        codewhale_sanitize::sanitize::strip_ansi_into(self.description.as_deref()?, &mut plain);
         normalize_header_summary(&plain)
     }
 

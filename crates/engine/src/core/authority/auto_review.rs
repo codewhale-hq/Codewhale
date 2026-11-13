@@ -1130,7 +1130,7 @@ pub fn build_reviewer_context(
     held_reason: &str,
     tool_input: &Value,
 ) -> String {
-    use codewhale_secrets::redact::{redact_json_model_bound_secrets, redact_model_bound_secrets};
+    use codewhale_sanitize::redact::{redact_json_model_bound_secrets, redact_model_bound_secrets};
 
     let mut input = redact_json_model_bound_secrets(tool_input);
     let tool = redact_model_bound_secrets(ctx.tool_name.as_ref());

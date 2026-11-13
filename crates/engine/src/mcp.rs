@@ -3736,23 +3736,6 @@ impl McpPool {
         Ok(pool)
     }
 
-    /// Construct a source-aware empty pool after the initial config load
-    /// failed. Keeping the source paths means a later edit or explicit
-    /// `/mcp reload` can recover in-process instead of pinning the session to
-    /// an ad-hoc pool that has no files to re-read.
-    pub fn empty_with_workspace_config_sources(
-        path: &std::path::Path,
-        workspace: &Path,
-        plugins: Arc<codewhale_plugins::PluginRegistry>,
-    ) -> Result<Self> {
-        Self::empty_with_workspace_config_sources_and_auth_context(
-            path,
-            workspace,
-            plugins,
-            process_mcp_auth_context(),
-        )
-    }
-
     pub fn empty_with_workspace_config_sources_and_auth_context(
         path: &std::path::Path,
         workspace: &Path,

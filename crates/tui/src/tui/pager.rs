@@ -191,7 +191,7 @@ fn evidence_window(content: &str, requested: u64) -> Result<EvidenceWindow, ()> 
     };
     let (text, copy, end, encoding, actual_offset, binary) = if let Some(text) = text_prefix {
         let mut sanitized = String::with_capacity(text.len());
-        codewhale_tui_kit::osc8::strip_ansi_into(text, &mut sanitized);
+        codewhale_sanitize::sanitize::strip_ansi_into(text, &mut sanitized);
         let (copy, encoding) = if sanitized == text {
             (text.to_string(), "UTF8")
         } else {
@@ -430,7 +430,7 @@ impl PagerPage {
         // Pager bodies frequently carry tool output or worker transcripts.
         // Keep the same terminal-injection boundary as the single-page path.
         let mut sanitized = String::with_capacity(text.len());
-        codewhale_tui_kit::osc8::strip_ansi_into(text, &mut sanitized);
+        codewhale_sanitize::sanitize::strip_ansi_into(text, &mut sanitized);
         Self::new(title, PagerSource::Text(sanitized), usize::from(width))
     }
 
@@ -816,7 +816,7 @@ impl PagerView {
             self.follow = true;
         }
         let mut sanitized = String::with_capacity(text.len());
-        codewhale_tui_kit::osc8::strip_ansi_into(text, &mut sanitized);
+        codewhale_sanitize::sanitize::strip_ansi_into(text, &mut sanitized);
         let page = self.current_page_mut();
         page.source = PagerSource::Text(sanitized);
         page.copy_text = Some(text.to_string());

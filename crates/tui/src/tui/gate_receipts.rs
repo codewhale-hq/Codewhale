@@ -76,7 +76,7 @@ pub fn tool_gate_audit_record(
         "gate": gate.as_str(),
         "decision": decision.as_str(),
         "risk": risk,
-        "reason": codewhale_secrets::redact::redact_secrets(reason),
+        "reason": codewhale_sanitize::redact::redact_secrets(reason),
     })
 }
 

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Removed (crate API):** the unwired `codewhale-hooks` dispatcher and its stdout, JSONL and Unix-socket sinks; `codewhale-core`'s `session`, `journal` and `ids` modules and the `hooks` argument of `Runtime::new`; `codewhale-runtime::resource_telemetry`; ten unreferenced public functions; and the duplicate `codewhale-agent` crate. `hook_sinks.unix_socket_path` still parses and is ignored. CLI, TUI and app-server behavior is unchanged.
+
 - **Plugin index hooks:** hooks with the same name and event now have distinct row IDs, so clients can keep every configured hook visible.
 - **Extension service approvals:** plugin service acts use the session permission gate and retain their approved or refused act records when a tool call fails. Closing a call seals its broker-act record so a late approval cannot authorize an unrecorded act. Ordinary nested-call receipts may still show an in-flight outcome when cancellation ends the call early.
 
