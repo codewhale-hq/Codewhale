@@ -494,7 +494,7 @@ owner = "crates/engine/src/tools/present.rs"
 [[feature]]
 id = "show-data"
 name = "Charts in the transcript"
-summary = "Read-only show_data tool: the model shows a sparkline, labelled bars or a trend, painted by the terminal kit with the same facts in words."
+summary = "Read-only show_data tool: display sparklines, labelled bars or trends, with matching text summaries."
 status = "experimental"
 surfaces = { tui = "preview", api = "partial" }
 since = "unreleased"

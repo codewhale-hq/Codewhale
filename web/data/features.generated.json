@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "ad585e502c1a0d44a9b8f5ddc632a33df5fe31d280395eeb4fbfc01e48c4754b"
+    "sha256": "21af938e54fedd4f5389ecec7b196a4b4ac957ed42cbffb1b4eeb0f0177fbb58"
   },
   "features": [
     {
@@ -619,7 +619,7 @@
     {
       "id": "show-data",
       "name": "Charts in the transcript",
-      "summary": "Read-only show_data tool: the model shows a sparkline, labelled bars or a trend, painted by the terminal kit with the same facts in words.",
+      "summary": "Read-only show_data tool: display sparklines, labelled bars or trends, with matching text summaries.",
       "status": "experimental",
       "surfaces": {
         "tui": "preview",

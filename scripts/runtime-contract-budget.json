@@ -123,9 +123,9 @@
           "tools": 16
         },
         "full": {
-          "bytes": 86316,
-          "identity_sha256": "b63d6fb294f6c92e4c7eedfa9d775886459f51798a3fd22ae4f931d5ed6cf41b",
-          "tokens_est": 21579,
+          "bytes": 87575,
+          "identity_sha256": "039b381a0c854e739088c0d5432abfc7b8ca9f0e2260051dc507ac5e1354b6d0",
+          "tokens_est": 21894,
           "tool_names": [
             "Git",
             "Run",
@@ -164,6 +164,7 @@
             "send_later",
             "session_get",
             "session_search",
+            "show_data",
             "speech",
             "task_shell_wait",
             "tasks",
@@ -182,7 +183,7 @@
             "workflow",
             "write"
           ],
-          "tools": 54
+          "tools": 55
         }
       },
       "operate": {
@@ -211,9 +212,9 @@
           "tools": 16
         },
         "full": {
-          "bytes": 86316,
-          "identity_sha256": "b63d6fb294f6c92e4c7eedfa9d775886459f51798a3fd22ae4f931d5ed6cf41b",
-          "tokens_est": 21579,
+          "bytes": 87575,
+          "identity_sha256": "039b381a0c854e739088c0d5432abfc7b8ca9f0e2260051dc507ac5e1354b6d0",
+          "tokens_est": 21894,
           "tool_names": [
             "Git",
             "Run",
@@ -252,6 +253,7 @@
             "send_later",
             "session_get",
             "session_search",
+            "show_data",
             "speech",
             "task_shell_wait",
             "tasks",
@@ -270,7 +272,7 @@
             "workflow",
             "write"
           ],
-          "tools": 54
+          "tools": 55
         }
       },
       "plan": {
@@ -297,9 +299,9 @@
           "tools": 14
         },
         "full": {
-          "bytes": 56473,
-          "identity_sha256": "f9578ac50bc6b69d793dd70090ecb4d7c9b2a8ad957dba57726c1da84ecc1cf9",
-          "tokens_est": 14119,
+          "bytes": 57732,
+          "identity_sha256": "191267223f8667b24726e08d57e13acdc84e7a7e5507591a6212946f8026d15a",
+          "tokens_est": 14433,
           "tool_names": [
             "Git",
             "Web",
@@ -326,6 +328,7 @@
             "request_user_input",
             "review",
             "send_later",
+            "show_data",
             "tasks",
             "todo_write",
             "tool_search",
@@ -335,7 +338,7 @@
             "workflow",
             "write"
           ],
-          "tools": 33
+          "tools": 34
         }
       }
     },
