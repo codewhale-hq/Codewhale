@@ -253,6 +253,12 @@ jobs:
           mkdir -p target/debug
           cp "$RUNNER_TEMP"/test-archive/codewhale* target/debug/
           if [ "$RUNNER_OS" != Windows ]; then chmod +x target/debug/codewhale; fi
+          # The archive extracts test binaries to a different layout than a
+          # one-job build, so acceptance tests would not find the executable
+          # beside them; QA_TUI_BIN names it explicitly.
+          exe=codewhale
+          if [ "$RUNNER_OS" = Windows ]; then exe=codewhale.exe; fi
+          echo "QA_TUI_BIN=${GITHUB_WORKSPACE}/target/debug/${exe}" >> "${GITHUB_ENV}"
       - name: Run native containment tests
         if: matrix.shard == 1
         shell: bash
