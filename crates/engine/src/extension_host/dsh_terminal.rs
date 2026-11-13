@@ -5,7 +5,9 @@ use codewhale_workflow_js::ToolCallResponse;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::dsh_broker::{BrokerCall, BrokerFuture, BrokerMethods, BrokerRefusal, decode};
+use super::dsh_broker::{
+    BrokerCall, BrokerEffect, BrokerFuture, BrokerMethods, BrokerRefusal, decode,
+};
 use super::protocol::DshService;
 use crate::tools::execution_envelope::enforce_tool_denial;
 
@@ -121,6 +123,7 @@ pub(super) fn serve(call: BrokerCall) -> BrokerFuture {
         match method {
             TerminalMethod::List(NoInput {}) => {
                 let live = live(&call, "terminal/wait").await?;
+                call.context.act("list", BrokerEffect::Read, None).await?;
                 tracing::info!(target: LOG, plugin = %call.owner.plugin_id, terminals = live.terminals.len(), "terminals listed");
                 Ok(json!({
                     "instance": live.instance,

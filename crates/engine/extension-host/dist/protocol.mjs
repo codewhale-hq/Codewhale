@@ -18,7 +18,7 @@ var ErrorCode = {
   Denied: -32003,
   Cancelled: -32800
 };
-var DSH_SERVICES = ["workspace", "llm", "network", "settings", "catalog", "terminal", "remote"];
+var DSH_SERVICES = ["workspace", "llm", "network", "settings", "catalog", "terminal", "remote", "plugins"];
 var METHODS = [
   { name: "host/initialize", direction: "core_to_host", request: true, params: "InitializeParams", tiers: ["plugin", "builtin"] },
   { name: "host/ping", direction: "core_to_host", request: true, params: "EmptyParams", tiers: ["plugin", "builtin"] },

@@ -226,6 +226,23 @@ fn map_call_error(tool: &str, error: HostCallError) -> ToolError {
     }
 }
 
+pub(super) fn failed_with_acts(
+    error: ToolError,
+    receipts: Option<&Value>,
+) -> Result<ToolResultWire, ToolError> {
+    let holds_acts = receipts.is_some_and(|receipts| receipts.get("broker_acts").is_some());
+    if !holds_acts {
+        return Err(error);
+    }
+    Ok(ToolResultWire {
+        content: vec![ContentBlockWire::Text {
+            text: error.to_string(),
+        }],
+        is_error: true,
+        structured: None,
+    })
+}
+
 pub fn wire_to_result(wire: ToolResultWire, origin: &str) -> ToolResult {
     let content = wire
         .content
@@ -396,26 +413,44 @@ impl ToolSpec for HostToolSpec {
         });
         // The deadline stops while one of this call's `core/call`s waits on
         // the gate (an approval card), so a person's time is not the tool's.
-        let value = host
+        let outcome = host
             .call_with_clock(
                 request,
                 Some(registration.owner.plugin_id.clone()),
                 invocation.as_ref().map(InvocationGuard::clock),
             )
-            .await
-            .map_err(|error| map_call_error(&registration.name, error))?;
-        self.check_caller(context)?;
-        self.manager
-            .live_host_for(registration)
-            .await
-            .map_err(ToolError::not_available)?;
-        self.check_caller(context)?;
-        let wire: ToolResultWire = serde_json::from_value(value).map_err(|error| {
-            ToolError::execution_failed(format!(
-                "extension tool `{}` returned a malformed result: {error}",
-                registration.name
-            ))
-        })?;
+            .await;
+        let receipts = invocation.as_ref().and_then(InvocationGuard::seal_receipts);
+        let settled: Result<ToolResultWire, ToolError> = async {
+            match outcome {
+                Ok(value) => {
+                    self.check_caller(context)?;
+                    self.manager
+                        .live_host_for(registration)
+                        .await
+                        .map_err(ToolError::not_available)?;
+                    self.check_caller(context)?;
+                    serde_json::from_value(value).map_err(|error| {
+                        ToolError::execution_failed(format!(
+                            "extension tool `{}` returned a malformed result: {error}",
+                            registration.name
+                        ))
+                    })
+                }
+                Err(error) => Err(map_call_error(&registration.name, error)),
+            }
+        }
+        .await;
+        let wire = match settled {
+            Ok(wire) => wire,
+            Err(error) => {
+                let wire = failed_with_acts(error, receipts.as_ref())?;
+                match self.check_caller(context) {
+                    Ok(()) => wire,
+                    Err(stale) => failed_with_acts(stale, receipts.as_ref())?,
+                }
+            }
+        };
         let mut result = wire_to_result(wire, &self.origin());
         if let Some(Value::Object(metadata)) = result.metadata.as_mut() {
             metadata.insert(
@@ -433,10 +468,9 @@ impl ToolSpec for HostToolSpec {
             );
         }
         // What the tool asked the core to run, so the persisted record shows it.
-        if let (Some(receipts), Some(Value::Object(metadata))) = (
-            invocation.as_ref().and_then(InvocationGuard::receipts),
-            result.metadata.as_mut(),
-        ) {
+        if let (Some(receipts), Some(Value::Object(metadata))) =
+            (receipts, result.metadata.as_mut())
+        {
             metadata.insert("core_calls".to_string(), receipts);
         }
         Ok(result)

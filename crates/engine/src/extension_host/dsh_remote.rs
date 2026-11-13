@@ -6,7 +6,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::dsh_broker::{BrokerCall, BrokerFuture, BrokerMethods, BrokerRefusal, decode};
+use super::dsh_broker::{
+    BrokerCall, BrokerEffect, BrokerFuture, BrokerMethods, BrokerRefusal, decode,
+};
 use super::protocol::DshService;
 
 pub const PAIRING_TTL: Duration = Duration::from_secs(10 * 60);
@@ -142,7 +144,16 @@ pub fn remote_grants() -> &'static RemoteGrants {
 }
 
 pub(super) fn serve(call: BrokerCall) -> BrokerFuture {
-    Box::pin(std::future::ready(remote_grants().serve(&call)))
+    Box::pin(async move {
+        let (method, effect) = match decode::<RemoteMethod>(&call)? {
+            RemoteMethod::Status {} => ("status", BrokerEffect::Read),
+            RemoteMethod::Pair { .. } => ("pair", BrokerEffect::Reach),
+            RemoteMethod::Clients {} => ("clients", BrokerEffect::Read),
+            RemoteMethod::Revoke { .. } => ("revoke", BrokerEffect::Write),
+        };
+        call.context.act(method, effect, None).await?;
+        remote_grants().serve(&call)
+    })
 }
 
 impl RemoteGrants {
