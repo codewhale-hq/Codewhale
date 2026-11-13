@@ -36,6 +36,26 @@ fn write_named_plugin(config: &DiscoveryConfig, name: &str, extra: &str) -> Path
 }
 
 #[test]
+fn catalog_stamp_changes_when_only_state_bytes_change() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = config(tmp.path());
+    write_plugin(&config, "");
+    let registry = discover_with_config(&config);
+    assert!(!registry.on_disk_catalog_changed());
+
+    std::fs::create_dir_all(config.state_path.parent().unwrap()).unwrap();
+    std::fs::write(&config.state_path, "{\"version\":1}").unwrap();
+    assert!(registry.on_disk_catalog_changed());
+
+    let reloaded = registry.rediscover_for_workspace(&config.workspace);
+    assert!(!reloaded.on_disk_catalog_changed());
+    std::fs::write(&config.state_path, "{\"version\":1}").unwrap();
+    assert!(!reloaded.on_disk_catalog_changed());
+    std::fs::write(&config.state_path, "{\"version\":2}").unwrap();
+    assert!(reloaded.on_disk_catalog_changed());
+}
+
+#[test]
 fn on_disk_catalog_change_nudges_reload_once_until_rediscover() {
     let tmp = tempfile::tempdir().unwrap();
     let config = config(tmp.path());

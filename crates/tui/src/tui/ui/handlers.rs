@@ -740,7 +740,7 @@ fn mcp_scoped_config_path(
 
 /// Whether a turn (or its compaction work) owns the engine. The engine
 /// services ops only between turns, so an op sent now waits for that turn.
-fn mcp_engine_busy(app: &App) -> bool {
+pub(super) fn mcp_engine_busy(app: &App) -> bool {
     app.is_loading
         || app.dispatch_in_flight
         || matches!(app.runtime_turn_status.as_deref(), Some("in_progress"))

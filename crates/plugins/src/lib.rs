@@ -27,11 +27,41 @@ pub mod test_fixture;
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeMap;
+
 pub use context::{HostEnvironment, PluginDiscoveryContext};
 pub use discovery::PluginCatalogStamp;
 pub use registry::PluginRegistry;
 
-pub const PLUGIN_RELOAD_NUDGE: &str = "Plugins changed on disk. Run /plugin reload to apply.";
+pub const PLUGIN_RELOAD_NUDGE: &str =
+    "Plugins changed on disk. They apply when the session is idle, or run /plugin reload.";
+
+pub const PLUGIN_PROVIDER_NEW_SESSION_NOTICE: &str =
+    "Plugin provider changes apply in a new session.";
+
+fn active_provider_declarations(
+    registry: &PluginRegistry,
+) -> BTreeMap<String, (String, Vec<String>)> {
+    registry
+        .active_plugins()
+        .into_iter()
+        .filter(|plugin| !plugin.manifest.providers.is_empty())
+        .map(|plugin| {
+            (
+                plugin.id.as_str().to_string(),
+                (
+                    plugin.content_hash.clone(),
+                    plugin.manifest.providers.keys().cloned().collect(),
+                ),
+            )
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn provider_declarations_changed(before: &PluginRegistry, after: &PluginRegistry) -> bool {
+    active_provider_declarations(before) != active_provider_declarations(after)
+}
 
 /// Returns the reload nudge once per distinct on-disk catalog stamp.
 #[must_use]

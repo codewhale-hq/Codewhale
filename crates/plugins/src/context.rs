@@ -182,7 +182,7 @@ impl PluginDiscoveryContext {
             super::discovery::default_workspace_plugins_dir(workspace),
         ];
         roots.extend(self.builtin_plugin_dirs.iter().cloned());
-        super::discovery::PluginCatalogStamp::capture(roots)
+        super::discovery::PluginCatalogStamp::capture(roots, &self.state_path)
     }
 }
 

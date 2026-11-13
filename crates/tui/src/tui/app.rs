@@ -1757,6 +1757,7 @@ pub struct App {
     pub plugin_reload_nudge_stamp: Option<codewhale_plugins::PluginCatalogStamp>,
     /// Last idle catalog fingerprint poll, so disk changes can surface between turns.
     pub last_plugin_catalog_poll: Option<Instant>,
+    pub mcp_config_watch: Option<crate::tui::plugin_suggestions::McpConfigWatch>,
     /// Live composer plugin CTA (debounce + one match, never auto-install).
     pub plugin_cta: crate::tui::plugin_suggestions::PluginCtaState,
     pub model: String,
