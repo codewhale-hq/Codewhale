@@ -368,6 +368,8 @@ pub enum PluginInstallError {
     PathTraversal(String),
     #[error("bundle is too large; uncompressed total would exceed {limit} bytes")]
     OversizedBundle { limit: u64 },
+    #[error("archive entry name is longer than {limit} bytes")]
+    EntryNameTooLong { limit: usize },
     #[error(
         "archive must contain exactly one plugin bundle root (a directory holding plugin.json, kimi.plugin.json, or plugin.toml); found {0} (install a single plugin bundle, not a mono-repo)"
     )]

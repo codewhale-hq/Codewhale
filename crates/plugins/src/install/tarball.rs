@@ -9,12 +9,13 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use codewhale_skill_install::bounded_tar::{
-    map_stream_limit, open_bounded_tarball, read_body_within,
+    MAX_ENTRY_NAME_BYTES, entry_names_within_bound, map_stream_limit, open_bounded_tarball,
+    read_body_within,
 };
 use codewhale_skill_install::install::is_safe_path;
 
@@ -97,6 +98,12 @@ fn scan_bundle_entries(
         .context("failed to read tar entries (corrupt archive?)")?
     {
         let mut entry = entry.context("failed to read tar entry")?;
+        if !entry_names_within_bound(&entry) {
+            return Err(PluginInstallError::EntryNameTooLong {
+                limit: MAX_ENTRY_NAME_BYTES,
+            }
+            .into());
+        }
         let header = entry.header().clone();
         let path = entry
             .path()
@@ -122,8 +129,9 @@ fn scan_bundle_entries(
                     .components()
                     .any(|part| part.as_os_str() == std::ffi::OsStr::new("node_modules"))
             {
-                let mut raw = Vec::new();
-                if entry.by_ref().take(65_536).read_to_end(&mut raw).is_ok()
+                let raw = read_body_within(&mut entry, 65_536)
+                    .context("failed to read package.json from archive")?;
+                if let Some(raw) = raw
                     && let Ok(text) = std::str::from_utf8(&raw)
                     && let Ok(parsed) = super::dsh::parse_json(text)
                     && parsed
@@ -192,6 +200,12 @@ fn extract_entries(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64)
         .context("failed to read tar entries (corrupt archive?)")?
     {
         let mut entry = entry.context("failed to read tar entry")?;
+        if !entry_names_within_bound(&entry) {
+            return Err(PluginInstallError::EntryNameTooLong {
+                limit: MAX_ENTRY_NAME_BYTES,
+            }
+            .into());
+        }
         let header = entry.header().clone();
         let entry_type = header.entry_type();
         let path = entry

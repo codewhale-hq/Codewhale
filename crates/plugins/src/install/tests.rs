@@ -231,6 +231,41 @@ fn scan_and_extract_bound_the_decoded_stream_for_extension_entries() {
     }
 }
 
+fn assert_name_too_long(err: &anyhow::Error) {
+    assert!(
+        matches!(
+            err.downcast_ref::<PluginInstallError>(),
+            Some(PluginInstallError::EntryNameTooLong { .. })
+        ),
+        "got: {err:#}"
+    );
+}
+
+#[test]
+fn entry_names_longer_than_the_bound_are_rejected_before_any_copy() {
+    use codewhale_skill_install::bounded_tar::MAX_ENTRY_NAME_BYTES;
+    let archives = [
+        test_archives::long_name_archive(("plugin.toml", MANIFEST), MAX_ENTRY_NAME_BYTES + 1),
+        test_archives::long_name_archive(("plugin.toml", MANIFEST), 100 * 1024),
+        test_archives::long_link_target_archive(
+            ("plugin.toml", MANIFEST),
+            MAX_ENTRY_NAME_BYTES + 1,
+        ),
+    ];
+    for bytes in &archives {
+        assert_name_too_long(&scan_tarball(bytes, SMALL_CAP).unwrap_err());
+        let tmp = tempfile::tempdir().unwrap();
+        assert_name_too_long(
+            &tarball::stage_tarball(bytes, tmp.path(), SMALL_CAP, None)
+                .map(|staged| staged.name)
+                .unwrap_err(),
+        );
+    }
+    let at_bound =
+        test_archives::long_name_archive(("plugin.toml", MANIFEST), MAX_ENTRY_NAME_BYTES);
+    assert!(scan_tarball(&at_bound, SMALL_CAP).is_ok());
+}
+
 #[test]
 fn scan_bounds_the_decoded_stream_for_many_empty_entries() {
     let bytes = test_archives::empty_entries_archive(("plugin.toml", MANIFEST), 600);

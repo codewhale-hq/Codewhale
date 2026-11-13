@@ -41,7 +41,10 @@ use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
-use crate::bounded_tar::{map_stream_limit, open_bounded_tarball, read_body_within, stream_cap};
+use crate::bounded_tar::{
+    MAX_ENTRY_NAME_BYTES, entry_names_within_bound, map_stream_limit, open_bounded_tarball,
+    read_body_within, stream_cap,
+};
 use anyhow::{Context, Result, bail};
 use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -334,6 +337,8 @@ pub enum InstallError {
     PathTraversal(String),
     #[error("entry is too large; uncompressed total would exceed {limit} bytes")]
     OversizedTarball { limit: u64 },
+    #[error("archive entry name is longer than {limit} bytes")]
+    EntryNameTooLong { limit: usize },
     #[error("missing SKILL.md in archive")]
     MissingSkillMd,
     #[error("symlinks are not allowed in skill tarballs")]
@@ -1345,6 +1350,12 @@ fn scan_tarball_entries(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
         .context("failed to read tar entries (corrupt archive?)")?
     {
         let mut entry = entry.context("failed to read tar entry")?;
+        if !entry_names_within_bound(&entry) {
+            return Err(InstallError::EntryNameTooLong {
+                limit: MAX_ENTRY_NAME_BYTES,
+            }
+            .into());
+        }
         let header = entry.header().clone();
         let entry_type = header.entry_type();
         let path = entry
@@ -1530,6 +1541,12 @@ fn extract_entries(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64)
         .context("failed to read tar entries (corrupt archive?)")?
     {
         let mut entry = entry.context("failed to read tar entry")?;
+        if !entry_names_within_bound(&entry) {
+            return Err(InstallError::EntryNameTooLong {
+                limit: MAX_ENTRY_NAME_BYTES,
+            }
+            .into());
+        }
         let header = entry.header().clone();
         let entry_type = header.entry_type();
         let path = entry
@@ -1808,6 +1825,43 @@ mod tests {
                 &extract_into(&benign_scan, &bytes, tmp.path(), SMALL_CAP).unwrap_err(),
             );
         }
+    }
+
+    fn assert_name_too_long(err: &anyhow::Error) {
+        assert!(
+            matches!(
+                err.downcast_ref::<InstallError>(),
+                Some(InstallError::EntryNameTooLong { .. })
+            ),
+            "got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn entry_names_longer_than_the_bound_are_rejected_before_any_copy() {
+        let benign = skill_tarball(&[("SKILL.md", SKILL_MD, 0o644)]);
+        let benign_scan = scan_tarball(&benign, SMALL_CAP).unwrap();
+        let archives = [
+            test_archives::long_name_archive(("SKILL.md", SKILL_MD), MAX_ENTRY_NAME_BYTES + 1),
+            test_archives::long_name_archive(("SKILL.md", SKILL_MD), 100 * 1024),
+            test_archives::long_link_target_archive(
+                ("SKILL.md", SKILL_MD),
+                MAX_ENTRY_NAME_BYTES + 1,
+            ),
+        ];
+        for bytes in &archives {
+            assert_name_too_long(&scan_tarball(bytes, SMALL_CAP).err().unwrap());
+            let tmp = tempfile::tempdir().unwrap();
+            assert_name_too_long(
+                &extract_into(&benign_scan, bytes, tmp.path(), SMALL_CAP).unwrap_err(),
+            );
+        }
+        let at_bound =
+            test_archives::long_name_archive(("SKILL.md", SKILL_MD), MAX_ENTRY_NAME_BYTES);
+        assert_eq!(
+            scan_tarball(&at_bound, SMALL_CAP).unwrap().skill_name,
+            "demo"
+        );
     }
 
     #[test]
