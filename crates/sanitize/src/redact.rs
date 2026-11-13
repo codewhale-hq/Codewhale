@@ -116,11 +116,12 @@ fn redact_json_secrets_at(
 ///    everything from the value to the end of the line is dropped, exactly as
 ///    the whole-line form already does. Token *counts* in diagnostics
 ///    (`max tokens = 8192`) are not credentials and stay visible.
-/// 2. **Bare tokens.** Whitespace-delimited words that are a credential on
-///    their own — a known `SECRET_TOKEN_PREFIXES` word, a provider-prefixed
-///    opaque key (`CREDENTIAL_VALUE_PREFIXES`, `xai-`, `nvapi-`, `gsk_`,
-///    `hf_`, `pplx-`), an AWS access key id, or a JWT — are replaced
-///    wholesale.
+/// 2. **Bare tokens.** Credentials that stand on their own — a known
+///    `SECRET_TOKEN_PREFIXES` word, a provider-prefixed opaque key
+///    (`CREDENTIAL_VALUE_PREFIXES`, `xai-`, `nvapi-`, `gsk_`, `hf_`, `pplx-`),
+///    an AWS access key id, or a JWT — are replaced wherever they sit in a
+///    word: after `NAME=`, inside quotes or brackets, after a tab, a diff
+///    marker or `user@`, or in URL userinfo.
 ///
 /// The goal is defense in depth: setup state and reports are built from safe
 /// summaries that never include secrets in the first place, and this is the
@@ -167,7 +168,7 @@ pub fn redact_secrets_with(input: &str, policy: RedactionPolicy) -> String {
         if in_private_key_block {
             if trimmed.starts_with("-----END") {
                 in_private_key_block = false;
-                out.push_str(line);
+                out.push_str(&redact_line(line, policy));
             } else {
                 out.push_str(REDACTED);
                 if line.ends_with('\n') {
@@ -176,7 +177,7 @@ pub fn redact_secrets_with(input: &str, policy: RedactionPolicy) -> String {
             }
             continue;
         }
-        if let Some(redacted) = redact_private_key_line(line) {
+        if let Some(redacted) = redact_private_key_line(line, policy) {
             in_private_key_block = redacted.opens_block;
             out.push_str(&redacted.text);
             continue;
@@ -186,44 +187,120 @@ pub fn redact_secrets_with(input: &str, policy: RedactionPolicy) -> String {
     out
 }
 
-fn is_private_key_block_start(trimmed: &str) -> bool {
-    trimmed.starts_with("-----BEGIN") && trimmed.contains("PRIVATE KEY")
-}
-
 struct PrivateKeyLine {
     text: String,
     opens_block: bool,
 }
 
-const PRIVATE_KEY_HEADER_END: &str = "PRIVATE KEY-----";
+const PRIVATE_KEY_HEADER_START: &str = "-----BEGIN";
+const PRIVATE_KEY_LABEL: &str = "PRIVATE KEY";
+const PRIVATE_KEY_LABEL_WINDOW: usize = 48;
 const PRIVATE_KEY_FOOTER: &str = "-----END";
+const PEM_DASHES: &str = "-----";
 
-fn redact_private_key_line(line: &str) -> Option<PrivateKeyLine> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UnclosedPrivateKey {
+    ToEnd,
+    OpensBlock,
+}
+
+fn private_key_header_end(text: &str, begin: usize) -> Option<usize> {
+    let label_start = begin + PRIVATE_KEY_HEADER_START.len();
+    let mut window_end = text.len().min(label_start + PRIVATE_KEY_LABEL_WINDOW);
+    while !text.is_char_boundary(window_end) {
+        window_end -= 1;
+    }
+    let window = &text[label_start..window_end];
+    let label = window.find(PRIVATE_KEY_LABEL)?;
+    if window[..label].contains(PEM_DASHES) {
+        return None;
+    }
+    let mut end = label_start + label + PRIVATE_KEY_LABEL.len();
+    if let Some(rest) = text[end..].strip_prefix(" BLOCK") {
+        end = text.len() - rest.len();
+    }
+    if text[end..].starts_with(PEM_DASHES) {
+        end += PEM_DASHES.len();
+    }
+    Some(end)
+}
+
+fn mask_private_key_spans(
+    text: &str,
+    placeholder: &str,
+    unclosed: UnclosedPrivateKey,
+) -> Option<(String, bool)> {
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    let mut changed = false;
+    let mut opens_block = false;
+    while let Some(found) = text[cursor..].find(PRIVATE_KEY_HEADER_START) {
+        let begin = cursor + found;
+        let Some(header_end) = private_key_header_end(text, begin) else {
+            let skip = begin + PRIVATE_KEY_HEADER_START.len();
+            out.push_str(&text[cursor..skip]);
+            cursor = skip;
+            continue;
+        };
+        out.push_str(&text[cursor..header_end]);
+        match text[header_end..].find(PRIVATE_KEY_FOOTER) {
+            Some(footer) => {
+                let key_body = &text[header_end..header_end + footer];
+                if key_body.trim().is_empty() {
+                    out.push_str(key_body);
+                } else {
+                    out.push_str(placeholder);
+                    changed = true;
+                }
+                cursor = header_end + footer;
+            }
+            None => {
+                let opens_line = text[..begin].trim().is_empty();
+                if unclosed == UnclosedPrivateKey::ToEnd || opens_line {
+                    let key_body = &text[header_end..];
+                    if key_body.trim().is_empty() {
+                        out.push_str(key_body);
+                    } else {
+                        out.push_str(placeholder);
+                        changed = true;
+                    }
+                    cursor = text.len();
+                    opens_block = unclosed == UnclosedPrivateKey::OpensBlock;
+                    changed |= opens_block;
+                } else {
+                    cursor = header_end;
+                }
+                break;
+            }
+        }
+    }
+    if !changed {
+        return None;
+    }
+    out.push_str(&text[cursor..]);
+    Some((out, opens_block))
+}
+
+fn redact_private_key_line(line: &str, policy: RedactionPolicy) -> Option<PrivateKeyLine> {
     let (body, newline) = match line.strip_suffix('\n') {
         Some(rest) => (rest, "\n"),
         None => (line, ""),
     };
-    let begin = body.find("-----BEGIN")?;
-    let header_len = body[begin..].find(PRIVATE_KEY_HEADER_END)?;
-    let header_end = begin + header_len + PRIVATE_KEY_HEADER_END.len();
-    let block_start = is_private_key_block_start(body.trim());
-    let footer = body[header_end..]
-        .find(PRIVATE_KEY_FOOTER)
-        .map(|idx| header_end + idx);
-    if footer.is_none() && !block_start {
-        return None;
-    }
-    let key_body_end = footer.unwrap_or(body.len());
-    let tail = &body[key_body_end..];
-    let text = if body[header_end..key_body_end].trim().is_empty() {
-        line.to_string()
-    } else {
-        format!("{}{REDACTED}{tail}{newline}", &body[..header_end])
-    };
+    let (masked, opens_block) =
+        mask_private_key_spans(body, REDACTED, UnclosedPrivateKey::OpensBlock)?;
     Some(PrivateKeyLine {
-        text,
-        opens_block: footer.is_none(),
+        text: redact_line(&format!("{masked}{newline}"), policy),
+        opens_block,
     })
+}
+
+/// Mask the body of every private-key PEM in `text` — one-line PEMs, PEMs
+/// embedded in JSON or after `NAME=`, and a PGP private key block — and
+/// return the result, or `None` when `text` holds none. A header with no
+/// footer masks everything after it.
+#[must_use]
+pub fn mask_private_keys(text: &str, placeholder: &str) -> Option<String> {
+    mask_private_key_spans(text, placeholder, UnclosedPrivateKey::ToEnd).map(|(masked, _)| masked)
 }
 
 /// Redact a single line (which may include a trailing newline).
@@ -247,6 +324,21 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
     let mut masked: Vec<String> = Vec::new();
     for word in body.split(' ') {
         let trimmed = trim_word_punctuation(word);
+        if spaced == SpacedAssignment::FlagValue && !trimmed.is_empty() {
+            if matches!(trimmed, "=" | ":") {
+                masked.push(word.to_string());
+                spaced = SpacedAssignment::AwaitingValue;
+                continue;
+            }
+            spaced = SpacedAssignment::None;
+            if !trimmed.starts_with('-')
+                && (policy == RedactionPolicy::KeyBased || value_looks_like_credential(trimmed))
+            {
+                masked.push(word.replace(trimmed, REDACTED));
+                changed = true;
+                continue;
+            }
+        }
         if spaced == SpacedAssignment::AwaitingValue && !trimmed.is_empty() {
             match policy {
                 RedactionPolicy::KeyBased => {
@@ -268,6 +360,9 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
                     if value_looks_like_credential(trimmed) {
                         masked.push(word.replace(trimmed, REDACTED));
                         changed = true;
+                    } else if let Some(redacted) = mask_bare_secret_tokens(word, REDACTED) {
+                        masked.push(redacted);
+                        changed = true;
                     } else {
                         masked.push(word.to_string());
                     }
@@ -287,6 +382,10 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
         } else if let Some(redacted) = redact_structured_word(trimmed, policy) {
             changed = true;
             masked.push(word.replace(trimmed, &redacted));
+            spaced = SpacedAssignment::None;
+        } else if let Some(redacted) = mask_bare_secret_tokens(word, REDACTED) {
+            changed = true;
+            masked.push(redacted);
             spaced = SpacedAssignment::None;
         } else {
             masked.push(word.to_string());
@@ -310,6 +409,9 @@ enum SpacedAssignment {
     SensitiveKey,
     /// A sensitive key and its separator are both behind us.
     AwaitingValue,
+    /// The previous word was a sensitive flag (`--api-key`) whose value is
+    /// the next word.
+    FlagValue,
 }
 
 impl SpacedAssignment {
@@ -340,19 +442,23 @@ impl SpacedAssignment {
             };
         }
         if key_is_sensitive(trimmed) {
-            return Self::SensitiveKey;
+            return if trimmed.starts_with('-') {
+                Self::FlagValue
+            } else {
+                Self::SensitiveKey
+            };
         }
         Self::None
     }
 }
+
+const STRUCTURAL_DELIMITERS: [char; 7] = ['{', '}', '[', ']', ',', '&', '?'];
 
 /// Compact JSON and query strings (`{"tokens":{"access_token":"eyJ…"}}`,
 /// `curl`, `jq -c`, `?access_token=…&x=1`) carry no spaces, so the word pass
 /// sees the whole document as one word whose first separator belongs to a
 /// harmless key. Split such a word on its structure and offer every member to
 /// the same keyed and bare-token checks; the delimiters are kept byte-exact.
-const STRUCTURAL_DELIMITERS: [char; 7] = ['{', '}', '[', ']', ',', '&', '?'];
-
 fn redact_structured_word(word: &str, policy: RedactionPolicy) -> Option<String> {
     if !word.contains(STRUCTURAL_DELIMITERS) {
         return None;
@@ -815,7 +921,7 @@ fn is_aws_access_key_id(word: &str) -> bool {
 /// Whether `raw` names a credential (`api_key`, `X-Api-Key`, `DBPASSWORD`)
 /// rather than a usage metric (`max_tokens`).
 #[must_use]
-pub fn is_sensitive_key(raw: &str) -> bool {
+pub fn names_a_credential(raw: &str) -> bool {
     key_is_sensitive(raw)
 }
 
@@ -831,23 +937,31 @@ pub fn contains_bare_secret_token(text: &str) -> bool {
 /// holds none.
 #[must_use]
 pub fn mask_bare_secret_tokens(text: &str, placeholder: &str) -> Option<String> {
-    let mut out = String::with_capacity(text.len());
-    let mut changed = false;
-    for piece in text.split_inclusive(is_token_delimiter) {
-        let (body, tail) = match piece.chars().next_back() {
+    fn split_piece(piece: &str) -> (&str, &str) {
+        match piece.chars().next_back() {
             Some(last) if is_token_delimiter(last) => piece.split_at(piece.len() - last.len_utf8()),
             _ => (piece, ""),
-        };
-        match secret_token_core(body) {
-            Some(core) => {
-                changed = true;
-                out.push_str(&body.replacen(core, placeholder, 1));
-            }
+        }
+    }
+    fn credential_core(body: &str) -> Option<&str> {
+        secret_token_core(body.trim_start_matches('-')).or_else(|| secret_token_core(body))
+    }
+    if !text
+        .split_inclusive(is_token_delimiter)
+        .any(|piece| credential_core(split_piece(piece).0).is_some())
+    {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len());
+    for piece in text.split_inclusive(is_token_delimiter) {
+        let (body, tail) = split_piece(piece);
+        match credential_core(body) {
+            Some(core) => out.push_str(&body.replacen(core, placeholder, 1)),
             None => out.push_str(body),
         }
         out.push_str(tail);
     }
-    changed.then_some(out)
+    Some(out)
 }
 
 fn is_token_delimiter(c: char) -> bool {
@@ -874,6 +988,11 @@ fn is_token_delimiter(c: char) -> bool {
                 | '\\'
                 | '='
                 | ':'
+                | '@'
+                | '/'
+                | '+'
+                | '#'
+                | '%'
         )
 }
 
@@ -1036,6 +1155,7 @@ mod assigned_secret_tests {
             "mode=fast region=us-east-1",
             "url=https://example.test/a?b=c",
             "path:/usr/local/bin",
+            "run --max-tokens 4096 --token-limit 5 --tokenizer bpe",
         ] {
             for out in both_policies(input) {
                 assert_eq!(out, input);
@@ -1065,6 +1185,138 @@ mod assigned_secret_tests {
                 "-----BEGIN PRIVATE KEY-----[redacted]\n[redacted]\n-----END PRIVATE KEY-----\n"
             );
         }
+    }
+
+    const HEX: &str = "3f9a8c1d2e4b5a6f7c8d9e0a1b2c3d4e5f6a7b8c";
+    const PEM: &str = "-----BEGIN PRIVATE KEY-----MIIEvQB-----END PRIVATE KEY-----";
+
+    fn assert_masked(input: &str, leaked: &str) {
+        for out in both_policies(input) {
+            assert!(!out.contains(leaked), "{input} leaked {leaked}: {out}");
+            assert!(out.contains(REDACTED), "{input}: {out}");
+        }
+    }
+
+    #[test]
+    fn a_line_holding_a_private_key_still_masks_everything_else_on_it() {
+        let openai = format!("sk-proj-{BODY}");
+        let github = format!("ghp_{BODY}");
+        for input in [
+            format!("OPENAI_API_KEY={openai} PEM={PEM}"),
+            format!("cert={PEM} then {github} and more"),
+            format!("x=-----BEGIN PRIVATE KEY-----y-----END x OPENAI_API_KEY={openai}"),
+            format!("-----BEGIN PRIVATE KEY----------END PRIVATE KEY----- GH_PAT={github}"),
+            format!("{{\"private_key\":\"{PEM}\\n\",\"token\":\"{github}\"}}"),
+            format!("a={PEM} b={PEM} {openai}"),
+        ] {
+            assert_masked(&input, BODY);
+            assert_masked(&input, "MIIEvQB");
+        }
+        let one_line = format!("cert={PEM} password=hunter2");
+        assert!(!redact_secrets(&one_line).contains("hunter2"));
+        let compact = format!("{{\"private_key\":\"{PEM}\",\"client_secret\":\"{HEX}\"}}");
+        assert_masked(&compact, HEX);
+    }
+
+    #[test]
+    fn multi_line_private_keys_open_a_block_whatever_their_header_spelling() {
+        for (header, footer) in [
+            (
+                "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+                "-----END PGP PRIVATE KEY BLOCK-----",
+            ),
+            ("-----BEGIN PRIVATE KEY", "-----END PRIVATE KEY"),
+            (
+                "-----BEGIN OPENSSH PRIVATE KEY-----",
+                "-----END OPENSSH PRIVATE KEY-----",
+            ),
+        ] {
+            let input = format!("{header}\nlQOYBFB\nmoreBody{BODY}\n{footer}\nafter\n");
+            for out in both_policies(&input) {
+                assert_eq!(
+                    out,
+                    format!("{header}\n[redacted]\n[redacted]\n{footer}\nafter\n"),
+                    "{header}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn text_after_the_footer_of_a_multi_line_key_is_still_scanned() {
+        let input = format!(
+            "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY----- GH_PAT=ghp_{BODY}\n"
+        );
+        for out in both_policies(&input) {
+            assert_eq!(
+                out,
+                "-----BEGIN PRIVATE KEY-----\n[redacted]\n-----END PRIVATE KEY----- GH_PAT=[redacted]\n"
+            );
+        }
+    }
+
+    #[test]
+    fn a_credential_is_masked_wherever_it_sits_in_a_word() {
+        for input in [
+            format!("client := openai.NewClient(\"sk-proj-{BODY}\")"),
+            format!("const stripe = new Stripe('sk_live_{BODY}');"),
+            format!("\t\"sk-live-{BODY}\","),
+            format!("\tghp_{BODY}"),
+            format!("prod\tsk-live-{BODY}\tactive"),
+            format!("+sk-live-{BODY}"),
+            format!("+\t\"sk-proj-{BODY}\","),
+            format!("-ghp_{BODY}"),
+            format!("x|sk-live-{BODY}"),
+            format!("vault/sk-live-{BODY}"),
+            format!("https://x-access-token:ghs_{BODY}@github.com/o/r.git"),
+            format!("https://ghp_{BODY}@github.com/o/r.git"),
+            format!("https://oauth2:glpat-{BODY}@gitlab.com/o/r.git"),
+            format!("https://github_pat_{BODY}@github.com/o/r.git"),
+            format!("https://user:hf_{BODY}@huggingface.co/x"),
+            format!("use ghs_{BODY}@github.com"),
+            format!("ref ghs_{BODY}#frag and ghs_{BODY}%40x"),
+        ] {
+            assert_masked(&input, BODY);
+        }
+        assert_eq!(
+            redact_secrets(&format!("https://ghp_{BODY}@github.com/o/r.git")),
+            "https://[redacted]@github.com/o/r.git"
+        );
+    }
+
+    #[test]
+    fn a_wrapped_credential_after_a_sensitive_name_is_masked_under_both_policies() {
+        for input in [
+            format!("  \"api_keys\": [\"sk-proj-{BODY}\", \"sk-proj-{BODY}Q\"],"),
+            format!("tokens_secret: ['ghp_{BODY}']"),
+            format!("api_key: (\"sk-proj-{BODY}\")"),
+        ] {
+            assert_masked(&input, BODY);
+        }
+    }
+
+    #[test]
+    fn a_secret_flag_masks_the_word_that_follows_it() {
+        for (input, expected) in [
+            (
+                format!("run login --api-key {HEX} first"),
+                "run login --api-key [redacted] first",
+            ),
+            (format!("deploy --token {HEX}"), "deploy --token [redacted]"),
+        ] {
+            for out in both_policies(&input) {
+                assert_eq!(out, expected, "{input}");
+            }
+        }
+        assert_masked(&format!("deploy --token = {HEX}"), HEX);
+        assert_eq!(
+            redact_secrets("mysql -u root --password Hunter2Xyzzy99 --verbose"),
+            "mysql -u root --password [redacted] --verbose"
+        );
+        assert_eq!(
+            redact_model_bound_secrets("mysql -u root --password hunter2"),
+            "mysql -u root --password hunter2"
+        );
     }
 
     #[test]

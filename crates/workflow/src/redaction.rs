@@ -34,7 +34,35 @@ const PATH_PLACEHOLDER: &str = "<path>";
 /// Placeholder substituted for a removed secret-shaped token.
 const SECRET_PLACEHOLDER: &str = "<redacted>";
 
-const EXTRA_SECRET_NAME_MARKERS: &[&str] = &["credential", "session_key"];
+const SECRET_NAME_MARKERS: &[&str] = &[
+    "api_key",
+    "apikey",
+    "secret",
+    "token",
+    "password",
+    "passwd",
+    "credential",
+    "authorization",
+    "auth_token",
+    "access_key",
+    "private_key",
+    "session_key",
+];
+
+const TOKEN_METRIC_NAMES: &[&str] = &[
+    "tokens",
+    "tokenizer",
+    "token_count",
+    "tokencount",
+    "token_limit",
+    "tokenlimit",
+    "token_budget",
+    "tokenbudget",
+    "token_usage",
+    "token_used",
+    "token_total",
+    "token_window",
+];
 
 /// HTTP authorization scheme keywords, in their canonical HTTP capitalization.
 ///
@@ -181,6 +209,11 @@ impl TokenOutcome {
 #[must_use]
 pub fn redact_for_disclosure(input: &str) -> Redaction {
     let mut kinds = BTreeSet::new();
+    let masked_keys = codewhale_sanitize::redact::mask_private_keys(input, SECRET_PLACEHOLDER);
+    if masked_keys.is_some() {
+        kinds.insert(REDACTION_SECRET.to_string());
+    }
+    let input = masked_keys.as_deref().unwrap_or(input);
     let tokens: Vec<&str> = input.split(' ').collect();
     let mut out: Vec<String> = Vec::with_capacity(tokens.len());
     let mut arm = CredentialArm::None;
@@ -224,18 +257,22 @@ pub fn redact_for_disclosure(input: &str) -> Redaction {
             // arming state is replaced wholesale by `redact_token` below.
         }
 
-        if let Some(end) = private_key_span(&tokens, index) {
+        if let Some(name) = name
+            && name.starts_with('-')
+            && !token.starts_with(['-', '=', ':'])
+        {
             kinds.insert(REDACTION_SECRET.to_string());
             out.push(SECRET_PLACEHOLDER.to_string());
-            arm = CredentialArm::None;
-            index = end;
+            index += 1;
             continue;
         }
 
         if let Some(name) = name
-            && let Some(rest) = token.strip_prefix(['=', ':'])
+            && let Some(rest) = token
+                .strip_prefix([':', '='])
+                .map(|rest| rest.trim_start_matches(['=', '>']))
         {
-            let separator = &token[..1];
+            let separator = &token[..token.len() - rest.len()];
             let weak = name.eq_ignore_ascii_case("authorization");
             if rest.is_empty() {
                 arm = if weak {
@@ -280,35 +317,17 @@ pub fn redact_for_disclosure(input: &str) -> Redaction {
 }
 
 fn is_secret_name(name: &str) -> bool {
-    if codewhale_sanitize::redact::is_sensitive_key(name) {
+    if codewhale_sanitize::redact::names_a_credential(name) {
         return true;
     }
     let lowered = name.to_ascii_lowercase().replace('-', "_");
-    EXTRA_SECRET_NAME_MARKERS
-        .iter()
-        .any(|marker| lowered.contains(marker))
-}
-
-fn private_key_span(tokens: &[&str], start: usize) -> Option<usize> {
-    if !unwrap_token(tokens[start]).starts_with("-----BEGIN") {
-        return None;
-    }
-    let header = tokens[start..tokens.len().min(start + 6)].join(" ");
-    if !header.contains("PRIVATE KEY-----") {
-        return None;
-    }
-    let Some(offset) = tokens[start + 1..]
-        .iter()
-        .position(|token| token.contains("-----END"))
-    else {
-        return Some(tokens.len());
-    };
-    let footer = start + 1 + offset;
-    let end = tokens[footer..tokens.len().min(footer + 4)]
-        .iter()
-        .position(|token| token.ends_with("KEY-----"))
-        .map_or(footer + 1, |closing| footer + closing + 1);
-    Some(end)
+    SECRET_NAME_MARKERS.iter().any(|marker| {
+        lowered.contains(marker)
+            && !(*marker == "token"
+                && TOKEN_METRIC_NAMES
+                    .iter()
+                    .any(|metric| lowered.contains(metric)))
+    })
 }
 
 /// Redact one whitespace-free token, recording what was removed.
@@ -940,6 +959,7 @@ mod tests {
     }
 
     const BODY: &str = "Z7qX4mNb2Vc9Lk3PwR8t";
+    const HEX: &str = "3f9a8c1d2e4b5a6f7c8d9e0a1b2c3d4e5f6a7b8c";
 
     fn reported_credential_rows() -> Vec<(String, String)> {
         let jwt = ["eyJhbGciOiJIUzI1NiJ9", ".eyJzdWIiOiIxIn0", ".c2lnbmF0dXJl"].concat();
@@ -968,6 +988,53 @@ mod tests {
                 BODY.to_string(),
             ),
             (format!("密钥：sk-live-{BODY}"), BODY.to_string()),
+            (format!("use ghs_{BODY}@github.com"), BODY.to_string()),
+            (
+                format!("https://x-access-token:ghs_{BODY}@github.com/o/r.git"),
+                BODY.to_string(),
+            ),
+            (
+                format!("https://ghp_{BODY}@github.com/o/r.git"),
+                BODY.to_string(),
+            ),
+            (
+                format!("https://oauth2:glpat-{BODY}@gitlab.com/o/r.git"),
+                BODY.to_string(),
+            ),
+            (
+                format!("x=-----BEGIN PRIVATE KEY-----y{BODY}-----END x OPENAI_API_KEY=sk-proj-{BODY}"),
+                BODY.to_string(),
+            ),
+            (
+                "SSH_KEY=-----BEGIN OPENSSH PRIVATE KEY----- b3BlbnNzaC1rZXktdjEAAAAAB -----END OPENSSH PRIVATE KEY-----".to_string(),
+                "b3BlbnNzaC1rZXktdjEAAAAAB".to_string(),
+            ),
+            (
+                "key=\"-----BEGIN PRIVATE KEY----- MIIEvQIBADANBgkqB -----END PRIVATE KEY-----\"".to_string(),
+                "MIIEvQIBADANBgkqB".to_string(),
+            ),
+            (
+                "-----BEGIN PGP PRIVATE KEY BLOCK----- lQOYBFBxyzB -----END PGP PRIVATE KEY BLOCK-----".to_string(),
+                "lQOYBFBxyzB".to_string(),
+            ),
+            (
+                "(\"k\":\"-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkqB\\n-----END PRIVATE KEY-----\\n\")".to_string(),
+                "MIIEvQIBADANBgkqB".to_string(),
+            ),
+            (format!("SLACKTOKEN={HEX}"), HEX.to_string()),
+            (format!("GHTOKEN={HEX}"), HEX.to_string()),
+            (format!("apitoken={HEX}"), HEX.to_string()),
+            (format!("authtoken={HEX}"), HEX.to_string()),
+            (format!("mytoken: {HEX}"), HEX.to_string()),
+            (format!("OPENAIAPIKEY={HEX}"), HEX.to_string()),
+            (format!("SECRETKEY={HEX}"), HEX.to_string()),
+            (format!("apiKey := {HEX}"), HEX.to_string()),
+            (format!("'api_key' => {HEX}"), HEX.to_string()),
+            (format!("password == {HEX}"), HEX.to_string()),
+            ("password := Hunter2Xyzzy99".to_string(), "Hunter2Xyzzy99".to_string()),
+            (format!("run codewhale login --api-key {HEX} first"), HEX.to_string()),
+            ("mysql -u root --password Hunter2Xyzzy99".to_string(), "Hunter2Xyzzy99".to_string()),
+            (format!("deploy --token {HEX}"), HEX.to_string()),
         ]
     }
 
@@ -989,8 +1056,46 @@ mod tests {
     }
 
     #[test]
+    fn operators_and_flags_are_kept_and_only_the_value_is_removed() {
+        for (input, expected) in [
+            (
+                format!("set apiKey := \"{HEX}\" in main.go"),
+                "set apiKey := <redacted> in main.go",
+            ),
+            (
+                format!("set 'api_key' => '{HEX}' in config"),
+                "set 'api_key' => <redacted> in config",
+            ),
+            (
+                format!("check password == {HEX}"),
+                "check password == <redacted>",
+            ),
+            (
+                "set password := Hunter2Xyzzy99 now".to_string(),
+                "set password := <redacted> now",
+            ),
+            (
+                format!("run codewhale login --api-key {HEX} first"),
+                "run codewhale login --api-key <redacted> first",
+            ),
+            (format!("deploy --token {HEX}"), "deploy --token <redacted>"),
+            (format!("SLACKTOKEN={HEX}"), "SLACKTOKEN=<redacted>"),
+            (format!("mytoken: {HEX}"), "mytoken: <redacted>"),
+        ] {
+            let redaction = redact_for_disclosure(&input);
+            assert_eq!(redaction.text(), expected, "{input}");
+            assert_eq!(redaction.kinds(), vec![REDACTION_SECRET.to_string()]);
+        }
+    }
+
+    #[test]
     fn token_counts_are_not_secrets() {
-        for text in ["max_tokens=8192", "TOKEN_LIMIT=4096", "tokenizer=bpe"] {
+        for text in [
+            "max_tokens=8192",
+            "TOKEN_LIMIT=4096",
+            "tokenizer=bpe",
+            "set --max-tokens 4096 --token-limit 5",
+        ] {
             let redaction = redact_for_disclosure(text);
             assert_eq!(redaction.text(), text);
             assert!(redaction.kinds().is_empty(), "{text}");
