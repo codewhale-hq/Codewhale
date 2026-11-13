@@ -3281,11 +3281,11 @@ impl Engine {
                 // policy itself gone, which is the one word the notice exists
                 // to carry. Product words only (§19): Permissions, then
                 // Plan / Work — not "Policy" or the ACT tag.
-                "Permissions: {} · {}",
-                effective_approval.permission_chip_label(),
+                "Permissions: {}",
                 match mode {
-                    AppMode::Plan => "Plan",
-                    AppMode::Agent => "Work",
+                    AppMode::Plan => "Plan (read only)".to_string(),
+                    AppMode::Agent =>
+                        format!("{} · Work", effective_approval.permission_chip_label()),
                 },
             )))
             .await;

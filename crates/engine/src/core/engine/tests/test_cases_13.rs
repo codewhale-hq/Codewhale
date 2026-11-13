@@ -333,6 +333,17 @@ async fn posture_change_status_uses_permissions_and_work() {
     assert!(engine.apply_pending_runtime_authority().await);
     publish(&handle);
     assert!(!engine.apply_pending_runtime_authority().await);
+    handle
+        .try_send(Op::ChangeMode {
+            mode: AppMode::Plan,
+            allow_shell: false,
+            trust_mode: false,
+            auto_approve: false,
+            approval_mode: ApprovalMode::Suggest,
+            configured_sandbox_mode: None,
+        })
+        .expect("publish plan runtime authority");
+    assert!(engine.apply_pending_runtime_authority().await);
 
     let mut statuses = Vec::new();
     let mut rx = handle.rx_event.write().await;
@@ -343,7 +354,10 @@ async fn posture_change_status_uses_permissions_and_work() {
     }
     assert_eq!(
         statuses,
-        vec!["Permissions: Full Access · Work".to_string()]
+        vec![
+            "Permissions: Full Access · Work".to_string(),
+            "Permissions: Plan (read only)".to_string(),
+        ]
     );
 }
 

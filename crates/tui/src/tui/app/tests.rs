@@ -4061,6 +4061,48 @@ fn base_policy_for_mode_projects_the_mode_permission_table() {
 }
 
 #[test]
+fn every_dial_step_writes_one_permissions_receipt() {
+    let _env_lock = lock_test_env();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config_path = tmp.path().join("config.toml");
+    let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+    let mut options = test_options(false);
+    options.start_in_agent_mode = true;
+    options.config_path = Some(config_path);
+    let mut app = App::new(options, &Config::default());
+    app.set_agent_approval_posture(ApprovalMode::AcceptEdits);
+    app.history.clear();
+    app.yolo_compat_notified = true;
+
+    let mut receipts = Vec::new();
+    for _ in 0..5 {
+        let before = app.history.len();
+        assert!(app.step_permission_dial(false).changed());
+        let added: Vec<String> = app.history[before..]
+            .iter()
+            .filter_map(|cell| match cell {
+                HistoryCell::System { content } if content.starts_with("Permissions changed") => {
+                    Some(content.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(added.len(), 1, "one receipt per press: {added:?}");
+        receipts.extend(added);
+    }
+    assert_eq!(
+        receipts,
+        [
+            "Permissions changed to plan",
+            "Permissions changed to auto",
+            "Permissions changed to Full Access",
+            "Permissions changed to ask",
+            "Permissions changed to accept edits",
+        ]
+    );
+}
+
+#[test]
 fn cycle_approval_scenario() {
     // Scenario consolidation of: the permission dial walk, cycle_approval_posture_emits_rebinding_notice_once
     // from the permission dial walk
