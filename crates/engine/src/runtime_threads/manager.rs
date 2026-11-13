@@ -1185,6 +1185,7 @@ fn unaccepted_usage_turn(thread_id: &str, turn_id: &str) -> TurnRecord {
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     }
 }
 
@@ -3050,6 +3051,10 @@ pub struct DroppedTurnSnapshots {
     /// only restore what the snapshots hold, so each is checked against the
     /// snapshot exclusions.
     pub declared_writes: Vec<String>,
+    /// Paths the turn's own sub-agents reported changing through bounded
+    /// write tools. They count as the turn's own changes, and are checked
+    /// against the snapshot exclusions like `declared_writes`.
+    pub delegated_writes: Vec<String>,
     /// Tool calls recorded as failed, canceled or never started: whatever
     /// paths their snapshot receipts declare, they wrote nothing.
     pub unrun_tool_calls: std::collections::BTreeSet<String>,
@@ -10576,6 +10581,7 @@ impl RuntimeThreadManager {
                         && (ran_tools || !ran_here),
                     snapshots: turn.workspace_snapshots.clone(),
                     declared_writes,
+                    delegated_writes: turn.delegated_writes.clone(),
                     unrun_tool_calls,
                 }
             })
@@ -11422,6 +11428,7 @@ impl RuntimeThreadManager {
                     artifacts: Vec::new(),
                     workspace: None,
                     workspace_snapshots: Vec::new(),
+                    delegated_writes: Vec::new(),
                 });
 
                 thread.latest_turn_id = Some(turn_id);
@@ -13712,6 +13719,7 @@ source_usage_records: Default::default(),
             artifacts: Vec::new(),
             workspace: None,
             workspace_snapshots: Vec::new(),
+            delegated_writes: Vec::new(),
 
 };
         append_initial_routed_usage_to_turn(&mut turn, &initial_routed_usage);
@@ -14308,6 +14316,7 @@ source_usage_records: Default::default(),
             artifacts: Vec::new(),
             workspace: None,
             workspace_snapshots: Vec::new(),
+            delegated_writes: Vec::new(),
         };
         let op = Op::CompactContext {
             id: compaction_id.clone(),
@@ -16901,6 +16910,37 @@ source_usage_records: Default::default(),
                         }
                         let _ = usage;
                         self.append_unverified_routed_usage_to_turn(&turn_id, &source_id, *route)?;
+                    }
+                }
+                EngineEvent::SubAgentMailbox {
+                    owner_session_id,
+                    turn_id: mailbox_turn_id,
+                    message: crate::tools::subagent::MailboxMessage::FileWrites { paths, .. },
+                    ..
+                } if owner_session_id == thread_id => {
+                    let belongs_to_turn = engine_turn_id
+                        .as_deref()
+                        .is_some_and(|started| started == mailbox_turn_id);
+                    if belongs_to_turn {
+                        let recorded = {
+                            let _turn_mutation = self.store.turn_mutation.lock();
+                            self.store.load_turn(&turn_id).and_then(|mut turn| {
+                                for path in paths {
+                                    if !turn.delegated_writes.contains(&path) {
+                                        turn.delegated_writes.push(path);
+                                    }
+                                }
+                                self.store.save_turn(&turn)
+                            })
+                        };
+                        if let Err(err) = recorded {
+                            tracing::warn!(
+                                target: "snapshot",
+                                thread_id = %thread_id,
+                                turn_id = %turn_id,
+                                "sub-agent file writes were not recorded; undoing this turn will refuse them: {err:#}"
+                            );
+                        }
                     }
                 }
                 EngineEvent::CompactionStarted {

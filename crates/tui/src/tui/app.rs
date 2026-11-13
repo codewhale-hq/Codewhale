@@ -2089,6 +2089,11 @@ pub struct App {
     pub agent_progress: HashMap<String, String>,
     /// Parent/depth metadata for live progress-only sub-agent rows.
     pub agent_progress_meta: HashMap<String, AgentProgressMeta>,
+    /// Workspace paths the sub-agents of each Engine turn reported writing,
+    /// keyed by session id and the turn sequence in its `pre-turn:<seq>`
+    /// restore point. Turn-scoped undo counts them as the turn's own changes.
+    pub delegated_writes:
+        std::collections::BTreeMap<(String, u64), std::collections::BTreeSet<String>>,
     /// In-transcript sub-agent card index by `agent_id` (issue #128).
     /// Maps each live sub-agent to the `HistoryCell::SubAgent` it renders
     /// into, so successive mailbox envelopes mutate the same cell rather

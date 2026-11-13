@@ -466,6 +466,19 @@ pub(super) fn handle_subagent_mailbox_for_turn(
     _seq: u64,
     message: &MailboxMessage,
 ) -> bool {
+    if let MailboxMessage::FileWrites {
+        turn_seq, paths, ..
+    } = message
+    {
+        if let Some(session) = app.current_session_id.clone() {
+            app.delegated_writes
+                .entry((session, *turn_seq))
+                .or_default()
+                .extend(paths.iter().cloned());
+        }
+        return false;
+    }
+
     // Accumulate sub-agent token costs for the real-time footer counter (#166).
     if let MailboxMessage::TokenUsage { record, .. } = message {
         if let Some(record) = record.as_ref().filter(|record| record.settlement.is_some()) {

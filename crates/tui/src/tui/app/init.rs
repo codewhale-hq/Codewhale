@@ -995,6 +995,7 @@ impl App {
             subagent_terminal_seen_at: HashMap::new(),
             agent_progress: HashMap::new(),
             agent_progress_meta: HashMap::new(),
+            delegated_writes: Default::default(),
             subagent_card_index: HashMap::new(),
             last_fanout_card_index: None,
             pending_subagent_dispatch: None,

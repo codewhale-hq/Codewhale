@@ -2719,6 +2719,7 @@ fn sample_turn(thread_id: &str, turn_id: &str, status: RuntimeTurnStatus) -> Tur
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     }
 }
 
@@ -20064,6 +20065,7 @@ fn opening_manager_recovers_stale_queued_and_in_progress_work() -> Result<()> {
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     })?;
     manager.store.save_turn(&TurnRecord {
         source_usage_origin_turn_id: None,
@@ -20110,6 +20112,7 @@ fn opening_manager_recovers_stale_queued_and_in_progress_work() -> Result<()> {
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     })?;
     drop(manager);
 
@@ -20314,6 +20317,7 @@ fn seed_turns_with_user_messages(
             artifacts: Vec::new(),
             workspace: None,
             workspace_snapshots: Vec::new(),
+            delegated_writes: Vec::new(),
         })?;
         turn_ids.push(turn_id);
     }
@@ -21079,6 +21083,7 @@ fn restart_rebuild_restores_tool_call_identity_from_persisted_items() -> Result<
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     })?;
 
     let turns = manager.store.list_turns_for_thread(&thread.id)?;
@@ -21372,6 +21377,7 @@ fn restart_rebuild_keeps_in_flight_tool_call_identity() -> Result<()> {
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     })?;
 
     let turns = manager.store.list_turns_for_thread(&thread.id)?;
@@ -21480,6 +21486,7 @@ fn restart_rebuild_skips_steers_the_engine_never_delivered() -> Result<()> {
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     })?;
 
     let turns = manager.store.list_turns_for_thread(&thread.id)?;
@@ -21589,6 +21596,7 @@ fn restart_rebuild_skips_legacy_tool_items_without_identity() -> Result<()> {
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     })?;
 
     let turns = manager.store.list_turns_for_thread(&thread.id)?;

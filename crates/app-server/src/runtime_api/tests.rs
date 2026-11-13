@@ -619,6 +619,7 @@ fn messages_from_thread_detail_batches_tool_results() {
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     };
     let item = |id: &str,
                 kind: TurnItemKind,
@@ -8155,6 +8156,7 @@ fn dropped_turn(
         may_change_files,
         snapshots,
         declared_writes: Vec::new(),
+        delegated_writes: Vec::new(),
         unrun_tool_calls: std::collections::BTreeSet::new(),
     }
 }
@@ -8278,6 +8280,76 @@ fn patch_undo_helper_refuses_to_overwrite_later_edits() -> Result<()> {
     assert_eq!(err.code, Some(PATCH_UNDO_WORKSPACE_CHANGED));
     assert!(err.message.contains("a.txt"), "{}", err.message);
     assert_eq!(fs::read_to_string(&a)?, "user edit after the turn");
+    Ok(())
+}
+
+/// Files a turn's own sub-agents wrote land while no lead tool call is open.
+/// They are the turn's own and the undo restores them; a file an editor
+/// changed in the same window stays foreign and still refuses the undo,
+/// naming only that file.
+#[test]
+fn patch_undo_helper_counts_sub_agent_writes_as_the_turns_own() -> Result<()> {
+    use codewhale_snapshot::WorkspaceSnapshotKind::{PostTurn, PreTurn};
+    if git_missing() {
+        return Ok(());
+    }
+    let _lock = lock_test_env();
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    fs::create_dir_all(&home)?;
+    let _home = EnvVarGuard::set("HOME", &home);
+
+    let workspace = root.path().join("workspace");
+    fs::create_dir_all(&workspace)?;
+    let repo = codewhale_snapshot::SnapshotRepo::open_or_init(&workspace)?;
+    let a = workspace.join("a.txt");
+    let b = workspace.join("b.txt");
+    let editor = workspace.join("editor.txt");
+    fs::write(&a, "a before")?;
+    fs::write(&b, "b before")?;
+    fs::write(&editor, "editor before")?;
+    let pre = repo.take_snapshot("pre-turn:1", Some("thr_a"))?;
+    fs::write(&a, "a child")?;
+    fs::write(&b, "b child")?;
+    fs::write(&editor, "editor typed")?;
+    let post = repo.take_snapshot("post-turn:1", Some("thr_a"))?;
+
+    let receipts = || {
+        let pre_receipt = snapshot_receipt(PreTurn, &pre, "thr_a");
+        let mut post_receipt = snapshot_receipt(PostTurn, &post, "thr_a");
+        post_receipt.changed_paths = Some(changed_between(&repo, &pre, &post));
+        vec![pre_receipt, post_receipt]
+    };
+    let mut turn = dropped_turn("turn_1", true, receipts());
+    let err = patch_undo_workspace_files(&workspace, std::slice::from_ref(&turn))
+        .expect_err("child writes without a receipt are foreign");
+    assert_eq!(err.code, Some(PATCH_UNDO_WORKSPACE_CHANGED));
+
+    turn.delegated_writes = vec!["a.txt".to_string(), "b.txt".to_string()];
+    let err = patch_undo_workspace_files(&workspace, std::slice::from_ref(&turn))
+        .expect_err("the editor's file must still refuse the undo");
+    assert_eq!(err.code, Some(PATCH_UNDO_WORKSPACE_CHANGED));
+    assert!(err.message.contains("editor.txt"), "{}", err.message);
+    assert!(!err.message.contains("a.txt"), "{}", err.message);
+    assert!(!err.message.contains("b.txt"), "{}", err.message);
+    assert_eq!(fs::read_to_string(&a)?, "a child");
+    assert_eq!(fs::read_to_string(&editor)?, "editor typed");
+
+    fs::write(&editor, "editor before")?;
+    let post = repo.take_snapshot("post-turn:1", Some("thr_a"))?;
+    let mut post_receipt = snapshot_receipt(PostTurn, &post, "thr_a");
+    post_receipt.changed_paths = Some(changed_between(&repo, &pre, &post));
+    let turn = codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots {
+        snapshots: vec![snapshot_receipt(PreTurn, &pre, "thr_a"), post_receipt],
+        delegated_writes: vec!["a.txt".to_string(), "b.txt".to_string()],
+        ..turn
+    };
+    let restored = patch_undo_workspace_files(&workspace, std::slice::from_ref(&turn))
+        .expect("the turn's sub-agent writes are undone");
+    assert!(restored.files_restored, "{:?}", restored.summary);
+    assert_eq!(fs::read_to_string(&a)?, "a before");
+    assert_eq!(fs::read_to_string(&b)?, "b before");
+    assert_eq!(fs::read_to_string(&editor)?, "editor before");
     Ok(())
 }
 
@@ -10646,6 +10718,7 @@ async fn session_save_merges_thread_cost_split_and_records_coverage() -> Result<
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     };
     // Mirror `TurnRecord::persist_effective_route` (private to the runtime
     // threads module): persist the route envelope onto the turn so the
@@ -10858,6 +10931,7 @@ async fn session_save_persists_parent_cny_unpriced_reasons_without_double_count(
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     };
     turn.effective_provider = Some(ProviderKind::Openai.as_str().to_string());
     turn.effective_provider_id = Some(ProviderKind::Openai.as_str().to_string());
@@ -12224,6 +12298,7 @@ fn seed_summary_search_transcript(
             artifacts: Vec::new(),
             workspace: None,
             workspace_snapshots: Vec::new(),
+            delegated_writes: Vec::new(),
         })?;
         latest_turn_id = Some(turn_id);
     }

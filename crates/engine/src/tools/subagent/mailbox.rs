@@ -76,6 +76,17 @@ pub enum MailboxMessage {
         #[serde(default)]
         todo: TodoListSnapshot,
     },
+    /// Workspace files this agent's bounded write tools just changed in the
+    /// shared checkout. `turn_seq` is the owning engine turn's sequence (the
+    /// number in its `pre-turn:<seq>` restore point), stamped when the
+    /// envelope is forwarded; a turn-scoped undo counts these paths as the
+    /// turn's own.
+    FileWrites {
+        agent_id: String,
+        #[serde(default)]
+        turn_seq: u64,
+        paths: Vec<String>,
+    },
     /// Incremental token usage from a sub-agent's API call.
     /// Published after each turn so the parent's cost counter updates live.
     TokenUsage {
@@ -104,6 +115,7 @@ impl MailboxMessage {
             | Self::Progress { agent_id, .. }
             | Self::ToolCallStarted { agent_id, .. }
             | Self::ToolCallCompleted { agent_id, .. }
+            | Self::FileWrites { agent_id, .. }
             | Self::Completed { agent_id, .. }
             | Self::Failed { agent_id, .. }
             | Self::Interrupted { agent_id, .. }

@@ -1141,6 +1141,11 @@ pub struct TurnRecord {
     /// carry none, and so have no restore point.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_snapshots: Vec<codewhale_snapshot::WorkspaceSnapshotRef>,
+    /// Workspace-relative paths the sub-agents this turn started changed in
+    /// the shared checkout through bounded write tools, as they reported
+    /// them. A turn-scoped undo counts them as the turn's own changes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delegated_writes: Vec<String>,
 }
 
 impl TurnRecord {
@@ -1222,6 +1227,7 @@ impl TurnRecord {
                     && self.artifacts.is_empty()
                     && self.workspace.is_none()
                     && self.workspace_snapshots.is_empty()
+                    && self.delegated_writes.is_empty()
                     && self.source_accounting
                     && self.source_usage_records.len() == 1
                     && self

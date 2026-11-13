@@ -9476,12 +9476,15 @@ enum SpanWriter {
 /// Split a window's changes into the turn's own and everyone else's, from
 /// the spans its receipts bound: a path belongs to the turn only if it
 /// changed while one of the turn's tool calls was running and, for a file
-/// tool, is one the call declared. A span whose changes were not recorded
+/// tool, is one the call declared. A path a sub-agent the turn started
+/// reported writing through a bounded write tool is the turn's own wherever
+/// it changed in the window. A span whose changes were not recorded
 /// (a snapshot in it failed) cannot be attributed and fails closed.
 fn attribute_window(
     workspace: &FsPath,
     turn_id: &str,
     receipts: &[codewhale_snapshot::WorkspaceSnapshotRef],
+    delegated: &std::collections::BTreeSet<PathBuf>,
 ) -> Result<
     (
         std::collections::BTreeSet<PathBuf>,
@@ -9558,6 +9561,11 @@ fn attribute_window(
                 _ => SpanWriter::Nobody,
             }
         };
+    }
+    for path in delegated {
+        if foreign.remove(path) {
+            owned.insert(path.clone());
+        }
     }
     Ok((owned, foreign))
 }
@@ -9733,7 +9741,12 @@ fn patch_undo_workspace_files_impl(
             })
             .filter_map(|receipt| receipt.write_paths.as_ref())
             .flatten();
-        for raw in turn.declared_writes.iter().chain(receipt_writes) {
+        for raw in turn
+            .declared_writes
+            .iter()
+            .chain(&turn.delegated_writes)
+            .chain(receipt_writes)
+        {
             let covered = match declared_write_path(workspace, raw) {
                 Some(rel) => !repo.path_is_excluded(&rel).map_err(|e| {
                     ApiError::internal(format!(
@@ -9759,7 +9772,12 @@ fn patch_undo_workspace_files_impl(
     for (turn, receipts) in windows {
         let (pre, pre_label) = resolve(&turn.turn_id, &receipts[0])?;
         let (post, _) = resolve(&turn.turn_id, &receipts[receipts.len() - 1])?;
-        let (owned, foreign) = attribute_window(workspace, &turn.turn_id, receipts)?;
+        let delegated = turn
+            .delegated_writes
+            .iter()
+            .filter_map(|raw| declared_write_path(workspace, raw))
+            .collect();
+        let (owned, foreign) = attribute_window(workspace, &turn.turn_id, receipts, &delegated)?;
         segments.push(UndoSegment {
             turn_id: turn.turn_id.clone(),
             pre,

@@ -1621,9 +1621,16 @@ async fn forward_subagent_mailbox_message(
     owner_session_id: &str,
     turn_id: &str,
     seq: u64,
-    message: MailboxMessage,
+    turn_seq: u64,
+    mut message: MailboxMessage,
     best_effort_sent_at: &mut HashMap<String, Instant>,
 ) -> bool {
+    if let MailboxMessage::FileWrites {
+        turn_seq: stamp, ..
+    } = &mut message
+    {
+        *stamp = turn_seq;
+    }
     let event = Event::SubAgentMailbox {
         owner_session_id: owner_session_id.to_string(),
         turn_id: turn_id.to_string(),
@@ -6380,6 +6387,7 @@ impl Engine {
                 let tx_event_clone = self.tx_event.clone();
                 let mailbox_owner_session_id = self.session.id.clone();
                 let mailbox_turn_id = turn_id.to_string();
+                let mailbox_turn_seq = self.turn_counter;
                 let (flush_tx, mut flush_rx) = tokio::sync::oneshot::channel();
                 let drain_handle = spawn_supervised(
                     "subagent-mailbox-drainer",
@@ -6396,6 +6404,7 @@ impl Engine {
                                             &mailbox_owner_session_id,
                                             &mailbox_turn_id,
                                             envelope.seq,
+                                            mailbox_turn_seq,
                                             envelope.message,
                                             &mut best_effort_sent_at,
                                         ).await {
@@ -6411,6 +6420,7 @@ impl Engine {
                                         &mailbox_owner_session_id,
                                         &mailbox_turn_id,
                                         envelope.seq,
+                                        mailbox_turn_seq,
                                         envelope.message,
                                         &mut best_effort_sent_at,
                                     ).await {

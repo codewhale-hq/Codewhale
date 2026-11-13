@@ -1081,6 +1081,7 @@ impl RuntimeThreadManager {
             artifacts: Vec::new(),
             workspace: None,
             workspace_snapshots: Vec::new(),
+            delegated_writes: Vec::new(),
         };
         let mut active = self.active.lock().await;
         let Some(state) = active.external.get_mut(&thread.id) else {

@@ -300,6 +300,7 @@ pub(crate) struct UndoRangeInput {
     messages: std::sync::Arc<Vec<codewhale_models::Message>>,
     boundaries: Vec<usize>,
     first_request: usize,
+    delegated_writes: std::collections::BTreeMap<u64, Vec<String>>,
 }
 
 pub(crate) struct UndoRangePlan {
@@ -352,6 +353,17 @@ pub(crate) fn undo_range_input(app: &App, cut: usize) -> anyhow::Result<UndoRang
         messages: app.api_messages.clone(),
         boundaries,
         first_request,
+        delegated_writes: app
+            .current_session_id
+            .as_ref()
+            .map(|session| {
+                app.delegated_writes
+                    .iter()
+                    .filter(|((owner, _), _)| owner == session)
+                    .map(|((_, seq), paths)| (*seq, paths.iter().cloned().collect()))
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -394,6 +406,7 @@ pub(crate) fn plan_undo_range(input: UndoRangeInput) -> anyhow::Result<UndoRange
                     may_change_files: false,
                     snapshots: Vec::new(),
                     declared_writes: Vec::new(),
+                    delegated_writes: Vec::new(),
                     unrun_tool_calls: Default::default(),
                 },
             );
@@ -460,6 +473,7 @@ pub(crate) fn plan_undo_range(input: UndoRangeInput) -> anyhow::Result<UndoRange
                     may_change_files: false,
                     snapshots: Vec::new(),
                     declared_writes: Vec::new(),
+                    delegated_writes: Vec::new(),
                     unrun_tool_calls: Default::default(),
                 },
             );
@@ -608,6 +622,11 @@ pub(crate) fn plan_undo_range(input: UndoRangeInput) -> anyhow::Result<UndoRange
                 may_change_files: true,
                 snapshots: receipts,
                 declared_writes,
+                delegated_writes: input
+                    .delegated_writes
+                    .get(&pre.seq.unwrap_or_default())
+                    .cloned()
+                    .unwrap_or_default(),
                 unrun_tool_calls: Default::default(),
             },
         );
