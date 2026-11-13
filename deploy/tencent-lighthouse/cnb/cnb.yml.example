@@ -15,7 +15,7 @@ main:
             npm test
 
     - docker:
-        image: rust:1.88-bookworm
+        image: rust:1.100.0-bookworm
       stages:
         - name: release version check
           script: |

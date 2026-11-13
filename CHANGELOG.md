@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Quota-window reset text:** a rate-limited turn now gives the reset time in plain words such as "19h29m" instead of Rust debug output like `Some(70168s)`, and leaves the reset clause out when the provider gives no reset time. An OpenCode Go message points at that provider's own key with `codewhale auth set --provider opencode-go`, without repeating a hint the message already carries. (CW-8209)
 - **Usage-reporting collector:** accepts runtime schema 6 alongside existing versions and keeps schema 6 reports first-party only.
 
+- **Source-build toolchain:** Rust 1.100.0 is pinned consistently across local source builds, CI, Docker, Dev Containers and CNB recipes. The minimum supported Rust version remains 1.89.
 - **Plugin index hooks:** hooks with the same name and event now have distinct row IDs, so clients can keep every configured hook visible.
 - **Extension service approvals:** plugin service acts use the session permission gate and retain their approved or refused act records when a tool call fails. Closing a call seals its broker-act record so a late approval cannot authorize an unrecorded act. Ordinary nested-call receipts may still show an in-flight outcome when cancellation ends the call early.
 
