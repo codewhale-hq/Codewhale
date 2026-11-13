@@ -21,7 +21,7 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: pet/package-lock.json
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
       - run: npm --prefix pet ci --ignore-scripts
       - run: npm --prefix pet run check
       - run: npm --prefix pet run sync
@@ -60,7 +60,7 @@ jobs:
           cache-dependency-path: pet/package-lock.json
       - run: npm --prefix pet ci --ignore-scripts
       - run: npm --prefix pet run check
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
         if: runner.os == 'macOS'
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         if: runner.os == 'macOS'

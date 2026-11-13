@@ -17,7 +17,7 @@ they do not cost context on machines that will never hit them.
   worktrees). Those spawned shells only see the repo's `rust-toolchain.toml`
   override while inside `/workspace`, so without a global default they fail with
   "rustup could not choose a version of rustc to run". The update script runs
-  `rustup default stable` to fix this.
+  `rustup default 1.100.0` to fix this.
 - **Known env-specific test failures at `/workspace` (not code bugs):** because
   the checkout sits directly under `/`, two `codewhale-tui` subagent tests fail
   here — `git_repo_root_reports_attempted_paths_when_no_repo_found` (cannot
