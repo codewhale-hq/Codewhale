@@ -1235,8 +1235,9 @@ enum DownloadAttempt {
 }
 
 /// Stream a URL into memory with a size cap. Aborts on the first read that
-/// would push the buffer over `max_size * 4` (the *4 accounts for compression;
-/// the unpack step still enforces `max_size` on the *uncompressed* bytes).
+/// would push the buffer over `(max_size * 4).min(4 GiB)` (accounting for
+/// compression while capping compressed downloads at 4 GiB; the unpack step
+/// still enforces `max_size` on the *uncompressed* bytes).
 async fn download_with_cap(
     url: &str,
     network: &NetworkPolicy,
