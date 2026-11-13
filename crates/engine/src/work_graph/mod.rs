@@ -16,8 +16,6 @@
 //! Session persistence, legacy import, UI projections, and liveness adapters
 //! are wired: `session_manager` stores a snapshot, `tools/shell` and
 //! `tools/tasks` observe operations, and the engine records owner liveness.
-#![allow(dead_code)]
-#![allow(unused_imports)]
 
 mod compat;
 mod digest;

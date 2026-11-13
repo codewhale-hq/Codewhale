@@ -528,7 +528,7 @@ impl AgentCurrentActivity {
 /// can enter the parent transcript/sidebar pass through this seam.
 pub(crate) fn bound_agent_activity_text(value: &str) -> String {
     let mut visible = String::with_capacity(value.len());
-    codewhale_tui_kit::osc8::strip_ansi_into(value, &mut visible);
+    codewhale_sanitize::sanitize::strip_ansi_into(value, &mut visible);
     let redacted = codewhale_config::persistence::redact_secrets(&visible);
     codewhale_app_server::exec_agent::summarize_tool_output(&redacted)
 }

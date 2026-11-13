@@ -3958,7 +3958,7 @@ async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -
             // re-arm mouse reporting in the caller's shell and leave it
             // executing escape fragments after this command exits.
             let mut safe_preview = String::with_capacity(preview.len());
-            codewhale_tui_kit::osc8::strip_ansi_into(&preview, &mut safe_preview);
+            codewhale_sanitize::sanitize::strip_ansi_into(&preview, &mut safe_preview);
             print!("{safe_preview}");
             if contents.chars().count() > preview.chars().count() {
                 println!("\n[truncated]");
@@ -12936,7 +12936,7 @@ fn duplicate_computer_use_warning(name: &str) -> String {
 
 /// Credential-safe launch summary used by the actual `mcp list` path.
 fn mcp_server_listing(command: Option<&str>, args: &[String], url: Option<&str>) -> String {
-    use codewhale_secrets::sanitize::{
+    use codewhale_sanitize::sanitize::{
         is_sensitive_key_name, redact_url_for_display, sanitize_text,
     };
     let flag_name = |arg: &str| arg.trim_start_matches('-').to_string();

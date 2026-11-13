@@ -1715,7 +1715,7 @@ fn number(value: Option<&Value>, keys: &[&str]) -> Option<i64> {
 }
 
 fn redact(text: &str) -> String {
-    codewhale_secrets::redact::redact_secrets(text)
+    codewhale_sanitize::redact::redact_secrets(text)
 }
 
 use codewhale_commands::diagnostics_reports::receipts::{bounded, plural};

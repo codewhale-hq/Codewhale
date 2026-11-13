@@ -772,7 +772,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             ));
         }
         let mut safe = String::new();
-        codewhale_tui_kit::osc8::strip_ansi_keep_sgr_into(
+        codewhale_sanitize::sanitize::strip_ansi_keep_sgr_into(
             &String::from_utf8_lossy(&dock.output),
             &mut safe,
         );

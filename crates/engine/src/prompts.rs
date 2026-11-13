@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! System prompt composition.
 //!
 //! Prompts are assembled from composable layers loaded at compile time from

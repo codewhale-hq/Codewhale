@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Removed (crate API):** the unwired `codewhale-hooks` dispatcher and its stdout, JSONL and Unix-socket sinks; `codewhale-core`'s `session`, `journal` and `ids` modules and the `hooks` argument of `Runtime::new`; `codewhale-runtime::resource_telemetry`; ten unreferenced public functions; and the duplicate `codewhale-agent` crate. `hook_sinks.unix_socket_path` still parses and is ignored. CLI, TUI and app-server behavior is unchanged.
+
 - **Plugin index hooks:** hooks with the same name and event now have distinct row IDs, so clients can keep every configured hook visible.
 
 - **Renaming sessions with Chinese titles:** the session picker no longer rejects a Chinese, Japanese, Korean or emoji title of more than about 33 characters as "Title must be 1–100 characters". It now counts characters, as the message says and as `/rename` and the Runtime API already did, so any title up to 100 characters is accepted. Thanks [@luochen211](https://github.com/luochen211) (PR 7322).

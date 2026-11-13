@@ -56,7 +56,7 @@ use codewhale_models::{
     ContentBlock, Message, MessageRequest, MessageResponse, SystemPrompt, Usage,
 };
 use codewhale_runtime::logging;
-use codewhale_secrets::sanitize::redact_url_for_display;
+use codewhale_sanitize::sanitize::redact_url_for_display;
 
 /// Every provider request that can feed the interactive TUI's attached CWC run
 /// takes a shared permit at this lowest common dispatch seam. Runtime Chat holds

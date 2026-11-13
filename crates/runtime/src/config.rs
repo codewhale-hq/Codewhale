@@ -4261,7 +4261,7 @@ impl Config {
                     Some((last, rest)) => format!("{}, or {last}", rest.join(", ")),
                     None => String::new(),
                 };
-                let displayed_value = codewhale_secrets::redact::redact_secrets(value);
+                let displayed_value = codewhale_sanitize::redact::redact_secrets(value);
                 return Err(SafeConfigDiagnostic::invalid_value(
                     key,
                     &displayed_value,
@@ -9630,7 +9630,7 @@ impl SafeConfigDiagnostic {
             Self::KimiCodeClaudeAlias => self.to_string(),
             Self::InvalidValue { shareable, .. } => shareable.clone(),
         };
-        codewhale_secrets::redact::redact_secrets(&text)
+        codewhale_sanitize::redact::redact_secrets(&text)
     }
 
     pub fn fix(&self) -> Option<&str> {

@@ -594,7 +594,7 @@ pub(crate) async fn probe_ds4_models(
     use codewhale_engine::core::model_client::ModelClient;
 
     let endpoint =
-        codewhale_secrets::sanitize::redact_url_for_display(&config.active_route_base_url());
+        codewhale_sanitize::sanitize::redact_url_for_display(&config.active_route_base_url());
     let client = CodewhaleClient::new(config)?;
     let configured_alias = client.model().to_string();
     let models = match tokio::time::timeout(
@@ -632,7 +632,7 @@ pub(crate) async fn probe_ds4_models(
 
 fn ds4_probe_error(config: &codewhale_runtime::config::Config, error: &str) -> String {
     let endpoint =
-        codewhale_secrets::sanitize::redact_url_for_display(&config.active_route_base_url());
+        codewhale_sanitize::sanitize::redact_url_for_display(&config.active_route_base_url());
     let status = error
         .split_whitespace()
         .collect::<Vec<_>>()

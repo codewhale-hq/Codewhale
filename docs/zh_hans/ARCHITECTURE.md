@@ -112,8 +112,6 @@ Codewhale Engine 是现有 Rust 执行运行时。[Runtime API](RUNTIME_API.md) 
   在同一进程内启动终端和无头模式（`run`、`exec`、`doctor`、`sessions`……）。
   `crates/tui` 是库；`codew` 和旧发布文件名的别名包含相同的可执行程序。
 - **`crates/tools`** - 共享的工具调用原语，包括 TUI 运行时使用的工具结果/错误/能力类型。
-- **`crates/agent`** - 模型/提供商（provider）注册表（ModelRegistry），用于把模型 ID
-  解析到提供商端点。
 - **`crates/app-server`** - 用于无头智能体工作流的 HTTP/SSE + JSON-RPC 应用服务器
   传输层。唯一的可执行程序将 `app-server --http`/`--mobile` 在同一进程内
   路由到由 `codewhale_tui` 库承载的运行时 API。
@@ -137,8 +135,7 @@ Codewhale Engine 是现有 Rust 执行运行时。[Runtime API](RUNTIME_API.md) 
   调用方会话，`share_session=true` 明确拒绝。子智能体也以已捕获的准入事实
   使用同一个 Engine；两种嵌套宿主都不再保留独立循环例外。
 - **`crates/execpolicy`** - 用于工具执行决策的审批（approval）/沙箱（sandbox）策略引擎。
-- **`crates/hooks`** - 响应、工具、作业和审批生命周期事件的事件接收端（sink：stdout、
-  JSONL 文件、webhook、Unix socket），外加可选启用的 lifecycle outbox。
+- **`crates/hooks`** - 可选启用的 lifecycle outbox（以 JSONL 文件和 webhook 投递生命周期事件）。
   用户在工具调用前后运行命令的自定义 shell 钩子（hook）是 `crates/engine/src/hooks.rs`
   里的另一套系统。
 - **`crates/localization`** - 面向用户的 UI 界面字符串的语言环境注册表
