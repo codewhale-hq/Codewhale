@@ -1284,6 +1284,51 @@ fn exec_help_discloses_full_access_and_session_persistence() {
 }
 
 #[test]
+fn permission_mode_flag_parses_for_root_and_exec_and_respects_managed_switch() {
+    use codewhale_engine::runtime_options::PermissionMode;
+
+    for (raw, expected) in [
+        ("ask", PermissionMode::Ask),
+        ("accept-edits", PermissionMode::AcceptEdits),
+        ("plan", PermissionMode::Plan),
+        ("auto-review", PermissionMode::AutoReview),
+        ("full-access", PermissionMode::FullAccess),
+    ] {
+        let root = parse_cli_args(&["codewhale", "--permission-mode", raw]).unwrap();
+        assert_eq!(root.options.permission_mode, Some(expected));
+
+        let exec = parse_cli_args(&["codewhale", "exec", "--permission-mode", raw, "hi"]).unwrap();
+        assert_eq!(exec.options.permission_mode, Some(expected));
+    }
+
+    assert!(parse_cli_args(&["codewhale", "--permission-mode", "unknown"]).is_err());
+    assert!(parse_cli_args(&["codewhale", "exec", "hi", "--permission-mode", "ask"]).is_err());
+
+    let mut config = Config::default();
+    config.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+        disabled: true,
+        ..Default::default()
+    });
+    let err = validate_cli_permission_mode(
+        Some(PermissionMode::AutoReview),
+        &config,
+        false,
+        "conflict",
+    )
+    .expect_err("auto-review flag must fail when auto_review.disabled = true");
+    assert!(err.to_string().contains("auto_review.disabled = true"));
+
+    assert!(
+        validate_cli_permission_mode(Some(PermissionMode::Ask), &config, false, "conflict")
+            .is_ok()
+    );
+    assert!(
+        validate_cli_permission_mode(Some(PermissionMode::Ask), &config, true, "conflict")
+            .is_err()
+    );
+}
+
+#[test]
 fn exec_shell_only_tool_surface_env_sets_shell_allowlist() {
     let _env_lock = crate::test_support::lock_test_env();
     let _surface =

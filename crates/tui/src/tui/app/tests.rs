@@ -4053,6 +4053,36 @@ fn cycle_approval_scenario() {
             std::fs::read_to_string(tmp.path().join("settings.toml")).expect("settings");
         assert!(persisted.contains("permission_posture = \"ask\""));
     }
+    {
+        let _env_lock = lock_test_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("config.toml");
+        let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+        let mut options = test_options(false);
+        options.start_in_agent_mode = true;
+        options.config_path = Some(config_path);
+        let mut config = Config::default();
+        config.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+            disabled: true,
+            ..Default::default()
+        });
+        let mut app = App::new(options, &config);
+        app.set_agent_approval_posture(ApprovalMode::Suggest);
+
+        for (mode, posture) in [
+            (AppMode::Agent, ApprovalMode::AcceptEdits),
+            (AppMode::Plan, ApprovalMode::AcceptEdits),
+            (AppMode::Agent, ApprovalMode::Bypass),
+            (AppMode::Agent, ApprovalMode::Suggest),
+        ] {
+            assert!(app.step_permission_dial(false).changed());
+            assert_eq!(app.mode, mode);
+            assert_eq!(app.mode_prefs.agent_approval_mode, posture);
+            if mode == AppMode::Agent {
+                assert_eq!(app.approval_mode, posture);
+            }
+        }
+    }
     // from cycle_approval_posture_emits_rebinding_notice_once
     {
         let _env_lock = lock_test_env();

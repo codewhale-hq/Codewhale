@@ -177,6 +177,7 @@ MCP 工具以 `mcp_<server>_<tool>` 暴露，使用与内置工具相同的审�
 - `-r, --resume <ID|PREFIX|latest>`：恢复一个已保存的会话
 - `-c, --continue`：恢复此工作区最近的会话
 - `--max-subagents <N>`：取值限制在 `1..=128` 之间
+- `--permission-mode <ask|accept-edits|plan|auto-review|full-access>`：以指定的权限模式启动（同时适用于 `codewhale` 和 `codewhale exec`）。`codewhale exec --auto` 仍表示 Full Access。当受管配置设置了 `auto_review.disabled = true` 时，`Shift+Tab` 会跳过 Auto-Review，且 `--permission-mode auto-review`、`/auto` 和 `approval_policy = "auto"` 都会被拒绝。
 - `--mouse-capture` / `--no-mouse-capture`：启用或关闭内部的鼠标滚动、对话记录选择、右键上下文操作和对话记录滚动条拖动。在非 Windows 终端以及 Windows Terminal/ConEmu/Cmder 上，鼠标捕获默认启用，因此拖动选择只会复制对话记录中的文本，去掉段落中因视觉换行产生的断行，并且只作用于对话记录窗格；拖动时按住 Shift，或使用 `--no-mouse-capture`，即可进行终端原生的选择。在旧版 Windows 控制台（没有 `WT_SESSION` / `ConEmuPID` 的 CMD）和 JetBrains JediTerm（PyCharm/IDEA/CLion 等）中默认关闭，因为这些终端声称支持鼠标，却把 SGR 鼠标事件当作原始文本转发（#878、#898）。在默认关闭的环境中，可用 `--mouse-capture` 主动启用。终端原生选择可能越过右侧任务面板并包含视觉换行，因为此时选择由终端而不是 TUI 掌控。
 - `--profile <NAME>`：选择配置 profile
 - `--config <PATH>`：配置文件路径

@@ -5,7 +5,56 @@
 
 use anyhow::{Result, bail};
 use clap::Args;
+use codewhale_execpolicy::ApprovalMode;
 use std::path::PathBuf;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionMode {
+    Ask,
+    AcceptEdits,
+    Plan,
+    AutoReview,
+    FullAccess,
+}
+
+impl PermissionMode {
+    #[must_use]
+    pub fn approval_mode(self) -> Option<ApprovalMode> {
+        match self {
+            Self::Ask => Some(ApprovalMode::Suggest),
+            Self::AcceptEdits => Some(ApprovalMode::AcceptEdits),
+            Self::Plan => None,
+            Self::AutoReview => Some(ApprovalMode::Auto),
+            Self::FullAccess => Some(ApprovalMode::Bypass),
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::AcceptEdits => "accept-edits",
+            Self::Plan => "plan",
+            Self::AutoReview => "auto-review",
+            Self::FullAccess => "full-access",
+        }
+    }
+}
+
+pub fn parse_permission_mode(raw: &str) -> std::result::Result<PermissionMode, String> {
+    if raw.trim().eq_ignore_ascii_case("plan") {
+        return Ok(PermissionMode::Plan);
+    }
+    match ApprovalMode::from_config_value(raw) {
+        Some(ApprovalMode::Suggest) => Ok(PermissionMode::Ask),
+        Some(ApprovalMode::AcceptEdits) => Ok(PermissionMode::AcceptEdits),
+        Some(ApprovalMode::Auto) => Ok(PermissionMode::AutoReview),
+        Some(ApprovalMode::Bypass) => Ok(PermissionMode::FullAccess),
+        Some(ApprovalMode::Never) | None => Err(format!(
+            "invalid permission mode '{raw}'; expected ask, accept-edits, plan, auto-review, or full-access"
+        )),
+    }
+}
 
 #[derive(Args, Debug, Default, Clone, PartialEq, Eq)]
 pub struct RuntimeOptions {
@@ -49,6 +98,14 @@ pub struct RuntimeOptions {
     /// (the same as `yolo = true`; `--yolo` is an alias).
     #[arg(long = "full-access", alias = "yolo")]
     pub yolo: bool,
+    #[arg(
+        long = "permission-mode",
+        value_name = "MODE",
+        value_parser = parse_permission_mode,
+        global = true,
+        help = "Start in this permission mode: ask, accept-edits, plan, auto-review, or full-access."
+    )]
+    pub permission_mode: Option<PermissionMode>,
     /// Maximum number of concurrent sub-agents (1-128; default 64).
     #[arg(long)]
     pub max_subagents: Option<usize>,
@@ -92,6 +149,7 @@ impl RuntimeOptions {
         scalar!(profile, "--profile");
         scalar!(workspace, "--workspace");
         scalar!(max_subagents, "--max-subagents");
+        scalar!(permission_mode, "--permission-mode");
         scalar!(control_frontend, "selected control frontend");
         flag!(mouse_capture, "--mouse-capture");
         flag!(no_mouse_capture, "--no-mouse-capture");
@@ -103,6 +161,9 @@ impl RuntimeOptions {
         flag!(remote_control, "--remote-control");
         if self.mouse_capture && self.no_mouse_capture {
             bail!("--mouse-capture conflicts with --no-mouse-capture");
+        }
+        if self.permission_mode.is_some() && self.yolo {
+            bail!("--permission-mode cannot be combined with --full-access or --yolo");
         }
         self.enable.extend(command.enable);
         self.disable.extend(command.disable);
@@ -178,5 +239,25 @@ mod tests {
                 .features()
                 .enabled(codewhale_runtime::features::Feature::WebSearch)
         );
+    }
+
+    #[test]
+    fn permission_mode_parses_all_five_modes_and_rejects_unknown_or_never() {
+        assert_eq!(parse_permission_mode("ask"), Ok(PermissionMode::Ask));
+        assert_eq!(
+            parse_permission_mode("accept-edits"),
+            Ok(PermissionMode::AcceptEdits)
+        );
+        assert_eq!(parse_permission_mode("plan"), Ok(PermissionMode::Plan));
+        assert_eq!(
+            parse_permission_mode("auto-review"),
+            Ok(PermissionMode::AutoReview)
+        );
+        assert_eq!(
+            parse_permission_mode("full-access"),
+            Ok(PermissionMode::FullAccess)
+        );
+        assert!(parse_permission_mode("never").is_err());
+        assert!(parse_permission_mode("bogus").is_err());
     }
 }

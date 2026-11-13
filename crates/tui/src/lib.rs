@@ -3071,6 +3071,12 @@ async fn run_async_main_dispatch(
                 // CODEWHALE_YOLO env var (which the config loader folds into
                 // `config.yolo`), not as a CLI flag. Honour either source.
                 let yolo = cli.yolo || config.yolo.unwrap_or(false);
+                validate_cli_permission_mode(
+                    cli.permission_mode,
+                    &config,
+                    args.auto || yolo,
+                    "--permission-mode cannot be combined with --auto, --full-access, or --yolo",
+                )?;
                 let env_tool_surface = exec_tool_surface_from_env();
                 // #6510: every exec runs on the Engine — one turn loop, one
                 // prompt authority (BASE_PROMPT, AGENTS.md, skills). Without
@@ -3093,7 +3099,10 @@ async fn run_async_main_dispatch(
                         || config.max_subagents_for_provider(&identity),
                         |value| value.clamp(1, MAX_SUBAGENTS),
                     );
-                    let auto_mode = args.auto || yolo;
+                    let auto_mode = args.auto
+                        || yolo
+                        || cli.permission_mode
+                            == Some(codewhale_engine::runtime_options::PermissionMode::FullAccess);
                     // A zero-tool run only spends model steps on output-limit
                     // continuations; without `--max-turns` those would run to
                     // the turn wall clock, so it gets a small default ceiling.
@@ -3140,6 +3149,7 @@ async fn run_async_main_dispatch(
                         args.tool_authority_json.clone(),
                         args.hooks,
                         std::sync::Arc::clone(&plugin_registry),
+                        cli.permission_mode,
                         !tool_surface_requested,
                     )
                     .await
@@ -14237,7 +14247,15 @@ fn merge_project_config_with_approval_baseline(
             .approval_policy
             .as_deref()
             .or(saved_approval_baseline);
-        if codewhale_config::project_approval_policy_is_allowed(approval_baseline, v) {
+        let auto_review_refused = config.auto_review_disabled()
+            && codewhale_execpolicy::ApprovalMode::from_config_value(v)
+                == Some(codewhale_execpolicy::ApprovalMode::Auto);
+        if auto_review_refused {
+            eprintln!(
+                "warning: project-scope `approval_policy = \"{v}\"` is ignored — \
+                 Auto-Review is disabled by managed configuration."
+            );
+        } else if codewhale_config::project_approval_policy_is_allowed(approval_baseline, v) {
             config.approval_policy = Some(v.to_string());
         } else {
             eprintln!(
@@ -14703,7 +14721,16 @@ async fn run_interactive_prepared(
 
     // A launcher can forward `--yolo` to this binary via the CODEWHALE_YOLO
     // env var (config.yolo), not as a CLI flag. Honour either.
-    let yolo = cli.yolo || config.yolo.unwrap_or(false);
+    let base_yolo = cli.yolo || config.yolo.unwrap_or(false);
+    validate_cli_permission_mode(
+        cli.permission_mode,
+        config,
+        base_yolo,
+        "--permission-mode cannot be combined with --full-access or --yolo",
+    )?;
+    let yolo = base_yolo
+        || cli.permission_mode
+            == Some(codewhale_engine::runtime_options::PermissionMode::FullAccess);
 
     Box::pin(tui::run_tui(
         config,
@@ -14732,8 +14759,29 @@ async fn run_interactive_prepared(
         },
         plugin_registry,
         pending_telemetry_notice,
+        cli.permission_mode,
     ))
     .await
+}
+
+fn validate_cli_permission_mode(
+    permission_mode: Option<codewhale_engine::runtime_options::PermissionMode>,
+    config: &Config,
+    conflicting_full_access: bool,
+    conflict_msg: &str,
+) -> Result<()> {
+    let Some(mode) = permission_mode else {
+        return Ok(());
+    };
+    if conflicting_full_access {
+        bail!("{conflict_msg}");
+    }
+    if mode == codewhale_engine::runtime_options::PermissionMode::AutoReview
+        && config.auto_review_disabled()
+    {
+        bail!("Auto-Review is disabled by managed configuration (`auto_review.disabled = true`)");
+    }
+    Ok(())
 }
 
 /// Review-pass reasoning effort: resolve `Auto` from the prompt exactly as the

@@ -235,6 +235,7 @@ pub async fn run_exec_agent(
     tool_authority_json: Option<String>,
     exec_hooks_enabled: bool,
     plugin_registry: std::sync::Arc<codewhale_plugins::PluginRegistry>,
+    permission_mode: Option<codewhale_engine::runtime_options::PermissionMode>,
     // #6510: plain `exec` (no tool-surface flag). The caller passes an empty
     // allowlist; this also skips workspace snapshots, LSP and the automation
     // store, and writes the one-shot `--json` receipt shape.
@@ -415,9 +416,16 @@ pub async fn run_exec_agent(
     let approval_posture = if auto_approve { "auto_tools" } else { "ask" }.to_string();
     // The Full Access posture travels in the op's auto_approve/approval_mode
     // fields; modes no longer carry permission.
-    let mode = AppMode::Agent;
+    let mode = match permission_mode {
+        Some(codewhale_engine::runtime_options::PermissionMode::Plan) => AppMode::Plan,
+        _ => AppMode::Agent,
+    };
     let turn_approval_mode = if auto_approve {
         ApprovalMode::Bypass
+    } else if let Some(explicit_mode) =
+        permission_mode.and_then(codewhale_engine::runtime_options::PermissionMode::approval_mode)
+    {
+        explicit_mode
     } else {
         execution_config
             .approval_policy

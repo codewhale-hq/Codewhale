@@ -257,6 +257,7 @@ Run options such as --model, --provider, --config and --profile work before or a
 
 Common forwarded flags:
   --auto                           Enable tools with automatic approvals and Full Access by default
+  --permission-mode <MODE>         Start in ask, accept-edits, plan, auto-review, or full-access
   --sandbox <POLICY>               Override the sandbox policy for this run
   --json                           Emit summary JSON
   --resume <SESSION_ID>            Resume a previous session by ID or prefix
@@ -3192,6 +3193,7 @@ fn capture_exec_startup_options(cli: &mut Cli) -> Result<()> {
             "--base-url" => cli.base_url.is_some(),
             "--config" => cli.config.is_some(),
             "--profile" => cli.profile.is_some(),
+            "--permission-mode" => cli.permission_mode.is_some(),
             _ => {
                 forwarded.push(arg.clone());
                 continue;
@@ -3217,6 +3219,10 @@ fn capture_exec_startup_options(cli: &mut Cli) -> Result<()> {
     cli.base_url = cli.base_url.take().or(captured.base_url);
     cli.config = cli.config.take().or(captured.runtime_options.config);
     cli.profile = cli.profile.take().or(captured.runtime_options.profile);
+    cli.permission_mode = cli
+        .permission_mode
+        .take()
+        .or(captured.runtime_options.permission_mode);
     let Some(Commands::Exec(args)) = cli.command.as_mut() else {
         unreachable!("only exec startup options were captured");
     };
@@ -6304,7 +6310,10 @@ fn thread_control_mutation_options(
         "thread history controls cannot import --api-key or --base-url; configure/authenticate the owning Runtime, then select its config/profile (values omitted)"
     );
     anyhow::ensure!(
-        !cli.yolo && cli.verbosity.is_none() && cli.telemetry.is_none(),
+        !cli.yolo
+            && cli.permission_mode.is_none()
+            && cli.verbosity.is_none()
+            && cli.telemetry.is_none(),
         "unsupported per-run thread setting; configure the owning Runtime instead (values omitted)"
     );
     for spec in &cli.overrides {
@@ -7228,6 +7237,27 @@ mod tests {
             std::env::var("DEEPSEEK_YOLO").is_err(),
             "--yolo must not write the retired DEEPSEEK_YOLO alias (#5443)"
         );
+    }
+
+    #[test]
+    fn permission_mode_parses_on_root_and_exec() {
+        use codewhale_engine::runtime_options::PermissionMode;
+
+        for (raw, expected) in [
+            ("ask", PermissionMode::Ask),
+            ("accept-edits", PermissionMode::AcceptEdits),
+            ("plan", PermissionMode::Plan),
+            ("auto-review", PermissionMode::AutoReview),
+            ("full-access", PermissionMode::FullAccess),
+        ] {
+            let root = parse_ok(&["codewhale", "--permission-mode", raw]);
+            assert_eq!(root.permission_mode, Some(expected));
+
+            let exec = parse_ok(&["codewhale", "exec", "--permission-mode", raw, "hello"]);
+            assert_eq!(exec.permission_mode, Some(expected));
+        }
+
+        assert!(Cli::try_parse_from(["codewhale", "--permission-mode", "invalid"]).is_err());
     }
 
     #[test]
@@ -13546,6 +13576,7 @@ verbosity = "concise"
         assert!(exec.contains("codewhale --model MODEL exec"), "{exec}");
         assert!(exec.contains("codewhale exec --model MODEL"), "{exec}");
         assert!(exec.contains("--sandbox <POLICY>"), "{exec}");
+        assert!(exec.contains("--permission-mode <MODE>"), "{exec}");
         assert!(exec.contains("Full Access"), "{exec}");
         assert!(
             exec.contains("no shell sandbox and trust mode on"),

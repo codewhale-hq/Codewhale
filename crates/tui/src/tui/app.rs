@@ -2239,6 +2239,7 @@ pub struct App {
     /// True only when an organization requirements file owns approval policy.
     /// Unlike a user-owned config key, this source cannot be edited in-app.
     approval_policy_requirements_managed: bool,
+    pub auto_review_disabled: bool,
     /// True when the interactive shell switch is user-owned (unset or root
     /// config.toml). Profile / env / managed / project owners stay in charge
     /// even when a YOLO entry point asks for Full Access.
@@ -3962,11 +3963,21 @@ impl App {
     #[must_use]
     pub fn permission_dial_next(&self) -> (AppMode, ApprovalMode) {
         if self.mode == AppMode::Plan {
-            return (AppMode::Agent, ApprovalMode::Auto);
+            return (
+                AppMode::Agent,
+                if self.auto_review_disabled {
+                    ApprovalMode::Bypass
+                } else {
+                    ApprovalMode::Auto
+                },
+            );
         }
         match self.approval_mode {
             ApprovalMode::AcceptEdits => (AppMode::Plan, ApprovalMode::AcceptEdits),
-            current => (AppMode::Agent, current.cycle_permission_next()),
+            current => (
+                AppMode::Agent,
+                current.cycle_permission_next_with_auto_review(self.auto_review_disabled),
+            ),
         }
     }
 
@@ -4001,6 +4012,16 @@ impl App {
 
     /// Set the durable Agent permission posture.
     pub fn select_approval_posture(&mut self, next: ApprovalMode) -> bool {
+        if next == ApprovalMode::Auto && self.auto_review_disabled {
+            self.push_status_toast(
+                "Auto-Review is disabled by managed configuration (`auto_review.disabled = true`)"
+                    .to_string(),
+                StatusToastLevel::Warning,
+                Some(6_000),
+            );
+            self.needs_redraw = true;
+            return false;
+        }
         if self.approval_policy_locked() {
             self.push_status_toast(
                 "Permissions are controlled by config or managed requirements".to_string(),
@@ -4028,6 +4049,16 @@ impl App {
     /// adopt the TUI posture, so persist the next setting first, then remove
     /// the shadowing root key. Roll back the setting if that removal fails.
     pub fn select_root_approval_posture(&mut self, next: ApprovalMode) -> bool {
+        if next == ApprovalMode::Auto && self.auto_review_disabled {
+            self.push_status_toast(
+                "Auto-Review is disabled by managed configuration (`auto_review.disabled = true`)"
+                    .to_string(),
+                StatusToastLevel::Warning,
+                Some(6_000),
+            );
+            self.needs_redraw = true;
+            return false;
+        }
         if !self.approval_policy_root_editable {
             self.push_status_toast(
                 "Permissions are controlled by a non-editable policy source".to_string(),
@@ -4211,10 +4242,43 @@ impl App {
         self.apply_agent_posture(ApprovalMode::Auto)
     }
 
+    pub fn apply_cli_permission_mode(
+        &mut self,
+        permission_mode: Option<codewhale_engine::runtime_options::PermissionMode>,
+    ) {
+        let Some(permission_mode) = permission_mode else {
+            return;
+        };
+        match permission_mode {
+            codewhale_engine::runtime_options::PermissionMode::Plan => {
+                self.set_mode(AppMode::Plan);
+            }
+            other => {
+                if let Some(approval) = other.approval_mode() {
+                    if approval == ApprovalMode::Auto && self.auto_review_disabled {
+                        return;
+                    }
+                    if !self.approval_policy_requirements_managed
+                        && (!self.approval_policy_locked() || self.approval_policy_root_editable)
+                    {
+                        self.mode = AppMode::Agent;
+                        self.set_agent_approval_posture(approval);
+                    }
+                }
+            }
+        }
+    }
+
     /// Persist `next` as the TUI permission posture. Same write as Shift+Tab
     /// landing on it; Plan stays read-only and only the Act baseline moves.
     /// Shared by `/auto` and the Plan hand-off.
     pub fn apply_agent_posture(&mut self, next: ApprovalMode) -> Result<(), String> {
+        if next == ApprovalMode::Auto && self.auto_review_disabled {
+            return Err(
+                "Auto-Review is disabled by managed configuration (`auto_review.disabled = true`)"
+                    .to_string(),
+            );
+        }
         if self.approval_policy_locked() {
             return Err("Permissions are controlled by config or managed requirements".to_string());
         }

@@ -545,6 +545,24 @@ mod tests {
     }
 
     #[test]
+    fn auto_errors_when_managed_auto_review_is_disabled() {
+        let mut app = test_app();
+        app.auto_review_disabled = true;
+        app.set_agent_approval_posture(ApprovalMode::Suggest);
+
+        let result = auto(&mut app, None);
+        assert!(result.is_error);
+        assert!(
+            result
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("auto_review.disabled = true")
+        );
+        assert_eq!(app.approval_mode, ApprovalMode::Suggest);
+    }
+
+    #[test]
     fn ordinary_workflow_is_a_toolless_review_turn() {
         let mut app = test_app();
         let result = workflow(&mut app, Some("audit provider error handling"));

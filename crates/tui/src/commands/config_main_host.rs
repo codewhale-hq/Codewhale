@@ -2038,6 +2038,9 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             }
             let mode = ApprovalMode::from_config_value(value);
             return match mode {
+                Some(ApprovalMode::Auto) if app.auto_review_disabled => ConfigReply::error(
+                    "Auto-Review is disabled by managed configuration (`auto_review.disabled = true`)",
+                ),
                 Some(ApprovalMode::Bypass)
                     if persist
                         && matches!(

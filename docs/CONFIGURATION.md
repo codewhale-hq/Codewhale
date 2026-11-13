@@ -2693,6 +2693,10 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   audit logging is enabled. Future PreToolUse/PostToolUse hooks can add
   observer input around this layer, but the configured auto-review policy is
   evaluated before a tool call is allowed to proceed.
+  Set `disabled = true` under `[auto_review]` in managed config to turn
+  Auto-Review off: `Shift+Tab` skips Auto-Review, and `--permission-mode auto-review`,
+  `/auto`, and `approval_policy = "auto"` are refused. A managed `[auto_review]`
+  table replaces the user's whole `[auto_review]` table rather than merging keys.
 - `managed_config_path` (string, optional): managed config file loaded after user/env config. `CODEWHALE_MANAGED_CONFIG_PATH` outranks it. A named file that is missing or unreadable is a load error, and it cannot replace an existing file at the default managed path.
 - `requirements_path` (string, optional): requirements file used to enforce allowed approval/sandbox values.
 - `max_subagents` (int, optional): defaults to `64` and is clamped to `1..=128`.

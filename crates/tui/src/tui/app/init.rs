@@ -590,6 +590,7 @@ impl App {
             needs_api_key,
             needs_workspace_trust,
         );
+        let auto_review_disabled = config.auto_review_disabled();
         let saved_permission_posture = if approval_policy_locked {
             None
         } else {
@@ -597,6 +598,7 @@ impl App {
                 .permission_posture
                 .as_deref()
                 .and_then(ApprovalMode::from_config_value)
+                .filter(|mode| !(auto_review_disabled && *mode == ApprovalMode::Auto))
         };
         let configured_approval_mode = explicit_approval_mode
             .or(saved_permission_posture)
@@ -1046,6 +1048,7 @@ impl App {
             approval_policy_locked,
             approval_policy_root_editable,
             approval_policy_requirements_managed,
+            auto_review_disabled,
             shell_access_editable,
             clipboard: ClipboardHandler::new(),
             approval_session_approved: HashSet::new(),
