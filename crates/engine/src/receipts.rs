@@ -45,6 +45,7 @@ use crate::runtime_threads::{
     RuntimeEventRecord, RuntimeTurnStatus, ThreadRecord, TurnItemKind, TurnItemLifecycleStatus,
     TurnItemRecord, TurnRecord,
 };
+use crate::tools::diff_format::make_unified_diff;
 
 const MAX_COMMAND_CHARS: usize = 200;
 const MAX_ERROR_CHARS: usize = 160;
@@ -1348,8 +1349,9 @@ fn files_from_input(semantic: &str, input: &Value, outcome: StepOutcome) -> Vec<
     }
 }
 
-/// `(+, -)` from an edit call's replacement pairs: the lines of every
-/// replacement text against the lines of every searched text.
+/// `(+, -)` from an edit call's replacement pairs: the line diff of each
+/// searched text against its replacement, summed, the same diff the edit
+/// card shows.
 fn edit_line_counts(input: &Value) -> (Option<u64>, Option<u64>) {
     const SEARCH: &[&str] = &["search", "old_string", "old_str", "oldText", "old_text"];
     const REPLACE: &[&str] = &[
@@ -1374,8 +1376,10 @@ fn edit_line_counts(input: &Value) -> (Option<u64>, Option<u64>) {
             continue;
         }
         any = true;
-        removed += line_count(old.as_deref().unwrap_or(""));
-        added += line_count(new.as_deref().unwrap_or(""));
+        let (pair_added, pair_removed) =
+            pair_line_counts(old.as_deref().unwrap_or(""), new.as_deref().unwrap_or(""));
+        added += pair_added;
+        removed += pair_removed;
     }
     if any {
         (Some(added), Some(removed))
@@ -1384,12 +1388,19 @@ fn edit_line_counts(input: &Value) -> (Option<u64>, Option<u64>) {
     }
 }
 
-fn line_count(text: &str) -> u64 {
-    if text.is_empty() {
-        0
-    } else {
-        text.lines().count() as u64
-    }
+fn pair_line_counts(old: &str, new: &str) -> (u64, u64) {
+    let whole_lines = |text: &str| {
+        if text.is_empty() || text.ends_with('\n') {
+            text.to_string()
+        } else {
+            format!("{text}\n")
+        }
+    };
+    let diff = make_unified_diff("edit", &whole_lines(old), &whole_lines(new));
+    diff_counts_by_path(&diff)
+        .get("edit")
+        .copied()
+        .unwrap_or_default()
 }
 
 /// Files and counts from a patch the call supplied: `*** Add/Update/Delete
