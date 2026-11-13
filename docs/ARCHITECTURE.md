@@ -127,7 +127,6 @@ rather than a traced write path.
   `codewhale_tui::run(RuntimeOptions, args)`. `crates/tui` is a library; the
   `codew` and legacy release filename aliases contain the same executable.
 - **`crates/tools`** - Shared tool invocation primitives, including tool result/error/capability types used by the TUI runtime.
-- **`crates/agent`** - Model/provider registry (ModelRegistry) for resolving model IDs to provider endpoints.
 - **`crates/agent-contract`** - Fleet role, child authority (`ChildAuthority`, `ChildGrant`) and worker runtime profile types the agent tool resolves before it spawns a child.
 - **`crates/app-server`** - HTTP/SSE + JSON-RPC app server transport for
   headless agent workflows. The canonical executable dispatches
@@ -160,9 +159,8 @@ rather than a traced write path.
   explicitly refuses. Child workers also use their captured admission in the
   same Engine; neither nested host retains a turn-loop exception.
 - **`crates/execpolicy`** - Approval/sandbox policy engine for tool execution decisions.
-- **`crates/hooks`** - Event sinks (stdout, JSONL file, webhook, Unix socket)
-  for response, tool, job and approval lifecycle events, plus the opt-in
-  lifecycle outbox. User-configured shell hooks that run commands around tool
+- **`crates/hooks`** - The opt-in lifecycle outbox (JSONL file and webhook
+  delivery of lifecycle events). User-configured shell hooks that run commands around tool
   calls are a separate system in `crates/engine/src/hooks.rs`.
 - **`crates/localization`** - Locale registry for user-facing UI chrome strings
   (`crates/localization/locales/*.json`); it never changes prompts or model

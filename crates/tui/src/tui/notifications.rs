@@ -906,7 +906,7 @@ pub fn latest_assistant_text(messages: &[Message]) -> Option<String> {
 pub fn text_summary(text: &str) -> Option<String> {
     const MAX_CHARS: usize = 360;
 
-    let sanitized = codewhale_secrets::sanitize::sanitize_stream_chunk(text);
+    let sanitized = codewhale_sanitize::sanitize::sanitize_stream_chunk(text);
     let collapsed = sanitized
         .lines()
         .map(str::trim)

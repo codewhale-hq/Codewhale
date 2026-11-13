@@ -23,8 +23,8 @@ use super::events::{
 };
 use super::ids::{ChangeId, WorkEdgeId, WorkNodeId};
 use super::model::{
-    EdgeKind, EvidenceRef, NodeKind, NodeState, OperationBinding, Provenance, WorkActivityEvent,
-    WorkEdge, WorkGraphSnapshot, WorkNode,
+    EdgeKind, EvidenceRef, NodeKind, NodeState, Provenance, WorkActivityEvent, WorkEdge,
+    WorkGraphSnapshot, WorkNode,
 };
 use super::validate::{ValidationCode, ValidationReport, validate};
 

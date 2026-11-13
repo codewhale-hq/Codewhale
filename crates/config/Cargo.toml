@@ -25,6 +25,7 @@ semver.workspace = true
 schemars = { version = "1.2.1", optional = true, features = ["derive", "preserve_order"] }
 codewhale-execpolicy = { path = "../execpolicy", version = "0.10.3" }
 codewhale-paths = { path = "../paths", version = "0.10.3" }
+codewhale-sanitize = { path = "../sanitize", version = "0.10.3" }
 codewhale-secrets = { path = "../secrets", version = "0.10.3" }
 fd-lock = "4.0.4"
 libc = "0.2"

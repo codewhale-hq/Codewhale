@@ -38,7 +38,6 @@ pub mod private_log;
 pub mod process_tree;
 pub mod prompt_zones;
 pub mod regex_cache;
-pub mod resource_telemetry;
 pub mod retry_status;
 pub mod runtime_control;
 pub mod runtime_log;

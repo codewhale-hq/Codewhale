@@ -1607,23 +1607,6 @@ pub fn server_supports_oauth_login(server: &McpServerConfig) -> bool {
         && !server_has_manual_authorization(server)
 }
 
-/// Whether the shared token store already holds a usable credential for this
-/// server, with its binding revalidated against discovery. Used by the
-/// authenticate tool's already-authorized branch.
-pub async fn has_usable_stored_tokens(
-    name: &str,
-    server: &McpServerConfig,
-    network_policy: Option<&NetworkPolicyDecider>,
-) -> Result<bool> {
-    has_usable_stored_tokens_with_auth_context(
-        name,
-        server,
-        network_policy,
-        super::process_mcp_auth_context(),
-    )
-    .await
-}
-
 pub async fn has_usable_stored_tokens_with_auth_context(
     name: &str,
     server: &McpServerConfig,

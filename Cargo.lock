@@ -913,14 +913,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-agent"
-version = "0.10.3"
-dependencies = [
- "codewhale-config",
- "serde",
-]
-
-[[package]]
 name = "codewhale-agent-contract"
 version = "0.10.3"
 dependencies = [
@@ -943,7 +935,6 @@ dependencies = [
  "chrono",
  "clap",
  "codewhale-account-cli",
- "codewhale-agent",
  "codewhale-agent-contract",
  "codewhale-app-server-protocol",
  "codewhale-build-support",
@@ -1049,6 +1040,7 @@ dependencies = [
  "codewhale-paths",
  "codewhale-release",
  "codewhale-runtime",
+ "codewhale-sanitize",
  "codewhale-secrets",
  "codewhale-state",
  "codewhale-telemetry",
@@ -1118,6 +1110,7 @@ dependencies = [
  "codewhale-execpolicy",
  "codewhale-paths",
  "codewhale-protocol",
+ "codewhale-sanitize",
  "codewhale-secrets",
  "fd-lock",
  "libc",
@@ -1141,7 +1134,6 @@ name = "codewhale-core"
 version = "0.10.3"
 dependencies = [
  "codewhale-config",
- "codewhale-hooks",
  "codewhale-protocol",
  "codewhale-state",
  "regex",
@@ -1150,7 +1142,6 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
- "tokio",
  "uuid",
 ]
 
@@ -1185,7 +1176,6 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "clap",
- "codewhale-agent",
  "codewhale-agent-contract",
  "codewhale-app-server-protocol",
  "codewhale-build-support",
@@ -1220,7 +1210,6 @@ dependencies = [
  "codewhale-util",
  "codewhale-workflow",
  "codewhale-workflow-js",
- "cucumber",
  "dirs 7.0.0",
  "encoding_rs",
  "fd-lock",
@@ -1239,12 +1228,10 @@ dependencies = [
  "objc2-foundation",
  "parking_lot",
  "portable-pty",
- "pretty_assertions",
  "proc-macro2",
  "regex",
  "reqwest",
  "ring",
- "rio-vt",
  "rmcp",
  "rusqlite",
  "rustls",
@@ -1260,9 +1247,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.21",
- "tiny_http",
  "tokio",
- "tokio-tungstenite 0.30.0",
  "tokio-util",
  "toml 1.1.6+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
@@ -1306,14 +1291,11 @@ name = "codewhale-hooks"
 version = "0.10.3"
 dependencies = [
  "anyhow",
- "async-trait",
  "chrono",
  "codewhale-app-server-protocol",
  "codewhale-paths",
- "codewhale-protocol",
  "codewhale-release",
  "reqwest",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1433,7 +1415,7 @@ version = "0.10.3"
 dependencies = [
  "codewhale-config",
  "codewhale-runtime",
- "codewhale-secrets",
+ "codewhale-sanitize",
  "dirs 7.0.0",
  "regex",
  "tempfile",
@@ -1610,12 +1592,12 @@ dependencies = [
  "codewhale-paths",
  "codewhale-protocol",
  "codewhale-release",
+ "codewhale-sanitize",
  "codewhale-secrets",
  "codewhale-util",
  "colored",
  "dirs 7.0.0",
  "fd-lock",
- "futures-util",
  "ignore",
  "jsonwebtoken",
  "libc",
@@ -1883,9 +1865,7 @@ dependencies = [
  "reqwest",
  "rio-vt",
  "rquickjs",
- "rusqlite",
  "rustls",
- "schemars 1.2.2",
  "semver",
  "serde",
  "serde_json",
@@ -1895,7 +1875,6 @@ dependencies = [
  "tempfile",
  "tiny_http",
  "tokio",
- "tokio-tungstenite 0.30.0",
  "tokio-util",
  "toml 1.1.6+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
@@ -1919,7 +1898,7 @@ version = "0.10.3"
 dependencies = [
  "codewhale-palette",
  "codewhale-ratatui",
- "codewhale-secrets",
+ "codewhale-sanitize",
  "crossterm",
  "ratatui",
  "similar",

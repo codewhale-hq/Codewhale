@@ -123,6 +123,7 @@ pub struct HotbarActionMetadata {
 }
 
 impl HotbarActionMetadata {
+    #[cfg(test)]
     #[must_use]
     pub fn validation_errors(&self) -> Vec<String> {
         let mut errors = Vec::new();
@@ -384,24 +385,6 @@ pub fn recommend_hotbar_actions(
         selected.push(entry);
     }
     selected
-}
-
-#[must_use]
-#[cfg_attr(not(test), expect(dead_code))]
-pub fn recommended_hotbar_bindings(
-    app: &App,
-    options: HotbarRecommendationOptions,
-) -> Vec<codewhale_config::HotbarBindingToml> {
-    recommend_hotbar_actions(app, options)
-        .into_iter()
-        .take(usize::from(codewhale_config::HOTBAR_SLOT_COUNT))
-        .enumerate()
-        .map(|(idx, entry)| codewhale_config::HotbarBindingToml {
-            slot: u8::try_from(idx + 1).expect("recommended hotbar slot fits in u8"),
-            action: entry.metadata.id,
-            label: Some(entry.metadata.compact_label),
-        })
-        .collect()
 }
 
 fn default_hotbar_position(action_id: &str) -> Option<usize> {
@@ -815,7 +798,7 @@ impl HotbarActionRegistry {
         self.iter().map(|action| action.metadata(locale)).collect()
     }
 
-    #[cfg_attr(not(test), expect(dead_code))]
+    #[cfg(test)]
     #[must_use]
     pub fn metadata_validation_errors(&self, locale: Locale) -> Vec<String> {
         let mut errors = Vec::new();
@@ -2025,46 +2008,6 @@ mod tests {
             .count();
         assert_eq!(default_slash, 3);
         assert_eq!(eligible_slash, 1);
-    }
-
-    #[test]
-    fn recommended_hotbar_bindings_serialize_action_ids_and_labels() {
-        let app = test_app();
-
-        let bindings = recommended_hotbar_bindings(&app, HotbarRecommendationOptions::default());
-
-        assert_eq!(
-            bindings
-                .iter()
-                .map(|binding| binding.action.as_str())
-                .collect::<Vec<_>>(),
-            codewhale_config::DEFAULT_HOTBAR_ACTIONS
-        );
-        assert_eq!(
-            bindings
-                .iter()
-                .map(|binding| (binding.slot, binding.label.as_deref()))
-                .collect::<Vec<_>>(),
-            vec![
-                (1, Some("wf")),
-                (2, Some("goal")),
-                (3, Some("auto")),
-                (4, Some("plan")),
-                (5, Some("agent")),
-                (6, Some("reason")),
-                (7, Some("palette")),
-                (8, Some("side")),
-            ]
-        );
-
-        let config = codewhale_config::ConfigToml {
-            hotbar: Some(bindings.clone()),
-            ..Default::default()
-        };
-        let serialized = toml::to_string_pretty(&config).expect("serialize hotbar recommendations");
-        let round_tripped: codewhale_config::ConfigToml =
-            toml::from_str(&serialized).expect("deserialize hotbar recommendations");
-        assert_eq!(round_tripped.hotbar, Some(bindings));
     }
 
     #[test]

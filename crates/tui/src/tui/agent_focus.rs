@@ -268,7 +268,7 @@ pub(crate) fn settled_result_raw(app: &App, agent_id: &str) -> Option<(String, b
 /// Strip terminal escapes and redact secrets before agent text is shown.
 fn visible_agent_text(text: &str) -> String {
     let mut visible = String::with_capacity(text.len());
-    codewhale_tui_kit::osc8::strip_ansi_into(text, &mut visible);
+    codewhale_sanitize::sanitize::strip_ansi_into(text, &mut visible);
     codewhale_config::persistence::redact_secrets(&visible)
 }
 

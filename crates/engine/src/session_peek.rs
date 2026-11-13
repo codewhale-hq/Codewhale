@@ -203,7 +203,7 @@ pub const REDACTED_PLACEHOLDER: &str = "[redacted]";
 
 /// Mask credential-shaped substrings.
 ///
-/// The shared export sanitizer ([`codewhale_secrets::sanitize::sanitize_text`],
+/// The shared export sanitizer ([`codewhale_sanitize::sanitize::sanitize_text`],
 /// also used by `/export`) runs first: it covers `Bearer <token>`, JWTs,
 /// URL credentials, PEM blocks, and quoted JSON/TOML keyed secrets. A
 /// token-level pass then masks the extra bare prefixes (AWS, Google, Hugging
@@ -211,7 +211,7 @@ pub const REDACTED_PLACEHOLDER: &str = "[redacted]";
 /// peek line is cheap; leaking a key over a LAN is not.
 #[must_use]
 pub fn redact(text: &str) -> (String, bool) {
-    let sanitized = codewhale_secrets::sanitize::sanitize_text(text);
+    let sanitized = codewhale_sanitize::sanitize::sanitize_text(text);
     // The sanitizer also strips control bytes and normalises URLs, so compare
     // placeholder counts rather than bytes to decide whether it redacted.
     let mut redacted = redaction_marks(&sanitized) > redaction_marks(text);

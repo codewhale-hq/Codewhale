@@ -128,7 +128,7 @@ pub(crate) fn redact_secret(secret: &str) -> String {
 pub fn is_sensitive_config_key(key: &str) -> bool {
     key.rsplit('.')
         .next()
-        .is_some_and(codewhale_secrets::sanitize::is_sensitive_key_name)
+        .is_some_and(codewhale_sanitize::sanitize::is_sensitive_key_name)
 }
 
 /// Resolve dotted paths without treating a dotted key as a top-level literal.
