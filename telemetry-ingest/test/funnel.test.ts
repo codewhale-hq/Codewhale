@@ -97,12 +97,12 @@ describe("additive website funnel contract", () => {
     }
   });
 
-  it("keeps all four historical goldens accepted and runtime v4 first-party only", async () => {
+  it("keeps the historical goldens and v6 accepted, with runtime v4 and v6 first-party only", async () => {
     const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
-    for (const version of [1, 2, 3, 4]) {
+    for (const version of [1, 2, 3, 4, 6]) {
       const batch = JSON.parse(readFileSync(new URL(`../../crates/telemetry/tests/golden/v${version}.json`, import.meta.url), "utf8"));
       expect(validateBatch(batch).ok, `v${version}`).toBe(true);
-      if (version !== 4) continue;
+      if (version !== 4 && version !== 6) continue;
       const { env, written } = harness();
       expect((await worker.fetch(postJson(batch), { ...env, POSTHOG_HOST: "https://us.i.posthog.com", POSTHOG_PROJECT_TOKEN: "phc_local_test_fixture", POSTHOG_IP_SAFE_EGRESS_VERIFIED: "true" })).status).toBe(204);
       expect(written).toHaveLength(batch.events.length);
