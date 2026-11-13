@@ -24,7 +24,14 @@
  */
 
 import type { Batch, Event } from "./schema";
-import { COUNTER_FIELDS, ERROR_FIELDS, MODEL_COUNTER_FIELDS, TURN_WALL_FIELDS } from "./schema";
+import {
+  CONTEXT_FIELDS,
+  COUNTER_FIELDS,
+  ERROR_FIELDS,
+  MODEL_COUNTER_FIELDS,
+  MODEL_COUNTER_FIELDS_V6_EXTRA,
+  TURN_WALL_FIELDS,
+} from "./schema";
 
 /** The subset of `AnalyticsEngineDataset` this Worker uses. */
 export interface DataPointSink {
@@ -58,7 +65,7 @@ export const BLOB_COLUMNS = [
   "install_kind", // blob9
   "previous_version", // blob10
   "session_source", // blob11
-  "duration_bucket", // blob12
+  "duration_bucket", // blob12  session_end; install_age on session_start (schema 6)
   "exit_class", // blob13
   "cold_start_bucket", // blob14
   "providers", // blob15 comma-joined, already sorted and deduplicated
@@ -66,7 +73,7 @@ export const BLOB_COLUMNS = [
   "sent_at", // blob17 the batch timestamp; events carry none
   "aggregate_counters", // blob18 closed product/operations JSON count object
   "schema_version", // blob19
-  "privacy_version", // blob20: v3/v4 notice, v2 consent, empty on v1; blob19 disambiguates
+  "privacy_version", // blob20: v3 to v6 notice, v2 consent, empty on v1; blob19 disambiguates
 ] as const;
 
 /**
@@ -111,6 +118,7 @@ function toDataPoint(batch: Batch, event: Event): DataPoint {
       break;
     case "session_start":
       blobs[10] = event.source;
+      blobs[11] = event.install_age ?? "";
       break;
     case "session_end":
       blobs[11] = event.duration_bucket;
@@ -141,8 +149,10 @@ function toDataPoint(batch: Batch, event: Event): DataPoint {
       doubles = [
         ...MODEL_COUNTER_FIELDS.map((field) => event.counters[field]),
         ...TURN_WALL_FIELDS.map((field) => event.turn_wall[field]),
-        ...EMPTY_DOUBLES.slice(MODEL_COUNTER_FIELDS.length + TURN_WALL_FIELDS.length),
+        ...MODEL_COUNTER_FIELDS_V6_EXTRA.map((field) => event.counters[field] ?? 0),
+        ...CONTEXT_FIELDS.map((field) => event.context?.[field] ?? 0),
       ];
+      doubles = [...doubles, ...EMPTY_DOUBLES.slice(doubles.length)];
       break;
     case "tool_usage":
       blobs[15] = event.tool;
