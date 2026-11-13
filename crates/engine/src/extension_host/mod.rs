@@ -126,6 +126,7 @@ pub mod dsh_broker;
 mod dsh_catalog;
 mod dsh_llm;
 mod dsh_network;
+mod dsh_plugins;
 mod dsh_remote;
 pub use dsh_remote::{RemoteClient, RemoteDenial, RemoteGrants, RemotePairing, remote_grants};
 mod dsh_settings;
@@ -1933,6 +1934,11 @@ impl ExtensionHostManager {
         if tools.is_empty() {
             return Vec::new();
         }
+        for gate in dsh_broker::BrokerActTool::all() {
+            if tool_registry.get(gate.name()).is_none() {
+                tool_registry.register(gate);
+            }
+        }
         let taken: HashSet<String> = tool_registry
             .names()
             .into_iter()
@@ -3629,6 +3635,9 @@ impl ManagerShared {
             })
     }
     pub(super) fn broker_services(&self, owner: &OwnerRef) -> Vec<protocol::DshService> {
+        if let Some(granted) = dsh_broker::test_grants() {
+            return granted;
+        }
         dsh_broker::granted_services(&self.registry.lock().expect("registry lock"), owner)
     }
 
@@ -3637,6 +3646,13 @@ impl ManagerShared {
         owner: &OwnerRef,
         service: protocol::DshService,
     ) -> bool {
+        if let Some(granted) = dsh_broker::builtin_granted(
+            &self.registry.lock().expect("registry lock"),
+            owner,
+            service,
+        ) {
+            return granted;
+        }
         if let Some(granted) = dsh_broker::test_grants() {
             return granted.contains(&service);
         }

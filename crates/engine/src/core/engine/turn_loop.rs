@@ -5968,7 +5968,9 @@ fn mode_blocks_write_capable_tool(
         && (matches!(
             canonical_action_alias(tool_name, input),
             "write_file" | "edit_file" | "apply_patch"
-        ) || (McpPool::is_mcp_tool(tool_name) && !read_only))
+        ) || ((McpPool::is_mcp_tool(tool_name)
+            || crate::extension_host::dsh_broker::is_gate_tool(tool_name))
+            && !read_only))
 }
 
 /// Synthesize the tool result recorded for a tool call that never executed

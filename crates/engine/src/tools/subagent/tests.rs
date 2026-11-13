@@ -28773,3 +28773,49 @@ async fn settled_projection_waiter_releases_origin_lease_and_mailbox_before_meta
     .unwrap();
     assert_eq!(sink_calls.load(Ordering::SeqCst), 2);
 }
+
+#[tokio::test]
+async fn a_write_capable_child_needs_a_network_grant_and_the_core_approval_for_a_broker_act() {
+    use crate::extension_host::dsh_broker::{ACT_TOOL, BrokerActTool, REACH_TOOL};
+    let reach = json!({"plugin": "p", "service": "network", "method": "fetch", "effect": "reach", "target": "example.com"});
+    let write = json!({"plugin": "p", "service": "network", "method": "credentials.set", "effect": "write", "target": "token"});
+    for network in [false, true] {
+        let tmp = tempdir().expect("tempdir");
+        let mut runtime =
+            stub_runtime().with_agent_tool_surface_options(enabled_agent_surface_options());
+        runtime.context = ToolContext::new(tmp.path());
+        runtime.worker_profile = WorkerRuntimeProfile::for_role(FleetRole::Builder);
+        runtime.worker_profile.permissions.network = network;
+        let mut probe = ChildCoreProbe::new(
+            runtime,
+            FleetRole::Builder,
+            None,
+            crate::tools::todo::new_shared_todo_list(),
+            crate::tools::plan::new_shared_plan_state(),
+        );
+        for gate in BrokerActTool::all() {
+            probe.registry.register(gate);
+        }
+        assert_eq!(
+            probe
+                .authority
+                .validate(&probe.registry, REACH_TOOL, &reach)
+                .is_ok(),
+            network,
+            "a reach act follows the child's network ceiling (network granted: {network})"
+        );
+        assert!(
+            probe
+                .authority
+                .validate(&probe.registry, ACT_TOOL, &write)
+                .is_ok(),
+            "a write act is admitted to a write-capable child"
+        );
+        for (tool, act) in [(REACH_TOOL, &reach), (ACT_TOOL, &write)] {
+            assert!(
+                probe.delegation_refusal(tool, act).is_some(),
+                "{tool} is never delegated as a file write; the Core approval decides it"
+            );
+        }
+    }
+}

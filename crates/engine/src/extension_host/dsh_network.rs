@@ -6,7 +6,9 @@ use codewhale_secrets::Secrets;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::dsh_broker::{BrokerCall, BrokerFuture, BrokerMethods, BrokerRefusal, decode};
+use super::dsh_broker::{
+    BrokerCall, BrokerEffect, BrokerFuture, BrokerMethods, BrokerRefusal, decode,
+};
 use super::protocol::DshService;
 use crate::tools::spec::ToolContext;
 use crate::tools::web::guard::validate_fetch_target;
@@ -115,6 +117,12 @@ pub(super) fn serve_with(call: BrokerCall, authority: NetworkAuthority) -> Broke
                 let Some(tool) = authority.tool.as_ref() else {
                     return Err(BrokerRefusal::NotAvailable(DshService::Network));
                 };
+                let host = reqwest::Url::parse(&input.url)
+                    .ok()
+                    .and_then(|url| url.host_str().map(normalized_host));
+                call.context
+                    .act("fetch", BrokerEffect::Reach, host.as_deref())
+                    .await?;
                 fetch(
                     &plugin,
                     &authority.hosts,
@@ -127,6 +135,9 @@ pub(super) fn serve_with(call: BrokerCall, authority: NetworkAuthority) -> Broke
             NetworkMethod::Describe(CredentialRef { name }) => {
                 let vault = vault(&authority)?;
                 let name = checked_ref(&name)?;
+                call.context
+                    .act("credentials.describe", BrokerEffect::Read, Some(name))
+                    .await?;
                 let set = read_secret(vault, &plugin, name)?.is_some();
                 tracing::info!(target: "codewhale::dsh_network", plugin = %plugin, credential = %name, set, "credential described");
                 Ok(json!({ "ref": name, "set": set, "handle": handle(name) }))
@@ -134,6 +145,9 @@ pub(super) fn serve_with(call: BrokerCall, authority: NetworkAuthority) -> Broke
             NetworkMethod::Resolve(CredentialRef { name }) => {
                 let vault = vault(&authority)?;
                 let name = checked_ref(&name)?;
+                call.context
+                    .act("credentials.resolve", BrokerEffect::Read, Some(name))
+                    .await?;
                 let set = read_secret(vault, &plugin, name)?.is_some();
                 tracing::info!(target: "codewhale::dsh_network", plugin = %plugin, credential = %name, set, "credential resolved to its handle");
                 Ok(json!({ "ref": name, "value": set.then(|| handle(name)) }))
@@ -146,6 +160,9 @@ pub(super) fn serve_with(call: BrokerCall, authority: NetworkAuthority) -> Broke
                         "a credential value must be a non-empty secret, not a handle",
                     ));
                 }
+                call.context
+                    .act("credentials.set", BrokerEffect::Write, Some(name))
+                    .await?;
                 vault
                     .set(&vault_slot(&plugin, name), &value)
                     .map_err(|_| invalid("the credential vault refused the write"))?;
