@@ -41,6 +41,18 @@ export const DOC_CATEGORY_LABELS: Record<DocTopic["category"], { en: string; zh:
 
 export const DOC_TOPICS: DocTopic[] = [
   {
+    id: "first-time",
+    slug: "first-time",
+    label: { en: "Use Codewhale for the first time", zh: "第一次使用 Codewhale" },
+    description: {
+      en: "Open a terminal, install, pick the folder Codewhale works in, connect a model and finish a first task.",
+      zh: "打开终端、安装、选择 Codewhale 工作的文件夹、连接模型并完成第一个任务。",
+    },
+    repoSource: ["docs/GUIDE.md", "docs/INSTALL.md", "docs/MODES.md", "docs/SANDBOX.md", "docs/KEYBINDINGS.md"],
+    hasPage: true,
+    category: "getting-started",
+  },
+  {
     id: "install",
     slug: "install",
     label: { en: "Install Codewhale", zh: "安装 Codewhale" },

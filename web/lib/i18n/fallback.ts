@@ -16,6 +16,7 @@ export const DOCS_TOPICS = [
   "computers",
   "configuration",
   "constitution",
+  "first-time",
   "fleet",
   "guide",
   "hooks",

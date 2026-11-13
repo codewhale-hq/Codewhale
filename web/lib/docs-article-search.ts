@@ -4,7 +4,7 @@ import {
   getDocsAuth, getDocsClaudeCode, getDocsConfiguration, getDocsFleet,
   getDocsHooks, getDocsMcp, getDocsModes, getDocsPet, getDocsReview,
   getDocsRuntimeApi, getDocsSandbox, getDocsSkills, getDocsSubagents,
-  getDocsTroubleshooting, getDocsTrust, getDocsWeb, getDocsWork,
+  getDocsTroubleshooting, getDocsTrust, getDocsWeb, getDocsWork, getDocsFirstTime,
   getDocsGuide, getDocsVocabulary, getConstitution, getChrome, getHome, fill, pickText,
 } from "./i18n/dictionaries";
 import type { DocsBlock, DocsPageDict } from "./i18n/dictionaries/types";
@@ -31,7 +31,7 @@ const ARTICLES: Record<string, (locale: string) => DocsPageDict> = {
   pet: getDocsPet, review: getDocsReview, "runtime-api": getDocsRuntimeApi,
   sandbox: getDocsSandbox, skills: getDocsSkills, subagents: getDocsSubagents,
   troubleshooting: getDocsTroubleshooting, trust: getDocsTrust, web: getDocsWeb,
-  work: getDocsWork,
+  work: getDocsWork, "first-time": getDocsFirstTime,
 };
 
 function blockText(block: DocsBlock): string {

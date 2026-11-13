@@ -442,6 +442,8 @@ export type DocsAuthDict = DocsPageDict;
 
 export type DocsTrustDict = DocsPageDict;
 
+export type DocsFirstTimeDict = DocsPageDict;
+
 /** `app/[locale]/changelog/page.tsx` — version-aware release record. */
 export interface ChangelogDict {
   metaTitle: string;

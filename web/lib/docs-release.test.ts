@@ -8,7 +8,7 @@ import { FEATURE_CATALOGUE, type Feature } from "./features";
 import {
   getDocsAuth, getDocsClaudeCode, getDocsConfiguration, getDocsFleet, getDocsHooks, getDocsMcp, getDocsModes, getDocsPet,
   getDocsReview, getDocsRuntimeApi, getDocsSandbox, getDocsSkills, getDocsSubagents, getDocsTroubleshooting, getDocsTrust,
-  getDocsWeb, getDocsWork,
+  getDocsWeb, getDocsWork, getDocsFirstTime,
 } from "./i18n/dictionaries";
 import type { DocsBlock, DocsPageDict } from "./i18n/dictionaries/types";
 import { DOC_TOPICS } from "./docs-map";
@@ -50,6 +50,7 @@ const PAGES: Record<string, (locale: string) => DocsPageDict> = {
   fleet: getDocsFleet, hooks: getDocsHooks, mcp: getDocsMcp, modes: getDocsModes, pet: getDocsPet, review: getDocsReview,
   "runtime-api": getDocsRuntimeApi, sandbox: getDocsSandbox, skills: getDocsSkills, subagents: getDocsSubagents,
   troubleshooting: getDocsTroubleshooting, trust: getDocsTrust, web: getDocsWeb, work: getDocsWork,
+  "first-time": getDocsFirstTime,
 };
 
 describe("docs describe the published release first", () => {
