@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Plugin index hooks:** hooks with the same name and event now have distinct row IDs, so clients can keep every configured hook visible.
+
 - **Renaming sessions with Chinese titles:** the session picker no longer rejects a Chinese, Japanese, Korean or emoji title of more than about 33 characters as "Title must be 1–100 characters". It now counts characters, as the message says and as `/rename` and the Runtime API already did, so any title up to 100 characters is accepted. Thanks [@luochen211](https://github.com/luochen211) (PR 7322).
 - **Non-ASCII file names:** `/diff`, the `@git` and `@diff` mentions and the Runtime API workspace diff now show paths with Chinese, emoji and other non-ASCII characters as written instead of as quoted octal escapes, and the turn context no longer lists the workspace root as an empty "Active paths" entry. Thanks [@luochen211](https://github.com/luochen211) (PR 7317).
 - **Session names after a crash, and keep-forever snapshot retention:** a session name saved right after a crash that cut off the previous session-index line is no longer lost, because the new entry now starts on its own line; and a very large `[snapshots] max_age_days` (such as `9223372036854775807` for "keep forever") no longer wraps around and deletes every undo snapshot at session start. Thanks [@luochen211](https://github.com/luochen211) (PR 7316).

@@ -429,7 +429,7 @@ pub(super) async fn get_plugin_index(
                     .clone()
                     .unwrap_or_else(|| format!("{} {}", hook.event, ordinal));
                 items.push(IndexItem {
-                    id: format!("hook:{source}:{}:{name}", hook.event),
+                    id: format!("hook:{source}:{}:{ordinal}", hook.event),
                     kind: "hook",
                     name,
                     description: None,
