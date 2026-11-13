@@ -24,8 +24,25 @@ const eslintConfig = [
     rules: {
       // Bilingual CJK content uses curly quotes intentionally
       "react/no-unescaped-entities": "off",
+    },
+  },
+  {
+    files: [
+      "components/connection-banner.tsx",
+      "components/docs-search.tsx",
+      "components/mobile-menu.tsx",
+      "components/ratatui/explorer.tsx",
+      "components/theme-toggle.tsx",
+      "components/usage-counting.tsx",
+    ],
+    rules: {
+      "react-hooks/set-state-in-effect": "warn",
+    },
+  },
+  {
+    files: ["app/\\[locale\\]/page.tsx"],
+    rules: {
       "react-hooks/purity": "off",
-      "react-hooks/set-state-in-effect": "off",
     },
   },
 ];
