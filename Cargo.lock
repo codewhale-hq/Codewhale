@@ -1206,6 +1206,7 @@ dependencies = [
  "codewhale-paths",
  "codewhale-plugins",
  "codewhale-protocol",
+ "codewhale-ratatui",
  "codewhale-release",
  "codewhale-repl",
  "codewhale-runtime",

@@ -76,6 +76,7 @@ pub mod send_later;
 pub mod session;
 pub mod shell;
 pub mod shell_output;
+pub mod show_data;
 pub mod skill;
 pub mod spec;
 pub mod speech;

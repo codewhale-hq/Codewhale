@@ -172,6 +172,7 @@ sha2.workspace = true
 # Reuse the locked cryptographic implementation for exact-call user decisions.
 ring = "0.17"
 codewhale-localization = { path = "../localization", version = "0.10.3" }
+codewhale-ratatui = { path = "../../vendor/codewhale-ratatui", version = "0.2.0" }
 shell-words = "1.1.1"
 
 wiremock = { version = "0.6", optional = true }
