@@ -65,7 +65,7 @@ function installFixture(
     : path.join(root, installDirName);
   const fakeBin = path.join(root, "fake-bin");
   mkdirSync(releaseDir, { recursive: true });
-  mkdirSync(installDir, { recursive: true });
+  mkdirSync(installDir, { recursive: true, mode: 0o700 });
   mkdirSync(fakeBin, { recursive: true });
 
   const runtime = executable("codewhale 0.9.5 (fixture)");
@@ -118,7 +118,7 @@ function installFixture(
     chmodSync(destination, 0o755);
   }
 
-  mkdirSync(home, { recursive: true });
+  mkdirSync(home, { recursive: true, mode: 0o700 });
   for (const file of homeFiles) {
     writeFileSync(path.join(home, file), "# existing profile\n");
   }
