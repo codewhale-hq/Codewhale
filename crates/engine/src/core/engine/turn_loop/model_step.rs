@@ -641,6 +641,7 @@ impl Engine {
             job.response_settled(!response_stream_failed);
         }
         turn.add_parent_usage(&usage);
+        turn.note_parent_model(&stream_request.model);
         turn.note_parent_prompt_len(
             self.session.messages.len(),
             crate::compaction::estimate_request_input_tokens(

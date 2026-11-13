@@ -93,6 +93,9 @@ pub struct TurnContext {
     /// their own routed receipts.
     pub parent_route_usage: Usage,
 
+    /// Model the most recent parent-route request was dispatched with.
+    pub last_parent_model: Option<String>,
+
     /// Provider calls whose usage became ambiguous after dispatch (for
     /// example an RLM timeout). A non-zero value makes cost coverage
     /// explicitly incomplete instead of inventing a zero-usage receipt.
@@ -199,6 +202,7 @@ impl TurnContext {
                 ..Usage::default()
             },
             parent_route_usage: Usage::default(),
+            last_parent_model: None,
             routed_usage_dropped_records: 0,
             latest_parent_input_tokens: None,
             messages_len_at_last_parent_prompt: None,
@@ -273,6 +277,10 @@ impl TurnContext {
         self.latest_parent_input_tokens = (latest.input_tokens > 0).then_some(latest.input_tokens);
         self.add_usage(usage);
         add_usage_to(&mut self.parent_route_usage, usage);
+    }
+
+    pub fn note_parent_model(&mut self, model: &str) {
+        self.last_parent_model = Some(model.to_string());
     }
 
     pub fn add_routed_usage_dropped_records(&mut self, dropped_records: u64) {

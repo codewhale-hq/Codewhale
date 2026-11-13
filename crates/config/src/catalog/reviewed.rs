@@ -484,6 +484,22 @@ pub fn public_model_identifier(model: &str) -> bool {
         })
 }
 
+/// Case-insensitive form of [`public_model_identifier`] for ids that were
+/// lowercased before the lookup.
+#[must_use]
+pub fn public_model_identifier_ignore_case(model: &str) -> bool {
+    let catalog = super::bundled_models_dev_catalog();
+    let matches = |id: &str| id.eq_ignore_ascii_case(model);
+    catalog.reviewed.intrinsic.keys().any(|id| matches(id))
+        || catalog.models.keys().any(|id| matches(id))
+        || catalog.providers.values().any(|provider| {
+            provider
+                .models
+                .iter()
+                .any(|(id, row)| matches(id) || matches(&row.id))
+        })
+}
+
 #[must_use]
 pub fn official_deepseek_model_id(model: &str) -> Option<&'static str> {
     bundled_reviewed()

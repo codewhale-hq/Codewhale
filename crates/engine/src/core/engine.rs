@@ -11793,6 +11793,7 @@ fn record_model_turn_telemetry(
     {
         return;
     }
+    let model = turn.last_parent_model.as_deref().unwrap_or(model);
     let outcome = match status {
         TurnOutcomeStatus::Completed => codewhale_telemetry::TurnOutcome::Ok,
         TurnOutcomeStatus::Failed => codewhale_telemetry::TurnOutcome::Failed,
