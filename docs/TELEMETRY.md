@@ -327,7 +327,7 @@ The workhorse. Everything a session accumulated ships here, once.
 
 | field | source anchor |
 |---|---|
-| `turns` | `run_event_loop` in `crates/tui/src/tui/ui/event_loop.rs`, immediately before it calls `execute_turn_end_observer_hook`. Never inside that hook: its first statement is `if !app.hooks.has_hooks_for_event(HookEvent::TurnEnd) { return Ok(()); }` (`crates/tui/src/tui/ui/observer_hooks.rs`), and the natural future optimization hoists that check to the call site, silently zeroing the counter for every user without hooks. |
+| `turns` | `record_model_turn_telemetry` in `crates/engine/src/core/engine.rs`, called once per turn the engine runs, before the zero-usage early return, so a turn that reported no tokens still counts. The engine counts on every surface (terminal UI, `exec`, `serve`, desktop), so an `exec` or `serve` session reports the turns it ran. It counts turns of the session's own engine only: a sub-agent's or an RLM call's child engine adds no session turn, though its model usage rows still count. The terminal UI no longer counts a turn itself. Autonomous continuation turns and review turns are turns the engine runs and count. Compared with the earlier terminal-UI count, shell-command turns (`!` commands), rejected submissions, history purges and turns that failed before the model was called no longer count. The call site never lives inside a conditionally entered handler such as the turn-end hook. |
 | `tool_calls` | `execute_tool_with_lock` in `crates/engine/src/core/engine/tool_execution.rs` — surface-agnostic, fires for exec and CLI too |
 | `fleet_dispatch` | `create_queued_run_with_descriptor` in `crates/engine/src/fleet/manager.rs` — the single funnel that `create_run` and `create_queued_run` both land in; counting at either caller would double-count a plain `fleet run`. |
 | `workflow_run` | bumped in `WorkflowTool::execute` (`crates/engine/src/tools/workflow/mod.rs`) only after `parse_workflow_action` returns an `Ok(WorkflowAction)`, never from `input["action"]`. The JSON Schema `enum` in `WorkflowTool::input_schema` is what is published *to the model* — a declaration, not a guard; the real parse also accepts `spawn\|wait\|list\|inspect\|stop\|abort`, and its reject arm (`Invalid workflow action '…'`) embeds the model string verbatim, so a rejected action is never counted. |
@@ -351,7 +351,7 @@ The workhorse. Everything a session accumulated ships here, once.
 
 Why discriminants and nothing else: `ToolError::PathEscape`'s `Display` *is* an absolute path (`crates/tools/src/lib.rs:61`); `fim.rs:48-50`'s `Display` *is* a literal source fragment the model emitted; `secrets/src/lib.rs:50`'s `Display` carries the secret store's absolute path; every `LlmError` variant carries the raw provider HTTP body verbatim (`crates/engine/src/llm_client/mod.rs:327`), and a 400 from a content filter routinely echoes the prompt.
 
-**`turn_wall`** — a per-session histogram of counts, never per-turn events. `lt_5s`, `5_30s`, `30_120s`, `gte_120s`. Recorded by `observe_turn_secs` next to the `turns` bump in `run_event_loop`, which already has the turn duration in hand.
+**`turn_wall`** — a per-session histogram of counts, never per-turn events. `lt_5s`, `5_30s`, `30_120s`, `gte_120s`. Recorded by `observe_turn_secs` next to the `turns` bump in `record_model_turn_telemetry`; the duration is the time from the engine starting the turn to the turn settling, and the same sub-agent and RLM exclusion as `turns` applies. The sum of its four buckets equals `turns`.
 
 ### Event: `panic`
 

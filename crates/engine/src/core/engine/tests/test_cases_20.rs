@@ -1614,3 +1614,57 @@ async fn computer_use_autonomous_postures_block_before_the_plugin() {
         .await;
     }
 }
+
+#[test]
+fn session_turns_count_completed_and_zero_usage_turns_but_not_child_engine_turns() {
+    let counters = codewhale_telemetry::SessionCounters::default();
+
+    let mut used = TurnContext::new(4);
+    used.parent_route_usage = Usage {
+        input_tokens: 120,
+        output_tokens: 30,
+        ..Usage::default()
+    };
+    record_model_turn_telemetry(
+        &counters,
+        ProviderKind::Deepseek,
+        "deepseek-v4-flash",
+        &used,
+        TurnOutcomeStatus::Completed,
+        true,
+    );
+
+    let idle = TurnContext::new(4);
+    record_model_turn_telemetry(
+        &counters,
+        ProviderKind::Deepseek,
+        "deepseek-v4-flash",
+        &idle,
+        TurnOutcomeStatus::Completed,
+        true,
+    );
+
+    assert_eq!(counters.counters().turns, 2);
+    let wall = counters.turn_wall();
+    assert_eq!(
+        wall.lt_5s + wall.five_to_thirty + wall.thirty_to_onetwenty + wall.gte_120s,
+        2
+    );
+    let usage_rows = counters.usage_events();
+    assert_eq!(usage_rows.len(), 1, "only the turn that used tokens has a row");
+
+    record_model_turn_telemetry(
+        &counters,
+        ProviderKind::Deepseek,
+        "deepseek-v4-flash",
+        &used,
+        TurnOutcomeStatus::Completed,
+        false,
+    );
+    assert_eq!(counters.counters().turns, 2, "a child engine turn adds no session turn");
+    let wall = counters.turn_wall();
+    assert_eq!(
+        wall.lt_5s + wall.five_to_thirty + wall.thirty_to_onetwenty + wall.gte_120s,
+        2
+    );
+}

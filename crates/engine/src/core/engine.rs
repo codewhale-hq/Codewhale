@@ -7853,7 +7853,14 @@ impl Engine {
 
         // Update session usage
         self.session.total_usage.add(&turn.usage);
-        record_model_turn_telemetry(self.api_provider, &self.session.model, &turn, status);
+        record_model_turn_telemetry(
+            codewhale_telemetry::session_counters(),
+            self.api_provider,
+            &self.session.model,
+            &turn,
+            status,
+            self.child_host.is_none() && self.rlm_host.is_none(),
+        );
         if !self.is_acp_turn() {
             self.record_goal_usage_for_turn(&turn.usage, turn.started_at);
         }
@@ -11783,11 +11790,17 @@ use codewhale_tools::names::{REQUEST_USER_INPUT_NAME, is_tool_search_tool};
 pub mod tests;
 
 fn record_model_turn_telemetry(
+    counters: &codewhale_telemetry::SessionCounters,
     provider: ProviderKind,
     model: &str,
     turn: &TurnContext,
     status: TurnOutcomeStatus,
+    counts_as_session_turn: bool,
 ) {
+    if counts_as_session_turn {
+        counters.bump(codewhale_telemetry::Counter::Turns);
+        counters.observe_turn_secs(turn.started_at.elapsed().as_secs());
+    }
     let usage = &turn.parent_route_usage;
     if usage.input_tokens == 0 && usage.output_tokens == 0 && status == TurnOutcomeStatus::Completed
     {
@@ -11798,7 +11811,7 @@ fn record_model_turn_telemetry(
         TurnOutcomeStatus::Failed => codewhale_telemetry::TurnOutcome::Failed,
         TurnOutcomeStatus::Interrupted => codewhale_telemetry::TurnOutcome::Interrupted,
     };
-    codewhale_telemetry::session_counters().record_model_turn(
+    counters.record_model_turn(
         provider,
         model,
         outcome,

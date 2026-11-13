@@ -3967,19 +3967,6 @@ pub(crate) async fn run_event_loop(
                             }
                         }
 
-                        // Counted here, at the caller, never inside
-                        // `execute_turn_end_observer_hook`: that function's
-                        // first statement returns early for anyone with no
-                        // TurnEnd hooks, and the natural future optimization
-                        // hoists that check up to this call site — which would
-                        // silently zero the counter for every user who does
-                        // not use hooks.
-                        {
-                            let telemetry = codewhale_telemetry::session_counters();
-                            telemetry.bump(codewhale_telemetry::Counter::Turns);
-                            telemetry.observe_turn_secs(turn_elapsed.as_secs());
-                        }
-
                         if let Err(error) = execute_turn_end_observer_hook(
                             app,
                             completed_turn.as_ref(),
