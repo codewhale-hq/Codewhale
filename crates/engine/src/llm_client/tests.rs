@@ -127,7 +127,7 @@ fn quota_window_display_prints_reset_time_as_plain_text() {
         transmission: RequestTransmission::Rejected,
     }
     .to_string();
-    assert!(windowed.contains("resets in 19 h 29 min"), "{windowed}");
+    assert!(windowed.contains("resets in 19h29m"), "{windowed}");
     assert!(windowed.contains("automatic retry stopped"), "{windowed}");
 
     let open_ended = LlmError::QuotaWindow {
@@ -153,9 +153,39 @@ fn quota_window_display_prints_reset_time_as_plain_text() {
         transmission: RequestTransmission::Rejected,
     }
     .to_string();
-    assert!(
-        hinted.contains("codewhale auth set --provider opencode-go"),
+    assert_eq!(
+        hinted
+            .matches("codewhale auth set --provider opencode-go")
+            .count(),
+        1,
         "{hinted}"
+    );
+
+    let rate_limited = LlmError::RateLimited {
+        message: "OpenCode Go free usage limit reached".into(),
+        retry_after: None,
+    }
+    .to_string();
+    assert_eq!(
+        rate_limited
+            .matches("codewhale auth set --provider opencode-go")
+            .count(),
+        1,
+        "{rate_limited}"
+    );
+
+    let already_hinted = LlmError::QuotaWindow {
+        message: hinted.clone(),
+        retry_after: Some(Duration::from_secs(70168)),
+        transmission: RequestTransmission::Rejected,
+    }
+    .to_string();
+    assert_eq!(
+        already_hinted
+            .matches("codewhale auth set --provider opencode-go")
+            .count(),
+        1,
+        "{already_hinted}"
     );
 }
 
