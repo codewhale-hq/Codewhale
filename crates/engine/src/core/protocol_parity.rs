@@ -1261,6 +1261,7 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
             model,
             workspace,
             mode,
+            agent_preset,
             ..
         } => wire_op::Op::SyncSession {
             expected: expected.as_ref().map(to_value),
@@ -1271,6 +1272,7 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
             model: model.clone(),
             workspace: workspace.clone(),
             mode: app_mode_str(*mode).to_string(),
+            agent_preset: agent_preset.clone(),
         },
         Op::RewindConversation {
             expected, messages, ..
@@ -1739,6 +1741,7 @@ mod tests {
             system_prompt: None,
             instruction_assembly: None,
             mode: "agent".into(),
+            agent_preset: None,
         };
         let (tx, mut receive) = tokio::sync::oneshot::channel();
         let op = Op::RewindConversation {

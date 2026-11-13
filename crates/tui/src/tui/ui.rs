@@ -582,6 +582,7 @@ async fn spawn_tui_engine_with_session(
                     model: app.model.clone(),
                     workspace: app.workspace.clone(),
                     mode: app.mode,
+                    agent_preset: app.agent_preset(),
                 })
                 .await?;
         }

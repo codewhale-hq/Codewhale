@@ -559,6 +559,10 @@ pub enum AppAction {
         model: String,
         workspace: PathBuf,
         mode: AppMode,
+        agent_preset: Option<String>,
+    },
+    SetConversationMode {
+        id: String,
     },
     OpenConfigView,
     /// Open this workspace's `.codewhale/hooks.toml` in `$EDITOR`, creating

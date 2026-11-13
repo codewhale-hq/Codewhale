@@ -2090,9 +2090,27 @@ pub struct SavedSession {
     /// record resume, export, and the Runtime API read back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub turn_outcomes: Vec<SavedTurnOutcome>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "read_saved_agent_preset"
+    )]
     pub agent_preset: Option<String>,
 }
+
+fn read_saved_agent_preset<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(
+        match <Option<serde_json::Value> as serde::Deserialize>::deserialize(deserializer)? {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(id)) => Some(id),
+            Some(other) => Some(other.to_string()),
+        },
+    )
+}
+
 impl SavedSession {
     pub fn capture_publication(
         &mut self,

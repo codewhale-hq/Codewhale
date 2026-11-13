@@ -180,6 +180,7 @@ async fn persist_exec_checkpoint(
                 Some(write_request.as_ref()),
                 &captured_source,
                 &captured_owner,
+                snapshot.agent_preset.as_deref(),
             )?;
             Ok(publication)
         },
@@ -239,6 +240,7 @@ pub async fn run_exec_agent(
     // allowlist; this also skips workspace snapshots, LSP and the automation
     // store, and writes the one-shot `--json` receipt shape.
     one_shot: bool,
+    conversation_mode: Option<String>,
 ) -> Result<()> {
     use codewhale_config::AppMode;
     use codewhale_engine::compaction::CompactionConfig;
@@ -308,6 +310,10 @@ pub async fn run_exec_agent(
     let mut exec_write_receipt = resume_session
         .as_ref()
         .and_then(|saved| saved.write_receipt.clone());
+    let exec_agent_preset = resume_session.as_ref().map_or_else(
+        || conversation_mode.clone(),
+        |saved| saved.agent_preset.clone(),
+    );
     let exec_is_fresh = resume_session.is_none();
 
     let exec_session_id = fleet_capture
@@ -784,12 +790,31 @@ pub async fn run_exec_agent(
                 model: saved.metadata.model,
                 workspace: saved.metadata.workspace,
                 mode,
+                agent_preset: saved.agent_preset,
             })
             .await?;
         loaded_session_id = Some(saved_id.clone());
         if output_format == ExecOutputFormat::Text && !json_output {
             eprintln!("{}", exec_resumed_session_line(&saved_id));
         }
+    }
+
+    if loaded_session_id.is_none() && exec_agent_preset.is_some() {
+        let snapshot = engine_handle.get_session_snapshot().await?;
+        engine_handle
+            .send(Op::SyncSession {
+                expected: None,
+                control: codewhale_engine::core::ops::SessionControlId::new(),
+                session_id: Some(snapshot.session_id),
+                messages: Vec::new(),
+                system_prompt: None,
+                system_prompt_override: false,
+                model: snapshot.model,
+                workspace: snapshot.workspace,
+                mode,
+                agent_preset: exec_agent_preset.clone(),
+            })
+            .await?;
     }
 
     // Lifecycle outbox (`[lifecycle_outbox]`): headless `codewhale exec`
@@ -1440,6 +1465,7 @@ pub async fn run_exec_agent(
                             None,
                             source,
                             owner,
+                            exec_agent_preset.as_deref(),
                         )
                     });
                     match saved {
@@ -2127,6 +2153,7 @@ mod tests {
             system_prompt: None,
             instruction_assembly: None,
             mode: "exec".into(),
+            agent_preset: None,
         });
         let caller = SessionCheckpointCaller {
             session_id: snapshot.session_id.clone(),
@@ -2195,6 +2222,7 @@ mod tests {
             None,
             source.as_ref().unwrap(),
             snapshot.source.as_ref().unwrap(),
+            None,
         )
         .unwrap();
         source = Some(publication.write_receipt());
@@ -2315,6 +2343,58 @@ mod tests {
                 .unwrap()
                 .messages,
             completed
+        );
+    }
+
+    #[test]
+    fn exec_session_file_keeps_the_conversation_mode_it_was_started_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager =
+            codewhale_engine::session_manager::SessionManager::new(tmp.path().join("exec-mode"))
+                .unwrap();
+        let workspace = tmp.path().join("workspace");
+        let messages: Vec<codewhale_models::Message> = serde_json::from_value(serde_json::json!([
+            {"role":"user","content":[{"type":"text","text":"hello"}]}
+        ]))
+        .unwrap();
+        let owner =
+            codewhale_engine::core::ops::SessionSnapshotSource::turn("exec-turn".into(), None);
+        let save = |source: &codewhale_engine::session_manager::SessionWriteReceipt,
+                    preset: Option<&str>| {
+            crate::exec_agent::persist_exec_session(
+                &messages,
+                "model",
+                crate::exec_agent::PersistedProviderRoute {
+                    kind: "custom",
+                    id: None,
+                },
+                &workspace,
+                &None,
+                Some("exec-mode-session"),
+                1,
+                None,
+                &manager,
+                &[],
+                None,
+                source,
+                &owner,
+                preset,
+            )
+            .unwrap()
+        };
+        let first = save(
+            &manager.expect_absent_session("exec-mode-session").unwrap(),
+            Some("creator"),
+        );
+        let saved = manager.load_session_snapshot("exec-mode-session").unwrap();
+        assert_eq!(saved.agent_preset.as_deref(), Some("creator"));
+
+        save(&first.write_receipt(), None);
+        let saved = manager.load_session_snapshot("exec-mode-session").unwrap();
+        assert_eq!(
+            saved.agent_preset.as_deref(),
+            Some("creator"),
+            "a later save without the mode does not turn the conversation into Standard"
         );
     }
 
@@ -3377,6 +3457,7 @@ fn persist_exec_session(
     checkpoint: Option<&codewhale_engine::core::events::SessionCheckpointRequest>,
     source: &session_manager::SessionWriteReceipt,
     owner: &codewhale_engine::core::ops::SessionSnapshotSource,
+    agent_preset: Option<&str>,
 ) -> Result<session_manager::SessionPublication> {
     let captured = source.capture(session_manager::SessionWriteOwner::Engine(owner.clone()))?;
     if checkpoint.is_some() {
@@ -3422,6 +3503,9 @@ fn persist_exec_session(
             Some("exec"),
         )
     };
+    if saved.agent_preset.is_none() {
+        saved.agent_preset = agent_preset.map(str::to_string);
+    }
     saved.write_receipt = Some(captured);
     stamp_exec_session_metadata(
         &mut saved,

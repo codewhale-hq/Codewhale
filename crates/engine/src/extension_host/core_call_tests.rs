@@ -1295,6 +1295,7 @@ fn the_wire_result_is_the_tools_text_and_json_and_says_when_it_was_cut() {
         system_prompt: None,
         instruction_assembly: None,
         mode: "agent".into(),
+        agent_preset: None,
     });
     let hash = SessionCheckpointRequest::prefix_hash(&snapshot.messages).unwrap();
     let make = |projection| {

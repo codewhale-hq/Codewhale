@@ -36,6 +36,7 @@ async fn sync_session_projects_persisted_subagent_handoff_for_headless_restore()
             model: "deepseek-v4-pro".to_string(),
             workspace: tmp.path().to_path_buf(),
             mode: AppMode::Agent,
+            agent_preset: None,
         })
         .await
         .expect("sync session");
@@ -176,6 +177,7 @@ async fn edit_last_turn_preserves_current_mode() {
             model: "deepseek-v4-pro".to_string(),
             workspace: tmp.path().to_path_buf(),
             mode: AppMode::Agent,
+            agent_preset: None,
         })
         .await
         .expect("sync session");
@@ -334,6 +336,7 @@ async fn edit_last_turn_cuts_at_user_prompt_before_tool_results() {
             model: "deepseek-v4-pro".to_string(),
             workspace: tmp.path().to_path_buf(),
             mode: AppMode::Agent,
+            agent_preset: None,
         })
         .await
         .expect("sync session");
@@ -451,6 +454,7 @@ async fn edit_last_turn_without_user_prompt_errors_and_sends_nothing() {
             model: "deepseek-v4-pro".to_string(),
             workspace: tmp.path().to_path_buf(),
             mode: AppMode::Agent,
+            agent_preset: None,
         })
         .await
         .expect("sync session");
@@ -569,6 +573,7 @@ async fn edit_last_turn_without_user_prompt_errors_and_sends_nothing() {
             model: "deepseek-v4-pro".to_string(),
             workspace: tmp.path().to_path_buf(),
             mode: AppMode::Agent,
+            agent_preset: None,
         })
         .await
         .expect("sync unsupported user session");

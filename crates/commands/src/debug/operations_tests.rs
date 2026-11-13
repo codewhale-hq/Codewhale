@@ -417,6 +417,7 @@ fn synced_conversation() -> SessionSyncPayload {
         model: "model".to_string(),
         workspace: std::path::PathBuf::from("/tmp/undo-workspace"),
         mode: codewhale_command_contract::CommandMode::Agent,
+        agent_preset: None,
     }
 }
 struct UndoFacet {

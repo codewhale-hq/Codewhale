@@ -444,6 +444,8 @@ pub enum Op {
         workspace: PathBuf,
         #[serde(default = "default_mode")]
         mode: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_preset: Option<String>,
     },
 
     /// Rewind an unchanged conversation. `expected` is the complete observed
@@ -787,6 +789,7 @@ mod tests {
                 model: "m".into(),
                 workspace: PathBuf::from("/ws"),
                 mode: "agent".into(),
+                agent_preset: Some("creator".into()),
             },
             Op::RewindConversation {
                 expected: json!({"session_id": "s", "messages": []}),

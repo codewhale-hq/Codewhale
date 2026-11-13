@@ -722,6 +722,9 @@ pub(crate) fn dial_chip(app: &App) -> PostureChip {
     if let Some(scope) = filesystem_scope_notice(app) {
         chip.0 = format!("{} · {scope}", chip.0).into();
     }
+    if let Some(label) = app.conversation_mode_label() {
+        chip.0 = format!("{label} · {}", chip.0).into();
+    }
     chip
 }
 

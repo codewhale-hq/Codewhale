@@ -1116,6 +1116,7 @@ pub(crate) fn begin_launch_session(
         model: app.model.clone(),
         workspace: app.workspace.clone(),
         mode: app.mode,
+        agent_preset: app.agent_preset(),
     })
 }
 
@@ -1165,6 +1166,7 @@ pub(crate) async fn switch_workspace(
                 model: app.model.clone(),
                 workspace: workspace.clone(),
                 mode: app.mode,
+                agent_preset: app.agent_preset(),
             })
             .await;
     }
@@ -1873,6 +1875,7 @@ pub(crate) struct PendingFreshSession {
     model: String,
     workspace: PathBuf,
     mode: AppMode,
+    agent_preset: Option<String>,
     queue_transition: Option<OfflineQueueTransition>,
     write_receipt: codewhale_engine::session_manager::SessionWriteReceipt,
     input: String,
@@ -1907,6 +1910,7 @@ pub(crate) fn begin_fresh_session(
                 .to_string(),
         );
     }
+    let agent_preset = sync.agent_preset.clone();
     let id = sync
         .session_id
         .filter(|id| !id.is_empty())
@@ -1940,6 +1944,7 @@ pub(crate) fn begin_fresh_session(
         model: app.model.clone(),
         workspace: app.workspace.clone(),
         mode: app.mode,
+        agent_preset,
         queue_transition,
         write_receipt,
         input: app.input.clone(),
@@ -2025,6 +2030,7 @@ pub(crate) fn poll_fresh_session(app: &mut App, engine: &EngineHandle) -> bool {
                     model: pending.model.clone(),
                     workspace: pending.workspace.clone(),
                     mode: pending.mode,
+                    agent_preset: pending.agent_preset.clone(),
                 },
             );
             engine.send_reserved_op(
@@ -2188,6 +2194,7 @@ fn commit_fresh_session(app: &mut App, mut pending: PendingFreshSession) -> bool
     app.session_context_references.clear();
     app.tool_evidence.clear();
     app.set_current_session_id(Some(pending.id.clone()));
+    app.install_conversation_mode(pending.agent_preset.clone(), None);
     app.session_write_receipt = Some(pending.write_receipt);
     app.session_write_owner =
         Some(codewhale_engine::session_manager::SessionWriteOwner::Control(pending.control));

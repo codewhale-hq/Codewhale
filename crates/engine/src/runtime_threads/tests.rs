@@ -19625,6 +19625,7 @@ fn answer_session_snapshot(
             system_prompt: None,
             instruction_assembly: None,
             mode: String::new(),
+            agent_preset: None,
         });
     }
 }
@@ -19704,6 +19705,7 @@ async fn compaction_lifecycle_emits_item_events_with_compaction_counts() -> Resu
                             system_prompt: None,
                             instruction_assembly: None,
                             mode: "agent".into(),
+                            agent_preset: None,
                         });
                         let (reply, received) = oneshot::channel();
                         let withdraw = CancellationToken::new();
@@ -22037,6 +22039,7 @@ mod runtime_image_inputs {
                 model: stored_thread.model.clone(),
                 workspace: stored_thread.workspace.clone(),
                 mode: AppMode::Agent,
+                agent_preset: None,
             })
             .await?;
         let followup = reopened

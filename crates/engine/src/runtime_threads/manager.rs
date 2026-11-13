@@ -9161,6 +9161,7 @@ impl RuntimeThreadManager {
                     thread.auto_approve,
                 )
                 .mode,
+                agent_preset: thread.agent_preset.clone(),
             })
             .await?;
         let observed = engine.get_session_snapshot().await?;
@@ -14916,6 +14917,7 @@ source_usage_records: Default::default(),
                             thread.auto_approve,
                         )
                         .mode,
+                        agent_preset: thread.agent_preset.clone(),
                     })
                     .await
                     .map_err(|e| anyhow!("Failed to sync thread session: {e}"))?;

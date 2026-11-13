@@ -319,7 +319,7 @@ owner = "crates/engine/src/tools/review_host.rs"
 [[feature]]
 id = "modes"
 name = "Modes"
-summary = "Plan and Work modes; Plan is a stop on the Shift+Tab dial, Operate parses as Work; a finished plan offers work."
+summary = "Plan and Work modes on the Shift+Tab dial; a conversation is Standard or Creator mode, fixed after its first message."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/MODES.md"

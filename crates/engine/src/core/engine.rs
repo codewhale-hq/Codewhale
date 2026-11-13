@@ -3504,6 +3504,7 @@ impl Engine {
                 .as_deref()
                 .map(crate::project_context::InstructionAssembly::receipt_json),
             mode: self.current_mode.as_setting().to_string(),
+            agent_preset: self.session.agent_preset.clone(),
         }
     }
 
@@ -4503,6 +4504,7 @@ impl Engine {
                             model,
                             workspace,
                             mode,
+                            agent_preset,
                         } => {
                             if expected
                                 .as_deref()
@@ -4523,6 +4525,9 @@ impl Engine {
                             } else {
                                 previous_session_id.clone()
                             };
+                            let keep_conversation_mode = next_session_id == previous_session_id
+                                && !self.session.messages.is_empty()
+                                && self.session.agent_preset != agent_preset;
                             let closed_session_id = (next_session_id != previous_session_id)
                                 .then_some(previous_session_id);
                             // SyncSession installs a conversation's identity; an id
@@ -4589,6 +4594,14 @@ impl Engine {
                             self.session.model = model;
                             self.session.workspace = workspace.clone();
                             self.current_mode = mode;
+                            if keep_conversation_mode {
+                                tracing::warn!(
+                                    target: "conversation_mode",
+                                    "ignored a conversation mode change on a conversation that already has messages"
+                                );
+                            } else {
+                                self.session.agent_preset = agent_preset;
+                            }
                             self.config.model.clone_from(&self.session.model);
                             self.config.workspace = workspace.clone();
                             if plugin_workspace_changed {

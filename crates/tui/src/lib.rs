@@ -129,6 +129,10 @@ struct Cli {
     /// Recover the exact durable Resume/Fork intent without repeating its mutation.
     #[arg(long, global = true, value_name = "KEY")]
     operation_key: Option<String>,
+    /// Conversation mode for a new interactive session (for example `creator`).
+    /// With `--resume` or `--continue` it must match the session's saved mode.
+    #[arg(long = "conversation-mode", value_name = "MODE")]
+    conversation_mode: Option<String>,
 }
 
 impl std::ops::Deref for Cli {
@@ -473,6 +477,10 @@ struct ExecArgs {
     /// prompts past the OS per-argument limit (~128 KiB on Linux).
     #[arg(long, value_name = "PATH", conflicts_with = "prompt")]
     prompt_file: Option<PathBuf>,
+    /// Conversation mode for a new session (for example `creator`). With a
+    /// resumed session it must match the session's saved mode.
+    #[arg(long = "conversation-mode", value_name = "MODE")]
+    conversation_mode: Option<String>,
     #[arg(
         value_name = "PROMPT",
         trailing_var_arg = true,
@@ -3010,6 +3018,19 @@ async fn run_async_main_dispatch(
                     .as_deref()
                     .map(load_exec_resume_session)
                     .transpose()?;
+                let exec_conversation_mode = match tui::conversation_mode::launch_conversation_mode(
+                    &config,
+                    codewhale_localization::resolve_locale("auto"),
+                    args.conversation_mode.as_deref(),
+                    resume_session.as_ref(),
+                )
+                .await
+                {
+                    Ok(mode) => mode,
+                    Err(message) => {
+                        tui::conversation_mode::exit_refused("codewhale exec", &message)
+                    }
+                };
                 let explicit_model = args
                     .model
                     .as_deref()
@@ -3141,6 +3162,7 @@ async fn run_async_main_dispatch(
                         args.hooks,
                         std::sync::Arc::clone(&plugin_registry),
                         !tool_surface_requested,
+                        exec_conversation_mode,
                     )
                     .await
                 }
@@ -3304,6 +3326,7 @@ async fn run_async_main_dispatch(
                 let plugin_registry = policy_current_registry(plugin_registry);
                 let prepared = prepare_interactive_config(&cli, &config, true)?;
                 let source_id = resolve_session_id(session_id, last, &prepared.workspace)?;
+                refuse_resume_mode_mismatch(&cli, &prepared.config, &source_id).await;
                 let (prepared, new_session_id) = prepare_mounted_session(
                     &cli,
                     prepared,
@@ -14503,6 +14526,7 @@ async fn run_interactive_with_notice(
     let plugin_registry = policy_current_registry(plugin_registry);
     let prepared = prepare_interactive_config(cli, config, resume_session_id.is_some())?;
     let (prepared, resume_session_id) = if let Some(selector) = resume_session_id {
+        refuse_resume_mode_mismatch(cli, &prepared.config, &selector).await;
         let (prepared, id) = prepare_mounted_session(
             cli,
             prepared,
@@ -14525,6 +14549,28 @@ async fn run_interactive_with_notice(
         plugin_registry,
     ))
     .await
+}
+
+async fn refuse_resume_mode_mismatch(cli: &Cli, config: &Config, selector: &str) {
+    if cli.conversation_mode.is_none() {
+        return;
+    }
+    let locale = codewhale_localization::resolve_locale("auto");
+    let outcome = match tui::conversation_mode::load_saved_for_resume(locale, selector) {
+        Ok(saved) => {
+            tui::conversation_mode::launch_conversation_mode(
+                config,
+                locale,
+                cli.conversation_mode.as_deref(),
+                Some(&saved),
+            )
+            .await
+        }
+        Err(message) => Err(message),
+    };
+    if let Err(message) = outcome {
+        tui::conversation_mode::exit_refused("codewhale", &message);
+    }
 }
 
 struct PreparedInteractiveConfig {
@@ -14585,6 +14631,32 @@ async fn run_interactive_prepared(
 ) -> Result<()> {
     let PreparedInteractiveConfig { config, workspace } = prepared;
     let config = &config;
+    let launch_conversation_mode = {
+        let locale = codewhale_localization::resolve_locale("auto");
+        let resumed = match (
+            cli.conversation_mode.as_deref(),
+            resume_session_id.as_deref(),
+        ) {
+            (Some(_), Some(id)) => {
+                match tui::conversation_mode::load_saved_for_resume(locale, id) {
+                    Ok(saved) => Some(saved),
+                    Err(message) => tui::conversation_mode::exit_refused("codewhale", &message),
+                }
+            }
+            _ => None,
+        };
+        match tui::conversation_mode::launch_conversation_mode(
+            config,
+            locale,
+            cli.conversation_mode.as_deref(),
+            resumed.as_ref(),
+        )
+        .await
+        {
+            Ok(mode) => mode,
+            Err(message) => tui::conversation_mode::exit_refused("codewhale", &message),
+        }
+    };
     let initial_input = if cli.remote_control {
         Some(tui::InitialInput::RemoteControl)
     } else {
@@ -14732,6 +14804,7 @@ async fn run_interactive_prepared(
         },
         plugin_registry,
         pending_telemetry_notice,
+        launch_conversation_mode,
     ))
     .await
 }

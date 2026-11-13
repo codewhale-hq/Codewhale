@@ -77,6 +77,7 @@ pub(crate) async fn acknowledge_new_session(app: &mut App, result: &CommandResul
             model: app.model.clone(),
             workspace: app.workspace.clone(),
             mode: app.mode,
+            agent_preset: app.agent_preset(),
         })
         .await
         .expect("install current fixture session");
@@ -1140,4 +1141,132 @@ fn branch_snapshot_roundtrip_preserves_siblings_ids_stamps_and_engine_projection
     assert_eq!(child.metadata.spawn_depth, 1);
     let snapshot = crate::tui::ui::build_session_snapshot(&mut app, &manager).unwrap();
     assert_eq!(snapshot.journal.unwrap().entries, journal.entries);
+}
+
+fn mode_test_message(text: &str) -> codewhale_models::Message {
+    codewhale_models::Message {
+        role: Role::User,
+        content: vec![codewhale_models::ContentBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+        }],
+    }
+}
+
+fn saved_file_value(path: &std::path::Path) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn new_creator_starts_a_creator_session_and_saves_agent_preset() {
+    let _available = codewhale_engine::conversation_modes::CreatorAvailabilityGuard::set(None);
+    let tmpdir = TempDir::new().unwrap();
+    let _home = SealedHome::new();
+    let mut app = create_test_app_with_tmpdir(&tmpdir);
+    app.current_session_id = Some("old-session".to_string());
+    app.capture_session_fixture_source();
+
+    let result = new_session(&mut app, Some("creator"));
+    assert!(!result.is_error, "{:?}", result.message);
+    match result.action.as_ref() {
+        Some(AppAction::NewSession { sync, .. }) => {
+            assert_eq!(sync.agent_preset.as_deref(), Some("creator"));
+        }
+        other => panic!("expected NewSession, got {other:?}"),
+    }
+    assert_eq!(
+        app.conversation_mode, None,
+        "nothing changes before the Engine acknowledges"
+    );
+    acknowledge_new_session(&mut app, &result).await;
+    assert_eq!(app.conversation_mode.as_deref(), Some("creator"));
+    assert_eq!(app.agent_preset().as_deref(), Some("creator"));
+
+    app.push_api_message(mode_test_message("hello"));
+    let creator_path = tmpdir.path().join("creator.json");
+    assert!(!save(&mut app, Some(creator_path.to_str().unwrap())).is_error);
+    assert_eq!(saved_file_value(&creator_path)["agent_preset"], "creator");
+
+    let mut standard = create_test_app_with_tmpdir(&tmpdir);
+    standard.push_api_message(mode_test_message("hello"));
+    let standard_path = tmpdir.path().join("standard.json");
+    assert!(!save(&mut standard, Some(standard_path.to_str().unwrap())).is_error);
+    assert!(
+        saved_file_value(&standard_path)
+            .get("agent_preset")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn new_without_argument_starts_standard_from_a_creator_session() {
+    let _available = codewhale_engine::conversation_modes::CreatorAvailabilityGuard::set(None);
+    let tmpdir = TempDir::new().unwrap();
+    let _home = SealedHome::new();
+    let mut app = create_test_app_with_tmpdir(&tmpdir);
+    app.current_session_id = Some("old-session".to_string());
+    app.capture_session_fixture_source();
+    app.install_conversation_mode(Some("creator".to_string()), None);
+    app.push_api_message(mode_test_message("a creator conversation"));
+
+    let result = new_session(&mut app, None);
+    assert!(!result.is_error, "{:?}", result.message);
+    match result.action.as_ref() {
+        Some(AppAction::NewSession { sync, .. }) => assert_eq!(sync.agent_preset, None),
+        other => panic!("expected NewSession, got {other:?}"),
+    }
+    acknowledge_new_session(&mut app, &result).await;
+    assert_eq!(
+        app.conversation_mode, None,
+        "never silently from the last one"
+    );
+
+    let explicit = new_session(&mut app, Some("standard --force"));
+    match explicit.action.as_ref() {
+        Some(AppAction::NewSession { sync, force: true }) => assert_eq!(sync.agent_preset, None),
+        other => panic!("expected a forced NewSession, got {other:?}"),
+    }
+}
+
+#[test]
+#[allow(clippy::await_holding_lock)]
+fn new_with_an_unknown_mode_is_refused_with_the_mode_list_and_changes_nothing() {
+    let _available = codewhale_engine::conversation_modes::CreatorAvailabilityGuard::set(None);
+    let tmpdir = TempDir::new().unwrap();
+    let _home = SealedHome::new();
+    let mut app = create_test_app_with_tmpdir(&tmpdir);
+    app.current_session_id = Some("old-session".to_string());
+    app.capture_session_fixture_source();
+    app.install_conversation_mode(Some("creator".to_string()), None);
+
+    let result = new_session(&mut app, Some("minimal"));
+    assert!(result.is_error);
+    let text = result.message.as_deref().unwrap_or_default();
+    assert!(
+        text.contains("minimal") && text.contains("standard, creator"),
+        "{text}"
+    );
+    assert!(result.action.is_none());
+    assert_eq!(app.current_session_id.as_deref(), Some("old-session"));
+    assert_eq!(app.conversation_mode.as_deref(), Some("creator"));
+    assert!(app.pending_fresh_session.is_none());
+
+    drop(_available);
+    let _unavailable = codewhale_engine::conversation_modes::CreatorAvailabilityGuard::set(Some(
+        codewhale_engine::conversation_modes::CREATOR_NOT_READY_REASON,
+    ));
+    let result = new_session(&mut app, Some("creator"));
+    assert!(result.is_error);
+    assert!(
+        result
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Not ready yet in this version."),
+        "{:?}",
+        result.message
+    );
+    assert!(result.action.is_none());
 }

@@ -936,6 +936,7 @@ async fn switch_provider_inner(
                 model: app.model.clone(),
                 workspace: app.workspace.clone(),
                 mode: app.mode,
+                agent_preset: app.agent_preset(),
             })
             .await;
     }

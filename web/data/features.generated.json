@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "4c4dfe17cea716328253c687d9d0665e1b24fc3b59d00f2a81cf1157dfea7072"
+    "sha256": "3b1dd6728ef545ca5928777d43f17bf47a5d993b279bc0b0b558440266375cf4"
   },
   "features": [
     {
@@ -360,7 +360,7 @@
     {
       "id": "modes",
       "name": "Modes",
-      "summary": "Plan and Work modes; Plan is a stop on the Shift+Tab dial, Operate parses as Work; a finished plan offers work.",
+      "summary": "Plan and Work modes on the Shift+Tab dial; a conversation is Standard or Creator mode, fixed after its first message.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
