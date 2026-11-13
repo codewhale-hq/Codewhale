@@ -2381,7 +2381,7 @@ fn render_critical_zh_hans_localizes_security_copy() {
         "missing zh impact label:\n{joined}"
     );
     assert!(
-        joined.contains("规则:"),
+        joined.contains("规则："),
         "missing zh policy semantics:\n{joined}"
     );
     assert!(

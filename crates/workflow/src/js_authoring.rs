@@ -99,6 +99,7 @@ fn normalize_gate_roles(gates: &mut [GateSpec]) {
 }
 
 fn reject_unsupported_constructs(source: &str) -> JavascriptWorkflowResult<()> {
+    let source = &blank_quoted_strings(source);
     for (needle, construct) in [
         ("import ", "import"),
         ("import(", "dynamic import"),
@@ -125,6 +126,51 @@ fn reject_unsupported_constructs(source: &str) -> JavascriptWorkflowResult<()> {
         }
     }
     Ok(())
+}
+
+fn blank_quoted_strings(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut chars = source.chars().peekable();
+    while let Some(ch) = chars.next() {
+        out.push(ch);
+        match ch {
+            '/' if chars.peek() == Some(&'/') => {
+                for next in chars.by_ref() {
+                    out.push(next);
+                    if next == '\n' {
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                out.extend(chars.next());
+                let mut previous = ' ';
+                for next in chars.by_ref() {
+                    out.push(next);
+                    if previous == '*' && next == '/' {
+                        break;
+                    }
+                    previous = next;
+                }
+            }
+            '"' | '\'' | '`' => {
+                let mut escaped = false;
+                for next in chars.by_ref() {
+                    if escaped {
+                        escaped = false;
+                    } else if next == '\\' {
+                        escaped = true;
+                    } else if next == ch {
+                        out.push(next);
+                        break;
+                    }
+                    out.push(if ch == '`' { next } else { ' ' });
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn is_identifier_byte(byte: u8) -> bool {
@@ -906,6 +952,36 @@ workflow({ "goal": "bad", "nodes": [] });
         let err = compile_javascript_workflow("bad.workflow.js", source)
             .expect_err("imports must be rejected");
 
+        assert!(matches!(
+            err,
+            JavascriptWorkflowError::UnsupportedConstruct {
+                construct: "import"
+            }
+        ));
+    }
+
+    #[test]
+    fn javascript_workflow_allows_construct_words_inside_strings() {
+        let source = r#"
+// A comment's apostrophe isn't a string.
+workflow({
+  "goal": "Make the fetch handler async and fix the import paths",
+  "nodes": [{ "agent": { "id": "fix", "prompt": "await open(path) and readFile it", "agent_type": "review" } }]
+});
+"#;
+
+        let workflow =
+            compile_javascript_workflow("words.workflow.js", source).expect("compile JS workflow");
+
+        assert_eq!(
+            workflow.goal,
+            "Make the fetch handler async and fix the import paths"
+        );
+        let err = compile_javascript_workflow(
+            "code.workflow.js",
+            &format!("{source}import fs from \"fs\";\n"),
+        )
+        .unwrap_err();
         assert!(matches!(
             err,
             JavascriptWorkflowError::UnsupportedConstruct {

@@ -4,11 +4,12 @@
 #   alias = Display Name <id+login@users.noreply.github.com>
 #
 # The right-hand side must use GitHub's numeric noreply address so a harvested
-# commit authored with it links to the contributor's account. Only commit
-# authorship puts someone in the repository's contributor list; a co-author
-# trailer shows on their profile but not there. The left-hand side may be a
-# GitHub login, old-style noreply address, raw email from a contributor commit,
-# or local machine email seen in older harvested history.
+# commit authored with it, or a Co-authored-by trailer in the commit's final
+# trailer block, links to the contributor's account. GitHub resolves the
+# address by its numeric id, so the id must be the contributor's own
+# (`gh api users/<login> --jq .id`). The left-hand side may be a GitHub login,
+# old-style noreply address, raw email from a contributor commit, or local
+# machine email seen in older harvested history.
 
 hmbown = Hmbown <101357273+Hmbown@users.noreply.github.com>
 hmbown@gmail.com = Hmbown <101357273+Hmbown@users.noreply.github.com>
@@ -50,6 +51,7 @@ Oliver-ZPLiu = Oliver-ZPLiu <47081637+Oliver-ZPLiu@users.noreply.github.com>
 idling11 = idling11 <8055620+idling11@users.noreply.github.com>
 Hanmiao Li = idling11 <8055620+idling11@users.noreply.github.com>
 894876246@qq.com = idling11 <8055620+idling11@users.noreply.github.com>
+894876246 = idling11 <8055620+idling11@users.noreply.github.com>
 angziii = angziii <177907677+angziii@users.noreply.github.com>
 aboimpinto = aboimpinto <1231687+aboimpinto@users.noreply.github.com>
 Paulo Aboim Pinto = aboimpinto <1231687+aboimpinto@users.noreply.github.com>
@@ -79,19 +81,24 @@ Vince = Liu-Vince <56624166+Liu-Vince@users.noreply.github.com>
 liuwenchang.x@qq.com = Liu-Vince <56624166+Liu-Vince@users.noreply.github.com>
 LI-Jialu = LI-Jialu <55438527+LI-Jialu@users.noreply.github.com>
 JiarenWang = JiarenWang <33421508+JiarenWang@users.noreply.github.com>
-wdw8276 = wdw8276 <3972439+wdw8276@users.noreply.github.com>
+wdw8276 = kitty <3972439+mars-base@users.noreply.github.com>
+mars-base = kitty <3972439+mars-base@users.noreply.github.com>
+dw_wang126@126.com = kitty <3972439+mars-base@users.noreply.github.com>
 pengyou200902 = pengyou200902 <35026241+pengyou200902@users.noreply.github.com>
 linzhiqin2003 = linzhiqin2003 <123250980+linzhiqin2003@users.noreply.github.com>
 LING71671 = LING71671 <231181387+LING71671@users.noreply.github.com>
+1739677116@qq.com = LING71671 <231181387+LING71671@users.noreply.github.com>
 JasonOA888 = JasonOA888 <101583541+JasonOA888@users.noreply.github.com>
 Inference1 = Inference1 <68734681+Inference1@users.noreply.github.com>
 hongqitai = hongqitai <188678175+hongqitai@users.noreply.github.com>
 gordonlu = gordonlu <3125629+gordonlu@users.noreply.github.com>
-angus-guo = gus <217034332+angus-guo@users.noreply.github.com>
-gus.guo@tec-do.com = gus <217034332+angus-guo@users.noreply.github.com>
+angus-guo = gus <217034332+imgusguo@users.noreply.github.com>
+imgusguo = gus <217034332+imgusguo@users.noreply.github.com>
+gus.guo@tec-do.com = gus <217034332+imgusguo@users.noreply.github.com>
 gaord = gaord <9567937+gaord@users.noreply.github.com>
 Ben Gao = gaord <9567937+gaord@users.noreply.github.com>
 bengao168@msn.com = gaord <9567937+gaord@users.noreply.github.com>
+bengao168 = gaord <9567937+gaord@users.noreply.github.com>
 MXAntian = MXAntian <271787757+MXAntian@users.noreply.github.com>
 tianzimyq@126.com = MXAntian <271787757+MXAntian@users.noreply.github.com>
 DarrellThomas = Darrell Thomas <10118469+DarrellThomas@users.noreply.github.com>
@@ -247,6 +254,7 @@ zhuo.wenpei@h3c.com = zhuowp <9426526+zhuowp@users.noreply.github.com>
 1461574375@qq.com = 秋月凉梦 <185303122+qiuYliangM@users.noreply.github.com>
 
 asto18089 = asto18089 <44870036+asto18089@users.noreply.github.com>
+asto18089@126.com = asto18089 <44870036+asto18089@users.noreply.github.com>
 xiechimon = Xmon Dai <157263579+xiechimon@users.noreply.github.com>
 yrk111222 = Rongkun Yan <185151020+yrk111222@users.noreply.github.com>
 VincentCorleone = Vincent Corleone <9076505+VincentCorleone@users.noreply.github.com>
@@ -278,3 +286,36 @@ Felixkw12 = Felix Wunderlich <151852644+Felixkw12@users.noreply.github.com>
 felix@opper.ai = Felix Wunderlich <151852644+Felixkw12@users.noreply.github.com>
 Felix Wunderlich = Felix Wunderlich <151852644+Felixkw12@users.noreply.github.com>
 cuidong111@gmail.com = luochen211 <188724350+luochen211@users.noreply.github.com>
+
+AiurArtanis = AiurArtanis <98091664+AiurArtanis@users.noreply.github.com>
+yukai.hong@xquant.com = AiurArtanis <98091664+AiurArtanis@users.noreply.github.com>
+Apeiron0w0 = Apeiron <63551400+Apeiron0w0@users.noreply.github.com>
+v_wanghuanping01@macbook-air.local = Apeiron <63551400+Apeiron0w0@users.noreply.github.com>
+leeadror958@gmail.com = ChaceLyee2101 <95995339+ChaceLyee2101@users.noreply.github.com>
+AmosLeeeeeeee = ChaceLyee2101 <95995339+ChaceLyee2101@users.noreply.github.com>
+ddlw = ddlw <57355329+ddlw@users.noreply.github.com>
+mo-vic = movic <44632584+mo-vic@users.noreply.github.com>
+movic.chen@gmail.com = movic <44632584+mo-vic@users.noreply.github.com>
+wangfengcsu@qq.com = merchloubna70-dot <258170091+merchloubna70-dot@users.noreply.github.com>
+mann_juarezxgs@cash4u.com = merchloubna70-dot <258170091+merchloubna70-dot@users.noreply.github.com>
+xulongzhe = luola <10559793+xulongzhe@users.noreply.github.com>
+xulongzhe@gmail.com = luola <10559793+xulongzhe@users.noreply.github.com>
+ZhulongNT = SONG ZHENRUI <191720247+ZhulongNT@users.noreply.github.com>
+songzhenrui@xzzlwl.com = SONG ZHENRUI <191720247+ZhulongNT@users.noreply.github.com>
+xiluoduyu = xiluoduyu <5248983+xiluoduyu@users.noreply.github.com>
+xiedongsheng@mingting.cn = xiluoduyu <5248983+xiluoduyu@users.noreply.github.com>
+wlon = Stephen Xu <83916+wlon@users.noreply.github.com>
+wexu@expediagroup.com = Stephen Xu <83916+wlon@users.noreply.github.com>
+krisclarkdev = Kristopher Clark <14341314+krisclarkdev@users.noreply.github.com>
+THatch26 = THatch26 <136092366+THatch26@users.noreply.github.com>
+jeoor = Kayro <142088385+jeoor@users.noreply.github.com>
+harvey2011888 = harvey2011888 <247177529+harvey2011888@users.noreply.github.com>
+duanchao-lab = DC <273292002+duanchao-lab@users.noreply.github.com>
+dumbjack = dumbjack <281856524+dumbjack@users.noreply.github.com>
+haomiaodemac@haomiaodemacdemacbook-air.local = dumbjack <281856524+dumbjack@users.noreply.github.com>
+AquaZhang = IceTear <48628825+AquaZhang@users.noreply.github.com>
+disappear00 = idontknow <203589583+disappear00@users.noreply.github.com>
+namezzb = sailorZ <170218402+namezzb@users.noreply.github.com>
+alphapku-ux = Alpha Wu <227962669+alphapku-ux@users.noreply.github.com>
+BX166 = BX166 <285602114+BX166@users.noreply.github.com>
+c020627 = c020627 <251123242+c020627@users.noreply.github.com>

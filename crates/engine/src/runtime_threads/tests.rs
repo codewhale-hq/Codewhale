@@ -2668,6 +2668,7 @@ fn sample_thread(thread_id: &str) -> ThreadRecord {
         last_read: None,
         executor: None,
         environment: None,
+        agent_preset: None,
     }
 }
 
@@ -19929,6 +19930,7 @@ async fn compaction_lifecycle_emits_item_events_with_compaction_counts() -> Resu
 fn summarize_text_truncates() {
     let out = summarize_text("abcdefghijklmnopqrstuvwxyz", 10);
     assert_eq!(out, "abcdefg...");
+    assert_eq!(summarize_text("abcdefgh", 10), "abcdefgh");
 }
 
 #[test]
@@ -19967,6 +19969,7 @@ fn opening_manager_recovers_stale_queued_and_in_progress_work() -> Result<()> {
         last_read: None,
         executor: None,
         environment: None,
+        agent_preset: None,
     };
     manager.store.save_thread(&thread)?;
 
@@ -21758,6 +21761,7 @@ async fn report_store_failure_names_the_item_file_without_terminalizing() -> Res
     Ok(())
 }
 
+mod conversation_modes;
 mod external_agent;
 mod task_ownership;
 

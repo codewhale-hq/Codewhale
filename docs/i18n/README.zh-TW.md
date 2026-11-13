@@ -1,243 +1,165 @@
-<!-- source: README.md sha256:a9ec5fb3f3dd -->
+<!-- source: README.md sha256:fd76d718e3a2 -->
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="../../brand/wordmark-inverted.svg">
-  <img src="../../brand/wordmark.svg" alt="Codewhale" width="320">
+  <source media="(prefers-color-scheme: dark)" srcset="../../brand/mark-reversed.svg">
+  <img src="../../brand/mark-mono.svg" alt="Codewhale" width="72" height="72">
 </picture>
 
-**在終端機中運作、可搭配任何模型的開源程式開發代理（coding agent）。**
+<h1>模型可以是任何人的。代理應該屬於你。</h1>
 
-交給 Codewhale 一項任務，它會讀取儲存庫、編輯檔案並執行指令，直到任務完成或需要你提供輸入為止。
-它支援超過 40 個內建供應商（預設為 DeepSeek V4.1 Flash），也能使用在你自己機器上執行的模型。
-`/receipts` 會列出它變更的檔案、執行的指令，以及它發出的網路與 MCP 呼叫。
-
-[![CI](https://github.com/codewhale-hq/CodeWhale/actions/workflows/ci.yml/badge.svg)](https://github.com/codewhale-hq/CodeWhale/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/codewhale-cli?label=crates.io)](https://crates.io/crates/codewhale-cli)
-[![npm](https://img.shields.io/npm/v/codewhale?label=npm)](https://www.npmjs.com/package/codewhale)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](../../LICENSE)
-[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/37gfS3ksug)
-
-[官方網站](https://codewhale.net) · [文件](../README.md) · [變更記錄](../../CHANGELOG.md) · [參與貢獻](../../CONTRIBUTING.md)
-
-[English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja-JP.md) · [Tiếng Việt](README.vi.md) · [Bahasa Indonesia](README.id.md) · [한국어](README.ko-KR.md) · [Español](README.es-419.md) · [Português](README.pt-BR.md) · [Русский](README.ru.md) · [Українська](README.uk.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [हिन्दी](README.hi.md) · [Türkçe](README.tr.md) · [Italiano](README.it.md) · [Polski](README.pl.md) · [العربية](README.ar.md) · [Català](README.ca.md)
-
-<img src="../../web/public/codewhale-tui-0102-demo.png" alt="一次 Codewhale 終端機工作階段" width="760">
-
-<sub>使用腳本化測試模型的 0.10.2 開發版本，在用完即丟的工作區中以「完整存取」執行。其中的編輯、三項測試與一次子代理審查都是實際執行的。</sub>
-
-</div>
-
-<p align="center">
-  <a href="https://www.orcarouter.ai/redeem/1a6250545fdc4e0aaccb0a4470159e67" rel="sponsored">
-    <img src="../../web/public/codewhale-x-orcarouter.webp" alt="Codewhale × OrcaRouter：DeepSeek v4.1 Flash 用量增加 30%" width="760">
-  </a>
-</p>
-
-[查看 Codewhale × OrcaRouter 優惠](https://www.orcarouter.ai/redeem/1a6250545fdc4e0aaccb0a4470159e67). Codewhale 會從 OrcaRouter 獲得推薦佣金。
-
-## 安裝
-
-macOS 與 Linux：
+Codewhale 是一個在終端機中執行的開源程式設計代理，以 Rust 撰寫。它支援任何模型，可以把一項任務分給多個代理，而且它的每一行程式碼都任你閱讀。
 
 ```bash
 curl -fsSL https://codewhale.net/install.sh | sh
 ```
 
-安裝程式會把經過 checksum 驗證的 `codewhale` 及其簡短別名 `codew` 放到 `~/.local/bin`。
-如果之後 shell 顯示 `command not found`，請執行安裝程式印出的那一行 PATH 指令
-（[詳細說明](../INSTALL.md#put-it-on-your-path)）。執行 `codewhale update` 即可升級。這些指令安裝的是最新發行版本。
-本頁跟隨 `main` 更新，因此標示版本的功能會在該版本推出；[變更記錄](../../CHANGELOG.md)列出了每個版本新增的內容。
+這會在 macOS 或 Linux 上安裝最新發行版本，不需要帳號。[Windows、npm 和 Cargo](#安裝) 的安裝方式見下文。
 
-<details>
-<summary><b>Windows、npm、Cargo 與其他安裝方式</b></summary>
+[![Latest release](https://img.shields.io/github/v/release/codewhale-hq/Codewhale?label=release)](https://github.com/codewhale-hq/Codewhale/releases/latest)
+[![CI](https://github.com/codewhale-hq/Codewhale/actions/workflows/ci.yml/badge.svg)](https://github.com/codewhale-hq/Codewhale/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](../../LICENSE)
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/37gfS3ksug)
+
+[網站](https://codewhale.net) · [文件](../README.md) · [更新紀錄](../../CHANGELOG.md) · [參與貢獻](../../CONTRIBUTING.md)
+
+[English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja-JP.md) · [Tiếng Việt](README.vi.md) · [Bahasa Indonesia](README.id.md) · [한국어](README.ko-KR.md) · [Español](README.es-419.md) · [Português](README.pt-BR.md) · [Русский](README.ru.md) · [Українська](README.uk.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [हिन्दी](README.hi.md) · [Türkçe](README.tr.md) · [Italiano](README.it.md) · [Polski](README.pl.md) · [العربية](README.ar.md) · [Català](README.ca.md)
+
+<sub>本翻譯為機器草稿，尚未經母語者審校。</sub>
+
+<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="一個示範任務結束後的 Codewhale 終端機畫面。它回報已為 export.py 加上 --json 參數，3 個本機測試全部通過，委派的審查沒有發現問題。下方的任務清單顯示三個已完成的步驟，狀態列顯示 Full Access 和本機 website-demo 提供者。">
+
+<sub>尚未發布的 0.10.3 開發版建置，使用腳本化的測試模型，在一次性工作區中以 Full Access 執行。其中的編輯、三個測試和一次子代理審查都是真實執行的。</sub>
+
+</div>
+
+## 安裝
+
+上面的指令會把經過總和檢查碼驗證的 `codewhale` 及其簡短別名 `codew` 放到 `~/.local/bin`。如果之後 shell 顯示 `command not found`，請依照安裝程式印出的 PATH 提示操作（[詳情](../INSTALL.md#put-it-on-your-path)）。使用 `codewhale update` 升級。
 
 ```bash
-winget install HunterBown.CodeWhale  # Windows x64 (or Scoop, or the installer from GitHub Releases)
-npm install -g codewhale            # wraps the same release binaries
-cargo install codewhale-cli --locked  # crates.io; can trail GitHub Releases
+winget install --id HunterBown.CodeWhale --exact --source winget  # Windows x64
+npm install -g codewhale                                          # wraps the same release binaries
+cargo install codewhale-cli --locked                              # builds from source; can trail GitHub Releases
 ```
 
-預先建置的二進位檔涵蓋 x64 與 arm64 上的 Linux、macOS 與 Windows。Nix、Linux 上的
-Homebrew、Android/Termux（預覽版）與手動下載請見[安裝指南](../INSTALL.md)，容器請見
-[Docker](../DOCKER.md)。每台機器請只使用一種安裝方式；否則 `PATH` 上會出現兩份副本，
-以排在前面的那份為準。
+預先編譯的二進位檔涵蓋 Linux、macOS 和 Windows 的 x64 與 arm64 架構。Scoop、Nix、Linux 上的 Homebrew、Android 和 Termux（預覽版）以及手動下載請見[安裝指南](../INSTALL.md)，容器請見 [Docker](../DOCKER.md)。每台電腦只使用一種安裝方式；否則 `PATH` 上會出現兩份副本，排在前面的那一份生效。
 
-</details>
+## 快速開始
 
-## 快速入門
-
-1. 先提交（commit）或暫存（stash）你的工作，然後在 git 儲存庫的根目錄執行 `codewhale`。
-   預設情況下，它在**接受編輯**（Accept Edits）下直接編輯儲存庫中的檔案、不先詢問，並在每個指令之前詢問；想讓它多問或少問時，用 `Shift+Tab` 逐檔切換權限。
-2. 執行 `/provider`（或按 `F3`），選擇供應商、貼上它的 API 金鑰，再選擇模型。預設供應商是
-   DeepSeek。如果沒有金鑰，請改選本機執行階段（local runtime）。若尚未設定任何供應商，而 Ollama 已在提供
-   聊天模型，Codewhale 會自動使用它；從 0.10.2 起，它會在你送出第一則訊息時提議使用它。
-3. 輸入任務：
+1. 提交或暫存你的變更，然後在 git 儲存庫根目錄執行 `codewhale`。預設情況下，它會直接套用儲存庫內的檔案修改而不詢問，並在每個非唯讀的 shell 指令前先詢問你。
+2. 執行 `/provider`（或按 `F3`），選擇一個提供者，貼上它的 API 金鑰，然後選擇模型。預設提供者是 DeepSeek。首次啟動且沒有金鑰時，Codewhale 會在你送出第一則訊息時請你選擇提供者；如果本機 Ollama 伺服器有回應，它會提議使用本機模型。
+3. 輸入一個任務：
 
 ```text
 Fix the failing tests and explain what changed.
 ```
 
-唯讀指令會直接執行。其他任何 shell 指令，Codewhale 都會先詢問：`y` 執行這一次，
-`a` 允許本次對話後續類似的指令，`n` 拒絕。`/undo` 會還原你上一個請求及其
-檔案變更。`/help` 會列出指令與按鍵。
+唯讀指令會直接執行。其他任何 shell 指令，Codewhale 都會先詢問：`y` 執行這一次，`a` 在本次對話接下來的時間裡允許類似的指令，`n` 拒絕。`/undo` 會復原你的上一個請求及其檔案變更，`/help` 列出指令和按鍵。
 
-在腳本與 CI 中，`codewhale exec` 會在沒有介面的情況下執行一項任務。預設情況下，`--auto`
-使用「完整存取」權限：工具不經詢問就執行，shell 指令不受 Codewhale 沙箱限制，信任模式
-允許檔案工具寫入工作區以外的位置。加上 `--sandbox workspace-write` 即可保留 shell 沙箱
-與檔案工具的工作區限制，並關閉信任模式：
-
-```bash
-codewhale exec --auto --sandbox workspace-write "fix the failing tests and explain what changed"
-```
-
-## 模式與權限
-
-全新安裝會以 Work 模式與「接受編輯」權限啟動。一個撥盤同時切換兩者：`Shift+Tab` 依序切換 詢問 → 接受編輯 → Plan → 自動審核 → 完整存取。
-
-| | 切換方式 | 選項 |
-| --- | --- | --- |
-| 模式 | `Shift+Tab` 上的 Plan 檔，或 `/mode` | **Plan** 會讀取與搜尋，但不做任何變更。**Work**（其餘各檔）會編輯檔案並執行指令。當請求需要多個回合時，用 `/goal` 開始一個目標。 |
-| 權限 | `Shift+Tab` | **詢問**（Ask）會在每次檔案編輯與每個非唯讀的 shell 指令之前先詢問。**接受編輯**（Accept Edits）會在你的 git 儲存庫中直接套用檔案編輯、不先詢問，並仍會在執行指令前先詢問。**自動審核**（Auto-Review）讓規則與審核模型核准例行呼叫，並拒絕高風險呼叫；若要自行核准這些呼叫，請切換到「詢問」。**完整存取**（Full Access）從不詢問，指令可以存取這台電腦上的任何內容；儲存庫規則與受管理的政策仍然適用。 |
-
-詳情請參閱[模式與權限指南](../MODES.md)。
+在腳本和 CI 中，`codewhale exec` 不啟動介面，只執行一個任務。用 `--auto` 給它工具之前，請先閱讀[無介面執行](../INSTALL.md#headless-scripts-ci)，因為除非你加上沙箱，`--auto` 使用的是 Full Access。
 
 ## 功能
 
-### 0.10.2 新增內容
+給 Codewhale 一個任務，它會閱讀儲存庫、編輯檔案並執行指令，直到任務完成或需要你的輸入。[最新版本的發行說明](https://github.com/codewhale-hq/Codewhale/releases/latest)列出最新變更，[更新日誌](../../CHANGELOG.md)包含每個版本。
 
-- `/pet on` 會把你的終端機變成一隻動畫鯨魚，顯示代理正在做什麼，同時訊息框仍可照常使用。
-  牠的 980 個粒子會以英文、中文或日文拼出目前的步驟。
-- `/workbar terminal` 會即時顯示代理正在執行的 shell。你可以在其中輸入，
-  也可以按 `Ctrl+N` 開啟你自己的 shell（macOS 與 Linux）。
-- `/undo` 一步就能還原你上一個完整的請求，包括它變更的每個檔案；`/diff` 也能在沒有 Git
-  的資料夾中使用。
-- 當計畫準備就緒時，Codewhale 會詢問你要以「詢問」還是「自動審核」開始 Work，
-  或是繼續規劃。
-- `/color` 會為每個對話設定各自的輸入框顏色，並隨工作階段一起儲存。
-- `web_search` 可以使用 DeepSeek 新推出的 Search API：在擁有 DeepSeek 金鑰的情況下設定
-  `[search] provider = "deepseek"`。
-- 在「完整存取」以外，會上傳憑證的 `curl` 或 `wget` 未經你核准絕不會執行，
-  而隱藏了不可見 Unicode 字元的指令會被拒絕。`write` 不再取代代理尚未讀取過的檔案，
-  也不再取代在它讀取之後已變更的檔案。
+### 任何模型
 
-### 模型
+內建超過 40 個提供者，包括 Anthropic、OpenAI、DeepSeek、Google、Mistral、Moonshot、OpenRouter 和 xAI。任何相容 OpenAI 的端點都可以使用，透過 Ollama、vLLM 或 SGLang 執行的本機模型也可以。預設模型是 DeepSeek 的 `deepseek-flash`，它現在由 DeepSeek V4.1 Flash 提供（[詳情](../PROVIDERS.md#deepseek-v41-flash)）。
 
-內建超過 40 個供應商，包括 Anthropic、OpenAI、DeepSeek、Google、Mistral、Moonshot、
-OpenRouter 與 xAI。任何相容 OpenAI 的端點都能使用，透過 Ollama、vLLM 或 SGLang 執行的
-本機模型也可以。預設模型是 DeepSeek 的 `deepseek-flash`，DeepSeek 已於 2026-10-17
-將其切換為 DeepSeek-V4.1-Flash-1017；0.10.1 不需更新即可執行
-（[詳細說明](../PROVIDERS.md#deepseek-v41-flash)）。
+`/model` 可在回合之間切換模型，`/model auto` 會為每個回合挑選一個模型（用 `/router` 設定挑選方式）。`/turn inspect` 顯示某個回合使用了哪個模型、花費多少以及耗時多久。請見[提供者](../PROVIDERS.md)。
 
-`/model` 可在回合之間切換模型，`/model auto` 會為每個回合挑選模型（以 `/router`
-設定挑選方式）。`/turn inspect` 會顯示某個回合使用了哪個模型、花費多少以及耗時多久。
-`codewhale auth chatgpt` 讓你可以用 ChatGPT 方案取代 API 金鑰（實驗性）。
-請參閱[供應商](../PROVIDERS.md)。
+### 收據與復原
 
-### 回條與復原
+`/receipts`（離開後可用 `codewhale receipts --last`）會列出一次工作階段修改過的檔案、執行過的指令、發出的網頁和 MCP 呼叫、啟動的代理、每次核准及核准者，以及失敗的操作。`/undo` 一步復原你的上一個請求及其修改的檔案。`/restore` 會把整個工作區回復到較早的快照；由於這會覆寫之後的編輯，它需要 `/trust on` 或 Full Access。請見[收據](../RECEIPTS.md)。
 
-`/receipts`（或在結束後執行 `codewhale receipts --last`）會列出變更的檔案、執行的指令、
-網路與 MCP 呼叫、啟動的代理、核准紀錄與核准人，以及失敗項目。`/undo` 一步還原你上一個請求及其變更的檔案，無需信任模式。`/restore` 會把整個工作區回復到先前的快照；由於這會覆寫之後的編輯，因此需要 `/trust on`
-或「完整存取」。請參閱[回條](../RECEIPTS.md)。
+### 多個代理共同完成一項任務
 
-可使用工具的 exec 執行紀錄無論採用哪種輸出格式都會儲存，因此在 `exec --auto` 之後，
-包括使用 `--json` 時，`codewhale receipts --last` 都能正常運作。只回答且使用文字輸出或
-`--json` 的執行紀錄，只有在繼續先前的對話或開始壓縮對話時才會儲存；使用
-`--output-format stream-json` 即可一律儲存這些紀錄，供回條或 `exec --continue` 使用。
+`/goal` 設定一個跨回合延續的目標。Codewhale 可以把工作分給[子代理](../SUBAGENTS.md)，執行一組各有角色和模型的代理 [Fleet](../FLEET.md)，或依照提交在儲存庫中的[工作流程](../WORKFLOW_AUTHORING.md)執行。
 
-### 長時間工作
+### 擴充
 
-`/goal` 會設定一個跨回合延續的目標。Codewhale 可以把工作分給[子代理](../SUBAGENTS.md)、
-執行[代理團隊（Fleet）](../FLEET.md)，或依照已提交到儲存庫的
-[工作流程](../WORKFLOW_AUTHORING.md)進行。
+連接 [MCP 伺服器](../MCP.md)，加入[技能](../SKILLS.md)和[外掛](../PLUGINS.md)，並在工作階段和工具事件上執行[掛鉤](../HOOKS.md)。程式碼模式（實驗性，預設開啟）讓模型撰寫一個呼叫多個 MCP 和外掛工具的 `execute_tools` 程式；每次呼叫仍須遵守你的核准規則，並保留收據。v0.10.2 內建的 Computer Use 外掛（實驗性，僅限 macOS）可以觀察並操作其他應用程式，在你檢查其權限並啟用之前一直保持關閉（[指南](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)）。即將在 0.10.3 推出：此外掛將[另外發行](https://github.com/codewhale-hq/codewhale-cu-plugin)。
 
-### 從其他代理轉過來
+### 執行方式
 
-Codewhale 會自行讀取 `AGENTS.md`。為其他工具撰寫的指示檔，例如 `CLAUDE.md`、`.cursorrules`
-或 `.github/copilot-instructions.md`，只有在你於設定中以
-`project_instruction_imports = ["claude"]`（或 `"cursor"`、`"cline"`、`"windsurf"`、
-`"copilot"`、`"all"`）選擇啟用時才會載入；請參閱 [config.example.toml](../../config.example.toml)。
-Codewhale 發現這類檔案卻沒有載入時，會發出警告。
-
-`/import-claude` 會準備匯入你的 Claude Code 設定與 MCP 伺服器，供你審閱。`/plugin install`
-接受包含技能、指令、代理設定檔與 MCP 伺服器的 Claude Code 外掛，並拒絕需要 Hook 或 LSP
-伺服器的外掛（[詳細說明](../CLAUDE_PLUGIN_COMPAT.md)）。
-
-### 擴充功能
-
-連接 [MCP 伺服器](../MCP.md)、加入[技能](../SKILLS.md)與[外掛](../PLUGINS.md)，
-並在工作階段與工具事件上執行 [Hook](../HOOKS.md)。程式碼模式（Code mode，實驗性，預設開啟）
-讓模型撰寫一個 `execute_tools` 程式來呼叫多個 MCP 與外掛工具；每次呼叫仍須遵守你的核准規則，
-並保留各自的回條。獨立安裝的 Computer Use 外掛（實驗性，
-僅限 macOS）可以觀察並操作其他應用程式。在你檢視其存取範圍並啟用之前，它會保持關閉
-（[指南](https://github.com/codewhale-hq/codewhale-cu-plugin)）。
-
-## 執行方式
-
-| 指令 | 作用 |
+| 指令 | 用途 |
 | --- | --- |
 | `codewhale` | 互動式終端機應用程式 |
-| `codewhale exec "…"` | 在沒有介面的情況下執行一項任務。單獨使用時，它只回答、不使用工具；`--auto` 預設以「完整存取」權限啟用工具，`--sandbox workspace-write` 對工具加以限制，`--output-format stream-json` 以 JSON 串流輸出事件 |
-| `codewhale web` | 在 `127.0.0.1` 上的本機 Web UI（[指南](../WEB.md)） |
-| `codewhale review --pr N` | 對 GitHub PR（Pull Request）進行僅供參考的審查。[GitHub 機器人設定](../GITHUB_ACTION.md#set-up-your-own-bot) 會產生一個固定版本的工作流程，用於自動審查和 `@codewhale review`，使用你自己的模型金鑰和可選的 App 身分 |
-| `codewhale app-server --http` | [Runtime API](../RUNTIME_API.md)，用於執行緒、事件、核准與每個回合檔案變更的本機 HTTP API |
-| `codewhale serve --acp` | 透過 stdio 提供的 Agent Client Protocol，供 Zed 等編輯器使用 |
+| `codewhale exec "…"` | 不啟動介面執行一個任務，用於腳本和 CI（[無介面執行](../INSTALL.md#headless-scripts-ci)） |
+| `codewhale web` | 在 `127.0.0.1` 上執行的本機網頁用戶端（[指南](../WEB.md)） |
+| `codewhale review --pr N` | 對 GitHub 提取要求進行建議性審查；[GitHub 機器人設定](../GITHUB_ACTION.md#set-up-your-own-bot)以你自己的模型金鑰執行它 |
+| `codewhale app-server --http` | [Runtime API](../RUNTIME_API.md)，一個本機 HTTP API，提供執行緒、事件、核准以及每個回合的檔案變更 |
+| `codewhale serve --acp` | 透過 stdio 提供 Agent Client Protocol，供 Zed 等編輯器使用 |
 
-終端機應用程式、`exec`、`web` 與 Runtime API 共用同一個引擎（[架構](../ARCHITECTURE.md)）。
-由社群維護的
-[VS Code 擴充功能](https://marketplace.visualstudio.com/items?itemName=HengQuWorld.brotherwhale-vscode)
-可從側邊欄連接到它（[原始碼](https://github.com/HengQuWorld/CodeWhale-VSCode)）。
-以 Runtime API 打造的原生桌面應用程式正在開發中，目前尚未提供公開下載。
+終端機應用程式、`exec`、`web` 和 Runtime API 共用同一個引擎（[架構](../ARCHITECTURE.md)）。社群維護的 [VS Code 擴充功能](https://marketplace.visualstudio.com/items?itemName=HengQuWorld.brotherwhale-vscode)可以從側邊欄連接到它（[原始碼](https://github.com/HengQuWorld/CodeWhale-VSCode)）。
 
-## 費用與帳號
+## 如何保持安全
 
-Codewhale 免費，並採用 MIT 授權。使用你自己的 API 金鑰時，費用直接付給供應商；本機模型
-不需要金鑰。價格已知時，底部狀態列與 `/cost` 會顯示工作階段目前的花費；價格未知時會顯示為
-未知，絕不會顯示為免費。
+兩個開關決定 Codewhale 可以自行做多少事。輸入框為空時，`Tab` 切換模式：**Plan** 只閱讀和搜尋，不做任何修改；**Work** 編輯檔案並執行指令；**Operate** 與 Work 權限相同，會持續工作到目標通過驗證或需要你介入。`Shift+Tab` 切換權限。預設的 **Ask** 會直接套用儲存庫內的檔案修改而不詢問，並在非唯讀的 shell 指令前詢問。**Auto-Review** 讓規則和一個審查模型核准例行呼叫，並拒絕高風險呼叫；切換到 Ask 即可自行核准這些呼叫。**Full Access** 從不詢問，並關閉 Codewhale 的沙箱，但儲存庫規則和受管政策仍然適用。[v0.10.2 指南](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md)有詳細說明。
 
-你不需要帳號。透過 `/provider` 加入的金鑰會留在你的機器上。
+即將在 0.10.3 推出：`Shift+Tab` 將成為依序經過 Ask、Accept Edits、Plan、Auto-Review 和 Full Access 的轉盤，`Tab` 不再切換模式，Operate 也將取消。Ask 將在每次檔案修改前也詢問，而新的預設選項 Accept Edits 會套用 git 儲存庫內的修改，並仍在指令前詢問。[目前的指南](../MODES.md)有說明。
 
-## 安全與隱私
+在 Ask 和 Auto-Review 中，指令會在系統提供的作業系統沙箱中執行：macOS 上是 Seatbelt，Linux 上安裝了 bubblewrap 時是 bubblewrap。Windows 目前還沒有作業系統沙箱，Full Access 會關閉沙箱。在沙箱內，shell 指令和終端機工作階段無法讀取 `~/.ssh`、`~/.aws` 和 `.env` 檔案等憑證儲存。`/preview-request` 會顯示下一個請求的遮蔽後預覽，而不會實際送出。
 
-在「詢問」與「自動審核」權限下，只要系統提供作業系統沙箱，指令就會在其中執行：macOS 上為
-Seatbelt，Linux 上則在已安裝 bubblewrap 時使用它。Windows 目前還沒有作業系統沙箱，而
-「完整存取」會關閉沙箱。在沙箱內，shell 指令無法讀取 `~/.ssh`、`~/.aws` 與 `.env` 檔案等
-憑證存放位置；從 0.10.2 起，同樣的規則也涵蓋終端機工作階段與更多檔案工具。
-`/preview-request` 會顯示下一個請求經過遮蔽的預覽，但不會送出。
+你不需要帳號，用 `/provider` 加入的金鑰只保存在你的電腦上。使用你自己的 API 金鑰時，你直接向提供者付費；本機模型不需要金鑰。價格已知時，頁尾和 `/cost` 會顯示一次工作階段的花費；價格未知時顯示為未知，絕不顯示為免費。
 
-遙測預設為開啟。它會傳送彙總計數（版本與平台、工作階段長度與結果、你使用了哪些內建供應商、
-功能與錯誤次數），並附上每 90 天輪替一次的隨機安裝 ID；絕不會傳送對話、程式碼、提示詞、
-模型名稱、檔案或儲存庫名稱，或憑證。
-執行 `codewhale config set telemetry false` 即可關閉。Codewhale 啟動時也會向 GitHub 檢查
-是否有新版本；設定 `CODEWHALE_NO_UPDATE_CHECK=1` 即可略過。更多資訊請參閱
-[授權順序](../AUTHORIZATION_ORDER.md)、[沙箱](../SANDBOX.md)與[遙測](../TELEMETRY.md)。
+遙測預設開啟。它會傳送彙總計數（版本和平台、工作階段時長和結果、你用過的內建提供者、功能和錯誤計數），附帶一個每 90 天輪替的隨機安裝 ID，絕不傳送對話、程式碼、提示詞、模型名稱、檔案或儲存庫名稱以及憑證。用這個指令關閉它：
+
+```bash
+codewhale config set telemetry false
+```
+
+Codewhale 啟動時也會在 GitHub 上檢查新版本；設定 `CODEWHALE_NO_UPDATE_CHECK=1` 可以略過。更多內容請見[授權順序](../AUTHORIZATION_ORDER.md)、[沙箱](../SANDBOX.md)和[遙測](../TELEMETRY.md)。
+
+## 未來方向
+
+Codewhale 正在成為橫跨你的終端機、桌面應用程式、瀏覽器和雲端電腦的統一環境，全部由同一個引擎驅動。下面每個部分都說明了它今天所處的狀態。
+
+| 部分 | 狀態 | 現況 |
+| --- | --- | --- |
+| 終端機應用程式 | 已發行 | 在 macOS、Linux 或 Windows 上安裝，然後在任何儲存庫中執行 `codewhale`。 |
+| 本機瀏覽器用戶端 | 已發行 | 執行 `codewhale web`，即可在瀏覽器中閱讀對話、送出任務並回應核准；它隨終端機一起提供，不需要帳號。 |
+| 多個代理共同完成一項任務 | 已發行 | 子代理、Fleet 和工作流程讓多個代理各司其職，共同完成一項任務。 |
+| 桌面應用程式 | 開發中，尚無下載 | 我們正在以同一個引擎打造桌面應用程式，目前還沒有公開下載。 |
+| 雲端電腦 | 僅限邀請 | 雲端電腦僅限邀請，我們正在打造它們，讓工作階段可以在雲端的一台機器上持續工作。 |
+| 貫穿它們的同一個工作階段 | 建置中 | 我們正在打造同一個工作階段，它會隨你從終端機到桌面、瀏覽器和雲端，並且自始至終都屬於你。 |
+
+[路線圖](../ROADMAP.md)說明了每個版本涵蓋的內容，以及你可以在哪裡提供協助。
+
+## 從其他代理轉換過來
+
+Codewhale 會自動讀取 `AGENTS.md`。為其他工具撰寫的指示檔案，例如 `CLAUDE.md`、`.cursorrules` 或 `.github/copilot-instructions.md`，只有在你於設定中加入 `project_instruction_imports = ["claude"]`（或 `"cursor"`、`"cline"`、`"windsurf"`、`"copilot"`、`"all"`）選擇啟用後才會載入；請見 [config.example.toml](../../config.example.toml)。Codewhale 發現未載入的此類檔案時會提出警告。
+
+`/import-claude` 會準備一份 Claude Code 設定和 MCP 伺服器的匯入內容，供你審閱。`/plugin install` 接受包含技能、指令、代理設定檔和 MCP 伺服器的 Claude Code 外掛，並拒絕需要掛鉤或 LSP 伺服器的外掛（[詳情](../CLAUDE_PLUGIN_COMPAT.md)）。
 
 ## 文件
 
-| 從這裡開始 | 參考資料 |
+這些指南跟隨主分支，可能會描述尚未包含在最新版本中的變更。
+
+| 從這裡開始 | 參考 |
 | --- | --- |
-| [安裝](../INSTALL.md) | [設定](../CONFIGURATION.md) |
-| [供應商與本機模型](../PROVIDERS.md) | [架構](../ARCHITECTURE.md) |
-| [模式與權限](../MODES.md) | [Runtime API](../RUNTIME_API.md) |
-| [鍵盤快速鍵](../KEYBINDINGS.md) | [外掛開發](../PLUGIN_AUTHORING.md) |
-| [GitHub PR 審查](../GITHUB_ACTION.md) | [所有文件](../README.md) |
+| [使用者指南](../GUIDE.md) | [設定](../CONFIGURATION.md) |
+| [安裝](../INSTALL.md) | [架構](../ARCHITECTURE.md) |
+| [提供者與本機模型](../PROVIDERS.md) | [Runtime API](../RUNTIME_API.md) |
+| [模式與權限](../MODES.md) | [外掛撰寫](../PLUGIN_AUTHORING.md) |
+| [快速鍵](../KEYBINDINGS.md) | [收據](../RECEIPTS.md) |
+| [GitHub 提取要求審查](../GITHUB_ACTION.md) | [所有文件](../README.md) |
 
-## 社群
+## 參與貢獻
 
-Codewhale 能有今天，靠的是社群。所有回饋我們都歡迎：一個 bug、一個想法，或者只是某處看起來、用起來不對勁。
-這些都可以[提交 issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose)；新功能也最適合從 issue 開始。
-修正、翻譯、供應商以及已規劃的工作，歡迎直接提交 PR。
-[貢獻指南](../../CONTRIBUTING.md)說明了每種協助該去哪裡，[路線圖](../ROADMAP.md)說明了專案的方向。
-被合併的工作會保留貢獻者的署名；[儲存庫結構](../../CONTRIBUTING.md#project-structure)說明了各部分程式碼所在的位置。
+Codewhale 由使用它的人公開打造，使用許多種語言。
 
-歡迎到 [Discord](https://discord.gg/37gfS3ksug) 交流，或在微信上加維護者 Hunter
-（`hunterbown`）為好友，申請加入 Whale Brothers 群組。歡迎每一個人。
+<a href="../CONTRIBUTORS.md#everyone"><img src="../assets/contributors.png" width="760" alt="Codewhale 貢獻者牆：每一位在 Codewhale 中留下程式碼、共同署名提交、被延續的提取要求或獲得致謝的回報的人各有一個頭像，頂端是總人數。"></a>
+
+[貢獻者牆](../CONTRIBUTORS.md)統計了每一位在 Codewhale 中留下程式碼、共同署名提交、被延續的提取要求或獲得致謝的回報的人，包括 GitHub 自己的貢獻者清單漏掉的人。`scripts/contributor-wall.py` 會根據 git 歷史和 GitHub 重新產生這張圖和名單。
+
+歡迎任何回饋：一個 bug、一個想法，或某處看起來、用起來不對勁的地方。這些都可以[開一個 issue](https://github.com/codewhale-hq/Codewhale/issues/new/choose)；新功能也最好從 issue 開始。歡迎為修正、翻譯、提供者和計畫中的工作提交提取要求。問題可以發到 [Discussions](https://github.com/codewhale-hq/Codewhale/discussions)。[貢獻指南](../../CONTRIBUTING.md)說明了每種協助該去哪裡、你的工作如何以你的名字合入，以及[各部分程式碼在哪裡](../../CONTRIBUTING.md#project-structure)。
+
+可以在 [Discord](https://discord.gg/37gfS3ksug) 上聊天，或在微信上加維護者 Hunter（`hunterbown`），申請加入 Whale Brothers 群。歡迎所有人。
 
 ## 歷史與授權
 
-Codewhale 最初名為 `deepseek-tui`，至今仍會讀取該專案的設定與工作階段。它是獨立維護的專案，
-與 DeepSeek 或任何其他模型供應商均無隸屬關係。感謝[每一位貢獻者](../CONTRIBUTORS.md)。
+Codewhale 最初名為 `deepseek-tui`，至今仍能讀取該專案的設定和工作階段。它由獨立維護，與 DeepSeek 或任何其他模型提供者均無關聯。
 
-[![Codewhale contributors](../assets/contributors.png)](../CONTRIBUTORS.md#everyone)
-
-[MIT](../../LICENSE)。改編自其他開源專案的程式碼列於[第三方聲明](../THIRD_PARTY_NOTICES.md)中。
+[MIT](../../LICENSE)。改編自其他開源專案的程式碼列在第三方聲明中：[內含的原始碼](../../THIRD_PARTY_NOTICES.md)和[借鑑的設計](../THIRD_PARTY_NOTICES.md)。

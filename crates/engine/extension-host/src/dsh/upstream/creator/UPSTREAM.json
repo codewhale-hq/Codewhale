@@ -1,0 +1,39 @@
+{
+  "repository": "https://github.com/deepseek-ai/deepseek-harness",
+  "version": "0.2.2-rc.1",
+  "license": "MIT",
+  "license_sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+  "source": "npm packages as shipped in DeepSeek Harness desktop 0.2.2-rc.1",
+  "packages": [
+    "@deepseek-ai/dsh-agent-preset",
+    "@deepseek-ai/dsh-plugin-manager",
+    "@deepseek-ai/dsh-tool-cordis",
+    "@deepseek-ai/dsh-sandbox"
+  ],
+  "files": [
+    {
+      "path": "plugin-manager/tools.js",
+      "package": "@deepseek-ai/dsh-plugin-manager",
+      "upstream_path": "lib/types/tools.js",
+      "sha256": "18d9f06f20a821bd205b6d88f87f440659730ef9431fb92351a50d86779da3ca",
+      "bytes": 12583,
+      "verbatim": true
+    },
+    {
+      "path": "tool-cordis/index.js",
+      "package": "@deepseek-ai/dsh-tool-cordis",
+      "upstream_path": "lib/index.js",
+      "sha256": "ce0cd4d8983532c920cab7713dc51874f6d710c2c46c4a095167bfa980becdb0",
+      "bytes": 3687,
+      "verbatim": true
+    }
+  ],
+  "pending": [
+    {
+      "path": "sandbox/escalation.js",
+      "package": "@deepseek-ai/dsh-sandbox",
+      "reason": "excerpt of approveEscalation and its mode table; needs the published tarball, not yet fetched"
+    }
+  ],
+  "skills_pin": "crates/skills/assets/dsh-creator/UPSTREAM.json"
+}

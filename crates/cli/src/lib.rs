@@ -117,7 +117,7 @@ struct Cli {
     #[arg(
         long,
         value_name = "BOOL",
-        help = "Control aggregate usage counting (default on; Codewhale + PostHog; \
+        help = "Control usage reporting (default on; Codewhale + PostHog; \
                 durable off: config set telemetry false; CODEWHALE_TELEMETRY=0 always wins)"
     )]
     telemetry: Option<bool>,
@@ -234,10 +234,10 @@ enum Commands {
     #[command(about = "Install a plugin bundle without trusting or enabling it")]
     Install(TuiPassthroughArgs),
     #[command(
-        about = "Inspect or restage reviewed plugin bundles",
+        about = "Inspect, review, trust, enable, disable or revoke plugin bundles",
         alias = "plugin",
         override_usage = "codewhale plugins <COMMAND>",
-        after_help = "Commands:\n  status [NAME] [--json]  Inspect plugin status and diagnostics\n  list [NAME] [--json]    Alias of status\n  restage <NAME> [--json]  Restore an eligible reviewed plugin snapshot"
+        after_help = "Commands:\n  status [NAME] [--json]  Inspect plugin status and diagnostics\n  list [NAME] [--json]    Alias of status\n  restage <NAME> [--json]  Restore an eligible reviewed plugin snapshot\n  trust <NAME> [--json]  Show the capability review; in a terminal, then ask\n  trust <NAME> --review-token T [--yes] [--json]  Trust exactly the content the bundle review token names\n  enable <NAME> [--json]  Enable a trusted plugin\n  disable <NAME> [--json]  Disable a plugin, keeping its trust\n  revoke <NAME> [--json]  Revoke trust\n\nThe bundle review token ties trust to exact content; it does not show that anyone read the review,\nand it is not the host-service review token. A --yes trust is recorded as the command line. When\nCODEWHALE_AGENT_PROJECT marks the process, as it does every command the agent runs, trust and enable\nare the agent's, for that project only; that mark is a label the agent could remove in Full Access."
     )]
     Plugins(TuiPassthroughArgs),
     /// Bootstrap MCP config and/or skills directories.
@@ -1957,7 +1957,7 @@ enum ConfigCommand {
     Unset {
         key: String,
     },
-    /// Review aggregate usage counting by Codewhale and PostHog (default on).
+    /// Review usage reporting by Codewhale and PostHog (default on).
     Telemetry {
         /// Optional compatibility form: enable future sessions under this policy version.
         #[arg(long, value_name = "VERSION")]
@@ -6792,6 +6792,10 @@ fn apply_tui_env(cli: &Cli, resolved_runtime: &ResolvedRuntimeOptions, passthrou
         codewhale_config::TELEMETRY_FLOOR_ENV,
         if floor { "1" } else { "0" },
     );
+    set_tui_env(
+        codewhale_config::TELEMETRY_SOURCE_ENV,
+        resolved_runtime.telemetry_source.as_str(),
+    );
     if let Some(endpoint) = resolved_runtime.telemetry_endpoint.as_ref() {
         set_tui_env("CODEWHALE_TELEMETRY_ENDPOINT", endpoint);
     }
@@ -7223,6 +7227,30 @@ mod tests {
         assert!(
             std::env::var("DEEPSEEK_YOLO").is_err(),
             "--yolo must not write the retired DEEPSEEK_YOLO alias (#5443)"
+        );
+    }
+
+    #[test]
+    fn dispatcher_hands_the_telemetry_source_to_the_tui() {
+        let _lock = env_lock();
+        let _guards = [
+            ScopedEnvVar::remove("CODEWHALE_TELEMETRY"),
+            ScopedEnvVar::remove("DEEPSEEK_TELEMETRY"),
+            ScopedEnvVar::remove(codewhale_config::TELEMETRY_FLOOR_ENV),
+            ScopedEnvVar::remove(codewhale_config::TELEMETRY_SOURCE_ENV),
+        ];
+
+        let cli = parse_ok(&["codewhale"]);
+        let mut runtime = resolved_runtime_for_test(ProviderKind::NvidiaNim, ProviderSource::Cli);
+        runtime.telemetry = false;
+        runtime.telemetry_source = codewhale_config::TelemetrySource::Config;
+        apply_tui_env(&cli, &runtime, &[]);
+
+        assert_eq!(std::env::var("CODEWHALE_TELEMETRY").as_deref(), Ok("false"));
+        assert!(std::env::var(codewhale_config::TELEMETRY_FLOOR_ENV).is_ok());
+        assert_eq!(
+            std::env::var(codewhale_config::TELEMETRY_SOURCE_ENV).as_deref(),
+            Ok("config")
         );
     }
 

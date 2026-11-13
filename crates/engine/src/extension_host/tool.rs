@@ -362,6 +362,7 @@ impl ToolSpec for HostToolSpec {
                     gate,
                     registration.scope.clone(),
                     registration.content_hash.clone(),
+                    &self.manager.broker_services(&registration.owner),
                 )
             });
         let request = CoreRequest::ToolCall(ToolCallParams {

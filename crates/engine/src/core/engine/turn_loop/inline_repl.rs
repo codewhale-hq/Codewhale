@@ -91,7 +91,7 @@ impl Engine {
                         Err("REPL startup cancelled".into())
                     }
                     () = wait_for_deadline(repl_deadline) => Err("parent turn deadline reached during REPL startup".into()),
-                    result = codewhale_repl::runtime::PythonRuntime::new() => result,
+                    result = codewhale_repl::runtime::PythonRuntime::new(&self.session.workspace) => result,
                 };
                 self.repl_kernel = match startup {
                     Ok(runtime) => Some(runtime),

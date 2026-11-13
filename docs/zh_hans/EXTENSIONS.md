@@ -26,6 +26,18 @@
    命令、监听器和提示词片段，保留计数。
 
 协助编写插件的 agent 应在安装和验证后把审查交给本人，不应自动信任或启用插件。
+运行 `codewhale plugins trust` 或 `codewhale plugins enable` 的 shell 命令和其他
+shell 命令一样经过会话审批：Ask 询问本人，Auto-Review 由审查模型判断，Full Access
+直接运行，因此 Full Access 下的 agent 可以信任并启用它自己编写的插件。每次信任都记录
+批准者。agent 运行的每条命令（shell 命令、持久终端、验证与测试运行、Python 内核里运行的代码、它用
+`start_mcp_server` 启动的 MCP 服务器）都带有 agent 标记 `CODEWHALE_AGENT_PROJECT`，值为会话
+所在项目，与沙箱和权限模式无关；钩子、配置文件中的 MCP 服务器和终端应用里的 `/plugin trust`
+不带标记。带有标记时，信任和启用都记为该 agent，仅限该项目，即使
+提示是通过终端回答的也一样，绝不记为本人；而且只能信任从该项目内的文件夹用
+`codewhale install` 安装的插件（依据插件包的 `.installed-from` 记录），否则拒绝并交给本人。
+没有标记时，`--yes` 记为命令行，不授予任何宿主服务；在本人终端里回答提示记为本人。这个
+标记只是标签而不是锁：在 Full Access 下 agent 可以把它去掉，此时记录显示为命令行。`--review-token` 是插件包审查令牌
+（`<content-hash>.<capability-hash>`），不是宿主服务审查令牌。
 
 ## 入口、审查与生命周期
 
@@ -237,8 +249,13 @@ DSH 的 `allow` 被视为不干预，每个所有者提示一次；不能预先�
 和审批检查。理由及上下文沿用现有清理与大小限制。
 
 该桥接作用于 Engine 会话的模型工具、受 gate 管理的 code-mode 调用及 `exec.core`
-调用。独立 ACP 执行路径没有 TypeScript 宿主 attachment。`prepend`/`global` 顺序
-覆盖、包裹实际执行的中间件、DSH 运行时句柄和执行后结果改写均不支持。
+调用。编辑器通过 ACP（`codewhale serve --acp`）驱动的会话获得同一个扩展宿主，并受相同的
+`[features]` 开关（`extension_host`、`mcp`）约束：已审查的插件工具（TypeScript 与 DSH）和
+Codewhale 中配置的 MCP 服务器会作为 ACP 工具调用出现，并通过会话的权限设置询问；Plan 保持只读。
+ACP 服务器的能力声明会说明这一点（`agentCapabilities._meta.codewhale`）。ACP 客户端在
+`mcpServers` 中传入的服务器和已配置的 shell hooks 不会挂载。`prepend`/`global` 顺序
+覆盖、包裹实际执行的中间件、DSH 运行时句柄和执行后结果改写均不支持。Native
+`tool_call_after` 仍是只观察的契约。
 
 ## 提示词片段
 

@@ -217,7 +217,21 @@ pub fn cost(contexts: CommandContexts<'_>, arg: Option<&str>) -> CommandResult {
     };
     let projection = diagnostics.cost_projection();
     let details = arg.is_some_and(|arg| arg.trim().eq_ignore_ascii_case("details"));
-    let plan_only = projection.total == 0.0
+    if cost_is_subscription_only(&projection) && !details {
+        return CommandResult::message(format!(
+            "Session Cost:\n ─────────────────────────────\n {SUBSCRIPTION_ONLY_COST_NOTE}\n\n Run /cost details for the route receipts."
+        ));
+    }
+    match cost_report(&projection, presentation) {
+        Ok(report) => CommandResult::message(report),
+        Err(error) => CommandResult::error(error),
+    }
+}
+
+pub const SUBSCRIPTION_ONLY_COST_NOTE: &str = "These routes use subscription billing. Codewhale does not know the amount charged by your provider.";
+
+pub fn cost_is_subscription_only(projection: &DebugCostProjection) -> bool {
+    projection.total == 0.0
         && projection.priced_turns == 0
         && projection.unpriced_turns == 0
         && !projection.legacy_coverage_unknown
@@ -227,19 +241,10 @@ pub fn cost(contexts: CommandContexts<'_>, arg: Option<&str>) -> CommandResult {
             receipt
                 .split_whitespace()
                 .any(|field| field == "billing_mode=subscription")
-        });
-    if plan_only && !details {
-        return CommandResult::message(
-            "Session Cost:\n ─────────────────────────────\n These routes use subscription billing. Codewhale does not know the amount charged by your provider.\n\n Run /cost details for the route receipts.".to_string(),
-        );
-    }
-    match cost_report(&projection, presentation) {
-        Ok(report) => CommandResult::message(report),
-        Err(error) => CommandResult::error(error),
-    }
+        })
 }
 
-fn cost_report(
+pub fn cost_report(
     cost: &DebugCostProjection,
     presentation: &dyn CommandPresentationContext,
 ) -> Result<String, String> {

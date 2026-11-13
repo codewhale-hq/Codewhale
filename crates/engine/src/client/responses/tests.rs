@@ -756,6 +756,43 @@ async fn responses_stream_inserts_boundary_between_reasoning_summary_parts() {
 }
 
 #[test]
+fn over_long_encoded_tool_names_are_withheld_from_responses_at_64() {
+    let tool = |name: &str| Tool {
+        tool_type: None,
+        name: name.to_string(),
+        description: "d".to_string(),
+        input_schema: json!({"type": "object", "additionalProperties": false}),
+        allowed_callers: None,
+        defer_loading: None,
+        input_examples: None,
+        strict: None,
+        cache_control: None,
+    };
+    let long = "mcp__tracker__projects.v2.issues.list-by-assignee";
+    assert!(to_api_tool_name(long).len() > 64);
+    let mut request = minimal_responses_request();
+    request.tools = Some(vec![tool("read_file"), tool(long)]);
+    let (body, omitted) = build_responses_wire_body(
+        &request,
+        profile_for_provider(ProviderKind::Openai),
+        ResponsesReplayContext {
+            provider_id: ProviderKind::Openai.as_str(),
+            wire_model_id: request.model.as_str(),
+            reasoning_api_id: None,
+        },
+    )
+    .expect("body builds");
+    let sent: Vec<&str> = body["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert_eq!(sent, vec!["read_file"]);
+    assert_eq!(omitted, vec![to_api_tool_name(long)]);
+}
+
+#[test]
 fn codex_reasoning_effort_uses_responses_labels() {
     assert_eq!(codex_responses_reasoning_effort("max"), Some("max"));
     assert_eq!(codex_responses_reasoning_effort("maximum"), Some("max"));

@@ -437,6 +437,7 @@ fn count_declared_components(
             filesystem_roots: Vec::new(),
             network_hosts: Vec::new(),
             lifecycle_mutation: false,
+            host_services: Vec::new(),
         }),
         diags,
     )

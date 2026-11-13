@@ -652,13 +652,15 @@ Codewhale 0.10.2 的 ACP v1 支持不完整。`session/new` 和 `session/load`
 会在创建、恢复或返回缓存会话之前拒绝非空 `mcpServers`，返回 `-32602`。
 该字段可省略或为 `[]`；null 与其他非数组值无效。验证不会执行所提供的命令。
 [ACP v1 要求 stdio MCP 支持](https://agentclientprotocol.com/protocol/v1/session-setup#mcp-servers)；HTTP/SSE 能力为 false 并不代表完整合规。
-需要 MCP 的集成请用完整 Runtime API。下列工具限制来自 Codewhale host profile，
+需要这类集成请用完整 Runtime API 及其现有 MCP 管理。下列工具限制来自 Codewhale host profile，
 不是 ACP 协议本身的限制。
 
 受信任的本地 ACP profile 将 Core 收窄到文件/搜索/git/patch，以及获准的前台
-shell 工具。Shell 同时要求编辑器声明 terminal 支持、操作者允许 `allow_shell`；
-指定的外部沙箱不可用时不提供 shell。此接口不提供 MCP、动态工具、任务、PTY、
-后台 shell、解释器、子智能体或 RLM 生命周期。内置工具覆盖会移除整个兼容别名族。
+shell 工具，外加已审查的插件工具（`extension_host` 功能）和 Codewhale 中配置的
+MCP 服务器的工具（`mcp` 功能），均受同一权限设置约束；这一点见于 0.10.2 之后的 main，0.10.2 本身不含。Shell 同时要求编辑器声明
+terminal 支持、操作者允许 `allow_shell`；指定的外部沙箱不可用时不提供 shell。此接口
+不提供客户端传入的 MCP 服务器、动态工具、任务、PTY、后台 shell、解释器、子智能体
+或 RLM 生命周期。内置工具覆盖会移除整个兼容别名族。
 最终派发再次校验 profile；伪造别名、hook 改写或目录中缺失的工具不能绕过限制。
 Full Access 下 Plan 仍只读。Full Access 与普通审批姿态是服务端拥有的只读选项，
 编辑器不能放宽。`approval_policy = "never"` 不是 ACP 审批姿态，服务端会拒绝
@@ -1056,6 +1058,7 @@ Runtime 前缀恢复验证与后续写入所需的完整文档条件保持独立
   "preview": "The TUI footer should count project MCP servers...",
   "model": "deepseek-v4-pro",
   "mode": "agent",
+  "agent_preset": "standard",
   "branch": "feature/runtime-api",
   "head": "abc1234",
   "dirty": false,
@@ -1086,6 +1089,35 @@ fork 还可能包含 `backtrack_depth_from_tail` 与 `dropped_turn_id`，而
 在 v0.8.40 中，线程列表与摘要响应仍是扁平的，因此需要
 图的客户端应当从事件重建它，而不是假定列表顺序就是
 一棵完整的树。
+
+### 对话模式
+
+`GET /v1/modes` 列出客户端在开始对话时可提供的对话模式：
+
+```json
+{
+  "default": "standard",
+  "modes": [
+    {"id": "standard", "name": "Standard", "description": "The everyday Codewhale agent with its normal tools and skills.", "source": "builtin", "available": true},
+    {"id": "creator", "name": "Creator", "description": "Build, inspect and test Codewhale plugins in this conversation, with the plugin authoring tools and guides loaded.", "source": "builtin", "available": false, "reason": "Creator mode is not ready in this build."}
+  ]
+}
+```
+
+仅当 `available` 为 `false` 时才有 `reason`；客户端应将该行显示为禁用并展示原因。
+线程的模式是其 `agent_preset` 字符串，可在 `POST /v1/threads` 时设置，或在线程尚无
+任何回合时通过 `PATCH /v1/threads/{id}` 修改。没有 `agent_preset` 的线程记录即
+`standard`（线程记录对 `standard` 省略该字段；`GET /v1/threads/summary` 的每一行总是
+带有它）。该字段只存储并报告模式，不决定模式加载什么。
+
+拒绝响应带有 `error.code`：
+
+| `error.code` | 状态 | 含义 |
+| --- | --- | --- |
+| `unknown_mode` | `400` | 该 id 不在 `GET /v1/modes` 中；绝不会静默改为 `standard`。 |
+| `mode_unavailable` | `424` | 该行以 `available: false` 列出；消息即其 `reason`。 |
+| `mode_locked` | `409` | 线程已有回合，模式不可再更改。 |
+| `mode_not_supported_with_executor` | `400` | `agent_preset` 与 `executor`（其他厂商的代理）同时出现。 |
 
 ### 已读标记
 
@@ -1660,6 +1692,7 @@ direction 为空、等待 lead 计划、缺少凭据或有
 - `GET /v1/workspace/files/search?query=<partial>&limit=<1-100>`（参见上文的工作区文件建议）
 - `GET /v1/workspace/files?path=<dir>&limit=<1-2000>`、`GET /v1/workspace/files/read?path=<file>&offset=&limit=`
   与 `PUT /v1/workspace/files`（参见上文的工作区文件与会话工件）
+- `GET /v1/modes`（参见对话模式）
 - `GET /v1/skills`
 - `GET /v1/skills/{name}` — 返回路由元数据（`source`、`invocation`、`aliases`、
   `bundled_tier`、`enabled`）及完整 `SKILL.md`，让客户端为自己的下一回合组成激活指令。

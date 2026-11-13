@@ -816,11 +816,11 @@ fn import_external(
 fn copy_skill_package(src: &Path, dest: &Path) -> Result<()> {
     // Fail closed: source must already pass package digest (no symlinks).
     package_digest::compute_package_digest(src).context("source package is not safe to copy")?;
-    copy_dir_regular_files(src, dest)?;
+    copy_dir_regular_files(src, dest, true)?;
     Ok(())
 }
 
-fn copy_dir_regular_files(src: &Path, dest: &Path) -> Result<()> {
+fn copy_dir_regular_files(src: &Path, dest: &Path, package_root: bool) -> Result<()> {
     fs::create_dir_all(dest)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
@@ -831,22 +831,17 @@ fn copy_dir_regular_files(src: &Path, dest: &Path) -> Result<()> {
         }
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if name_str == install::INSTALLED_FROM_MARKER
-            || name_str == install::TRUSTED_MARKER
-            || name_str == ".system-installed-version"
+        if package_root
+            && (name_str == install::INSTALLED_FROM_MARKER
+                || name_str == install::TRUSTED_MARKER
+                || name_str == ".system-installed-version")
         {
             continue;
         }
         let target = dest.join(&name);
         if meta.is_dir() {
-            if name_str.starts_with('.') {
-                continue;
-            }
-            copy_dir_regular_files(&path, &target)?;
+            copy_dir_regular_files(&path, &target, false)?;
         } else if meta.is_file() {
-            if name_str.starts_with('.') {
-                continue;
-            }
             fs::copy(&path, &target)?;
         }
     }
@@ -1342,6 +1337,62 @@ mod tests {
                 .join("from-claude")
                 .join("SKILL.md")
                 .is_file()
+        );
+    }
+
+    #[test]
+    fn import_external_keeps_hidden_files_the_digest_covers() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("ws");
+        let home = tmp.path().join("home");
+        let network = NetworkPolicy::default();
+        let c = ctx(&workspace, &home, &network);
+
+        fs::create_dir_all(workspace.join(".codewhale").join("skills")).unwrap();
+        let source_root = workspace.join(".claude").join("skills");
+        write_skill(&source_root, "dotted", "import-me");
+        fs::write(source_root.join("dotted").join(".DS_Store"), "finder").unwrap();
+        fs::create_dir_all(source_root.join("dotted").join(".config")).unwrap();
+        fs::write(source_root.join("dotted").join(".config").join("a"), "x").unwrap();
+        fs::write(
+            source_root.join("dotted").join(".config").join(".trusted"),
+            "y",
+        )
+        .unwrap();
+
+        let snap = scan_with_configured(
+            &workspace,
+            Some(&home),
+            None,
+            SkillAuditMode::Compatible,
+            None,
+        );
+        let external = snap.skills.iter().find(|s| s.name == "dotted").unwrap();
+        let DigestState::Known(digest) = &external.digest else {
+            panic!("digest");
+        };
+
+        let receipt = import_external(
+            external.id.clone(),
+            digest.clone(),
+            SkillTargetScope::Project,
+            ConflictPolicy::Reject,
+            &c,
+        )
+        .unwrap();
+        assert_eq!(receipt.outcome, SkillMutationOutcome::Imported);
+        let dest = workspace.join(".codewhale").join("skills").join("dotted");
+        assert_eq!(
+            fs::read_to_string(dest.join(".DS_Store")).unwrap(),
+            "finder"
+        );
+        assert_eq!(
+            fs::read_to_string(dest.join(".config").join("a")).unwrap(),
+            "x"
+        );
+        assert_eq!(
+            fs::read_to_string(dest.join(".config").join(".trusted")).unwrap(),
+            "y"
         );
     }
 

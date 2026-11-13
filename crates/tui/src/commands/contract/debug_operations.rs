@@ -35,14 +35,20 @@ impl CommandDebugReceiptsContext for DebugOperationsAdapter<'_> {
             started_at: Some(app.session_started_at),
             updated_at: None,
         };
-        codewhale_engine::receipts::session_receipt(
+        let receipt = codewhale_engine::receipts::session_receipt(
             source,
             &app.api_messages,
             &approvals,
             &app.session_turn_outcomes,
             turn,
         )
-        .map_err(|error| DebugReceiptError::Build(error.to_string()))
+        .map_err(|error| DebugReceiptError::Build(error.to_string()))?;
+        let usage = codewhale_engine::receipts::session_usage(
+            &super::debug_diagnostics::cost_projection(&app),
+            &app.session.accounted_usage_sources,
+            u64::from(app.session.displayed_total_tokens()),
+        );
+        Ok(codewhale_engine::receipts::with_usage(receipt, usage))
     }
 }
 
@@ -151,7 +157,8 @@ fn session_diff(app: &App) -> std::io::Result<Option<DebugDiffObservation>> {
 /// The workspace repository's own uncommitted changes: what `/diff` shows
 /// before the session has a restore point to compare against.
 fn workspace_git_diff(workspace: &std::path::Path) -> DebugDiffObservation {
-    let git = |args: &[&str]| Git::output(args, workspace);
+    let git =
+        |args: &[&str]| Git::output(&[&["-c", "core.quotePath=false"], args].concat(), workspace);
     // Outside a repository `git diff` prints nothing on stdout, which would
     // read as "no changes".
     match git(&["rev-parse", "--is-inside-work-tree"]) {

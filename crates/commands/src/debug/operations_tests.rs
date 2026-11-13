@@ -263,6 +263,7 @@ fn empty_receipt() -> Receipt {
         turn: None,
         postures: vec![],
         totals: ReceiptTotals::default(),
+        usage: None,
         actions: vec![],
         omitted_actions: 0,
         not_recorded: vec![],

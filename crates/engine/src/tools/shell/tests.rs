@@ -6085,3 +6085,111 @@ async fn a_foreground_command_past_its_wait_moves_to_the_background_alive() {
     );
     assert!(manager.processes.get(&task_id).expect("tracked").background);
 }
+
+#[test]
+fn a_tool_launcher_clamps_a_danger_full_access_escalation() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let escalation = json!({
+        "command": "id",
+        "sandbox_permissions": "danger-full-access",
+        "justification": "needs the host",
+    });
+    let tool = BashTool::new("bash");
+    assert!(tool.refusal_before_approval(&escalation, &ctx).is_none());
+
+    ctx.shell_manager
+        .lock()
+        .unwrap()
+        .set_tool_launcher(Some(vec!["/usr/bin/env".to_string()]));
+    let refusal = tool
+        .refusal_before_approval(&escalation, &ctx)
+        .expect("escalation refused before approval");
+    assert!(!refusal.success);
+    assert!(
+        refusal.content.contains("danger-full-access"),
+        "{}",
+        refusal.content
+    );
+
+    let error = ctx
+        .shell_manager
+        .lock()
+        .unwrap()
+        .execute_with_options_env(
+            "id",
+            Some(&tmp.path().to_string_lossy()),
+            1_000,
+            false,
+            None,
+            false,
+            Some(ExecutionSandboxPolicy::DangerFullAccess),
+            HashMap::new(),
+        )
+        .expect_err("an approved escalation still never runs unwrapped");
+    assert!(
+        format!("{error:#}").contains("nothing was run"),
+        "{error:#}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn every_model_run_shell_command_carries_the_agent_project() {
+    let workspace = tempdir().expect("workspace");
+    let project = workspace.path().to_string_lossy().into_owned();
+    let command = "printf '%s' \"${CODEWHALE_AGENT_PROJECT-unset}\"";
+    let mut sandboxed = ToolContext::new(workspace.path());
+    sandboxed.auto_approve = true;
+    let mut full_access = ToolContext::new(workspace.path())
+        .with_elevated_sandbox_policy(ExecutionSandboxPolicy::DangerFullAccess);
+    full_access.auto_approve = true;
+    for context in [&sandboxed, &full_access] {
+        for tool in [BashTool::new("exec_shell"), BashTool::new("Bash")] {
+            let result = tool
+                .execute(json!({ "command": command }), context)
+                .await
+                .expect("shell runs");
+            assert_eq!(result.content.trim(), project, "{result:?}");
+        }
+        let result = LowercaseBashTool
+            .execute(json!({ "command": command }), context)
+            .await
+            .expect("bash runs");
+        assert_eq!(result.content.trim(), project, "{result:?}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn persistent_terminal_commands_carry_the_agent_project() {
+    use crate::tools::terminal_session::{TerminalResetTool, TerminalRunTool, TerminalSendTool};
+    let workspace = tempdir().expect("workspace");
+    let marked = format!("MARK={}", workspace.path().display());
+    let mut context = ToolContext::new(workspace.path())
+        .with_elevated_sandbox_policy(ExecutionSandboxPolicy::DangerFullAccess);
+    context.auto_approve = true;
+    let session = format!("agent-mark-{}", uuid::Uuid::new_v4().simple());
+    let print = "printf 'MARK=%s\\n' \"${CODEWHALE_AGENT_PROJECT-unset}\"";
+
+    let run = TerminalRunTool
+        .execute(
+            json!({ "command": print, "session": session, "timeout_secs": 30 }),
+            &context,
+        )
+        .await
+        .expect("terminal/run");
+    assert!(run.content.contains(&marked), "{}", run.content);
+
+    let sent = TerminalSendTool
+        .execute(
+            json!({ "session": session, "text": format!("{print}\n"), "wait_ms": 2000 }),
+            &context,
+        )
+        .await
+        .expect("terminal/send");
+    assert!(sent.content.contains(&marked), "{}", sent.content);
+    let _ = TerminalResetTool
+        .execute(json!({ "session": session }), &context)
+        .await;
+}

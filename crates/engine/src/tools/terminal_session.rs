@@ -339,6 +339,7 @@ fn pty_sandbox_policy(
 fn prepare_pty_shell(
     shell: &str,
     workspace: &std::path::Path,
+    project: &std::path::Path,
     policy: codewhale_sandbox::SandboxPolicy,
     shell_manager: &crate::tools::shell::SharedShellManager,
 ) -> Result<(codewhale_sandbox::ExecEnv, bool), String> {
@@ -349,6 +350,7 @@ fn prepare_pty_shell(
             shell,
             vec!["-i".to_string()],
             workspace,
+            project,
             Duration::from_secs(24 * 60 * 60),
             Some(policy.clone()),
         );
@@ -380,6 +382,7 @@ fn create_session(
     let shell = "/bin/sh".to_string();
     #[cfg(not(any(test, feature = "test-support")))]
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let project = workspace.to_path_buf();
     let workspace = canonical(workspace);
     let durable_path = durable_path(owner, name, &workspace)?;
     let previous = load_durable(&durable_path).map(|mut record| {
@@ -400,7 +403,7 @@ fn create_session(
         .map_err(|e| format!("failed to open PTY: {e}"))?;
 
     let (prepared, sandbox_confined) =
-        prepare_pty_shell(&shell, &workspace, policy.clone(), shell_manager)?;
+        prepare_pty_shell(&shell, &workspace, &project, policy.clone(), shell_manager)?;
     let child = prepared
         .spawn_pty(pair.slave, &prepared.cwd)
         .map_err(|e| format!("failed to start shell {shell}: {e}"))?;
@@ -1747,6 +1750,7 @@ mod tests {
     fn full_access_prepares_an_unsandboxed_pty() {
         let (prepared, confined) = prepare_pty_shell(
             "/bin/sh",
+            Path::new("/tmp"),
             Path::new("/tmp"),
             codewhale_sandbox::SandboxPolicy::DangerFullAccess,
             &test_shell_manager(),

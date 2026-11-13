@@ -2,7 +2,7 @@
 //! on first launch.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use codewhale_runtime::config::{BundledSkillsConfig, BundledSkillsInstall, SkillsConfig};
 use codewhale_skill_install::skill_parse::{self, normalize_skill_name_for_lookup};
@@ -42,7 +42,26 @@ use sha2::{Digest, Sha256};
 /// person; the exact generation-16 body allows a safe upgrade.
 /// Generation 18 recognizes previously shipped bodies by SHA-256 as well as by
 /// retained bytes, so an untouched copy from any earlier generation upgrades.
-const BUNDLED_SKILL_VERSION: &str = "20";
+const BUNDLED_SKILL_VERSION: &str = "22";
+
+mod dsh_creator;
+use dsh_creator::{BundledFile, CREATOR_SKILLS};
+
+pub const CREATOR_SKILL_NAMES: [&str; 4] = [
+    "agent-experience",
+    "cordis-composition-reference",
+    "cordis-plugin-development",
+    "editing-cordis-compositions",
+];
+
+const AGENT_EXPERIENCE_BODY: &str =
+    include_str!("../assets/dsh-creator/skills/agent-experience/SKILL.md");
+const CORDIS_COMPOSITION_REFERENCE_BODY: &str =
+    include_str!("../assets/dsh-creator/skills/cordis-composition-reference/SKILL.md");
+const CORDIS_PLUGIN_DEVELOPMENT_BODY: &str =
+    include_str!("../assets/dsh-creator/skills/cordis-plugin-development/SKILL.md");
+const EDITING_CORDIS_COMPOSITIONS_BODY: &str =
+    include_str!("../assets/dsh-creator/skills/editing-cordis-compositions/SKILL.md");
 
 // ── system & extension (meta) ───────────────────────────────────────────────
 const SKILL_CREATOR_BODY: &str = include_str!("../assets/skills/skill-creator/SKILL.md");
@@ -156,6 +175,10 @@ const SUPERSEDED_BODIES: &[(&str, &str)] = &[
     (
         "plugin-creator",
         include_str!("../assets/skills/plugin-creator/SKILL.generation-16.md"),
+    ),
+    (
+        "plugin-creator",
+        include_str!("../assets/skills/plugin-creator/SKILL.generation-19.md"),
     ),
     (
         "help",
@@ -404,6 +427,26 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
         body: MCP_DISCOVERY_BODY,
         introduced_in: 10,
     },
+    BundledSkill {
+        name: "cordis-plugin-development",
+        body: CORDIS_PLUGIN_DEVELOPMENT_BODY,
+        introduced_in: 21,
+    },
+    BundledSkill {
+        name: "editing-cordis-compositions",
+        body: EDITING_CORDIS_COMPOSITIONS_BODY,
+        introduced_in: 21,
+    },
+    BundledSkill {
+        name: "cordis-composition-reference",
+        body: CORDIS_COMPOSITION_REFERENCE_BODY,
+        introduced_in: 21,
+    },
+    BundledSkill {
+        name: "agent-experience",
+        body: AGENT_EXPERIENCE_BODY,
+        introduced_in: 21,
+    },
     // Everyday (generation 12)
     BundledSkill {
         name: "github",
@@ -500,11 +543,26 @@ pub fn bundled_skill_tier(name: &str) -> Option<BundledSkillTier> {
         return None;
     }
     let tier = match name {
-        "skill-creator" | "plugin-creator" | "skill-installer" | "mcp-builder" | "help"
-        | "frontend-design" | "webapp-testing" | "document" | "dataviz" | "docx" | "pdf"
-        | "pptx" | "xlsx" | "documents" | "presentations" | "spreadsheets" => {
-            BundledSkillTier::FormatTooling
-        }
+        "skill-creator"
+        | "plugin-creator"
+        | "skill-installer"
+        | "mcp-builder"
+        | "cordis-plugin-development"
+        | "editing-cordis-compositions"
+        | "cordis-composition-reference"
+        | "agent-experience"
+        | "help"
+        | "frontend-design"
+        | "webapp-testing"
+        | "document"
+        | "dataviz"
+        | "docx"
+        | "pdf"
+        | "pptx"
+        | "xlsx"
+        | "documents"
+        | "presentations"
+        | "spreadsheets" => BundledSkillTier::FormatTooling,
         _ => BundledSkillTier::CoreAgentic,
     };
     Some(tier)
@@ -614,6 +672,7 @@ fn install_one(
                 return Ok(false);
             }
             Ok(existing) if existing == skill.body => {
+                install_companion_files(skills_dir, skill.name)?;
                 return Ok(installed_version != Some(BUNDLED_SKILL_VERSION));
             }
             Ok(_) => {}
@@ -627,8 +686,75 @@ fn install_one(
             true,
         )?
         .replace(skill.body.as_bytes())?;
+        install_companion_files(skills_dir, skill.name)?;
     }
     Ok(should_install)
+}
+
+fn companion_files(name: &str) -> &'static [BundledFile] {
+    CREATOR_SKILLS
+        .iter()
+        .find(|skill| skill.name == name)
+        .map_or(&[], |skill| skill.files)
+}
+
+fn install_companion_files(skills_dir: &Path, name: &str) -> std::io::Result<()> {
+    for file in companion_files(name) {
+        let relative = Path::new(name).join(file.path);
+        if fs::symlink_metadata(skills_dir.join(&relative)).is_ok() {
+            continue;
+        }
+        codewhale_util::files::WorkspaceFile::open(skills_dir, &relative, true)?
+            .replace(file.bytes)?;
+    }
+    Ok(())
+}
+
+static CREATOR_SKILLS_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_creator_skills_enabled(enabled: bool) {
+    CREATOR_SKILLS_ENABLED.store(enabled, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[must_use]
+pub fn creator_skills_enabled() -> bool {
+    CREATOR_SKILLS_ENABLED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[must_use]
+pub(super) fn effective_bundled_policy(policy: &BundledSkillsConfig) -> BundledSkillsConfig {
+    if creator_skills_enabled() {
+        return policy.clone();
+    }
+    let mut effective = policy.clone();
+    let disabled = effective.disabled.get_or_insert_with(Vec::new);
+    disabled.extend(CREATOR_SKILL_NAMES.iter().map(|name| (*name).to_string()));
+    effective
+}
+
+pub struct BundledSkillLoadContext {
+    pub base_dir: PathBuf,
+    pub host_notes: Option<&'static str>,
+}
+
+#[must_use]
+pub fn bundled_skill_load_context(
+    name: &str,
+    skill_path: &Path,
+) -> Option<BundledSkillLoadContext> {
+    let owned = codewhale_runtime::config::owned_skills_dir()?;
+    let creator = CREATOR_SKILLS.iter().find(|skill| skill.name == name)?;
+    if creator.files.is_empty() && creator.host_notes.is_none() {
+        return None;
+    }
+    if !is_bundled_copy(skill_path, name, &owned) {
+        return None;
+    }
+    Some(BundledSkillLoadContext {
+        base_dir: skill_path.parent()?.to_path_buf(),
+        host_notes: creator.host_notes,
+    })
 }
 
 /// Install bundled system skills into `skills_dir`.
@@ -833,7 +959,7 @@ pub fn bundled_skills_status(
     registry: &super::SkillRegistry,
 ) -> Option<BundledSkillsStatus> {
     let owned = codewhale_runtime::config::owned_skills_dir()?;
-    let policy = &config.bundled;
+    let policy = &effective_bundled_policy(&config.bundled);
     let marker_generation = codewhale_util::fs_confined::read_to_string(
         &owned,
         &owned.join(".system-installed-version"),

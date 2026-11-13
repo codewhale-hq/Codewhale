@@ -492,11 +492,7 @@ fn outdated_marker_triggers_reinstall_of_existing_skills() {
         assert!(!skill_file(&tmp, "debug").exists());
         assert_eq!(
             fs::read_to_string(marker_file(&tmp)).unwrap().trim(),
-            if customized {
-                "18"
-            } else {
-                BUNDLED_SKILL_VERSION
-            }
+            BUNDLED_SKILL_VERSION
         );
     }
 }
@@ -878,7 +874,8 @@ fn generation_17_refreshes_previous_plugin_creator_bodies() {
         .find(|skill| skill.name == "plugin-creator")
         .unwrap();
     assert!(skill.body.contains("Create `plugin.json`"));
-    assert!(skill.body.contains("## Experimental host code"));
+    assert!(skill.body.contains("cordis-plugin-development"));
+    assert!(!skill.body.contains("never automate the trust token"));
     for (generation, old) in [
         (
             "15",
@@ -888,9 +885,16 @@ fn generation_17_refreshes_previous_plugin_creator_bodies() {
             "16",
             include_str!("../../assets/skills/plugin-creator/SKILL.generation-16.md"),
         ),
+        (
+            "19",
+            include_str!("../../assets/skills/plugin-creator/SKILL.generation-19.md"),
+        ),
     ] {
         assert!(is_superseded_shipped_body("plugin-creator", old));
-        assert!(!old.contains("## Experimental host code"));
+        assert_eq!(
+            old.contains("## Experimental host code"),
+            generation == "19"
+        );
         for customized in [false, true] {
             let tmp = TempDir::new().unwrap();
             fs::create_dir_all(skill_dir(&tmp, "plugin-creator")).unwrap();
@@ -912,4 +916,62 @@ fn generation_17_refreshes_previous_plugin_creator_bodies() {
             );
         }
     }
+}
+
+#[test]
+fn creator_skills_install_every_file_equal_to_the_pinned_bytes() {
+    let tmp = TempDir::new().unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
+    let mut files = 0;
+    for creator in CREATOR_SKILLS {
+        let skill = BUNDLED_SKILLS
+            .iter()
+            .find(|skill| skill.name == creator.name)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(skill_file(&tmp, creator.name)).unwrap(),
+            skill.body
+        );
+        for file in creator.files {
+            assert_eq!(
+                fs::read(skill_dir(&tmp, creator.name).join(file.path)).unwrap(),
+                file.bytes,
+                "{}/{}",
+                creator.name,
+                file.path
+            );
+            files += 1;
+        }
+    }
+    assert_eq!(files + CREATOR_SKILLS.len(), 37);
+    let license = include_bytes!("../../assets/dsh-creator/LICENSE");
+    for name in CREATOR_SKILL_NAMES {
+        let installed = fs::read(skill_dir(&tmp, name).join("LICENSE")).unwrap();
+        assert_eq!(installed, license, "{name} must carry DeepSeek's licence");
+        assert!(installed.starts_with(b"MIT License\n\nCopyright (c) 2026 DeepSeek\n"));
+    }
+    assert_eq!(CREATOR_SKILLS.len(), CREATOR_SKILL_NAMES.len());
+    for name in CREATOR_SKILL_NAMES {
+        assert!(is_bundled_skill_name(name));
+    }
+}
+
+#[test]
+fn an_edited_creator_skill_file_is_not_overwritten_on_upgrade() {
+    let tmp = TempDir::new().unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
+    let edited = skill_dir(&tmp, "cordis-plugin-development").join("references/host-plugin.md");
+    fs::write(&edited, "my notes").unwrap();
+    let missing = skill_dir(&tmp, "cordis-plugin-development").join("templates/mcp/icon.svg");
+    fs::remove_file(&missing).unwrap();
+    fs::write(marker_file(&tmp), "20").unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
+    assert_eq!(fs::read_to_string(&edited).unwrap(), "my notes");
+    assert!(missing.is_file());
+
+    let body = skill_file(&tmp, "editing-cordis-compositions");
+    fs::write(&body, "my own copy").unwrap();
+    fs::write(marker_file(&tmp), "20").unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
+    assert_eq!(fs::read_to_string(body).unwrap(), "my own copy");
 }

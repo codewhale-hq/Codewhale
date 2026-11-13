@@ -33,6 +33,7 @@ use super::web::contract::{
     Recency, SearchQuery, SearchReceipt, SearchResult as NormalizedSearchResult,
 };
 use super::web::scrape::BROWSER_USER_AGENT as USER_AGENT;
+use super::web::scrape::decode_html_entities;
 use super::web_search::{domain_matches, execute_search};
 
 // Search and open share the retrieval-path defaults from `web::contract` and
@@ -1871,16 +1872,6 @@ fn wrap_line(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-fn decode_html_entities(text: &str) -> String {
-    text.replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&#x27;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&nbsp;", " ")
-}
-
 fn url_encode(input: &str) -> String {
     codewhale_util::utils::url_encode(input)
 }
@@ -1943,6 +1934,18 @@ mod tests {
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].url, "https://example.com");
         assert!(lines.iter().any(|line| line.contains("Example")));
+    }
+
+    #[test]
+    fn html_parsing_does_not_double_decode_escaped_entities() {
+        let html = "<html><head><title>&amp;lt;br&amp;gt; tag</title></head>\
+            <body><p>Use &amp;lt;br&amp;gt; here</p></body></html>";
+        let (lines, _links, title) = parse_html(html, "https://example.com");
+        assert_eq!(title.as_deref(), Some("&lt;br&gt; tag"));
+        assert!(
+            lines.iter().any(|line| line == "Use &lt;br&gt; here"),
+            "lines: {lines:?}"
+        );
     }
 
     #[test]

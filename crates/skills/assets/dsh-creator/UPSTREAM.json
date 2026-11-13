@@ -1,0 +1,242 @@
+{
+  "repository": "https://github.com/deepseek-ai/deepseek-harness",
+  "version": "0.2.2-rc.1",
+  "license": "MIT",
+  "license_sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+  "source": "npm packages as shipped in DeepSeek Harness desktop 0.2.2-rc.1",
+  "package": "@deepseek-ai/dsh-agent-preset",
+  "files": [
+    {
+      "path": "skills/agent-experience/SKILL.md",
+      "upstream_path": "skills/agent-experience/SKILL.md",
+      "sha256": "1244928710cb7e399325c416e80312037d4da249559a09fe289515cc66ee1752",
+      "bytes": 2093,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-composition-reference/SKILL.md",
+      "upstream_path": "skills/cordis-composition-reference/SKILL.md",
+      "sha256": "6583a81d9f4de07032ebdee0d5ea1a925067277805798936a5297cf2bac4f5e3",
+      "bytes": 2806,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-composition-reference/references/packages.md",
+      "upstream_path": "skills/cordis-composition-reference/references/packages.md",
+      "sha256": "7dfa3c48de4baf51ba353927734d0e00755e1541aaabda4fcb9e88b5497e58ab",
+      "bytes": 43771,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/SKILL.md",
+      "upstream_path": "skills/cordis-plugin-development/SKILL.md",
+      "sha256": "314cb46e064e1aa4ecd9bffd9b0364eb3be7a3e8bd2678f06b0276bd88c09640",
+      "bytes": 8131,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/references/host-plugin.md",
+      "upstream_path": "skills/cordis-plugin-development/references/host-plugin.md",
+      "sha256": "86f774512e83fae3457c405ffc5a3ea6299d38ac84ea456b17f7731831d871f9",
+      "bytes": 6883,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/references/mcp-bundle.md",
+      "upstream_path": "skills/cordis-plugin-development/references/mcp-bundle.md",
+      "sha256": "944b431411ba50582d690f03aa239044556d7a1395d50d3db69cff3920f61ff3",
+      "bytes": 984,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/references/practices.md",
+      "upstream_path": "skills/cordis-plugin-development/references/practices.md",
+      "sha256": "5a61f4e0f754eded6116e55bbf72471fd9b128e138ea3faca120cda76701a042",
+      "bytes": 7825,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/references/ui-plugin.md",
+      "upstream_path": "skills/cordis-plugin-development/references/ui-plugin.md",
+      "sha256": "830a1710af97e3930ba5f29062e46ff78f7be3337995fbb20e85867f80339e23",
+      "bytes": 1992,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/references/user-actions.md",
+      "upstream_path": "skills/cordis-plugin-development/references/user-actions.md",
+      "sha256": "ecc7f1226536584d781af8f1f9dee30d7262943dada67bfd997eb7902b34a9be",
+      "bytes": 1375,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/references/verification.md",
+      "upstream_path": "skills/cordis-plugin-development/references/verification.md",
+      "sha256": "a28f7b91d0ec4592533360d11fd8a65dc2f103058e2ebf2f7e1497ad90afa9e2",
+      "bytes": 1277,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/decoration/client.js",
+      "upstream_path": "skills/cordis-plugin-development/templates/decoration/client.js",
+      "sha256": "bb17be70ae65f05d2cb26dd18f54448d706a89a1ba4da7ee3fe46ed46ac89f69",
+      "bytes": 686,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/decoration/cordis.patch.yml",
+      "upstream_path": "skills/cordis-plugin-development/templates/decoration/cordis.patch.yml",
+      "sha256": "542639675b704bbdfa7c6694011c6e57d05c403e4499baa35731902a9063e7fc",
+      "bytes": 69,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/decoration/icon.svg",
+      "upstream_path": "skills/cordis-plugin-development/templates/decoration/icon.svg",
+      "sha256": "4adcba5c2950e778c213101265820e287ed6b6248ba58e22840eef7690960935",
+      "bytes": 118,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/decoration/index.js",
+      "upstream_path": "skills/cordis-plugin-development/templates/decoration/index.js",
+      "sha256": "87edbe4014ee569545ade02f7aa1915f2d2135ffebad84016a247d4542d6f39a",
+      "bytes": 108,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/decoration/locale/de.json",
+      "upstream_path": "skills/cordis-plugin-development/templates/decoration/locale/de.json",
+      "sha256": "f6789b92bc3b81c62c570b35d5ad160e5f3011af868209daa5cb7db722e24a8c",
+      "bytes": 139,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/decoration/locale/en.json",
+      "upstream_path": "skills/cordis-plugin-development/templates/decoration/locale/en.json",
+      "sha256": "6768a03c91f2ebacca4dc837619dfa9b81aa3bec02ad8d4ed72e58753ba59bdf",
+      "bytes": 128,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/decoration/locale/es.json",
+      "upstream_path": "skills/cordis-plugin-development/templates/decoration/locale/es.json",
+      "sha256": "fd27b119a98ab199664bc7e5056923feb59cbf2f8760fd3e311062b97d3d778f",
+      "bytes": 142,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/decoration/locale/fr.json",
+      "upstream_path": "skills/cordis-plugin-development/templates/decoration/locale/fr.json",
+      "sha256": "e9cc642906d1a8511ddabae1871f583e198150813dd6d97aae034c2647fa0e2e",
+      "bytes": 139,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/decoration/locale/ja.json",
+      "upstream_path": "skills/cordis-plugin-development/templates/decoration/locale/ja.json",
+      "sha256": "146163de7f067d174848d2fd0c015eb31c363815f1d5063139dc72e31af0abfd",
+      "bytes": 140,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/decoration/locale/pt.json",
+      "upstream_path": "skills/cordis-plugin-development/templates/decoration/locale/pt.json",
+      "sha256": "493127e4227fdd8d3a39f98c79ab0e8fb656e0dcaa444d260942af6de1f19d2f",
+      "bytes": 140,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/decoration/locale/ru.json",
+      "upstream_path": "skills/cordis-plugin-development/templates/decoration/locale/ru.json",
+      "sha256": "2ce2bfa3b3a723d347640d3c84b0761bdf2f1ec0508a1f344093243d95677486",
+      "bytes": 202,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/decoration/package.json",
+      "upstream_path": "skills/cordis-plugin-development/templates/decoration/package.json",
+      "sha256": "08a8d23db9b417c706bd57084b99781631a95f9fd556558da0a3920ac7fa7690",
+      "bytes": 527,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/mcp/cordis.patch.yml",
+      "upstream_path": "skills/cordis-plugin-development/templates/mcp/cordis.patch.yml",
+      "sha256": "9a828bb02bd1aa07a6f873d823b725e85279b7ddf4bebbba40aa391ac501e9b5",
+      "bytes": 217,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/mcp/icon.svg",
+      "upstream_path": "skills/cordis-plugin-development/templates/mcp/icon.svg",
+      "sha256": "3afa45f14c22ab9f88075411708861bc35fc54bcffd0cbed7c508d2b4a0f6d1a",
+      "bytes": 335,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/mcp/locale/de.json",
+      "upstream_path": "skills/cordis-plugin-development/templates/mcp/locale/de.json",
+      "sha256": "4d2476d6f5ce49fe5be9336be4d8220479699c24a4c1f023e749fc2c197e2afc",
+      "bytes": 166,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/mcp/locale/en.json",
+      "upstream_path": "skills/cordis-plugin-development/templates/mcp/locale/en.json",
+      "sha256": "4298642447b595850c22ff2c878555877ef252aecc651f87f2318c26fa285625",
+      "bytes": 148,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/mcp/locale/es.json",
+      "upstream_path": "skills/cordis-plugin-development/templates/mcp/locale/es.json",
+      "sha256": "c263c4950f346fb677f8fbd08feba6a69c5822370ea737c2c3c06664eca4fdbd",
+      "bytes": 180,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/mcp/locale/fr.json",
+      "upstream_path": "skills/cordis-plugin-development/templates/mcp/locale/fr.json",
+      "sha256": "698d8899017ed6102f317d3b28f4dbb72d72cb90045817b64450d1d1e066e9cb",
+      "bytes": 159,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/mcp/locale/ja.json",
+      "upstream_path": "skills/cordis-plugin-development/templates/mcp/locale/ja.json",
+      "sha256": "7d7fe99c8bc504c489fcffb5c90d3ec2f3dd4015633a9c5477da12e2efc51128",
+      "bytes": 194,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/mcp/locale/pt.json",
+      "upstream_path": "skills/cordis-plugin-development/templates/mcp/locale/pt.json",
+      "sha256": "9a911263962a86c98a59ee96d75657f3531133c03bd8cac64fb4094711798d87",
+      "bytes": 167,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/mcp/locale/ru.json",
+      "upstream_path": "skills/cordis-plugin-development/templates/mcp/locale/ru.json",
+      "sha256": "6fe10339d533eb4ba1a6eea4f38459046b8c420e5c2ea76160b14ee41727a885",
+      "bytes": 247,
+      "verbatim": true
+    },
+    {
+      "path": "skills/cordis-plugin-development/templates/mcp/package.json",
+      "upstream_path": "skills/cordis-plugin-development/templates/mcp/package.json",
+      "sha256": "592eb1cc8b7072ab06ca96afefefe444a9dfb519877a225a076966aae37082cc",
+      "bytes": 292,
+      "verbatim": true
+    },
+    {
+      "path": "skills/editing-cordis-compositions/SKILL.md",
+      "upstream_path": "skills/editing-cordis-compositions/SKILL.md",
+      "sha256": "974cc1e115bf07a8de7229c20a7e7aa7fa5cc5bfe0fbc22f86b5bc776a7298e6",
+      "bytes": 5739,
+      "verbatim": true
+    }
+  ],
+  "note": "Copied unmodified. Identical to packages/preset/agent-preset/skills in the public repository source."
+}

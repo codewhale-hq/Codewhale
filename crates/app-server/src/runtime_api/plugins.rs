@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use codewhale_plugins::host_services::{PersonVia, PluginApprover, ReviewApproval};
 use codewhale_plugins::marketplace::document::{
     CatalogInstallResolution, load_catalog_document, resolve_candidate_install,
 };
@@ -1432,8 +1433,16 @@ async fn run_registry_mutation(
 
     let mut registry = (*registry).clone();
     let result = match mutation {
-        RegistryMutation::Trust { .. } => registry.trust(selector),
-        RegistryMutation::Enable => registry.enable(selector),
+        RegistryMutation::Trust { .. } => registry.trust_reviewed(
+            selector,
+            ReviewApproval {
+                approved_by: PluginApprover::person(PersonVia::App),
+                host_services: None,
+            },
+        ),
+        RegistryMutation::Enable => {
+            registry.enable_by(selector, PluginApprover::person(PersonVia::App))
+        }
         RegistryMutation::Restage => registry.restage(selector),
         RegistryMutation::Disable => registry.disable(selector),
         RegistryMutation::Revoke => registry.revoke_trust(selector),

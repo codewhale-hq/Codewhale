@@ -129,12 +129,19 @@ the `agent/created` hook fires only for children the same plugin starts.
 
 ## Plugin UI (`dsh.client`)
 
-Imported DSH client UIs are not supported. The Engine refuses their client
-descriptor and asset grants when the reviewed conversion report identifies a
-DSH import; the plugin's supported Native and MCP contributions keep their
-existing lifecycle. Code Review 1.0.8's client decorates global command
-candidates through DSH services that the current detail-slot renderer does
-not provide.
+An imported DSH plugin's client UI is served, on the seats the Engine admits.
+The importer retains the reviewed client closure; at serve time the Engine
+re-verifies it byte for byte against the reviewed hashes, maps each declared
+slot key to a seat, and loads one Engine-generated bootstrap built from those
+bytes. A native client is admitted only on `customize.plugins.detail`. A slot
+key with no seat answers `plugin_ui_seat_unsupported`; several keys on one seat
+need the caller to name one (`plugin_ui_dsh_slot_required`). A closure that needs
+a host module the frame does not provide, uses ES module syntax or is not valid
+JSON answers `plugin_ui_unsupported`. Code Review 1.0.8's client decorates
+global command candidates through DSH services that the current detail-slot
+renderer does not provide, so it is not qualified.
+The route that forwards a client's requests to a plugin web server answers
+`plugin_route_not_served` (501): no plugin web server exists yet.
 
 The selected Electron host's reviewed asset transport and isolated frame do
 not establish compatibility with those services. Its real network containment
@@ -142,6 +149,22 @@ and revocation still need qualification. An earlier macOS WebKit probe found
 WebRTC traffic despite content rules, CSP, an opaque sandboxed frame and a
 restrictive Permissions-Policy; that historical result does not qualify the
 current Electron/Chromium host.
+
+## Host services and grants
+
+DSH services that need the core to act for a plugin (`llm`, `credentials`,
+`settings`, `terminal`, `remote`, the plugin catalog, workspace files) are
+brokered: the Rust core serves them, and only for a plugin whose review granted
+them. See [Host services](EXTENSIONS.md#host-services).
+
+| Behavior | Status |
+| --- | --- |
+| A service is granted only by a review that showed it, recorded with who approved | Verified by focused plugin and Engine tests on Linux |
+| A review recorded before grants existed, or an altered or unreadable record | Grants nothing; verified by focused tests |
+| Plugins share one process: a service is given only while every loaded plugin holds the same grant | Verified by focused Engine tests |
+| Turned off, revoked or reviewed again | Grant withdrawn at once, including a call in flight; verified by focused Engine tests |
+| Services offered by this build | None. Each is switched on separately, after its own review |
+| A real plugin using a granted service end to end | Not verified |
 
 ## Containment
 

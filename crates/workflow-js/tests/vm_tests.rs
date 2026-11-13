@@ -1623,6 +1623,7 @@ async fn sandbox_global_inventory_fails_closed_on_new_host_leaks() {
         "__workflow_task",
         "__workflow_log",
         "__workflow_every_slot_failed",
+        "__workflow_slot_dropped",
         "__workflow_phase",
         "__workflow_budget_total",
         "__workflow_budget_spent",

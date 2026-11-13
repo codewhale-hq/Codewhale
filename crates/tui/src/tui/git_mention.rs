@@ -404,6 +404,25 @@ mod tests {
     }
 
     #[test]
+    fn mentions_name_non_ascii_paths_as_written() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        Command::new("git")
+            .args(["config", "core.quotePath", "true"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(dir.path().join("笔记 📝.md"), "旧\n").unwrap();
+        commit_all(dir.path(), "initial");
+        std::fs::write(dir.path().join("笔记 📝.md"), "新\n").unwrap();
+
+        let status = resolve_git_mention(GitMentionKind::Status, dir.path());
+        let diff = resolve_git_mention(GitMentionKind::Diff, dir.path());
+        assert!(status.block.contains("笔记 📝.md"), "{}", status.block);
+        assert!(diff.block.contains("b/笔记 📝.md"), "{}", diff.block);
+    }
+
+    #[test]
     fn diff_covers_staged_and_unstaged_changes() {
         let dir = tempfile::tempdir().unwrap();
         init_repo(dir.path());

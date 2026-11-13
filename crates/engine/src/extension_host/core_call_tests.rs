@@ -1821,7 +1821,7 @@ async fn dsh_broker_tickets_bind_plugin_service_and_session_and_every_refusal_is
     for service in DshService::ALL.into_iter().filter(|s| {
         !matches!(
             s,
-            DshService::Network | DshService::Remote | DshService::Terminal
+            DshService::Network | DshService::Remote | DshService::Terminal | DshService::Workspace
         )
     }) {
         let ticket = &tickets_a[service.name()];
@@ -2041,8 +2041,9 @@ async fn dsh_broker_services_are_granted_by_one_check_and_an_ungranted_service_i
     assert!(
         DshService::ALL
             .into_iter()
-            .all(|service| !super::dsh_broker::granted(service))
+            .all(|service| !super::dsh_broker::offered(service))
     );
+    assert!(f.manager.shared.broker_services(&f.owner).is_empty());
     let none = f.begin(7, &f.owner);
     assert!(
         none.broker_tickets().is_none(),
@@ -2099,7 +2100,7 @@ async fn dsh_broker_services_are_granted_by_one_check_and_an_ungranted_service_i
         }
         if !matches!(
             service,
-            DshService::Network | DshService::Remote | DshService::Terminal
+            DshService::Network | DshService::Remote | DshService::Terminal | DshService::Workspace
         ) {
             let result = f
                 .broker(
@@ -2132,14 +2133,17 @@ async fn dsh_broker_services_are_granted_by_one_check_and_an_ungranted_service_i
             .await;
         assert_eq!(
             dsh_refusal(&withdrawn),
-            (error_code::NOT_AVAILABLE, "not_available".into()),
+            (error_code::REFUSED, "not_granted".into()),
             "a grant withdrawn after minting refuses {} before the arm runs",
             service.name()
         );
         assert_eq!(
             withdrawn.unwrap_err().message,
-            format!("the {} broker is not available yet", service.name()),
-            "the refusal names no grant"
+            format!(
+                "the {} service is not granted to this plugin",
+                service.name()
+            ),
+            "the refusal names no other plugin and no reason"
         );
         drop(guard);
     }
@@ -2488,6 +2492,15 @@ async fn an_invocations_brokers_share_one_cap_on_nested_core_calls() {
     assert_eq!(
         dsh_refusal(&capped),
         (error_code::REFUSED, "refused".into())
+    );
+    assert_eq!(
+        f.server.asked.load(Ordering::SeqCst),
+        MAX_CALLS_PER_INVOCATION as usize
+    );
+    let (direct, _) = f.serve(HostTier::Plugin, 7, &f.owner, guard.ticket()).await;
+    assert!(
+        refused(&direct),
+        "core/call and the brokers share the one cap: {direct:?}"
     );
     assert_eq!(
         f.server.asked.load(Ordering::SeqCst),
@@ -3024,6 +3037,264 @@ async fn dsh_terminal_arm_runs_through_the_gate_in_the_plugins_own_thread_owned_
         dsh_refusal(&revoked),
         (error_code::REFUSED, "ticket_refused".into())
     );
+    drop(guard_b);
+    assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
+}
+
+#[tokio::test]
+async fn dsh_workspace_arm_reads_writes_and_runs_literal_git_only_through_the_gate_inside_the_workspace()
+ {
+    use super::dsh_broker::{TABLE, TestGrants};
+    use super::dsh_workspace::TestOverlay;
+    use super::protocol::DshService;
+
+    let _grants = TestGrants::only(&[DshService::Workspace, DshService::Terminal]);
+    let mut f = fixture(true);
+    let workspace = f.context.workspace.canonicalize().unwrap();
+    std::fs::create_dir_all(workspace.join("src")).unwrap();
+    std::fs::write(workspace.join("src/a.txt"), "alpha\n").unwrap();
+    let git_ready = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&workspace)
+        .status()
+        .is_ok_and(|status| status.success());
+    let specs = crate::tools::registry::ToolRegistryBuilder::new()
+        .with_file_tools()
+        .with_git_tools()
+        .build(ToolContext::new(&workspace))
+        .all();
+    f.gate = f.gate.clone().for_extension(f.caller(), specs);
+    f.in_session("workspace-session-a");
+    let guard_a = f.begin(7, &f.owner);
+    let ticket = broker_ticket(&guard_a, "workspace").unwrap();
+    let other_service = broker_ticket(&guard_a, "terminal").unwrap();
+    let read = json!({"path": "src/a.txt"});
+
+    let unknown = f
+        .broker(TABLE, &f.owner, &ticket, "workspace", "delete", json!({}))
+        .await;
+    assert_eq!(
+        dsh_refusal(&unknown),
+        (error_code::INVALID_PARAMS, "unknown_method".into())
+    );
+    for (owner, presented) in [
+        (&f.other, ticket.as_str()),
+        (&f.owner, other_service.as_str()),
+        (&f.owner, guard_a.ticket()),
+    ] {
+        let result = f
+            .broker(TABLE, owner, presented, "workspace", "read", read.clone())
+            .await;
+        assert_eq!(
+            dsh_refusal(&result),
+            (error_code::REFUSED, "ticket_refused".into())
+        );
+    }
+
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret"), "s").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path(), workspace.join("out")).unwrap();
+    let mut escapes = vec![
+        ("read", json!({"path": "../secret"})),
+        (
+            "read",
+            json!({"path": outside.path().join("secret").to_str().unwrap()}),
+        ),
+        ("list", json!({"path": "src/../.."})),
+        (
+            "exec",
+            json!({"argv": ["git", "rev-parse", "--show-toplevel"], "cwd": "src"}),
+        ),
+        ("exec", json!({"argv": ["git", "status"]})),
+        ("exec", json!({"argv": ["sh", "-c", "git status"]})),
+        ("write", json!({"path": "src/b.txt", "content": "b"})),
+    ];
+    if cfg!(unix) {
+        escapes.extend([
+            ("read", json!({"path": "out/secret"})),
+            ("list", json!({"path": "out"})),
+        ]);
+    }
+    for (method, input) in escapes {
+        let result = f
+            .broker(TABLE, &f.owner, &ticket, "workspace", method, input.clone())
+            .await;
+        assert_eq!(
+            dsh_refusal(&result),
+            (error_code::REFUSED, "refused".into()),
+            "{method} {input}"
+        );
+        assert!(
+            !result
+                .unwrap_err()
+                .message
+                .contains(outside.path().to_str().unwrap()),
+            "a refusal names no path"
+        );
+    }
+    assert!(!workspace.join("src/b.txt").exists());
+    assert_eq!(
+        f.server.asked.load(Ordering::SeqCst),
+        0,
+        "nothing refused reached the gate"
+    );
+
+    let ran = f
+        .broker(TABLE, &f.owner, &ticket, "workspace", "read", read.clone())
+        .await
+        .unwrap();
+    assert_eq!(ran["ok"], true, "{ran}");
+    assert_eq!(ran["path"], "src/a.txt");
+    assert!(ran["output"].as_str().unwrap().contains("alpha"), "{ran}");
+    let listed = f
+        .broker(TABLE, &f.owner, &ticket, "workspace", "list", json!({}))
+        .await
+        .unwrap();
+    assert!(
+        listed["output"].as_str().unwrap().contains("src"),
+        "{listed}"
+    );
+    assert_eq!(f.server.asked.load(Ordering::SeqCst), 2);
+
+    {
+        let _overlay = TestOverlay::granted();
+        let mut excluded = vec![".git/config", "../new.txt", "."];
+        if cfg!(unix) {
+            excluded.push("out/new.txt");
+        }
+        for path in excluded {
+            let result = f
+                .broker(
+                    TABLE,
+                    &f.owner,
+                    &ticket,
+                    "workspace",
+                    "write",
+                    json!({"path": path, "content": "x"}),
+                )
+                .await;
+            assert_eq!(
+                dsh_refusal(&result),
+                (error_code::REFUSED, "refused".into()),
+                "{path}"
+            );
+        }
+        assert!(!outside.path().join("new.txt").exists());
+        let wrote = f
+            .broker(
+                TABLE,
+                &f.owner,
+                &ticket,
+                "workspace",
+                "write",
+                json!({"path": "src/new/b.txt", "content": "beta\n"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrote["ok"], true, "{wrote}");
+        assert_eq!(wrote["path"], "src/new/b.txt");
+    }
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("src/new/b.txt")).unwrap(),
+        "beta\n",
+        "the overlay write persists in the workspace"
+    );
+    assert_eq!(f.server.asked.load(Ordering::SeqCst), 3);
+
+    if git_ready {
+        let root = f
+            .broker(
+                TABLE,
+                &f.owner,
+                &ticket,
+                "workspace",
+                "exec",
+                json!({"argv": ["git", "rev-parse", "--show-toplevel"], "cwd": workspace.to_str().unwrap()}),
+            )
+            .await
+            .unwrap();
+        assert!(root["exit_code"].is_i64(), "{root}");
+        assert!(root["stderr"].is_string(), "{root}");
+        if root["exit_code"] == 0 {
+            assert_eq!(root["ok"], true, "{root}");
+            assert_eq!(
+                std::path::Path::new(root["stdout"].as_str().unwrap().trim())
+                    .canonicalize()
+                    .unwrap(),
+                workspace
+            );
+        }
+        assert_eq!(f.server.asked.load(Ordering::SeqCst), 4);
+    }
+
+    let receipts = guard_a.receipts().expect("workspace calls are receipted");
+    let receipted = receipts.to_string();
+    assert!(receipted.contains("read_file"), "{receipts}");
+    assert!(receipted.contains("write_file"), "{receipts}");
+
+    let allowed = f.context.clone();
+    f.context.disallowed_tools = vec!["read_file".into()];
+    let narrowed = f.begin(7, &f.owner);
+    let narrowed_ticket = broker_ticket(&narrowed, "workspace").unwrap();
+    let asked = f.server.asked.load(Ordering::SeqCst);
+    let denied = f
+        .broker(
+            TABLE,
+            &f.owner,
+            &narrowed_ticket,
+            "workspace",
+            "read",
+            read.clone(),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&denied),
+        (error_code::REFUSED, "refused".into())
+    );
+    assert_eq!(
+        f.server.asked.load(Ordering::SeqCst),
+        asked,
+        "a denied tool never reaches the gate"
+    );
+    drop(narrowed);
+    f.context = allowed;
+
+    let (cx, _violations, host_cancel) = HostRequestContext::for_test(52);
+    host_cancel.cancel();
+    let cancelled = f
+        .broker_in(
+            cx,
+            TABLE,
+            &f.owner,
+            &ticket,
+            "workspace",
+            "read",
+            read.clone(),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&cancelled),
+        (error_code::CANCELLED, "cancelled".into())
+    );
+
+    f.in_session("workspace-session-b");
+    let guard_b = f.begin(7, &f.owner);
+    let ticket_b = broker_ticket(&guard_b, "workspace").unwrap();
+    drop(guard_a);
+    let ended = f
+        .broker(TABLE, &f.owner, &ticket, "workspace", "read", read.clone())
+        .await;
+    assert_eq!(
+        dsh_refusal(&ended),
+        (error_code::REFUSED, "ticket_refused".into()),
+        "session a's ticket dies with its invocation"
+    );
+    let in_b = f
+        .broker(TABLE, &f.owner, &ticket_b, "workspace", "read", read)
+        .await
+        .unwrap();
+    assert_eq!(in_b["ok"], true);
     drop(guard_b);
     assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
 }

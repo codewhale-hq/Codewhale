@@ -147,7 +147,7 @@ enum Commands {
     SessionDiagnostics(SessionDiagnosticsArgs),
     #[command(about = "Install a local, GitHub or version-pinned npm plugin bundle")]
     Install { source: String },
-    #[command(about = "Inspect or restage reviewed plugin bundles")]
+    #[command(about = "Inspect, review, trust, enable, disable or revoke plugin bundles")]
     Plugins {
         #[command(subcommand)]
         command: PluginsCommand,
@@ -283,6 +283,49 @@ enum PluginsCommand {
         #[arg(value_name = "NAME")]
         name: String,
         #[arg(long)]
+        json: bool,
+    },
+    #[command(
+        about = "Show a plugin's capability review, or trust the exact content a review token names",
+        long_about = "Without --review-token, prints the capability review and its bundle review token and changes nothing; in a terminal it then asks whether to trust. With --review-token, trusts only if the bundle review token still matches the installed content and capability set. That token ties trust to the exact content; it is not a record that anyone read the review, and it is not the host-service review token, which this command never asks for. A trust made with --yes is recorded as the command line, and an answered prompt as you. When the process carries the agent's mark (CODEWHALE_AGENT_PROJECT, set on every command the agent runs), the trust is the agent's, for that project only, and only for a plugin installed from a folder inside it. Trust never enables the plugin."
+    )]
+    Trust {
+        #[arg(value_name = "NAME", help = "Plugin bundle name")]
+        name: String,
+        #[arg(
+            long,
+            value_name = "TOKEN",
+            help = "The bundle review token (<content-hash>.<capability-hash>) printed by the review; trust is refused if the content or capability set has changed"
+        )]
+        review_token: Option<String>,
+        #[arg(
+            long,
+            short = 'y',
+            help = "Skip the confirmation prompt; needs --review-token"
+        )]
+        yes: bool,
+        #[arg(long, help = "Print the review or the result as JSON; never prompts")]
+        json: bool,
+    },
+    #[command(about = "Enable a trusted plugin")]
+    Enable {
+        #[arg(value_name = "NAME", help = "Plugin bundle name")]
+        name: String,
+        #[arg(long, help = "Print the result as JSON")]
+        json: bool,
+    },
+    #[command(about = "Disable a plugin; its trust is kept")]
+    Disable {
+        #[arg(value_name = "NAME", help = "Plugin bundle name")]
+        name: String,
+        #[arg(long, help = "Print the result as JSON")]
+        json: bool,
+    },
+    #[command(about = "Revoke a plugin's trust; it stays inactive until reviewed again")]
+    Revoke {
+        #[arg(value_name = "NAME", help = "Plugin bundle name")]
+        name: String,
+        #[arg(long, help = "Print the result as JSON")]
         json: bool,
     },
 }
@@ -2762,7 +2805,8 @@ async fn run_async_main_dispatch(
             }
             Commands::Plugins { command } => tokio::task::spawn_blocking(move || {
                 let _config = load_structural_config_from_cli(&cli)?;
-                let workspace = resolve_workspace(&cli);
+                let workspace = crate::commands::groups::plugins::headless::agent_project()
+                    .unwrap_or_else(|| resolve_workspace(&cli));
                 let registry = plugin_discovery.inspect_registry_for_workspace(&workspace);
                 run_plugins_cli(command, registry)
             })
@@ -3172,6 +3216,7 @@ async fn run_async_main_dispatch(
                         workspace,
                         skills_dir,
                         skills_config,
+                        config.tool_launcher.is_some(),
                     )
                     .await
                 } else if http_selected {
@@ -7823,7 +7868,7 @@ fn doctor_control_socket_posture_line(config: &Config) -> String {
 /// Report the durable opt-out and environment preference without arming or
 /// touching telemetry state. Notice presentation is not a permission gate.
 fn doctor_runtime_telemetry(config: &Config) -> (bool, &'static str) {
-    let (on, source) = codewhale_config::resolved_telemetry_consent(config.telemetry);
+    let (on, source) = codewhale_config::dispatched_telemetry_consent(config.telemetry);
     if !on {
         return (false, source.as_str());
     }
@@ -9356,6 +9401,9 @@ fn plugin_cli_record(plugin: &codewhale_plugins::types::LoadedPlugin) -> serde_j
         "trust": plugin.trust_status.as_str(),
         "enabled": plugin.enabled,
         "active": plugin.active(),
+        "approved_by": plugin.approved_by,
+        "enabled_by": plugin.enabled_by,
+        "outside_reach": plugin.outside_reach,
         "staged": plugin.staged_root.is_some(),
         "applicable": plugin.applicable,
         "compatibility": plugin.compatibility().as_str(),
@@ -9389,6 +9437,7 @@ fn run_plugins_cli(
     command: PluginsCommand,
     mut registry: Arc<codewhale_plugins::PluginRegistry>,
 ) -> Result<()> {
+    use crate::commands::groups::plugins::headless;
     use codewhale_localization::{MessageId, resolve_locale, tr};
     let settings = codewhale_runtime::settings::Settings::load_read_only().unwrap_or_default();
     let locale = resolve_locale(&settings.locale);
@@ -9452,6 +9501,14 @@ fn run_plugins_cli(
                         plugin.content_hash,
                         plugin.capability_hash
                     );
+                    if plugin.trusted() {
+                        println!(
+                            "    {}",
+                            codewhale_plugins::host_services::approver_label(
+                                plugin.approved_by.as_ref()
+                            )
+                        );
+                    }
                     for diagnostic in &plugin.diagnostics {
                         print_plugin_cli_diagnostic(diagnostic);
                     }
@@ -9468,6 +9525,43 @@ fn run_plugins_cli(
                 }
             }
         }
+        PluginsCommand::Trust {
+            name,
+            review_token,
+            yes,
+            json,
+        } => headless::trust(
+            &mut registry,
+            locale,
+            headless::TrustRequest {
+                name,
+                review_token,
+                yes,
+                json,
+            },
+            &mut headless::ProcessConsole,
+        )?,
+        PluginsCommand::Enable { name, json } => headless::enable(
+            &mut registry,
+            locale,
+            &name,
+            json,
+            &mut headless::ProcessConsole,
+        )?,
+        PluginsCommand::Disable { name, json } => headless::disable(
+            &mut registry,
+            locale,
+            &name,
+            json,
+            &mut headless::ProcessConsole,
+        )?,
+        PluginsCommand::Revoke { name, json } => headless::revoke(
+            &mut registry,
+            locale,
+            &name,
+            json,
+            &mut headless::ProcessConsole,
+        )?,
         PluginsCommand::Restage { name, json } => {
             Arc::make_mut(&mut registry)
                 .restage(&name)
@@ -13536,6 +13630,7 @@ fn run_sandbox_command(config: &Config, args: SandboxArgs) -> Result<()> {
         CommandSpec::program(program, args.to_vec(), cwd.clone(), timeout).with_policy(policy);
     let mut manager = SandboxManager::new();
     manager.set_prefer_bwrap(config.prefers_bwrap());
+    manager.set_tool_launcher(config.tool_launcher.clone());
     manager.set_bwrap_extensions(codewhale_sandbox::BwrapMountExtensions {
         read_only_roots: config.bwrap_ro_roots.clone(),
         device_roots: config.bwrap_dev_roots.clone(),
@@ -13543,7 +13638,7 @@ fn run_sandbox_command(config: &Config, args: SandboxArgs) -> Result<()> {
     manager.set_denied_read_subpaths(
         codewhale_sandbox::read_guard::ReadDenylist::from_config(config).subtree_paths(),
     );
-    let exec_env = manager.prepare(&spec);
+    let exec_env = manager.try_prepare(&spec).map_err(anyhow::Error::msg)?;
     if spec.sandbox_policy.should_sandbox() && !exec_env.is_sandboxed() {
         bail!(
             "no OS sandbox can enforce the {} policy on this host; nothing was run",
@@ -14066,6 +14161,13 @@ fn merge_project_config_with_approval_baseline(
     let Some(table) = project.as_table() else {
         return Err(project_config_unusable(&path, "not a TOML table"));
     };
+
+    if table.contains_key("tool_launcher") {
+        return Err(project_config_unusable(
+            &path,
+            "tool_launcher is read only from the managed configuration",
+        ));
+    }
 
     // #417: dangerous keys are denied at project scope. A malicious
     // `<workspace>/.deepseek/config.toml` could otherwise:
@@ -16457,6 +16559,8 @@ mod doctor_setup_state_tests {
         let _telemetry_alias_env = crate::test_support::EnvVarGuard::remove("DEEPSEEK_TELEMETRY");
         let _telemetry_floor =
             crate::test_support::EnvVarGuard::remove("CODEWHALE_TELEMETRY_FLOOR");
+        let _telemetry_source =
+            crate::test_support::EnvVarGuard::remove("CODEWHALE_TELEMETRY_SOURCE");
         let workspace = tmp.path().join("workspace");
         fs::create_dir_all(&workspace).expect("workspace");
 
@@ -16507,6 +16611,32 @@ mod doctor_setup_state_tests {
         let report = doctor_setup_report_json(&config, &workspace);
         assert_eq!(report["runtime_posture"]["telemetry"]["value"], false);
         assert_eq!(report["runtime_posture"]["telemetry"]["source"], "config");
+
+        {
+            let _handed_down =
+                crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY", "false");
+            let _floor = crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY_FLOOR", "0");
+            let _source =
+                crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY_SOURCE", "config");
+            let line = doctor_runtime_posture_line(&config, &workspace);
+            assert!(
+                line.contains("telemetry=off (config)"),
+                "a saved opt-out the dispatcher handed down is not the environment: {line}"
+            );
+            let report = doctor_setup_report_json(&config, &workspace);
+            assert_eq!(report["runtime_posture"]["telemetry"]["source"], "config");
+        }
+        {
+            let _by_hand = crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY", "0");
+            let _floor = crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY_FLOOR", "1");
+            let _source =
+                crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY_SOURCE", "env");
+            let line = doctor_runtime_posture_line(&config, &workspace);
+            assert!(
+                line.contains("telemetry=off (env)"),
+                "a kill switch the person set is the environment: {line}"
+            );
+        }
     }
 
     #[test]
@@ -19267,6 +19397,21 @@ max_subagents = -3
         assert!(message.contains("--no-project-config"), "{message}");
         assert!(!message.contains("this is not valid"), "{message}");
         assert_eq!(config.provider.as_deref(), Some("codewhale"));
+    }
+
+    #[test]
+    fn project_overlay_refuses_a_tool_launcher() {
+        let tmp = workspace_with_project_config("tool_launcher = [\"/usr/bin/sudo\", \"-n\"]\n");
+        let mut config = Config::default();
+        let error = merge_project_config_with_approval_baseline(&mut config, tmp.path(), None)
+            .expect_err("a project tool_launcher must stop the launch");
+        assert!(
+            error
+                .to_string()
+                .contains("read only from the managed configuration"),
+            "{error}"
+        );
+        assert_eq!(config.tool_launcher, None);
     }
 
     #[test]

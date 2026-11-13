@@ -430,6 +430,8 @@ pub struct ThreadRecord {
     pub executor: Option<ExecutorRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<ThreadEnvironment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_preset: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

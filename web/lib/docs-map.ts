@@ -215,8 +215,8 @@ export const DOC_TOPICS: DocTopic[] = [
     slug: "mcp",
     label: { en: "Connect tools with MCP", zh: "用 MCP 连接工具" },
     description: {
-      en: "Add local (stdio) or remote (HTTP) MCP servers, sign in with OAuth, serve Codewhale over MCP, and try code mode.",
-      zh: "添加本地（stdio）或远程（HTTP）MCP 服务器、用 OAuth 登录、把 Codewhale 作为 MCP 服务器运行，并试用代码模式。",
+      en: "Add a connector: a local (stdio) or remote (HTTP) MCP server. Sign in with OAuth, serve Codewhale over MCP, and try code mode.",
+      zh: "添加连接器：本地（stdio）或远程（HTTP）MCP 服务器。用 OAuth 登录、把 Codewhale 作为 MCP 服务器运行，并试用代码模式。",
     },
     repoSource: "docs/MCP.md",
     hasPage: true,
@@ -227,8 +227,8 @@ export const DOC_TOPICS: DocTopic[] = [
     slug: "hooks",
     label: { en: "Run commands on events", zh: "在事件发生时运行命令" },
     description: {
-      en: "Run your own scripts at session start, before a tool call, at turn end, or when Codewhale waits for you.",
-      zh: "在会话开始、工具调用之前、回合结束或 Codewhale 等你回应时运行你自己的脚本。",
+      en: "Add a hook that runs your own script at session start, before a tool call, at turn end, or when Codewhale waits for you.",
+      zh: "添加钩子，在会话开始、工具调用之前、回合结束或 Codewhale 等你回应时运行你自己的脚本。",
     },
     repoSource: ["docs/HOOKS.md", "docs/CONFIGURATION.md"],
     hasPage: true,
@@ -239,8 +239,8 @@ export const DOC_TOPICS: DocTopic[] = [
     slug: "skills",
     label: { en: "Add skills", zh: "添加技能" },
     description: {
-      en: "Install, find, trust, and load reusable instruction packages.",
-      zh: "安装、查找、信任并加载可复用的指令包。",
+      en: "Install, find, trust, and load reusable instruction packages. A skill can come on its own or inside a plugin.",
+      zh: "安装、查找、信任并加载可复用的指令包。技能可以单独添加，也可以包含在插件中。",
     },
     repoSource: ["docs/SKILLS.md", "docs/CLAUDE_PLUGIN_COMPAT.md"],
     hasPage: true,
@@ -263,8 +263,8 @@ export const DOC_TOPICS: DocTopic[] = [
     slug: "plugins",
     label: { en: "Add plugins", zh: "添加插件" },
     description: {
-      en: "Choose plugin formats, browse catalog examples, and review, trust and enable bundles.",
-      zh: "选择插件格式，浏览目录示例，并审阅、信任和启用插件包。",
+      en: "Choose plugin formats, browse catalog examples, and review, trust and enable plugin bundles. A bundle can carry skills, connectors and hooks.",
+      zh: "选择插件格式，浏览目录示例，并审阅、信任和启用插件包。一个插件包可以携带技能、连接器和钩子。",
     },
     repoSource: ["docs/PLUGINS.md", "docs/PLUGIN_BUNDLES.md", "docs/PLUGIN_MARKETPLACE.md", "docs/EXTENSIONS.md"],
     hasPage: true,

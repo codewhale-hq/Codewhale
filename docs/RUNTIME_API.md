@@ -396,6 +396,11 @@ Fleet receipt artifacts keep their own route
 cannot provide an exact commit reports `unknown`, allowing compatibility
 clients to fail closed rather than accepting an ambiguous binary pair.
 
+`sandbox.kind` names the OS wrapper commands get (`linux-bwrap`, `macos-seatbelt`,
+`none`); `sandbox.tool_launcher` is true when the managed configuration runs
+tools as another user. Both are computed when the route is called, and with a
+launcher `kind` is `linux-bwrap` only after the launcher probe has passed.
+
 The same response advertises `capabilities.account_session: true` and
 `capabilities.turn_operation_idempotency: true`. A client must require the
 latter before relying on `operation_key`; do not infer support from a 2xx turn
@@ -877,6 +882,8 @@ foreground shell tools, plus reviewed plugin tools (`extension_host` feature) an
 the tools of MCP servers configured in Codewhale (`mcp` feature), under the same
 permission setting. Shell requires both editor terminal support and operator
 `allow_shell`; a requested external sandbox that is unavailable removes shell.
+Plugin tools and configured MCP servers on this transport are on main after
+0.10.2; 0.10.2 itself does not have them.
 Client-supplied MCP servers, dynamic tools, task/PTY/background shell,
 interpreter, subagent and RLM lifecycles are unavailable on this transport.
 Built-in overrides remove the
@@ -1476,6 +1483,7 @@ plus workspace metadata:
   "preview": "The TUI footer should count project MCP servers...",
   "model": "deepseek-v4-pro",
   "mode": "agent",
+  "agent_preset": "standard",
   "branch": "feature/runtime-api",
   "head": "abc1234",
   "dirty": false,
@@ -1512,6 +1520,38 @@ manual compaction that sits between them).
 Thread list and summary responses remain flat in v0.8.40, so clients that need
 a graph should reconstruct it from events instead of assuming list order is a
 complete tree.
+
+### Conversation modes
+
+`GET /v1/modes` lists the conversation modes a client can offer when it starts
+a conversation:
+
+```json
+{
+  "default": "standard",
+  "modes": [
+    {"id": "standard", "name": "Standard", "description": "The everyday Codewhale agent with its normal tools and skills.", "source": "builtin", "available": true},
+    {"id": "creator", "name": "Creator", "description": "Build, inspect and test Codewhale plugins in this conversation, with the plugin authoring tools and guides loaded.", "source": "builtin", "available": false, "reason": "Creator mode is not ready in this build."}
+  ]
+}
+```
+
+`reason` appears only when `available` is `false`; a client lists the row
+disabled and shows it. A thread's mode is its `agent_preset` string. Set it on
+`POST /v1/threads`, or with `PATCH /v1/threads/{id}` while the thread has no
+turn. A thread record with no `agent_preset` is `standard`, and the thread
+record omits the field for `standard`; rows from `GET /v1/threads/summary`
+always carry it. This field stores and reports the mode; what a mode loads is
+not part of it.
+
+Refusals carry `error.code`:
+
+| `error.code` | Status | Meaning |
+| --- | --- | --- |
+| `unknown_mode` | `400` | The id is not in `GET /v1/modes`. Never replaced by `standard`. |
+| `mode_unavailable` | `424` | The row is listed with `available: false`; the message is its `reason`. |
+| `mode_locked` | `409` | The thread already has a turn, so its mode cannot change. |
+| `mode_not_supported_with_executor` | `400` | `agent_preset` with `executor` (another vendor's agent). |
 
 ### Read markers
 
@@ -2251,6 +2291,7 @@ This persisted project decision is separate from a thread’s `trust_mode` / Ful
 - `GET /v1/workspace/files/search?query=<partial>&limit=<1-100>` (see workspace file suggestions above)
 - `GET /v1/workspace/files?path=<dir>&limit=<1-2000>`, `GET /v1/workspace/files/read?path=<file>&offset=&limit=`
   and `PUT /v1/workspace/files` (see workspace files and session artifacts above)
+- `GET /v1/modes` (see Conversation modes)
 - `GET /v1/skills`
 - `GET /v1/skills/{name}` — one skill's routing metadata (`source`,
   `invocation`, `aliases`, `bundled_tier`, `enabled`) plus its full
@@ -3229,7 +3270,7 @@ refuses OpenAI Codex. An Engine without this route answers `404`.
 
 Reports which external agent CLIs this computer already has, without starting a
 session. It covers Claude, Codex, DeepSeek Harness, Antigravity (`agy acp`),
-OpenCode, Kimi Code, Mistral Vibe, Qoder, CodeBuddy and Grok. `state` is `installed` or `not_installed`; a binary is
+OpenCode, Kimi Code, Mistral Vibe, Qoder, CodeBuddy, Grok and Qwen Code. `state` is `installed` or `not_installed`; a binary is
 looked up on `PATH` (absolute entries only; on Windows the spawnable PATHEXT suffixes `.com/.exe/.bat/.cmd` and `%APPDATA%\npm`) and in the usual per-user bin directories. For an installed
 agent the route runs `--version` and, where the CLI speaks Agent Client Protocol
 itself, one `initialize` request on stdin, concurrently. `acp` is `native` when

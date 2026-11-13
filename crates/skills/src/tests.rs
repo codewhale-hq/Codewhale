@@ -2939,3 +2939,87 @@ fn workspace_skill_discovery_does_not_follow_links_out_of_the_workspace() {
         registry.warnings()
     );
 }
+
+#[test]
+fn creator_skills_are_hidden_by_default_and_found_when_the_switch_is_on() {
+    struct ResetSwitch;
+    impl Drop for ResetSwitch {
+        fn drop(&mut self) {
+            super::set_creator_skills_enabled(false);
+        }
+    }
+    let _env_lock = codewhale_runtime::test_support::lock_test_env();
+    let _reset = ResetSwitch;
+    let tmpdir = TempDir::new().unwrap();
+    let home = tmpdir.path().join("home");
+    let workspace = tmpdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let _home = codewhale_runtime::test_support::EnvVarGuard::set("HOME", &home);
+    let _userprofile = codewhale_runtime::test_support::EnvVarGuard::set("USERPROFILE", &home);
+    let _codewhale_home = codewhale_runtime::test_support::EnvVarGuard::set(
+        "CODEWHALE_HOME",
+        home.join("isolated-product-state"),
+    );
+    codewhale_runtime::test_support::trust_workspace(&workspace);
+    super::set_creator_skills_enabled(false);
+    super::clear_skill_discovery_cache();
+
+    let owned = codewhale_runtime::config::owned_skills_dir().unwrap();
+    let config = codewhale_runtime::config::SkillsConfig::default();
+    super::install_system_skills(&owned, &config.bundled).unwrap();
+    for name in super::CREATOR_SKILL_NAMES {
+        assert!(
+            owned.join(name).join("LICENSE").is_file(),
+            "{name} files are installed"
+        );
+    }
+
+    let hidden = super::discover_for_workspace(&workspace, None, &config, None);
+    for name in super::CREATOR_SKILL_NAMES {
+        assert!(
+            hidden.get(name).is_none(),
+            "{name} must be hidden by default"
+        );
+    }
+    assert!(hidden.get("plugin-creator").is_some());
+    let catalogue = super::render_index(&workspace, None, &config, "en", None, None).unwrap();
+    for name in super::CREATOR_SKILL_NAMES {
+        assert!(
+            !catalogue.contains(name),
+            "{name} must not be in the catalogue"
+        );
+    }
+
+    super::set_creator_skills_enabled(true);
+    let shown = super::discover_for_workspace(&workspace, None, &config, None);
+    for name in super::CREATOR_SKILL_NAMES {
+        assert!(
+            shown.get(name).is_some(),
+            "{name} must be found when enabled"
+        );
+    }
+    let catalogue = super::render_index(&workspace, None, &config, "en", None, None).unwrap();
+    assert!(catalogue.contains("cordis-plugin-development"));
+
+    let development = shown.get("cordis-plugin-development").unwrap();
+    let context = super::bundled_skill_load_context(&development.name, &development.path).unwrap();
+    assert_eq!(
+        std::fs::canonicalize(&context.base_dir).unwrap(),
+        std::fs::canonicalize(owned.join("cordis-plugin-development")).unwrap()
+    );
+    assert!(context.base_dir.join("references/host-plugin.md").is_file());
+    assert!(
+        context
+            .base_dir
+            .join("templates/decoration/client.js")
+            .is_file()
+    );
+    assert!(context.host_notes.unwrap().contains("`load_skill`"));
+    let experience = shown.get("agent-experience").unwrap();
+    let context = super::bundled_skill_load_context(&experience.name, &experience.path).unwrap();
+    assert!(context.host_notes.is_none());
+
+    std::fs::write(development.path.clone(), "my own copy").unwrap();
+    assert!(super::bundled_skill_load_context(&development.name, &development.path).is_none());
+}

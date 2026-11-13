@@ -313,8 +313,14 @@ fn resolve_interpreter(path: &Path) -> (String, Vec<String>) {
         let bin_name = interp.rsplit('/').next().unwrap_or(&interp);
         // `env` is a special case: `#!/usr/bin/env node` → `node`
         // On Windows, `env` is not available, so extract the intended binary.
-        if bin_name == "env" && !shebang_args.is_empty() {
-            return (shebang_args[0].clone(), shebang_args[1..].to_vec());
+        if bin_name == "env" {
+            let env_args = match shebang_args.first().map(String::as_str) {
+                Some("-S" | "--split-string") => &shebang_args[1..],
+                _ => &shebang_args[..],
+            };
+            if let Some((program, args)) = env_args.split_first() {
+                return (program.clone(), args.to_vec());
+            }
         }
         if cfg!(windows) {
             return (bin_name.to_string(), shebang_args);
@@ -777,6 +783,18 @@ echo hello
             assert_eq!(interpreter, "/opt/custom/bin/tool-runner");
         }
         assert_eq!(args, vec!["--safe"]);
+    }
+
+    #[test]
+    fn resolve_interpreter_skips_env_split_string_flag() {
+        let dir = TempDir::new().unwrap();
+        let script = dir.path().join("tool");
+        std::fs::write(&script, "#!/usr/bin/env -S python3 -u\n# name: tool\n").unwrap();
+
+        assert_eq!(
+            resolve_interpreter(&script),
+            ("python3".to_string(), vec!["-u".to_string()])
+        );
     }
 
     #[test]

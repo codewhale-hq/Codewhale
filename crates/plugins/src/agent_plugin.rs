@@ -1125,6 +1125,7 @@ fn capabilities_are_default(capabilities: &PluginCapabilities) -> bool {
     capabilities.filesystem_roots.is_empty()
         && capabilities.network_hosts.is_empty()
         && !capabilities.lifecycle_mutation
+        && capabilities.host_services.is_empty()
 }
 
 fn config_to_standard_server(

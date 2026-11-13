@@ -10,7 +10,7 @@
  * importing desktop colors.
  *
  *   Filled actions use the primary blue; links, focus and selection carry
- *   the accent. The sea below the horizon stays navy in both appearances.
+ *   the accent. The footer sits on the page's own ground in both appearances.
  *
  *   Depth is elevation. --panel is raised (nearer the surface, lighter);
  *   --bg is the floor; --surface is recessed (code, rails, fields).
@@ -31,30 +31,17 @@
   --kit-mark-navy: #142352;
   --kit-abyss: #0f1e2d;
   --kit-deep-navy: #142638;
-  --kit-ocean-depth: #173b50;
-  --kit-night-surface: #20374e;
   --kit-night-border: #31495e;
   --ocean-abyss: var(--kit-abyss);
   --ocean-floor: var(--kit-deep-navy);
-  --ocean-raised: var(--kit-ocean-depth);
-  --ocean-hover: var(--kit-night-surface);
-  --ocean-selected: var(--kit-night-border);
   --ocean-line: var(--kit-night-border);
   --ocean-line-strong: var(--gpui-dark-border-strong);
-  --ocean-sky: var(--kit-mark-navy);
   --brand-light: var(--kit-current-blue);
   --brand-deep: var(--kit-whale-blue);
   --brand-mid: #1877c9;
   --brand-fill: linear-gradient(135deg, var(--brand-mid), var(--brand-deep));
   --brand-fill-hover: linear-gradient(135deg, var(--brand-deep), var(--kit-mark-navy));
   --on-brand: var(--gpui-dark-on-primary);
-  --sea-surface: var(--brand-deep);
-  --sea-shallow: #0f3991;
-  --sea-mid: var(--kit-mark-navy);
-  --sea: linear-gradient(180deg, var(--sea-shallow) 0, var(--sea-mid) 5rem, var(--ocean-floor) 22rem);
-  --sea-band: linear-gradient(180deg, var(--sea-shallow) 0, var(--sea-mid) 40%, var(--ocean-floor) 100%);
-  --horizon-light: color-mix(in srgb, var(--gpui-dark-accent) 85%, transparent);
-  --horizon-glow: var(--horizon-light);
   --ombre: var(--gpui-ombre);
 
   --font-body: var(--font-geist-sans), var(--gpui-font-fallbacks), ui-sans-serif, system-ui,
@@ -157,6 +144,7 @@
   --diff-add: var(--gpui-light-diff-add);
   --diff-del: var(--gpui-light-diff-remove);
   --ground: var(--gpui-water-light) top center / 100% 38rem no-repeat, var(--bg);
+  --home-sky: var(--gpui-surface-light-light) top center / 100% 38rem no-repeat, var(--ground);
   --glow: 0 0 0 3px color-mix(in srgb, currentColor 16%, transparent);
   --glow-focus: 0 0 0 4px color-mix(in srgb, var(--gpui-light-accent) 16%, transparent);
   --shadow-popover: var(--gpui-elevation-popover-light);
@@ -190,6 +178,7 @@
   --diff-add: var(--gpui-dark-diff-add);
   --diff-del: var(--gpui-dark-diff-remove);
   --ground: var(--gpui-water-dark) top center / 100% 38rem no-repeat, var(--bg);
+  --home-sky: var(--gpui-surface-light-dark) top center / 100% 38rem no-repeat, var(--ground);
   --glow: 0 0 0 3px color-mix(in srgb, currentColor 20%, transparent), 0 0 12px 1px color-mix(in srgb, currentColor 45%, transparent);
   --glow-focus: 0 0 0 4px color-mix(in srgb, var(--gpui-dark-accent) 30%, transparent);
   --shadow-popover: var(--gpui-elevation-popover-dark);
@@ -197,67 +186,10 @@
   color-scheme: dark;
 }
 
-/* ---------- the stage — below the horizon, in both appearances ---------- */
-/* The footer and the home install band. Legacy aliases are repeated here
-   because a custom property that references another is computed where it is
-   declared. */
-.stage,
-.site-footer {
-  --bg: var(--ocean-floor);
-  --surface: var(--ocean-abyss);
-  --panel: var(--ocean-raised);
-  --text: var(--gpui-dark-text);
-  --muted: var(--gpui-dark-text-muted);
-  --line: var(--ocean-line);
-  --line-strong: var(--ocean-line-strong);
-  --accent: var(--gpui-dark-accent);
-  --accent-hover: color-mix(in srgb, var(--gpui-dark-accent) calc(var(--gpui-primary-hover-opacity) * 100%), transparent);
-  --on-accent: var(--gpui-dark-bg);
-
-  --hover: var(--ocean-hover);
-  --selected: var(--ocean-selected);
-  --selection: color-mix(in srgb, var(--gpui-dark-accent) calc(var(--gpui-selection-opacity) * 100%), transparent);
-  --ring: var(--gpui-dark-accent);
-  --live: var(--gpui-dark-live);
-  --success: var(--gpui-dark-live);
-  --attention: var(--gpui-dark-attention);
-  --danger: var(--gpui-dark-danger);
-  --mark-ink: var(--gpui-dark-text);
-  --ombre-ink: linear-gradient(135deg, var(--gpui-dark-accent), var(--brand-light));
-  --diff-add: var(--gpui-dark-diff-add);
-  --diff-del: var(--gpui-dark-diff-remove);
-  --glow: 0 0 0 3px color-mix(in srgb, currentColor 20%, transparent), 0 0 12px 1px color-mix(in srgb, currentColor 45%, transparent);
-  --glow-focus: 0 0 0 4px color-mix(in srgb, var(--gpui-dark-accent) 30%, transparent);
-  --shadow-popover: var(--gpui-elevation-popover-dark);
-
-  --paper: var(--bg);
-  --paper-deep: var(--surface);
-  --paper-card: var(--panel);
-  --paper-edge: var(--line);
-  --paper-line: var(--line);
-  --paper-line-soft: var(--line);
-  --hairline: var(--line);
-  --ink: var(--text);
-  --ink-soft: var(--muted);
-  --ink-mute: var(--muted);
-  --indigo: var(--accent);
-  --indigo-deep: var(--accent-hover);
-  --indigo-pale: color-mix(in srgb, var(--accent) 14%, transparent);
-  --docs-accent: var(--accent);
-  --code-bg: var(--surface);
-  --code-fg: var(--text);
-  color-scheme: dark;
-  color: var(--text);
-}
-
-/* The page's own ground, resolved here on :root so it survives into regions
-   (the footer, the stage) that re-declare --bg. */
-:root { --page-ground: var(--bg); }
-
 /* ---------- legacy names ---------- */
 /* Pages and partials that have not moved to the roles (the docs) read these.
    Declared once on :root, they resolve against whichever scheme block wins
-   there; `.stage` repeats them. Removed in the post-renovation sweep. */
+   there. Removed in the post-renovation sweep. */
 :root {
   --paper: var(--bg);
   --paper-deep: var(--surface);
@@ -286,5 +218,4 @@
   --code-bg: var(--surface);
   --code-fg: var(--text);
   --stage-line: var(--line);
-  --stage-dim: var(--muted);
 }

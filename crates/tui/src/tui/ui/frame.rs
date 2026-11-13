@@ -1152,6 +1152,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             |identity| config.subagent_heartbeat_timeout_secs_for_provider(identity),
         )),
         prefer_bwrap: config.prefers_bwrap(),
+        tool_launcher: config.tool_launcher.clone(),
         bwrap_extensions: codewhale_sandbox::BwrapMountExtensions {
             read_only_roots: config.bwrap_ro_roots.clone(),
             device_roots: config.bwrap_dev_roots.clone(),

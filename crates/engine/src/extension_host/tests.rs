@@ -2164,6 +2164,7 @@ fn attachment_changes_discard_the_complete_scan_before_owner_side_effects() {
                 plugin_name: "plugin".into(),
                 authority: fake_authority("plugin"),
                 entries: Vec::new(),
+                host_services: Vec::new(),
             },
         )]
         .into(),

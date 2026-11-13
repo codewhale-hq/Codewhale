@@ -522,6 +522,36 @@ mod tests {
     }
 
     #[test]
+    fn status_values_start_in_one_column_for_cjk_labels() {
+        let tmpdir = TempDir::new().expect("temp dir");
+        let mut app = create_test_app(tmpdir.path().to_path_buf());
+        app.ui_locale = Locale::ZhHans;
+
+        let msg = format_status(&mut app);
+
+        let columns: Vec<usize> = [
+            MessageId::StatusLabelRoute,
+            MessageId::StatusLabelProjectDocs,
+            MessageId::StatusLabelContextWindow,
+        ]
+        .into_iter()
+        .map(|id| {
+            let label = format!("{}:", tr(Locale::ZhHans, id));
+            let line = msg
+                .lines()
+                .find(|line| line.trim_start().starts_with(&label))
+                .unwrap_or_else(|| panic!("missing {id:?}: {msg}"));
+            let value = line[line.find(&label).unwrap() + label.len()..].trim_start();
+            unicode_width::UnicodeWidthStr::width(&line[..line.len() - value.len()])
+        })
+        .collect();
+        assert!(
+            columns.windows(2).all(|w| w[0] == w[1]),
+            "{columns:?}\n{msg}"
+        );
+    }
+
+    #[test]
     fn status_report_localizes_the_complete_japanese_surface() {
         let tmpdir = TempDir::new().expect("temp dir");
         let mut app = create_test_app(tmpdir.path().to_path_buf());

@@ -1,0 +1,133 @@
+//! Stable diagnostics translation keys mapped to the existing catalog.
+//! This bridge does not introduce new copy or infer provider prices.
+
+use codewhale_command_contract::facets::CommandPresentationContext;
+use codewhale_localization::{Locale, MessageId, tr};
+
+pub fn resolve(key: &str) -> Option<MessageId> {
+    if let Some(reason) = key.strip_prefix("cost_reason_") {
+        return Some(crate::pricing::UnpricedReason::from_label(reason).message_id());
+    }
+    Some(match key {
+        "cmd_diff_git_unavailable" => MessageId::CmdDiffGitUnavailable,
+        "cmd_diff_no_baseline" => MessageId::CmdDiffNoBaseline,
+        "cmd_diff_failed" => MessageId::CmdDiffFailed,
+        "cmd_diff_no_changes" => MessageId::CmdDiffNoChanges,
+        "cmd_diff_changed_files" => MessageId::CmdDiffChangedFiles,
+        "cmd_diff_changed_files_renamed" => MessageId::CmdDiffChangedFilesRenamed,
+        "cmd_diff_stat_header" => MessageId::CmdDiffStatHeader,
+        "cmd_diff_truncated" => MessageId::CmdDiffTruncated,
+        "cmd_diff_title" => MessageId::CmdDiffTitle,
+        "cmd_undo_unknown_option" => MessageId::CmdUndoUnknownOption,
+        "cmd_undo_removed_messages" => MessageId::CmdUndoRemovedMessages,
+        "cmd_undo_nothing_to_undo" => MessageId::CmdUndoNothingToUndo,
+        "cmd_undo_files_not_reverted_note" => MessageId::CmdUndoFilesNotRevertedNote,
+        "cmd_undo_no_file_changes_note" => MessageId::CmdUndoNoFileChangesNote,
+        "cmd_undo_snapshot_repo_unavailable" => MessageId::CmdUndoSnapshotRepoUnavailable,
+        "cmd_undo_snapshot_pending" => MessageId::CmdUndoSnapshotPending,
+        "cmd_undo_no_snapshots" => MessageId::CmdUndoNoSnapshots,
+        "cmd_undo_no_session" => MessageId::CmdUndoNoSession,
+        "cmd_undo_no_owned_steps" => MessageId::CmdUndoNoOwnedSteps,
+        "cmd_undo_no_difference" => MessageId::CmdUndoNoDifference,
+        "cmd_undo_open_ended" => MessageId::CmdUndoOpenEnded,
+        "cmd_undo_compare_failed" => MessageId::CmdUndoCompareFailed,
+        "cmd_undo_snapshot_failed" => MessageId::CmdUndoSnapshotFailed,
+        "cmd_undo_list_failed" => MessageId::CmdUndoListFailed,
+        "cmd_undo_restore_failed" => MessageId::CmdUndoRestoreFailed,
+        "cmd_undo_changed_since" => MessageId::CmdUndoChangedSince,
+        "cmd_undo_request_named" => MessageId::CmdUndoRequestNamed,
+        "cmd_undo_request_last" => MessageId::CmdUndoRequestLast,
+        "cmd_undo_undid_summary" => MessageId::CmdUndoUndidSummary,
+        "cmd_undo_one_file_back" => MessageId::CmdUndoOneFileBack,
+        "cmd_undo_files_back" => MessageId::CmdUndoFilesBack,
+        "cmd_undo_action_restored" => MessageId::CmdUndoActionRestored,
+        "cmd_undo_action_recreated" => MessageId::CmdUndoActionRecreated,
+        "cmd_undo_action_removed" => MessageId::CmdUndoActionRemoved,
+        "cmd_undo_forced_note" => MessageId::CmdUndoForcedNote,
+        "cmd_undo_conversation_removed" => MessageId::CmdUndoConversationRemoved,
+        "cmd_undo_conversation_kept" => MessageId::CmdUndoConversationKept,
+        "cmd_undo_left_in_place" => MessageId::CmdUndoLeftInPlace,
+        "cmd_change_header" => MessageId::CmdChangeHeader,
+        "cmd_change_previous_version" => MessageId::CmdChangePreviousVersion,
+        "cmd_change_translation_unavailable" => MessageId::CmdChangeTranslationUnavailable,
+        "cmd_change_translation_queued" => MessageId::CmdChangeTranslationQueued,
+        "cmd_tokens_not_reported" => MessageId::CmdTokensNotReported,
+        "cmd_tokens_context_with_window" => MessageId::CmdTokensContextWithWindow,
+        "cmd_tokens_cache_both" => MessageId::CmdTokensCacheBoth,
+        "cmd_tokens_cache_hit_only" => MessageId::CmdTokensCacheHitOnly,
+        "cmd_tokens_cache_miss_only" => MessageId::CmdTokensCacheMissOnly,
+        "cmd_tokens_report" => MessageId::CmdTokensReport,
+        "cmd_tokens_cache_write_total" => MessageId::CmdTokensCacheWriteTotal,
+        "cmd_cost_report" => MessageId::CmdCostReport,
+        "cmd_cost_report_subtotal" => MessageId::CmdCostReportSubtotal,
+        "cmd_cost_report_unknown" => MessageId::CmdCostReportUnknown,
+        "cmd_cost_unknown_value" => MessageId::CmdCostUnknownValue,
+        "cmd_cost_estimate_only" => MessageId::CmdCostEstimateOnly,
+        "cmd_cost_coverage_unknown_legacy" => MessageId::CmdCostCoverageUnknownLegacy,
+        "cmd_cost_coverage" => MessageId::CmdCostCoverage,
+        "cmd_cost_unpriced_turns" => MessageId::CmdCostUnpricedTurns,
+        "cmd_cost_unpriced_classes" => MessageId::CmdCostUnpricedClasses,
+        "cmd_cost_pricing_provenance" => MessageId::CmdCostPricingProvenance,
+        "cmd_cost_live_pricing_downgraded" => MessageId::CmdCostLivePricingDowngraded,
+        "cmd_cost_live_pricing_unavailable" => MessageId::CmdCostLivePricingUnavailable,
+        "cmd_cost_routes_header" => MessageId::CmdCostRoutesHeader,
+        "cmd_cache_header" => MessageId::CmdCacheHeader,
+        "cmd_cache_no_data" => MessageId::CmdCacheNoData,
+        "cmd_cache_totals" => MessageId::CmdCacheTotals,
+        "cmd_cache_unpriced_note" => MessageId::CmdCacheUnpricedNote,
+        "cmd_cache_advice" => MessageId::CmdCacheAdvice,
+        "cmd_cache_footnote" => MessageId::CmdCacheFootnote,
+        "cmd_cache_rate_parent" => MessageId::CmdCacheRateParent,
+        "cmd_cache_rate_agents" => MessageId::CmdCacheRateAgents,
+        "cmd_cache_rate_combined" => MessageId::CmdCacheRateCombined,
+        "cmd_cache_session_rates" => MessageId::CmdCacheSessionRates,
+        _ => return None,
+    })
+}
+
+pub fn apply_named_replacements(template: &str, replacements: &[(&str, &str)]) -> Option<String> {
+    let supplied: std::collections::BTreeMap<&str, &str> = replacements.iter().copied().collect();
+    if supplied.len() != replacements.len() {
+        return None;
+    }
+    let mut placeholders = std::collections::BTreeSet::new();
+    let mut cursor = 0usize;
+    while let Some(start) = template[cursor..].find('{') {
+        let start = cursor + start;
+        let Some(end) = template[start + 1..].find('}') else {
+            break;
+        };
+        let end = start + 1 + end;
+        let name = &template[start + 1..end];
+        if !name.is_empty() {
+            placeholders.insert(name);
+        }
+        cursor = end + 1;
+    }
+    if placeholders != supplied.keys().copied().collect() {
+        return None;
+    }
+    let placeholders: Vec<_> = replacements
+        .iter()
+        .map(|(name, _)| format!("{{{name}}}"))
+        .collect();
+    let replacements: Vec<_> = placeholders
+        .iter()
+        .zip(replacements)
+        .map(|(placeholder, (_, value))| (placeholder.as_str(), *value))
+        .collect();
+    Some(codewhale_protocol::display::interpolate(
+        template,
+        &replacements,
+    ))
+}
+
+pub struct EnglishDiagnostics;
+
+impl CommandPresentationContext for EnglishDiagnostics {
+    fn translate(&self, key: &str, replacements: &[(&str, &str)]) -> Result<String, String> {
+        let message_id = resolve(key).ok_or_else(|| "unknown translation key".to_string())?;
+        apply_named_replacements(&tr(Locale::En, message_id), replacements)
+            .ok_or_else(|| "invalid translation replacement contract".to_string())
+    }
+}

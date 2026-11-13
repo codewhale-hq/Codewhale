@@ -157,6 +157,9 @@ fn receipt(capability: &str, age: Duration) -> TrustReceipt {
         capability_hash: capability.into(),
         reviewed_capabilities: PluginInventory::default(),
         reviewed_at: rfc3339_ago(age),
+        version: 0,
+        approved_by: None,
+        host_services: Vec::new(),
     }
 }
 
@@ -166,6 +169,7 @@ fn trusted(capability: &str, enabled: bool, age: Duration) -> PersistedPluginSta
     PersistedPluginState {
         generation: 1,
         enabled,
+        enabled_by: None,
         trust: Some(receipt.clone()),
         review_history: vec![receipt],
     }
@@ -176,6 +180,7 @@ fn inert(age: Duration) -> PersistedPluginState {
     PersistedPluginState {
         generation: 4,
         enabled: false,
+        enabled_by: None,
         trust: None,
         review_history: vec![receipt("cap", age)],
     }

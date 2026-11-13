@@ -1465,6 +1465,8 @@ pub struct CreateThreadRequest {
     pub executor: Option<CreateThreadExecutor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<ThreadEnvironment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_preset: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1514,6 +1516,8 @@ pub struct UpdateThreadRequest {
     /// route name in `model_provider`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_preset: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3964,6 +3968,12 @@ impl RuntimeThreadManager {
 
     pub fn read_config(&self) -> parking_lot::RwLockReadGuard<'_, Config> {
         self.config.read()
+    }
+
+    pub fn extension_host_options(&self) -> crate::extension_host::ExtensionHostOptions {
+        crate::extension_host::ExtensionHostOptions::from_config(
+            self.read_config().extension_host.as_ref(),
+        )
     }
 
     pub(super) fn resolved_route_for_thread(
@@ -7171,6 +7181,18 @@ impl RuntimeThreadManager {
         if let Some(environment) = req.environment.as_ref() {
             return Err(environment.refusal().into());
         }
+        if req.executor.is_some() && req.agent_preset.is_some() {
+            return Err(crate::conversation_modes::ModeRefusal::with_executor().into());
+        }
+        let agent_preset = match req.agent_preset.as_deref() {
+            Some(id) => {
+                let selection =
+                    crate::conversation_modes::select(id, self.extension_host_options()).await?;
+                selection.require_available()?;
+                crate::conversation_modes::stored_form(&selection.id)
+            }
+            None => None,
+        };
         let executor = match req.executor.as_ref() {
             Some(requested) => {
                 anyhow::ensure!(
@@ -7311,6 +7333,7 @@ impl RuntimeThreadManager {
             last_read: None,
             executor,
             environment: None,
+            agent_preset,
         };
         if let Some(operation_key) = req.operation_key {
             let key_fingerprint = runtime_turn_operation_key_fingerprint(
@@ -7318,28 +7341,32 @@ impl RuntimeThreadManager {
                 ":thread-create:",
                 &operation_key,
             )?;
+            let mut fingerprint_body = json!({
+                "version": 1,
+                "model": thread.model,
+                "model_provider": thread.model_provider,
+                "model_provider_id": thread.model_provider_id,
+                "reasoning_effort": thread.reasoning_effort,
+                "allowed_tools": thread.allowed_tools,
+                "add_dirs": thread.add_dirs,
+                "workspace": thread.workspace,
+                "mode": thread.mode,
+                "permission_posture": thread.permission_posture,
+                "allow_shell": thread.allow_shell,
+                "trust_mode": thread.trust_mode,
+                "auto_approve": thread.auto_approve,
+                "archived": thread.archived,
+                "system_prompt": thread.system_prompt,
+                "task_id": thread.task_id,
+                "dynamic_tools": req.dynamic_tools,
+                "environments": req.environments,
+                "executor": thread.executor,
+            });
+            if let Some(preset) = thread.agent_preset.as_ref() {
+                fingerprint_body["agent_preset"] = json!(preset);
+            }
             let request_fingerprint =
-                codewhale_runtime::hashing::sha256_hex(serde_json::to_vec(&json!({
-                    "version": 1,
-                    "model": thread.model,
-                    "model_provider": thread.model_provider,
-                    "model_provider_id": thread.model_provider_id,
-                    "reasoning_effort": thread.reasoning_effort,
-                    "allowed_tools": thread.allowed_tools,
-                    "add_dirs": thread.add_dirs,
-                    "workspace": thread.workspace,
-                    "mode": thread.mode,
-                    "permission_posture": thread.permission_posture,
-                    "allow_shell": thread.allow_shell,
-                    "trust_mode": thread.trust_mode,
-                    "auto_approve": thread.auto_approve,
-                    "archived": thread.archived,
-                    "system_prompt": thread.system_prompt,
-                    "task_id": thread.task_id,
-                    "dynamic_tools": req.dynamic_tools,
-                    "environments": req.environments,
-                    "executor": thread.executor,
-                }))?);
+                codewhale_runtime::hashing::sha256_hex(serde_json::to_vec(&fingerprint_body)?);
             let _emit_order = self.event_emit.lock().await;
             let store = self.store.clone();
             let (thread, event) = tokio::task::spawn_blocking(move || {
@@ -8400,9 +8427,26 @@ impl RuntimeThreadManager {
             && req.workspace.is_none()
             && req.model_provider.is_none()
             && req.model_provider_id.is_none()
+            && req.agent_preset.is_none()
         {
             bail!("At least one thread field is required");
         }
+        let preset_selection = match req.agent_preset.as_deref() {
+            Some(preset_id) => {
+                if self
+                    .store
+                    .load_thread(id)
+                    .is_ok_and(|thread| thread.executor.is_some())
+                {
+                    return Err(crate::conversation_modes::ModeRefusal::with_executor().into());
+                }
+                Some(
+                    crate::conversation_modes::select(preset_id, self.extension_host_options())
+                        .await?,
+                )
+            }
+            None => None,
+        };
         if (req.model.is_some()
             || req.model_provider.is_some()
             || req.model_provider_id.is_some()
@@ -8571,6 +8615,24 @@ impl RuntimeThreadManager {
                 thread.trust_mode = trust_mode;
                 changes.insert("trust_mode".to_string(), json!(trust_mode));
             }
+            if let Some(selection) = preset_selection.as_ref() {
+                let current =
+                    crate::conversation_modes::effective_id(thread.agent_preset.as_deref());
+                if selection.id != current {
+                    if thread.latest_turn_id.is_some()
+                        || active
+                            .engines
+                            .get(id)
+                            .and_then(|state| state.active_turn.as_ref())
+                            .is_some()
+                    {
+                        return Err(crate::conversation_modes::ModeRefusal::locked().into());
+                    }
+                    selection.require_available()?;
+                    thread.agent_preset = crate::conversation_modes::stored_form(&selection.id);
+                    changes.insert("agent_preset".to_string(), json!(selection.id));
+                }
+            }
             let requested_model = match provider_switch {
                 Some((model_provider, model_provider_id, model)) => {
                     if thread.model_provider.as_deref() != Some(model_provider.as_str())
@@ -8639,7 +8701,9 @@ impl RuntimeThreadManager {
             }
 
             let workspace_changed = changes.contains_key("workspace");
-            let rebuild_engine = workspace_changed || changes.contains_key("system_prompt");
+            let rebuild_engine = workspace_changed
+                || changes.contains_key("system_prompt")
+                || changes.contains_key("agent_preset");
             if rebuild_engine
                 && active
                     .engines
@@ -14738,6 +14802,7 @@ source_usage_records: Default::default(),
                     cfg.subagent_heartbeat_timeout_secs_for_provider(&route_identity),
                 ),
                 prefer_bwrap: cfg.prefers_bwrap(),
+                tool_launcher: cfg.tool_launcher.clone(),
                 bwrap_extensions: codewhale_sandbox::BwrapMountExtensions {
                     read_only_roots: cfg.bwrap_ro_roots.clone(),
                     device_roots: cfg.bwrap_dev_roots.clone(),
@@ -15155,10 +15220,11 @@ source_usage_records: Default::default(),
         if let Some(environment) = thread.environment.as_ref() {
             return Err(environment.refusal().into());
         }
-        let (prefer_bwrap, bwrap_extensions, denied_read_paths) = {
+        let (prefer_bwrap, tool_launcher, bwrap_extensions, denied_read_paths) = {
             let cfg = self.read_config();
             (
                 cfg.prefers_bwrap(),
+                cfg.tool_launcher.clone(),
                 codewhale_sandbox::BwrapMountExtensions {
                     read_only_roots: cfg.bwrap_ro_roots.clone(),
                     device_roots: cfg.bwrap_dev_roots.clone(),
@@ -15173,6 +15239,7 @@ source_usage_records: Default::default(),
                 let manager = new_shared_shell_manager(thread.workspace.clone());
                 if let Ok(mut guard) = manager.lock() {
                     guard.set_prefer_bwrap(prefer_bwrap);
+                    guard.set_tool_launcher(tool_launcher);
                     guard.set_bwrap_extensions(bwrap_extensions);
                     guard.set_denied_read_subpaths(denied_read_paths);
                 }
@@ -18970,21 +19037,12 @@ pub async fn receipt_secret_values(config: Config) -> Result<Vec<String>> {
 }
 
 pub fn summarize_text(text: &str, limit: usize) -> String {
-    let take = limit.saturating_sub(3);
-    let mut count = 0;
-    let mut out = String::new();
-    for ch in text.chars() {
-        if count >= take {
-            out.push_str("...");
-            return out;
-        }
-        if ch.is_control() && ch != '\n' && ch != '\t' {
-            continue;
-        }
-        out.push(ch);
-        count += 1;
-    }
-    out
+    let visible: String = text
+        .chars()
+        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+        .take(limit.saturating_add(1))
+        .collect();
+    crate::rlm::turn::truncate_text(&visible, limit)
 }
 
 pub(super) fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {

@@ -82,7 +82,10 @@ wrapper derives its mounts and network namespace from the resolved
 ```
 
 The sandbox always gets a private `/dev` (fresh device nodes, so `>/dev/null`
-works), a private `/proc`, and a tmpfs `/tmp` (#5410). Two optional top-level
+works), a private `/proc`, and a tmpfs `/tmp` (#5410). A `workspace-write`
+policy then binds the host `/tmp` (and `TMPDIR`) over that tmpfs unless it
+excludes them, so by default a sandboxed command shares the host's `/tmp`,
+writable, with the usual sticky-bit rules. Two optional top-level
 config keys extend the mounts: `bwrap_ro_roots` (extra host paths bind-mounted
 read-only, applied last so they can narrow a policy-writable path) and
 `bwrap_dev_roots` (host character/block device nodes bind-mounted read-write;
@@ -116,6 +119,105 @@ Install bubblewrap separately to get enforcement on Linux:
 - Arch: `pacman -S bubblewrap`
 
 Codewhale does not vendor bubblewrap.
+
+### Running tools as another user
+
+A host that must keep tool commands away from the Engine's own files (a cloud
+computer, for example) can run every sandboxed command as a separate Linux
+user. The managed configuration sets an argv prefix that changes user, and
+pins a sandboxed mode beside it:
+
+```toml
+sandbox_mode = "workspace-write"
+tool_launcher = ["/usr/bin/sudo", "-n", "-u", "agent", "--", "/usr/local/bin/agent-exec"]
+```
+
+The launcher goes in front of bubblewrap, not inside it: every unprivileged
+confinement sets no-new-privileges, and a setuid program started under it
+cannot switch user. The command becomes
+`<launcher...> /usr/bin/bwrap ... -- <program> <args>`, so the tool runs as the
+other user, with no-new-privileges, inside the same mounts, masks and network
+namespace a local command gets. `--die-with-parent` stays, so a cancel or
+timeout that kills the launcher ends the whole sandbox.
+
+The key is read only from the managed configuration file named by
+`CODEWHALE_MANAGED_CONFIG_PATH`, or from the default managed path, only on
+Linux, and only when neither that file nor any directory above it can be
+changed by the Engine's own user. A managed file at any other path (for
+example one a user config points at through `managed_config_path`) is refused.
+In a user `config.toml` or a profile the key is a load error. The managed
+file must also set `sandbox_mode` itself; a sandboxed mode from a user config
+does not count. Without the key, nothing on this page changes.
+
+A host that relies on the launcher puts the managed file in a root-owned
+place and sets `CODEWHALE_MANAGED_CONFIG_PATH` to it for the Engine's service.
+The variable outranks a user config's `managed_config_path`, and a Fleet local
+worker (a child `codewhale exec`) gets the parent's variable even though its
+environment is otherwise cleaned; a worker request cannot replace it. Any
+other `codewhale` process sees a file named only by the variable when it is
+started with the variable. An MCP server entry that runs `codewhale serve
+--mcp` is started with a cleaned environment and does not get it. A host that
+relies on the launcher therefore also keeps the file at the default managed
+path, or sets the variable in every such entry. A file named by the variable
+or by `managed_config_path` that is missing or cannot be read is a load error,
+not "no managed layer", and a user config cannot point `managed_config_path`
+away from an existing file at the default managed path.
+Only a missing file at the default path, with nothing naming another, means no
+managed layer. A file in another ordinary user's home also passes the
+"Engine's user cannot change it" check, so the file should be root-owned.
+Check `sandbox.tool_launcher` in `GET /v1/runtime/info`: the route
+reads the live configuration, but a check made once at start does not cover a
+later reload, so ask again after a reload.
+
+The launcher's first program runs as the Engine's user with the Engine's
+allow-listed environment, the model-chosen working directory and stdin, so it
+must ignore all three (a setuid switcher such as `sudo -n`, not a shell
+script).
+
+With a launcher configured:
+
+- **Fail closed.** A command runs under bubblewrap or not at all. The Engine
+  probes the launcher (its user and groups, then one wrapped `/bin/true` with
+  the deny masks) before the first command; a failed probe,
+  `prefer_bwrap = false`, or a policy that would skip the sandbox
+  (`danger-full-access`, `external-sandbox`, including an approved per-command
+  escalation) refuses the command with the reason, and nothing runs. The
+  managed `sandbox_mode` must be `workspace-write` or `read-only`.
+- **Masks for the other user.** Bubblewrap creates each mask as the
+  launcher's user, so every command's masks and binds are computed for that
+  user: a denied path below a directory it cannot search is masked at the
+  highest such directory, and a bind it cannot reach is dropped. The built-in
+  deny list stays on; it also guards the Engine's own file tools.
+- **Private `/tmp`.** Each command gets a fresh tmpfs `/tmp`; the host `/tmp`
+  and `TMPDIR` are not bound, so the tool user cannot leave files there for the
+  Engine's user. Scratch files that must outlive one command belong in the
+  workspace.
+- **Network** follows the policy as everywhere else: a managed
+  `sandbox_network_access = true` adds `--share-net`, and then only the host's
+  own firewall rules for the tool user fence it.
+- **Runtime info.** `GET /v1/runtime/info` reports `sandbox.kind`
+  (`linux-bwrap` once the launcher probe passed) and `sandbox.tool_launcher`.
+
+Limits: only commands the sandbox manager prepares (shell commands, terminal
+sessions, workspace runners) go through the launcher. In-process file tools,
+MCP servers, hooks, LSP servers, the extension host, external ACP agents and
+the Engine's own `git`, formatter and diagnostic helpers still run as the
+Engine's user. A Fleet local worker is its own Engine, so its shell commands
+go through the launcher only because it loads the same managed file.
+`codewhale serve --mcp` does not run commands through the launcher. When the
+managed file it loads sets a launcher, it does not expose `shell` or
+`exec_shell`, whatever its own `expose_tools` lists; its file tools use the
+built-in read deny list only. Model-written Python in the session REPL kernel
+(` ```repl ` blocks and the `rlm` tool) runs in a local interpreter as the
+Engine's user. With `sandbox_backend = "opensandbox"` a shell command goes to
+the remote backend before the launcher is consulted, so a launcher host pins
+`sandbox_backend = "none"`, `prefer_bwrap = true` and `sandbox_network_access`
+in the managed file. A `tool_launcher` in a project config stops an
+interactive launch with an error; `serve` and `exec` do not read project
+config, so there the key is ignored. Deny-list exceptions are not applied
+under a launcher. Search rights come from mode bits and group membership, not
+ACLs. Processes keep running after the Engine itself dies, until bubblewrap's
+parent exits.
 
 ## Windows: no advertised OS sandbox
 

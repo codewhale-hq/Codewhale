@@ -608,7 +608,11 @@ fn start_background_gates(
         };
 
         let command = render_gate_command(program, &gate.args)?;
-        let env: HashMap<String, String> = gate.env.into_iter().collect();
+        let mut env: HashMap<String, String> = gate.env.into_iter().collect();
+        env.insert(
+            crate::tools::shell::AGENT_PROJECT_ENV.to_string(),
+            context.workspace.to_string_lossy().into_owned(),
+        );
         let spawn_result = {
             let mut manager = context
                 .shell_manager
@@ -1916,6 +1920,48 @@ mod tests {
         assert_eq!(metadata["verifier_verdict"], verifier, "{metadata}");
         assert!(metadata.get("hunt_verdict").is_none(), "{metadata}");
         assert!(metadata.get("task_updates").is_none(), "{metadata}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn verifier_gates_carry_the_agent_project_in_the_foreground_and_background() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path());
+        let marked = format!("MARK={}", tmp.path().display());
+        let gate = json!({
+            "name": "agent-mark",
+            "program": "sh",
+            "args": ["-c", "printf 'MARK=%s' \"${CODEWHALE_AGENT_PROJECT-unset}\""]
+        });
+
+        let foreground = RunVerifiersTool
+            .execute(
+                json!({ "profile": "auto", "commands": [gate.clone()] }),
+                &ctx,
+            )
+            .await
+            .expect("foreground verifier");
+        assert!(
+            foreground.content.contains(&marked),
+            "{}",
+            foreground.content
+        );
+
+        let background = RunVerifiersTool
+            .execute(
+                json!({ "profile": "auto", "background": true, "commands": [gate] }),
+                &ctx,
+            )
+            .await
+            .expect("background verifier");
+        let parsed: RunVerifiersBackgroundOutput =
+            serde_json::from_str(&background.content).expect("background output json");
+        let task_id = parsed.jobs[0].task_id.as_deref().expect("task id");
+        let output = wait_for_completed_shell(
+            &mut ctx.shell_manager.lock().expect("shell manager"),
+            task_id,
+        );
+        assert!(output.stdout.contains(&marked), "{output:?}");
     }
 
     #[tokio::test]

@@ -1300,7 +1300,7 @@ async fn narrowing_the_posture_discards_python_kernels() {
         client,
     );
     // Without a Python interpreter there is no kernel to discard.
-    let Ok(kernel) = codewhale_repl::runtime::PythonRuntime::new().await else {
+    let Ok(kernel) = codewhale_repl::runtime::PythonRuntime::new(&std::env::temp_dir()).await else {
         return;
     };
     engine.repl_kernel = Some(kernel);
@@ -1363,7 +1363,7 @@ async fn a_broken_repl_kernel_is_replaced_by_the_next_turn() {
     engine.session.auto_approve = true;
 
     // What a turn dropped mid-round leaves behind.
-    let mut stale = codewhale_repl::PythonRuntime::new().await.expect("spawn");
+    let mut stale = codewhale_repl::PythonRuntime::new(&std::env::temp_dir()).await.expect("spawn");
     let dropped = tokio::time::timeout(
         Duration::from_millis(50),
         stale.execute("import time\ntime.sleep(30)"),

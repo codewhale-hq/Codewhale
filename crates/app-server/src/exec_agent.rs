@@ -668,6 +668,7 @@ pub async fn run_exec_agent(
             execution_config.subagent_heartbeat_timeout_secs_for_provider(&effective_identity),
         ),
         prefer_bwrap: execution_config.prefers_bwrap(),
+        tool_launcher: execution_config.tool_launcher.clone(),
         bwrap_extensions: codewhale_sandbox::BwrapMountExtensions {
             read_only_roots: execution_config.bwrap_ro_roots.clone(),
             device_roots: execution_config.bwrap_dev_roots.clone(),

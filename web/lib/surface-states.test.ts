@@ -10,9 +10,7 @@ import { footerDocsLinks, footerLegalLinks, footerProductLinks, footerProjectLin
 import { PERMANENT_ROUTE_REDIRECTS, REDIRECTED_ROUTES } from "./route-redirects";
 import { AVAILABILITY_ROWS, describeRow } from "./content/availability";
 import { DESKTOP_RELEASE, desktopDownload, parseDesktopRelease, type DesktopReleaseFact } from "./desktop-release";
-import { daysLeft, isActiveAt } from "./expiry";
 import { FOUNDER_SWITCHES, FOUNDER_SWITCH_VALUES } from "./founder-switches";
-import { PARTNER_PROMO } from "./content/partner-promo";
 import { STATE_CHROME_KEY, SURFACE_IDS, SURFACE_STATES, stateLabel, surfaceCapabilities, surfaceState } from "./surface-states";
 import { DesktopDownloadBlock } from "../components/desktop-download";
 import HomePage from "../app/[locale]/page";
@@ -324,40 +322,17 @@ describe("no page links to a missing or gone route", () => {
   });
 });
 
-describe("things with an end time are checked when the page renders", () => {
-  it("compares against the clock it is given", () => {
-    expect(isActiveAt("2026-11-21T12:29:57Z", Date.parse("2026-11-21T12:29:56Z"))).toBe(true);
-    expect(isActiveAt("2026-11-21T12:29:57Z", Date.parse("2026-11-21T12:29:57Z"))).toBe(false);
-    expect(isActiveAt("not a date", 0)).toBe(false);
-    expect(daysLeft("2026-11-21T12:29:57Z", Date.parse("2026-11-21T12:00:00Z"))).toBe(1);
-    expect(daysLeft("2026-11-21T12:29:57Z", Date.parse("2026-11-19T12:00:00Z"))).toBe(3);
-  });
-
-  it("removes the partner strip from the home page after its end time without a rebuild", async () => {
-    const end = Date.parse(PARTNER_PROMO.endsAt);
-    vi.useFakeTimers({ toFake: ["Date"], now: end - 3_600_000 });
-    expect(await render(HomePage as Page)).toContain("OrcaRouter");
-    vi.setSystemTime(end + 1000);
-    expect(await render(HomePage as Page)).not.toMatch(/OrcaRouter|orcarouter\.ai/);
-  });
-
-  it("keeps the partner strip English-only", async () => {
-    vi.useFakeTimers({ toFake: ["Date"], now: Date.parse(PARTNER_PROMO.endsAt) - 3_600_000 });
-    expect(await render(HomePage as Page, "zh")).not.toMatch(/orcarouter\.ai/);
-  });
-});
-
 describe("numbers from the build-time snapshot carry the date they were read", () => {
   it.each(LOCALES)("on the home page in %s", async (locale) => {
     const snapshot = JSON.parse(readFileSync(join(WEB, "data/repo-stats-snapshot.json"), "utf8")) as { readAt: string };
     const date = new Intl.DateTimeFormat(getChrome(locale).dateLocale, { dateStyle: "medium", timeZone: "UTC" }).format(new Date(snapshot.readAt));
     const label = getChrome(locale).numbersAsOf.replace("{date}", date);
     const html = await render(HomePage as Page, locale);
-    expect(html).toContain(`title="${label}"`);
-    expect(html).toContain(label);
-    const numbers = [...html.matchAll(/<a [^>]*(?:class="tabular"|home-proof-stars)[^>]*>/g)].map((match) => match[0]).filter((tag) => !tag.includes("CONTRIBUTORS.md"));
-    expect(numbers.length).toBeGreaterThan(0);
-    for (const tag of numbers) expect(tag).toContain(`title="${label}"`);
+    const counts = [...html.matchAll(/<p class="home-accounts tabular"[^>]*>/g)].map((match) => match[0]);
+    expect(counts).toHaveLength(1);
+    expect(counts[0]).toContain(`title="${label}"`);
+    expect(html).toContain(`<span class="sr-only"> ${label}</span>`);
+    expect(html.replace(/<span class="sr-only">[^<]*<\/span>/g, "").replace(/title="[^"]*"/g, "")).not.toContain(label);
   });
 
   it("on /contribute", async () => {

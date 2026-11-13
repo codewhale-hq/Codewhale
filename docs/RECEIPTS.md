@@ -6,7 +6,10 @@ A receipt answers "what did this session do?" from the records Codewhale
 already keeps. It lists, in order, the files changed, commands run, web and
 MCP calls, agents started, approvals (and who decided each one), and
 failures, with totals on top. It also counts what ran without asking, and
-names the permission posture that let it.
+names the permission posture that let it. Below the totals it carries the
+provider's token counts; a terminal session's receipt also carries the cost
+line `/cost` prints, and a Runtime thread's receipt carries token counts only
+(see [Tokens and cost](#tokens-and-cost)).
 
 ```text
 # Receipt: Fix the parser
@@ -22,8 +25,14 @@ Changed 1 file (+2 −1) · ran 1 command · made 1 MCP call · 1 approved by yo
 6. turn failed — failed: provider returned 500
 
 Not recorded:
+- Cost: a Runtime thread receipt carries token counts only; GET /v1/threads/{id}/usage reports the thread's cost and what it covers.
 - Shell file changes: a Runtime thread's workspace snapshots are not tagged with the thread, so files a command changed are not itemized; only file tools are.
 ```
+
+This sample is the Runtime-thread form. A terminal session's receipt has no
+line counts for whole-file writes, shows pass or fail rather than an exit
+code for a call that passed, and has no per-call timestamps; its "Not
+recorded" list says so (see [Not recorded](#not-recorded)).
 
 A terminal session's receipt also lists the files a command changed, from
 the turn's own workspace snapshots:
@@ -148,6 +157,57 @@ approval, so a receipt reads the result itself:
 Terminal sessions started before 0.9.10 (2026-08-20) have no approval log,
 so their receipts do not count this and say why.
 
+### Tokens and cost
+
+A terminal session's receipt has a `usage` section for the whole session:
+
+```text
+Tokens: 1200 in · 90 out · 1290 total · 2 provider calls (800 cache read)
+Cost, as /cost reports it:
+  Session Cost:
+  ─────────────────────────────
+  Estimated total: unknown
+  No turn has an authoritative price in the selected currency.
+  This is an estimate, not a bill: it is computed locally from provider-reported token usage and published rates, and can differ from your invoice.
+  Covered: 0 of 2 money-metered turn(s) priced.
+  Excluded: 2 money-metered turn(s) had no authoritative price (billing basis unknown); their spend is missing from the total above.
+```
+
+In JSON, the same section is `usage`, with the cost as an object:
+
+```json
+"usage": {
+  "tokens": { "input": 1200, "output": 90, "total": 1290, "cache_read": 800, "calls": 2 },
+  "cost": {
+    "state": "unknown", "currency": "USD",
+    "priced_turns": 0, "unpriced_turns": 2,
+    "report": "Session Cost: …"
+  }
+}
+```
+
+- **Tokens** are what the provider reported, summed over the session's
+  recorded provider calls (parent turns and sub-agents). When a session saved
+  only a combined total, the receipt shows that total alone. When it saved
+  none, the receipt says so: that is not zero usage.
+- **Cost** is the report `/cost` prints, built by the same formatter from the
+  same saved coverage, so the wording and the numbers cannot drift. When the
+  route has no known price the receipt says "unknown" and why; it never
+  estimates one. JSON `usage.cost.state` is `priced`, `partial` (a subtotal:
+  some turns had no price) or `unknown`; `amount` is present only when at
+  least one turn was priced.
+- A receipt for one turn (`/receipts 2`, `--turn 2`) leaves `usage` out and
+  says so, because tokens and cost are kept for the whole session.
+- A Runtime thread's receipt carries token counts from its turn records and
+  no cost; `GET /v1/threads/{id}/usage` reports a thread's cost and what it
+  covers.
+- `codewhale metrics` counts the same usage from saved terminal sessions on
+  its own line, apart from Runtime `turn.usage` events, because a
+  session-scoped Runtime store can describe the same call from its side.
+
+Receipts written by a build before 0.10.3 have no `usage` section; readers
+treat the field as optional.
+
 ### Not recorded
 
 The receipt says so instead of guessing:
@@ -226,6 +286,9 @@ totals always cover every action, and `omitted_actions` counts the rest.
     "ran_without_asking": 1, "failures": 1, "blocked": 1,
     "other_tool_calls": 0
   },
+  "usage": {
+    "tokens": { "input": 1200, "output": 90, "total": 1290, "cache_read": 800 }
+  },
   "actions": [
     {
       "seq": 2, "turn": "turn_1", "at": "2026-09-24T10:02:00Z",
@@ -240,7 +303,7 @@ totals always cover every action, and `omitted_actions` counts the rest.
     }
   ],
   "omitted_actions": 0,
-  "not_recorded": ["Shell file changes: …"],
+  "not_recorded": ["Cost: …", "Shell file changes: …"],
   "claim_ceiling": [
     "local_record_only",
     "not_safety_certification",

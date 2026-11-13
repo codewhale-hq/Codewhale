@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { siteCss } from "./site-css";
 
 // The whale-road (codewhale-design/DIRECTION.md): one character drawn from
-// the v2 kit, one horizon, the sea below it, and a header that stays usable
-// in every locale.
+// the v2 kit, a footer on the page's own ground, and a header that stays
+// usable in every locale.
 const CSS = siteCss();
 const web = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const POSES = [
@@ -39,35 +39,29 @@ describe("the whale", () => {
     expect(web("app/styles/shell.css")).toContain('mask: url("/brand/mark-mono.svg")');
   });
 
-  it("keeps the founder's 404 poster, seals and recovered water drawing", () => {
+  it("keeps the founder's 404 poster and seals", () => {
     // The Codwhale poster is the 404 joke, restored on purpose (site merge plan R4).
     expect(existsSync(new URL("../public/codwhale-404.webp", import.meta.url))).toBe(true);
     expect(web("components/route-state.tsx")).toContain('src="/codwhale-404.webp"');
-    // Seals and the recovered static water drawing use the original geometry.
     expect(existsSync(new URL("../components/seal.tsx", import.meta.url))).toBe(true);
-    expect(existsSync(new URL("../components/strata.tsx", import.meta.url))).toBe(true);
     expect(existsSync(new URL("../components/install-binary.tsx", import.meta.url))).toBe(false);
   });
 });
 
-describe("the horizon", () => {
-  it("ends every page on one horizon line, then the sea", () => {
+describe("the footer", () => {
+  it("sits on the page's own ground under one hairline, with no navy band", () => {
     const footer = web("components/footer.tsx");
-    expect(footer).toContain('className="horizon"');
-    expect(footer).not.toContain("Strata");
-    expect(CSS).toMatch(/\.site-footer-sea \{[^}]*background: var\(--sea\)/);
-    // A page already ending in the sea (home) runs on without a second line.
-    expect(CSS).toMatch(/main:has\(\.sea-continues:last-child\) \+ \.site-footer \.site-footer-sea > \.horizon \{ display: none; \}/);
-    const home = web("app/[locale]/page.tsx");
-    expect(home).toContain("sea-continues");
+    expect(footer).not.toMatch(/horizon|sea-texture|site-footer-sea|Strata/);
+    expect(CSS).toMatch(/\.site-footer \{[^}]*border-top: 1px solid var\(--line\);/);
+    expect(CSS).not.toMatch(/\.site-footer \{[^}]*background:/);
+    expect(CSS).not.toMatch(/site-footer-sea|sea-texture/);
+    expect(web("app/[locale]/page.tsx")).not.toContain("sea-continues");
   });
 
-  it("paints the stage with the dark set in both appearances", () => {
-    expect(CSS).toMatch(/\.stage,\s*\.site-footer\s*\{[^}]*--ring: var\(--gpui-dark-accent\);[^}]*color-scheme: dark;/);
-  });
-
-  it("keeps the horizon visible in forced colours", () => {
-    expect(CSS).toMatch(/@media \(forced-colors: active\) \{\s*\.horizon \{ background: CanvasText; \}/);
+  it("folds its four link groups into disclosures on a phone", () => {
+    const footer = web("components/footer.tsx");
+    expect(footer).toContain('<details key={group.label} className="site-footer-fold"');
+    expect(CSS).toMatch(/@media \(max-width: 640px\) \{\s*\.site-footer-links \{ display: none; \}\s*\.site-footer-folds \{ display: block; \}/);
   });
 });
 

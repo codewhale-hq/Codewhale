@@ -1,8 +1,8 @@
 import { Icon } from "./icon";
-import { LivePulseStats, LiveStarCount, type PulseRow } from "./github-live";
+import { LiveStarCount } from "./github-live";
 import { GITHUB_STAR_COPY } from "@/lib/content/github-star";
 import { PROJECT_COPY } from "@/lib/content/project";
-import { formatStars, relativeAge, type Face } from "@/lib/github";
+import { relativeAge, type Face } from "@/lib/github";
 import { fill, getChrome, pickText } from "@/lib/i18n/dictionaries";
 import { REPO_URL } from "@/lib/i18n/links";
 import type { FeedItem, RepoStats } from "@/lib/types";
@@ -22,17 +22,6 @@ export function readAsOf(readAt: string | null | undefined, locale: string): str
 
 export function statsAsOf(stats: RepoStats | null, locale: string): string | undefined {
   return readAsOf(stats?.fetchedAt, locale);
-}
-
-export function PulseStats({ stats, contributors, locale }: { stats: RepoStats | null; contributors: number; locale: string }) {
-  const asOf = statsAsOf(stats, locale);
-  const rows: PulseRow[] = [
-    { key: "stars", label: pickText(PROJECT_COPY.statStars, locale), href: REPO_URL, value: stats?.stars != null ? formatStars(stats.stars) : undefined, asOf },
-    { key: "contributors", label: pickText(PROJECT_COPY.statContributors, locale), href: `${REPO_URL}/blob/main/docs/CONTRIBUTORS.md`, value: String(contributors) },
-    { key: "pulls", label: pickText(PROJECT_COPY.statPulls, locale), href: `${REPO_URL}/pulls`, value: stats?.openPulls != null ? String(stats.openPulls) : undefined, asOf },
-    { key: "issues", label: pickText(PROJECT_COPY.statIssues, locale), href: `${REPO_URL}/issues`, value: stats?.openIssues != null ? String(stats.openIssues) : undefined, asOf },
-  ];
-  return <LivePulseStats rows={rows} numberLocale={getChrome(locale).dateLocale} />;
 }
 
 export function MergedList({ items, locale }: { items: FeedItem[]; locale: string; limit?: number }) {

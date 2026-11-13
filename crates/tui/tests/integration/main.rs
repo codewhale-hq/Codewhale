@@ -28,6 +28,7 @@ mod integration_mock_llm;
 mod issue_report_acceptance;
 mod lifecycle_outbox_exec;
 mod palette_audit;
+mod plugin_trust_cli;
 mod protocol_recovery;
 mod reasoning_content_replayed_after_tool_call;
 mod shell_denial_acceptance;

@@ -1323,6 +1323,7 @@ struct ThreadSummary {
     preview: String,
     model: String,
     mode: String,
+    agent_preset: String,
     workspace: PathBuf,
     branch: Option<String>,
     head: Option<String>,
@@ -1578,8 +1579,39 @@ struct RuntimeInfoResponse {
     job_operation_store_id: Option<String>,
     account: RuntimeAccountInfo,
     experimental: RuntimeExperimentalCapabilities,
+    sandbox: RuntimeSandboxInfo,
     // Backward-compatible alias kept for existing clients.
     version: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeSandboxInfo {
+    kind: String,
+    tool_launcher: bool,
+}
+
+async fn runtime_sandbox_info(state: &RuntimeApiState) -> RuntimeSandboxInfo {
+    let (prefer_bwrap, tool_launcher, denied_read_paths) = {
+        let cfg = state.config.read();
+        (
+            cfg.prefers_bwrap(),
+            cfg.tool_launcher.clone(),
+            codewhale_sandbox::read_guard::ReadDenylist::from_config(&cfg).subtree_paths(),
+        )
+    };
+    let launcher_configured = tool_launcher.is_some();
+    let kind = tokio::task::spawn_blocking(move || {
+        let mut manager = codewhale_sandbox::SandboxManager::with_bwrap_preference(prefer_bwrap);
+        manager.set_tool_launcher(tool_launcher);
+        manager.set_denied_read_subpaths(denied_read_paths);
+        manager.configured_sandbox().unwrap_or_default().to_string()
+    })
+    .await
+    .unwrap_or_else(|_| codewhale_sandbox::SandboxType::None.to_string());
+    RuntimeSandboxInfo {
+        kind,
+        tool_launcher: launcher_configured,
+    }
 }
 
 fn default_runtime_capabilities() -> RuntimeCapabilities {
@@ -3283,6 +3315,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/tasks/{id}", get(get_task))
         .route("/v1/tasks/{id}/cancel", post(cancel_task))
         .route("/v1/skills", get(list_skills))
+        .route("/v1/modes", get(list_modes))
         .route("/v1/commands", get(list_commands))
         .route("/v1/threads/{id}/commands", post(run_thread_command))
         .route(
@@ -3904,7 +3937,7 @@ async fn create_thread(
         )
         .await
         .map_err(|e| {
-            if let Some(refusal) = external_agent_refusal(&e) {
+            if let Some(refusal) = external_agent_refusal(&e).or_else(|| mode_refusal(&e)) {
                 refusal
             } else if e
                 .is::<codewhale_engine::runtime_threads::manager::RuntimeThreadCreateConflict>()
@@ -4153,6 +4186,10 @@ async fn list_threads_summary(
             preview,
             model: thread.model,
             mode: thread.mode,
+            agent_preset: codewhale_engine::conversation_modes::effective_id(
+                thread.agent_preset.as_deref(),
+            )
+            .to_string(),
             branch: workspace_git.and_then(|git| git.branch.clone()),
             head: workspace_git.and_then(|git| git.head.clone()),
             dirty: workspace_git.is_some_and(|git| git.dirty),
@@ -6217,6 +6254,17 @@ async fn list_hooks(
     }))
 }
 
+async fn list_modes(
+    State(state): State<RuntimeApiState>,
+) -> Json<codewhale_engine::conversation_modes::ConversationModeTable> {
+    Json(
+        codewhale_engine::conversation_modes::current_table(
+            state.runtime_threads.extension_host_options(),
+        )
+        .await,
+    )
+}
+
 async fn list_skills(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<SkillsResponse>, ApiError> {
@@ -7083,6 +7131,7 @@ async fn runtime_info(
     capabilities.fleet_run_create = !session_only;
     capabilities.fleet_run_start = !session_only;
     capabilities.fleet_local_target = !session_only;
+    let sandbox = runtime_sandbox_info(&state).await;
     Json(RuntimeInfoResponse {
         service: "codewhale-runtime-api",
         runtime_api_version: RUNTIME_API_VERSION,
@@ -7097,6 +7146,7 @@ async fn runtime_info(
             .then(|| state.runtime_threads.job_operation_store_id().to_string()),
         account,
         experimental: RuntimeExperimentalCapabilities::default(),
+        sandbox,
         version,
     })
 }
@@ -14796,6 +14846,20 @@ fn map_automation_err(err: anyhow::Error) -> ApiError {
     }
 }
 
+fn mode_refusal(err: &anyhow::Error) -> Option<ApiError> {
+    use codewhale_engine::conversation_modes::ModeRefusal;
+    let error = err.downcast_ref::<ModeRefusal>()?;
+    Some(ApiError {
+        status: match error.code {
+            ModeRefusal::MODE_UNAVAILABLE => StatusCode::FAILED_DEPENDENCY,
+            ModeRefusal::MODE_LOCKED => StatusCode::CONFLICT,
+            _ => StatusCode::BAD_REQUEST,
+        },
+        message: error.message.clone(),
+        code: Some(error.code),
+    })
+}
+
 fn external_agent_refusal(err: &anyhow::Error) -> Option<ApiError> {
     use codewhale_engine::fleet::agents::ExecutorUnavailable;
     let error = err.downcast_ref::<ExecutorUnavailable>()?;
@@ -14811,7 +14875,7 @@ fn external_agent_refusal(err: &anyhow::Error) -> Option<ApiError> {
 }
 
 fn map_thread_err(err: anyhow::Error) -> ApiError {
-    if let Some(refusal) = external_agent_refusal(&err) {
+    if let Some(refusal) = external_agent_refusal(&err).or_else(|| mode_refusal(&err)) {
         return refusal;
     }
     if let Some(error) = err.downcast_ref::<codewhale_engine::runtime_threads::manager::RuntimeTurnOperationLookupError>() {

@@ -11,7 +11,7 @@ mod runtime_aliases;
 
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
@@ -1453,6 +1453,7 @@ impl StateStore {
         self.with_session_index_lock(|| {
             let mut file = OpenOptions::new()
                 .create(true)
+                .read(true)
                 .append(true)
                 .open(&self.session_index_path)
                 .with_context(|| {
@@ -1461,7 +1462,14 @@ impl StateStore {
                         self.session_index_path.display()
                     )
                 })?;
-            writeln!(file, "{encoded}").context("failed to append session index entry")?;
+            let mut last = *b"\n";
+            if file.metadata()?.len() > 0 {
+                file.seek(SeekFrom::End(-1))?;
+                file.read_exact(&mut last)?;
+            }
+            let separator = if last[0] == b'\n' { "" } else { "\n" };
+            writeln!(file, "{separator}{encoded}")
+                .context("failed to append session index entry")?;
             // Durability: without this a crash mid-write can leave a torn
             // final line. Reads tolerate one (see `session_index_map`), but
             // not losing the entry beats recovering from having lost it.
@@ -2913,6 +2921,33 @@ mod tests {
                 .as_deref(),
             Some("first"),
         );
+        assert_eq!(
+            store
+                .find_thread_name_by_id("thread-3")
+                .expect("lookup thread-3")
+                .as_deref(),
+            Some("third"),
+        );
+    }
+
+    #[test]
+    fn session_index_append_after_an_unterminated_torn_line_is_kept() {
+        let store = temp_state_store("session-index-unterminated");
+        store
+            .append_thread_name("thread-1", Some("first".to_string()), 1, None)
+            .expect("append first entry");
+        {
+            let mut file = OpenOptions::new()
+                .append(true)
+                .open(&store.session_index_path)
+                .expect("open session index");
+            write!(file, "{{\"thread_id\":\"thread-2\",\"thread_na").expect("write torn line");
+        }
+
+        store
+            .append_thread_name("thread-3", Some("third".to_string()), 3, None)
+            .expect("append third entry");
+
         assert_eq!(
             store
                 .find_thread_name_by_id("thread-3")

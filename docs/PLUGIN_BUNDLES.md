@@ -240,6 +240,13 @@ The accept/reject behavior is deliberately loud, never silent:
 - `capabilities.network_hosts` is not a future surface: it is enforced today,
   and must exactly match the normalized host set of the bundle's remote MCP
   endpoints (so it cannot be declared without them, or omitted with them).
+- `capabilities.host_services` names the host services a bundle's native code
+  asks to use (`workspace`, `llm`, `network`, `settings`, `catalog`,
+  `terminal`, `remote`). It is hashed into the capability receipt only when it
+  is not empty, so bundles that ask for nothing keep their review. Asking
+  grants nothing: only a review that showed the services does, and this
+  version offers none yet. See
+  [Host services](EXTENSIONS.md#host-services).
 
 A successful environment or health check is never treated as trust.
 
@@ -293,6 +300,48 @@ whose review needs upgrade carry-forward can therefore appear unreviewed
 until normal runtime loading. `codew plugins restage <name> [--json]` performs
 an explicit verified repair. Use `/plugin reload` in an already running
 terminal session to refresh its registry after a repair from another process.
+
+The same review and state changes are available from a shell:
+
+- `codew plugins trust <name> [--json]` prints the review that `/plugin trust`
+  shows, with its bundle review token, and changes nothing. In a terminal it
+  then asks once whether to trust.
+- `codew plugins trust <name> --review-token <token> --yes` trusts without a
+  prompt, and only if the bundle review token still matches the installed
+  content and capability set. The token is `<content-hash>.<capability-hash>`
+  and ties trust to that exact content. It is not a record that anyone read
+  the review, and `plugins status --json` prints both of its halves. It is
+  also not the host-service review token described in
+  [EXTENSIONS.md](EXTENSIONS.md): the command never asks for that one.
+- `codew plugins enable|disable|revoke <name> [--json]` make the same state
+  changes as the slash commands. Trust never enables a bundle.
+
+Every trust records who approved it, and `plugins status` shows it. Every
+command the agent runs carries the agent's mark, the variable
+`CODEWHALE_AGENT_PROJECT` set to the session's project, whatever the sandbox
+or permission mode: shell commands, persistent terminal sessions, verifier and
+test runs, code run in the Python kernel (`repl` blocks and RLM), and MCP
+servers the agent starts with `start_mcp_server`. Processes
+Codewhale starts that are not the agent's commands carry no mark: hooks, MCP
+servers from your configuration, and `/plugin trust` typed in the terminal
+app. With the mark, a trust or an `enable` is recorded as the
+agent's, for that project only, including a prompt answered through a
+terminal; it is never recorded as yours. The agent may trust only a plugin it
+installed with `codewhale install` from a folder inside that project, read
+from the bundle's `.installed-from` record; anything else is refused and left
+to you. That record shows where the files came from, not who wrote them.
+Without the mark, a `--yes` trust is recorded as the command line and grants
+no host service, and a prompt answered in your own terminal is recorded as
+yours.
+
+The agent's shell commands that run `plugins trust` or `plugins enable` go
+through the session's approval like any other shell command: Ask asks you,
+Auto-Review's reviewer judges, and Full Access runs them, so a Full Access
+agent can trust and enable a plugin it wrote, for its own project. The mark is
+a label, not a lock: in Full Access the agent could remove it, which shows in
+the command it runs. Where an OS sandbox applies, it keeps plugin state
+read-only, so a trust from inside it fails when it writes. `disable` and
+`revoke` are never held for you.
 
 (`/plugin install`, `update`, and `uninstall` place, replace, and remove the
 bits themselves and always drop into this same review — see

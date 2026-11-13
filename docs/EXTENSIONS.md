@@ -26,7 +26,11 @@ files or use the network.
    its answer in the transcript with its origin, `extension:hello-extension`.
 
 An authoring agent should stop after installation and validation and present
-the review to the person. Do not trust or enable a bundle automatically.
+the review to the person, unless it runs in Full Access and the plugin is one
+it wrote and installed from a folder in its project: then it may trust and
+enable it for that project with `codewhale plugins trust` and `enable`. Those
+shell commands go through the session's approval like any other: Ask asks the
+person, Auto-Review's reviewer judges, and Full Access runs them.
 
 ## Locations, installation and trust
 
@@ -611,6 +615,96 @@ tool's text (`content`) and, when it was JSON, the parsed value
 tool asked the core to run is recorded (bounded) in your tool result's
 `core_calls` metadata, with each call's decision and outcome.
 
+## Host services
+
+A host service is something the core does for an extension beyond running a
+core tool: workspace files and commands, the model provider, network requests,
+settings, the plugin catalog, terminal sessions and remote pairing. Each is
+served by the core, never by the host process, and each is off until a review
+grants it. This version of Codewhale offers none of them yet: the mechanism is
+in place, and each service is switched on separately.
+
+**Asking.** Name the services in the manifest. A name outside this list fails
+validation.
+
+```toml
+[capabilities]
+host_services = ["network"]
+```
+
+(In a `plugin.json` bundle: `extensions["net.codewhale"].capabilities.host_services`.)
+For an imported DeepSeek Harness package the importer writes this list from the
+package's own `inject` declarations. What a bundle asks for is part of its
+capability hash, so changing the list needs a new review.
+
+**Granting.** Only a review grants a service, and only when the review showed
+it: the review lists each service in plain words, the reviewed plugins that
+already hold it, and any plugin that is turned on without it. Approval is bound
+to exactly that list. If it changed between showing and approving, the approval
+is refused and nothing is recorded. A review that did not show the services
+(`/plugin trust` today) records trust and grants none. A review recorded before
+this feature holds no grant.
+
+**Who approved.** Every review records its approver, and every place that shows
+a plugin's trust shows it:
+
+| Approver | How it happens | Reach |
+| --- | --- | --- |
+| You | the Plugins page, `/plugin trust`, an approval card, or the prompt of `codewhale plugins trust` in your terminal | every project |
+| The agent, in Full Access or Auto-Review | the agent's plugin tool, bound to the token of the review composed for that call and to the thread, turn and tool call that made it | only the project named in the record |
+| The agent, from a shell command | `codewhale plugins trust … --yes` run by a process that carries the agent's mark | only the project named in the record |
+| The command line | `codewhale plugins trust … --yes` without the mark: no review was shown there, so it grants no service | every project |
+
+The agent's mark is `CODEWHALE_AGENT_PROJECT`, which Codewhale sets to the
+session's project on every command the agent runs (shell, persistent terminal,
+verifier and test runs, the Python kernel, MCP servers it starts), whatever the sandbox or
+permission mode. Hooks, MCP servers from your configuration and the terminal
+app's `/plugin trust` carry no mark. With it, the command records the agent, even for a prompt
+answered through a terminal, and trusts only a plugin installed from a folder
+inside that project (the bundle's `.installed-from` record). It is a label, not
+a lock: in Full Access the agent could remove it, and the record then says "the
+command line". The `--review-token` that the command
+takes is the bundle review token (`<content-hash>.<capability-hash>`), not the
+host-service review token: an unmarked trust passes no host-service token, and
+a marked one passes the token of the review composed for the agent.
+A plugin the agent approved is active only in the project its record names,
+and its code does not run in the host process of the plugins you reviewed:
+until it has a host of its own, its native code is refused with a diagnostic
+that asks you to review it. Your own review replaces the agent's record. Who
+turned a plugin on is recorded the same way, separately from who approved it.
+The agent never approves a built-in plugin, never replaces a review that holds
+for every project (yours, the command line's, or one from an earlier version)
+or one the agent of another project made, and never approves a project plugin
+whose folder resolves outside the project.
+It turns on only a plugin whose record it made for this project. Everything
+else is left to you.
+
+**One process, one rule.** Extensions share one host process and cannot be
+isolated from each other inside it. A service is therefore given to a tool call
+only while every extension loaded in that process holds the same grant. The
+rule, and the list of plugins a review says a service is shared with, cover
+only plugins of the same kind: the plugins you reviewed are counted together,
+and a plugin the agent approved is never counted with them. If one
+does not, the service is off for all of them, and the host diagnostics name the
+extension without it. Code that was loaded cannot be unloaded, so after an
+extension is turned off, changed or fails, every service stays off until the
+host process has restarted, which Codewhale does by itself once the host is
+idle.
+
+**What a refused call receives.** `REFUSED` with `data.dsh_refusal`:
+`not_granted` (the same answer whether your own review lacks the service or
+another extension's does), `limit` (this tool call used up its calls to that
+service), `ticket_refused`, `cancelled`, or the service's own typed refusal.
+Turning an extension off, revoking it or reviewing it again withdraws its grant
+at once: a call already running is dropped and its answer withheld.
+
+Known limits: a grant is all of what the review showed or none of it; there is
+no per-service choice inside one review. The review record is protected by its
+private directory, not by a signature: another program running as you, outside
+the sandbox, can write it, as it can write trust itself. A change made by
+another Codewhale process reaches a running call within about 50 ms; a side
+effect a service completes inside that window is not undone.
+
 ## Lifecycle, diagnostics and restarts
 
 Use `/plugin show <name>` for that plugin's owner state, live tool names and
@@ -679,7 +773,11 @@ resident size at each 3-second heartbeat and kills it past the cap. Under Node
 the JavaScript heap is also limited to 256 MiB. The host has a
 32 MiB frame limit, 256 in-flight request
 limit (plus a reserved heartbeat), 128 tools per owner and 1024 per host, and
-64 commands per owner and 256 per host. Tool
+64 commands per owner and 256 per host. One tool call may make 50 core tool
+calls in all, counting those a host service makes for it, and 50 calls to each
+host service. Eight invalid tickets in a minute end the host process for every
+extension in it; a ticket whose tool call ended in the last 10 seconds is
+refused without counting. Tool
 descriptions are at most 4 KiB and schemas 64 KiB. Tool calls have a 120-second
 deadline and commands a 30-second one. The feature stays Experimental and off by default; local fixture
 tests do not establish sandbox parity, provider behavior or release readiness.

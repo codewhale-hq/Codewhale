@@ -129,6 +129,7 @@ registration index.
 | GET | `/v1/lsp` |
 | DELETE / GET / POST | `/v1/memory` |
 | GET | `/v1/memory/{id}` |
+| GET | `/v1/modes` |
 | GET / PATCH / POST | `/v1/operate` |
 | POST | `/v1/operate/auto-merge/check` |
 | POST | `/v1/operate/cancel` |
@@ -262,4 +263,4 @@ registration index.
 | GET / POST | `/v1/worktrees` |
 | POST | `/v1/worktrees/remove` |
 
-The source contains 242 distinct literal paths in this table.
+The source contains 243 distinct literal paths in this table.

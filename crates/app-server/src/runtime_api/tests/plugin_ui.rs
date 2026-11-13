@@ -464,13 +464,22 @@ async fn plugin_ui_native_client_serves_only_the_detail_seat_and_is_revoked() ->
     fs::create_dir_all(&root)?;
     let bundle = write_native_ui_bundle(tmp.path(), "nativeui")?;
 
-    let Some((addr, handle)) = spawn_plugin_api_server(root, workspace).await? else {
+    let Some((addr, handle)) = spawn_plugin_api_server(root.clone(), workspace.clone()).await?
+    else {
         return Ok(());
     };
     let client = codewhale_release::tls::reqwest_client();
     let base = format!("http://{addr}/v1/apps/plugins");
     let installed = install_active(&client, &base, format!("path:{}", bundle.display())).await?;
     let name = installed["name"].as_str().unwrap().to_string();
+    let recorded =
+        isolated_plugin_discovery(&root, &workspace).inspect_registry_for_workspace(&workspace);
+    let by_app = codewhale_plugins::host_services::PluginApprover::person(
+        codewhale_plugins::host_services::PersonVia::App,
+    );
+    let plugin = recorded.get(&name).unwrap();
+    assert_eq!(plugin.approved_by.as_ref(), Some(&by_app));
+    assert_eq!(plugin.enabled_by.as_ref(), Some(&by_app));
 
     let (status, minted) = ui(&client, &base, &name, "slot=customize.plugins.detail").await?;
     assert_eq!(status, 200, "{minted}");

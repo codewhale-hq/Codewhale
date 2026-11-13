@@ -114,8 +114,8 @@ export const APP_COPY = {
       body: { en: "Use your own model keys or a local model.", zh: "使用你自己的模型密钥或本地模型。" },
     },
     {
-      title: { en: "Plugins, connectors and skills", zh: "插件、连接器与技能" },
-      body: { en: "They run on this computer with no sign-in.", zh: "它们在这台电脑上运行，无需登录。" },
+      title: { en: "Plugins", zh: "插件" },
+      body: { en: "Skills, connectors, hooks and the plugin bundles that carry them run on this computer with no sign-in.", zh: "技能、连接器、钩子以及携带它们的插件包都在这台电脑上运行，无需登录。" },
     },
     {
       title: { en: "The terminal and the local browser", zh: "终端与本地浏览器" },

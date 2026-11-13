@@ -223,6 +223,15 @@ impl ToolSpec for GitTool {
     }
 }
 
+fn apply_review_git_options(command: &mut std::process::Command, args: Vec<String>) {
+    command
+        .args(["--no-optional-locks", "--no-pager"])
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_NO_LAZY_FETCH", "1");
+}
+
 async fn review_scope(input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
     let query = input
         .get("query")
@@ -318,11 +327,7 @@ async fn review_scope(input: Value, context: &ToolContext) -> Result<ToolResult,
             .map_err(|error| {
                 ToolError::execution_failed(format!("Git preparation failed: {error}"))
             })??;
-    command
-        .args(["--no-optional-locks", "--no-pager", "--no-lazy-fetch"])
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_OPTIONAL_LOCKS", "0");
+    apply_review_git_options(&mut command, args);
     let mut command = tokio::process::Command::from(command);
     let cancel = context.cancel_token.clone().unwrap_or_default();
     let stop = async {
@@ -375,6 +380,73 @@ mod tests {
             .await
             .expect_err("call must be refused")
             .to_string()
+    }
+
+    #[test]
+    fn review_git_options_use_env_not_a_flag_old_git_rejects() {
+        let mut command = std::process::Command::new("git");
+        apply_review_git_options(&mut command, vec!["rev-parse".into(), "HEAD".into()]);
+        let args: Vec<_> = command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            ["--no-optional-locks", "--no-pager", "rev-parse", "HEAD"]
+        );
+        assert!(!args.iter().any(|a| a == "--no-lazy-fetch"));
+        let lazy = command
+            .get_envs()
+            .find(|(key, _)| *key == "GIT_NO_LAZY_FETCH")
+            .and_then(|(_, value)| value);
+        assert_eq!(lazy, Some(std::ffi::OsStr::new("1")));
+    }
+
+    #[tokio::test]
+    async fn review_scope_resolve_runs_against_system_git() {
+        if !<codewhale_dependencies::Git as codewhale_dependencies::ExternalTool>::available() {
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["init", "-q"]);
+        run(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ]);
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let result = GitTool::new("Git")
+            .execute(
+                json!({"action": "review_scope", "query": "resolve", "rev": "HEAD"}),
+                &ctx,
+            )
+            .await
+            .expect("review_scope runs");
+        let body: Value = serde_json::from_str(&result.content).expect("json");
+        assert_eq!(body["exit_code"], 0, "{body}");
+        assert_eq!(
+            body["stdout"].as_str().map(|s| s.trim().len()),
+            Some(40),
+            "{body}"
+        );
     }
 
     #[tokio::test]

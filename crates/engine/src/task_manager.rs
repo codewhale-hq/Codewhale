@@ -26,7 +26,7 @@ use crate::runtime_threads::{
     RUNTIME_STORE_FAILURE_EVENT, RuntimeEventRecord, RuntimeProcessOwnerLock, RuntimeTurnStatus,
     manager::CreateThreadRequest, manager::RuntimeThreadManager,
     manager::RuntimeThreadManagerConfig, manager::SharedRuntimeThreadManager,
-    manager::StartTurnRequest,
+    manager::StartTurnRequest, manager::summarize_text,
 };
 use codewhale_runtime::config::Config;
 use codewhale_util::utils::spawn_supervised;
@@ -4177,24 +4177,6 @@ fn summarize_json(value: &Value) -> Option<String> {
     Some(summarize_text(&text, TIMELINE_SUMMARY_LIMIT))
 }
 
-fn summarize_text(text: &str, limit: usize) -> String {
-    let take = limit.saturating_sub(3);
-    let mut count = 0;
-    let mut out = String::new();
-    for ch in text.chars() {
-        if count >= take {
-            out.push_str("...");
-            return out;
-        }
-        if ch.is_control() && ch != '\n' && ch != '\t' {
-            continue;
-        }
-        out.push(ch);
-        count += 1;
-    }
-    out
-}
-
 fn ensure_safe_storage_id(kind: &str, value: &str) -> Result<()> {
     let mut components = Path::new(value).components();
     let Some(component) = components.next() else {
@@ -5006,14 +4988,16 @@ mod tests {
             Arc::new(MockExecutor),
         )
         .await?;
-        sleep(STORE_IDLE_POLL_INTERVAL + Duration::from_millis(300)).await;
+        settle_queue_fixture(&manager).await?;
+        inspect_settled_workers(&manager).await?;
         manager.fingerprint_reads.store(0, Ordering::Relaxed);
         manager.store_loads.store(0, Ordering::Relaxed);
 
-        let window = Duration::from_secs(3);
-        sleep(window).await;
+        let started = Instant::now();
+        sleep(Duration::from_secs(3)).await;
         let reads = manager.fingerprint_reads.load(Ordering::Relaxed);
         let loads = manager.store_loads.load(Ordering::Relaxed);
+        let window = started.elapsed();
         let ticks = (window.as_millis() / STORE_SETTLED_NAP.as_millis()) as usize + 1;
         assert!(
             reads <= workers * ticks,
