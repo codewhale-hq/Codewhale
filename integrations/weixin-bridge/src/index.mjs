@@ -423,6 +423,11 @@ function ownsThread(chatId, threadId) {
   return Boolean(scope) && threadStore.ownsThread(chatId, threadId, scope);
 }
 
+function ownershipPending(chatId, threadId) {
+  const scope = turnActor(chatId);
+  return Boolean(scope) && threadStore.ownershipPending(chatId, threadId, scope);
+}
+
 function inboundKey(msg) {
   const id = msg.message_id;
   if (!accountIdentity() || !msg.from_user_id || id === undefined || id === null || String(id).trim() === "") return null;
@@ -474,6 +479,7 @@ async function reconcileAdmission(chatId) {
   let pending = state?.pendingAdmission;
   if (!pending || !ownsRecovery(chatId, state)) return;
   if (pending.threadId && !pending.submitted && !ownsThread(chatId, pending.threadId)) {
+    if (ownershipPending(chatId, pending.threadId)) return;
     await threadStore.patchChat(chatId, { pendingAdmission: null });
     await sendText(chatId, THREAD_NOT_OWNED_MESSAGE);
     return;

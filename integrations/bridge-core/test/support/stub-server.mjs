@@ -9,7 +9,8 @@ export async function startStub() {
     approvalDecisions: [],
     replies: [],
     inbound: { wecom: [], feishu: [], telegram: [] },
-    nextUpdateId: 1
+    nextUpdateId: 1,
+    failDetailUntil: 0
   };
 
   function thread(id) {
@@ -72,6 +73,7 @@ export async function startStub() {
     const entry = thread(decodeURIComponent(match[1]));
     if (!entry) return json(res, 404, { message: "thread not found" });
     const rest = match[2] || "";
+    if (req.method === "GET" && rest === "" && Date.now() < state.failDetailUntil) return json(res, 503, { message: "runtime starting" });
     if (req.method === "GET" && rest === "") {
       return json(res, 200, { id: entry.id, thread: { id: entry.id, workspace: entry.workspace, system_prompt: entry.systemPrompt }, latest_seq: entry.events.length, turns: entry.turns, pending_approvals: entry.pendingApprovals });
     }

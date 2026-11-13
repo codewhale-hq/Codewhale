@@ -257,7 +257,7 @@ async function isReplayCallbackUpdate(update) {
 
 async function releaseUnownedRecovery(chatId) {
   const state = await threadStore.getChat(chatId);
-  if (!state?.threadId || threadStore.ownsThread(chatId, state.threadId)) return state;
+  if (!state?.threadId || threadStore.ownsThread(chatId, state.threadId) || threadStore.ownershipPending(chatId, state.threadId)) return state;
   if (!state.pendingAdmission && !state.activeTurnId && !state.pendingQuestion) return state;
   await clearActiveTurn(chatId);
   return threadStore.patchChat(chatId, { pendingAdmission: null });
@@ -571,6 +571,10 @@ function startTrackedTurnStream(chatId) {
       const state = await releaseUnownedRecovery(chatId);
       if (!recoveryAllowed(chatId, state)) return;
       if (!state?.pendingAdmission && !state?.activeTurnId) return;
+      if (threadStore.ownershipPending(chatId, state.pendingAdmission?.threadId || state.threadId)) {
+        await delay(2000);
+        continue;
+      }
       try {
         if (await runPrompt(chatId, { signal: controller.signal })) return;
         const pending = (await threadStore.getChat(chatId))?.pendingAdmission;
@@ -595,9 +599,11 @@ function turnActor(identity) {
 async function runPrompt(chatId, options = {}) {
   let state = await releaseUnownedRecovery(chatId);
   if (!recoveryAllowed(chatId, state)) return true;
+  if (threadStore.ownershipPending(chatId, state?.pendingAdmission?.threadId || state?.threadId)) return false;
   let pending = state?.pendingAdmission;
   if (pending) {
     if (pending.threadId && !pending.submitted && !threadStore.ownsThread(chatId, pending.threadId)) {
+      if (threadStore.ownershipPending(chatId, pending.threadId)) return false;
       await threadStore.patchChat(chatId, { pendingAdmission: null });
       await sendText(chatId, THREAD_NOT_OWNED_MESSAGE);
       return true;

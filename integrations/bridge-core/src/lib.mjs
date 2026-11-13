@@ -259,6 +259,11 @@ export class ThreadStore {
     return this.data.threadOwners.some((entry) => entry.legacy !== true && entry.threadId === threadId && entry.chatId === chatId && entry.scope === scope);
   }
 
+  ownershipPending(chatId, threadId, scope = "") {
+    if (!chatId || !threadId || this.ownsThread(chatId, threadId, scope)) return false;
+    return this.data.threadOwners.some((entry) => entry.legacy === true && entry.threadId === threadId && entry.chatId === chatId && entry.scope === scope);
+  }
+
   legacyOwnerCount() {
     return this.data.threadOwners.filter((entry) => entry.legacy === true).length;
   }
@@ -470,10 +475,27 @@ export class ThreadOwnershipError extends Error {
   }
 }
 
-export async function settleLegacyOwners(store, runtimeJson, accept, { retryMs = 30_000, timeoutMs = 15_000 } = {}) {
+export async function settleLegacyOwners(store, runtimeJson, accept, { retryMs = 30_000, timeoutMs = 15_000, onSettled = null } = {}) {
   const bounded = (route) => runtimeJson(route, { signal: AbortSignal.timeout(timeoutMs) });
-  const remaining = await store.verifyLegacyOwners(bounded, accept).catch(() => store.legacyOwnerCount());
-  if (remaining > 0) setTimeout(() => void settleLegacyOwners(store, runtimeJson, accept, { retryMs, timeoutMs }), retryMs).unref();
+  const run = async (retried) => {
+    const pendingBefore = new Set(
+      (store.data?.threadOwners || []).filter((entry) => entry.legacy === true).map((entry) => entry.threadId)
+    );
+    const remaining = await store.verifyLegacyOwners(bounded, accept).catch(() => store.legacyOwnerCount());
+    if (retried && typeof onSettled === "function" && pendingBefore.size) {
+      const stillPending = new Set(
+        (store.data?.threadOwners || []).filter((entry) => entry.legacy === true).map((entry) => entry.threadId)
+      );
+      const settled = new Set([...pendingBefore].filter((id) => !stillPending.has(id)));
+      if (settled.size) {
+        await Promise.resolve(onSettled(settled)).catch((error) => {
+          console.error("failed after settling legacy thread owners", error);
+        });
+      }
+    }
+    if (remaining > 0) setTimeout(() => void run(true), retryMs).unref();
+  };
+  await run(false);
 }
 
 export function createdByBridge(thread, { systemPrompt, workspace }) {

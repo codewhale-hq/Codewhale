@@ -32,7 +32,8 @@ async function withBridge(name, env, run, { seedMap = null, seedThreads = [], pr
   if (prepare) prepare(stub);
   const scratch = await mkdtemp(path.join(tmpdir(), "cw-bridge-ownership-"));
   const mapPath = path.join(scratch, "thread-map.json");
-  if (seedMap) await writeFile(mapPath, JSON.stringify(seedMap));
+  const seeded = typeof seedMap === "function" ? seedMap(stub) : seedMap;
+  if (seeded) await writeFile(mapPath, JSON.stringify(seeded));
   const logs = [];
   const child = spawn(
     process.execPath,
@@ -387,13 +388,16 @@ test("an existing store migrates once: unique threads wait for confirmation, sha
   const accept = (thread) => thread.system_prompt === "bridge";
   await withStore(async (store, file) => {
     assert.ok(!store.ownsThread("a", "only-a"), "a migrated grant is not usable before it is confirmed");
+    assert.ok(store.ownershipPending("a", "only-a"), "an unconfirmed grant is pending");
     assert.deepEqual(store.ownedThreadIds("a"), []);
     const scope = "weixin-account:acct:user:w";
     assert.ok(store.ownsThread("w", "w-old", scope), "an old per-account binding was recorded by the bridge itself and needs no confirmation");
+    assert.ok(!store.ownershipPending("w", "w-old", scope));
     const { runtimeJson, calls } = runtimeOf({ "only-a": confirmed, "w-now": confirmed, shared: confirmed });
     assert.equal(await store.verifyLegacyOwners(runtimeJson, accept), 0);
     assert.deepEqual(calls.sort(), ["/v1/threads/only-a", "/v1/threads/w-now"], "only unshared migrated grants are looked up, once each");
     assert.ok(store.ownsThread("a", "only-a"));
+    assert.ok(!store.ownershipPending("a", "only-a"));
     assert.ok(!store.ownsThread("b", "shared") && !store.ownsThread("c", "shared"));
     assert.ok(store.ownsThread("w", "w-now", scope) && !store.ownsThread("w", "w-now"));
     await store.recordThreadOwner("a", "fresh");
@@ -416,13 +420,82 @@ test("a migrated grant is dropped when the thread was not started by the bridge 
     };
     assert.equal(await store.verifyLegacyOwners(runtimeOf(threads, { failing: new Set(["t-down"]) }).runtimeJson, accept), 1);
     assert.ok(store.ownsThread("a", "t-ok"));
+    assert.ok(!store.ownershipPending("a", "t-ok"));
     for (const [chat, id] of [["b", "t-foreign"], ["c", "t-gone"], ["d", "t-down"]]) assert.ok(!store.ownsThread(chat, id), id);
+    assert.ok(!store.ownershipPending("b", "t-foreign") && !store.ownershipPending("c", "t-gone"));
+    assert.ok(store.ownershipPending("d", "t-down"));
     const reopened = await ThreadStore.open(file);
     assert.equal(reopened.legacyOwnerCount(), 1, "the unconfirmed grant is still pending after a restart");
+    assert.ok(reopened.ownershipPending("d", "t-down"));
     assert.ok(!reopened.data.threadOwners.some((entry) => entry.threadId === "t-foreign" || entry.threadId === "t-gone"));
     assert.equal(await reopened.verifyLegacyOwners(runtimeOf(threads).runtimeJson, accept), 0);
     assert.ok(reopened.ownsThread("d", "t-down"), "a later check confirms it");
+    assert.ok(!reopened.ownershipPending("d", "t-down"));
   }, {}, seed);
+});
+
+test("pending-ownership recovery preserves stored turns and retained admissions when Runtime thread reads return 503 at startup", async () => {
+  const tg = bridges.telegram;
+  const fsBridge = bridges.feishu;
+  await Promise.all([
+    withBridge(tg.name, tg.env, async ({ stub }) => {
+      await until(
+        () => turnPosts(stub, "thr-own").some((request) => request.body?.prompt === "RETAINED_PROMPT"),
+        "retained admission should post after ownership confirms",
+        45000
+      );
+    }, {
+      seedThreads: [{ id: "thr-own", workspace: BRIDGE_WORKSPACE, systemPrompt: tg.systemPrompt, summary: "own" }],
+      prepare: (stub) => { stub.state.failDetailUntil = Date.now() + 4000; },
+      seedMap: (stub) => ({ chats: { "222": {
+        threadId: "thr-own", lastSeq: 0, activeTurnId: null,
+        authorizedIdentity: { chatId: "222", chatType: "private", userId: "222", isBot: false },
+        pendingAdmission: {
+          botAccountId: "1000", runtimeUrl: stub.url, actorId: "telegram-user:222",
+          identity: { chatId: "222", chatType: "private", userId: "222", username: "", isBot: false },
+          messageKey: "telegram:222:77", request: { prompt: "RETAINED_PROMPT", input_summary: "RETAINED_PROMPT" },
+          operationKey: null, threadId: "thr-own", submitted: false, sinceSeq: null,
+          threadRequest: { workspace: BRIDGE_WORKSPACE, system_prompt: tg.systemPrompt }
+        }
+      } } })
+    }),
+    withBridge(tg.name, tg.env, async ({ stub }) => {
+      await until(
+        () => stub.state.replies.some((reply) => reply.to === "111" && reply.text.includes("OWN_TURN_OUTPUT")),
+        "telegram stored turn should relay after ownership confirms",
+        45000
+      );
+    }, {
+      seedMap: { chats: { "111": {
+        threadId: "thr-own", lastSeq: 0, activeTurnId: "turn-own", activeMessageKey: "k1",
+        authorizedIdentity: { chatId: "111", chatType: "private", userId: "111", isBot: false }
+      } } },
+      prepare: (stub) => {
+        stub.state.failDetailUntil = Date.now() + 4000;
+        const entry = stub.seedThread({ id: "thr-own", workspace: BRIDGE_WORKSPACE, systemPrompt: tg.systemPrompt, summary: "own", runningTurnId: "turn-own" });
+        entry.events.push({ seq: 1, thread_id: "thr-own", turn_id: "turn-own", event: "item.delta", payload: { kind: "agent_message", delta: "OWN_TURN_OUTPUT" } });
+        entry.events.push({ seq: 2, thread_id: "thr-own", turn_id: "turn-own", event: "turn.completed", payload: { turn: { status: "completed" } } });
+      }
+    }),
+    withBridge(fsBridge.name, fsBridge.env, async ({ stub }) => {
+      await until(
+        () => stub.state.replies.some((reply) => reply.to === "oc_alice" && reply.text.includes("OWN_FEISHU_OUTPUT")),
+        "feishu stored turn should reattach after ownership confirms",
+        45000
+      );
+    }, {
+      seedMap: { chats: { oc_alice: {
+        threadId: "thr-own", lastSeq: 0, activeTurnId: "turn-own",
+        authorizedIdentity: { chatId: "oc_alice", chatType: "p2p", openId: "ou_oc_alice" }
+      } } },
+      prepare: (stub) => {
+        stub.state.failDetailUntil = Date.now() + 4000;
+        const entry = stub.seedThread({ id: "thr-own", workspace: BRIDGE_WORKSPACE, systemPrompt: fsBridge.systemPrompt, summary: "own", runningTurnId: "turn-own" });
+        entry.events.push({ seq: 1, thread_id: "thr-own", turn_id: "turn-own", event: "item.delta", payload: { kind: "agent_message", delta: "OWN_FEISHU_OUTPUT" } });
+        entry.events.push({ seq: 2, thread_id: "thr-own", turn_id: "turn-own", event: "turn.completed", payload: { turn: { status: "completed" } } });
+      }
+    })
+  ]);
 });
 
 test("core approval decisions check ownership only when the caller supplies it", async () => {

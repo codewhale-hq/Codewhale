@@ -48,6 +48,7 @@ async function fixture(t, options = {}) {
     if (url.pathname === "/v1/threads/summary") { state.summaryQueries.push((url.searchParams.get("thread_ids") || "").split(",").filter(Boolean)); return json(res, options.summaries || []); }
     if (/^\/v1\/threads\/[^/]+$/.test(url.pathname)) {
       state.threadReads.push(url.pathname);
+      if (options.failDetailUntil && Date.now() < options.failDetailUntil) return json(res, { error: "unavailable" }, 503);
       const id = url.pathname.split("/").at(-1);
       const foreign = options.foreignThreads?.includes(id);
       return json(res, { id, thread: { id, workspace: foreign ? "/other/project" : dir, system_prompt: foreign ? null : WEIXIN_PROMPT }, latest_seq: state.seq, turns: state.turns, items: state.items, pending_approvals: state.approvals });
@@ -423,4 +424,22 @@ test("a chat on a thread shared in an existing thread map cannot decide an appro
   await until(() => f.sent.length === 1, "the approval was not answered");
   assert.equal(f.sent[0].item_list[0].text_item.text, NOT_OWNED);
   assert.deepEqual(f.decisions, [], "the decision never reaches the Runtime");
+});
+
+test("an unsent admission on a pending-ownership thread is preserved when Runtime thread reads return 503 at startup", async (t) => {
+  const f = await fixture(t, { failDetailUntil: Date.now() + 3000 });
+  const key = JSON.stringify(["bot-A", "alice", "1"]);
+  const request = { prompt: "retained", input_summary: "retained", model: "m", mode: "agent", allow_shell: false, trust_mode: false, auto_approve: false, operation_key: "retained-operation" };
+  await fs.writeFile(path.join(f.dir, "thread-map.json"), JSON.stringify({ chats: { alice: {
+    threadId: "thread-1", bindingAccountId: "bot-A",
+    pendingAdmission: {
+      accountId: "bot-A", actorId: "weixin-account:bot-A:user:alice", messageKey: key, request,
+      operationKey: request.operation_key, threadId: "thread-1", submitted: false, sinceSeq: null,
+    },
+  } }, messages: [], inflight: {} }));
+  f.start();
+  await until(() => f.posts.length === 1 || f.sent.some((msg) => msg.item_list[0].text_item.text === NOT_OWNED), "admission neither posted nor dropped", 40000);
+  assert.equal(f.sent.some((msg) => msg.item_list[0].text_item.text === NOT_OWNED), false, "must not drop pending admission as unowned");
+  assert.equal(f.posts.length, 1, "retained admission posts after ownership confirms");
+  assert.equal(f.posts[0].prompt, "retained");
 });

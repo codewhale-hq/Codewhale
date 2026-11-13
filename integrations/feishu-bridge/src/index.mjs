@@ -80,7 +80,12 @@ const FEISHU_SYSTEM_PROMPT =
   "You are being controlled from a Feishu/Lark phone chat. Keep status updates concise. Ask for tool approvals when needed; do not assume mobile messages imply blanket approval.";
 
 const threadStore = await ThreadStore.open(config.threadMapPath);
-await settleLegacyOwners(threadStore, runtimeJson, (thread) => createdByBridge(thread, { systemPrompt: FEISHU_SYSTEM_PROMPT, workspace: config.workspace }));
+await settleLegacyOwners(
+  threadStore,
+  runtimeJson,
+  (thread) => createdByBridge(thread, { systemPrompt: FEISHU_SYSTEM_PROMPT, workspace: config.workspace }),
+  { onSettled: (settledThreadIds) => reattachActiveTurns(settledThreadIds) }
+);
 
 const dispatcher = new Lark.EventDispatcher({}).register({
   "im.message.receive_v1": async (data) => {
@@ -296,14 +301,16 @@ async function runPrompt(chatId, prompt, identity) {
   }
 }
 
-async function reattachActiveTurns() {
+async function reattachActiveTurns(onlyThreadIds = null) {
   for (const [chatId, state] of threadStore.listChats()) {
     if (!state?.threadId || !state.activeTurnId) continue;
+    if (onlyThreadIds && !onlyThreadIds.has(state.threadId)) continue;
     const identity = state.authorizedIdentity;
     if (!identity || identity.chatId !== chatId ||
         !["p2p", "group"].includes(identity.chatType) ||
         (identity.chatType !== "p2p" && !config.allowGroups) ||
         !isAllowed(identity, config.allowlist, config.allowUnlisted)) continue;
+    if (threadStore.ownershipPending(chatId, state.threadId)) continue;
     if (!threadStore.ownsThread(chatId, state.threadId)) {
       await threadStore.patchChat(chatId, { activeTurnId: null, updatedAt: new Date().toISOString() });
       continue;
