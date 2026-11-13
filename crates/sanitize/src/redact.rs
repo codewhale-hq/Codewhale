@@ -246,6 +246,7 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
             spaced = SpacedAssignment::None;
         } else if let Some(redacted) = redact_bare_tokens(word) {
             changed = true;
+            let redacted = redact_structured_word(&redacted, policy).unwrap_or(redacted);
             masked.push(redacted);
             spaced = SpacedAssignment::None;
         } else if let Some(redacted) = redact_structured_word(trimmed, policy) {
@@ -888,6 +889,32 @@ mod bare_token_tests {
         ] {
             assert_eq!(redact_secrets(&input), expected);
             assert_eq!(redact_model_bound_secrets(&input), expected);
+        }
+    }
+
+    #[test]
+    fn a_keyed_secret_after_a_cjk_adjacent_token_in_the_same_word_is_still_masked() {
+        let token = "ABCDEFGH12345678";
+        for (out, secret) in [
+            (
+                redact_secrets(
+                    "https://h/s?q=见xai-ABCDEFGH12345678乙&access_token=hunter2hunter2",
+                ),
+                "hunter2hunter2",
+            ),
+            (
+                redact_secrets(r#"{"msg":"见xai-ABCDEFGH12345678乙","api_key":"hunter2"}"#),
+                "hunter2",
+            ),
+            (
+                redact_model_bound_secrets(
+                    r#"{"password":"Zx9qLm2Vb7Nc4Rt8Wp3K","msg":"见xai-ABCDEFGH12345678乙"}"#,
+                ),
+                "Zx9qLm2Vb7Nc4Rt8Wp3K",
+            ),
+        ] {
+            assert!(!out.contains(secret), "{out}");
+            assert!(!out.contains(token), "{out}");
         }
     }
 
