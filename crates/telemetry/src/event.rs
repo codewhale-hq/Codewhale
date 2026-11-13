@@ -830,17 +830,22 @@ pub fn is_reported_tool_name(value: &str) -> bool {
     value == "mcp" || value == "other" || TOOL_NAMES.contains(&value)
 }
 
-/// The `model` value for a model id: the lowercased id when the bundled model
-/// catalog lists it, otherwise `other`. Custom, local and fine-tuned model
-/// names therefore never leave the machine.
+/// The `model` value for a model id: the lowercased canonical id when the
+/// bundled model catalog lists it, otherwise `other`. Official aliases and
+/// compatibility spellings are resolved first. Custom, local and fine-tuned
+/// model names therefore never leave the machine.
 #[must_use]
 pub fn reported_model_id(model: &str) -> String {
+    use codewhale_config::catalog::reviewed::{compatibility_alias, official_deepseek_model_id};
     let id = model.trim().to_ascii_lowercase();
-    if is_catalogued_model(&id) {
-        id
-    } else {
-        "other".to_string()
-    }
+    let canonical = official_deepseek_model_id(&id)
+        .or_else(|| compatibility_alias("canonical_model_name", &id))
+        .map(str::to_ascii_lowercase);
+    canonical
+        .into_iter()
+        .chain(std::iter::once(id))
+        .find(|candidate| is_catalogued_model(candidate))
+        .unwrap_or_else(|| "other".to_string())
 }
 
 /// Whether `value` may appear as `model_usage.model`.
@@ -850,21 +855,9 @@ pub fn is_reported_model_id(value: &str) -> bool {
 }
 
 fn is_catalogued_model(id: &str) -> bool {
-    if id.is_empty() || id.len() > 128 {
-        return false;
-    }
-    let catalog = codewhale_config::catalog::bundled_models_dev_catalog();
-    catalog.reviewed.intrinsic.contains_key(id)
-        || catalog
-            .models
-            .keys()
-            .any(|key| key.eq_ignore_ascii_case(id))
-        || catalog.providers.values().any(|provider| {
-            provider
-                .models
-                .keys()
-                .any(|key| key.eq_ignore_ascii_case(id))
-        })
+    !id.is_empty()
+        && id.len() <= 128
+        && codewhale_config::catalog::reviewed::public_model_identifier_ignore_case(id)
 }
 
 impl Event {
