@@ -115,6 +115,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Child processes now inherit only the standard locale variables (`LC_ALL`, `LC_CTYPE` and the other locale categories, plus `LC_TERMINAL` and `LC_TERMINAL_VERSION`) and a listed set of `DOTNET_` host, SDK and runtime settings. Other `DOTNET_` variables, including application configuration keys, are no longer passed to child processes or MCP servers.
 - **Starting after a hard kill:** the Engine now starts when its process was killed and its data directory was then deleted. A socket owner record whose process is dead and whose data directory, the one this start selected, no longer exists is discarded instead of failing every start with "Failed to resolve ... tasks/runtime". A home reached through a symbolic link, such as one under macOS /tmp, is not covered yet.
 - The install guide's note for a first message that gets no answer now describes v0.10.2: connect a model with `/provider`, and restart if messages stay saved for later after you connect. It described v0.10.0's key screen. The Chinese guide carries the same correction.
 - Project activity on the site now comes from a server-side snapshot with a freshness record, the browser no longer calls GitHub, and count sentences use the right plural form in every language.
