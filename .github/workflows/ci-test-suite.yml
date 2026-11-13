@@ -1,0 +1,387 @@
+name: CI test suite
+
+# Called by ci.yml, once per operating system, so each OS is its own pipeline:
+# one build of the whole workspace's test binaries, parallel shards that run
+# partitions of that one nextest archive, and a check that the shards together
+# ran exactly the tests the archive lists. Running per OS means Linux reports
+# as soon as Linux is done instead of waiting for the slowest build.
+#
+# Trust boundary: this runs with the caller's event. For a pull request from a
+# fork that is the read-only token and no secrets; nothing here writes a cache
+# (rust-cache and sccache save only on main) or uses a write permission. The
+# artifacts passed between jobs live inside one run.
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: Hosted runner label
+        required: true
+        type: string
+      shards:
+        description: Number of shards, equal to the length of shard_list
+        required: true
+        type: number
+      shard_list:
+        description: JSON array of shard numbers, for example [1,2,3,4]
+        required: true
+        type: string
+      build_jobs:
+        description: CARGO_BUILD_JOBS for the test build
+        required: true
+        type: string
+      debug:
+        description: Debug-table level for the test build (CARGO_PROFILE_*_DEBUG)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -Dwarnings
+  RUST_MIN_STACK: 8388608
+
+jobs:
+  build:
+    name: Build
+    # A cold hosted Mac compiled for 65 minutes with one Cargo job (run
+    # 43216596942) and the old one-job cap was 210; this job only compiles, so
+    # it keeps real margin without the test run in it.
+    timeout-minutes: 150
+    runs-on: ${{ inputs.os }}
+    env:
+      # Test builds compile all features of the whole workspace. One Cargo job
+      # kept hosted runners inside memory (exit 143 on 2026-10-19 with four);
+      # trimmed debug tables shrink compiler and linker memory so Linux and
+      # Windows can run two. Assertions and every test are unchanged.
+      CARGO_BUILD_JOBS: ${{ inputs.build_jobs }}
+      CARGO_PROFILE_DEV_DEBUG: ${{ inputs.debug }}
+      CARGO_PROFILE_TEST_DEBUG: ${{ inputs.debug }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test Windows installer PATH helper
+        if: inputs.os == 'windows-latest'
+        shell: pwsh
+        run: ./scripts/installer/update-user-path.tests.ps1
+      - name: Install NSIS for Windows installer regression
+        if: inputs.os == 'windows-latest'
+        shell: pwsh
+        run: ./scripts/installer/install-nsis.ps1
+      - name: Test Windows installer PATH regression
+        if: inputs.os == 'windows-latest'
+        shell: pwsh
+        run: ./scripts/installer/installer-path-regression.tests.ps1 -AllowUserPathMutation
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install macOS LLVM tools
+        if: inputs.os == 'macos-latest'
+        run: rustup component add llvm-tools --toolchain stable
+      - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+        # Main-only GitHub Actions cache backend; see the Safety gate job.
+        if: github.ref == 'refs/heads/main'
+      - name: Enable sccache
+        if: steps.sccache.outcome == 'success'
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
+          echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
+          echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "${GITHUB_ENV}"
+      - name: Install Linux system dependencies
+        if: inputs.os == 'ubuntu-latest'
+        run: |
+          bash scripts/ci-apt-install.sh libdbus-1-dev pkg-config bubblewrap apparmor-profiles
+          sh scripts/prepare-linux-test-sandbox.sh
+      - name: Ubuntu build headroom
+        # Reuse the same fixed hosted-runner provisioning as Safety and Lint.
+        # Exit 143 is a shutdown observation, not proof of OOM or timeout.
+        if: inputs.os == 'ubuntu-latest'
+        shell: bash
+        run: bash scripts/prepare-ubuntu-build-headroom.sh
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@nextest
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+      - name: Build canonical executable for acceptance tests
+        shell: bash
+        run: cargo build -p codewhale-cli --bin codewhale --all-features --locked
+        env:
+          RUSTC_WRAPPER: ${{ inputs.os != 'windows-latest' && env.RUSTC_WRAPPER || '' }}
+      - name: Windows Terminal clipboard-to-draft acceptance
+        if: inputs.os == 'windows-latest'
+        timeout-minutes: 5
+        shell: pwsh
+        run: node scripts/release/windows-terminal-clipboard.mjs target/debug/codewhale.exe "${{ runner.temp }}/windows-clipboard"
+      - name: Retain Windows Terminal clipboard-to-draft evidence
+        if: ${{ !cancelled() && inputs.os == 'windows-latest' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-clipboard-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-clipboard/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Archive test binaries
+        # One compile per OS. Shards run this archive with
+        # `cargo nextest run --archive-file`, so the suite is the same test
+        # binaries, built once. Doctests are not in the archive; they run
+        # below, once, while the library artifacts are still warm.
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/test-archive" "$RUNNER_TEMP/test-expected"
+          cargo nextest archive --workspace --all-features --locked --profile ci \
+            --archive-file "$RUNNER_TEMP/test-archive/nextest-archive.tar.zst"
+          exe=codewhale
+          if [ "$RUNNER_OS" = Windows ]; then exe=codewhale.exe; fi
+          cp "target/debug/$exe" "$RUNNER_TEMP/test-archive/$exe"
+        env:
+          RUSTC_WRAPPER: ${{ inputs.os != 'windows-latest' && env.RUSTC_WRAPPER || '' }}
+      - name: Count the tests the archive selects
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo nextest list --archive-file "$RUNNER_TEMP/test-archive/nextest-archive.tar.zst" \
+            --workspace-remap . --profile ci --message-format json > "$RUNNER_TEMP/test-listing.json"
+          tests="$(python3 -I scripts/ci/nextest-shard-count.py list "$RUNNER_TEMP/test-listing.json")"
+          printf '{"os": "%s", "tests": %s, "shards": %s}\n' "${{ inputs.os }}" "$tests" "${{ inputs.shards }}" \
+            > "$RUNNER_TEMP/test-expected/expected-${{ inputs.os }}.json"
+          cat "$RUNNER_TEMP/test-expected/expected-${{ inputs.os }}.json"
+      - name: Run doctests
+        # nextest does not run doctests; this keeps them once per OS.
+        shell: bash
+        run: sh scripts/with-hermetic-test-home.sh cargo test --workspace --all-features --locked --doc
+        env:
+          RUSTC_WRAPPER: ${{ inputs.os != 'windows-latest' && env.RUSTC_WRAPPER || '' }}
+          RUST_MIN_STACK: '16777216'
+      - name: Lockfile drift guard
+        run: git diff --exit-code -- Cargo.lock
+      - name: sccache stats
+        if: steps.sccache.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: sccache --show-stats
+      - name: Retain test archive for the shards
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: test-archive-${{ inputs.os }}
+          path: ${{ runner.temp }}/test-archive/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      - name: Retain expected test count
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: test-expected-${{ inputs.os }}
+          path: ${{ runner.temp }}/test-expected/
+          if-no-files-found: error
+          retention-days: 7
+
+  shard:
+    name: Shard ${{ matrix.shard }}/${{ inputs.shards }}
+    needs: build
+    timeout-minutes: 60
+    runs-on: ${{ inputs.os }}
+    strategy:
+      # A failure in one shard must not erase the others' results; the suite
+      # gate needs every conclusion.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.shard_list) }}
+    env:
+      CODEWHALE_EXT_HOST_TESTS: '1'
+      CODEWHALE_EXT_HOST_BUN_TESTS: '1'
+      # Give test threads the stack the product gives itself; the reasoning is
+      # on the shared-process step above and in scripts/dev-cargo.sh.
+      RUST_MIN_STACK: '16777216'
+      # The exact-image Native containment tests (and, on Windows, the LPAC
+      # owner and profile tests) that scripts/compiled-host-native-receipt.py
+      # requires in ONE JUnit report. Shard 1 runs them in their own nextest
+      # invocation and every shard excludes them from its partition, so each
+      # still runs exactly once. release-workflows.test.js keeps this list equal
+      # to the script's.
+      NATIVE_FILTER: >-
+        package(codewhale-engine) & kind(lib) & (
+        test(=extension_host::tests::compiled_native_host_cannot_read_secrets_or_write_outside_its_data_dir) |
+        test(=extension_host::tests::compiled_native_host_memory_cap_is_enforced) |
+        test(=extension_host::windows::tests::windows_native_lpac_node_owner_boundary) |
+        test(=extension_host::windows::tests::windows_native_lpac_bun_owner_boundary) |
+        test(=extension_host::windows::tests::windows_native_lpac_compiled_owner_boundary) |
+        test(=extension_host::windows::tests::windows_native_profiles_are_distinct_and_acl_grant_refuses_junctions) |
+        test(=extension_host::windows::tests::windows_argv_and_environment_keep_exact_values_and_reject_nul) |
+        test(=extension_host::windows::tests::windows_profile_retirement_removes_only_its_grants_and_inherited_data_on_restarts) |
+        test(=extension_host::windows::tests::windows_profile_directory_budget_and_recorded_identity_refuse_before_overwrite))
+    steps:
+      - uses: actions/checkout@v7
+      - name: Point terminal failure diagnostics at the runner temp directory
+        shell: bash
+        run: echo "QA_PTY_DIAGNOSTICS_DIR=${RUNNER_TEMP}/pty-failures" >> "${GITHUB_ENV}"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux system dependencies
+        if: inputs.os == 'ubuntu-latest'
+        run: |
+          bash scripts/ci-apt-install.sh libdbus-1-dev pkg-config bubblewrap apparmor-profiles
+          sh scripts/prepare-linux-test-sandbox.sh
+      - uses: taiki-e/install-action@nextest
+      - uses: actions/setup-node@v7.1.0
+        # The extension-host integration tests spawn the real bundle under
+        # Node >= 22.19; CODEWHALE_EXT_HOST_TESTS makes a missing Node a
+        # failure instead of a silent skip.
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2
+        with:
+          bun-version: 1.4.0
+      - name: Build matching compiled-host input for required Native containment receipts
+        shell: bash
+        run: bash scripts/ci/compiled-host-test-input.sh
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: test-archive-${{ inputs.os }}
+          path: ${{ runner.temp }}/test-archive
+      - name: Place the canonical executable for acceptance tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/debug
+          cp "$RUNNER_TEMP"/test-archive/codewhale* target/debug/
+          if [ "$RUNNER_OS" != Windows ]; then chmod +x target/debug/codewhale; fi
+      - name: Run native containment tests
+        if: matrix.shard == 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/test-count" "$RUNNER_TEMP/nextest-extract"
+          sh scripts/with-hermetic-test-home.sh cargo nextest run \
+            --archive-file "$RUNNER_TEMP/test-archive/nextest-archive.tar.zst" \
+            --extract-to "$RUNNER_TEMP/nextest-extract" --extract-overwrite \
+            --workspace-remap . --profile ci -E "$NATIVE_FILTER"
+          cp target/nextest/ci/junit.xml "$RUNNER_TEMP/native-junit.xml"
+          python3 -I scripts/ci/nextest-shard-count.py junit "$RUNNER_TEMP/native-junit.xml" > "$RUNNER_TEMP/native-count.txt"
+      - name: Run tests
+        # Same test binaries as `cargo test`, run by cargo-nextest: one
+        # process per test, all runner cores busy, slow tests named instead
+        # of stalling the binary. `.config/nextest.toml` serializes the PTY
+        # binary and bounds the integration binary that spawns the real
+        # executable; retries are off, so a flake is a red run, not a hidden
+        # one. This shard runs partition k of N of everything except the
+        # native containment tests; test-suite proves the shards add up to the
+        # archive's full list.
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/test-count" "$RUNNER_TEMP/nextest-extract"
+          monitor=
+          if [ "$RUNNER_OS" = Linux ]; then
+            # Headroom trace: if the runner is terminated again, the last lines
+            # say whether memory or disk ran out.
+            ( while sleep 30; do
+                echo "[headroom] $(free -m | awk '/^Mem:/{print "mem used " $3 "/" $2 " MiB"} /^Swap:/{print "swap used " $3 "/" $2 " MiB"}' | paste -sd ' ') disk free $(df -h / | awk 'NR==2{print $4}')"
+              done ) &
+            monitor=$!
+          fi
+          status=0
+          sh scripts/with-hermetic-test-home.sh cargo nextest run \
+            --archive-file "$RUNNER_TEMP/test-archive/nextest-archive.tar.zst" \
+            --extract-to "$RUNNER_TEMP/nextest-extract" --extract-overwrite \
+            --workspace-remap . --profile ci \
+            --partition "count:${{ matrix.shard }}/${{ inputs.shards }}" \
+            -E "not ($NATIVE_FILTER)" || status=$?
+          if [ -n "$monitor" ]; then kill "$monitor" 2>/dev/null || true; fi
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          tests="$(python3 -I scripts/ci/nextest-shard-count.py junit target/nextest/ci/junit.xml)"
+          if [ -f "$RUNNER_TEMP/native-count.txt" ]; then tests=$((tests + $(cat "$RUNNER_TEMP/native-count.txt"))); fi
+          printf '{"os": "%s", "shard": %s, "tests": %s}\n' "${{ inputs.os }}" "${{ matrix.shard }}" "$tests" \
+            > "$RUNNER_TEMP/test-count/shard-${{ inputs.os }}-${{ matrix.shard }}.json"
+          cat "$RUNNER_TEMP/test-count/shard-${{ inputs.os }}-${{ matrix.shard }}.json"
+      - name: Retain sealed terminal failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: terminal-failures-${{ runner.os }}-${{ matrix.shard }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pty-failures/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Export exact compiled-image Native containment receipt
+        # JUnit is from the same archive's native invocation: no second
+        # compile. The official entire CI run must be green before release can
+        # consume this artifact. Missing/changed inputs or silent test skips
+        # are red.
+        if: matrix.shard == 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
+          python3 scripts/compiled-host-native-receipt.py \
+            --junit "$RUNNER_TEMP/native-junit.xml" \
+            --compiled-image "$CODEWHALE_COMPILED_HOST_TEST_BINARY" \
+            --bundle crates/engine/extension-host/dist/codewhale-extension-host.mjs \
+            --bun "$CODEWHALE_COMPILED_HOST_TEST_BUN" --source-sha "$GITHUB_SHA" \
+            --image-platform "$CODEWHALE_COMPILED_HOST_TEST_PLATFORM" --image-arch "$CODEWHALE_COMPILED_HOST_TEST_ARCH" \
+            --host-sha256 "$CODEWHALE_COMPILED_HOST_TEST_SHA256" \
+            --runtime-sha256 "$CODEWHALE_COMPILED_HOST_TEST_RUNTIME_SHA256" \
+            --bundle-sha256 "$CODEWHALE_COMPILED_HOST_TEST_BUNDLE_SHA256" \
+            --output "$RUNNER_TEMP/native-compiled-host"
+      - name: Retain exact compiled image and Native receipt
+        if: matrix.shard == 1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: native-compiled-host-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/native-compiled-host/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Lockfile drift guard
+        run: git diff --exit-code -- Cargo.lock
+      - name: Retain shard test count
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: test-count-${{ inputs.os }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/test-count/
+          if-no-files-found: error
+          retention-days: 7
+
+  check:
+    # The job that answers "did this OS's whole suite pass": the build and every
+    # shard succeeded, and the shards together ran exactly the tests the archive
+    # lists. Not a required check (§180).
+    name: Suite check
+    needs: [build, shard]
+    if: '!cancelled()'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/ci
+      - name: Every build and shard succeeded
+        shell: bash
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          SHARD_RESULT: ${{ needs.shard.result }}
+        run: |
+          echo "build: ${BUILD_RESULT}"
+          echo "shard: ${SHARD_RESULT}"
+          if [ "${BUILD_RESULT}" != success ] || [ "${SHARD_RESULT}" != success ]; then
+            echo "::error::The sharded suite did not complete successfully."
+            exit 1
+          fi
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: test-expected-${{ inputs.os }}
+          path: counts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: test-count-${{ inputs.os }}-*
+          path: counts
+          merge-multiple: true
+      - name: Shards ran every listed test exactly once
+        run: python3 -I scripts/ci/nextest-shard-count.py check counts

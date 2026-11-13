@@ -16,13 +16,32 @@ on:
         options:
           - nextest
           - shared-process-twice
+      crate:
+        description: Scoped run, in a few minutes. One workspace package (for example codewhale-tui); with crate or filter set only the scoped test runs, not the full suite
+        required: false
+        default: ''
+        type: string
+      filter:
+        description: Scoped run, in a few minutes. A nextest filterset (for example 'test(auto_review)'), alone or with crate; with crate or filter set only the scoped test runs
+        required: false
+        default: ''
+        type: string
+      os:
+        description: Operating systems for a scoped run, comma separated (ubuntu-latest, macos-latest, windows-latest, or all); ignored by a full run
+        required: false
+        default: ubuntu-latest
+        type: string
 
 permissions:
   contents: read
 
+# A new push to a pull request, or a new dispatch on the same non-main branch
+# (an agent's ci/<task> branch), cancels the older run still in progress.
+# Runs on main are keyed by SHA and never cancel each other, and a scoped
+# dispatch gets its own group so it cannot cancel a full run on the same branch.
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.workflow, github.sha) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || (github.event_name == 'workflow_dispatch' && (inputs.crate != '' || inputs.filter != '') && format('ci-scoped-{0}', github.run_id)) || (github.ref != 'refs/heads/main' && format('ci-ref-{0}', github.ref)) || format('ci-{0}-{1}', github.workflow, github.sha) }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !(github.event_name == 'workflow_dispatch' && (inputs.crate != '' || inputs.filter != '')) }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -45,6 +64,8 @@ jobs:
       mobile: ${{ steps.detect.outputs.mobile }}
       actions: ${{ steps.detect.outputs.actions }}
       trusted: ${{ steps.trust.outputs.trusted }}
+      scoped: ${{ steps.scope.outputs.scoped }}
+      scoped_os: ${{ steps.scope.outputs.scoped_os }}
     steps:
       - name: Classify event trust
         id: trust
@@ -64,6 +85,48 @@ jobs:
           else
             echo "trusted=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Classify scoped dispatch
+        id: scope
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SCOPE_CRATE: ${{ inputs.crate }}
+          SCOPE_FILTER: ${{ inputs.filter }}
+          SCOPE_OS: ${{ inputs.os }}
+        run: |
+          set -euo pipefail
+          # A dispatch with a crate or a filter runs only the scoped test job.
+          # Inputs reach the shell only through env, and the crate and OS
+          # names are validated before anything uses them.
+          scoped=false
+          scoped_os='["ubuntu-latest"]'
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" && ( -n "${SCOPE_CRATE}" || -n "${SCOPE_FILTER}" ) ]]; then
+            scoped=true
+            if [[ -n "${SCOPE_CRATE}" && ! "${SCOPE_CRATE}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+              echo "::error::crate must be a package name (letters, digits, - and _)." >&2
+              exit 1
+            fi
+            oses=()
+            IFS=',' read -r -a requested <<< "${SCOPE_OS:-ubuntu-latest}"
+            for name in "${requested[@]}"; do
+              name="${name//[[:space:]]/}"
+              case "${name}" in
+                ubuntu|ubuntu-latest|linux) oses+=("ubuntu-latest") ;;
+                macos|macos-latest) oses+=("macos-latest") ;;
+                windows|windows-latest) oses+=("windows-latest") ;;
+                all) oses+=("ubuntu-latest" "macos-latest" "windows-latest") ;;
+                "") ;;
+                *)
+                  echo "::error::os entries must be ubuntu-latest, macos-latest, windows-latest or all." >&2
+                  exit 1
+                  ;;
+              esac
+            done
+            if [[ "${#oses[@]}" -eq 0 ]]; then oses=("ubuntu-latest"); fi
+            scoped_os="$(printf '%s\n' "${oses[@]}" | sort -u | jq -R . | jq -sc .)"
+          fi
+          echo "scoped=${scoped}" >> "${GITHUB_OUTPUT}"
+          echo "scoped_os=${scoped_os}" >> "${GITHUB_OUTPUT}"
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -197,6 +260,8 @@ jobs:
 
   versions:
     name: Version drift
+    needs: changes
+    if: needs.changes.outputs.scoped != 'true'
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
@@ -274,6 +339,8 @@ jobs:
 
   plugin-conversion:
     name: Plugin conversion
+    needs: changes
+    if: needs.changes.outputs.scoped != 'true'
     timeout-minutes: 5
     runs-on: ubuntu-latest
     steps:
@@ -293,6 +360,8 @@ jobs:
 
   integrations:
     name: Integrations
+    needs: changes
+    if: needs.changes.outputs.scoped != 'true'
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
@@ -349,7 +418,7 @@ jobs:
   extension-host-runtimes:
     name: Extension host runtimes (${{ matrix.os }})
     needs: changes
-    if: needs.changes.outputs.heavy == 'true'
+    if: needs.changes.outputs.heavy == 'true' && needs.changes.outputs.scoped != 'true'
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -388,6 +457,8 @@ jobs:
 
   vscode-extension:
     name: VS Code extension
+    needs: changes
+    if: needs.changes.outputs.scoped != 'true'
     timeout-minutes: 15
     runs-on: ubuntu-latest
     defaults:
@@ -421,7 +492,7 @@ jobs:
   safety-gate:
     name: Safety gate
     needs: changes
-    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.heavy == 'true'
+    if: needs.changes.outputs.heavy == 'true' && needs.changes.outputs.scoped != 'true'
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
@@ -475,6 +546,7 @@ jobs:
   lint:
     name: Lint
     needs: changes
+    if: needs.changes.outputs.scoped != 'true'
     # Measured on 89ee629e with runner headroom: clippy 10 min, runtime-contract
     # budget 16 min, and persistence-backlog still running at the old 45-minute
     # cancellation. Commands, filters and budgets are unchanged.
@@ -725,7 +797,7 @@ jobs:
     # fail the build there while stable stays green (#6543).
     name: MSRV check (1.89)
     needs: changes
-    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.heavy == 'true'
+    if: needs.changes.outputs.heavy == 'true' && needs.changes.outputs.scoped != 'true'
     timeout-minutes: 45
     runs-on: ubuntu-latest
     steps:
@@ -746,7 +818,7 @@ jobs:
   workflow-rlm-cache:
     name: Workflow RLM cache
     needs: changes
-    if: needs.changes.outputs.workflow == 'true'
+    if: needs.changes.outputs.workflow == 'true' && needs.changes.outputs.scoped != 'true'
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
@@ -772,261 +844,63 @@ jobs:
         run: sh scripts/with-hermetic-test-home.sh cargo test -p codewhale-workflow --locked
 
   test:
-    name: Test
+    # Manual shared-process qualification only (workspace_test_mode =
+    # shared-process-twice): the GH6698 evidence of two libtest passes at one
+    # exact revision on one hosted Ubuntu runner. Every other run executes the
+    # suite through test-build, test-shard and test-suite below.
+    name: Shared-process tests
     needs: changes
-    if: github.event_name == 'workflow_dispatch'
-    # Contexts "Test (ubuntu-latest)" / "Test (macos-latest)" /
-    # "Test (windows-latest)" derive from job name + matrix.os and are
-    # independent of runs-on. For light changes the macOS/Windows legs only
-    # echo a skip line, so run them on ubuntu instead of queueing for scarce
-    # macOS/Windows runners. Pull requests run only the Linux leg here; the
-    # required "Test (windows-latest)" context comes from test-windows-pr.
-    # The ternary is safe: matrix.os is always a non-empty literal, so
-    # runs-on can never evaluate to empty.
-    # A cold GitHub-hosted Mac spent 77-80 minutes in Test on 2026-09-23
-    # (fork PRs #6431, #6417), too close to the old 90-minute limit.
-    # On 2026-10-04 a PR leg spent 111 minutes compiling with no cache and
-    # was cancelled at 120 with 12,356 tests passed and none failed. The
-    # limit stays a literal (release-workflows.test.js, #5496); 210 bounds
-    # cold compilation and the complete suite without disabling test deadlines.
+    if: github.event_name == 'workflow_dispatch' && inputs.workspace_test_mode == 'shared-process-twice' && needs.changes.outputs.heavy == 'true' && needs.changes.outputs.scoped != 'true'
+    # A cold GitHub-hosted runner spent 111 minutes compiling with no cache on
+    # 2026-10-04. The limit stays a literal (release-workflows.test.js, #5496);
+    # 210 bounds cold compilation and both complete passes.
     timeout-minutes: 210
-    # macOS legs go to the self-hosted Mac ONLY when all three hold: the
-    # change is heavy, the event is trusted (not a fork PR), and the
-    # CW_SELF_HOSTED_MAC repo variable is 'true'. That variable is the kill
-    # switch: unset it and every leg falls back to GitHub-hosted runners
-    # immediately, with no commit — important because an offline
-    # self-hosted runner queues jobs forever, which is worse than a slow one.
-    runs-on: ${{ needs.changes.outputs.heavy != 'true' && 'ubuntu-latest' || (matrix.os == 'macos-latest' && needs.changes.outputs.trusted == 'true' && vars.CW_SELF_HOSTED_MAC == 'true' && fromJSON('["self-hosted","macOS","ARM64","codewhale-mac"]')) || matrix.os }}
-    strategy:
-      # A failure on one desktop platform must not erase evidence from the
-      # other one. We need both conclusions to diagnose and release safely.
-      fail-fast: false
-      matrix:
-        # Pull requests run the Linux workspace suite only; the macOS and
-        # Windows suites run in final validation. The explicit manual
-        # libtest qualification uses one hosted Ubuntu job, never a fork PR or
-        # self-hosted runner; normal dispatches keep all three legs.
-        os: ${{ fromJSON((github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.workspace_test_mode == 'shared-process-twice')) && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+    runs-on: ubuntu-latest
     steps:
-      - name: Skip tests for light change
-        if: needs.changes.outputs.heavy != 'true'
-        run: echo "No executable Rust changes detected; preserving required Test context."
       - uses: actions/checkout@v7
-        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
-      - name: Test Windows installer PATH helper
-        if: needs.changes.outputs.heavy == 'true' && matrix.os == 'windows-latest'
-        shell: pwsh
-        run: ./scripts/installer/update-user-path.tests.ps1
-      - name: Install NSIS for Windows installer regression
-        if: needs.changes.outputs.heavy == 'true' && matrix.os == 'windows-latest'
-        shell: pwsh
-        run: ./scripts/installer/install-nsis.ps1
-      - name: Test Windows installer PATH regression
-        if: needs.changes.outputs.heavy == 'true' && matrix.os == 'windows-latest'
-        shell: pwsh
-        run: ./scripts/installer/installer-path-regression.tests.ps1 -AllowUserPathMutation
       - uses: dtolnay/rust-toolchain@stable
-        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
-      - name: Install macOS LLVM tools
-        if: needs.changes.outputs.heavy == 'true' && matrix.os == 'macos-latest'
-        run: rustup component add llvm-tools --toolchain stable
-      - name: Omit macOS build debug metadata
-        if: needs.changes.outputs.heavy == 'true' && matrix.os == 'macos-latest'
-        shell: bash
-        # Match the existing full-workspace CNB gate. Keep debug assertions and
-        # every test; only disposable build debug tables change on this lane.
-        run: printf '%s\n' 'CARGO_PROFILE_DEV_DEBUG=0' 'CARGO_PROFILE_TEST_DEBUG=0' >> "$GITHUB_ENV"
       - uses: mozilla-actions/sccache-action@v0.0.11
         id: sccache
         continue-on-error: true
         # Main-only GitHub Actions cache backend; see the Safety gate job.
-        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') && github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main'
       - name: Enable sccache
-        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') && steps.sccache.outcome == 'success'
+        if: steps.sccache.outcome == 'success'
         shell: bash
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
           echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
           echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "${GITHUB_ENV}"
       - name: Install Linux system dependencies
-        if: needs.changes.outputs.heavy == 'true' && matrix.os == 'ubuntu-latest' && (github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
         run: |
           bash scripts/ci-apt-install.sh libdbus-1-dev pkg-config bubblewrap apparmor-profiles
           sh scripts/prepare-linux-test-sandbox.sh
       - name: Ubuntu build headroom
         # Reuse the same fixed hosted-runner provisioning as Safety and Lint.
         # Exit 143 is a shutdown observation, not proof of OOM or timeout.
-        if: needs.changes.outputs.heavy == 'true' && matrix.os == 'ubuntu-latest' && (github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
         shell: bash
         run: bash scripts/prepare-ubuntu-build-headroom.sh
       - uses: Swatinem/rust-cache@v2
-        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
         with:
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@nextest
-        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
-      - name: Check portable config policy boundary
-        if: needs.changes.outputs.heavy == 'true' && matrix.os == 'ubuntu-latest' && (github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
-        shell: bash
-        run: |
-          python3 -B scripts/test_check_command_config_proof.py
-          sh scripts/check-portable-config.sh
-      - name: Check portable core navigation boundary
-        if: needs.changes.outputs.heavy == 'true' && matrix.os == 'ubuntu-latest' && (github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
-        shell: bash
-        run: |
-          python3 -B scripts/test_check_command_core_navigation_proof.py
-          sh scripts/check-portable-core-navigation.sh
       - uses: actions/setup-node@v7.1.0
         # The extension-host integration tests spawn the real bundle under
         # Node >= 22.19; CODEWHALE_EXT_HOST_TESTS below makes a missing Node a
         # failure instead of a silent skip.
-        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
         with:
           node-version: 22
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2
-        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
         with:
           bun-version: 1.4.0
       - name: Build matching compiled-host input for required Native containment receipts
-        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
         shell: bash
-        run: |
-          set -euo pipefail
-          bun_binary="$(bun -p 'process.execPath')"
-          host_binary="$(node -p "require('path').join(process.env.RUNNER_TEMP, 'codewhale-extension-host' + (process.platform === 'win32' ? '.exe' : ''))")"
-          compiled_info="$(node crates/engine/extension-host/compile-host.mjs --bun "$bun_binary" --output "$host_binary")"
-          printf 'CODEWHALE_COMPILED_HOST_TEST_BINARY=%s\n' "$host_binary" >> "$GITHUB_ENV"
-          node - "$host_binary" "$bun_binary" "$compiled_info" >> "$GITHUB_ENV" <<'JS'
-          const fs = require('node:fs'), crypto = require('node:crypto');
-          const digest = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-          const info = JSON.parse(process.argv[4]);
-          if (!info.platform || !info.arch || info.platform !== info.compiler?.platform || info.arch !== info.compiler?.arch) throw new Error('image/compiler identity mismatch');
-          console.log('CODEWHALE_COMPILED_HOST_TEST_PLATFORM=' + info.platform);
-          console.log('CODEWHALE_COMPILED_HOST_TEST_ARCH=' + info.arch);
-          console.log('CODEWHALE_COMPILED_HOST_TEST_SHA256=' + digest(process.argv[2]));
-          console.log('CODEWHALE_COMPILED_HOST_TEST_BUN=' + process.argv[3]);
-          console.log('CODEWHALE_COMPILED_HOST_TEST_RUNTIME_SHA256=' + digest(process.argv[3]));
-          console.log('CODEWHALE_COMPILED_HOST_TEST_BUNDLE_SHA256=' + digest('crates/engine/extension-host/dist/codewhale-extension-host.mjs'));
-          JS
-          # The required hermetic full invocation executes the shared actual
-          # compiled Native secret/history/write scenario on each OS; Windows
-          # additionally requires Node/Bun/compiled LPAC owner/reparse probes.
-          # Missing requested compiled input or a failed sandbox is red.
-      - name: Hold this machine's build lock (self-hosted)
-        # The self-hosted Mac is also a developer machine: local agents build
-        # through scripts/dev-cargo.sh, which holds this lock, and two Cargo
-        # builds at once exhaust its memory. Opt-in: the runner's `.env` names
-        # the same file as CODEWHALE_BUILD_LOCK_FILE. The holder is a
-        # background process; the runner kills orphans when the job ends, so a
-        # cancelled or crashed job cannot leave the lock held.
-        # (`env.*` in `if:` cannot see the runner's `.env`, so the opt-in is
-        # checked in the script.)
-        if: needs.changes.outputs.heavy == 'true' && runner.environment == 'self-hosted'
-        shell: bash
-        run: |
-          if [ -z "${CODEWHALE_BUILD_LOCK_FILE:-}" ]; then
-            echo "CODEWHALE_BUILD_LOCK_FILE is not set on this runner; building without the machine lock."
-            exit 0
-          fi
-          hold="$RUNNER_TEMP/cw-build-lock.hold"
-          ready="$RUNNER_TEMP/cw-build-lock.ready"
-          log="$RUNNER_TEMP/cw-build-lock.log"
-          touch "$hold"
-          rm -f "$ready"
-          # The single quotes are deliberate: the inner sh expands $1/$2.
-          # shellcheck disable=SC2016
-          nohup python3 scripts/build-lock.py "$CODEWHALE_BUILD_LOCK_FILE" -- \
-            sh -c 'touch "$1"; while [ -e "$2" ]; do sleep 2; done' _ "$ready" "$hold" \
-            >"$log" 2>&1 &
-          shown=0
-          until [ -e "$ready" ]; do
-            if [ "$shown" -eq 0 ] && [ -s "$log" ]; then cat "$log"; shown=1; fi
-            sleep 2
-          done
-          cat "$log"
-          # Scripts inside this job already run under the lock.
-          echo "CODEWHALE_BUILD_LOCK_HELD=1" >> "$GITHUB_ENV"
+        run: bash scripts/ci/compiled-host-test-input.sh
       - name: Build canonical executable for acceptance tests
-        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
         shell: bash
         run: cargo build -p codewhale-cli --bin codewhale --all-features --locked
-        env:
-          RUSTC_WRAPPER: ${{ matrix.os != 'windows-latest' && env.RUSTC_WRAPPER || '' }}
-      - name: Windows Terminal clipboard-to-draft acceptance
-        if: needs.changes.outputs.heavy == 'true' && matrix.os == 'windows-latest'
-        timeout-minutes: 5
-        shell: pwsh
-        run: node scripts/release/windows-terminal-clipboard.mjs target/debug/codewhale.exe "${{ runner.temp }}/windows-clipboard"
-      - name: Retain Windows Terminal clipboard-to-draft evidence
-        if: ${{ !cancelled() && matrix.os == 'windows-latest' && needs.changes.outputs.heavy == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: windows-clipboard-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/windows-clipboard/
-          if-no-files-found: error
-          retention-days: 7
-      - name: Run tests
-        # Same test binaries as `cargo test`, run by cargo-nextest: one
-        # process per test, all runner cores busy, slow tests named instead
-        # of stalling the binary. `.config/nextest.toml` serializes the PTY
-        # binary and bounds the integration binary that spawns the real
-        # executable; retries are off, so a flake is a red run, not a hidden
-        # one. nextest does not run doctests — the next step keeps them.
-        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') && !(github.event_name == 'workflow_dispatch' && inputs.workspace_test_mode == 'shared-process-twice')
-        shell: bash
-        run: |
-          monitor=
-          if [ "$RUNNER_OS" = Linux ]; then
-            # Headroom trace: if the runner is terminated again, the last lines
-            # say whether memory or disk ran out.
-            ( while sleep 30; do
-                echo "[headroom] $(free -m | awk '/^Mem:/{print "mem used " $3 "/" $2 " MiB"} /^Swap:/{print "swap used " $3 "/" $2 " MiB"}' | paste -sd ' ') disk free $(df -h / | awk 'NR==2{print $4}')"
-              done ) &
-            monitor=$!
-          fi
-          status=0
-          sh scripts/with-hermetic-test-home.sh cargo nextest run --workspace --all-features --locked --profile ci || status=$?
-          if [ -n "$monitor" ]; then kill "$monitor" 2>/dev/null || true; fi
-          exit "$status"
-        env:
-          CARGO_BUILD_JOBS: '1'
-          QA_PTY_DIAGNOSTICS_DIR: ${{ runner.temp }}/pty-failures
-          CODEWHALE_EXT_HOST_TESTS: '1'
-          CODEWHALE_EXT_HOST_BUN_TESTS: '1'
-          # sccache 0.17 panics resolving its config directory under the
-          # isolated Windows home before Cargo can compile or run any test.
-          # Bypass only that optional cache; keep the full suite and isolation.
-          RUSTC_WRAPPER: ${{ matrix.os != 'windows-latest' && env.RUSTC_WRAPPER || '' }}
-          # Give test threads the stack the product gives itself. main.rs runs
-          # the owner thread and every tokio worker at
-          # CODEWHALE_MAIN_STACK_BYTES (32 MiB) because the engine and
-          # runtime-thread futures are genuinely deep. `#[tokio::test]` builds
-          # its own runtime and never sees that, so tests ran the same code on
-          # ~2 MiB (~1 MiB on Windows) — a configuration that never ships.
-          # That gap is what aborted the whole Windows test binary with
-          # STATUS_STACK_OVERFLOW in start_turn_accepts_dynamic_tools_and_
-          # environment_id, masking every other Windows result (78afd8d3d4
-          # Box::pin'd that one frame; the mismatch itself remained). std reads
-          # this for any thread spawned without an explicit size, which covers
-          # both libtest's per-test threads and tokio's workers. Test threads
-          # hold 16 MiB: the engine-only chains they run measured a ~2.5 MiB
-          # debug high-water, while the full ~16.5 MiB UI-loop chain that
-          # forced 32 MiB lives in spawned binaries, which size their own
-          # stacks explicitly and never read this variable.
-          RUST_MIN_STACK: '16777216'
-      - name: Retain sealed terminal failure diagnostics
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: terminal-failures-${{ runner.os }}-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/pty-failures/
-          include-hidden-files: true
-          if-no-files-found: ignore
-          retention-days: 7
       - name: Shared-process workspace qualification
-        if: github.event_name == 'workflow_dispatch' && inputs.workspace_test_mode == 'shared-process-twice' && matrix.os == 'ubuntu-latest'
+        if: github.event_name == 'workflow_dispatch' && inputs.workspace_test_mode == 'shared-process-twice'
         shell: bash
         env:
           CARGO_BUILD_JOBS: '1'
@@ -1128,83 +1002,192 @@ jobs:
           cat "$evidence/results.txt"
           exit "$failed"
       - name: Retain shared-process qualification evidence
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.workspace_test_mode == 'shared-process-twice' && matrix.os == 'ubuntu-latest'
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.workspace_test_mode == 'shared-process-twice'
         uses: actions/upload-artifact@v7
         with:
           name: shared-process-workspace-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/shared-process-workspace/
           if-no-files-found: error
           retention-days: 30
-      - name: Export exact compiled-image Native containment receipt
-        # JUnit is from the same full invocation: no second compile/test run.
-        # The official entire CI run must be green before release can consume
-        # this artifact. Missing/changed inputs or silent test skips are red.
-        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') && !(github.event_name == 'workflow_dispatch' && inputs.workspace_test_mode == 'shared-process-twice')
+
+  # One sharded pipeline per OS (ci-test-suite.yml). Shard counts follow the
+  # measured serial test time of each OS (2026-11-12, run 43216596942: Linux 19
+  # min, macOS 24 min, Windows 25 min of test execution, on top of 30 to 65
+  # minutes of single-job compilation), so a shard is five to eight minutes of
+  # tests plus setup. Hosted macOS is the scarce pool, so it gets three shards.
+  # The caller names ("Sharded tests (...)") never equal the required
+  # "Test (windows-latest)" context, which test-windows-pr still produces on
+  # every pull request.
+  test-ubuntu:
+    name: Sharded tests (ubuntu-latest)
+    needs: changes
+    if: >-
+      needs.changes.outputs.heavy == 'true' &&
+      needs.changes.outputs.scoped != 'true' &&
+      (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') &&
+      !(github.event_name == 'workflow_dispatch' && inputs.workspace_test_mode == 'shared-process-twice')
+    uses: ./.github/workflows/ci-test-suite.yml
+    with:
+      os: ubuntu-latest
+      shards: 4
+      shard_list: '[1,2,3,4]'
+      build_jobs: '2'
+      debug: line-tables-only
+
+  test-macos:
+    name: Sharded tests (macos-latest)
+    needs: changes
+    if: >-
+      needs.changes.outputs.heavy == 'true' &&
+      needs.changes.outputs.scoped != 'true' &&
+      (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') &&
+      !(github.event_name == 'workflow_dispatch' && inputs.workspace_test_mode == 'shared-process-twice')
+    uses: ./.github/workflows/ci-test-suite.yml
+    with:
+      os: macos-latest
+      shards: 3
+      shard_list: '[1,2,3]'
+      build_jobs: '1'
+      debug: '0'
+
+  test-windows:
+    name: Sharded tests (windows-latest)
+    needs: changes
+    if: >-
+      needs.changes.outputs.heavy == 'true' &&
+      needs.changes.outputs.scoped != 'true' &&
+      (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') &&
+      !(github.event_name == 'workflow_dispatch' && inputs.workspace_test_mode == 'shared-process-twice')
+    uses: ./.github/workflows/ci-test-suite.yml
+    with:
+      os: windows-latest
+      shards: 4
+      shard_list: '[1,2,3,4]'
+      build_jobs: '2'
+      debug: '0'
+
+  portable-boundaries:
+    name: Portable boundaries
+    needs: changes
+    if: >-
+      needs.changes.outputs.heavy == 'true' &&
+      needs.changes.outputs.scoped != 'true' &&
+      (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+        # Main-only GitHub Actions cache backend; see the Safety gate job.
+        if: github.ref == 'refs/heads/main'
+      - name: Enable sccache
+        if: steps.sccache.outcome == 'success'
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
+          echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
+          echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "${GITHUB_ENV}"
+      - name: Install Linux system dependencies
+        run: |
+          bash scripts/ci-apt-install.sh libdbus-1-dev pkg-config bubblewrap apparmor-profiles
+          sh scripts/prepare-linux-test-sandbox.sh
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@nextest
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2
+        with:
+          bun-version: 1.4.0
+      - name: Check portable config policy boundary
+        shell: bash
+        run: |
+          python3 -B scripts/test_check_command_config_proof.py
+          sh scripts/check-portable-config.sh
+      - name: Check portable core navigation boundary
+        shell: bash
+        run: |
+          python3 -B scripts/test_check_command_core_navigation_proof.py
+          sh scripts/check-portable-core-navigation.sh
+
+  scoped-test:
+    # workflow_dispatch with `crate` and/or `filter`: one package or one nextest
+    # filterset on the chosen OSes (default ubuntu-latest) instead of the full
+    # suite. `changes` skips every other job for such a run. The build uses the
+    # same flags as the full build; only `-p` and `-E` narrow what runs.
+    name: Scoped test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.scoped == 'true'
+    timeout-minutes: 90
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.changes.outputs.scoped_os) }}
+    env:
+      CARGO_BUILD_JOBS: ${{ matrix.os == 'macos-latest' && '1' || '2' }}
+      CARGO_PROFILE_DEV_DEBUG: ${{ matrix.os == 'ubuntu-latest' && 'line-tables-only' || '0' }}
+      CARGO_PROFILE_TEST_DEBUG: ${{ matrix.os == 'ubuntu-latest' && 'line-tables-only' || '0' }}
+      CODEWHALE_EXT_HOST_TESTS: '1'
+      CODEWHALE_EXT_HOST_BUN_TESTS: '1'
+      RUST_MIN_STACK: '16777216'
+      SCOPE_CRATE: ${{ inputs.crate }}
+      SCOPE_FILTER: ${{ inputs.filter }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Point terminal failure diagnostics at the runner temp directory
+        shell: bash
+        run: echo "QA_PTY_DIAGNOSTICS_DIR=${RUNNER_TEMP}/pty-failures" >> "${GITHUB_ENV}"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          bash scripts/ci-apt-install.sh libdbus-1-dev pkg-config bubblewrap apparmor-profiles
+          sh scripts/prepare-linux-test-sandbox.sh
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+          save-if: false
+      - uses: taiki-e/install-action@nextest
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2
+        with:
+          bun-version: 1.4.0
+      - name: Build matching compiled-host input for required Native containment receipts
+        shell: bash
+        run: bash scripts/ci/compiled-host-test-input.sh
+      - name: Build canonical executable for acceptance tests
+        # Acceptance tests in the TUI, engine and CLI crates, and any run that
+        # names no crate, look for the codewhale binary next to the test
+        # binaries; a narrow run on another crate does not need it.
+        if: env.SCOPE_CRATE == '' || env.SCOPE_CRATE == 'codewhale-tui' || env.SCOPE_CRATE == 'codewhale-engine' || env.SCOPE_CRATE == 'codewhale-cli'
+        shell: bash
+        run: cargo build -p codewhale-cli --bin codewhale --all-features --locked
+      - name: Run the scoped tests
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          git diff --exit-code
-          git diff --cached --exit-code
-          python3 scripts/compiled-host-native-receipt.py \
-            --junit target/nextest/ci/junit.xml \
-            --compiled-image "$CODEWHALE_COMPILED_HOST_TEST_BINARY" \
-            --bundle crates/engine/extension-host/dist/codewhale-extension-host.mjs \
-            --bun "$CODEWHALE_COMPILED_HOST_TEST_BUN" --source-sha "$GITHUB_SHA" \
-            --image-platform "$CODEWHALE_COMPILED_HOST_TEST_PLATFORM" --image-arch "$CODEWHALE_COMPILED_HOST_TEST_ARCH" \
-            --host-sha256 "$CODEWHALE_COMPILED_HOST_TEST_SHA256" \
-            --runtime-sha256 "$CODEWHALE_COMPILED_HOST_TEST_RUNTIME_SHA256" \
-            --bundle-sha256 "$CODEWHALE_COMPILED_HOST_TEST_BUNDLE_SHA256" \
-            --output "$RUNNER_TEMP/native-compiled-host"
-      - name: Retain exact compiled image and Native receipt
-        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') && !(github.event_name == 'workflow_dispatch' && inputs.workspace_test_mode == 'shared-process-twice')
+          args=(--all-features --locked --profile ci --no-tests=fail)
+          if [ -n "${SCOPE_CRATE}" ]; then args+=(-p "${SCOPE_CRATE}"); else args+=(--workspace); fi
+          if [ -n "${SCOPE_FILTER}" ]; then args+=(-E "${SCOPE_FILTER}"); fi
+          sh scripts/with-hermetic-test-home.sh cargo nextest run "${args[@]}"
+      - name: Retain sealed terminal failure diagnostics
+        if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: native-compiled-host-${{ runner.os }}-${{ runner.arch }}
-          path: ${{ runner.temp }}/native-compiled-host/
-          if-no-files-found: error
-          retention-days: 30
-      - name: Run doctests
-        # The shared-process command already includes every workspace doctest.
-        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') && !(github.event_name == 'workflow_dispatch' && inputs.workspace_test_mode == 'shared-process-twice')
-        shell: bash
-        run: sh scripts/with-hermetic-test-home.sh cargo test --workspace --all-features --locked --doc
-        env:
-          RUSTC_WRAPPER: ${{ matrix.os != 'windows-latest' && env.RUSTC_WRAPPER || '' }}
-          RUST_MIN_STACK: '16777216'
-      # The Ubuntu lint lane validates non-RSS backlog fields. Run the same
-      # source-bound measurement on macOS so loss or growth of RSS evidence
-      # fails closed instead of becoming an unsupported-field skip.
-      # Only on the self-hosted Mac: there it reuses the warm build. Every
-      # hosted Mac leg (fork PRs, or any PR with CW_SELF_HOSTED_MAC off) runs
-      # it in the separate `macos-budget` job with its own timeout, because
-      # on a cold hosted Mac it pushed Test past 90 minutes.
-      - name: Check persistence-backlog RSS budget
-        if: needs.changes.outputs.heavy == 'true' && matrix.os == 'macos-latest' && needs.changes.outputs.trusted == 'true' && vars.CW_SELF_HOSTED_MAC == 'true'
-        run: python3 scripts/check-persistence-backlog-budget.py
-      - name: Lockfile drift guard
-        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
-        run: git diff --exit-code -- Cargo.lock
-      - name: Run Offline Eval Harness
-        # The eval harness is OS-independent prompt/composition checking;
-        # running it once (on the faster macOS leg, warm from the test build)
-        # instead of once per desktop OS keeps the coverage while taking
-        # ~2min off the Windows critical path. Self-hosted Mac only; hosted
-        # Mac legs run it in `macos-budget` (see the RSS step above).
-        if: needs.changes.outputs.heavy == 'true' && matrix.os == 'macos-latest' && needs.changes.outputs.trusted == 'true' && vars.CW_SELF_HOSTED_MAC == 'true'
-        run: cargo run -p codewhale-cli --bin codewhale --all-features -- eval
-      - name: sccache stats
-        if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') && steps.sccache.outcome == 'success'
-        continue-on-error: true
-        shell: bash
-        run: sccache --show-stats
-      - name: Linux test location (CNB)
-        if: needs.changes.outputs.heavy == 'true' && matrix.os == 'ubuntu-latest' && github.event_name != 'workflow_dispatch' && github.event_name != 'pull_request'
-        run: echo "Linux workspace tests run on CNB for non-PR release/main pushes; pull requests run directly on Ubuntu."
-      - name: Release this machine's build lock (self-hosted)
-        if: always() && runner.environment == 'self-hosted'
-        shell: bash
-        run: rm -f "$RUNNER_TEMP/cw-build-lock.hold"
+          name: terminal-failures-scoped-${{ runner.os }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pty-failures/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
 
   test-windows-pr:
     name: Test (windows-latest)
@@ -1239,7 +1222,7 @@ jobs:
             echo "## Test (windows-latest) on a pull request"
             echo
             echo "Compiled every workspace target for Windows with warnings denied and ran the installer PATH helper tests."
-            echo "The Windows and macOS test suites run in final validation, before a release, not on pull requests."
+            echo "The full Windows test suite runs beside this check as Sharded tests (windows-latest); it is not a required check."
           } >> "$GITHUB_STEP_SUMMARY"
 
   macos-budget:
@@ -1252,15 +1235,15 @@ jobs:
     # macOS leg runs on the self-hosted Mac (trusted event and
     # CW_SELF_HOSTED_MAC == 'true'), it runs these two steps on the warm
     # build instead. The name keeps "(fork PR)" so check contexts stay stable.
-    # Hosted macOS allows only five concurrent jobs per account, and this job
-    # doubled every pull request's claim on them, queueing the required Test
-    # (macos-latest) leg for hours. So pull requests skip it and every push to
-    # main still runs it; a regression shows up on the merge that caused it.
+    # Hosted macOS allows only five concurrent jobs per account, and the macOS
+    # test build and shards already take most of them, so pull requests skip
+    # this job and every dispatch (main-landing issues one per push to main)
+    # still runs it; a regression shows up on the merge that caused it. The
+    # sharded macOS suite never runs on the self-hosted Mac, so these gates no
+    # longer depend on CW_SELF_HOSTED_MAC.
     name: macOS budget and eval (fork PR)
     needs: changes
-    # The explicit Ubuntu-only qualification has no warm Test macOS leg, so
-    # retain these gates on the hosted fallback even when self-hosting is on.
-    if: needs.changes.outputs.heavy == 'true' && github.event_name != 'pull_request' && ((github.event_name == 'workflow_dispatch' && inputs.workspace_test_mode == 'shared-process-twice') || !(needs.changes.outputs.trusted == 'true' && vars.CW_SELF_HOSTED_MAC == 'true'))
+    if: needs.changes.outputs.heavy == 'true' && needs.changes.outputs.scoped != 'true' && github.event_name != 'pull_request'
     # Cold hosted builds consumed 73 minutes before eval could start (F run
     # 37497498829). Match Test's compile allowance; RSS/eval limits stay intact.
     timeout-minutes: 210
@@ -1282,9 +1265,10 @@ jobs:
   npm-wrapper-smoke:
     name: npm wrapper smoke
     needs: changes
-    if: github.event_name == 'workflow_dispatch'
-    # Same ternary rationale as the Test job: light legs only echo, so keep
-    # them off macOS/Windows runners. On pull_request the matrix is
+    if: needs.changes.outputs.scoped != 'true' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
+    # Light legs only echo, so keep them off macOS/Windows runners. The
+    # ternary is safe: matrix.os is always a non-empty literal. On
+    # pull_request the matrix is
     # ubuntu-only, so the required "npm wrapper smoke (ubuntu-latest)"
     # context is unaffected. Heavy pull requests execute the Ubuntu smoke
     # here; their branches may not be mirrored to CNB.
@@ -1358,8 +1342,14 @@ jobs:
   mobile-smoke:
     name: Mobile runtime smoke
     needs: changes
-    # Manual (workflow_dispatch) only; the release candidate builds android-arm64.
-    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.heavy == 'true'
+    # Not a required PR context. Pull requests run it only when the mobile
+    # runtime surface changed (see the `mobile` filter above); every dispatch,
+    # which main-landing issues for each push to main, runs it unconditionally
+    # as the pre-release safety net.
+    if: >-
+      needs.changes.outputs.scoped != 'true' &&
+      needs.changes.outputs.heavy == 'true' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.mobile == 'true')
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
@@ -1401,7 +1391,7 @@ jobs:
   actionlint:
     name: Workflow lint
     needs: changes
-    if: needs.changes.outputs.actions == 'true'
+    if: needs.changes.outputs.actions == 'true' && needs.changes.outputs.scoped != 'true'
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
@@ -1418,7 +1408,8 @@ jobs:
   # Check documentation builds without warnings
   docs:
     name: Documentation
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: changes
+    if: needs.changes.outputs.scoped != 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
@@ -1439,17 +1430,17 @@ jobs:
   cargo-deny:
     name: cargo-deny
     needs: changes
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.scoped != 'true'
     uses: ./.github/workflows/cargo-deny.yml
 
   security-audit:
     name: Security audit
     needs: changes
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.scoped != 'true'
     uses: ./.github/workflows/security-audit.yml
 
   ohos:
     name: OpenHarmony
     needs: changes
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.scoped != 'true'
     uses: ./.github/workflows/ohos.yml

@@ -273,7 +273,7 @@ class CiWiringTests(unittest.TestCase):
         block = ci[start:next_step]
         self.assertIn(
             "sh scripts/with-hermetic-test-home.sh cargo nextest run "
-            "-p codewhale-tui -p codewhale-runtime --lib --locked --no-tests=fail "
+            "-p codewhale-engine -p codewhale-tui -p codewhale-runtime --lib --locked --no-tests=fail "
             "-E 'test(auto_review) | test(authority) | test(sandbox)'", block
         )
         self.assertIn(
@@ -290,27 +290,27 @@ class CiWiringTests(unittest.TestCase):
         self.assertIn("check-command-migration-manifest.py", ci)
         self.assertIn("needs.changes.outputs.heavy == 'true'", ci)
 
-    def test_shared_process_mode_is_manual_hosted_and_preserves_default_runner(self) -> None:
+    def test_shared_process_mode_is_manual_hosted_ubuntu_only_and_replaces_the_sharded_suite(self) -> None:
         ci = load_ci()
         self.assertIn("default: nextest", ci)
-        matrix = ci.split("  test:\n", 1)[1].split("    steps:\n", 1)[0]
-        self.assertIn(
-            SHARED_PROCESS_MODE + " && '[\"ubuntu-latest\"]' || "
-            "'[\"ubuntu-latest\",\"macos-latest\",\"windows-latest\"]'", matrix,
-        )
-        self.assertIn("needs.changes.outputs.trusted == 'true'", matrix)
+        job = ci.split("  test:\n", 1)[1].split("    steps:\n", 1)[0]
+        self.assertIn("runs-on: ubuntu-latest", job)
+        self.assertIn(SHARED_PROCESS_MODE, job)
+        self.assertNotIn("pull_request", job)
+        for name in ("test-ubuntu", "test-macos", "test-windows"):
+            caller = ci.split(f"  {name}:\n", 1)[1].split("    uses:", 1)[0]
+            self.assertIn(f"!({SHARED_PROCESS_MODE})", caller)
         qualification = named_step(ci, "Shared-process workspace qualification")
-        self.assertIn("if: " + SHARED_PROCESS_MODE + " && matrix.os == 'ubuntu-latest'", qualification)
-        for name, command in (
-            ("Run tests", "cargo nextest run --workspace --all-features --locked --profile ci"),
-            ("Run doctests", "cargo test --workspace --all-features --locked --doc"),
-        ):
-            step = named_step(ci, name)
-            self.assertIn(command, step)
-            self.assertIn(f"!({SHARED_PROCESS_MODE})", step)
+        self.assertIn("if: " + SHARED_PROCESS_MODE, qualification)
         upload = named_step(ci, "Retain shared-process qualification evidence")
         self.assertIn("if: always() && " + SHARED_PROCESS_MODE, upload)
         self.assertIn("if-no-files-found: error", upload)
+        suite = (ROOT / ".github" / "workflows" / "ci-test-suite.yml").read_text(encoding="utf-8")
+        for name, command in (
+            ("Run tests", "cargo nextest run"),
+            ("Run doctests", "cargo test --workspace --all-features --locked --doc"),
+        ):
+            self.assertIn(command, named_step(suite, name))
 
     def test_shared_process_runs_exact_command_twice_with_fresh_hermetic_homes(self) -> None:
         proof = run_shared_process_fixture()
@@ -332,31 +332,24 @@ class CiWiringTests(unittest.TestCase):
             for identity in ISSUE_6698_TESTS:
                 self.assertIn(f"test {identity} ... ok", proof["evidence"][f"run-{run}.log"])
 
-    def test_shared_process_keeps_macos_budget_when_self_hosted_test_leg_is_absent(self) -> None:
+    def test_macos_budget_runs_on_every_heavy_dispatch_and_never_on_pull_requests(self) -> None:
         job = load_ci().split("  macos-budget:\n", 1)[1].split("    steps:\n", 1)[0]
         condition = next(line.strip()[4:] for line in job.splitlines() if line.strip().startswith("if: "))
         self.assertIn("runs-on: macos-latest", job)
         for event in ("pull_request", "push", "schedule", "workflow_dispatch"):
-            for mode in ("nextest", "shared-process-twice"):
-                for heavy, trusted, self_hosted in (
-                    (True, True, True), (True, True, False),
-                    (True, False, True), (False, True, True),
-                ):
-                    with self.subTest(event=event, mode=mode, heavy=heavy, trusted=trusted, self_hosted=self_hosted):
+            for heavy in (True, False):
+                for scoped in (True, False):
+                    with self.subTest(event=event, heavy=heavy, scoped=scoped):
                         expression = condition
                         for name, value in {
                             "github.event_name": event,
-                            "inputs.workspace_test_mode": mode,
                             "needs.changes.outputs.heavy": str(heavy).lower(),
-                            "needs.changes.outputs.trusted": str(trusted).lower(),
-                            "vars.CW_SELF_HOSTED_MAC": str(self_hosted).lower(),
+                            "needs.changes.outputs.scoped": str(scoped).lower(),
                         }.items():
                             expression = expression.replace(name, repr(value))
                         expression = re.sub(r"!(?!=)", "not ", expression.replace("&&", "and").replace("||", "or"))
                         actual = eval(expression, {"__builtins__": {}}, {})
-                        previous = heavy and event != "pull_request" and not (trusted and self_hosted)
-                        qualification = heavy and event == "workflow_dispatch" and mode == "shared-process-twice"
-                        self.assertEqual(actual, previous or qualification)
+                        self.assertEqual(actual, heavy and not scoped and event != "pull_request")
 
     def test_shared_process_retains_failed_first_run_and_still_runs_second_once(self) -> None:
         proof = run_shared_process_fixture("first_failure")
