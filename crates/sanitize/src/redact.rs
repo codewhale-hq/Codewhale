@@ -160,15 +160,22 @@ pub fn redact_model_bound_secrets(input: &str) -> String {
 pub fn redact_secrets_with(input: &str, policy: RedactionPolicy) -> String {
     let mut out = String::with_capacity(input.len());
     let mut in_private_key_block = false;
-    for line in input.split_inclusive('\n') {
+    let mut lines = input.split_inclusive('\n').peekable();
+    while let Some(line) = lines.next() {
         // split_inclusive keeps the newline on the previous chunk, so we do
         // not need to re-add separators here.
         let body = line.strip_suffix('\n').unwrap_or(line);
         let trimmed = body.trim();
+        let next_is_body = lines.peek().is_some_and(|next| looks_like_pem_body(next));
         if in_private_key_block {
-            if trimmed.starts_with("-----END") {
+            if trimmed.contains(PRIVATE_KEY_FOOTER) {
                 in_private_key_block = false;
-                out.push_str(&redact_line(line, policy));
+                if let Some(redacted) = redact_private_key_line(line, policy, next_is_body) {
+                    in_private_key_block = redacted.opens_block;
+                    out.push_str(&redacted.text);
+                } else {
+                    out.push_str(&redact_line(line, policy));
+                }
             } else {
                 out.push_str(REDACTED);
                 if line.ends_with('\n') {
@@ -177,7 +184,7 @@ pub fn redact_secrets_with(input: &str, policy: RedactionPolicy) -> String {
             }
             continue;
         }
-        if let Some(redacted) = redact_private_key_line(line, policy) {
+        if let Some(redacted) = redact_private_key_line(line, policy, next_is_body) {
             in_private_key_block = redacted.opens_block;
             out.push_str(&redacted.text);
             continue;
@@ -229,6 +236,7 @@ fn mask_private_key_spans(
     text: &str,
     placeholder: &str,
     unclosed: UnclosedPrivateKey,
+    next_is_body: bool,
 ) -> Option<(String, bool)> {
     let mut out = String::with_capacity(text.len());
     let mut cursor = 0;
@@ -255,7 +263,10 @@ fn mask_private_key_spans(
                 cursor = header_end + footer;
             }
             None => {
-                let opens_line = text[..begin].trim().is_empty();
+                let before = text[..begin].trim();
+                let opens_line = before.is_empty()
+                    || before.ends_with(PEM_DASHES)
+                    || (next_is_body && ends_after_header(&text[header_end..]));
                 if unclosed == UnclosedPrivateKey::ToEnd || opens_line {
                     let key_body = &text[header_end..];
                     if key_body.trim().is_empty() {
@@ -281,13 +292,46 @@ fn mask_private_key_spans(
     Some((out, opens_block))
 }
 
-fn redact_private_key_line(line: &str, policy: RedactionPolicy) -> Option<PrivateKeyLine> {
+fn looks_like_pem_body(line: &str) -> bool {
+    let mut run = 0usize;
+    for c in line.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=') {
+            run += 1;
+            if run >= 40 {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
+
+fn ends_after_header(rest: &str) -> bool {
+    let mut chars = rest.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && matches!(chars.peek(), Some('n' | 'r')) {
+            chars.next();
+            continue;
+        }
+        if c.is_ascii_alphanumeric() {
+            return false;
+        }
+    }
+    true
+}
+
+fn redact_private_key_line(
+    line: &str,
+    policy: RedactionPolicy,
+    next_is_body: bool,
+) -> Option<PrivateKeyLine> {
     let (body, newline) = match line.strip_suffix('\n') {
         Some(rest) => (rest, "\n"),
         None => (line, ""),
     };
     let (masked, opens_block) =
-        mask_private_key_spans(body, REDACTED, UnclosedPrivateKey::OpensBlock)?;
+        mask_private_key_spans(body, REDACTED, UnclosedPrivateKey::OpensBlock, next_is_body)?;
     Some(PrivateKeyLine {
         text: redact_line(&format!("{masked}{newline}"), policy),
         opens_block,
@@ -300,7 +344,8 @@ fn redact_private_key_line(line: &str, policy: RedactionPolicy) -> Option<Privat
 /// footer masks everything after it.
 #[must_use]
 pub fn mask_private_keys(text: &str, placeholder: &str) -> Option<String> {
-    mask_private_key_spans(text, placeholder, UnclosedPrivateKey::ToEnd).map(|(masked, _)| masked)
+    mask_private_key_spans(text, placeholder, UnclosedPrivateKey::ToEnd, false)
+        .map(|(masked, _)| masked)
 }
 
 /// Redact a single line (which may include a trailing newline).
@@ -409,8 +454,6 @@ enum SpacedAssignment {
     SensitiveKey,
     /// A sensitive key and its separator are both behind us.
     AwaitingValue,
-    /// The previous word was a sensitive flag (`--api-key`) whose value is
-    /// the next word.
     FlagValue,
 }
 
@@ -493,6 +536,10 @@ fn push_structured_segment(out: &mut String, segment: &str, policy: RedactionPol
     let core = core.trim_end_matches(['"', '\'']);
     if !core.is_empty() && (looks_like_secret_token(core) || is_jwt_shaped(core)) {
         out.push_str(&segment.replacen(core, REDACTED, 1));
+        return true;
+    }
+    if let Some(redacted) = mask_bare_secret_tokens(segment, REDACTED) {
+        out.push_str(&redacted);
         return true;
     }
     out.push_str(segment);
@@ -946,19 +993,44 @@ pub fn mask_bare_secret_tokens(text: &str, placeholder: &str) -> Option<String> 
     fn credential_core(body: &str) -> Option<&str> {
         secret_token_core(body.trim_start_matches('-')).or_else(|| secret_token_core(body))
     }
-    if !text
-        .split_inclusive(is_token_delimiter)
-        .any(|piece| credential_core(split_piece(piece).0).is_some())
-    {
+    fn after_escape(body: &str) -> &str {
+        if let Some(rest) = body.strip_prefix(['n', 'r', 't', 'b', 'f']) {
+            return rest;
+        }
+        if let Some(rest) = body.strip_prefix('u')
+            && let Some(hex) = rest.get(..4)
+            && hex.chars().all(|c| c.is_ascii_hexdigit())
+        {
+            return &rest[4..];
+        }
+        body
+    }
+    fn core_after(body: &str, escaped: bool) -> Option<&str> {
+        credential_core(body).or_else(|| {
+            escaped
+                .then(|| credential_core(after_escape(body)))
+                .flatten()
+        })
+    }
+    let mut escaped = false;
+    let mut found = false;
+    for piece in text.split_inclusive(is_token_delimiter) {
+        let (body, tail) = split_piece(piece);
+        found |= core_after(body, escaped).is_some();
+        escaped = tail == "\\";
+    }
+    if !found {
         return None;
     }
     let mut out = String::with_capacity(text.len());
+    let mut escaped = false;
     for piece in text.split_inclusive(is_token_delimiter) {
         let (body, tail) = split_piece(piece);
-        match credential_core(body) {
+        match core_after(body, escaped) {
             Some(core) => out.push_str(&body.replacen(core, placeholder, 1)),
             None => out.push_str(body),
         }
+        escaped = tail == "\\";
         out.push_str(tail);
     }
     Some(out)
@@ -1239,6 +1311,76 @@ mod assigned_secret_tests {
                     "{header}"
                 );
             }
+        }
+        for input in [
+            "-----BEGIN CERTIFICATE-----MIIc-----END CERTIFICATE----- -----BEGIN PRIVATE KEY-----\nMIIkeybody\n-----END PRIVATE KEY-----\n",
+            "-----BEGIN PRIVATE KEY-----a1-----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----\nMIIsecond\n-----END PRIVATE KEY-----\n",
+            "-----END CERTIFICATE----------BEGIN PRIVATE KEY-----\nMIIkeybody\n-----END PRIVATE KEY-----\n",
+        ] {
+            for out in both_policies(input) {
+                assert!(!out.contains("MIIkeybody"), "{input}: {out}");
+                assert!(!out.contains("MIIsecond"), "{input}: {out}");
+                assert!(out.contains(REDACTED), "{input}: {out}");
+            }
+        }
+    }
+
+    #[test]
+    fn prefixed_multi_line_private_keys_open_a_block_without_breaking_scripts() {
+        let pem_body = "MIIEpAIBAAKCAQEAz7qX4mNb2Vc9Lk3PwR8tMIIEpAIBAAKCAQEAz7qX4mNb2Vc9";
+        for input in [
+            format!(
+                "     1│ -----BEGIN RSA PRIVATE KEY-----\n     2│ {pem_body}\n     3│ -----END RSA PRIVATE KEY-----\n"
+            ),
+            format!(
+                "     1\t-----BEGIN OPENSSH PRIVATE KEY-----\n     2\t{pem_body}\n     3\t-----END OPENSSH PRIVATE KEY-----\n"
+            ),
+            format!(
+                "+-----BEGIN RSA PRIVATE KEY-----\n+{pem_body}\n+-----END RSA PRIVATE KEY-----\n"
+            ),
+            format!(
+                "------BEGIN RSA PRIVATE KEY-----\n-{pem_body}\n------END RSA PRIVATE KEY-----\n"
+            ),
+            format!(
+                "deploy/key.pem:1:-----BEGIN PRIVATE KEY-----\ndeploy/key.pem:2:{pem_body}\ndeploy/key.pem:3:-----END PRIVATE KEY-----\n"
+            ),
+            format!(
+                "GITHUB_APP_PRIVATE_KEY=\"-----BEGIN RSA PRIVATE KEY-----\n{pem_body}\n-----END RSA PRIVATE KEY-----\"\n"
+            ),
+            format!("> -----BEGIN PRIVATE KEY-----\n> {pem_body}\n> -----END PRIVATE KEY-----\n"),
+            format!("# -----BEGIN PRIVATE KEY-----\n# {pem_body}\n# -----END PRIVATE KEY-----\n"),
+            format!(
+                "const key = \"-----BEGIN RSA PRIVATE KEY-----\\n\" +\n\"{pem_body}\\n\" +\n\"-----END RSA PRIVATE KEY-----\";\n"
+            ),
+            format!(
+                "KEY = \"\"\"-----BEGIN RSA PRIVATE KEY-----\n{pem_body}\n-----END RSA PRIVATE KEY-----\"\"\"\n"
+            ),
+            format!(
+                "     1│ -----BEGIN RSA PRIVATE KEY-----\r\n     2│ {pem_body}\r\n     3│ -----END RSA PRIVATE KEY-----\r\n"
+            ),
+        ] {
+            assert_masked(&input, pem_body);
+        }
+        for script in [
+            "echo \"-----BEGIN PRIVATE KEY-----\"\necho ok\n",
+            "if line.starts_with(\"-----BEGIN PRIVATE KEY-----\") {\n    return true;\n}\n",
+        ] {
+            for out in both_policies(script) {
+                assert_eq!(out, script);
+            }
+        }
+    }
+
+    #[test]
+    fn escaped_delimiters_do_not_hide_bare_credentials() {
+        for input in [
+            format!("{{\"stdout\":\"ok\\nsk-proj-{BODY}\\n\"}}"),
+            format!("{{\"line\":\"name\\tghp_{BODY}\"}}"),
+            format!("{{\"html\":\"\\u003cghs_{BODY}\\u003e\"}}"),
+            format!("{{\"log\":\"key\\nsk-ant-api03-{BODY}\"}}"),
+            format!("printf 'a\\nsk-live-{BODY}'"),
+        ] {
+            assert_masked(&input, BODY);
         }
     }
 
