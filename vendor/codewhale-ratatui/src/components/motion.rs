@@ -366,6 +366,14 @@ impl MotionStep {
         }
     }
 
+    /// Progress for a draw-in, in `0..=1`: eased where `policy` lets space
+    /// move, the target where it does not. Feed it to a data display's
+    /// `drawn`.
+    #[must_use]
+    pub fn drawn(&self, now: Instant, policy: MotionPolicy) -> f32 {
+        self.shown(now, policy, MotionChannel::Space)
+    }
+
     /// A column between `from` and `to`: slide a marker, nudge a panel.
     #[must_use]
     pub fn offset(&self, now: Instant, policy: MotionPolicy, from: u16, to: u16) -> u16 {

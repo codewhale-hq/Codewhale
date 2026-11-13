@@ -2,6 +2,16 @@
 
 ## Unreleased — 0.2.0
 
+- Add data displays: `DataSparkline`, `DataBars` and `DataTrend` (a braille
+  line chart). The words carry every value; the ink draws in from a caller
+  progress (`MotionStep::drawn`) and is at its end state under reduced or
+  still motion. Bars glide from their previous values.
+- Add `DataDisplay`, the same displays as JSON an agent can send:
+  `DataDisplay::from_json` validates it (finite numbers, at most 1024 points
+  or 24 bars, labels up to 120 characters), `describe` says the same facts as
+  plain text, and `DATA_DISPLAY_SCHEMA` is its tool schema. Try
+  `cargo run --example data`.
+
 - Reexport the shared avatar contract from Codewhale Protocol. Rendering and
   artwork stay in this library. Protocol 0.10.3 registry proof must precede
   this package publication.
