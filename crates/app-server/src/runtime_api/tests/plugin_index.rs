@@ -137,3 +137,83 @@ async fn the_index_lists_every_kind_once_and_a_plugin_carries_what_it_adds() -> 
     handle.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn the_index_keeps_same_name_hooks_distinct() -> Result<()> {
+    let _env = lock_test_env();
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().join("hook-index-route");
+    let workspace = root.join("workspace");
+    let mut config = Config::default();
+    config.hooks = Some(codewhale_config::hooks::HooksConfig {
+        hooks: vec![
+            codewhale_config::hooks::Hook::new(
+                codewhale_config::hooks::HookEvent::SessionStart,
+                "echo first",
+            )
+            .with_name("gate"),
+            codewhale_config::hooks::Hook::new(
+                codewhale_config::hooks::HookEvent::SessionStart,
+                "echo second",
+            )
+            .with_name("gate"),
+            codewhale_config::hooks::Hook::new(
+                codewhale_config::hooks::HookEvent::SessionStart,
+                "echo third",
+            ),
+            codewhale_config::hooks::Hook::new(
+                codewhale_config::hooks::HookEvent::SessionStart,
+                "echo fourth",
+            )
+            .with_name("session_start 3"),
+        ],
+        enabled: true,
+        ..Default::default()
+    });
+    let (addr, _runtime_threads, handle) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root.clone(),
+            root.join("sessions"),
+            None,
+            false,
+            workspace.clone(),
+            TestServerOverrides {
+                config: Some(config),
+                plugin_discovery: Some(isolated_plugin_discovery(&root, &workspace)),
+                ..TestServerOverrides::default()
+            },
+        )
+        .await?
+        .expect("hook index test server");
+    let client = codewhale_release::tls::reqwest_client();
+    let index: Value = client
+        .get(format!("http://{addr}/v1/apps/plugin-index"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let hooks: Vec<_> = index["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter(|item| item["kind"] == "hook")
+        .collect();
+    assert_eq!(hooks.len(), 4, "{index}");
+    for (ordinal, hook) in hooks.iter().enumerate() {
+        assert_eq!(
+            hook["id"],
+            format!("hook:user:session_start:{}", ordinal + 1)
+        );
+        assert_eq!(hook["state"], "enabled");
+    }
+    assert_eq!(hooks[0]["name"], "gate");
+    assert_eq!(hooks[1]["name"], "gate");
+    assert_eq!(hooks[2]["name"], "session_start 3");
+    assert_eq!(hooks[3]["name"], "session_start 3");
+    assert_eq!(hooks[3]["row"]["command"], "echo fourth");
+    assert_eq!(hooks[0]["row"]["command"], "echo first");
+    assert_eq!(hooks[1]["row"]["command"], "echo second");
+    handle.abort();
+    Ok(())
+}
