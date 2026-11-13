@@ -1039,7 +1039,7 @@
   "OnboardTrustLocationPrefix": "Workspace  ",
   "OnboardTrustRiskHint": "Tệp không đáng tin có thể tìm cách chuyển hướng agent bằng prompt injection.",
   "OnboardTrustEffectHint": "Trạng thái tin cậy được ghi cho bản cài Codewhale này và bật công cụ cùng hook của workspace.",
-  "OnboardTrustEnterHint": "Nhấn 1 hoặc Y để tin cậy, 2 hoặc U để tiếp tục mà không tin cậy, hoặc 3, N, Esc để thoát Codewhale.",
+  "OnboardTrustEnterHint": "Nhấn 1 để tin cậy, 2 để tiếp tục mà không tin cậy, hoặc 3 hay Esc để thoát Codewhale.",
   "OnboardTrustUntrustedNotice": "Tiếp tục mà không tin cậy workspace — công cụ và hook vẫn bị hạn chế.",
   "RedactionGateActionConfirm": "xác nhận và tắt",
   "RedactionGateActionKeep": "giữ che khóa",

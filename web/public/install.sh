@@ -85,12 +85,26 @@ download() {
   url="$1"
   out="$2"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url" -o "$out"
+    download_tool=curl
   elif command -v wget >/dev/null 2>&1; then
-    wget -q "$url" -O "$out"
+    download_tool=wget
   else
     fail "curl or wget is required"
   fi
+  attempt=1
+  while :; do
+    if [ "$download_tool" = curl ]; then
+      curl -fsSL "$url" -o "$out" && return 0
+    else
+      wget -q "$url" -O "$out" && return 0
+    fi
+    rm -f "$out"
+    if [ "$attempt" -ge 3 ]; then
+      fail "Download failed. This is usually a network blip; run the same command again."
+    fi
+    attempt=$((attempt + 1))
+    sleep "${CODEWHALE_INSTALL_RETRY_DELAY:-1}"
+  done
 }
 
 sha256_file() {

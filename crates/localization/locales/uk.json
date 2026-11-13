@@ -1016,7 +1016,7 @@
   "OnboardTrustLocationPrefix": "Робоча область  ",
   "OnboardTrustRiskHint": "Недовірені файли можуть спробувати перенаправити агента через ін'єкцію промптів.",
   "OnboardTrustEffectHint": "Довіру записано для цього встановлення Codewhale; вона вмикає інструменти та хуки робочої області.",
-  "OnboardTrustEnterHint": "Натисніть 1 або Y, щоб довірити; 2 або U, щоб продовжити без довіри; або 3, N чи Esc, щоб вийти з Codewhale.",
+  "OnboardTrustEnterHint": "Натисніть 1, щоб довірити; 2, щоб продовжити без довіри; або 3 чи Esc, щоб вийти з Codewhale.",
   "OnboardTrustUntrustedNotice": "Продовження без довіри до робочої області — інструменти та хуки лишаються обмеженими.",
   "RedactionGateActionConfirm": "підтвердити й вимкнути",
   "RedactionGateActionKeep": "залишити маскування",

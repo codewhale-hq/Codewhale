@@ -1039,7 +1039,7 @@
   "OnboardTrustLocationPrefix": "Workspace  ",
   "OnboardTrustRiskHint": "Los archivos no confiables pueden intentar redirigir al agente mediante inyección de prompt.",
   "OnboardTrustEffectHint": "La confianza se registra para esta instalación de Codewhale y habilita las herramientas y hooks del workspace.",
-  "OnboardTrustEnterHint": "Pulsa 1 o Y para confiar, 2 o U para continuar sin confiar, o 3, N o Esc para salir de Codewhale.",
+  "OnboardTrustEnterHint": "Pulsa 1 para confiar, 2 para continuar sin confiar, o 3 o Esc para salir de Codewhale.",
   "OnboardTrustUntrustedNotice": "Continuando sin confiar en el workspace: las herramientas y los hooks siguen restringidos.",
   "RedactionGateActionConfirm": "confirmar y desactivar",
   "RedactionGateActionKeep": "mantener enmascaramiento",

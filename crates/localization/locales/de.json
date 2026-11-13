@@ -1016,7 +1016,7 @@
   "OnboardTrustLocationPrefix": "Workspace  ",
   "OnboardTrustRiskHint": "Nicht vertrauenswürdige Dateien können versuchen, den Agenten per Prompt Injection umzuleiten.",
   "OnboardTrustEffectHint": "Vertrauen wird für diese Codewhale-Installation gespeichert und aktiviert Workspace-Tools und -Hooks.",
-  "OnboardTrustEnterHint": "Drücke 1 oder Y zum Vertrauen, 2 oder U, um ohne Vertrauen fortzufahren, oder 3, N oder Esc, um Codewhale zu beenden.",
+  "OnboardTrustEnterHint": "Drücke 1 zum Vertrauen, 2, um ohne Vertrauen fortzufahren, oder 3 oder Esc, um Codewhale zu beenden.",
   "OnboardTrustUntrustedNotice": "Fortfahren ohne Workspace-Vertrauen — Tools und Hooks bleiben eingeschränkt.",
   "RedactionGateActionConfirm": "bestätigen und deaktivieren",
   "RedactionGateActionKeep": "Schwärzung beibehalten",
