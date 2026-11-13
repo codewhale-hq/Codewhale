@@ -27,20 +27,40 @@ pub struct DiscoveryConfig {
     pub state_path: PathBuf,
 }
 
-/// Cheap on-disk catalog fingerprint: plugin-bundle directories only.
+/// Cheap on-disk catalog fingerprint: plugin-bundle directories plus the
+/// content of the plugin state file.
 ///
-/// Used to nudge `/plugin reload` when a bundle appears, disappears, or is
-/// rewritten without consulting process environment or auto-applying trust.
-/// `state.json` writes are ignored so enable/trust does not look like a
-/// catalog change.
+/// Used to apply or nudge a reload when a bundle appears, disappears, or is
+/// rewritten, or when another process installs, enables or disables a plugin.
+/// The state file is compared by content digest, never by mtime, so a rewrite
+/// with identical bytes is not a change and a same-second rewrite is.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PluginCatalogStamp {
     entries: BTreeMap<PathBuf, Option<SystemTime>>,
+    state: Option<[u8; 32]>,
+}
+
+const MAX_STAMPED_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// SHA-256 of a small file's bytes, or `None` when it is absent, unreadable or
+/// larger than the stamp bound.
+#[must_use]
+pub fn file_content_digest(path: &Path) -> Option<[u8; 32]> {
+    use std::io::Read;
+    let file = fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_STAMPED_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_STAMPED_FILE_BYTES {
+        return None;
+    }
+    Some(Sha256::digest(&bytes).into())
 }
 
 impl PluginCatalogStamp {
     #[must_use]
-    pub fn capture(roots: impl IntoIterator<Item = PathBuf>) -> Self {
+    pub fn capture(roots: impl IntoIterator<Item = PathBuf>, state_path: &Path) -> Self {
         let mut entries = BTreeMap::new();
         for root in roots {
             let Ok(read) = fs::read_dir(&root) else {
@@ -57,7 +77,14 @@ impl PluginCatalogStamp {
                 entries.insert(path, metadata.modified().ok());
             }
         }
-        Self { entries }
+        Self {
+            entries,
+            state: file_content_digest(state_path),
+        }
+    }
+
+    pub fn refresh_state(&mut self, state_path: &Path) {
+        self.state = file_content_digest(state_path);
     }
 }
 

@@ -981,7 +981,9 @@ pub(crate) use compaction_flow::*;
 pub(crate) use provider_setup::*;
 mod dispatch;
 mod dispatch_prepare;
+mod external_catalog;
 pub(crate) use dispatch_prepare::*;
+pub(crate) use external_catalog::*;
 pub(crate) mod fatal_signal_guard;
 // #6169: runtime half of the foreground-ownership contract — restore on stop,
 // rebuild on continue. Sits next to the fatal guard because both write the same

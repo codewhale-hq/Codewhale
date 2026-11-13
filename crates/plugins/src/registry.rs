@@ -1326,6 +1326,7 @@ impl PluginRegistry {
         let mut next = load_state_unlocked(path)?;
         mutate(&mut next)?;
         save_state(path, &next)?;
+        self.catalog_stamp.refresh_state(path);
         self.state = next;
         // Runtime selection rechecks the persisted review through its own
         // read lock. Publish the completed state transaction before deriving
