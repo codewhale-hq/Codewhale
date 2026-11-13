@@ -3049,7 +3049,7 @@ fn start_cli_telemetry(
     telemetry::init(consent);
     telemetry::record(Event::SessionStart {
         source: SessionSource::Unknown,
-        install_age: None,
+        install_age: telemetry::install_age(),
     });
     Some(CliTelemetrySession {
         started: std::time::Instant::now(),

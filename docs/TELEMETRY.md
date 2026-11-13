@@ -65,7 +65,7 @@ codewhale --telemetry false              # the same kill switch, for one command
 **`telemetry = false` in the config file is the opt-out.** It is a floor:
 `--telemetry true` and `CODEWHALE_TELEMETRY=1` both lose to it, because a
 setting you can undo by accident from a wrapper script is not a setting. It
-deletes the random install id, truncates every buffered event and every dry-run
+deletes the random install id and the local first-seen day (so the install-age bucket starts over at `new_today` if you turn telemetry back on), truncates every buffered event and every dry-run
 record, and writes a tombstone. Appends, identity/state writes, and delivery all
 share the wipe's ordering lock, so once opt-out returns no pre-opt-out write or
 POST remains in flight. If any part of that wipe fails, the tombstone is still
@@ -104,7 +104,7 @@ Everything is under `$CODEWHALE_HOME/telemetry/` (`0700`), every file `0600`:
 | `buffer.jsonl` | pending events, one JSON object per line |
 | `buffer.jsonl.lock` | the sibling ordering lock shared by writes, delivery, arming, and wipe |
 | `dryrun.jsonl` | where batches go when the endpoint is configured empty |
-| `state.json` | the last app version seen and the last flush attempt |
+| `state.json` | the last app version seen, the last flush attempt, and the UTC day this state was first created. The date never leaves the device: only the `install_age` bucket is sent |
 | `install_id.json` | the random install id and when it was minted |
 | `disabled` | the tombstone; present means nothing is appended or sent |
 
@@ -307,7 +307,7 @@ terminal. When more than one applies the order is `fleet_worker`, `agent`, `ci`,
 `install_age` is `new_today | under_week | older | null`: a coarse bucket of how
 long this installation has existed. It is computed on your device and only the
 bucket leaves it; the date it comes from is stored only in the local state file
-and never leaves the device. `null` means the local state could not be read.
+and never leaves the device. The same UTC day is `new_today`, 1 to 6 days is `under_week`, and 7 or more is `older`. An installation whose state predates this field reports `older`, never `new_today`. `null` means the local state could not be read.
 
 ### Event: `session_end`
 

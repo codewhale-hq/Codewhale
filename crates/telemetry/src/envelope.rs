@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::buffer;
-use crate::event::{Arch, Libc, Os};
+use crate::event::{Arch, InstallAge, Libc, Os};
 
 /// How long an install id may live before it is replaced.
 ///
@@ -47,6 +47,77 @@ pub struct TelemetryState {
     /// a permanently offline machine tries at most once per interval.
     #[serde(default)]
     pub last_flush: Option<String>,
+    /// The UTC day (`YYYY-MM-DD`) this state was first created. Local only: it
+    /// is read to pick an [`InstallAge`] bucket and is never sent.
+    #[serde(default)]
+    pub first_seen_day: Option<String>,
+    /// Set when this file predates `first_seen_day`, so its age is unknown and
+    /// is reported as the oldest bucket rather than as new.
+    #[serde(default)]
+    pub first_seen_unknown: bool,
+}
+
+enum StateRead {
+    Missing,
+    Unreadable,
+    Present(TelemetryState),
+}
+
+fn read_state_checked(root: &Path) -> StateRead {
+    match std::fs::read_to_string(buffer::state_path(root)) {
+        Ok(body) => serde_json::from_str::<TelemetryState>(&body)
+            .map_or(StateRead::Unreadable, StateRead::Present),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => StateRead::Missing,
+        Err(_) => StateRead::Unreadable,
+    }
+}
+
+/// Today's date in UTC.
+#[must_use]
+pub fn utc_today() -> chrono::NaiveDate {
+    chrono::Utc::now().date_naive()
+}
+
+/// Record the first-seen day if this state has none. A missing state file is a
+/// new install; a file that has a recorded version but no day predates this
+/// field and is marked unknown. An unreadable file is left untouched.
+pub(crate) fn stamp_first_seen(root: &Path, today: chrono::NaiveDate) {
+    let mut state = match read_state_checked(root) {
+        StateRead::Unreadable => return,
+        StateRead::Missing => TelemetryState::default(),
+        StateRead::Present(state) => state,
+    };
+    if state.first_seen_day.is_some() || state.first_seen_unknown {
+        return;
+    }
+    if state.last_version.is_some() {
+        state.first_seen_unknown = true;
+    } else {
+        state.first_seen_day = Some(today.format("%Y-%m-%d").to_string());
+    }
+    let _ = write_state(root, &state);
+}
+
+/// The coarse age bucket for this installation, or `None` when the local state
+/// cannot be read. A missing state is new.
+pub(crate) fn install_age_at(root: &Path, today: chrono::NaiveDate) -> Option<InstallAge> {
+    let state = match read_state_checked(root) {
+        StateRead::Unreadable => return None,
+        StateRead::Missing => return Some(InstallAge::NewToday),
+        StateRead::Present(state) => state,
+    };
+    if state.first_seen_unknown {
+        return Some(InstallAge::Older);
+    }
+    let Some(day) = state.first_seen_day else {
+        return Some(InstallAge::NewToday);
+    };
+    let first = chrono::NaiveDate::parse_from_str(&day, "%Y-%m-%d").ok()?;
+    Some(match today.signed_duration_since(first).num_days() {
+        ..=0 => InstallAge::NewToday,
+        1..=6 => InstallAge::UnderWeek,
+        _ => InstallAge::Older,
+    })
 }
 
 /// Read the install id, minting a fresh one if it is missing, unreadable,

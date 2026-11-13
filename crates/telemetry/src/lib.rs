@@ -123,7 +123,16 @@ pub fn init(consent: TelemetryConsent) {
         exit_class: AtomicU8::new(ExitClass::Clean.as_u8()),
     });
 
+    envelope::stamp_first_seen(&root, envelope::utc_today());
     record_install_or_upgrade(&root);
+}
+
+/// The coarse install-age bucket for this process's `session_start`, or `None`
+/// when unarmed or when the local state cannot be read.
+#[must_use]
+pub fn install_age() -> Option<InstallAge> {
+    let armed = ARMED.get()?;
+    envelope::install_age_at(&armed.root, envelope::utc_today())
 }
 
 /// Note that this binary's version differs from the one last seen on this

@@ -2517,7 +2517,7 @@ fn arm_telemetry_with_setup(
     let _ = TELEMETRY_SESSION_START.set(std::time::Instant::now());
     codewhale_telemetry::record(codewhale_telemetry::Event::SessionStart {
         source,
-        install_age: None,
+        install_age: codewhale_telemetry::install_age(),
     });
 }
 

@@ -2176,3 +2176,132 @@ fn every_listed_model_and_provider_default_maps_to_a_catalogued_id() {
         missing.join("\n")
     );
 }
+
+// -------------------------------------------------------------- install age --
+
+fn day(text: &str) -> chrono::NaiveDate {
+    chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").expect("date")
+}
+
+fn root_with_state(state: &str) -> (tempfile::TempDir, PathBuf) {
+    let home = temp_home();
+    let root = root_of(&home);
+    buffer::ensure_dir(&root).expect("create telemetry dir");
+    std::fs::write(buffer::state_path(&root), state).expect("write state");
+    (home, root)
+}
+
+#[test]
+fn a_fresh_home_is_new_today_and_ages_by_utc_day() {
+    let home = temp_home();
+    let root = root_of(&home);
+    buffer::ensure_dir(&root).expect("create telemetry dir");
+    assert_eq!(
+        envelope::install_age_at(&root, day("2026-11-13")),
+        Some(InstallAge::NewToday)
+    );
+    envelope::stamp_first_seen(&root, day("2026-11-13"));
+    for (today, expected) in [
+        ("2026-11-13", InstallAge::NewToday),
+        ("2026-11-14", InstallAge::UnderWeek),
+        ("2026-11-16", InstallAge::UnderWeek),
+        ("2026-11-19", InstallAge::UnderWeek),
+        ("2026-11-20", InstallAge::Older),
+        ("2027-06-01", InstallAge::Older),
+        ("2026-11-12", InstallAge::NewToday),
+    ] {
+        assert_eq!(
+            envelope::install_age_at(&root, day(today)),
+            Some(expected),
+            "{today}"
+        );
+    }
+    envelope::stamp_first_seen(&root, day("2026-12-25"));
+    assert_eq!(
+        envelope::read_state(&root).first_seen_day.as_deref(),
+        Some("2026-11-13"),
+        "a second stamp never moves the first-seen day"
+    );
+}
+
+#[test]
+fn a_state_written_before_the_day_existed_reads_older_never_new() {
+    let (_home, root) = root_with_state(r#"{"schema_version":4,"last_version":"0.10.2"}"#);
+    envelope::stamp_first_seen(&root, day("2026-11-13"));
+    let state = envelope::read_state(&root);
+    assert_eq!(state.first_seen_day, None);
+    assert!(state.first_seen_unknown);
+    assert_eq!(state.last_version.as_deref(), Some("0.10.2"));
+    for today in ["2026-11-13", "2026-11-14", "2030-01-01"] {
+        assert_eq!(
+            envelope::install_age_at(&root, day(today)),
+            Some(InstallAge::Older),
+            "{today}"
+        );
+    }
+}
+
+#[test]
+fn unreadable_or_hostile_state_gives_null_and_is_not_overwritten() {
+    for body in [
+        "not json",
+        r#"{"first_seen_day":"9999-99-99"}"#,
+        r#"{"first_seen_day":"yesterday"}"#,
+    ] {
+        let (_home, root) = root_with_state(body);
+        envelope::stamp_first_seen(&root, day("2026-11-13"));
+        assert_eq!(
+            envelope::install_age_at(&root, day("2026-11-13")),
+            None,
+            "{body}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(buffer::state_path(&root)).expect("state"),
+            body,
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn opting_out_erases_the_age_and_rotating_the_install_id_keeps_it() {
+    let home = temp_home();
+    let root = root_of(&home);
+    buffer::ensure_dir(&root).expect("create telemetry dir");
+    envelope::stamp_first_seen(&root, day("2026-01-01"));
+    assert_eq!(
+        envelope::install_age_at(&root, day("2026-11-13")),
+        Some(InstallAge::Older)
+    );
+
+    std::fs::write(
+        buffer::install_id_path(&root),
+        r#"{"schema_version":1,"install_id":"3f2a9c1e-0000-4000-8000-000000000001","rotated_at":"2020-01-01T00:00:00Z"}"#,
+    )
+    .expect("write expired id");
+    let rotated = envelope::read_or_create_install_id(&root).expect("rotate");
+    assert_ne!(rotated.install_id, "3f2a9c1e-0000-4000-8000-000000000001");
+    assert_eq!(
+        envelope::read_state(&root).first_seen_day.as_deref(),
+        Some("2026-01-01"),
+        "rotation does not touch the age"
+    );
+
+    buffer::wipe(&root).expect("wipe");
+    std::fs::remove_file(buffer::tombstone_path(&root)).expect("re-enable");
+    assert_eq!(
+        envelope::install_age_at(&root, day("2026-11-13")),
+        Some(InstallAge::NewToday)
+    );
+    envelope::stamp_first_seen(&root, day("2026-11-13"));
+    assert_eq!(
+        envelope::read_state(&root).first_seen_day.as_deref(),
+        Some("2026-11-13")
+    );
+}
+
+#[test]
+fn the_first_seen_day_never_reaches_the_wire() {
+    let wire = serde_json::to_string(&every_field_batch()).expect("serialize");
+    assert!(!wire.contains("first_seen"));
+}
