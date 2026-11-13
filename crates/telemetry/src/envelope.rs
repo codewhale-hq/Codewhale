@@ -185,10 +185,10 @@ fn is_expired(rotated_at: &str) -> bool {
 /// Read `state.json`, or a default when it is missing or unreadable.
 #[must_use]
 pub fn read_state(root: &Path) -> TelemetryState {
-    std::fs::read_to_string(buffer::state_path(root))
-        .ok()
-        .and_then(|body| serde_json::from_str::<TelemetryState>(&body).ok())
-        .unwrap_or_default()
+    match read_state_checked(root) {
+        StateRead::Present(state) => state,
+        StateRead::Missing | StateRead::Unreadable => TelemetryState::default(),
+    }
 }
 
 /// Write `state.json`.
