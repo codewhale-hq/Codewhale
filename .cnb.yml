@@ -48,7 +48,7 @@
     tags: cnb:arch:amd64
     cpus: 16
   docker:
-    image: rust:1.88-bookworm
+    image: rust:1.100.0-bookworm
   # codewhale-cnb-bridge GitHub App credentials from the CNB KeyStore
   # (codewhale.net/codewhale-ci-secrets, github-bridge.yml), injected as
   # environment variables. Values are never printed.
@@ -112,7 +112,7 @@
     tags: cnb:arch:amd64
     cpus: 16
   docker:
-    image: rust:1.88-bookworm
+    image: rust:1.100.0-bookworm
   stages:
     - name: install release dependencies
       script: |
@@ -163,7 +163,7 @@ main:
 $:
   tag_push:
     - docker:
-        image: rust:1.88-bookworm
+        image: rust:1.100.0-bookworm
       stages:
         - name: build linux x64 release assets (static)
           # The static full-LTO link can also outlive CNB's default no-output

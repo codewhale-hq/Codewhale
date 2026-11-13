@@ -23,17 +23,17 @@ jobs:
     continue-on-error: ${{ matrix.checks == 'advisories' }}
     steps:
       - uses: actions/checkout@v7
-      # rust-toolchain.toml pins `channel = "stable"` with no target, so
+      # rust-toolchain.toml pins `channel = "1.100.0"` with no target, so
       # inside the action's alpine (musl) container rustup resolves it to
-      # `stable-x86_64-unknown-linux-musl` — which the container does not
+      # `1.100.0-x86_64-unknown-linux-musl`, which the container does not
       # have. Without provisioning, the action's `rustup show` step prints
-      # "error: override toolchain 'stable-x86_64-unknown-linux-musl' is not
+      # "error: override toolchain '1.100.0-x86_64-unknown-linux-musl' is not
       # installed" and then auto-installs mid-run (network-dependent ~12s
       # detour, hard failure if the download stalls). `rust-version` makes the
-      # entrypoint run `rustup default stable` (same musl host triple) before
+      # entrypoint run `rustup default 1.100.0` (same musl host triple) before
       # cargo-deny touches the workspace, so the toolchain file resolves to an
       # already-installed toolchain on every run.
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check ${{ matrix.checks }}
-          rust-version: stable
+          rust-version: 1.100.0

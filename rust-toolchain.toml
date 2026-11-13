@@ -1,2 +1,2 @@
 [toolchain]
-channel = "stable"
+channel = "1.100.0"
