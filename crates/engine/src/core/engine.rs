@@ -1375,6 +1375,14 @@ impl LiveRuntimeAuthority {
             approval_mode: self.approval_mode,
         }
     }
+
+    pub(crate) fn mode(&self) -> AppMode {
+        self.mode
+    }
+
+    pub(crate) fn approval_mode(&self) -> ApprovalMode {
+        self.approval_mode
+    }
 }
 
 #[derive(Debug)]
@@ -1485,17 +1493,15 @@ impl LivePosture {
     }
 
     pub fn switch_for_tests(&self, approval_mode: ApprovalMode) {
+        self.switch_mode_for_tests(AppMode::Agent, approval_mode);
+    }
+
+    pub fn switch_mode_for_tests(&self, mode: AppMode, approval_mode: ApprovalMode) {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .authority = LiveRuntimeAuthority::from_fields(
-            AppMode::Agent,
-            true,
-            false,
-            false,
-            approval_mode,
-            None,
-        );
+            .authority =
+            LiveRuntimeAuthority::from_fields(mode, true, false, false, approval_mode, None);
     }
 }
 
