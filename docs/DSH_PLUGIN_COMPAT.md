@@ -164,6 +164,7 @@ them. See [Host services](EXTENSIONS.md#host-services).
 | Plugins share one process: a service is given only while every loaded plugin holds the same grant | Verified by focused Engine tests |
 | Turned off, revoked or reviewed again | Grant withdrawn at once, including a call in flight; verified by focused Engine tests |
 | Services offered by this build | None. Each is switched on separately, after its own review |
+| Reasoning-translation bridge (`cot-translation`, anonymous Bing/Google over network broker) | Bridge built and verified with mocked broker responses; not offered in this build (paid DeepSeek routes unavailable) |
 | A real plugin using a granted service end to end | Not verified |
 
 ## Containment

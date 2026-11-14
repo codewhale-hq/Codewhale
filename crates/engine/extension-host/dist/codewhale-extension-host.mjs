@@ -2245,6 +2245,658 @@ var init_lib2 = __esm({
   }
 });
 
+// node_modules/@deepseek-ai/schemastery/lib/index.mjs
+var lib_exports3 = {};
+__export(lib_exports3, {
+  default: () => Schema
+});
+function mergeDesc(original, messages) {
+  const result = typeof original === "string" ? { "": original } : { ...original };
+  for (const locale in messages) {
+    const value = messages[locale];
+    if (value?.$description || value?.$desc) result[locale] = value.$description || value.$desc;
+    else if (typeof value === "string") result[locale] = value;
+  }
+  return result;
+}
+function getInner(value) {
+  return value?.$value ?? value?.$inner;
+}
+function extractKeys(data2) {
+  return filterKeys(data2 ?? {}, (key) => !key.startsWith("$"));
+}
+function validateVolatileSchema(schema3, path = [], blocked = false, seen = /* @__PURE__ */ new Map()) {
+  const states = seen.get(schema3) ?? /* @__PURE__ */ new Set();
+  if (states.has(blocked)) return;
+  states.add(blocked);
+  seen.set(schema3, states);
+  if (schema3.meta?.volatile && blocked) throw new ValidationError2("volatile fields require a fixed object path without an enclosing volatile field", { path });
+  const nested = blocked || !!schema3.meta?.volatile;
+  if (schema3.dict) for (const [key, child] of Object.entries(schema3.dict)) validateVolatileSchema(child, [...path, key], nested, seen);
+  if (schema3.sKey) validateVolatileSchema(schema3.sKey, [...path, "<key>"], true, seen);
+  if (schema3.inner && (schema3.type !== "lazy" || schema3.inner[kSchema])) validateVolatileSchema(schema3.inner, [...path, "*"], true, seen);
+  if (schema3.list) for (let index = 0; index < schema3.list.length; index++) validateVolatileSchema(schema3.list[index], [...path, String(index)], true, seen);
+}
+function checkWithinRange(data2, meta, description, options, skipMin = false) {
+  const { max = Infinity, min = -Infinity } = meta;
+  if (data2 > max) throw new ValidationError2(`expected ${description} <= ${max} but got ${data2}`, options);
+  if (data2 < min && !skipMin) throw new ValidationError2(`expected ${description} >= ${min} but got ${data2}`, options);
+}
+function decimalShift(data2, digits) {
+  const str2 = data2.toString();
+  if (str2.includes("e")) return data2 * Math.pow(10, digits);
+  const index = str2.indexOf(".");
+  if (index === -1) return data2 * Math.pow(10, digits);
+  const frac = str2.slice(index + 1);
+  const integer = str2.slice(0, index);
+  if (frac.length <= digits) return +(integer + frac.padEnd(digits, "0"));
+  return +(integer + frac.slice(0, digits) + "." + frac.slice(digits));
+}
+function isMultipleOf(data2, min, step) {
+  step = Math.abs(step);
+  if (!/^\d+\.\d+$/.test(step.toString())) return (data2 - min) % step === 0;
+  const index = step.toString().indexOf(".");
+  const digits = step.toString().slice(index + 1).length;
+  return Math.abs(decimalShift(data2, digits) - decimalShift(min, digits)) % decimalShift(step, digits) === 0;
+}
+function property(data2, key, schema3, options) {
+  try {
+    const [value, adapted] = Schema.resolve(data2[key], schema3, {
+      ...options,
+      path: [...options.path || [], key]
+    });
+    if (adapted !== void 0) data2[key] = adapted;
+    return value;
+  } catch (e) {
+    if (!options?.autofix) throw e;
+    delete data2[key];
+    return schema3.meta.volatile ? createVolatile(schema3.meta.default) : schema3.meta.default;
+  }
+}
+function merge(result, data2) {
+  for (const key in data2) {
+    if (key in result) continue;
+    result[key] = data2[key];
+  }
+}
+function defineMethod(name, keys, format) {
+  formatters[name] = format;
+  Object.assign(Schema, { [name](...args) {
+    const schema3 = new Schema({ type: name });
+    keys.forEach((key, index) => {
+      switch (key) {
+        case "sKey":
+          schema3.sKey = args[index] ?? Schema.string();
+          break;
+        case "inner":
+          schema3.inner = Schema.from(args[index]);
+          break;
+        case "list":
+          schema3.list = args[index].map(Schema.from);
+          break;
+        case "dict":
+          schema3.dict = mapValues(args[index], Schema.from);
+          break;
+        case "bits":
+          schema3.bits = {};
+          for (const key2 in args[index]) {
+            if (typeof args[index][key2] !== "number") continue;
+            schema3.bits[key2] = args[index][key2];
+          }
+          break;
+        case "callback": {
+          const callback = schema3.callback = args[index];
+          callback["toJSON"] ||= () => callback.toString();
+          break;
+        }
+        case "constructor": {
+          const constructor = schema3.constructor = args[index];
+          if (typeof constructor === "function") constructor["toJSON"] ||= () => constructor["name"];
+          break;
+        }
+        default:
+          schema3[key] = args[index];
+      }
+    });
+    if (name === "object" || name === "dict") schema3.meta.default = {};
+    else if (name === "array" || name === "tuple") schema3.meta.default = [];
+    else if (name === "bitset") schema3.meta.default = 0;
+    return schema3;
+  } });
+}
+var kSchema, kValidationError2, ValidationError2, Schema, resolvers, checkedVolatile, formatters;
+var init_lib3 = __esm({
+  "node_modules/@deepseek-ai/schemastery/lib/index.mjs"() {
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_lib();
+    kSchema = /* @__PURE__ */ Symbol.for("schemastery");
+    kValidationError2 = /* @__PURE__ */ Symbol.for("ValidationError");
+    globalThis.__schemastery_index__ ??= 0;
+    globalThis.__schemastery_refs__ = void 0;
+    ValidationError2 = class extends TypeError {
+      options;
+      name = "ValidationError";
+      constructor(message, options) {
+        let prefix = "$";
+        for (const segment of options.path || []) if (typeof segment === "string") prefix += "." + segment;
+        else if (typeof segment === "number") prefix += "[" + segment + "]";
+        else if (typeof segment === "symbol") prefix += `[Symbol(${segment.toString()})]`;
+        if (prefix.startsWith(".")) prefix = prefix.slice(1);
+        super((prefix === "$" ? "" : `${prefix} `) + message);
+        this.options = options;
+      }
+      static is(error) {
+        return !!error?.[kValidationError2];
+      }
+    };
+    Object.defineProperty(ValidationError2.prototype, kValidationError2, { value: true });
+    Schema = function(options) {
+      const schema3 = function(data2, options2 = {}) {
+        return Schema.resolve(data2, schema3, options2)[0];
+      };
+      if (options.refs) {
+        const refs = mapValues(options.refs, (options2) => new Schema(options2));
+        const getRef = (uid) => refs[uid];
+        for (const key in refs) {
+          const options2 = refs[key];
+          options2.sKey = getRef(options2.sKey);
+          options2.inner = getRef(options2.inner);
+          options2.list = options2.list && options2.list.map(getRef);
+          options2.dict = options2.dict && mapValues(options2.dict, getRef);
+        }
+        return refs[options.uid];
+      }
+      Object.assign(schema3, options);
+      if (typeof schema3.callback === "string") try {
+        schema3.callback = new Function("return " + schema3.callback)();
+      } catch {
+      }
+      Object.defineProperty(schema3, "uid", { value: globalThis.__schemastery_index__++ });
+      Object.setPrototypeOf(schema3, Schema.prototype);
+      schema3.meta ||= {};
+      schema3.toString = schema3.toString.bind(schema3);
+      return schema3;
+    };
+    Schema.prototype = Object.create(Function.prototype);
+    Schema.prototype[kSchema] = true;
+    Object.defineProperty(Schema.prototype, "~standard", { get() {
+      return {
+        version: 1,
+        vendor: "schemastery",
+        validate: (value) => {
+          try {
+            return { value: Schema.resolve(value, this, {})[0] };
+          } catch (error) {
+            if (ValidationError2.is(error)) return { issues: [{
+              message: error.message,
+              path: error.options.path
+            }] };
+            throw error;
+          }
+        }
+      };
+    } });
+    Schema.ValidationError = ValidationError2;
+    Schema.prototype.toJSON = function toJSON() {
+      if (globalThis.__schemastery_refs__) {
+        globalThis.__schemastery_refs__[this.uid] ??= JSON.parse(JSON.stringify({ ...this }));
+        return this.uid;
+      }
+      globalThis.__schemastery_refs__ = { [this.uid]: { ...this } };
+      globalThis.__schemastery_refs__[this.uid] = JSON.parse(JSON.stringify({ ...this }));
+      const result = {
+        uid: this.uid,
+        refs: globalThis.__schemastery_refs__
+      };
+      globalThis.__schemastery_refs__ = void 0;
+      return result;
+    };
+    Schema.prototype.set = function set(key, value) {
+      this.dict[key] = value;
+      return this;
+    };
+    Schema.prototype.push = function push(value) {
+      this.list.push(value);
+      return this;
+    };
+    Schema.prototype.i18n = function i18n(messages) {
+      const schema3 = Schema(this);
+      const desc = mergeDesc(schema3.meta.description, messages);
+      if (Object.keys(desc).length) schema3.meta.description = desc;
+      if (schema3.dict) schema3.dict = mapValues(schema3.dict, (inner, key) => {
+        return inner.i18n(mapValues(messages, (data2) => getInner(data2)?.[key] ?? data2?.[key]));
+      });
+      if (schema3.list) schema3.list = schema3.list.map((inner, index) => {
+        return inner.i18n(mapValues(messages, (data2 = {}) => {
+          if (Array.isArray(getInner(data2))) return getInner(data2)[index];
+          if (Array.isArray(data2)) return data2[index];
+          return extractKeys(data2);
+        }));
+      });
+      if (schema3.inner) schema3.inner = schema3.inner.i18n(mapValues(messages, (data2) => {
+        if (getInner(data2)) return getInner(data2);
+        return extractKeys(data2);
+      }));
+      if (schema3.sKey) schema3.sKey = schema3.sKey.i18n(mapValues(messages, (data2) => data2?.$key));
+      return schema3;
+    };
+    Schema.prototype.extra = function extra(key, value) {
+      const schema3 = Schema(this);
+      schema3.meta = {
+        ...schema3.meta,
+        [key]: value
+      };
+      return schema3;
+    };
+    for (const key of [
+      "required",
+      "disabled",
+      "collapse",
+      "hidden",
+      "loose"
+    ]) Object.assign(Schema.prototype, { [key](value = true) {
+      const schema3 = Schema(this);
+      schema3.meta = {
+        ...schema3.meta,
+        [key]: value
+      };
+      return schema3;
+    } });
+    Schema.prototype.deprecated = function deprecated() {
+      const schema3 = Schema(this);
+      schema3.meta.badges ||= [];
+      schema3.meta.badges.push({
+        text: "deprecated",
+        type: "danger"
+      });
+      return schema3;
+    };
+    Schema.prototype.experimental = function experimental() {
+      const schema3 = Schema(this);
+      schema3.meta.badges ||= [];
+      schema3.meta.badges.push({
+        text: "experimental",
+        type: "warning"
+      });
+      return schema3;
+    };
+    Schema.prototype.pattern = function pattern(regexp) {
+      const schema3 = Schema(this);
+      const pattern2 = pick(regexp, ["source", "flags"]);
+      schema3.meta = {
+        ...schema3.meta,
+        pattern: pattern2
+      };
+      return schema3;
+    };
+    Schema.prototype.simplify = function simplify(value) {
+      if (isVolatile(value)) value = value.get();
+      if (deepEqual(value, this.meta.default, this.type === "dict")) return null;
+      if (isNullable(value)) return value;
+      if (this.type === "object" || this.type === "dict") {
+        const result = {};
+        for (const key in value) {
+          const item = (this.type === "object" ? this.dict[key] : this.inner)?.simplify(value[key]);
+          if (this.type === "dict" || !isNullable(item)) result[key] = item;
+        }
+        if (deepEqual(result, this.meta.default, this.type === "dict")) return null;
+        return result;
+      } else if (this.type === "array" || this.type === "tuple") {
+        const result = [];
+        value.forEach((value2, index) => {
+          const schema3 = this.type === "array" ? this.inner : this.list[index];
+          const item = schema3 ? schema3.simplify(value2) : value2;
+          result.push(item);
+        });
+        return result;
+      } else if (this.type === "intersect") {
+        const result = {};
+        for (const item of this.list) Object.assign(result, item.simplify(value));
+        return result;
+      } else if (this.type === "union") for (const schema3 of this.list) try {
+        Schema.resolve(value, schema3, {});
+        return schema3.simplify(value);
+      } catch {
+      }
+      return value;
+    };
+    Schema.prototype.toString = function toString(inline) {
+      return formatters[this.type]?.(this, inline) ?? `Schema<${this.type}>`;
+    };
+    Schema.prototype.role = function role(role, extra2) {
+      const schema3 = Schema(this);
+      schema3.meta = {
+        ...schema3.meta,
+        role,
+        extra: extra2
+      };
+      return schema3;
+    };
+    for (const key of [
+      "default",
+      "link",
+      "comment",
+      "description",
+      "max",
+      "min",
+      "step"
+    ]) Object.assign(Schema.prototype, { [key](value) {
+      const schema3 = Schema(this);
+      schema3.meta = {
+        ...schema3.meta,
+        [key]: value
+      };
+      return schema3;
+    } });
+    Schema.prototype.volatile = function volatile() {
+      if (this.meta.volatile) throw new TypeError("volatile schema is already wrapped");
+      return this.extra("volatile", true);
+    };
+    resolvers = {};
+    checkedVolatile = /* @__PURE__ */ Symbol("checked-volatile-schema");
+    Schema.extend = function extend(type2, resolve6) {
+      resolvers[type2] = resolve6;
+    };
+    Schema.resolve = function resolve(data2, schema3, options = {}, strict = false) {
+      if (!schema3) return [data2];
+      if (!options[checkedVolatile]) {
+        validateVolatileSchema(schema3, options.path);
+        options = {
+          ...options,
+          [checkedVolatile]: true
+        };
+      }
+      if (schema3.meta?.volatile) {
+        const inner = Schema(schema3);
+        inner.meta = {
+          ...schema3.meta,
+          volatile: false
+        };
+        const [value, adapted] = Schema.resolve(data2, inner, options, strict);
+        try {
+          return [createVolatile(value), adapted];
+        } catch (error) {
+          throw new ValidationError2(error instanceof Error ? error.message : String(error), options);
+        }
+      }
+      if (options.ignore?.(data2, schema3)) return [data2];
+      if (isNullable(data2) && schema3.type !== "lazy") {
+        if (schema3.meta.required) throw new ValidationError2(`missing required value`, options);
+        let current2 = schema3;
+        let fallback = schema3.meta.default;
+        while (current2?.type === "intersect" && isNullable(fallback)) {
+          current2 = current2.list[0];
+          fallback = current2?.meta.default;
+        }
+        if (isNullable(fallback)) return [data2];
+        data2 = clone(fallback);
+      }
+      const callback = resolvers[schema3.type];
+      if (!callback) throw new ValidationError2(`unsupported type "${schema3.type}"`, options);
+      try {
+        return callback(data2, schema3, options, strict);
+      } catch (error) {
+        if (!schema3.meta.loose) throw error;
+        return [schema3.meta.default];
+      }
+    };
+    Schema.from = function from(source) {
+      if (isNullable(source)) return Schema.any();
+      else if ([
+        "string",
+        "number",
+        "boolean"
+      ].includes(typeof source)) return Schema.const(source).required();
+      else if (source[kSchema]) return source;
+      else if (typeof source === "function") switch (source) {
+        case String:
+          return Schema.string().required();
+        case Number:
+          return Schema.number().required();
+        case Boolean:
+          return Schema.boolean().required();
+        case Function:
+          return Schema.function().required();
+        default:
+          return Schema.is(source).required();
+      }
+      else throw new TypeError(`cannot infer schema from ${source}`);
+    };
+    Schema.lazy = function lazy(builder) {
+      const toJSON2 = () => {
+        if (!schema3.inner[kSchema]) {
+          schema3.inner = schema3.builder();
+          schema3.inner.meta = {
+            ...schema3.meta,
+            ...schema3.inner.meta
+          };
+        }
+        return schema3.inner.toJSON();
+      };
+      const schema3 = new Schema({
+        type: "lazy",
+        builder,
+        inner: { toJSON: toJSON2 }
+      });
+      return schema3;
+    };
+    Schema.natural = function natural() {
+      return Schema.number().step(1).min(0);
+    };
+    Schema.percent = function percent() {
+      return Schema.number().step(0.01).min(0).max(1).role("slider");
+    };
+    Schema.date = function date() {
+      return Schema.union([Schema.is(Date), Schema.transform(Schema.string().role("datetime"), (value, options) => {
+        const date2 = new Date(value);
+        if (isNaN(+date2)) throw new ValidationError2(`invalid date "${value}"`, options);
+        return date2;
+      }, true)]);
+    };
+    Schema.regExp = function regExp(flag = "") {
+      return Schema.union([Schema.is(RegExp), Schema.transform(Schema.string().role("regexp", { flag }), (value, options) => {
+        try {
+          return new RegExp(value, flag);
+        } catch (e) {
+          throw new ValidationError2(e.message, options);
+        }
+      }, true)]);
+    };
+    Schema.arrayBuffer = function arrayBuffer(encoding) {
+      return Schema.union([
+        Schema.is(ArrayBuffer),
+        Schema.is(SharedArrayBuffer),
+        Schema.transform(Schema.any(), (value, options) => {
+          if (Binary.isSource(value)) return Binary.fromSource(value);
+          throw new ValidationError2(`expected ArrayBufferSource but got ${value}`, options);
+        }, true),
+        ...encoding ? [Schema.transform(Schema.string(), (value, options) => {
+          try {
+            return encoding === "base64" ? Binary.fromBase64(value) : Binary.fromHex(value);
+          } catch (e) {
+            throw new ValidationError2(e.message, options);
+          }
+        }, true)] : []
+      ]);
+    };
+    Schema.extend("lazy", (data2, schema3, options, strict) => {
+      if (!schema3.inner[kSchema]) {
+        schema3.inner = schema3.builder();
+        schema3.inner.meta = {
+          ...schema3.meta,
+          ...schema3.inner.meta
+        };
+        validateVolatileSchema(schema3.inner, options.path, true);
+      }
+      return Schema.resolve(data2, schema3.inner, options, strict);
+    });
+    Schema.extend("any", (data2) => {
+      return [data2];
+    });
+    Schema.extend("never", (data2, _, options) => {
+      throw new ValidationError2(`expected nullable but got ${data2}`, options);
+    });
+    Schema.extend("const", (data2, { value }, options) => {
+      if (deepEqual(data2, value)) return [value];
+      throw new ValidationError2(`expected ${value} but got ${data2}`, options);
+    });
+    Schema.extend("string", (data2, { meta }, options) => {
+      if (typeof data2 !== "string") throw new ValidationError2(`expected string but got ${data2}`, options);
+      if (meta.pattern) {
+        const regexp = new RegExp(meta.pattern.source, meta.pattern.flags);
+        if (!regexp.test(data2)) throw new ValidationError2(`expect string to match regexp ${regexp}`, options);
+      }
+      checkWithinRange(data2.length, meta, "string length", options);
+      return [data2];
+    });
+    Schema.extend("number", (data2, { meta }, options) => {
+      if (typeof data2 !== "number") throw new ValidationError2(`expected number but got ${data2}`, options);
+      checkWithinRange(data2, meta, "number", options);
+      const { step } = meta;
+      if (step && !isMultipleOf(data2, meta.min ?? 0, step)) throw new ValidationError2(`expected number multiple of ${step} but got ${data2}`, options);
+      return [data2];
+    });
+    Schema.extend("boolean", (data2, _, options) => {
+      if (typeof data2 === "boolean") return [data2];
+      throw new ValidationError2(`expected boolean but got ${data2}`, options);
+    });
+    Schema.extend("bitset", (data2, { bits, meta }, options) => {
+      let value = 0, keys = [];
+      if (typeof data2 === "number") {
+        value = data2;
+        for (const key in bits) if (data2 & bits[key]) keys.push(key);
+      } else if (Array.isArray(data2)) {
+        keys = data2;
+        for (const key of keys) {
+          if (typeof key !== "string") throw new ValidationError2(`expected string but got ${key}`, options);
+          if (key in bits) value |= bits[key];
+        }
+      } else throw new ValidationError2(`expected number or array but got ${data2}`, options);
+      if (value === meta.default) return [value];
+      return [value, keys];
+    });
+    Schema.extend("function", (data2, _, options) => {
+      if (typeof data2 === "function") return [data2];
+      throw new ValidationError2(`expected function but got ${data2}`, options);
+    });
+    Schema.extend("is", (data2, { constructor }, options) => {
+      if (typeof constructor === "function") {
+        if (data2 instanceof constructor) return [data2];
+        throw new ValidationError2(`expected ${constructor.name} but got ${data2}`, options);
+      } else {
+        if (isNullable(data2)) throw new ValidationError2(`expected ${constructor} but got ${data2}`, options);
+        let prototype = Object.getPrototypeOf(data2);
+        while (prototype) {
+          if (prototype.constructor?.name === constructor) return [data2];
+          prototype = Object.getPrototypeOf(prototype);
+        }
+        throw new ValidationError2(`expected ${constructor} but got ${data2}`, options);
+      }
+    });
+    Schema.extend("array", (data2, { inner, meta }, options) => {
+      if (!Array.isArray(data2)) throw new ValidationError2(`expected array but got ${data2}`, options);
+      checkWithinRange(data2.length, meta, "array length", options, !isNullable(inner.meta.default));
+      return [data2.map((_, index) => property(data2, index, inner, options))];
+    });
+    Schema.extend("dict", (data2, { inner, sKey }, options, strict) => {
+      if (!isPlainObject(data2)) throw new ValidationError2(`expected object but got ${data2}`, options);
+      const result = {};
+      for (const key in data2) {
+        let rKey;
+        try {
+          rKey = Schema.resolve(key, sKey, options)[0];
+        } catch (error) {
+          if (strict) continue;
+          throw error;
+        }
+        result[rKey] = property(data2, key, inner, options);
+        data2[rKey] = data2[key];
+        if (key !== rKey) delete data2[key];
+      }
+      return [result];
+    });
+    Schema.extend("tuple", (data2, { list: list2 }, options, strict) => {
+      if (!Array.isArray(data2)) throw new ValidationError2(`expected array but got ${data2}`, options);
+      const result = list2.map((inner, index) => property(data2, index, inner, options));
+      if (strict) return [result];
+      result.push(...data2.slice(list2.length));
+      return [result];
+    });
+    Schema.extend("object", (data2, { dict }, options, strict) => {
+      if (!isPlainObject(data2)) throw new ValidationError2(`expected object but got ${data2}`, options);
+      const result = {};
+      for (const key in dict) {
+        const value = property(data2, key, dict[key], options);
+        if (!isNullable(value) || key in data2) result[key] = value;
+      }
+      if (!strict) merge(result, data2);
+      return [result];
+    });
+    Schema.extend("union", (data2, { list: list2, toString: toString3 }, options, strict) => {
+      const messages = [];
+      for (const inner of list2) try {
+        return Schema.resolve(data2, inner, options, strict);
+      } catch (error) {
+        messages.push(error);
+      }
+      throw new ValidationError2(`expected ${toString3()} but got ${JSON.stringify(data2)}`, options);
+    });
+    Schema.extend("intersect", (data2, { list: list2, toString: toString3 }, options, strict) => {
+      if (!list2.length) return [data2];
+      let result;
+      for (const inner of list2) {
+        const value = Schema.resolve(data2, inner, options, true)[0];
+        if (isNullable(value)) continue;
+        if (isNullable(result)) result = value;
+        else if (typeof result !== typeof value) throw new ValidationError2(`expected ${toString3()} but got ${JSON.stringify(data2)}`, options);
+        else if (typeof value === "object") merge(result ??= {}, value);
+        else if (result !== value) throw new ValidationError2(`expected ${toString3()} but got ${JSON.stringify(data2)}`, options);
+      }
+      if (!strict && isPlainObject(data2)) merge(result, data2);
+      return [result];
+    });
+    Schema.extend("transform", (data2, { inner, callback, preserve }, options) => {
+      const [result, adapted = data2] = Schema.resolve(data2, inner, options, true);
+      if (preserve) return [callback(result)];
+      else return [callback(result), callback(adapted)];
+    });
+    formatters = {};
+    defineMethod("is", ["constructor"], ({ constructor }) => {
+      if (typeof constructor === "function") return constructor.name;
+      else return constructor;
+    });
+    defineMethod("any", [], () => "any");
+    defineMethod("never", [], () => "never");
+    defineMethod("const", ["value"], ({ value }) => typeof value === "string" ? JSON.stringify(value) : value);
+    defineMethod("string", [], () => "string");
+    defineMethod("number", [], () => "number");
+    defineMethod("boolean", [], () => "boolean");
+    defineMethod("bitset", ["bits"], () => "bitset");
+    defineMethod("function", [], () => "function");
+    defineMethod("array", ["inner"], ({ inner }) => `${inner.toString(true)}[]`);
+    defineMethod("dict", ["inner", "sKey"], ({ inner, sKey }) => `{ [key: ${sKey.toString()}]: ${inner.toString()} }`);
+    defineMethod("tuple", ["list"], ({ list: list2 }) => `[${list2.map((inner) => inner.toString()).join(", ")}]`);
+    defineMethod("object", ["dict"], ({ dict }) => {
+      if (Object.keys(dict).length === 0) return "{}";
+      return `{ ${Object.entries(dict).map(([key, inner]) => {
+        return `${key}${inner.meta.required ? "" : "?"}: ${inner.toString()}`;
+      }).join(", ")} }`;
+    });
+    defineMethod("union", ["list"], ({ list: list2 }, inline) => {
+      const result = list2.map(({ toString: format }) => format()).join(" | ");
+      return inline ? `(${result})` : result;
+    });
+    defineMethod("intersect", ["list"], ({ list: list2 }) => {
+      return `${list2.map((inner) => inner.toString(true)).join(" & ")}`;
+    });
+    defineMethod("transform", [
+      "inner",
+      "callback",
+      "preserve"
+    ], ({ inner }, isInner) => inner.toString(isInner));
+  }
+});
+
 // node_modules/@deepseek-ai/dsh-util-values/lib/index.js
 var lib_exports4 = {};
 __export(lib_exports4, {
@@ -2439,7 +3091,7 @@ function deepFreeze(value) {
   return value;
 }
 var SIMPLE_ESCAPES, CONTENT_ESCAPE, PartialArguments, WeakMapWithValues;
-var init_lib3 = __esm({
+var init_lib4 = __esm({
   "node_modules/@deepseek-ai/dsh-util-values/lib/index.js"() {
     init_define_BUILTIN_MODULE_DIGESTS();
     SIMPLE_ESCAPES = {
@@ -3851,7 +4503,7 @@ var init_dsh_tools_compat = __esm({
   "src/dsh/dsh-tools-compat.js"() {
     "use strict";
     init_define_BUILTIN_MODULE_DIGESTS();
-    init_lib3();
+    init_lib4();
     HarnessError = class extends Error {
       code;
       constructor(message, code, options) {
@@ -3974,7 +4626,7 @@ var init_dsh_message_compat = __esm({
   "src/dsh/dsh-message-compat.js"() {
     "use strict";
     init_define_BUILTIN_MODULE_DIGESTS();
-    init_lib3();
+    init_lib4();
     PERSONA_PREFIX_SECTION = "deployment:persona-prefix";
     HarnessError2 = class extends Error {
       code;
@@ -18460,6 +19112,495 @@ var init_agent_presets = __esm({
   }
 });
 
+// src/dsh/cot-translation.ts
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function validateEndpoint(value) {
+  const url = new URL(value);
+  if (!["http:", "https:"].includes(url.protocol) || url.username !== "" || url.password !== "" || url.hash !== "") {
+    throw new Error(
+      "Translation endpoint must be an HTTP(S) URL without credentials or a fragment"
+    );
+  }
+  return url.href;
+}
+function mapLanguage(tag, provider) {
+  const lower = tag.toLowerCase();
+  if (lower === "zh" || lower === "zh-cn" || lower === "zh-sg" || lower === "zh-hans") {
+    return provider === "google" ? "zh-CN" : "zh-Hans";
+  }
+  if (lower === "zh-tw" || lower === "zh-hk" || lower === "zh-mo" || lower === "zh-hant") {
+    return provider === "google" ? "zh-TW" : "zh-Hant";
+  }
+  return tag;
+}
+function parseGooglePayload(payload) {
+  if (!Array.isArray(payload) || !Array.isArray(payload[0]) || payload[0].length === 0) {
+    throw new TranslationError(
+      "TRANSLATION_INVALID_RESPONSE",
+      "Google translation returned invalid payload"
+    );
+  }
+  const parts = [];
+  for (const segment of payload[0]) {
+    if (!Array.isArray(segment) || typeof segment[0] !== "string") {
+      throw new TranslationError(
+        "TRANSLATION_INVALID_RESPONSE",
+        "Google translation returned invalid payload"
+      );
+    }
+    parts.push(segment[0]);
+  }
+  return parts.join("");
+}
+function parseBingPayload(payload) {
+  if (!Array.isArray(payload) || payload.length === 0 || !isRecord2(payload[0])) {
+    throw new TranslationError(
+      "TRANSLATION_INVALID_RESPONSE",
+      "Bing translation returned invalid payload"
+    );
+  }
+  const translations = payload[0].translations;
+  if (!Array.isArray(translations) || translations.length === 0 || !isRecord2(translations[0]) || typeof translations[0].text !== "string") {
+    throw new TranslationError(
+      "TRANSLATION_INVALID_RESPONSE",
+      "Bing translation returned invalid payload"
+    );
+  }
+  return translations[0].text;
+}
+function raceWithSignal(promise, signal) {
+  if (signal.aborted) {
+    promise.catch(() => {
+    });
+    return Promise.reject(signal.reason);
+  }
+  return new Promise((resolve6, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      promise.catch(() => {
+      });
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        resolve6(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
+}
+async function readBoundedResponseJson(response, maxResponseBytes, provider, signal) {
+  if (!response.body) {
+    throw new TranslationError(
+      "TRANSLATION_INVALID_RESPONSE",
+      `${provider} translation returned empty body`
+    );
+  }
+  if (signal.aborted) {
+    void response.body.cancel().catch(() => {
+    });
+    throw signal.reason;
+  }
+  const chunks = [];
+  let totalBytes = 0;
+  let reader;
+  let cancelled = false;
+  const cancelReader = () => {
+    if (cancelled || !reader) return;
+    cancelled = true;
+    void reader.cancel().catch(() => {
+    });
+  };
+  const onAbort = () => {
+    cancelReader();
+  };
+  try {
+    reader = response.body.getReader();
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      cancelReader();
+      throw signal.reason;
+    }
+    while (true) {
+      const { done, value } = await raceWithSignal(reader.read(), signal);
+      if (done) break;
+      if (!value) continue;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxResponseBytes) {
+        cancelReader();
+        throw new TranslationError(
+          "TRANSLATION_RESPONSE_LIMIT",
+          `${provider} translation response exceeded size limit`
+        );
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    cancelReader();
+    if (signal.aborted) throw signal.reason;
+    if (error instanceof TranslationError) throw error;
+    throw new TranslationError(
+      "TRANSLATION_REQUEST_FAILED",
+      `${provider} translation request failed`
+    );
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+    reader?.releaseLock();
+  }
+  const merged = new Uint8Array(totalBytes);
+  let offset2 = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset2);
+    offset2 += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8").decode(merged));
+  } catch {
+    throw new TranslationError(
+      "TRANSLATION_INVALID_RESPONSE",
+      `${provider} translation returned invalid JSON`
+    );
+  }
+}
+function reviewedCotTranslationModule() {
+  return TranslatorService;
+}
+var ANONYMOUS_PROVIDERS, VALID_PROVIDERS, LANGUAGE_PREFERENCE_PATTERN, MAX_CONFIG_TEXT_CHARS, MAX_CONFIG_RESPONSE_BYTES, MAX_LANGUAGE_TAG_LENGTH, MAX_SESSION_ID_LENGTH, TranslationError, TranslatorConfigSchema, CotTranslationConfigSchema, TranslatorService;
+var init_cot_translation = __esm({
+  "src/dsh/cot-translation.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_lib2();
+    init_lib3();
+    ANONYMOUS_PROVIDERS = ["bing", "google"];
+    VALID_PROVIDERS = /* @__PURE__ */ new Set([
+      "google",
+      "bing",
+      "deepseek-account",
+      "deepseek-official"
+    ]);
+    LANGUAGE_PREFERENCE_PATTERN = /^(?:auto|[a-zA-Z]{2,8}(?:-[a-zA-Z0-9]{1,8})*)$/;
+    MAX_CONFIG_TEXT_CHARS = 1048576;
+    MAX_CONFIG_RESPONSE_BYTES = 8 * 1024 * 1024;
+    MAX_LANGUAGE_TAG_LENGTH = 64;
+    MAX_SESSION_ID_LENGTH = 256;
+    TranslationError = class extends Error {
+      code;
+      constructor(code, message) {
+        super(message);
+        this.name = "TranslationError";
+        this.code = code;
+      }
+    };
+    TranslatorConfigSchema = Schema.object({
+      provider: Schema.union(["google", "bing", "deepseek-account", "deepseek-official"]).default("bing"),
+      googleEndpoint: Schema.transform(Schema.string(), validateEndpoint).default("https://translate.googleapis.com/translate_a/single"),
+      bingEndpoint: Schema.transform(Schema.string(), validateEndpoint).default("https://edge.microsoft.com/translate/translatetext"),
+      timeoutMs: Schema.natural().min(1).max(2147483647).default(1e4),
+      maxTextChars: Schema.natural().min(2).max(MAX_CONFIG_TEXT_CHARS).default(4e3),
+      maxResponseBytes: Schema.natural().min(1).max(MAX_CONFIG_RESPONSE_BYTES).default(1048576),
+      deepseekTimeoutMs: Schema.natural().min(1).max(2147483647).default(6e4),
+      deepseekMaxOutputTokens: Schema.natural().min(1).max(131072).default(8192)
+    });
+    CotTranslationConfigSchema = Schema.object({
+      provider: Schema.union(["google", "bing", "deepseek-account", "deepseek-official"]).default("bing"),
+      targetLanguage: Schema.string().pattern(LANGUAGE_PREFERENCE_PATTERN).default("auto")
+    });
+    TranslatorService = class extends Service {
+      static inject = ["credentials", "llm"];
+      static provide = "translator";
+      static Config = TranslatorConfigSchema;
+      config;
+      lifetime = new AbortController();
+      pending = /* @__PURE__ */ new Set();
+      constructor(ctx, config) {
+        super(ctx, "translator");
+        this.config = TranslatorConfigSchema(config ?? {});
+        ctx.effect(() => async () => {
+          this.lifetime.abort(new Error("Translator service disposed"));
+          await Promise.allSettled([...this.pending]);
+        });
+      }
+      get maxTextChars() {
+        return this.config.maxTextChars;
+      }
+      combineSignal(signal) {
+        return signal ? AbortSignal.any([this.lifetime.signal, signal]) : this.lifetime.signal;
+      }
+      assertTextLimit(text) {
+        if (typeof text !== "string") {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Translation text must be a string"
+          );
+        }
+        if (text.length > this.config.maxTextChars) {
+          throw new TranslationError(
+            "TRANSLATION_TEXT_LIMIT",
+            `Translation text exceeds maximum length (${this.config.maxTextChars} characters)`
+          );
+        }
+      }
+      async availableProviders(signal) {
+        const combined = this.combineSignal(signal);
+        if (combined.aborted) throw combined.reason;
+        return [...ANONYMOUS_PROVIDERS];
+      }
+      resolve(request) {
+        if (this.lifetime.signal.aborted) throw this.lifetime.signal.reason;
+        if (!isRecord2(request)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Translation request must be an object"
+          );
+        }
+        this.assertTextLimit(request.text);
+        const provider = request.provider ?? this.config.provider;
+        if (typeof provider !== "string" || !VALID_PROVIDERS.has(provider)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Unsupported translation provider"
+          );
+        }
+        if (typeof request.targetLanguage !== "string" || request.targetLanguage.trim() === "" || request.targetLanguage.length > MAX_LANGUAGE_TAG_LENGTH) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Target language is required"
+          );
+        }
+        const sourceLanguage = request.sourceLanguage ?? "auto";
+        if (typeof sourceLanguage !== "string" || sourceLanguage.trim() === "" || sourceLanguage.length > MAX_LANGUAGE_TAG_LENGTH) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Source language must be a bounded non-empty string"
+          );
+        }
+        if (request.sessionId !== void 0 && (typeof request.sessionId !== "string" || request.sessionId.trim() === "" || request.sessionId.length > MAX_SESSION_ID_LENGTH)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Session ID must be a bounded non-empty string"
+          );
+        }
+        return {
+          text: request.text,
+          sourceLanguage,
+          targetLanguage: request.targetLanguage,
+          provider,
+          ...request.sessionId !== void 0 ? { sessionId: request.sessionId } : {}
+        };
+      }
+      async translate(spec, signal) {
+        const combined = this.combineSignal(signal);
+        if (combined.aborted) throw combined.reason;
+        if (!isRecord2(spec)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Translation spec must be an object"
+          );
+        }
+        this.assertTextLimit(spec.text);
+        if (typeof spec.provider !== "string" || !VALID_PROVIDERS.has(spec.provider)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Unsupported translation provider"
+          );
+        }
+        if (typeof spec.targetLanguage !== "string" || spec.targetLanguage.trim() === "" || spec.targetLanguage.length > MAX_LANGUAGE_TAG_LENGTH) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Target language is required"
+          );
+        }
+        if (typeof spec.sourceLanguage !== "string" || spec.sourceLanguage.trim() === "" || spec.sourceLanguage.length > MAX_LANGUAGE_TAG_LENGTH) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Source language must be a bounded non-empty string"
+          );
+        }
+        if (spec.sessionId !== void 0 && (typeof spec.sessionId !== "string" || spec.sessionId.trim() === "" || spec.sessionId.length > MAX_SESSION_ID_LENGTH)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Session ID must be a bounded non-empty string"
+          );
+        }
+        if (spec.provider === "deepseek-account" || spec.provider === "deepseek-official") {
+          throw new TranslationError(
+            "TRANSLATION_UNAVAILABLE",
+            `Paid translation route ${spec.provider} is not offered in this build`
+          );
+        }
+        if (spec.text === "") {
+          return "";
+        }
+        const provider = spec.provider;
+        const run = this.executeAnonymous(provider, spec, combined);
+        this.pending.add(run);
+        try {
+          return await run;
+        } finally {
+          this.pending.delete(run);
+        }
+      }
+      async executeAnonymous(provider, spec, combined) {
+        const timeoutController = new AbortController();
+        const timer = setTimeout(() => {
+          timeoutController.abort(
+            new TranslationError(
+              "TRANSLATION_TIMEOUT",
+              `${provider} translation timed out`
+            )
+          );
+        }, this.config.timeoutMs);
+        const effectiveSignal = AbortSignal.any([
+          combined,
+          timeoutController.signal
+        ]);
+        try {
+          const target = mapLanguage(spec.targetLanguage, provider);
+          const source = spec.sourceLanguage === "auto" ? "auto" : mapLanguage(spec.sourceLanguage, provider);
+          let url;
+          let init;
+          if (provider === "google") {
+            url = new URL(this.config.googleEndpoint);
+            url.searchParams.delete("client");
+            url.searchParams.delete("sl");
+            url.searchParams.delete("tl");
+            url.searchParams.delete("dt");
+            url.searchParams.delete("q");
+            init = {
+              method: "POST",
+              headers: { "content-type": "application/x-www-form-urlencoded" },
+              body: new URLSearchParams({
+                client: "gtx",
+                sl: source,
+                tl: target,
+                dt: "t",
+                q: spec.text
+              }).toString(),
+              redirect: "error",
+              credentials: "omit",
+              signal: effectiveSignal
+            };
+          } else {
+            url = new URL(this.config.bingEndpoint);
+            if (source === "auto") {
+              url.searchParams.delete("from");
+            } else {
+              url.searchParams.set("from", source);
+            }
+            url.searchParams.set("to", target);
+            url.searchParams.set("isEnterpriseClient", "false");
+            init = {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify([spec.text]),
+              redirect: "error",
+              credentials: "omit",
+              signal: effectiveSignal
+            };
+          }
+          const hostCtx = this.ctx;
+          const fetchPromise = Promise.resolve().then(
+            () => hostCtx.credentials.fetch(url.href, init)
+          );
+          fetchPromise.then(
+            (res) => {
+              if (effectiveSignal.aborted) {
+                void res?.body?.cancel?.().catch(() => {
+                });
+              }
+            },
+            () => {
+            }
+          );
+          let response;
+          try {
+            response = await raceWithSignal(fetchPromise, effectiveSignal);
+          } catch (error) {
+            if (combined.aborted) throw combined.reason;
+            if (timeoutController.signal.aborted) {
+              throw timeoutController.signal.reason;
+            }
+            if (error instanceof TranslationError) throw error;
+            throw new TranslationError(
+              "TRANSLATION_REQUEST_FAILED",
+              `${provider} translation request failed`
+            );
+          }
+          if (combined.aborted) {
+            void response?.body?.cancel?.().catch(() => {
+            });
+            throw combined.reason;
+          }
+          if (timeoutController.signal.aborted) {
+            void response?.body?.cancel?.().catch(() => {
+            });
+            throw timeoutController.signal.reason;
+          }
+          if (response.redirected) {
+            if (response.body) {
+              await raceWithSignal(
+                response.body.cancel().catch(() => {
+                }),
+                effectiveSignal
+              ).catch(() => {
+              });
+            }
+            if (combined.aborted) throw combined.reason;
+            if (timeoutController.signal.aborted) {
+              throw timeoutController.signal.reason;
+            }
+            throw new TranslationError(
+              "TRANSLATION_REQUEST_FAILED",
+              `${provider} translation response was redirected`
+            );
+          }
+          if (!response.ok) {
+            if (response.body) {
+              await raceWithSignal(
+                response.body.cancel().catch(() => {
+                }),
+                effectiveSignal
+              ).catch(() => {
+              });
+            }
+            if (combined.aborted) throw combined.reason;
+            if (timeoutController.signal.aborted) {
+              throw timeoutController.signal.reason;
+            }
+            throw new TranslationError(
+              "TRANSLATION_HTTP_ERROR",
+              `${provider} translation failed (HTTP ${response.status})`
+            );
+          }
+          const payload = await readBoundedResponseJson(
+            response,
+            this.config.maxResponseBytes,
+            provider,
+            effectiveSignal
+          );
+          return provider === "google" ? parseGooglePayload(payload) : parseBingPayload(payload);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+    };
+  }
+});
+
 // src/dsh/composition.ts
 var composition_exports = {};
 __export(composition_exports, {
@@ -18514,6 +19655,10 @@ function checkRows(rows, depth = 0, count = { value: 0 }) {
     if (row === null || typeof row !== "object" || Array.isArray(row)) throw new Error("entry row must be an object");
     assignmentSafe(row);
     if (row.id !== void 0 && (typeof row.id !== "string" || row.id.length > 512)) throw new Error("entry id must be a bounded string");
+    const isolate2 = row.isolate;
+    if (isolate2 !== void 0 && isolate2 !== null && (typeof isolate2 !== "object" || Array.isArray(isolate2) || Object.hasOwn(isolate2, "translator"))) {
+      throw new Error("composition row cannot override translator isolation");
+    }
     if (!(row.group === true && row.name === void 0) && (typeof row.name !== "string" || row.name.length === 0 || row.name.length > 4096)) throw new Error("entry name must be a bounded string");
     if ((row.group || row.name === "cordis:group" || row.name === "@deepseek-ai/cordis-plugin-group") && Array.isArray(row.config)) checkRows(row.config, depth + 1, count);
   }
@@ -18612,7 +19757,8 @@ async function mountReviewedComposition(ctx, baseUrl, spec) {
   const loaderCtx = ctx.extend({
     baseUrl,
     [Context.isolate]: Object.assign(Object.create(ctx[Context.isolate]), {
-      loader: installed3.ctx[Context.isolate].loader
+      loader: installed3.ctx[Context.isolate].loader,
+      translator: /* @__PURE__ */ Symbol("translator")
     })
   });
   const config = { baseUrl, spec, review, releaseClosure: admitReviewedClosure(baseUrl, spec.files) };
@@ -18697,6 +19843,7 @@ var init_composition = __esm({
     init_resolve_hooks();
     init_persona();
     init_agent_presets();
+    init_cot_translation();
     init_compatibility();
     MAX_LAYERS = 64;
     MAX_SOURCE_BYTES = 1024 * 1024;
@@ -18743,6 +19890,8 @@ var init_composition = __esm({
         if (name === "@deepseek-ai/dsh-skill-filesystem") return reviewedSkillModule();
         if (name === "@deepseek-ai/dsh-hooks-claude-code") return reviewedHookModule("claude-code", fileURLToPath5(this.base), this.spec.files);
         if (name === "@deepseek-ai/dsh-hooks-codex") return reviewedHookModule("codex", fileURLToPath5(this.base), this.spec.files);
+        const rowBridge = Object.hasOwn(compatibility_default.row_bridges, name) ? compatibility_default.row_bridges[name] : void 0;
+        if (rowBridge === "cot-translation") return reviewedCotTranslationModule();
         if (UNSUPPORTED_ROWS.has(name)) throw new Error(`${name}: ${UNSUPPORTED_ROWS.get(name)}`);
         const module = this.modules.get(name);
         if (!module) throw new Error(`row requires ${JSON.stringify(name)}, absent from the reviewed module closure`);
@@ -18816,661 +19965,9 @@ var init_composition = __esm({
 // src/main.ts
 init_define_BUILTIN_MODULE_DIGESTS();
 init_lib2();
-import { createHash as createHash6 } from "node:crypto";
-import { readFileSync as readFileSync3 } from "node:fs";
-import { createRequire as createRequire4 } from "node:module";
-import { fileURLToPath as fileURLToPath6 } from "node:url";
-
-// node_modules/@deepseek-ai/schemastery/lib/index.mjs
-var lib_exports3 = {};
-__export(lib_exports3, {
-  default: () => Schema
-});
-init_define_BUILTIN_MODULE_DIGESTS();
-init_lib();
-var kSchema = /* @__PURE__ */ Symbol.for("schemastery");
-var kValidationError2 = /* @__PURE__ */ Symbol.for("ValidationError");
-globalThis.__schemastery_index__ ??= 0;
-globalThis.__schemastery_refs__ = void 0;
-var ValidationError2 = class extends TypeError {
-  options;
-  name = "ValidationError";
-  constructor(message, options) {
-    let prefix = "$";
-    for (const segment of options.path || []) if (typeof segment === "string") prefix += "." + segment;
-    else if (typeof segment === "number") prefix += "[" + segment + "]";
-    else if (typeof segment === "symbol") prefix += `[Symbol(${segment.toString()})]`;
-    if (prefix.startsWith(".")) prefix = prefix.slice(1);
-    super((prefix === "$" ? "" : `${prefix} `) + message);
-    this.options = options;
-  }
-  static is(error) {
-    return !!error?.[kValidationError2];
-  }
-};
-Object.defineProperty(ValidationError2.prototype, kValidationError2, { value: true });
-var Schema = function(options) {
-  const schema3 = function(data2, options2 = {}) {
-    return Schema.resolve(data2, schema3, options2)[0];
-  };
-  if (options.refs) {
-    const refs = mapValues(options.refs, (options2) => new Schema(options2));
-    const getRef = (uid) => refs[uid];
-    for (const key in refs) {
-      const options2 = refs[key];
-      options2.sKey = getRef(options2.sKey);
-      options2.inner = getRef(options2.inner);
-      options2.list = options2.list && options2.list.map(getRef);
-      options2.dict = options2.dict && mapValues(options2.dict, getRef);
-    }
-    return refs[options.uid];
-  }
-  Object.assign(schema3, options);
-  if (typeof schema3.callback === "string") try {
-    schema3.callback = new Function("return " + schema3.callback)();
-  } catch {
-  }
-  Object.defineProperty(schema3, "uid", { value: globalThis.__schemastery_index__++ });
-  Object.setPrototypeOf(schema3, Schema.prototype);
-  schema3.meta ||= {};
-  schema3.toString = schema3.toString.bind(schema3);
-  return schema3;
-};
-Schema.prototype = Object.create(Function.prototype);
-Schema.prototype[kSchema] = true;
-Object.defineProperty(Schema.prototype, "~standard", { get() {
-  return {
-    version: 1,
-    vendor: "schemastery",
-    validate: (value) => {
-      try {
-        return { value: Schema.resolve(value, this, {})[0] };
-      } catch (error) {
-        if (ValidationError2.is(error)) return { issues: [{
-          message: error.message,
-          path: error.options.path
-        }] };
-        throw error;
-      }
-    }
-  };
-} });
-Schema.ValidationError = ValidationError2;
-Schema.prototype.toJSON = function toJSON() {
-  if (globalThis.__schemastery_refs__) {
-    globalThis.__schemastery_refs__[this.uid] ??= JSON.parse(JSON.stringify({ ...this }));
-    return this.uid;
-  }
-  globalThis.__schemastery_refs__ = { [this.uid]: { ...this } };
-  globalThis.__schemastery_refs__[this.uid] = JSON.parse(JSON.stringify({ ...this }));
-  const result = {
-    uid: this.uid,
-    refs: globalThis.__schemastery_refs__
-  };
-  globalThis.__schemastery_refs__ = void 0;
-  return result;
-};
-Schema.prototype.set = function set(key, value) {
-  this.dict[key] = value;
-  return this;
-};
-Schema.prototype.push = function push(value) {
-  this.list.push(value);
-  return this;
-};
-function mergeDesc(original, messages) {
-  const result = typeof original === "string" ? { "": original } : { ...original };
-  for (const locale in messages) {
-    const value = messages[locale];
-    if (value?.$description || value?.$desc) result[locale] = value.$description || value.$desc;
-    else if (typeof value === "string") result[locale] = value;
-  }
-  return result;
-}
-function getInner(value) {
-  return value?.$value ?? value?.$inner;
-}
-function extractKeys(data2) {
-  return filterKeys(data2 ?? {}, (key) => !key.startsWith("$"));
-}
-Schema.prototype.i18n = function i18n(messages) {
-  const schema3 = Schema(this);
-  const desc = mergeDesc(schema3.meta.description, messages);
-  if (Object.keys(desc).length) schema3.meta.description = desc;
-  if (schema3.dict) schema3.dict = mapValues(schema3.dict, (inner, key) => {
-    return inner.i18n(mapValues(messages, (data2) => getInner(data2)?.[key] ?? data2?.[key]));
-  });
-  if (schema3.list) schema3.list = schema3.list.map((inner, index) => {
-    return inner.i18n(mapValues(messages, (data2 = {}) => {
-      if (Array.isArray(getInner(data2))) return getInner(data2)[index];
-      if (Array.isArray(data2)) return data2[index];
-      return extractKeys(data2);
-    }));
-  });
-  if (schema3.inner) schema3.inner = schema3.inner.i18n(mapValues(messages, (data2) => {
-    if (getInner(data2)) return getInner(data2);
-    return extractKeys(data2);
-  }));
-  if (schema3.sKey) schema3.sKey = schema3.sKey.i18n(mapValues(messages, (data2) => data2?.$key));
-  return schema3;
-};
-Schema.prototype.extra = function extra(key, value) {
-  const schema3 = Schema(this);
-  schema3.meta = {
-    ...schema3.meta,
-    [key]: value
-  };
-  return schema3;
-};
-for (const key of [
-  "required",
-  "disabled",
-  "collapse",
-  "hidden",
-  "loose"
-]) Object.assign(Schema.prototype, { [key](value = true) {
-  const schema3 = Schema(this);
-  schema3.meta = {
-    ...schema3.meta,
-    [key]: value
-  };
-  return schema3;
-} });
-Schema.prototype.deprecated = function deprecated() {
-  const schema3 = Schema(this);
-  schema3.meta.badges ||= [];
-  schema3.meta.badges.push({
-    text: "deprecated",
-    type: "danger"
-  });
-  return schema3;
-};
-Schema.prototype.experimental = function experimental() {
-  const schema3 = Schema(this);
-  schema3.meta.badges ||= [];
-  schema3.meta.badges.push({
-    text: "experimental",
-    type: "warning"
-  });
-  return schema3;
-};
-Schema.prototype.pattern = function pattern(regexp) {
-  const schema3 = Schema(this);
-  const pattern2 = pick(regexp, ["source", "flags"]);
-  schema3.meta = {
-    ...schema3.meta,
-    pattern: pattern2
-  };
-  return schema3;
-};
-Schema.prototype.simplify = function simplify(value) {
-  if (isVolatile(value)) value = value.get();
-  if (deepEqual(value, this.meta.default, this.type === "dict")) return null;
-  if (isNullable(value)) return value;
-  if (this.type === "object" || this.type === "dict") {
-    const result = {};
-    for (const key in value) {
-      const item = (this.type === "object" ? this.dict[key] : this.inner)?.simplify(value[key]);
-      if (this.type === "dict" || !isNullable(item)) result[key] = item;
-    }
-    if (deepEqual(result, this.meta.default, this.type === "dict")) return null;
-    return result;
-  } else if (this.type === "array" || this.type === "tuple") {
-    const result = [];
-    value.forEach((value2, index) => {
-      const schema3 = this.type === "array" ? this.inner : this.list[index];
-      const item = schema3 ? schema3.simplify(value2) : value2;
-      result.push(item);
-    });
-    return result;
-  } else if (this.type === "intersect") {
-    const result = {};
-    for (const item of this.list) Object.assign(result, item.simplify(value));
-    return result;
-  } else if (this.type === "union") for (const schema3 of this.list) try {
-    Schema.resolve(value, schema3, {});
-    return schema3.simplify(value);
-  } catch {
-  }
-  return value;
-};
-Schema.prototype.toString = function toString(inline) {
-  return formatters[this.type]?.(this, inline) ?? `Schema<${this.type}>`;
-};
-Schema.prototype.role = function role(role, extra2) {
-  const schema3 = Schema(this);
-  schema3.meta = {
-    ...schema3.meta,
-    role,
-    extra: extra2
-  };
-  return schema3;
-};
-for (const key of [
-  "default",
-  "link",
-  "comment",
-  "description",
-  "max",
-  "min",
-  "step"
-]) Object.assign(Schema.prototype, { [key](value) {
-  const schema3 = Schema(this);
-  schema3.meta = {
-    ...schema3.meta,
-    [key]: value
-  };
-  return schema3;
-} });
-Schema.prototype.volatile = function volatile() {
-  if (this.meta.volatile) throw new TypeError("volatile schema is already wrapped");
-  return this.extra("volatile", true);
-};
-var resolvers = {};
-var checkedVolatile = /* @__PURE__ */ Symbol("checked-volatile-schema");
-function validateVolatileSchema(schema3, path = [], blocked = false, seen = /* @__PURE__ */ new Map()) {
-  const states = seen.get(schema3) ?? /* @__PURE__ */ new Set();
-  if (states.has(blocked)) return;
-  states.add(blocked);
-  seen.set(schema3, states);
-  if (schema3.meta?.volatile && blocked) throw new ValidationError2("volatile fields require a fixed object path without an enclosing volatile field", { path });
-  const nested = blocked || !!schema3.meta?.volatile;
-  if (schema3.dict) for (const [key, child] of Object.entries(schema3.dict)) validateVolatileSchema(child, [...path, key], nested, seen);
-  if (schema3.sKey) validateVolatileSchema(schema3.sKey, [...path, "<key>"], true, seen);
-  if (schema3.inner && (schema3.type !== "lazy" || schema3.inner[kSchema])) validateVolatileSchema(schema3.inner, [...path, "*"], true, seen);
-  if (schema3.list) for (let index = 0; index < schema3.list.length; index++) validateVolatileSchema(schema3.list[index], [...path, String(index)], true, seen);
-}
-Schema.extend = function extend(type2, resolve6) {
-  resolvers[type2] = resolve6;
-};
-Schema.resolve = function resolve(data2, schema3, options = {}, strict = false) {
-  if (!schema3) return [data2];
-  if (!options[checkedVolatile]) {
-    validateVolatileSchema(schema3, options.path);
-    options = {
-      ...options,
-      [checkedVolatile]: true
-    };
-  }
-  if (schema3.meta?.volatile) {
-    const inner = Schema(schema3);
-    inner.meta = {
-      ...schema3.meta,
-      volatile: false
-    };
-    const [value, adapted] = Schema.resolve(data2, inner, options, strict);
-    try {
-      return [createVolatile(value), adapted];
-    } catch (error) {
-      throw new ValidationError2(error instanceof Error ? error.message : String(error), options);
-    }
-  }
-  if (options.ignore?.(data2, schema3)) return [data2];
-  if (isNullable(data2) && schema3.type !== "lazy") {
-    if (schema3.meta.required) throw new ValidationError2(`missing required value`, options);
-    let current2 = schema3;
-    let fallback = schema3.meta.default;
-    while (current2?.type === "intersect" && isNullable(fallback)) {
-      current2 = current2.list[0];
-      fallback = current2?.meta.default;
-    }
-    if (isNullable(fallback)) return [data2];
-    data2 = clone(fallback);
-  }
-  const callback = resolvers[schema3.type];
-  if (!callback) throw new ValidationError2(`unsupported type "${schema3.type}"`, options);
-  try {
-    return callback(data2, schema3, options, strict);
-  } catch (error) {
-    if (!schema3.meta.loose) throw error;
-    return [schema3.meta.default];
-  }
-};
-Schema.from = function from(source) {
-  if (isNullable(source)) return Schema.any();
-  else if ([
-    "string",
-    "number",
-    "boolean"
-  ].includes(typeof source)) return Schema.const(source).required();
-  else if (source[kSchema]) return source;
-  else if (typeof source === "function") switch (source) {
-    case String:
-      return Schema.string().required();
-    case Number:
-      return Schema.number().required();
-    case Boolean:
-      return Schema.boolean().required();
-    case Function:
-      return Schema.function().required();
-    default:
-      return Schema.is(source).required();
-  }
-  else throw new TypeError(`cannot infer schema from ${source}`);
-};
-Schema.lazy = function lazy(builder) {
-  const toJSON2 = () => {
-    if (!schema3.inner[kSchema]) {
-      schema3.inner = schema3.builder();
-      schema3.inner.meta = {
-        ...schema3.meta,
-        ...schema3.inner.meta
-      };
-    }
-    return schema3.inner.toJSON();
-  };
-  const schema3 = new Schema({
-    type: "lazy",
-    builder,
-    inner: { toJSON: toJSON2 }
-  });
-  return schema3;
-};
-Schema.natural = function natural() {
-  return Schema.number().step(1).min(0);
-};
-Schema.percent = function percent() {
-  return Schema.number().step(0.01).min(0).max(1).role("slider");
-};
-Schema.date = function date() {
-  return Schema.union([Schema.is(Date), Schema.transform(Schema.string().role("datetime"), (value, options) => {
-    const date2 = new Date(value);
-    if (isNaN(+date2)) throw new ValidationError2(`invalid date "${value}"`, options);
-    return date2;
-  }, true)]);
-};
-Schema.regExp = function regExp(flag = "") {
-  return Schema.union([Schema.is(RegExp), Schema.transform(Schema.string().role("regexp", { flag }), (value, options) => {
-    try {
-      return new RegExp(value, flag);
-    } catch (e) {
-      throw new ValidationError2(e.message, options);
-    }
-  }, true)]);
-};
-Schema.arrayBuffer = function arrayBuffer(encoding) {
-  return Schema.union([
-    Schema.is(ArrayBuffer),
-    Schema.is(SharedArrayBuffer),
-    Schema.transform(Schema.any(), (value, options) => {
-      if (Binary.isSource(value)) return Binary.fromSource(value);
-      throw new ValidationError2(`expected ArrayBufferSource but got ${value}`, options);
-    }, true),
-    ...encoding ? [Schema.transform(Schema.string(), (value, options) => {
-      try {
-        return encoding === "base64" ? Binary.fromBase64(value) : Binary.fromHex(value);
-      } catch (e) {
-        throw new ValidationError2(e.message, options);
-      }
-    }, true)] : []
-  ]);
-};
-Schema.extend("lazy", (data2, schema3, options, strict) => {
-  if (!schema3.inner[kSchema]) {
-    schema3.inner = schema3.builder();
-    schema3.inner.meta = {
-      ...schema3.meta,
-      ...schema3.inner.meta
-    };
-    validateVolatileSchema(schema3.inner, options.path, true);
-  }
-  return Schema.resolve(data2, schema3.inner, options, strict);
-});
-Schema.extend("any", (data2) => {
-  return [data2];
-});
-Schema.extend("never", (data2, _, options) => {
-  throw new ValidationError2(`expected nullable but got ${data2}`, options);
-});
-Schema.extend("const", (data2, { value }, options) => {
-  if (deepEqual(data2, value)) return [value];
-  throw new ValidationError2(`expected ${value} but got ${data2}`, options);
-});
-function checkWithinRange(data2, meta, description, options, skipMin = false) {
-  const { max = Infinity, min = -Infinity } = meta;
-  if (data2 > max) throw new ValidationError2(`expected ${description} <= ${max} but got ${data2}`, options);
-  if (data2 < min && !skipMin) throw new ValidationError2(`expected ${description} >= ${min} but got ${data2}`, options);
-}
-Schema.extend("string", (data2, { meta }, options) => {
-  if (typeof data2 !== "string") throw new ValidationError2(`expected string but got ${data2}`, options);
-  if (meta.pattern) {
-    const regexp = new RegExp(meta.pattern.source, meta.pattern.flags);
-    if (!regexp.test(data2)) throw new ValidationError2(`expect string to match regexp ${regexp}`, options);
-  }
-  checkWithinRange(data2.length, meta, "string length", options);
-  return [data2];
-});
-function decimalShift(data2, digits) {
-  const str2 = data2.toString();
-  if (str2.includes("e")) return data2 * Math.pow(10, digits);
-  const index = str2.indexOf(".");
-  if (index === -1) return data2 * Math.pow(10, digits);
-  const frac = str2.slice(index + 1);
-  const integer = str2.slice(0, index);
-  if (frac.length <= digits) return +(integer + frac.padEnd(digits, "0"));
-  return +(integer + frac.slice(0, digits) + "." + frac.slice(digits));
-}
-function isMultipleOf(data2, min, step) {
-  step = Math.abs(step);
-  if (!/^\d+\.\d+$/.test(step.toString())) return (data2 - min) % step === 0;
-  const index = step.toString().indexOf(".");
-  const digits = step.toString().slice(index + 1).length;
-  return Math.abs(decimalShift(data2, digits) - decimalShift(min, digits)) % decimalShift(step, digits) === 0;
-}
-Schema.extend("number", (data2, { meta }, options) => {
-  if (typeof data2 !== "number") throw new ValidationError2(`expected number but got ${data2}`, options);
-  checkWithinRange(data2, meta, "number", options);
-  const { step } = meta;
-  if (step && !isMultipleOf(data2, meta.min ?? 0, step)) throw new ValidationError2(`expected number multiple of ${step} but got ${data2}`, options);
-  return [data2];
-});
-Schema.extend("boolean", (data2, _, options) => {
-  if (typeof data2 === "boolean") return [data2];
-  throw new ValidationError2(`expected boolean but got ${data2}`, options);
-});
-Schema.extend("bitset", (data2, { bits, meta }, options) => {
-  let value = 0, keys = [];
-  if (typeof data2 === "number") {
-    value = data2;
-    for (const key in bits) if (data2 & bits[key]) keys.push(key);
-  } else if (Array.isArray(data2)) {
-    keys = data2;
-    for (const key of keys) {
-      if (typeof key !== "string") throw new ValidationError2(`expected string but got ${key}`, options);
-      if (key in bits) value |= bits[key];
-    }
-  } else throw new ValidationError2(`expected number or array but got ${data2}`, options);
-  if (value === meta.default) return [value];
-  return [value, keys];
-});
-Schema.extend("function", (data2, _, options) => {
-  if (typeof data2 === "function") return [data2];
-  throw new ValidationError2(`expected function but got ${data2}`, options);
-});
-Schema.extend("is", (data2, { constructor }, options) => {
-  if (typeof constructor === "function") {
-    if (data2 instanceof constructor) return [data2];
-    throw new ValidationError2(`expected ${constructor.name} but got ${data2}`, options);
-  } else {
-    if (isNullable(data2)) throw new ValidationError2(`expected ${constructor} but got ${data2}`, options);
-    let prototype = Object.getPrototypeOf(data2);
-    while (prototype) {
-      if (prototype.constructor?.name === constructor) return [data2];
-      prototype = Object.getPrototypeOf(prototype);
-    }
-    throw new ValidationError2(`expected ${constructor} but got ${data2}`, options);
-  }
-});
-function property(data2, key, schema3, options) {
-  try {
-    const [value, adapted] = Schema.resolve(data2[key], schema3, {
-      ...options,
-      path: [...options.path || [], key]
-    });
-    if (adapted !== void 0) data2[key] = adapted;
-    return value;
-  } catch (e) {
-    if (!options?.autofix) throw e;
-    delete data2[key];
-    return schema3.meta.volatile ? createVolatile(schema3.meta.default) : schema3.meta.default;
-  }
-}
-Schema.extend("array", (data2, { inner, meta }, options) => {
-  if (!Array.isArray(data2)) throw new ValidationError2(`expected array but got ${data2}`, options);
-  checkWithinRange(data2.length, meta, "array length", options, !isNullable(inner.meta.default));
-  return [data2.map((_, index) => property(data2, index, inner, options))];
-});
-Schema.extend("dict", (data2, { inner, sKey }, options, strict) => {
-  if (!isPlainObject(data2)) throw new ValidationError2(`expected object but got ${data2}`, options);
-  const result = {};
-  for (const key in data2) {
-    let rKey;
-    try {
-      rKey = Schema.resolve(key, sKey, options)[0];
-    } catch (error) {
-      if (strict) continue;
-      throw error;
-    }
-    result[rKey] = property(data2, key, inner, options);
-    data2[rKey] = data2[key];
-    if (key !== rKey) delete data2[key];
-  }
-  return [result];
-});
-Schema.extend("tuple", (data2, { list: list2 }, options, strict) => {
-  if (!Array.isArray(data2)) throw new ValidationError2(`expected array but got ${data2}`, options);
-  const result = list2.map((inner, index) => property(data2, index, inner, options));
-  if (strict) return [result];
-  result.push(...data2.slice(list2.length));
-  return [result];
-});
-function merge(result, data2) {
-  for (const key in data2) {
-    if (key in result) continue;
-    result[key] = data2[key];
-  }
-}
-Schema.extend("object", (data2, { dict }, options, strict) => {
-  if (!isPlainObject(data2)) throw new ValidationError2(`expected object but got ${data2}`, options);
-  const result = {};
-  for (const key in dict) {
-    const value = property(data2, key, dict[key], options);
-    if (!isNullable(value) || key in data2) result[key] = value;
-  }
-  if (!strict) merge(result, data2);
-  return [result];
-});
-Schema.extend("union", (data2, { list: list2, toString: toString3 }, options, strict) => {
-  const messages = [];
-  for (const inner of list2) try {
-    return Schema.resolve(data2, inner, options, strict);
-  } catch (error) {
-    messages.push(error);
-  }
-  throw new ValidationError2(`expected ${toString3()} but got ${JSON.stringify(data2)}`, options);
-});
-Schema.extend("intersect", (data2, { list: list2, toString: toString3 }, options, strict) => {
-  if (!list2.length) return [data2];
-  let result;
-  for (const inner of list2) {
-    const value = Schema.resolve(data2, inner, options, true)[0];
-    if (isNullable(value)) continue;
-    if (isNullable(result)) result = value;
-    else if (typeof result !== typeof value) throw new ValidationError2(`expected ${toString3()} but got ${JSON.stringify(data2)}`, options);
-    else if (typeof value === "object") merge(result ??= {}, value);
-    else if (result !== value) throw new ValidationError2(`expected ${toString3()} but got ${JSON.stringify(data2)}`, options);
-  }
-  if (!strict && isPlainObject(data2)) merge(result, data2);
-  return [result];
-});
-Schema.extend("transform", (data2, { inner, callback, preserve }, options) => {
-  const [result, adapted = data2] = Schema.resolve(data2, inner, options, true);
-  if (preserve) return [callback(result)];
-  else return [callback(result), callback(adapted)];
-});
-var formatters = {};
-function defineMethod(name, keys, format) {
-  formatters[name] = format;
-  Object.assign(Schema, { [name](...args) {
-    const schema3 = new Schema({ type: name });
-    keys.forEach((key, index) => {
-      switch (key) {
-        case "sKey":
-          schema3.sKey = args[index] ?? Schema.string();
-          break;
-        case "inner":
-          schema3.inner = Schema.from(args[index]);
-          break;
-        case "list":
-          schema3.list = args[index].map(Schema.from);
-          break;
-        case "dict":
-          schema3.dict = mapValues(args[index], Schema.from);
-          break;
-        case "bits":
-          schema3.bits = {};
-          for (const key2 in args[index]) {
-            if (typeof args[index][key2] !== "number") continue;
-            schema3.bits[key2] = args[index][key2];
-          }
-          break;
-        case "callback": {
-          const callback = schema3.callback = args[index];
-          callback["toJSON"] ||= () => callback.toString();
-          break;
-        }
-        case "constructor": {
-          const constructor = schema3.constructor = args[index];
-          if (typeof constructor === "function") constructor["toJSON"] ||= () => constructor["name"];
-          break;
-        }
-        default:
-          schema3[key] = args[index];
-      }
-    });
-    if (name === "object" || name === "dict") schema3.meta.default = {};
-    else if (name === "array" || name === "tuple") schema3.meta.default = [];
-    else if (name === "bitset") schema3.meta.default = 0;
-    return schema3;
-  } });
-}
-defineMethod("is", ["constructor"], ({ constructor }) => {
-  if (typeof constructor === "function") return constructor.name;
-  else return constructor;
-});
-defineMethod("any", [], () => "any");
-defineMethod("never", [], () => "never");
-defineMethod("const", ["value"], ({ value }) => typeof value === "string" ? JSON.stringify(value) : value);
-defineMethod("string", [], () => "string");
-defineMethod("number", [], () => "number");
-defineMethod("boolean", [], () => "boolean");
-defineMethod("bitset", ["bits"], () => "bitset");
-defineMethod("function", [], () => "function");
-defineMethod("array", ["inner"], ({ inner }) => `${inner.toString(true)}[]`);
-defineMethod("dict", ["inner", "sKey"], ({ inner, sKey }) => `{ [key: ${sKey.toString()}]: ${inner.toString()} }`);
-defineMethod("tuple", ["list"], ({ list: list2 }) => `[${list2.map((inner) => inner.toString()).join(", ")}]`);
-defineMethod("object", ["dict"], ({ dict }) => {
-  if (Object.keys(dict).length === 0) return "{}";
-  return `{ ${Object.entries(dict).map(([key, inner]) => {
-    return `${key}${inner.meta.required ? "" : "?"}: ${inner.toString()}`;
-  }).join(", ")} }`;
-});
-defineMethod("union", ["list"], ({ list: list2 }, inline) => {
-  const result = list2.map(({ toString: format }) => format()).join(" | ");
-  return inline ? `(${result})` : result;
-});
-defineMethod("intersect", ["list"], ({ list: list2 }) => {
-  return `${list2.map((inner) => inner.toString(true)).join(" & ")}`;
-});
-defineMethod("transform", [
-  "inner",
-  "callback",
-  "preserve"
-], ({ inner }, isInner) => inner.toString(isInner));
-
-// src/main.ts
-init_lib();
 init_lib3();
+init_lib();
+init_lib4();
 init_dsh_tools_compat();
 init_dsh_message_compat();
 init_composition();
@@ -19482,6 +19979,10 @@ init_rpc();
 init_root();
 init_runtime();
 init_tier();
+import { createHash as createHash6 } from "node:crypto";
+import { readFileSync as readFileSync3 } from "node:fs";
+import { createRequire as createRequire4 } from "node:module";
+import { fileURLToPath as fileURLToPath6 } from "node:url";
 
 // src/windows-sandbox-probe.mjs
 init_define_BUILTIN_MODULE_DIGESTS();

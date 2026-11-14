@@ -24,11 +24,11 @@ var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
 };
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
+var __copyProps = (to, from2, except, desc) => {
+  if (from2 && typeof from2 === "object" || typeof from2 === "function") {
+    for (let key of __getOwnPropNames(from2))
       if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+        __defProp(to, key, { get: () => from2[key], enumerable: !(desc = __getOwnPropDesc(from2, key)) || desc.enumerable });
   }
   return to;
 };
@@ -48,8 +48,20 @@ function isNullable(value) {
 function isNonNullable(value) {
   return !isNullable(value);
 }
+function isPlainObject(data2) {
+  return data2 && typeof data2 === "object" && !Array.isArray(data2);
+}
+function filterKeys(object, filter) {
+  return Object.fromEntries(Object.entries(object).filter(([key, value]) => filter(key, value)));
+}
 function mapValues(object, transform) {
   return Object.fromEntries(Object.entries(object).map(([key, value]) => [key, transform(value, key)]));
+}
+function pick(source, keys, forced) {
+  if (!keys) return { ...source };
+  const result = {};
+  for (const key of keys) if (forced || source[key] !== void 0) result[key] = source[key];
+  return result;
 }
 function omit(source, keys) {
   if (!keys) return { ...source };
@@ -62,6 +74,28 @@ function defineProperty(object, key, value) {
     writable: true,
     value,
     enumerable: false
+  });
+}
+function snapshot(value, ancestors = /* @__PURE__ */ new Set()) {
+  if (typeof value === "function") throw new TypeError("volatile config cannot contain functions");
+  if (value === null || typeof value !== "object") return value;
+  if (ancestors.has(value)) throw new TypeError("volatile config cannot contain cycles");
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) return Object.freeze(value.map((item) => snapshot(item, ancestors)));
+    if (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) throw new TypeError("volatile config objects must be plain objects or arrays");
+    return Object.freeze(Object.fromEntries(Object.entries(value).map(([key, item]) => [key, snapshot(item, ancestors)])));
+  } finally {
+    ancestors.delete(value);
+  }
+}
+function createVolatile(value) {
+  let current2 = snapshot(value);
+  return Object.freeze({
+    get: () => current2,
+    [write]: (value2) => {
+      current2 = value2;
+    }
   });
 }
 function isVolatile(value) {
@@ -97,6 +131,31 @@ function isArrayBufferLike(value) {
 }
 function isArrayBufferSource(value) {
   return isArrayBufferLike(value) || ArrayBuffer.isView(value);
+}
+function clone(source, refs = /* @__PURE__ */ new Map()) {
+  if (!source || typeof source !== "object") return source;
+  if (is("Date", source)) return new Date(source.valueOf());
+  if (is("RegExp", source)) return new RegExp(source.source, source.flags);
+  if (isArrayBufferLike(source)) return source.slice(0);
+  if (ArrayBuffer.isView(source)) return source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength);
+  const cached = refs.get(source);
+  if (cached) return cached;
+  if (Array.isArray(source)) {
+    const result2 = [];
+    refs.set(source, result2);
+    source.forEach((value, index) => {
+      result2[index] = Reflect.apply(clone, null, [value, refs]);
+    });
+    return result2;
+  }
+  const result = Object.create(Object.getPrototypeOf(source));
+  refs.set(source, result);
+  for (const key of Reflect.ownKeys(source)) {
+    const descriptor = { ...Reflect.getOwnPropertyDescriptor(source, key) };
+    if ("value" in descriptor) descriptor.value = Reflect.apply(clone, null, [descriptor.value, refs]);
+    Reflect.defineProperty(result, key, descriptor);
+  }
+  return result;
 }
 function deepEqual(a, b, strict) {
   const ancestors = /* @__PURE__ */ new Set();
@@ -221,16 +280,16 @@ var init_lib = __esm({
         return timezoneOffset;
       }
       Time2.getTimezoneOffset = getTimezoneOffset;
-      function getDateNumber(date = /* @__PURE__ */ new Date(), offset2) {
-        if (typeof date === "number") date = new Date(date);
+      function getDateNumber(date2 = /* @__PURE__ */ new Date(), offset2) {
+        if (typeof date2 === "number") date2 = new Date(date2);
         if (offset2 === void 0) offset2 = timezoneOffset;
-        return Math.floor((date.valueOf() / Time2.minute - offset2) / 1440);
+        return Math.floor((date2.valueOf() / Time2.minute - offset2) / 1440);
       }
       Time2.getDateNumber = getDateNumber;
       function fromDateNumber(value, offset2) {
-        const date = new Date(value * Time2.day);
+        const date2 = new Date(value * Time2.day);
         if (offset2 === void 0) offset2 = timezoneOffset;
-        return new Date(+date + offset2 * Time2.minute);
+        return new Date(+date2 + offset2 * Time2.minute);
       }
       Time2.fromDateNumber = fromDateNumber;
       const numeric = /\d+(?:\.\d+)?/.source;
@@ -247,12 +306,12 @@ var init_lib = __esm({
         return (parseFloat(capture[1]) * Time2.week || 0) + (parseFloat(capture[2]) * Time2.day || 0) + (parseFloat(capture[3]) * Time2.hour || 0) + (parseFloat(capture[4]) * Time2.minute || 0) + (parseFloat(capture[5]) * Time2.second || 0);
       }
       Time2.parseTime = parseTime;
-      function parseDate(date) {
-        const parsed = parseTime(date);
-        if (parsed) date = Date.now() + parsed;
-        else if (/^\d{1,2}(:\d{1,2}){1,2}$/.test(date)) date = `${(/* @__PURE__ */ new Date()).toLocaleDateString()}-${date}`;
-        else if (/^\d{1,2}-\d{1,2}-\d{1,2}(:\d{1,2}){1,2}$/.test(date)) date = `${(/* @__PURE__ */ new Date()).getFullYear()}-${date}`;
-        return date ? new Date(date) : /* @__PURE__ */ new Date();
+      function parseDate(date2) {
+        const parsed = parseTime(date2);
+        if (parsed) date2 = Date.now() + parsed;
+        else if (/^\d{1,2}(:\d{1,2}){1,2}$/.test(date2)) date2 = `${(/* @__PURE__ */ new Date()).toLocaleDateString()}-${date2}`;
+        else if (/^\d{1,2}-\d{1,2}-\d{1,2}(:\d{1,2}){1,2}$/.test(date2)) date2 = `${(/* @__PURE__ */ new Date()).getFullYear()}-${date2}`;
+        return date2 ? new Date(date2) : /* @__PURE__ */ new Date();
       }
       Time2.parseDate = parseDate;
       function format(ms) {
@@ -326,12 +385,12 @@ function withProp(target, prop, value) {
     writable: false
   }));
 }
-function createShadow(useSite, target, property, receiver) {
-  if (!property) return receiver;
-  const value = getPropertyDescriptor(target, property)?.value;
+function createShadow(useSite, target, property2, receiver) {
+  if (!property2) return receiver;
+  const value = getPropertyDescriptor(target, property2)?.value;
   if (!value) return receiver;
   const defSite = value[symbols.shadow] ?? value;
-  return withProp(receiver, property, useSite.extend({ [symbols.shadow]: defSite }));
+  return withProp(receiver, property2, useSite.extend({ [symbols.shadow]: defSite }));
 }
 function createShadowMethod(ctx, value, outer, shadow) {
   return new Proxy(value, { apply: (target, thisArg, args) => {
@@ -485,10 +544,10 @@ function Inject(name, config) {
       const inject = (value[symbols.metadata] ??= {}).inject ??= /* @__PURE__ */ Object.create(null);
       inject[name] = config;
       decorator.addInitializer(function() {
-        const property = this[symbols.tracker]?.property;
+        const property2 = this[symbols.tracker]?.property;
         (this[symbols.initHooks] ??= []).push(() => {
           this.ctx.inject(inject, (ctx) => {
-            return value.call(property ? withProps(this, { [property]: ctx }) : this);
+            return value.call(property2 ? withProps(this, { [property2]: ctx }) : this);
           });
         });
       });
@@ -795,8 +854,8 @@ var init_lib2 = __esm({
         let inFlight;
         let removeWrapper = () => false;
         const waitForSetup = () => {
-          setupBarrier ??= new Promise((resolve6, reject) => {
-            resolveSetup = resolve6;
+          setupBarrier ??= new Promise((resolve7, reject) => {
+            resolveSetup = resolve7;
             rejectSetup = reject;
           });
           return setupBarrier;
@@ -986,7 +1045,7 @@ var init_lib2 = __esm({
         });
       }
       async _unload() {
-        while ([...this.provisions].some((impl) => impl.dependents.size)) await new Promise((resolve6) => this._release = resolve6);
+        while ([...this.provisions].some((impl) => impl.dependents.size)) await new Promise((resolve7) => this._release = resolve7);
         this._release = void 0;
         await Promise.all(this._disposables.clear().map(async (dispose) => {
           try {
@@ -1651,9 +1710,9 @@ var init_lib2 = __esm({
           return async () => {
             if (this.store[impl.isolate] === impl) delete this.store[impl.isolate];
             this.ctx.isolate(name, impl.isolate).reflect.notify([name]);
-            await new Promise((resolve6) => {
-              impl.release = resolve6;
-              if (!impl.dependents.size) resolve6();
+            await new Promise((resolve7) => {
+              impl.release = resolve7;
+              if (!impl.dependents.size) resolve7();
             });
             impl.release = void 0;
             this.ctx.fiber.provisions.delete(impl);
@@ -1761,16 +1820,16 @@ var init_lib2 = __esm({
       }
     };
     (function(Inject3) {
-      function resolve6(inject, result = /* @__PURE__ */ Object.create(null)) {
+      function resolve7(inject, result = /* @__PURE__ */ Object.create(null)) {
         if (!inject) return result;
         if (Array.isArray(inject)) for (const name of inject) result[name] = null;
         else if (Reflect.has(inject, symbols.checkProto)) {
-          Object.assign(result, resolve6(Object.getPrototypeOf(inject)));
+          Object.assign(result, resolve7(Object.getPrototypeOf(inject)));
           for (const name of Object.keys(inject)) result[name] = inject[name] ?? null;
         } else for (const name of Object.keys(inject)) result[name] = inject[name] ?? null;
         return result;
       }
-      Inject3.resolve = resolve6;
+      Inject3.resolve = resolve7;
     })(Inject || (Inject = {}));
     RegistryService = class {
       ctx;
@@ -2309,8 +2368,8 @@ var init_tree = __esm({
           source.tree.commit({ id: legacy.id, group: source, legacy });
           entry.parent.tree.commit({ id: legacy.id, group: entry.parent, options: entry.options });
         } else {
-          const from = entry.parent === source ? void 0 : source;
-          entry.parent.tree.commit({ id: legacy.id, group: entry.parent, from, options: entry.options, legacy });
+          const from2 = entry.parent === source ? void 0 : source;
+          entry.parent.tree.commit({ id: legacy.id, group: entry.parent, from: from2, options: entry.options, legacy });
         }
         return task;
       }
@@ -2913,7 +2972,7 @@ function requireCommon() {
     else if (isNothing(sequence)) return [];
     return [sequence];
   }
-  function extend2(target, source) {
+  function extend3(target, source) {
     if (source) {
       const sourceKeys = Object.keys(source);
       for (let index = 0, length = sourceKeys.length; index < length; index += 1) {
@@ -2938,7 +2997,7 @@ function requireCommon() {
   common.toArray = toArray;
   common.repeat = repeat;
   common.isNegativeZero = isNegativeZero;
-  common.extend = extend2;
+  common.extend = extend3;
   return common;
 }
 function requireException() {
@@ -2971,7 +3030,7 @@ function requireException() {
   }
   YAMLException2.prototype = Object.create(Error.prototype);
   YAMLException2.prototype.constructor = YAMLException2;
-  YAMLException2.prototype.toString = function toString2(compact) {
+  YAMLException2.prototype.toString = function toString3(compact) {
     return this.name + ": " + formatError(this, compact);
   };
   exception = YAMLException2;
@@ -3161,10 +3220,10 @@ function requireSchema() {
     }
     return result;
   }
-  function Schema2(definition) {
+  function Schema22(definition) {
     return this.extend(definition);
   }
-  Schema2.prototype.extend = function extend2(definition) {
+  Schema22.prototype.extend = function extend3(definition) {
     let implicit = [];
     let explicit = [];
     if (definition instanceof Type2) {
@@ -3193,7 +3252,7 @@ function requireSchema() {
         throw new YAMLException2("Specified list of YAML types (or a single Type object) contains a non-Type object.");
       }
     });
-    const result = Object.create(Schema2.prototype);
+    const result = Object.create(Schema22.prototype);
     result.implicit = (this.implicit || []).concat(implicit);
     result.explicit = (this.explicit || []).concat(explicit);
     result.compiledImplicit = compileList(result, "implicit");
@@ -3201,7 +3260,7 @@ function requireSchema() {
     result.compiledTypeMap = compileMap(result.compiledImplicit, result.compiledExplicit);
     return result;
   };
-  schema = Schema2;
+  schema = Schema22;
   return schema;
 }
 function requireStr() {
@@ -3243,8 +3302,8 @@ function requireMap() {
 function requireFailsafe() {
   if (hasRequiredFailsafe) return failsafe;
   hasRequiredFailsafe = 1;
-  const Schema2 = requireSchema();
-  failsafe = new Schema2({
+  const Schema22 = requireSchema();
+  failsafe = new Schema22({
     explicit: [
       requireStr(),
       requireSeq(),
@@ -3589,9 +3648,9 @@ function requireTimestamp() {
       delta = (tzHour * 60 + tzMinute) * 6e4;
       if (match[9] === "-") delta = -delta;
     }
-    const date = new Date(Date.UTC(year, month, day, hour, minute, second, fraction));
-    if (delta) date.setTime(date.getTime() - delta);
-    return date;
+    const date2 = new Date(Date.UTC(year, month, day, hour, minute, second, fraction));
+    if (delta) date2.setTime(date2.getTime() - delta);
+    return date2;
   }
   function representYamlTimestamp(object) {
     return object.toISOString();
@@ -4052,16 +4111,16 @@ function requireLoader() {
       result: state.result
     };
   }
-  function restoreState(state, snapshot) {
-    state.position = snapshot.position;
-    state.line = snapshot.line;
-    state.lineStart = snapshot.lineStart;
-    state.lineIndent = snapshot.lineIndent;
-    state.firstTabInLine = snapshot.firstTabInLine;
-    state.tag = snapshot.tag;
-    state.anchor = snapshot.anchor;
-    state.kind = snapshot.kind;
-    state.result = snapshot.result;
+  function restoreState(state, snapshot2) {
+    state.position = snapshot2.position;
+    state.line = snapshot2.line;
+    state.lineStart = snapshot2.lineStart;
+    state.lineIndent = snapshot2.lineIndent;
+    state.firstTabInLine = snapshot2.firstTabInLine;
+    state.tag = snapshot2.tag;
+    state.anchor = snapshot2.anchor;
+    state.kind = snapshot2.kind;
+    state.result = snapshot2.result;
   }
   const directiveHandlers = {
     YAML: function handleYamlDirective(state, name, args) {
@@ -5857,9 +5916,9 @@ function requireJsYaml() {
   hasRequiredJsYaml = 1;
   const loader2 = requireLoader();
   const dumper2 = requireDumper();
-  function renamed(from, to) {
+  function renamed(from2, to) {
     return function() {
-      throw new Error("Function yaml." + from + " is removed in js-yaml 4. Use yaml." + to + " instead, which is now safe by default.");
+      throw new Error("Function yaml." + from2 + " is removed in js-yaml 4. Use yaml." + to + " instead, which is now safe by default.");
     };
   }
   jsYaml.Type = requireType();
@@ -6120,7 +6179,7 @@ function applyPatches(data2, patches, warn) {
   for (const patch of patches) {
     const { id, insert, name, ...overrides } = patch;
     if (insert) {
-      const clone = structuredClone(insert);
+      const clone2 = structuredClone(insert);
       if (id) {
         const target2 = entryMap.get(id);
         if (!target2) {
@@ -6132,11 +6191,11 @@ function applyPatches(data2, patches, warn) {
           continue;
         }
         if (!Array.isArray(target2.config)) target2.config = [];
-        target2.config.push(...clone);
+        target2.config.push(...clone2);
       } else {
-        data2.push(...clone);
+        data2.push(...clone2);
       }
-      buildMap(clone);
+      buildMap(clone2);
       continue;
     }
     if (!id) {
@@ -6845,18 +6904,18 @@ var init_canonical_path = __esm({
 function isMatchAll(matcher) {
   return matcher === void 0 || matcher === "" || matcher === "*";
 }
-function compileRegex(pattern) {
+function compileRegex(pattern2) {
   try {
-    return new RegExp(pattern);
+    return new RegExp(pattern2);
   } catch (_syntaxError) {
     return void 0;
   }
 }
 function matcherDiagnostic(matcher, mode) {
   if (isMatchAll(matcher)) return void 0;
-  const pattern = matcher;
-  if (mode === "claude-code" && CLAUDE_LITERAL.test(pattern)) return void 0;
-  return compileRegex(pattern) === void 0 ? `invalid ${mode} regex matcher ${JSON.stringify(pattern)}` : void 0;
+  const pattern2 = matcher;
+  if (mode === "claude-code" && CLAUDE_LITERAL.test(pattern2)) return void 0;
+  return compileRegex(pattern2) === void 0 ? `invalid ${mode} regex matcher ${JSON.stringify(pattern2)}` : void 0;
 }
 var CLAUDE_LITERAL;
 var init_matcher = __esm({
@@ -7041,14 +7100,14 @@ var init_runtime = __esm({
 });
 
 // node_modules/acorn/dist/acorn.mjs
-function isInAstralSet(code, set2) {
+function isInAstralSet(code, set3) {
   var pos = 65536;
-  for (var i2 = 0; i2 < set2.length; i2 += 2) {
-    pos += set2[i2];
+  for (var i2 = 0; i2 < set3.length; i2 += 2) {
+    pos += set3[i2];
     if (pos > code) {
       return false;
     }
-    pos += set2[i2 + 1];
+    pos += set3[i2 + 1];
     if (pos >= code) {
       return true;
     }
@@ -7114,9 +7173,9 @@ function kw(name, options) {
 function isNewLine(code) {
   return code === 10 || code === 13 || code === 8232 || code === 8233;
 }
-function nextLineBreak(code, from, end) {
+function nextLineBreak(code, from2, end) {
   if (end === void 0) end = code.length;
-  for (var i2 = from; i2 < end; i2++) {
+  for (var i2 = from2; i2 < end; i2++) {
     var next = code.charCodeAt(i2);
     if (isNewLine(next)) {
       return i2 < end - 1 && next === 13 && code.charCodeAt(i2 + 1) === 10 ? i2 + 2 : i2 + 1;
@@ -10681,11 +10740,11 @@ var init_acorn = __esm({
       this.backReferenceNames = [];
       this.branchID = null;
     };
-    RegExpValidationState.prototype.reset = function reset(start, pattern, flags) {
+    RegExpValidationState.prototype.reset = function reset(start, pattern2, flags) {
       var unicodeSets = flags.indexOf("v") !== -1;
       var unicode = flags.indexOf("u") !== -1;
       this.start = start | 0;
-      this.source = pattern + "";
+      this.source = pattern2 + "";
       this.flags = flags;
       if (unicodeSets && this.parser.options.ecmaVersion >= 15) {
         this.switchU = true;
@@ -12320,7 +12379,7 @@ var init_acorn = __esm({
         }
         ++this.pos;
       }
-      var pattern = this.input.slice(start, this.pos);
+      var pattern2 = this.input.slice(start, this.pos);
       ++this.pos;
       var flagsStart = this.pos;
       var flags = this.readWord1();
@@ -12328,15 +12387,15 @@ var init_acorn = __esm({
         this.unexpected(flagsStart);
       }
       var state = this.regexpState || (this.regexpState = new RegExpValidationState(this));
-      state.reset(start, pattern, flags);
+      state.reset(start, pattern2, flags);
       this.validateRegExpFlags(state);
       this.validateRegExpPattern(state);
       var value = null;
       try {
-        value = new RegExp(pattern, flags);
+        value = new RegExp(pattern2, flags);
       } catch (e) {
       }
-      return this.finishToken(types$1.regexp, { pattern, flags, value });
+      return this.finishToken(types$1.regexp, { pattern: pattern2, flags, value });
     };
     pp.readInt = function(radix, len, maybeLegacyOctalNumericLiteral) {
       var allowSeparators = this.options.ecmaVersion >= 12 && len === void 0;
@@ -14866,9 +14925,9 @@ function defineReviewedAgentPresets(mount) {
     constructor(ctx, config) {
       super(ctx, "agentPresets");
       this.selfCtx = ctx;
-      const snapshot = config?.codewhale_reviewed;
-      if (!snapshot || snapshot.catalog?.version !== 1 || !snapshot.catalog.presets.some((p) => p.id === snapshot.selected?.metadata.id && !p.broken)) fail("raw roster needs an installer-minted preset receipt");
-      this.snapshot = structuredClone(snapshot);
+      const snapshot2 = config?.codewhale_reviewed;
+      if (!snapshot2 || snapshot2.catalog?.version !== 1 || !snapshot2.catalog.presets.some((p) => p.id === snapshot2.selected?.metadata.id && !p.broken)) fail("raw roster needs an installer-minted preset receipt");
+      this.snapshot = structuredClone(snapshot2);
     }
     mounting;
     mounted;
@@ -14940,6 +14999,1141 @@ var init_agent_presets = __esm({
   }
 });
 
+// node_modules/@deepseek-ai/schemastery/lib/index.mjs
+function mergeDesc(original, messages) {
+  const result = typeof original === "string" ? { "": original } : { ...original };
+  for (const locale in messages) {
+    const value = messages[locale];
+    if (value?.$description || value?.$desc) result[locale] = value.$description || value.$desc;
+    else if (typeof value === "string") result[locale] = value;
+  }
+  return result;
+}
+function getInner(value) {
+  return value?.$value ?? value?.$inner;
+}
+function extractKeys(data2) {
+  return filterKeys(data2 ?? {}, (key) => !key.startsWith("$"));
+}
+function validateVolatileSchema(schema3, path = [], blocked = false, seen = /* @__PURE__ */ new Map()) {
+  const states = seen.get(schema3) ?? /* @__PURE__ */ new Set();
+  if (states.has(blocked)) return;
+  states.add(blocked);
+  seen.set(schema3, states);
+  if (schema3.meta?.volatile && blocked) throw new ValidationError2("volatile fields require a fixed object path without an enclosing volatile field", { path });
+  const nested = blocked || !!schema3.meta?.volatile;
+  if (schema3.dict) for (const [key, child] of Object.entries(schema3.dict)) validateVolatileSchema(child, [...path, key], nested, seen);
+  if (schema3.sKey) validateVolatileSchema(schema3.sKey, [...path, "<key>"], true, seen);
+  if (schema3.inner && (schema3.type !== "lazy" || schema3.inner[kSchema])) validateVolatileSchema(schema3.inner, [...path, "*"], true, seen);
+  if (schema3.list) for (let index = 0; index < schema3.list.length; index++) validateVolatileSchema(schema3.list[index], [...path, String(index)], true, seen);
+}
+function checkWithinRange(data2, meta, description, options, skipMin = false) {
+  const { max = Infinity, min = -Infinity } = meta;
+  if (data2 > max) throw new ValidationError2(`expected ${description} <= ${max} but got ${data2}`, options);
+  if (data2 < min && !skipMin) throw new ValidationError2(`expected ${description} >= ${min} but got ${data2}`, options);
+}
+function decimalShift(data2, digits) {
+  const str2 = data2.toString();
+  if (str2.includes("e")) return data2 * Math.pow(10, digits);
+  const index = str2.indexOf(".");
+  if (index === -1) return data2 * Math.pow(10, digits);
+  const frac = str2.slice(index + 1);
+  const integer = str2.slice(0, index);
+  if (frac.length <= digits) return +(integer + frac.padEnd(digits, "0"));
+  return +(integer + frac.slice(0, digits) + "." + frac.slice(digits));
+}
+function isMultipleOf(data2, min, step) {
+  step = Math.abs(step);
+  if (!/^\d+\.\d+$/.test(step.toString())) return (data2 - min) % step === 0;
+  const index = step.toString().indexOf(".");
+  const digits = step.toString().slice(index + 1).length;
+  return Math.abs(decimalShift(data2, digits) - decimalShift(min, digits)) % decimalShift(step, digits) === 0;
+}
+function property(data2, key, schema3, options) {
+  try {
+    const [value, adapted] = Schema2.resolve(data2[key], schema3, {
+      ...options,
+      path: [...options.path || [], key]
+    });
+    if (adapted !== void 0) data2[key] = adapted;
+    return value;
+  } catch (e) {
+    if (!options?.autofix) throw e;
+    delete data2[key];
+    return schema3.meta.volatile ? createVolatile(schema3.meta.default) : schema3.meta.default;
+  }
+}
+function merge3(result, data2) {
+  for (const key in data2) {
+    if (key in result) continue;
+    result[key] = data2[key];
+  }
+}
+function defineMethod(name, keys, format) {
+  formatters[name] = format;
+  Object.assign(Schema2, { [name](...args) {
+    const schema3 = new Schema2({ type: name });
+    keys.forEach((key, index) => {
+      switch (key) {
+        case "sKey":
+          schema3.sKey = args[index] ?? Schema2.string();
+          break;
+        case "inner":
+          schema3.inner = Schema2.from(args[index]);
+          break;
+        case "list":
+          schema3.list = args[index].map(Schema2.from);
+          break;
+        case "dict":
+          schema3.dict = mapValues(args[index], Schema2.from);
+          break;
+        case "bits":
+          schema3.bits = {};
+          for (const key2 in args[index]) {
+            if (typeof args[index][key2] !== "number") continue;
+            schema3.bits[key2] = args[index][key2];
+          }
+          break;
+        case "callback": {
+          const callback = schema3.callback = args[index];
+          callback["toJSON"] ||= () => callback.toString();
+          break;
+        }
+        case "constructor": {
+          const constructor = schema3.constructor = args[index];
+          if (typeof constructor === "function") constructor["toJSON"] ||= () => constructor["name"];
+          break;
+        }
+        default:
+          schema3[key] = args[index];
+      }
+    });
+    if (name === "object" || name === "dict") schema3.meta.default = {};
+    else if (name === "array" || name === "tuple") schema3.meta.default = [];
+    else if (name === "bitset") schema3.meta.default = 0;
+    return schema3;
+  } });
+}
+var kSchema, kValidationError2, ValidationError2, Schema2, resolvers, checkedVolatile, formatters;
+var init_lib4 = __esm({
+  "node_modules/@deepseek-ai/schemastery/lib/index.mjs"() {
+    init_lib();
+    kSchema = /* @__PURE__ */ Symbol.for("schemastery");
+    kValidationError2 = /* @__PURE__ */ Symbol.for("ValidationError");
+    globalThis.__schemastery_index__ ??= 0;
+    globalThis.__schemastery_refs__ = void 0;
+    ValidationError2 = class extends TypeError {
+      options;
+      name = "ValidationError";
+      constructor(message, options) {
+        let prefix = "$";
+        for (const segment of options.path || []) if (typeof segment === "string") prefix += "." + segment;
+        else if (typeof segment === "number") prefix += "[" + segment + "]";
+        else if (typeof segment === "symbol") prefix += `[Symbol(${segment.toString()})]`;
+        if (prefix.startsWith(".")) prefix = prefix.slice(1);
+        super((prefix === "$" ? "" : `${prefix} `) + message);
+        this.options = options;
+      }
+      static is(error) {
+        return !!error?.[kValidationError2];
+      }
+    };
+    Object.defineProperty(ValidationError2.prototype, kValidationError2, { value: true });
+    Schema2 = function(options) {
+      const schema3 = function(data2, options2 = {}) {
+        return Schema2.resolve(data2, schema3, options2)[0];
+      };
+      if (options.refs) {
+        const refs = mapValues(options.refs, (options2) => new Schema2(options2));
+        const getRef = (uid) => refs[uid];
+        for (const key in refs) {
+          const options2 = refs[key];
+          options2.sKey = getRef(options2.sKey);
+          options2.inner = getRef(options2.inner);
+          options2.list = options2.list && options2.list.map(getRef);
+          options2.dict = options2.dict && mapValues(options2.dict, getRef);
+        }
+        return refs[options.uid];
+      }
+      Object.assign(schema3, options);
+      if (typeof schema3.callback === "string") try {
+        schema3.callback = new Function("return " + schema3.callback)();
+      } catch {
+      }
+      Object.defineProperty(schema3, "uid", { value: globalThis.__schemastery_index__++ });
+      Object.setPrototypeOf(schema3, Schema2.prototype);
+      schema3.meta ||= {};
+      schema3.toString = schema3.toString.bind(schema3);
+      return schema3;
+    };
+    Schema2.prototype = Object.create(Function.prototype);
+    Schema2.prototype[kSchema] = true;
+    Object.defineProperty(Schema2.prototype, "~standard", { get() {
+      return {
+        version: 1,
+        vendor: "schemastery",
+        validate: (value) => {
+          try {
+            return { value: Schema2.resolve(value, this, {})[0] };
+          } catch (error) {
+            if (ValidationError2.is(error)) return { issues: [{
+              message: error.message,
+              path: error.options.path
+            }] };
+            throw error;
+          }
+        }
+      };
+    } });
+    Schema2.ValidationError = ValidationError2;
+    Schema2.prototype.toJSON = function toJSON() {
+      if (globalThis.__schemastery_refs__) {
+        globalThis.__schemastery_refs__[this.uid] ??= JSON.parse(JSON.stringify({ ...this }));
+        return this.uid;
+      }
+      globalThis.__schemastery_refs__ = { [this.uid]: { ...this } };
+      globalThis.__schemastery_refs__[this.uid] = JSON.parse(JSON.stringify({ ...this }));
+      const result = {
+        uid: this.uid,
+        refs: globalThis.__schemastery_refs__
+      };
+      globalThis.__schemastery_refs__ = void 0;
+      return result;
+    };
+    Schema2.prototype.set = function set2(key, value) {
+      this.dict[key] = value;
+      return this;
+    };
+    Schema2.prototype.push = function push(value) {
+      this.list.push(value);
+      return this;
+    };
+    Schema2.prototype.i18n = function i18n(messages) {
+      const schema3 = Schema2(this);
+      const desc = mergeDesc(schema3.meta.description, messages);
+      if (Object.keys(desc).length) schema3.meta.description = desc;
+      if (schema3.dict) schema3.dict = mapValues(schema3.dict, (inner, key) => {
+        return inner.i18n(mapValues(messages, (data2) => getInner(data2)?.[key] ?? data2?.[key]));
+      });
+      if (schema3.list) schema3.list = schema3.list.map((inner, index) => {
+        return inner.i18n(mapValues(messages, (data2 = {}) => {
+          if (Array.isArray(getInner(data2))) return getInner(data2)[index];
+          if (Array.isArray(data2)) return data2[index];
+          return extractKeys(data2);
+        }));
+      });
+      if (schema3.inner) schema3.inner = schema3.inner.i18n(mapValues(messages, (data2) => {
+        if (getInner(data2)) return getInner(data2);
+        return extractKeys(data2);
+      }));
+      if (schema3.sKey) schema3.sKey = schema3.sKey.i18n(mapValues(messages, (data2) => data2?.$key));
+      return schema3;
+    };
+    Schema2.prototype.extra = function extra(key, value) {
+      const schema3 = Schema2(this);
+      schema3.meta = {
+        ...schema3.meta,
+        [key]: value
+      };
+      return schema3;
+    };
+    for (const key of [
+      "required",
+      "disabled",
+      "collapse",
+      "hidden",
+      "loose"
+    ]) Object.assign(Schema2.prototype, { [key](value = true) {
+      const schema3 = Schema2(this);
+      schema3.meta = {
+        ...schema3.meta,
+        [key]: value
+      };
+      return schema3;
+    } });
+    Schema2.prototype.deprecated = function deprecated() {
+      const schema3 = Schema2(this);
+      schema3.meta.badges ||= [];
+      schema3.meta.badges.push({
+        text: "deprecated",
+        type: "danger"
+      });
+      return schema3;
+    };
+    Schema2.prototype.experimental = function experimental() {
+      const schema3 = Schema2(this);
+      schema3.meta.badges ||= [];
+      schema3.meta.badges.push({
+        text: "experimental",
+        type: "warning"
+      });
+      return schema3;
+    };
+    Schema2.prototype.pattern = function pattern(regexp) {
+      const schema3 = Schema2(this);
+      const pattern2 = pick(regexp, ["source", "flags"]);
+      schema3.meta = {
+        ...schema3.meta,
+        pattern: pattern2
+      };
+      return schema3;
+    };
+    Schema2.prototype.simplify = function simplify(value) {
+      if (isVolatile(value)) value = value.get();
+      if (deepEqual(value, this.meta.default, this.type === "dict")) return null;
+      if (isNullable(value)) return value;
+      if (this.type === "object" || this.type === "dict") {
+        const result = {};
+        for (const key in value) {
+          const item = (this.type === "object" ? this.dict[key] : this.inner)?.simplify(value[key]);
+          if (this.type === "dict" || !isNullable(item)) result[key] = item;
+        }
+        if (deepEqual(result, this.meta.default, this.type === "dict")) return null;
+        return result;
+      } else if (this.type === "array" || this.type === "tuple") {
+        const result = [];
+        value.forEach((value2, index) => {
+          const schema3 = this.type === "array" ? this.inner : this.list[index];
+          const item = schema3 ? schema3.simplify(value2) : value2;
+          result.push(item);
+        });
+        return result;
+      } else if (this.type === "intersect") {
+        const result = {};
+        for (const item of this.list) Object.assign(result, item.simplify(value));
+        return result;
+      } else if (this.type === "union") for (const schema3 of this.list) try {
+        Schema2.resolve(value, schema3, {});
+        return schema3.simplify(value);
+      } catch {
+      }
+      return value;
+    };
+    Schema2.prototype.toString = function toString2(inline) {
+      return formatters[this.type]?.(this, inline) ?? `Schema<${this.type}>`;
+    };
+    Schema2.prototype.role = function role(role, extra2) {
+      const schema3 = Schema2(this);
+      schema3.meta = {
+        ...schema3.meta,
+        role,
+        extra: extra2
+      };
+      return schema3;
+    };
+    for (const key of [
+      "default",
+      "link",
+      "comment",
+      "description",
+      "max",
+      "min",
+      "step"
+    ]) Object.assign(Schema2.prototype, { [key](value) {
+      const schema3 = Schema2(this);
+      schema3.meta = {
+        ...schema3.meta,
+        [key]: value
+      };
+      return schema3;
+    } });
+    Schema2.prototype.volatile = function volatile() {
+      if (this.meta.volatile) throw new TypeError("volatile schema is already wrapped");
+      return this.extra("volatile", true);
+    };
+    resolvers = {};
+    checkedVolatile = /* @__PURE__ */ Symbol("checked-volatile-schema");
+    Schema2.extend = function extend2(type2, resolve7) {
+      resolvers[type2] = resolve7;
+    };
+    Schema2.resolve = function resolve5(data2, schema3, options = {}, strict = false) {
+      if (!schema3) return [data2];
+      if (!options[checkedVolatile]) {
+        validateVolatileSchema(schema3, options.path);
+        options = {
+          ...options,
+          [checkedVolatile]: true
+        };
+      }
+      if (schema3.meta?.volatile) {
+        const inner = Schema2(schema3);
+        inner.meta = {
+          ...schema3.meta,
+          volatile: false
+        };
+        const [value, adapted] = Schema2.resolve(data2, inner, options, strict);
+        try {
+          return [createVolatile(value), adapted];
+        } catch (error) {
+          throw new ValidationError2(error instanceof Error ? error.message : String(error), options);
+        }
+      }
+      if (options.ignore?.(data2, schema3)) return [data2];
+      if (isNullable(data2) && schema3.type !== "lazy") {
+        if (schema3.meta.required) throw new ValidationError2(`missing required value`, options);
+        let current2 = schema3;
+        let fallback = schema3.meta.default;
+        while (current2?.type === "intersect" && isNullable(fallback)) {
+          current2 = current2.list[0];
+          fallback = current2?.meta.default;
+        }
+        if (isNullable(fallback)) return [data2];
+        data2 = clone(fallback);
+      }
+      const callback = resolvers[schema3.type];
+      if (!callback) throw new ValidationError2(`unsupported type "${schema3.type}"`, options);
+      try {
+        return callback(data2, schema3, options, strict);
+      } catch (error) {
+        if (!schema3.meta.loose) throw error;
+        return [schema3.meta.default];
+      }
+    };
+    Schema2.from = function from(source) {
+      if (isNullable(source)) return Schema2.any();
+      else if ([
+        "string",
+        "number",
+        "boolean"
+      ].includes(typeof source)) return Schema2.const(source).required();
+      else if (source[kSchema]) return source;
+      else if (typeof source === "function") switch (source) {
+        case String:
+          return Schema2.string().required();
+        case Number:
+          return Schema2.number().required();
+        case Boolean:
+          return Schema2.boolean().required();
+        case Function:
+          return Schema2.function().required();
+        default:
+          return Schema2.is(source).required();
+      }
+      else throw new TypeError(`cannot infer schema from ${source}`);
+    };
+    Schema2.lazy = function lazy(builder) {
+      const toJSON2 = () => {
+        if (!schema3.inner[kSchema]) {
+          schema3.inner = schema3.builder();
+          schema3.inner.meta = {
+            ...schema3.meta,
+            ...schema3.inner.meta
+          };
+        }
+        return schema3.inner.toJSON();
+      };
+      const schema3 = new Schema2({
+        type: "lazy",
+        builder,
+        inner: { toJSON: toJSON2 }
+      });
+      return schema3;
+    };
+    Schema2.natural = function natural() {
+      return Schema2.number().step(1).min(0);
+    };
+    Schema2.percent = function percent() {
+      return Schema2.number().step(0.01).min(0).max(1).role("slider");
+    };
+    Schema2.date = function date() {
+      return Schema2.union([Schema2.is(Date), Schema2.transform(Schema2.string().role("datetime"), (value, options) => {
+        const date2 = new Date(value);
+        if (isNaN(+date2)) throw new ValidationError2(`invalid date "${value}"`, options);
+        return date2;
+      }, true)]);
+    };
+    Schema2.regExp = function regExp(flag = "") {
+      return Schema2.union([Schema2.is(RegExp), Schema2.transform(Schema2.string().role("regexp", { flag }), (value, options) => {
+        try {
+          return new RegExp(value, flag);
+        } catch (e) {
+          throw new ValidationError2(e.message, options);
+        }
+      }, true)]);
+    };
+    Schema2.arrayBuffer = function arrayBuffer(encoding) {
+      return Schema2.union([
+        Schema2.is(ArrayBuffer),
+        Schema2.is(SharedArrayBuffer),
+        Schema2.transform(Schema2.any(), (value, options) => {
+          if (Binary.isSource(value)) return Binary.fromSource(value);
+          throw new ValidationError2(`expected ArrayBufferSource but got ${value}`, options);
+        }, true),
+        ...encoding ? [Schema2.transform(Schema2.string(), (value, options) => {
+          try {
+            return encoding === "base64" ? Binary.fromBase64(value) : Binary.fromHex(value);
+          } catch (e) {
+            throw new ValidationError2(e.message, options);
+          }
+        }, true)] : []
+      ]);
+    };
+    Schema2.extend("lazy", (data2, schema3, options, strict) => {
+      if (!schema3.inner[kSchema]) {
+        schema3.inner = schema3.builder();
+        schema3.inner.meta = {
+          ...schema3.meta,
+          ...schema3.inner.meta
+        };
+        validateVolatileSchema(schema3.inner, options.path, true);
+      }
+      return Schema2.resolve(data2, schema3.inner, options, strict);
+    });
+    Schema2.extend("any", (data2) => {
+      return [data2];
+    });
+    Schema2.extend("never", (data2, _, options) => {
+      throw new ValidationError2(`expected nullable but got ${data2}`, options);
+    });
+    Schema2.extend("const", (data2, { value }, options) => {
+      if (deepEqual(data2, value)) return [value];
+      throw new ValidationError2(`expected ${value} but got ${data2}`, options);
+    });
+    Schema2.extend("string", (data2, { meta }, options) => {
+      if (typeof data2 !== "string") throw new ValidationError2(`expected string but got ${data2}`, options);
+      if (meta.pattern) {
+        const regexp = new RegExp(meta.pattern.source, meta.pattern.flags);
+        if (!regexp.test(data2)) throw new ValidationError2(`expect string to match regexp ${regexp}`, options);
+      }
+      checkWithinRange(data2.length, meta, "string length", options);
+      return [data2];
+    });
+    Schema2.extend("number", (data2, { meta }, options) => {
+      if (typeof data2 !== "number") throw new ValidationError2(`expected number but got ${data2}`, options);
+      checkWithinRange(data2, meta, "number", options);
+      const { step } = meta;
+      if (step && !isMultipleOf(data2, meta.min ?? 0, step)) throw new ValidationError2(`expected number multiple of ${step} but got ${data2}`, options);
+      return [data2];
+    });
+    Schema2.extend("boolean", (data2, _, options) => {
+      if (typeof data2 === "boolean") return [data2];
+      throw new ValidationError2(`expected boolean but got ${data2}`, options);
+    });
+    Schema2.extend("bitset", (data2, { bits, meta }, options) => {
+      let value = 0, keys = [];
+      if (typeof data2 === "number") {
+        value = data2;
+        for (const key in bits) if (data2 & bits[key]) keys.push(key);
+      } else if (Array.isArray(data2)) {
+        keys = data2;
+        for (const key of keys) {
+          if (typeof key !== "string") throw new ValidationError2(`expected string but got ${key}`, options);
+          if (key in bits) value |= bits[key];
+        }
+      } else throw new ValidationError2(`expected number or array but got ${data2}`, options);
+      if (value === meta.default) return [value];
+      return [value, keys];
+    });
+    Schema2.extend("function", (data2, _, options) => {
+      if (typeof data2 === "function") return [data2];
+      throw new ValidationError2(`expected function but got ${data2}`, options);
+    });
+    Schema2.extend("is", (data2, { constructor }, options) => {
+      if (typeof constructor === "function") {
+        if (data2 instanceof constructor) return [data2];
+        throw new ValidationError2(`expected ${constructor.name} but got ${data2}`, options);
+      } else {
+        if (isNullable(data2)) throw new ValidationError2(`expected ${constructor} but got ${data2}`, options);
+        let prototype = Object.getPrototypeOf(data2);
+        while (prototype) {
+          if (prototype.constructor?.name === constructor) return [data2];
+          prototype = Object.getPrototypeOf(prototype);
+        }
+        throw new ValidationError2(`expected ${constructor} but got ${data2}`, options);
+      }
+    });
+    Schema2.extend("array", (data2, { inner, meta }, options) => {
+      if (!Array.isArray(data2)) throw new ValidationError2(`expected array but got ${data2}`, options);
+      checkWithinRange(data2.length, meta, "array length", options, !isNullable(inner.meta.default));
+      return [data2.map((_, index) => property(data2, index, inner, options))];
+    });
+    Schema2.extend("dict", (data2, { inner, sKey }, options, strict) => {
+      if (!isPlainObject(data2)) throw new ValidationError2(`expected object but got ${data2}`, options);
+      const result = {};
+      for (const key in data2) {
+        let rKey;
+        try {
+          rKey = Schema2.resolve(key, sKey, options)[0];
+        } catch (error) {
+          if (strict) continue;
+          throw error;
+        }
+        result[rKey] = property(data2, key, inner, options);
+        data2[rKey] = data2[key];
+        if (key !== rKey) delete data2[key];
+      }
+      return [result];
+    });
+    Schema2.extend("tuple", (data2, { list: list2 }, options, strict) => {
+      if (!Array.isArray(data2)) throw new ValidationError2(`expected array but got ${data2}`, options);
+      const result = list2.map((inner, index) => property(data2, index, inner, options));
+      if (strict) return [result];
+      result.push(...data2.slice(list2.length));
+      return [result];
+    });
+    Schema2.extend("object", (data2, { dict }, options, strict) => {
+      if (!isPlainObject(data2)) throw new ValidationError2(`expected object but got ${data2}`, options);
+      const result = {};
+      for (const key in dict) {
+        const value = property(data2, key, dict[key], options);
+        if (!isNullable(value) || key in data2) result[key] = value;
+      }
+      if (!strict) merge3(result, data2);
+      return [result];
+    });
+    Schema2.extend("union", (data2, { list: list2, toString: toString3 }, options, strict) => {
+      const messages = [];
+      for (const inner of list2) try {
+        return Schema2.resolve(data2, inner, options, strict);
+      } catch (error) {
+        messages.push(error);
+      }
+      throw new ValidationError2(`expected ${toString3()} but got ${JSON.stringify(data2)}`, options);
+    });
+    Schema2.extend("intersect", (data2, { list: list2, toString: toString3 }, options, strict) => {
+      if (!list2.length) return [data2];
+      let result;
+      for (const inner of list2) {
+        const value = Schema2.resolve(data2, inner, options, true)[0];
+        if (isNullable(value)) continue;
+        if (isNullable(result)) result = value;
+        else if (typeof result !== typeof value) throw new ValidationError2(`expected ${toString3()} but got ${JSON.stringify(data2)}`, options);
+        else if (typeof value === "object") merge3(result ??= {}, value);
+        else if (result !== value) throw new ValidationError2(`expected ${toString3()} but got ${JSON.stringify(data2)}`, options);
+      }
+      if (!strict && isPlainObject(data2)) merge3(result, data2);
+      return [result];
+    });
+    Schema2.extend("transform", (data2, { inner, callback, preserve }, options) => {
+      const [result, adapted = data2] = Schema2.resolve(data2, inner, options, true);
+      if (preserve) return [callback(result)];
+      else return [callback(result), callback(adapted)];
+    });
+    formatters = {};
+    defineMethod("is", ["constructor"], ({ constructor }) => {
+      if (typeof constructor === "function") return constructor.name;
+      else return constructor;
+    });
+    defineMethod("any", [], () => "any");
+    defineMethod("never", [], () => "never");
+    defineMethod("const", ["value"], ({ value }) => typeof value === "string" ? JSON.stringify(value) : value);
+    defineMethod("string", [], () => "string");
+    defineMethod("number", [], () => "number");
+    defineMethod("boolean", [], () => "boolean");
+    defineMethod("bitset", ["bits"], () => "bitset");
+    defineMethod("function", [], () => "function");
+    defineMethod("array", ["inner"], ({ inner }) => `${inner.toString(true)}[]`);
+    defineMethod("dict", ["inner", "sKey"], ({ inner, sKey }) => `{ [key: ${sKey.toString()}]: ${inner.toString()} }`);
+    defineMethod("tuple", ["list"], ({ list: list2 }) => `[${list2.map((inner) => inner.toString()).join(", ")}]`);
+    defineMethod("object", ["dict"], ({ dict }) => {
+      if (Object.keys(dict).length === 0) return "{}";
+      return `{ ${Object.entries(dict).map(([key, inner]) => {
+        return `${key}${inner.meta.required ? "" : "?"}: ${inner.toString()}`;
+      }).join(", ")} }`;
+    });
+    defineMethod("union", ["list"], ({ list: list2 }, inline) => {
+      const result = list2.map(({ toString: format }) => format()).join(" | ");
+      return inline ? `(${result})` : result;
+    });
+    defineMethod("intersect", ["list"], ({ list: list2 }) => {
+      return `${list2.map((inner) => inner.toString(true)).join(" & ")}`;
+    });
+    defineMethod("transform", [
+      "inner",
+      "callback",
+      "preserve"
+    ], ({ inner }, isInner) => inner.toString(isInner));
+  }
+});
+
+// src/dsh/cot-translation.ts
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function validateEndpoint(value) {
+  const url = new URL(value);
+  if (!["http:", "https:"].includes(url.protocol) || url.username !== "" || url.password !== "" || url.hash !== "") {
+    throw new Error(
+      "Translation endpoint must be an HTTP(S) URL without credentials or a fragment"
+    );
+  }
+  return url.href;
+}
+function mapLanguage(tag, provider) {
+  const lower = tag.toLowerCase();
+  if (lower === "zh" || lower === "zh-cn" || lower === "zh-sg" || lower === "zh-hans") {
+    return provider === "google" ? "zh-CN" : "zh-Hans";
+  }
+  if (lower === "zh-tw" || lower === "zh-hk" || lower === "zh-mo" || lower === "zh-hant") {
+    return provider === "google" ? "zh-TW" : "zh-Hant";
+  }
+  return tag;
+}
+function parseGooglePayload(payload) {
+  if (!Array.isArray(payload) || !Array.isArray(payload[0]) || payload[0].length === 0) {
+    throw new TranslationError(
+      "TRANSLATION_INVALID_RESPONSE",
+      "Google translation returned invalid payload"
+    );
+  }
+  const parts = [];
+  for (const segment of payload[0]) {
+    if (!Array.isArray(segment) || typeof segment[0] !== "string") {
+      throw new TranslationError(
+        "TRANSLATION_INVALID_RESPONSE",
+        "Google translation returned invalid payload"
+      );
+    }
+    parts.push(segment[0]);
+  }
+  return parts.join("");
+}
+function parseBingPayload(payload) {
+  if (!Array.isArray(payload) || payload.length === 0 || !isRecord2(payload[0])) {
+    throw new TranslationError(
+      "TRANSLATION_INVALID_RESPONSE",
+      "Bing translation returned invalid payload"
+    );
+  }
+  const translations = payload[0].translations;
+  if (!Array.isArray(translations) || translations.length === 0 || !isRecord2(translations[0]) || typeof translations[0].text !== "string") {
+    throw new TranslationError(
+      "TRANSLATION_INVALID_RESPONSE",
+      "Bing translation returned invalid payload"
+    );
+  }
+  return translations[0].text;
+}
+function raceWithSignal(promise, signal) {
+  if (signal.aborted) {
+    promise.catch(() => {
+    });
+    return Promise.reject(signal.reason);
+  }
+  return new Promise((resolve7, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      promise.catch(() => {
+      });
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        resolve7(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
+}
+async function readBoundedResponseJson(response, maxResponseBytes, provider, signal) {
+  if (!response.body) {
+    throw new TranslationError(
+      "TRANSLATION_INVALID_RESPONSE",
+      `${provider} translation returned empty body`
+    );
+  }
+  if (signal.aborted) {
+    void response.body.cancel().catch(() => {
+    });
+    throw signal.reason;
+  }
+  const chunks = [];
+  let totalBytes = 0;
+  let reader;
+  let cancelled = false;
+  const cancelReader = () => {
+    if (cancelled || !reader) return;
+    cancelled = true;
+    void reader.cancel().catch(() => {
+    });
+  };
+  const onAbort = () => {
+    cancelReader();
+  };
+  try {
+    reader = response.body.getReader();
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      cancelReader();
+      throw signal.reason;
+    }
+    while (true) {
+      const { done, value } = await raceWithSignal(reader.read(), signal);
+      if (done) break;
+      if (!value) continue;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxResponseBytes) {
+        cancelReader();
+        throw new TranslationError(
+          "TRANSLATION_RESPONSE_LIMIT",
+          `${provider} translation response exceeded size limit`
+        );
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    cancelReader();
+    if (signal.aborted) throw signal.reason;
+    if (error instanceof TranslationError) throw error;
+    throw new TranslationError(
+      "TRANSLATION_REQUEST_FAILED",
+      `${provider} translation request failed`
+    );
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+    reader?.releaseLock();
+  }
+  const merged = new Uint8Array(totalBytes);
+  let offset2 = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset2);
+    offset2 += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8").decode(merged));
+  } catch {
+    throw new TranslationError(
+      "TRANSLATION_INVALID_RESPONSE",
+      `${provider} translation returned invalid JSON`
+    );
+  }
+}
+function reviewedCotTranslationModule() {
+  return TranslatorService;
+}
+var ANONYMOUS_PROVIDERS, VALID_PROVIDERS, LANGUAGE_PREFERENCE_PATTERN, MAX_CONFIG_TEXT_CHARS, MAX_CONFIG_RESPONSE_BYTES, MAX_LANGUAGE_TAG_LENGTH, MAX_SESSION_ID_LENGTH, TranslationError, TranslatorConfigSchema, CotTranslationConfigSchema, TranslatorService;
+var init_cot_translation = __esm({
+  "src/dsh/cot-translation.ts"() {
+    "use strict";
+    init_lib2();
+    init_lib4();
+    ANONYMOUS_PROVIDERS = ["bing", "google"];
+    VALID_PROVIDERS = /* @__PURE__ */ new Set([
+      "google",
+      "bing",
+      "deepseek-account",
+      "deepseek-official"
+    ]);
+    LANGUAGE_PREFERENCE_PATTERN = /^(?:auto|[a-zA-Z]{2,8}(?:-[a-zA-Z0-9]{1,8})*)$/;
+    MAX_CONFIG_TEXT_CHARS = 1048576;
+    MAX_CONFIG_RESPONSE_BYTES = 8 * 1024 * 1024;
+    MAX_LANGUAGE_TAG_LENGTH = 64;
+    MAX_SESSION_ID_LENGTH = 256;
+    TranslationError = class extends Error {
+      code;
+      constructor(code, message) {
+        super(message);
+        this.name = "TranslationError";
+        this.code = code;
+      }
+    };
+    TranslatorConfigSchema = Schema2.object({
+      provider: Schema2.union(["google", "bing", "deepseek-account", "deepseek-official"]).default("bing"),
+      googleEndpoint: Schema2.transform(Schema2.string(), validateEndpoint).default("https://translate.googleapis.com/translate_a/single"),
+      bingEndpoint: Schema2.transform(Schema2.string(), validateEndpoint).default("https://edge.microsoft.com/translate/translatetext"),
+      timeoutMs: Schema2.natural().min(1).max(2147483647).default(1e4),
+      maxTextChars: Schema2.natural().min(2).max(MAX_CONFIG_TEXT_CHARS).default(4e3),
+      maxResponseBytes: Schema2.natural().min(1).max(MAX_CONFIG_RESPONSE_BYTES).default(1048576),
+      deepseekTimeoutMs: Schema2.natural().min(1).max(2147483647).default(6e4),
+      deepseekMaxOutputTokens: Schema2.natural().min(1).max(131072).default(8192)
+    });
+    CotTranslationConfigSchema = Schema2.object({
+      provider: Schema2.union(["google", "bing", "deepseek-account", "deepseek-official"]).default("bing"),
+      targetLanguage: Schema2.string().pattern(LANGUAGE_PREFERENCE_PATTERN).default("auto")
+    });
+    TranslatorService = class extends Service {
+      static inject = ["credentials", "llm"];
+      static provide = "translator";
+      static Config = TranslatorConfigSchema;
+      config;
+      lifetime = new AbortController();
+      pending = /* @__PURE__ */ new Set();
+      constructor(ctx, config) {
+        super(ctx, "translator");
+        this.config = TranslatorConfigSchema(config ?? {});
+        ctx.effect(() => async () => {
+          this.lifetime.abort(new Error("Translator service disposed"));
+          await Promise.allSettled([...this.pending]);
+        });
+      }
+      get maxTextChars() {
+        return this.config.maxTextChars;
+      }
+      combineSignal(signal) {
+        return signal ? AbortSignal.any([this.lifetime.signal, signal]) : this.lifetime.signal;
+      }
+      assertTextLimit(text2) {
+        if (typeof text2 !== "string") {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Translation text must be a string"
+          );
+        }
+        if (text2.length > this.config.maxTextChars) {
+          throw new TranslationError(
+            "TRANSLATION_TEXT_LIMIT",
+            `Translation text exceeds maximum length (${this.config.maxTextChars} characters)`
+          );
+        }
+      }
+      async availableProviders(signal) {
+        const combined = this.combineSignal(signal);
+        if (combined.aborted) throw combined.reason;
+        return [...ANONYMOUS_PROVIDERS];
+      }
+      resolve(request) {
+        if (this.lifetime.signal.aborted) throw this.lifetime.signal.reason;
+        if (!isRecord2(request)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Translation request must be an object"
+          );
+        }
+        this.assertTextLimit(request.text);
+        const provider = request.provider ?? this.config.provider;
+        if (typeof provider !== "string" || !VALID_PROVIDERS.has(provider)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Unsupported translation provider"
+          );
+        }
+        if (typeof request.targetLanguage !== "string" || request.targetLanguage.trim() === "" || request.targetLanguage.length > MAX_LANGUAGE_TAG_LENGTH) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Target language is required"
+          );
+        }
+        const sourceLanguage = request.sourceLanguage ?? "auto";
+        if (typeof sourceLanguage !== "string" || sourceLanguage.trim() === "" || sourceLanguage.length > MAX_LANGUAGE_TAG_LENGTH) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Source language must be a bounded non-empty string"
+          );
+        }
+        if (request.sessionId !== void 0 && (typeof request.sessionId !== "string" || request.sessionId.trim() === "" || request.sessionId.length > MAX_SESSION_ID_LENGTH)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Session ID must be a bounded non-empty string"
+          );
+        }
+        return {
+          text: request.text,
+          sourceLanguage,
+          targetLanguage: request.targetLanguage,
+          provider,
+          ...request.sessionId !== void 0 ? { sessionId: request.sessionId } : {}
+        };
+      }
+      async translate(spec, signal) {
+        const combined = this.combineSignal(signal);
+        if (combined.aborted) throw combined.reason;
+        if (!isRecord2(spec)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Translation spec must be an object"
+          );
+        }
+        this.assertTextLimit(spec.text);
+        if (typeof spec.provider !== "string" || !VALID_PROVIDERS.has(spec.provider)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Unsupported translation provider"
+          );
+        }
+        if (typeof spec.targetLanguage !== "string" || spec.targetLanguage.trim() === "" || spec.targetLanguage.length > MAX_LANGUAGE_TAG_LENGTH) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Target language is required"
+          );
+        }
+        if (typeof spec.sourceLanguage !== "string" || spec.sourceLanguage.trim() === "" || spec.sourceLanguage.length > MAX_LANGUAGE_TAG_LENGTH) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Source language must be a bounded non-empty string"
+          );
+        }
+        if (spec.sessionId !== void 0 && (typeof spec.sessionId !== "string" || spec.sessionId.trim() === "" || spec.sessionId.length > MAX_SESSION_ID_LENGTH)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Session ID must be a bounded non-empty string"
+          );
+        }
+        if (spec.provider === "deepseek-account" || spec.provider === "deepseek-official") {
+          throw new TranslationError(
+            "TRANSLATION_UNAVAILABLE",
+            `Paid translation route ${spec.provider} is not offered in this build`
+          );
+        }
+        if (spec.text === "") {
+          return "";
+        }
+        const provider = spec.provider;
+        const run = this.executeAnonymous(provider, spec, combined);
+        this.pending.add(run);
+        try {
+          return await run;
+        } finally {
+          this.pending.delete(run);
+        }
+      }
+      async executeAnonymous(provider, spec, combined) {
+        const timeoutController = new AbortController();
+        const timer = setTimeout(() => {
+          timeoutController.abort(
+            new TranslationError(
+              "TRANSLATION_TIMEOUT",
+              `${provider} translation timed out`
+            )
+          );
+        }, this.config.timeoutMs);
+        const effectiveSignal = AbortSignal.any([
+          combined,
+          timeoutController.signal
+        ]);
+        try {
+          const target = mapLanguage(spec.targetLanguage, provider);
+          const source = spec.sourceLanguage === "auto" ? "auto" : mapLanguage(spec.sourceLanguage, provider);
+          let url;
+          let init;
+          if (provider === "google") {
+            url = new URL(this.config.googleEndpoint);
+            url.searchParams.delete("client");
+            url.searchParams.delete("sl");
+            url.searchParams.delete("tl");
+            url.searchParams.delete("dt");
+            url.searchParams.delete("q");
+            init = {
+              method: "POST",
+              headers: { "content-type": "application/x-www-form-urlencoded" },
+              body: new URLSearchParams({
+                client: "gtx",
+                sl: source,
+                tl: target,
+                dt: "t",
+                q: spec.text
+              }).toString(),
+              redirect: "error",
+              credentials: "omit",
+              signal: effectiveSignal
+            };
+          } else {
+            url = new URL(this.config.bingEndpoint);
+            if (source === "auto") {
+              url.searchParams.delete("from");
+            } else {
+              url.searchParams.set("from", source);
+            }
+            url.searchParams.set("to", target);
+            url.searchParams.set("isEnterpriseClient", "false");
+            init = {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify([spec.text]),
+              redirect: "error",
+              credentials: "omit",
+              signal: effectiveSignal
+            };
+          }
+          const hostCtx = this.ctx;
+          const fetchPromise = Promise.resolve().then(
+            () => hostCtx.credentials.fetch(url.href, init)
+          );
+          fetchPromise.then(
+            (res) => {
+              if (effectiveSignal.aborted) {
+                void res?.body?.cancel?.().catch(() => {
+                });
+              }
+            },
+            () => {
+            }
+          );
+          let response;
+          try {
+            response = await raceWithSignal(fetchPromise, effectiveSignal);
+          } catch (error) {
+            if (combined.aborted) throw combined.reason;
+            if (timeoutController.signal.aborted) {
+              throw timeoutController.signal.reason;
+            }
+            if (error instanceof TranslationError) throw error;
+            throw new TranslationError(
+              "TRANSLATION_REQUEST_FAILED",
+              `${provider} translation request failed`
+            );
+          }
+          if (combined.aborted) {
+            void response?.body?.cancel?.().catch(() => {
+            });
+            throw combined.reason;
+          }
+          if (timeoutController.signal.aborted) {
+            void response?.body?.cancel?.().catch(() => {
+            });
+            throw timeoutController.signal.reason;
+          }
+          if (response.redirected) {
+            if (response.body) {
+              await raceWithSignal(
+                response.body.cancel().catch(() => {
+                }),
+                effectiveSignal
+              ).catch(() => {
+              });
+            }
+            if (combined.aborted) throw combined.reason;
+            if (timeoutController.signal.aborted) {
+              throw timeoutController.signal.reason;
+            }
+            throw new TranslationError(
+              "TRANSLATION_REQUEST_FAILED",
+              `${provider} translation response was redirected`
+            );
+          }
+          if (!response.ok) {
+            if (response.body) {
+              await raceWithSignal(
+                response.body.cancel().catch(() => {
+                }),
+                effectiveSignal
+              ).catch(() => {
+              });
+            }
+            if (combined.aborted) throw combined.reason;
+            if (timeoutController.signal.aborted) {
+              throw timeoutController.signal.reason;
+            }
+            throw new TranslationError(
+              "TRANSLATION_HTTP_ERROR",
+              `${provider} translation failed (HTTP ${response.status})`
+            );
+          }
+          const payload = await readBoundedResponseJson(
+            response,
+            this.config.maxResponseBytes,
+            provider,
+            effectiveSignal
+          );
+          return provider === "google" ? parseGooglePayload(payload) : parseBingPayload(payload);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+    };
+  }
+});
+
 // src/dsh/composition.ts
 var composition_exports = {};
 __export(composition_exports, {
@@ -14954,7 +16148,7 @@ __export(composition_exports, {
 });
 import { createHash as createHash3 } from "node:crypto";
 import { readFile as readFile2 } from "node:fs/promises";
-import { isAbsolute as isAbsolute4, relative as relative3, resolve as resolve5, sep as sep3 } from "node:path";
+import { isAbsolute as isAbsolute4, relative as relative3, resolve as resolve6, sep as sep3 } from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 function digest(bytes) {
   return createHash3("sha256").update(bytes).digest("hex");
@@ -14994,6 +16188,10 @@ function checkRows(rows, depth = 0, count = { value: 0 }) {
     if (row === null || typeof row !== "object" || Array.isArray(row)) throw new Error("entry row must be an object");
     assignmentSafe(row);
     if (row.id !== void 0 && (typeof row.id !== "string" || row.id.length > 512)) throw new Error("entry id must be a bounded string");
+    const isolate2 = row.isolate;
+    if (isolate2 !== void 0 && isolate2 !== null && (typeof isolate2 !== "object" || Array.isArray(isolate2) || Object.hasOwn(isolate2, "translator"))) {
+      throw new Error("composition row cannot override translator isolation");
+    }
     if (!(row.group === true && row.name === void 0) && (typeof row.name !== "string" || row.name.length === 0 || row.name.length > 4096)) throw new Error("entry name must be a bounded string");
     if ((row.group || row.name === "cordis:group" || row.name === "@deepseek-ai/cordis-plugin-group") && Array.isArray(row.config)) checkRows(row.config, depth + 1, count);
   }
@@ -15092,7 +16290,8 @@ async function mountReviewedComposition(ctx, baseUrl, spec) {
   const loaderCtx = ctx.extend({
     baseUrl,
     [Context.isolate]: Object.assign(Object.create(ctx[Context.isolate]), {
-      loader: installed.ctx[Context.isolate].loader
+      loader: installed.ctx[Context.isolate].loader,
+      translator: /* @__PURE__ */ Symbol("translator")
     })
   });
   const config = { baseUrl, spec, review, releaseClosure: admitReviewedClosure(baseUrl, spec.files) };
@@ -15176,6 +16375,7 @@ var init_composition = __esm({
     init_resolve_hooks();
     init_persona();
     init_agent_presets();
+    init_cot_translation();
     init_compatibility();
     MAX_LAYERS = 64;
     MAX_SOURCE_BYTES = 1024 * 1024;
@@ -15222,6 +16422,8 @@ var init_composition = __esm({
         if (name === "@deepseek-ai/dsh-skill-filesystem") return reviewedSkillModule();
         if (name === "@deepseek-ai/dsh-hooks-claude-code") return reviewedHookModule("claude-code", fileURLToPath5(this.base), this.spec.files);
         if (name === "@deepseek-ai/dsh-hooks-codex") return reviewedHookModule("codex", fileURLToPath5(this.base), this.spec.files);
+        const rowBridge = Object.hasOwn(compatibility_default.row_bridges, name) ? compatibility_default.row_bridges[name] : void 0;
+        if (rowBridge === "cot-translation") return reviewedCotTranslationModule();
         if (UNSUPPORTED_ROWS.has(name)) throw new Error(`${name}: ${UNSUPPORTED_ROWS.get(name)}`);
         const module = this.modules.get(name);
         if (!module) throw new Error(`row requires ${JSON.stringify(name)}, absent from the reviewed module closure`);
@@ -15229,7 +16431,7 @@ var init_composition = __esm({
       }
       async importReviewed(module) {
         const root = fileURLToPath5(this.base);
-        const path = resolve5(root, module.path);
+        const path = resolve6(root, module.path);
         const inside = relative3(root, path);
         if (inside.startsWith(`..${sep3}`) || inside === ".." || isAbsolute4(inside)) throw new Error("module escapes reviewed bundle");
         if (this.spec.files[module.path] !== module.sha256 || digest(await readFile2(path)) !== module.sha256) throw new Error("module changed after review");
@@ -16361,17 +17563,17 @@ var require_range = __commonJS({
       debug("replaceGTE0", comp, options);
       return comp.trim().replace(re[options.includePrerelease ? t.GTE0PRE : t.GTE0], "");
     };
-    var hyphenReplace = (incPr) => ($0, from, fM, fm, fp, fpr, fb, to, tM, tm, tp, tpr) => {
+    var hyphenReplace = (incPr) => ($0, from2, fM, fm, fp, fpr, fb, to, tM, tm, tp, tpr) => {
       if (isX(fM)) {
-        from = "";
+        from2 = "";
       } else if (isX(fm)) {
-        from = `>=${fM}.0.0${incPr ? "-0" : ""}`;
+        from2 = `>=${fM}.0.0${incPr ? "-0" : ""}`;
       } else if (isX(fp)) {
-        from = `>=${fM}.${fm}.0${incPr ? "-0" : ""}`;
+        from2 = `>=${fM}.${fm}.0${incPr ? "-0" : ""}`;
       } else if (fpr) {
-        from = `>=${from}`;
+        from2 = `>=${from2}`;
       } else {
-        from = `>=${from}${incPr ? "-0" : ""}`;
+        from2 = `>=${from2}${incPr ? "-0" : ""}`;
       }
       if (isX(tM)) {
         to = "";
@@ -16386,22 +17588,22 @@ var require_range = __commonJS({
       } else {
         to = `<=${to}`;
       }
-      return `${from} ${to}`.trim();
+      return `${from2} ${to}`.trim();
     };
-    var testSet = (set2, version2, options) => {
-      for (let i2 = 0; i2 < set2.length; i2++) {
-        if (!set2[i2].test(version2)) {
+    var testSet = (set3, version2, options) => {
+      for (let i2 = 0; i2 < set3.length; i2++) {
+        if (!set3[i2].test(version2)) {
           return false;
         }
       }
       if (version2.prerelease.length && !options.includePrerelease) {
-        for (let i2 = 0; i2 < set2.length; i2++) {
-          debug(set2[i2].semver);
-          if (set2[i2].semver === Comparator.ANY) {
+        for (let i2 = 0; i2 < set3.length; i2++) {
+          debug(set3[i2].semver);
+          if (set3[i2].semver === Comparator.ANY) {
             continue;
           }
-          if (set2[i2].semver.prerelease.length > 0) {
-            const allowed = set2[i2].semver;
+          if (set3[i2].semver.prerelease.length > 0) {
+            const allowed = set3[i2].semver;
             if (allowed.major === version2.major && allowed.minor === version2.minor && allowed.patch === version2.patch) {
               return true;
             }

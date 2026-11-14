@@ -18,6 +18,7 @@ import {reviewedHookModule} from './shell-hooks.ts'
 import {admitReviewedClosure,importReviewedModule} from './resolve-hooks.ts'
 import { PERSONA, reviewedPersonaModule } from './persona.ts'
 import { AGENT_PRESETS, defineReviewedAgentPresets, type PresetCatalog, type PreparedPreset } from './agent-presets.ts'
+import { reviewedCotTranslationModule } from './cot-translation.ts'
 import compatibility from './compatibility.json' with { type: 'json' }
 
 const MAX_LAYERS = 64
@@ -108,6 +109,10 @@ function checkRows(rows: EntryOptions[], depth = 0, count = { value: 0 }): void 
     if (row === null || typeof row !== 'object' || Array.isArray(row)) throw new Error('entry row must be an object')
     assignmentSafe(row)
     if (row.id !== undefined && (typeof row.id !== 'string' || row.id.length > 512)) throw new Error('entry id must be a bounded string')
+    const isolate = (row as { isolate?: unknown }).isolate
+    if (isolate !== undefined && isolate !== null && (typeof isolate !== 'object' || Array.isArray(isolate) || Object.hasOwn(isolate, 'translator'))) {
+      throw new Error('composition row cannot override translator isolation')
+    }
     if (!(row.group===true && row.name===undefined) && (typeof row.name !== 'string' || row.name.length === 0 || row.name.length > 4096)) throw new Error('entry name must be a bounded string')
     if ((row.group || row.name==='cordis:group' || row.name==='@deepseek-ai/cordis-plugin-group') && Array.isArray(row.config)) checkRows(row.config, depth + 1, count)
   }
@@ -233,6 +238,10 @@ class ReviewedTree extends EntryTree {
     if(name==='@deepseek-ai/dsh-skill-filesystem')return reviewedSkillModule()
     if(name==='@deepseek-ai/dsh-hooks-claude-code')return reviewedHookModule('claude-code',fileURLToPath(this.base),this.spec.files)
     if(name==='@deepseek-ai/dsh-hooks-codex')return reviewedHookModule('codex',fileURLToPath(this.base),this.spec.files)
+    const rowBridge = Object.hasOwn(compatibility.row_bridges, name)
+      ? (compatibility.row_bridges as Record<string, string>)[name]
+      : undefined
+    if (rowBridge === 'cot-translation') return reviewedCotTranslationModule()
     if (UNSUPPORTED_ROWS.has(name)) throw new Error(`${name}: ${UNSUPPORTED_ROWS.get(name)}`)
     const module = this.modules.get(name)
     if (!module) throw new Error(`row requires ${JSON.stringify(name)}, absent from the reviewed module closure`)
@@ -343,6 +352,7 @@ export async function mountReviewedComposition(ctx: Context, baseUrl: string, sp
     baseUrl,
     [Context.isolate]: Object.assign(Object.create(ctx[Context.isolate]), {
       loader: installed.ctx[Context.isolate].loader,
+      translator: Symbol('translator'),
     }),
   })
   const config: ReviewedMountConfig = { baseUrl, spec, review, releaseClosure: admitReviewedClosure(baseUrl, spec.files) }
