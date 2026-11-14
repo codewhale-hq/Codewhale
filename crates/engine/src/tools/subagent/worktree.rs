@@ -29,9 +29,7 @@ pub(super) fn prepare_child_workspace(
     let discovery_anchor = if let Some(requested_cwd) = requested_cwd {
         validate_existing_child_cwd(parent_workspace, requested_cwd)?
     } else {
-        parent_workspace
-            .canonicalize()
-            .unwrap_or_else(|_| parent_workspace.to_path_buf())
+        canonicalize_or_self(parent_workspace)
     };
 
     if let Some(worktree) = worktree {
@@ -46,6 +44,10 @@ pub(super) fn prepare_child_workspace(
     Ok(None)
 }
 
+fn canonicalize_or_self(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
 fn validate_existing_child_cwd(
     parent_workspace: &Path,
     requested_cwd: &Path,
@@ -55,9 +57,7 @@ fn validate_existing_child_cwd(
     } else {
         parent_workspace.join(requested_cwd)
     };
-    let workspace_canonical = parent_workspace
-        .canonicalize()
-        .unwrap_or_else(|_| parent_workspace.to_path_buf());
+    let workspace_canonical = canonicalize_or_self(parent_workspace);
     let canonical = resolved.canonicalize().map_err(|e| {
         ToolError::invalid_input(format!(
             "Invalid cwd '{}': {e}. Allowed cwd: an existing directory under {} (relative paths resolve against it), or omit cwd to use it. The path may not exist yet — use worktree=true to let Codewhale create an isolated checkout.",
@@ -65,7 +65,9 @@ fn validate_existing_child_cwd(
             workspace_canonical.display()
         ))
     })?;
-    if !canonical.starts_with(&workspace_canonical) {
+    if !canonical.starts_with(&workspace_canonical)
+        && !is_sibling_worktree_path(parent_workspace, &canonical)
+    {
         return Err(ToolError::invalid_input(format!(
             "cwd must be inside the parent workspace: {} is not under {}. Allowed cwd: {} or a directory beneath it (relative paths resolve against it); omit cwd to run the child there.",
             canonical.display(),
@@ -74,6 +76,29 @@ fn validate_existing_child_cwd(
         )));
     }
     Ok(canonical)
+}
+
+fn is_sibling_worktree_path(parent_workspace: &Path, canonical: &Path) -> bool {
+    if !canonical.is_dir() {
+        return false;
+    }
+    let Some(repo_root) = try_git_toplevel(parent_workspace) else {
+        return false;
+    };
+    let default_root = default_worktree_root(&repo_root);
+    let Some(rebased) = relative_to_root(canonical, &default_root)
+        .filter(|rest| !rest.as_os_str().is_empty())
+        .map(|rest| normalize_path_lexically(&default_root.join(rest)))
+    else {
+        return false;
+    };
+    if !worktree_path_within_root(&rebased, &default_root) {
+        return false;
+    }
+    match (git_common_dir(parent_workspace), git_common_dir(canonical)) {
+        (Some(parent_common), Some(child_common)) => parent_common == child_common,
+        _ => false,
+    }
 }
 
 pub(super) fn create_isolated_worktree(
@@ -183,9 +208,7 @@ pub(super) fn remove_unstarted_worktree(worktree: &Path) {
 
 pub(super) fn git_repo_root(workspace: &Path) -> Result<PathBuf, ToolError> {
     const MAX_PARENT_LEVELS: usize = 4;
-    let start = workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_path_buf());
+    let start = canonicalize_or_self(workspace);
     let mut paths_tried = Vec::new();
     let mut current = Some(start.as_path());
     let mut levels = 0usize;
@@ -260,17 +283,29 @@ fn path_looks_like_git_checkout(path: &Path) -> bool {
     git_path.is_dir() || git_path.is_file()
 }
 
-fn try_git_toplevel(path: &Path) -> Option<PathBuf> {
-    let output = Git::output(&["rev-parse", "--show-toplevel"], path).ok()?;
+fn git_rev_parse_path(args: &[&str], path: &Path) -> Option<PathBuf> {
+    let output = Git::output(args, path).ok()?;
     if !output.status.success() {
         return None;
     }
-    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if root.is_empty() {
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if raw.is_empty() {
         None
     } else {
-        Some(PathBuf::from(root))
+        Some(PathBuf::from(raw))
     }
+}
+
+fn try_git_toplevel(path: &Path) -> Option<PathBuf> {
+    git_rev_parse_path(&["rev-parse", "--show-toplevel"], path)
+}
+
+fn git_common_dir(path: &Path) -> Option<PathBuf> {
+    git_rev_parse_path(
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        path,
+    )
+    .and_then(|dir| dir.canonicalize().ok())
 }
 
 fn validate_git_branch_name(repo_root: &Path, branch: &str) -> Result<(), ToolError> {
@@ -350,9 +385,7 @@ fn resolve_worktree_path(
         None => default_root.join(branch_worktree_slug(branch)),
     };
     let normalized = normalize_path_lexically(&path);
-    let repo_canonical = repo_root
-        .canonicalize()
-        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let repo_canonical = canonicalize_or_self(repo_root);
     if relative_to_root(&normalized, &repo_canonical).is_some() {
         return Err(ToolError::invalid_input(format!(
             "worktree_path must not be inside the parent checkout: {} is under {}",
@@ -684,5 +717,207 @@ mod tests {
                 "{candidate}"
             );
         }
+    }
+
+    fn init_test_git_repo(path: &Path) {
+        let init = std::process::Command::new("git")
+            .arg("init")
+            .current_dir(path)
+            .output()
+            .expect("git init");
+        assert!(init.status.success(), "git init failed: {init:?}");
+        let commit = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=codewhale Tests",
+                "-c",
+                "user.email=tests@example.com",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "init",
+            ])
+            .current_dir(path)
+            .output()
+            .expect("git commit");
+        assert!(commit.status.success(), "git commit failed: {commit:?}");
+    }
+
+    #[test]
+    fn linked_sibling_worktree_and_subdirs_are_admitted_as_child_cwd() {
+        let harness = tempfile::tempdir().expect("harness");
+        let repo = harness.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("repo dir");
+        init_test_git_repo(&repo);
+
+        let worktree = create_isolated_worktree(
+            &repo,
+            &SubAgentWorktreeRequest {
+                branch: Some("codex/agent-sibling-cwd".to_string()),
+                path: Some(PathBuf::from("sibling-one")),
+                base_ref: None,
+            },
+            Some("sibling-one"),
+            &FleetRole::Worker,
+        )
+        .expect("linked sibling worktree");
+
+        assert_eq!(
+            validate_existing_child_cwd(&repo, &worktree).expect("linked worktree root admitted"),
+            worktree
+        );
+
+        let relative_worktree = PathBuf::from("..")
+            .join(".codewhale-worktrees")
+            .join("repo")
+            .join("sibling-one");
+        assert_eq!(
+            validate_existing_child_cwd(&repo, &relative_worktree)
+                .expect("relative linked worktree admitted"),
+            worktree
+        );
+
+        let tracked_sub = worktree.join("tracked-sub");
+        std::fs::create_dir_all(&tracked_sub).expect("tracked sub");
+        std::fs::write(tracked_sub.join("file.txt"), "hello").expect("write tracked file");
+        let add = std::process::Command::new("git")
+            .args(["add", "tracked-sub/file.txt"])
+            .current_dir(&worktree)
+            .output()
+            .expect("git add");
+        assert!(add.status.success(), "git add failed: {add:?}");
+        let commit = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=codewhale Tests",
+                "-c",
+                "user.email=tests@example.com",
+                "commit",
+                "-m",
+                "add tracked file",
+            ])
+            .current_dir(&worktree)
+            .output()
+            .expect("git commit");
+        assert!(commit.status.success(), "git commit failed: {commit:?}");
+
+        assert_eq!(
+            validate_existing_child_cwd(&repo, &tracked_sub).expect("tracked subdir admitted"),
+            tracked_sub
+        );
+
+        let untracked_sub = worktree.join("untracked-sub");
+        std::fs::create_dir_all(&untracked_sub).expect("untracked sub");
+        assert_eq!(
+            validate_existing_child_cwd(&repo, &untracked_sub).expect("untracked subdir admitted"),
+            untracked_sub
+        );
+
+        let parent_sub = repo.join("parent-sub");
+        std::fs::create_dir_all(&parent_sub).expect("parent sub");
+        assert_eq!(
+            validate_existing_child_cwd(&parent_sub, &worktree)
+                .expect("repo subdir parent admits sibling worktree"),
+            worktree
+        );
+        assert_eq!(
+            prepare_child_workspace(&repo, Some(&worktree), None, None, &FleetRole::Reviewer)
+                .expect("prepare_child_workspace admits sibling worktree"),
+            Some(worktree)
+        );
+    }
+
+    #[test]
+    fn outside_directories_and_non_managed_worktrees_are_rejected_as_child_cwd() {
+        let harness = tempfile::tempdir().expect("harness");
+        let repo = harness.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("repo dir");
+        init_test_git_repo(&repo);
+
+        let outside = tempfile::tempdir().expect("outside");
+        let outside_err = validate_existing_child_cwd(&repo, outside.path())
+            .expect_err("arbitrary outside directory rejected")
+            .to_string();
+        assert!(
+            outside_err.contains("cwd must be inside the parent workspace")
+                && outside_err.contains("Allowed cwd"),
+            "{outside_err}"
+        );
+
+        let unmanaged_wt = outside.path().join("unmanaged-wt");
+        let add_wt = std::process::Command::new("git")
+            .args(["worktree", "add", "-b", "codex/agent-unmanaged"])
+            .arg(&unmanaged_wt)
+            .current_dir(&repo)
+            .output()
+            .expect("git worktree add");
+        assert!(
+            add_wt.status.success(),
+            "git worktree add failed: {add_wt:?}"
+        );
+        let unmanaged_err = validate_existing_child_cwd(&repo, &unmanaged_wt)
+            .expect_err("linked worktree outside .codewhale-worktrees rejected")
+            .to_string();
+        assert!(
+            unmanaged_err.contains("cwd must be inside the parent workspace"),
+            "{unmanaged_err}"
+        );
+
+        let repo_root = try_git_toplevel(&repo).expect("repo toplevel");
+        let managed_root = default_worktree_root(&repo_root);
+        std::fs::create_dir_all(&managed_root).expect("managed root");
+        let container_err = validate_existing_child_cwd(&repo, &managed_root)
+            .expect_err("managed worktree container root itself rejected")
+            .to_string();
+        assert!(
+            container_err.contains("cwd must be inside the parent workspace"),
+            "{container_err}"
+        );
+
+        #[cfg(unix)]
+        {
+            let link = managed_root.join("escape-link");
+            std::os::unix::fs::symlink(&unmanaged_wt, &link).expect("symlink");
+            let link_err = validate_existing_child_cwd(&repo, &link)
+                .expect_err("symlink pointing outside managed root rejected")
+                .to_string();
+            assert!(
+                link_err.contains("cwd must be inside the parent workspace"),
+                "{link_err}"
+            );
+        }
+    }
+
+    #[test]
+    fn spoofed_and_plain_directories_under_worktree_root_are_rejected_as_child_cwd() {
+        let harness = tempfile::tempdir().expect("harness");
+        let repo = harness.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("repo dir");
+        init_test_git_repo(&repo);
+
+        let repo_root = try_git_toplevel(&repo).expect("repo toplevel");
+        let managed_root = default_worktree_root(&repo_root);
+        let spoof = managed_root.join("spoof");
+        std::fs::create_dir_all(&spoof).expect("spoof dir");
+        init_test_git_repo(&spoof);
+
+        let spoof_err = validate_existing_child_cwd(&repo, &spoof)
+            .expect_err("foreign git repo under worktree root rejected")
+            .to_string();
+        assert!(
+            spoof_err.contains("cwd must be inside the parent workspace")
+                && spoof_err.contains("Allowed cwd"),
+            "{spoof_err}"
+        );
+
+        let plain = managed_root.join("plain");
+        std::fs::create_dir_all(&plain).expect("plain dir");
+        let plain_err = validate_existing_child_cwd(&repo, &plain)
+            .expect_err("non-git directory under worktree root rejected")
+            .to_string();
+        assert!(
+            plain_err.contains("cwd must be inside the parent workspace"),
+            "{plain_err}"
+        );
     }
 }
