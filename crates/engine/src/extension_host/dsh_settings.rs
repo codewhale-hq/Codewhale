@@ -12,7 +12,9 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::dsh_broker::{BrokerCall, BrokerFuture, BrokerMethods, BrokerRefusal, decode};
+use super::dsh_broker::{
+    BrokerCall, BrokerEffect, BrokerFuture, BrokerMethods, BrokerRefusal, decode,
+};
 use super::plugin_config::{self, PluginConfig};
 use super::protocol::DshService;
 use crate::tools::spec::ToolContext;
@@ -122,19 +124,42 @@ pub(super) fn serve_with(call: BrokerCall, authority: Option<SettingsAuthority>)
         if !fits(&call.input, &mut { MAX_INPUT_BYTES }) {
             return Err(invalid("the settings input is too large"));
         }
-        let (change, expected) = match decode::<SettingsMethod>(&call)? {
+        let (method_name, change, expected) = match decode::<SettingsMethod>(&call)? {
             SettingsMethod::Describe(NoInput {}) => {
                 let writable = write_refusal(call.context.tool()).is_none();
                 let plugin = call.owner.plugin_id.clone();
                 let cancel = call.context.cancel().clone();
+                call.context
+                    .act("describe", BrokerEffect::Read, Some(&authority.plugin_name))
+                    .await?;
                 return describe(plugin, cancel, authority, source, writable).await;
             }
-            SettingsMethod::Update(input) => (Change::Update(input.patch), input.expected_revision),
-            SettingsMethod::Replace(input) => {
-                (Change::Replace(input.value), input.expected_revision)
+            SettingsMethod::Update(input) => (
+                "update",
+                Change::Update(input.patch),
+                input.expected_revision,
+            ),
+            SettingsMethod::Replace(input) => (
+                "replace",
+                Change::Replace(input.value),
+                input.expected_revision,
+            ),
+            SettingsMethod::Mutate(input) => {
+                ("mutate", Change::Mutate(input.ops), input.expected_revision)
             }
-            SettingsMethod::Mutate(input) => (Change::Mutate(input.ops), input.expected_revision),
         };
+        if let Some(reason) = write_refusal(call.context.tool()) {
+            tracing::info!(target: LOG, plugin = %call.owner.plugin_id, reason, "settings write refused by the session");
+            return Err(refused("settings cannot be changed in this session"));
+        }
+        validate_change(&authority.roots, &change).map_err(failure_refusal)?;
+        call.context
+            .act(
+                method_name,
+                BrokerEffect::Write,
+                Some(&authority.plugin_name),
+            )
+            .await?;
         if let Some(reason) = write_refusal(call.context.tool()) {
             tracing::info!(target: LOG, plugin = %call.owner.plugin_id, reason, "settings write refused by the session");
             return Err(refused("settings cannot be changed in this session"));
@@ -160,11 +185,8 @@ pub(super) fn serve_with(call: BrokerCall, authority: Option<SettingsAuthority>)
                     "applies": APPLIES,
                 }))
             }
-            Ok(Err(Failure::Invalid(message))) => Err(invalid(message)),
-            Ok(Err(Failure::Outside)) => Err(refused(
-                "that setting is outside this plugin's reviewed settings",
-            )),
-            Ok(Err(Failure::Store)) | Err(_) => Err(refused("the settings could not be saved")),
+            Ok(Err(failure)) => Err(failure_refusal(failure)),
+            Err(_) => Err(refused("the settings could not be saved")),
         }
     })
 }
@@ -228,9 +250,17 @@ fn refused(message: &str) -> BrokerRefusal {
     }
 }
 
+fn failure_refusal(failure: Failure) -> BrokerRefusal {
+    match failure {
+        Failure::Invalid(message) => invalid(message),
+        Failure::Outside => refused("that setting is outside this plugin's reviewed settings"),
+        Failure::Store => refused("the settings could not be saved"),
+    }
+}
+
 fn write_refusal(context: &ToolContext) -> Option<&'static str> {
     let mut tool = context.clone();
-    tool.refresh_live_posture();
+    let _ = tool.refresh_live_posture();
     if tool.child_host.is_some() || tool.owner_agent_id.is_some() {
         return Some("the caller is a child agent");
     }
@@ -353,35 +383,71 @@ fn unset_at(section: &mut Map<String, Value>, path: &[String]) {
     }
 }
 
+fn validate_change(roots: &BTreeSet<String>, change: &Change) -> Result<(), Failure> {
+    let valid_map = |map: &Map<String, Value>| {
+        reviewed(roots, map.keys())?;
+        if map
+            .iter()
+            .all(|(key, value)| key_ok(key) && storable(value))
+        {
+            Ok(())
+        } else {
+            Err(Failure::Invalid(
+                "settings hold strings, finite numbers, booleans, arrays and tables under plain keys",
+            ))
+        }
+    };
+    match change {
+        Change::Update(patch) => valid_map(patch),
+        Change::Replace(section) => valid_map(section),
+        Change::Mutate(ops) => {
+            if ops.len() > MAX_OPS {
+                return Err(Failure::Invalid("too many settings edits in one call"));
+            }
+            for op in ops {
+                let (PathOp::Set { path, .. } | PathOp::Unset { path }) = op;
+                if path.is_empty() || path.len() > MAX_PATH_DEPTH {
+                    return Err(Failure::Invalid("a settings path names 1 to 16 keys"));
+                }
+                reviewed(roots, path.iter().take(1))?;
+                if !path.iter().all(|key| key_ok(key)) {
+                    return Err(Failure::Invalid(
+                        "settings hold strings, finite numbers, booleans, arrays and tables under plain keys",
+                    ));
+                }
+                if let PathOp::Set { value, .. } = op
+                    && !storable(value)
+                {
+                    return Err(Failure::Invalid(
+                        "settings hold strings, finite numbers, booleans, arrays and tables under plain keys",
+                    ));
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 fn next_config(
     current: &Value,
     roots: &BTreeSet<String>,
     change: Change,
 ) -> Result<Map<String, Value>, Failure> {
+    validate_change(roots, &change)?;
     let mut next = current.as_object().cloned().unwrap_or_default();
     match change {
         Change::Update(patch) => {
-            reviewed(roots, patch.keys())?;
             for (key, value) in patch {
                 let merged = merge(next.remove(&key), value);
                 next.insert(key, merged);
             }
         }
         Change::Replace(section) => {
-            reviewed(roots, section.keys())?;
             next.retain(|key, _| !roots.contains(key));
             next.extend(section);
         }
         Change::Mutate(ops) => {
-            if ops.len() > MAX_OPS {
-                return Err(Failure::Invalid("too many settings edits in one call"));
-            }
             for op in ops {
-                let (PathOp::Set { path, .. } | PathOp::Unset { path }) = &op;
-                if path.is_empty() || path.len() > MAX_PATH_DEPTH {
-                    return Err(Failure::Invalid("a settings path names 1 to 16 keys"));
-                }
-                reviewed(roots, path.iter().take(1))?;
                 match op {
                     PathOp::Set { path, value } => set_at(&mut next, &path, value)?,
                     PathOp::Unset { path } => unset_at(&mut next, &path),
@@ -556,7 +622,7 @@ mod tests {
     use codewhale_runtime::config::read_plugin_settings;
 
     use super::super::core_call::InvocationGuard;
-    use super::super::dsh_broker::{Arm, TABLE, TestGrants};
+    use super::super::dsh_broker::{Arm, BrokerActTool, TABLE, TestGrants};
     use super::super::plugin_config::{PluginConfigs, activation_hash};
     use super::super::protocol::{DshBrokerParams, RpcErrorWire, error_code};
     use super::super::supervisor::HostRequestContext;
@@ -565,9 +631,12 @@ mod tests {
     use super::super::{ExtensionHostManager, ExtensionHostOptions};
     use super::*;
     use crate::core::engine::LivePosture;
-    use crate::tools::codemode::{ExtensionCaller, NestedCallGate};
+    use crate::tools::codemode::{
+        ExtensionCaller, NestedCallGate, NestedCallVerdict, NestedDecision,
+    };
     use crate::tools::spec::{
-        ToolAuthorityEnvelope, ToolMutationAuthority, ToolShellAuthority, ToolVerificationAuthority,
+        ToolAuthorityEnvelope, ToolError, ToolMutationAuthority, ToolShellAuthority,
+        ToolVerificationAuthority,
     };
 
     const NAME: &str = "fixture.plugin";
@@ -637,7 +706,7 @@ model = "theirs"
                         tool: "a_tool".to_string(),
                         scope: "ext:a@hash".to_string(),
                     },
-                    Vec::new(),
+                    BrokerActTool::all().to_vec(),
                 ),
                 posture,
                 dir,
@@ -1187,6 +1256,110 @@ model = "theirs"
             f.active().select(NAME).unwrap().value,
             json!({"limits": {"max": 1}}),
             "a first edit creates only the plugin's own table"
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_acts_pass_the_gate_and_record_receipts() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let mut f = Fixture::new();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let deny = Arc::new(AtomicBool::new(false));
+        let switch_to_never = Arc::new(AtomicBool::new(false));
+        let asked_in_gate = Arc::clone(&asked);
+        let deny_in_gate = Arc::clone(&deny);
+        let switch_in_gate = Arc::clone(&switch_to_never);
+        let posture_in_gate = f.posture.clone();
+        f.gate = NestedCallGate::answering_for_test(move |name, input| {
+            asked_in_gate.fetch_add(1, Ordering::SeqCst);
+            if deny_in_gate.load(Ordering::SeqCst) {
+                return NestedCallVerdict::Refused {
+                    error: ToolError::permission_denied("denied by the person"),
+                    decision: NestedDecision::Denied,
+                };
+            }
+            if switch_in_gate.load(Ordering::SeqCst) {
+                posture_in_gate.switch_for_tests(ApprovalMode::Never);
+            }
+            NestedCallVerdict::Run {
+                name: name.to_string(),
+                input: input.clone(),
+                supports_parallel: false,
+                decision: NestedDecision::Auto,
+                hook_context: None,
+            }
+        })
+        .for_extension(
+            ExtensionCaller {
+                origin: "extension:a".to_string(),
+                tool: "a_tool".to_string(),
+                scope: "ext:a@hash".to_string(),
+            },
+            BrokerActTool::all().to_vec(),
+        );
+
+        let guard = f.begin();
+        let settings = ticket(&guard, "settings");
+
+        let _ = f.call(&settings, "describe", json!({})).await.unwrap();
+        assert_eq!(asked.load(Ordering::SeqCst), 0);
+
+        let outside = f
+            .call(&settings, "update", json!({"patch": {"other": 1}}))
+            .await;
+        assert_eq!(refusal(&outside), policy_refused());
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            0,
+            "out-of-scope edits are rejected before opening a gate prompt"
+        );
+
+        let ok = f
+            .call(&settings, "update", json!({"patch": {"model": "gated"}}))
+            .await
+            .unwrap();
+        assert_eq!(ok["written"], true);
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        let after_ok = f.text();
+
+        deny.store(true, Ordering::SeqCst);
+        let denied = f
+            .call(&settings, "update", json!({"patch": {"model": "blocked"}}))
+            .await;
+        assert_eq!(refusal(&denied), (error_code::DENIED, "denied".into()));
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+        assert_eq!(f.text(), after_ok);
+
+        deny.store(false, Ordering::SeqCst);
+        switch_to_never.store(true, Ordering::SeqCst);
+        let raced = f
+            .call(&settings, "update", json!({"patch": {"model": "never"}}))
+            .await;
+        assert_eq!(refusal(&raced), policy_refused());
+        assert_eq!(asked.load(Ordering::SeqCst), 3);
+        assert_eq!(f.text(), after_ok);
+
+        let receipts = guard.receipts().expect("broker acts are recorded");
+        assert_eq!(receipts["broker_acts"]["total"], 4, "{receipts}");
+        assert_eq!(
+            receipts["broker_acts"]["acts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|act| (
+                    act["service"].as_str().unwrap(),
+                    act["method"].as_str().unwrap(),
+                    act["outcome"].as_str().unwrap(),
+                    act["target"].as_str().unwrap(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("settings", "describe", "read", NAME),
+                ("settings", "update", "allowed", NAME),
+                ("settings", "update", "denied", NAME),
+                ("settings", "update", "allowed", NAME),
+            ]
         );
     }
 }
