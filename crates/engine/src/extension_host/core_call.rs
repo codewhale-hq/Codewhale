@@ -72,7 +72,7 @@
 //!   tool's `core/call`s run beside it, not through the lock.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -295,7 +295,9 @@ pub struct Invocation {
     root_caller: Option<SessionCheckpointCaller>,
     broker: Option<BrokerScope>,
     nested_calls: AtomicU32,
+    next_broker_token: AtomicU64,
     broker_acts: Mutex<(usize, Vec<Value>, bool)>,
+    held_image: Mutex<(Option<(u64, HeldImage)>, bool)>,
     tickets: Vec<Ticket>,
     caller_tools: Vec<String>,
     gates: Vec<&'static str>,
@@ -320,11 +322,103 @@ struct BrokerScope {
     context: Arc<ToolContext>,
 }
 
+#[derive(Clone)]
+pub(super) struct HeldImage {
+    pub(super) attachment_id: String,
+    pub(super) media_type: String,
+    pub(super) bytes: usize,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) data_base64: String,
+}
+
+impl Invocation {
+    fn push_act_record(&self, service: &str, entry: Value) -> bool {
+        let mut entry = match entry {
+            Value::Object(fields) => fields,
+            other => {
+                let mut fields = serde_json::Map::new();
+                fields.insert("detail".to_string(), other);
+                fields
+            }
+        };
+        entry.insert("service".to_string(), Value::String(service.to_string()));
+        let mut entry = Value::Object(entry);
+        if entry.to_string().len() > MAX_ACT_RECORD_BYTES {
+            let cut = |key: &str| {
+                entry
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map_or(Value::Null, |text| {
+                        Value::String(text.chars().take(dsh_broker::MAX_ACT_TARGET).collect())
+                    })
+            };
+            entry = json!({
+                "service": service,
+                "method": cut("method"),
+                "outcome": cut("outcome"),
+                "cut": true,
+            });
+        }
+        let mut acts = self
+            .broker_acts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if acts.2 {
+            return false;
+        }
+        acts.0 += 1;
+        if acts.1.len() < RECEIPTS_ATTACHED {
+            acts.1.push(entry);
+        }
+        true
+    }
+
+    fn rollback_held_image(&self, broker_token: u64, reason: &str) -> bool {
+        let rolled = {
+            let mut guard = self
+                .held_image
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if guard.1 {
+                return false;
+            }
+            if !guard
+                .0
+                .as_ref()
+                .is_some_and(|(token, _)| *token == broker_token)
+            {
+                return false;
+            }
+            guard.0.take().map(|(_, held)| held)
+        };
+        if let Some(held) = rolled {
+            let _ = self.push_act_record(
+                DshService::Attachments.name(),
+                json!({
+                    "method": "save",
+                    "outcome": "refused_after_hold",
+                    "reason": reason,
+                    "attachment_id": held.attachment_id,
+                    "media_type": held.media_type,
+                    "bytes": held.bytes,
+                    "width": held.width,
+                    "height": held.height,
+                }),
+            );
+            true
+        } else {
+            false
+        }
+    }
+}
+
 pub struct BrokerContext {
     invocation: Arc<Invocation>,
     tool: Arc<ToolContext>,
     service: DshService,
     cancel: CancellationToken,
+    broker_token: u64,
 }
 
 impl BrokerContext {
@@ -339,48 +433,50 @@ impl BrokerContext {
     }
 
     pub fn record(&self, entry: Value) -> bool {
-        let mut entry = match entry {
-            Value::Object(fields) => fields,
-            other => {
-                let mut fields = serde_json::Map::new();
-                fields.insert("detail".to_string(), other);
-                fields
-            }
-        };
-        entry.insert(
-            "service".to_string(),
-            Value::String(self.service.name().to_string()),
-        );
-        let mut entry = Value::Object(entry);
-        if entry.to_string().len() > MAX_ACT_RECORD_BYTES {
-            let cut = |key: &str| {
-                entry
-                    .get(key)
-                    .and_then(Value::as_str)
-                    .map_or(Value::Null, |text| {
-                        Value::String(text.chars().take(dsh_broker::MAX_ACT_TARGET).collect())
-                    })
-            };
-            entry = json!({
-                "service": self.service.name(),
-                "method": cut("method"),
-                "outcome": cut("outcome"),
-                "cut": true,
-            });
-        }
-        let mut acts = self
+        self.invocation.push_act_record(self.service.name(), entry)
+    }
+
+    pub(super) fn can_hold_image(&self) -> Result<(), bool> {
+        let guard = self
             .invocation
-            .broker_acts
+            .held_image
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if acts.2 {
-            return false;
+        if guard.1 {
+            return Err(true);
         }
-        acts.0 += 1;
-        if acts.1.len() < RECEIPTS_ATTACHED {
-            acts.1.push(entry);
+        if guard.0.is_some() {
+            return Err(false);
         }
-        true
+        Ok(())
+    }
+
+    pub(super) fn hold_image(&self, image: HeldImage) -> Result<(), bool> {
+        let mut guard = self
+            .invocation
+            .held_image
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.1 {
+            return Err(true);
+        }
+        if guard.0.is_some() {
+            return Err(false);
+        }
+        guard.0 = Some((self.broker_token, image));
+        Ok(())
+    }
+
+    pub(super) fn held_image(&self, attachment_id: &str) -> Option<HeldImage> {
+        self.invocation
+            .held_image
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0
+            .as_ref()
+            .map(|(_, held)| held)
+            .filter(|held| held.attachment_id == attachment_id)
+            .cloned()
     }
 
     pub async fn act(
@@ -540,7 +636,9 @@ impl BrokerContext {
             root_caller: None,
             broker: None,
             nested_calls: AtomicU32::new(0),
+            next_broker_token: AtomicU64::new(1),
             broker_acts: Mutex::new((0, Vec::new(), false)),
+            held_image: Mutex::new((None, false)),
             tickets: Vec::new(),
             caller_tools: Vec::new(),
             gates: dsh_broker::GATE_TOOLS.to_vec(),
@@ -554,6 +652,7 @@ impl BrokerContext {
             tool: Arc::new(tool),
             service,
             cancel: CancellationToken::new(),
+            broker_token: 0,
         }
     }
 }
@@ -760,7 +859,9 @@ impl CoreCalls {
             root_caller,
             broker,
             nested_calls: AtomicU32::new(0),
+            next_broker_token: AtomicU64::new(1),
             broker_acts: Mutex::new((0, Vec::new(), false)),
+            held_image: Mutex::new((None, false)),
             tickets: std::iter::once(ticket.clone())
                 .chain(checkpoint_ticket.iter().cloned())
                 .chain(question_ticket.iter().cloned())
@@ -1506,6 +1607,37 @@ impl CoreCalls {
             .ok_or_else(|| BrokerRefusal::NotAvailable(service).wire())?;
         let withdraw = invocation.cancel.child_token();
         let _withdraw_guard = withdraw.clone().drop_guard();
+        let broker_token = invocation.next_broker_token.fetch_add(1, Ordering::Relaxed);
+        struct HeldImageRollback {
+            invocation: Arc<Invocation>,
+            broker_token: u64,
+            armed: bool,
+        }
+        impl HeldImageRollback {
+            fn commit(&mut self) {
+                self.armed = false;
+            }
+            fn rollback(&mut self, reason: &str) {
+                if self.armed {
+                    self.armed = false;
+                    self.invocation
+                        .rollback_held_image(self.broker_token, reason);
+                }
+            }
+        }
+        impl Drop for HeldImageRollback {
+            fn drop(&mut self) {
+                if self.armed {
+                    self.invocation
+                        .rollback_held_image(self.broker_token, "aborted");
+                }
+            }
+        }
+        let mut rollback = HeldImageRollback {
+            invocation: Arc::clone(&invocation),
+            broker_token,
+            armed: true,
+        };
         let call = BrokerCall {
             owner: params.owner.clone(),
             session_id,
@@ -1517,6 +1649,7 @@ impl CoreCalls {
                 tool,
                 service,
                 cancel: withdraw.clone(),
+                broker_token,
             },
         };
         let withdrawn = async {
@@ -1529,9 +1662,18 @@ impl CoreCalls {
         };
         let outcome = tokio::select! {
             biased;
-            () = cx.cancel.cancelled() => return Err(cancelled("dsh/broker was cancelled by its host")),
-            () = withdraw.cancelled() => return Err(cancelled("dsh/broker invocation ended")),
-            () = withdrawn => return Err(BrokerRefusal::NotGranted(service).wire()),
+            () = cx.cancel.cancelled() => {
+                rollback.rollback("cancelled");
+                return Err(cancelled("dsh/broker was cancelled by its host"));
+            }
+            () = withdraw.cancelled() => {
+                rollback.rollback("invocation_ended");
+                return Err(cancelled("dsh/broker invocation ended"));
+            }
+            () = withdrawn => {
+                rollback.rollback("grant_revoked");
+                return Err(BrokerRefusal::NotGranted(service).wire());
+            }
             outcome = arm(call) => outcome,
         };
         if shared
@@ -1541,24 +1683,36 @@ impl CoreCalls {
             .tier_of(&params.owner)
             != Some(tier)
         {
+            rollback.rollback("owner_stale");
             return Err(refused("dsh/broker owner is no longer current".into()));
         }
-        shared
-            .check_selection(
-                invocation
-                    .plugins
-                    .as_ref()
-                    .and_then(|plugins| plugins.caller_selection()),
-                invocation.plugins.as_deref(),
-                &params.owner.plugin_id,
-                &invocation.content_hash,
-                invocation.scope.as_ref(),
-            )
-            .map_err(refused)?;
+        if let Err(err) = shared.check_selection(
+            invocation
+                .plugins
+                .as_ref()
+                .and_then(|plugins| plugins.caller_selection()),
+            invocation.plugins.as_deref(),
+            &params.owner.plugin_id,
+            &invocation.content_hash,
+            invocation.scope.as_ref(),
+        ) {
+            rollback.rollback("selection_changed");
+            return Err(refused(err));
+        }
         if !shared.broker_granted(&params.owner, service).await {
+            rollback.rollback("grant_revoked");
             return Err(BrokerRefusal::NotGranted(service).wire());
         }
-        outcome.map_err(BrokerRefusal::wire)
+        match outcome {
+            Ok(value) => {
+                rollback.commit();
+                Ok(value)
+            }
+            Err(err) => {
+                rollback.rollback("refused");
+                Err(err.wire())
+            }
+        }
     }
 
     /// Redeem `params` presented by `tier`'s host process `host_generation`
@@ -1756,7 +1910,24 @@ impl InvocationGuard {
         self.snapshot(false)
     }
 
+    pub(super) fn seal_held_image(&self) -> Option<HeldImage> {
+        let mut guard = self
+            .invocation
+            .held_image
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.1 = true;
+        let held = guard.0.take().map(|(_, held)| held);
+        self.invocation.cancel.cancel();
+        held
+    }
+
+    pub(super) fn record_service_act(&self, service: DshService, entry: Value) -> bool {
+        self.invocation.push_act_record(service.name(), entry)
+    }
+
     pub fn seal_receipts(&self) -> Option<Value> {
+        let _ = self.seal_held_image();
         self.snapshot(true)
     }
 
@@ -1828,6 +1999,7 @@ mod seal_tests {
             tool: Arc::new(context),
             service: DshService::Remote,
             cancel: CancellationToken::new(),
+            broker_token: 0,
         };
         assert!(broker.record(json!({"method": "before", "outcome": "read"})));
         let performed = std::sync::atomic::AtomicBool::new(false);
