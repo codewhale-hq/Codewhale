@@ -19994,13 +19994,7 @@ async fn non_output_incomplete_response_is_typed_and_records_usage() {
     };
     assert!(reason.contains("response was incomplete"), "{reason}");
     assert!(reason.contains("`content_filter`"), "{reason}");
-    assert!(
-        result
-            .result
-            .as_deref()
-            .unwrap()
-            .contains("partial response diagnostics")
-    );
+    assert_eq!(result.result, None);
     assert_eq!(total_tokens, Some(15), "usage must still be recorded");
     assert_partial_tool_was_not_executed(&mailbox);
 }
