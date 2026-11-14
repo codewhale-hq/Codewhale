@@ -2775,7 +2775,11 @@ LFS, keep working.
   frame the write routes take; in a workspace that is a subdirectory of its
   repository, rows outside the workspace are not listed (the counts stay
   repository-wide). A rename out of the workspace appears as its source
-  deletion. Normal Git filters and untracked settings apply. Untracked
+  deletion. A rename can be reported by either side of the change, so that
+  row is a worktree-side deletion (`index` a space, `worktree` `D`) when only
+  the working tree moved, and an index-side one (`index` `D`) when the move
+  is staged. A copy leaves its source in place and is never shown this way.
+  Normal Git filters and untracked settings apply. Untracked
   directories stay collapsed; only a row naming the workspace itself is
   expanded to individually addressable files. The precondition tokens are
   opaque:
