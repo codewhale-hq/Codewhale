@@ -31971,6 +31971,7 @@ fn queued_terminal_events_keep_receipt_gap_for_late_unbracketed_submit() {
     );
 }
 
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn terminal_input_child_pause_drains_codewhale_events_before_editor_handoff() {
     let _serialized = CHILD_TERMINAL_GATE_TEST_LOCK
@@ -32028,6 +32029,7 @@ async fn terminal_input_child_pause_drains_codewhale_events_before_editor_handof
     assert!(!input.paused_ack.load(std::sync::atomic::Ordering::Acquire));
 }
 
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn terminal_input_handoff_preserves_pending_cancellation_keys() {
     let _serialized = CHILD_TERMINAL_GATE_TEST_LOCK
@@ -36173,6 +36175,7 @@ fn issue_7123_reasoning_after_prose_stays_in_the_thinking_cell() {
     );
 }
 
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn nested_editor_handoff_closes_every_child_window() {
     let _serialized = CHILD_TERMINAL_GATE_TEST_LOCK
@@ -36217,6 +36220,7 @@ async fn nested_editor_handoff_closes_every_child_window() {
     );
 }
 
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn single_pump_handoff_closes_its_child_window() {
     let _serialized = CHILD_TERMINAL_GATE_TEST_LOCK
