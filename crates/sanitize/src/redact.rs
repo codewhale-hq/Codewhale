@@ -711,9 +711,10 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
             changed = true;
             masked.push(word.replace(trimmed, &redacted));
             spaced = SpacedAssignment::None;
-        } else if let Some(core) = secret_token_core(trimmed) {
+        } else if let Some(redacted) = redact_bare_tokens(word) {
             changed = true;
-            masked.push(word.replacen(core, REDACTED, 1));
+            let redacted = redact_structured_word(&redacted, policy).unwrap_or(redacted);
+            masked.push(redacted);
             spaced = SpacedAssignment::None;
         } else if let Some(redacted) = redact_structured_word(trimmed, policy) {
             changed = true;
@@ -1656,6 +1657,24 @@ fn secret_token_core(word: &str) -> Option<&str> {
     (!core.is_empty() && is_bare_secret_token(core)).then_some(core)
 }
 
+fn redact_bare_tokens(word: &str) -> Option<String> {
+    let mut changed = false;
+    let out: String = word
+        .split_inclusive(|c: char| !c.is_ascii())
+        .map(|piece| {
+            let run = piece.trim_end_matches(|c: char| !c.is_ascii());
+            match secret_token_core(trim_word_punctuation(run)) {
+                Some(core) => {
+                    changed = true;
+                    piece.replacen(core, REDACTED, 1)
+                }
+                None => piece.to_string(),
+            }
+        })
+        .collect();
+    changed.then_some(out)
+}
+
 fn is_bare_secret_token(word: &str) -> bool {
     SECRET_TOKEN_PREFIXES
         .iter()
@@ -1875,6 +1894,51 @@ mod bare_token_tests {
             redact_secrets(&format!("key `xai-{body}` rejected")),
             "key `[redacted]` rejected"
         );
+    }
+
+    #[test]
+    fn a_bare_token_next_to_cjk_text_or_full_width_punctuation_is_masked() {
+        let key = ["sk-", "Z7qX4mNb2Vc9Lk3PwR8t"].concat();
+        let jwt = ["eyJhbGciOiJIUzI1NiJ9", ".eyJzdWIiOiIxIn0", ".c2lnbmF0dXJl"].concat();
+        for (input, expected) in [
+            (format!("密钥：{key}"), "密钥：[redacted]"),
+            (
+                format!("我的密钥是{key}，请保管"),
+                "我的密钥是[redacted]，请保管",
+            ),
+            (format!("（{jwt}）"), "（[redacted]）"),
+            (format!("key\u{3000}{key}"), "key\u{3000}[redacted]"),
+            (format!("甲{key}乙{key}"), "甲[redacted]乙[redacted]"),
+        ] {
+            assert_eq!(redact_secrets(&input), expected);
+            assert_eq!(redact_model_bound_secrets(&input), expected);
+        }
+    }
+
+    #[test]
+    fn a_keyed_secret_after_a_cjk_adjacent_token_in_the_same_word_is_still_masked() {
+        let token = "ABCDEFGH12345678";
+        for (out, secret) in [
+            (
+                redact_secrets(
+                    "https://h/s?q=见xai-ABCDEFGH12345678乙&access_token=hunter2hunter2",
+                ),
+                "hunter2hunter2",
+            ),
+            (
+                redact_secrets(r#"{"msg":"见xai-ABCDEFGH12345678乙","api_key":"hunter2"}"#),
+                "hunter2",
+            ),
+            (
+                redact_model_bound_secrets(
+                    r#"{"password":"Zx9qLm2Vb7Nc4Rt8Wp3K","msg":"见xai-ABCDEFGH12345678乙"}"#,
+                ),
+                "Zx9qLm2Vb7Nc4Rt8Wp3K",
+            ),
+        ] {
+            assert!(!out.contains(secret), "{out}");
+            assert!(!out.contains(token), "{out}");
+        }
     }
 
     #[test]
