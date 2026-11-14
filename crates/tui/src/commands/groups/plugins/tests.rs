@@ -758,6 +758,98 @@ fn dsh_import_reviews_without_installing_then_installs_the_exact_bundle() {
 }
 
 #[test]
+fn dsh_import_review_surfaces_sibling_plugin_json_hooks_commands_and_agents() {
+    let _lock = crate::test_support::lock_test_env();
+    let root = TempDir::new().unwrap();
+    let codewhale_home = root.path().join("codewhale-home");
+    let _codewhale_home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &codewhale_home);
+    let package = root.path().join("combo-dsh-package");
+    fs::create_dir_all(package.join("commands")).unwrap();
+    fs::create_dir_all(package.join("agents")).unwrap();
+    fs::create_dir_all(package.join("hooks")).unwrap();
+    fs::write(
+        package.join("package.json"),
+        r#"{"name": "@demo/combo-dsh", "version": "1.0.0", "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}}"#,
+    )
+    .unwrap();
+    fs::write(package.join("cordis.patch.yml"), "[]\n").unwrap();
+    fs::write(package.join("commands/hello.md"), "# Hello\n").unwrap();
+    fs::write(
+        package.join("agents/reviewer.toml"),
+        "id = \"reviewer\"\n[role]\nname = \"reviewer\"\ndescription = \"Reviews\"\nprompt = \"Review.\"\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join("hooks/hooks.toml"),
+        "enabled = true\n[[hooks]]\nname = \"check\"\nevent = \"turn_end\"\ncommand = \"true\"\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join("plugin.json"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "combo-dsh",
+            "version": "1.0.0",
+            "description": "ignored sibling description",
+            "extensions": {
+                "net.codewhale": {
+                    "commands": {"path": "commands"},
+                    "agents": {"path": "agents"},
+                    "hooks": {"path": "hooks"}
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let (mut app, _temp) = create_test_app(root.path());
+    let review = plugins_with_kimi_home_override(
+        &mut app,
+        Some(&format!("import dsh {}", package.display())),
+        None,
+    );
+    assert!(!review.is_error, "{:?}", review.message);
+    let message = review.message.unwrap();
+    for fact in [
+        "@demo/combo-dsh@1.0.0",
+        "plugin 'combo-dsh'",
+        "Commands: commands/hello.md",
+        "Agents: agents/reviewer.toml",
+        "Hooks (run shell commands with your user's authority): hooks/hooks.toml",
+        "Diagnostics:",
+        "description",
+        "Nothing was installed",
+    ] {
+        assert!(
+            message.replace('\\', "").contains(fact),
+            "{fact}: {message}"
+        );
+    }
+    assert!(!codewhale_home.join("plugins/combo-dsh").exists());
+
+    let approval = message
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("/plugin "))
+        .expect("review renders an exact approval command")
+        .to_string();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let installed = plugins_with_kimi_home_override(&mut app, Some(&approval), None);
+        assert!(!installed.is_error, "{:?}", installed.message);
+    });
+    assert!(
+        codewhale_home
+            .join("plugins/combo-dsh/hooks/hooks.toml")
+            .is_file()
+    );
+}
+
+#[test]
 fn kimi_managed_import_is_read_only_until_hash_bound_approval() {
     let _lock = crate::test_support::lock_test_env();
     let root = TempDir::new().unwrap();

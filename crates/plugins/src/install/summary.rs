@@ -138,6 +138,9 @@ impl Capabilities {
         self.skills = self.skills.max(dsh.skills.len());
         self.local_mcp = self.local_mcp.max(dsh.local_servers.len());
         self.remote_mcp = self.remote_mcp.max(dsh.remote_servers.len());
+        self.commands = self.commands.max(dsh.commands.len());
+        self.agents = self.agents.max(dsh.agents.len());
+        self.hooks = self.hooks.max(dsh.hooks.len());
         self.native = self.native.max(dsh.native_rows.len());
         if dsh.requires_native && self.native == 0 {
             self.native = 1;
@@ -508,6 +511,9 @@ mod tests {
             outcomes: Vec::new(),
             diagnostics: Vec::new(),
             skills: vec!["balance".into()],
+            commands: Vec::new(),
+            agents: Vec::new(),
+            hooks: Vec::new(),
             remote_servers: vec!["account".into()],
             local_servers: vec!["bridge".into(), "helper".into()],
             network_hosts: vec!["api.example.com".into()],

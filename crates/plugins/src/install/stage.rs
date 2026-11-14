@@ -147,7 +147,7 @@ fn copy_bundle_regular_files(
         let entry = entry?;
         let path = entry.path();
         let metadata = fs::symlink_metadata(&path)?;
-        if metadata.file_type().is_symlink() {
+        if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) {
             return Err(PluginInstallError::SymlinkRejected.into());
         }
         let name = entry.file_name();
@@ -160,17 +160,55 @@ fn copy_bundle_regular_files(
                 .with_context(|| format!("failed to create {}", target.display()))?;
             copy_bundle_regular_files(&path, &target, max_size, budget)?;
         } else if metadata.is_file() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt as _;
+                if metadata.nlink() != 1 {
+                    bail!("source file {} has multiple hard links", path.display());
+                }
+            }
             budget.files = budget.files.saturating_add(1);
             if budget.files > MAX_BUNDLE_FILES {
                 bail!("bundle exceeds the {MAX_BUNDLE_FILES} file limit");
             }
-            budget.bytes = budget.bytes.saturating_add(metadata.len());
+            let src = codewhale_util::bundle_file::open_bundle_file(&path)
+                .with_context(|| format!("failed to open {} safely", path.display()))?;
+            let opened_meta = src.metadata()?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt as _;
+                if (opened_meta.dev(), opened_meta.ino()) != (metadata.dev(), metadata.ino())
+                    || opened_meta.nlink() != 1
+                {
+                    bail!(
+                        "source file {} changed or was linked during staging",
+                        path.display()
+                    );
+                }
+            }
+            let remaining = max_size.saturating_sub(budget.bytes);
+            budget.bytes = budget.bytes.saturating_add(opened_meta.len());
             if budget.bytes > max_size {
                 return Err(PluginInstallError::OversizedBundle { limit: max_size }.into());
             }
-            fs::copy(&path, &target).with_context(|| {
+            let mut dst = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)
+                .with_context(|| format!("failed to create {}", target.display()))?;
+            let copied = std::io::copy(
+                &mut std::io::Read::take(src, remaining.saturating_add(1)),
+                &mut dst,
+            )
+            .with_context(|| {
                 format!("failed to copy {} to {}", path.display(), target.display())
             })?;
+            if copied > remaining {
+                return Err(PluginInstallError::OversizedBundle { limit: max_size }.into());
+            }
+            #[cfg(unix)]
+            dst.set_permissions(opened_meta.permissions())
+                .with_context(|| format!("failed to set permissions on {}", target.display()))?;
         }
     }
     Ok(())

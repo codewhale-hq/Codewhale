@@ -100,7 +100,7 @@ pub struct PluginPathSpec {
 }
 
 impl PluginPathSpec {
-    fn declared_paths(&self, default: Option<&str>) -> Result<Vec<String>, String> {
+    pub(crate) fn declared_paths(&self, default: Option<&str>) -> Result<Vec<String>, String> {
         let mut paths = Vec::new();
         if let Some(path) = self.path.as_deref() {
             paths.push(path.to_string());
