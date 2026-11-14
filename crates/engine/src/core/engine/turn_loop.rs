@@ -1038,8 +1038,6 @@ impl Engine {
         catalog: &mut Vec<Tool>,
         active: &mut std::collections::HashSet<String>,
     ) {
-        // A pending ordinary connection keeps its own catalog authority. An
-        // ACP turn cannot drain or import it; the next ordinary turn can.
         if self.is_acp_turn() {
             return;
         }
