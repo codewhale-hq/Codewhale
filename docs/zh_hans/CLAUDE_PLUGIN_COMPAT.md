@@ -1,7 +1,7 @@
 # Claude 插件兼容性
 
 > 英文原文：[CLAUDE_PLUGIN_COMPAT.md](../CLAUDE_PLUGIN_COMPAT.md)。
-> 最后与英文同步日期（last synced with English revision）：2026-11-10。
+> 最后与英文同步日期（last synced with English revision）：2026-11-14。
 
 Claude Code 的技能（skill）目录如果只是普通的 `SKILL.md` 目录，Codewhale 会把它当作
 指令包来处理。Codewhale 不运行 Claude Code 的插件运行时。
@@ -42,5 +42,9 @@ Codewhale 现有的插件凭据边界；安装过程不会完成 OAuth，也不�
 `/skill install` 仍是独立的、一次只装一个技能的操作：遇到包含多个技能的插件归档，
 它会直接拒绝，而不是悄悄选中其中一个目录、丢掉其他组件。受支持的插件包请用
 `/plugin install`；如果仓库依赖不受支持的运行时行为，就单独迁移一个明确指定的技能目录。
+例如 [`deja-vu`](https://github.com/vshulcz/deja-vu/tree/main/extensions/codewhale)
+这类混合插件包会通过 `.claude-plugin/plugin.json`、`.mcp.json`、`skills/` 和 `commands/`
+提供 `/plugin install` 所需声明，由于 Claude 插件导入器会拒绝 `hooks`，宿主生命周期钩子则单独写入
+`~/.codewhale/config.toml`。
 
 发现、审查与激活见 [PLUGIN_BUNDLES.md](./PLUGIN_BUNDLES.md)。
