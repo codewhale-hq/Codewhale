@@ -49,70 +49,79 @@ struct Server {
     stale: AtomicUsize,
     withdrawn: AtomicUsize,
     hold: AtomicBool,
+    concurrent: AtomicBool,
     deny: AtomicBool,
     rewrite: std::sync::Mutex<Option<Value>>,
     release: Notify,
 }
 
+async fn handle_request(request: NestedCallRequest, server: Arc<Server>) {
+    let request = match request {
+        NestedCallRequest::Tool(request) => request,
+        NestedCallRequest::UserQuestion { reply, .. } => {
+            let _ = reply.send(Err(ToolError::not_available(
+                "fixture has no user question backend",
+            )));
+            return;
+        }
+        NestedCallRequest::Checkpoint { reply, .. } => {
+            let _ = reply.send(Err(ToolError::not_available(
+                "fixture has no session checkpoint backend",
+            )));
+            return;
+        }
+    };
+    if request.is_stale() {
+        server.stale.fetch_add(1, Ordering::SeqCst);
+        return;
+    }
+    server.asked.fetch_add(1, Ordering::SeqCst);
+    let held = server.hold.load(Ordering::SeqCst);
+    if held {
+        match &request.withdraw {
+            Some(withdraw) => tokio::select! {
+                () = server.release.notified() => {}
+                () = withdraw.cancelled() => {
+                    server.withdrawn.fetch_add(1, Ordering::SeqCst);
+                    return;
+                }
+            },
+            None => server.release.notified().await,
+        }
+    }
+    if server.deny.load(Ordering::SeqCst) {
+        let _ = request.reply.send(NestedCallVerdict::Refused {
+            error: ToolError::permission_denied("denied by the person"),
+            decision: NestedDecision::Denied,
+        });
+        return;
+    }
+    let _ = request.reply.send(NestedCallVerdict::Run {
+        name: request.name.clone(),
+        input: server
+            .rewrite
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| request.input.clone()),
+        supports_parallel: true,
+        decision: if held {
+            NestedDecision::Approved
+        } else {
+            NestedDecision::Auto
+        },
+        hook_context: None,
+    });
+}
+
 fn serve(mut requests: mpsc::Receiver<NestedCallRequest>, server: Arc<Server>) {
     tokio::spawn(async move {
         while let Some(request) = requests.recv().await {
-            let request = match request {
-                NestedCallRequest::Tool(request) => request,
-                NestedCallRequest::UserQuestion { reply, .. } => {
-                    let _ = reply.send(Err(ToolError::not_available(
-                        "fixture has no user question backend",
-                    )));
-                    continue;
-                }
-                NestedCallRequest::Checkpoint { reply, .. } => {
-                    let _ = reply.send(Err(ToolError::not_available(
-                        "fixture has no session checkpoint backend",
-                    )));
-                    continue;
-                }
-            };
-            if request.is_stale() {
-                server.stale.fetch_add(1, Ordering::SeqCst);
-                continue;
+            if server.concurrent.load(Ordering::SeqCst) {
+                tokio::spawn(handle_request(request, Arc::clone(&server)));
+            } else {
+                handle_request(request, Arc::clone(&server)).await;
             }
-            server.asked.fetch_add(1, Ordering::SeqCst);
-            let held = server.hold.load(Ordering::SeqCst);
-            if held {
-                match &request.withdraw {
-                    Some(withdraw) => tokio::select! {
-                        () = server.release.notified() => {}
-                        () = withdraw.cancelled() => {
-                            server.withdrawn.fetch_add(1, Ordering::SeqCst);
-                            continue;
-                        }
-                    },
-                    None => server.release.notified().await,
-                }
-            }
-            if server.deny.load(Ordering::SeqCst) {
-                let _ = request.reply.send(NestedCallVerdict::Refused {
-                    error: ToolError::permission_denied("denied by the person"),
-                    decision: NestedDecision::Denied,
-                });
-                continue;
-            }
-            let _ = request.reply.send(NestedCallVerdict::Run {
-                name: request.name.clone(),
-                input: server
-                    .rewrite
-                    .lock()
-                    .unwrap()
-                    .clone()
-                    .unwrap_or_else(|| request.input.clone()),
-                supports_parallel: true,
-                decision: if held {
-                    NestedDecision::Approved
-                } else {
-                    NestedDecision::Auto
-                },
-                hook_context: None,
-            });
         }
     });
 }
@@ -1789,13 +1798,54 @@ impl Fixture {
         input: Value,
     ) -> Result<Value, RpcErrorWire> {
         let (cx, _violations, _cancel) = HostRequestContext::for_test(40);
-        self.broker_in(cx, table, owner, ticket, service, method, input)
+        self.broker_at_in(7, cx, table, owner, ticket, service, method, input)
             .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn broker_at(
+        &self,
+        host_generation: u64,
+        table: &[(super::protocol::DshService, super::dsh_broker::Arm)],
+        owner: &OwnerRef,
+        ticket: &str,
+        service: &str,
+        method: &str,
+        input: Value,
+    ) -> Result<Value, RpcErrorWire> {
+        let (cx, _violations, _cancel) = HostRequestContext::for_test(40);
+        self.broker_at_in(
+            host_generation,
+            cx,
+            table,
+            owner,
+            ticket,
+            service,
+            method,
+            input,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn broker_in(
         &self,
+        cx: HostRequestContext,
+        table: &[(super::protocol::DshService, super::dsh_broker::Arm)],
+        owner: &OwnerRef,
+        ticket: &str,
+        service: &str,
+        method: &str,
+        input: Value,
+    ) -> Result<Value, RpcErrorWire> {
+        self.broker_at_in(7, cx, table, owner, ticket, service, method, input)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn broker_at_in(
+        &self,
+        host_generation: u64,
         cx: HostRequestContext,
         table: &[(super::protocol::DshService, super::dsh_broker::Arm)],
         owner: &OwnerRef,
@@ -1811,7 +1861,7 @@ impl Fixture {
                 table,
                 &self.manager.shared,
                 HostTier::Plugin,
-                7,
+                host_generation,
                 super::protocol::DshBrokerParams {
                     owner: owner.clone(),
                     ticket: ticket.to_string(),
@@ -3091,6 +3141,317 @@ async fn dsh_terminal_arm_runs_through_the_gate_in_the_plugins_own_thread_owned_
         (error_code::REFUSED, "ticket_refused".into())
     );
     drop(guard_b);
+    assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
+}
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+#[tokio::test]
+async fn dsh_terminal_enforces_limit_across_concurrent_runs_while_cards_are_open_and_under_full_access()
+ {
+    use super::dsh_broker::{TABLE, TestGrants};
+    use super::dsh_terminal::MAX_TERMINALS;
+    use super::protocol::DshService;
+    use crate::tools::terminal_session;
+    use codewhale_sandbox::SandboxPolicy;
+
+    const ASKED: usize = MAX_TERMINALS + 4;
+
+    let _grants = TestGrants::only(&[DshService::Terminal]);
+    let mut f = fixture(true);
+    let workspace = f.context.workspace.clone();
+    let specs = crate::tools::registry::ToolRegistryBuilder::new()
+        .with_file_tools()
+        .with_terminal_tools()
+        .build(ToolContext::new(&workspace))
+        .all();
+    f.gate = f.gate.clone().for_extension(f.caller(), specs);
+    f.context.elevated_sandbox_policy = Some(SandboxPolicy::DangerFullAccess);
+    f.context.state_namespace = "thread-probe-cards".into();
+    f.in_session("terminal-session-probe-cards");
+    let guard = f.begin(7, &f.owner);
+    let terminal = broker_ticket(&guard, "terminal").unwrap();
+    f.server.concurrent.store(true, Ordering::SeqCst);
+    f.server.hold.store(true, Ordering::SeqCst);
+
+    let done = AtomicUsize::new(0);
+    let runs = futures_util::future::join_all((0..ASKED).map(|n| {
+        let f = &f;
+        let terminal = terminal.as_str();
+        let done = &done;
+        async move {
+            let result = f
+                .broker(
+                    TABLE,
+                    &f.owner,
+                    terminal,
+                    "terminal",
+                    "run",
+                    json!({"command": "true", "session": format!("p{n}")}),
+                )
+                .await;
+            done.fetch_add(1, Ordering::SeqCst);
+            result
+        }
+    }));
+    let release = async {
+        until("four cards open at once", || {
+            f.server.asked.load(Ordering::SeqCst) >= 4
+        })
+        .await;
+        while done.load(Ordering::SeqCst) < ASKED {
+            f.server.release.notify_one();
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    };
+    let (results, ()) = tokio::join!(runs, release);
+    let ok = results
+        .iter()
+        .filter(|result| result.as_ref().is_ok_and(|ran| ran["ok"] == true))
+        .count();
+    let held = terminal_session::owned_sessions(&workspace, "thread-probe-cards")
+        .unwrap()
+        .into_iter()
+        .filter(|info| info.name.starts_with("dsh:a:"))
+        .count();
+    let listed = f
+        .broker(TABLE, &f.owner, &terminal, "terminal", "list", json!({}))
+        .await
+        .unwrap();
+    let _ = terminal_session::kill_owner_sessions(&workspace, "thread-probe-cards");
+    assert_eq!(
+        (ok, held, listed["terminals"].as_array().unwrap().len()),
+        (MAX_TERMINALS, MAX_TERMINALS, MAX_TERMINALS),
+        "concurrent runs while cards were open must cap at {MAX_TERMINALS}; results {results:?}"
+    );
+    assert_eq!(listed["limit"], MAX_TERMINALS);
+    drop(guard);
+
+    f.server.hold.store(false, Ordering::SeqCst);
+    f.context.state_namespace = "thread-probe-full".into();
+    f.in_session("terminal-session-probe-full");
+    let guard_1 = f.begin(7, &f.owner);
+    let guard_2 = f.begin(7, &f.owner);
+    let ticket_1 = broker_ticket(&guard_1, "terminal").unwrap();
+    let ticket_2 = broker_ticket(&guard_2, "terminal").unwrap();
+    let full_runs = futures_util::future::join_all((0..ASKED).map(|n| {
+        let f = &f;
+        let ticket = if n % 2 == 0 {
+            ticket_1.as_str()
+        } else {
+            ticket_2.as_str()
+        };
+        async move {
+            f.broker(
+                TABLE,
+                &f.owner,
+                ticket,
+                "terminal",
+                "run",
+                json!({"command": "true", "session": format!("f{n}")}),
+            )
+            .await
+        }
+    }))
+    .await;
+    let full_ok = full_runs
+        .iter()
+        .filter(|result| result.as_ref().is_ok_and(|ran| ran["ok"] == true))
+        .count();
+    let full_held = terminal_session::owned_sessions(&workspace, "thread-probe-full")
+        .unwrap()
+        .into_iter()
+        .filter(|info| info.name.starts_with("dsh:a:"))
+        .count();
+    let full_listed = f
+        .broker(TABLE, &f.owner, &ticket_1, "terminal", "list", json!({}))
+        .await
+        .unwrap();
+    let _ = terminal_session::kill_owner_sessions(&workspace, "thread-probe-full");
+    assert_eq!(
+        (
+            full_ok,
+            full_held,
+            full_listed["terminals"].as_array().unwrap().len()
+        ),
+        (MAX_TERMINALS, MAX_TERMINALS, MAX_TERMINALS),
+        "concurrent runs under full access must cap at {MAX_TERMINALS}; results {full_runs:?}"
+    );
+    drop(guard_1);
+    drop(guard_2);
+    assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
+}
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+#[tokio::test]
+async fn dsh_terminal_ends_plugin_shells_when_disabled_or_revoked_while_keeping_thread_shell() {
+    use super::dsh_broker::{TABLE, TestGrants};
+    use super::protocol::DshService;
+    use crate::tools::terminal_session;
+    use codewhale_sandbox::SandboxPolicy;
+
+    let _policy = TestPolicyGuard::extension_host(true);
+    let _grants = TestGrants::only(&[DshService::Terminal]);
+    let mut f = fixture(true);
+    f.manager = ExtensionHostManager::with_builtin_modules(ExtensionHostOptions::default(), &[]);
+    {
+        let mut registry = f.manager.shared.registry.lock().unwrap();
+        for id in ["a", "b"] {
+            let owner = registry
+                .begin_owner(HostTier::Plugin, id, id, Some(fake_authority(id)), "hash")
+                .unwrap();
+            registry.mark_active(&owner);
+            if id == "a" {
+                f.owner = owner;
+            } else {
+                f.other = owner;
+            }
+        }
+    }
+    let workspace = f.context.workspace.clone();
+    let specs = crate::tools::registry::ToolRegistryBuilder::new()
+        .with_file_tools()
+        .with_terminal_tools()
+        .build(ToolContext::new(&workspace))
+        .all();
+    f.gate = f.gate.clone().for_extension(f.caller(), specs);
+    f.context.elevated_sandbox_policy = Some(SandboxPolicy::DangerFullAccess);
+    f.context.state_namespace = "thread-revoke".into();
+    f.in_session("terminal-session-revoke");
+
+    let term1 = terminal_session::get_or_create(
+        "thread-revoke",
+        "term-1",
+        &workspace,
+        SandboxPolicy::DangerFullAccess,
+        &f.context.shell_manager,
+    )
+    .unwrap();
+    let colliding = terminal_session::get_or_create(
+        "thread-revoke",
+        "dsh:a:b:x",
+        &workspace,
+        SandboxPolicy::DangerFullAccess,
+        &f.context.shell_manager,
+    )
+    .unwrap();
+
+    let guard = f.begin(7, &f.owner);
+    let terminal = broker_ticket(&guard, "terminal").unwrap();
+    let idle = f
+        .broker(
+            TABLE,
+            &f.owner,
+            &terminal,
+            "terminal",
+            "run",
+            json!({"command": "true", "session": "idle"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(idle["ok"], true, "{idle}");
+    let idle_id = idle["terminal_id"].as_str().unwrap().to_string();
+    let idle_shell = terminal_session::lookup(&workspace, Some("thread-revoke"), &idle_id).unwrap();
+
+    f.manager.shared.core_calls.revoke_host(HostTier::Plugin, 7);
+    assert!(
+        terminal_session::lookup(&workspace, Some("thread-revoke"), &idle_id).is_some(),
+        "host process exit must not end a still-enabled plugin's shells"
+    );
+    assert!(
+        terminal_session::session_exit_status(&mut idle_shell.lock().unwrap())
+            .unwrap()
+            .is_none()
+    );
+    drop(guard);
+
+    let guard_2 = f.begin(8, &f.owner);
+    let terminal_2 = broker_ticket(&guard_2, "terminal").unwrap();
+    let (in_flight, ()) = tokio::join!(
+        f.broker_at(
+            8,
+            TABLE,
+            &f.owner,
+            &terminal_2,
+            "terminal",
+            "run",
+            json!({"command": "printf 'cmd-started\\n'; sleep 30", "session": "work", "timeout_secs": 2}),
+        ),
+        async {
+            until("dsh:a:work command running", || {
+                terminal_session::owned_sessions(&workspace, "thread-revoke")
+                    .is_ok_and(|entries| {
+                        entries.iter().any(|info| {
+                            info.name == "dsh:a:work"
+                                && terminal_session::lookup(
+                                    &workspace,
+                                    Some("thread-revoke"),
+                                    &info.id,
+                                )
+                                .is_some_and(|session| {
+                                    terminal_session::read_session_since(
+                                        &session.lock().unwrap(),
+                                        0,
+                                        4096,
+                                    )
+                                    .is_ok_and(|chunk| {
+                                        String::from_utf8_lossy(&chunk.bytes)
+                                            .contains("cmd-started")
+                                    })
+                                })
+                        })
+                    })
+            })
+            .await;
+            f.manager.reconcile().await.unwrap();
+        }
+    );
+    assert_eq!(
+        dsh_refusal(&in_flight),
+        (error_code::CANCELLED, "cancelled".into())
+    );
+    until("killed plugin shells to exit", || {
+        terminal_session::session_exit_status(&mut idle_shell.lock().unwrap())
+            .unwrap()
+            .is_some()
+    })
+    .await;
+    assert!(
+        terminal_session::lookup(&workspace, Some("thread-revoke"), &idle_id).is_none(),
+        "disabled/revoked plugin's idle shell must be removed"
+    );
+    let remaining: Vec<String> = terminal_session::owned_sessions(&workspace, "thread-revoke")
+        .unwrap()
+        .into_iter()
+        .map(|info| info.name)
+        .collect();
+    assert_eq!(
+        remaining.iter().filter(|name| *name == "term-1").count(),
+        1,
+        "thread's own term-1 must remain: {remaining:?}"
+    );
+    assert!(
+        remaining.contains(&"dsh:a:b:x".to_string()),
+        "non-plugin-matching name must remain: {remaining:?}"
+    );
+    assert!(
+        !remaining
+            .iter()
+            .any(|name| name == "dsh:a:idle" || name == "dsh:a:work"),
+        "plugin shells must be gone: {remaining:?}"
+    );
+    assert!(
+        terminal_session::session_exit_status(&mut term1.lock().unwrap())
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        terminal_session::session_exit_status(&mut colliding.lock().unwrap())
+            .unwrap()
+            .is_none()
+    );
+
+    let _ = terminal_session::kill_owner_sessions(&workspace, "thread-revoke");
+    drop(guard_2);
     assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
 }
 

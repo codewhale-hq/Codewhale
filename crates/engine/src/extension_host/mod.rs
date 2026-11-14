@@ -130,7 +130,7 @@ mod dsh_plugins;
 mod dsh_remote;
 pub use dsh_remote::{RemoteClient, RemoteDenial, RemoteGrants, RemotePairing, remote_grants};
 mod dsh_settings;
-mod dsh_terminal;
+pub(crate) mod dsh_terminal;
 mod dsh_workspace;
 pub mod execution;
 pub use execution::StockOperation;
@@ -772,6 +772,14 @@ impl ManagerShared {
             .record_dirty_teardown(Instant::now(), &self.options.supervision);
     }
 
+    fn revoke_owner_state(&self, plugin_id: &str) {
+        self.core_calls.revoke_owner(plugin_id);
+        self.execution_broker.revoke_owner(plugin_id);
+        self.mcp_users
+            .fetch_sub(self.mcp_broker.revoke_owner(plugin_id), Ordering::SeqCst);
+        dsh_terminal::kill_plugin_sessions(plugin_id);
+    }
+
     fn diagnostic(&self, message: String) {
         self.record_diagnostic(None, message);
     }
@@ -1202,14 +1210,7 @@ impl HostEvents for Events {
             host.revoke_calls_of(&params.owner.plugin_id);
         }
         drop(slot);
-        shared.core_calls.revoke_owner(&params.owner.plugin_id);
-        shared
-            .execution_broker
-            .revoke_owner(&params.owner.plugin_id);
-        shared.mcp_users.fetch_sub(
-            shared.mcp_broker.revoke_owner(&params.owner.plugin_id),
-            Ordering::SeqCst,
-        );
+        shared.revoke_owner_state(&params.owner.plugin_id);
         shared.plugin_diagnostic(
             &params.owner.plugin_id,
             format!(
@@ -2204,12 +2205,7 @@ impl ExtensionHostManager {
         }
         let host = shared.ready_host(HostTier::Plugin).ok();
         for owner in revoked {
-            shared.core_calls.revoke_owner(&owner.plugin_id);
-            shared.execution_broker.revoke_owner(&owner.plugin_id);
-            shared.mcp_users.fetch_sub(
-                shared.mcp_broker.revoke_owner(&owner.plugin_id),
-                Ordering::SeqCst,
-            );
+            shared.revoke_owner_state(&owner.plugin_id);
             shared.plugin_diagnostic(
                 &owner.plugin_id,
                 format!("extension `{}` revoked", owner.plugin_id),
@@ -2334,12 +2330,7 @@ impl ExtensionHostManager {
             .owner(owner_id)
             .is_some_and(|entry| entry.state != OwnerState::Active);
         if stale {
-            self.shared.core_calls.revoke_owner(owner_id);
-            self.shared.execution_broker.revoke_owner(owner_id);
-            self.shared.mcp_users.fetch_sub(
-                self.shared.mcp_broker.revoke_owner(owner_id),
-                Ordering::SeqCst,
-            );
+            self.shared.revoke_owner_state(owner_id);
             self.shared
                 .registry
                 .lock()

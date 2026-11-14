@@ -18,7 +18,7 @@ const MAX_COMMAND_BYTES: usize = 16 * 1024;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_TIMEOUT_SECS: u64 = 600;
 const MAX_SETTLE_MS: u64 = 60_000;
-pub(super) const MAX_TERMINALS: usize = 8;
+pub(crate) const MAX_TERMINALS: usize = 8;
 const LOG: &str = "codewhale::dsh_terminal";
 
 static REGISTRY_GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
@@ -224,19 +224,29 @@ fn refused(message: &str) -> BrokerRefusal {
     }
 }
 
-fn session_name(name: &str) -> Result<&str, BrokerRefusal> {
-    let ok = !name.is_empty()
+pub(crate) fn is_valid_session_name(name: &str) -> bool {
+    !name.is_empty()
         && name.len() <= MAX_SESSION_NAME
         && name
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'));
-    if ok {
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+}
+
+fn session_name(name: &str) -> Result<&str, BrokerRefusal> {
+    if is_valid_session_name(name) {
         Ok(name)
     } else {
         Err(invalid(format!(
             "a terminal name is 1 to {MAX_SESSION_NAME} letters, digits, `_`, `-` or `.`"
         )))
     }
+}
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+pub(crate) fn session_parts(full_name: &str) -> Option<(&str, &str)> {
+    let rest = full_name.strip_prefix("dsh:")?;
+    let (plugin_id, session) = rest.rsplit_once(':')?;
+    (!plugin_id.is_empty() && is_valid_session_name(session)).then_some((plugin_id, session))
 }
 
 fn timeout(secs: Option<u64>) -> Result<Option<u64>, BrokerRefusal> {
@@ -248,9 +258,20 @@ fn timeout(secs: Option<u64>) -> Result<Option<u64>, BrokerRefusal> {
     }
 }
 
-fn prefix(plugin: &str) -> String {
+pub(crate) fn prefix(plugin: &str) -> String {
     format!("dsh:{plugin}:")
 }
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+pub(super) fn kill_plugin_sessions(plugin_id: &str) {
+    let prefix = prefix(plugin_id);
+    if let Err(error) = crate::tools::terminal_session::kill_sessions_named(&prefix) {
+        tracing::warn!(target: LOG, plugin = %plugin_id, %error, "failed to end plugin terminal sessions");
+    }
+}
+
+#[cfg(not(all(unix, not(target_env = "ohos"))))]
+pub(super) fn kill_plugin_sessions(_plugin_id: &str) {}
 
 fn owned_name(call: &BrokerCall, session: &str) -> String {
     format!("{}{session}", prefix(&call.owner.plugin_id))
