@@ -1837,3 +1837,1406 @@ fn dsh_client_closure_is_retained_hashed_and_refuses_ambient_dependencies() {
         );
     }
 }
+
+fn write_dsh_base_package(root: &Path, package_json: serde_json::Value, patch: &str) -> PathBuf {
+    fs::create_dir_all(root).unwrap();
+    fs::write(
+        root.join("package.json"),
+        serde_json::to_string_pretty(&package_json).unwrap(),
+    )
+    .unwrap();
+    fs::write(root.join("cordis.patch.yml"), patch).unwrap();
+    root.to_path_buf()
+}
+
+fn minimal_dsh_patch_with_skill() -> &'static str {
+    "- insert:\n  - id: guide-skills\n    name: '@deepseek-ai/dsh-skill-filesystem'\n    config:\n      customSkillDirs:\n        - custom-skills\n"
+}
+
+fn write_minimal_skill(dir: &Path, name: &str) {
+    fs::create_dir_all(dir.join(name)).unwrap();
+    fs::write(
+        dir.join(name).join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: demo skill\n---\nbody\n"),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn local_install_of_folder_with_both_files_takes_dsh_and_merges_commands_agents_hooks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins = tmp.path().join("plugins");
+    let pkg = write_dsh_base_package(
+        &tmp.path().join("combo-pkg"),
+        serde_json::json!({
+            "name": "@acme/combo-widget",
+            "version": "1.2.0",
+            "description": "DSH description wins",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        }),
+        minimal_dsh_patch_with_skill(),
+    );
+    write_minimal_skill(&pkg.join("custom-skills"), "guide");
+    fs::create_dir_all(pkg.join("commands")).unwrap();
+    fs::write(pkg.join("commands/hello.md"), "# Hello\nRun hello.\n").unwrap();
+    fs::create_dir_all(pkg.join("agents")).unwrap();
+    fs::write(
+        pkg.join("agents/reviewer.toml"),
+        "id = \"reviewer\"\n[role]\nname = \"reviewer\"\ndescription = \"Reviews\"\nprompt = \"Review.\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(pkg.join("hooks")).unwrap();
+    fs::write(
+        pkg.join("hooks/hooks.toml"),
+        "enabled = true\n[[hooks]]\nname = \"check\"\nevent = \"turn_end\"\ncommand = \"true\"\n",
+    )
+    .unwrap();
+    fs::write(
+        pkg.join("plugin.json"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "combo-widget",
+            "version": "1.2.0",
+            "extensions": {
+                "net.codewhale": {
+                    "commands": {"path": "commands"},
+                    "agents": {"path": "agents"},
+                    "hooks": {"path": "hooks"}
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let bare_source = PluginInstallSource::parse(pkg.to_str().unwrap()).unwrap();
+    assert_eq!(bare_source, PluginInstallSource::Dsh(pkg.clone()));
+    let path_prefixed =
+        PluginInstallSource::parse(&format!("path:{}", pkg.to_str().unwrap())).unwrap();
+    assert_eq!(path_prefixed, PluginInstallSource::Dsh(pkg.clone()));
+
+    let outcome = install(
+        bare_source,
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &allow_all(),
+        false,
+        &no_conflict(),
+    )
+    .await
+    .unwrap();
+    let PluginInstallOutcome::Installed(installed) = outcome else {
+        panic!("expected merged install");
+    };
+    assert_eq!(installed.name, "combo-widget");
+    assert!(installed.path.join("commands/hello.md").is_file());
+    assert!(installed.path.join("agents/reviewer.toml").is_file());
+    assert!(installed.path.join("hooks/hooks.toml").is_file());
+    assert!(installed.path.join("skills/guide/SKILL.md").is_file());
+    assert!(installed.path.join("CONVERSION.md").is_file());
+    assert!(installed.path.join("CONVERSION.json").is_file());
+
+    let validated =
+        crate::manifest::PluginManifest::validate_from_path(&installed.path.join("plugin.json"))
+            .unwrap();
+    assert_eq!(validated.inventory.skills, 1);
+    assert_eq!(validated.inventory.commands, 1);
+    assert_eq!(validated.inventory.agents, 1);
+    assert_eq!(validated.inventory.hooks, 1);
+
+    let config = crate::discovery::DiscoveryConfig {
+        workspace: tmp.path().join("workspace"),
+        user_plugins_dir: plugins.clone(),
+        workspace_plugins_dir: tmp.path().join("workspace/.codewhale/plugins"),
+        builtin_plugin_dirs: Vec::new(),
+        state_path: tmp.path().join("state.json"),
+    };
+    let registry = crate::discovery::discover_with_config(&config);
+    let loaded = registry.get("combo-widget").unwrap();
+    assert!(!loaded.trusted());
+    assert!(!loaded.enabled);
+    assert_eq!(loaded.inventory.commands, 1);
+    assert_eq!(loaded.inventory.agents, 1);
+    assert_eq!(loaded.inventory.hooks, 1);
+}
+
+#[test]
+fn plugin_json_beside_dsh_package_keeps_dsh_name_and_version_and_refuses_mismatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let make_pair = |tag: &str, pkg_ver: Option<&str>, pj: serde_json::Value| {
+        let mut package = serde_json::json!({
+            "name": "@org/my-tool",
+            "description": "From package.json",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        });
+        if let Some(ver) = pkg_ver {
+            package["version"] = serde_json::json!(ver);
+        }
+        let dir = write_dsh_base_package(
+            &tmp.path().join(tag),
+            package,
+            minimal_dsh_patch_with_skill(),
+        );
+        write_minimal_skill(&dir.join("custom-skills"), "guide");
+        fs::create_dir_all(dir.join("commands")).unwrap();
+        fs::write(dir.join("commands/ping.md"), "ping\n").unwrap();
+        fs::write(
+            dir.join("plugin.json"),
+            serde_json::to_string_pretty(&pj).unwrap(),
+        )
+        .unwrap();
+        dir
+    };
+
+    let wrong_name = make_pair(
+        "wrong-name",
+        Some("1.0.0"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "other-name",
+            "version": "1.0.0",
+            "extensions": {"net.codewhale": {"commands": {"path": "commands"}}}
+        }),
+    );
+    let err = dsh::convert_package(&wrong_name, &tmp.path().join("out-wrong-name"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("plugin.json"), "{err}");
+    assert!(err.contains("package.json"), "{err}");
+    assert!(err.contains("my-tool"), "{err}");
+
+    let wrong_ver = make_pair(
+        "wrong-ver",
+        Some("1.0.0"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "my-tool",
+            "version": "2.0.0",
+            "extensions": {"net.codewhale": {"commands": {"path": "commands"}}}
+        }),
+    );
+    let err = dsh::convert_package(&wrong_ver, &tmp.path().join("out-wrong-ver"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("plugin.json"), "{err}");
+    assert!(err.contains("package.json"), "{err}");
+    assert!(err.contains("2.0.0"), "{err}");
+
+    let meta_ignored = make_pair(
+        "meta-ignored",
+        Some("1.0.0"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "my-tool",
+            "description": "From plugin.json (ignored)",
+            "author": {"name": "Someone"},
+            "homepage": "https://example.invalid",
+            "repository": "https://example.invalid/repo",
+            "license": "MIT",
+            "keywords": ["alpha"],
+            "extensions": {
+                "net.codewhale": {"commands": {"path": "commands"}},
+                "com.example.vendor": {"ignored": true}
+            }
+        }),
+    );
+    let out_ignored = tmp.path().join("out-meta-ignored");
+    let converted = dsh::convert_package(&meta_ignored, &out_ignored).unwrap();
+    assert!(
+        converted
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("plugin.json")
+                && line.contains("package.json")
+                && line.contains("description")
+                && line.contains("author")),
+        "{:?}",
+        converted.diagnostics
+    );
+    let emitted: serde_json::Value =
+        serde_json::from_slice(&fs::read(out_ignored.join("plugin.json")).unwrap()).unwrap();
+    assert_eq!(emitted["name"], "my-tool");
+    assert_eq!(emitted["version"], "1.0.0");
+    assert_eq!(emitted["description"], "From package.json");
+    assert!(emitted.get("author").is_none());
+    assert!(emitted["extensions"].get("com.example.vendor").is_none());
+
+    let pkg_no_ver = make_pair(
+        "pkg-no-ver",
+        None,
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "my-tool",
+            "version": "9.9.9",
+            "extensions": {"net.codewhale": {"commands": {"path": "commands"}}}
+        }),
+    );
+    let out_no_ver = tmp.path().join("out-no-ver");
+    dsh::convert_package(&pkg_no_ver, &out_no_ver).unwrap();
+    let emitted_no_ver: serde_json::Value =
+        serde_json::from_slice(&fs::read(out_no_ver.join("plugin.json")).unwrap()).unwrap();
+    assert!(emitted_no_ver.get("version").is_none());
+}
+
+#[test]
+fn plugin_json_beside_dsh_package_may_not_declare_skills_or_connectors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let setup = |tag: &str, ext: serde_json::Value| {
+        let dir = write_dsh_base_package(
+            &tmp.path().join(tag),
+            serde_json::json!({
+                "name": "tool-pkg",
+                "version": "1.0.0",
+                "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+            }),
+            minimal_dsh_patch_with_skill(),
+        );
+        write_minimal_skill(&dir.join("custom-skills"), "guide");
+        fs::create_dir_all(dir.join("commands")).unwrap();
+        fs::write(dir.join("commands/ping.md"), "ping\n").unwrap();
+        fs::write(
+            dir.join("plugin.json"),
+            serde_json::json!({
+                "$schema": "https://agent-plugins.org/schemas/plugin.json",
+                "name": "tool-pkg",
+                "version": "1.0.0",
+                "extensions": {"net.codewhale": ext}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        dir
+    };
+
+    for (key, val) in [
+        ("skills", serde_json::json!({"path": "custom-skills"})),
+        ("native", serde_json::json!({"path": "index.mjs"})),
+        ("lsp", serde_json::json!({"path": "lsp"})),
+        (
+            "providers",
+            serde_json::json!({"acme": {"base_url": "https://example.invalid"}}),
+        ),
+        (
+            "capabilities",
+            serde_json::json!({"network_hosts": ["api.example.com"]}),
+        ),
+        ("when", serde_json::json!({"binaries": ["node"]})),
+        ("display_name", serde_json::json!("Pretty")),
+        ("icon", serde_json::json!("icon.svg")),
+    ] {
+        let pkg = setup(&format!("forbid-{key}"), serde_json::json!({key: val}));
+        let err = dsh::convert_package(&pkg, &tmp.path().join(format!("out-{key}")))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("plugin.json"), "{key}: {err}");
+        assert!(err.contains("package.json"), "{key}: {err}");
+        assert!(err.contains(key), "{key}: {err}");
+    }
+
+    let with_mcp_json = setup(
+        "sibling-mcp-json",
+        serde_json::json!({"commands": {"path": "commands"}}),
+    );
+    fs::write(
+        with_mcp_json.join("mcp.json"),
+        r#"{"mcpServers":{"s":{"type":"http","url":"https://example.invalid"}}}"#,
+    )
+    .unwrap();
+    let err = dsh::convert_package(&with_mcp_json, &tmp.path().join("out-mcp-json"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("plugin.json"), "{err}");
+    assert!(err.contains("package.json"), "{err}");
+    assert!(err.contains("mcp.json"), "{err}");
+
+    let with_unpatched_skills = setup(
+        "unpatched-skills-dir",
+        serde_json::json!({"commands": {"path": "commands"}}),
+    );
+    write_minimal_skill(&with_unpatched_skills.join("skills"), "auto-picked");
+    let err = dsh::convert_package(
+        &with_unpatched_skills,
+        &tmp.path().join("out-unpatched-skills"),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("plugin.json"), "{err}");
+    assert!(err.contains("package.json"), "{err}");
+    assert!(err.contains("skills/"), "{err}");
+
+    let patched_root_skills = write_dsh_base_package(
+        &tmp.path().join("patched-root-skills"),
+        serde_json::json!({
+            "name": "tool-pkg",
+            "version": "1.0.0",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        }),
+        "- insert:\n  - id: root-skills\n    name: '@deepseek-ai/dsh-skill-filesystem'\n    config:\n      customSkillDirs:\n        - skills\n",
+    );
+    write_minimal_skill(&patched_root_skills.join("skills"), "patched");
+    fs::create_dir_all(patched_root_skills.join("commands")).unwrap();
+    fs::write(patched_root_skills.join("commands/ping.md"), "ping\n").unwrap();
+    fs::write(
+        patched_root_skills.join("plugin.json"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "tool-pkg",
+            "version": "1.0.0",
+            "extensions": {"net.codewhale": {"commands": {"path": "commands"}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let converted = dsh::convert_package(
+        &patched_root_skills,
+        &tmp.path().join("out-patched-root-skills"),
+    )
+    .unwrap();
+    assert_eq!(converted.skills, ["patched"]);
+    assert_eq!(converted.commands, ["commands/ping.md"]);
+}
+
+#[test]
+fn hooks_from_plugin_json_and_hook_bridge_patch_row_are_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    for (label, bridge_pkg) in [
+        ("claude", "@deepseek-ai/dsh-hooks-claude-code"),
+        ("codex", "@deepseek-ai/dsh-hooks-codex"),
+    ] {
+        let dir = write_dsh_base_package(
+            &tmp.path().join(format!("dup-hooks-{label}")),
+            serde_json::json!({
+                "name": "hook-clash",
+                "version": "1.0.0",
+                "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+            }),
+            &format!(
+                "- insert:\n  - id: bridge-hooks\n    name: '{bridge_pkg}'\n    config:\n      configPath: bridge-hooks.json\n"
+            ),
+        );
+        fs::write(dir.join("bridge-hooks.json"), "{}").unwrap();
+        fs::create_dir_all(dir.join("hooks")).unwrap();
+        fs::write(
+            dir.join("hooks/hooks.toml"),
+            "enabled = true\n[[hooks]]\nname = \"cw\"\nevent = \"turn_end\"\ncommand = \"true\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("plugin.json"),
+            serde_json::json!({
+                "$schema": "https://agent-plugins.org/schemas/plugin.json",
+                "name": "hook-clash",
+                "version": "1.0.0",
+                "extensions": {"net.codewhale": {"hooks": {"path": "hooks"}}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let err = dsh::convert_package(&dir, &tmp.path().join(format!("out-{label}")))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("package.json"), "{label}: {err}");
+        assert!(err.contains("plugin.json"), "{label}: {err}");
+        assert!(err.contains("hooks"), "{label}: {err}");
+    }
+}
+
+#[test]
+fn other_manifest_spellings_beside_dsh_package_are_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    for spelling in [
+        "kimi.plugin.json",
+        "plugin.toml",
+        ".claude-plugin/plugin.json",
+        ".plugin/plugin.json",
+        ".github/plugin/plugin.json",
+    ] {
+        let dir = write_dsh_base_package(
+            &tmp.path().join(spelling.replace(['/', '.'], "_")),
+            serde_json::json!({
+                "name": "other-manifest",
+                "version": "1.0.0",
+                "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+            }),
+            minimal_dsh_patch_with_skill(),
+        );
+        write_minimal_skill(&dir.join("custom-skills"), "guide");
+        let target = dir.join(spelling);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(
+            &target,
+            if spelling.ends_with(".toml") {
+                "schema_version = 1\n[plugin]\nname = \"other-manifest\"\nversion = \"1.0.0\"\n"
+            } else {
+                r#"{"name":"other-manifest"}"#
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            PluginInstallSource::parse(dir.to_str().unwrap()).unwrap(),
+            PluginInstallSource::Dsh(dir.clone()),
+            "{spelling} must still route to DSH"
+        );
+        let err = dsh::convert_package(
+            &dir,
+            &tmp.path()
+                .join(format!("out-{}", spelling.replace(['/', '.'], "_"))),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("package.json"), "{spelling}: {err}");
+        assert!(err.contains(spelling), "{spelling}: {err}");
+    }
+
+    let non_object_bundle = write_dsh_base_package(
+        &tmp.path().join("non-object-dsh-bundle"),
+        serde_json::json!({
+            "name": "non-object",
+            "version": "1.0.0",
+            "dsh": {"bundle": "not-an-object"}
+        }),
+        "[]\n",
+    );
+    fs::write(
+        non_object_bundle.join("plugin.json"),
+        r#"{"$schema":"https://agent-plugins.org/schemas/plugin.json","name":"non-object"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        PluginInstallSource::parse(non_object_bundle.to_str().unwrap()).unwrap(),
+        PluginInstallSource::Dsh(non_object_bundle.clone())
+    );
+    assert!(dsh::convert_package(&non_object_bundle, &tmp.path().join("out-non-obj")).is_err());
+}
+
+#[test]
+fn plain_dsh_package_with_no_plugin_json_keeps_behavior_with_skills_dir_or_mcp_json() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = write_dsh_base_package(
+        &tmp.path().join("plain-dsh"),
+        serde_json::json!({
+            "name": "plain-dsh",
+            "version": "1.0.0",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        }),
+        minimal_dsh_patch_with_skill(),
+    );
+    write_minimal_skill(&dir.join("custom-skills"), "guide");
+    write_minimal_skill(&dir.join("skills"), "unreferenced");
+    fs::write(dir.join("mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+
+    let out = tmp.path().join("out-plain-dsh");
+    let converted = dsh::convert_package(&dir, &out).unwrap();
+    assert_eq!(converted.skills, ["guide"]);
+    assert!(converted.commands.is_empty());
+    assert!(converted.agents.is_empty());
+    assert!(converted.hooks.is_empty());
+    assert!(!out.join("skills/unreferenced").exists());
+    assert!(!out.join("mcp.json").exists());
+
+    let emitted_manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(out.join("plugin.json")).unwrap()).unwrap();
+    let net_codewhale = emitted_manifest
+        .get("extensions")
+        .and_then(|ext| ext.get("net.codewhale"));
+    for forbidden in ["commands", "agents", "hooks"] {
+        assert!(
+            net_codewhale.and_then(|obj| obj.get(forbidden)).is_none(),
+            "{forbidden} must be omitted from plugin.json"
+        );
+    }
+    let conversion_json: serde_json::Value =
+        serde_json::from_slice(&fs::read(out.join("CONVERSION.json")).unwrap()).unwrap();
+    for key in ["commands", "agents", "hooks"] {
+        assert!(conversion_json.get(key).is_none());
+        assert!(conversion_json["counts"].get(key).is_none());
+    }
+    let conversion_md = fs::read_to_string(out.join("CONVERSION.md")).unwrap();
+    assert!(!conversion_md.contains("Merged from sibling plugin.json"));
+}
+
+#[test]
+fn component_paths_in_sibling_plugin_json_cannot_escape_or_follow_links() {
+    let tmp = tempfile::tempdir().unwrap();
+    let outside = tmp.path().join("outside.md");
+    fs::write(&outside, "secret\n").unwrap();
+
+    let make = |tag: &str, commands_path: &str| {
+        let dir = write_dsh_base_package(
+            &tmp.path().join(tag),
+            serde_json::json!({
+                "name": "sec-pkg",
+                "version": "1.0.0",
+                "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+            }),
+            minimal_dsh_patch_with_skill(),
+        );
+        write_minimal_skill(&dir.join("custom-skills"), "guide");
+        fs::write(
+            dir.join("plugin.json"),
+            serde_json::json!({
+                "$schema": "https://agent-plugins.org/schemas/plugin.json",
+                "name": "sec-pkg",
+                "version": "1.0.0",
+                "extensions": {"net.codewhale": {"commands": {"path": commands_path}}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        dir
+    };
+
+    for (tag, bad_path) in [
+        ("parent", "../outside.md"),
+        ("abs", "/etc/passwd"),
+        ("win-abs", "C:\\Users\\demo\\.ssh\\id_rsa"),
+        ("dot-env", ".env"),
+        ("ssh", ".ssh/id_rsa"),
+        ("creds", "credentials.json"),
+        ("dot", "."),
+    ] {
+        let dir = make(tag, bad_path);
+        if bad_path == ".env" || bad_path == "credentials.json" {
+            fs::write(dir.join(bad_path), "SECRET=1\n").unwrap();
+        }
+        assert!(
+            dsh::convert_package(&dir, &tmp.path().join(format!("out-{tag}"))).is_err(),
+            "{tag} ({bad_path}) must refuse"
+        );
+    }
+
+    let hidden_in_dir = make("hidden-in-dir", "commands");
+    fs::create_dir_all(hidden_in_dir.join("commands")).unwrap();
+    fs::write(hidden_in_dir.join("commands/.env"), "SECRET=1\n").unwrap();
+    assert!(dsh::convert_package(&hidden_in_dir, &tmp.path().join("out-hidden-in-dir")).is_err());
+
+    #[cfg(unix)]
+    {
+        let linked_cmd = make("linked-cmd", "commands");
+        fs::create_dir_all(linked_cmd.join("commands")).unwrap();
+        std::os::unix::fs::symlink(&outside, linked_cmd.join("commands/link.md")).unwrap();
+        assert!(dsh::convert_package(&linked_cmd, &tmp.path().join("out-linked-cmd")).is_err());
+
+        let linked_pj = write_dsh_base_package(
+            &tmp.path().join("linked-pj"),
+            serde_json::json!({
+                "name": "sec-pkg",
+                "version": "1.0.0",
+                "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+            }),
+            minimal_dsh_patch_with_skill(),
+        );
+        write_minimal_skill(&linked_pj.join("custom-skills"), "guide");
+        let outside_pj = tmp.path().join("outside-plugin.json");
+        fs::write(
+            &outside_pj,
+            r#"{"$schema":"https://agent-plugins.org/schemas/plugin.json","name":"sec-pkg"}"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside_pj, linked_pj.join("plugin.json")).unwrap();
+        assert!(dsh::convert_package(&linked_pj, &tmp.path().join("out-linked-pj")).is_err());
+
+        let hardlinked = make("hardlinked", "commands");
+        fs::create_dir_all(hardlinked.join("commands")).unwrap();
+        fs::hard_link(&outside, hardlinked.join("commands/hard.md")).unwrap();
+        assert!(dsh::convert_package(&hardlinked, &tmp.path().join("out-hardlinked")).is_err());
+    }
+}
+
+#[tokio::test]
+async fn existing_codewhale_install_keeps_update_semantics_when_dsh_added() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins = tmp.path().join("plugins");
+    let source = tmp.path().join("evolved-plugin");
+    fs::create_dir_all(source.join("commands")).unwrap();
+    fs::write(source.join("commands/ping.md"), "ping v1\n").unwrap();
+    fs::write(
+        source.join("plugin.json"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "evolved",
+            "version": "1.0.0",
+            "extensions": {"net.codewhale": {"commands": {"path": "commands"}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let outcome = install(
+        PluginInstallSource::parse(source.to_str().unwrap()).unwrap(),
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &allow_all(),
+        false,
+        &no_conflict(),
+    )
+    .await
+    .unwrap();
+    let PluginInstallOutcome::Installed(installed) = outcome else {
+        panic!("expected initial install");
+    };
+    let marker: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(installed.path.join(INSTALLED_FROM_MARKER)).unwrap(),
+    )
+    .unwrap();
+    assert!(marker["spec"].as_str().unwrap().starts_with("path:"));
+
+    fs::write(
+        source.join("package.json"),
+        serde_json::json!({
+            "name": "evolved",
+            "version": "1.0.0",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(source.join("cordis.patch.yml"), "[]\n").unwrap();
+    fs::write(source.join("commands/ping.md"), "ping v2\n").unwrap();
+
+    assert_eq!(
+        PluginInstallSource::parse(source.to_str().unwrap()).unwrap(),
+        PluginInstallSource::Dsh(source.clone())
+    );
+
+    let updated = update("evolved", &plugins, DEFAULT_MAX_SIZE_BYTES, &allow_all())
+        .await
+        .unwrap();
+    let PluginUpdateResult::Updated(updated_bundle) = updated else {
+        panic!("expected LocalPath update");
+    };
+    assert_eq!(
+        fs::read_to_string(updated_bundle.path.join("commands/ping.md")).unwrap(),
+        "ping v2\n"
+    );
+    assert!(!updated_bundle.path.join("CONVERSION.json").exists());
+}
+
+#[tokio::test]
+async fn merged_bundle_review_shows_commands_agents_hooks_and_fails_closed_on_tamper() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins = tmp.path().join("plugins");
+    let pkg = write_dsh_base_package(
+        &tmp.path().join("review-pkg"),
+        serde_json::json!({
+            "name": "review-pkg",
+            "version": "1.0.0",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        }),
+        "[]\n",
+    );
+    fs::create_dir_all(pkg.join("commands")).unwrap();
+    fs::write(pkg.join("commands/hello.md"), "hello v1\n").unwrap();
+    fs::create_dir_all(pkg.join("agents")).unwrap();
+    fs::write(
+        pkg.join("agents/scout.toml"),
+        "id = \"scout\"\n[role]\nname = \"scout\"\ndescription = \"Scouts\"\nprompt = \"Scout.\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(pkg.join("hooks")).unwrap();
+    fs::write(
+        pkg.join("hooks/hooks.toml"),
+        "enabled = true\n[[hooks]]\nname = \"guard\"\nevent = \"turn_end\"\ncommand = \"true\"\n",
+    )
+    .unwrap();
+    fs::write(
+        pkg.join("plugin.json"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "review-pkg",
+            "version": "1.0.0",
+            "extensions": {
+                "net.codewhale": {
+                    "commands": {"path": "commands"},
+                    "agents": {"path": "agents"},
+                    "hooks": {"path": "hooks"}
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let (conversion, reviewed_hash) = preview_dsh(&pkg).unwrap();
+    assert_eq!(conversion.commands, ["commands/hello.md"]);
+    assert_eq!(conversion.agents, ["agents/scout.toml"]);
+    assert_eq!(conversion.hooks, ["hooks/hooks.toml"]);
+
+    fs::write(pkg.join("commands/hello.md"), "tampered\n").unwrap();
+    let err = install_with_expected_content_hash(
+        PluginInstallSource::parse(pkg.to_str().unwrap()).unwrap(),
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &allow_all(),
+        &no_conflict(),
+        &reviewed_hash,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.downcast_ref::<PluginContentMismatch>().is_some());
+    assert!(!plugins.join("review-pkg").exists());
+
+    let (updated_conversion, updated_hash) = preview_dsh(&pkg).unwrap();
+    assert_eq!(updated_conversion.commands, ["commands/hello.md"]);
+    let outcome = install_with_expected_content_hash(
+        PluginInstallSource::parse(pkg.to_str().unwrap()).unwrap(),
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &allow_all(),
+        &no_conflict(),
+        &updated_hash,
+    )
+    .await
+    .unwrap();
+    let PluginInstallOutcome::Installed(installed) = outcome else {
+        panic!("expected install");
+    };
+    let receipt_md = fs::read_to_string(installed.path.join("CONVERSION.md")).unwrap();
+    assert!(receipt_md.contains("commands/hello.md"), "{receipt_md}");
+    assert!(receipt_md.contains("agents/scout.toml"), "{receipt_md}");
+    assert!(receipt_md.contains("hooks/hooks.toml"), "{receipt_md}");
+    let receipt_json: serde_json::Value =
+        serde_json::from_slice(&fs::read(installed.path.join("CONVERSION.json")).unwrap()).unwrap();
+    assert_eq!(receipt_json["counts"]["commands"], 1);
+    assert_eq!(receipt_json["counts"]["agents"], 1);
+    assert_eq!(receipt_json["counts"]["hooks"], 1);
+
+    fs::write(pkg.join("commands/hello.md"), "hello v3\n").unwrap();
+    let PluginUpdateResult::Updated(refreshed) =
+        update("review-pkg", &plugins, DEFAULT_MAX_SIZE_BYTES, &allow_all())
+            .await
+            .unwrap()
+    else {
+        panic!("expected DSH update");
+    };
+    assert_eq!(
+        fs::read_to_string(refreshed.path.join("commands/hello.md")).unwrap(),
+        "hello v3\n"
+    );
+}
+
+#[test]
+fn package_with_native_code_and_plugin_json_commands_prevents_bytes_drift_and_collisions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = write_dsh_base_package(
+        &tmp.path().join("native-plus-cmd"),
+        serde_json::json!({
+            "name": "@demo/native-plus-cmd",
+            "version": "1.0.0",
+            "main": "index.js",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        }),
+        "- insert:\n  - id: native-mod\n    name: '@demo/native-plus-cmd'\n",
+    );
+    fs::write(pkg.join("index.js"), "export function apply() {}\n").unwrap();
+    fs::create_dir_all(pkg.join("extra")).unwrap();
+    fs::write(pkg.join("extra/run.md"), "Run custom command.\n").unwrap();
+    fs::create_dir_all(pkg.join("commands")).unwrap();
+    fs::write(pkg.join("commands/built.md"), "Built-in command.\n").unwrap();
+    fs::write(
+        pkg.join("plugin.json"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "native-plus-cmd",
+            "version": "1.0.0",
+            "extensions": {
+                "net.codewhale": {
+                    "commands": {"paths": ["commands/built.md", "extra/run.md"]}
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = tmp.path().join("out-native-plus-cmd");
+    let converted = dsh::convert_package(&pkg, &out).unwrap();
+    assert!(converted.requires_native);
+    assert_eq!(
+        converted.commands,
+        ["commands/built.md", "commands/extra/run.md"]
+    );
+    assert_eq!(
+        fs::read(out.join("source/commands/built.md")).unwrap(),
+        fs::read(out.join("commands/built.md")).unwrap()
+    );
+    assert_eq!(
+        fs::read(out.join("source/extra/run.md")).unwrap(),
+        fs::read(out.join("commands/extra/run.md")).unwrap()
+    );
+    let validated =
+        crate::manifest::PluginManifest::validate_from_path(&out.join("plugin.json")).unwrap();
+    assert_eq!(validated.inventory.native, 1);
+    assert_eq!(validated.inventory.commands, 2);
+}
+
+#[test]
+fn case_variant_plugin_json_beside_dsh_package_is_handled_on_case_insensitive_fs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let probe = tmp.path().join("case_probe.txt");
+    fs::write(&probe, "x").unwrap();
+    let case_insensitive = fs::symlink_metadata(tmp.path().join("CASE_PROBE.TXT")).is_ok();
+
+    let pkg = write_dsh_base_package(
+        &tmp.path().join("case-pkg"),
+        serde_json::json!({
+            "name": "case-pkg",
+            "version": "1.0.0",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        }),
+        minimal_dsh_patch_with_skill(),
+    );
+    write_minimal_skill(&pkg.join("custom-skills"), "guide");
+    fs::create_dir_all(pkg.join("commands")).unwrap();
+    let crlf_cmd = "Line one\r\nLine two\r\n";
+    fs::write(pkg.join("commands/hello.md"), crlf_cmd).unwrap();
+    let crlf_pj = "{\r\n  \"$schema\": \"https://agent-plugins.org/schemas/plugin.json\",\r\n  \"name\": \"wrong-case-pkg\",\r\n  \"extensions\": {\"net.codewhale\": {\"commands\": {\"path\": \"commands\"}}}\r\n}\r\n";
+    fs::write(pkg.join("Plugin.JSON"), crlf_pj).unwrap();
+
+    if case_insensitive {
+        assert_eq!(
+            PluginInstallSource::parse(pkg.to_str().unwrap()).unwrap(),
+            PluginInstallSource::Dsh(pkg.clone())
+        );
+        let err = dsh::convert_package(&pkg, &tmp.path().join("out-case-bad"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("plugin.json"), "{err}");
+        assert!(err.contains("package.json"), "{err}");
+
+        let valid_crlf_pj = "{\r\n  \"$schema\": \"https://agent-plugins.org/schemas/plugin.json\",\r\n  \"name\": \"case-pkg\",\r\n  \"version\": \"1.0.0\",\r\n  \"extensions\": {\"net.codewhale\": {\"commands\": {\"path\": \"commands\"}}}\r\n}\r\n";
+        fs::write(pkg.join("Plugin.JSON"), valid_crlf_pj).unwrap();
+        let out_ok = tmp.path().join("out-case-ok");
+        let converted = dsh::convert_package(&pkg, &out_ok).unwrap();
+        assert_eq!(converted.commands, ["commands/hello.md"]);
+        assert_eq!(
+            fs::read(out_ok.join("commands/hello.md")).unwrap(),
+            crlf_cmd.as_bytes()
+        );
+    } else {
+        let converted = dsh::convert_package(&pkg, &tmp.path().join("out-case-sens")).unwrap();
+        assert!(converted.commands.is_empty());
+    }
+}
+
+#[test]
+fn tarball_with_dsh_package_and_plugin_json_merges_and_enforces_rules() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dsh_pkg = serde_json::to_vec(&serde_json::json!({
+        "name": "@acme/tar-combo",
+        "version": "1.0.0",
+        "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+    }))
+    .unwrap();
+    let patch = minimal_dsh_patch_with_skill().as_bytes();
+    let skill = b"---\nname: guide\ndescription: demo\n---\nbody\n";
+    let cmd = b"# Tar command\n";
+    let valid_pj = serde_json::to_vec(&serde_json::json!({
+        "$schema": "https://agent-plugins.org/schemas/plugin.json",
+        "name": "tar-combo",
+        "version": "1.0.0",
+        "extensions": {"net.codewhale": {"commands": {"path": "commands"}}}
+    }))
+    .unwrap();
+
+    let ok_tar = tarball(&[
+        ("repo/package.json", &dsh_pkg),
+        ("repo/cordis.patch.yml", patch),
+        ("repo/custom-skills/guide/SKILL.md", skill),
+        ("repo/commands/hello.md", cmd),
+        ("repo/plugin.json", &valid_pj),
+    ]);
+    let staged = tarball::stage_tarball(&ok_tar, tmp.path(), DEFAULT_MAX_SIZE_BYTES, None).unwrap();
+    assert_eq!(staged.name, "tar-combo");
+    assert!(staged.staged_path.join("commands/hello.md").is_file());
+    assert!(staged.staged_path.join("CONVERSION.json").is_file());
+    let validated = crate::manifest::PluginManifest::validate_from_path(
+        &staged.staged_path.join("plugin.json"),
+    )
+    .unwrap();
+    assert_eq!(validated.inventory.skills, 1);
+    assert_eq!(validated.inventory.commands, 1);
+
+    let forbidden_pj = serde_json::to_vec(&serde_json::json!({
+        "$schema": "https://agent-plugins.org/schemas/plugin.json",
+        "name": "tar-combo",
+        "version": "1.0.0",
+        "extensions": {"net.codewhale": {"native": {"path": "index.mjs"}}}
+    }))
+    .unwrap();
+    let bad_tar = tarball(&[
+        ("repo/package.json", &dsh_pkg),
+        ("repo/cordis.patch.yml", patch),
+        ("repo/custom-skills/guide/SKILL.md", skill),
+        ("repo/index.mjs", b"export function apply() {}\n"),
+        ("repo/plugin.json", &forbidden_pj),
+    ]);
+    assert!(tarball::stage_tarball(&bad_tar, tmp.path(), DEFAULT_MAX_SIZE_BYTES, None).is_err());
+
+    let huge_pkg_json = vec![b' '; 1_048_577];
+    let oversized_pkg_tar = tarball(&[
+        ("repo/package.json", &huge_pkg_json),
+        ("repo/plugin.json", &valid_pj),
+    ]);
+    assert!(
+        tarball::stage_tarball(&oversized_pkg_tar, tmp.path(), DEFAULT_MAX_SIZE_BYTES, None)
+            .is_err()
+    );
+
+    let multi_tar = tarball(&[
+        ("a/package.json", &dsh_pkg),
+        ("a/cordis.patch.yml", patch),
+        ("a/custom-skills/guide/SKILL.md", skill),
+        ("b/plugin.json", &valid_pj),
+        ("b/commands/hello.md", cmd),
+    ]);
+    assert!(tarball::stage_tarball(&multi_tar, tmp.path(), DEFAULT_MAX_SIZE_BYTES, None).is_err());
+}
+
+#[test]
+fn tarball_with_dsh_package_and_other_manifest_spelling_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dsh_pkg = serde_json::to_vec(&serde_json::json!({
+        "name": "other-tar",
+        "version": "1.0.0",
+        "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+    }))
+    .unwrap();
+    let patch = minimal_dsh_patch_with_skill().as_bytes();
+    let skill = b"---\nname: guide\ndescription: demo\n---\nbody\n";
+
+    for (path, body) in [
+        (
+            "repo/.claude-plugin/plugin.json",
+            &br#"{"name":"other-tar"}"#[..],
+        ),
+        ("repo/kimi.plugin.json", &br#"{"name":"other-tar"}"#[..]),
+    ] {
+        let archive = tarball(&[
+            ("repo/package.json", &dsh_pkg),
+            ("repo/cordis.patch.yml", patch),
+            ("repo/custom-skills/guide/SKILL.md", skill),
+            (path, body),
+        ]);
+        let err = tarball::stage_tarball(&archive, tmp.path(), DEFAULT_MAX_SIZE_BYTES, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("package.json"), "{path}: {err}");
+    }
+}
+
+#[test]
+fn native_dsh_bundle_allows_root_skills_only_when_skill_filesystem_row_is_active() {
+    let tmp = tempfile::tempdir().unwrap();
+    let active_pkg = write_dsh_base_package(
+        &tmp.path().join("native-active-skills"),
+        serde_json::json!({
+            "name": "@demo/native-skills",
+            "version": "1.0.0",
+            "main": "index.js",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        }),
+        "- insert:\n  - id: native-mod\n    name: '@demo/native-skills'\n  - id: root-skills\n    name: '@deepseek-ai/dsh-skill-filesystem'\n    config:\n      customSkillDirs: [skills]\n",
+    );
+    fs::write(active_pkg.join("index.js"), "export function apply() {}\n").unwrap();
+    write_minimal_skill(&active_pkg.join("skills"), "guide");
+    fs::create_dir_all(active_pkg.join("commands")).unwrap();
+    fs::write(active_pkg.join("commands/hello.md"), "# Hello\n").unwrap();
+    fs::write(
+        active_pkg.join("plugin.json"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "native-skills",
+            "version": "1.0.0",
+            "extensions": {"net.codewhale": {"commands": {"path": "commands"}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let converted =
+        dsh::convert_package(&active_pkg, &tmp.path().join("out-native-active")).unwrap();
+    assert!(converted.requires_native);
+    assert_eq!(converted.commands, ["commands/hello.md"]);
+
+    let disabled_pkg = write_dsh_base_package(
+        &tmp.path().join("native-disabled-skills"),
+        serde_json::json!({
+            "name": "@demo/native-skills",
+            "version": "1.0.0",
+            "main": "index.js",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        }),
+        "- insert:\n  - id: native-mod\n    name: '@demo/native-skills'\n  - id: root-skills\n    name: '@deepseek-ai/dsh-skill-filesystem'\n    disabled: true\n    config:\n      customSkillDirs: [skills]\n",
+    );
+    fs::write(
+        disabled_pkg.join("index.js"),
+        "export function apply() {}\n",
+    )
+    .unwrap();
+    write_minimal_skill(&disabled_pkg.join("skills"), "guide");
+    fs::create_dir_all(disabled_pkg.join("commands")).unwrap();
+    fs::write(disabled_pkg.join("commands/hello.md"), "# Hello\n").unwrap();
+    fs::write(
+        disabled_pkg.join("plugin.json"),
+        fs::read(active_pkg.join("plugin.json")).unwrap(),
+    )
+    .unwrap();
+
+    let err = dsh::convert_package(&disabled_pkg, &tmp.path().join("out-native-disabled"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("skills/"), "{err}");
+
+    let missing_row_pkg = write_dsh_base_package(
+        &tmp.path().join("native-missing-skills"),
+        serde_json::json!({
+            "name": "@demo/native-skills",
+            "version": "1.0.0",
+            "main": "index.js",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        }),
+        "- insert:\n  - id: native-mod\n    name: '@demo/native-skills'\n",
+    );
+    fs::write(
+        missing_row_pkg.join("index.js"),
+        "export function apply() {}\n",
+    )
+    .unwrap();
+    write_minimal_skill(&missing_row_pkg.join("skills"), "guide");
+    fs::create_dir_all(missing_row_pkg.join("commands")).unwrap();
+    fs::write(missing_row_pkg.join("commands/hello.md"), "# Hello\n").unwrap();
+    fs::write(
+        missing_row_pkg.join("plugin.json"),
+        fs::read(active_pkg.join("plugin.json")).unwrap(),
+    )
+    .unwrap();
+    let err = dsh::convert_package(&missing_row_pkg, &tmp.path().join("out-native-missing"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("skills/"), "{err}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn hardlinks_are_rejected_in_local_bundle_and_dsh_routing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins = tmp.path().join("plugins");
+
+    let outside_cmd = tmp.path().join("outside-cmd.md");
+    fs::write(&outside_cmd, "outside\n").unwrap();
+    let local_bundle = tmp.path().join("local-hardlink");
+    fs::create_dir_all(local_bundle.join("commands")).unwrap();
+    fs::write(
+        local_bundle.join("plugin.json"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "local-hardlink",
+            "version": "1.0.0",
+            "extensions": {"net.codewhale": {"commands": {"path": "commands"}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::hard_link(&outside_cmd, local_bundle.join("commands/linked.md")).unwrap();
+    let err = install(
+        PluginInstallSource::parse(local_bundle.to_str().unwrap()).unwrap(),
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &allow_all(),
+        false,
+        &no_conflict(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("hard link"),
+        "expected hard link refusal, got: {err:#}"
+    );
+
+    let outside_pkg_json = tmp.path().join("outside-package.json");
+    fs::write(
+        &outside_pkg_json,
+        serde_json::json!({
+            "name": "hardlink-dsh",
+            "version": "1.0.0",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let dsh_hardlink = tmp.path().join("dsh-hardlink");
+    fs::create_dir_all(&dsh_hardlink).unwrap();
+    fs::hard_link(&outside_pkg_json, dsh_hardlink.join("package.json")).unwrap();
+    fs::write(
+        dsh_hardlink.join("plugin.json"),
+        r#"{"$schema":"https://agent-plugins.org/schemas/plugin.json","name":"hardlink-dsh","version":"1.0.0"}"#,
+    )
+    .unwrap();
+    assert!(PluginInstallSource::parse(dsh_hardlink.to_str().unwrap()).is_err());
+
+    let bad_pkg_json = tmp.path().join("dsh-malformed");
+    fs::create_dir_all(&bad_pkg_json).unwrap();
+    fs::write(bad_pkg_json.join("package.json"), "{not-json").unwrap();
+    fs::write(
+        bad_pkg_json.join("plugin.json"),
+        r#"{"$schema":"https://agent-plugins.org/schemas/plugin.json","name":"bad-pkg","version":"1.0.0"}"#,
+    )
+    .unwrap();
+    assert!(PluginInstallSource::parse(bad_pkg_json.to_str().unwrap()).is_err());
+}
+
+#[tokio::test]
+async fn plugin_json_only_folder_still_installs_by_its_plugin_json() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins = tmp.path().join("plugins");
+
+    let pure_src = tmp.path().join("pure-plugin");
+    fs::create_dir_all(pure_src.join("commands")).unwrap();
+    fs::write(pure_src.join("commands/hello.md"), "# Hello\n").unwrap();
+    fs::write(
+        pure_src.join("plugin.json"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "pure-plugin",
+            "version": "1.0.0",
+            "description": "Plain plugin.json",
+            "extensions": {"net.codewhale": {"commands": {"path": "commands"}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let source_parsed = PluginInstallSource::parse(pure_src.to_str().unwrap()).unwrap();
+    assert_eq!(
+        source_parsed,
+        PluginInstallSource::LocalPath(pure_src.clone())
+    );
+    let expected =
+        crate::manifest::PluginManifest::validate_from_path(&pure_src.join("plugin.json")).unwrap();
+    let PluginInstallOutcome::Installed(installed_pure) = install(
+        source_parsed,
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &allow_all(),
+        false,
+        &no_conflict(),
+    )
+    .await
+    .unwrap() else {
+        panic!("expected pure local install");
+    };
+    assert!(!installed_pure.path.join("CONVERSION.json").exists());
+    let actual_pure = crate::manifest::PluginManifest::validate_from_path(
+        &installed_pure.path.join("plugin.json"),
+    )
+    .unwrap();
+    assert_eq!(installed_pure.content_hash, expected.content_hash);
+    assert_eq!(
+        actual_pure.content_hash,
+        installed_pure.installed_content_hash
+    );
+    assert_eq!(actual_pure.capability_hash, expected.capability_hash);
+
+    let npm_src = tmp.path().join("npm-helper-plugin");
+    fs::create_dir_all(npm_src.join("commands")).unwrap();
+    fs::write(npm_src.join("commands/hello.md"), "# Hello\n").unwrap();
+    fs::write(
+        npm_src.join("package.json"),
+        serde_json::json!({
+            "name": "@demo/helper-scripts",
+            "version": "9.9.9",
+            "scripts": {"test": "echo ok"}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        npm_src.join("plugin.json"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "npm-helper-plugin",
+            "version": "1.0.0",
+            "description": "Plain plugin.json beside npm package.json",
+            "extensions": {"net.codewhale": {"commands": {"path": "commands"}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let expected_npm =
+        crate::manifest::PluginManifest::validate_from_path(&npm_src.join("plugin.json")).unwrap();
+    let npm_parsed = PluginInstallSource::parse(npm_src.to_str().unwrap()).unwrap();
+    assert_eq!(npm_parsed, PluginInstallSource::LocalPath(npm_src.clone()));
+    let PluginInstallOutcome::Installed(installed_npm) = install(
+        npm_parsed,
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &allow_all(),
+        false,
+        &no_conflict(),
+    )
+    .await
+    .unwrap() else {
+        panic!("expected local install with ordinary package.json");
+    };
+    assert!(!installed_npm.path.join("CONVERSION.json").exists());
+    let actual_npm = crate::manifest::PluginManifest::validate_from_path(
+        &installed_npm.path.join("plugin.json"),
+    )
+    .unwrap();
+    assert_eq!(actual_npm.manifest.plugin.name, "npm-helper-plugin");
+    assert_eq!(installed_npm.content_hash, expected_npm.content_hash);
+    assert_eq!(
+        actual_npm.content_hash,
+        installed_npm.installed_content_hash
+    );
+    assert_eq!(actual_npm.capability_hash, expected_npm.capability_hash);
+}
+
+#[tokio::test]
+async fn a_hook_from_plugin_json_is_in_the_review_and_the_capability_hash() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins = tmp.path().join("plugins");
+
+    let hook_a =
+        "enabled = true\n[[hooks]]\nname = \"guard\"\nevent = \"turn_end\"\ncommand = \"true\"\n";
+    let hook_b =
+        "enabled = true\n[[hooks]]\nname = \"alt\"\nevent = \"turn_end\"\ncommand = \"true\"\n";
+
+    let plain = tmp.path().join("plain-hook-bundle");
+    fs::create_dir_all(plain.join("hooks")).unwrap();
+    fs::write(plain.join("hooks/a.toml"), hook_a).unwrap();
+    fs::write(
+        plain.join("plugin.json"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "hook-parity",
+            "version": "1.0.0",
+            "extensions": {"net.codewhale": {"hooks": {"path": "hooks/a.toml"}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let validated_plain =
+        crate::manifest::PluginManifest::validate_from_path(&plain.join("plugin.json")).unwrap();
+
+    let dsh_pkg = write_dsh_base_package(
+        &tmp.path().join("dsh-hook-bundle"),
+        serde_json::json!({
+            "name": "hook-parity",
+            "version": " 1.0.0 ",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        }),
+        "[]\n",
+    );
+    fs::create_dir_all(dsh_pkg.join("hooks")).unwrap();
+    fs::write(dsh_pkg.join("hooks/a.toml"), hook_a).unwrap();
+    fs::write(dsh_pkg.join("hooks/b.toml"), hook_b).unwrap();
+    fs::create_dir_all(dsh_pkg.join("empty-commands")).unwrap();
+    let sibling_pj_a = serde_json::json!({
+        "$schema": "https://agent-plugins.org/schemas/plugin.json",
+        "name": "hook-parity",
+        "version": "1.0.0",
+        "extensions": {
+            "net.codewhale": {
+                "commands": {"path": "empty-commands"},
+                "hooks": {"path": "hooks/a.toml"}
+            }
+        }
+    })
+    .to_string();
+    fs::write(dsh_pkg.join("plugin.json"), &sibling_pj_a).unwrap();
+
+    let (previewed, reviewed_hash) = preview_dsh(&dsh_pkg).unwrap();
+    assert_eq!(previewed.hooks, ["hooks/a.toml"]);
+    assert!(previewed.commands.is_empty());
+
+    let PluginInstallOutcome::Installed(installed) = install_with_expected_content_hash(
+        PluginInstallSource::parse(dsh_pkg.to_str().unwrap()).unwrap(),
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &allow_all(),
+        &no_conflict(),
+        &reviewed_hash,
+    )
+    .await
+    .unwrap() else {
+        panic!("expected install");
+    };
+    let validated_dsh =
+        crate::manifest::PluginManifest::validate_from_path(&installed.path.join("plugin.json"))
+            .unwrap();
+    assert_eq!(
+        serde_json::to_value(&validated_dsh.manifest.capabilities).unwrap(),
+        serde_json::to_value(&validated_plain.manifest.capabilities).unwrap()
+    );
+    assert_eq!(
+        validated_dsh.capability_hash,
+        validated_plain.capability_hash
+    );
+    assert!(installed.path.join("hooks/a.toml").is_file());
+    assert!(!installed.path.join("empty-commands").exists());
+
+    fs::write(
+        dsh_pkg.join("hooks/a.toml"),
+        hook_a.replace("\"true\"", "\"false\""),
+    )
+    .unwrap();
+    let err_hook = install_with_expected_content_hash(
+        PluginInstallSource::parse(dsh_pkg.to_str().unwrap()).unwrap(),
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &allow_all(),
+        &no_conflict(),
+        &reviewed_hash,
+    )
+    .await
+    .unwrap_err();
+    assert!(err_hook.downcast_ref::<PluginContentMismatch>().is_some());
+
+    fs::write(dsh_pkg.join("hooks/a.toml"), hook_a).unwrap();
+    let (_, clean_hash) = preview_dsh(&dsh_pkg).unwrap();
+    assert_eq!(clean_hash, reviewed_hash);
+
+    fs::write(
+        dsh_pkg.join("plugin.json"),
+        sibling_pj_a.replace("hooks/a.toml", "hooks/b.toml"),
+    )
+    .unwrap();
+    let err_pj = install_with_expected_content_hash(
+        PluginInstallSource::parse(dsh_pkg.to_str().unwrap()).unwrap(),
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &allow_all(),
+        &no_conflict(),
+        &reviewed_hash,
+    )
+    .await
+    .unwrap_err();
+    assert!(err_pj.downcast_ref::<PluginContentMismatch>().is_some());
+
+    let empty_only = write_dsh_base_package(
+        &tmp.path().join("empty-only-cmd"),
+        serde_json::json!({
+            "name": "empty-only-cmd",
+            "version": "1.0.0",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        }),
+        "[]\n",
+    );
+    fs::create_dir_all(empty_only.join("empty-commands")).unwrap();
+    fs::write(
+        empty_only.join("plugin.json"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "empty-only-cmd",
+            "version": "1.0.0",
+            "extensions": {"net.codewhale": {"commands": {"path": "empty-commands"}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert!(dsh::convert_package(&empty_only, &tmp.path().join("out-empty-only")).is_err());
+}

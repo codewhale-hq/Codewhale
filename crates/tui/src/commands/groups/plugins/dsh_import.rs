@@ -66,6 +66,13 @@ fn review(plugin: &dyn CommandPluginContext, path: &str) -> CommandResult {
         escape_review_path(&preview.package_path, ReviewTextContext::Prose),
     );
     list_line(&mut output, "Skills", &preview.skills);
+    list_line(&mut output, "Commands", &preview.commands);
+    list_line(&mut output, "Agents", &preview.agents);
+    list_line(
+        &mut output,
+        "Hooks (run shell commands with your user's authority)",
+        &preview.hooks,
+    );
     list_line(&mut output, "Remote MCP servers", &preview.remote_servers);
     list_line(
         &mut output,
@@ -101,6 +108,16 @@ fn review(plugin: &dyn CommandPluginContext, path: &str) -> CommandResult {
             preview.manual_ports.len()
         );
         for line in &preview.manual_ports {
+            let _ = writeln!(
+                output,
+                "    - {}",
+                escape_review_text(line, ReviewTextContext::Prose)
+            );
+        }
+    }
+    if !preview.diagnostics.is_empty() {
+        output.push_str("  Diagnostics:\n");
+        for line in &preview.diagnostics {
             let _ = writeln!(
                 output,
                 "    - {}",

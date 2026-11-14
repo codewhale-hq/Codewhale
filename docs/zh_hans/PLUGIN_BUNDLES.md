@@ -237,6 +237,14 @@ lifecycle_mutation = true
 
 环境检查或健康检查通过，永远不等于信任。
 
+### 带有 Codewhale 自有类型的 DeepSeek Harness 包
+
+当本地目录包含 DeepSeek Harness 的 `package.json`（声明了 `dsh.bundle`）时，新的本地安装和预览会进入 DSH 导入流程，即使旁边同时存在 `plugin.json`。此时旁边的 `plugin.json` 只能声明 Codewhale 自有的声明式类型（`extensions["net.codewhale"]` 下的 `commands`、`agents` 与 `hooks`）以及标准根元数据字段；其中的描述性字段会被忽略（以 `package.json` 为准），并在 `CONVERSION.md` 与诊断信息中留下一行说明。
+
+- **名称与版本：** `plugin.json` 的 `name` 必须等于从 `package.json` 推导出的插件名；若两份文件都提供了 `version`，两者必须一致。
+- **禁止重名或越界声明：** 拒绝在 `plugin.json` 中声明 `skills`、`native`、`lsp`、`providers`、`capabilities`、`when`、`display_name`、`icon`，拒绝与 `plugin.json` 同级的 `mcp.json`、未在 DSH patch 行中声明的根目录 `skills/`，以及任何其他清单文件名（`kimi.plugin.json`、`plugin.toml`、`.claude-plugin/plugin.json`、`.plugin/plugin.json`、`.github/plugin/plugin.json`）。同时在 DSH patch 的 hook 桥接行与 `plugin.json` 的 `hooks` 中声明 hooks 也会被拒绝。
+- **项目级插件暂不变：** `.codewhale/plugins/<name>/` 下的项目级插件目前仍仅按 `plugin.json` 发现；已按 `path:` 安装的 Codewhale 插件在执行 `/plugin update` 时即使源目录后来加入了 `package.json`，也仍按其 Codewhale 清单更新。
+
 ## 审查、信任与启用
 
 使用会话内的命令界面：

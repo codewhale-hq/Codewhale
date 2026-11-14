@@ -250,6 +250,14 @@ The accept/reject behavior is deliberately loud, never silent:
 
 A successful environment or health check is never treated as trust.
 
+### A DeepSeek Harness package with Codewhale's own kinds
+
+When a local folder has a DeepSeek Harness `package.json` (`dsh.bundle`), new local installs and previews take the DSH importer even when a sibling `plugin.json` is present. That sibling `plugin.json` may declare only Codewhale's own declarative kinds (`commands`, `agents`, and `hooks` under `extensions["net.codewhale"]`) plus standard root metadata, whose descriptive fields are ignored in favor of `package.json` and recorded in `CONVERSION.md` / diagnostics.
+
+- **Identity and version:** `plugin.json`'s `name` must match the plugin name derived from `package.json`; `version`, if given in both files, must be equal.
+- **No overlapping or forbidden declarations:** `skills`, `native`, `lsp`, `providers`, `capabilities`, `when`, `display_name`, and `icon` in `plugin.json`, a sibling `mcp.json`, a root `skills/` folder not declared by a DSH patch row, and any other manifest spelling (`kimi.plugin.json`, `plugin.toml`, `.claude-plugin/plugin.json`, `.plugin/plugin.json`, `.github/plugin/plugin.json`) are refused. Declaring `hooks` in `plugin.json` alongside a DSH hook-bridge row is also refused.
+- **Project plugins unchanged:** project-scoped bundles under `.codewhale/plugins/<name>/` are still discovered by `plugin.json` alone; updating an already-installed `path:` Codewhale bundle keeps reading it by its Codewhale manifest even if `package.json` is added later.
+
 ## Review, trust, and enablement
 
 Use the in-session command surface:

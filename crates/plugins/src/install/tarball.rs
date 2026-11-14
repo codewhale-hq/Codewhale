@@ -129,10 +129,12 @@ fn scan_bundle_entries(
                     .components()
                     .any(|part| part.as_os_str() == std::ffi::OsStr::new("node_modules"))
             {
-                let raw = read_body_within(&mut entry, 65_536)
-                    .context("failed to read package.json from archive")?;
-                if let Some(raw) = raw
-                    && let Ok(text) = std::str::from_utf8(&raw)
+                let raw = read_body_within(&mut entry, 1_048_576)
+                    .context("failed to read package.json from archive")?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("package.json in archive exceeds the 1 MiB metadata limit")
+                    })?;
+                if let Ok(text) = std::str::from_utf8(&raw)
                     && let Ok(parsed) = super::dsh::parse_json(text)
                     && parsed
                         .get("dsh")
@@ -165,23 +167,16 @@ fn scan_bundle_entries(
     };
 
     let roots = filter_roots(&manifest_paths);
-    if roots.is_empty() {
-        let dsh_roots = filter_roots(&dsh_manifest_paths);
-        if dsh_roots.len() == 1 {
-            let plugin_root = dsh_roots.into_iter().next().unwrap_or_default();
-            return Ok(TarballScan {
-                plugin_root,
-                is_dsh: true,
-            });
-        }
+    let dsh_roots = filter_roots(&dsh_manifest_paths);
+    let all_roots: BTreeSet<String> = roots.union(&dsh_roots).cloned().collect();
+    if all_roots.len() != 1 {
+        return Err(PluginInstallError::PluginTomlRoots(all_roots.len()).into());
     }
-    if roots.len() != 1 {
-        return Err(PluginInstallError::PluginTomlRoots(roots.len()).into());
-    }
-    let plugin_root = roots.into_iter().next().unwrap_or_default();
+    let plugin_root = all_roots.into_iter().next().unwrap_or_default();
+    let is_dsh = dsh_roots.contains(&plugin_root);
     Ok(TarballScan {
         plugin_root,
-        is_dsh: false,
+        is_dsh,
     })
 }
 

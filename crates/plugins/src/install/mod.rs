@@ -229,8 +229,7 @@ impl PluginInstallSource {
             bail!("local install path must not be empty");
         }
         let path = PathBuf::from(trimmed);
-        if crate::agent_plugin::resolve_manifest_path(&path).is_none() && dsh::is_dsh_package(&path)
-        {
+        if dsh::try_is_dsh_package(&path)? {
             return Ok(Self::Dsh(path));
         }
         Ok(Self::LocalPath(path))
@@ -672,7 +671,15 @@ pub async fn update(
         .with_context(|| format!("failed to read {}", marker_path.display()))?;
     let marker: InstalledFromMarker = serde_json::from_str(&marker_body)
         .with_context(|| format!("malformed {INSTALLED_FROM_MARKER} for {name}"))?;
-    let source = PluginInstallSource::parse(&marker.spec)?;
+    let source = if let Some(path) = marker.spec.trim().strip_prefix("path:") {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            bail!("local install path must not be empty");
+        }
+        PluginInstallSource::LocalPath(PathBuf::from(trimmed))
+    } else {
+        PluginInstallSource::parse(&marker.spec)?
+    };
     if let PluginInstallSource::LocalPath(path) = &source {
         let path = path.clone();
         let user_plugins_dir = user_plugins_dir.to_path_buf();
