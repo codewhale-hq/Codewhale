@@ -178,6 +178,7 @@ them. See [Host services](EXTENSIONS.md#host-services).
 | Turned off, revoked or reviewed again | Grant withdrawn at once, including a call in flight; verified by focused Engine tests |
 | Services offered by this build | Grant-gated host services (`workspace`, `llm`, `credentials`, `settings`, `pluginManager`, `deepseekAccount`, `terminal`, `remote`) and reviewed compatibility adapters |
 | Reasoning-translation bridge (`cot-translation`, anonymous Bing/Google over network broker) | Bridge built and verified with mocked broker responses; not offered in this build (paid DeepSeek routes unavailable) |
+| `attachments` (`validate`, `save`, `read`, `read_request`, `imageLimits`, single-image tool-result projection) | Built and verified by focused Engine, adapter, and consumer-shaped real-host fixture tests on Linux; not offered or registered in this build |
 | A real plugin using a granted service end to end | Not verified |
 
 ## Containment

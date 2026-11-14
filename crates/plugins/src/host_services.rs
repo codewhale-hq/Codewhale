@@ -13,10 +13,11 @@ pub enum HostService {
     Catalog,
     Terminal,
     Remote,
+    Attachments,
 }
 
 impl HostService {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Workspace,
         Self::Llm,
         Self::Network,
@@ -24,6 +25,7 @@ impl HostService {
         Self::Catalog,
         Self::Terminal,
         Self::Remote,
+        Self::Attachments,
     ];
 
     #[must_use]
@@ -36,6 +38,7 @@ impl HostService {
             Self::Catalog => "catalog",
             Self::Terminal => "terminal",
             Self::Remote => "remote",
+            Self::Attachments => "attachments",
         }
     }
 
@@ -54,6 +57,7 @@ impl HostService {
             Self::Catalog => "Plugins and provider routes",
             Self::Terminal => "Terminal sessions",
             Self::Remote => "Remote pairing",
+            Self::Attachments => "Images in the conversation",
         }
     }
 
@@ -73,6 +77,9 @@ impl HostService {
             }
             Self::Terminal => "start and drive terminal sessions in the session's workspace",
             Self::Remote => "pair another device with the session",
+            Self::Attachments => {
+                "read and add images in this conversation, within Codewhale's image limits"
+            }
         }
     }
 }
@@ -448,7 +455,11 @@ mod tests {
     #[test]
     fn every_host_service_is_offered_and_the_table_names_only_advertised_injects() {
         assert!(!HOST_SERVICE_INJECTS.is_empty());
-        assert!(HostService::ALL.into_iter().all(offered));
+        assert!(
+            HostService::ALL
+                .into_iter()
+                .all(|service| (service == HostService::Attachments) ^ offered(service))
+        );
         let table: serde_json::Value =
             serde_json::from_slice(crate::activation::DSH_COMPATIBILITY).unwrap();
         let advertised: BTreeSet<&str> = table["provided_services"]

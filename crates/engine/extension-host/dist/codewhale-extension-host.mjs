@@ -18075,7 +18075,7 @@ function failureFor(error) {
 }
 function toResult(wire) {
   const result = {
-    content: wire.content.map((block) => block.text).join("\n"),
+    content: wire.content.map((block) => block.type === "text" ? block.text : `[image ${block.attachment_id}]`).join("\n"),
     isError: wire.is_error
   };
   if (wire.structured !== void 0) result.structured = wire.structured;
@@ -18865,11 +18865,30 @@ function renderResult(definition, input, value) {
   const content = [];
   if (Array.isArray(blocks)) {
     for (const block of blocks) {
-      if (!block || typeof block !== "object" || block.type !== "text" || typeof block.text !== "string") {
-        throw new ToolOutputError(definition.name, ["output.render returned an unsupported content block; this host accepts text blocks only"]);
+      if (!block || typeof block !== "object" || Array.isArray(block)) {
+        throw new ToolOutputError(definition.name, ["output.render returned an unsupported content block; this host accepts text or saved image blocks only"]);
       }
-      if (Reflect.ownKeys(block).some((key) => key !== "type" && key !== "text")) throw new ToolOutputError(definition.name, ["output.render returned unsupported text-block fields"]);
-      content.push({ type: "text", text: block.text });
+      const kind = block.type;
+      if (kind === "text") {
+        if (typeof block.text !== "string") {
+          throw new ToolOutputError(definition.name, ["output.render returned an unsupported content block; this host accepts text or saved image blocks only"]);
+        }
+        if (Reflect.ownKeys(block).some((key) => key !== "type" && key !== "text")) throw new ToolOutputError(definition.name, ["output.render returned unsupported text-block fields"]);
+        content.push({ type: "text", text: block.text });
+      } else if (kind === "image") {
+        const attachment = block.attachment;
+        if (!attachment || typeof attachment !== "object" || Array.isArray(attachment)) {
+          throw new ToolOutputError(definition.name, ["output.render returned an unsupported content block; image blocks require a saved attachment reference"]);
+        }
+        if (Reflect.ownKeys(block).some((key) => key !== "type" && key !== "attachment")) throw new ToolOutputError(definition.name, ["output.render returned unsupported image-block fields"]);
+        const attachmentId = attachment.attachmentId;
+        if (typeof attachmentId !== "string" || attachmentId.length === 0 || attachmentId.length > 256) {
+          throw new ToolOutputError(definition.name, ["output.render returned an image block without a valid attachmentId"]);
+        }
+        content.push({ type: "image_ref", attachment_id: attachmentId });
+      } else {
+        throw new ToolOutputError(definition.name, ["output.render returned an unsupported content block; this host accepts text or saved image blocks only"]);
+      }
     }
   } else {
     content.push({ type: "text", text: typeof value === "string" ? value : safeStringify(value) });
@@ -19232,11 +19251,15 @@ var init_root = __esm({
             return invocation && invocation.active && !invocation.signal.aborted && owner !== void 0 && invocation.owner === owner && owner.state === "active" && !owner.disposing ? invocation : void 0;
           },
           log: (level, message, owner) => host2.log(level, message, owner),
-          broker: async (ctx, service, method, input) => {
+          broker: async (ctx, service, method, input, signal) => {
+            if (signal !== void 0 && !(signal instanceof AbortSignal)) {
+              throw new RpcError(ErrorCode.InvalidParams, "signal must be an AbortSignal");
+            }
             const invocation = adapterHost.liveInvocation(ctx);
             const ticket = invocation?.brokerTickets.get(service);
             if (invocation === void 0 || ticket === void 0) throw new RpcError(ErrorCode.NotAvailable, `the ${String(service).slice(0, 64)} broker is only available to a live tool invocation the core gave a ticket for it`);
-            return rpc2.request("dsh/broker", { owner: invocation.owner.ref, ticket, service, method, input }, invocation.signal);
+            const combined = signal === void 0 ? invocation.signal : AbortSignal.any([invocation.signal, signal]);
+            return rpc2.request("dsh/broker", { owner: invocation.owner.ref, ticket, service, method, input }, combined);
           }
         };
         const shims = /* @__PURE__ */ new Map([

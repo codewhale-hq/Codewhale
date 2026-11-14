@@ -75,17 +75,21 @@ pub const MAX_IMAGE_PIXELS: u64 = 33_554_432;
 
 /// Memory allocation limit for image decoding (64 MiB).
 pub const MAX_DECODE_ALLOC_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_TOOL_RESULT_IMAGES: usize = 1;
+pub const ACCEPTED_IMAGE_MEDIA_TYPES: &[&str] =
+    &["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+pub(crate) fn decode_limits() -> Limits {
+    let mut limits = Limits::default();
+    limits.max_alloc = Some(MAX_DECODE_ALLOC_BYTES);
+    limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+    limits
+}
 
 pub fn decode_and_guard_image(bytes: &[u8]) -> Result<(DynamicImage, u32, u32)> {
-    let limits = || {
-        let mut limits = Limits::default();
-        limits.max_alloc = Some(MAX_DECODE_ALLOC_BYTES);
-        limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
-        limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
-        limits
-    };
     let mut reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
-    reader.limits(limits());
+    reader.limits(decode_limits());
     let (width, height) = reader
         .into_dimensions()
         .map_err(|_| anyhow::anyhow!("invalid image header or decompression bomb guard"))?;
@@ -96,7 +100,7 @@ pub fn decode_and_guard_image(bytes: &[u8]) -> Result<(DynamicImage, u32, u32)> 
         bail!("image dimensions exceed the decompression bomb guard; downscale or crop first");
     }
     let mut reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
-    reader.limits(limits());
+    reader.limits(decode_limits());
     let decoded = reader
         .decode()
         .map_err(|_| anyhow::anyhow!("invalid image content or decode allocation limit"))?;
@@ -330,10 +334,8 @@ pub fn prepare_tool_image_bytes(bytes: &[u8], mime_type: &str) -> PreparedToolIm
 }
 
 fn valid_tool_image(mime_type: &str, data: &str) -> bool {
-    matches!(
-        mime_type,
-        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-    ) && data.len() <= MAX_IMAGE_BYTES.div_ceil(3) * 4
+    ACCEPTED_IMAGE_MEDIA_TYPES.contains(&mime_type)
+        && data.len() <= MAX_IMAGE_BYTES.div_ceil(3) * 4
         && STANDARD.decode(data).is_ok_and(|bytes| {
             bytes.len() <= MAX_IMAGE_BYTES
                 && sniff_media_type(&bytes) == Some(mime_type)
@@ -351,7 +353,7 @@ pub fn bound_rich_tool_result(
     let mut omitted = 0usize;
     for block in rich.content_blocks.drain(..) {
         let codewhale_tools::ToolResultContentBlock::Image { mime_type, data } = &block;
-        if kept.is_empty() && valid_tool_image(mime_type, data) {
+        if kept.len() < MAX_TOOL_RESULT_IMAGES && valid_tool_image(mime_type, data) {
             kept.push(block);
         } else {
             omitted += 1;
@@ -1211,7 +1213,7 @@ fn inline_image_sizes(messages: &[codewhale_models::Message]) -> Vec<usize> {
 
 /// The `(mime_type, data)` pair of a stored tool-result image block, if the
 /// block is one.
-fn stored_tool_image_payload(value: &serde_json::Value) -> Option<(&str, &str)> {
+pub(crate) fn stored_tool_image_payload(value: &serde_json::Value) -> Option<(&str, &str)> {
     if value.get("type").and_then(serde_json::Value::as_str) != Some("image") {
         return None;
     }

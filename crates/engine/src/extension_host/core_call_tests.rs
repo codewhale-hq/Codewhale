@@ -2049,6 +2049,7 @@ async fn dsh_broker_tickets_bind_plugin_service_and_session_and_every_refusal_is
                 | DshService::Workspace
                 | DshService::Catalog
                 | DshService::Llm
+                | DshService::Attachments
         )
     }) {
         let ticket = &tickets_a[service.name()];
@@ -2265,7 +2266,12 @@ async fn dsh_broker_services_are_granted_by_one_check_and_an_ungranted_service_i
     f.in_session("grant-session");
     let echo = every_service(echo_arm);
 
-    assert!(DshService::ALL.into_iter().all(super::dsh_broker::offered));
+    assert!(
+        DshService::ALL
+            .into_iter()
+            .all(|service| (service == DshService::Attachments)
+                ^ super::dsh_broker::offered(service))
+    );
     assert!(f.manager.shared.broker_services(&f.owner).is_empty());
     let none = f.begin(7, &f.owner);
     assert!(
@@ -2329,6 +2335,7 @@ async fn dsh_broker_services_are_granted_by_one_check_and_an_ungranted_service_i
                 | DshService::Workspace
                 | DshService::Catalog
                 | DshService::Llm
+                | DshService::Attachments
         ) {
             let result = f
                 .broker(
@@ -5035,7 +5042,9 @@ async fn a_tool_that_failed_after_an_act_returns_the_record_on_a_failed_result()
     )
     .expect("a failed result, not a bare error");
     assert!(failed.is_error);
-    let super::protocol::ContentBlockWire::Text { text } = &failed.content[0];
+    let super::protocol::ContentBlockWire::Text { text } = &failed.content[0] else {
+        panic!("expected text content block");
+    };
     assert!(text.contains("boom"), "{text}");
     assert_eq!(
         receipts.as_ref().unwrap()["broker_acts"]["acts"][0]["target"],
@@ -5053,7 +5062,9 @@ async fn a_tool_that_failed_after_an_act_returns_the_record_on_a_failed_result()
     let failed = super::tool::failed_with_acts(cancelled, receipts.as_ref())
         .expect("a cancel a plugin can cause leaves the record too");
     assert!(failed.is_error);
-    let super::protocol::ContentBlockWire::Text { text } = &failed.content[0];
+    let super::protocol::ContentBlockWire::Text { text } = &failed.content[0] else {
+        panic!("expected text content block");
+    };
     assert!(text.contains("withdrawn"), "{text}");
     for error in [
         ToolError::not_available("extension tool `t` is no longer available"),

@@ -334,7 +334,10 @@ fn the_engine_and_the_review_record_name_the_same_services() {
         HostService::ALL.map(HostService::name)
     );
     for service in DshService::ALL {
-        assert!(super::dsh_broker::offered(service));
+        assert_eq!(
+            super::dsh_broker::offered(service),
+            service != DshService::Attachments
+        );
     }
     let _offer = TestOffer::only(&[HostService::Remote]);
     assert!(super::dsh_broker::offered(DshService::Remote));

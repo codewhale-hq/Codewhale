@@ -9,8 +9,8 @@ use super::protocol::{DshService, RpcErrorWire, error_code};
 use super::registry::OwnerRegistry;
 use super::tier::{HOST_OWNER_PREFIX, HostTier};
 use super::{
-    dsh_catalog, dsh_llm, dsh_network, dsh_plugins, dsh_remote, dsh_settings, dsh_terminal,
-    dsh_workspace,
+    dsh_attachments, dsh_catalog, dsh_llm, dsh_network, dsh_plugins, dsh_remote, dsh_settings,
+    dsh_terminal, dsh_workspace,
 };
 use crate::tools::codemode::{NestedDecision, NestedFailure};
 use crate::tools::spec::{
@@ -154,6 +154,7 @@ pub const TABLE: &[(DshService, Arm)] = &[
     (DshService::Catalog, dsh_catalog::serve as Arm),
     (DshService::Terminal, dsh_terminal::serve as Arm),
     (DshService::Remote, dsh_remote::serve as Arm),
+    (DshService::Attachments, dsh_attachments::serve as Arm),
     (DshService::Plugins, dsh_plugins::serve as Arm),
 ];
 
@@ -277,6 +278,7 @@ pub fn ticket_method(service: DshService) -> &'static str {
         DshService::Catalog => "dsh/broker:catalog",
         DshService::Terminal => "dsh/broker:terminal",
         DshService::Remote => "dsh/broker:remote",
+        DshService::Attachments => "dsh/broker:attachments",
         DshService::Plugins => "dsh/broker:plugins",
     }
 }

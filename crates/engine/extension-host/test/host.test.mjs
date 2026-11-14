@@ -114,6 +114,8 @@ test('the published DSH plugin runs unmodified and returns its payload', async (
   for (const [name, definition, expected] of [
     ['invalid-output', "{ schema: { type: 'string' }, render: () => [{ type: 'text', text: 'invalid' }] }", /returned invalid output/],
     ['unsupported-content', "{ schema: { type: 'number' }, render: () => [{ type: 'image', source: 'hidden' }] }", /unsupported content block/],
+    ['extra-image-field', "{ schema: { type: 'number' }, render: () => [{ type: 'image', attachment: { attachmentId: 'sha256:0000' }, extra: 1 }] }", /unsupported image-block fields/],
+    ['missing-attachment-id', "{ schema: { type: 'number' }, render: () => [{ type: 'image', attachment: {} }] }", /without a valid attachmentId/],
     ['malformed-render', "{ schema: { type: 'number' }, render: () => 'hidden' }", /must return an array/],
   ]) {
     const plugin = tempPlugin(`export const inject = ['tools']; export function apply(ctx) { ctx.tools.register({ name: '${name}', parameters: { type: 'object' }, output: ${definition}, execute: () => 7 }) }`)
@@ -123,6 +125,15 @@ test('the published DSH plugin runs unmodified and returns its payload', async (
     const tool = host.registry.find(row => row.op === 'register' && row.spec.name === name)
     await assert.rejects(host.call('tool/call', { handle: tool.handle, call_id: name, input: {}, deadline_ms: 5000 }), expected)
   }
+  const imageRefPlugin = tempPlugin("export const inject = ['tools']; export function apply(ctx) { ctx.tools.register({ name: 'image-ref-output', parameters: { type: 'object' }, output: { schema: { type: 'string' }, render: () => [{ type: 'text', text: 'rendered' }, { type: 'image', attachment: { attachmentId: 'sha256:abcd', mediaType: 'image/png' } }] }, execute: () => 'ok' }) }")
+  t.after(() => imageRefPlugin.cleanup())
+  const imageRefActivated = await activate(host, 'image-ref-output', imageRefPlugin.entry)
+  assert.equal(imageRefActivated.result.status, 'ok', imageRefActivated.result.diagnostic)
+  const imageRefTool = host.registry.find(row => row.op === 'register' && row.spec.name === 'image-ref-output')
+  assert.deepEqual(
+    await host.call('tool/call', { handle: imageRefTool.handle, call_id: 'image-ref-call', input: {}, deadline_ms: 5000 }),
+    { content: [{ type: 'text', text: 'rendered' }, { type: 'image_ref', attachment_id: 'sha256:abcd' }], is_error: false, structured: 'ok' },
+  )
 })
 
 test('providing `approval` fails activation and rolls back every registration', async (t) => {

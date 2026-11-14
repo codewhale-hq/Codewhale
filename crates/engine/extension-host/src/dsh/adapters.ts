@@ -18,7 +18,7 @@ export interface AdapterHost {
   readonly rpc: RpcPeer
   ownerOf(ctx: unknown): OwnerRecord | undefined
   liveInvocation(ctx: unknown): ToolInvocation | undefined
-  broker(ctx: unknown, service: DshService, method: string, input: unknown): Promise<unknown>
+  broker(ctx: unknown, service: DshService, method: string, input: unknown, signal?: AbortSignal): Promise<unknown>
   log(level: 'info' | 'warn' | 'error', message: string, owner?: OwnerRecord): void
 }
 
