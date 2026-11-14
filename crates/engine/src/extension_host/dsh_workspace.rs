@@ -7,14 +7,17 @@ use serde_json::{Value, json};
 use super::dsh_broker::{BrokerCall, BrokerFuture, BrokerMethods, BrokerRefusal, decode};
 use super::protocol::DshService;
 use crate::tools::execution_envelope::enforce_tool_denial;
-use crate::tools::spec::{ToolContext, resolve_strict_authority_path};
+use crate::tools::spec::{
+    ToolContext, has_forbidden_windows_colon, has_windows_drive_or_unc_prefix,
+    is_protected_workspace_metadata_segment, resolve_strict_authority_path,
+    strip_workspace_root_str, validate_windows_relative_segments,
+};
 
 const MAX_PATH_BYTES: usize = 512;
 const MAX_WRITE_BYTES: usize = 1024 * 1024;
 const MAX_READ_LINES: u64 = 10_000;
 const MAX_ARGS: usize = 8;
 const MAX_ARG_BYTES: usize = 1024;
-const PROTECTED: &[&str] = &[".git", ".codewhale"];
 const LOG: &str = "codewhale::dsh_workspace";
 
 static CONFINE_GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
@@ -96,7 +99,7 @@ pub(super) fn serve(call: BrokerCall) -> BrokerFuture {
                         "max_lines is between 1 and {MAX_READ_LINES}"
                     )));
                 }
-                let tool = caller(&call, "read_file")?;
+                let tool = caller(&call, "read_file", &json!({}))?;
                 let (shown, resolved) = confine(&call, &tool, &path, Access::Read).await?;
                 let mut input = json!({ "path": resolved });
                 if let Some(start_line) = start_line {
@@ -110,7 +113,7 @@ pub(super) fn serve(call: BrokerCall) -> BrokerFuture {
                     .map(|response| file_outcome(&shown, response))
             }
             WorkspaceMethod::List(ListInput { path }) => {
-                let tool = caller(&call, "list_dir")?;
+                let tool = caller(&call, "list_dir", &json!({}))?;
                 let raw = path.as_deref().unwrap_or(".");
                 let (shown, resolved) = confine(&call, &tool, raw, Access::Read).await?;
                 nested(&call, "list_dir", json!({ "path": resolved }))
@@ -137,7 +140,7 @@ pub(super) fn serve(call: BrokerCall) -> BrokerFuture {
                     tracing::info!(target: LOG, plugin = %call.owner.plugin_id, "workspace write refused: no reviewed overlay grant");
                     return Err(refused("this plugin may not write to the workspace"));
                 }
-                let tool = caller(&call, "write_file")?;
+                let tool = caller(&call, "write_file", &json!({}))?;
                 let (shown, resolved) = confine(&call, &tool, &path, Access::Overlay).await?;
                 let mut input = json!({ "path": resolved, "content": content });
                 if let Some(expected_hash) = expected_hash {
@@ -148,8 +151,9 @@ pub(super) fn serve(call: BrokerCall) -> BrokerFuture {
                     .map(|response| file_outcome(&shown, response))
             }
             WorkspaceMethod::Exec(ExecInput { argv, cwd }) => {
-                let query = literal_git(&argv)?;
-                let tool = caller(&call, "Git")?;
+                let mut input = literal_git(&argv)?;
+                input["action"] = json!("review_scope");
+                let tool = caller(&call, "Git", &input)?;
                 if let Some(cwd) = cwd.as_deref() {
                     let (shown, _) = confine(&call, &tool, cwd, Access::Read).await?;
                     if shown != "." {
@@ -157,8 +161,6 @@ pub(super) fn serve(call: BrokerCall) -> BrokerFuture {
                         return Err(refused("git runs only at the workspace root"));
                     }
                 }
-                let mut input = query;
-                input["action"] = json!("review_scope");
                 nested(&call, "Git", input).await.map(exec_outcome)
             }
         }
@@ -212,10 +214,14 @@ fn overlay_granted() -> bool {
     }
 }
 
-fn caller(call: &BrokerCall, tool_name: &'static str) -> Result<ToolContext, BrokerRefusal> {
+fn caller(
+    call: &BrokerCall,
+    tool_name: &'static str,
+    input: &Value,
+) -> Result<ToolContext, BrokerRefusal> {
     let mut tool = call.context.tool().clone();
     let _ = tool.refresh_live_posture();
-    if enforce_tool_denial(&tool, tool_name, &json!({})).is_err() {
+    if enforce_tool_denial(&tool, tool_name, input).is_err() {
         tracing::info!(target: LOG, plugin = %call.owner.plugin_id, tool = tool_name, "workspace refused: the caller may not use this tool");
         return Err(refused(
             "this workspace call is not available to this caller",
@@ -224,23 +230,17 @@ fn caller(call: &BrokerCall, tool_name: &'static str) -> Result<ToolContext, Bro
     Ok(tool)
 }
 
-fn relative(workspace: &Path, raw: &str) -> Option<String> {
+fn relative_for(workspace: &Path, canonical: &Path, raw: &str, windows: bool) -> Option<String> {
     let path = Path::new(raw);
-    if !path.is_absolute() {
+    let is_absolute = path.is_absolute()
+        || raw.starts_with('/')
+        || (windows && (raw.starts_with('\\') || has_windows_drive_or_unc_prefix(raw)));
+    if !is_absolute {
         return Some(raw.to_string());
     }
-    let canonical = workspace.canonicalize().ok();
-    let rest = path.strip_prefix(workspace).ok().or_else(|| {
-        canonical
-            .as_deref()
-            .and_then(|root| path.strip_prefix(root).ok())
-    })?;
-    let rest = rest.to_str()?;
-    Some(if rest.is_empty() {
-        ".".into()
-    } else {
-        rest.into()
-    })
+    let ws_str = workspace.to_str()?;
+    let canonical_str = canonical.to_str();
+    strip_workspace_root_str(ws_str, canonical_str, raw, windows)
 }
 
 fn shape(raw: &str) -> Result<(), BrokerRefusal> {
@@ -256,18 +256,37 @@ fn shape(raw: &str) -> Result<(), BrokerRefusal> {
     Ok(())
 }
 
-fn protected(relative: &str) -> bool {
-    relative.replace('\\', "/").split('/').any(|segment| {
-        PROTECTED
-            .iter()
-            .any(|name| segment.eq_ignore_ascii_case(name))
-    })
+fn protected_for(relative: &str, windows: bool) -> bool {
+    relative
+        .replace('\\', "/")
+        .split('/')
+        .any(|segment| is_protected_workspace_metadata_segment(segment, windows))
 }
 
 fn resolve(tool: &ToolContext, raw: &str, access: Access) -> Result<(String, PathBuf), String> {
-    let relative = relative(&tool.workspace, raw).ok_or_else(|| "outside".to_string())?;
-    let resolved = resolve_strict_authority_path(tool, &relative).map_err(|e| e.to_string())?;
+    resolve_for(tool, raw, access, cfg!(windows))
+}
+
+fn resolve_for(
+    tool: &ToolContext,
+    raw: &str,
+    access: Access,
+    windows: bool,
+) -> Result<(String, PathBuf), String> {
+    if has_forbidden_windows_colon(raw, windows) {
+        return Err("windows colons and alternate data streams are not allowed".to_string());
+    }
     let root = tool.workspace.canonicalize().map_err(|e| e.to_string())?;
+    let relative =
+        relative_for(&tool.workspace, &root, raw, windows).ok_or_else(|| "outside".to_string())?;
+    validate_windows_relative_segments(&relative, windows)?;
+    let resolved = resolve_strict_authority_path(tool, &relative).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    let resolved = if resolved.exists() {
+        resolved.canonicalize().map_err(|e| e.to_string())?
+    } else {
+        resolved
+    };
     let shown = resolved
         .strip_prefix(&root)
         .map_err(|_| "outside".to_string())?
@@ -275,7 +294,8 @@ fn resolve(tool: &ToolContext, raw: &str, access: Access) -> Result<(String, Pat
         .ok_or_else(|| "not UTF-8".to_string())?
         .replace('\\', "/");
     let shown = if shown.is_empty() { ".".into() } else { shown };
-    if access == Access::Overlay && (shown == "." || protected(&shown)) {
+    validate_windows_relative_segments(&shown, windows)?;
+    if access == Access::Overlay && (shown == "." || protected_for(&shown, windows)) {
         return Err(format!("overlay excludes {shown}"));
     }
     Ok((shown, resolved))
@@ -683,6 +703,91 @@ mod tests {
             assert!(resolve(&tool, raw, Access::Read).is_err(), "{raw}");
             assert!(resolve(&tool, raw, Access::Overlay).is_err(), "{raw}");
         }
+    }
+
+    #[test]
+    fn windows_metadata_aliases_short_names_and_ads_are_refused_in_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.txt"), "a").unwrap();
+        let tool = ToolContext::new(&root);
+
+        for alias in [
+            "GIT~1",
+            "GIT~1/hooks/pre-commit",
+            "git~12/config",
+            "sub/GIT~2/HEAD",
+            "CODEWH~1",
+            "CODEWH~1/config.json",
+            "codew~1/auth.json",
+            "code~1/sessions",
+            "SUBDIR~1/file.txt",
+            ".git::$INDEX_ALLOCATION",
+            ".GIT::$INDEX_ALLOCATION",
+            "sub/.git:stream",
+            "sub/.codewhale:secret",
+            "file.txt:Zone.Identifier",
+            "C:rel.txt",
+            ".git.",
+            ".git /config",
+            ".codewhale.",
+            "sub/.codewhale /x",
+        ] {
+            assert!(
+                resolve_for(&tool, alias, Access::Read, true).is_err(),
+                "read must reject {alias}"
+            );
+            assert!(
+                resolve_for(&tool, alias, Access::Overlay, true).is_err(),
+                "overlay must reject {alias}"
+            );
+        }
+
+        for metadata in [
+            "GIT~1/hooks/pre-commit",
+            "git~1",
+            "CODEWH~1/config.json",
+            "codew~2",
+            ".git::$INDEX_ALLOCATION",
+            "sub/.git:stream",
+            "sub/.codewhale:secret",
+            ".git.",
+            ".git ",
+            ".codewhale.",
+            ".codewhale ",
+        ] {
+            assert!(
+                protected_for(metadata, true),
+                "protected_for must catch {metadata}"
+            );
+        }
+
+        assert_eq!(
+            resolve_for(&tool, "src/a.txt", Access::Overlay, true)
+                .unwrap()
+                .0,
+            "src/a.txt"
+        );
+        assert!(has_forbidden_windows_colon(".git::$INDEX_ALLOCATION", true));
+        assert!(has_forbidden_windows_colon("sub/.git:stream", true));
+        assert!(has_forbidden_windows_colon("C:rel.txt", true));
+        assert!(!has_forbidden_windows_colon(r"C:\ws\src\a.txt", true));
+        assert!(!has_forbidden_windows_colon(r"\\?\C:\ws\src\a.txt", true));
+
+        assert_eq!(
+            strip_workspace_root_str(r"C:\ws", Some(r"\\?\C:\ws"), r"\\?\C:\ws\src\a.txt", true)
+                .as_deref(),
+            Some("src/a.txt")
+        );
+        assert_eq!(
+            strip_workspace_root_str(r"C:\ws", None, r"c:/ws/src/a.txt", true).as_deref(),
+            Some("src/a.txt")
+        );
+        assert!(
+            has_forbidden_windows_colon(r"C:\ws\.git::$INDEX_ALLOCATION", true),
+            "drive prefix must not exempt trailing colons"
+        );
     }
 
     #[test]

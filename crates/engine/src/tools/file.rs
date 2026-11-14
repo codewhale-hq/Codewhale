@@ -47,15 +47,13 @@ pub fn content_hash(bytes: &[u8]) -> String {
 /// never has the full contents to hash. Digesting through a separate streaming
 /// pass keeps that memory bound while still producing a hash over the entire
 /// file — the only value an edit guard can verify against.
-fn hash_file_streaming(path: &Path) -> std::io::Result<String> {
+fn hash_reader_streaming(reader: &mut impl std::io::Read) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
-    use std::io::Read as _;
 
-    let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0_u8; 64 * 1024];
     loop {
-        let read = file.read(&mut buf)?;
+        let read = reader.read(&mut buf)?;
         if read == 0 {
             break;
         }
@@ -65,6 +63,11 @@ fn hash_file_streaming(path: &Path) -> std::io::Result<String> {
         "sha256:{}",
         codewhale_runtime::hashing::hex_bytes(hasher.finalize())
     ))
+}
+
+fn hash_file_streaming(path: &Path) -> std::io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    hash_reader_streaming(&mut file)
 }
 
 /// The one-line header that reports a snapshot hash to the model.
@@ -683,6 +686,196 @@ async fn run_blocking_write_atomic(path: &Path, contents: Vec<u8>) -> Result<(),
     Ok(())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConfinedFileId {
+    #[cfg(unix)]
+    Unix { dev: u64, ino: u64 },
+    #[cfg(windows)]
+    Windows { volume: u32, index: u64 },
+    #[cfg(all(not(unix), not(windows)))]
+    Unsupported,
+}
+
+fn confined_file_id(file: &fs::File) -> std::io::Result<ConfinedFileId> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let meta = file.metadata()?;
+        Ok(ConfinedFileId::Unix {
+            dev: meta.dev(),
+            ino: meta.ino(),
+        })
+    }
+    #[cfg(windows)]
+    {
+        let identity = codewhale_util::path_identity::windows_file_identity(file)?;
+        Ok(ConfinedFileId::Windows {
+            volume: identity.volume,
+            index: identity.index,
+        })
+    }
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        let _ = file;
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+}
+
+fn is_confined_policy_error(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    if error.raw_os_error() == Some(libc::ELOOP) {
+        return true;
+    }
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::InvalidInput
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::AlreadyExists
+            | std::io::ErrorKind::PermissionDenied
+    )
+}
+
+fn map_confined_io_error(error: std::io::Error, path: &Path, action: &str) -> ToolError {
+    if is_confined_policy_error(&error) {
+        return ToolError::permission_denied(format!(
+            "{action} refused symlink or confined path constraint for {}",
+            path.display()
+        ));
+    }
+    ToolError::execution_failed(format!("Failed to {action} {}: {error}", path.display()))
+}
+
+enum ConfinedPrior {
+    Missing,
+    Existing { bytes: Vec<u8>, id: ConfinedFileId },
+}
+
+fn write_uses_confined_io(context: &ToolContext) -> bool {
+    context.strict_workspace_confinement
+        || (!context.trust_mode
+            && !context.follow_symlinks
+            && context.trusted_external_paths.is_empty())
+}
+
+async fn resolve_confined_target_async(
+    context: &ToolContext,
+    raw: &str,
+    allow_root_dot: bool,
+) -> Result<(PathBuf, PathBuf), ToolError> {
+    let workspace_canonical =
+        tokio::fs::canonicalize(&context.workspace)
+            .await
+            .map_err(|error| {
+                ToolError::execution_failed(format!(
+                    "Failed to canonicalize workspace {}: {error}",
+                    context.workspace.display()
+                ))
+            })?;
+    let relative =
+        super::spec::resolve_confined_target(context, &workspace_canonical, raw, allow_root_dot)?;
+    Ok((workspace_canonical, relative))
+}
+
+async fn load_confined_prior_file(
+    workspace_canonical: &Path,
+    relative: &Path,
+    display_path: &Path,
+    max_bytes: Option<usize>,
+    context: &ToolContext,
+) -> Result<ConfinedPrior, ToolError> {
+    check_file_operation_cancelled(context)?;
+    let workspace = workspace_canonical.to_path_buf();
+    let relative = relative.to_path_buf();
+    let display = display_path.to_path_buf();
+    let cancel = context.cancel_token.clone();
+    let mut worker = tokio::task::spawn_blocking(move || {
+        use std::io::Read as _;
+        check_contract_cancelled(cancel.as_ref())?;
+        let ws =
+            match codewhale_util::files::WorkspaceFile::open_shared(&workspace, &relative, false) {
+                Ok(ws) => ws,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(ConfinedPrior::Missing);
+                }
+                Err(error) => return Err(map_confined_io_error(error, &display, "inspect")),
+            };
+        let mut file = match ws.open_file() {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(ConfinedPrior::Missing);
+            }
+            Err(error) => return Err(map_confined_io_error(error, &display, "read")),
+        };
+        let id = confined_file_id(&file)
+            .map_err(|error| map_confined_io_error(error, &display, "inspect"))?;
+        let bytes = if let Some(cap) = max_bytes {
+            let meta = file
+                .metadata()
+                .map_err(|error| map_confined_io_error(error, &display, "read"))?;
+            if meta.len() > cap as u64 {
+                check_contract_file_size(CONTRACT_FILE_MAX_BYTES + 1)?;
+            }
+            read_contract_source(&mut file, cancel.as_ref())?
+        } else {
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)
+                .map_err(|error| map_confined_io_error(error, &display, "read"))?;
+            bytes
+        };
+        Ok(ConfinedPrior::Existing { bytes, id })
+    });
+    let result = if let Some(cancel) = context.cancel_token.as_ref() {
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(ToolError::cancelled("Operation aborted")),
+            result = &mut worker => result,
+        }
+    } else {
+        worker.await
+    };
+    result.map_err(|error| ToolError::execution_failed(format!("File read task: {error}")))?
+}
+
+async fn commit_confined_write(
+    workspace_canonical: &Path,
+    relative: &Path,
+    display_path: &Path,
+    expected_id: Option<ConfinedFileId>,
+    contents: Vec<u8>,
+) -> Result<(), ToolError> {
+    let workspace = workspace_canonical.to_path_buf();
+    let relative = relative.to_path_buf();
+    let display = display_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let create = expected_id.is_none();
+        let ws = codewhale_util::files::WorkspaceFile::open_shared(&workspace, &relative, create)
+            .map_err(|error| map_confined_io_error(error, &display, "write"))?;
+        match expected_id {
+            None => ws
+                .publish(&contents)
+                .map_err(|error| map_confined_io_error(error, &display, "write")),
+            Some(prior_id) => {
+                let probe = ws
+                    .identity_probe()
+                    .map_err(|error| map_confined_io_error(error, &display, "write"))?;
+                let current_id = confined_file_id(&probe)
+                    .map_err(|error| map_confined_io_error(error, &display, "write"))?;
+                if current_id != prior_id {
+                    return Err(ToolError::permission_denied(format!(
+                        "write target changed before replacement: {}",
+                        display.display()
+                    )));
+                }
+                drop(probe);
+                ws.replace(&contents)
+                    .map_err(|error| map_confined_io_error(error, &display, "write"))
+            }
+        }
+    })
+    .await
+    .map_err(|error| ToolError::execution_failed(format!("File write task: {error}")))?
+}
+
 fn check_file_operation_cancelled(context: &ToolContext) -> Result<(), ToolError> {
     check_contract_cancelled(context.cancel_token.as_ref())
 }
@@ -1024,6 +1217,9 @@ impl ToolSpec for ReadFileTool {
         READ_PARAMS.reject_unknown(&input)?;
 
         let path_str = required_str(&input, "path")?;
+        if context.strict_workspace_confinement {
+            return execute_confined_read(&input, path_str, context).await;
+        }
         // S1/F2: raw spelling first, resolved path after — see the matching
         // comment in `execute_contract_read`. Only the raw-spelling denial can
         // promise an error that never names the symlink target's location.
@@ -1163,7 +1359,7 @@ impl ToolSpec for ReadFileTool {
                         e
                     ))
                 })?;
-                let (window, total_lines) = read_window_streaming(file, start_line, max_lines)
+                let (window, total_lines) = read_window_streaming(&file, start_line, max_lines)
                     .map_err(|e| {
                         ToolError::execution_failed(format!(
                             "Failed to read {}: {}",
@@ -1221,6 +1417,244 @@ impl ToolSpec for ReadFileTool {
     }
 }
 
+fn parse_read_range(input: &Value) -> Result<(usize, usize), ToolError> {
+    let start_line = match optional_u64(input, "start_line", 1)? {
+        0 => {
+            return Err(ToolError::invalid_input(
+                "start_line must be 1-based and greater than 0".to_string(),
+            ));
+        }
+        v => usize::try_from(v).map_err(|_| {
+            ToolError::invalid_input("start_line exceeds platform addressable range".to_string())
+        })?,
+    };
+    let max_lines = match optional_u64(input, "max_lines", DEFAULT_READ_LINES as u64)? {
+        0 => {
+            return Err(ToolError::invalid_input(
+                "max_lines must be greater than 0".to_string(),
+            ));
+        }
+        v => {
+            let converted = usize::try_from(v).map_err(|_| {
+                ToolError::invalid_input("max_lines exceeds platform addressable range".to_string())
+            })?;
+            std::cmp::min(converted, HARD_MAX_READ_LINES)
+        }
+    };
+    Ok((start_line, max_lines))
+}
+
+enum ConfinedReadOutput {
+    Pdf {
+        id: ConfinedFileId,
+    },
+    Image {
+        id: ConfinedFileId,
+    },
+    Small(String),
+    Window {
+        window: Vec<String>,
+        total_lines: usize,
+        start_line: usize,
+        max_lines: usize,
+        hash: Option<String>,
+    },
+}
+
+fn is_confined_pdf_handle(file: &mut fs::File, path: &Path) -> std::io::Result<bool> {
+    use std::io::{Read as _, Seek as _};
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+    {
+        return Ok(true);
+    }
+    let mut buf = [0u8; 4];
+    let matched = file.read_exact(&mut buf).is_ok() && &buf == b"%PDF";
+    file.seek(std::io::SeekFrom::Start(0))?;
+    Ok(matched)
+}
+
+async fn execute_confined_read(
+    input: &Value,
+    path_str: &str,
+    context: &ToolContext,
+) -> Result<ToolResult, ToolError> {
+    enforce_read_denylist(Path::new(path_str), "read_file")?;
+    let (workspace_canonical, relative) =
+        resolve_confined_target_async(context, path_str, false).await?;
+    let file_path = workspace_canonical.join(&relative);
+    if is_codewhale_credential_path(&file_path) {
+        return Err(ToolError::permission_denied(
+            "read_file cannot expose Codewhale configuration or credential-store files; use `codewhale config list` or `codewhale auth status` for safe inspection"
+                .to_string(),
+        ));
+    }
+    enforce_read_denylist(&file_path, "read_file")?;
+    let pages = optional_str(input, "pages")?;
+    let explicit_range = input
+        .get("start_line")
+        .or_else(|| input.get("max_lines"))
+        .is_some();
+
+    let output = tokio::task::spawn_blocking({
+        let workspace_canonical = workspace_canonical.clone();
+        let relative = relative.clone();
+        let file_path = file_path.clone();
+        let input_clone = input.clone();
+        move || {
+            use std::io::{Read as _, Seek as _};
+            let ws = codewhale_util::files::WorkspaceFile::open_shared(
+                &workspace_canonical,
+                &relative,
+                false,
+            )
+            .map_err(|error| map_confined_io_error(error, &file_path, "read"))?;
+            let mut file = ws
+                .open_file_shared()
+                .map_err(|error| map_confined_io_error(error, &file_path, "read"))?;
+            let id = confined_file_id(&file)
+                .map_err(|error| map_confined_io_error(error, &file_path, "read"))?;
+            if is_confined_pdf_handle(&mut file, &file_path)
+                .map_err(|error| map_confined_io_error(error, &file_path, "read"))?
+            {
+                return Ok::<_, ToolError>(ConfinedReadOutput::Pdf { id });
+            }
+            if is_image_for_ocr(&file_path) {
+                return Ok(ConfinedReadOutput::Image { id });
+            }
+            let file_bytes = file.metadata().map(|meta| meta.len()).unwrap_or(u64::MAX);
+            if !explicit_range && file_bytes <= SMALL_FILE_BYTES as u64 {
+                let mut contents = String::new();
+                file.read_to_string(&mut contents)
+                    .map_err(|error| map_confined_io_error(error, &file_path, "read"))?;
+                return Ok(ConfinedReadOutput::Small(contents));
+            }
+            let (start_line, max_lines) = parse_read_range(&input_clone)?;
+            let (window, total_lines) = read_window_streaming(&file, start_line, max_lines)
+                .map_err(|error| map_confined_io_error(error, &file_path, "read"))?;
+            let hash = if file.seek(std::io::SeekFrom::Start(0)).is_ok() {
+                hash_reader_streaming(&mut file).ok()
+            } else {
+                None
+            };
+            Ok(ConfinedReadOutput::Window {
+                window,
+                total_lines,
+                start_line,
+                max_lines,
+                hash,
+            })
+        }
+    })
+    .await
+    .map_err(|e| ToolError::execution_failed(format!("File read task: {e}")))??;
+
+    match output {
+        ConfinedReadOutput::Pdf { id } => {
+            verify_confined_probe(&workspace_canonical, &relative, &file_path, id, "read")?;
+            if let Some(result) = read_pdf_if_detected(
+                &file_path,
+                pages,
+                super::pdf::PdfTextCommand::system(Some(context)),
+            )
+            .await?
+            {
+                return Ok(result);
+            }
+            Err(ToolError::execution_failed(format!(
+                "Failed to read {}",
+                file_path.display()
+            )))
+        }
+        ConfinedReadOutput::Image { id } => {
+            verify_confined_probe(&workspace_canonical, &relative, &file_path, id, "read")?;
+            read_image_via_ocr(&file_path, path_str, context).await
+        }
+        ConfinedReadOutput::Small(contents) => {
+            context.note_file_read(&file_path);
+            let total_lines = contents.lines().count();
+            if total_lines <= SMALL_FILE_LINES {
+                let hash = content_hash(contents.as_bytes());
+                let body = format!("{}{contents}", content_hash_header(&hash));
+                return Ok(ToolResult::success(body).with_metadata(json!({
+                    "evidence_routing": "inline",
+                    "content_hash": hash
+                })));
+            }
+            let hash = content_hash(contents.as_bytes());
+            let window: Vec<String> = contents
+                .lines()
+                .take(DEFAULT_READ_LINES)
+                .map(str::to_string)
+                .collect();
+            Ok(render_line_window(
+                path_str,
+                &window,
+                total_lines,
+                1,
+                DEFAULT_READ_LINES,
+                Some(hash.as_str()),
+            ))
+        }
+        ConfinedReadOutput::Window {
+            window,
+            total_lines,
+            start_line,
+            max_lines,
+            hash,
+        } => {
+            context.note_file_read(&file_path);
+            if start_line > total_lines {
+                let hash_attr = hash
+                    .as_deref()
+                    .map(|hash| format!(" content_hash=\"{hash}\""))
+                    .unwrap_or_default();
+                let output = format!(
+                    "<file path=\"{path_str}\" total_lines=\"{total_lines}\" shown_lines=\"none\" truncated=\"false\"{hash_attr}>\n\n[NO CONTENT] start_line {start_line} is beyond total_lines {total_lines}.\n</file>"
+                );
+                return Ok(ToolResult::success(output).with_metadata(json!({
+                    "evidence_routing": "inline",
+                    "content_hash": hash
+                })));
+            }
+            Ok(render_line_window(
+                path_str,
+                &window,
+                total_lines,
+                start_line,
+                max_lines,
+                hash.as_deref(),
+            ))
+        }
+    }
+}
+
+fn verify_confined_probe(
+    workspace_canonical: &Path,
+    relative: &Path,
+    display_path: &Path,
+    expected_id: ConfinedFileId,
+    action: &str,
+) -> Result<(), ToolError> {
+    let ws =
+        codewhale_util::files::WorkspaceFile::open_shared(workspace_canonical, relative, false)
+            .map_err(|error| map_confined_io_error(error, display_path, action))?;
+    let probe = ws
+        .identity_probe()
+        .map_err(|error| map_confined_io_error(error, display_path, action))?;
+    let current_id = confined_file_id(&probe)
+        .map_err(|error| map_confined_io_error(error, display_path, action))?;
+    if current_id != expected_id {
+        return Err(ToolError::permission_denied(format!(
+            "{action} target changed before inspection: {}",
+            display_path.display()
+        )));
+    }
+    Ok(())
+}
+
 // Bounded output for large files. The small-file fast path keeps the
 // historical "return contents unchanged" behavior so existing flows
 // (small configs, single source files, etc.) don't suddenly start
@@ -1246,7 +1680,7 @@ const SMALL_FILE_BYTES: usize = 16 * 1024;
 /// Returns the collected window plus the total line count. Only the window
 /// is ever held in memory.
 fn read_window_streaming(
-    file: fs::File,
+    file: &fs::File,
     start_line: usize,
     max_lines: usize,
 ) -> std::io::Result<(Vec<String>, usize)> {
@@ -1565,11 +1999,36 @@ impl WriteFileTool {
         let path_str = required_str(&input, "path")?;
         let file_content = required_str(&input, "content")?;
         check_contract_file_size(file_content.len())?;
-        let file_path = context.resolve_path(path_str)?;
+        let confined_target = if write_uses_confined_io(context) {
+            Some(resolve_confined_target_async(context, path_str, false).await?)
+        } else {
+            None
+        };
+        let file_path = match confined_target.as_ref() {
+            Some((workspace_canonical, relative)) => workspace_canonical.join(relative),
+            None => context.resolve_path(path_str)?,
+        };
         let mutation_guard = acquire_file_mutation(&file_path, context).await?;
         check_file_operation_cancelled(context)?;
 
-        let prior = load_contract_source(&file_path, false, context).await?;
+        let (prior_id, prior) = match confined_target.as_ref() {
+            Some((workspace_canonical, relative)) => match load_confined_prior_file(
+                workspace_canonical,
+                relative,
+                &file_path,
+                Some(CONTRACT_FILE_MAX_BYTES),
+                context,
+            )
+            .await?
+            {
+                ConfinedPrior::Missing => (None, None),
+                ConfinedPrior::Existing { bytes, id } => (Some(id), Some(bytes)),
+            },
+            None => (
+                None,
+                load_contract_source(&file_path, false, context).await?,
+            ),
+        };
         let existed_before = prior.is_some();
         if existed_before {
             context.require_fresh_read_before_write(&file_path, path_str)?;
@@ -1598,17 +2057,27 @@ impl WriteFileTool {
         }
         check_contract_file_size(written.len())?;
         check_file_operation_cancelled(context)?;
-        if let Some(parent) = file_path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|error| {
-                ToolError::execution_failed(format!(
-                    "Failed to create directory {}: {error}",
-                    parent.display()
-                ))
-            })?;
+        if let Some((workspace_canonical, relative)) = confined_target.as_ref() {
+            commit_confined_write(
+                workspace_canonical,
+                relative,
+                &file_path,
+                prior_id,
+                written.clone().into_bytes(),
+            )
+            .await?;
+        } else {
+            if let Some(parent) = file_path.parent() {
+                tokio::fs::create_dir_all(parent).await.map_err(|error| {
+                    ToolError::execution_failed(format!(
+                        "Failed to create directory {}: {error}",
+                        parent.display()
+                    ))
+                })?;
+            }
+            check_file_operation_cancelled(context)?;
+            run_blocking_write_atomic(&file_path, written.clone().into_bytes()).await?;
         }
-        check_file_operation_cancelled(context)?;
-        // Once replacement starts, report its actual completion even if cancelled.
-        run_blocking_write_atomic(&file_path, written.clone().into_bytes()).await?;
         context.note_file_read(&file_path);
         drop(mutation_guard);
 
@@ -1700,29 +2169,61 @@ impl ToolSpec for WriteFileTool {
         let expected_hash = optional_str(&input, "expected_hash")?;
         let line_ending = requested_line_ending(&input)?;
 
-        let file_path = context.resolve_path(path_str)?;
+        let confined_target = if write_uses_confined_io(context) {
+            Some(resolve_confined_target_async(context, path_str, false).await?)
+        } else {
+            None
+        };
+        let file_path = match confined_target.as_ref() {
+            Some((workspace_canonical, relative)) => workspace_canonical.join(relative),
+            None => context.resolve_path(path_str)?,
+        };
+        let mutation_guard = acquire_file_mutation(&file_path, context).await?;
 
-        // Snapshot the existing contents (if any) before we overwrite — used
-        // to render an inline diff in the tool result. Only a genuinely
-        // absent path is "new": a stat that fails for any other reason must
-        // not let an existing file be overwritten as if it were empty.
-        let existed_before = tokio::fs::try_exists(&file_path).await.map_err(|error| {
-            ToolError::execution_failed(format!(
-                "Failed to inspect {}: {error}",
-                file_path.display()
-            ))
-        })?;
-        let prior_contents = if existed_before {
-            tokio::fs::read_to_string(&file_path)
-                .await
-                .map_err(|error| {
+        let (existed_before, prior_id, prior_contents) = match confined_target.as_ref() {
+            Some((workspace_canonical, relative)) => {
+                match load_confined_prior_file(
+                    workspace_canonical,
+                    relative,
+                    &file_path,
+                    None,
+                    context,
+                )
+                .await?
+                {
+                    ConfinedPrior::Missing => (false, None, String::new()),
+                    ConfinedPrior::Existing { bytes, id } => {
+                        let contents = String::from_utf8(bytes).map_err(|error| {
+                            ToolError::execution_failed(format!(
+                                "Failed to read {}: {error}",
+                                file_path.display()
+                            ))
+                        })?;
+                        (true, Some(id), contents)
+                    }
+                }
+            }
+            None => {
+                let existed_before = tokio::fs::try_exists(&file_path).await.map_err(|error| {
                     ToolError::execution_failed(format!(
-                        "Failed to read {}: {error}",
+                        "Failed to inspect {}: {error}",
                         file_path.display()
                     ))
-                })?
-        } else {
-            String::new()
+                })?;
+                let prior_contents = if existed_before {
+                    tokio::fs::read_to_string(&file_path)
+                        .await
+                        .map_err(|error| {
+                            ToolError::execution_failed(format!(
+                                "Failed to read {}: {error}",
+                                file_path.display()
+                            ))
+                        })?
+                } else {
+                    String::new()
+                };
+                (existed_before, None, prior_contents)
+            }
         };
 
         // Content-hash guard (#3979), checked against the same snapshot the
@@ -1758,16 +2259,28 @@ impl ToolSpec for WriteFileTool {
         if line_ending.is_some() {
             written = write_line_endings(&written, "", line_ending, true)?;
         }
-        if let Some(parent) = file_path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|error| {
-                ToolError::execution_failed(format!(
-                    "Failed to create directory {}: {error}",
-                    parent.display()
-                ))
-            })?;
+        if let Some((workspace_canonical, relative)) = confined_target.as_ref() {
+            commit_confined_write(
+                workspace_canonical,
+                relative,
+                &file_path,
+                prior_id,
+                written.clone().into_bytes(),
+            )
+            .await?;
+        } else {
+            if let Some(parent) = file_path.parent() {
+                tokio::fs::create_dir_all(parent).await.map_err(|error| {
+                    ToolError::execution_failed(format!(
+                        "Failed to create directory {}: {error}",
+                        parent.display()
+                    ))
+                })?;
+            }
+            run_blocking_write_atomic(&file_path, written.clone().into_bytes()).await?;
         }
-        run_blocking_write_atomic(&file_path, written.clone().into_bytes()).await?;
         context.note_file_read(&file_path);
+        drop(mutation_guard);
 
         let display = file_path.display().to_string();
         let diff = make_unified_diff(&display, &prior_contents, &written);
@@ -3436,6 +3949,52 @@ impl ToolSpec for ListDirTool {
         // raw spelling is checked first (F2) so the refusal names the caller's
         // path, never a symlink target it might resolve to.
         enforce_read_denylist(Path::new(path_str), "list_dir")?;
+        if context.strict_workspace_confinement {
+            let (workspace_canonical, relative) =
+                resolve_confined_target_async(context, path_str, true).await?;
+            let dir_path = if relative.as_os_str().is_empty() {
+                workspace_canonical.clone()
+            } else {
+                workspace_canonical.join(&relative)
+            };
+            enforce_read_denylist(&dir_path, "list_dir")?;
+            let worker_cancel_token = context.cancel_token.clone();
+            let entries =
+                run_blocking_list_dir(LIST_DIR_TIMEOUT, context.cancel_token.clone(), move || {
+                    check_list_dir_cancelled(worker_cancel_token.as_ref())?;
+                    let rel = (!relative.as_os_str().is_empty()).then_some(relative.as_path());
+                    let listing = codewhale_util::files::read_confined_dir(
+                        &workspace_canonical,
+                        rel,
+                        LIST_DIR_MAX_ENTRIES,
+                    )
+                    .map_err(|error| map_confined_io_error(error, &dir_path, "list"))?;
+                    check_list_dir_cancelled(worker_cancel_token.as_ref())?;
+                    let entries = listing
+                        .entries
+                        .into_iter()
+                        .map(|entry| {
+                            json!({
+                                "name": entry.name,
+                                "is_dir": entry.is_dir,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    if listing.total_entries > entries.len() {
+                        Ok(json!({
+                            "entries": entries,
+                            "listed_entries": LIST_DIR_MAX_ENTRIES,
+                            "total_entries": listing.total_entries,
+                            "truncated": true,
+                        }))
+                    } else {
+                        Ok(Value::Array(entries))
+                    }
+                })
+                .await?;
+            return ToolResult::json(&entries)
+                .map_err(|e| ToolError::execution_failed(e.to_string()));
+        }
         let dir_path = context.resolve_path(path_str)?;
         enforce_read_denylist(&dir_path, "list_dir")?;
 

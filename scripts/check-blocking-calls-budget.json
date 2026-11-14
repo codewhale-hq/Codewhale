@@ -567,8 +567,8 @@
     "path_canonicalize": 2
   },
   "crates/util/src/files.rs": {
-    "path_canonicalize": 5,
-    "std_fs": 5,
+    "path_canonicalize": 6,
+    "std_fs": 7,
     "thread_sleep": 1
   },
   "crates/util/src/git_metadata.rs": {

@@ -3352,6 +3352,447 @@ async fn dsh_workspace_arm_reads_writes_and_runs_literal_git_only_through_the_ga
     assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn dsh_workspace_overlay_closes_mid_approval_symlink_toctou_and_trust_mode() {
+    use super::dsh_broker::{TABLE, TestGrants};
+    use super::dsh_workspace::TestOverlay;
+    use super::protocol::DshService;
+
+    let _grants = TestGrants::only(&[DshService::Workspace]);
+    let mut f = fixture(true);
+    let workspace = f.context.workspace.canonicalize().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let hooks_dir = workspace.join(".git/hooks");
+    std::fs::create_dir_all(&hooks_dir).unwrap();
+    std::fs::create_dir_all(workspace.join("notes")).unwrap();
+    std::fs::create_dir_all(workspace.join("stage")).unwrap();
+    let hook = hooks_dir.join("pre-commit");
+    std::fs::write(&hook, "clean-hook\n").unwrap();
+    let outside_target = outside.path().join("outside.txt");
+    std::fs::write(&outside_target, "clean-outside\n").unwrap();
+    let existing = workspace.join("notes/existing.txt");
+    std::fs::write(&existing, "before\n").unwrap();
+    let existing_hash = crate::tools::file::content_hash(b"before\n");
+
+    let specs = crate::tools::registry::ToolRegistryBuilder::new()
+        .with_file_tools()
+        .with_git_tools()
+        .build(ToolContext::new(&workspace))
+        .all();
+    f.gate = f.gate.clone().for_extension(f.caller(), specs);
+    f.context.trust_mode = true;
+    f.context.follow_symlinks = true;
+    f.context
+        .trusted_external_paths
+        .push(outside.path().to_path_buf());
+    f.in_session("workspace-toctou-session");
+    let guard = f.begin(7, &f.owner);
+    let ticket = broker_ticket(&guard, "workspace").unwrap();
+    let _overlay = TestOverlay::granted();
+
+    f.server.hold.store(true, Ordering::SeqCst);
+
+    {
+        let target = workspace.join("notes/new_leaf.txt");
+        let hook_target = hook.clone();
+        let expected_asked = 1;
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                f.broker(
+                    TABLE,
+                    &f.owner,
+                    &ticket,
+                    "workspace",
+                    "write",
+                    json!({"path": "notes/new_leaf.txt", "content": "pwned\n"}),
+                ),
+                async {
+                    while f.server.asked.load(Ordering::SeqCst) < expected_asked {
+                        tokio::task::yield_now().await;
+                    }
+                    std::os::unix::fs::symlink(&hook_target, &target).unwrap();
+                    f.server.release.notify_one();
+                }
+            )
+        })
+        .await
+        .expect("leaf swap test timed out");
+        assert_eq!(
+            dsh_refusal(&result),
+            (error_code::REFUSED, "refused".into())
+        );
+    }
+
+    {
+        let stage_dir = workspace.join("stage");
+        let hooks_target = hooks_dir.clone();
+        let expected_asked = 2;
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                f.broker(
+                    TABLE,
+                    &f.owner,
+                    &ticket,
+                    "workspace",
+                    "write",
+                    json!({"path": "stage/swapped-hook", "content": "pwned\n"}),
+                ),
+                async {
+                    while f.server.asked.load(Ordering::SeqCst) < expected_asked {
+                        tokio::task::yield_now().await;
+                    }
+                    std::fs::remove_dir(&stage_dir).unwrap();
+                    std::os::unix::fs::symlink(&hooks_target, &stage_dir).unwrap();
+                    f.server.release.notify_one();
+                }
+            )
+        })
+        .await
+        .expect("dir swap test timed out");
+        assert_eq!(
+            dsh_refusal(&result),
+            (error_code::REFUSED, "refused".into())
+        );
+    }
+
+    {
+        let existing_path = existing.clone();
+        let hook_target = hook.clone();
+        let expected_asked = 3;
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                f.broker(
+                    TABLE,
+                    &f.owner,
+                    &ticket,
+                    "workspace",
+                    "write",
+                    json!({
+                        "path": "notes/existing.txt",
+                        "content": "pwned\n",
+                        "expected_hash": existing_hash,
+                    }),
+                ),
+                async {
+                    while f.server.asked.load(Ordering::SeqCst) < expected_asked {
+                        tokio::task::yield_now().await;
+                    }
+                    std::fs::remove_file(&existing_path).unwrap();
+                    std::os::unix::fs::symlink(&hook_target, &existing_path).unwrap();
+                    f.server.release.notify_one();
+                }
+            )
+        })
+        .await
+        .expect("existing replace swap test timed out");
+        assert_eq!(
+            dsh_refusal(&result),
+            (error_code::REFUSED, "refused".into())
+        );
+    }
+
+    {
+        let trust_target = workspace.join("notes/trust_escape.txt");
+        let outside_copy = outside_target.clone();
+        let expected_asked = 4;
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                f.broker(
+                    TABLE,
+                    &f.owner,
+                    &ticket,
+                    "workspace",
+                    "write",
+                    json!({"path": "notes/trust_escape.txt", "content": "pwned\n"}),
+                ),
+                async {
+                    while f.server.asked.load(Ordering::SeqCst) < expected_asked {
+                        tokio::task::yield_now().await;
+                    }
+                    std::os::unix::fs::symlink(&outside_copy, &trust_target).unwrap();
+                    f.server.release.notify_one();
+                }
+            )
+        })
+        .await
+        .expect("trust escape swap test timed out");
+        assert_eq!(
+            dsh_refusal(&result),
+            (error_code::REFUSED, "refused".into())
+        );
+    }
+
+    {
+        std::fs::write(workspace.join("notes/swap_read.txt"), "safe\n").unwrap();
+        let swap_read = workspace.join("notes/swap_read.txt");
+        let outside_copy = outside_target.clone();
+        let expected_asked = 5;
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                f.broker(
+                    TABLE,
+                    &f.owner,
+                    &ticket,
+                    "workspace",
+                    "read",
+                    json!({"path": "notes/swap_read.txt"}),
+                ),
+                async {
+                    while f.server.asked.load(Ordering::SeqCst) < expected_asked {
+                        tokio::task::yield_now().await;
+                    }
+                    std::fs::remove_file(&swap_read).unwrap();
+                    std::os::unix::fs::symlink(&outside_copy, &swap_read).unwrap();
+                    f.server.release.notify_one();
+                }
+            )
+        })
+        .await
+        .expect("read swap test timed out");
+        assert_eq!(
+            dsh_refusal(&result),
+            (error_code::REFUSED, "refused".into())
+        );
+    }
+
+    {
+        std::fs::create_dir_all(workspace.join("list_stage")).unwrap();
+        let list_dir_path = workspace.join("list_stage");
+        let outside_dir_copy = outside.path().to_path_buf();
+        let expected_asked = 6;
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                f.broker(
+                    TABLE,
+                    &f.owner,
+                    &ticket,
+                    "workspace",
+                    "list",
+                    json!({"path": "list_stage"}),
+                ),
+                async {
+                    while f.server.asked.load(Ordering::SeqCst) < expected_asked {
+                        tokio::task::yield_now().await;
+                    }
+                    std::fs::remove_dir(&list_dir_path).unwrap();
+                    std::os::unix::fs::symlink(&outside_dir_copy, &list_dir_path).unwrap();
+                    f.server.release.notify_one();
+                }
+            )
+        })
+        .await
+        .expect("list swap test timed out");
+        assert_eq!(
+            dsh_refusal(&result),
+            (error_code::REFUSED, "refused".into())
+        );
+    }
+
+    f.server.hold.store(false, Ordering::SeqCst);
+
+    std::fs::hard_link(&hook, workspace.join("notes/hard_hook")).unwrap();
+    let hard_result = f
+        .broker(
+            TABLE,
+            &f.owner,
+            &ticket,
+            "workspace",
+            "write",
+            json!({"path": "notes/hard_hook", "content": "pwned\n"}),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&hard_result),
+        (error_code::REFUSED, "refused".into())
+    );
+
+    assert_eq!(std::fs::read_to_string(&hook).unwrap(), "clean-hook\n");
+    assert!(!hooks_dir.join("swapped-hook").exists());
+    assert_eq!(
+        std::fs::read_to_string(&outside_target).unwrap(),
+        "clean-outside\n"
+    );
+
+    drop(guard);
+    assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
+}
+
+#[tokio::test]
+async fn dsh_workspace_exec_checks_git_review_scope_denial_before_gate() {
+    use super::dsh_broker::{TABLE, TestGrants};
+    use super::protocol::DshService;
+
+    let _grants = TestGrants::only(&[DshService::Workspace]);
+    let mut f = fixture(true);
+    let workspace = f.context.workspace.canonicalize().unwrap();
+    let specs = crate::tools::registry::ToolRegistryBuilder::new()
+        .with_git_tools()
+        .build(ToolContext::new(&workspace))
+        .all();
+    f.gate = f.gate.clone().for_extension(f.caller(), specs);
+    f.context.disallowed_tools = vec!["git_review_scope".into()];
+    f.in_session("workspace-git-deny-session");
+    let guard = f.begin(7, &f.owner);
+    let ticket = broker_ticket(&guard, "workspace").unwrap();
+
+    let denied = f
+        .broker(
+            TABLE,
+            &f.owner,
+            &ticket,
+            "workspace",
+            "exec",
+            json!({"argv": ["git", "rev-parse", "--show-toplevel"]}),
+        )
+        .await;
+    assert_eq!(
+        dsh_refusal(&denied),
+        (error_code::REFUSED, "refused".into())
+    );
+    assert_eq!(
+        f.server.asked.load(Ordering::SeqCst),
+        0,
+        "git_review_scope denial must stop before the gate"
+    );
+    drop(guard);
+    assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
+}
+
+#[tokio::test]
+async fn dsh_workspace_exec_runs_real_git_review_scope_queries() {
+    use super::dsh_broker::{TABLE, TestGrants};
+    use super::protocol::DshService;
+
+    let _grants = TestGrants::only(&[DshService::Workspace]);
+    let mut f = fixture(true);
+    let workspace = f.context.workspace.canonicalize().unwrap();
+    let run_git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(&workspace)
+            .output()
+    };
+    let Ok(init) = run_git(&["init", "-q"]) else {
+        return;
+    };
+    assert!(
+        init.status.success(),
+        "{:?}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    assert!(
+        run_git(&["config", "user.email", "test@example.com"])
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        run_git(&["config", "user.name", "Tester"])
+            .unwrap()
+            .status
+            .success()
+    );
+    std::fs::write(workspace.join("base.txt"), "one\n").unwrap();
+    assert!(run_git(&["add", "base.txt"]).unwrap().status.success());
+    assert!(
+        run_git(&["commit", "-q", "-m", "first commit"])
+            .unwrap()
+            .status
+            .success()
+    );
+    std::fs::create_dir_all(workspace.join("src")).unwrap();
+    std::fs::write(workspace.join("src/a.txt"), "two\n").unwrap();
+    assert!(run_git(&["add", "src/a.txt"]).unwrap().status.success());
+    assert!(
+        run_git(&["commit", "-q", "-m", "second commit"])
+            .unwrap()
+            .status
+            .success()
+    );
+
+    let specs = crate::tools::registry::ToolRegistryBuilder::new()
+        .with_git_tools()
+        .build(ToolContext::new(&workspace))
+        .all();
+    f.gate = f.gate.clone().for_extension(f.caller(), specs);
+    f.in_session("workspace-git-exec-session");
+    let guard = f.begin(7, &f.owner);
+    let ticket = broker_ticket(&guard, "workspace").unwrap();
+
+    let resolve_out = f
+        .broker(
+            TABLE,
+            &f.owner,
+            &ticket,
+            "workspace",
+            "exec",
+            json!({"argv": ["git", "rev-parse", "--verify", "--end-of-options", "HEAD"]}),
+        )
+        .await
+        .expect("resolve HEAD");
+    assert_eq!(resolve_out["ok"], true, "{resolve_out}");
+    assert_eq!(resolve_out["exit_code"], 0, "{resolve_out}");
+    let head_sha = resolve_out["stdout"].as_str().unwrap().trim().to_string();
+    assert!(matches!(head_sha.len(), 40 | 64), "{head_sha}");
+
+    let merge_range = format!("{head_sha}...{head_sha}");
+    for (argv, expected_substr) in [
+        (vec!["git", "rev-parse", "--show-toplevel"], None),
+        (
+            vec!["git", "log", "-n", "100", "--format=%H%x09%s"],
+            Some("second commit"),
+        ),
+        (
+            vec![
+                "git",
+                "--no-optional-locks",
+                "for-each-ref",
+                "--format=%(refname:short)",
+                "refs/heads",
+            ],
+            None,
+        ),
+        (
+            vec!["git", "merge-base", head_sha.as_str(), head_sha.as_str()],
+            None,
+        ),
+        (
+            vec![
+                "git",
+                "rev-list",
+                "--left-right",
+                "--count",
+                merge_range.as_str(),
+            ],
+            Some("0\t0"),
+        ),
+    ] {
+        let out = f
+            .broker(
+                TABLE,
+                &f.owner,
+                &ticket,
+                "workspace",
+                "exec",
+                json!({"argv": argv}),
+            )
+            .await
+            .unwrap_or_else(|err| panic!("argv={argv:?}: {err:?}"));
+        assert_eq!(out["ok"], true, "argv={argv:?}: {out}");
+        assert_eq!(out["exit_code"], 0, "argv={argv:?}: {out}");
+        if let Some(substr) = expected_substr {
+            assert!(
+                out["stdout"].as_str().unwrap().contains(substr),
+                "expected {substr} in {out}"
+            );
+        }
+    }
+
+    drop(guard);
+    assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
+}
+
 #[derive(serde::Deserialize)]
 #[serde(tag = "method", content = "input", deny_unknown_fields)]
 enum ActMethod {

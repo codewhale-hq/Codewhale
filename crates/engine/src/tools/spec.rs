@@ -538,7 +538,9 @@ pub fn resolve_strict_authority_path(
         for segment in normalized.split('/') {
             current.push(segment);
             match fs::symlink_metadata(&current) {
-                Ok(metadata) if metadata.file_type().is_symlink() => {
+                Ok(metadata)
+                    if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) =>
+                {
                     return Err(ToolError::permission_denied(format!(
                         "machine-readable authority paths must not traverse symlinks: {}",
                         current.display()
@@ -732,6 +734,7 @@ pub struct ToolExecutionState {
     pub live_posture: Option<crate::core::engine::LivePosture>,
     pub browser_tool: Option<String>,
     pub child_activation: Option<Arc<crate::tools::subagent::ChildActivationRequest>>,
+    pub strict_workspace_confinement: bool,
 }
 
 impl std::ops::Deref for ToolContext {
@@ -837,6 +840,7 @@ impl ToolContext {
                 live_posture: None,
                 browser_tool: None,
                 child_activation: None,
+                strict_workspace_confinement: false,
             }),
         }
     }
@@ -1473,6 +1477,302 @@ pub fn normalize_path(path: &Path) -> PathBuf {
         normalized.push(part);
     }
     normalized
+}
+
+pub(crate) fn has_forbidden_windows_colon(raw: &str, windows: bool) -> bool {
+    if !windows {
+        return false;
+    }
+    let bytes = raw.as_bytes();
+    let rest = if raw.starts_with(r"\\?\")
+        || raw.starts_with("//?/")
+        || raw.starts_with(r"\\.\")
+        || raw.starts_with("//./")
+    {
+        if bytes.get(4).is_some_and(u8::is_ascii_alphabetic)
+            && bytes.get(5) == Some(&b':')
+            && matches!(bytes.get(6), Some(b'\\') | Some(b'/'))
+        {
+            &raw[6..]
+        } else {
+            raw
+        }
+    } else if bytes.first().is_some_and(u8::is_ascii_alphabetic)
+        && bytes.get(1) == Some(&b':')
+        && matches!(bytes.get(2), Some(b'\\') | Some(b'/'))
+    {
+        &raw[2..]
+    } else {
+        raw
+    };
+    rest.contains(':')
+}
+
+pub(crate) fn is_windows_short_name_segment(segment: &str) -> bool {
+    for (idx, _) in segment.match_indices('~') {
+        let after = &segment[idx + 1..];
+        let digits = after.split('.').next().unwrap_or(after);
+        if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return true;
+        }
+    }
+    false
+}
+
+pub(crate) fn has_windows_trailing_dot_or_space(segment: &str, windows: bool) -> bool {
+    windows && segment != "." && segment != ".." && segment.ends_with(['.', ' '])
+}
+
+pub(crate) fn is_protected_workspace_metadata_segment(segment: &str, windows: bool) -> bool {
+    if codewhale_util::git_metadata::git_metadata_name(segment, windows) {
+        return true;
+    }
+    let trimmed = if windows {
+        segment
+            .split(':')
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(['.', ' '])
+    } else {
+        segment
+    };
+    if trimmed.eq_ignore_ascii_case(".codewhale") {
+        return true;
+    }
+    if windows {
+        let stem = trimmed.split('.').next().unwrap_or(trimmed);
+        if let Some((prefix, digits)) = stem.rsplit_once('~')
+            && !digits.is_empty()
+            && digits.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            let prefix = prefix.strip_prefix('.').unwrap_or(prefix);
+            let upper = prefix.to_ascii_uppercase();
+            if !upper.is_empty() && "CODEWHALE".starts_with(&upper) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub(crate) fn validate_windows_relative_segments(
+    relative: &str,
+    windows: bool,
+) -> Result<(), String> {
+    if !windows {
+        return Ok(());
+    }
+    if has_forbidden_windows_colon(relative, true) {
+        return Err("windows colons and alternate data streams are not allowed".to_string());
+    }
+    for segment in relative.replace('\\', "/").split('/') {
+        if segment.is_empty() || segment == "." {
+            continue;
+        }
+        if has_windows_trailing_dot_or_space(segment, true) {
+            return Err(format!(
+                "trailing dots or spaces are not allowed: {segment}"
+            ));
+        }
+        if is_windows_short_name_segment(segment) {
+            return Err(format!(
+                "windows short-name aliases are not allowed: {segment}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn strip_windows_verbatim_slashes(raw: &str) -> String {
+    let mut normalized = raw.replace('\\', "/");
+    if let Some(rest) = normalized
+        .strip_prefix("//?/UNC/")
+        .or_else(|| normalized.strip_prefix("//?/unc/"))
+    {
+        normalized = format!("//{rest}");
+    } else if let Some(rest) = normalized
+        .strip_prefix("//?/")
+        .or_else(|| normalized.strip_prefix("//./"))
+    {
+        normalized = rest.to_string();
+    }
+    while normalized.len() > 1 && normalized.ends_with('/') {
+        if normalized.len() == 3 && normalized.as_bytes().get(1) == Some(&b':') {
+            break;
+        }
+        normalized.pop();
+    }
+    normalized
+}
+
+pub(crate) fn has_windows_drive_or_unc_prefix(raw: &str) -> bool {
+    raw.starts_with(r"\\")
+        || raw.starts_with("//")
+        || (raw.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+            && raw.as_bytes().get(1) == Some(&b':'))
+}
+
+pub(crate) fn strip_workspace_root_str(
+    workspace_raw: &str,
+    workspace_canonical: Option<&str>,
+    raw: &str,
+    windows: bool,
+) -> Option<String> {
+    if !windows {
+        let candidate = Path::new(raw);
+        let rest = candidate
+            .strip_prefix(Path::new(workspace_raw))
+            .ok()
+            .or_else(|| {
+                workspace_canonical.and_then(|root| candidate.strip_prefix(Path::new(root)).ok())
+            })?;
+        let mut clean = PathBuf::new();
+        for component in rest.components() {
+            match component {
+                Component::Normal(part) => clean.push(part),
+                Component::CurDir => {}
+                _ => return None,
+            }
+        }
+        let shown = clean.to_str()?;
+        return Some(if shown.is_empty() {
+            ".".to_string()
+        } else {
+            shown.to_string()
+        });
+    }
+
+    let cand = strip_windows_verbatim_slashes(raw);
+    for root in std::iter::once(workspace_raw).chain(workspace_canonical) {
+        let root_norm = strip_windows_verbatim_slashes(root);
+        if cand.eq_ignore_ascii_case(&root_norm) {
+            return Some(".".to_string());
+        }
+        let cand_bytes = cand.as_bytes();
+        let root_len = root_norm.len();
+        if cand_bytes.len() > root_len
+            && cand[..root_len].eq_ignore_ascii_case(&root_norm)
+            && (root_norm.ends_with('/') || cand_bytes[root_len] == b'/')
+        {
+            let tail = &cand[if root_norm.ends_with('/') {
+                root_len
+            } else {
+                root_len + 1
+            }..];
+            let mut segments = Vec::new();
+            for segment in tail.split('/') {
+                match segment {
+                    "" | "." => {}
+                    ".." => return None,
+                    part => segments.push(part),
+                }
+            }
+            return Some(if segments.is_empty() {
+                ".".to_string()
+            } else {
+                segments.join("/")
+            });
+        }
+    }
+    None
+}
+
+pub(crate) fn resolve_confined_target(
+    context: &ToolContext,
+    workspace_canonical: &Path,
+    raw: &str,
+    allow_root_dot: bool,
+) -> Result<PathBuf, ToolError> {
+    if context.workspace.as_os_str().is_empty() || raw.is_empty() {
+        return Err(ToolError::permission_denied(
+            "workspace path cannot be empty".to_string(),
+        ));
+    }
+    if has_forbidden_windows_colon(raw, cfg!(windows)) {
+        return Err(ToolError::permission_denied(
+            "workspace path cannot contain a colon outside a Windows drive prefix".to_string(),
+        ));
+    }
+    if context.strict_workspace_confinement
+        && (raw == "~" || raw.starts_with("~/") || (cfg!(windows) && raw.starts_with("~\\")))
+    {
+        return Err(ToolError::permission_denied(
+            "workspace path cannot use home shorthand".to_string(),
+        ));
+    }
+    let home_resolved = if !context.strict_workspace_confinement {
+        resolve_home_path(raw)?
+    } else {
+        None
+    };
+    let check_path = home_resolved.as_deref().unwrap_or_else(|| Path::new(raw));
+    if check_path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(ToolError::PathEscape {
+            path: normalize_path(&context.workspace.join(check_path)),
+        });
+    }
+    let relative = if let Some(home_path) = home_resolved.as_deref() {
+        let home_str = home_path.to_str().ok_or_else(|| {
+            ToolError::permission_denied("workspace path must be valid UTF-8".to_string())
+        })?;
+        let ws_plain = normalize_path(&context.workspace);
+        let ws_str = ws_plain.to_string_lossy();
+        let can_str = workspace_canonical.to_string_lossy();
+        let rel = strip_workspace_root_str(&ws_str, Some(&can_str), home_str, cfg!(windows))
+            .ok_or_else(|| ToolError::PathEscape {
+                path: normalize_path(home_path),
+            })?;
+        if rel == "." {
+            PathBuf::new()
+        } else {
+            PathBuf::from(rel)
+        }
+    } else if check_path.is_absolute()
+        || check_path.has_root()
+        || (cfg!(windows) && has_windows_drive_or_unc_prefix(raw))
+    {
+        let ws_str = context.workspace.to_string_lossy();
+        let can_str = workspace_canonical.to_string_lossy();
+        let rel = strip_workspace_root_str(&ws_str, Some(&can_str), raw, cfg!(windows))
+            .ok_or_else(|| ToolError::PathEscape {
+                path: PathBuf::from(raw),
+            })?;
+        if rel == "." {
+            PathBuf::new()
+        } else {
+            PathBuf::from(rel)
+        }
+    } else {
+        let mut rel = PathBuf::new();
+        for component in check_path.components() {
+            match component {
+                Component::Normal(part) => rel.push(part),
+                Component::CurDir => {}
+                _ => {
+                    return Err(ToolError::PathEscape {
+                        path: PathBuf::from(raw),
+                    });
+                }
+            }
+        }
+        rel
+    };
+
+    if relative.as_os_str().is_empty() {
+        if !allow_root_dot {
+            return Err(ToolError::permission_denied(
+                "workspace path must name an entry inside the workspace".to_string(),
+            ));
+        }
+    } else {
+        validate_windows_relative_segments(&relative.to_string_lossy(), cfg!(windows))
+            .map_err(ToolError::permission_denied)?;
+    }
+
+    Ok(relative)
 }
 
 /// Resolve an exact `~` or `~/` path prefix to the current user's home directory.

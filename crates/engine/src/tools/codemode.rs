@@ -730,6 +730,10 @@ impl CodemodeInvoker {
         extra_refusal: ExtraRefusal,
     ) -> Self {
         context.execution.nested_call_gate = None;
+        context.execution.strict_workspace_confinement = true;
+        context.execution.trust_mode = false;
+        context.execution.follow_symlinks = false;
+        context.execution.trusted_external_paths.clear();
         Self::with_gate(
             specs,
             context,
