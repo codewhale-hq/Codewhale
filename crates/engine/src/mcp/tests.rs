@@ -3589,10 +3589,19 @@ struct ReplyRefusingTransport {
 #[async_trait::async_trait]
 impl McpTransport for ReplyRefusingTransport {
     async fn send(&mut self, msg: Vec<u8>) -> Result<()> {
-        let msg: serde_json::Value = serde_json::from_slice(&msg)?;
-        anyhow::ensure!(msg.get("method").is_some(), "status=405 Method Not Allowed");
-        self.sent.lock().unwrap().push(msg);
+        self.sent
+            .lock()
+            .unwrap()
+            .push(serde_json::from_slice(&msg)?);
         Ok(())
+    }
+
+    async fn send_reply(&mut self, _msg: Vec<u8>) -> Result<()> {
+        Err(super::wire::McpServerReplyUnsupported(
+            "MCP Streamable HTTP refused a reply to a server request: status=405 Method Not Allowed"
+                .to_string(),
+        )
+        .into())
     }
 
     async fn recv(&mut self) -> Result<Vec<u8>> {
@@ -3624,6 +3633,186 @@ async fn call_method_keeps_its_reply_when_answering_a_server_request_fails() {
     let sent = sent.lock().unwrap();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0]["method"], "tools/call");
+}
+
+enum ScriptedReplyBehavior {
+    Complete,
+    Stall,
+    Fail(&'static str),
+}
+
+struct HangingReplyTransport {
+    sent: Arc<Mutex<Vec<serde_json::Value>>>,
+    responses: VecDeque<Vec<u8>>,
+    reply_behavior: ScriptedReplyBehavior,
+    reply_started: Arc<AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl McpTransport for HangingReplyTransport {
+    async fn send(&mut self, msg: Vec<u8>) -> Result<()> {
+        self.sent
+            .lock()
+            .unwrap()
+            .push(serde_json::from_slice(&msg)?);
+        Ok(())
+    }
+
+    async fn send_reply(&mut self, msg: Vec<u8>) -> Result<()> {
+        self.reply_started.store(true, AtomicOrdering::SeqCst);
+        match self.reply_behavior {
+            ScriptedReplyBehavior::Complete => {
+                self.sent
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::from_slice(&msg)?);
+                Ok(())
+            }
+            ScriptedReplyBehavior::Stall => std::future::pending::<Result<()>>().await,
+            ScriptedReplyBehavior::Fail(reason) => Err(anyhow::anyhow!("{reason}")),
+        }
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>> {
+        match self.responses.pop_front() {
+            Some(response) => Ok(response),
+            None => std::future::pending().await,
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn answer_server_request_disconnects_when_dropped_mid_write_and_restores_on_completion() {
+    let stalled_started = Arc::new(AtomicBool::new(false));
+    let mut stalled_conn = test_connection(Box::new(HangingReplyTransport {
+        sent: Arc::new(Mutex::new(Vec::new())),
+        responses: VecDeque::from([json_frame(
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}),
+        )]),
+        reply_behavior: ScriptedReplyBehavior::Stall,
+        reply_started: Arc::clone(&stalled_started),
+    }));
+
+    let err = stalled_conn
+        .call_method("tools/call", serde_json::json!({"name": "echo"}), 1)
+        .await
+        .expect_err("a stalled server-request reply must time out at the request deadline");
+    assert!(
+        err.to_string()
+            .contains("MCP method 'tools/call' on server 'mock' timed out after 1s"),
+        "unexpected error: {err:#}"
+    );
+    assert!(stalled_started.load(AtomicOrdering::SeqCst));
+    assert_eq!(stalled_conn.state(), ConnectionState::Disconnected);
+    assert!(!stalled_conn.is_ready());
+
+    let ok_sent = Arc::new(Mutex::new(Vec::new()));
+    let mut ok_conn = test_connection(Box::new(HangingReplyTransport {
+        sent: Arc::clone(&ok_sent),
+        responses: VecDeque::from([
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "ping"})),
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"ok": true}})),
+        ]),
+        reply_behavior: ScriptedReplyBehavior::Complete,
+        reply_started: Arc::new(AtomicBool::new(false)),
+    }));
+
+    let result = ok_conn
+        .call_method("tools/call", serde_json::json!({"name": "echo"}), 1)
+        .await
+        .expect("a completed server-request reply should finish the call");
+    assert_eq!(result, serde_json::json!({"ok": true}));
+    assert_eq!(ok_conn.state(), ConnectionState::Ready);
+    assert!(ok_conn.is_ready());
+    assert_eq!(ok_sent.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn answer_server_request_disconnects_on_fatal_send_reply_error() {
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let reply_started = Arc::new(AtomicBool::new(false));
+    let mut conn = test_connection(Box::new(HangingReplyTransport {
+        sent: Arc::clone(&sent),
+        responses: VecDeque::from([
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "ping"})),
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"ok": true}})),
+        ]),
+        reply_behavior: ScriptedReplyBehavior::Fail("Broken pipe (os error 32)"),
+        reply_started: Arc::clone(&reply_started),
+    }));
+
+    let err = conn
+        .call_method("tools/call", serde_json::json!({"name": "echo"}), 5)
+        .await
+        .expect_err("a fatal I/O failure on send_reply must fail the call and disconnect");
+    assert!(reply_started.load(AtomicOrdering::SeqCst));
+    assert!(
+        err.to_string().contains("Broken pipe (os error 32)"),
+        "unexpected error: {err:#}"
+    );
+    assert!(super::wire::is_mcp_connection_lost_error(&err));
+    assert!(!super::wire::is_mcp_session_rejected_error(&err));
+    assert_eq!(conn.state(), ConnectionState::Disconnected);
+    assert!(!conn.is_ready());
+    assert_eq!(sent.lock().unwrap().len(), 1);
+
+    let retry_err = conn
+        .call_method("tools/call", serde_json::json!({"name": "echo"}), 5)
+        .await
+        .expect_err("a disconnected connection must fail closed without writing again");
+    assert!(
+        retry_err.to_string().contains("is not ready"),
+        "unexpected error: {retry_err:#}"
+    );
+    assert_eq!(sent.lock().unwrap().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn discover_all_aborts_when_optional_discovery_disconnects_mid_server_reply() {
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let reply_started = Arc::new(AtomicBool::new(false));
+    let mut conn = test_connection(Box::new(HangingReplyTransport {
+        sent: Arc::clone(&sent),
+        responses: VecDeque::from([
+            json_frame(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"tools": [{"name": "search", "inputSchema": {}}]}
+            })),
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 99, "method": "ping"})),
+        ]),
+        reply_behavior: ScriptedReplyBehavior::Stall,
+        reply_started: Arc::clone(&reply_started),
+    }));
+    conn.state = ConnectionState::Connecting;
+    conn.discovery_timeout = Duration::from_millis(60);
+
+    let err = conn
+        .discover_all()
+        .await
+        .expect_err("a stalled server-request reply in optional discovery must abort discover_all");
+    assert!(reply_started.load(AtomicOrdering::SeqCst));
+    assert!(
+        err.to_string().contains("is disconnected"),
+        "unexpected error: {err:#}"
+    );
+    assert_eq!(conn.state(), ConnectionState::Disconnected);
+    assert!(!conn.is_ready());
+    let methods: Vec<_> = sent
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|message| message.get("method").and_then(|method| method.as_str()))
+        .map(str::to_string)
+        .collect();
+    assert_eq!(methods, ["tools/list", "resources/list"]);
+
+    let send_err = conn
+        .send(serde_json::json!({"jsonrpc": "2.0", "method": "prompts/list"}))
+        .await
+        .expect_err("sending after disconnect must fail without calling transport");
+    assert!(send_err.to_string().contains("is disconnected"));
+    assert_eq!(sent.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -7130,7 +7319,11 @@ async fn refused_reply_to_a_server_request_does_not_fall_back_to_sse() {
         .await;
 
     server.abort();
-    assert!(result.is_err(), "a refused reply reports the refusal");
+    let err = result.expect_err("a refused reply reports the refusal");
+    assert!(
+        super::wire::is_mcp_server_reply_unsupported_error(&err),
+        "unexpected error: {err:#}"
+    );
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 1, "requests seen: {requests:?}");
     assert!(requests[0].starts_with("POST "), "{requests:?}");
