@@ -22,6 +22,7 @@ registration index.
 | GET | `/` |
 | GET | `/__codewhale/bootstrap/{nonce}` |
 | GET | `/__codewhale/mobile/bootstrap/{nonce}` |
+| GET | `/__codewhale/mobile/pair/{secret}` |
 | POST | `/__codewhale/mobile/session` |
 | POST | `/__codewhale/mobile/stream-ticket` |
 | POST | `/__codewhale/web/stream-ticket` |
@@ -96,6 +97,9 @@ registration index.
 | GET | `/v1/definition` |
 | GET | `/v1/diagnostics` |
 | GET | `/v1/diff` |
+| GET | `/v1/dsh/remote/pairings` |
+| DELETE | `/v1/dsh/remote/pairings/{grant}` |
+| POST | `/v1/dsh/remote/pairings/{grant}/present` |
 | POST | `/v1/fleet/placement` |
 | GET | `/v1/fleet/profiles` |
 | GET | `/v1/fleet/profiles/{id}/document` |
@@ -268,4 +272,4 @@ registration index.
 | GET / POST | `/v1/worktrees` |
 | POST | `/v1/worktrees/remove` |
 
-The source contains 248 distinct literal paths in this table.
+The source contains 252 distinct literal paths in this table.

@@ -1195,6 +1195,63 @@ steer or interrupt an active turn, and resolve normal tool approvals through
 do not expose it directly to another device or public network until Runtime has
 a TLS or verified transport boundary.
 
+#### Remote pairing grants (DSH remote service)
+
+Plugins granted the `remote` host service can request conversation-scoped
+pairings via Engine `dsh_remote`. Runtime exposes host management and loopback
+redemption over existing HTTP/SSE transport (no separate listener or WebSocket):
+
+- `GET /v1/dsh/remote/pairings` — requires the master `Authorization: Bearer`
+  header (never mobile/web cookies or device Watch/Drive tokens; returns `409`
+  if auth is off). Returns a JSON array with `grant`, `plugin_id`,
+  `plugin_name` (from the reviewed record), `session_id`, `state`
+  (`"awaiting_host"` or `"paired"`), `plugin_label`, `client_label`, and
+  `expires_in_seconds`. No pairing secret or client token is ever included.
+- `POST /v1/dsh/remote/pairings/{grant}/present` — master bearer only. Mints
+  and returns `{ "grant", "url", "expires_in_seconds" }` (`Cache-Control: no-store`)
+  where `url` is `http://<bind>/__codewhale/mobile/pair/<secret>`. Calling this
+  again replaces and invalidates the prior link; callers must only invoke it on
+  explicit human action, never by polling. Returns `404` with no detail when
+  unknown or already paired, and `409 Conflict` without minting a secret when
+  mobile control is off or `session_id` is not an active Runtime HTTP thread
+  (for example a terminal session or archived thread).
+- `DELETE /v1/dsh/remote/pairings/{grant}` — master bearer only. Ends a waiting
+  pairing or paired device session, returning `204 No Content` identically for
+  known and unknown grants.
+- `GET /__codewhale/mobile/pair/{secret}` — unauthenticated single-use loopback
+  redemption (`403` for non-loopback peers ignoring `X-Forwarded-For`; uniform
+  `401` fixed text for unknown, expired, replayed, withdrawn, or malformed
+  links). Issues a grant-backed mobile session (`HttpOnly; SameSite=Strict`
+  cookie clamped to the grant TTL plus origin-bound fragment proof and stream
+  ticket) without ever exposing the Engine client token or pairing secret in
+  cookies, fragments, URLs, response bodies, or logs.
+
+Grant-backed mobile sessions are validated against the Engine on every HTTP
+request and every SSE stream ticket, drop immediately (`401`) if withdrawn,
+revoked, expired, or if the bound conversation is archived/deleted (and terminate
+any already-open `GET /v1/threads/{id}/events` SSE stream cleanly with
+`stream.end { "reason": "remote_access_revoked", "retryable": false }` without
+delivering post-revocation events), and are strictly restricted to reading and
+sending/steering/interrupting turns in their single bound conversation
+(`GET /v1/threads` and `GET /v1/threads/summary` are filtered to that thread,
+`GET /v1/threads/{id}`, `GET /v1/threads/{id}/events`,
+`POST /v1/threads/{id}/turns`, `/steer`, `/interrupt`, and
+`POST /__codewhale/mobile/stream-ticket`). On `POST /v1/threads/{id}/turns`,
+paired device sessions cannot override `mode`, `permission_posture`,
+`allowed_tools`, `dynamic_tools`, `model`, `model_provider`,
+`model_provider_id`, `account_model_owner`, `profile_constitution`,
+`reasoning_effort`, `max_output_tokens`, or `environment_id` (`403 Forbidden`),
+nor pass `true` for `allow_shell`, `trust_mode`, or `auto_approve` (`403`);
+explicit `false` values on those three boolean flags are normalized to `None`
+so the conversation's existing posture is preserved. Foreign threads, thread
+creation, settings/secrets/terminals/files, pairing routes, and approval routes
+(`POST /v1/approvals/{approval_id}`) return `403 Forbidden`: approval cards are
+answered on the computer only.
+
+When UI clients render `plugin_label` or `client_label`, they MUST present them
+as quoted third-party text inside a directional isolate (such as `<bdi>`) beside
+`plugin_name`, and never as a heading or host-authored prose.
+
 ### Endpoints
 
 **Health**
@@ -3672,6 +3729,7 @@ data: {"schema_version":1,"event":"stream.end","kind":"stream.end","thread_id":"
 | `replay_failed` | The durable history read that feeds the opening replay failed, including a replay worker crash after the first cursor | `true` |
 | `catch_up_failed` | After broadcast lag, the durable re-read from the stream's cursor could not be opened or failed | `true` |
 | `runtime_shutdown` | The Runtime API server is stopping (SIGINT, SIGTERM, or SIGHUP; Ctrl+C or Ctrl+Break on Windows). Open streams get this frame within a bounded drain window before the process exits | `true` |
+| `remote_access_revoked` | A grant-backed paired remote device session ended because the pairing was withdrawn, the plugin was revoked, the session TTL expired, or the bound conversation was archived/deleted | `false` |
 
 Every `200` response carries `x-codewhale-stream-end: 1`. With that header, an
 EOF **without** `stream.end` means the connection or the Runtime process died

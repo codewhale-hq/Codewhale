@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use codewhale_core::secret_eq::constant_time_eq;
 use serde_json::json;
 
-use super::{RuntimeApiState, mobile, web};
+use super::{RuntimeApiState, mobile, remote_pairings, web};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ResolvedRuntimeAuth {
@@ -89,86 +89,130 @@ pub(super) enum RuntimeAuthCaller {
     MobileSession,
 }
 
+pub(super) enum RuntimeAuthDecision {
+    Allow(Option<remote_pairings::RemoteSessionScope>),
+    Forbidden(&'static str),
+    Unauthorized,
+}
+
+enum RuntimeAuthOutcome {
+    Allow {
+        caller: RuntimeAuthCaller,
+        scope: Option<remote_pairings::RemoteSessionScope>,
+    },
+    Forbidden(&'static str),
+    Unauthorized,
+}
+
 pub(super) async fn require_runtime_token(
     State(state): State<RuntimeApiState>,
     mut req: Request,
     next: Next,
 ) -> Response {
-    if let Some(caller) = resolve_runtime_auth_caller(&req, &state) {
-        req.extensions_mut().insert(caller);
-        next.run(req).await
-    } else if request_bearer(&req)
-        .is_some_and(|token| state.computer.client_principal(token).is_some())
-    {
-        (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "watch client tokens cannot change Runtime state"})),
-        )
-            .into_response()
-    } else {
-        runtime_token_required_response()
+    match authorize_runtime_request(&req, &state) {
+        RuntimeAuthOutcome::Allow { caller, scope } => {
+            req.extensions_mut().insert(caller);
+            if let Some(scope) = scope {
+                req.extensions_mut().insert(scope);
+            }
+            next.run(req).await
+        }
+        RuntimeAuthOutcome::Forbidden(message) => {
+            (StatusCode::FORBIDDEN, Json(json!({"error": message}))).into_response()
+        }
+        RuntimeAuthOutcome::Unauthorized => runtime_token_required_response(),
     }
 }
 
 pub(super) fn runtime_request_is_authorized(req: &Request, state: &RuntimeApiState) -> bool {
-    resolve_runtime_auth_caller(req, state).is_some()
+    matches!(
+        authorize_runtime_request(req, state),
+        RuntimeAuthOutcome::Allow { .. }
+    )
 }
 
-pub(super) fn resolve_runtime_auth_caller(
-    req: &Request,
-    state: &RuntimeApiState,
-) -> Option<RuntimeAuthCaller> {
-    if let Some(expected) = state.runtime_token.as_deref() {
-        if request_has_header_runtime_token(req, expected) {
-            return Some(RuntimeAuthCaller::MasterOrLocal);
-        }
-        // Device tokens carry their immutable mint intent. Watch permits HTTP
-        // reads only; an upgraded GET could otherwise become a write channel.
-        // Computer display/control routes enforce intent in their own handlers.
-        if let Some(principal) =
-            request_bearer(req).and_then(|token| state.computer.client_principal(token))
-        {
-            return client_request_is_authorized(&principal, req)
-                .then_some(RuntimeAuthCaller::DeviceClient);
-        }
-        if state
-            .web
-            .as_ref()
-            .is_some_and(|web| web_session_request_is_authorized(req, state, web))
-        {
-            return Some(RuntimeAuthCaller::WebSession);
-        }
-        if state
-            .mobile
-            .as_ref()
-            .is_some_and(|mobile| mobile_session_request_is_authorized(req, state, mobile))
-        {
-            return Some(RuntimeAuthCaller::MobileSession);
-        }
-        None
-    } else {
-        if let Some(principal) =
-            request_bearer(req).and_then(|token| state.computer.client_principal(token))
-        {
-            return client_request_is_authorized(&principal, req)
-                .then_some(RuntimeAuthCaller::DeviceClient);
-        }
-        if state
-            .web
-            .as_ref()
-            .is_some_and(|web| web_session_request_is_authorized(req, state, web))
-        {
-            return Some(RuntimeAuthCaller::WebSession);
-        }
-        if state
-            .mobile
-            .as_ref()
-            .is_some_and(|mobile| mobile_session_request_is_authorized(req, state, mobile))
-        {
-            return Some(RuntimeAuthCaller::MobileSession);
-        }
-        Some(RuntimeAuthCaller::MasterOrLocal)
+fn authorize_runtime_request(req: &Request, state: &RuntimeApiState) -> RuntimeAuthOutcome {
+    if let Some(expected) = state.runtime_token.as_deref()
+        && request_has_header_runtime_token(req, expected)
+    {
+        return RuntimeAuthOutcome::Allow {
+            caller: RuntimeAuthCaller::MasterOrLocal,
+            scope: None,
+        };
     }
+    // Device tokens carry their immutable mint intent. Watch permits HTTP
+    // reads only; an upgraded GET could otherwise become a write channel.
+    // Computer display/control routes enforce intent in their own handlers.
+    if let Some(principal) =
+        request_bearer(req).and_then(|token| state.computer.client_principal(token))
+    {
+        return if client_request_is_authorized(&principal, req) {
+            RuntimeAuthOutcome::Allow {
+                caller: RuntimeAuthCaller::DeviceClient,
+                scope: None,
+            }
+        } else {
+            RuntimeAuthOutcome::Forbidden("watch client tokens cannot change Runtime state")
+        };
+    }
+    if state
+        .web
+        .as_ref()
+        .is_some_and(|web| web_session_request_is_authorized(req, state, web))
+    {
+        return RuntimeAuthOutcome::Allow {
+            caller: RuntimeAuthCaller::WebSession,
+            scope: None,
+        };
+    }
+    if let Some(mobile) = state.mobile.as_ref() {
+        match mobile_session_request_is_authorized(req, state, mobile) {
+            RuntimeAuthDecision::Allow(scope) => {
+                return RuntimeAuthOutcome::Allow {
+                    caller: RuntimeAuthCaller::MobileSession,
+                    scope,
+                };
+            }
+            RuntimeAuthDecision::Forbidden(message) => {
+                return RuntimeAuthOutcome::Forbidden(message);
+            }
+            RuntimeAuthDecision::Unauthorized => {}
+        }
+    }
+    if state.runtime_token.is_none() && !request_has_any_credential(req) {
+        RuntimeAuthOutcome::Allow {
+            caller: RuntimeAuthCaller::MasterOrLocal,
+            scope: None,
+        }
+    } else {
+        RuntimeAuthOutcome::Unauthorized
+    }
+}
+
+fn request_has_any_credential(req: &Request) -> bool {
+    let has_header_token = req.headers().contains_key(header::AUTHORIZATION)
+        || req.headers().contains_key("x-codewhale-runtime-token")
+        || req.headers().contains_key("x-deepseek-runtime-token");
+    let has_session_cookie = req.headers().get_all(header::COOKIE).iter().any(|value| {
+        let Ok(cookie) = value.to_str() else {
+            return true;
+        };
+        mobile::cookie_value(Some(cookie), web::WEB_SESSION_COOKIE_NAME).is_some()
+            || mobile::cookie_value(Some(cookie), mobile::MOBILE_SESSION_COOKIE_NAME).is_some()
+    });
+    let has_web = req.headers().contains_key(web::WEB_REQUEST_HEADER)
+        || request_has_query_key(req, web::WEB_STREAM_TICKET_QUERY);
+    let has_mobile = req.headers().contains_key(mobile::MOBILE_REQUEST_HEADER)
+        || request_has_query_key(req, mobile::MOBILE_STREAM_TICKET_QUERY);
+    has_header_token || has_session_cookie || has_web || has_mobile
+}
+
+fn request_has_query_key(req: &Request, query_key: &str) -> bool {
+    req.uri().query().is_some_and(|query| {
+        query
+            .split('&')
+            .any(|pair| pair.split_once('=').map_or(pair, |(key, _)| key) == query_key)
+    })
 }
 
 fn client_request_is_authorized(
@@ -261,26 +305,67 @@ pub(super) fn mobile_session_request_is_authorized(
     req: &Request,
     state: &RuntimeApiState,
     mobile_state: &mobile::RuntimeMobileState,
-) -> bool {
+) -> RuntimeAuthDecision {
     if !mobile_cookie_request_is_same_origin(req, state) {
-        return false;
+        return RuntimeAuthDecision::Unauthorized;
     }
     let cookie_header = req
         .headers()
         .get(header::COOKIE)
         .and_then(|value| value.to_str().ok());
     if is_thread_stream_request(req) {
-        return mobile_state.consume_stream_ticket(
-            cookie_header,
-            stream_ticket(req, mobile::MOBILE_STREAM_TICKET_QUERY),
-        );
+        let ticket = stream_ticket(req, mobile::MOBILE_STREAM_TICKET_QUERY);
+        let Some(grant_binding) = mobile_state.peek_stream_ticket(cookie_header, ticket) else {
+            return RuntimeAuthDecision::Unauthorized;
+        };
+        if let Some(binding) = grant_binding {
+            let route = remote_pairings::classify_mobile_route(req.method(), req.uri().path());
+            return match remote_pairings::authorize_grant_binding(&binding, route) {
+                remote_pairings::GrantAuthOutcome::Allow(scope) => {
+                    if mobile_state.consume_stream_ticket(cookie_header, ticket) {
+                        RuntimeAuthDecision::Allow(Some(scope))
+                    } else {
+                        RuntimeAuthDecision::Unauthorized
+                    }
+                }
+                remote_pairings::GrantAuthOutcome::Forbidden => {
+                    RuntimeAuthDecision::Forbidden("paired device cannot access this route")
+                }
+                remote_pairings::GrantAuthOutcome::DropAndUnauthorized => {
+                    mobile_state.remove_session_by_cookie(cookie_header);
+                    RuntimeAuthDecision::Unauthorized
+                }
+            };
+        }
+        return if mobile_state.consume_stream_ticket(cookie_header, ticket) {
+            RuntimeAuthDecision::Allow(None)
+        } else {
+            RuntimeAuthDecision::Unauthorized
+        };
     }
-    mobile_state.matches_request(
-        cookie_header,
-        req.headers()
-            .get(mobile::MOBILE_REQUEST_HEADER)
-            .and_then(|value| value.to_str().ok()),
-    )
+    let request_proof = req
+        .headers()
+        .get(mobile::MOBILE_REQUEST_HEADER)
+        .and_then(|value| value.to_str().ok());
+    let Some(grant_binding) = mobile_state.authorize_proof(cookie_header, request_proof) else {
+        return RuntimeAuthDecision::Unauthorized;
+    };
+    if let Some(binding) = grant_binding {
+        let route = remote_pairings::classify_mobile_route(req.method(), req.uri().path());
+        return match remote_pairings::authorize_grant_binding(&binding, route) {
+            remote_pairings::GrantAuthOutcome::Allow(scope) => {
+                RuntimeAuthDecision::Allow(Some(scope))
+            }
+            remote_pairings::GrantAuthOutcome::Forbidden => {
+                RuntimeAuthDecision::Forbidden("paired device cannot access this route")
+            }
+            remote_pairings::GrantAuthOutcome::DropAndUnauthorized => {
+                mobile_state.remove_session_by_cookie(cookie_header);
+                RuntimeAuthDecision::Unauthorized
+            }
+        };
+    }
+    RuntimeAuthDecision::Allow(None)
 }
 
 fn mobile_cookie_request_is_same_origin(req: &Request, state: &RuntimeApiState) -> bool {
@@ -308,7 +393,7 @@ fn mobile_cookie_request_is_same_origin(req: &Request, state: &RuntimeApiState) 
     }
 }
 
-fn runtime_http_origin(state: &RuntimeApiState) -> String {
+pub(super) fn runtime_http_origin(state: &RuntimeApiState) -> String {
     runtime_http_origin_for_bind(&state.bind_host, state.bind_port)
 }
 
@@ -363,7 +448,7 @@ pub(super) async fn require_runtime_master_bearer(
     let Some(expected) = state.runtime_token.as_deref() else {
         return (
             StatusCode::CONFLICT,
-            Json(json!({"error": "Watch turns require configured Runtime bearer authentication"})),
+            Json(json!({"error": "Master bearer routes require configured Runtime bearer authentication"})),
         )
             .into_response();
     };
@@ -378,7 +463,7 @@ pub(super) async fn require_runtime_master_bearer(
     } else {
         (
             StatusCode::FORBIDDEN,
-            Json(json!({"error": "Watch turns require the master Authorization bearer"})),
+            Json(json!({"error": "This route requires the master Authorization bearer"})),
         )
             .into_response()
     }

@@ -123,6 +123,7 @@ async fn execute_ordinary(state: RuntimeApiState, request: RuntimeOwnerRequest) 
         } => {
             let Json(value) = api(list_threads(
                 State(state),
+                None,
                 Query(ThreadsQuery {
                     limit: Some(limit),
                     include_archived: Some(include_archived),
@@ -192,6 +193,7 @@ async fn execute_ordinary(state: RuntimeApiState, request: RuntimeOwnerRequest) 
                 Path(thread_id),
                 Json(decode(body)?),
                 false,
+                None,
             )
             .await)?;
             serde_json::to_value(value)?
@@ -398,6 +400,7 @@ async fn execute_native(
             }
             let Json(records) = api(list_threads(
                 State(state.clone()),
+                None,
                 Query(ThreadsQuery {
                     limit: None,
                     include_archived: params.include_archived,
@@ -467,6 +470,7 @@ async fn execute_native(
                 Path(params.thread_id),
                 Json(decode(body)?),
                 true,
+                None,
             )
             .await)?;
             return Ok(serde_json::to_value(value)?);

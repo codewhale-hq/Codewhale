@@ -33,6 +33,7 @@ mod owner_bootstrap;
 mod plugin_index;
 mod plugin_ui;
 mod profile_constitution;
+mod remote_pairing;
 #[cfg(any(unix, windows))]
 mod runtime_store_convergence;
 mod workspace_instructions;
@@ -1290,6 +1291,11 @@ fn spawn_product_stack_server(
     let catalog = codewhale_engine::command_catalog::installed();
     let extension_manager = codewhale_engine::extension_host::manager();
     let extension_policy = codewhale_plugins::activation::extension_host_policy_enabled();
+    let offered_services: Vec<codewhale_plugins::host_services::HostService> =
+        codewhale_plugins::host_services::HostService::ALL
+            .into_iter()
+            .filter(|service| codewhale_plugins::host_services::offered(*service))
+            .collect();
     std::thread::Builder::new()
         .name("runtime-api-test-server".to_string())
         .stack_size(codewhale_runtime::CODEWHALE_MAIN_STACK_BYTES)
@@ -1302,6 +1308,8 @@ fn spawn_product_stack_server(
                 codewhale_engine::extension_host::TestManagerGuard::install(extension_manager);
             let _extension_policy =
                 codewhale_plugins::activation::TestPolicyGuard::extension_host(extension_policy);
+            let _host_service_offer = (!offered_services.is_empty())
+                .then(|| codewhale_plugins::host_services::TestOffer::only(&offered_services));
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
