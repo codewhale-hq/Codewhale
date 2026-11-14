@@ -36,15 +36,20 @@ function brokerHost(answers) {
 test('credentials resolve to an opaque handle and go only to the network broker', async () => {
   const { host, calls } = brokerHost({
     'credentials.resolve': { ref: 'KEY', value: 'codewhale-credential:KEY' },
-    'credentials.describe': { ref: 'KEY', set: true },
+    'credentials.describe': { ref: 'KEY', set: true, site: 'https://api.example.com' },
     'credentials.set': { ref: 'KEY', set: true },
   })
   const Credentials = credentialsAdapter.define(host)
   const service = Object.create(Credentials.prototype)
   service.ctx = {}
   assert.deepEqual(await service.resolve('KEY'), { value: 'codewhale-credential:KEY' })
-  assert.deepEqual(await service.describe('KEY'), { ref: 'KEY', set: true })
-  await service.set('KEY', 'sk-secret')
+  assert.deepEqual(await service.describe('KEY'), { ref: 'KEY', set: true, site: 'https://api.example.com' })
+  await service.set('KEY', 'sk-secret', 'https://API.example.com/')
+  assert.deepEqual(calls[2].input, { ref: 'KEY', value: 'sk-secret', site: 'https://api.example.com' })
+  for (const site of [undefined, 'http://api.example.com', 'https://user:pw@api.example.com', 'https://api.example.com/v1', 'https://api.example.com/?q=1', 'api.example.com']) {
+    await assert.rejects(service.set('KEY', 'sk-secret', site), /one https site/, String(site))
+  }
+  assert.equal(calls.length, 3, 'a site that is not an https origin never reaches the broker')
   assert.deepEqual(calls.map((c) => [c.service, c.method]), [
     ['network', 'credentials.resolve'], ['network', 'credentials.describe'], ['network', 'credentials.set'],
   ])
@@ -83,6 +88,6 @@ test('brokeredFetch sends a typed fetch and rebuilds a Response from the broker 
 })
 
 test('a broker refusal reaches the plugin as the refusal', async () => {
-  const { host } = brokerHost({ fetch: new Error('egress refused: `evil.example` is not one of this plugin\'s reviewed network hosts') })
-  await assert.rejects(brokeredFetch(host, {}, 'https://evil.example/'), /egress refused/)
+  const { host } = brokerHost({ fetch: new Error('this site is not one of the plugin\'s reviewed network sites') })
+  await assert.rejects(brokeredFetch(host, {}, 'https://evil.example/'), /not one of the plugin's reviewed network sites/)
 })

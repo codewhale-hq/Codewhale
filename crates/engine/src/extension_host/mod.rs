@@ -134,6 +134,7 @@ mod dsh_settings;
 pub(crate) mod dsh_terminal;
 mod dsh_workspace;
 pub mod execution;
+pub use dsh_network::forget_plugin_credentials;
 pub use execution::StockOperation;
 pub mod avatars;
 mod hooks;
@@ -1976,6 +1977,9 @@ impl ExtensionHostManager {
                 Arc::clone(&self.shared),
                 desired.revision,
             )));
+        }
+        if !installed.is_empty() && tool_registry.get(dsh_network::SEND_TOOL).is_none() {
+            tool_registry.register(Arc::new(dsh_network::SendConsent));
         }
         installed
     }

@@ -18,6 +18,19 @@ function credentialRef(ref: unknown): string {
   return ref
 }
 
+function credentialSite(site: unknown): string {
+  let url: URL
+  try {
+    url = new URL(String(site))
+  } catch {
+    throw new RpcError(ErrorCode.InvalidParams, 'a credential is stored for one https site, such as https://api.example.com')
+  }
+  if (typeof site !== 'string' || url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.pathname !== '/' || url.search !== '' || url.hash !== '') {
+    throw new RpcError(ErrorCode.InvalidParams, 'a credential is stored for one https site, such as https://api.example.com')
+  }
+  return url.origin
+}
+
 function brokered(value: unknown): BrokeredResponse {
   const response = value as Partial<BrokeredResponse> | null
   if (response === null || typeof response !== 'object' || typeof response.status !== 'number' || typeof response.url !== 'string'
@@ -71,15 +84,15 @@ export const credentialsAdapter: DshAdapter = {
         return { value }
       }
 
-      async describe(ref: unknown): Promise<{ ref: string, set: boolean }> {
-        const result = await host.broker(this.ctx, 'network', 'credentials.describe', { ref: credentialRef(ref) }) as { ref?: unknown, set?: unknown } | null
+      async describe(ref: unknown): Promise<{ ref: string, set: boolean, site?: string }> {
+        const result = await host.broker(this.ctx, 'network', 'credentials.describe', { ref: credentialRef(ref) }) as { ref?: unknown, set?: unknown, site?: unknown } | null
         if (result === null || typeof result !== 'object' || typeof result.set !== 'boolean') throw new RpcError(ErrorCode.Internal, 'invalid credential description')
-        return { ref: credentialRef(ref), set: result.set }
+        return typeof result.site === 'string' ? { ref: credentialRef(ref), set: result.set, site: result.site } : { ref: credentialRef(ref), set: result.set }
       }
 
-      async set(ref: unknown, value: unknown): Promise<void> {
+      async set(ref: unknown, value: unknown, site: unknown): Promise<void> {
         if (typeof value !== 'string' || value.length === 0) throw new RpcError(ErrorCode.InvalidParams, 'a credential value is a non-empty string')
-        await host.broker(this.ctx, 'network', 'credentials.set', { ref: credentialRef(ref), value })
+        await host.broker(this.ctx, 'network', 'credentials.set', { ref: credentialRef(ref), value, site: credentialSite(site) })
       }
 
       fetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
