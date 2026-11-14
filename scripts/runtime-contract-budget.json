@@ -1,4 +1,5 @@
 {
+  "_agy_20261114_main_remeasure": "2026-11-14: record merged CW-8215 (059529678f5) schema growth on Act and Operate full catalogs (plan replan_if and send_later delay_seconds parameters: 87575 -> 87803 bytes, 21894 -> 21951 estimated tokens; +228 B / +57 estimated tokens) measured provider-free on current origin/main (9b567b2b25a + native_runtime Windows fix); tool identities, Plan surfaces, active surfaces, and prompt ceilings are unchanged. bytes/4 remains an estimate, not provider usage or billing.",
   "_claude_20261017_task_shell_wait": "2026-10-17: ecf50ab598 makes task_shell_wait eager on Act/Operate (DEFAULT_ACTIVE_NATIVE_TOOLS; Plan registers only the foreground shell, so its surfaces gain no tool). The bash description, timeout parameter and backgrounded-result texts now name task_shell_wait directly instead of via tool_search. Measured provider-free on macOS aarch64 from 72c1327be4: Act/Operate active 37822 -> 38870 B (+1048 = task_shell_wait schema plus the wording), 9456 -> 9718 estimated tokens, 14 -> 15 tools, name-set identity re-hashed; Act/Operate full 84503 -> 84582 (+79), Plan active 36292 -> 36370 (+78), Plan full 55282 -> 55360 (+78) from the wording alone. Removes the mid-session tool_search activation and change:tool_surface re-pin each background job used to cost (CW-7450). Re-lock from a Linux Lint run if CI reports drift. bytes/4 remains an estimate, not provider usage or billing.",
   "_claude_20261108_eager_agents_ask_options": "2026-11-08: 5ba1aa63bc (eager sub-agents and goals by default, clearer tool text) and 080554911c (ask the user with options when a choice is theirs) intentionally grow the base system prompt from 7231 to 9063 bytes and change every representative-stage identity; the shared tool-description edits are recorded in their commit messages. Measured provider-free on macOS aarch64 with the existing runtime-contract metric tests on source e59a119643. Hosted Linux Lint on e59a119643 reported only the base-stage identity change, so the numeric ceilings are unchanged in kind.",
   "_codex_0101_remeasure": "2026-10-01: lock the composed candidate measurement after the audited composition-required schema repair (46835a2fc, D04-11) and shared finance-timeout documentation (7c36620d4, D03-m3). Their parent-surface causal controls are recorded in 6655b191e. Act/Operate full catalog measured 84151 bytes / 21038 estimated tokens versus stale 83988 / 20997; no tools or surface identities changed. Plan/active surfaces and other budgets use their measured values. Estimate only, not provider usage. Receipt: CW/artifacts/codex-0101-takeover-20260930/root-runtime-contract-receipt.json.",
@@ -123,9 +124,9 @@
           "tools": 16
         },
         "full": {
-          "bytes": 87575,
+          "bytes": 87803,
           "identity_sha256": "039b381a0c854e739088c0d5432abfc7b8ca9f0e2260051dc507ac5e1354b6d0",
-          "tokens_est": 21894,
+          "tokens_est": 21951,
           "tool_names": [
             "Git",
             "Run",
@@ -212,9 +213,9 @@
           "tools": 16
         },
         "full": {
-          "bytes": 87575,
+          "bytes": 87803,
           "identity_sha256": "039b381a0c854e739088c0d5432abfc7b8ca9f0e2260051dc507ac5e1354b6d0",
-          "tokens_est": 21894,
+          "tokens_est": 21951,
           "tool_names": [
             "Git",
             "Run",
