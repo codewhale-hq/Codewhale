@@ -3,7 +3,7 @@ use crate::{RuntimeOwnerFrontend, RuntimeOwnerRequest};
 use codewhale_app_server_protocol::runtime::NativeRuntimeRequest;
 
 struct Rig {
-    root: tempfile::TempDir,
+    _root: tempfile::TempDir,
     state: RuntimeApiState,
     owner: Arc<CapturedRuntimeFrontend>,
     other: PathBuf,
@@ -41,7 +41,7 @@ impl Rig {
             CapturedRuntimeFrontend::capture(state.clone(), "deepseek-v4-pro".into(), 1, false)
                 .await?;
         Ok(Self {
-            root,
+            _root: root,
             state,
             owner,
             other,
@@ -596,7 +596,7 @@ fn native_real_owner_helper_retains_initialize_ack_during_concurrent_input_and_r
     run_on_product_stack(async move {
         use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
         let rig = Rig::new().await?;
-        let socket = rig.root.path().canonicalize()?.join("run/daemon.sock");
+        let socket = rig._root.path().canonicalize()?.join("run/daemon.sock");
         let (daemon, _) = bind_captured_runtime_frontends(
             &rig.state,
             Some(socket.clone()),

@@ -747,19 +747,22 @@ fn is_confined_policy_error(error: &std::io::Error) -> bool {
     if error.raw_os_error() == Some(libc::ELOOP) {
         return true;
     }
+    #[cfg(windows)]
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        return true;
+    }
     matches!(
         error.kind(),
         std::io::ErrorKind::InvalidInput
             | std::io::ErrorKind::InvalidData
             | std::io::ErrorKind::AlreadyExists
-            | std::io::ErrorKind::PermissionDenied
     )
 }
 
 fn map_confined_io_error(error: std::io::Error, path: &Path, action: &str) -> ToolError {
     if is_confined_policy_error(&error) {
         return ToolError::permission_denied(format!(
-            "{action} refused symlink or confined path constraint for {}",
+            "{action} refused symlink or confined path constraint for {}: {error}",
             path.display()
         ));
     }
