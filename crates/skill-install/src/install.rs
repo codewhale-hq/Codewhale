@@ -51,10 +51,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use codewhale_net::guard::{
-    DnsPin, fetch_target_host, guarded_reqwest_client_builder, validate_fetch_destination,
-};
-use codewhale_net::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider, host_from_url};
+use codewhale_net::guard::{GuardedGet, PrivateTargets};
+use codewhale_net::network_policy::{Decision, NetworkPolicy, host_from_url};
 
 const MAX_INSTALL_REDIRECTS: usize = 5;
 
@@ -75,81 +73,24 @@ fn install_http_timeouts() -> (std::time::Duration, std::time::Duration) {
     }
 }
 
-fn reqwest_client(proxy: Option<reqwest::Proxy>, pin: DnsPin) -> reqwest::Client {
-    let (connect_timeout, total_timeout) = install_http_timeouts();
-    let mut builder = guarded_reqwest_client_builder()
-        .redirect(reqwest::redirect::Policy::none())
-        // The shared platform builder sets no timeouts; without a bound, a
-        // connection that opens but stalls (dead proxy, black-holed route)
-        // hangs installs and registry sync forever. Connect is bounded tightly;
-        // the total budget is generous for 5 MiB tarballs on slow links
-        // (registry sync fans out `SYNC_REGISTRY_CONCURRENCY` of these in
-        // parallel).
-        .connect_timeout(connect_timeout)
-        .timeout(total_timeout);
-    if let Some(proxy) = proxy {
-        builder = builder.proxy(proxy);
-    } else if let Some((host, ip)) = pin {
-        builder = builder.resolve(&host, std::net::SocketAddr::new(ip, 0));
-    }
-    builder.build().expect("build platform HTTP client")
-}
-
 async fn guarded_get(
     url: &str,
     network: &NetworkPolicy,
     if_none_match: Option<&str>,
 ) -> Result<reqwest::Response> {
-    let decider = NetworkPolicyDecider::new(network.clone(), None);
-    let mut current = reqwest::Url::parse(url).with_context(|| format!("invalid url: {url}"))?;
-    let mut initial_pin: Option<DnsPin> = (cfg!(any(test, feature = "test-support"))
-        && current.host_str() == Some("127.0.0.1"))
-    .then_some(None);
-    for _ in 0..=MAX_INSTALL_REDIRECTS {
-        let host = fetch_target_host(&current)?;
-        if matches!(network.decide(&host), Decision::Deny) {
-            bail!("network policy denies {host}");
-        }
-        let proxy = if initial_pin.is_some() {
-            None
+    let (connect_timeout, total_timeout) = install_http_timeouts();
+    let request = GuardedGet::new(url, network, "skill_install", PrivateTargets::Refuse)
+        .if_none_match(if_none_match)
+        .timeouts(connect_timeout, total_timeout)
+        .max_redirects(MAX_INSTALL_REDIRECTS);
+    #[cfg(any(test, feature = "test-support"))]
+    let request =
+        if reqwest::Url::parse(url).is_ok_and(|parsed| parsed.host_str() == Some("127.0.0.1")) {
+            request.trust_first_hop()
         } else {
-            codewhale_net::proxy::configured_mcp_proxy(&current, false, |key| std::env::var(key))?
+            request
         };
-        let pin = match initial_pin.take() {
-            Some(pin) => pin,
-            None => {
-                validate_fetch_destination(host, Some(&decider), "skill_install", proxy.is_none())
-                    .await?
-            }
-        };
-        let mut request = reqwest_client(proxy, pin).get(current.clone());
-        if let Some(etag) = if_none_match {
-            request = request.header(reqwest::header::IF_NONE_MATCH, etag);
-        }
-        let response = request
-            .send()
-            .await
-            .with_context(|| format!("failed to GET {current}"))?;
-        if !response.status().is_redirection() {
-            return Ok(response);
-        }
-        let Some(location) = response
-            .headers()
-            .get(reqwest::header::LOCATION)
-            .and_then(|value| value.to_str().ok())
-        else {
-            return Ok(response);
-        };
-        let next = response
-            .url()
-            .join(location)
-            .with_context(|| format!("invalid redirect location from {current}"))?;
-        if current.scheme() == "https" && next.scheme() != "https" {
-            bail!("redirect from {current} would downgrade HTTPS");
-        }
-        current = next;
-    }
-    bail!("{url} exceeded {MAX_INSTALL_REDIRECTS} redirects")
+    request.send().await
 }
 
 /// Cache directory for registry-synced skills.
@@ -2131,6 +2072,61 @@ mod tests {
             Err(err) => format!("{err:#}"),
         };
         assert!(err.contains("timed out"), "{err}");
+    }
+
+    async fn counting_server(
+        response: String,
+    ) -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&hits);
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let response = response.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        (addr, hits)
+    }
+
+    #[tokio::test]
+    async fn an_allow_listed_hop_to_a_local_address_is_refused() {
+        use std::sync::atomic::Ordering;
+        let (internal, internal_hits) = counting_server(
+            "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\ninternal-only"
+                .to_string(),
+        )
+        .await;
+        let location = format!("http://127.0.0.1:{}/secret", internal.port());
+        let (entry, _) = counting_server(format!(
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ))
+        .await;
+        let policy = NetworkPolicy {
+            default: Decision::Prompt.into(),
+            allow: vec!["127.0.0.1".to_string()],
+            deny: Vec::new(),
+            proxy: Vec::new(),
+            proxy_fake_ip_cidrs: Vec::new(),
+            audit: false,
+        };
+        let outcome = guarded_get(&format!("http://{entry}/start"), &policy, None).await;
+        assert!(
+            outcome.is_err(),
+            "the hop to an allow-listed local name must be refused"
+        );
+        assert_eq!(internal_hits.load(Ordering::SeqCst), 0);
     }
 
     #[test]

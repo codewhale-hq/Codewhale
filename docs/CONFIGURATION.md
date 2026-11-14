@@ -479,7 +479,14 @@ deterministic plan — added / changed / skipped / conflicting / rejected —
 then asks for consent unless `--yes` is given; headless use requires it.
 Credential-shaped entries are rejected by key name and by value shape;
 rejections name the field, never a value. Remote bundles come from HTTPS
-only (loopback http excepted) with a 5 MiB cap. Application backs up the
+only (loopback http excepted) with a 5 MiB cap. The first request and every
+redirect honor the `[network]` policy and refuse loopback, private, link-local
+and cloud-metadata destinations, including a host name that resolves to one;
+the only exceptions are a loopback URL you type yourself and a `localhost` name
+or private IP address you listed in `network.allow` (never on a redirect to a
+different host). When `HTTPS_PROXY` (or `HTTP_PROXY`, unless matched by
+`NO_PROXY`) is set, non-local hops delegate resolution to the proxy and skip
+the local DNS resolution check. Application backs up the
 target document to `<config>.bundle-backup-<timestamp>-<random>`, rolls back on any
 failure, and re-importing an applied bundle changes nothing.
 

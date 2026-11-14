@@ -12,6 +12,7 @@ use super::dsh_broker::{
 use super::protocol::DshService;
 use crate::tools::spec::ToolContext;
 use crate::tools::web::guard::validate_fetch_target;
+use codewhale_net::guard::PrivateTargets;
 
 pub const CREDENTIAL_HANDLE_PREFIX: &str = "codewhale-credential:";
 const MAX_REF_LEN: usize = 128;
@@ -92,6 +93,8 @@ pub(super) struct NetworkAuthority {
     pub hosts: BTreeSet<String>,
     pub tool: Option<ToolContext>,
     pub vault: Option<Secrets>,
+    #[cfg(test)]
+    pub test_dns_pin: Option<(String, std::net::IpAddr)>,
 }
 
 impl NetworkAuthority {
@@ -100,6 +103,8 @@ impl NetworkAuthority {
             hosts: BTreeSet::new(),
             tool: None,
             vault: None,
+            #[cfg(test)]
+            test_dns_pin: None,
         }
     }
 }
@@ -128,6 +133,8 @@ pub(super) fn serve_with(call: BrokerCall, authority: NetworkAuthority) -> Broke
                     &authority.hosts,
                     tool,
                     authority.vault.as_ref(),
+                    #[cfg(test)]
+                    authority.test_dns_pin.as_ref(),
                     input,
                 )
                 .await
@@ -332,6 +339,7 @@ async fn fetch(
     hosts: &BTreeSet<String>,
     tool: &ToolContext,
     vault: Option<&Secrets>,
+    #[cfg(test)] test_dns_pin: Option<&(String, std::net::IpAddr)>,
     input: FetchInput,
 ) -> Result<Value, BrokerRefusal> {
     let mut url = reqwest::Url::parse(&input.url).map_err(|_| invalid("the URL is not valid"))?;
@@ -393,9 +401,26 @@ async fn fetch(
     let mut substituted: Option<Substituted> = None;
     let response = loop {
         egress_host(&url, hosts)?;
-        let pin = validate_fetch_target(&url, tool, AUDIT_LABEL)
-            .await
-            .map_err(|error| invalid(format!("egress refused: {error}")))?;
+        let pin = {
+            #[cfg(test)]
+            if let Some((pinned_host, pinned_ip)) = test_dns_pin
+                && url
+                    .host_str()
+                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(pinned_host))
+            {
+                crate::tools::web::guard::validate_network_policy(&host, tool, AUDIT_LABEL)
+                    .map_err(|error| invalid(format!("egress refused: {error}")))?;
+                Some((pinned_host.clone(), *pinned_ip))
+            } else {
+                validate_fetch_target(&url, tool, AUDIT_LABEL, PrivateTargets::Refuse)
+                    .await
+                    .map_err(|error| invalid(format!("egress refused: {error}")))?
+            }
+            #[cfg(not(test))]
+            validate_fetch_target(&url, tool, AUDIT_LABEL, PrivateTargets::Refuse)
+                .await
+                .map_err(|error| invalid(format!("egress refused: {error}")))?
+        };
         let substitution = match substituted.take() {
             Some(done) => done,
             None => substitute_headers(plugin, vault, &input.headers)?,
@@ -556,6 +581,22 @@ mod tests {
             hosts: hosts.iter().map(|h| (*h).to_string()).collect(),
             tool: Some(tool),
             vault: Some(vault.clone()),
+            test_dns_pin: None,
+        }
+    }
+
+    fn authority_with_pin(
+        hosts: &[&str],
+        tool: ToolContext,
+        vault: &Secrets,
+        pinned_host: &str,
+    ) -> NetworkAuthority {
+        NetworkAuthority {
+            test_dns_pin: Some((
+                pinned_host.to_string(),
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            )),
+            ..authority(hosts, tool, vault)
         }
     }
 
@@ -665,11 +706,16 @@ mod tests {
                 "a",
                 "fetch",
                 json!({
-                    "url": format!("{}/v1/models", server.uri()),
+                    "url": format!("http://api.example.com:{}/v1/models", server.address().port()),
                     "headers": [["authorization", "Bearer codewhale-credential:KEY"]],
                 }),
             ),
-            authority(&["127.0.0.1"], policy(&["127.0.0.1"], &[]), &vault),
+            authority_with_pin(
+                &["api.example.com"],
+                policy(&["api.example.com"], &[]),
+                &vault,
+                "api.example.com",
+            ),
         )
         .await
         .unwrap();
@@ -725,6 +771,16 @@ mod tests {
         )
         .await;
         assert!(message(&unapproved).contains("egress refused"));
+        let local_allowed = serve_with(
+            call("a", "fetch", json!({"url": url})),
+            authority(&["127.0.0.1"], policy(&["127.0.0.1"], &[]), &vault),
+        )
+        .await;
+        assert!(
+            message(&local_allowed).contains("restricted"),
+            "{}",
+            message(&local_allowed)
+        );
         let metadata = serve_with(
             call(
                 "a",
@@ -815,16 +871,18 @@ mod tests {
         let vault = vault();
         vault.set(&vault_slot("a", "KEY"), SECRET).unwrap();
         let headers = json!([["authorization", "codewhale-credential:KEY"]]);
-        let both = authority(
-            &["127.0.0.1", "localhost"],
-            policy(&["127.0.0.1", "localhost"], &[]),
+        let base = format!("http://api.example.com:{}", server.address().port());
+        let both = authority_with_pin(
+            &["api.example.com", "localhost"],
+            policy(&["api.example.com", "localhost"], &[]),
             &vault,
+            "api.example.com",
         );
         let away = serve_with(
             call(
                 "a",
                 "fetch",
-                json!({"url": format!("{}/away", server.uri()), "headers": headers}),
+                json!({"url": format!("{base}/away"), "headers": headers}),
             ),
             both,
         )
@@ -834,12 +892,13 @@ mod tests {
             call(
                 "a",
                 "fetch",
-                json!({"url": format!("{}/rename", server.uri()), "headers": headers}),
+                json!({"url": format!("{base}/rename"), "headers": headers}),
             ),
-            authority(
-                &["127.0.0.1", "localhost"],
-                policy(&["127.0.0.1", "localhost"], &[]),
+            authority_with_pin(
+                &["api.example.com", "localhost"],
+                policy(&["api.example.com", "localhost"], &[]),
                 &vault,
+                "api.example.com",
             ),
         )
         .await;
@@ -848,9 +907,14 @@ mod tests {
             call(
                 "a",
                 "fetch",
-                json!({"url": format!("{}/hop", server.uri()), "headers": headers}),
+                json!({"url": format!("{base}/hop"), "headers": headers}),
             ),
-            authority(&["127.0.0.1"], policy(&["127.0.0.1"], &[]), &vault),
+            authority_with_pin(
+                &["api.example.com"],
+                policy(&["api.example.com"], &[]),
+                &vault,
+                "api.example.com",
+            ),
         )
         .await
         .unwrap();

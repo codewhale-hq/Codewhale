@@ -15,6 +15,9 @@
 //! - Input size is capped (5 MiB, matching the skill installer's cap).
 //! - HTTPS only for remote fetch, except plain `http` on loopback; redirects
 //!   are followed at most a bounded number of times within the same scheme.
+//!   The first request and every redirect honor the `[network]` policy and
+//!   refuse loopback, private, link-local and cloud-metadata destinations,
+//!   except a visibly local host the person listed or typed as the URL.
 //! - Bundle-declared file paths must resolve inside the target config
 //!   directory; traversal and symlink escapes are refused.
 //! - Project scope never mutates the user-global document and vice versa.
@@ -573,13 +576,29 @@ fn nonportable_path_reason(path: &str) -> Option<&'static str> {
     None
 }
 
+fn is_network_allow_path(path: &str) -> bool {
+    let mut segments = path.split('.').map(normalize_bundle_key).rev();
+    matches!(
+        (segments.next().as_deref(), segments.next().as_deref()),
+        (Some("allow"), Some("network"))
+    )
+}
+
 /// Telemetry opt-out is safe to move between machines, but opt-in is durable
 /// user consent coupled to SetupState. A portable bundle may tighten that
 /// consent (`false`); it must never manufacture or transfer `true`.
 fn nonportable_value_reason(path: &str, value: &toml::Value) -> Option<&'static str> {
     let top_level_telemetry = !path.contains('.') && normalize_bundle_key(path) == "telemetry";
-    (top_level_telemetry && matches!(value, toml::Value::Boolean(true)))
-        .then_some("would port telemetry opt-in consent between machines")
+    if top_level_telemetry && matches!(value, toml::Value::Boolean(true)) {
+        return Some("would port telemetry opt-in consent between machines");
+    }
+    if is_network_allow_path(path)
+        && let toml::Value::String(host) = value
+        && codewhale_net::guard::is_visibly_local_host(host)
+    {
+        return Some("network.allow entry would grant local-network authority");
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -798,67 +817,85 @@ pub fn resolve_bounded_path(base_dir: &Path, candidate: &str) -> Result<PathBuf>
 // ---------------------------------------------------------------------------
 
 /// Fetch a bundle over HTTPS (or plain http on loopback only) with a hard
-/// size cap, a timeout, and bounded redirects. Mirrors the skill installer's
-/// fetch bounds.
-pub fn fetch_bundle(url: &str) -> Result<Vec<u8>> {
-    let mut current_url = reqwest::Url::parse(url).map_err(|_| anyhow!("invalid bundle URL"))?;
-    validate_bundle_url(&current_url)?;
-    let initial_scheme = current_url.scheme().to_string();
+/// size cap, a timeout, and bounded redirects. The first request and every
+/// redirect go through the shared guarded download: the network policy
+/// applies, the host is resolved and checked, and loopback, private,
+/// link-local and cloud-metadata destinations are refused unless the person
+/// listed a visibly local host in `network.allow`. A loopback host typed as
+/// the URL itself is admitted without a listing.
+pub fn fetch_bundle(
+    url: &str,
+    network: &codewhale_net::network_policy::NetworkPolicy,
+) -> Result<Vec<u8>> {
+    let initial_url = reqwest::Url::parse(url).map_err(|_| anyhow!("invalid bundle URL"))?;
+    validate_bundle_url(&initial_url)?;
+    let initial_scheme = initial_url.scheme().to_string();
+    let initial_host = initial_url
+        .host_str()
+        .context("bundle URL must include a host")?
+        .to_string();
 
-    let client = codewhale_release::platform_blocking_http_client_builder()
-        .timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECS))
-        // Redirect targets must pass the same scheme/host policy as the
-        // initial request, so redirects are followed explicitly below.
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| anyhow!("building bundle fetch client failed"))?;
-    let mut redirects = 0usize;
-    let response = loop {
-        let response = client
-            .get(current_url.clone())
-            .send()
-            // reqwest errors can include the full URL (including its query or
-            // userinfo), so keep transport failures deliberately URL-free.
-            .map_err(|_| anyhow!("bundle fetch request failed"))?;
-
-        if !response.status().is_redirection() {
-            break response;
-        }
-        if redirects >= MAX_REDIRECTS {
-            bail!("bundle fetch exceeded the five-redirect limit");
-        }
-        let location = response
-            .headers()
-            .get(reqwest::header::LOCATION)
-            .ok_or_else(|| anyhow!("bundle redirect is missing a valid Location header"))?
-            .to_str()
-            .map_err(|_| anyhow!("bundle redirect is missing a valid Location header"))?;
-        let next_url = current_url
-            .join(location)
-            .map_err(|_| anyhow!("bundle redirect Location is invalid"))?;
-        validate_bundle_redirect(&initial_scheme, &next_url)?;
-        current_url = next_url;
-        redirects += 1;
-    };
-
-    if !response.status().is_success() {
-        bail!(
-            "bundle fetch failed with HTTP status {}",
-            response.status().as_u16()
-        );
+    let mut policy = network.clone();
+    if is_loopback_bundle_host(&initial_host) {
+        policy.add_allow(&initial_host);
     }
+    let check =
+        move |next: &reqwest::Url| validate_bundle_redirect(&initial_scheme, &initial_host, next);
+    let request = codewhale_net::guard::GuardedGet::new(
+        url,
+        &policy,
+        "config_import",
+        codewhale_net::guard::PrivateTargets::TypedLocalHosts,
+    )
+    .timeouts(
+        std::time::Duration::from_secs(FETCH_TIMEOUT_SECS),
+        std::time::Duration::from_secs(FETCH_TIMEOUT_SECS),
+    )
+    .max_redirects(MAX_REDIRECTS)
+    .redirect_check(&check);
 
-    // Read at most MAX_BUNDLE_BYTES + 1 so an oversize body is detected
-    // rather than silently truncated.
-    let mut buffer = Vec::new();
-    let body = response;
-    body.take(MAX_BUNDLE_BYTES + 1)
-        .read_to_end(&mut buffer)
-        .map_err(|_| anyhow!("reading remote bundle failed"))?;
-    if buffer.len() as u64 > MAX_BUNDLE_BYTES {
-        bail!("remote bundle exceeds the {MAX_BUNDLE_BYTES} byte limit; refused");
-    }
-    Ok(buffer)
+    run_blocking(async move {
+        let mut response = request.send().await?;
+        if !response.status().is_success() {
+            bail!(
+                "bundle fetch failed with HTTP status {}",
+                response.status().as_u16()
+            );
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_BUNDLE_BYTES)
+        {
+            bail!("remote bundle exceeds the {MAX_BUNDLE_BYTES} byte limit; refused");
+        }
+        let mut buffer = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| anyhow!("reading remote bundle failed"))?
+        {
+            if (buffer.len() + chunk.len()) as u64 > MAX_BUNDLE_BYTES {
+                bail!("remote bundle exceeds the {MAX_BUNDLE_BYTES} byte limit; refused");
+            }
+            buffer.extend_from_slice(&chunk);
+        }
+        Ok(buffer)
+    })
+}
+
+fn run_blocking<T: Send>(future: impl std::future::Future<Output = Result<T>> + Send) -> Result<T> {
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|_| anyhow!("building bundle fetch runtime failed"))?
+                    .block_on(future)
+            })
+            .join()
+            .map_err(|_| anyhow!("bundle fetch thread failed"))?
+    })
 }
 
 fn validate_bundle_url(url: &reqwest::Url) -> Result<()> {
@@ -877,19 +914,37 @@ fn validate_bundle_url(url: &reqwest::Url) -> Result<()> {
     }
 }
 
-fn validate_bundle_redirect(initial_scheme: &str, next_url: &reqwest::Url) -> Result<()> {
+fn validate_bundle_redirect(
+    initial_scheme: &str,
+    initial_host: &str,
+    next_url: &reqwest::Url,
+) -> Result<()> {
     validate_bundle_url(next_url)?;
     if next_url.scheme() != initial_scheme {
         bail!("bundle redirects may not change URL scheme");
     }
+    let next_host = next_url
+        .host_str()
+        .context("bundle URL must include a host")?;
+    if codewhale_net::guard::is_visibly_local_host(next_host)
+        && !same_bundle_host(initial_host, next_host)
+    {
+        bail!("bundle redirects may not target a different local host");
+    }
     Ok(())
+}
+
+fn same_bundle_host(left: &str, right: &str) -> bool {
+    let normalize = |host: &str| host.trim().trim_end_matches('.').to_ascii_lowercase();
+    normalize(left) == normalize(right)
 }
 
 fn is_loopback_bundle_host(host: &str) -> bool {
     let normalized = host
         .strip_prefix('[')
         .and_then(|value| value.strip_suffix(']'))
-        .unwrap_or(host);
+        .unwrap_or(host)
+        .trim_end_matches('.');
     normalized.eq_ignore_ascii_case("localhost")
         || normalized.to_ascii_lowercase().ends_with(".localhost")
         || normalized
@@ -1571,7 +1626,13 @@ pub fn run_import(
         }
         buffer
     } else if remote_source {
-        fetch_bundle(&args.source)?
+        let network = store
+            .config
+            .network
+            .clone()
+            .map(codewhale_net::network_policy::NetworkPolicy::from)
+            .unwrap_or_default();
+        fetch_bundle(&args.source, &network)?
     } else {
         let path = PathBuf::from(&args.source);
         let metadata = std::fs::metadata(&path)
@@ -1672,6 +1733,7 @@ pub fn run_export(args: &ExportArgs, store: &codewhale_config::ConfigStore) -> R
 mod tests {
     use super::*;
     use codewhale_config::ConfigStore;
+    use codewhale_net::network_policy::NetworkPolicy;
     use std::io::Write;
     use std::net::{Ipv4Addr, TcpListener};
 
@@ -4183,7 +4245,7 @@ label = "safe-nested-workspace-label"
 
     #[test]
     fn http_non_loopback_fetch_is_refused_without_network_access() {
-        let err = fetch_bundle("http://example.com/bundle.toml")
+        let err = fetch_bundle("http://example.com/bundle.toml", &NetworkPolicy::default())
             .expect_err("plain http to a public host must be refused");
         assert!(err.to_string().contains("loopback"), "{err:#}");
         assert!(!err.to_string().contains("example.com"), "{err:#}");
@@ -4196,7 +4258,8 @@ label = "safe-nested-workspace-label"
         let response = http_response("302 Found", &[("Location", location.as_str())], b"");
         let (url, server) = spawn_bundle_http_server(vec![response]);
 
-        let error = fetch_bundle(&url).expect_err("redirect target must be revalidated");
+        let error = fetch_bundle(&url, &NetworkPolicy::default())
+            .expect_err("redirect target must be revalidated");
         let rendered = format!("{error:#}");
         assert!(rendered.contains("loopback"), "{rendered}");
         assert!(!rendered.contains("example.com"), "{rendered}");
@@ -4205,17 +4268,206 @@ label = "safe-nested-workspace-label"
     }
 
     #[test]
+    fn visibly_local_network_allow_entries_are_rejected_while_public_hosts_import() {
+        let local_bundle = parse_bundle_str(
+            r#"
+schema_version = 1
+kind = "codewhale.portable-config"
+
+[global.network]
+default = "prompt"
+allow = ["docs.example.com", "localhost", "10.0.0.5"]
+"#,
+            "local-allow.toml",
+        )
+        .expect("local allow bundle parses");
+        let rejected = find_rejected_entries(&local_bundle);
+        assert_eq!(rejected.len(), 1, "{rejected:?}");
+        assert_eq!(rejected[0].key, "global.network");
+        assert!(rejected[0].reason.contains("network.allow"), "{rejected:?}");
+        assert!(!rejected[0].reason.contains("localhost"), "{rejected:?}");
+        assert!(!rejected[0].reason.contains("10.0.0.5"), "{rejected:?}");
+
+        let mut store = isolated_store();
+        let before = std::fs::read(store.path()).expect("config before import");
+        let dir = store.path().parent().expect("config dir").to_path_buf();
+        apply_bundle(&local_bundle, &mut store, BundleScope::Global, &dir)
+            .expect_err("bundle adding visibly local network.allow entries must fail");
+        assert_eq!(
+            std::fs::read(store.path()).expect("config after rejected import"),
+            before
+        );
+
+        let public_bundle = parse_bundle_str(
+            r#"
+schema_version = 1
+kind = "codewhale.portable-config"
+
+[global.network]
+default = "prompt"
+allow = ["docs.example.com"]
+"#,
+            "public-allow.toml",
+        )
+        .expect("public allow bundle parses");
+        assert!(find_rejected_entries(&public_bundle).is_empty());
+        let receipt = apply_bundle(&public_bundle, &mut store, BundleScope::Global, &dir)
+            .expect("public network.allow entry must import");
+        assert!(receipt.plan.rejected.is_empty());
+        assert_eq!(
+            store
+                .config
+                .network
+                .as_ref()
+                .map(|network| network.allow.as_slice()),
+            Some(&["docs.example.com".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn localdomain_and_localhost_wildcard_network_allow_entries_are_rejected_and_scrubbed() {
+        for (section, entry) in [
+            ("global", ".localdomain"),
+            ("global", "*.localdomain"),
+            ("global", ".localhost"),
+            ("global", "*.localhost"),
+            ("global", "*.dev.localhost"),
+            ("project", "*.localdomain"),
+        ] {
+            let bundle_text = format!(
+                r#"
+schema_version = 1
+kind = "codewhale.portable-config"
+
+[{section}.network]
+default = "prompt"
+allow = ["docs.example.com", "{entry}"]
+"#
+            );
+            let bundle = parse_bundle_str(&bundle_text, "wildcard-local-allow.toml")
+                .expect("wildcard allow bundle parses");
+            let rejected = find_rejected_entries(&bundle);
+            assert_eq!(rejected.len(), 1, "{section} {entry}: {rejected:?}");
+            assert_eq!(rejected[0].key, format!("{section}.network"));
+            assert!(rejected[0].reason.contains("network.allow"), "{rejected:?}");
+            assert!(!rejected[0].reason.contains(entry), "{rejected:?}");
+        }
+
+        let combined = parse_bundle_str(
+            r#"
+schema_version = 1
+kind = "codewhale.portable-config"
+
+[global.network]
+default = "prompt"
+allow = [".localdomain", "*.localdomain", "*.localhost"]
+"#,
+            "combined-wildcard-local-allow.toml",
+        )
+        .expect("combined wildcard bundle parses");
+        let mut store = isolated_store();
+        let before = std::fs::read(store.path()).expect("config before import");
+        let dir = store.path().parent().expect("config dir").to_path_buf();
+        apply_bundle(&combined, &mut store, BundleScope::Global, &dir)
+            .expect_err("bundle adding local-domain wildcard network.allow entries must fail");
+        assert_eq!(
+            std::fs::read(store.path()).expect("config after rejected import"),
+            before
+        );
+
+        let config: ConfigToml = toml::from_str(
+            r#"
+[network]
+default = "prompt"
+allow = ["docs.example.com", ".localdomain", "*.localdomain", ".localhost", "*.localhost", "localhost", "10.0.0.5"]
+"#,
+        )
+        .expect("config with local network.allow entries parses");
+        let exported = export_bundle(&config, BundleScope::Global, BundleMetadata::default())
+            .expect("local network.allow entries are scrubbed on export");
+        let body = serialize_bundle(&exported).expect("serialize scrubbed export");
+        for forbidden in [
+            ".localdomain",
+            "*.localdomain",
+            ".localhost",
+            "*.localhost",
+            "\"localhost\"",
+            "10.0.0.5",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "export retained {forbidden}: {body}"
+            );
+        }
+        assert!(body.contains("docs.example.com"), "{body}");
+        assert!(find_rejected_entries(&exported).is_empty(), "{exported:?}");
+    }
+
+    #[test]
     fn https_redirect_cannot_downgrade_to_loopback_http() {
         let secret = "downgrade-secret-must-not-leak";
         let target = reqwest::Url::parse(&format!("http://127.0.0.1/internal?token={secret}"))
             .expect("test target URL");
 
-        let error = validate_bundle_redirect("https", &target)
+        let error = validate_bundle_redirect("https", "example.com", &target)
             .expect_err("HTTPS redirect must not downgrade to loopback HTTP");
         let rendered = format!("{error:#}");
         assert!(rendered.contains("scheme"), "{rendered}");
         assert!(!rendered.contains(secret), "{rendered}");
         assert!(!rendered.contains("127.0.0.1"), "{rendered}");
+    }
+
+    fn spawn_counting_server(
+        response: Vec<u8>,
+    ) -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind counting fixture");
+        let port = listener.local_addr().expect("fixture address").port();
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&hits);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                counter.fetch_add(1, Ordering::SeqCst);
+                let mut chunk = [0_u8; 1024];
+                let _ = stream.read(&mut chunk);
+                let _ = stream.write_all(&response);
+            }
+        });
+        (port, hits)
+    }
+
+    #[test]
+    fn redirect_to_another_local_host_is_refused() {
+        use std::sync::atomic::Ordering;
+        let (port, hits) = spawn_counting_server(http_response(
+            "200 OK",
+            &[("Content-Type", "text/plain")],
+            VALID_TOML.as_bytes(),
+        ));
+        let location = format!("http://localhost:{port}/bundle.toml");
+        let redirect = http_response("302 Found", &[("Location", location.as_str())], b"");
+        let (url, entry_server) = spawn_bundle_http_server(vec![redirect.clone()]);
+
+        let error = fetch_bundle(&url, &NetworkPolicy::default())
+            .expect_err("a hop to another local host must be refused");
+        assert!(!format!("{error:#}").contains("bundle.toml"), "{error:#}");
+        assert_eq!(entry_server.join().expect("entry joins"), 1);
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+        let (listed_url, listed_entry_server) = spawn_bundle_http_server(vec![redirect]);
+        let listed_policy = NetworkPolicy {
+            allow: vec!["localhost".to_string()],
+            ..NetworkPolicy::default()
+        };
+        let listed_error = fetch_bundle(&listed_url, &listed_policy)
+            .expect_err("even a listed local host must be refused on redirect from another host");
+        assert!(
+            !format!("{listed_error:#}").contains("bundle.toml"),
+            "{listed_error:#}"
+        );
+        assert_eq!(listed_entry_server.join().expect("listed entry joins"), 1);
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -4225,7 +4477,8 @@ label = "safe-nested-workspace-label"
         let success = http_response("200 OK", &[("Content-Type", "text/plain")], body);
         let (url, server) = spawn_bundle_http_server(vec![redirect, success]);
 
-        let fetched = fetch_bundle(&url).expect("relative redirect remains allowed");
+        let fetched = fetch_bundle(&url, &NetworkPolicy::default())
+            .expect("relative redirect remains allowed");
         assert_eq!(fetched, body);
         assert_eq!(server.join().expect("server joins"), 2);
     }
@@ -4240,16 +4493,23 @@ label = "safe-nested-workspace-label"
             .collect();
         let (url, server) = spawn_bundle_http_server(responses);
 
-        let error = fetch_bundle(&url).expect_err("sixth redirect must be refused");
-        assert!(error.to_string().contains("five-redirect"), "{error:#}");
+        let error = fetch_bundle(&url, &NetworkPolicy::default())
+            .expect_err("sixth redirect must be refused");
+        assert!(
+            error.to_string().contains("too many redirects"),
+            "{error:#}"
+        );
         assert_eq!(server.join().expect("server joins"), MAX_REDIRECTS + 1);
     }
 
     #[test]
     fn bundle_url_credentials_are_rejected_without_echoing_them() {
         let secret = "credential-secret-must-not-leak";
-        let error = fetch_bundle(&format!("https://user:{secret}@example.com/bundle.toml"))
-            .expect_err("URL userinfo must be refused");
+        let error = fetch_bundle(
+            &format!("https://user:{secret}@example.com/bundle.toml"),
+            &NetworkPolicy::default(),
+        )
+        .expect_err("URL userinfo must be refused");
         let rendered = format!("{error:#}");
         assert!(rendered.contains("credentials"), "{rendered}");
         assert!(!rendered.contains(secret), "{rendered}");
@@ -4258,7 +4518,8 @@ label = "safe-nested-workspace-label"
 
     #[test]
     fn unsupported_schemes_are_refused() {
-        let err = fetch_bundle("file:///etc/passwd").expect_err("file scheme refused");
+        let err = fetch_bundle("file:///etc/passwd", &NetworkPolicy::default())
+            .expect_err("file scheme refused");
         assert!(err.to_string().contains("scheme"), "{err:#}");
     }
 

@@ -11,7 +11,7 @@ description = "Codewhale community-skill installer, package digests and skill fr
 workspace = true
 
 [features]
-test-support = []
+test-support = ["codewhale-net/test-support"]
 
 [dependencies]
 anyhow.workspace = true
@@ -31,4 +31,5 @@ tokio.workspace = true
 yaml-rust2.workspace = true
 
 [dev-dependencies]
+codewhale-net = { path = "../net", version = "0.10.3", features = ["test-support"] }
 tempfile.workspace = true

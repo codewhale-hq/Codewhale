@@ -1037,6 +1037,7 @@ dependencies = [
  "codewhale-engine",
  "codewhale-execpolicy",
  "codewhale-lane",
+ "codewhale-net",
  "codewhale-paths",
  "codewhale-release",
  "codewhale-runtime",

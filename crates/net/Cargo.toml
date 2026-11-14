@@ -10,6 +10,9 @@ description = "Codewhale outbound network policy, guarded destinations and proxy
 [lints]
 workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true

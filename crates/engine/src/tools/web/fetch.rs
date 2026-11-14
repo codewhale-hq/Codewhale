@@ -15,7 +15,7 @@ use super::extract::is_js_shell_error;
 use super::guard::{validate_fetch_target, validate_network_policy};
 use crate::tools::spec::{ToolContext, ToolError};
 use codewhale_agent_contract::worker_profile::ShellPolicy;
-use codewhale_net::guard::{DnsPin, guarded_reqwest_client_builder};
+use codewhale_net::guard::{DnsPin, PrivateTargets, guarded_reqwest_client_builder};
 use codewhale_runtime::features::Feature;
 
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -535,7 +535,15 @@ async fn fetch_inner(
     // session cannot be bypassed by a previously cached response.
     let validated_initial_pin = match test_initial_pin {
         Some(pin) => pin,
-        None => validate_fetch_target(&initial_url, context, tool_label).await?,
+        None => {
+            validate_fetch_target(
+                &initial_url,
+                context,
+                tool_label,
+                PrivateTargets::TypedLocalHosts,
+            )
+            .await?
+        }
     };
 
     if let Some(cached) = (!cache_mode.is_revalidate())
@@ -703,14 +711,24 @@ async fn fetch_attempt(
         let dns_pin = if redirects == 0 {
             match initial_pin.take() {
                 Some(pin) => Some(pin),
-                None => validate_fetch_target(&current_url, context, tool_label)
-                    .await
-                    .map_err(AttemptError::Fatal)?,
+                None => validate_fetch_target(
+                    &current_url,
+                    context,
+                    tool_label,
+                    PrivateTargets::TypedLocalHosts,
+                )
+                .await
+                .map_err(AttemptError::Fatal)?,
             }
         } else {
-            validate_fetch_target(&current_url, context, tool_label)
-                .await
-                .map_err(AttemptError::Fatal)?
+            validate_fetch_target(
+                &current_url,
+                context,
+                tool_label,
+                PrivateTargets::TypedLocalHosts,
+            )
+            .await
+            .map_err(AttemptError::Fatal)?
         };
 
         let remaining = deadline.saturating_duration_since(Instant::now());

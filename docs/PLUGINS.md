@@ -176,7 +176,10 @@ There is no registry index and no `git clone` in v1 — tarball-only fetching
 keeps the size cap and no-symlink guarantees of the installer. Downloads are
 gated by the per-domain network policy: an unknown host returns a
 "needs approval" error naming the host (`/network allow <host>`, then retry),
-a denied host aborts without touching disk.
+a denied host aborts without touching disk. Allowing a host never lets a
+download reach a local or private address: every request and redirect refuses
+loopback, private, link-local and cloud-metadata destinations, including a host
+name that resolves to one.
 
 The fetched tree must contain **exactly one** bundle root — a directory
 holding a `plugin.json`, compatible `kimi.plugin.json`,

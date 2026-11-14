@@ -34,6 +34,7 @@ codewhale-engine = { path = "../engine", version = "0.10.3" }
 codewhale-app-server = { path = "../app-server", version = "0.10.3" }
 codewhale-config = { path = "../config", version = "0.10.3" }
 codewhale-lane = { path = "../lane", version = "0.10.3" }
+codewhale-net = { path = "../net", version = "0.10.3" }
 codewhale-workflow = { path = "../workflow", version = "0.10.3" }
 codewhale-execpolicy = { path = "../execpolicy", version = "0.10.3" }
 codewhale-paths = { path = "../paths", version = "0.10.3" }
