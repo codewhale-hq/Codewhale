@@ -436,6 +436,7 @@ pub struct AutoReviewContext<'a> {
     pub shell_is_auto_review_routine: bool,
     session_runtime_risk: Option<SessionRuntimeRisk>,
     pub run_origin: RunOrigin,
+    pub owner_present: bool,
     pub approval_mode: ApprovalMode,
     pub workspace_trusted: bool,
     pub write_targets_bounded: bool,
@@ -458,6 +459,48 @@ impl<'a> AutoReviewContext<'a> {
         approval_mode: ApprovalMode,
         workspace: Option<&std::path::Path>,
     ) -> Result<Self, crate::tools::spec::ToolError> {
+        Self::from_tool_call_with_owner_presence_async(
+            tool_name,
+            params,
+            run_origin,
+            run_origin == RunOrigin::Interactive,
+            approval_mode,
+            workspace,
+        )
+        .await
+    }
+
+    pub async fn from_turn_authority_async(
+        tool_name: &str,
+        params: &Value,
+        authority: &crate::core::authority::TurnAuthority,
+        detached_start: bool,
+        workspace: Option<&std::path::Path>,
+    ) -> Result<Self, crate::tools::spec::ToolError> {
+        let (run_origin, owner_present) = if detached_start {
+            (RunOrigin::Background, false)
+        } else {
+            (authority.run_origin(), authority.owner_present())
+        };
+        Self::from_tool_call_with_owner_presence_async(
+            tool_name,
+            params,
+            run_origin,
+            owner_present,
+            authority.approval_mode,
+            workspace,
+        )
+        .await
+    }
+
+    async fn from_tool_call_with_owner_presence_async(
+        tool_name: &str,
+        params: &Value,
+        run_origin: RunOrigin,
+        owner_present: bool,
+        approval_mode: ApprovalMode,
+        workspace: Option<&std::path::Path>,
+    ) -> Result<Self, crate::tools::spec::ToolError> {
         let tool_name = tool_name.to_owned();
         let params = params.clone();
         let workspace = workspace.map(std::path::Path::to_path_buf);
@@ -473,6 +516,7 @@ impl<'a> AutoReviewContext<'a> {
                 Cow::Owned(tool_name),
                 &params,
                 run_origin,
+                owner_present,
                 approval_mode,
                 trusted,
                 workspace.as_deref(),
@@ -502,6 +546,7 @@ impl<'a> AutoReviewContext<'a> {
             Cow::Borrowed(tool_name),
             params,
             run_origin,
+            run_origin == RunOrigin::Interactive,
             approval_mode,
             workspace_trusted,
             workspace,
@@ -512,6 +557,7 @@ impl<'a> AutoReviewContext<'a> {
         tool_name: Cow<'a, str>,
         params: &Value,
         run_origin: RunOrigin,
+        owner_present: bool,
         approval_mode: ApprovalMode,
         workspace_trusted: bool,
         workspace: Option<&std::path::Path>,
@@ -540,6 +586,7 @@ impl<'a> AutoReviewContext<'a> {
                 None
             },
             run_origin,
+            owner_present: run_origin == RunOrigin::Interactive && owner_present,
             approval_mode,
             workspace_trusted,
             outbound_web_request: matches!(
@@ -809,6 +856,11 @@ fn deterministic_fallback(
             (ToolActionKind::Destructive, RunOrigin::Background | RunOrigin::Headless) => {
                 return AutoReviewDecision::safety_gate(
                     "destructive background/headless action requires durable review",
+                );
+            }
+            (ToolActionKind::Destructive, RunOrigin::Interactive) if !ctx.owner_present => {
+                return AutoReviewDecision::safety_gate(
+                    "destructive unattended action requires durable review",
                 );
             }
             _ => {}
@@ -4302,5 +4354,46 @@ mod tests {
             context["deterministic_observations"]["credentials_masked"],
             true
         );
+    }
+
+    #[tokio::test]
+    async fn auto_review_unattended_floor_gates_destructive_calls_without_owner_presence() {
+        let params = json!({ "command": "rm -rf /etc/nginx" });
+        let policy = AutoReviewPolicy::default();
+        let cases = [
+            (RunOrigin::Interactive, true, false, false),
+            (RunOrigin::Interactive, false, false, true),
+            (RunOrigin::Headless, false, false, true),
+            (RunOrigin::Headless, true, false, true),
+            (RunOrigin::Background, false, false, true),
+            (RunOrigin::Background, true, false, true),
+            (RunOrigin::Interactive, true, true, true),
+        ];
+
+        for (origin, attached, detached_start, expect_unattended_gate) in cases {
+            let authority = crate::core::authority::TurnAuthority::from_effective_fields(
+                codewhale_config::AppMode::Agent,
+                false,
+                true,
+                false,
+                ApprovalMode::Auto,
+            )
+            .with_rust_origin(origin, attached);
+            let ctx = AutoReviewContext::from_turn_authority_async(
+                "exec_shell",
+                &params,
+                &authority,
+                detached_start,
+                None,
+            )
+            .await
+            .expect("build auto review context");
+            let decision = policy.evaluate(&ctx);
+            assert_eq!(
+                decision.built_in_safety_gate, expect_unattended_gate,
+                "origin={origin:?} attached={attached} detached={detached_start} decision={decision:?}"
+            );
+            assert_eq!(decision.action, AutoReviewAction::AskUser);
+        }
     }
 }

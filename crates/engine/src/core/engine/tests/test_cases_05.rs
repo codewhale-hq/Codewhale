@@ -1406,6 +1406,7 @@ async fn user_steer_during_parent_answer_still_gets_a_reply_with_healthy_childre
                     turn_id,
                     content: "Also read state.txt and include its evidence.".to_string(),
                     outcome: Some(outcome),
+                    owner_steer: false,
                 })
                 .await
                 .expect("steer channel open");

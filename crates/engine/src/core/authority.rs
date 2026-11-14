@@ -167,6 +167,8 @@ pub struct TurnAuthority {
     pub trust_mode: bool,
     pub auto_approve: bool,
     pub approval_mode: ApprovalMode,
+    run_origin: RunOrigin,
+    owner_present: bool,
     pub dynamic_active_tools: Vec<&'static str>,
     /// Structured record of any narrowing applied to this turn (#3947). The
     /// UI status line, `<turn_meta>`, and doctor all render from here, so a
@@ -178,6 +180,16 @@ impl TurnAuthority {
     /// The user-facing status sentence for this turn's narrowing, if any.
     pub fn status(&self) -> Option<String> {
         self.narrowing.as_ref().map(PolicyNarrowingEvent::message)
+    }
+
+    #[must_use]
+    pub const fn run_origin(&self) -> RunOrigin {
+        self.run_origin
+    }
+
+    #[must_use]
+    pub const fn owner_present(&self) -> bool {
+        self.owner_present
     }
 
     #[must_use]
@@ -194,9 +206,34 @@ impl TurnAuthority {
             trust_mode,
             auto_approve,
             approval_mode,
+            run_origin: RunOrigin::Background,
+            owner_present: false,
             dynamic_active_tools: Vec::new(),
             narrowing: None,
         }
+    }
+
+    #[must_use]
+    pub fn for_tui_surface(
+        mode: AppMode,
+        allow_shell: bool,
+        trust_mode: bool,
+        auto_approve: bool,
+        approval_mode: ApprovalMode,
+    ) -> Self {
+        Self::from_effective_fields(mode, allow_shell, trust_mode, auto_approve, approval_mode)
+            .with_rust_origin(RunOrigin::Interactive, true)
+    }
+
+    #[must_use]
+    pub(crate) fn with_rust_origin(
+        mut self,
+        run_origin: RunOrigin,
+        owner_surface_attached: bool,
+    ) -> Self {
+        self.run_origin = run_origin;
+        self.owner_present = run_origin == RunOrigin::Interactive && owner_surface_attached;
+        self
     }
 
     #[must_use]
@@ -303,6 +340,8 @@ pub fn effective_input_policy(
         trust_mode,
         auto_approve,
         approval_mode,
+        run_origin: RunOrigin::Background,
+        owner_present: false,
         dynamic_active_tools: Vec::new(),
         narrowing,
     }
@@ -1426,5 +1465,53 @@ mod tests {
             resolve_approval_request_disposition(&ask, false, false, false, false),
             ApprovalRequestDisposition::Prompt
         );
+    }
+
+    #[test]
+    fn turn_origin_and_owner_presence_default_fail_closed_and_clamp() {
+        for mode in [AppMode::Plan, AppMode::Agent] {
+            for allow_shell in [false, true] {
+                for trust_mode in [false, true] {
+                    for auto_approve in [false, true] {
+                        for approval_mode in [
+                            ApprovalMode::Suggest,
+                            ApprovalMode::Auto,
+                            ApprovalMode::Never,
+                            ApprovalMode::Bypass,
+                        ] {
+                            let from_fields = TurnAuthority::from_effective_fields(
+                                mode,
+                                allow_shell,
+                                trust_mode,
+                                auto_approve,
+                                approval_mode,
+                            );
+                            assert_eq!(from_fields.run_origin(), RunOrigin::Background);
+                            assert!(!from_fields.owner_present());
+                        }
+                    }
+                }
+            }
+        }
+
+        let cases = [
+            (RunOrigin::Interactive, true, RunOrigin::Interactive, true),
+            (RunOrigin::Interactive, false, RunOrigin::Interactive, false),
+            (RunOrigin::Headless, true, RunOrigin::Headless, false),
+            (RunOrigin::Headless, false, RunOrigin::Headless, false),
+            (RunOrigin::Background, true, RunOrigin::Background, false),
+            (RunOrigin::Background, false, RunOrigin::Background, false),
+        ];
+        for (requested_origin, attached, expected_origin, expected_owner) in cases {
+            let auth = authority(AppMode::Agent, false, ApprovalMode::Auto)
+                .with_rust_origin(requested_origin, attached);
+            assert_eq!(auth.run_origin(), expected_origin);
+            assert_eq!(auth.owner_present(), expected_owner);
+        }
+
+        let tui =
+            TurnAuthority::for_tui_surface(AppMode::Agent, false, false, false, ApprovalMode::Auto);
+        assert_eq!(tui.run_origin(), RunOrigin::Interactive);
+        assert!(tui.owner_present());
     }
 }

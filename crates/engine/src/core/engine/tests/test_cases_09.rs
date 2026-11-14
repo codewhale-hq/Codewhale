@@ -386,12 +386,30 @@ fn auto_review_scenario_2() {
     }
     // from auto_review_run_origin_marks_detached_tools_as_background
     {
+        let tui = TurnAuthority::for_tui_surface(
+            AppMode::Agent,
+            true,
+            true,
+            false,
+            ApprovalMode::Auto,
+        );
+        let unattended = TurnAuthority::from_effective_fields(
+            AppMode::Agent,
+            true,
+            true,
+            false,
+            ApprovalMode::Auto,
+        );
         assert_eq!(
-            auto_review_run_origin_for_plan(false),
+            auto_review_run_origin_for_plan(&tui, false),
             crate::core::authority::auto_review::RunOrigin::Interactive
         );
         assert_eq!(
-            auto_review_run_origin_for_plan(true),
+            auto_review_run_origin_for_plan(&tui, true),
+            crate::core::authority::auto_review::RunOrigin::Background
+        );
+        assert_eq!(
+            auto_review_run_origin_for_plan(&unattended, false),
             crate::core::authority::auto_review::RunOrigin::Background
         );
     }
@@ -1612,4 +1630,735 @@ fn core_primitives_and_todo_write_default_to_eager() {
     for searchable in ["File", "Bash", "Git", "Run", "tasks", "git_blame"] {
         assert!(should_default_defer_tool(searchable, &always_load));
     }
+}
+
+#[tokio::test]
+async fn run_origin_table_assigns_expected_origin_and_owner_presence() {
+    let _lock = lock_test_env();
+    let workspace = tempdir().expect("tempdir");
+    let api_config = Config::default().with_legacy_root(
+        Some("test-key".to_string()),
+        Some("http://127.0.0.1:1/v1".to_string()),
+    );
+    let engine_config = EngineConfig {
+        model: codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string(),
+        workspace: workspace.path().to_path_buf(),
+        snapshots_enabled: false,
+        subagents_enabled: false,
+        memory_enabled: false,
+        ..EngineConfig::default()
+    };
+
+    let (mut engine, mut handle) = Engine::new(engine_config.clone(), &api_config);
+    let interactive_origin = handle::RustTurnOrigin {
+        run_origin: RunOrigin::Interactive,
+        owner_present: true,
+    };
+    let non_owner_interactive = handle::RustTurnOrigin {
+        run_origin: RunOrigin::Interactive,
+        owner_present: false,
+    };
+    let headless_origin = handle::RustTurnOrigin {
+        run_origin: RunOrigin::Headless,
+        owner_present: true,
+    };
+    let background_origin = handle::RustTurnOrigin {
+        run_origin: RunOrigin::Background,
+        owner_present: true,
+    };
+
+    let matrix = [
+        (
+            EngineHostProfile::Normal,
+            true,
+            None,
+            UserInputProvenance::ExternalUser,
+            (RunOrigin::Interactive, true),
+        ),
+        (
+            EngineHostProfile::Normal,
+            false,
+            None,
+            UserInputProvenance::ExternalUser,
+            (RunOrigin::Background, false),
+        ),
+        (
+            EngineHostProfile::Normal,
+            false,
+            Some(interactive_origin),
+            UserInputProvenance::ExternalUser,
+            (RunOrigin::Background, false),
+        ),
+        (
+            EngineHostProfile::Normal,
+            true,
+            Some(non_owner_interactive),
+            UserInputProvenance::ExternalUser,
+            (RunOrigin::Background, false),
+        ),
+        (
+            EngineHostProfile::Normal,
+            true,
+            Some(headless_origin),
+            UserInputProvenance::ExternalUser,
+            (RunOrigin::Headless, false),
+        ),
+        (
+            EngineHostProfile::Normal,
+            true,
+            Some(background_origin),
+            UserInputProvenance::ExternalUser,
+            (RunOrigin::Background, false),
+        ),
+        (
+            EngineHostProfile::Headless,
+            true,
+            Some(interactive_origin),
+            UserInputProvenance::ExternalUser,
+            (RunOrigin::Headless, false),
+        ),
+        (
+            EngineHostProfile::Acp,
+            true,
+            Some(interactive_origin),
+            UserInputProvenance::ExternalUser,
+            (RunOrigin::Headless, false),
+        ),
+        (
+            EngineHostProfile::Rlm,
+            true,
+            Some(interactive_origin),
+            UserInputProvenance::ExternalUser,
+            (RunOrigin::Background, false),
+        ),
+        (
+            EngineHostProfile::Normal,
+            true,
+            Some(interactive_origin),
+            UserInputProvenance::Runtime,
+            (RunOrigin::Background, false),
+        ),
+        (
+            EngineHostProfile::Normal,
+            true,
+            Some(interactive_origin),
+            UserInputProvenance::GoalContinuation,
+            (RunOrigin::Background, false),
+        ),
+        (
+            EngineHostProfile::Normal,
+            true,
+            Some(interactive_origin),
+            UserInputProvenance::SubAgentHandoff,
+            (RunOrigin::Background, false),
+        ),
+        (
+            EngineHostProfile::Normal,
+            true,
+            Some(interactive_origin),
+            UserInputProvenance::AgentMail,
+            (RunOrigin::Background, false),
+        ),
+        (
+            EngineHostProfile::Normal,
+            true,
+            Some(interactive_origin),
+            UserInputProvenance::ImportedTranscript,
+            (RunOrigin::Background, false),
+        ),
+        (
+            EngineHostProfile::Normal,
+            true,
+            Some(interactive_origin),
+            UserInputProvenance::MemoryRecall,
+            (RunOrigin::Background, false),
+        ),
+        (
+            EngineHostProfile::Normal,
+            true,
+            Some(interactive_origin),
+            UserInputProvenance::AssistantGenerated,
+            (RunOrigin::Background, false),
+        ),
+    ];
+
+    for (host_profile, owner_attached, control_origin, provenance, expected) in matrix {
+        engine.host_profile = host_profile;
+        engine.owner_surface_attached = owner_attached;
+        assert_eq!(
+            engine.mint_turn_origin(control_origin, provenance),
+            expected,
+            "host_profile={host_profile:?} owner_attached={owner_attached} provenance={provenance:?}"
+        );
+    }
+
+    engine.host_profile = EngineHostProfile::Normal;
+    engine.turn_run_origin = RunOrigin::Background;
+    engine.turn_owner_present = false;
+    handle.set_host_profile(EngineHostProfile::Normal);
+    handle.set_owner_surface_attached(false);
+    handle
+        .reserve_steer()
+        .await
+        .expect("reserve non-owner steer")
+        .send("bg steer".to_string());
+    let bg_pending = engine.next_turn_steer().expect("queued bg steer");
+    assert!(!bg_pending.is_owner_steer());
+    engine.commit_pending_steer(bg_pending);
+    assert_eq!(
+        (engine.turn_run_origin, engine.turn_owner_present),
+        (RunOrigin::Background, false)
+    );
+
+    engine.attach_owner_surface_for_tests(&mut handle);
+    handle
+        .reserve_steer()
+        .await
+        .expect("reserve owner steer")
+        .send("owner steer".to_string());
+    let owner_pending = engine.next_turn_steer().expect("queued owner steer");
+    assert!(owner_pending.is_owner_steer());
+    engine.commit_pending_steer(owner_pending);
+    assert_eq!(
+        (engine.turn_run_origin, engine.turn_owner_present),
+        (RunOrigin::Interactive, true)
+    );
+
+    let tool_ctx = crate::tools::ToolContext::new(workspace.path());
+    let client = CodewhaleClient::new(&engine.api_config).expect("stub client");
+    let fg_subagent = crate::tools::subagent::SubAgentRuntime::new(
+        client,
+        engine_config.model.clone(),
+        tool_ctx,
+        false,
+        None,
+        Arc::clone(&engine.subagent_manager),
+    )
+    .with_foreground_children(Arc::new(
+        crate::tools::subagent::ForegroundChildRegistry::new(),
+    ))
+    .with_parent_origin(RunOrigin::Interactive, true);
+    let bg_subagent = fg_subagent.background_runtime();
+    assert!(fg_subagent.has_foreground_ownership());
+    assert_eq!(fg_subagent.parent_run_origin, RunOrigin::Interactive);
+    assert!(fg_subagent.parent_owner_present);
+    assert!(!bg_subagent.has_foreground_ownership());
+    assert_eq!(bg_subagent.parent_run_origin, RunOrigin::Background);
+    assert!(!bg_subagent.parent_owner_present);
+
+    let tui_auth =
+        TurnAuthority::for_tui_surface(AppMode::Agent, false, false, false, ApprovalMode::Auto);
+    assert_eq!(
+        auto_review_run_origin_for_plan(&tui_auth, false),
+        RunOrigin::Interactive
+    );
+    assert_eq!(
+        auto_review_run_origin_for_plan(&tui_auth, true),
+        RunOrigin::Background
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn headless_exec_and_detached_runs_meet_auto_review_unattended_floor_without_prompting() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let _lock = lock_test_env();
+    let workspace = tempdir().expect("tempdir");
+    let outside_dir = tempdir().expect("outside tempdir");
+    let victim = outside_dir.path().join("unattended-victim");
+    fs::write(&victim, "guarded\n").expect("write victim");
+
+    let server = MockServer::start().await;
+    let tool_input = json!({
+        "action": "run",
+        "command": format!("rm -rf \"{}\"", victim.display()),
+        "background": false,
+    });
+    let arguments = serde_json::to_string(&tool_input).expect("serialize tool arguments");
+    let tool_delta = json!({
+        "id": "chatcmpl-headless",
+        "choices": [{
+            "index": 0,
+            "delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call_headless",
+                "type": "function",
+                "function": {"name": "Bash", "arguments": arguments},
+            }]},
+            "finish_reason": serde_json::Value::Null,
+        }],
+    });
+    let tool_finish = json!({
+        "id": "chatcmpl-headless",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+    });
+    let tool_call_sse = format!("data: {tool_delta}\n\ndata: {tool_finish}\n\ndata: [DONE]\n\n");
+    let done_sse = concat!(
+        "data: {\"id\":\"chatcmpl-done\",\"choices\":[{\"index\":0,",
+        "\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"chatcmpl-done\",\"choices\":[{\"index\":0,\"delta\":{},",
+        "\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_string_contains("call_headless"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(done_sse),
+        )
+        .expect(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(tool_call_sse),
+        )
+        .expect(1)
+        .with_priority(2)
+        .mount(&server)
+        .await;
+
+    let api_config =
+        Config::default().with_legacy_root(Some("test-key".to_string()), Some(server.uri()));
+    let engine_config = EngineConfig {
+        model: codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string(),
+        workspace: workspace.path().to_path_buf(),
+        snapshots_enabled: false,
+        subagents_enabled: false,
+        memory_enabled: false,
+        ..EngineConfig::default()
+    };
+    let handle = spawn_headless_engine(engine_config.clone(), &api_config, None).await;
+    handle
+        .send(Op::SendMessage(TurnSpec {
+            profile_constitution: None,
+            max_output_tokens: None,
+            content: "headless exec destructive check".to_string(),
+            images: Vec::new(),
+            mode: AppMode::Agent,
+            route: resolved_route_for_test(
+                &api_config,
+                codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL,
+            ),
+            compaction: Box::new(CompactionConfig::default()),
+            initial_routed_usage: Box::default(),
+            goal_objective: None,
+            goal_token_budget: None,
+            goal_status: crate::tools::goal::GoalStatus::Active,
+            reasoning_effort: None,
+            reasoning_effort_auto: false,
+            auto_model: false,
+            allow_shell: true,
+            trust_mode: false,
+            auto_approve: false,
+            approval_mode: ApprovalMode::Auto,
+            translation_enabled: false,
+            allowed_tools: None,
+            dynamic_tools: Vec::new(),
+            hook_executor: None,
+            verbosity: None,
+            provenance: UserInputProvenance::ExternalUser,
+            submission_id: None,
+        }))
+        .await
+        .expect("send headless exec turn");
+
+    let mut saw_safety_block = false;
+    let mut saw_complete = false;
+    let mut rx = handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timed out waiting for headless exec event")
+    {
+        match event {
+            Event::ApprovalRequired { .. } => {
+                panic!("headless Auto-Review must never wait on an approval card")
+            }
+            Event::ToolCallComplete { name, result, .. } if name == "Bash" => {
+                let err = result.expect_err("destructive headless call must be blocked");
+                assert!(err.to_string().contains("Built-in safety gate"), "{err}");
+                saw_safety_block = true;
+            }
+            Event::TurnComplete { status, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed);
+                saw_complete = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+    handle.send(Op::Shutdown).await.expect("shutdown headless");
+    assert!(saw_safety_block);
+    assert!(saw_complete);
+    assert!(victim.exists());
+
+    let detached_args = serde_json::to_string(&json!({
+        "action": "run",
+        "command": format!("rm -rf \"{}\"", victim.display()),
+        "background": true,
+    }))
+    .expect("serialize detached args");
+    let mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn("call_detached", "Bash", &detached_args),
+        canned::simple_text_turn("done"),
+    ]));
+    let (mut detached_engine, mut detached_handle) =
+        Engine::new_with_model_client(engine_config, &Config::default(), mock.clone());
+    detached_engine.attach_owner_surface_for_tests(&mut detached_handle);
+    let detached_task = tokio::spawn(detached_engine.run());
+    detached_handle
+        .send(Op::SendMessage(TurnSpec {
+            profile_constitution: None,
+            max_output_tokens: None,
+            content: "detached destructive check".to_string(),
+            images: Vec::new(),
+            mode: AppMode::Agent,
+            route: resolved_route_for_test(
+                &Config::default(),
+                codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL,
+            ),
+            compaction: Box::new(CompactionConfig::default()),
+            initial_routed_usage: Box::default(),
+            goal_objective: None,
+            goal_token_budget: None,
+            goal_status: crate::tools::goal::GoalStatus::Active,
+            reasoning_effort: None,
+            reasoning_effort_auto: false,
+            auto_model: false,
+            allow_shell: true,
+            trust_mode: false,
+            auto_approve: false,
+            approval_mode: ApprovalMode::Auto,
+            translation_enabled: false,
+            allowed_tools: None,
+            dynamic_tools: Vec::new(),
+            hook_executor: None,
+            verbosity: None,
+            provenance: UserInputProvenance::ExternalUser,
+            submission_id: None,
+        }))
+        .await
+        .expect("send detached turn");
+
+    let mut saw_detached_block = false;
+    let mut saw_detached_complete = false;
+    let mut drx = detached_handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), drx.recv())
+        .await
+        .expect("timed out waiting for detached event")
+    {
+        match event {
+            Event::ApprovalRequired { .. } => {
+                panic!("detached call under Auto-Review must not open an approval card")
+            }
+            Event::ToolCallComplete { name, result, .. } if name == "Bash" => {
+                let err = result.expect_err("destructive detached call must block");
+                assert!(err.to_string().contains("Built-in safety gate"), "{err}");
+                saw_detached_block = true;
+            }
+            Event::TurnComplete { status, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed);
+                saw_detached_complete = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(drx);
+    detached_handle
+        .send(Op::Shutdown)
+        .await
+        .expect("shutdown detached");
+    detached_task.await.expect("detached engine task");
+    assert!(saw_detached_block);
+    assert!(saw_detached_complete);
+    assert_eq!(mock.call_count(), 2);
+    assert!(victim.exists());
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn interactive_tui_turn_preserves_ask_and_auto_review_interactive_behavior() {
+    use crate::core::authority::{
+        ApprovalRequestDisposition, ToolPermission, resolve_approval_request_disposition,
+        resolve_tool_permission,
+    };
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use codewhale_models::{ContentBlock, MessageResponse, Usage};
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let _lock = lock_test_env();
+    let workspace = tempdir().expect("tempdir");
+
+    let server = MockServer::start().await;
+    let ask_args = serde_json::to_string(&json!({
+        "action": "run",
+        "command": "echo interactive-ask-ok",
+        "background": false,
+    }))
+    .expect("serialize ask args");
+    let tool_delta = json!({
+        "id": "chatcmpl-tui-ask",
+        "choices": [{
+            "index": 0,
+            "delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call_tui_ask",
+                "type": "function",
+                "function": {"name": "Bash", "arguments": ask_args},
+            }]},
+            "finish_reason": serde_json::Value::Null,
+        }],
+    });
+    let tool_finish = json!({
+        "id": "chatcmpl-tui-ask",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+    });
+    let tool_call_sse = format!("data: {tool_delta}\n\ndata: {tool_finish}\n\ndata: [DONE]\n\n");
+    let done_sse = concat!(
+        "data: {\"id\":\"chatcmpl-done\",\"choices\":[{\"index\":0,",
+        "\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"chatcmpl-done\",\"choices\":[{\"index\":0,\"delta\":{},",
+        "\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_string_contains("call_tui_ask"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(done_sse),
+        )
+        .expect(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(tool_call_sse),
+        )
+        .expect(1)
+        .with_priority(2)
+        .mount(&server)
+        .await;
+
+    let api_config =
+        Config::default().with_legacy_root(Some("test-key".to_string()), Some(server.uri()));
+    let engine_config = EngineConfig {
+        model: codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string(),
+        workspace: workspace.path().to_path_buf(),
+        snapshots_enabled: false,
+        subagents_enabled: false,
+        memory_enabled: false,
+        ..EngineConfig::default()
+    };
+    let tui_handle = spawn_tui_engine(engine_config.clone(), &api_config, None).await;
+    tui_handle
+        .send(Op::SendMessage(TurnSpec {
+            profile_constitution: None,
+            max_output_tokens: None,
+            content: "interactive ask prompt".to_string(),
+            images: Vec::new(),
+            mode: AppMode::Agent,
+            route: resolved_route_for_test(
+                &api_config,
+                codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL,
+            ),
+            compaction: Box::new(CompactionConfig::default()),
+            initial_routed_usage: Box::default(),
+            goal_objective: None,
+            goal_token_budget: None,
+            goal_status: crate::tools::goal::GoalStatus::Active,
+            reasoning_effort: None,
+            reasoning_effort_auto: false,
+            auto_model: false,
+            allow_shell: true,
+            trust_mode: false,
+            auto_approve: false,
+            approval_mode: ApprovalMode::Suggest,
+            translation_enabled: false,
+            allowed_tools: None,
+            dynamic_tools: Vec::new(),
+            hook_executor: None,
+            verbosity: None,
+            provenance: UserInputProvenance::ExternalUser,
+            submission_id: None,
+        }))
+        .await
+        .expect("send TUI Ask turn");
+
+    let mut saw_approval_prompt = false;
+    let mut saw_ask_tool_ok = false;
+    let mut saw_ask_complete = false;
+    let mut rx = tui_handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timed out waiting for TUI Ask event")
+    {
+        match event {
+            Event::ApprovalRequired { id, .. } => {
+                saw_approval_prompt = true;
+                tui_handle
+                    .approve_tool_call(id)
+                    .await
+                    .expect("approve interactive TUI ask prompt");
+            }
+            Event::ToolCallComplete { name, result, .. } if name == "Bash" => {
+                let res = result.expect("approved Ask tool must run");
+                assert!(res.success && res.content.contains("interactive-ask-ok"), "{res:?}");
+                saw_ask_tool_ok = true;
+            }
+            Event::TurnComplete { status, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed);
+                saw_ask_complete = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+    tui_handle.send(Op::Shutdown).await.expect("shutdown TUI");
+    assert!(saw_approval_prompt);
+    assert!(saw_ask_tool_ok);
+    assert!(saw_ask_complete);
+
+    let nonexistent = workspace.path().join("nonexistent-interactive");
+    let auto_args = serde_json::to_string(&json!({
+        "action": "run",
+        "command": format!("rm -rf \"{}\"", nonexistent.display()),
+        "background": false,
+    }))
+    .expect("serialize auto args");
+    let mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn("call_tui_auto", "Bash", &auto_args),
+        canned::simple_text_turn("done"),
+    ]));
+    mock.push_message_response(MessageResponse {
+        id: "review-allow".to_string(),
+        r#type: "message".to_string(),
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "{\"risk_level\":\"low\",\"decision\":\"allow\",\"reason\":\"safe test path\"}"
+                .to_string(),
+            cache_control: None,
+        }],
+        model: "mock-model".to_string(),
+        stop_reason: Some("end_turn".to_string()),
+        stop_sequence: None,
+        container: None,
+        usage: Usage::default(),
+        title: None,
+        stop_details: None,
+        refusal: None,
+    });
+    let (mut interactive_engine, mut interactive_handle) =
+        Engine::new_with_model_client(engine_config, &Config::default(), mock.clone());
+    interactive_engine.attach_owner_surface_for_tests(&mut interactive_handle);
+    let interactive_task = tokio::spawn(interactive_engine.run());
+    interactive_handle
+        .send(Op::SendMessage(TurnSpec {
+            profile_constitution: None,
+            max_output_tokens: None,
+            content: "interactive Auto-Review check".to_string(),
+            images: Vec::new(),
+            mode: AppMode::Agent,
+            route: resolved_route_for_test(
+                &Config::default(),
+                codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL,
+            ),
+            compaction: Box::new(CompactionConfig::default()),
+            initial_routed_usage: Box::default(),
+            goal_objective: None,
+            goal_token_budget: None,
+            goal_status: crate::tools::goal::GoalStatus::Active,
+            reasoning_effort: None,
+            reasoning_effort_auto: false,
+            auto_model: false,
+            allow_shell: true,
+            trust_mode: false,
+            auto_approve: false,
+            approval_mode: ApprovalMode::Auto,
+            translation_enabled: false,
+            allowed_tools: None,
+            dynamic_tools: Vec::new(),
+            hook_executor: None,
+            verbosity: None,
+            provenance: UserInputProvenance::ExternalUser,
+            submission_id: None,
+        }))
+        .await
+        .expect("send interactive Auto-Review turn");
+
+    let mut saw_guardian_status = false;
+    let mut saw_auto_complete = false;
+    let mut irx = interactive_handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), irx.recv())
+        .await
+        .expect("timed out waiting for interactive Auto-Review event")
+    {
+        match event {
+            Event::Status { message, .. } if message.contains("Auto-Review checking") => {
+                saw_guardian_status = true;
+            }
+            Event::TurnComplete { status, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed);
+                saw_auto_complete = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(irx);
+    interactive_handle
+        .send(Op::Shutdown)
+        .await
+        .expect("shutdown interactive engine");
+    interactive_task.await.expect("interactive engine task");
+    assert!(saw_guardian_status);
+    assert!(saw_auto_complete);
+    assert_eq!(mock.call_count(), 3);
+
+    let ask =
+        TurnAuthority::for_tui_surface(AppMode::Agent, false, false, false, ApprovalMode::Suggest);
+    let accept_edits =
+        TurnAuthority::for_tui_surface(AppMode::Agent, false, true, false, ApprovalMode::Suggest);
+    let full_access =
+        TurnAuthority::for_tui_surface(AppMode::Agent, false, true, true, ApprovalMode::Bypass);
+    assert_eq!(
+        resolve_tool_permission(&ask, ApprovalRequirement::Suggest, false),
+        ToolPermission::Prompt
+    );
+    assert_eq!(
+        resolve_approval_request_disposition(&ask, false, false, false, false),
+        ApprovalRequestDisposition::Prompt
+    );
+    assert_eq!(
+        resolve_tool_permission(&accept_edits, ApprovalRequirement::Auto, false),
+        ToolPermission::Allow
+    );
+    assert_eq!(
+        resolve_tool_permission(&full_access, ApprovalRequirement::Required, false),
+        ToolPermission::Allow
+    );
+    assert_eq!(
+        resolve_approval_request_disposition(&full_access, false, false, false, false),
+        ApprovalRequestDisposition::AutoApprove
+    );
 }

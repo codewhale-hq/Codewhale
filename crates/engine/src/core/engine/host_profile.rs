@@ -5,12 +5,17 @@ pub enum EngineHostProfile {
     #[default]
     Normal,
     Acp,
+    Headless,
     Rlm,
     Child,
 }
 impl EngineHostProfile {
     pub fn is_acp(self) -> bool {
         self == Self::Acp
+    }
+
+    pub fn is_headless(self) -> bool {
+        self == Self::Headless
     }
 }
 /// Additional local narrowing on one exact admitted control. Neither request

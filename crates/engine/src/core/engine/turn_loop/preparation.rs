@@ -69,7 +69,7 @@ impl Engine {
                 // Nothing to deliver; dropping `pending` settles it.
                 continue;
             }
-            let steer = pending.commit().trim().to_string();
+            let steer = self.commit_pending_steer(pending).trim().to_string();
             accepted_steer = true;
             self.session
                 .working_set

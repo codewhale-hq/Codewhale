@@ -1153,7 +1153,7 @@ impl TaskExecutor for EngineTaskExecutor {
             }
             match self
                 .runtime_threads
-                .start_turn(&thread.id, task.turn_request())
+                .start_task_turn(&thread.id, task.turn_request(), &task.id)
                 .await
             {
                 Ok(turn) => (thread.id, turn),

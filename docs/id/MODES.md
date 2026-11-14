@@ -1,5 +1,7 @@
 # Mode dan Postur Izin (Modes and Permission Postures)
 
+> Terjemahan ini belum mencakup pembaruan Auto-Review, asal giliran (*run origin*), dan kehadiran pemilik terkini; rujuk [docs/MODES.md](../MODES.md) untuk spesifikasi terbaru.
+
 Codewhale memiliki tiga konsep yang saling berhubungan:
 
 - **Mode TUI**: jenis interaksi yang terlihat (Plan / Work / Operate).

@@ -158,7 +158,7 @@ impl Engine {
         let accepted_steer_after_tools = !pending_steers.is_empty();
         if !pending_steers.is_empty() {
             for pending in pending_steers.drain(..) {
-                let steer = pending.commit().trim().to_string();
+                let steer = self.commit_pending_steer(pending).trim().to_string();
                 self.session
                     .working_set
                     .observe_user_message(&steer, &self.session.workspace);

@@ -2024,20 +2024,26 @@ pub(crate) fn open_runtime_threads_for_host(
     // thread manager can spawn any of those engines, matching interactive and
     // headless exec startup.
     let workshop_activation = install_runtime_server_workshop_budgets(config);
-    let profile = if acp {
-        codewhale_engine::core::engine::EngineHostProfile::Acp
+    let manager = Arc::new(if acp {
+        RuntimeThreadManager::open_host(
+            config.clone(),
+            workspace,
+            manager_config,
+            plugin_registry,
+            codewhale_engine::core::engine::EngineHostProfile::Acp,
+            preheld_lock,
+            binding,
+        )?
     } else {
-        codewhale_engine::core::engine::EngineHostProfile::Normal
-    };
-    let manager = Arc::new(RuntimeThreadManager::open_host(
-        config.clone(),
-        workspace,
-        manager_config,
-        plugin_registry,
-        profile,
-        preheld_lock,
-        binding,
-    )?);
+        RuntimeThreadManager::open_owner_host(
+            config.clone(),
+            workspace,
+            manager_config,
+            plugin_registry,
+            preheld_lock,
+            binding,
+        )?
+    });
     if let Some(skills_dir) = config.bundled_skills_install_dir()
         && let Err(error) =
             codewhale_skills::install_system_skills(&skills_dir, &config.skills_config().bundled)

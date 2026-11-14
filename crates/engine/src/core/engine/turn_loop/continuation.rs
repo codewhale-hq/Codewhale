@@ -83,7 +83,7 @@ impl Engine {
                         .permission_denial_rounds_without_progress = 0;
                 }
                 for pending in pending_steers.drain(..) {
-                    let steer = pending.commit().trim().to_string();
+                    let steer = self.commit_pending_steer(pending).trim().to_string();
                     self.session
                         .working_set
                         .observe_user_message(&steer, &self.session.workspace);

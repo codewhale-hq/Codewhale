@@ -224,29 +224,39 @@ Legacy note: `/set approval_mode ...` was retired in favor of `/config`.
   questions remain available in interactive sessions through `request_user_input`;
   a question parks the turn until answered, canceled, or its configured timeout
   expires. Headless `exec` withholds that tool because it has no responder.
-  Tool safety holds remain separate from user questions. Two layers decide approvals. The
-  **deterministic floor** (configured block rules plus the built-in safety
-  floor) allows proven-safe calls and hard-blocks publish-like actions and
-  destructive background/headless work; it is never model-reviewed. Fallback
-  holds — calls the deterministic engine could not prove safe — escalate to a
-  one-shot **model guardian** (v0.9.8) that returns risk, allow/deny, and a
-  rationale. The guardian sees the exact held call and deterministic
-  observations in separate JSON fields; conversation history, skill
-  instructions, attachments, and expanded model context are excluded. It does
-  not infer user intent or compute a generic user-intent score.
-  High or critical risk cannot auto-run even if the model says allow. It has no
-  tools, remembers no rules, and denies rather than truncates an oversized
-  exact call. Exactly one reviewer request is made; incomplete or malformed
-  output, timeout, cancellation, or provider failure fails closed. Repeated
-  denials stop the turn: after three guardian denials in a row, or ten among
-  the turn's last fifty reviews, the turn ends as interrupted with a status
-  line, and calls still in that batch are refused without another review.
-  Only explicit denials count (not timeouts or failures), an allowed review
-  resets the run of three, the count starts fresh with each turn, and a child
-  agent counts its own turns. Headless
-  adapters use the deterministic-only tier. Repo-law
-  holds that explicitly require a person block in Auto-Review rather than
-  opening a hidden approval modal.
+  Tool safety holds remain separate from user questions. Each turn carries an
+  engine-minted run origin (`Interactive` only when started or steered directly
+  from the owner's active TUI composer or signed-in owner runtime composer with
+  an owner surface attached; `Headless` for `exec` and ACP runs, including
+  `approval_policy = "auto"`; `Background` for detached starts, detached
+  children, tasks, automations, and delayed `send_later` runs) and an owner
+  presence signal (`owner_present`), neither of which can be supplied by a
+  host or request field. Two layers decide approvals. The **deterministic
+  floor** (configured block rules plus the built-in safety floor) allows
+  proven-safe calls and hard-blocks publish-like actions and destructive
+  unattended work (`Background`, `Headless`, or any turn where `owner_present`
+  is false); it is never model-reviewed and never waits for an approval card.
+  Fallback holds — calls the deterministic engine could not prove safe —
+  escalate to a one-shot **model guardian** (v0.9.8) that returns risk,
+  allow/deny, and a rationale. The guardian sees the exact held call and
+  deterministic observations in separate JSON fields; conversation history,
+  skill instructions, attachments, and expanded model context are excluded. It
+  does not infer user intent or compute a generic user-intent score. High or
+  critical risk cannot auto-run even if the model says allow. It has no tools,
+  remembers no rules, and denies rather than truncates an oversized exact call.
+  Exactly one reviewer request is made; incomplete or malformed output, timeout,
+  cancellation, or provider failure fails closed. Repeated denials stop the
+  turn: after three guardian denials in a row, or ten among the turn's last
+  fifty reviews, the turn ends as interrupted with a status line, and calls still
+  in that batch are refused without another review. Only explicit denials count
+  (not timeouts or failures), an allowed review resets the run of three, the
+  count starts fresh with each turn, and a child agent counts its own turns.
+  Headless `exec` turns consult the model guardian for fallback non-destructive
+  holds while applying the deterministic unattended rules to destructive work;
+  ACP turns use deterministic rules only and refuse guardian consultation.
+  Unattended and headless runs never open an approval card, and repo-law holds
+  that explicitly require a person block in Auto-Review rather than opening a
+  hidden approval modal.
 
 The LLM reviewer is closest to OpenAI Codex's experimental Auto-Review at
 commit [`6fc6b9d6d2580d62622fc9884b5f5707f6505a5e`](https://github.com/openai/codex/tree/6fc6b9d6d2580d62622fc9884b5f5707f6505a5e).

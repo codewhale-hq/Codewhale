@@ -3309,7 +3309,7 @@ where
     Ok(())
 }
 
-async fn fire_due_triggers_shared(
+pub(crate) async fn fire_due_triggers_shared(
     automations: &SharedAutomationManager,
     task_manager: &SharedTaskManager,
 ) -> Result<()> {

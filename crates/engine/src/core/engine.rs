@@ -814,6 +814,8 @@ pub struct EngineHandle {
     subagent_manager: SharedSubAgentManager,
     terminal_worker_events: Option<Arc<TerminalEventDelivery>>,
     mcp_pool_slot: Arc<StdMutex<McpPoolSlot>>,
+    owner_surface_attached: bool,
+    host_profile: host_profile::EngineHostProfile,
 }
 
 #[derive(Default)]
@@ -1053,6 +1055,9 @@ pub fn project_history_for_restore(
 pub struct Engine {
     rlm_host: Option<rlm_host::RlmHostState>,
     host_profile: EngineHostProfile,
+    owner_surface_attached: bool,
+    turn_run_origin: RunOrigin,
+    turn_owner_present: bool,
     child_host: Option<child_host::ChildHostState>,
     turn_narrowing: TurnNarrowing,
     turn_acp_shell_ceiling: Option<bool>,
@@ -1743,7 +1748,78 @@ impl Engine {
             controls: Arc::clone(&self.turn_controls),
             id: control.id,
             narrowing: control.narrowing,
+            origin: control.origin,
         }
+    }
+
+    fn mint_turn_origin(
+        &self,
+        control_origin: Option<handle::RustTurnOrigin>,
+        provenance: UserInputProvenance,
+    ) -> (RunOrigin, bool) {
+        if self.is_acp_turn() || self.host_profile.is_acp() || self.host_profile.is_headless() {
+            return (RunOrigin::Headless, false);
+        }
+        if let Some(child) = self.child_host.as_ref() {
+            if !child.authority.runtime.has_foreground_ownership() {
+                return (RunOrigin::Background, false);
+            }
+            let origin = child.authority.runtime.parent_run_origin;
+            let owner_present =
+                origin == RunOrigin::Interactive && child.authority.runtime.parent_owner_present;
+            return (origin, owner_present);
+        }
+        if matches!(self.host_profile, EngineHostProfile::Rlm)
+            || !matches!(provenance, UserInputProvenance::ExternalUser)
+        {
+            return (RunOrigin::Background, false);
+        }
+        if let Some(origin) = control_origin {
+            let owner_present = origin.run_origin == RunOrigin::Interactive
+                && origin.owner_present
+                && self.owner_surface_attached;
+            let run_origin = if origin.run_origin == RunOrigin::Interactive && !owner_present {
+                RunOrigin::Background
+            } else {
+                origin.run_origin
+            };
+            return (run_origin, owner_present);
+        }
+        if self.owner_surface_attached {
+            (RunOrigin::Interactive, true)
+        } else {
+            (RunOrigin::Background, false)
+        }
+    }
+
+    pub(super) fn current_turn_authority(&self) -> TurnAuthority {
+        TurnAuthority::from_effective_fields(
+            self.current_mode,
+            self.session.allow_shell,
+            self.session.trust_mode,
+            self.session.auto_approve,
+            self.session.approval_mode,
+        )
+        .with_rust_origin(self.turn_run_origin, self.turn_owner_present)
+    }
+
+    pub(super) fn commit_pending_steer(&mut self, pending: handle::PendingSteer) -> String {
+        let (text, owner_steer) = pending.commit_with_owner_steer();
+        if owner_steer
+            && self.owner_surface_attached
+            && matches!(self.host_profile, EngineHostProfile::Normal)
+            && !self.is_acp_turn()
+        {
+            self.turn_run_origin = RunOrigin::Interactive;
+            self.turn_owner_present = true;
+        }
+        text
+    }
+
+    #[cfg(test)]
+    pub(crate) fn attach_owner_surface_for_tests(&mut self, handle: &mut EngineHandle) {
+        self.owner_surface_attached = true;
+        handle.set_owner_surface_attached(true);
     }
 
     /// Take the next steer belonging to the active turn.
@@ -2655,6 +2731,9 @@ impl Engine {
             instruction_settings,
             authoritative_route_config: None,
             host_profile,
+            owner_surface_attached: false,
+            turn_run_origin: RunOrigin::Background,
+            turn_owner_present: false,
             turn_narrowing: TurnNarrowing::Inherit,
             turn_acp_shell_ceiling: None,
             codewhale_client,
@@ -2770,6 +2849,8 @@ impl Engine {
                 .as_ref()
                 .map(|limits| limits.terminal_events.clone()),
             mcp_pool_slot: Arc::clone(&engine.mcp_pool_slot),
+            owner_surface_attached: false,
+            host_profile,
         };
 
         (engine, handle)
@@ -2849,13 +2930,19 @@ impl Engine {
             .unwrap_or_default()
             .to_string();
 
+        let (shell_origin, shell_owner_present) =
+            self.mint_turn_origin(None, UserInputProvenance::ExternalUser);
+        let previous_origin = std::mem::replace(&mut self.turn_run_origin, shell_origin);
+        let previous_owner_present =
+            std::mem::replace(&mut self.turn_owner_present, shell_owner_present);
         let authority = TurnAuthority::from_effective_fields(
             mode,
             allow_shell,
             trust_mode,
             auto_approve,
             approval_mode,
-        );
+        )
+        .with_rust_origin(shell_origin, shell_owner_present);
         let prior = self.applied_runtime_authority();
         self.apply_runtime_mode_policy(&authority);
         self.discard_kernels_if_policy_changed(&prior).await;
@@ -3018,6 +3105,8 @@ impl Engine {
             snapshot_prompt,
             pending_post_turn,
         );
+        self.turn_owner_present = previous_owner_present;
+        self.turn_run_origin = previous_origin;
         drop(turn_control);
     }
 
@@ -6495,7 +6584,8 @@ impl Engine {
                 .with_permission_posture(
                     Arc::clone(&self.shared_auto_review_policy),
                     self.config.terminal_chrome_enabled,
-                );
+                )
+                .with_parent_origin(self.turn_run_origin, self.turn_owner_present);
                 if matches!(input_policy.mode, AppMode::Plan) {
                     rt.worker_profile = WorkerRuntimeProfile::for_role(FleetRole::Planner);
                 }
@@ -6810,6 +6900,11 @@ impl Engine {
         );
         let _stall_watchdog_guard = turn_heartbeat::AbortOnDrop(stall_watchdog);
         let previous = std::mem::replace(&mut self.turn_narrowing, control.narrowing);
+        let (turn_run_origin, turn_owner_present) =
+            self.mint_turn_origin(control.origin, spec.provenance);
+        let previous_origin = std::mem::replace(&mut self.turn_run_origin, turn_run_origin);
+        let previous_owner_present =
+            std::mem::replace(&mut self.turn_owner_present, turn_owner_present);
         let shell_ceiling = self.is_acp_turn().then_some(spec.allow_shell);
         let previous_shell = std::mem::replace(&mut self.turn_acp_shell_ceiling, shell_ceiling);
         let outcome = match review {
@@ -6820,6 +6915,8 @@ impl Engine {
             None => self.handle_admitted_message(spec, autonomous).await,
         };
         self.turn_acp_shell_ceiling = previous_shell;
+        self.turn_owner_present = previous_owner_present;
+        self.turn_run_origin = previous_origin;
         self.turn_narrowing = previous;
         drop(control);
         self.clear_turn_meta_git_snapshot();
@@ -7221,7 +7318,8 @@ impl Engine {
             trust_mode,
             auto_approve,
             approval_mode,
-        );
+        )
+        .with_rust_origin(self.turn_run_origin, self.turn_owner_present);
         let mut prompt_context = NextTurnPromptContext::for_planned_turn(
             effective_provider,
             model.clone(),
@@ -8418,7 +8516,8 @@ impl Engine {
             self.session.trust_mode,
             self.session.auto_approve,
             self.session.approval_mode,
-        );
+        )
+        .with_rust_origin(self.turn_run_origin, self.turn_owner_present);
         project_turn_authority(
             &mut context,
             &authority,
@@ -10837,11 +10936,14 @@ pub enum AutoReviewPlanDecision {
     ConsultReviewer(String),
 }
 
-pub fn auto_review_run_origin_for_plan(detached_start: bool) -> RunOrigin {
+pub fn auto_review_run_origin_for_plan(
+    authority: &TurnAuthority,
+    detached_start: bool,
+) -> RunOrigin {
     if detached_start {
         RunOrigin::Background
     } else {
-        RunOrigin::Interactive
+        authority.run_origin()
     }
 }
 
@@ -11139,15 +11241,22 @@ fn apply_patch_permission_paths(input: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Spawn the engine in a background task
-pub async fn spawn_engine(
+async fn spawn_engine_inner(
     config: EngineConfig,
     api_config: &Config,
     mcp_handoff: Option<crate::mcp::McpHandoff>,
+    host_profile: EngineHostProfile,
+    owner_surface_attached: bool,
 ) -> EngineHandle {
     let api_config = api_config.clone();
+    let owner_surface_attached =
+        owner_surface_attached && matches!(host_profile, EngineHostProfile::Normal);
     let (engine, mut handle) = codewhale_runtime::runtime_control::owner_work(move || {
-        let (engine, handle) = Engine::new(config, &api_config);
+        let (mut engine, mut handle) = Engine::new(config, &api_config);
+        engine.host_profile = host_profile;
+        engine.owner_surface_attached = owner_surface_attached;
+        handle.set_host_profile(host_profile);
+        handle.set_owner_surface_attached(owner_surface_attached);
         engine
             .mcp_pool_slot
             .lock()
@@ -11167,12 +11276,104 @@ pub async fn spawn_engine(
     handle
 }
 
+/// Spawn the engine in a background task
+pub async fn spawn_engine(
+    config: EngineConfig,
+    api_config: &Config,
+    mcp_handoff: Option<crate::mcp::McpHandoff>,
+) -> EngineHandle {
+    spawn_engine_inner(
+        config,
+        api_config,
+        mcp_handoff,
+        EngineHostProfile::Normal,
+        false,
+    )
+    .await
+}
+
+pub async fn spawn_tui_engine(
+    config: EngineConfig,
+    api_config: &Config,
+    mcp_handoff: Option<crate::mcp::McpHandoff>,
+) -> EngineHandle {
+    spawn_engine_inner(
+        config,
+        api_config,
+        mcp_handoff,
+        EngineHostProfile::Normal,
+        true,
+    )
+    .await
+}
+
+pub async fn spawn_headless_engine(
+    config: EngineConfig,
+    api_config: &Config,
+    mcp_handoff: Option<crate::mcp::McpHandoff>,
+) -> EngineHandle {
+    spawn_engine_inner(
+        config,
+        api_config,
+        mcp_handoff,
+        EngineHostProfile::Headless,
+        false,
+    )
+    .await
+}
+
 /// Spawn a runtime-owned engine whose autonomous later turns resolve against
 /// the manager's atomic config snapshot. This does not mutate an active turn.
 pub fn spawn_engine_with_authoritative_route_config(
+    config: EngineConfig,
+    api_config: &Config,
+    host_profile: EngineHostProfile,
+    authoritative_route_config: Arc<parking_lot::RwLock<Config>>,
+    model_client: Option<SharedModelClient>,
+    subagent_manager: Option<SharedSubAgentManager>,
+    execution_admission: CancellationToken,
+) -> (EngineHandle, tokio::task::JoinHandle<()>) {
+    spawn_engine_with_authoritative_route_config_inner(
+        config,
+        api_config,
+        host_profile,
+        false,
+        authoritative_route_config,
+        model_client,
+        subagent_manager,
+        execution_admission,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_runtime_engine_with_owner_surface(
+    config: EngineConfig,
+    api_config: &Config,
+    host_profile: EngineHostProfile,
+    owner_surface_attached: bool,
+    authoritative_route_config: Arc<parking_lot::RwLock<Config>>,
+    model_client: Option<SharedModelClient>,
+    subagent_manager: Option<SharedSubAgentManager>,
+    execution_admission: CancellationToken,
+) -> (EngineHandle, tokio::task::JoinHandle<()>) {
+    spawn_engine_with_authoritative_route_config_inner(
+        config,
+        api_config,
+        host_profile,
+        owner_surface_attached,
+        authoritative_route_config,
+        model_client,
+        subagent_manager,
+        execution_admission,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_engine_with_authoritative_route_config_inner(
     mut config: EngineConfig,
     api_config: &Config,
     host_profile: EngineHostProfile,
+    owner_surface_attached: bool,
     authoritative_route_config: Arc<parking_lot::RwLock<Config>>,
     model_client: Option<SharedModelClient>,
     subagent_manager: Option<SharedSubAgentManager>,
@@ -11186,6 +11387,8 @@ pub fn spawn_engine_with_authoritative_route_config(
         config.goal_max_steps = None;
         config.subagents_enabled = false;
     }
+    let owner_surface_attached =
+        owner_surface_attached && matches!(host_profile, EngineHostProfile::Normal);
     let (mut engine, mut handle) =
         Engine::new_admitted_with_subagent_manager(config, api_config, None, subagent_manager);
     if let Some(limits) = engine.subagent_execution_limits.as_mut() {
@@ -11198,6 +11401,9 @@ pub fn spawn_engine_with_authoritative_route_config(
         handle.client_preflight_required = false;
     }
     engine.host_profile = host_profile;
+    engine.owner_surface_attached = owner_surface_attached;
+    handle.set_host_profile(host_profile);
+    handle.set_owner_surface_attached(owner_surface_attached);
     engine.authoritative_route_config = Some(authoritative_route_config);
 
     let (run, completion) = run_completion::observe(Box::pin(engine.run()));
@@ -11376,6 +11582,8 @@ pub fn mock_engine_handle() -> MockEngineHandle {
         ),
         terminal_worker_events: Some(Arc::new(TerminalEventDelivery::default())),
         mcp_pool_slot: Arc::default(),
+        owner_surface_attached: false,
+        host_profile: host_profile::EngineHostProfile::Normal,
     };
 
     MockEngineHandle {

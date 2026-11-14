@@ -3196,6 +3196,8 @@ pub struct SubAgentRuntime {
     /// Whether the host can answer an approval prompt for a child (an
     /// interactive TUI). Headless hosts keep the fail-closed denial.
     pub parent_can_prompt: bool,
+    pub parent_run_origin: crate::core::authority::auto_review::RunOrigin,
+    pub parent_owner_present: bool,
     /// Durable approval evidence inherited from the parent session. Legacy
     /// runtimes that do not install a store cannot open child approval prompts.
     approval_receipt_store: Option<Result<crate::approval_log::ApprovalReceiptStore, String>>,
@@ -3285,6 +3287,8 @@ impl SubAgentRuntime {
                 crate::core::authority::auto_review::AutoReviewPolicy::default(),
             ),
             parent_can_prompt: false,
+            parent_run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+            parent_owner_present: false,
             approval_receipt_store: None,
             compaction: crate::compaction::CompactionConfig::default(),
             activation: None,
@@ -3325,6 +3329,20 @@ impl SubAgentRuntime {
     ) -> Self {
         self.auto_review_policy = auto_review_policy;
         self.parent_can_prompt = parent_can_prompt;
+        self
+    }
+
+    #[must_use]
+    pub fn with_parent_origin(
+        mut self,
+        parent_run_origin: crate::core::authority::auto_review::RunOrigin,
+        parent_owner_present: bool,
+    ) -> Self {
+        let owner_present = parent_run_origin
+            == crate::core::authority::auto_review::RunOrigin::Interactive
+            && parent_owner_present;
+        self.parent_run_origin = parent_run_origin;
+        self.parent_owner_present = owner_present;
         self
     }
 
@@ -3540,6 +3558,8 @@ impl SubAgentRuntime {
         runtime.cancel_token = token.clone();
         runtime.context.cancel_token = Some(token);
         runtime.foreground_children = None;
+        runtime.parent_run_origin = crate::core::authority::auto_review::RunOrigin::Background;
+        runtime.parent_owner_present = false;
         runtime
     }
 
@@ -3630,6 +3650,8 @@ impl SubAgentRuntime {
             parent_mode: self.parent_mode,
             auto_review_policy: Arc::clone(&self.auto_review_policy),
             parent_can_prompt: self.parent_can_prompt,
+            parent_run_origin: self.parent_run_origin,
+            parent_owner_present: self.parent_owner_present,
             approval_receipt_store: self.approval_receipt_store.clone(),
             compaction: self.compaction.clone(),
             activation: None,

@@ -82,10 +82,17 @@ async fn await_user_input_acceptance(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct RustTurnOrigin {
+    pub run_origin: crate::core::authority::auto_review::RunOrigin,
+    pub owner_present: bool,
+}
+
 #[derive(Clone)]
 pub(super) struct TurnControl {
     pub id: u64,
     pub narrowing: super::host_profile::TurnNarrowing,
+    pub origin: Option<RustTurnOrigin>,
     pub cancel: CancellationToken,
     pub reason: Arc<StdMutex<Option<CancelReason>>>,
 }
@@ -106,6 +113,7 @@ impl TurnControls {
         TurnControl {
             id: self.next_id,
             narrowing: super::host_profile::TurnNarrowing::Inherit,
+            origin: None,
             cancel: CancellationToken::new(),
             reason: Arc::new(StdMutex::new(None)),
         }
@@ -120,6 +128,7 @@ pub(super) struct TurnControlGuard {
     pub controls: Arc<StdMutex<TurnControls>>,
     pub id: u64,
     pub narrowing: super::host_profile::TurnNarrowing,
+    pub origin: Option<RustTurnOrigin>,
 }
 
 impl Drop for TurnControlGuard {
@@ -144,6 +153,7 @@ pub struct SteerInput {
     pub(super) replace_pending: bool,
     pub content: String,
     pub(super) outcome: Option<oneshot::Sender<SteerOutcome>>,
+    pub(super) owner_steer: bool,
 }
 
 /// The engine's verdict on one steer. A steer whose turn had already moved
@@ -168,6 +178,7 @@ pub struct PendingSteer {
     pub replace_pending: bool,
     pub content: String,
     outcome: Option<oneshot::Sender<SteerOutcome>>,
+    owner_steer: bool,
 }
 
 impl PendingSteer {
@@ -176,7 +187,13 @@ impl PendingSteer {
             content,
             outcome,
             replace_pending: false,
+            owner_steer: false,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) const fn is_owner_steer(&self) -> bool {
+        self.owner_steer
     }
 
     /// Commit the steer into the turn's record: report `Accepted`, then hand
@@ -189,6 +206,11 @@ impl PendingSteer {
         // `Drop` runs after this returns and finds `outcome` already taken,
         // so the verdict stays exactly one `Accepted`.
         std::mem::take(&mut self.content)
+    }
+
+    pub(super) fn commit_with_owner_steer(self) -> (String, bool) {
+        let owner_steer = self.owner_steer;
+        (self.commit(), owner_steer)
     }
 }
 
@@ -211,6 +233,7 @@ impl SteerInput {
         // settle and the verdict travels with the `PendingSteer`.
         let mut pending = PendingSteer::new(std::mem::take(&mut self.content), self.outcome.take());
         pending.replace_pending = self.replace_pending;
+        pending.owner_steer = self.owner_steer;
         pending
     }
 }
@@ -239,6 +262,7 @@ impl std::fmt::Display for SteerInput {
 pub struct SteerPermit {
     permit: mpsc::OwnedPermit<SteerInput>,
     turn_id: Option<u64>,
+    owner_steer: bool,
 }
 
 impl SteerPermit {
@@ -248,6 +272,7 @@ impl SteerPermit {
             replace_pending: false,
             content,
             outcome: None,
+            owner_steer: self.owner_steer,
         });
     }
 
@@ -275,6 +300,7 @@ impl SteerPermit {
             replace_pending,
             content,
             outcome: Some(outcome_tx),
+            owner_steer: self.owner_steer,
         });
         outcome_rx
     }
@@ -429,16 +455,74 @@ impl EngineHandle {
         }
     }
 
+    pub(crate) fn set_owner_surface_attached(&mut self, attached: bool) {
+        self.owner_surface_attached = attached;
+    }
+
+    pub(crate) fn set_host_profile(
+        &mut self,
+        host_profile: super::host_profile::EngineHostProfile,
+    ) {
+        self.host_profile = host_profile;
+    }
+
     /// Bind controls and enqueue under one lock, preserving the same FIFO as
     /// the operation mailbox even when several senders hold reserved slots.
     pub fn send_reserved_op(&self, permit: mpsc::OwnedPermit<Op>, op: Op) {
-        self.send_reserved_narrowed_op(permit, op, super::host_profile::TurnNarrowing::Inherit);
+        self.send_reserved_narrowed_op(
+            permit,
+            op,
+            super::host_profile::TurnNarrowing::Inherit,
+            None,
+        );
     }
 
     /// Called only by the captured ACP Runtime admission. One lock retains the
     /// exact control/mailbox FIFO; no profile is added to the public operation.
     pub fn send_reserved_acp_op(&self, permit: mpsc::OwnedPermit<Op>, op: Op) {
-        self.send_reserved_narrowed_op(permit, op, super::host_profile::TurnNarrowing::Acp);
+        self.send_reserved_narrowed_op(
+            permit,
+            op,
+            super::host_profile::TurnNarrowing::Acp,
+            Some(RustTurnOrigin {
+                run_origin: crate::core::authority::auto_review::RunOrigin::Headless,
+                owner_present: false,
+            }),
+        );
+    }
+
+    pub(crate) fn send_reserved_op_with_origin(
+        &self,
+        permit: mpsc::OwnedPermit<Op>,
+        op: Op,
+        narrowing: super::host_profile::TurnNarrowing,
+        run_origin: crate::core::authority::auto_review::RunOrigin,
+        owner_present: bool,
+    ) {
+        use crate::core::authority::auto_review::RunOrigin;
+        let origin = if matches!(narrowing, super::host_profile::TurnNarrowing::Acp)
+            || self.host_profile.is_acp()
+            || self.host_profile.is_headless()
+        {
+            RustTurnOrigin {
+                run_origin: RunOrigin::Headless,
+                owner_present: false,
+            }
+        } else {
+            let owner_present = run_origin == RunOrigin::Interactive
+                && owner_present
+                && self.owner_surface_attached;
+            let run_origin = if run_origin == RunOrigin::Interactive && !owner_present {
+                RunOrigin::Background
+            } else {
+                run_origin
+            };
+            RustTurnOrigin {
+                run_origin,
+                owner_present,
+            }
+        };
+        self.send_reserved_narrowed_op(permit, op, narrowing, Some(origin));
     }
 
     fn send_reserved_narrowed_op(
@@ -446,6 +530,7 @@ impl EngineHandle {
         permit: mpsc::OwnedPermit<Op>,
         op: Op,
         narrowing: super::host_profile::TurnNarrowing,
+        origin: Option<RustTurnOrigin>,
     ) {
         let mut controls = self
             .turn_controls
@@ -454,6 +539,7 @@ impl EngineHandle {
         if matches!(&op, Op::SendMessage(_) | Op::Review { .. }) {
             let mut control = controls.fresh();
             control.narrowing = narrowing;
+            control.origin = origin;
             controls.pending.push_back(control);
         }
         permit.send(op);
@@ -525,13 +611,26 @@ impl EngineHandle {
     /// without a cancellation point between those two operations.
     pub async fn reserve_steer(&self) -> Result<SteerPermit> {
         let permit = self.tx_steer.clone().reserve_owned().await?;
-        let turn_id = self
+        let controls = self
             .turn_controls
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .target()
-            .map(|control| control.id);
-        Ok(SteerPermit { permit, turn_id })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let target = controls.target();
+        let turn_id = target.map(|control| control.id);
+        let target_acp = target.is_some_and(|control| {
+            matches!(control.narrowing, super::host_profile::TurnNarrowing::Acp)
+        });
+        let owner_steer = self.owner_surface_attached
+            && matches!(
+                self.host_profile,
+                super::host_profile::EngineHostProfile::Normal
+            )
+            && !target_acp;
+        Ok(SteerPermit {
+            permit,
+            turn_id,
+            owner_steer,
+        })
     }
 
     /// Cancel the current request (user-initiated path — keeps the

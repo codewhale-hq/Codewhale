@@ -318,11 +318,14 @@ impl RuntimeChatRelayHost {
         let task_data_dir = private_dir.join("tasks");
         let mut manager_cfg = RuntimeThreadManagerConfig::from_task_data_dir(task_data_dir);
         manager_cfg.data_dir = private_dir.join("runtime");
-        let manager = RuntimeThreadManager::open_with_plugin_registry(
+        let manager = RuntimeThreadManager::open_host(
             execution_config,
             chat_workspace,
             manager_cfg,
             relay_plugin_registry,
+            codewhale_engine::core::engine::EngineHostProfile::Headless,
+            None,
+            None,
         )
         .map_err(|_| "Runtime Chat could not open its isolated native thread store.".to_string())?;
 

@@ -29,9 +29,7 @@ use uuid::Uuid;
 
 use crate::compaction::CompactionConfig;
 use crate::core::engine::handle::SteerOutcome;
-use crate::core::engine::{
-    EngineConfig, EngineHandle, spawn_engine_with_authoritative_route_config,
-};
+use crate::core::engine::{EngineConfig, EngineHandle};
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
 use crate::core::ops::{Op, TurnSpec};
 use crate::cost_status::{

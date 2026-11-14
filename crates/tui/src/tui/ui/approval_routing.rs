@@ -113,7 +113,7 @@ pub(super) fn app_auto_approve_enabled(app: &App) -> bool {
 /// Shell/trust bits do not affect disposition; mode + approval_mode + the
 /// full-access shape (Bypass) are what the shared resolver consults.
 fn app_turn_authority_for_approvals(app: &App) -> codewhale_engine::core::authority::TurnAuthority {
-    codewhale_engine::core::authority::TurnAuthority::from_effective_fields(
+    codewhale_engine::core::authority::TurnAuthority::for_tui_surface(
         app.mode,
         true,
         false,

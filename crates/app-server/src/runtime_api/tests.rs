@@ -27317,3 +27317,83 @@ fn workspace_bootstrap_status_reports_the_trust_gate() -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn request_fields_cannot_grant_interactive_origin_or_owner_presence() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let workspace = tmp.path().join("workspace");
+    fs::create_dir_all(&workspace)?;
+
+    let create_req: CreateThreadRequest = serde_json::from_value(json!({
+        "run_origin": "interactive",
+        "owner_present": true
+    }))?;
+    assert_eq!(create_req.permission_posture, None);
+
+    let turn_req: codewhale_engine::runtime_threads::manager::StartTurnRequest =
+        serde_json::from_value(json!({
+            "prompt": "hello",
+            "run_origin": "interactive",
+            "owner_present": true
+        }))?;
+    assert_eq!(turn_req.prompt, "hello");
+
+    let cfg = codewhale_runtime::config::Config::default();
+    let plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace));
+    let mgr_cfg = RuntimeThreadManagerConfig::from_task_data_dir(tmp.path().join("rt-acp"));
+    let (acp_rt, _) = open_runtime_threads_for_host(
+        &cfg,
+        workspace.clone(),
+        mgr_cfg,
+        plugins.clone(),
+        true,
+        None,
+        None,
+    )?;
+    assert!(!acp_rt.is_owner_surface_attached_for_test());
+    acp_rt.shutdown_and_wait().await?;
+
+    let (owner_rt, _) = open_runtime_threads_for_host(
+        &cfg,
+        workspace.clone(),
+        RuntimeThreadManagerConfig::from_task_data_dir(tmp.path().join("rt-owner")),
+        plugins.clone(),
+        false,
+        None,
+        None,
+    )?;
+    assert!(owner_rt.is_owner_surface_attached_for_test());
+    owner_rt.shutdown_and_wait().await?;
+
+    let unattached = codewhale_engine::runtime_threads::manager::RuntimeThreadManager::open(
+        cfg.clone(),
+        workspace.clone(),
+        RuntimeThreadManagerConfig::from_task_data_dir(tmp.path().join("rt-unattached")),
+    )?;
+    assert!(!unattached.is_owner_surface_attached_for_test());
+    let acp_mgr = codewhale_engine::runtime_threads::manager::RuntimeThreadManager::open_host(
+        cfg.clone(),
+        workspace.clone(),
+        RuntimeThreadManagerConfig::from_task_data_dir(tmp.path().join("rt-acp-host")),
+        plugins.clone(),
+        codewhale_engine::core::engine::EngineHostProfile::Acp,
+        None,
+        None,
+    )?;
+    assert!(!acp_mgr.is_owner_surface_attached_for_test());
+    let owner_mgr =
+        codewhale_engine::runtime_threads::manager::RuntimeThreadManager::open_owner_host(
+            cfg,
+            workspace,
+            RuntimeThreadManagerConfig::from_task_data_dir(tmp.path().join("rt-owner-host")),
+            plugins,
+            None,
+            None,
+        )?;
+    assert!(owner_mgr.is_owner_surface_attached_for_test());
+
+    unattached.shutdown_and_wait().await?;
+    acp_mgr.shutdown_and_wait().await?;
+    owner_mgr.shutdown_and_wait().await?;
+    Ok(())
+}

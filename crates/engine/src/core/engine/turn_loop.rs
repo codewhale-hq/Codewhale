@@ -2339,21 +2339,11 @@ impl Engine {
 
             if blocked_error.is_none() {
                 let review_context =
-                    crate::core::authority::auto_review::AutoReviewContext::from_tool_call_async(
+                    crate::core::authority::auto_review::AutoReviewContext::from_turn_authority_async(
                         &tool_name,
                         &tool_input,
-                        if self.is_acp_turn() {
-                            RunOrigin::Headless
-                        } else if self.child_host.as_ref().is_some_and(|child| {
-                            !child.authority.runtime.has_foreground_ownership()
-                        }) {
-                            // A detached child's caller remains background even
-                            // for a synchronous tool.
-                            RunOrigin::Background
-                        } else {
-                            auto_review_run_origin_for_plan(detached_start)
-                        },
-                        self.session.approval_mode,
+                        &self.current_turn_authority(),
+                        detached_start,
                         Some(&self.session.workspace),
                     )
                     .await;

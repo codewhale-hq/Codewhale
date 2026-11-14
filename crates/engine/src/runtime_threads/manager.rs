@@ -2918,6 +2918,8 @@ pub(super) fn runtime_compaction_config(
 #[derive(Debug, Clone)]
 pub(super) struct ActiveTurnState {
     pub(super) narrowing: crate::core::engine::TurnNarrowing,
+    pub(super) run_origin: crate::core::authority::auto_review::RunOrigin,
+    pub(super) owner_present: bool,
     pub(super) turn_id: String,
     pub(super) goal_id: Option<String>,
     pub(super) goal_progress: Option<crate::tools::goal::GoalSnapshot>,
@@ -3457,6 +3459,7 @@ pub(super) struct RecoveredTurnReceipt {
 #[derive(Clone)]
 pub struct RuntimeThreadManager {
     pub(super) host_profile: crate::core::engine::EngineHostProfile,
+    pub(super) owner_surface_attached: bool,
     pub(super) config: Arc<parking_lot::RwLock<Config>>,
     pub(super) workspace: PathBuf,
     pub(super) plugin_registry: Option<Arc<codewhale_plugins::PluginRegistry>>,
@@ -4239,6 +4242,7 @@ impl RuntimeThreadManager {
             None,
             None,
             crate::core::engine::EngineHostProfile::Normal,
+            false,
             None,
         )
     }
@@ -4256,6 +4260,7 @@ impl RuntimeThreadManager {
             Some(plugin_registry),
             None,
             crate::core::engine::EngineHostProfile::Normal,
+            false,
             None,
         )
     }
@@ -4290,6 +4295,7 @@ impl RuntimeThreadManager {
                     Some(plugin_registry),
                     None,
                     crate::core::engine::EngineHostProfile::Normal,
+                    false,
                     None,
                 );
             }
@@ -4303,6 +4309,7 @@ impl RuntimeThreadManager {
             Some(plugin_registry),
             binding,
             crate::core::engine::EngineHostProfile::Normal,
+            false,
             None,
         )
     }
@@ -4331,6 +4338,7 @@ impl RuntimeThreadManager {
             Some(plugin_registry),
             Some(binding),
             crate::core::engine::EngineHostProfile::Normal,
+            false,
             None,
         )
     }
@@ -4373,10 +4381,38 @@ impl RuntimeThreadManager {
             Some(plugins),
             binding,
             host_profile,
+            false,
             preheld_lock,
         )
     }
 
+    pub fn open_owner_host(
+        config: Config,
+        workspace: PathBuf,
+        manager_cfg: RuntimeThreadManagerConfig,
+        plugins: Arc<codewhale_plugins::PluginRegistry>,
+        preheld_lock: Option<RuntimeProcessOwnerLock>,
+        binding: Option<&RuntimeStoreBinding>,
+    ) -> Result<Self> {
+        Self::open_inner(
+            config,
+            workspace,
+            manager_cfg,
+            Some(plugins),
+            binding,
+            crate::core::engine::EngineHostProfile::Normal,
+            true,
+            preheld_lock,
+        )
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn is_owner_surface_attached_for_test(&self) -> bool {
+        self.owner_surface_attached
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn open_inner(
         mut config: Config,
         workspace: PathBuf,
@@ -4384,8 +4420,11 @@ impl RuntimeThreadManager {
         plugin_registry: Option<Arc<codewhale_plugins::PluginRegistry>>,
         binding: Option<&RuntimeStoreBinding>,
         host_profile: crate::core::engine::EngineHostProfile,
+        owner_surface_attached: bool,
         preheld_lock: Option<RuntimeProcessOwnerLock>,
     ) -> Result<Self> {
+        let owner_surface_attached = owner_surface_attached
+            && matches!(host_profile, crate::core::engine::EngineHostProfile::Normal);
         // A public RuntimeThreadManager owns independent native threads. They
         // may run concurrently with the interactive TUI because their events
         // cannot be projected into that TUI's attached CWC run. The private
@@ -4425,6 +4464,7 @@ impl RuntimeThreadManager {
         let event_pump_stop = CancellationToken::new();
         let manager = Self {
             host_profile,
+            owner_surface_attached,
             config: Arc::new(parking_lot::RwLock::new(config)),
             workspace,
             plugin_registry,
@@ -4805,6 +4845,52 @@ impl RuntimeThreadManager {
             Ok((turn, _replayed)) => Ok(Some(turn)),
             Err(error) if error.to_string().contains("already has an active") => Ok(None),
             Err(error) => Err(error),
+        }
+    }
+
+    pub async fn start_task_turn(
+        &self,
+        thread_id: &str,
+        req: StartTurnRequest,
+        task_id: &str,
+    ) -> Result<TurnRecord> {
+        let (turn, _) = self
+            .start_turn_with_source(
+                thread_id,
+                req,
+                RuntimeTurnInputSource::Scheduled {
+                    task_id: task_id.to_string(),
+                },
+                None,
+                false,
+            )
+            .await?;
+        Ok(turn)
+    }
+
+    pub(super) fn mint_turn_origin_for_source(
+        &self,
+        input_source: &RuntimeTurnInputSource,
+        narrowing: crate::core::engine::TurnNarrowing,
+    ) -> (crate::core::authority::auto_review::RunOrigin, bool) {
+        use crate::core::authority::auto_review::RunOrigin;
+        if narrowing.is_acp() || self.host_profile.is_acp() || self.host_profile.is_headless() {
+            return (RunOrigin::Headless, false);
+        }
+        match input_source {
+            RuntimeTurnInputSource::ExternalUser | RuntimeTurnInputSource::Review(_) => {
+                if self.owner_surface_attached {
+                    (RunOrigin::Interactive, true)
+                } else {
+                    (RunOrigin::Background, false)
+                }
+            }
+            RuntimeTurnInputSource::WatchEvent(_)
+            | RuntimeTurnInputSource::ExtensionCommand { .. }
+            | RuntimeTurnInputSource::AgentMail { .. }
+            | RuntimeTurnInputSource::GoalContinuation { .. }
+            | RuntimeTurnInputSource::Scheduled { .. }
+            | RuntimeTurnInputSource::AsyncCompletionWake => (RunOrigin::Background, false),
         }
     }
 
@@ -6931,6 +7017,7 @@ impl RuntimeThreadManager {
         &self,
     ) -> Arc<dyn Fn() -> Option<RuntimeThreadManager> + Send + Sync> {
         let host_profile = self.host_profile;
+        let owner_surface_attached = self.owner_surface_attached;
         let config = self.config.clone();
         let workspace = self.workspace.clone();
         let plugin_registry = self.plugin_registry.clone();
@@ -6987,6 +7074,7 @@ impl RuntimeThreadManager {
             let active = weak_active.upgrade()?;
             Some(RuntimeThreadManager {
                 host_profile,
+                owner_surface_attached,
                 config: config.clone(),
                 workspace: workspace.clone(),
                 plugin_registry: plugin_registry.clone(),
@@ -10177,6 +10265,8 @@ impl RuntimeThreadManager {
             .ok_or_else(|| anyhow!("no engine installed for {thread_id}"))?;
         state.active_turn = turn_id.map(|turn_id| ActiveTurnState {
             narrowing: crate::core::engine::TurnNarrowing::Inherit,
+            run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+            owner_present: false,
             turn_id: turn_id.to_string(),
             goal_id: None,
             goal_progress: None,
@@ -13214,6 +13304,23 @@ impl RuntimeThreadManager {
                 };
                 match outcome {
                     SteerOutcome::Accepted => {
+                        if manager.owner_surface_attached
+                            && matches!(
+                                manager.host_profile,
+                                crate::core::engine::EngineHostProfile::Normal
+                            )
+                        {
+                            let mut active = manager.active.lock().await;
+                            if let Some(active_thread) = active.engines.get_mut(&turn.thread_id)
+                                && let Some(active_turn) = active_thread.active_turn.as_mut()
+                                && active_turn.turn_id == turn.id
+                                && !active_turn.narrowing.is_acp()
+                            {
+                                active_turn.run_origin =
+                                    crate::core::authority::auto_review::RunOrigin::Interactive;
+                                active_turn.owner_present = true;
+                            }
+                        }
                         if let Err(err) = manager
                             .emit_event(
                                 &turn.thread_id,
@@ -14708,9 +14815,13 @@ source_usage_records: Default::default(),
             if !thread_execution_state_matches(&thread, &current_thread) {
                 bail!("Thread execution settings changed while preparing the turn; retry");
             }
+            let (turn_run_origin, turn_owner_present) =
+                self.mint_turn_origin_for_source(&input_source, narrowing);
             let previous_active_route = (state.route_identity.clone(), state.route_model.clone());
             state.active_turn = Some(ActiveTurnState {
                 narrowing,
+                run_origin: turn_run_origin,
+                owner_present: turn_owner_present,
                 goal_id: (!narrowing.is_acp()).then(||turn_goal.as_ref().map(|goal| goal.goal_id.clone())).flatten(),
                 turn_id: turn_id.clone(),
                 goal_progress: None,
@@ -14803,7 +14914,13 @@ source_usage_records: Default::default(),
                 policy.permission,
                 configured_sandbox_mode,
             );
-            if narrowing.is_acp() { engine.send_reserved_acp_op(permit, op); } else { engine.send_reserved_op(permit, op); }
+            engine.send_reserved_op_with_origin(
+                permit,
+                op,
+                narrowing,
+                turn_run_origin,
+                turn_owner_present,
+            );
             if let Some(settlement) = initial_routed_usage_settlement.as_mut() {
                 settlement.disarm();
             }
@@ -15157,6 +15274,8 @@ source_usage_records: Default::default(),
             let previous_active_route = (state.route_identity.clone(), state.route_model.clone());
             state.active_turn = Some(ActiveTurnState {
                 narrowing: crate::core::engine::TurnNarrowing::Inherit,
+                run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+                owner_present: false,
                 goal_id: None,
                 turn_id: turn_id.clone(),
                 goal_progress: None,
@@ -15699,10 +15818,11 @@ source_usage_records: Default::default(),
                     await_retained_completion(&completion).await?;
                 }
             }
-            let (engine, worker) = spawn_engine_with_authoritative_route_config(
+            let (engine, worker) = crate::core::engine::spawn_runtime_engine_with_owner_surface(
                 engine_cfg,
                 &cfg,
                 self.host_profile,
+                self.owner_surface_attached,
                 Arc::clone(&self.config),
                 model_client,
                 Some(subagent_manager),
@@ -18046,6 +18166,8 @@ source_usage_records: Default::default(),
                         }
                         crate::core::authority::grants::GrantVerdict::NoMatch => (None, None),
                     };
+                    let (turn_run_origin, turn_owner_present) =
+                        self.active_turn_origin(&thread_id, &turn_id).await;
                     // This resolver reads the exact live approval posture only;
                     // Core already owns mode and shell admission for this call.
                     let approval_authority = TurnAuthority::from_effective_fields(
@@ -18054,7 +18176,8 @@ source_usage_records: Default::default(),
                         trust_mode,
                         auto_approve,
                         approval_mode,
-                    );
+                    )
+                    .with_rust_origin(turn_run_origin, turn_owner_present);
                     let disposition = resolve_approval_request_disposition(
                         &approval_authority,
                         grant.is_some(),
@@ -19329,6 +19452,33 @@ source_usage_records: Default::default(),
             return None;
         }
         Some(engine.runtime_permission_authority())
+    }
+
+    pub(super) async fn active_turn_origin(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> (crate::core::authority::auto_review::RunOrigin, bool) {
+        let active = self.active.lock().await;
+        let Some(state) = active.engines.get(thread_id) else {
+            return (
+                crate::core::authority::auto_review::RunOrigin::Background,
+                false,
+            );
+        };
+        let Some(turn) = state.active_turn.as_ref() else {
+            return (
+                crate::core::authority::auto_review::RunOrigin::Background,
+                false,
+            );
+        };
+        if turn.turn_id != turn_id || turn.interrupt_requested {
+            return (
+                crate::core::authority::auto_review::RunOrigin::Background,
+                false,
+            );
+        }
+        (turn.run_origin, turn.owner_present)
     }
 
     #[cfg(test)]

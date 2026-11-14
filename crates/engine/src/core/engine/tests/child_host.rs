@@ -331,6 +331,7 @@ async fn replacing_child_steer_drops_only_uncommitted_same_control_inputs() {
             replace_pending: false,
             content: "future input".into(),
             outcome: Some(future_tx),
+            owner_steer: false,
         })
         .await
         .unwrap();
@@ -425,6 +426,7 @@ async fn future_control_lookahead_stays_bounded_and_never_retargets_input() {
                 replace_pending: false,
                 content: "future only".into(),
                 outcome: None,
+                owner_steer: false,
             })
             .await
             .unwrap();
@@ -439,6 +441,7 @@ async fn future_control_lookahead_stays_bounded_and_never_retargets_input() {
                 replace_pending: false,
                 content: "also future".into(),
                 outcome: None,
+                owner_steer: false,
             })
             .await
             .unwrap();

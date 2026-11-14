@@ -8464,6 +8464,8 @@ fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
             engine: harness_a.handle,
             active_turn: Some(ActiveTurnState {
                 narrowing: crate::core::engine::TurnNarrowing::Inherit,
+                run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+                owner_present: false,
                 goal_progress: None,
                 goal_id: None,
                 turn_id: "turn_a".to_string(),
@@ -8485,6 +8487,8 @@ fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
             engine: harness_b.handle,
             active_turn: Some(ActiveTurnState {
                 narrowing: crate::core::engine::TurnNarrowing::Inherit,
+                run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+                owner_present: false,
                 goal_progress: None,
                 goal_id: None,
                 turn_id: "turn_b".to_string(),
@@ -11190,6 +11194,8 @@ async fn workspace_restore_guard_rejects_overlapping_active_turns() -> Result<()
         let state = active.engines.get_mut(&thread.id).expect("mock engine");
         state.active_turn = Some(ActiveTurnState {
             narrowing: crate::core::engine::TurnNarrowing::Inherit,
+            run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+            owner_present: false,
             goal_progress: None,
             goal_id: None,
             turn_id: "turn_live".to_string(),
@@ -11261,6 +11267,8 @@ async fn update_thread_workspace_rejects_active_turn() -> Result<()> {
         let state = active.engines.get_mut(&thread.id).expect("mock engine");
         state.active_turn = Some(ActiveTurnState {
             narrowing: crate::core::engine::TurnNarrowing::Inherit,
+            run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+            owner_present: false,
             goal_progress: None,
             goal_id: None,
             turn_id: "turn_live".to_string(),
@@ -22790,6 +22798,8 @@ async fn shell_opt_in_is_idle_only_and_preserves_ask() -> Result<()> {
         .unwrap()
         .active_turn = Some(ActiveTurnState {
         narrowing: crate::core::engine::TurnNarrowing::Inherit,
+        run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+        owner_present: false,
         goal_progress: None,
         goal_id: None,
         turn_id: "turn_shell_guard".into(),
@@ -22855,6 +22865,8 @@ async fn shell_opt_in_is_idle_only_and_preserves_ask() -> Result<()> {
         .unwrap()
         .active_turn = Some(ActiveTurnState {
         narrowing: crate::core::engine::TurnNarrowing::Inherit,
+        run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+        owner_present: false,
         goal_progress: None,
         goal_id: None,
         turn_id: "turn_revoke".into(),

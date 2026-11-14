@@ -242,7 +242,7 @@ pub async fn run_exec_agent(
 ) -> Result<()> {
     use codewhale_config::AppMode;
     use codewhale_engine::compaction::CompactionConfig;
-    use codewhale_engine::core::engine::{EngineConfig, spawn_engine};
+    use codewhale_engine::core::engine::{EngineConfig, spawn_headless_engine};
     use codewhale_engine::core::events::Event;
     use codewhale_engine::core::ops::Op;
     use codewhale_engine::tools::plan::new_shared_plan_state;
@@ -742,7 +742,7 @@ pub async fn run_exec_agent(
             .unwrap_or_else(codewhale_engine::tools::subagent::AdvisorConfig::disabled),
     };
 
-    let engine_handle = spawn_engine(engine_config, &execution_config, None).await;
+    let engine_handle = spawn_headless_engine(engine_config, &execution_config, None).await;
     // A restricted posture that resolves to no enforcing sandbox must reach
     // the person running exec, not only the model's posture line: policy-only
     // is accepted (read-only already fails closed in the shell tool), but it
@@ -1950,7 +1950,7 @@ mod tests {
             config
                 .features
                 .disable(codewhale_runtime::features::Feature::Mcp);
-            let handle = codewhale_engine::core::engine::spawn_engine(
+            let handle = codewhale_engine::core::engine::spawn_headless_engine(
                 config,
                 &codewhale_runtime::config::Config::default(),
                 None,

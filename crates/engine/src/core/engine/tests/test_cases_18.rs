@@ -897,6 +897,8 @@ fn engine_handle_try_send_does_not_block_when_op_channel_is_full() {
         tx_user_input: mpsc::channel(1).0,
         tx_steer: mpsc::channel(1).0,
         turn_controls: Arc::new(StdMutex::new(handle::TurnControls::default())),
+        host_profile: EngineHostProfile::Normal,
+        owner_surface_attached: false,
         shared_paused: Arc::new(StdMutex::new(false)),
         client_preflight_required: true,
         live_runtime_authority: Arc::new(StdMutex::new(LiveRuntimeAuthorityState::new(

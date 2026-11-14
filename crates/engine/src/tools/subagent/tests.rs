@@ -16479,6 +16479,8 @@ pub fn stub_runtime() -> SubAgentRuntime {
             crate::core::authority::auto_review::AutoReviewPolicy::default(),
         ),
         parent_can_prompt: false,
+        parent_run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+        parent_owner_present: false,
         approval_receipt_store: Some(Ok(crate::approval_log::ApprovalReceiptStore::new(
             std::env::temp_dir().join(format!(
                 "codewhale-child-approval-tests-{}",

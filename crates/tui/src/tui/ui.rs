@@ -77,7 +77,7 @@ use codewhale_engine::client::{
 };
 use codewhale_engine::compaction::CompactionConfig;
 use codewhale_engine::compaction::{estimate_input_tokens_conservative, estimate_tokens};
-use codewhale_engine::core::engine::{EngineConfig, EngineHandle, spawn_engine};
+use codewhale_engine::core::engine::{EngineConfig, EngineHandle};
 use codewhale_engine::core::events::Event as EngineEvent;
 use codewhale_engine::core::ops::{Op, ProviderRuntimeStatus, UserInputProvenance};
 use codewhale_engine::hooks::{HookExecutor, TurnEndPayloadInput, TurnEndTotals};
@@ -505,7 +505,7 @@ async fn spawn_tui_engine(
     api_config: &Config,
     mcp_handoff: Option<codewhale_engine::mcp::McpHandoff>,
 ) -> EngineHandle {
-    let handle = spawn_engine(
+    let handle = codewhale_engine::core::engine::spawn_tui_engine(
         build_engine_config(app, api_config),
         api_config,
         mcp_handoff,
