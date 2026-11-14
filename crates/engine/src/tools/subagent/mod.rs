@@ -16251,6 +16251,9 @@ pub async fn spawn_workflow_task(
         "prompt": request.description,
         "worktree": request.worktree,
     });
+    if let Some(value) = request.worktree_base {
+        input["worktree_base"] = json!(value);
+    }
     if let Some(value) = request.cwd {
         input["cwd"] = json!(value);
     }

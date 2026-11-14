@@ -278,6 +278,10 @@
   "crates/engine/src/tools/verify.rs": {
     "std_fs": 1
   },
+  "crates/engine/src/tools/workflow/experimental_search.rs": {
+    "path_canonicalize": 9,
+    "thread_sleep": 1
+  },
   "crates/engine/src/tools/workflow/journal.rs": {
     "path_canonicalize": 2
   },
