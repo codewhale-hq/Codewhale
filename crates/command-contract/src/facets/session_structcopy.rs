@@ -102,6 +102,8 @@ pub struct StructcopyPlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_packet: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replan_if: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<StructcopyPlanItem>,
 }
 

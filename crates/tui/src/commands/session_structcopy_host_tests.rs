@@ -117,6 +117,7 @@ fn seed(app: &mut App) {
         verification_plan: Some("golden comparison".into()),
         risks_and_unknowns: Some("unknown remains null".into()),
         handoff_packet: Some("ready".into()),
+        replan_if: Vec::new(),
         plan: vec![
             PlanItemArg {
                 step: "first".into(),

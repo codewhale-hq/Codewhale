@@ -755,6 +755,8 @@ pub struct CompatPlanMetadata {
     pub risks_and_unknowns: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_packet: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replan_if: Vec<String>,
 }
 
 impl CompatPlanMetadata {
@@ -771,6 +773,7 @@ impl CompatPlanMetadata {
             && self.verification_plan.is_none()
             && self.risks_and_unknowns.is_none()
             && self.handoff_packet.is_none()
+            && self.replan_if.is_empty()
     }
 }
 

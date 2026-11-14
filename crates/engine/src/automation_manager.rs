@@ -22,7 +22,7 @@ use chrono::{
     DateTime, Datelike, Duration, Local, NaiveDateTime, TimeZone, Timelike, Utc, Weekday,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -1217,6 +1217,7 @@ pub struct AutomationManager {
     triggers_dir: PathBuf,
     archive_dir: PathBuf,
     missed_dir: PathBuf,
+    trigger_wakeup: Arc<Notify>,
 }
 
 impl AutomationManager {
@@ -1318,6 +1319,7 @@ impl AutomationManager {
             triggers_dir,
             archive_dir,
             missed_dir,
+            trigger_wakeup: Arc::new(Notify::new()),
         })
     }
 
@@ -2646,6 +2648,7 @@ impl AutomationManager {
             dispatch: None,
         };
         self.save_trigger(&record)?;
+        self.trigger_wakeup.notify_one();
         self.emit_trigger_event("trigger.scheduled", &record);
         Ok(record)
     }
@@ -2796,8 +2799,38 @@ impl AutomationManager {
             self.save_trigger_unlocked(&record)?;
             Ok(record)
         })?;
+        self.trigger_wakeup.notify_one();
         self.emit_trigger_event("trigger.canceled", &record);
         Ok(record)
+    }
+
+    pub(crate) fn trigger_wakeup(&self) -> Arc<Notify> {
+        Arc::clone(&self.trigger_wakeup)
+    }
+
+    pub(crate) fn trigger_wait_duration(
+        &self,
+        now: DateTime<Utc>,
+        max_wait: std::time::Duration,
+    ) -> Result<std::time::Duration> {
+        let next_fire_at = self
+            .list_triggers(Some(DelayedTriggerStatus::Pending), None)?
+            .into_iter()
+            .filter(|trigger| {
+                trigger.owner_session_id.is_some()
+                    && self.eligible_scope(trigger.execution_scope.as_deref())
+            })
+            .map(|trigger| trigger.fire_at)
+            .min();
+        let wait = match next_fire_at {
+            Some(fire_at) if fire_at <= now => std::time::Duration::ZERO,
+            Some(fire_at) => (fire_at - now)
+                .to_std()
+                .unwrap_or(max_wait)
+                .clamp(std::time::Duration::ZERO, max_wait),
+            None => max_wait,
+        };
+        Ok(wait)
     }
 
     /// Return due proposals and unfinished durable trigger admissions.
@@ -3849,6 +3882,11 @@ pub fn spawn_scheduler(
         std::panic::Location::caller(),
         async move {
             let interval = config.tick_interval_secs.max(5);
+            let max_wait = std::time::Duration::from_secs(interval);
+            let wakeup =
+                with_manager_blocking(&automations, |manager| Ok(manager.trigger_wakeup()))
+                    .await
+                    .unwrap_or_else(|_| Arc::new(Notify::new()));
             let grace = Duration::seconds(
                 SCHEDULER_PRESENCE_MIN_GRACE_SECS.max(
                     i64::try_from(interval)
@@ -3882,9 +3920,16 @@ pub fn spawn_scheduler(
                     tracing::warn!("delayed trigger tick failed: {err}");
                 }
 
+                let wait_duration = with_manager_blocking(&automations, move |manager| {
+                    manager.trigger_wait_duration(Utc::now(), max_wait)
+                })
+                .await
+                .unwrap_or(max_wait);
+
                 tokio::select! {
                     _ = cancel.cancelled() => break,
-                    _ = sleep(std::time::Duration::from_secs(interval)) => {}
+                    _ = sleep(wait_duration) => {}
+                    _ = wakeup.notified() => {}
                 }
             }
         },
@@ -6591,5 +6636,177 @@ model = "private-model"
         assert!(apply_task_status(&mut run, &task));
         assert_eq!(run.status, AutomationRunStatus::Canceled);
         assert_eq!(run.error, None);
+    }
+
+    #[tokio::test]
+    async fn trigger_wait_duration_clamps_and_cancel_wakes_notifier() -> Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let mut manager = AutomationManager::open_for_test(tempdir.path().to_path_buf())?;
+        let max_wait = std::time::Duration::from_secs(60);
+        let now = Utc::now();
+        assert_eq!(manager.trigger_wait_duration(now, max_wait)?, max_wait);
+
+        let far = manager.create_trigger(CreateDelayedTriggerRequest {
+            destination_thread_id: None,
+            fire_at: now + Duration::seconds(120),
+            message: "far".to_string(),
+            workspace: None,
+            owner_session_id: Some("session-a".to_string()),
+            parent_trigger_id: None,
+            disallowed_tools: Vec::new(),
+        })?;
+        assert_eq!(manager.trigger_wait_duration(now, max_wait)?, max_wait);
+
+        let wakeup = manager.trigger_wakeup();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), wakeup.notified())
+                .await
+                .is_ok()
+        );
+
+        let subminute = manager.create_trigger(CreateDelayedTriggerRequest {
+            destination_thread_id: None,
+            fire_at: now + Duration::seconds(2),
+            message: "subminute".to_string(),
+            workspace: None,
+            owner_session_id: Some("session-a".to_string()),
+            parent_trigger_id: None,
+            disallowed_tools: Vec::new(),
+        })?;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), wakeup.notified())
+                .await
+                .is_ok()
+        );
+        let sub_wait = manager.trigger_wait_duration(now, max_wait)?;
+        assert!(sub_wait <= std::time::Duration::from_secs(2));
+        assert!(sub_wait > std::time::Duration::ZERO);
+
+        let mut past = manager.create_trigger(CreateDelayedTriggerRequest {
+            destination_thread_id: None,
+            fire_at: now + Duration::seconds(30),
+            message: "past".to_string(),
+            workspace: None,
+            owner_session_id: Some("session-a".to_string()),
+            parent_trigger_id: None,
+            disallowed_tools: Vec::new(),
+        })?;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), wakeup.notified())
+                .await
+                .is_ok()
+        );
+        past.fire_at = now - Duration::seconds(5);
+        manager.save_trigger(&past)?;
+        assert_eq!(
+            manager.trigger_wait_duration(now, max_wait)?,
+            std::time::Duration::ZERO
+        );
+        manager.cancel_trigger(&past.trigger_id)?;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), wakeup.notified())
+                .await
+                .is_ok()
+        );
+
+        let notified = tokio::spawn({
+            let wakeup = Arc::clone(&wakeup);
+            async move { wakeup.notified().await }
+        });
+        tokio::task::yield_now().await;
+        manager.cancel_trigger(&subminute.trigger_id)?;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), notified)
+                .await
+                .is_ok()
+        );
+        assert_eq!(manager.trigger_wait_duration(now, max_wait)?, max_wait);
+
+        let mut ownerless = manager.create_trigger(CreateDelayedTriggerRequest {
+            destination_thread_id: None,
+            fire_at: now + Duration::seconds(1),
+            message: "ownerless".to_string(),
+            workspace: None,
+            owner_session_id: None,
+            parent_trigger_id: None,
+            disallowed_tools: Vec::new(),
+        })?;
+        ownerless.fire_at = now - Duration::seconds(1);
+        manager.save_trigger(&ownerless)?;
+        manager.execution_scope = Some("other-scope".to_string());
+        let mut foreign = manager.create_trigger(CreateDelayedTriggerRequest {
+            destination_thread_id: None,
+            fire_at: now + Duration::seconds(1),
+            message: "foreign".to_string(),
+            workspace: None,
+            owner_session_id: Some("session-b".to_string()),
+            parent_trigger_id: None,
+            disallowed_tools: Vec::new(),
+        })?;
+        foreign.fire_at = now - Duration::seconds(1);
+        manager.save_trigger(&foreign)?;
+        manager.execution_scope = far.execution_scope.clone();
+        assert_eq!(manager.trigger_wait_duration(now, max_wait)?, max_wait);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn scheduler_wakes_within_one_second_for_subminute_trigger() -> Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let task_manager = TaskManager::start_with_executor(
+            automation_task_config(tempdir.path().join("tasks")),
+            std::sync::Arc::new(AutomationNoopExecutor),
+        )
+        .await?;
+        let mut manager = AutomationManager::open(tempdir.path().join("automations"))?;
+        manager.bind_task_manager(&task_manager)?;
+        let shared = Arc::new(Mutex::new(manager));
+        let cancel = CancellationToken::new();
+        let handle = spawn_scheduler(
+            Arc::clone(&shared),
+            Arc::clone(&task_manager),
+            cancel.clone(),
+            AutomationSchedulerConfig {
+                tick_interval_secs: 60,
+            },
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let start = std::time::Instant::now();
+        let trigger = {
+            let guard = shared.lock().await;
+            guard.create_trigger(CreateDelayedTriggerRequest {
+                destination_thread_id: None,
+                fire_at: Utc::now() + Duration::milliseconds(60),
+                message: "sub-second notify wakeup".to_string(),
+                workspace: None,
+                owner_session_id: Some("session-notify".to_string()),
+                parent_trigger_id: None,
+                disallowed_tools: Vec::new(),
+            })?
+        };
+
+        let mut fired = None;
+        for _ in 0..95 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let current = shared.lock().await.get_trigger(&trigger.trigger_id)?;
+            if current.status == DelayedTriggerStatus::Fired {
+                fired = Some(current);
+                break;
+            }
+        }
+        let elapsed = start.elapsed();
+
+        cancel.cancel();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
+        task_manager.shutdown();
+
+        let fired = fired.expect("sub-minute trigger must fire before 1s via Notify");
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "expected wakeup and fire under 1s, took {elapsed:?}"
+        );
+        assert!(fired.task_id.is_some());
+        Ok(())
     }
 }

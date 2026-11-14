@@ -1549,6 +1549,7 @@ fn plan_snapshot_to_sections(
         verification_plan: snapshot.verification_plan.clone(),
         risks_and_unknowns: snapshot.risks_and_unknowns.clone(),
         handoff_packet: snapshot.handoff_packet.clone(),
+        replan_if: snapshot.replan_if.clone(),
         items: snapshot
             .items
             .iter()

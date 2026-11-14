@@ -27,6 +27,7 @@ impl CompatPlanMetadata {
             verification_plan: snapshot.verification_plan.clone(),
             risks_and_unknowns: snapshot.risks_and_unknowns.clone(),
             handoff_packet: snapshot.handoff_packet.clone(),
+            replan_if: snapshot.replan_if.clone(),
         }
     }
 
@@ -44,6 +45,7 @@ impl CompatPlanMetadata {
             verification_plan: self.verification_plan.clone(),
             risks_and_unknowns: self.risks_and_unknowns.clone(),
             handoff_packet: self.handoff_packet.clone(),
+            replan_if: self.replan_if.clone(),
             items: Vec::new(),
         }
     }

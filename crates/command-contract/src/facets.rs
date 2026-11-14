@@ -1592,6 +1592,7 @@ pub struct PlanSections {
     pub verification_plan: Option<String>,
     pub risks_and_unknowns: Option<String>,
     pub handoff_packet: Option<String>,
+    pub replan_if: Vec<String>,
     pub items: Vec<PlanStep>,
 }
 
