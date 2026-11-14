@@ -3317,6 +3317,7 @@ fn record_ln_virtual_link(
     virtual_links: &mut Vec<(String, VirtualLinkTarget)>,
     scope: CriticalPathScope<'_>,
 ) {
+    let win_paths = path_is_windows_style(scope.windows_mode);
     let mut after_double_dash = false;
     let mut symbolic = false;
     let mut relative = false;
@@ -3388,7 +3389,7 @@ fn record_ln_virtual_link(
             dst_path.push(name);
         }
     }
-    let dst_norm = normalize_compare_str(&dst_path.to_string_lossy(), scope.windows_mode);
+    let dst_norm = normalize_compare_str(&dst_path.to_string_lossy(), win_paths);
     if dst_norm.is_empty() {
         return;
     }
@@ -3402,8 +3403,7 @@ fn record_ln_virtual_link(
             Some(ResolvedTarget::Unresolved) | None => VirtualLinkTarget::Unresolved,
         }
     };
-    virtual_links
-        .retain(|(existing, _)| !same_compare_path(existing, &dst_norm, scope.windows_mode));
+    virtual_links.retain(|(existing, _)| !same_compare_path(existing, &dst_norm, win_paths));
     virtual_links.push((dst_norm, link_target));
 }
 
@@ -3415,11 +3415,12 @@ fn resolve_via_virtual_links(
     if virtual_links.is_empty() {
         return None;
     }
-    let norm = normalize_compare_str(target_str, scope.windows_mode);
+    let win_paths = path_is_windows_style(scope.windows_mode);
+    let norm = normalize_compare_str(target_str, win_paths);
     let mut best: Option<(&str, &VirtualLinkTarget)> = None;
     for (link_norm, target) in virtual_links {
-        if (same_compare_path(&norm, link_norm, scope.windows_mode)
-            || path_has_prefix(&norm, link_norm, scope.windows_mode))
+        if (same_compare_path(&norm, link_norm, win_paths)
+            || path_has_prefix(&norm, link_norm, win_paths))
             && best.is_none_or(|(prev, _)| link_norm.len() > prev.len())
         {
             best = Some((link_norm.as_str(), target));
@@ -3730,6 +3731,7 @@ fn find_expr_can_delete(expr: &[String]) -> bool {
 }
 
 fn find_expr_safely_narrowed(expr: &[String], windows_mode: bool) -> bool {
+    let win_paths = path_is_windows_style(windows_mode);
     if expr.iter().any(|token| {
         matches!(
             token.as_str(),
@@ -3746,7 +3748,7 @@ fn find_expr_safely_narrowed(expr: &[String], windows_mode: bool) -> bool {
             "-name" | "-iname" if index + 1 < expr.len() => {
                 let pattern = expr[index + 1].as_str();
                 if !pattern.contains(['$', '`'])
-                    && !glob_matches_critical_name(pattern, flag == "-iname" || windows_mode)
+                    && !glob_matches_critical_name(pattern, flag == "-iname" || win_paths)
                 {
                     narrowed_so_far = true;
                 }
@@ -3755,7 +3757,7 @@ fn find_expr_safely_narrowed(expr: &[String], windows_mode: bool) -> bool {
             "-path" | "-ipath" | "-wholename" | "-iwholename" if index + 1 < expr.len() => {
                 let pattern = expr[index + 1].as_str();
                 let trimmed = pattern.trim_start_matches("./").trim_start_matches(".\\");
-                let ci = flag.starts_with("-i") || windows_mode;
+                let ci = flag.starts_with("-i") || win_paths;
                 if !pattern.contains(['$', '`'])
                     && !trimmed.is_empty()
                     && trimmed
@@ -3953,11 +3955,15 @@ fn has_glob_or_brace(component: &str) -> bool {
     false
 }
 
+fn path_is_windows_style(windows_mode: bool) -> bool {
+    windows_mode || cfg!(windows)
+}
+
 fn is_abs_target(token: &str, windows_mode: bool) -> bool {
     if token.starts_with('/') {
         return true;
     }
-    if windows_mode {
+    if path_is_windows_style(windows_mode) {
         return token.starts_with('\\')
             || token.as_bytes().get(1).is_some_and(|b| *b == b':')
                 && token
@@ -3970,11 +3976,14 @@ fn is_abs_target(token: &str, windows_mode: bool) -> bool {
 
 fn join_path_str(base: &std::path::Path, rel: &str, windows_mode: bool) -> String {
     let base_str = base.to_string_lossy();
-    let sep = if windows_mode { '\\' } else { '/' };
+    let win_paths = path_is_windows_style(windows_mode);
+    let sep = if win_paths { '\\' } else { '/' };
     let clean_base = base_str.trim_end_matches(['/', '\\']);
     let clean_rel = rel.trim_start_matches(['/', '\\']);
     if clean_base.is_empty() && base_str.starts_with('/') {
         format!("/{clean_rel}")
+    } else if clean_base.is_empty() && win_paths && base_str.starts_with('\\') {
+        format!("\\{clean_rel}")
     } else if clean_rel.is_empty() {
         base_str.into_owned()
     } else {
@@ -4047,15 +4056,16 @@ fn classify_resolved_concrete(
     resolved_target: &std::path::Path,
     scope: CriticalPathScope<'_>,
 ) -> Option<CriticalPathKind> {
+    let win_paths = path_is_windows_style(scope.windows_mode);
     let target_str = resolved_target.to_string_lossy();
     if let Some(kind) = check_glob_target(&target_str, scope) {
         return Some(kind);
     }
-    let lex_norm = normalize_compare_str(&target_str, scope.windows_mode);
+    let lex_norm = normalize_compare_str(&target_str, win_paths);
     if let Some(kind) = classify_normalized_str(&lex_norm, scope) {
         return Some(kind);
     }
-    if is_abs_target(&target_str, scope.windows_mode) {
+    if is_abs_target(&target_str, win_paths) {
         for candidate in [
             resolve_physical_preserving_tail(resolved_target),
             resolve_physical_preserving_tail(std::path::Path::new(&lex_norm)),
@@ -4063,7 +4073,7 @@ fn classify_resolved_concrete(
         .into_iter()
         .flatten()
         {
-            let phys_norm = normalize_compare_str(&candidate.to_string_lossy(), scope.windows_mode);
+            let phys_norm = normalize_compare_str(&candidate.to_string_lossy(), win_paths);
             if let Some(kind) = classify_normalized_str(&phys_norm, scope) {
                 return Some(kind);
             }
@@ -4076,11 +4086,8 @@ fn check_glob_target(target_str: &str, scope: CriticalPathScope<'_>) -> Option<C
     if !target_str.contains(['*', '?', '[', '{']) {
         return None;
     }
-    let seps: &[char] = if scope.windows_mode {
-        &['/', '\\']
-    } else {
-        &['/']
-    };
+    let win_paths = path_is_windows_style(scope.windows_mode);
+    let seps: &[char] = if win_paths { &['/', '\\'] } else { &['/'] };
     let parts: Vec<&str> = target_str.split(seps).collect();
     for (idx, part) in parts.iter().enumerate() {
         if !has_glob_or_brace(part) {
@@ -4089,16 +4096,14 @@ fn check_glob_target(target_str: &str, scope: CriticalPathScope<'_>) -> Option<C
         if part.contains(['{', '}']) {
             return Some(CriticalPathKind::UnresolvedTarget);
         }
-        if glob_can_match_dotfile(part, scope)
-            && glob_matches_critical_name(part, scope.windows_mode)
-        {
+        if glob_can_match_dotfile(part, scope) && glob_matches_critical_name(part, win_paths) {
             return Some(CriticalPathKind::GitMetadata);
         }
         let parent_str = parts[..idx].join("/");
         if parent_str.is_empty() && target_str.starts_with(seps) {
             return Some(CriticalPathKind::FilesystemRoot);
         }
-        let parent_norm = normalize_compare_str(&parent_str, scope.windows_mode);
+        let parent_norm = normalize_compare_str(&parent_str, win_paths);
         let Some(parent_kind) = classify_normalized_str(&parent_norm, scope) else {
             continue;
         };
@@ -4109,28 +4114,28 @@ fn check_glob_target(target_str: &str, scope: CriticalPathScope<'_>) -> Option<C
             return Some(parent_kind);
         }
         if let Some(ws) = scope.workspace {
-            for ws_norm in path_compare_variants(ws, scope.windows_mode) {
-                if path_is_strict_ancestor(&parent_norm, &ws_norm, scope.windows_mode)
+            for ws_norm in path_compare_variants(ws, win_paths) {
+                if path_is_strict_ancestor(&parent_norm, &ws_norm, win_paths)
                     && let Some(next_comp) = ws_norm
                         .get(parent_norm.len()..)
                         .map(|s| s.trim_start_matches('/'))
                         .and_then(|s| s.split('/').next())
                     && !next_comp.is_empty()
-                    && glob_matches_name(part, next_comp, scope.windows_mode)
+                    && glob_matches_name(part, next_comp, win_paths)
                 {
                     return Some(CriticalPathKind::WorkspaceOrAncestor);
                 }
             }
         }
         if let Some(home_dir) = scope.home {
-            for h_norm in path_compare_variants(home_dir, scope.windows_mode) {
-                if path_is_strict_ancestor(&parent_norm, &h_norm, scope.windows_mode)
+            for h_norm in path_compare_variants(home_dir, win_paths) {
+                if path_is_strict_ancestor(&parent_norm, &h_norm, win_paths)
                     && let Some(next_comp) = h_norm
                         .get(parent_norm.len()..)
                         .map(|s| s.trim_start_matches('/'))
                         .and_then(|s| s.split('/').next())
                     && !next_comp.is_empty()
-                    && glob_matches_name(part, next_comp, scope.windows_mode)
+                    && glob_matches_name(part, next_comp, win_paths)
                 {
                     return Some(CriticalPathKind::HomeFolder);
                 }
@@ -4154,17 +4159,18 @@ fn classify_normalized_str(
     norm_path: &str,
     scope: CriticalPathScope<'_>,
 ) -> Option<CriticalPathKind> {
+    let win_paths = path_is_windows_style(scope.windows_mode);
     if norm_path.is_empty() {
         return Some(CriticalPathKind::WorkspaceOrAncestor);
     }
-    if is_filesystem_root_str(norm_path, scope.windows_mode) {
+    if is_filesystem_root_str(norm_path, win_paths) {
         return Some(CriticalPathKind::FilesystemRoot);
     }
     if let Some(home_dir) = scope.home {
-        let home_variants = path_compare_variants(home_dir, scope.windows_mode);
+        let home_variants = path_compare_variants(home_dir, win_paths);
         if home_variants.iter().any(|h| {
-            same_compare_path(norm_path, h, scope.windows_mode)
-                || path_is_strict_ancestor(norm_path, h, scope.windows_mode)
+            same_compare_path(norm_path, h, win_paths)
+                || path_is_strict_ancestor(norm_path, h, win_paths)
         }) {
             return Some(CriticalPathKind::HomeFolder);
         }
@@ -4174,15 +4180,13 @@ fn classify_normalized_str(
     }
     let mut matched_ws_prefix: Option<String> = None;
     if let Some(ws) = scope.workspace {
-        for ws_norm in path_compare_variants(ws, scope.windows_mode) {
-            if same_compare_path(norm_path, &ws_norm, scope.windows_mode)
-                || path_is_strict_ancestor(norm_path, &ws_norm, scope.windows_mode)
+        for ws_norm in path_compare_variants(ws, win_paths) {
+            if same_compare_path(norm_path, &ws_norm, win_paths)
+                || path_is_strict_ancestor(norm_path, &ws_norm, win_paths)
             {
                 return Some(CriticalPathKind::WorkspaceOrAncestor);
             }
-            if matched_ws_prefix.is_none()
-                && path_has_prefix(norm_path, &ws_norm, scope.windows_mode)
-            {
+            if matched_ws_prefix.is_none() && path_has_prefix(norm_path, &ws_norm, win_paths) {
                 matched_ws_prefix = Some(ws_norm);
             }
         }
@@ -4194,8 +4198,7 @@ fn classify_normalized_str(
         None => norm_path,
     };
     if rel_for_git.split('/').any(|comp| {
-        !comp.is_empty()
-            && codewhale_util::git_metadata::git_metadata_name(comp, scope.windows_mode)
+        !comp.is_empty() && codewhale_util::git_metadata::git_metadata_name(comp, win_paths)
     }) {
         return Some(CriticalPathKind::GitMetadata);
     }
@@ -4215,6 +4218,7 @@ fn is_exact_workspace_root_target(
     if matches!(cwd, ShellCwd::Tainted) {
         return false;
     }
+    let win_paths = path_is_windows_style(windows_mode);
     let cwd_path = match cwd {
         ShellCwd::Known(p) => Some(p.as_path()),
         ShellCwd::Unset | ShellCwd::Tainted => None,
@@ -4224,19 +4228,19 @@ fn is_exact_workspace_root_target(
     else {
         return false;
     };
-    let lex_norm = normalize_compare_str(&resolved.to_string_lossy(), windows_mode);
-    let ws_variants = path_compare_variants(ws, windows_mode);
+    let lex_norm = normalize_compare_str(&resolved.to_string_lossy(), win_paths);
+    let ws_variants = path_compare_variants(ws, win_paths);
     if ws_variants
         .iter()
-        .any(|w| same_compare_path(&lex_norm, w, windows_mode))
+        .any(|w| same_compare_path(&lex_norm, w, win_paths))
     {
         return true;
     }
     if let Some(phys) = resolve_physical_preserving_tail(&resolved) {
-        let phys_norm = normalize_compare_str(&phys.to_string_lossy(), windows_mode);
+        let phys_norm = normalize_compare_str(&phys.to_string_lossy(), win_paths);
         return ws_variants
             .iter()
-            .any(|w| same_compare_path(&phys_norm, w, windows_mode));
+            .any(|w| same_compare_path(&phys_norm, w, win_paths));
     }
     false
 }
@@ -4262,17 +4266,18 @@ fn resolve_physical_preserving_tail(path: &std::path::Path) -> Option<std::path:
 }
 
 fn path_compare_variants(path: &std::path::Path, windows_mode: bool) -> Vec<String> {
+    let win_paths = path_is_windows_style(windows_mode);
     let mut out = Vec::new();
-    let lex = normalize_compare_str(&path.to_string_lossy(), windows_mode);
+    let lex = normalize_compare_str(&path.to_string_lossy(), win_paths);
     if !lex.is_empty() {
         out.push(lex);
     }
     if let Ok(canon) = path.canonicalize() {
-        let c = normalize_compare_str(&canon.to_string_lossy(), windows_mode);
+        let c = normalize_compare_str(&canon.to_string_lossy(), win_paths);
         if !c.is_empty()
             && !out
                 .iter()
-                .any(|existing| same_compare_path(existing, &c, windows_mode))
+                .any(|existing| same_compare_path(existing, &c, win_paths))
         {
             out.push(c);
         }
@@ -4281,7 +4286,8 @@ fn path_compare_variants(path: &std::path::Path, windows_mode: bool) -> Vec<Stri
 }
 
 fn normalize_compare_str(raw: &str, windows_mode: bool) -> String {
-    let s = if windows_mode {
+    let win_paths = path_is_windows_style(windows_mode);
+    let s = if win_paths {
         strip_windows_verbatim(raw).replace('\\', "/")
     } else {
         raw.to_string()
@@ -4290,7 +4296,7 @@ fn normalize_compare_str(raw: &str, windows_mode: bool) -> String {
     if s.is_empty() {
         return String::new();
     }
-    let (prefix, rest) = split_compare_prefix(s, windows_mode);
+    let (prefix, rest) = split_compare_prefix(s, win_paths);
     let has_root = !prefix.is_empty();
     let mut stack: Vec<&str> = Vec::new();
     for seg in rest.split('/') {
@@ -4336,7 +4342,7 @@ fn strip_windows_verbatim(raw: &str) -> std::borrow::Cow<'_, str> {
 }
 
 fn split_compare_prefix(s: &str, windows_mode: bool) -> (String, &str) {
-    if windows_mode {
+    if path_is_windows_style(windows_mode) {
         if let Some(after_unc) = s.strip_prefix("//") {
             let mut parts = after_unc.splitn(3, '/');
             if let (Some(server), Some(share)) = (parts.next(), parts.next())
@@ -4365,7 +4371,7 @@ fn is_filesystem_root_str(norm_path: &str, windows_mode: bool) -> bool {
     if norm_path == "/" {
         return true;
     }
-    if windows_mode {
+    if path_is_windows_style(windows_mode) {
         let bytes = norm_path.as_bytes();
         if bytes.len() == 3
             && bytes[0].is_ascii_alphabetic()
@@ -4389,7 +4395,7 @@ fn is_filesystem_root_str(norm_path: &str, windows_mode: bool) -> bool {
 }
 
 fn same_compare_path(a: &str, b: &str, windows_mode: bool) -> bool {
-    if windows_mode {
+    if path_is_windows_style(windows_mode) {
         a.eq_ignore_ascii_case(b)
     } else {
         a == b
@@ -4400,7 +4406,7 @@ fn path_has_prefix(path: &str, prefix: &str, windows_mode: bool) -> bool {
     if same_compare_path(path, prefix, windows_mode) {
         return true;
     }
-    let starts = if windows_mode {
+    let starts = if path_is_windows_style(windows_mode) {
         path.len() > prefix.len()
             && path
                 .get(..prefix.len())
@@ -7104,10 +7110,19 @@ mod tests {
         std::fs::create_dir_all(ws.join("sub")).expect("create sub");
         std::fs::create_dir_all(ws.join("build")).expect("create build");
 
+        let posix_path = |path: &std::path::Path| {
+            let s = path.display().to_string();
+            if cfg!(windows) {
+                s.replace('\\', "/")
+            } else {
+                s
+            }
+        };
         let home_parent_str = fake_home_parent.display().to_string();
+        let home_parent_cmd = posix_path(&fake_home_parent);
         let sub_str = ws.join("sub").display().to_string();
-        let ws_parent_glob = format!("{}/*", fake_home.join("work").display());
-        let home_parent_glob = format!("{home_parent_str}/*");
+        let ws_parent_glob = format!("{}/*", posix_path(&fake_home.join("work")));
+        let home_parent_glob = format!("{home_parent_cmd}/*");
         let nested_non_delete = (0..10).fold("node --version".to_string(), |inner, _| {
             format!("sh -c {}", shlex::try_quote(&inner).unwrap())
         });
@@ -7172,7 +7187,7 @@ mod tests {
             ("exec_shell", json!({"command": "rm -rf ~/.."})),
             (
                 "exec_shell",
-                json!({"command": format!("rm -rf {home_parent_str}")}),
+                json!({"command": format!("rm -rf {home_parent_cmd}")}),
             ),
             (
                 "exec_shell",
@@ -7261,6 +7276,37 @@ mod tests {
                 got, None,
                 "unexpected critical path hit for {tool} {params}"
             );
+        }
+
+        let win_case_ws = std::path::Path::new(r"C:\Users\alice\work\project");
+        let win_case_home = std::path::Path::new(r"C:\Users\alice");
+        for (cmd, expected) in [
+            (
+                "echo cd sub; rm -rf ../project",
+                CriticalPathKind::WorkspaceOrAncestor,
+            ),
+            (
+                "cd sub | true; rm -rf ../project",
+                CriticalPathKind::WorkspaceOrAncestor,
+            ),
+            (
+                "cd sub & rm -rf ../project",
+                CriticalPathKind::WorkspaceOrAncestor,
+            ),
+            ("rm -rf C:/Users/alice/..", CriticalPathKind::HomeFolder),
+            (
+                "rm -rf C:/Users/alice/work",
+                CriticalPathKind::WorkspaceOrAncestor,
+            ),
+        ] {
+            let got = critical_path_delete_with_home(
+                "exec_shell",
+                &json!({"command": cmd}),
+                Some(win_case_ws),
+                Some(win_case_home),
+                true,
+            );
+            assert_eq!(got, Some(expected), "{cmd}");
         }
 
         let win_utf8_ws = std::path::Path::new("C:\\Users\\张三\\proj");
