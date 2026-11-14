@@ -546,7 +546,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn mode_picker_lists_conversation_modes_first_and_locks_after_first_message() {
         let _available = CreatorAvailabilityGuard::set(None);
-        let table = conversation_modes::current_table(Default::default()).await;
+        let table = conversation_modes::current_table(Default::default(), true).await;
         for (w, h) in [(80, 24), (120, 32)] {
             let open = ModePickerView::from_table(AppMode::Agent, Locale::En, &table, None, false);
             let (buf, area) = render_view(open, w, h);
@@ -623,7 +623,7 @@ mod tests {
             "Creator mode needs a plugin runtime (Node.js or Bun), and none was found.";
         for reason in [CREATOR_NOT_READY_REASON, runtime_missing] {
             let _guard = CreatorAvailabilityGuard::set(Some(reason));
-            let table = conversation_modes::current_table(Default::default()).await;
+            let table = conversation_modes::current_table(Default::default(), true).await;
             let view = ModePickerView::from_table(AppMode::Agent, Locale::En, &table, None, false);
             let (buf, area) = render_view(view, 100, 30);
             let text = frame_text(&buf, area);
@@ -661,7 +661,7 @@ mod tests {
             );
         }
         let _guard = CreatorAvailabilityGuard::set(None);
-        let table = conversation_modes::current_table(Default::default()).await;
+        let table = conversation_modes::current_table(Default::default(), true).await;
         let mut view = ModePickerView::from_table(AppMode::Agent, Locale::En, &table, None, false);
         view.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert!(matches!(

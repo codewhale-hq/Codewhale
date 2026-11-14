@@ -715,3 +715,394 @@ async fn extension_creator_first_turn_event_is_restored_whenever_the_log_lacks_i
         "a log that lost it gets it back"
     );
 }
+
+fn creator_test_manager(
+    node: std::path::PathBuf,
+    root: std::path::PathBuf,
+) -> Arc<crate::extension_host::ExtensionHostManager> {
+    Arc::new(crate::extension_host::ExtensionHostManager::new(
+        crate::extension_host::ExtensionHostOptions {
+            runtime: codewhale_config::extension_host::ExtensionHostRuntime::Node,
+            node_override: Some(node),
+            root: Some(root),
+            ..Default::default()
+        },
+    ))
+}
+
+async fn run_prompt_with_outcomes(
+    handle: &EngineHandle,
+    config: &Config,
+    prompt: &str,
+) -> (Vec<(String, bool, String)>, usize) {
+    handle
+        .send(external_user_message_op(prompt, AppMode::Agent, config))
+        .await
+        .unwrap();
+    let mut outcomes = Vec::new();
+    let mut approvals = 0;
+    let mut rx = handle.rx_event.write().await;
+    loop {
+        match tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            Event::ApprovalRequired { id, .. } => {
+                approvals += 1;
+                handle.deny_tool_call(id).await.unwrap();
+            }
+            Event::ToolCallComplete {
+                model_call: Some(model_call),
+                result,
+                ..
+            } => match result {
+                Ok(res) => outcomes.push((model_call.provider_id, res.success, res.content)),
+                Err(err) => outcomes.push((model_call.provider_id, false, err.to_string())),
+            },
+            Event::TurnComplete { status, error, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                break;
+            }
+            _ => {}
+        }
+    }
+    (outcomes, approvals)
+}
+
+async fn run_turn_with_tool_outcomes(
+    engine: Engine,
+    handle: EngineHandle,
+    prompt: &str,
+) -> (Vec<(String, bool, String)>, usize) {
+    let config = Config::default();
+    let task = tokio::spawn(engine.run());
+    let result = run_prompt_with_outcomes(&handle, &config, prompt).await;
+    handle.send(Op::Shutdown).await.unwrap();
+    task.await.unwrap();
+    result
+}
+
+#[tokio::test]
+async fn extension_creator_tool_is_found_by_search_in_a_standard_thread() {
+    let _home = crate::test_support::SealedHome::new();
+    let Some(node) = crate::extension_host::test_support::node_for_tests(
+        "extension_creator_tool_is_found_by_search_in_a_standard_thread",
+    ) else {
+        return;
+    };
+    let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(false);
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("ws");
+    fs::create_dir_all(&workspace).unwrap();
+    let manager = creator_test_manager(node.clone(), temp.path().join("home"));
+    let _manager = crate::extension_host::TestManagerGuard::install(Arc::clone(&manager));
+
+    let _available = CreatorAvailabilityGuard::set(None);
+    let mock = Arc::new(MockLlmClient::new(vec![
+        canned::simple_text_turn("Warmed."),
+        canned::tool_call_turn(
+            "call-search",
+            "tool_search",
+            r#"{"query":"plugin_manager","match":"regex"}"#,
+        ),
+        canned::simple_text_turn("Found plugin_manager."),
+    ]));
+    let mut cfg = deterministic_engine_config(&workspace);
+    cfg.features.enable(Feature::PluginCreator);
+    cfg.features.disable(Feature::ExtensionHost);
+    cfg.plugin_registry = Some(Arc::new(codewhale_plugins::PluginRegistry::empty(
+        &workspace,
+    )));
+    let (_engine, handle) = Engine::new_with_model_client(cfg, &Config::default(), mock.clone());
+    let config = Config::default();
+    let task = tokio::spawn(_engine.run());
+
+    let (warm_outcomes, warm_approvals) = run_prompt_with_outcomes(&handle, &config, "Warm.").await;
+    assert_eq!(warm_approvals, 0);
+    assert!(warm_outcomes.is_empty());
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !manager
+        .live_tool_names()
+        .iter()
+        .any(|name| name == "plugin_manager")
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "creator module did not start in the background"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let (outcomes, approvals) = run_prompt_with_outcomes(&handle, &config, "Search.").await;
+    handle.send(Op::Shutdown).await.unwrap();
+    task.await.unwrap();
+    assert_eq!(approvals, 0);
+    let requests = mock.captured_requests();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        !tool_names(&requests[0])
+            .iter()
+            .any(|name| name == "plugin_manager")
+    );
+    assert!(
+        !tool_names(&requests[1])
+            .iter()
+            .any(|name| name == "plugin_manager")
+    );
+    let search_outcome = outcomes
+        .iter()
+        .find(|(id, _, _)| id == "call-search")
+        .expect("tool_search outcome");
+    assert!(search_outcome.1 && search_outcome.2.contains("plugin_manager"));
+    assert!(
+        tool_names(&requests[2])
+            .iter()
+            .any(|name| name == "plugin_manager")
+    );
+    assert_eq!(
+        manager.tier_spawn_attempts(crate::extension_host::tier::HostTier::Builtin),
+        1
+    );
+    assert_eq!(
+        manager.tier_spawn_attempts(crate::extension_host::tier::HostTier::Plugin),
+        0
+    );
+    manager.shutdown().await;
+    drop(_available);
+    drop(_manager);
+
+    let idle_manager = creator_test_manager(node, temp.path().join("home-off"));
+    let _idle_guard = crate::extension_host::TestManagerGuard::install(Arc::clone(&idle_manager));
+    let mut key_off = deterministic_engine_config(&workspace);
+    key_off.features.disable(Feature::PluginCreator);
+    key_off.features.disable(Feature::ExtensionHost);
+    run_turns(
+        key_off,
+        Arc::new(MockLlmClient::new(vec![canned::simple_text_turn("ok")])),
+        &["hi"],
+    )
+    .await;
+    {
+        let _unavail = CreatorAvailabilityGuard::set(Some("No plugin runtime."));
+        let mut unavail_cfg = deterministic_engine_config(&workspace);
+        unavail_cfg.features.enable(Feature::PluginCreator);
+        unavail_cfg.features.disable(Feature::ExtensionHost);
+        run_turns(
+            unavail_cfg,
+            Arc::new(MockLlmClient::new(vec![canned::simple_text_turn("ok")])),
+            &["hi"],
+        )
+        .await;
+    }
+    assert_eq!(
+        idle_manager.tier_spawn_attempts(crate::extension_host::tier::HostTier::Builtin),
+        0
+    );
+    assert_eq!(
+        idle_manager.tier_spawn_attempts(crate::extension_host::tier::HostTier::Plugin),
+        0
+    );
+    idle_manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn extension_creator_thread_has_plugin_manager_in_its_first_request() {
+    let _home = crate::test_support::SealedHome::new();
+    let Some(node) = crate::extension_host::test_support::node_for_tests(
+        "extension_creator_thread_has_plugin_manager_in_its_first_request",
+    ) else {
+        return;
+    };
+    let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(false);
+    let _available = CreatorAvailabilityGuard::set(None);
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("ws");
+    fs::create_dir_all(&workspace).unwrap();
+    let manager = creator_test_manager(node, temp.path().join("home"));
+    let _manager = crate::extension_host::TestManagerGuard::install(Arc::clone(&manager));
+
+    let mock = Arc::new(MockLlmClient::new(vec![canned::simple_text_turn("Ready.")]));
+    let mut cfg = deterministic_engine_config(&workspace);
+    cfg.features.enable(Feature::PluginCreator);
+    cfg.features.disable(Feature::ExtensionHost);
+    cfg.plugin_registry = Some(Arc::new(codewhale_plugins::PluginRegistry::empty(
+        &workspace,
+    )));
+    cfg.agent_preset = Some("creator".to_string());
+    run_turns(cfg, mock.clone(), &["hello"]).await;
+
+    let requests = mock.captured_requests();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        tool_names(&requests[0])
+            .iter()
+            .any(|name| name == "plugin_manager")
+    );
+    manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn extension_creator_switch_off_attachment_leaves_the_plugin_registry_unchanged() {
+    let _home = crate::test_support::SealedHome::new();
+    let Some(node) = crate::extension_host::test_support::node_for_tests(
+        "extension_creator_switch_off_attachment_leaves_the_plugin_registry_unchanged",
+    ) else {
+        return;
+    };
+    let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(false);
+    let _available = CreatorAvailabilityGuard::set(None);
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("ws");
+    let plugins_dir = temp.path().join("user-plugins");
+    let plugin_dir = plugins_dir.join("sample-all");
+    fs::create_dir_all(plugin_dir.join("skills/sample-skill")).unwrap();
+    fs::create_dir_all(plugin_dir.join("commands")).unwrap();
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(
+        plugin_dir.join("plugin.toml"),
+        "schema_version = 1\n[plugin]\nname = \"sample-all\"\nversion = \"1.0.0\"\n\n[skills]\npath = \"skills\"\n\n[commands]\npath = \"commands\"\n\n[mcp_servers.local]\ncommand = \"node\"\nargs = [\"server.js\"]\n",
+    )
+    .unwrap();
+    fs::write(
+        plugin_dir.join("skills/sample-skill/SKILL.md"),
+        "---\nname: sample-skill\ndescription: sample skill\n---\nBody\n",
+    )
+    .unwrap();
+    fs::write(
+        plugin_dir.join("commands/sample.md"),
+        "---\ndescription: sample command\n---\nPrompt\n",
+    )
+    .unwrap();
+
+    let discovery = codewhale_plugins::discovery::DiscoveryConfig {
+        workspace: workspace.clone(),
+        user_plugins_dir: plugins_dir,
+        workspace_plugins_dir: workspace.join(".codewhale/plugins-unused"),
+        builtin_plugin_dirs: Vec::new(),
+        state_path: temp.path().join("state/plugin-state.json"),
+    };
+    let mut registry = codewhale_plugins::discovery::discover_with_config(&discovery);
+    registry.trust("sample-all").unwrap();
+    registry.enable("sample-all").unwrap();
+    let plugins = Arc::new(registry);
+
+    let manager = creator_test_manager(node, temp.path().join("home"));
+    let _manager = crate::extension_host::TestManagerGuard::install(Arc::clone(&manager));
+
+    let mut cfg_on = deterministic_engine_config(&workspace);
+    cfg_on.features.enable(Feature::PluginCreator);
+    cfg_on.features.disable(Feature::ExtensionHost);
+    cfg_on.plugin_registry = Some(Arc::clone(&plugins));
+    let mock_on = Arc::new(MockLlmClient::new(vec![canned::simple_text_turn("ok")]));
+    let (engine_on, handle_on) = Engine::new_with_model_client(cfg_on, &Config::default(), mock_on);
+
+    let mut cfg_off = deterministic_engine_config(&workspace);
+    cfg_off.features.disable(Feature::PluginCreator);
+    cfg_off.features.disable(Feature::ExtensionHost);
+    cfg_off.plugin_registry = Some(Arc::clone(&plugins));
+    let mock_off = Arc::new(MockLlmClient::new(vec![canned::simple_text_turn("ok")]));
+    let (engine_off, _handle_off) =
+        Engine::new_with_model_client(cfg_off, &Config::default(), mock_off);
+
+    let summary = |reg: &codewhale_plugins::PluginRegistry| {
+        let active = reg.active_plugins();
+        let skills: Vec<_> = active
+            .iter()
+            .flat_map(|p| p.skill_snapshots.iter().map(|s| s.name.clone()))
+            .collect();
+        let commands: Vec<_> = codewhale_plugins::runtime::active_component_sources(
+            reg,
+            codewhale_plugins::activation::PluginActivationCapability::Commands,
+        )
+        .0
+        .into_iter()
+        .map(|s| (s.plugin_name, s.path))
+        .collect();
+        let mcps: Vec<_> = active
+            .iter()
+            .filter_map(|p| {
+                p.manifest
+                    .mcp_servers
+                    .as_ref()
+                    .map(|m| (p.name().to_string(), m.keys().cloned().collect::<Vec<_>>()))
+            })
+            .collect();
+        (skills, commands, mcps)
+    };
+    assert!(Arc::ptr_eq(
+        &engine_on.plugin_registry,
+        &engine_off.plugin_registry
+    ));
+    let expected = summary(&engine_off.plugin_registry);
+    assert_eq!(expected.0, vec!["sample-skill".to_string()]);
+    assert_eq!(expected.1.len(), 1);
+    assert_eq!(
+        expected.2,
+        vec![("sample-all".to_string(), vec!["local".to_string()])]
+    );
+    assert_eq!(summary(&engine_on.plugin_registry), expected);
+
+    let before_view = engine_on
+        .extension_host
+        .as_ref()
+        .expect("attached for creator")
+        .plugin_view();
+    assert_eq!(summary(&before_view), expected);
+    let _ = run_turn_with_tool_outcomes(engine_on, handle_on, "hi").await;
+    assert_eq!(summary(&before_view), expected);
+    assert_eq!(
+        manager.tier_spawn_attempts(crate::extension_host::tier::HostTier::Plugin),
+        0
+    );
+    manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn extension_creator_tool_honors_disallowed_tools() {
+    let _home = crate::test_support::SealedHome::new();
+    let Some(node) = crate::extension_host::test_support::node_for_tests(
+        "extension_creator_tool_honors_disallowed_tools",
+    ) else {
+        return;
+    };
+    let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(false);
+    let _available = CreatorAvailabilityGuard::set(None);
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("ws");
+    fs::create_dir_all(&workspace).unwrap();
+    let manager = creator_test_manager(node, temp.path().join("home"));
+    let _manager = crate::extension_host::TestManagerGuard::install(Arc::clone(&manager));
+
+    for preset in [Some("creator"), None] {
+        let mock = Arc::new(MockLlmClient::new(vec![
+            canned::tool_call_turn("call-pm", "plugin_manager", r#"{"action":"list_bundles"}"#),
+            canned::simple_text_turn("Done."),
+        ]));
+        let mut cfg = deterministic_engine_config(&workspace);
+        cfg.features.enable(Feature::PluginCreator);
+        cfg.features.disable(Feature::ExtensionHost);
+        cfg.plugin_registry = Some(Arc::new(codewhale_plugins::PluginRegistry::empty(
+            &workspace,
+        )));
+        cfg.agent_preset = preset.map(str::to_string);
+        cfg.disallowed_tools = Some(vec!["plugin_manager".to_string()]);
+        let (engine, handle) = Engine::new_with_model_client(cfg, &Config::default(), mock.clone());
+        let (outcomes, approvals) = run_turn_with_tool_outcomes(engine, handle, "List.").await;
+        assert_eq!(approvals, 0, "preset={preset:?}");
+        let requests = mock.captured_requests();
+        for req in &requests {
+            assert!(
+                !tool_names(req).iter().any(|name| name == "plugin_manager"),
+                "preset={preset:?}"
+            );
+        }
+        let pm = outcomes
+            .iter()
+            .find(|(id, _, _)| id == "call-pm")
+            .expect("call-pm outcome");
+        assert!(!pm.1, "disallowed tool must refuse: {pm:?}");
+    }
+    manager.shutdown().await;
+}

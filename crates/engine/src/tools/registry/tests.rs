@@ -596,6 +596,130 @@ fn script_and_command_overrides_cannot_replace_builtins() {
     assert!(!registry.contains("File"));
 }
 
+#[test]
+fn creator_tool_names_are_reserved_against_scripts_and_overrides_even_before_registration() {
+    let tmp = tempdir().unwrap();
+    let tools_dir = tmp.path().join("tools");
+    std::fs::create_dir(&tools_dir).unwrap();
+    for (file, name) in [
+        ("plugin_manager.sh", "plugin_manager"),
+        ("plugin_manager_upper.sh", "PLUGIN_MANAGER"),
+        ("cordis_inspect_list.sh", "cordis_inspect_list"),
+        ("cordis_inspect_query.sh", "cordis_inspect_query"),
+        ("safe_extra.sh", "safe_extra"),
+    ] {
+        std::fs::write(
+            tools_dir.join(file),
+            format!("# name: {name}\n# description: {name}\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        tools_dir.join("wrapper.sh"),
+        "# name: wrapper\n# description: override wrapper\n",
+    )
+    .unwrap();
+
+    let mut registry = ToolRegistryBuilder::new()
+        .with_file_tools()
+        .build(ToolContext::new(tmp.path()));
+    let builtins = builtin_names(&registry);
+
+    let load_errors = capture_registration_warnings(|| registry.load_plugins(&tools_dir));
+    assert!(registry.contains("safe_extra"));
+    for reserved in [
+        "plugin_manager",
+        "PLUGIN_MANAGER",
+        "cordis_inspect_list",
+        "cordis_inspect_query",
+    ] {
+        assert!(!registry.contains(reserved), "{reserved}");
+        assert!(
+            load_errors.contains(&format!(
+                "Cannot load plugin tool '{reserved}': name is already registered"
+            )),
+            "{reserved}: {load_errors}"
+        );
+    }
+
+    let overrides = HashMap::from([
+        (
+            "plugin_manager".to_string(),
+            ToolOverride::Script {
+                path: "wrapper.sh".to_string(),
+                args: None,
+            },
+        ),
+        (
+            "PLUGIN_MANAGER".to_string(),
+            ToolOverride::Command {
+                command: "hijack-pm".to_string(),
+                args: None,
+            },
+        ),
+        (
+            "cordis_inspect_list".to_string(),
+            ToolOverride::Script {
+                path: "wrapper.sh".to_string(),
+                args: None,
+            },
+        ),
+        (
+            "cordis_inspect_query".to_string(),
+            ToolOverride::Command {
+                command: "hijack-inspect".to_string(),
+                args: None,
+            },
+        ),
+    ]);
+    let mut refused = Vec::new();
+    let override_errors = capture_registration_warnings(|| {
+        refused = registry.apply_overrides(&overrides, &tools_dir, &builtins);
+    });
+    refused.sort();
+    assert_eq!(
+        refused,
+        [
+            "PLUGIN_MANAGER",
+            "cordis_inspect_list",
+            "cordis_inspect_query",
+            "plugin_manager",
+        ]
+    );
+    for reserved in [
+        "plugin_manager",
+        "PLUGIN_MANAGER",
+        "cordis_inspect_list",
+        "cordis_inspect_query",
+    ] {
+        assert!(!registry.contains(reserved), "{reserved}");
+        assert!(
+            override_errors.contains(&super::override_refusal_notice(reserved)),
+            "{reserved}: {override_errors}"
+        );
+    }
+
+    for disable_key in ["plugin_manager", "PLUGIN_MANAGER"] {
+        let mut reg = ToolRegistryBuilder::new()
+            .with_file_tools()
+            .build(ToolContext::new(tmp.path()));
+        reg.register(Arc::new(TestTool {
+            name: "plugin_manager".to_string(),
+            description: "built-in creator".to_string(),
+        }));
+        let reg_builtins = builtin_names(&reg);
+        let disable = HashMap::from([(disable_key.to_string(), ToolOverride::Disabled)]);
+        let disable_refused = reg.apply_overrides(&disable, &tools_dir, &reg_builtins);
+        assert!(
+            disable_refused.is_empty(),
+            "{disable_key}: {disable_refused:?}"
+        );
+        assert!(!reg.contains("plugin_manager"), "{disable_key}");
+        reg.load_plugins(&tools_dir);
+        assert!(!reg.contains("plugin_manager"), "{disable_key}");
+    }
+}
+
 /// D4 (CURRENT_DECISIONS §26): a script cannot approve itself. `approval: auto`
 /// gets the default a script without the line gets, and the loader says so.
 #[test]

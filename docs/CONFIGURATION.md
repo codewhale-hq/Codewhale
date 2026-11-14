@@ -3653,6 +3653,7 @@ code_mode = true # execute_tools composes MCP/plugin/native calls; false defers 
 verify_tool = true # agent-callable `verify` self-critique; false removes it from the tool catalog
 vision_model = false # true routes image analysis to the [vision_model] model (see above)
 extension_host = false # experimental: run reviewed plugins' native code (see EXTENSIONS.md)
+plugin_creator = true # beta, on by default: built-in plugin_manager tool and Creator mode host module
 ```
 
 `code_mode` is on by default: `execute_tools` is advertised from the first
@@ -3667,6 +3668,12 @@ changes the plugin activation policy, so every plugin is reviewed again after a
 restart. Its `[extension_host]` table (`runtime`, `node`, `bun`) and what the
 host's sandbox does on each platform are in
 [Writing an extension tool](EXTENSIONS.md).
+
+`plugin_creator` is beta and on by default. Keeping it on enables the
+built-in `plugin_manager` tool and Creator mode host module independently of
+`extension_host` (when a supported Node.js or Bun runtime is present and
+Creator availability admits it). Setting `plugin_creator = false` turns off
+the built-in Creator host module and marks Creator mode unavailable.
 
 `[extension_host] mcp_backend` (user config only) chooses the MCP client
 independently of the `extension_host` flag: `"host"` (default) uses the official

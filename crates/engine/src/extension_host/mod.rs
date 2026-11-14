@@ -249,6 +249,11 @@ fn materialize_bundle(root: &Path) -> Result<PathBuf, String> {
         "harness.mjs",
         include_bytes!("../../extension-host/dist/builtin/harness.mjs"),
     )?;
+    materialize_file(
+        &dir.join("builtin"),
+        "creator.mjs",
+        include_bytes!("../../extension-host/dist/builtin/creator.mjs"),
+    )?;
     Ok(bundle)
 }
 
@@ -576,6 +581,7 @@ struct AttachmentState {
     settled: Option<codewhale_plugins::composition_scope::SelectionRevision>,
     session_id: Option<String>,
     agent_id: Option<String>,
+    creator_demanded: bool,
 }
 
 /// Lock order, outermost first, everywhere in this module:
@@ -608,6 +614,7 @@ pub struct ManagerShared {
     execution_broker: execution::Broker,
     harness_users: AtomicU64,
     stock_users: AtomicU64,
+    creator_users: AtomicU64,
     mcp_broker: mcp::Broker,
     mcp_users: AtomicU64,
     /// Tier 1: reviewed third-party plugins.
@@ -840,7 +847,9 @@ impl ManagerShared {
             // Script/hook jobs still require Native policy in Caller::check.
             let core_stock =
                 owner.plugin_id == "host:harness" && self.stock_users.load(Ordering::SeqCst) > 0;
-            if !native_policy && owner.plugin_id != "host:mcp" && !core_stock {
+            let creator_live =
+                owner.plugin_id == "host:creator" && self.creator_users.load(Ordering::SeqCst) > 0;
+            if !native_policy && owner.plugin_id != "host:mcp" && !core_stock && !creator_live {
                 return Err(host_down(tier, &HostStatus::Disabled));
             }
             let owner_tier = registry
@@ -1133,11 +1142,18 @@ impl HostEvents for Events {
             };
         }
         let mut foreign_owner = false;
+        let unlisted_creator = self.tier == HostTier::Builtin
+            && params.owner.plugin_id == "host:creator"
+            && (params.kind != RegisterKind::Tool
+                || !shared.builtin_modules.iter().any(|module| {
+                    module.id == "creator"
+                        && module
+                            .tools
+                            .iter()
+                            .any(|tool| tool.name == params.spec.name)
+                }));
         let result = {
             let mut registry = shared.registry.lock().expect("registry lock");
-            // A host registers only for owners it was asked to activate: one
-            // of its own tier. The owner token already makes another tier's
-            // owner unreachable; this says so out loud.
             match registry.owner(&params.owner.plugin_id) {
                 Some(entry) if entry.tier != self.tier => {
                     foreign_owner = true;
@@ -1148,6 +1164,10 @@ impl HostEvents for Events {
                         self.tier.name()
                     ))
                 }
+                _ if unlisted_creator => Err(format!(
+                    "built-in module `creator` may not register unlisted tool `{}`",
+                    params.spec.name
+                )),
                 _ => registry.register(params),
             }
         };
@@ -1540,6 +1560,7 @@ impl ExtensionHostManager {
                 execution_broker: execution::Broker::default(),
                 harness_users: AtomicU64::new(0),
                 stock_users: AtomicU64::new(0),
+                creator_users: AtomicU64::new(0),
                 mcp_broker: mcp::Broker::default(),
                 mcp_users: AtomicU64::new(0),
                 plugin: TierRuntime::new(),
@@ -1601,7 +1622,7 @@ impl ExtensionHostManager {
 
     /// How many times this manager has tried to start `tier`'s host.
     #[must_use]
-    fn tier_spawn_attempts(&self, tier: HostTier) -> u64 {
+    pub(crate) fn tier_spawn_attempts(&self, tier: HostTier) -> u64 {
         self.shared
             .tier_runtime(tier)
             .spawn_attempts
@@ -1693,6 +1714,35 @@ impl ExtensionHostManager {
             .expect("registry lock")
             .owner(plugin_id)
             .map(|entry| entry.state.clone())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn register_test_creator_tool(&self, name: &str) {
+        let mut reg = self.shared.registry.lock().expect("registry lock");
+        let owner = reg
+            .begin_owner(
+                HostTier::Builtin,
+                "host:creator",
+                "creator",
+                None,
+                "test-creator-hash",
+            )
+            .expect("creator owner");
+        reg.register(&protocol::RegisterParams {
+            scope: None,
+            owner: owner.clone(),
+            kind: protocol::RegisterKind::Tool,
+            spec: protocol::RegisterSpecWire {
+                name: name.to_string(),
+                description: "creator tool".into(),
+                input_schema: serde_json::json!({"type": "object", "properties": {}})
+                    .as_object()
+                    .cloned(),
+                argument_hint: None,
+            },
+        })
+        .expect("register creator tool");
+        reg.mark_active(&owner);
     }
 
     /// Install the user's `[plugins]` settings (boot), and the config file a
@@ -1836,6 +1886,7 @@ impl ExtensionHostManager {
                     settled: None,
                     session_id: None,
                     agent_id: None,
+                    creator_demanded: false,
                 },
             );
         command::bump_epoch();
@@ -1929,11 +1980,12 @@ impl ExtensionHostManager {
             .live_tools()
             .into_iter()
             .filter(|tool| {
-                desired.includes(
-                    &tool.owner.plugin_id,
-                    &tool.content_hash,
-                    tool.scope.as_ref(),
-                )
+                tool.tier != HostTier::Builtin
+                    && desired.includes(
+                        &tool.owner.plugin_id,
+                        &tool.content_hash,
+                        tool.scope.as_ref(),
+                    )
             })
             .collect();
         if tools.is_empty() {
@@ -2254,11 +2306,17 @@ impl ExtensionHostManager {
             Ok(())
         }
         .await;
-        // MCP selection admits tier-0 demand independently of Native plugins.
-        // Harness demand still requires the captured Native policy below.
+        let has_creator_owner = shared
+            .registry
+            .lock()
+            .expect("registry lock")
+            .owner("host:creator")
+            .is_some();
         let builtin = if policy
             || shared.mcp_users.load(Ordering::SeqCst) > 0
             || shared.stock_users.load(Ordering::SeqCst) > 0
+            || shared.creator_users.load(Ordering::SeqCst) > 0
+            || has_creator_owner
         {
             self.reconcile_builtin(policy).await
         } else {
@@ -2367,6 +2425,26 @@ impl ExtensionHostManager {
 
     async fn reconcile_builtin(&self, policy: bool) -> Result<(), String> {
         let shared = &self.shared;
+        let revoked_creator = if shared.creator_users.load(Ordering::SeqCst) == 0 {
+            let mut registry = shared.registry.lock().expect("registry lock");
+            let revoked = registry.revoke_owner("host:creator");
+            registry.forget_owner("host:creator");
+            revoked
+        } else {
+            None
+        };
+        if let Some(owner) = revoked_creator {
+            shared.revoke_owner_state(&owner.plugin_id);
+            dsh_remote::withdraw_owner(&owner);
+            shared.plugin_diagnostic(
+                &owner.plugin_id,
+                format!("extension `{}` revoked", owner.plugin_id),
+            );
+            if let Ok(host) = shared.ready_host(HostTier::Builtin) {
+                host.revoke_calls_of(&owner.plugin_id);
+                shared.deactivate_owner(&host, &owner).await;
+            }
+        }
         let wanted: Vec<&'static BuiltinModule> = {
             let registry = shared.registry.lock().expect("registry lock");
             shared
@@ -2377,6 +2455,8 @@ impl ExtensionHostManager {
                         && (module.id != "harness"
                             || (policy && shared.harness_users.load(Ordering::SeqCst) > 0)
                             || shared.stock_users.load(Ordering::SeqCst) > 0)
+                        && (module.id != "creator"
+                            || shared.creator_users.load(Ordering::SeqCst) > 0)
                         && registry.owner(&module.owner_id()).is_none()
                 })
                 .collect()
@@ -2385,6 +2465,19 @@ impl ExtensionHostManager {
             return Ok(());
         }
         let root = host_root(&shared.options)?;
+        if !supervisor::bundle_dir(&root, bundle_sha256())
+            .join("builtin")
+            .exists()
+            && std::ptr::eq(
+                shared.builtin_modules.as_ptr(),
+                tier::BUILTIN_MODULES.as_ptr(),
+            )
+        {
+            let materialize_root = root.clone();
+            tokio::task::spawn_blocking(move || materialize_bundle(&materialize_root))
+                .await
+                .map_err(|error| format!("extension host bundle preparation failed: {error}"))??;
+        }
         let mut activations = Vec::new();
         for module in wanted {
             // The module's source, accepted only if its SHA-256 is the one the
@@ -2636,6 +2729,22 @@ impl ExtensionHostManager {
                 });
             match outcome {
                 Ok((names, _slash)) => {
+                    if want.tier == HostTier::Builtin
+                        && want.owner_id == "host:creator"
+                        && let Some(module) = shared
+                            .builtin_modules
+                            .iter()
+                            .find(|module| module.owner_id() == want.owner_id)
+                        && let Some(unlisted) = names.iter().find(|name| {
+                            !module.tools.iter().any(|tool| tool.name == name.as_str())
+                        })
+                    {
+                        failure = Some(format!(
+                            "built-in module `{}` reported unlisted tool `{unlisted}`",
+                            want.name
+                        ));
+                        break;
+                    }
                     tools.extend(names);
                     if let Some(scope) = &scope {
                         shared
@@ -3515,6 +3624,7 @@ impl HostAttachment {
 
     pub fn set_identity(&self, session_id: Option<String>, agent_id: Option<String>) {
         let mut left = None;
+        let mut dropped_creator = false;
         if let Some(state) = self
             .manager
             .shared
@@ -3526,12 +3636,157 @@ impl HostAttachment {
             if state.session_id != session_id {
                 left = state.session_id.take();
             }
+            if agent_id.is_some() && state.creator_demanded {
+                state.creator_demanded = false;
+                dropped_creator = true;
+            }
             state.session_id = session_id;
             state.agent_id = agent_id;
+        }
+        if dropped_creator
+            && self
+                .manager
+                .shared
+                .creator_users
+                .fetch_sub(1, Ordering::SeqCst)
+                == 1
+        {
+            self.manager.reconcile_in_background();
         }
         if let Some(left) = left {
             dsh_remote::end_remote_session(&left);
         }
+    }
+
+    pub fn set_creator_demand(&self, demanded: bool) -> bool {
+        let delta = {
+            let mut attachments = self
+                .manager
+                .shared
+                .attachments
+                .lock()
+                .expect("attachments lock");
+            let Some(state) = attachments.get_mut(&self.id) else {
+                return false;
+            };
+            let next = demanded && state.agent_id.is_none();
+            if state.creator_demanded == next {
+                return false;
+            }
+            state.creator_demanded = next;
+            next
+        };
+        if delta {
+            self.manager
+                .shared
+                .creator_users
+                .fetch_add(1, Ordering::SeqCst);
+        } else {
+            self.manager
+                .shared
+                .creator_users
+                .fetch_sub(1, Ordering::SeqCst);
+        }
+        true
+    }
+
+    #[must_use]
+    pub fn creator_ready(&self) -> bool {
+        self.manager
+            .shared
+            .registry
+            .lock()
+            .expect("registry lock")
+            .owner("host:creator")
+            .is_some_and(|entry| entry.state == OwnerState::Active)
+    }
+
+    pub fn sync_creator_in_background(&self) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let manager = Arc::clone(&self.manager);
+        tokio::spawn(async move {
+            if let Err(error) = manager.reconcile_with_policy(false).await {
+                manager.shared.diagnostic(error);
+            }
+        });
+    }
+
+    pub async fn sync_creator_within(&self, limit: Duration) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let manager = Arc::clone(&self.manager);
+        let task = tokio::spawn(async move {
+            if let Err(error) = manager.reconcile_with_policy(false).await {
+                manager.shared.diagnostic(error);
+            }
+        });
+        let _ = tokio::time::timeout(limit, task).await;
+    }
+
+    pub fn install_creator_tools(
+        &self,
+        tool_registry: &mut crate::tools::ToolRegistry,
+    ) -> Vec<String> {
+        let allowed = self
+            .manager
+            .shared
+            .attachments
+            .lock()
+            .expect("attachments lock")
+            .get(&self.id)
+            .is_some_and(|state| state.creator_demanded && state.agent_id.is_none())
+            && self.manager.shared.creator_users.load(Ordering::SeqCst) > 0;
+        if !allowed {
+            return Vec::new();
+        }
+        let tools: Vec<ToolRegistration> = self
+            .manager
+            .shared
+            .registry
+            .lock()
+            .expect("registry lock")
+            .live_tools()
+            .into_iter()
+            .filter(|tool| tool.tier == HostTier::Builtin && tool.owner.plugin_id == "host:creator")
+            .collect();
+        if tools.is_empty() {
+            return Vec::new();
+        }
+        if tool_registry.get(dsh_broker::ACT_TOOL).is_none() {
+            tool_registry.register(Arc::new(dsh_broker::BrokerActTool::ACT));
+        }
+        let taken: HashSet<String> = tool_registry
+            .names()
+            .into_iter()
+            .map(str::to_ascii_lowercase)
+            .collect();
+        let mut installed = Vec::new();
+        for registration in tools {
+            if taken.contains(&registration.name.to_ascii_lowercase()) {
+                let origin = tool_registry
+                    .get(&registration.name)
+                    .map(|existing| existing.registration_origin().into_owned())
+                    .unwrap_or_else(|| "another tool".to_string());
+                self.manager.shared.plugin_diagnostic(
+                    &registration.owner.plugin_id,
+                    format!(
+                        "extension tool `{}` from `{}` skipped: the name is already registered by {origin}",
+                        registration.name, registration.plugin_name
+                    ),
+                );
+                continue;
+            }
+            installed.push(registration.name.clone());
+            tool_registry.register(Arc::new(tool::HostToolSpec::for_selection(
+                registration,
+                Arc::clone(&self.manager.shared),
+                None,
+            )));
+        }
+        installed
     }
     pub fn plugin_view(&self) -> Arc<PluginRegistry> {
         self.manager
@@ -3805,10 +4060,22 @@ pub fn caller_view(
 impl Drop for HostAttachment {
     fn drop(&mut self) {
         self.manager.shared.core_calls.revoke_attachment(self.id);
+        let mut dropped_creator = false;
         if let Ok(mut attachments) = self.manager.shared.attachments.lock()
             && let Some(state) = attachments.remove(&self.id)
         {
             state.selection_cancel.cancel();
+            dropped_creator = state.creator_demanded;
+        }
+        if dropped_creator
+            && self
+                .manager
+                .shared
+                .creator_users
+                .fetch_sub(1, Ordering::SeqCst)
+                == 1
+        {
+            self.manager.reconcile_in_background();
         }
         command::bump_epoch();
     }

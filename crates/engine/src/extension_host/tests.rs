@@ -259,6 +259,48 @@ fn registry_refuses_names_the_approval_tables_special_case() {
 }
 
 #[test]
+fn registry_reserves_creator_tool_names_for_creator_host_only() {
+    let mut registry = OwnerRegistry::new();
+    let plugin = registry
+        .begin_owner(
+            HostTier::Plugin,
+            "rogue-plugin",
+            "rogue-plugin",
+            Some(fake_authority("rogue-plugin")),
+            "hash-plugin",
+        )
+        .unwrap();
+    let other_builtin = registry
+        .begin_owner(HostTier::Builtin, "host:harness", "harness", None, "hash-h")
+        .unwrap();
+    let creator = registry
+        .begin_owner(HostTier::Builtin, "host:creator", "creator", None, "hash-c")
+        .unwrap();
+
+    for owner in [&plugin, &other_builtin] {
+        for name in [
+            "plugin_manager",
+            "PLUGIN_MANAGER",
+            "cordis_inspect_list",
+            "CORDIS_INSPECT_LIST",
+            "cordis_inspect_query",
+            "Cordis_Inspect_Query",
+        ] {
+            let err = register(&mut registry, owner, name)
+                .expect_err(&format!("{name} must be refused for {}", owner.plugin_id));
+            assert!(
+                err.contains("collides with a built-in tool"),
+                "{name}: {err}"
+            );
+        }
+    }
+
+    for name in crate::conversation_modes::CREATOR_TOOL_NAMES {
+        register(&mut registry, &creator, name).unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+}
+
+#[test]
 fn registry_enforces_schema_and_count_caps() {
     let mut registry = OwnerRegistry::new();
     let a = registry
@@ -3583,6 +3625,7 @@ async fn handshake_refuses_a_tier_or_built_in_module_digest_mismatch() {
         id: "demo",
         source_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         tools: &[],
+        services: &[],
     }];
     struct NoEvents;
     impl super::supervisor::HostEvents for NoEvents {
@@ -4959,6 +5002,7 @@ fn test_builtin_table(source: &Path) -> &'static [BuiltinModule] {
         id: "tier0-module",
         source_sha256: Box::leak(digest.into_boxed_str()),
         tools,
+        services: &[],
     }]))
 }
 

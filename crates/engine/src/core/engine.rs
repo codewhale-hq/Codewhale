@@ -2412,16 +2412,23 @@ impl Engine {
             Some(EngineHostSetup::Rlm(_)) => None,
             None => own_plugin_registry
                 .as_ref()
-                .filter(|_| config.features.enabled(Feature::ExtensionHost))
+                .filter(|_| {
+                    config.features.enabled(Feature::ExtensionHost)
+                        || (config.features.enabled(Feature::PluginCreator)
+                            && !api_config.runtime_chat_isolated)
+                })
                 .map(|registry| {
                     let manager = crate::extension_host::manager();
                     let attachment = manager.attach(Arc::clone(registry));
-                    attachment.sync_in_background();
+                    if config.features.enabled(Feature::ExtensionHost) {
+                        attachment.sync_in_background();
+                    }
                     attachment
                 }),
         };
         let plugin_registry = extension_host
             .as_ref()
+            .filter(|_| config.features.enabled(Feature::ExtensionHost))
             .map(|attachment| attachment.plugin_view())
             .or(own_plugin_registry)
             .unwrap_or_else(|| {
@@ -4866,8 +4873,12 @@ impl Engine {
                                 self.drop_mcp_pool();
                                 if let Some(attachment) = &self.extension_host {
                                     attachment.set_plugins(Arc::clone(&self.plugin_registry));
-                                    self.plugin_registry = attachment.plugin_view();
-                                    attachment.sync_in_background();
+                                    if self.config.features.enabled(Feature::ExtensionHost) {
+                                        self.plugin_registry = attachment.plugin_view();
+                                        attachment.sync_in_background();
+                                    } else if self.creator_available {
+                                        attachment.sync_creator_in_background();
+                                    }
                                 }
                             }
                             self.session.project_context =
@@ -6823,19 +6834,38 @@ impl Engine {
         // Load plugin tools from the user's tools directory and apply any
         // config.toml overrides. Explicit overrides win over auto-discovered
         // scripts with the same tool name; neither may replace a built-in.
-        let extension_host = self
+        let ext_enabled = self.config.features.enabled(Feature::ExtensionHost);
+        let creator_eligible = self.creator_eligible();
+        let is_creator =
+            crate::conversation_modes::is_creator(self.session.agent_preset.as_deref());
+        let extension_host = self.extension_host.as_ref().filter(|_| ext_enabled);
+        if let Some(attachment) = self
             .extension_host
             .as_ref()
-            .filter(|_| self.config.features.enabled(Feature::ExtensionHost));
-        if let Some(attachment) = extension_host {
-            // Natives only: scripts are added next and must not count as built-ins.
+            .filter(|_| ext_enabled || creator_eligible)
+        {
             attachment
                 .manager()
                 .note_native_names(tool_registry.names());
-            if attachment.selection_settled() {
-                attachment.sync_in_background();
-            } else {
-                attachment.sync_within(EXTENSION_FIRST_SYNC_WAIT).await;
+            if ext_enabled {
+                if attachment.selection_settled()
+                    && (!creator_eligible || !is_creator || attachment.creator_ready())
+                {
+                    attachment.sync_in_background();
+                } else {
+                    attachment.sync_within(EXTENSION_FIRST_SYNC_WAIT).await;
+                }
+            } else if creator_eligible {
+                if is_creator && !attachment.creator_ready() {
+                    attachment
+                        .sync_creator_within(EXTENSION_FIRST_SYNC_WAIT)
+                        .await;
+                } else {
+                    attachment.sync_creator_in_background();
+                }
+            }
+            if creator_eligible {
+                attachment.install_creator_tools(&mut tool_registry);
             }
         }
         let (mut plugin_tool_names, refused_overrides) =
@@ -7908,7 +7938,9 @@ impl Engine {
             // Capture only this engine's reviewed, live plugin contributions. A
             // failed/withdrawn capture records retirement. Full bounded snapshots
             // use ordinary session history, not the smaller workspace line delta.
-            if let Some(attachment) = self.extension_host.as_ref() {
+            if self.config.features.enabled(Feature::ExtensionHost)
+                && let Some(attachment) = self.extension_host.as_ref()
+            {
                 self.plugin_registry = attachment.plugin_view();
             }
             self.config.hook_executor = self.config.hook_executor.as_ref().map(|hooks| {
@@ -10220,30 +10252,53 @@ impl Engine {
         }
     }
 
+    fn creator_eligible(&self) -> bool {
+        self.creator_available
+            && self.child_host.is_none()
+            && self.rlm_host.is_none()
+            && !self.api_config.runtime_chat_isolated
+    }
+
     async fn refresh_creator_availability(&mut self) {
         self.creator_available = false;
-        if self.child_host.is_some()
-            || self.rlm_host.is_some()
-            || self.api_config.runtime_chat_isolated
-            || !crate::conversation_modes::is_creator(self.session.agent_preset.as_deref())
-        {
-            return;
+        let is_creator =
+            crate::conversation_modes::is_creator(self.session.agent_preset.as_deref());
+        let eligible = self.child_host.is_none()
+            && self.rlm_host.is_none()
+            && !self.api_config.runtime_chat_isolated;
+        let reason = if eligible {
+            let options = crate::extension_host::ExtensionHostOptions::from_config(
+                self.api_config.extension_host.as_ref(),
+            );
+            let plugin_creator_enabled = self.config.features.enabled(Feature::PluginCreator);
+            crate::conversation_modes::creator_unavailable_reason(options, plugin_creator_enabled)
+                .await
+        } else {
+            None
+        };
+        if eligible {
+            self.creator_available = reason.is_none();
         }
-        let options = crate::extension_host::ExtensionHostOptions::from_config(
-            self.api_config.extension_host.as_ref(),
-        );
-        match crate::conversation_modes::creator_unavailable_reason(options).await {
-            None => self.creator_available = true,
-            Some(reason) => {
-                if self.creator_unavailable_noted.as_deref() != Some(self.session.id.as_str()) {
-                    self.creator_unavailable_noted = Some(self.session.id.clone());
-                    let _ = self
-                        .send_event(Event::status(format!(
-                            "Creator mode is unavailable, so this conversation runs without its plugin tools and guides: {reason}"
-                        )))
-                        .await;
+        if let Some(attachment) = self.extension_host.as_ref() {
+            let ext_enabled = self.config.features.enabled(Feature::ExtensionHost);
+            if attachment.set_creator_demand(self.creator_available) {
+                if ext_enabled {
+                    attachment.sync_in_background();
+                } else {
+                    attachment.sync_creator_in_background();
                 }
             }
+        }
+        if is_creator
+            && let Some(reason) = reason
+            && self.creator_unavailable_noted.as_deref() != Some(self.session.id.as_str())
+        {
+            self.creator_unavailable_noted = Some(self.session.id.clone());
+            let _ = self
+                .send_event(Event::status(format!(
+                    "Creator mode is unavailable, so this conversation runs without its plugin tools and guides: {reason}"
+                )))
+                .await;
         }
     }
 
@@ -11040,11 +11095,16 @@ fn configure_plugin_tools(
 ) -> (std::collections::HashSet<String>, Vec<String>) {
     // Everything registered before the plugin directory loads is built in
     // (native and host-dynamic tools); no script tool may replace it (D4).
-    let builtin_names: std::collections::HashSet<String> = tool_registry
+    let mut builtin_names: std::collections::HashSet<String> = tool_registry
         .names()
         .into_iter()
         .map(|s| s.to_string())
         .collect();
+    builtin_names.extend(
+        crate::conversation_modes::CREATOR_TOOL_NAMES
+            .into_iter()
+            .map(str::to_string),
+    );
 
     let plugin_dir = plugin_tools_dir(tools_config);
     let executor = crate::tools::plugin::PluginExecutor::for_engine();

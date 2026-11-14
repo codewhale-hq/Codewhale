@@ -1444,7 +1444,12 @@ impl OwnerRegistry {
                 "tool name `{name}` uses a reserved prefix; {NAME_HINT}"
             ));
         }
-        if self.native_names.contains(&plain_key) {
+        if self.native_names.contains(&plain_key)
+            || (params.owner.plugin_id != "host:creator"
+                && crate::conversation_modes::CREATOR_TOOL_NAMES
+                    .iter()
+                    .any(|reserved| reserved.eq_ignore_ascii_case(name)))
+        {
             return Err(format!(
                 "tool name `{name}` collides with a built-in tool; extensions never shadow core tools; {NAME_HINT}"
             ));

@@ -19794,7 +19794,13 @@ async fn plugin_catalog_over_http_lists_and_toggles_feature_rows() -> Result<()>
         .collect();
     assert_eq!(
         builtin_ids,
-        ["subagents", "web_search", "shell_tool", "agent_loop"]
+        [
+            "subagents",
+            "web_search",
+            "shell_tool",
+            "plugin_creator",
+            "agent_loop",
+        ]
     );
     assert!(
         catalog["experimental"]

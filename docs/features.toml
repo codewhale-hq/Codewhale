@@ -216,6 +216,17 @@ docs = "docs/EXTENSIONS.md"
 owner = "crates/engine/src/extension_host"
 
 [[feature]]
+id = "plugin-creator"
+name = "Plugin creator"
+summary = "Enables the built-in plugin_manager tool and Creator mode host module while Rust retains permission gates."
+status = "experimental"
+surfaces = { tui = "preview", web = "none", api = "preview" }
+since = "unreleased"
+flag = "plugin_creator"
+docs = "docs/MODES.md"
+owner = "crates/engine/src/extension_host"
+
+[[feature]]
 id = "finance-host"
 name = "Finance host"
 summary = "Routes opted-in finance tools through the bundled Native host under the existing permission and sandbox gates."

@@ -12,12 +12,26 @@ pub(crate) fn options(config: &Config) -> ExtensionHostOptions {
 }
 
 pub(crate) async fn current_table(config: &Config) -> ConversationModeTable {
-    conversation_modes::current_table(options(config)).await
+    let plugin_creator_enabled = config
+        .features()
+        .enabled(codewhale_runtime::features::Feature::PluginCreator);
+    conversation_modes::current_table(options(config), plugin_creator_enabled).await
 }
 
 pub(crate) fn current_table_blocking(config: Option<&Config>) -> ConversationModeTable {
     let options = config.map_or_else(ExtensionHostOptions::default, options);
-    let future = conversation_modes::current_table(options);
+    let plugin_creator_enabled = config.map_or_else(
+        || {
+            codewhale_runtime::features::Features::with_defaults()
+                .enabled(codewhale_runtime::features::Feature::PluginCreator)
+        },
+        |config| {
+            config
+                .features()
+                .enabled(codewhale_runtime::features::Feature::PluginCreator)
+        },
+    );
+    let future = conversation_modes::current_table(options, plugin_creator_enabled);
     match tokio::runtime::Handle::try_current() {
         Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
             tokio::task::block_in_place(|| handle.block_on(future))

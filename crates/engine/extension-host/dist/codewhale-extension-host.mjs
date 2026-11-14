@@ -19,7 +19,7 @@ var __export = (target, all) => {
 var define_BUILTIN_MODULE_DIGESTS_default;
 var init_define_BUILTIN_MODULE_DIGESTS = __esm({
   "<define:__BUILTIN_MODULE_DIGESTS__>"() {
-    define_BUILTIN_MODULE_DIGESTS_default = { harness: "ac65aa44a3824dcdb0060db426bf530a088fd593e58b9f4cfdaefbc09a5fa037", mcp: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39" };
+    define_BUILTIN_MODULE_DIGESTS_default = { creator: "036ac514a65083d2fd1f43f68722871eb94bef625a3d78cdbbadc6984e6ba491", harness: "ac65aa44a3824dcdb0060db426bf530a088fd593e58b9f4cfdaefbc09a5fa037", mcp: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39" };
   }
 });
 
@@ -8548,8 +8548,8 @@ function mergeRecords(older, newer) {
     changes: { ...older.changes, ...newer.changes }
   };
 }
-function merge3(journal, id, record3) {
-  const merged = mergeRecords(journal.get(id), record3);
+function merge3(journal, id, record4) {
+  const merged = mergeRecords(journal.get(id), record4);
   if (merged) {
     journal.set(id, merged);
   } else {
@@ -8610,27 +8610,27 @@ function place(data2, options, parent, position) {
 }
 function applyJournal(data2, journal, filter = () => true, warn = () => {
 }) {
-  for (const [id, record3] of journal) {
+  for (const [id, record4] of journal) {
     if (!filter(id, null)) continue;
-    if (record3.kind === "remove") {
+    if (record4.kind === "remove") {
       detach(data2, id);
       continue;
     }
     const flat = flatten(data2).get(id);
     if (!flat) {
       const options = { id };
-      applyChanges(options, record3.changes, (key) => filter(id, key));
-      const parent = record3.parent ?? null;
-      if (!place(data2, options, parent, record3.position)) {
+      applyChanges(options, record4.changes, (key) => filter(id, key));
+      const parent = record4.parent ?? null;
+      if (!place(data2, options, parent, record4.position)) {
         warn("cannot place entry %C: group %C not found", id, parent);
       }
       continue;
     }
-    applyChanges(flat.options, record3.changes, (key) => filter(id, key));
-    if (record3.parent !== void 0 && flat.parent !== record3.parent) {
+    applyChanges(flat.options, record4.changes, (key) => filter(id, key));
+    if (record4.parent !== void 0 && flat.parent !== record4.parent) {
       detach(data2, id);
-      if (!place(data2, flat.options, record3.parent, record3.position)) {
-        warn("cannot move entry %C: group %C not found", id, record3.parent);
+      if (!place(data2, flat.options, record4.parent, record4.position)) {
+        warn("cannot move entry %C: group %C not found", id, record4.parent);
         place(data2, flat.options, flat.parent, flat.position);
       }
     }
@@ -8639,11 +8639,11 @@ function applyJournal(data2, journal, filter = () => true, warn = () => {
 }
 function reconcile(journal, base, theirs, fileOwned) {
   const conflicts = [];
-  for (const [id, record3] of journal) {
+  for (const [id, record4] of journal) {
     if (!fileOwned(id, null)) continue;
     const b = base.get(id);
     const t = theirs.get(id);
-    if (record3.kind === "remove") {
+    if (record4.kind === "remove") {
       if (!t) {
         journal.delete(id);
       } else if (!b || !deepEqual(t.options, b.options)) {
@@ -8659,21 +8659,21 @@ function reconcile(journal, base, theirs, fileOwned) {
       }
       continue;
     }
-    if (record3.created) record3.created = false;
-    for (const key of Object.keys(record3.changes)) {
+    if (record4.created) record4.created = false;
+    for (const key of Object.keys(record4.changes)) {
       if (!fileOwned(id, key)) continue;
       const bv = b?.options?.[key];
       const tv = t.options[key];
-      if (deepEqual(bv, tv) || deepEqual(tv, record3.changes[key])) continue;
+      if (deepEqual(bv, tv) || deepEqual(tv, record4.changes[key])) continue;
       conflicts.push({ id, reason: `key "${key}" modified both in file and at runtime` });
-      delete record3.changes[key];
+      delete record4.changes[key];
     }
-    if (record3.parent !== void 0 && b && t.parent !== b.parent && t.parent !== record3.parent) {
+    if (record4.parent !== void 0 && b && t.parent !== b.parent && t.parent !== record4.parent) {
       conflicts.push({ id, reason: "moved both in file and at runtime" });
-      record3.parent = void 0;
+      record4.parent = void 0;
     }
-    const moved = record3.parent !== void 0 && record3.parent !== t.parent;
-    if (!Object.keys(record3.changes).length && !moved) {
+    const moved = record4.parent !== void 0 && record4.parent !== t.parent;
+    if (!Object.keys(record4.changes).length && !moved) {
       journal.delete(id);
     }
   }
@@ -8775,9 +8775,9 @@ function routeJournal(journal, data2, patches, warn) {
       warn("cannot place entry %C: group %C not found", options.id, parent);
     }
   };
-  for (const [id, record3] of journal) {
+  for (const [id, record4] of journal) {
     const owner = index.entry(id);
-    if (record3.kind === "remove") {
+    if (record4.kind === "remove") {
       if (owner.type === "insert") {
         owner.list.splice(owner.list.indexOf(owner.options), 1);
         patched = true;
@@ -8789,31 +8789,31 @@ function routeJournal(journal, data2, patches, warn) {
     const current2 = owner.type === "insert" ? owner : flatten(data2).get(id);
     if (!current2) {
       const options = { id };
-      applyChanges(options, record3.changes);
-      placeAt(options, record3.parent ?? null, record3.position);
+      applyChanges(options, record4.changes);
+      placeAt(options, record4.parent ?? null, record4.position);
       continue;
     }
-    if (record3.parent !== void 0 && current2.parent !== record3.parent) {
+    if (record4.parent !== void 0 && current2.parent !== record4.parent) {
       if (owner.type === "insert") {
         owner.list.splice(owner.list.indexOf(owner.options), 1);
         patched = true;
       } else {
         detach(data2, id);
       }
-      applyChanges(current2.options, record3.changes);
-      placeAt(current2.options, record3.parent, record3.position);
+      applyChanges(current2.options, record4.changes);
+      placeAt(current2.options, record4.parent, record4.position);
       continue;
     }
     if (owner.type === "insert") {
-      applyChanges(current2.options, record3.changes);
+      applyChanges(current2.options, record4.changes);
       patched = true;
       continue;
     }
     const patchChanges = {};
-    applyChanges(current2.options, record3.changes, (key) => {
+    applyChanges(current2.options, record4.changes, (key) => {
       const keyOwner = index.key(id, key);
       if (keyOwner.type !== "patch") return true;
-      (patchChanges[keyOwner.index] ??= {})[key] = record3.changes[key];
+      (patchChanges[keyOwner.index] ??= {})[key] = record4.changes[key];
       return false;
     });
     for (const [i2, changes] of Object.entries(patchChanges)) {
@@ -9118,7 +9118,7 @@ var init_src2 = __esm({
         const batch = this.journal;
         this.journal = /* @__PURE__ */ new Map();
         const restore = () => {
-          for (const [id, record3] of this.journal) merge3(batch, id, record3);
+          for (const [id, record4] of this.journal) merge3(batch, id, record4);
           this.journal = batch;
         };
         const data2 = structuredClone(this.cache.data);
@@ -16503,23 +16503,23 @@ var init_prompt = __esm({
         }
         const entry = { owner, name: section.id, definition: section, disposed: false };
         const undo = (section.interpolate === void 0 ? this.registrations : this.templates).add(entry, { name: section.id, description: section.text });
-        const record3 = { entry, bytes, dispose: () => {
-          if (sections.get(section.id) !== record3) return;
+        const record4 = { entry, bytes, dispose: () => {
+          if (sections.get(section.id) !== record4) return;
           sections.delete(section.id);
           this.bytes -= bytes;
           this.count -= 1;
           if (sections.size === 0) this.owners.delete(owner);
           undo();
         } };
-        sections.set(section.id, record3);
+        sections.set(section.id, record4);
         this.owners.set(owner, sections);
         this.bytes += bytes;
         this.count += 1;
-        return record3.dispose;
+        return record4.dispose;
       }
       /** Release reservations even after a plugin fails or times out during teardown. */
       forget(owner) {
-        for (const record3 of [...this.owners.get(owner)?.values() ?? []]) record3.dispose();
+        for (const record4 of [...this.owners.get(owner)?.values() ?? []]) record4.dispose();
         this.registrations.forget(owner);
         this.templates.forget(owner);
       }
@@ -18023,6 +18023,197 @@ var init_terminal = __esm({
   }
 });
 
+// src/dsh/plugin-manager.ts
+function invalid5(what) {
+  return new RpcError(ErrorCode.Internal, `invalid plugins broker ${what}`);
+}
+function record3(value, what) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw invalid5(what);
+  return value;
+}
+function named2(value, what) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new RpcError(ErrorCode.InvalidParams, `${what} must be a non-empty string`);
+  }
+  return value;
+}
+function booleanFlag(value, what) {
+  if (typeof value !== "boolean") {
+    throw new RpcError(ErrorCode.InvalidParams, `${what} must be a boolean`);
+  }
+  return value;
+}
+function changeResult(value, what) {
+  const row = record3(value, what);
+  if (typeof row.changed !== "boolean" || typeof row.application !== "string" || !APPLICATIONS.has(row.application)) {
+    throw invalid5(what);
+  }
+  return row;
+}
+function requireCreator(host2, ctx, service) {
+  if (host2.tier !== "builtin" || host2.ownerOf(ctx)?.ref.plugin_id !== "host:creator") {
+    throw new RpcError(ErrorCode.Refused, `${service} is only available to the built-in creator module`);
+  }
+  if (host2.liveInvocation(ctx) === void 0) {
+    throw new RpcError(ErrorCode.Refused, `${service} requires a live tool invocation`);
+  }
+}
+var EXEMPTIONS_DISABLED, APPLICATIONS, builtinPluginManagerAdapter, builtinSandboxPolicyAdapter, builtinApprovalAdapter, BUILTIN_DSH_ADAPTERS;
+var init_plugin_manager = __esm({
+  "src/dsh/plugin-manager.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    EXEMPTIONS_DISABLED = "Codewhale does not exempt plugins from the host compatibility contract.";
+    APPLICATIONS = /* @__PURE__ */ new Set(["applied", "cancelled", "overridden", "restart-required", "failed"]);
+    builtinPluginManagerAdapter = {
+      service: "pluginManager",
+      define(host2) {
+        class BuiltinPluginManagerService extends Service {
+          constructor(ctx) {
+            super(ctx, "pluginManager");
+          }
+          async listBundles() {
+            requireCreator(host2, this.ctx, "pluginManager");
+            const answer = record3(await host2.broker(this.ctx, "plugins", "list", {}), "list");
+            if (!Array.isArray(answer.entries)) throw invalid5("list");
+            return answer.entries;
+          }
+          async listPlugins() {
+            requireCreator(host2, this.ctx, "pluginManager");
+            const answer = record3(await host2.broker(this.ctx, "plugins", "status", {}), "status");
+            if (!Array.isArray(answer.entries)) throw invalid5("status");
+            return answer.entries;
+          }
+          async setPluginEnabled(target, enabled) {
+            requireCreator(host2, this.ctx, "pluginManager");
+            const entry = named2(target, "target");
+            const method = booleanFlag(enabled, "enabled") ? "enable" : "disable";
+            return changeResult(await host2.broker(this.ctx, "plugins", method, { target: entry, row: entry }), method);
+          }
+          async setBundleEnabled(target, enabled) {
+            requireCreator(host2, this.ctx, "pluginManager");
+            const bundle = named2(target, "target");
+            const method = booleanFlag(enabled, "enabled") ? "enable" : "disable";
+            return changeResult(await host2.broker(this.ctx, "plugins", method, { target: bundle }), method);
+          }
+          async installBundle(target, options) {
+            requireCreator(host2, this.ctx, "pluginManager");
+            const spec = named2(target, "target");
+            if (options !== void 0 && options !== null && (typeof options !== "object" || Array.isArray(options))) {
+              throw new RpcError(ErrorCode.InvalidParams, "options must be an object");
+            }
+            const payload = { target: spec };
+            if (options?.enabled !== void 0) payload.enabled = booleanFlag(options.enabled, "enabled");
+            if (options?.approvedBuilds !== void 0) {
+              if (!Array.isArray(options.approvedBuilds) || options.approvedBuilds.some((name) => typeof name !== "string" || name.length === 0)) {
+                throw new RpcError(ErrorCode.InvalidParams, "approvedBuilds must be an array of non-empty strings");
+              }
+              payload.approved_builds = [...options.approvedBuilds];
+            }
+            if (options?.registry !== void 0 && options.registry !== null) {
+              payload.registry = named2(options.registry, "registry");
+            }
+            return changeResult(await host2.broker(this.ctx, "plugins", "install", payload), "install");
+          }
+          async removeBundle(target) {
+            requireCreator(host2, this.ctx, "pluginManager");
+            const bundle = named2(target, "target");
+            return changeResult(await host2.broker(this.ctx, "plugins", "remove", { target: bundle }), "remove");
+          }
+          listVersionExemptions() {
+            requireCreator(host2, this.ctx, "pluginManager");
+            return { exemptions: [], warnings: [EXEMPTIONS_DISABLED] };
+          }
+          async setVersionExemption(target, runtimeVersion, enabled, _acceptRisk) {
+            requireCreator(host2, this.ctx, "pluginManager");
+            named2(target, "target");
+            named2(runtimeVersion, "runtimeVersion");
+            booleanFlag(enabled, "enabled");
+            return {
+              changed: false,
+              application: "failed",
+              stage: "install",
+              target: String(target),
+              error: {
+                code: "incompatible-version",
+                diagnostic: EXEMPTIONS_DISABLED,
+                message: EXEMPTIONS_DISABLED
+              }
+            };
+          }
+          async cancelInstall() {
+            requireCreator(host2, this.ctx, "pluginManager");
+            return { status: "not-running" };
+          }
+        }
+        Object.freeze(BuiltinPluginManagerService.prototype);
+        return BuiltinPluginManagerService;
+      }
+    };
+    builtinSandboxPolicyAdapter = {
+      service: "sandboxPolicy",
+      define(host2) {
+        class BuiltinSandboxPolicyService extends Service {
+          constructor(ctx) {
+            super(ctx, "sandboxPolicy");
+          }
+          resolve(_query) {
+            requireCreator(host2, this.ctx, "sandboxPolicy");
+            return { mode: "read-only" };
+          }
+        }
+        Object.freeze(BuiltinSandboxPolicyService.prototype);
+        return BuiltinSandboxPolicyService;
+      }
+    };
+    builtinApprovalAdapter = {
+      service: "approval",
+      define(host2) {
+        class BuiltinApprovalService extends Service {
+          constructor(ctx) {
+            super(ctx, "approval");
+          }
+          async request(req) {
+            if (host2.tier !== "builtin") return "unavailable";
+            if (host2.ownerOf(this.ctx)?.ref.plugin_id !== "host:creator") return "unavailable";
+            const invocation = host2.liveInvocation(this.ctx);
+            if (invocation === void 0) return "unavailable";
+            if (req === null || typeof req !== "object" || Array.isArray(req)) return "unavailable";
+            const candidate = req;
+            const signal = candidate.signal;
+            if (signal !== void 0 && !(signal instanceof AbortSignal)) return "unavailable";
+            if (signal?.aborted || invocation.signal.aborted) return "cancelled";
+            if (invocation.agent === void 0 || candidate.agent !== invocation.agent || candidate.callId !== invocation.callId) {
+              return "unavailable";
+            }
+            try {
+              const answer = record3(await host2.broker(this.ctx, "plugins", "posture", {}, signal), "posture");
+              const mode = answer.mode;
+              if (mode === "read-only") return "rejected";
+              if (mode === "workspace-write" || mode === "danger-full-access") return "allowed-once";
+              return "unavailable";
+            } catch (error) {
+              if (signal?.aborted || invocation.signal.aborted) return "cancelled";
+              if (error instanceof RpcError && error.code === ErrorCode.Cancelled) return "cancelled";
+              return "unavailable";
+            }
+          }
+        }
+        Object.freeze(BuiltinApprovalService.prototype);
+        return BuiltinApprovalService;
+      }
+    };
+    BUILTIN_DSH_ADAPTERS = [
+      builtinPluginManagerAdapter,
+      builtinSandboxPolicyAdapter,
+      builtinApprovalAdapter
+    ];
+  }
+});
+
 // src/dsh/adapters.ts
 var DSH_ADAPTERS;
 var init_adapters = __esm({
@@ -18038,6 +18229,7 @@ var init_adapters = __esm({
     init_settings();
     init_catalog();
     init_terminal();
+    init_plugin_manager();
     DSH_ADAPTERS = [
       sessionsAdapter,
       systemPromptAdapter,
@@ -18453,10 +18645,10 @@ function createStorage({ dataDir, isActive, onWarning }) {
     let count = 0, bytes = 0;
     for (const entry of names) {
       if (entry === name) continue;
-      const record3 = await readRecord(directory2, entry);
-      if (!record3) continue;
+      const record4 = await readRecord(directory2, entry);
+      if (!record4) continue;
       count++;
-      bytes += record3.bytes;
+      bytes += record4.bytes;
       if (count + 1 > STORAGE_LIMITS.keys || bytes + candidateBytes > STORAGE_LIMITS.totalBytes) throw new StorageError("limit", "plugin storage exceeds its observed owner quota");
     }
     if (count + 1 > STORAGE_LIMITS.keys || bytes + candidateBytes > STORAGE_LIMITS.totalBytes) throw new StorageError("limit", "plugin storage exceeds its observed owner quota");
@@ -18514,9 +18706,9 @@ function createStorage({ dataDir, isActive, onWarning }) {
     get(key) {
       return queue(async (dir) => {
         checkKey(key);
-        const record3 = await readRecord(dir, recordName(key));
+        const record4 = await readRecord(dir, recordName(key));
         active();
-        return record3?.value;
+        return record4?.value;
       });
     },
     set(key, value) {
@@ -18948,7 +19140,7 @@ function pendingFibers(fiber) {
   }
   return out;
 }
-var OWNER, REFUSED_SERVICES, PROVIDED_SERVICES, CORDIS_SERVICES, ACTIVATE_DEADLINE_MS, DISPOSE_DEADLINE_MS, ownerStorage, HostRoot;
+var OWNER, REFUSED_SERVICES, PROVIDED_SERVICES, CORDIS_SERVICES, CREATOR_SERVICES, ACTIVATE_DEADLINE_MS, DISPOSE_DEADLINE_MS, ownerStorage, HostRoot;
 var init_root = __esm({
   "src/root.ts"() {
     "use strict";
@@ -18979,6 +19171,7 @@ var init_root = __esm({
     REFUSED_SERVICES = new Set(compatibility_default.refused_services);
     PROVIDED_SERVICES = new Set(Object.values(compatibility_default.provided_services).flat());
     CORDIS_SERVICES = new Set(compatibility_default.provided_services.cordis);
+    CREATOR_SERVICES = /* @__PURE__ */ new Set(["pluginManager", "sandboxPolicy", "approval"]);
     ACTIVATE_DEADLINE_MS = 5e3;
     DISPOSE_DEADLINE_MS = 2e3;
     ownerStorage = new AsyncLocalStorage2();
@@ -19282,7 +19475,18 @@ var init_root = __esm({
           ...[...PROVIDED_SERVICES].filter((name) => !CORDIS_SERVICES.has(name) && !shims.has(name)).map((name) => `${name} is declared in compatibility.json but has no installed service`)
         ];
         if (mismatched.length > 0) throw new Error(`DSH provided services disagree with the installed services: ${mismatched.join("; ")}`);
-        for (const [name, shim] of shims) {
+        const builtinExtras = [];
+        if (tier === "builtin") {
+          for (const adapter of BUILTIN_DSH_ADAPTERS) {
+            const shim = adapter.define(adapterHost);
+            if (shims.has(adapter.service)) {
+              shims.set(adapter.service, shim);
+            } else {
+              builtinExtras.push([adapter.service, shim]);
+            }
+          }
+        }
+        for (const [name, shim] of [...shims, ...builtinExtras]) {
           shimClasses.set(name, shim);
           root.plugin(shim);
         }
@@ -19404,7 +19608,9 @@ var init_root = __esm({
             return { status: "ok", tools: [], commands: [] };
           }
           const plugin = pickPlugin(module);
-          const missing = Object.keys(Inject.resolve(plugin.inject)).filter((name) => !PROVIDED_SERVICES.has(name));
+          const creatorAllowed = this.tier === "builtin" && owner.ref.plugin_id === "host:creator";
+          const creatorRestricted = this.tier === "builtin" && !creatorAllowed;
+          const missing = Object.keys(Inject.resolve(plugin.inject)).filter((name) => (!PROVIDED_SERVICES.has(name) || creatorRestricted && CREATOR_SERVICES.has(name)) && !(creatorAllowed && CREATOR_SERVICES.has(name)));
           if (missing.length > 0) {
             const owned = missing.filter((name) => REFUSED_SERVICES.has(name));
             throw new Error(`requires ${missing.map((name) => `\`${name}\``).join(", ")}, not provided by the Codewhale extension host in this phase` + (owned.length > 0 ? `; ${owned.map((name) => `\`${name}\``).join(", ")} belong${owned.length === 1 ? "s" : ""} to the Codewhale core and no reviewed bridge exposes ${owned.length === 1 ? "it" : "them"} yet` : ""));
@@ -19552,6 +19758,7 @@ var init_root = __esm({
         const closed = new AbortController();
         const invocation = {
           owner: local.owner,
+          callId,
           session: agent?.session,
           agent,
           questionTicket: identity?.question_ticket,

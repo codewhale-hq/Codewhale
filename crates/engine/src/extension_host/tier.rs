@@ -29,6 +29,7 @@
 //! executing as the current OS user. Sources are embedded and materialized at
 //! `<bundle dir>/builtin/<module>.mjs` with the host's notices.
 
+use super::protocol::DshService;
 use crate::tools::spec::ApprovalRequirement;
 
 /// Every tier-0 owner id starts with this: `host:<module>`.
@@ -131,6 +132,7 @@ pub struct BuiltinModule {
     /// activate a file with any other digest.
     pub source_sha256: &'static str,
     pub tools: &'static [Tier0Tool],
+    pub services: &'static [DshService],
 }
 
 impl BuiltinModule {
@@ -149,11 +151,22 @@ pub const BUILTIN_MODULES: &[BuiltinModule] = &[
         id: "harness",
         source_sha256: "ac65aa44a3824dcdb0060db426bf530a088fd593e58b9f4cfdaefbc09a5fa037",
         tools: &[],
+        services: &[],
     },
     BuiltinModule {
         id: "mcp",
         source_sha256: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39",
         tools: &[],
+        services: &[],
+    },
+    BuiltinModule {
+        id: "creator",
+        source_sha256: "036ac514a65083d2fd1f43f68722871eb94bef625a3d78cdbbadc6984e6ba491",
+        tools: &[Tier0Tool {
+            name: "plugin_manager",
+            approval: ApprovalRequirement::Required,
+        }],
+        services: &[DshService::Plugins],
     },
 ];
 
@@ -292,6 +305,7 @@ mod tests {
             id: "demo",
             source_sha256: "0000000000000000000000000000000000000000000000000000000000000000",
             tools: TOOLS,
+            services: &[],
         }];
         assert_eq!(
             tool_approval(&table, "host:demo", "open"),
@@ -324,4 +338,25 @@ mod tests {
             ApprovalRequirement::Required
         );
     }
+
+    #[test]
+    fn only_the_creator_row_names_a_service() {
+        let with_services: Vec<&str> = BUILTIN_MODULES
+            .iter()
+            .filter(|module| !module.services.is_empty())
+            .map(|module| module.id)
+            .collect();
+        assert_eq!(with_services, ["creator"]);
+        assert_eq!(
+            BUILTIN_MODULES
+                .iter()
+                .find(|module| module.id == "creator")
+                .map(|module| module.services),
+            Some(&[DshService::Plugins][..])
+        );
+    }
 }
+
+#[cfg(test)]
+#[path = "creator_tests.rs"]
+mod creator_tests;

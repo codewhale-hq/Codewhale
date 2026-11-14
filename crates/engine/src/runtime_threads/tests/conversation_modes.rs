@@ -59,7 +59,8 @@ async fn mode_is_set_at_creation_and_refused_when_unknown_or_unavailable() -> Re
         .expect_err("unavailable");
     assert_eq!(refusal_code(&unavailable), ModeRefusal::MODE_UNAVAILABLE);
     assert_eq!(unavailable.to_string(), "no runtime");
-    let table = crate::conversation_modes::current_table(manager.extension_host_options()).await;
+    let table =
+        crate::conversation_modes::current_table(manager.extension_host_options(), true).await;
     assert!(table.modes[0].available && table.modes[0].reason.is_none());
     assert!(!table.modes[1].available);
     assert_eq!(table.modes[1].reason.as_deref(), Some("no runtime"));
@@ -120,7 +121,8 @@ async fn creator_is_listed_unavailable_until_it_loads_its_tools() -> Result<()> 
     let _real = CreatorAvailabilityGuard::unforced();
     let tmp = tempfile::tempdir()?;
     let manager = test_manager(tmp.path().to_path_buf())?;
-    let table = crate::conversation_modes::current_table(manager.extension_host_options()).await;
+    let table =
+        crate::conversation_modes::current_table(manager.extension_host_options(), true).await;
     assert!(table.modes[0].available);
     assert!(!table.modes[1].available);
     assert_eq!(

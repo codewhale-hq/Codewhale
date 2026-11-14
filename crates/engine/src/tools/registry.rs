@@ -501,13 +501,23 @@ impl ToolRegistry {
         for (tool_name, override_cfg) in overrides {
             match override_cfg {
                 codewhale_runtime::config::ToolOverride::Disabled => {
-                    if self.remove_tool(tool_name) {
+                    let canonical = crate::conversation_modes::CREATOR_TOOL_NAMES
+                        .iter()
+                        .copied()
+                        .find(|reserved| reserved.eq_ignore_ascii_case(tool_name));
+                    let removed = self.remove_tool(tool_name)
+                        || canonical.is_some_and(|reserved| self.remove_tool(reserved));
+                    if removed {
                         tracing::info!("Tool '{}' disabled via config override", tool_name);
                     } else {
                         tracing::warn!("Cannot disable tool '{}': not registered", tool_name);
                     }
                 }
-                _ if builtin_names.contains(tool_name) => {
+                _ if builtin_names.contains(tool_name)
+                    || crate::conversation_modes::CREATOR_TOOL_NAMES
+                        .iter()
+                        .any(|reserved| reserved.eq_ignore_ascii_case(tool_name)) =>
+                {
                     tracing::error!("{}", override_refusal_notice(tool_name));
                     refused.push(tool_name.clone());
                 }
@@ -574,6 +584,18 @@ impl ToolRegistry {
             if let Some(previous) = self.get(tool.name()) {
                 tracing::error!(
                     previous_origin = ?previous.registration_origin(),
+                    plugin_origin = ?tool.registration_origin(),
+                    "Cannot load plugin tool '{}': name is already registered; script tools cannot replace a registered tool, so give the script its own name",
+                    codewhale_runtime::safe_label::SafeLabel::identifier(tool.name())
+                );
+                continue;
+            }
+            if crate::conversation_modes::CREATOR_TOOL_NAMES
+                .iter()
+                .any(|reserved| reserved.eq_ignore_ascii_case(tool.name()))
+            {
+                tracing::error!(
+                    previous_origin = "reserved built-in tool",
                     plugin_origin = ?tool.registration_origin(),
                     "Cannot load plugin tool '{}': name is already registered; script tools cannot replace a registered tool, so give the script its own name",
                     codewhale_runtime::safe_label::SafeLabel::identifier(tool.name())

@@ -2808,11 +2808,13 @@ mod tests {
             id: "demo",
             source_sha256: DEMO_DIGEST,
             tools: &[],
+            services: &[],
         },
         BuiltinModule {
             id: "other",
             source_sha256: OTHER_DIGEST,
             tools: &[],
+            services: &[],
         },
     ];
 

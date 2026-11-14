@@ -3743,6 +3743,7 @@ fn apply_fleet_engine_feature_caps(
     if fleet_authority_active {
         features.disable(codewhale_runtime::features::Feature::Subagents);
         features.disable(codewhale_runtime::features::Feature::Mcp);
+        features.disable(codewhale_runtime::features::Feature::PluginCreator);
         if shell_authority != codewhale_engine::tools::spec::ToolShellAuthority::ReadOnly {
             features.disable(codewhale_runtime::features::Feature::ShellTool);
         }

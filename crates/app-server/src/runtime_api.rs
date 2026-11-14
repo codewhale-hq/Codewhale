@@ -6390,9 +6390,15 @@ async fn list_hooks(
 async fn list_modes(
     State(state): State<RuntimeApiState>,
 ) -> Json<codewhale_engine::conversation_modes::ConversationModeTable> {
+    let plugin_creator_enabled = state
+        .config
+        .read()
+        .features()
+        .enabled(codewhale_runtime::features::Feature::PluginCreator);
     Json(
         codewhale_engine::conversation_modes::current_table(
             state.runtime_threads.extension_host_options(),
+            plugin_creator_enabled,
         )
         .await,
     )

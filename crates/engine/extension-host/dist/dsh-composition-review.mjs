@@ -14920,6 +14920,15 @@ var init_terminal = __esm({
   }
 });
 
+// src/dsh/plugin-manager.ts
+var init_plugin_manager = __esm({
+  "src/dsh/plugin-manager.ts"() {
+    "use strict";
+    init_protocol();
+    init_rpc();
+  }
+});
+
 // src/dsh/adapters.ts
 var DSH_ADAPTERS;
 var init_adapters = __esm({
@@ -14934,6 +14943,7 @@ var init_adapters = __esm({
     init_settings();
     init_catalog();
     init_terminal();
+    init_plugin_manager();
     DSH_ADAPTERS = [
       sessionsAdapter,
       systemPromptAdapter,

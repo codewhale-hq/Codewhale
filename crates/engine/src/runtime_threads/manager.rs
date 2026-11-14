@@ -8183,8 +8183,16 @@ impl RuntimeThreadManager {
         }
         let agent_preset = match req.agent_preset.as_deref() {
             Some(id) => {
-                let selection =
-                    crate::conversation_modes::select(id, self.extension_host_options()).await?;
+                let plugin_creator_enabled = self
+                    .read_config()
+                    .features()
+                    .enabled(codewhale_runtime::features::Feature::PluginCreator);
+                let selection = crate::conversation_modes::select(
+                    id,
+                    self.extension_host_options(),
+                    plugin_creator_enabled,
+                )
+                .await?;
                 selection.require_available()?;
                 crate::conversation_modes::stored_form(&selection.id)
             }
@@ -9442,9 +9450,17 @@ impl RuntimeThreadManager {
                 {
                     return Err(crate::conversation_modes::ModeRefusal::with_executor().into());
                 }
+                let plugin_creator_enabled = self
+                    .read_config()
+                    .features()
+                    .enabled(codewhale_runtime::features::Feature::PluginCreator);
                 Some(
-                    crate::conversation_modes::select(preset_id, self.extension_host_options())
-                        .await?,
+                    crate::conversation_modes::select(
+                        preset_id,
+                        self.extension_host_options(),
+                        plugin_creator_enabled,
+                    )
+                    .await?,
                 )
             }
             None => None,

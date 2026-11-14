@@ -12,6 +12,7 @@ import { credentialsAdapter } from './network.ts'
 import { settingsAdapter } from './settings.ts'
 import { pluginManagerAdapter, deepseekAccountAdapter } from './catalog.ts'
 import { terminalAdapter } from './terminal.ts'
+export { BUILTIN_DSH_ADAPTERS } from './plugin-manager.ts'
 
 export interface AdapterHost {
   readonly tier: HostTier

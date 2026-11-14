@@ -1,5 +1,5 @@
 import { ReviewedLoader, installCompositionLoader } from './dsh/composition.ts'
-import { DSH_ADAPTERS, type AdapterHost, type DshAdapter } from './dsh/adapters.ts'
+import { BUILTIN_DSH_ADAPTERS, DSH_ADAPTERS, type AdapterHost, type DshAdapter } from './dsh/adapters.ts'
 /**
  * The Cordis root that plugin fibers run under.
  *
@@ -70,6 +70,7 @@ export const REFUSED_SERVICES = new Set(compatibility.refused_services)
 /** Services the root provides; `inject` of anything else fails activation. */
 const PROVIDED_SERVICES = new Set(Object.values(compatibility.provided_services).flat())
 const CORDIS_SERVICES = new Set(compatibility.provided_services.cordis)
+const CREATOR_SERVICES = new Set(['pluginManager', 'sandboxPolicy', 'approval'])
 
 const ACTIVATE_DEADLINE_MS = 5_000
 const DISPOSE_DEADLINE_MS = 2_000
@@ -138,6 +139,7 @@ function withDeadline<T>(promise: Promise<T>, ms: number, label: string): Promis
 
 export interface ToolInvocation {
   owner: OwnerRecord
+  callId: string
   session: object | undefined
   agent: object | undefined
   questionTicket: string | undefined
@@ -463,7 +465,18 @@ export class HostRoot {
       ...[...PROVIDED_SERVICES].filter((name) => !CORDIS_SERVICES.has(name) && !shims.has(name)).map((name) => `${name} is declared in compatibility.json but has no installed service`),
     ]
     if (mismatched.length > 0) throw new Error(`DSH provided services disagree with the installed services: ${mismatched.join('; ')}`)
-    for (const [name, shim] of shims) {
+    const builtinExtras: Array<[string, new (ctx: any) => Service]> = []
+    if (tier === 'builtin') {
+      for (const adapter of BUILTIN_DSH_ADAPTERS) {
+        const shim = adapter.define(adapterHost)
+        if (shims.has(adapter.service)) {
+          shims.set(adapter.service, shim)
+        } else {
+          builtinExtras.push([adapter.service, shim])
+        }
+      }
+    }
+    for (const [name, shim] of [...shims, ...builtinExtras]) {
       shimClasses.set(name, shim)
       root.plugin(shim)
     }
@@ -575,7 +588,9 @@ export class HostRoot {
         return { status: 'ok', tools: [], commands: [] }
       }
       const plugin = pickPlugin(module)
-      const missing = Object.keys(Inject.resolve(plugin.inject)).filter((name) => !PROVIDED_SERVICES.has(name))
+      const creatorAllowed = this.tier === 'builtin' && owner.ref.plugin_id === 'host:creator'
+      const creatorRestricted = this.tier === 'builtin' && !creatorAllowed
+      const missing = Object.keys(Inject.resolve(plugin.inject)).filter((name) => (!PROVIDED_SERVICES.has(name) || (creatorRestricted && CREATOR_SERVICES.has(name))) && !(creatorAllowed && CREATOR_SERVICES.has(name)))
       if (missing.length > 0) {
         const owned = missing.filter((name) => REFUSED_SERVICES.has(name))
         throw new Error(`requires ${missing.map((name) => `\`${name}\``).join(', ')}, not provided by the Codewhale extension host in this phase`
@@ -734,6 +749,7 @@ export class HostRoot {
     const closed = new AbortController()
     const invocation: ToolInvocation = {
       owner: local.owner,
+      callId,
       session: agent?.session,
       agent,
       questionTicket: identity?.question_ticket,

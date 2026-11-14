@@ -158,17 +158,15 @@ pub const TABLE: &[(DshService, Arm)] = &[
     (DshService::Plugins, dsh_plugins::serve as Arm),
 ];
 
-pub const BUILTIN_SERVICES: &[(&str, &[DshService])] = &[("creator", &[DshService::Plugins])];
-
 #[must_use]
 pub fn builtin_services(owner_id: &str) -> &'static [DshService] {
     owner_id
         .strip_prefix(HOST_OWNER_PREFIX)
         .and_then(|module| {
-            BUILTIN_SERVICES
+            super::tier::BUILTIN_MODULES
                 .iter()
-                .find(|(id, _)| *id == module)
-                .map(|(_, services)| *services)
+                .find(|row| row.id == module)
+                .map(|row| row.services)
         })
         .unwrap_or(&[])
 }
