@@ -403,11 +403,16 @@ def trust_and_enable(engine: Engine, name: str) -> list[dict]:
     rounds = []
     for _ in range(3):
         code, detail = engine.request("GET", base)
-        token = (detail.get("review") or {}).get("token")
+        review = detail.get("review") or {}
+        token = review.get("token")
         if code != 200 or not token:
             return [step("lifecycle.trust", "FAIL", f"no review token, HTTP {code}", {"http": code}),
                     step("lifecycle.enable", "SKIPPED", "trust did not complete")]
-        code, answer = engine.request("POST", base + "/trust", {"token": token})
+        payload = {"token": token}
+        hs_token = (review.get("host_services") or {}).get("token")
+        if hs_token:
+            payload["host_services_token"] = hs_token
+        code, answer = engine.request("POST", base + "/trust", payload)
         rounds.append({"trust_http": code})
         if code != 200:
             return [step("lifecycle.trust", "FAIL", f"trust HTTP {code}", {"http": code, "answer": answer}),

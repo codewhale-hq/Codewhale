@@ -1,7 +1,7 @@
 use super::*;
 // `scan_tarball` lives in the sibling stage-reader module and is not needed
 // by the verbs, so it is not in `super`'s namespace.
-use super::tarball::scan_tarball;
+use super::tarball::{scan_tarball, stage_tarball};
 use codewhale_skill_install::bounded_tar::test_archives;
 
 #[path = "tests/place_recovery.rs"]
@@ -1715,15 +1715,30 @@ fn dsh_native_source_admits_a_top_level_gitignore_and_still_refuses_other_hidden
 
     let with_gitignore = make("with-gitignore");
     fs::write(with_gitignore.join(".gitignore"), "node_modules/\n").unwrap();
+    fs::create_dir_all(with_gitignore.join("presets/liangshen")).unwrap();
+    fs::write(
+        with_gitignore.join("presets/liangshen/.dsh-tui-managed.json"),
+        "{\"owner\":\"@deepseek-harness-tui/dsh-tui\",\"preset\":\"liangshen\"}\n",
+    )
+    .unwrap();
     let out = tmp.path().join("out-with-gitignore");
     let converted = dsh::convert_package(&with_gitignore, &out).unwrap();
     assert!(converted.requires_native);
     assert!(out.join("source/.gitignore").is_file());
+    assert!(
+        out.join("source/presets/liangshen/.dsh-tui-managed.json")
+            .is_file()
+    );
 
     for (name, relative) in [
         ("nested-gitignore", "lib/.gitignore"),
         ("other-hidden", ".prettierrc"),
+        ("root-dsh-tui-managed", ".dsh-tui-managed.json"),
         ("env-file", ".env"),
+        (
+            "node-modules-env-variant",
+            "node_modules/pkg/.env.production",
+        ),
         ("npmrc", ".npmrc"),
         ("git-dir", ".git/config"),
     ] {
@@ -1836,4 +1851,92 @@ fn dsh_client_closure_is_retained_hashed_and_refuses_ambient_dependencies() {
             "{label}: server half still imports"
         );
     }
+}
+
+#[test]
+fn parse_package_json_admits_duplicate_keys_last_wins_while_parse_json_refuses() {
+    assert!(dsh::parse_json(r#"{"a":1,"a":2}"#).is_err());
+    assert_eq!(
+        dsh::parse_package_json(r#"{"a":1,"a":2}"#).unwrap(),
+        dsh::parse_json(r#"{"a":2}"#).unwrap()
+    );
+}
+
+#[test]
+fn convert_package_sanitizes_and_truncates_oversized_description() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("long-desc");
+    fs::create_dir_all(dir.join("lib")).unwrap();
+    let raw_desc = format!("a\x07\u{202E}b{}", "x".repeat(1200));
+    fs::write(
+        dir.join("package.json"),
+        serde_json::json!({
+            "name": "@demo/long-desc",
+            "version": "1.0.0",
+            "description": raw_desc,
+            "main": "lib/index.cjs",
+            "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("cordis.patch.yml"),
+        "- insert:\n  - id: entry\n    name: ./lib/index.cjs\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("lib/index.cjs"),
+        "module.exports = { apply() {} };\n",
+    )
+    .unwrap();
+
+    let out = tmp.path().join("out");
+    dsh::convert_package(&dir, &out).unwrap();
+    let manifest_value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(out.join("plugin.json")).unwrap()).unwrap();
+    let desc = manifest_value["description"].as_str().unwrap();
+    assert!(
+        desc.chars().count() <= 1024,
+        "desc chars={}",
+        desc.chars().count()
+    );
+    assert!(desc.ends_with('…'), "desc={desc:?}");
+    assert!(!desc.contains('\x07') && !desc.contains('\u{202E}'));
+    crate::manifest::PluginManifest::validate_from_path(&out.join("plugin.json")).unwrap();
+}
+
+#[test]
+fn mixed_composition_with_agent_presets_and_code_row_writes_composition_not_roster() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("mixed-comp");
+    fs::create_dir_all(dir.join("lib")).unwrap();
+    fs::write(
+        dir.join("package.json"),
+        serde_json::json!({
+            "name": "@demo/mixed-comp",
+            "version": "1.0.0",
+            "main": "lib/index.cjs",
+            "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("cordis.patch.yml"),
+        "- insert:\n  - id: presets\n    name: \"@deepseek-ai/dsh-agent-presets\"\n    config: {}\n  - id: entry\n    name: ./lib/index.cjs\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("lib/index.cjs"),
+        "module.exports = { apply() {} };\n",
+    )
+    .unwrap();
+
+    let out = tmp.path().join("out");
+    let converted = dsh::convert_package(&dir, &out).unwrap();
+    assert!(converted.requires_native);
+    assert!(out.join("native/composition.json").is_file());
+    assert!(out.join("native/index.mjs").is_file());
+    assert!(!out.join("native/presets.json").exists());
 }

@@ -77,7 +77,16 @@ impl HostService {
     }
 }
 
-pub const HOST_SERVICE_INJECTS: &[(&str, HostService)] = &[];
+pub const HOST_SERVICE_INJECTS: &[(&str, HostService)] = &[
+    ("workspace", HostService::Workspace),
+    ("llm", HostService::Llm),
+    ("credentials", HostService::Network),
+    ("settings", HostService::Settings),
+    ("pluginManager", HostService::Catalog),
+    ("deepseekAccount", HostService::Catalog),
+    ("terminal", HostService::Terminal),
+    ("remote", HostService::Remote),
+];
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
@@ -421,13 +430,9 @@ mod tests {
     }
 
     #[test]
-    fn no_host_service_is_offered_and_the_table_names_only_advertised_injects() {
-        assert!(HOST_SERVICE_INJECTS.is_empty());
-        assert!(
-            HostService::ALL
-                .into_iter()
-                .all(|service| !offered(service))
-        );
+    fn every_host_service_is_offered_and_the_table_names_only_advertised_injects() {
+        assert!(!HOST_SERVICE_INJECTS.is_empty());
+        assert!(HostService::ALL.into_iter().all(offered));
         let table: serde_json::Value =
             serde_json::from_slice(crate::activation::DSH_COMPATIBILITY).unwrap();
         let advertised: BTreeSet<&str> = table["provided_services"]

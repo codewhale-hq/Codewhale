@@ -156,6 +156,75 @@ const SERVICES = {
       { name: 'revoke', signature: 'revoke(id: string): Promise<void>', summary: 'Revoke one grant by the id pair returned.' },
     ],
   },
+  workspace: {
+    summary: 'Bounded workspace file reads, writes, directory listings, and approved command execution.',
+    availability: 'review-grant',
+    methods: [
+      { name: 'read', signature: 'read(path: string, options?: { startLine?: number, maxLines?: number }): Promise<string>', summary: 'Read a file inside the reviewed workspace root.' },
+      { name: 'list', signature: 'list(path?: string): Promise<WorkspaceEntry[]>', summary: 'List entries under a workspace directory.' },
+      { name: 'write', signature: 'write(path: string, content: string): Promise<void>', summary: 'Write a file inside the reviewed workspace root.' },
+      { name: 'exec', signature: 'exec(argv: string[], options?: { cwd?: string, timeoutMs?: number }): Promise<ExecResult>', summary: 'Run a reviewed command inside the workspace.' },
+    ],
+  },
+  llm: {
+    summary: 'Host-mediated model catalog lookup, completions, and streaming.',
+    availability: 'review-grant',
+    methods: [
+      { name: 'catalog', signature: 'catalog(options?: { provider?: string }): Promise<ModelCatalog>', summary: 'List available providers and models.' },
+      { name: 'complete', signature: 'complete(request: LlmRequest): Promise<LlmResponse>', summary: 'Run a single non-streaming completion through Core.' },
+      { name: 'listModels', signature: 'listModels(provider?: string): Promise<ModelSummary[]>', summary: 'List model entries with context and modality metadata.' },
+      { name: 'resolveModelInfo', signature: 'resolveModelInfo(modelId: string): Promise<ModelSummary | null>', summary: 'Look up metadata for one model identifier.' },
+      { name: 'stream', signature: 'stream(request: LlmRequest): AsyncIterable<LlmChunk>', summary: 'Stream completion chunks through Core.' },
+    ],
+  },
+  credentials: {
+    summary: 'Reviewed credential resolution and host-guarded HTTP fetch.',
+    availability: 'review-grant',
+    methods: [
+      { name: 'resolve', signature: 'resolve(key: string, options?: Record<string, unknown>): Promise<CredentialValue>', summary: 'Resolve an approved credential key.' },
+      { name: 'describe', signature: 'describe(key: string): Promise<CredentialMeta>', summary: 'Inspect metadata for a credential key.' },
+      { name: 'set', signature: 'set(key: string, secret: string, options?: Record<string, unknown>): Promise<void>', summary: 'Store a secret in Codewhale credential storage.' },
+      { name: 'fetch', signature: 'fetch(input: string, init?: FetchInit): Promise<FetchResponse>', summary: 'Perform a policy-checked outbound HTTP request.' },
+    ],
+  },
+  settings: {
+    summary: 'Reviewed read/write access to declared Codewhale plugin settings.',
+    availability: 'review-grant',
+    methods: [
+      { name: 'describe', signature: 'describe(keys?: string[]): Promise<Record<string, unknown>>', summary: 'Read reviewed setting values and schemas.' },
+      { name: 'update', signature: 'update(patch: Record<string, unknown>, options?: Record<string, unknown>): Promise<void>', summary: 'Merge partial updates into allowed settings.' },
+      { name: 'replace', signature: 'replace(patch: Record<string, unknown>, options?: Record<string, unknown>): Promise<void>', summary: 'Replace reviewed setting keys atomically.' },
+      { name: 'mutate', signature: 'mutate(fn: (current: Record<string, unknown>) => Record<string, unknown>): Promise<void>', summary: 'Apply a synchronous transform to reviewed settings.' },
+    ],
+  },
+  pluginManager: {
+    summary: 'Reviewed plugin installation and removal requests through Core.',
+    availability: 'review-grant',
+    methods: [
+      { name: 'installBundle', signature: 'installBundle(packageName: string, options?: Record<string, unknown>): Promise<unknown>', summary: 'Request Core to preview or install a plugin bundle.' },
+      { name: 'removeBundle', signature: 'removeBundle(packageName: string): Promise<void>', summary: 'Request Core to remove an installed plugin bundle.' },
+      { name: 'cancelInstall', signature: 'cancelInstall(): Promise<void>', summary: 'Cancel an active plugin installation request.' },
+    ],
+  },
+  deepseekAccount: {
+    summary: 'DeepSeek account balance queries through the authenticated provider.',
+    availability: 'review-grant',
+    methods: [
+      { name: 'getBalance', signature: 'getBalance(options?: Record<string, unknown>): Promise<AccountBalance>', summary: 'Fetch the active DeepSeek account balance.' },
+    ],
+  },
+  terminal: {
+    summary: 'Reviewed interactive terminal sessions inside the workspace.',
+    availability: 'review-grant',
+    methods: [
+      { name: 'list', signature: 'list(): Promise<TerminalSession[]>', summary: 'List active terminal sessions for this owner.' },
+      { name: 'run', signature: 'run(options?: { argv?: string[], cwd?: string }): Promise<TerminalSession>', summary: 'Start a terminal session in the workspace.' },
+      { name: 'send', signature: 'send(id: string, data: string): Promise<void>', summary: 'Write input to a running terminal session.' },
+      { name: 'wait', signature: 'wait(id: string, options?: { timeoutMs?: number }): Promise<TerminalExit>', summary: 'Wait for output or completion from a terminal session.' },
+      { name: 'cancel', signature: 'cancel(id: string): Promise<void>', summary: 'Terminate a running terminal session.' },
+      { name: 'reset', signature: 'reset(id: string): Promise<void>', summary: 'Reset a terminal session buffer.' },
+    ],
+  },
 }
 
 const AVAILABILITY = {
@@ -272,6 +341,60 @@ const ROW_PACKAGES = {
     },
     limits: ['Needs an exact Engine-selected entry scope.'],
     example: { prefix: 'Answer in short sentences.' },
+  },
+  '@deepseek-ai/dsh-storage': {
+    summary: 'Storage row bridge satisfied natively by the Engine spine.',
+    schema: { type: 'object', additionalProperties: true },
+    limits: ['Served natively by the Codewhale Engine spine; row configuration is inert.'],
+    example: {},
+  },
+  '@deepseek-ai/dsh-storage-json': {
+    summary: 'JSON storage row bridge satisfied natively by the Engine spine.',
+    schema: { type: 'object', additionalProperties: true },
+    limits: ['Served natively by the Codewhale Engine spine; row configuration is inert.'],
+    example: {},
+  },
+  '@deepseek-ai/dsh-storage-domain': {
+    summary: 'Domain storage row bridge satisfied natively by the Engine spine.',
+    schema: { type: 'object', additionalProperties: true },
+    limits: ['Served natively by the Codewhale Engine spine; row configuration is inert.'],
+    example: {},
+  },
+  '@deepseek-ai/dsh-workspace': {
+    summary: 'Workspace row bridge satisfied natively by the Engine spine.',
+    schema: { type: 'object', additionalProperties: true },
+    limits: ['Served natively by the Codewhale Engine spine; row configuration is inert.'],
+    example: {},
+  },
+  '@deepseek-ai/dsh-code-runtime-worker-thread': {
+    summary: 'Worker-thread runtime row bridge satisfied natively by the Engine spine.',
+    schema: { type: 'object', additionalProperties: true },
+    limits: ['Served natively by the Codewhale Engine spine; row configuration is inert.'],
+    example: {},
+  },
+  '@deepseek-ai/dsh-tool-subagent/model-selection-settings': {
+    summary: 'Subagent model-selection settings row bridge satisfied natively by the Engine spine.',
+    schema: { type: 'object', additionalProperties: true },
+    limits: ['Served natively by the Codewhale Engine spine; row configuration is inert.'],
+    example: {},
+  },
+  '@deepseek-ai/dsh-agent-preset-registry': {
+    summary: 'Agent-preset registry row bridge satisfied natively by the Engine spine.',
+    schema: { type: 'object', additionalProperties: true },
+    limits: ['Served natively by the Codewhale Engine spine; row configuration is inert.'],
+    example: {},
+  },
+  '@deepseek-ai/dsh-cordis-host-runner': {
+    summary: 'Host-runner row bridge satisfied natively by the Engine spine.',
+    schema: { type: 'object', additionalProperties: true },
+    limits: ['Served natively by the Codewhale Engine spine; row configuration is inert.'],
+    example: {},
+  },
+  '@deepseek-ai/dsh-host-webserver': {
+    summary: 'Host webserver row bridge satisfied natively by the Engine spine.',
+    schema: { type: 'object', additionalProperties: true },
+    limits: ['Served natively by the Codewhale Engine spine; row configuration is inert.'],
+    example: {},
   },
 }
 

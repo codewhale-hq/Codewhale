@@ -54,9 +54,21 @@ keeping reviewed module imports and non-writing composition: tree mutations
 now report through `commit(change)`, which a reviewed composition ignores, and
 bare specifiers keep the native import fallback instead of upstream's
 writable `.cordis/resolve.mjs` helper. The `dsh-tools` definition excerpt is
-taken from rc.1's split build with unchanged definition semantics. The
-injectable and refused service lists are unchanged; the changed table digest
-requires fresh Native review and trust. The legacy preset adapter remains
+taken from rc.1's split build with unchanged definition semantics. In
+`compatibility.json` v3, grant-gated brokered host services add `remote` and
+`workspace` under `codewhale` and `llm`, `credentials`, `settings`,
+`pluginManager`, `deepseekAccount`, and `terminal` under `dsh`; `row_bridges`
+include the 9 `"host-spine"` bridges (`@deepseek-ai/dsh-storage`,
+`@deepseek-ai/dsh-storage-json`, `@deepseek-ai/dsh-storage-domain`,
+`@deepseek-ai/dsh-workspace`, `@deepseek-ai/dsh-code-runtime-worker-thread`,
+`@deepseek-ai/dsh-tool-subagent/model-selection-settings`,
+`@deepseek-ai/dsh-agent-preset-registry`, `@deepseek-ai/dsh-cordis-host-runner`,
+and `@deepseek-ai/dsh-host-webserver`). DSH package conversion uses a
+`16,384`-file / `256 MiB` bundle budget, normalizes package metadata for
+validation, treats `@deepseek-ai/dsh-agent-presets` rows as inert alongside
+executable composition rows, and stages reviewed `registry.npmjs.org`
+transitive server dependencies when network policy allows. The changed table
+digest requires fresh Native review and trust. The legacy preset adapter remains
 explicitly pinned to `0d1f5000`; its replacement upstream runtime packages
 are not adopted. Node support remains `^22.19.0 || >=24.0.0`, and Bun remains
 `>=1.4.0`. rc.1 is a prerelease. Earlier rc.5 receipts are not evidence for
@@ -81,7 +93,8 @@ walkthroughs below.
 | `tools.get(name, agent)` | read-only lookup in the calling tool's catalog | Verified with the child-agent probe |
 | `tools.restrict` outside a child's `agent/created` handler | refused | Not implemented |
 | `agents`, `systemPrompt` | injectable so plugins that name them activate; `agents` offers nothing and `systemPrompt` methods refuse outside a child's `agent/created` context | Verified with the child-agent probe |
-| `llm`, `approval`, `credentials`, `fs`, `subprocess` | refused by design until each maps to Engine authority | Not implemented |
+| `llm`, `credentials` | grant-gated brokered host services in `compatibility.json` v3 | Grant-gated brokered |
+| `approval`, `fs`, `subprocess` | refused by design until each maps to Engine authority | Not implemented |
 | Rich or media tool output | dropped | Not implemented |
 | Git review scopes | Bounded `execFile` metadata requests use the Engine Git tool and its approval path; the Native host still cannot read the repository directly | Current-source qualification pending |
 
@@ -163,7 +176,7 @@ them. See [Host services](EXTENSIONS.md#host-services).
 | A review recorded before grants existed, or an altered or unreadable record | Grants nothing; verified by focused tests |
 | Plugins share one process: a service is given only while every loaded plugin holds the same grant | Verified by focused Engine tests |
 | Turned off, revoked or reviewed again | Grant withdrawn at once, including a call in flight; verified by focused Engine tests |
-| Services offered by this build | None. Each is switched on separately, after its own review |
+| Services offered by this build | Grant-gated host services (`workspace`, `llm`, `credentials`, `settings`, `pluginManager`, `deepseekAccount`, `terminal`, `remote`) and reviewed compatibility adapters |
 | A real plugin using a granted service end to end | Not verified |
 
 ## Containment

@@ -4,7 +4,7 @@ import { PERSONA, normalizePersonaConfig } from './persona.ts'
  * Rust alone selects caller/AgentProfile ancestry and writes session/settings.
  */
 import { Service } from '@deepseek-ai/cordis'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { resolve, relative, dirname, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { discoverPresets, type DiscoveryIO } from './upstream/agent-presets/discovery.ts'
@@ -99,7 +99,7 @@ export interface PresetReview {
 export async function reviewAgentPresets(input: PresetReviewInput): Promise<PresetReview> {
   const { composition } = input
   const files = composition.files
-  if (!files || Object.keys(files).length > 4096 || !Array.isArray(input.directories) || input.directories.length > 4096) fail('invalid source inventory')
+  if (!files || Object.keys(files).length > 16384 || !Array.isArray(input.directories) || input.directories.length > 16384) fail('invalid source inventory')
   const base = resolve('codewhale-reviewed-agent-presets')
   const baseUrl = pathToFileURL(`${base}${sep}`).href
   function key(path: string): string {
@@ -233,43 +233,76 @@ export interface PresetMountConfig {
  * Its subtree owns the real five contributions. It cannot select/reparent an
  * Agent, start a turn, write a session, or mutate roots/settings.
  */
+const activePresetReceipts = new Map<string, string>()
+
+export function issuePresetReceipt(snapshot: PresetMountConfig): string {
+  const payload = JSON.stringify(snapshot)
+  const receipt = createHash('sha256').update(randomBytes(32)).update(payload).digest('hex')
+  activePresetReceipts.set(receipt, payload)
+  return receipt
+}
+
+export function revokePresetReceipt(receipt: string): void {
+  activePresetReceipts.delete(receipt)
+}
+
 export function defineReviewedAgentPresets(mount: (ctx: any, base: string, spec: ReviewedComposition) => Promise<CompositionMount>) {
   return class ReviewedAgentPresets extends Service {
     static inject = ['loader']
-    private readonly snapshot: PresetMountConfig
+    private readonly snapshot?: PresetMountConfig
     private readonly selfCtx: any
-    constructor(ctx: any, config: { codewhale_reviewed?: PresetMountConfig }) {
+    constructor(ctx: any, config?: { codewhale_reviewed?: PresetMountConfig; codewhale_receipt?: unknown }) {
       super(ctx, 'agentPresets')
       this.selfCtx = ctx
-      const snapshot = config?.codewhale_reviewed
-      if (!snapshot || snapshot.catalog?.version !== 1 || !snapshot.catalog.presets.some(p => p.id === snapshot.selected?.metadata.id && !p.broken)) fail('raw roster needs an installer-minted preset receipt')
-      this.snapshot = structuredClone(snapshot)
+      if (config?.codewhale_reviewed !== undefined || config?.codewhale_receipt !== undefined) {
+        const snapshot = config.codewhale_reviewed
+        const receipt = typeof config.codewhale_receipt === 'string' ? config.codewhale_receipt : ''
+        const expected = receipt ? activePresetReceipts.get(receipt) : undefined
+        activePresetReceipts.delete(receipt)
+        if (!snapshot || !expected || expected !== JSON.stringify(snapshot) || snapshot.catalog?.version !== 1 || !snapshot.catalog.presets.some(p => p.id === snapshot.selected?.metadata.id && !p.broken)) fail('raw roster needs an installer-minted preset receipt')
+        this.snapshot = structuredClone(snapshot)
+      }
     }
-    private mounting?: Promise<CompositionMount>
+    private mounting?: Promise<CompositionMount | undefined>
     private mounted?: CompositionMount
-    mountSelected() { return this.mounting ??= mount(this.selfCtx, this.snapshot.base_url, this.snapshot.selected.composition).then(result => this.mounted=result) }
-    async list() { return this.snapshot.catalog.presets.map(row => ({...structuredClone(row),path:fileURLToPath(new URL(this.snapshot.catalog.inventory[row.id].path,this.snapshot.base_url))})) }
-    async remoteExportList() { return {presets:this.snapshot.catalog.presets.map(({is_default,entry,...row})=>({...structuredClone(row),isDefault:is_default})),authorable:false,defaultId:this.defaultId,modeSelectionEnabled:this.snapshot.catalog.mode_selection_enabled} }
-    get defaultId() { return this.snapshot.catalog.default }
+    mountSelected() {
+      const snapshot = this.snapshot
+      if (!snapshot) return Promise.resolve(undefined)
+      return this.mounting ??= mount(this.selfCtx, snapshot.base_url, snapshot.selected.composition).then(result => this.mounted = result)
+    }
+    async list() {
+      const snapshot = this.snapshot
+      if (!snapshot) return []
+      return snapshot.catalog.presets.map(row => ({...structuredClone(row),path:fileURLToPath(new URL(snapshot.catalog.inventory[row.id].path,snapshot.base_url))}))
+    }
+    async remoteExportList() {
+      const snapshot = this.snapshot
+      if (!snapshot) return { presets: [], authorable: false, defaultId: undefined, modeSelectionEnabled: false }
+      return {presets:snapshot.catalog.presets.map(({is_default,entry,...row})=>({...structuredClone(row),isDefault:is_default})),authorable:false,defaultId:this.defaultId,modeSelectionEnabled:snapshot.catalog.mode_selection_enabled}
+    }
+    get defaultId() { return this.snapshot?.catalog.default }
     get authorable() { return false }
     async resolve(id = this.defaultId) {
       const row = (await this.list()).find(p => p.id === id)
       if (!row) fail('preset not found')
       return row
     }
-    composedPreset() { return this.snapshot.selected.metadata.id }
+    composedPreset() { return this.snapshot?.selected.metadata.id }
     async compositionInventory() {
-      return this.snapshot.catalog.presets.map(row => {
+      const snapshot = this.snapshot
+      if (!snapshot) return []
+      return snapshot.catalog.presets.map(row => {
         const identity={id:row.id,trust:row.trust,...(row.name===undefined?{}:{name:row.name}),isDefault:row.id===this.defaultId}
         if (row.id===this.composedPreset() && this.mounted) return {...identity,rows:mountedCompositionRows(this.mounted.tree)}
-        const read=this.snapshot.catalog.inventory[row.id]
+        const read=snapshot.catalog.inventory[row.id]
         if (row.broken || 'broken' in read) return {...identity,broken:row.broken ?? ('broken' in read?read.broken:undefined),rows:[]}
         return {...identity,rows:structuredClone(read.rows)}
       })
     }
     async readDocument(id: string) {
-      if (id !== this.composedPreset()) fail('read another preset through Core file authority')
-      return { agentPreset: id, trust: this.snapshot.selected.metadata.trust, content: this.snapshot.selected.source }
+      const snapshot = this.snapshot
+      if (!snapshot || id !== this.composedPreset()) fail('read another preset through Core file authority')
+      return { agentPreset: id, trust: snapshot.selected.metadata.trust, content: snapshot.selected.source }
     }
     select() { fail('select through Core AgentProfile/native preset selection before a turn') }
     recompose() { fail('Core owns the captured agent selection and blank-session check') }

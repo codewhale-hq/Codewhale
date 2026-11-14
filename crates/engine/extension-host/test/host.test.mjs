@@ -175,11 +175,17 @@ test('injecting a service the host does not provide fails with its name', async 
   assert.equal(result.status, 'failed')
   assert.match(result.diagnostic, /requires `secrets`/)
   assert.doesNotMatch(result.diagnostic, /belongs? to the Codewhale core/)
-  const provided = tempPlugin("export const inject = ['shellHooks', 'sessions', 'userQuestions']; export function apply(ctx) { if (!ctx.shellHooks || typeof ctx.sessions.flush !== 'function' || typeof ctx.userQuestions.ask !== 'function') throw new Error('missing provided service') }\n")
+  const provided = tempPlugin(`import { createUserMessage } from '@deepseek-ai/dsh-llm'
+export const inject = ['shellHooks', 'sessions', 'userQuestions', 'llm']
+export function apply(ctx) {
+  createUserMessage({ content: [], source: { kind: 'fixture' } })
+  if (!ctx.shellHooks || !ctx.llm || typeof ctx.sessions.flush !== 'function' || typeof ctx.userQuestions.ask !== 'function') throw new Error('missing provided service')
+}
+`)
   t.after(() => provided.cleanup())
   const available = await activate(host, 'needs-shell-hooks', provided.entry)
   assert.equal(available.result.status, 'ok', available.result.diagnostic)
-  for (const service of ['llm']) {
+  for (const service of ['approval']) {
     const pure = tempPlugin(`import { createUserMessage } from '@deepseek-ai/dsh-llm'
 export const inject = [${JSON.stringify(service)}]
 export function apply() { createUserMessage({ content: [], source: { kind: 'fixture' } }) }
@@ -188,7 +194,7 @@ export function apply() { createUserMessage({ content: [], source: { kind: 'fixt
     const refused = (await activate(host, `pure-needs-${service}`, pure.entry)).result
     assert.equal(refused.status, 'failed')
     assert.ok(refused.diagnostic.includes('requires `' + service + '`'), refused.diagnostic)
-    assert.match(refused.diagnostic, /`llm` belongs to the Codewhale core and no reviewed bridge exposes it yet/)
+    assert.match(refused.diagnostic, /`approval` belongs to the Codewhale core and no reviewed bridge exposes it yet/)
   }
 })
 

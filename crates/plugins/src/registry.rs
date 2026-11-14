@@ -339,10 +339,10 @@ impl PluginRegistry {
         let file = codewhale_util::bundle_file::open_bundle_file(&source.path)
             .map_err(|_| "Native preset cannot be opened")?;
         let mut bytes = Vec::new();
-        file.take(64 * 1024 * 1024 + 1)
+        file.take(256 * 1024 * 1024 + 1)
             .read_to_end(&mut bytes)
             .map_err(|_| "Native preset cannot be read")?;
-        if bytes.len() > 64 * 1024 * 1024 {
+        if bytes.len() > 256 * 1024 * 1024 {
             return Err("Native preset entry exceeds the bundle limit".into());
         }
         if codewhale_runtime::hashing::sha256_hex(&bytes) != selected.entry.sha256 {
@@ -2446,7 +2446,7 @@ fn copy_bundle_tree_bounded(
             copy_bundle_tree_bounded(&source_path, &destination_path, budget)?;
         } else if metadata.is_file() {
             budget.files = budget.files.saturating_add(1);
-            if budget.files > 4_096 {
+            if budget.files > 16_384 {
                 return Err("Plugin content exceeded the staging file limit".to_string());
             }
             let mut source_file = codewhale_util::bundle_file::open_bundle_file(&source_path)
@@ -2467,7 +2467,7 @@ fn copy_bundle_tree_bounded(
                     break;
                 }
                 budget.bytes = budget.bytes.saturating_add(read as u64);
-                if budget.bytes > 64 * 1024 * 1024 {
+                if budget.bytes > 256 * 1024 * 1024 {
                     return Err("Plugin content exceeded the staging byte limit".to_string());
                 }
                 destination_file
@@ -2677,7 +2677,7 @@ fn copy_bundle_directory_fd(
                 return Err("Plugin content may not contain hard-linked files".to_string());
             }
             budget.files = budget.files.saturating_add(1);
-            if budget.files > 4_096 {
+            if budget.files > 16_384 {
                 return Err("Plugin content exceeded the staging file limit".to_string());
             }
             // SAFETY: openat is anchored and O_NOFOLLOW prevents a file swap
@@ -2717,7 +2717,7 @@ fn copy_bundle_directory_fd(
                     break;
                 }
                 budget.bytes = budget.bytes.saturating_add(read as u64);
-                if budget.bytes > 64 * 1024 * 1024 {
+                if budget.bytes > 256 * 1024 * 1024 {
                     return Err("Plugin content exceeded the staging byte limit".to_string());
                 }
                 destination_file

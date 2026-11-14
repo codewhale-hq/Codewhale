@@ -35,7 +35,7 @@ use codewhale_util::path_identity::metadata_is_link_or_reparse;
 
 /// Mirrors the install staging budget: a validated bundle already fits the
 /// review limits, and export refuses to grow unbounded copies regardless.
-const MAX_EXPORT_FILES: usize = 4_096;
+const MAX_EXPORT_FILES: usize = 16_384;
 
 /// Files generated fresh (or provenance-local) at the destination; never
 /// copied out of the source tree.

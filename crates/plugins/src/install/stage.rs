@@ -17,7 +17,7 @@ use codewhale_skill_install::install::{INSTALLED_FROM_MARKER, validate_skill_nam
 use super::PluginInstallError;
 
 /// File count cap for local copies, mirroring the registry staging budget.
-const MAX_BUNDLE_FILES: usize = 4_096;
+const MAX_BUNDLE_FILES: usize = 16_384;
 
 #[derive(Debug)]
 pub(super) struct StagedPlugin {

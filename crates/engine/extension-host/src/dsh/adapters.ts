@@ -6,6 +6,12 @@ import type { HostTier } from '../tier.ts'
 import { sessionsAdapter, systemPromptAdapter } from './session-prompt.ts'
 import { DSH_AGENT_ADAPTERS } from './agents.ts'
 import { remoteAdapter } from './remote.ts'
+import { workspaceAdapter } from './workspace.ts'
+import { llmAdapter } from './llm.ts'
+import { credentialsAdapter } from './network.ts'
+import { settingsAdapter } from './settings.ts'
+import { pluginManagerAdapter, deepseekAccountAdapter } from './catalog.ts'
+import { terminalAdapter } from './terminal.ts'
 
 export interface AdapterHost {
   readonly tier: HostTier
@@ -21,4 +27,16 @@ export interface DshAdapter {
   define(host: AdapterHost): new (ctx: any) => Service
 }
 
-export const DSH_ADAPTERS: readonly DshAdapter[] = [sessionsAdapter, systemPromptAdapter, ...DSH_AGENT_ADAPTERS, remoteAdapter]
+export const DSH_ADAPTERS: readonly DshAdapter[] = [
+  sessionsAdapter,
+  systemPromptAdapter,
+  ...DSH_AGENT_ADAPTERS,
+  remoteAdapter,
+  workspaceAdapter,
+  llmAdapter,
+  credentialsAdapter,
+  settingsAdapter,
+  pluginManagerAdapter,
+  deepseekAccountAdapter,
+  terminalAdapter,
+]

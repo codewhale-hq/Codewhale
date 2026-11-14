@@ -59,7 +59,7 @@ const classBody = (source, name) => {
   const next = rest.search(/\n\s*(export )?(class |function )/)
   return next < 0 ? rest : rest.slice(0, next)
 }
-const defines = (body, name) => new RegExp(`^\\s*(async\\s+)?${name}\\s*\\(`, 'm').test(body)
+const defines = (body, name) => new RegExp(`^\\s*(?:async\\s*(?:\\*\\s*)?|\\*\\s*)?${name}\\s*\\(`, 'm').test(body)
 
 test('every curated method is defined on the class that serves it', () => {
   const served = {
@@ -68,6 +68,10 @@ test('every curated method is defined on the class that serves it', () => {
     mcp: ['shims/mcp.ts', 'McpShim'], shellHooks: ['shims/shell-hooks.ts', 'ShellHooks'], remote: ['dsh/remote.ts', 'RemoteService'],
     sessions: ['dsh/session-prompt.ts', 'SessionsService'], userQuestions: ['root.ts', 'UserQuestionsShim'],
     subagents: ['dsh/agents.ts', 'SubagentsShim'], systemPrompt: ['dsh/session-prompt.ts', 'SystemPromptService'],
+    workspace: ['dsh/workspace.ts', 'WorkspaceService'], llm: ['dsh/llm.ts', 'LlmService'],
+    credentials: ['dsh/network.ts', 'CredentialsService'], settings: ['dsh/settings.ts', 'SettingsService'],
+    pluginManager: ['dsh/catalog.ts', 'PluginManagerService'], deepseekAccount: ['dsh/catalog.ts', 'DeepSeekAccountService'],
+    terminal: ['dsh/terminal.ts', 'TerminalService'],
   }
   const cordis = { events: ['events', ['on', 'once', 'emit']], reflect: ['reflect', ['provide', 'get']], registry: ['registry', ['get', 'resolve']] }
   const agentsSource = text(src('dsh/agents.ts'))
@@ -134,11 +138,11 @@ test('the refused events equal the list in root.ts', () => {
 
 test('the Service provider answers a directory, one contract, and refuses a name the host lacks', async () => {
   const directory = await ask('host', 'Service', 'listService')
-  assert.equal(directory.services.length, 18)
-  assert.ok(!directory.services.some((s) => s.key === 'fs' || s.key === 'llm'))
+  assert.equal(directory.services.length, 25)
+  assert.ok(!directory.services.some((s) => s.key === 'fs'))
   const one = await ask('host', 'Service', 'listService', { service: 'prompt' })
   assert.equal(one.service.methods[0].name, 'registerSection')
-  await assert.rejects(ask('host', 'Service', 'listService', { service: 'llm' }), /not provided by this host/)
+  await assert.rejects(ask('host', 'Service', 'listService', { service: 'fs' }), /not provided by this host/)
 })
 
 test('the Event provider separates supported from refused', async () => {
@@ -151,7 +155,7 @@ test('the Event provider separates supported from refused', async () => {
 test('the Config provider lists exactly the row packages, pages, and shows installed rows', async () => {
   const page = await ask('host', 'Config', 'listConfigs')
   assert.deepEqual(page.entries.map((e) => e.name).sort(), Object.keys(compatibility.row_bridges).sort())
-  assert.equal(page.total, 5)
+  assert.equal(page.total, 14)
   const paged = await ask('host', 'Config', 'listConfigs', { limit: 2 })
   assert.equal(paged.entries.length, 2)
   assert.equal(paged.nextOffset, 2)

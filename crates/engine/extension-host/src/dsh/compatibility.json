@@ -11,7 +11,13 @@
       "userQuestions",
       "subagents",
       "agents",
-      "systemPrompt"
+      "systemPrompt",
+      "llm",
+      "credentials",
+      "settings",
+      "pluginManager",
+      "deepseekAccount",
+      "terminal"
     ],
     "cordis": [
       "logger",
@@ -24,7 +30,8 @@
       "avatars",
       "mcp",
       "shellHooks",
-      "remote"
+      "remote",
+      "workspace"
     ]
   },
   "refused_services": [
@@ -50,14 +57,28 @@
     "mcp",
     "logger",
     "userQuestions",
-    "remote"
+    "remote",
+    "workspace",
+    "settings",
+    "pluginManager",
+    "deepseekAccount",
+    "terminal"
   ],
   "row_bridges": {
     "@deepseek-ai/dsh-mcp-client": "mcp",
     "@deepseek-ai/dsh-skill-filesystem": "skills",
     "@deepseek-ai/dsh-hooks-claude-code": "hooks-claude-code",
     "@deepseek-ai/dsh-hooks-codex": "hooks-codex",
-    "@deepseek-ai/dsh-persona": "persona"
+    "@deepseek-ai/dsh-persona": "persona",
+    "@deepseek-ai/dsh-storage": "host-spine",
+    "@deepseek-ai/dsh-storage-json": "host-spine",
+    "@deepseek-ai/dsh-storage-domain": "host-spine",
+    "@deepseek-ai/dsh-workspace": "host-spine",
+    "@deepseek-ai/dsh-code-runtime-worker-thread": "host-spine",
+    "@deepseek-ai/dsh-tool-subagent/model-selection-settings": "host-spine",
+    "@deepseek-ai/dsh-agent-preset-registry": "host-spine",
+    "@deepseek-ai/dsh-cordis-host-runner": "host-spine",
+    "@deepseek-ai/dsh-host-webserver": "host-spine"
   },
   "module_singletons": {
     "@codewhale/dsh-composition": "dsh-composition",

@@ -473,14 +473,14 @@ fn the_importer_asks_only_for_services_its_own_server_modules_inject() {
         vec![HostService::Llm, HostService::Network, HostService::Remote]
     );
     assert!(asked_host_services(&files, &rows, &[], &[]).is_empty());
-    assert!(
+    assert_eq!(
         asked_host_services(
             &files,
             &rows,
             &[],
             super::host_services::HOST_SERVICE_INJECTS
-        )
-        .is_empty()
+        ),
+        vec![HostService::Llm, HostService::Network, HostService::Remote]
     );
 }
 

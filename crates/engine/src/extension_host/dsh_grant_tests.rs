@@ -334,7 +334,7 @@ fn the_engine_and_the_review_record_name_the_same_services() {
         HostService::ALL.map(HostService::name)
     );
     for service in DshService::ALL {
-        assert!(!super::dsh_broker::offered(service));
+        assert!(super::dsh_broker::offered(service));
     }
     let _offer = TestOffer::only(&[HostService::Remote]);
     assert!(super::dsh_broker::offered(DshService::Remote));
@@ -432,6 +432,7 @@ async fn no_broker_ticket_is_minted_for_a_plugin_whose_reviewed_record_does_not_
     );
 
     drop(offer);
+    let _none = TestOffer::only(&[]);
     assert!(
         host_a.services(&alpha).is_empty(),
         "a build that offers no service mints no broker ticket, whatever is recorded"

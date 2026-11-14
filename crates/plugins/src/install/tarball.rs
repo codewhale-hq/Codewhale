@@ -24,11 +24,22 @@ use super::stage::{StagedPlugin, fresh_staging_dir, validate_staged};
 
 /// Validate a tarball and extract the manifest-rooted subtree into a
 /// `.staging-*` sibling of the destination.
+#[cfg(test)]
 pub(super) fn stage_tarball(
     bytes: &[u8],
     user_plugins_dir: &Path,
     max_size: u64,
     bundle_path: Option<&str>,
+) -> Result<StagedPlugin> {
+    stage_tarball_with_network(bytes, user_plugins_dir, max_size, bundle_path, None)
+}
+
+pub(super) fn stage_tarball_with_network(
+    bytes: &[u8],
+    user_plugins_dir: &Path,
+    max_size: u64,
+    bundle_path: Option<&str>,
+    network: Option<&codewhale_net::network_policy::NetworkPolicy>,
 ) -> Result<StagedPlugin> {
     let scan = scan_tarball_for_bundle(bytes, max_size, bundle_path)?;
     let staged_path = fresh_staging_dir(user_plugins_dir)?;
@@ -36,7 +47,7 @@ pub(super) fn stage_tarball(
         let raw_dir = tempfile::tempdir().context("failed to create DSH extraction dir")?;
         extract_into(&scan, bytes, raw_dir.path(), max_size).and_then(|()| {
             let _ = fs::remove_dir_all(&staged_path);
-            super::dsh::convert_package(raw_dir.path(), &staged_path)?;
+            super::dsh::convert_package_with_network(raw_dir.path(), &staged_path, network)?;
             validate_staged(&staged_path)
         })
     } else {
@@ -133,7 +144,7 @@ fn scan_bundle_entries(
                     .context("failed to read package.json from archive")?;
                 if let Some(raw) = raw
                     && let Ok(text) = std::str::from_utf8(&raw)
-                    && let Ok(parsed) = super::dsh::parse_json(text)
+                    && let Ok(parsed) = super::dsh::parse_package_json(text)
                     && parsed
                         .get("dsh")
                         .and_then(|dsh| dsh.get("bundle"))

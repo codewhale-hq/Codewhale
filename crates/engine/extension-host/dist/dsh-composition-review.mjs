@@ -69,16 +69,16 @@ function isVolatile(value) {
 }
 function volatileEntries(value) {
   const ancestors = /* @__PURE__ */ new Set();
-  function visit(value2, path) {
+  function visit(value2, path2) {
     if (isVolatile(value2)) return [{
-      path,
+      path: path2,
       ref: value2
     }];
     if (!value2 || typeof value2 !== "object" || ancestors.has(value2)) return [];
     if (!Array.isArray(value2) && Object.getPrototypeOf(value2) !== Object.prototype && Object.getPrototypeOf(value2) !== null) return [];
     ancestors.add(value2);
     try {
-      return Object.entries(value2).flatMap(([key, child]) => visit(child, [...path, key]));
+      return Object.entries(value2).flatMap(([key, child]) => visit(child, [...path2, key]));
     } finally {
       ancestors.delete(value2);
     }
@@ -2551,11 +2551,11 @@ var init_entry = __esm({
           this.ctx.logger.debug("ordinary config values of %C changed with its volatile values; applying the ordinary update", this.options.id);
           return false;
         }
-        const paths = refs.flatMap(({ path, ref: ref2 }) => {
-          const source = path.reduce((value, key) => Reflect.get(value, key), candidate);
+        const paths = refs.flatMap(({ path: path2, ref: ref2 }) => {
+          const source = path2.reduce((value, key) => Reflect.get(value, key), candidate);
           if (deepEqual(ref2.get(), source.get(), true)) return [];
           updateVolatile(ref2, source);
-          return [path];
+          return [path2];
         });
         if (!paths.length) return true;
         const self = Object.create(fiber.ctx);
@@ -2944,7 +2944,7 @@ function requireCommon() {
 function requireException() {
   if (hasRequiredException) return exception;
   hasRequiredException = 1;
-  function formatError(exception2, compact) {
+  function formatError(exception2, compact3) {
     let where = "";
     const message = exception2.reason || "(unknown reason)";
     if (!exception2.mark) return message;
@@ -2952,7 +2952,7 @@ function requireException() {
       where += 'in "' + exception2.mark.name + '" ';
     }
     where += "(" + (exception2.mark.line + 1) + ":" + (exception2.mark.column + 1) + ")";
-    if (!compact && exception2.mark.snippet) {
+    if (!compact3 && exception2.mark.snippet) {
       where += "\n\n" + exception2.mark.snippet;
     }
     return message + " " + where;
@@ -2971,8 +2971,8 @@ function requireException() {
   }
   YAMLException2.prototype = Object.create(Error.prototype);
   YAMLException2.prototype.constructor = YAMLException2;
-  YAMLException2.prototype.toString = function toString2(compact) {
-    return this.name + ": " + formatError(this, compact);
+  YAMLException2.prototype.toString = function toString2(compact3) {
+    return this.name + ": " + formatError(this, compact3);
   };
   exception = YAMLException2;
   return exception;
@@ -5423,14 +5423,14 @@ function requireDumper() {
     let hasFoldableLine = false;
     const shouldTrackWidth = lineWidth !== -1;
     let previousLineBreak = -1;
-    let plain3 = isPlainSafeFirst(codePointAt(string, 0)) && isPlainSafeLast(codePointAt(string, string.length - 1));
+    let plain4 = isPlainSafeFirst(codePointAt(string, 0)) && isPlainSafeLast(codePointAt(string, string.length - 1));
     if (singleLineOnly || forceQuotes) {
       for (i2 = 0; i2 < string.length; char >= 65536 ? i2 += 2 : i2++) {
         char = codePointAt(string, i2);
         if (!isPrintable(char)) {
           return STYLE_DOUBLE;
         }
-        plain3 = plain3 && isPlainSafe(char, prevChar, inblock);
+        plain4 = plain4 && isPlainSafe(char, prevChar, inblock);
         prevChar = char;
       }
     } else {
@@ -5446,13 +5446,13 @@ function requireDumper() {
         } else if (!isPrintable(char)) {
           return STYLE_DOUBLE;
         }
-        plain3 = plain3 && isPlainSafe(char, prevChar, inblock);
+        plain4 = plain4 && isPlainSafe(char, prevChar, inblock);
         prevChar = char;
       }
       hasFoldableLine = hasFoldableLine || shouldTrackWidth && (i2 - previousLineBreak - 1 > lineWidth && string[previousLineBreak + 1] !== " ");
     }
     if (!hasLineBreak && !hasFoldableLine) {
-      if (plain3 && !forceQuotes && !testAmbiguousType(string)) {
+      if (plain4 && !forceQuotes && !testAmbiguousType(string)) {
         return STYLE_PLAIN;
       }
       return quotingType === QUOTING_TYPE_DOUBLE ? STYLE_DOUBLE : STYLE_SINGLE;
@@ -5594,7 +5594,7 @@ function requireDumper() {
     state.tag = _tag;
     state.dump = "[" + _result + "]";
   }
-  function writeBlockSequence(state, level, object, compact) {
+  function writeBlockSequence(state, level, object, compact3) {
     let _result = "";
     const _tag = state.tag;
     for (let index = 0, length = object.length; index < length; index += 1) {
@@ -5603,7 +5603,7 @@ function requireDumper() {
         value = state.replacer.call(object, String(index), value);
       }
       if (writeNode(state, level + 1, value, true, true, false, true) || typeof value === "undefined" && writeNode(state, level + 1, null, true, true, false, true)) {
-        if (!compact || _result !== "") {
+        if (!compact3 || _result !== "") {
           _result += generateNextLine(state, level);
         }
         if (state.dump && CHAR_LINE_FEED === state.dump.charCodeAt(0)) {
@@ -5644,7 +5644,7 @@ function requireDumper() {
     state.tag = _tag;
     state.dump = "{" + _result + "}";
   }
-  function writeBlockMapping(state, level, object, compact) {
+  function writeBlockMapping(state, level, object, compact3) {
     let _result = "";
     const _tag = state.tag;
     const objectKeyList = Object.keys(object);
@@ -5657,7 +5657,7 @@ function requireDumper() {
     }
     for (let index = 0, length = objectKeyList.length; index < length; index += 1) {
       let pairBuffer = "";
-      if (!compact || _result !== "") {
+      if (!compact3 || _result !== "") {
         pairBuffer += generateNextLine(state, level);
       }
       const objectKey = objectKeyList[index];
@@ -5725,7 +5725,7 @@ function requireDumper() {
     }
     return false;
   }
-  function writeNode(state, level, object, block, compact, iskey, isblockseq) {
+  function writeNode(state, level, object, block, compact3, iskey, isblockseq) {
     state.tag = null;
     state.dump = object;
     if (!detectType(state, object, false)) {
@@ -5744,7 +5744,7 @@ function requireDumper() {
       duplicate = duplicateIndex !== -1;
     }
     if (state.tag !== null && state.tag !== "?" || duplicate || state.indent !== 2 && level > 0) {
-      compact = false;
+      compact3 = false;
     }
     if (duplicate && state.usedDuplicates[duplicateIndex]) {
       state.dump = "*ref_" + duplicateIndex;
@@ -5754,7 +5754,7 @@ function requireDumper() {
       }
       if (type2 === "[object Object]") {
         if (block && Object.keys(state.dump).length !== 0) {
-          writeBlockMapping(state, level, state.dump, compact);
+          writeBlockMapping(state, level, state.dump, compact3);
           if (duplicate) {
             state.dump = "&ref_" + duplicateIndex + state.dump;
           }
@@ -5767,9 +5767,9 @@ function requireDumper() {
       } else if (type2 === "[object Array]") {
         if (block && state.dump.length !== 0) {
           if (state.noArrayIndent && !isblockseq && level > 0) {
-            writeBlockSequence(state, level - 1, state.dump, compact);
+            writeBlockSequence(state, level - 1, state.dump, compact3);
           } else {
-            writeBlockSequence(state, level, state.dump, compact);
+            writeBlockSequence(state, level, state.dump, compact3);
           }
           if (duplicate) {
             state.dump = "&ref_" + duplicateIndex + state.dump;
@@ -5947,8 +5947,8 @@ function mergeRecords(older, newer) {
     changes: { ...older.changes, ...newer.changes }
   };
 }
-function merge2(journal, id, record2) {
-  const merged = mergeRecords(journal.get(id), record2);
+function merge2(journal, id, record3) {
+  const merged = mergeRecords(journal.get(id), record3);
   if (merged) {
     journal.set(id, merged);
   } else {
@@ -6009,27 +6009,27 @@ function place(data2, options, parent, position) {
 }
 function applyJournal(data2, journal, filter = () => true, warn = () => {
 }) {
-  for (const [id, record2] of journal) {
+  for (const [id, record3] of journal) {
     if (!filter(id, null)) continue;
-    if (record2.kind === "remove") {
+    if (record3.kind === "remove") {
       detach(data2, id);
       continue;
     }
     const flat = flatten(data2).get(id);
     if (!flat) {
       const options = { id };
-      applyChanges(options, record2.changes, (key) => filter(id, key));
-      const parent = record2.parent ?? null;
-      if (!place(data2, options, parent, record2.position)) {
+      applyChanges(options, record3.changes, (key) => filter(id, key));
+      const parent = record3.parent ?? null;
+      if (!place(data2, options, parent, record3.position)) {
         warn("cannot place entry %C: group %C not found", id, parent);
       }
       continue;
     }
-    applyChanges(flat.options, record2.changes, (key) => filter(id, key));
-    if (record2.parent !== void 0 && flat.parent !== record2.parent) {
+    applyChanges(flat.options, record3.changes, (key) => filter(id, key));
+    if (record3.parent !== void 0 && flat.parent !== record3.parent) {
       detach(data2, id);
-      if (!place(data2, flat.options, record2.parent, record2.position)) {
-        warn("cannot move entry %C: group %C not found", id, record2.parent);
+      if (!place(data2, flat.options, record3.parent, record3.position)) {
+        warn("cannot move entry %C: group %C not found", id, record3.parent);
         place(data2, flat.options, flat.parent, flat.position);
       }
     }
@@ -6038,11 +6038,11 @@ function applyJournal(data2, journal, filter = () => true, warn = () => {
 }
 function reconcile(journal, base, theirs, fileOwned) {
   const conflicts = [];
-  for (const [id, record2] of journal) {
+  for (const [id, record3] of journal) {
     if (!fileOwned(id, null)) continue;
     const b = base.get(id);
     const t = theirs.get(id);
-    if (record2.kind === "remove") {
+    if (record3.kind === "remove") {
       if (!t) {
         journal.delete(id);
       } else if (!b || !deepEqual(t.options, b.options)) {
@@ -6058,21 +6058,21 @@ function reconcile(journal, base, theirs, fileOwned) {
       }
       continue;
     }
-    if (record2.created) record2.created = false;
-    for (const key of Object.keys(record2.changes)) {
+    if (record3.created) record3.created = false;
+    for (const key of Object.keys(record3.changes)) {
       if (!fileOwned(id, key)) continue;
       const bv = b?.options?.[key];
       const tv = t.options[key];
-      if (deepEqual(bv, tv) || deepEqual(tv, record2.changes[key])) continue;
+      if (deepEqual(bv, tv) || deepEqual(tv, record3.changes[key])) continue;
       conflicts.push({ id, reason: `key "${key}" modified both in file and at runtime` });
-      delete record2.changes[key];
+      delete record3.changes[key];
     }
-    if (record2.parent !== void 0 && b && t.parent !== b.parent && t.parent !== record2.parent) {
+    if (record3.parent !== void 0 && b && t.parent !== b.parent && t.parent !== record3.parent) {
       conflicts.push({ id, reason: "moved both in file and at runtime" });
-      record2.parent = void 0;
+      record3.parent = void 0;
     }
-    const moved = record2.parent !== void 0 && record2.parent !== t.parent;
-    if (!Object.keys(record2.changes).length && !moved) {
+    const moved = record3.parent !== void 0 && record3.parent !== t.parent;
+    if (!Object.keys(record3.changes).length && !moved) {
       journal.delete(id);
     }
   }
@@ -6173,9 +6173,9 @@ function routeJournal(journal, data2, patches, warn) {
       warn("cannot place entry %C: group %C not found", options.id, parent);
     }
   };
-  for (const [id, record2] of journal) {
+  for (const [id, record3] of journal) {
     const owner = index.entry(id);
-    if (record2.kind === "remove") {
+    if (record3.kind === "remove") {
       if (owner.type === "insert") {
         owner.list.splice(owner.list.indexOf(owner.options), 1);
         patched = true;
@@ -6187,31 +6187,31 @@ function routeJournal(journal, data2, patches, warn) {
     const current2 = owner.type === "insert" ? owner : flatten(data2).get(id);
     if (!current2) {
       const options = { id };
-      applyChanges(options, record2.changes);
-      placeAt(options, record2.parent ?? null, record2.position);
+      applyChanges(options, record3.changes);
+      placeAt(options, record3.parent ?? null, record3.position);
       continue;
     }
-    if (record2.parent !== void 0 && current2.parent !== record2.parent) {
+    if (record3.parent !== void 0 && current2.parent !== record3.parent) {
       if (owner.type === "insert") {
         owner.list.splice(owner.list.indexOf(owner.options), 1);
         patched = true;
       } else {
         detach(data2, id);
       }
-      applyChanges(current2.options, record2.changes);
-      placeAt(current2.options, record2.parent, record2.position);
+      applyChanges(current2.options, record3.changes);
+      placeAt(current2.options, record3.parent, record3.position);
       continue;
     }
     if (owner.type === "insert") {
-      applyChanges(current2.options, record2.changes);
+      applyChanges(current2.options, record3.changes);
       patched = true;
       continue;
     }
     const patchChanges = {};
-    applyChanges(current2.options, record2.changes, (key) => {
+    applyChanges(current2.options, record3.changes, (key) => {
       const keyOwner = index.key(id, key);
       if (keyOwner.type !== "patch") return true;
-      (patchChanges[keyOwner.index] ??= {})[key] = record2.changes[key];
+      (patchChanges[keyOwner.index] ??= {})[key] = record3.changes[key];
       return false;
     });
     for (const [i2, changes] of Object.entries(patchChanges)) {
@@ -6310,8 +6310,8 @@ var init_src2 = __esm({
       ".yml": "application/yaml"
     };
     ConfigFileError = class extends Error {
-      constructor(stage, path, cause) {
-        super(`failed to ${stage} config file ${path}`, { cause });
+      constructor(stage, path2, cause) {
+        super(`failed to ${stage} config file ${path2}`, { cause });
         this.stage = stage;
       }
       stage;
@@ -6506,7 +6506,7 @@ var init_src2 = __esm({
         const batch = this.journal;
         this.journal = /* @__PURE__ */ new Map();
         const restore = () => {
-          for (const [id, record2] of this.journal) merge2(batch, id, record2);
+          for (const [id, record3] of this.journal) merge2(batch, id, record3);
           this.journal = batch;
         };
         const data2 = structuredClone(this.cache.data);
@@ -6529,7 +6529,7 @@ var init_src2 = __esm({
           this._scheduleApply();
           return;
         }
-        const text2 = this.dump(data2);
+        const text4 = this.dump(data2);
         try {
           await access(this.filename, constants.W_OK);
         } catch {
@@ -6538,7 +6538,7 @@ var init_src2 = __esm({
           return;
         }
         try {
-          await this._writeText(text2, this.cache.content);
+          await this._writeText(text4, this.cache.content);
         } catch (error) {
           restore();
           if (error instanceof StaleWriteError) {
@@ -6549,7 +6549,7 @@ var init_src2 = __esm({
           this.ctx.logger.warn("failed to write config file %C, %d pending change(s) kept in memory", this.filename, this.journal.size);
           throw error;
         }
-        this.cache = { content: text2, data: data2 };
+        this.cache = { content: text4, data: data2 };
         this._scheduleApply();
       }
       /**
@@ -6557,10 +6557,10 @@ var init_src2 = __esm({
        * truncated file. When `expected` is given, the rename (and every retry of
        * it) only goes ahead while the file still holds that content.
        */
-      async _writeText(text2, expected) {
+      async _writeText(text4, expected) {
         const tmp = join(dirname(this.filename), `.${basename(this.filename)}.${process.pid}.${this._seq++}.tmp`);
         try {
-          await writeFile(tmp, text2);
+          await writeFile(tmp, text4);
           for (let attempt = 0; ; attempt++) {
             if (expected !== void 0) {
               const current2 = await readFile(this.filename, "utf8").catch((error) => {
@@ -6669,8 +6669,8 @@ function isJson(value, depth = 0) {
         if (array && key === "length") continue;
         if (typeof key !== "string") return false;
         if (array && (!/^(0|[1-9]\d*)$/u.test(key) || Number(key) >= value.length)) return false;
-        const descriptor = Object.getOwnPropertyDescriptor(value, key);
-        if (!descriptor.enumerable || !("value" in descriptor) || !isJson(descriptor.value, depth + 1)) return false;
+        const descriptor2 = Object.getOwnPropertyDescriptor(value, key);
+        if (!descriptor2.enumerable || !("value" in descriptor2) || !isJson(descriptor2.value, depth + 1)) return false;
       }
       return true;
     }
@@ -6750,11 +6750,11 @@ var init_mcp2 = __esm({
 // src/shims/skills.ts
 function normalizeSkillRoot(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value) || Object.keys(value).some((key) => key !== "path")) throw new TypeError("skill root supports only path");
-  const { path } = value;
-  if (typeof path !== "string" || !path || Buffer.byteLength(path, "utf8") > 512 || /[\\:\u0000-\u001f\u007f-\u009f]/u.test(path) || path.split("/").some((part) => !part || part === "." || part === "..")) {
+  const { path: path2 } = value;
+  if (typeof path2 !== "string" || !path2 || Buffer.byteLength(path2, "utf8") > 512 || /[\\:\u0000-\u001f\u007f-\u009f]/u.test(path2) || path2.split("/").some((part) => !part || part === "." || part === "..")) {
     throw new TypeError("skill root path must be a bounded bundle-relative path with normal slash-separated components");
   }
-  return Object.freeze({ path });
+  return Object.freeze({ path: path2 });
 }
 var init_skills = __esm({
   "src/shims/skills.ts"() {
@@ -6770,13 +6770,13 @@ function reviewedSkillModule() {
     if (config.includeDefaultRoots !== false || config.watch !== false) throw new Error("filesystem row must explicitly disable default roots and watchers");
     if (config.providerName !== void 0 && (typeof config.providerName !== "string" || !config.providerName || config.providerName.length > 64)) throw new Error("skill providerName must be bounded");
     if (!Array.isArray(config.customSkillDirs) || !config.customSkillDirs.length || config.customSkillDirs.length > 8) throw new Error("filesystem row needs 1–8 reviewed roots");
-    const roots = config.customSkillDirs.map((path) => normalizeSkillRoot({ path }));
+    const roots = config.customSkillDirs.map((path2) => normalizeSkillRoot({ path: path2 }));
     const seen = /* @__PURE__ */ new Set();
-    for (const { path } of roots) {
-      if (seen.has(path)) throw new Error("duplicate filesystem root");
-      seen.add(path);
+    for (const { path: path2 } of roots) {
+      if (seen.has(path2)) throw new Error("duplicate filesystem root");
+      seen.add(path2);
     }
-    for (const { path } of roots) ctx.skills.registerRoot({ path: `source/${path}` });
+    for (const { path: path2 } of roots) ctx.skills.registerRoot({ path: `source/${path2}` });
   } };
 }
 var init_skill_filesystem = __esm({
@@ -6789,35 +6789,35 @@ var init_skill_filesystem = __esm({
 // src/dsh/canonical-path.ts
 import { realpathSync } from "node:fs";
 import { posix, win32 } from "node:path";
-function canonicalPath(path, platform = process.platform) {
-  if (platform !== "win32") return realpathSync(path);
+function canonicalPath(path2, platform = process.platform) {
+  if (platform !== "win32") return realpathSync(path2);
   try {
-    return stripVerbatim(realpathSync.native(path), platform);
+    return stripVerbatim(realpathSync.native(path2), platform);
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error ? error.code : void 0;
     if (code === "EPERM" || code === "EACCES") {
-      return stripVerbatim(win32.normalize(path), platform);
+      return stripVerbatim(win32.normalize(path2), platform);
     }
     throw error;
   }
 }
-function stripVerbatim(path, platform = process.platform) {
-  if (platform !== "win32") return path;
-  if (/^[\\/]{2}\?[\\/]UNC[\\/]/i.test(path)) return `\\\\${path.slice(8)}`;
-  if (/^[\\/]{2}\?[\\/]/.test(path)) return path.slice(4);
-  return path;
+function stripVerbatim(path2, platform = process.platform) {
+  if (platform !== "win32") return path2;
+  if (/^[\\/]{2}\?[\\/]UNC[\\/]/i.test(path2)) return `\\\\${path2.slice(8)}`;
+  if (/^[\\/]{2}\?[\\/]/.test(path2)) return path2.slice(4);
+  return path2;
 }
-function pathKey(path, platform = process.platform) {
-  if (platform !== "win32") return posix.normalize(path);
-  return win32.normalize(stripVerbatim(path, platform)).toLowerCase();
+function pathKey(path2, platform = process.platform) {
+  if (platform !== "win32") return posix.normalize(path2);
+  return win32.normalize(stripVerbatim(path2, platform)).toLowerCase();
 }
 function samePath(a, b, platform = process.platform) {
   return pathKey(a, platform) === pathKey(b, platform);
 }
 function insideKey(root, target, platform = process.platform) {
-  const path = platform === "win32" ? win32 : posix;
-  const inside = path.relative(stripVerbatim(root, platform), stripVerbatim(target, platform));
-  if (inside === ".." || inside.startsWith(`..${path.sep}`) || path.isAbsolute(inside)) return void 0;
+  const path2 = platform === "win32" ? win32 : posix;
+  const inside = path2.relative(stripVerbatim(root, platform), stripVerbatim(target, platform));
+  if (inside === ".." || inside.startsWith(`..${path2.sep}`) || path2.isAbsolute(inside)) return void 0;
   return platform === "win32" ? inside.split(win32.sep).join("/") : inside;
 }
 function isUnlinkedInside(root, key, target, platform = process.platform) {
@@ -6832,8 +6832,8 @@ function isUnlinkedInside(root, key, target, platform = process.platform) {
 }
 function unlinkedKeyMatches(canonicalRoot, key, canonicalTarget, platform = process.platform) {
   if (!key || key.split("/").some((part) => !part || part === "." || part === "..")) return false;
-  const path = platform === "win32" ? win32 : posix;
-  return samePath(path.join(stripVerbatim(canonicalRoot, platform), ...key.split("/")), canonicalTarget, platform);
+  const path2 = platform === "win32" ? win32 : posix;
+  return samePath(path2.join(stripVerbatim(canonicalRoot, platform), ...key.split("/")), canonicalTarget, platform);
 }
 var init_canonical_path = __esm({
   "src/dsh/canonical-path.ts"() {
@@ -6994,10 +6994,10 @@ import { resolve, relative, isAbsolute, sep } from "node:path";
 function reviewedHookModule(dialect, root, files) {
   return { name: `hooks-${dialect}`, inject: ["shellHooks"], apply(ctx, config) {
     if (!config || typeof config.configPath !== "string") throw new Error("hook bridge needs its reviewed configPath");
-    const path = resolve(root, config.configPath);
-    const inside = relative(root, path).split(sep).join("/");
-    if (!inside || inside.startsWith("../") || isAbsolute(inside) || !files[inside] || !isUnlinkedInside(root, inside, path) || !lstatSync(path).isFile()) throw new Error("hook config is absent from the reviewed regular-file closure");
-    const bytes = readFileSync(path);
+    const path2 = resolve(root, config.configPath);
+    const inside = relative(root, path2).split(sep).join("/");
+    if (!inside || inside.startsWith("../") || isAbsolute(inside) || !files[inside] || !isUnlinkedInside(root, inside, path2) || !lstatSync(path2).isFile()) throw new Error("hook config is absent from the reviewed regular-file closure");
+    const bytes = readFileSync(path2);
     if (bytes.length > 1024 * 1024 || createHash("sha256").update(bytes).digest("hex") !== files[inside]) throw new Error("hook config changed after review or exceeds 1 MiB");
     if (config.projectDir !== void 0) throw new Error("explicit projectDir is unsupported; each process uses its current core workspace");
     if (config.pluginRoot !== void 0 && config.pluginRoot !== "." && config.pluginRoot !== root) throw new Error("pluginRoot must be this reviewed bundle root");
@@ -7181,10 +7181,10 @@ function getOptions(opts) {
   return options;
 }
 function pushComment(options, array) {
-  return function(block, text2, start, end, startLoc, endLoc) {
+  return function(block, text4, start, end, startLoc, endLoc) {
     var comment = {
       type: block ? "Block" : "Line",
-      value: text2,
+      value: text4,
       start,
       end
     };
@@ -12761,7 +12761,13 @@ var init_compatibility = __esm({
           "userQuestions",
           "subagents",
           "agents",
-          "systemPrompt"
+          "systemPrompt",
+          "llm",
+          "credentials",
+          "settings",
+          "pluginManager",
+          "deepseekAccount",
+          "terminal"
         ],
         cordis: [
           "logger",
@@ -12774,7 +12780,8 @@ var init_compatibility = __esm({
           "avatars",
           "mcp",
           "shellHooks",
-          "remote"
+          "remote",
+          "workspace"
         ]
       },
       refused_services: [
@@ -12800,14 +12807,28 @@ var init_compatibility = __esm({
         "mcp",
         "logger",
         "userQuestions",
-        "remote"
+        "remote",
+        "workspace",
+        "settings",
+        "pluginManager",
+        "deepseekAccount",
+        "terminal"
       ],
       row_bridges: {
         "@deepseek-ai/dsh-mcp-client": "mcp",
         "@deepseek-ai/dsh-skill-filesystem": "skills",
         "@deepseek-ai/dsh-hooks-claude-code": "hooks-claude-code",
         "@deepseek-ai/dsh-hooks-codex": "hooks-codex",
-        "@deepseek-ai/dsh-persona": "persona"
+        "@deepseek-ai/dsh-persona": "persona",
+        "@deepseek-ai/dsh-storage": "host-spine",
+        "@deepseek-ai/dsh-storage-json": "host-spine",
+        "@deepseek-ai/dsh-storage-domain": "host-spine",
+        "@deepseek-ai/dsh-workspace": "host-spine",
+        "@deepseek-ai/dsh-code-runtime-worker-thread": "host-spine",
+        "@deepseek-ai/dsh-tool-subagent/model-selection-settings": "host-spine",
+        "@deepseek-ai/dsh-agent-preset-registry": "host-spine",
+        "@deepseek-ai/dsh-cordis-host-runner": "host-spine",
+        "@deepseek-ai/dsh-host-webserver": "host-spine"
       },
       module_singletons: {
         "@codewhale/dsh-composition": "dsh-composition",
@@ -13116,11 +13137,11 @@ var init_compatibility = __esm({
 // src/dsh/resolve-hooks.ts
 import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL2 } from "node:url";
 import { resolve as resolve2, isAbsolute as isAbsolute2, dirname as dirname2 } from "node:path";
-function keyIn(closure, path) {
-  const canonical = insideKey(closure.canonicalRoot, path);
+function keyIn(closure, path2) {
+  const canonical = insideKey(closure.canonicalRoot, path2);
   if (canonical !== void 0) return canonical;
   for (const root of closure.rawRoots) {
-    const raw = insideKey(root, path);
+    const raw = insideKey(root, path2);
     if (raw !== void 0) return raw;
   }
 }
@@ -13130,7 +13151,7 @@ function admitReviewedClosure(baseUrl, files) {
   const id = pathKey(canonicalRoot);
   const accepted = /* @__PURE__ */ Object.create(null);
   const keys = Object.keys(files);
-  if (keys.length > 4096) throw new Error("reviewed composition closure exceeds its file limit");
+  if (keys.length > 16384) throw new Error("reviewed composition closure exceeds its file limit");
   for (const key of keys) {
     if (!key || key.split("/").some((part) => !part || part === "." || part === "..") || key.includes("\\") || key.includes(":") || isAbsolute2(key) || !/^[a-f0-9]{64}$/.test(files[key])) throw new Error("invalid reviewed composition closure file");
     accepted[key] = files[key];
@@ -13149,21 +13170,21 @@ function admitReviewedClosure(baseUrl, files) {
     if (current2 && --current2.refs === 0) reviewedClosures.delete(id);
   };
 }
-async function importReviewedModule(baseUrl, path) {
+async function importReviewedModule(baseUrl, path2) {
   const rawRoot = resolve2(fileURLToPath2(baseUrl));
   const id = pathKey(canonicalPath(rawRoot));
   const receipt = reviewedClosures.get(id);
   if (!receipt) throw new Error("composition module closure is no longer admitted");
-  const entry = resolve2(rawRoot, path);
+  const entry = resolve2(rawRoot, path2);
   const admitted = closureAt(pathToFileURL2(entry).href);
   if (!admitted || admitted.root !== id || !(admitted.path in receipt.files)) throw new Error("composition module is absent from reviewed closure");
   return import(pathToFileURL2(entry).href);
 }
 function closureAt(url) {
   if (!url?.startsWith("file:")) return;
-  const path = resolve2(fileURLToPath2(url));
+  const path2 = resolve2(fileURLToPath2(url));
   for (const [root, receipt] of reviewedClosures) {
-    const inside = keyIn(receipt, path);
+    const inside = keyIn(receipt, path2);
     if (inside !== void 0) return { root, receipt, path: inside };
   }
 }
@@ -13188,34 +13209,34 @@ function normalizePromptSection(value) {
   if (Object.keys(value).some((key) => key !== "id" && key !== "text" && key !== "interpolate")) {
     throw new TypeError("prompt section supports only id and text, plus optional model-cwd interpolation");
   }
-  const { id, text: text2, interpolate: interpolate2 } = value;
+  const { id, text: text4, interpolate: interpolate2 } = value;
   if (typeof id !== "string" || !SECTION_ID.test(id)) {
     throw new TypeError("prompt section id must be lower case, start with a letter, and use a-z, 0-9, _ or - (at most 64 characters)");
   }
-  if (typeof text2 !== "string" || text2.trim().length === 0) {
+  if (typeof text4 !== "string" || text4.trim().length === 0) {
     throw new TypeError(`prompt section "${id}" needs non-empty text`);
   }
-  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text2)) {
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text4)) {
     throw new TypeError(`prompt section "${id}" text contains control characters`);
   }
-  if (Buffer.byteLength(text2, "utf8") > MAX_PROMPT_SECTION_BYTES) {
+  if (Buffer.byteLength(text4, "utf8") > MAX_PROMPT_SECTION_BYTES) {
     throw new RangeError(`prompt section "${id}" exceeds ${MAX_PROMPT_SECTION_BYTES} UTF-8 bytes`);
   }
   if (interpolate2 !== void 0 && interpolate2 !== "model-cwd") throw new TypeError("prompt interpolation supports only model-cwd");
-  if (interpolate2 !== void 0) validatePromptTemplate(text2);
-  return Object.freeze({ id, text: text2, ...interpolate2 === void 0 ? {} : { interpolate: interpolate2 } });
+  if (interpolate2 !== void 0) validatePromptTemplate(text4);
+  return Object.freeze({ id, text: text4, ...interpolate2 === void 0 ? {} : { interpolate: interpolate2 } });
 }
-function validatePromptTemplate(text2) {
-  for (let open = text2.indexOf("{{"); open >= 0; ) {
-    const group = /^\{\{([^{}]*)\}\}/u.exec(text2.slice(open));
+function validatePromptTemplate(text4) {
+  for (let open = text4.indexOf("{{"); open >= 0; ) {
+    const group = /^\{\{([^{}]*)\}\}/u.exec(text4.slice(open));
     if (!group) {
-      if (text2.indexOf("}}", open + 2) >= 0) throw new TypeError("malformed prompt variable reference");
-      open = text2.indexOf("{{", open + 2);
+      if (text4.indexOf("}}", open + 2) >= 0) throw new TypeError("malformed prompt variable reference");
+      open = text4.indexOf("{{", open + 2);
       continue;
     }
     if (!/^[a-z][a-z0-9_]*$/u.test(group[1])) throw new TypeError("malformed prompt variable reference");
     if (group[1] !== "model" && group[1] !== "cwd") throw new TypeError(`unknown Core prompt variable "{{${group[1]}}}"; supported variables: model, cwd`);
-    open = text2.indexOf("{{", open + group[0].length);
+    open = text4.indexOf("{{", open + group[0].length);
   }
 }
 var MAX_PROMPT_SECTION_BYTES, MAX_PROMPT_OWNER_BYTES, MAX_PROMPT_HOST_BYTES, SECTION_ID;
@@ -13285,10 +13306,10 @@ var init_rpc = __esm({
 });
 
 // src/dsh/session-prompt.ts
-function checkpointCall(host, ctx, session) {
+function checkpointCall(host, ctx, session2) {
   const invocation = host.liveInvocation(ctx);
   const ticket = invocation?.ticket;
-  return invocation !== void 0 && typeof ticket === "string" && ticket.length > 0 && session !== void 0 && session === invocation.session ? invocation : void 0;
+  return invocation !== void 0 && typeof ticket === "string" && ticket.length > 0 && session2 !== void 0 && session2 === invocation.session ? invocation : void 0;
 }
 var CHILD_ONLY, sessionsAdapter, systemPromptAdapter;
 var init_session_prompt = __esm({
@@ -13305,12 +13326,12 @@ var init_session_prompt = __esm({
           constructor(ctx) {
             super(ctx, "sessions");
           }
-          async flush(session) {
+          async flush(session2) {
             const ctx = this.ctx;
-            const call = checkpointCall(host, ctx, session);
+            const call = checkpointCall(host, ctx, session2);
             if (call === void 0) throw new RpcError(ErrorCode.NotAvailable, "sessions.flush requires this live tool invocation’s session");
             const owner = call.owner;
-            const live = () => checkpointCall(host, ctx, session) === call && !call.signal.aborted;
+            const live = () => checkpointCall(host, ctx, session2) === call && !call.signal.aborted;
             const run = async () => {
               if (!live()) throw new RpcError(ErrorCode.NotAvailable, "session checkpoint invocation ended");
               const result2 = await host.rpc.request("session/checkpoint", { owner: owner.ref, ticket: call.ticket }, call.signal);
@@ -13381,9 +13402,9 @@ var init_lib3 = __esm({
       * @param text - the complete argument JSON text.
       * @returns a sealed view.
       */
-      static fromText(text2) {
+      static fromText(text4) {
         const view = new PartialArguments2();
-        view.append(text2);
+        view.append(text4);
         view.sealed = true;
         return view;
       }
@@ -13447,15 +13468,15 @@ var init_lib3 = __esm({
       * @param text - the final argument text, which replaces missing or conflicting deltas.
       * @returns this view sealed with its caches retained when every character matches; otherwise a new sealed view.
       */
-      settle(text2) {
-        if (this.object !== void 0 || text2.length !== this.#size) return PartialArguments2.fromText(text2);
+      settle(text4) {
+        if (this.object !== void 0 || text4.length !== this.#size) return PartialArguments2.fromText(text4);
         let offset2 = 0;
         for (const chunk of this.chunks) {
-          if (!text2.startsWith(chunk, offset2)) return PartialArguments2.fromText(text2);
+          if (!text4.startsWith(chunk, offset2)) return PartialArguments2.fromText(text4);
           offset2 += chunk.length;
         }
-        this.chunks = text2.length === 0 ? [] : [text2];
-        this.#ends = text2.length === 0 ? [] : [text2.length];
+        this.chunks = text4.length === 0 ? [] : [text4];
+        this.#ends = text4.length === 0 ? [] : [text4.length];
         this.sealed = true;
         return this;
       }
@@ -13616,15 +13637,15 @@ var init_lib3 = __esm({
         const entry = this.#entries.get(key);
         if (entry?.kind !== "string") return void 0;
         if (entry.text === void 0 && entry.end >= 0 && entry.needsDecoding && entry.invalidAt === void 0) {
-          let text2;
+          let text4;
           try {
-            text2 = JSON.parse(`"${this.slice(entry.start, entry.end)}"`);
+            text4 = JSON.parse(`"${this.slice(entry.start, entry.end)}"`);
           } catch (_error) {
           }
-          if (text2 !== void 0) entry.text = {
+          if (text4 !== void 0) entry.text = {
             at: entry.end,
-            length: text2.length,
-            text: text2
+            length: text4.length,
+            text: text4
           };
         }
         const read = entry.text ??= {
@@ -14006,9 +14027,9 @@ function plain(value, allowed, what) {
   if (value === null || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new RpcError(ErrorCode.InvalidParams, `expected a plain ${what} object`);
   const result = /* @__PURE__ */ Object.create(null);
   for (const key of Reflect.ownKeys(value)) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (typeof key !== "string" || !allowed.includes(key) || !("value" in descriptor)) throw new RpcError(ErrorCode.NotAvailable, `unsupported ${what} property ${String(key)}`);
-    if (descriptor.value !== void 0) result[key] = descriptor.value;
+    const descriptor2 = Object.getOwnPropertyDescriptor(value, key);
+    if (typeof key !== "string" || !allowed.includes(key) || !("value" in descriptor2)) throw new RpcError(ErrorCode.NotAvailable, `unsupported ${what} property ${String(key)}`);
+    if (descriptor2.value !== void 0) result[key] = descriptor2.value;
   }
   return result;
 }
@@ -14206,6 +14227,640 @@ var init_remote = __esm({
   }
 });
 
+// src/dsh/workspace.ts
+function invalid(message) {
+  throw new RpcError(ErrorCode.InvalidParams, message);
+}
+function path(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > MAX_PATH || value.trim() !== value || /[\x00-\x1f\x7f]/.test(value)) {
+    invalid(`a path is 1 to ${MAX_PATH} characters on one line with no surrounding spaces`);
+  }
+  return value;
+}
+function bounded(value, what, min, max) {
+  if (value === void 0) return void 0;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) invalid(`${what} is an integer between ${min} and ${max}`);
+  return value;
+}
+function argv(value) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ARGV || value.some((arg) => typeof arg !== "string" || arg.length > MAX_ARG || /[\x00-\x1f\x7f]/.test(arg))) {
+    invalid(`argv is 1 to ${MAX_ARGV} strings of at most ${MAX_ARG} characters`);
+  }
+  return [...value];
+}
+function compact(input) {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== void 0));
+}
+var MAX_PATH, MAX_WRITE, MAX_ARGV, MAX_ARG, workspaceAdapter;
+var init_workspace = __esm({
+  "src/dsh/workspace.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    MAX_PATH = 512;
+    MAX_WRITE = 1024 * 1024;
+    MAX_ARGV = 9;
+    MAX_ARG = 1024;
+    workspaceAdapter = {
+      service: "workspace",
+      define(host) {
+        class WorkspaceService extends Service {
+          constructor(ctx) {
+            super(ctx, "workspace");
+          }
+          read(file, options) {
+            return host.broker(this.ctx, "workspace", "read", compact({
+              path: path(file),
+              start_line: bounded(options?.startLine, "startLine", 1, Number.MAX_SAFE_INTEGER),
+              max_lines: bounded(options?.maxLines, "maxLines", 1, 1e4)
+            }));
+          }
+          list(dir) {
+            return host.broker(this.ctx, "workspace", "list", compact({ path: dir === void 0 ? void 0 : path(dir) }));
+          }
+          write(file, content, options) {
+            if (typeof content !== "string" || Buffer.byteLength(content) > MAX_WRITE) invalid(`content is a string of at most ${MAX_WRITE} bytes`);
+            const hash2 = options?.expectedHash;
+            if (hash2 !== void 0 && (typeof hash2 !== "string" || hash2.length === 0 || hash2.length > 128)) invalid("expectedHash is 1 to 128 characters");
+            return host.broker(this.ctx, "workspace", "write", compact({ path: path(file), content, expected_hash: hash2 }));
+          }
+          exec(command, options) {
+            return host.broker(this.ctx, "workspace", "exec", compact({
+              argv: argv(command),
+              cwd: options?.cwd === void 0 ? void 0 : path(options.cwd)
+            }));
+          }
+        }
+        Object.freeze(WorkspaceService.prototype);
+        return WorkspaceService;
+      }
+    };
+  }
+});
+
+// src/dsh/llm.ts
+function catalogOf(value) {
+  const catalog = value;
+  if (catalog === null || typeof catalog !== "object" || !Array.isArray(catalog.providers) || !Array.isArray(catalog.models) || catalog.models.some((model) => model === null || typeof model !== "object" || typeof model.id !== "string" || typeof model.provider !== "string")) {
+    throw new RpcError(ErrorCode.Internal, "invalid llm broker catalog");
+  }
+  return catalog;
+}
+function completionOf(value) {
+  const completion = value;
+  if (completion === null || typeof completion !== "object" || typeof completion.text !== "string" || typeof completion.finish !== "string" || completion.finish.length === 0 || completion.usage === null || typeof completion.usage !== "object" || typeof completion.usage.coverage !== "string") {
+    throw new RpcError(ErrorCode.Internal, "invalid llm broker completion");
+  }
+  return completion;
+}
+function textOf(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) throw invalid2("the llm broker takes text message content");
+  return content.map((block) => {
+    if (block === null || typeof block !== "object" || block.type !== "text" || typeof block.text !== "string") {
+      throw invalid2("the llm broker takes text blocks only; images, files and tool calls are not brokered");
+    }
+    return block.text;
+  }).join("");
+}
+function promptOf(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) throw invalid2("the llm broker needs at least one message");
+  const turns = messages.map((message) => {
+    if (message === null || typeof message !== "object" || typeof message.role !== "string") throw invalid2("each message has a role and content");
+    if (message.role === "tool") throw invalid2("tool results are not brokered");
+    return { role: message.role, text: textOf(message.content) };
+  });
+  const only = turns.length === 1 ? turns[0] : void 0;
+  if (only !== void 0 && only.role === "user") return only.text;
+  return turns.map((turn) => `${turn.role}: ${turn.text}`).join("\n\n");
+}
+function modelInfo(model) {
+  return {
+    provider: model.provider,
+    id: model.id,
+    name: model.name,
+    inputModalities: ["text"],
+    ...typeof model.context_window === "number" ? { context: { contextWindow: model.context_window } } : {},
+    defaultMaxTokens: model.default_max_output_tokens
+  };
+}
+function usageChunk(usage) {
+  if (usage.coverage !== "reported" || typeof usage.input_tokens !== "number" || typeof usage.output_tokens !== "number") return void 0;
+  return {
+    type: "usage",
+    usage: {
+      inputTokens: usage.input_tokens,
+      outputTokens: usage.output_tokens,
+      totalTokens: usage.input_tokens + usage.output_tokens,
+      ...typeof usage.cache_read_tokens === "number" ? { cacheReadTokens: usage.cache_read_tokens } : {},
+      ...typeof usage.cache_write_tokens === "number" ? { cacheWriteTokens: usage.cache_write_tokens } : {},
+      ...typeof usage.reasoning_tokens === "number" ? { reasoningTokens: usage.reasoning_tokens } : {}
+    }
+  };
+}
+var invalid2, notBrokered, llmAdapter;
+var init_llm = __esm({
+  "src/dsh/llm.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    invalid2 = (message) => new RpcError(ErrorCode.InvalidParams, message);
+    notBrokered = (method) => {
+      throw new RpcError(ErrorCode.NotAvailable, `llm.${method} is not available: Codewhale brokers model calls on the session's approved route and registers no plugin adapters, providers or keys`);
+    };
+    llmAdapter = {
+      service: "llm",
+      define(host) {
+        class LlmService extends Service {
+          constructor(ctx) {
+            super(ctx, "llm");
+          }
+          async catalog() {
+            return catalogOf(await host.broker(this.ctx, "llm", "catalog", {}));
+          }
+          async complete(input) {
+            if (input === null || typeof input !== "object" || typeof input.prompt !== "string") throw invalid2("llm.complete takes { prompt }");
+            if (input.system !== void 0 && typeof input.system !== "string") throw invalid2("system must be a string");
+            if (input.provider !== void 0 && typeof input.provider !== "string") throw invalid2("provider must be a string");
+            if (input.model !== void 0 && typeof input.model !== "string") throw invalid2("model must be a string");
+            if (input.maxTokens !== void 0 && (typeof input.maxTokens !== "number" || !Number.isInteger(input.maxTokens) || input.maxTokens <= 0 || input.maxTokens > 4294967295)) {
+              throw invalid2("maxTokens must be a positive integer");
+            }
+            if (input.timeoutMs !== void 0 && (typeof input.timeoutMs !== "number" || !Number.isSafeInteger(input.timeoutMs) || input.timeoutMs <= 0)) {
+              throw invalid2("timeoutMs must be a positive integer");
+            }
+            return completionOf(await host.broker(this.ctx, "llm", "complete", {
+              prompt: input.prompt,
+              ...input.system !== void 0 ? { system: input.system } : {},
+              ...input.provider !== void 0 ? { provider: input.provider } : {},
+              ...input.model !== void 0 ? { model: input.model } : {},
+              ...input.maxTokens !== void 0 ? { max_output_tokens: input.maxTokens } : {},
+              ...input.timeoutMs !== void 0 ? { timeout_ms: input.timeoutMs } : {}
+            }));
+          }
+          async listModels(provider) {
+            const catalog = await this.catalog();
+            return catalog.models.filter((model) => model.provider === provider).map(modelInfo);
+          }
+          async resolveModelInfo(provider, model) {
+            const found = (await this.catalog()).models.find((candidate) => candidate.provider === provider && candidate.id === model);
+            if (found === void 0) throw new RpcError(ErrorCode.NotAvailable, "the llm broker serves only the models in its catalog");
+            return modelInfo(found);
+          }
+          async *stream(options) {
+            if (options === null || typeof options !== "object") throw invalid2("llm.stream takes generate options");
+            if (options.tools !== void 0 && (!Array.isArray(options.tools) || options.tools.length > 0) || options.toolHistory !== void 0) throw invalid2("the llm broker runs text completions without tools");
+            const prompt = promptOf(options.messages);
+            if (options.system !== void 0 && typeof options.system !== "string") throw invalid2("system must be a string");
+            if (options.provider !== void 0 && typeof options.provider !== "string") throw invalid2("provider must be a string");
+            if (options.model !== void 0 && typeof options.model !== "string") throw invalid2("model must be a string");
+            if (options.maxTokens !== void 0 && (typeof options.maxTokens !== "number" || !Number.isInteger(options.maxTokens) || options.maxTokens <= 0 || options.maxTokens > 4294967295)) {
+              throw invalid2("maxTokens must be a positive integer");
+            }
+            const isAborted = () => options.signal?.aborted === true;
+            const aborted = () => ({ type: "finish", reason: { kind: "aborted", failure: { message: "the model call was aborted", code: "ABORTED" } } });
+            if (isAborted()) {
+              yield aborted();
+              return;
+            }
+            let completion;
+            try {
+              completion = await this.complete({
+                prompt,
+                ...options.system !== void 0 ? { system: options.system } : {},
+                ...options.provider !== void 0 ? { provider: options.provider } : {},
+                ...options.model !== void 0 ? { model: options.model } : {},
+                ...options.maxTokens !== void 0 ? { maxTokens: options.maxTokens } : {}
+              });
+            } catch (error) {
+              if (isAborted()) {
+                yield aborted();
+                return;
+              }
+              const message = error instanceof Error ? error.message : "the model call did not complete";
+              yield { type: "finish", reason: { kind: "error", failure: { message, code: "BROKER_REFUSED" } } };
+              return;
+            }
+            if (isAborted()) {
+              yield aborted();
+              return;
+            }
+            yield { type: "block-start", index: 0, blockType: "text" };
+            yield { type: "text-delta", index: 0, text: completion.text };
+            yield { type: "block-end", index: 0, block: { type: "text", text: completion.text } };
+            const usage = usageChunk(completion.usage);
+            if (usage !== void 0) yield usage;
+            yield { type: "finish", reason: { kind: "stop" } };
+          }
+          listProviders() {
+            return notBrokered("listProviders");
+          }
+          registerAdapter() {
+            return notBrokered("registerAdapter");
+          }
+          registerConfigurableProviders() {
+            return notBrokered("registerConfigurableProviders");
+          }
+          listConfigurableProviders() {
+            return notBrokered("listConfigurableProviders");
+          }
+          registerModelDiscovery() {
+            return notBrokered("registerModelDiscovery");
+          }
+          discoverModels() {
+            return notBrokered("discoverModels");
+          }
+          prepareCall() {
+            return notBrokered("prepareCall");
+          }
+          resolveCallConfig() {
+            return notBrokered("resolveCallConfig");
+          }
+        }
+        Object.freeze(LlmService.prototype);
+        return LlmService;
+      }
+    };
+  }
+});
+
+// src/dsh/network.ts
+function credentialRef(ref2) {
+  if (typeof ref2 !== "string" || ref2.length === 0) throw new RpcError(ErrorCode.InvalidParams, "a credential ref is a non-empty string");
+  return ref2;
+}
+function credentialSite(site) {
+  let url;
+  try {
+    url = new URL(String(site));
+  } catch {
+    throw new RpcError(ErrorCode.InvalidParams, "a credential is stored for one https site, such as https://api.example.com");
+  }
+  if (typeof site !== "string" || url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.pathname !== "/" || url.search !== "" || url.hash !== "") {
+    throw new RpcError(ErrorCode.InvalidParams, "a credential is stored for one https site, such as https://api.example.com");
+  }
+  return url.origin;
+}
+function brokered(value) {
+  const response = value;
+  if (response === null || typeof response !== "object" || typeof response.status !== "number" || typeof response.url !== "string" || typeof response.body_base64 !== "string" || !Array.isArray(response.headers)) {
+    throw new RpcError(ErrorCode.Internal, "invalid network broker response");
+  }
+  return response;
+}
+async function requestBody(body) {
+  if (body === void 0 || body === null) return void 0;
+  if (typeof body === "string") return Buffer.from(body, "utf8").toString("base64");
+  if (body instanceof ArrayBuffer) return Buffer.from(body).toString("base64");
+  if (ArrayBuffer.isView(body)) return Buffer.from(body.buffer, body.byteOffset, body.byteLength).toString("base64");
+  if (body instanceof URLSearchParams) return Buffer.from(body.toString(), "utf8").toString("base64");
+  if (body instanceof Blob) return Buffer.from(await body.arrayBuffer()).toString("base64");
+  throw new RpcError(ErrorCode.InvalidParams, "the network broker sends string, binary, URLSearchParams or Blob bodies");
+}
+async function brokeredFetch(host, ctx, input, init = {}) {
+  const request = input instanceof Request ? input : void 0;
+  const url = request?.url ?? String(input);
+  const headers = new Headers(request?.headers);
+  new Headers(init.headers).forEach((value, name) => headers.set(name, value));
+  const body = init.body !== void 0 ? init.body : request !== void 0 && request.body !== null ? await request.arrayBuffer() : void 0;
+  const result = brokered(await host.broker(ctx, "network", "fetch", {
+    url,
+    method: init.method ?? request?.method ?? "GET",
+    headers: [...headers.entries()],
+    body_base64: await requestBody(body)
+  }));
+  const bytes = Buffer.from(result.body_base64, "base64");
+  const nullBody = [101, 204, 205, 304].includes(result.status);
+  const response = new Response(nullBody ? null : bytes, { status: result.status, headers: result.headers });
+  Object.defineProperty(response, "url", { value: result.url });
+  Object.defineProperty(response, "redirected", { value: result.redirected === true });
+  return response;
+}
+var CREDENTIAL_HANDLE_PREFIX, credentialsAdapter;
+var init_network = __esm({
+  "src/dsh/network.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    CREDENTIAL_HANDLE_PREFIX = "codewhale-credential:";
+    credentialsAdapter = {
+      service: "credentials",
+      define(host) {
+        class CredentialsService extends Service {
+          constructor(ctx) {
+            super(ctx, "credentials");
+          }
+          async resolve(ref2) {
+            const result = await host.broker(this.ctx, "network", "credentials.resolve", { ref: credentialRef(ref2) });
+            const value = result?.value;
+            if (value === null || value === void 0) return void 0;
+            if (typeof value !== "string" || !value.startsWith(CREDENTIAL_HANDLE_PREFIX)) throw new RpcError(ErrorCode.Internal, "invalid credential handle");
+            return { value };
+          }
+          async describe(ref2) {
+            const result = await host.broker(this.ctx, "network", "credentials.describe", { ref: credentialRef(ref2) });
+            if (result === null || typeof result !== "object" || typeof result.set !== "boolean") throw new RpcError(ErrorCode.Internal, "invalid credential description");
+            return typeof result.site === "string" ? { ref: credentialRef(ref2), set: result.set, site: result.site } : { ref: credentialRef(ref2), set: result.set };
+          }
+          async set(ref2, value, site) {
+            if (typeof value !== "string" || value.length === 0) throw new RpcError(ErrorCode.InvalidParams, "a credential value is a non-empty string");
+            await host.broker(this.ctx, "network", "credentials.set", { ref: credentialRef(ref2), value, site: credentialSite(site) });
+          }
+          fetch(input, init) {
+            return brokeredFetch(host, this.ctx, input, init);
+          }
+        }
+        Object.freeze(CredentialsService.prototype);
+        return CredentialsService;
+      }
+    };
+  }
+});
+
+// src/dsh/settings.ts
+function plain2(value, what) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new RpcError(ErrorCode.InvalidParams, `${what} is a plain object`);
+  return value;
+}
+function revision(value) {
+  if (value === void 0) return void 0;
+  if (typeof value !== "string" || value.length === 0) throw new RpcError(ErrorCode.InvalidParams, "an expected revision is the revision string describe returned");
+  return value;
+}
+function descriptor(value) {
+  const row = value;
+  if (row === null || typeof row !== "object" || typeof row.ns !== "string" || typeof row.revision !== "string" || typeof row.writable !== "boolean" || !Array.isArray(row.roots) || typeof row.value !== "object" || row.value === null || row.applies !== "reload") {
+    throw new RpcError(ErrorCode.Internal, "invalid settings broker response");
+  }
+  return { ns: row.ns, writable: row.writable, roots: row.roots.map(String), value: row.value, revision: row.revision, applied: typeof row.applied === "boolean" ? row.applied : null, applies: "reload" };
+}
+var SettingsConflictError, settingsAdapter;
+var init_settings = __esm({
+  "src/dsh/settings.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    SettingsConflictError = class extends Error {
+      constructor(ns, expected, actual) {
+        super(`settings namespace "${ns}" changed since it was read`);
+        this.ns = ns;
+        this.expected = expected;
+        this.actual = actual;
+        this.name = "SettingsConflictError";
+      }
+      ns;
+      expected;
+      actual;
+      code = "SETTINGS_CONFLICT";
+    };
+    settingsAdapter = {
+      service: "settings",
+      define(host) {
+        class SettingsService extends Service {
+          constructor(ctx) {
+            super(ctx, "settings");
+          }
+          async describe() {
+            return [descriptor(await host.broker(this.ctx, "settings", "describe", {}))];
+          }
+          async update(ns, patch, expectedRevision) {
+            return this.write(ns, "update", { patch: plain2(patch, "a settings patch") }, expectedRevision);
+          }
+          async replace(ns, section, expectedRevision) {
+            return this.write(ns, "replace", { value: plain2(section, "a settings section") }, expectedRevision);
+          }
+          async mutate(ns, ops, expectedRevision) {
+            if (!Array.isArray(ops)) throw new RpcError(ErrorCode.InvalidParams, "settings edits are an array of path operations");
+            return this.write(ns, "mutate", { ops }, expectedRevision);
+          }
+          async write(ns, method, input, expectedRevision) {
+            if (typeof ns !== "string" || ns.length === 0) throw new RpcError(ErrorCode.InvalidParams, "a settings namespace is a non-empty string");
+            const owner = host.ownerOf(this.ctx);
+            if (owner === void 0 || ns !== owner.pluginName) throw new RpcError(ErrorCode.Refused, "a plugin may edit only its own settings namespace");
+            const expected = revision(expectedRevision);
+            const result = await host.broker(this.ctx, "settings", method, expected === void 0 ? input : { ...input, expected_revision: expected });
+            if (result === null || typeof result !== "object" || typeof result.written !== "boolean" || typeof result.revision !== "string") throw new RpcError(ErrorCode.Internal, "invalid settings broker response");
+            if (result.conflict === true) throw new SettingsConflictError(ns, expected, result.revision);
+            return { written: result.written, revision: result.revision, applies: "reload" };
+          }
+        }
+        Object.freeze(SettingsService.prototype);
+        return SettingsService;
+      }
+    };
+  }
+});
+
+// src/dsh/catalog.ts
+function invalid3(what) {
+  return new RpcError(ErrorCode.Internal, `invalid catalog broker ${what}`);
+}
+function record2(value, what) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw invalid3(what);
+  return value;
+}
+function text(value, what) {
+  if (typeof value !== "string" || value.length === 0) throw invalid3(what);
+  return value;
+}
+function named(value, what) {
+  if (typeof value !== "string" || value.length === 0) throw new RpcError(ErrorCode.InvalidParams, `${what} is a non-empty string`);
+  return value;
+}
+async function accountBalance(host, ctx) {
+  const answer = record2(await host.broker(ctx, "catalog", "balance", {}), "balance");
+  const status = answer.status;
+  if (status === "unknown" || status === "absent") return { status };
+  const toppedUp = answer.topped_up;
+  const granted = answer.granted;
+  if (status !== "known" || typeof toppedUp !== "string" || typeof granted !== "string") throw invalid3("balance");
+  return { status, currency: text(answer.currency, "balance"), total: text(answer.total, "balance"), topped_up: toppedUp, granted };
+}
+async function planInstall(host, ctx, spec, registry) {
+  const exact = typeof spec === "string" ? spec.lastIndexOf("@") : -1;
+  if (typeof spec !== "string" || exact <= 0 || exact === spec.length - 1) throw new RpcError(ErrorCode.InvalidParams, EXACT_VERSION_ONLY);
+  const request = { package: spec.slice(0, exact), version: spec.slice(exact + 1) };
+  const input = registry === void 0 || registry === null ? request : { ...request, registry: named(registry, "a registry URL") };
+  const plan = record2(await host.broker(ctx, "catalog", "install.plan", input), "install plan");
+  const status = plan.status;
+  const planned = plan.spec;
+  if (status !== "review_required" && status !== "already_present" || planned !== void 0 && typeof planned !== "string") throw invalid3("install plan");
+  return {
+    status,
+    package: text(plan.package, "install plan"),
+    version: text(plan.version, "install plan"),
+    plugin: text(plan.plugin, "install plan"),
+    ...planned === void 0 ? {} : { spec: planned },
+    command: text(plan.command, "install plan"),
+    message: text(plan.message, "install plan")
+  };
+}
+function notChanged(stage, target, code, diagnostic) {
+  return { changed: false, application: "failed", stage, target: typeof target === "string" ? target : "", error: { code, diagnostic, message: diagnostic } };
+}
+function declined(error) {
+  if (!(error instanceof Error)) return void 0;
+  if (error instanceof RpcError && error.code === ErrorCode.InvalidParams && error.data === void 0) return error.message;
+  const refusal = error.data?.dsh_refusal;
+  return refusal === "refused" || refusal === "invalid_input" ? error.message : void 0;
+}
+var EXACT_VERSION_ONLY, REMOVE_IN_CODEWHALE, WITHHELD_ACCOUNT_METHODS, pluginManagerAdapter, deepseekAccountAdapter;
+var init_catalog = __esm({
+  "src/dsh/catalog.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    EXACT_VERSION_ONLY = "Codewhale plans a plugin install only for one exact npm version, written name@1.2.3";
+    REMOVE_IN_CODEWHALE = "Codewhale removes a plugin only from its own plugin manager, after you disable it: /plugin uninstall";
+    WITHHELD_ACCOUNT_METHODS = [
+      "getState",
+      "getProfile",
+      "getUnnotifiedBonuses",
+      "ackBonusNotified",
+      "startSignIn",
+      "cancelSignIn",
+      "signOut",
+      "watch",
+      "resolveToken",
+      "rejectToken",
+      "getPlatformSession",
+      "getDeviceIdentity"
+    ];
+    pluginManagerAdapter = {
+      service: "pluginManager",
+      define(host) {
+        class PluginManagerService extends Service {
+          constructor(ctx) {
+            super(ctx, "pluginManager");
+          }
+          async installBundle(spec, options) {
+            try {
+              const plan = await planInstall(host, this.ctx, spec, options?.registry);
+              return notChanged("install", spec, plan.status === "already_present" ? "already-installed" : "management-required", plan.message);
+            } catch (error) {
+              const diagnostic = declined(error);
+              if (diagnostic === void 0) throw error;
+              return notChanged("install", spec, "invalid-spec", diagnostic);
+            }
+          }
+          async removeBundle(target) {
+            return notChanged("remove", target, "management-required", REMOVE_IN_CODEWHALE);
+          }
+          async cancelInstall() {
+            return { status: "not-running" };
+          }
+        }
+        Object.freeze(PluginManagerService.prototype);
+        return PluginManagerService;
+      }
+    };
+    deepseekAccountAdapter = {
+      service: "deepseekAccount",
+      define(host) {
+        class DeepSeekAccountService extends Service {
+          constructor(ctx) {
+            super(ctx, "deepseekAccount");
+          }
+          async getBalance() {
+            const answer = await accountBalance(host, this.ctx);
+            if (answer.status === "absent") return null;
+            if (answer.status === "unknown") return { status: "failed" };
+            const { currency, total, topped_up: toppedUp, granted } = answer;
+            const wallet = (balance) => balance.length > 0 ? [{ currency, balance }] : [];
+            return { status: "ready", value: wallet(toppedUp.length > 0 ? toppedUp : total), bonusWallets: wallet(granted) };
+          }
+        }
+        for (const method of WITHHELD_ACCOUNT_METHODS) {
+          Object.defineProperty(DeepSeekAccountService.prototype, method, {
+            value() {
+              throw new RpcError(ErrorCode.NotAvailable, `deepseekAccount.${method} is not provided: Codewhale answers a read-only balance and never gives a plugin an account credential or a sign-in`);
+            }
+          });
+        }
+        Object.freeze(DeepSeekAccountService.prototype);
+        return DeepSeekAccountService;
+      }
+    };
+  }
+});
+
+// src/dsh/terminal.ts
+function invalid4(message) {
+  throw new RpcError(ErrorCode.InvalidParams, message);
+}
+function session(value) {
+  if (typeof value !== "string" || !SESSION.test(value)) invalid4("a terminal name is 1 to 64 letters, digits, `_`, `-` or `.`");
+  return value;
+}
+function text2(value, what) {
+  if (typeof value !== "string" || value.length === 0) invalid4(`${what} is a non-empty string`);
+  return value;
+}
+function bounded2(value, what, min, max) {
+  if (value === void 0) return void 0;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) invalid4(`${what} is an integer between ${min} and ${max}`);
+  return value;
+}
+function compact2(input) {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== void 0));
+}
+var SESSION, terminalAdapter;
+var init_terminal = __esm({
+  "src/dsh/terminal.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    SESSION = /^[A-Za-z0-9._-]{1,64}$/;
+    terminalAdapter = {
+      service: "terminal",
+      define(host) {
+        class TerminalService extends Service {
+          constructor(ctx) {
+            super(ctx, "terminal");
+          }
+          list() {
+            return host.broker(this.ctx, "terminal", "list", {});
+          }
+          run(command, options) {
+            return host.broker(this.ctx, "terminal", "run", compact2({
+              command: text2(command, "a command"),
+              session: options?.session === void 0 ? void 0 : session(options.session),
+              timeout_secs: bounded2(options?.timeoutSecs, "timeoutSecs", 1, 600)
+            }));
+          }
+          send(name, input, options) {
+            return host.broker(this.ctx, "terminal", "send", compact2({
+              session: session(name),
+              text: text2(input, "terminal input"),
+              wait_ms: bounded2(options?.waitMs, "waitMs", 0, 6e4)
+            }));
+          }
+          wait(name, options) {
+            return host.broker(this.ctx, "terminal", "wait", compact2({
+              session: session(name),
+              timeout_secs: bounded2(options?.timeoutSecs, "timeoutSecs", 1, 600)
+            }));
+          }
+          cancel(name) {
+            return host.broker(this.ctx, "terminal", "cancel", { session: session(name) });
+          }
+          reset(name) {
+            return host.broker(this.ctx, "terminal", "reset", { session: session(name) });
+          }
+        }
+        Object.freeze(TerminalService.prototype);
+        return TerminalService;
+      }
+    };
+  }
+});
+
 // src/dsh/adapters.ts
 var DSH_ADAPTERS;
 var init_adapters = __esm({
@@ -14214,7 +14869,25 @@ var init_adapters = __esm({
     init_session_prompt();
     init_agents();
     init_remote();
-    DSH_ADAPTERS = [sessionsAdapter, systemPromptAdapter, ...DSH_AGENT_ADAPTERS, remoteAdapter];
+    init_workspace();
+    init_llm();
+    init_network();
+    init_settings();
+    init_catalog();
+    init_terminal();
+    DSH_ADAPTERS = [
+      sessionsAdapter,
+      systemPromptAdapter,
+      ...DSH_AGENT_ADAPTERS,
+      remoteAdapter,
+      workspaceAdapter,
+      llmAdapter,
+      credentialsAdapter,
+      settingsAdapter,
+      pluginManagerAdapter,
+      deepseekAccountAdapter,
+      terminalAdapter
+    ];
   }
 });
 
@@ -14340,11 +15013,11 @@ function normalizePersonaConfig(value) {
   if (config.includeRuntimeContext !== void 0 && config.includeRuntimeContext !== true) throw new TypeError("persona runtime-context suppression belongs to the Core prompt and cannot be imported");
   if (typeof config.prefix !== "string" || config.suffix !== void 0 && typeof config.suffix !== "string") throw new TypeError("persona prefix and suffix must be text");
   const result = { prefix: config.prefix, suffix: config.suffix ?? "" };
-  for (const [position, text2] of Object.entries(result)) {
-    if (Buffer.byteLength(text2, "utf8") > MAX_PROMPT_SECTION_BYTES) throw new RangeError("persona text exceeds 4096 UTF-8 bytes");
-    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text2)) throw new TypeError("persona text contains control characters");
-    validatePromptTemplate(text2);
-    if (text2.trim().length > 0) normalizePromptSection({ id: `persona-${position}`, text: text2, interpolate: "model-cwd" });
+  for (const [position, text4] of Object.entries(result)) {
+    if (Buffer.byteLength(text4, "utf8") > MAX_PROMPT_SECTION_BYTES) throw new RangeError("persona text exceeds 4096 UTF-8 bytes");
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text4)) throw new TypeError("persona text contains control characters");
+    validatePromptTemplate(text4);
+    if (text4.trim().length > 0) normalizePromptSection({ id: `persona-${position}`, text: text4, interpolate: "model-cwd" });
   }
   return Object.freeze(result);
 }
@@ -14361,8 +15034,8 @@ var init_persona = __esm({
       apply(ctx, value) {
         if (!ownerStorage.getStore()?.scope) throw new Error("persona requires an exact Core-selected entry scope");
         const config = normalizePersonaConfig(value);
-        for (const [position, text2] of Object.entries(config)) {
-          if (text2.trim().length > 0) ctx.prompt.registerSection({ id: `persona-${position}`, text: text2, interpolate: "model-cwd" });
+        for (const [position, text4] of Object.entries(config)) {
+          if (text4.trim().length > 0) ctx.prompt.registerSection({ id: `persona-${position}`, text: text4, interpolate: "model-cwd" });
         }
       }
     });
@@ -14371,7 +15044,7 @@ var init_persona = __esm({
 
 // src/dsh/upstream/agent-presets/metadata.ts
 import { join as join2 } from "node:path";
-function text(value) {
+function text3(value) {
   if (typeof value !== "string") return void 0;
   const trimmed = value.trim();
   return trimmed === "" ? void 0 : trimmed;
@@ -14390,10 +15063,10 @@ async function readPresetMetadata(directory, readFile3) {
     return {};
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
-  const record2 = parsed;
-  const name = text(record2.name);
-  const description = text(record2.description);
-  const order = typeof record2.order === "number" && Number.isFinite(record2.order) ? record2.order : void 0;
+  const record3 = parsed;
+  const name = text3(record3.name);
+  const description = text3(record3.description);
+  const order = typeof record3.order === "number" && Number.isFinite(record3.order) ? record3.order : void 0;
   return {
     ...name === void 0 ? {} : { name },
     ...description === void 0 ? {} : { description },
@@ -14480,10 +15153,10 @@ async function unresolvableRows(rows, presetBase, harnessBase, resolves, io, at2
   }
   return found;
 }
-async function compositionProblem(path, harnessBase, resolves, io) {
+async function compositionProblem(path2, harnessBase, resolves, io) {
   let content;
   try {
-    content = await io.readFile(path, "utf8");
+    content = await io.readFile(path2, "utf8");
   } catch {
     return `the composition file ${COMPOSITION_FILE} cannot be read`;
   }
@@ -14496,7 +15169,7 @@ async function compositionProblem(path, harnessBase, resolves, io) {
   }
   const shape = entryListProblem(rows);
   if (shape !== void 0) return shape;
-  const presetBase = new URL(".", pathToFileURL4(path)).href;
+  const presetBase = new URL(".", pathToFileURL4(path2)).href;
   let unresolvable;
   try {
     unresolvable = await unresolvableRows(rows, presetBase, harnessBase, resolves, io);
@@ -14512,9 +15185,9 @@ async function compositionProblem(path, harnessBase, resolves, io) {
   return `${String(unresolvable.length)} rows name plugins that cannot be resolved:
 ` + unresolvable.map((row) => `- ${row.label}: ${row.name}`).join("\n");
 }
-async function isFile(path, io) {
+async function isFile(path2, io) {
   try {
-    return (await io.stat(path)).isFile();
+    return (await io.stat(path2)).isFile();
   } catch {
     return false;
   }
@@ -14532,13 +15205,13 @@ async function scanRoot(root, harnessBase, resolves, io) {
   for (const child of children) {
     if (!child.isDirectory() || !PRESET_ID.test(child.name)) continue;
     const directory = join3(dir, child.name);
-    const path = join3(directory, COMPOSITION_FILE);
-    const broken = await isFile(path, io) ? await compositionProblem(path, harnessBase, resolves, io) : `the composition file ${COMPOSITION_FILE} is missing — the directory still occupies the id; delete it or restore the file`;
+    const path2 = join3(directory, COMPOSITION_FILE);
+    const broken = await isFile(path2, io) ? await compositionProblem(path2, harnessBase, resolves, io) : `the composition file ${COMPOSITION_FILE} is missing — the directory still occupies the id; delete it or restore the file`;
     const metadata = await readPresetMetadata(directory, io.readFile);
     found.push({
       id: child.name,
       trust: root.trust,
-      path,
+      path: path2,
       ...metadata,
       ...broken === void 0 ? {} : { broken }
     });
@@ -14606,10 +15279,10 @@ function flattenRows(rows, outerDisabled, evaluateExpression, found) {
     });
   }
 }
-async function fileComposition(path, evaluateExpression, readFile3) {
+async function fileComposition(path2, evaluateExpression, readFile3) {
   let rows;
   try {
-    rows = load(await readFile3(path, "utf8"), { schema: entryListSchema });
+    rows = load(await readFile3(path2, "utf8"), { schema: entryListSchema });
   } catch (error) {
     return { broken: error instanceof Error ? error.message : String(error) };
   }
@@ -14644,11 +15317,11 @@ var init_composition_inventory = __esm({
 });
 
 // src/dsh/agent-presets.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash2, randomBytes } from "node:crypto";
 import { resolve as resolve4, relative as relative2, dirname as dirname4, sep as sep2 } from "node:path";
 import { fileURLToPath as fileURLToPath4, pathToFileURL as pathToFileURL5 } from "node:url";
-function plain2(path) {
-  return typeof path === "string" && path.length > 0 && path.length <= 4096 && !/[\\:\u0000-\u001f\u007f]/u.test(path) && !path.startsWith("/") && path.split("/").every((p) => p !== "" && p !== "." && p !== "..");
+function plain3(path2) {
+  return typeof path2 === "string" && path2.length > 0 && path2.length <= 4096 && !/[\\:\u0000-\u001f\u007f]/u.test(path2) && !path2.startsWith("/") && path2.split("/").every((p) => p !== "" && p !== "." && p !== "..");
 }
 function fail(message) {
   throw new Error(`agent-presets: ${message}`);
@@ -14687,48 +15360,48 @@ function containedPackageModule(name, documents, files) {
     entry = value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).some((k) => k.startsWith(".")) ? target(value[subpath]) : subpath === "." ? target(value) : void 0;
   } else if (subpath === ".") entry = typeof data2.main === "string" ? data2.main : "./index.js";
   else entry = subpath;
-  if (typeof entry !== "string" || !entry.startsWith("./") || !plain2(entry.slice(2))) return;
-  const path = `${packageRoot}/${entry.slice(2)}`;
-  if (!/\.(mjs|js|mts)$/.test(path) || !SHA.test(files[path] ?? "")) return;
-  return { name, path, sha256: files[path] };
+  if (typeof entry !== "string" || !entry.startsWith("./") || !plain3(entry.slice(2))) return;
+  const path2 = `${packageRoot}/${entry.slice(2)}`;
+  if (!/\.(mjs|js|mts)$/.test(path2) || !SHA.test(files[path2] ?? "")) return;
+  return { name, path: path2, sha256: files[path2] };
 }
 async function reviewAgentPresets(input) {
   const { composition } = input;
   const files = composition.files;
-  if (!files || Object.keys(files).length > 4096 || !Array.isArray(input.directories) || input.directories.length > 4096) fail("invalid source inventory");
+  if (!files || Object.keys(files).length > 16384 || !Array.isArray(input.directories) || input.directories.length > 16384) fail("invalid source inventory");
   const base = resolve4("codewhale-reviewed-agent-presets");
   const baseUrl = pathToFileURL5(`${base}${sep2}`).href;
-  function key(path) {
-    const inside = relative2(base, path).split(sep2).join("/");
-    if (!plain2(inside)) fail("path escapes the admitted source root");
+  function key(path2) {
+    const inside = relative2(base, path2).split(sep2).join("/");
+    if (!plain3(inside)) fail("path escapes the admitted source root");
     return inside;
   }
   const documents = /* @__PURE__ */ new Map();
   let bytes = 0;
   for (const doc of input.documents) {
-    if (!plain2(doc.path) || !SHA.test(doc.sha256) || files[doc.path] !== doc.sha256 || hash(doc.source) !== doc.sha256 || documents.has(doc.path)) fail("document changed or is outside the source receipt");
+    if (!plain3(doc.path) || !SHA.test(doc.sha256) || files[doc.path] !== doc.sha256 || hash(doc.source) !== doc.sha256 || documents.has(doc.path)) fail("document changed or is outside the source receipt");
     bytes += Buffer.byteLength(doc.source);
     if (Buffer.byteLength(doc.source) > 1024 * 1024 || bytes > 4 * 1024 * 1024) fail("documents exceed their bound");
     documents.set(doc.path, doc.source);
   }
   const directories = new Set(input.directories);
-  for (const path of directories) if (!plain2(path)) fail("invalid source directory");
-  for (const path of Object.keys(files)) if (!plain2(path) || !SHA.test(files[path])) fail("invalid source file receipt");
-  const invalid = /* @__PURE__ */ new Set();
+  for (const path2 of directories) if (!plain3(path2)) fail("invalid source directory");
+  for (const path2 of Object.keys(files)) if (!plain3(path2) || !SHA.test(files[path2])) fail("invalid source file receipt");
+  const invalid5 = /* @__PURE__ */ new Set();
   const parsed = /* @__PURE__ */ new Map();
   const io = {
-    async readFile(path) {
-      const relative4 = key(path);
-      if (invalid.has(relative4)) throw new Error("composition exceeds its data/shape bound");
-      const text2 = documents.get(relative4);
-      if (text2 === void 0) throw new Error("document not admitted");
-      return text2;
+    async readFile(path2) {
+      const relative4 = key(path2);
+      if (invalid5.has(relative4)) throw new Error("composition exceeds its data/shape bound");
+      const text4 = documents.get(relative4);
+      if (text4 === void 0) throw new Error("document not admitted");
+      return text4;
     },
-    async stat(path) {
-      return { isFile: () => Object.hasOwn(files, key(path)) };
+    async stat(path2) {
+      return { isFile: () => Object.hasOwn(files, key(path2)) };
     },
-    async readdir(path) {
-      const prefix = `${key(path)}/`;
+    async readdir(path2) {
+      const prefix = `${key(path2)}/`;
       if (!directories.has(prefix.slice(0, -1))) {
         const e = new Error("missing root");
         Object.assign(e, { code: "ENOENT" });
@@ -14738,12 +15411,12 @@ async function reviewAgentPresets(input) {
     }
   };
   const { reviewComposition: reviewComposition2, parsePresetComposition: parsePresetComposition2, compositionRowProblem: compositionRowProblem2, hasReviewedRowBridge: hasReviewedRowBridge2 } = await Promise.resolve().then(() => (init_composition(), composition_exports));
-  for (const [path, source] of documents) {
-    if (!path.endsWith("/agent.cordis.yml")) continue;
+  for (const [path2, source] of documents) {
+    if (!path2.endsWith("/agent.cordis.yml")) continue;
     try {
-      parsed.set(path, parsePresetComposition2(source));
+      parsed.set(path2, parsePresetComposition2(source));
     } catch {
-      invalid.add(path);
+      invalid5.add(path2);
     }
   }
   const top = reviewComposition2(composition);
@@ -14762,10 +15435,10 @@ async function reviewAgentPresets(input) {
   if (config.default !== void 0 && (typeof config.default !== "string" || !PRESET_ID.test(config.default) || config.default.length > 64)) fail("invalid default id");
   const roots = [];
   if (config.includeShippedRoot !== false) {
-    const candidates = [...documents.entries()].filter(([p, text2]) => {
+    const candidates = [...documents.entries()].filter(([p, text4]) => {
       if (p !== "package.json" && !p.endsWith("/package.json")) return false;
       try {
-        return JSON.parse(text2).name === AGENT_PRESETS;
+        return JSON.parse(text4).name === AGENT_PRESETS;
       } catch {
         return false;
       }
@@ -14778,7 +15451,7 @@ async function reviewAgentPresets(input) {
   }
   if (config.roots !== void 0 && !Array.isArray(config.roots)) fail("roots must be a literal list");
   for (const root of config.roots ?? []) {
-    if (!root || Object.keys(root).some((k) => !["path", "trust"].includes(k)) || !plain2(root.path) || !["system", "user"].includes(root.trust)) fail("configured roots must stay inside the admitted package");
+    if (!root || Object.keys(root).some((k) => !["path", "trust"].includes(k)) || !plain3(root.path) || !["system", "user"].includes(root.trust)) fail("configured roots must stay inside the admitted package");
     if (!directories.has(root.path)) fail("configured preset root was not admitted");
     roots.push({ path: resolve4(base, root.path), trust: root.trust });
   }
@@ -14812,8 +15485,8 @@ async function reviewAgentPresets(input) {
         if (specifier.kind === "package") receipt = declared.get(row.name) ?? containedPackageModule(row.name, documents, files);
         else {
           const url = specifier.kind === "file" ? new URL(specifier.specifier) : new URL(specifier.specifier, pathToFileURL5(preset.path).href);
-          const path2 = key(fileURLToPath4(url));
-          if (files[path2] !== void 0) receipt = { name: row.name, path: path2, sha256: files[path2] };
+          const path3 = key(fileURLToPath4(url));
+          if (files[path3] !== void 0) receipt = { name: row.name, path: path3, sha256: files[path3] };
         }
         if (!receipt || files[receipt.path] !== receipt.sha256) {
           if (isJsExpr(row.disabled)) continue;
@@ -14834,8 +15507,8 @@ async function reviewAgentPresets(input) {
       ...preset.broken === void 0 ? {} : { broken: preset.broken }
     };
     rows.push(metadata);
-    const path = key(preset.path);
-    inventory[preset.id] = { path, ...preset.broken !== void 0 ? { broken: preset.broken } : await fileComposition(preset.path, () => {
+    const path2 = key(preset.path);
+    inventory[preset.id] = { path: path2, ...preset.broken !== void 0 ? { broken: preset.broken } : await fileComposition(preset.path, () => {
       throw new Error("conditional until mounted");
     }, io.readFile) };
     if (preset.broken !== void 0) continue;
@@ -14858,6 +15531,15 @@ async function reviewAgentPresets(input) {
   if (Buffer.byteLength(JSON.stringify(inventory)) > 4 * 1024 * 1024) fail("composition inventory exceeds its bound");
   return { catalog: { version: 1, ...config.default === void 0 ? {} : { default: config.default }, mode_selection_enabled: true, presets: rows, inventory }, presets: prepared };
 }
+function issuePresetReceipt(snapshot) {
+  const payload = JSON.stringify(snapshot);
+  const receipt = createHash2("sha256").update(randomBytes(32)).update(payload).digest("hex");
+  activePresetReceipts.set(receipt, payload);
+  return receipt;
+}
+function revokePresetReceipt(receipt) {
+  activePresetReceipts.delete(receipt);
+}
 function defineReviewedAgentPresets(mount) {
   return class ReviewedAgentPresets extends Service {
     static inject = ["loader"];
@@ -14866,23 +15548,34 @@ function defineReviewedAgentPresets(mount) {
     constructor(ctx, config) {
       super(ctx, "agentPresets");
       this.selfCtx = ctx;
-      const snapshot = config?.codewhale_reviewed;
-      if (!snapshot || snapshot.catalog?.version !== 1 || !snapshot.catalog.presets.some((p) => p.id === snapshot.selected?.metadata.id && !p.broken)) fail("raw roster needs an installer-minted preset receipt");
-      this.snapshot = structuredClone(snapshot);
+      if (config?.codewhale_reviewed !== void 0 || config?.codewhale_receipt !== void 0) {
+        const snapshot = config.codewhale_reviewed;
+        const receipt = typeof config.codewhale_receipt === "string" ? config.codewhale_receipt : "";
+        const expected = receipt ? activePresetReceipts.get(receipt) : void 0;
+        activePresetReceipts.delete(receipt);
+        if (!snapshot || !expected || expected !== JSON.stringify(snapshot) || snapshot.catalog?.version !== 1 || !snapshot.catalog.presets.some((p) => p.id === snapshot.selected?.metadata.id && !p.broken)) fail("raw roster needs an installer-minted preset receipt");
+        this.snapshot = structuredClone(snapshot);
+      }
     }
     mounting;
     mounted;
     mountSelected() {
-      return this.mounting ??= mount(this.selfCtx, this.snapshot.base_url, this.snapshot.selected.composition).then((result) => this.mounted = result);
+      const snapshot = this.snapshot;
+      if (!snapshot) return Promise.resolve(void 0);
+      return this.mounting ??= mount(this.selfCtx, snapshot.base_url, snapshot.selected.composition).then((result) => this.mounted = result);
     }
     async list() {
-      return this.snapshot.catalog.presets.map((row) => ({ ...structuredClone(row), path: fileURLToPath4(new URL(this.snapshot.catalog.inventory[row.id].path, this.snapshot.base_url)) }));
+      const snapshot = this.snapshot;
+      if (!snapshot) return [];
+      return snapshot.catalog.presets.map((row) => ({ ...structuredClone(row), path: fileURLToPath4(new URL(snapshot.catalog.inventory[row.id].path, snapshot.base_url)) }));
     }
     async remoteExportList() {
-      return { presets: this.snapshot.catalog.presets.map(({ is_default, entry, ...row }) => ({ ...structuredClone(row), isDefault: is_default })), authorable: false, defaultId: this.defaultId, modeSelectionEnabled: this.snapshot.catalog.mode_selection_enabled };
+      const snapshot = this.snapshot;
+      if (!snapshot) return { presets: [], authorable: false, defaultId: void 0, modeSelectionEnabled: false };
+      return { presets: snapshot.catalog.presets.map(({ is_default, entry, ...row }) => ({ ...structuredClone(row), isDefault: is_default })), authorable: false, defaultId: this.defaultId, modeSelectionEnabled: snapshot.catalog.mode_selection_enabled };
     }
     get defaultId() {
-      return this.snapshot.catalog.default;
+      return this.snapshot?.catalog.default;
     }
     get authorable() {
       return false;
@@ -14893,20 +15586,23 @@ function defineReviewedAgentPresets(mount) {
       return row;
     }
     composedPreset() {
-      return this.snapshot.selected.metadata.id;
+      return this.snapshot?.selected.metadata.id;
     }
     async compositionInventory() {
-      return this.snapshot.catalog.presets.map((row) => {
+      const snapshot = this.snapshot;
+      if (!snapshot) return [];
+      return snapshot.catalog.presets.map((row) => {
         const identity = { id: row.id, trust: row.trust, ...row.name === void 0 ? {} : { name: row.name }, isDefault: row.id === this.defaultId };
         if (row.id === this.composedPreset() && this.mounted) return { ...identity, rows: mountedCompositionRows(this.mounted.tree) };
-        const read = this.snapshot.catalog.inventory[row.id];
+        const read = snapshot.catalog.inventory[row.id];
         if (row.broken || "broken" in read) return { ...identity, broken: row.broken ?? ("broken" in read ? read.broken : void 0), rows: [] };
         return { ...identity, rows: structuredClone(read.rows) };
       });
     }
     async readDocument(id) {
-      if (id !== this.composedPreset()) fail("read another preset through Core file authority");
-      return { agentPreset: id, trust: this.snapshot.selected.metadata.trust, content: this.snapshot.selected.source };
+      const snapshot = this.snapshot;
+      if (!snapshot || id !== this.composedPreset()) fail("read another preset through Core file authority");
+      return { agentPreset: id, trust: snapshot.selected.metadata.trust, content: snapshot.selected.source };
     }
     select() {
       fail("select through Core AgentProfile/native preset selection before a turn");
@@ -14922,7 +15618,7 @@ function defineReviewedAgentPresets(mount) {
     }
   };
 }
-var AGENT_PRESETS, MAX_PRESETS, hash, SHA;
+var AGENT_PRESETS, MAX_PRESETS, hash, SHA, activePresetReceipts;
 var init_agent_presets = __esm({
   "src/dsh/agent-presets.ts"() {
     "use strict";
@@ -14937,6 +15633,7 @@ var init_agent_presets = __esm({
     MAX_PRESETS = 64;
     hash = (bytes) => createHash2("sha256").update(bytes).digest("hex");
     SHA = /^[a-f0-9]{64}$/;
+    activePresetReceipts = /* @__PURE__ */ new Map();
   }
 });
 
@@ -14959,8 +15656,8 @@ import { fileURLToPath as fileURLToPath5 } from "node:url";
 function digest(bytes) {
   return createHash3("sha256").update(bytes).digest("hex");
 }
-function plainRelative(path) {
-  return typeof path === "string" && path.length > 0 && path.length <= 4096 && !isAbsolute4(path) && !path.startsWith("/") && !/[\\:\u0000-\u001f\u007f]/u.test(path) && path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+function plainRelative(path2) {
+  return typeof path2 === "string" && path2.length > 0 && path2.length <= 4096 && !isAbsolute4(path2) && !path2.startsWith("/") && !/[\\:\u0000-\u001f\u007f]/u.test(path2) && path2.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 }
 function boundData(root) {
   let nodes = 0;
@@ -15082,7 +15779,8 @@ async function mountReviewedComposition(ctx, baseUrl, spec) {
   function groups(rows) {
     for (const row of rows) {
       if (row.group === true && row.name === void 0) row.name = "cordis:group";
-      if (row.group === true && Array.isArray(row.config)) groups(row.config);
+      if (row.name === AGENT_PRESETS) row.isolate = { ...row.isolate, agentPresets: true };
+      if ((row.group === true || row.name === "cordis:group" || row.name === "@deepseek-ai/cordis-plugin-group") && Array.isArray(row.config)) groups(row.config);
     }
   }
   groups(review.entries);
@@ -15134,6 +15832,8 @@ function leakedServices(ctx, mount) {
 async function mountReviewedPreset(ctx, baseUrl, spec, catalog, selected) {
   if (!selected) throw new Error("agent-presets: explicit selection is required when no default is configured");
   const entries = structuredClone(reviewComposition(spec).entries);
+  const snapshot = { catalog, selected, base_url: baseUrl };
+  const receipt = issuePresetReceipt(snapshot);
   let found = 0;
   function prepare(rows) {
     for (const row of rows) {
@@ -15142,14 +15842,22 @@ async function mountReviewedPreset(ctx, baseUrl, spec, catalog, selected) {
       } else if (row.name === AGENT_PRESETS) {
         found++;
         row.isolate = { ...row.isolate, agentPresets: true };
-        row.config = { codewhale_reviewed: { catalog, selected, base_url: baseUrl } };
+        row.config = { codewhale_reviewed: snapshot, codewhale_receipt: receipt };
       }
     }
   }
   prepare(entries);
-  if (found !== 1) throw new Error("exactly one raw roster row is required for a selected preset");
+  if (found !== 1) {
+    revokePresetReceipt(receipt);
+    throw new Error("exactly one raw roster row is required for a selected preset");
+  }
   const source = JSON.stringify([{ insert: entries }]);
-  const top = await mountReviewedComposition(ctx, baseUrl, { ...spec, layers: [{ path: "selected-preset.json", sha256: digest(source), source }] });
+  let top;
+  try {
+    top = await mountReviewedComposition(ctx, baseUrl, { ...spec, layers: [{ path: "selected-preset.json", sha256: digest(source), source }] });
+  } finally {
+    revokePresetReceipt(receipt);
+  }
   try {
     const entry = [...top.tree.entries()].find((entry2) => entry2.options.name === AGENT_PRESETS && !entry2.disabled);
     const roster = entry?.ctx.get("agentPresets");
@@ -15204,7 +15912,7 @@ var init_composition = __esm({
         this.base = base;
         this.spec = spec;
         const modules = /* @__PURE__ */ new Map();
-        if (!Array.isArray(spec.modules) || spec.modules.length > MAX_ROWS || !spec.files || Object.keys(spec.files).length > 4096) throw new Error("invalid reviewed module closure");
+        if (!Array.isArray(spec.modules) || spec.modules.length > MAX_ROWS || !spec.files || Object.keys(spec.files).length > 16384) throw new Error("invalid reviewed module closure");
         for (const module of spec.modules) {
           if (!module || typeof module.name !== "string" || module.name.length === 0 || module.name.length > 4096 || modules.has(module.name) || !plainRelative(module.path) || !SHA256.test(module.sha256) || spec.files[module.path] !== module.sha256) throw new Error("module map differs from reviewed closure");
           modules.set(module.name, module);
@@ -15222,6 +15930,8 @@ var init_composition = __esm({
         if (name === "@deepseek-ai/dsh-skill-filesystem") return reviewedSkillModule();
         if (name === "@deepseek-ai/dsh-hooks-claude-code") return reviewedHookModule("claude-code", fileURLToPath5(this.base), this.spec.files);
         if (name === "@deepseek-ai/dsh-hooks-codex") return reviewedHookModule("codex", fileURLToPath5(this.base), this.spec.files);
+        if (compatibility_default.row_bridges[name] === "host-spine") return Object.freeze({ name, apply() {
+        } });
         if (UNSUPPORTED_ROWS.has(name)) throw new Error(`${name}: ${UNSUPPORTED_ROWS.get(name)}`);
         const module = this.modules.get(name);
         if (!module) throw new Error(`row requires ${JSON.stringify(name)}, absent from the reviewed module closure`);
@@ -15229,10 +15939,10 @@ var init_composition = __esm({
       }
       async importReviewed(module) {
         const root = fileURLToPath5(this.base);
-        const path = resolve5(root, module.path);
-        const inside = relative3(root, path);
+        const path2 = resolve5(root, module.path);
+        const inside = relative3(root, path2);
         if (inside.startsWith(`..${sep3}`) || inside === ".." || isAbsolute4(inside)) throw new Error("module escapes reviewed bundle");
-        if (this.spec.files[module.path] !== module.sha256 || digest(await readFile2(path)) !== module.sha256) throw new Error("module changed after review");
+        if (this.spec.files[module.path] !== module.sha256 || digest(await readFile2(path2)) !== module.sha256) throw new Error("module changed after review");
         return importReviewedModule(this.base, module.path);
       }
     };

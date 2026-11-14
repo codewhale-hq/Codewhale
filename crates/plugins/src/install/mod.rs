@@ -79,11 +79,12 @@ pub struct PluginArchiveMismatch {
 use crate::manifest::PluginManifest;
 use codewhale_net::network_policy::NetworkPolicy;
 use codewhale_skill_install::install::{
-    self as skill_install, FetchOutcome, INSTALLED_FROM_MARKER, InstallSource, InstalledFromMarker,
-    fetch_tarball, sha256_hex, source_spec_string,
+    FetchOutcome, INSTALLED_FROM_MARKER, InstallSource, InstalledFromMarker, fetch_tarball,
+    sha256_hex, source_spec_string,
 };
 
 pub mod dsh;
+pub(crate) mod npm_deps;
 mod place;
 mod stage;
 mod summary;
@@ -95,11 +96,11 @@ mod tests;
 use place::{ensure_target_within_plugins_dir, finalize_install, plugin_target_path};
 use stage::stage_local_copy;
 pub use summary::{PluginSummary, PreviousInstall, SummaryClause, SummaryInput, build_summary};
-use tarball::stage_tarball;
+use tarball::stage_tarball_with_network;
 
 /// Default per-bundle size cap. Mirrors the skill installer; the runtime
 /// staging budget in `registry.rs` stays the outer bound.
-pub const DEFAULT_MAX_SIZE_BYTES: u64 = skill_install::DEFAULT_MAX_SIZE_BYTES;
+pub const DEFAULT_MAX_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Source parsing
@@ -479,7 +480,7 @@ async fn install_inner(
             )
         }
         PluginInstallSource::Dsh(package) => {
-            let converted = convert_dsh_off_runtime(package.clone()).await?;
+            let converted = convert_dsh_off_runtime(package.clone(), network.clone()).await?;
             install_converted_dsh(
                 converted,
                 user_plugins_dir,
@@ -503,6 +504,7 @@ async fn install_inner(
                 remote,
                 &bytes,
                 &url,
+                network,
                 user_plugins_dir,
                 max_size,
                 update,
@@ -523,7 +525,7 @@ struct ConvertedDsh {
 
 /// Parse and convert off the async runtime: conversion reads and copies the
 /// whole package synchronously.
-async fn convert_dsh_off_runtime(package: PathBuf) -> Result<ConvertedDsh> {
+async fn convert_dsh_off_runtime(package: PathBuf, network: NetworkPolicy) -> Result<ConvertedDsh> {
     #[cfg(any(test, feature = "test-support"))]
     let env_scope = codewhale_runtime::test_support::env_scope_ticket();
     tokio::task::spawn_blocking(move || {
@@ -532,7 +534,8 @@ async fn convert_dsh_off_runtime(package: PathBuf) -> Result<ConvertedDsh> {
         let canonical = package
             .canonicalize()
             .with_context(|| format!("failed to resolve {}", package.display()))?;
-        let (scratch, bundle, _conversion) = dsh::convert_to_scratch(&canonical)?;
+        let (scratch, bundle, _conversion) =
+            dsh::convert_to_scratch_with_network(&canonical, Some(&network))?;
         Ok(ConvertedDsh {
             canonical,
             _scratch: scratch,
@@ -578,7 +581,21 @@ fn install_converted_dsh(
 /// Review a DSH package without installing it: the conversion receipt and the
 /// content hash that an exact install of the same package will stage.
 pub fn preview_dsh(package: &Path) -> Result<(dsh::DshConversion, String)> {
-    let (_scratch, bundle, conversion) = dsh::convert_to_scratch(package)?;
+    preview_dsh_with_network_opt(package, None)
+}
+
+pub fn preview_dsh_with_network(
+    package: &Path,
+    network: &NetworkPolicy,
+) -> Result<(dsh::DshConversion, String)> {
+    preview_dsh_with_network_opt(package, Some(network))
+}
+
+fn preview_dsh_with_network_opt(
+    package: &Path,
+    network: Option<&NetworkPolicy>,
+) -> Result<(dsh::DshConversion, String)> {
+    let (_scratch, bundle, conversion) = dsh::convert_to_scratch_with_network(package, network)?;
     let manifest = crate::agent_plugin::resolve_manifest_path(&bundle)
         .context("converted DSH bundle has no manifest")?;
     let validated = PluginManifest::validate_from_path(&manifest)
@@ -613,6 +630,7 @@ fn install_remote_bytes(
     remote: &InstallSource,
     bytes: &[u8],
     url: &str,
+    network: &NetworkPolicy,
     user_plugins_dir: &Path,
     max_size: u64,
     update: bool,
@@ -631,7 +649,13 @@ fn install_remote_bytes(
         }
         .into());
     }
-    let staged = stage_tarball(bytes, user_plugins_dir, max_size, bundle_path.as_deref())?;
+    let staged = stage_tarball_with_network(
+        bytes,
+        user_plugins_dir,
+        max_size,
+        bundle_path.as_deref(),
+        Some(network),
+    )?;
     verify_expected_content_hash(&staged, expected_content_hash)?;
     if let Some(conflict) = name_conflict(&staged.name) {
         let _ = fs::remove_dir_all(&staged.staged_path);
@@ -730,7 +754,7 @@ pub async fn update(
         // Re-convert the recorded package. An identical converted bundle is
         // no change; a different one replaces the installed copy, and its
         // new content hash invalidates the trust receipt at next discovery.
-        let converted = convert_dsh_off_runtime(package.clone()).await?;
+        let converted = convert_dsh_off_runtime(package.clone(), network.clone()).await?;
         let content_hash = {
             let manifest = crate::agent_plugin::resolve_manifest_path(&converted.bundle)
                 .context("converted DSH bundle has no manifest")?;
@@ -786,6 +810,7 @@ pub async fn update(
         &remote,
         &bytes,
         &url,
+        network,
         user_plugins_dir,
         max_size,
         true,

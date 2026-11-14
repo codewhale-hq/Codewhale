@@ -18,8 +18,8 @@ use serde_json::{Value as Json, json};
 pub mod presets;
 
 pub const CONVERTER_VERSION: &str = "0.10.1";
-const MAX_FILES: usize = 4096;
-const MAX_BYTES: usize = 64 * 1024 * 1024;
+const MAX_FILES: usize = 16_384;
+const MAX_BYTES: usize = 256 * 1024 * 1024;
 const MAX_DOCUMENT: usize = 1024 * 1024;
 const MAX_PATCH_FILES: usize = 64;
 const MAX_DEPTH: usize = 32;
@@ -114,7 +114,7 @@ impl Value {
         }
     }
 
-    fn str(&self) -> Option<&str> {
+    pub(super) fn str(&self) -> Option<&str> {
         match self {
             Value::Str(text) => Some(text),
             _ => None,
@@ -128,7 +128,7 @@ impl Value {
         }
     }
 
-    fn is_true(&self) -> bool {
+    pub(super) fn is_true(&self) -> bool {
         matches!(self, Value::Bool(true))
     }
 
@@ -339,6 +339,53 @@ pub fn parse_json(text: &str) -> Result<Value> {
     serde_json::from_str::<serde::de::IgnoredAny>(text)
         .map_err(|_| anyhow::Error::msg(PARSE_REFUSAL))?;
     parse_yaml(text, false)
+}
+
+pub fn parse_package_json(text: &str) -> Result<Value> {
+    let raw: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| anyhow::Error::msg(PARSE_REFUSAL))?;
+    json_value_to_yaml_value(&raw, 0)
+}
+
+fn json_value_to_yaml_value(value: &serde_json::Value, depth: usize) -> Result<Value> {
+    require(depth <= MAX_DEPTH, PARSE_REFUSAL)?;
+    match value {
+        serde_json::Value::Null => Ok(Value::Null),
+        serde_json::Value::Bool(b) => Ok(Value::Bool(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(Value::Int(i))
+            } else if let Some(u) = n.as_u64() {
+                match i64::try_from(u) {
+                    Ok(i) => Ok(Value::Int(i)),
+                    Err(_) => {
+                        let f = n.as_f64().unwrap_or(f64::NAN);
+                        require(f.is_finite(), PARSE_REFUSAL)?;
+                        Ok(Value::Float(f))
+                    }
+                }
+            } else {
+                let f = n.as_f64().unwrap_or(f64::NAN);
+                require(f.is_finite(), PARSE_REFUSAL)?;
+                Ok(Value::Float(f))
+            }
+        }
+        serde_json::Value::String(s) => Ok(Value::Str(s.clone())),
+        serde_json::Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(json_value_to_yaml_value(item, depth + 1)?);
+            }
+            Ok(Value::Seq(out))
+        }
+        serde_json::Value::Object(map) => {
+            let mut out = Vec::with_capacity(map.len());
+            for (k, v) in map {
+                out.push((k.clone(), json_value_to_yaml_value(v, depth + 1)?));
+            }
+            Ok(Value::Map(out))
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1282,7 +1329,7 @@ impl ClientScan<'_> {
             if let Some(bytes) = self.files.get(&format!("{package}/package.json")) {
                 let manifest = std::str::from_utf8(bytes)
                     .ok()
-                    .and_then(|text| parse_json(text).ok())
+                    .and_then(|text| parse_package_json(text).ok())
                     .ok_or_else(|| format!("`{name}` has an unreadable package.json"))?;
                 let target = package_target(&manifest, &subpath)
                     .and_then(|target| normalize_slash(&format!("{package}/{target}")))
@@ -1299,7 +1346,11 @@ impl ClientScan<'_> {
                 None => break,
             }
         }
-        if name == "react" || name == "react-dom" || name.starts_with("@deepseek-ai/") {
+        if name == "react"
+            || name == "react-dom"
+            || name == "cosmokit"
+            || name.starts_with("@deepseek-ai/")
+        {
             self.host.insert(name);
             return Ok(None);
         }
@@ -1421,7 +1472,7 @@ pub fn load_bundle(package: &Package) -> Result<LoadedBundle> {
             anyhow::Error::msg("Not a DSH bundle package: package.json is missing or unreadable.")
         })?;
     let manifest_sha256 = sha256_hex(&manifest_bytes);
-    let manifest = parse_json(&utf8(manifest_bytes)?)?;
+    let manifest = parse_package_json(&utf8(manifest_bytes)?)?;
     mapping(&manifest, None)?;
     let bundle = manifest.get("dsh").and_then(|dsh| dsh.get("bundle"));
     require(
@@ -2389,7 +2440,7 @@ impl OutputFiles {
         self.bytes += content.len();
         require(
             self.bytes <= MAX_BYTES,
-            "Output exceeds the 4096-file / 64 MiB bundle budget.",
+            "Output exceeds the 16384-file / 256 MiB bundle budget.",
         )?;
         self.files.insert(relative, content);
         Ok(())
@@ -2731,7 +2782,11 @@ fn native_composition_files(
             (dependency
                 || !lower.starts_with('.')
                 || lower == ".agent-presets"
+                || (lower == ".dsh-tui-managed.json"
+                    && (relative.starts_with("presets/")
+                        || relative.starts_with(".agent-presets/")))
                 || relative == ".gitignore")
+                && !lower.starts_with(".env.")
                 && !matches!(
                     lower.as_str(),
                     "credentials"
@@ -2789,7 +2844,7 @@ fn native_composition_files(
                     let text = std::str::from_utf8(bytes).map_err(|_| {
                         anyhow::Error::msg("Configuration and skill entrypoints must be UTF-8.")
                     })?;
-                    let manifest = parse_json(text)?;
+                    let manifest = parse_package_json(text)?;
                     if declares_client(&manifest) {
                         let root = manifest_path
                             .rsplit_once('/')
@@ -2863,7 +2918,7 @@ fn native_composition_files(
     }
     document["modules"] = json!(selected);
     document["files"] = json!(files);
-    if presets::has_roster(entries) {
+    if selected.is_empty() && presets::has_roster(entries) {
         presets::prepare(package, &document, output)?;
         return Ok(names);
     }
@@ -2981,11 +3036,19 @@ pub fn plan_npm_install(
 /// `output`. `output` must not exist; nothing is written unless every
 /// component validated, and a failed write removes what it created.
 pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
+    convert_package_with_network(package, output, None)
+}
+
+pub fn convert_package_with_network(
+    package: &Path,
+    output: &Path,
+    network: Option<&codewhale_net::network_policy::NetworkPolicy>,
+) -> Result<DshConversion> {
     static CONVERSION: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _conversion = CONVERSION
         .lock()
         .map_err(|_| anyhow::Error::msg("DSH preparation is unavailable"))?;
-    let package = Package::open(package)?;
+    let mut package = Package::open(package)?;
     require(
         !output.exists(),
         "Output already exists; choose a fresh directory. Nothing was overwritten.",
@@ -2997,6 +3060,21 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
         )?;
     }
     let loaded = load_bundle(&package)?;
+    let _staged_npm = if let Some(policy) = network {
+        if let Some(dir) = super::npm_deps::maybe_stage_with_dependencies(
+            &package.root,
+            &loaded.manifest,
+            &loaded.entries,
+            policy,
+        )? {
+            package = Package::open(dir.path())?;
+            Some(dir)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let mut output_files = OutputFiles::default();
     let mut client_outcomes = Vec::new();
     let mut client_closures = Vec::new();
@@ -3146,14 +3224,29 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
         "$schema": "https://agent-plugins.org/schemas/plugin.json",
         "name": plugin_name,
     });
-    for field in ["version", "description"] {
-        if let Some(value) = loaded
-            .manifest
-            .get(field)
-            .and_then(Value::str)
-            .filter(|v| !v.trim().is_empty())
-        {
-            manifest[field] = json!(value);
+    if let Some(value) = loaded
+        .manifest
+        .get("version")
+        .and_then(Value::str)
+        .filter(|v| !v.trim().is_empty())
+    {
+        manifest["version"] = json!(value);
+    }
+    if let Some(raw_description) = loaded.manifest.get("description").and_then(Value::str) {
+        let cleaned: String = raw_description
+            .chars()
+            .filter(|c| !codewhale_sanitize::sanitize::is_bidi_control(*c))
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        let trimmed = cleaned.trim();
+        if !trimmed.is_empty() {
+            let truncated = if trimmed.chars().count() > 1024 {
+                let prefix: String = trimmed.chars().take(1023).collect();
+                format!("{}…", prefix.trim_end())
+            } else {
+                trimmed.to_string()
+            };
+            manifest["description"] = json!(truncated);
         }
     }
     let mut extension = serde_json::Map::new();
@@ -3410,11 +3503,18 @@ fn write_output(output: &Path, files: &OutputFiles) -> Result<()> {
 /// Convert into a private scratch directory and return it with the receipt.
 /// The directory is removed when the returned guard drops.
 pub fn convert_to_scratch(package: &Path) -> Result<(tempfile::TempDir, PathBuf, DshConversion)> {
+    convert_to_scratch_with_network(package, None)
+}
+
+pub fn convert_to_scratch_with_network(
+    package: &Path,
+    network: Option<&codewhale_net::network_policy::NetworkPolicy>,
+) -> Result<(tempfile::TempDir, PathBuf, DshConversion)> {
     let scratch = tempfile::Builder::new()
         .prefix("codewhale-dsh-import-")
         .tempdir()?;
     let bundle = scratch.path().join("bundle");
-    let conversion = convert_package(package, &bundle)?;
+    let conversion = convert_package_with_network(package, &bundle, network)?;
     Ok((scratch, bundle, conversion))
 }
 
@@ -3430,7 +3530,7 @@ pub fn is_dsh_package(path: &Path) -> bool {
     read_file(&path, MAX_DOCUMENT)
         .ok()
         .and_then(|bytes| utf8(bytes).ok())
-        .and_then(|text| parse_json(&text).ok())
+        .and_then(|text| parse_package_json(&text).ok())
         .is_some_and(|manifest| {
             manifest
                 .get("dsh")

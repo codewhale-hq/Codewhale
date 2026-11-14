@@ -240,6 +240,8 @@ pub(super) struct PluginReviewPayload {
     pub(super) commands: Vec<String>,
     pub(super) agents: Vec<String>,
     pub(super) hooks: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) host_services: Option<codewhale_plugins::host_services::HostServiceReview>,
 }
 
 #[derive(Debug, Serialize)]
@@ -342,6 +344,8 @@ pub(super) struct TrustPluginRequest {
     /// Review token from `GET /v1/apps/plugins/{selector}`. Required: trust
     /// is an explicit confirmation bound to both SHA-256 receipts.
     pub(super) token: String,
+    #[serde(default)]
+    pub(super) host_services_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -457,7 +461,10 @@ fn file_stem(path: &std::path::Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-fn review_payload(plugin: &LoadedPlugin) -> PluginReviewPayload {
+fn review_payload(
+    plugin: &LoadedPlugin,
+    registry: Option<&codewhale_plugins::PluginRegistry>,
+) -> PluginReviewPayload {
     let mut mcp_servers: Vec<_> = plugin
         .manifest
         .mcp_servers
@@ -501,6 +508,12 @@ fn review_payload(plugin: &LoadedPlugin) -> PluginReviewPayload {
         .collect();
     skills.sort_by(|a, b| a.name.cmp(&b.name));
 
+    let host_services = registry
+        .and_then(|reg| {
+            reg.host_service_review_for(plugin.name(), &PluginApprover::person(PersonVia::App))
+        })
+        .filter(|review| !review.lines.is_empty());
+
     PluginReviewPayload {
         token: plugin.review_token(),
         capabilities: plugin.inventory.supported_labels(),
@@ -513,17 +526,21 @@ fn review_payload(plugin: &LoadedPlugin) -> PluginReviewPayload {
         commands,
         agents,
         hooks,
+        host_services,
     }
 }
 
-fn plugin_detail(plugin: &LoadedPlugin) -> PluginDetailResponse {
+fn plugin_detail(
+    plugin: &LoadedPlugin,
+    registry: Option<&codewhale_plugins::PluginRegistry>,
+) -> PluginDetailResponse {
     PluginDetailResponse {
         summary: plugin_summary(plugin),
         repository: plugin.manifest.plugin.repository.clone(),
         license: plugin.manifest.plugin.license.clone(),
         keywords: plugin.manifest.plugin.keywords.clone(),
         staged: plugin.staged_root.is_some(),
-        review: review_payload(plugin),
+        review: review_payload(plugin, registry),
     }
 }
 
@@ -1409,7 +1426,7 @@ async fn run_registry_mutation(
     mutation: RegistryMutation<'_>,
 ) -> Result<PluginActionResponse, ApiError> {
     let registry = registry_for_state(state);
-    if let RegistryMutation::Trust { token } = &mutation {
+    if let RegistryMutation::Trust { token, .. } = &mutation {
         let Some(plugin) = registry.get(selector) else {
             return Err(ApiError::not_found(format!(
                 "plugin '{selector}' not found"
@@ -1433,11 +1450,14 @@ async fn run_registry_mutation(
 
     let mut registry = (*registry).clone();
     let result = match mutation {
-        RegistryMutation::Trust { .. } => registry.trust_reviewed(
+        RegistryMutation::Trust {
+            host_services_token,
+            ..
+        } => registry.trust_reviewed(
             selector,
             ReviewApproval {
                 approved_by: PluginApprover::person(PersonVia::App),
-                host_services: None,
+                host_services: host_services_token.map(str::to_owned),
             },
         ),
         RegistryMutation::Enable => {
@@ -1491,7 +1511,10 @@ async fn run_registry_mutation(
 }
 
 enum RegistryMutation<'a> {
-    Trust { token: &'a str },
+    Trust {
+        token: &'a str,
+        host_services_token: Option<&'a str>,
+    },
     Enable,
     Restage,
     Disable,
@@ -1717,7 +1740,12 @@ pub(super) async fn get_plugin(
     State(state): State<RuntimeApiState>,
     Path(selector): Path<String>,
 ) -> Result<Json<PluginDetailResponse>, ApiError> {
-    Ok(Json(plugin_detail(&find_plugin(&state, &selector)?)))
+    let registry = registry_for_state(&state);
+    let plugin = registry
+        .get(&selector)
+        .cloned()
+        .ok_or_else(|| ApiError::not_found(format!("plugin '{selector}' not found")))?;
+    Ok(Json(plugin_detail(&plugin, Some(&registry))))
 }
 
 pub(super) async fn get_plugin_ui(
@@ -1946,11 +1974,19 @@ pub(super) async fn preview_dsh_plugin_api(
     } else {
         state.workspace.join(requested)
     };
+    let network = {
+        let config = state.config.read();
+        config
+            .network
+            .clone()
+            .map(codewhale_net::network_policy::NetworkPolicy::from)
+            .unwrap_or_default()
+    };
     let preview = tokio::task::spawn_blocking(move || {
         let canonical = path
             .canonicalize()
             .map_err(|_| format!("DSH package not found at {}", path.display()))?;
-        codewhale_plugins::install::preview_dsh(&canonical)
+        codewhale_plugins::install::preview_dsh_with_network(&canonical, &network)
             .map(|(conversion, content_hash)| (canonical, conversion, content_hash))
             .map_err(|error| format!("{error:#}"))
     })
@@ -2009,7 +2045,10 @@ pub(super) async fn trust_plugin_api(
         run_registry_mutation(
             &state,
             &selector,
-            RegistryMutation::Trust { token: &req.token },
+            RegistryMutation::Trust {
+                token: &req.token,
+                host_services_token: req.host_services_token.as_deref(),
+            },
         )
         .await?,
     ))

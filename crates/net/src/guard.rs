@@ -369,6 +369,7 @@ pub struct GuardedGet<'a> {
     tool: &'a str,
     private: PrivateTargets,
     if_none_match: Option<&'a str>,
+    accept: Option<&'a str>,
     connect_timeout: Duration,
     total_timeout: Duration,
     max_redirects: usize,
@@ -389,6 +390,7 @@ impl<'a> GuardedGet<'a> {
             tool,
             private,
             if_none_match: None,
+            accept: None,
             connect_timeout: Duration::from_secs(10),
             total_timeout: Duration::from_secs(60),
             max_redirects: 5,
@@ -400,6 +402,12 @@ impl<'a> GuardedGet<'a> {
     #[must_use]
     pub fn if_none_match(mut self, etag: Option<&'a str>) -> Self {
         self.if_none_match = etag;
+        self
+    }
+
+    #[must_use]
+    pub fn accept(mut self, accept: &'a str) -> Self {
+        self.accept = Some(accept);
         self
     }
 
@@ -471,6 +479,9 @@ impl<'a> GuardedGet<'a> {
             let mut request = client.get(current.clone());
             if let Some(etag) = self.if_none_match {
                 request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+            }
+            if let Some(accept) = self.accept {
+                request = request.header(reqwest::header::ACCEPT, accept);
             }
             let origin = current.origin().ascii_serialization();
             let response = request.send().await.map_err(|err| {

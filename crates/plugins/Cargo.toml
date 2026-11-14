@@ -26,12 +26,14 @@ codewhale-secrets = { path = "../secrets", version = "0.10.3" }
 codewhale-skill-install = { path = "../skill-install", version = "0.10.3" }
 codewhale-util = { path = "../util", version = "0.10.3" }
 fd-lock = "4.0.4"
+flate2 = "1.1"
 regex = "1.11"
 reqwest = { workspace = true, features = ["blocking", "stream", "form", "http2"] }
 semver.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
 sha2.workspace = true
+tar = "0.4"
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -53,5 +55,3 @@ codewhale-config = { path = "../config", version = "0.10.3", features = ["schema
 codewhale-runtime = { path = "../runtime", version = "0.10.3", features = ["test-support", "test-thread-scoped-state"] }
 codewhale-skill-install = { path = "../skill-install", version = "0.10.3", features = ["test-support"] }
 codewhale-util = { path = "../util", version = "0.10.3", features = ["test-support"] }
-flate2 = "1.1"
-tar = "0.4"
