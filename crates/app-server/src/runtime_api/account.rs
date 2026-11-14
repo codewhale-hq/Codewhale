@@ -84,8 +84,14 @@ async fn blocking(
         .map(|body| Json(body).into_response())
 }
 
+pub(super) async fn status_receipt(state: RuntimeApiState) -> Result<Value, ApiError> {
+    tokio::task::spawn_blocking(move || read_status(&client(&state)?))
+        .await
+        .map_err(|_| ApiError::internal("Codewhale account operation failed"))?
+}
+
 async fn status(State(state): State<RuntimeApiState>) -> Result<Response, ApiError> {
-    blocking(move || read_status(&client(&state)?)).await
+    Ok(Json(status_receipt(state).await?).into_response())
 }
 
 #[derive(Deserialize)]

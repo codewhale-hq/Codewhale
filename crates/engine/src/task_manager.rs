@@ -1106,7 +1106,7 @@ impl TaskExecutor for EngineTaskExecutor {
             let turn = loop {
                 match self
                     .runtime_threads
-                    .start_scheduled_turn(&destination, &task.prompt, &task.id)
+                    .start_scheduled_turn(&destination, &task.prompt, &task.id, &task.workspace)
                     .await
                 {
                     Ok(Some(turn)) => break turn,

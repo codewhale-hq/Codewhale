@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Source-build toolchain:** Rust 1.100.0 is pinned consistently across local source builds, CI, Docker, Dev Containers and CNB recipes. The minimum supported Rust version remains 1.89.
 - **Terminal input recovery:** retains a wake event from a replaced reader, suppresses retired events observed during a child-terminal handoff, and closes only the handoff window owned by that scope.
+- **Chrome attachment:** an explicit attach-only native Runtime capability connects to a selected authenticated owner without starting another Runtime; thread operations, approvals and journal observations stay bound to that folder.
 
 - **Plugin index hooks:** hooks with the same name and event now have distinct row IDs, so clients can keep every configured hook visible.
 - **Extension service approvals:** plugin service acts use the session permission gate and retain their approved or refused act records when a tool call fails. Closing a call seals its broker-act record so a late approval cannot authorize an unrecorded act. Ordinary nested-call receipts may still show an in-flight outcome when cancellation ends the call early.

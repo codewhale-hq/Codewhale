@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "f0dda0668311fca8041f9f2ae579f0db0de1f34dd74124e622fbe20639c10ed3"
+    "sha256": "8f375bb915b7e588a15d8bb254e82fe14548bcb66117cca0788c3b56e3120b5e"
   },
   "features": [
     {
@@ -1433,6 +1433,19 @@
       "flag": null,
       "docs": "docs/CONFIGURATION.md",
       "registryLine": 1056
+    },
+    {
+      "id": "native-runtime-attachment",
+      "name": "Native Runtime attachment",
+      "summary": "Attach-only native clients select an authenticated existing owner and a fixed workspace.",
+      "status": "experimental",
+      "surfaces": {
+        "api": "partial"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/NATIVE_RUNTIME.md",
+      "registryLine": 1066
     }
   ]
 }

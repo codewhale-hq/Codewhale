@@ -3658,6 +3658,9 @@ impl RuntimeOwnerFrontend for MockRuntimeFrontend {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + '_>> {
         Box::pin(async move {
             let (method, path, body, query) = match request {
+                RuntimeOwnerRequest::Native { .. } => anyhow::bail!(
+                    "native Runtime requires the captured owner, not the HTTP fixture"
+                ),
                 RuntimeOwnerRequest::Capabilities => (
                     Method::GET,
                     vec!["v1".to_owned(), "runtime".to_owned(), "info".to_owned()],

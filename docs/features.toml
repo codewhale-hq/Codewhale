@@ -1061,3 +1061,13 @@ surfaces = { tui = "stable" }
 since = "unreleased"
 docs = "docs/CONFIGURATION.md"
 owner = "crates/config/src/provider_toml.rs"
+
+[[feature]]
+id = "native-runtime-attachment"
+name = "Native Runtime attachment"
+summary = "Attach-only native clients select an authenticated existing owner and a fixed workspace."
+status = "experimental"
+surfaces = { api = "partial" }
+since = "unreleased"
+owner = "crates/app-server/src/native_runtime.rs"
+docs = "docs/NATIVE_RUNTIME.md"

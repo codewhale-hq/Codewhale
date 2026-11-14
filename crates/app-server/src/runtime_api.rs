@@ -253,6 +253,8 @@ pub struct RuntimeApiState {
     provider_connect: secrets::ProviderConnect,
     #[cfg(test)]
     compat_stream_test_hook: Option<tokio::sync::mpsc::UnboundedSender<CompatStreamTestPoint>>,
+    #[cfg(test)]
+    automation_admission_test_hook: Arc<parking_lot::Mutex<Option<AutomationAdmissionTestHook>>>,
 }
 
 // This is a cache bound inside the existing owner, matching the daemon's
@@ -858,6 +860,21 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
     > {
         Box::pin(owner_calls::events(
             self.state.clone(),
+            thread_id,
+            since_seq,
+        ))
+    }
+    fn events_in_workspace(
+        &self,
+        workspace: PathBuf,
+        thread_id: String,
+        since_seq: u64,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<crate::RuntimeOwnerEventStream>> + Send + '_>,
+    > {
+        Box::pin(owner_calls::events_in_workspace(
+            self.state.clone(),
+            workspace,
             thread_id,
             since_seq,
         ))
@@ -2443,6 +2460,8 @@ pub async fn run_http_server(
         provider_connect: Default::default(),
         #[cfg(test)]
         compat_stream_test_hook: None,
+        #[cfg(test)]
+        automation_admission_test_hook: Default::default(),
     };
     #[cfg(any(unix, windows))]
     let (owner_endpoint, control_state) = bind_captured_runtime_frontends(
@@ -2620,7 +2639,7 @@ fn selected_control_socket(options: &RuntimeApiOptions) -> Option<PathBuf> {
 /// `selected_store` is the store root this run resolved, the same value the
 /// thread manager will open.
 #[cfg(unix)]
-async fn store_selected_control_socket(
+pub(crate) async fn store_selected_control_socket(
     explicit: Option<PathBuf>,
     selected_store: &FsPath,
 ) -> Result<PathBuf> {
@@ -7021,14 +7040,33 @@ async fn settle_approval_request(
     decision: ExternalApprovalDecision,
     responder: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
 ) -> Result<DecideApprovalResponse, ApiError> {
+    settle_approval_request_in_workspace(state, approval_id, binding, decision, responder, None)
+        .await
+}
+
+async fn settle_approval_request_in_workspace(
+    state: &RuntimeApiState,
+    approval_id: String,
+    binding: Option<&codewhale_engine::runtime_threads::manager::ExternalApprovalBinding>,
+    decision: ExternalApprovalDecision,
+    responder: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+    expected_workspace: Option<&FsPath>,
+) -> Result<DecideApprovalResponse, ApiError> {
     let delivered = state
         .runtime_threads
-        .deliver_approval_from(&approval_id, binding, decision, responder)
+        .deliver_approval_from_workspace(
+            &approval_id,
+            binding,
+            decision,
+            responder,
+            expected_workspace,
+        )
         .await
         .map_err(|error| {
-            if error
-                .downcast_ref::<codewhale_engine::runtime_threads::manager::ApprovalBindingMismatch>()
-                .is_some()
+            if error.is::<codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch>() {
+                ApiError::forbidden(error.to_string()).with_code("workspace_mismatch")
+            } else if error
+                .is::<codewhale_engine::runtime_threads::manager::ApprovalBindingMismatch>()
             {
                 ApiError::forbidden(error.to_string())
             } else if error
@@ -8501,25 +8539,73 @@ fn map_trigger_err(err: anyhow::Error) -> ApiError {
     }
 }
 
+#[cfg(test)]
+struct AutomationAdmissionTestHook {
+    arrived: tokio::sync::oneshot::Sender<()>,
+    resume: tokio::sync::oneshot::Receiver<()>,
+}
+
+#[cfg(test)]
+async fn automation_admission_test_point(state: &RuntimeApiState) {
+    let hook = { state.automation_admission_test_hook.lock().take() };
+    if let Some(hook) = hook {
+        let _ = hook.arrived.send(());
+        let _ = hook.resume.await;
+    }
+}
+
 async fn create_automation(
     State(state): State<RuntimeApiState>,
     headers: HeaderMap,
     Json(req): Json<CreateAutomationRequest>,
 ) -> Result<Response, ApiError> {
+    create_automation_in_workspace(state, headers, req, None).await
+}
+
+async fn create_automation_in_workspace(
+    state: RuntimeApiState,
+    headers: HeaderMap,
+    req: CreateAutomationRequest,
+    expected_workspace: Option<PathBuf>,
+) -> Result<Response, ApiError> {
     require_destination_thread(&state, req.destination_thread_id.as_deref()).await?;
+    #[cfg(test)]
+    if expected_workspace.is_some() {
+        automation_admission_test_point(&state).await;
+    }
     automation_mutation(
         &state,
         &headers,
         "POST /v1/automations",
         &req,
         StatusCode::CREATED,
-        |e| ApiError::bad_request(e.to_string()),
+        |e| {
+            if e.is::<codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch>() {
+                map_thread_err(e)
+            } else {
+                ApiError::bad_request(e.to_string())
+            }
+        },
         async {
-            state
-                .automations
-                .lock()
-                .await
-                .create_automation(req.clone())
+            let manager = state.automations.clone().lock_owned().await;
+            let runtime = state.runtime_threads.clone();
+            let req = req.clone();
+            let expected_workspace = expected_workspace.clone();
+            tokio::task::spawn_blocking(move || match expected_workspace.as_deref() {
+                Some(workspace) => runtime.with_thread_in_workspace(
+                    req.destination_thread_id.as_deref().ok_or(
+                        codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch,
+                    )?,
+                    workspace,
+                    |thread| {
+                        anyhow::ensure!(!thread.archived, "destination thread is archived");
+                        manager.create_automation(req.clone())
+                    },
+                ),
+                None => manager.create_automation(req.clone()),
+            })
+            .await
+            .context("automation create admission worker failed")?
         },
     )
     .await
@@ -8601,19 +8687,66 @@ async fn set_automation_status(
     action: &str,
     status: codewhale_engine::automation_manager::AutomationStatus,
 ) -> Result<Response, ApiError> {
+    set_automation_status_in_workspace(state, id, query, headers, action, status, None).await
+}
+
+async fn set_automation_status_in_workspace(
+    state: RuntimeApiState,
+    id: String,
+    query: AutomationPreconditionQuery,
+    headers: HeaderMap,
+    action: &str,
+    status: codewhale_engine::automation_manager::AutomationStatus,
+    expected_workspace: Option<PathBuf>,
+) -> Result<Response, ApiError> {
     let req = UpdateAutomationRequest {
         status: Some(status),
         expected_revision: query.expected_revision,
         ..UpdateAutomationRequest::default()
     };
+    #[cfg(test)]
+    if expected_workspace.is_some() {
+        automation_admission_test_point(&state).await;
+    }
     automation_mutation(
         &state,
         &headers,
         &format!("POST /v1/automations/{id}/{action}"),
         &query.expected_revision,
         StatusCode::OK,
-        map_automation_err,
-        async { state.automations.lock().await.update_automation(&id, req) },
+        |e| {
+            if e.is::<codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch>() {
+                map_thread_err(e)
+            } else {
+                map_automation_err(e)
+            }
+        },
+        async {
+            let manager = state.automations.clone().lock_owned().await;
+            let runtime = state.runtime_threads.clone();
+            let id = id.clone();
+            tokio::task::spawn_blocking(move || match expected_workspace.as_deref() {
+                Some(workspace) => {
+                    let record = manager.get_automation(&id)?;
+                    if record.cwds.as_slice() != [workspace.to_path_buf()] {
+                        return Err(
+                            codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch
+                                .into(),
+                        );
+                    }
+                    runtime.with_thread_in_workspace(
+                        record.destination_thread_id.as_deref().ok_or(
+                            codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch,
+                        )?,
+                        workspace,
+                        |_| manager.update_automation(&id, req),
+                    )
+                }
+                None => manager.update_automation(&id, req),
+            })
+            .await
+            .context("automation status admission worker failed")?
+        },
     )
     .await
 }
@@ -10324,6 +10457,7 @@ async fn start_thread_turn(
     }
     let req: StartTurnRequest = serde_json::from_value(value)
         .map_err(|error| ApiError::unprocessable(error.to_string()))?;
+    let expected_workspace = req.expected_workspace.clone();
     let (turn, replayed) = state
         .runtime_threads
         .start_turn_reporting_replay(&id, req)
@@ -10334,6 +10468,15 @@ async fn start_thread_turn(
         .get_thread(&id)
         .await
         .map_err(map_thread_err)?;
+    if expected_workspace
+        .as_ref()
+        .is_some_and(|expected| expected != &thread.workspace)
+    {
+        return Err(
+            ApiError::forbidden("thread is outside the selected workspace")
+                .with_code("workspace_mismatch"),
+        );
+    }
     // A replay acknowledges work already accepted rather than admitting new
     // work: 200 tells the client "this is the turn I already started", which
     // is what lets an ambiguous submit resolve without duplicate messages or
@@ -10955,11 +11098,27 @@ async fn open_thread_event_frames(
     id: String,
     query: ThreadEventsQuery,
 ) -> Result<crate::RuntimeOwnerEventStream, ApiError> {
-    let _ = state
-        .runtime_threads
-        .get_thread(&id)
-        .await
-        .map_err(map_thread_err)?;
+    open_thread_event_frames_in_workspace(state, id, query, None).await
+}
+
+async fn open_thread_event_frames_in_workspace(
+    state: RuntimeApiState,
+    id: String,
+    query: ThreadEventsQuery,
+    expected_workspace: Option<PathBuf>,
+) -> Result<crate::RuntimeOwnerEventStream, ApiError> {
+    if let Some(workspace) = expected_workspace.as_deref() {
+        state
+            .runtime_threads
+            .with_thread_in_workspace(&id, workspace, |_| Ok(()))
+            .map_err(map_thread_err)?;
+    } else {
+        let _ = state
+            .runtime_threads
+            .get_thread(&id)
+            .await
+            .map_err(map_thread_err)?;
+    }
 
     // Subscribe before reading durable history. An event emitted while replay
     // is loaded is then present in both places (and deduped below) or queued
@@ -10978,6 +11137,12 @@ async fn open_thread_event_frames(
         .replay_events(&id, query.since_seq, query.replay_limit)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
+    if let Some(workspace) = expected_workspace.as_deref() {
+        state
+            .runtime_threads
+            .with_thread_in_workspace(&id, workspace, |_| Ok(()))
+            .map_err(map_thread_err)?;
+    }
 
     let stream = replay_live_thread_events(
         state.runtime_threads.clone(),
@@ -14874,6 +15039,9 @@ fn external_agent_refusal(err: &anyhow::Error) -> Option<ApiError> {
 }
 
 fn map_thread_err(err: anyhow::Error) -> ApiError {
+    if err.is::<codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch>() {
+        return ApiError::forbidden(err.to_string()).with_code("workspace_mismatch");
+    }
     if let Some(refusal) = external_agent_refusal(&err).or_else(|| mode_refusal(&err)) {
         return refusal;
     }
@@ -15191,6 +15359,8 @@ base_url = "http://127.0.0.1:9/v1"
             provider_switches: Arc::new(tokio::sync::Mutex::new(())),
             provider_connect: Default::default(),
             compat_stream_test_hook: None,
+            #[cfg(test)]
+            automation_admission_test_hook: Default::default(),
         };
         let router = build_router(state.clone());
         let server = tokio::spawn(async move {

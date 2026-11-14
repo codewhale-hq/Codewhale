@@ -41,6 +41,7 @@ use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 mod chat_completions;
 mod connection;
+pub mod native_runtime;
 mod thread_control;
 mod websocket;
 pub use codewhale_protocol::{
@@ -228,6 +229,10 @@ pub struct RuntimeOwnerEventFrame {
 
 #[derive(Debug, Clone)]
 pub enum RuntimeOwnerRequest {
+    Native {
+        workspace: PathBuf,
+        request: codewhale_app_server_protocol::runtime::NativeRuntimeRequest,
+    },
     Capabilities,
     Providers,
     ProviderModels {
@@ -317,6 +322,17 @@ pub trait RuntimeOwnerFrontend: Send + Sync {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<RuntimeOwnerEventStream>> + Send + '_>,
     >;
+    fn events_in_workspace(
+        &self,
+        workspace: PathBuf,
+        thread_id: String,
+        since_seq: u64,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<RuntimeOwnerEventStream>> + Send + '_>,
+    > {
+        let _ = workspace;
+        self.events(thread_id, since_seq)
+    }
     fn validate_selection<'a>(
         &'a self,
         selection: &'a RuntimeOwnerFrontendSelection,

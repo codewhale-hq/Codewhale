@@ -2116,6 +2116,12 @@ impl From<ApprovalModeArg> for AskForApproval {
 
 #[derive(Debug, Args)]
 struct AppServerArgs {
+    #[arg(long, requires_all = ["stdio", "native_runtime"], conflicts_with_all = ["http", "mobile", "socket", "host", "port", "workers", "config", "auth_token", "insecure_no_auth", "cors_origin"])]
+    attach_only: bool,
+    #[arg(long, requires = "attach_only")]
+    native_runtime: bool,
+    #[arg(long, requires = "attach_only")]
+    describe_target: bool,
     /// Serve the full HTTP/SSE runtime API (`/v1/*`: sessions, threads, turns,
     /// approvals, events, usage, fleet, tasks). This is the canonical runtime
     /// API surface; it delegates to the same server as `codewhale serve --http`.
@@ -2404,6 +2410,21 @@ fn run() -> Result<()> {
             || matches!(cli.command.as_ref(), Some(Commands::AppServer(args)) if args.http),
         "An inherited Runtime listener requires serve --http or app-server --http"
     );
+    if let Some(Commands::AppServer(args)) = cli.command.as_ref()
+        && args.attach_only
+    {
+        anyhow::ensure!(
+            matches.ids().all(|id| matches.value_source(id.as_str())
+                != Some(clap::parser::ValueSource::CommandLine)),
+            "attach-only accepts its selection only through the input prelude"
+        );
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        return runtime.block_on(codewhale_app_server::native_runtime::run_attach_only(
+            args.describe_target,
+        ));
+    }
     #[cfg(not(target_env = "ohos"))]
     if !inherited_listener
         && !matches!(
@@ -8502,6 +8523,40 @@ verbosity = "concise"
     }
 
     #[test]
+    fn native_attach_cli_requires_explicit_nonstarting_transport() {
+        let parsed = Cli::try_parse_from([
+            "codewhale",
+            "app-server",
+            "--stdio",
+            "--attach-only",
+            "--native-runtime",
+            "--describe-target",
+        ])
+        .unwrap();
+        let Some(Commands::AppServer(args)) = parsed.command else {
+            panic!("expected app-server");
+        };
+        assert!(args.attach_only && args.native_runtime && args.describe_target && args.stdio);
+        for extra in ["--http", "--mobile", "--socket", "--insecure-no-auth"] {
+            assert!(
+                Cli::try_parse_from([
+                    "codewhale",
+                    "app-server",
+                    "--stdio",
+                    "--attach-only",
+                    "--native-runtime",
+                    extra
+                ])
+                .is_err()
+            );
+        }
+        assert!(Cli::try_parse_from(["codewhale", "app-server", "--native-runtime"]).is_err());
+        assert!(
+            Cli::try_parse_from(["codewhale", "app-server", "--stdio", "--attach-only"]).is_err()
+        );
+    }
+
+    #[test]
     fn app_server_in_process_transports_honor_the_global_config() {
         let cli = parse_ok(&[
             "codewhale",
@@ -9078,6 +9133,9 @@ verbosity = "concise"
     #[test]
     fn app_server_serve_passthrough_maps_flags_to_serve() {
         let args = AppServerArgs {
+            attach_only: false,
+            native_runtime: false,
+            describe_target: false,
             http: true,
             mobile: false,
             stdio: false,
@@ -9118,6 +9176,9 @@ verbosity = "concise"
     #[test]
     fn app_server_serve_passthrough_mobile_defaults_are_minimal() {
         let args = AppServerArgs {
+            attach_only: false,
+            native_runtime: false,
+            describe_target: false,
             http: false,
             mobile: true,
             stdio: false,

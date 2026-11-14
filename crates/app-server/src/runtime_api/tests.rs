@@ -27,6 +27,7 @@ mod external_agent_quota;
 mod headless_catalog;
 #[cfg(any(unix, windows))]
 mod member_operations;
+mod native_runtime;
 #[cfg(unix)]
 mod owner_bootstrap;
 mod plugin_index;
@@ -1133,6 +1134,7 @@ async fn spawn_test_server_with_root_token_mobile_workspace(
 
 #[derive(Default)]
 struct TestServerOverrides {
+    state_handle: Option<oneshot::Sender<RuntimeApiState>>,
     automation_handles: Option<
         oneshot::Sender<(
             codewhale_engine::automation_manager::SharedAutomationManager,
@@ -1518,7 +1520,11 @@ async fn build_test_server(
         provider_switches: Arc::new(tokio::sync::Mutex::new(())),
         provider_connect: Default::default(),
         compat_stream_test_hook: overrides.compat_stream_test_hook,
+        automation_admission_test_hook: Default::default(),
     };
+    if let Some(sender) = overrides.state_handle {
+        let _ = sender.send(state.clone());
+    }
     let (owner_frontend, compatibility) = if let Some(socket) = overrides.owner_socket {
         let model = runtime_request_model(&state.config.read(), None)
             .map_err(|error| anyhow::anyhow!(error.message))?;

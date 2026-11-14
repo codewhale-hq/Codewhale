@@ -1499,6 +1499,8 @@ pub struct CreateThreadExecutorConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UpdateThreadRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workspace: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_idle: Option<bool>,
     pub archived: Option<bool>,
     pub allow_shell: Option<bool>,
@@ -3507,6 +3509,9 @@ pub struct RuntimeThreadManager {
     #[cfg(any(test, feature = "test-support"))]
     snapshot_test_hook: Arc<parking_lot::Mutex<Option<mpsc::UnboundedSender<SnapshotTestPoint>>>>,
     #[cfg(any(test, feature = "test-support"))]
+    update_admission_test_hook:
+        Arc<parking_lot::Mutex<Option<mpsc::UnboundedSender<oneshot::Sender<()>>>>>,
+    #[cfg(any(test, feature = "test-support"))]
     replay_test_hook: Arc<parking_lot::Mutex<Option<mpsc::UnboundedSender<ReplayTestPoint>>>>,
     /// Test seam: the model client every engine this manager builds uses in
     /// place of the route's provider client. Everything else about the build
@@ -3613,6 +3618,17 @@ pub struct ExternalApprovalBinding {
 #[derive(Debug, thiserror::Error)]
 #[error("approval does not belong to the claimed thread, turn or tool call")]
 pub struct ApprovalBindingMismatch;
+
+#[derive(Debug, thiserror::Error)]
+#[error("thread is outside the selected workspace")]
+pub struct ThreadWorkspaceMismatch;
+
+fn require_thread_workspace(thread: &ThreadRecord, expected: Option<&Path>) -> Result<()> {
+    if expected.is_some_and(|workspace| workspace != thread.workspace.as_path()) {
+        return Err(ThreadWorkspaceMismatch.into());
+    }
+    Ok(())
+}
 
 pub(super) struct PendingApprovalEntry {
     pub(super) thread_id: String,
@@ -4446,6 +4462,8 @@ impl RuntimeThreadManager {
             #[cfg(any(test, feature = "test-support"))]
             snapshot_test_hook: Arc::new(parking_lot::Mutex::new(None)),
             #[cfg(any(test, feature = "test-support"))]
+            update_admission_test_hook: Arc::new(parking_lot::Mutex::new(None)),
+            #[cfg(any(test, feature = "test-support"))]
             replay_test_hook: Arc::new(parking_lot::Mutex::new(None)),
             #[cfg(any(test, feature = "test-support"))]
             test_model_client: Arc::new(parking_lot::Mutex::new(None)),
@@ -4732,13 +4750,27 @@ impl RuntimeThreadManager {
         }))
     }
 
+    pub fn with_thread_in_workspace<T>(
+        &self,
+        thread_id: &str,
+        expected_workspace: &Path,
+        operation: impl FnOnce(&ThreadRecord) -> Result<T>,
+    ) -> Result<T> {
+        let _thread_mutation = self.store.thread_mutation.lock();
+        let thread = self.store.load_thread(thread_id)?;
+        require_thread_workspace(&thread, Some(expected_workspace))?;
+        operation(&thread)
+    }
+
     pub async fn start_scheduled_turn(
         &self,
         thread_id: &str,
         prompt: &str,
         task_id: &str,
+        expected_workspace: &Path,
     ) -> Result<Option<TurnRecord>> {
         let thread = self.get_thread(thread_id).await?;
+        require_thread_workspace(&thread, Some(expected_workspace))?;
         if thread.archived {
             bail!("thread {thread_id} is archived");
         }
@@ -4755,6 +4787,7 @@ impl RuntimeThreadManager {
         }
         let request = StartTurnRequest {
             prompt: prompt.to_string(),
+            expected_workspace: Some(expected_workspace.to_path_buf()),
             ..Default::default()
         };
         match self
@@ -5106,7 +5139,27 @@ impl RuntimeThreadManager {
         decision: ExternalApprovalDecision,
         responder: Option<ApprovalResponder>,
     ) -> Result<bool> {
+        self.deliver_approval_from_workspace(approval_id, binding, decision, responder, None)
+            .await
+    }
+
+    pub async fn deliver_approval_from_workspace(
+        &self,
+        approval_id: &str,
+        binding: Option<&ExternalApprovalBinding>,
+        decision: ExternalApprovalDecision,
+        responder: Option<ApprovalResponder>,
+        expected_workspace: Option<&Path>,
+    ) -> Result<bool> {
         let publication = {
+            let _thread_mutation = expected_workspace.map(|_| self.store.thread_mutation.lock());
+            if let Some(expected) = expected_workspace {
+                let binding = binding.ok_or(ApprovalBindingMismatch)?;
+                require_thread_workspace(
+                    &self.store.load_thread(&binding.thread_id)?,
+                    Some(expected),
+                )?;
+            }
             let mut pending = self.pending_approvals.lock();
             let Some(entry) = pending.get_mut(approval_id) else {
                 return Ok(false);
@@ -6915,6 +6968,8 @@ impl RuntimeThreadManager {
         #[cfg(any(test, feature = "test-support"))]
         let snapshot_test_hook = self.snapshot_test_hook.clone();
         #[cfg(any(test, feature = "test-support"))]
+        let update_admission_test_hook = self.update_admission_test_hook.clone();
+        #[cfg(any(test, feature = "test-support"))]
         let replay_test_hook = self.replay_test_hook.clone();
         #[cfg(any(test, feature = "test-support"))]
         let test_model_client = self.test_model_client.clone();
@@ -6968,6 +7023,8 @@ impl RuntimeThreadManager {
                 hook_base: hook_base.clone(),
                 #[cfg(any(test, feature = "test-support"))]
                 snapshot_test_hook: snapshot_test_hook.clone(),
+                #[cfg(any(test, feature = "test-support"))]
+                update_admission_test_hook: update_admission_test_hook.clone(),
                 #[cfg(any(test, feature = "test-support"))]
                 replay_test_hook: replay_test_hook.clone(),
                 #[cfg(any(test, feature = "test-support"))]
@@ -7835,6 +7892,11 @@ impl RuntimeThreadManager {
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_snapshot_test_hook(&self, hook: mpsc::UnboundedSender<SnapshotTestPoint>) {
         *self.snapshot_test_hook.lock() = Some(hook);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_update_admission_test_hook(&self, hook: mpsc::UnboundedSender<oneshot::Sender<()>>) {
+        *self.update_admission_test_hook.lock() = Some(hook);
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -9243,6 +9305,17 @@ impl RuntimeThreadManager {
         } else {
             None
         };
+        #[cfg(any(test, feature = "test-support"))]
+        if req.expected_workspace.is_some() {
+            let hook = { self.update_admission_test_hook.lock().take() };
+            if let Some(hook) = hook {
+                let (resume, wait) = oneshot::channel();
+                hook.send(resume)
+                    .map_err(|_| anyhow!("update admission hook closed"))?;
+                wait.await
+                    .map_err(|_| anyhow!("update admission hook dropped resume"))?;
+            }
+        }
         let configured_sandbox_mode = self.read_config().sandbox_mode.clone();
         let (thread, changes, evicted_engine, posture_engine, ended_grants, permission_receipt) = {
             // Take the active guard first so a workspace mutation can check
@@ -9254,6 +9327,7 @@ impl RuntimeThreadManager {
                 .store
                 .load_thread(id)
                 .with_context(|| format!("Thread not found: {id}"))?;
+            require_thread_workspace(&thread, req.expected_workspace.as_deref())?;
             if req.expected_idle == Some(true)
                 && active
                     .engines
@@ -10350,6 +10424,14 @@ impl RuntimeThreadManager {
     }
 
     pub async fn get_thread_detail(&self, id: &str) -> Result<ThreadDetail> {
+        self.get_thread_detail_in_workspace(id, None).await
+    }
+
+    pub async fn get_thread_detail_in_workspace(
+        &self,
+        id: &str,
+        expected_workspace: Option<&Path>,
+    ) -> Result<ThreadDetail> {
         self.flush_recovery_receipts_for_thread(id).await?;
         // Hold the per-thread projection boundary from cursor capture through
         // item reads. A streamed delta is therefore either entirely before
@@ -10380,11 +10462,16 @@ impl RuntimeThreadManager {
         // flush and this read would re-enter recovery and wait forever on the
         // projection lock held by this snapshot.
         let store = self.store.clone();
+        let snapshot_workspace = expected_workspace.map(Path::to_path_buf);
         let snapshot_thread_id = id.to_string();
         let (thread, turns, items, command_receipts) = tokio::task::spawn_blocking(move || {
+            let _thread_mutation = snapshot_workspace
+                .as_ref()
+                .map(|_| store.thread_mutation.lock());
             let thread = store
                 .load_thread(&snapshot_thread_id)
                 .with_context(|| format!("Thread not found: {snapshot_thread_id}"))?;
+            require_thread_workspace(&thread, snapshot_workspace.as_deref())?;
             let mut turns = store.list_turns_for_thread(&snapshot_thread_id)?;
             turns.retain(|turn| runtime_usage_partition_parent(turn).is_none());
             let turn_ids: Vec<String> = turns.iter().map(|turn| turn.id.clone()).collect();
@@ -10432,8 +10519,19 @@ impl RuntimeThreadManager {
         // somebody opens, instead of making every launch read every item in
         // every store to find the few that need it.
         let items = self.repair_terminal_turn_items(id, &turns, items).await?;
-        let (pending_approvals, pending_user_inputs) = self.pending_requests_for_thread(id);
-        let pending_dynamic_tool_calls = self.pending_dynamic_tool_calls_for_thread(id);
+        let (pending_approvals, pending_user_inputs, pending_dynamic_tool_calls, approval_grants) = {
+            let _thread_mutation = expected_workspace.map(|_| self.store.thread_mutation.lock());
+            if expected_workspace.is_some() {
+                require_thread_workspace(&self.store.load_thread(id)?, expected_workspace)?;
+            }
+            let (approvals, inputs) = self.pending_requests_for_thread(id);
+            (
+                approvals,
+                inputs,
+                self.pending_dynamic_tool_calls_for_thread(id),
+                self.approval_grants_for_thread(id),
+            )
+        };
         Ok(ThreadDetail {
             thread,
             turns,
@@ -10443,7 +10541,7 @@ impl RuntimeThreadManager {
             pending_approvals,
             pending_user_inputs,
             pending_dynamic_tool_calls,
-            approval_grants: self.approval_grants_for_thread(id),
+            approval_grants,
         })
     }
 
@@ -13959,7 +14057,7 @@ impl RuntimeThreadManager {
             return Err(environment.refusal().into());
         }
         if req.expected_workspace.as_ref().is_some_and(|workspace| workspace != &thread.workspace) {
-            bail!("Thread workspace changed from the selected frontend admission");
+            return Err(ThreadWorkspaceMismatch.into());
         }
         if thread.executor.is_some() {
             anyhow::ensure!(!narrowing.is_acp(), "an ACP frontend turn cannot run in a session with another agent");
@@ -14605,7 +14703,7 @@ source_usage_records: Default::default(),
             let _thread_mutation = self.store.thread_mutation.lock();
             let mut current_thread = self.store.load_thread(thread_id)?;
             if expected_workspace.as_ref().is_some_and(|workspace| workspace != &current_thread.workspace) {
-                bail!("Thread workspace changed before selected frontend admission");
+                return Err(ThreadWorkspaceMismatch.into());
             }
             if !thread_execution_state_matches(&thread, &current_thread) {
                 bail!("Thread execution settings changed while preparing the turn; retry");
@@ -14731,11 +14829,27 @@ source_usage_records: Default::default(),
     }
 
     pub async fn interrupt_turn(&self, thread_id: &str, turn_id: &str) -> Result<TurnRecord> {
+        self.interrupt_turn_in_workspace(thread_id, turn_id, None)
+            .await
+    }
+
+    pub async fn interrupt_turn_in_workspace(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        expected_workspace: Option<&Path>,
+    ) -> Result<TurnRecord> {
         if self.external_thread_loaded(thread_id).await {
-            return self.interrupt_external_turn(thread_id, turn_id).await;
+            return self
+                .interrupt_external_turn_in_workspace(thread_id, turn_id, expected_workspace)
+                .await;
         }
         {
             let mut active = self.active.lock().await;
+            if expected_workspace.is_some() {
+                let _thread_mutation = self.store.thread_mutation.lock();
+                require_thread_workspace(&self.store.load_thread(thread_id)?, expected_workspace)?;
+            }
             let Some(active_thread) = active.engines.get_mut(thread_id) else {
                 bail!("Thread is not loaded");
             };

@@ -105,6 +105,11 @@ mod platform {
         output_failed: bool,
         native_initialized: bool,
         pending_initialize: Option<RequestId>,
+        native: Option<crate::native_runtime::NativeSelection>,
+        publication: Arc<OwnerPublication>,
+        #[cfg(test)]
+        receive_test_hook:
+            Option<tokio::sync::mpsc::UnboundedSender<tokio::sync::oneshot::Sender<()>>>,
     }
 
     /// Host startup is the only caller allowed to acquire the Runtime lease.
@@ -411,6 +416,7 @@ mod platform {
             None,
             None,
             None,
+            None,
         )
         .await?
         {
@@ -444,9 +450,34 @@ mod platform {
             None,
             None,
             None,
+            None,
         )
         .await
     }
+    pub async fn connect_native(
+        receipt: RuntimeOwnerReceipt,
+        workspace: PathBuf,
+    ) -> Result<OwnerClient> {
+        let native = crate::native_runtime::NativeSelection {
+            capability: codewhale_app_server_protocol::runtime::NATIVE_RUNTIME_CAPABILITY
+                .to_owned(),
+            workspace,
+        };
+        native.validate()?;
+        connect_frontend(
+            receipt.config_path.clone(),
+            Some(receipt.socket_path.clone()),
+            crate::daemon_socket::AttachFrontend::Control,
+            None,
+            Some(receipt),
+            None,
+            None,
+            Some(native),
+        )
+        .await?
+        .context("selected owner is absent")
+    }
+
     pub async fn connect_acp_if_published(
         config_path: Option<PathBuf>,
         selected: Option<PathBuf>,
@@ -455,6 +486,7 @@ mod platform {
             config_path,
             selected,
             crate::daemon_socket::AttachFrontend::Acp,
+            None,
             None,
             None,
             None,
@@ -477,6 +509,7 @@ mod platform {
             Some(expected_owner),
             None,
             None,
+            None,
         )
         .await
     }
@@ -494,6 +527,7 @@ mod platform {
             None,
             Some(owner),
             Some(scope),
+            None,
             None,
         )
         .await
@@ -518,6 +552,7 @@ mod platform {
             Some(owner),
             Some(scope),
             Some(model),
+            None,
         )
         .await
     }
@@ -529,6 +564,7 @@ mod platform {
         expected_owner: Option<RuntimeOwnerReceipt>,
         scope: Option<crate::RuntimeFrontendScope>,
         acp_model: Option<String>,
+        native: Option<crate::native_runtime::NativeSelection>,
     ) -> Result<Option<OwnerClient>> {
         match probe_frontend(
             config_path,
@@ -538,6 +574,7 @@ mod platform {
             expected_owner,
             scope,
             acp_model,
+            native,
         )
         .await?
         {
@@ -555,6 +592,7 @@ mod platform {
         expected_owner: Option<RuntimeOwnerReceipt>,
         scope: Option<crate::RuntimeFrontendScope>,
         acp_model: Option<String>,
+        native: Option<crate::native_runtime::NativeSelection>,
     ) -> Result<HostOwnerProbe> {
         let Some(publication) = observe_publication(config_path, selected).await? else {
             return Ok(HostOwnerProbe::Absent);
@@ -674,7 +712,7 @@ mod platform {
             method: "daemon/attach".into(),
             params: json!({
                 "client":{"name":"codewhale-stdio","version":env!("CARGO_PKG_VERSION"),"pid":std::process::id()},
-                "mode":"attach","frontend":frontend,"listener":listener,"scope":scope,"acp_model":acp_model,"expect_daemon_version":env!("CARGO_PKG_VERSION"),"expect_owner":receipt
+                "mode":"attach","frontend":frontend,"native_runtime":native,"listener":listener,"scope":scope,"acp_model":acp_model,"expect_daemon_version":env!("CARGO_PKG_VERSION"),"expect_owner":receipt
             }),
             trace: None
         });
@@ -703,6 +741,12 @@ mod platform {
             returned == receipt,
             "connected owner did not confirm the exact captured generation/store"
         );
+        if let Some(selection) = native.as_ref() {
+            anyhow::ensure!(
+                response["result"]["native_runtime"] == json!(selection),
+                "native capability or workspace acknowledgement mismatch"
+            );
+        }
         let routing = response["result"]
             .get("runtime_routing")
             .filter(|value| !value.is_null())
@@ -718,6 +762,10 @@ mod platform {
             output_failed: false,
             native_initialized: false,
             pending_initialize: None,
+            native,
+            publication,
+            #[cfg(test)]
+            receive_test_hook: None,
         })))
     }
 
@@ -780,9 +828,28 @@ mod platform {
             Ok(())
         }
         async fn send_call(&mut self, request: RpcCall) -> Result<()> {
-            self.send_frame(json!(request)).await
+            let mut frame = json!(request);
+            if self.native.is_some() {
+                frame["jsonrpc"] = json!("2.0");
+            }
+            self.send_frame(frame).await
+        }
+        async fn check_native_publication(&self) -> Result<()> {
+            if self.native.is_some() {
+                let publication = self.publication.clone();
+                owner_work(move || {
+                    anyhow::ensure!(
+                        publication.is_current()?,
+                        "selected owner publication changed"
+                    );
+                    Ok(())
+                })
+                .await?;
+            }
+            Ok(())
         }
         async fn send_frame(&mut self, frame: Value) -> Result<()> {
+            self.check_native_publication().await?;
             anyhow::ensure!(
                 !self.output_failed,
                 "owner transport write previously failed; outcomes uncertain, not replayed"
@@ -808,8 +875,28 @@ mod platform {
             let Some(line) = self.read.next_line().await? else {
                 return Ok(None);
             };
+            self.process_received_line(line).await.map(Some)
+        }
+
+        #[cfg(test)]
+        pub(crate) fn set_receive_test_hook(
+            &mut self,
+            hook: tokio::sync::mpsc::UnboundedSender<tokio::sync::oneshot::Sender<()>>,
+        ) {
+            self.receive_test_hook = Some(hook);
+        }
+
+        async fn process_received_line(&mut self, line: String) -> Result<Value> {
+            #[cfg(test)]
+            if let Some(hook) = self.receive_test_hook.as_ref() {
+                let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+                if hook.send(resume_tx).is_ok() {
+                    let _ = resume_rx.await;
+                }
+            }
             let check = self.peer.clone();
             owner_work(move || check.check()).await?;
+            self.check_native_publication().await?;
             let value: Value = serde_json::from_str(&line)?;
             if let Some(id) = self.pending_initialize.as_ref()
                 && value.get("id") == Some(&json!(id))
@@ -821,7 +908,12 @@ mod platform {
                     .and_then(|response| {
                         serde_json::from_value::<InitializeResponse>(response.result).ok()
                     })
-                    .is_some_and(|response| response.codex_home.is_absolute());
+                    .is_some_and(|response| response.codex_home.is_absolute())
+                    && (self.native.is_none()
+                        || value["result"]["capabilities"]
+                            == json!([
+                                codewhale_app_server_protocol::runtime::NATIVE_RUNTIME_CAPABILITY
+                            ]));
                 let rejected = serde_json::from_value::<RpcErrorResponse>(value.clone()).is_ok();
                 if !accepted && !rejected {
                     self.output_failed = true;
@@ -839,7 +931,57 @@ mod platform {
                     .await?;
                 }
             }
-            Ok(Some(value))
+            Ok(value)
+        }
+        pub async fn forward_native<I, O>(mut self, input: I, mut output: O) -> Result<()>
+        where
+            I: tokio::io::AsyncRead + Unpin,
+            O: tokio::io::AsyncWrite + Unpin,
+        {
+            anyhow::ensure!(self.native.is_some(), "native capability was not selected");
+            anyhow::ensure!(
+                !self.output_failed,
+                "owner transport write previously failed; outcomes uncertain, not replayed"
+            );
+            let mut input = BoundedLines::new(BufReader::new(input));
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let initialized = self.native_initialized;
+                tokio::select! {
+                    _=tokio::time::sleep_until(deadline),if !initialized=>anyhow::bail!("native initialize deadline expired"),
+                    line=input.next_line()=>{
+                        let Some(line)=line? else{return Ok(())};
+                        let frame=match crate::native_runtime::decode_envelope(&line) {
+                            Ok(frame)=>frame,
+                            Err(_)=>{tokio::time::timeout(Duration::from_secs(5),write_stdio_line(&mut output,&crate::native_runtime::error(Value::Null,-32600,"Invalid native request envelope",400,"not_started"))).await.context("native output deadline expired")??;continue;}
+                        };
+                        if frame.method=="initialized" {
+                            anyhow::ensure!(self.native_initialized,"initialize acknowledgement required before initialized");
+                            continue;
+                        }
+                        if frame.id.is_none() {
+                            tokio::time::timeout(Duration::from_secs(5),write_stdio_line(&mut output,&crate::native_runtime::error(Value::Null,-32600,"Invalid native request envelope",400,"not_started"))).await.context("native output deadline expired")??;
+                            continue;
+                        }
+                        if self.pending_initialize.is_some()
+                            || (!self.native_initialized && frame.method!="initialize")
+                        {
+                            tokio::time::timeout(Duration::from_secs(5),write_stdio_line(&mut output,&crate::native_runtime::error(json!(frame.id),-32600,"Not initialized",400,"not_started"))).await.context("native output deadline expired")??;
+                            continue;
+                        }
+                        self.send(json!(frame.id),&frame.method,frame.params).await?;
+                    }
+                    line=self.read.next_line()=>{
+                        let line=line?.context("native owner connection closed; pending outcomes unknown")?;
+                        anyhow::ensure!(
+                            !self.output_failed,
+                            "owner transport write previously failed; outcomes uncertain, not replayed"
+                        );
+                        let response=self.process_received_line(line).await?;
+                        tokio::time::timeout(Duration::from_secs(5),write_stdio_line(&mut output,&response)).await.context("native output deadline expired")??;
+                    }
+                }
+            }
         }
         pub async fn forward<I, O>(mut self, input: I, output: O) -> Result<()>
         where
@@ -864,6 +1006,7 @@ mod platform {
                         Err(error) => return Err(error.into()),
                     } {
                         None => {
+                            if self.native.is_some() {return Ok(());}
                             input_open=false;
                             tokio::time::timeout(Duration::from_secs(5), async {
                                 write_stdio_line(&mut self.write,&json!(RpcNotification { method:"daemon/input_closed".into(), params:Some(json!({})) })).await?;
@@ -892,7 +1035,8 @@ mod platform {
                         None => bail!("selected owner connection closed; pending operation outcomes may be uncertain"),
                         Some(line) => {
                             let _: Value = serde_json::from_str(&line).context("invalid owner response")?;
-                            write_control_line(&mut output, line.as_bytes()).await?;
+                            self.check_native_publication().await?;
+                            tokio::time::timeout(Duration::from_secs(5), write_control_line(&mut output, line.as_bytes())).await.context("output write deadline expired")??;
                         }
                     }
                 }
@@ -925,7 +1069,7 @@ mod platform {
 #[cfg(any(unix, windows))]
 pub use platform::{
     HostOwnerProbe, OwnerClient, PublicationChangedBeforeAttach, UnavailablePublication, connect,
-    connect_acp_if_published, connect_if_published, connect_listener_if_published,
+    connect_acp_if_published, connect_if_published, connect_listener_if_published, connect_native,
     connect_scoped_control_if_published, connect_selected_acp_if_published,
     probe_owner_for_host_startup, publication_is_absent,
 };
