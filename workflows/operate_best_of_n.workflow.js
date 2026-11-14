@@ -3,10 +3,10 @@
  *
  * Set strategy="search" for a bounded 2-16 candidate search. This remains a
  * Workflow recipe, not a new mode or scheduler. Runtime-owned command gates
- * and clean-baseline scoring require the typed search/evaluator host seam.
+ * and clean-baseline scoring use the optional verified candidate host seam.
  *
  * Run: /workflow run workflows/operate_best_of_n.workflow.js
- * Args: { brief, n?, strategy?, rubric?, model?, thinking?, targetFiles?, writeRoots? }
+ * Args: { brief, n?, strategy?, rubric?, model?, thinking?, targetFiles?, writeRoots?, evaluator? }
  */
 export default async function (args) {
   const brief =
@@ -52,6 +52,10 @@ export default async function (args) {
     },
   };
 
+  const frozen = args?.evaluator
+    ? await task.verifyCandidate({ action: "summary" })
+    : null;
+
   phase("Candidates");
   const candidateFns = [];
   for (let i = 1; i <= n; i++) {
@@ -68,7 +72,9 @@ export default async function (args) {
           "Do not inspect other candidates, rankings, hidden tests, or evaluator internals.",
           "Do not push. Do not merge. Do not touch the parent checkout.",
           "Your self_verdict is informational; only runtime-owned evaluation can pass a hard gate.",
-          "Return only the required structured response.",
+          args?.evaluator
+            ? "Declare actual modified paths under a CHANGES heading, with evidence."
+            : "Return only the required structured response.",
           "",
           "BRIEF:",
           String(brief),
@@ -92,11 +98,49 @@ export default async function (args) {
           "Parent checkout must remain unchanged until apply.",
         ],
         acceptance: ["Return the exact structured candidate contract."],
-        responseSchema: candidateSchema,
+        ...(args?.evaluator ? {} : { responseSchema: candidateSchema }),
       })
     );
   }
   const candidates = await parallel(candidateFns);
+
+  if (frozen) {
+    phase("Host verification");
+    const receipts = [];
+    for (let index = 0; index < n; index++) {
+      const candidate_id = `candidate_${index + 1}`;
+      let evaluation;
+      try {
+        evaluation = await task.verifyCandidate({
+          action: "evaluate", candidate_id,
+        });
+      } catch (error) {
+        receipts.push({
+          candidate_id,
+          evaluation: { status: "UNKNOWN", reason: String(error) },
+          replay: null,
+        });
+        continue;
+      }
+      let replay = null;
+      if (evaluation.status === "PASS") {
+        try {
+          replay = await task.verifyCandidate({
+            action: "replay", candidate_id,
+          });
+        } catch (error) {
+          replay = { status: "UNKNOWN", reason: String(error) };
+        }
+      }
+      receipts.push({ candidate_id, evaluation, replay });
+    }
+    return {
+      scenario: "operate-verified-search",
+      strategy, n, brief, rubric, candidates, frozen, receipts,
+      promotion: "proposal_only",
+      apply_policy: "Explicit human review is required before any apply, push or merge.",
+    };
+  }
 
   phase("Review");
   const review = await task({
@@ -146,6 +190,6 @@ export default async function (args) {
     apply_policy:
       "Parent applies a winner only after independent clean replay and explicit user approval.",
     execution_boundary:
-      "This recipe generates and reviews candidates. It does not claim runtime-owned hidden gates, benchmark scoring, or clean-baseline replay; those need a runtime evaluator host that does not exist yet.",
+      "This run generates and reviews candidates without the optional host evaluator. It does not claim hidden gates, benchmark scoring, or clean-baseline replay.",
   };
 }

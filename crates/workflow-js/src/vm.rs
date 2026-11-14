@@ -720,6 +720,39 @@ async fn tools_call_host(
     envelope.to_string()
 }
 
+async fn verify_candidate_host(
+    call_json: String,
+    driver: Arc<dyn WorkflowDriver>,
+    cancel: CancelHandle,
+    host_runtime: Handle,
+) -> String {
+    let outcome = async {
+        let request: serde_json::Value = serde_json::from_str(&call_json)
+            .map_err(|error| TaskError::new(TaskErrorKind::Admission, error.to_string()))?;
+        if !request.is_object() {
+            return Err(TaskError::new(
+                TaskErrorKind::Admission,
+                "verifyCandidate(): expected an object",
+            ));
+        }
+        call_on_host(
+            &host_runtime,
+            &cancel,
+            TaskError::new(TaskErrorKind::Cancelled, "verifyCandidate(): run cancelled"),
+            move || async move { driver.verify_candidate(request).await },
+        )
+        .await?
+        .map_err(|error| TaskError::new(TaskErrorKind::from(&error), error.to_string()))
+    }
+    .await;
+    match outcome {
+        Ok(result) => serde_json::json!({"result": result}).to_string(),
+        Err(TaskError { kind, message }) => {
+            serde_json::json!({"error": message, "error_kind": kind.as_str()}).to_string()
+        }
+    }
+}
+
 async fn tools_call_host_inner(
     call_json: String,
     invoker: Arc<dyn ToolInvoker>,
@@ -794,6 +827,21 @@ fn install_host(
                 let cancel = task_cancel.clone();
                 let host_runtime = task_runtime.clone();
                 async move { task_host(opts_json, driver, cancel, host_runtime).await }
+            })),
+        )
+        .map_err(init_err)?;
+
+    let verifier_driver = driver.clone();
+    let verifier_cancel = cancel.clone();
+    let verifier_runtime = host_runtime.clone();
+    globals
+        .set(
+            "__workflow_verify_candidate",
+            Func::from(Async(move |call_json: String| {
+                let driver = verifier_driver.clone();
+                let cancel = verifier_cancel.clone();
+                let runtime = verifier_runtime.clone();
+                async move { verify_candidate_host(call_json, driver, cancel, runtime).await }
             })),
         )
         .map_err(init_err)?;
@@ -1602,6 +1650,7 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
   // Capture temporary host bindings into this closure, then strip them from
   // globalThis so scripts only see the documented Workflow surface (#4129).
   const hostTask = __workflow_task;
+  const hostVerifyCandidate = __workflow_verify_candidate;
   const hostLog = __workflow_log;
   const hostEverySlotFailed = __workflow_every_slot_failed;
   const hostSlotDropped = __workflow_slot_dropped;
@@ -1702,6 +1751,19 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
       throw err;
     }
     return envelope.value;
+  };
+
+  globalThis.task.verifyCandidate = async (request) => {
+    if (request === null || typeof request !== "object") {
+      throw new TypeError("verifyCandidate(): expected an object");
+    }
+    const envelope = JSON.parse(await hostVerifyCandidate(JSON.stringify(request)));
+    if (envelope.error !== undefined) {
+      const err = new Error(envelope.error);
+      err.kind = envelope.error_kind;
+      throw err;
+    }
+    return envelope.result;
   };
 
   globalThis.parallel = (thunks, opts) => {
@@ -1862,6 +1924,7 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
 
   for (const name of [
     "__workflow_task",
+    "__workflow_verify_candidate",
     "__workflow_log",
     "__workflow_every_slot_failed",
     "__workflow_slot_dropped",
