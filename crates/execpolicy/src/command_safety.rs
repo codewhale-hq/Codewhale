@@ -564,7 +564,9 @@ pub fn is_parallel_readonly_command(command: &str) -> bool {
 /// posture. Keys on the arity-aware canonical form, the literal-program
 /// hardener, the env-prefix rejection, and the per-command option tables.
 fn readonly_tokens_admitted(trimmed: &str) -> bool {
-    let tokens = shell_words(trimmed);
+    let Some(tokens) = shlex::split(trimmed) else {
+        return false;
+    };
     let Some(start) = primary_token_index(&tokens) else {
         return false;
     };
@@ -2087,12 +2089,31 @@ fn split_command_segments(command: &str) -> Vec<String> {
 }
 
 fn shell_words(segment: &str) -> Vec<String> {
-    shlex::split(segment).unwrap_or_else(|| {
-        segment
-            .split_whitespace()
-            .map(|token| token.trim_matches(['"', '\'']).to_string())
-            .collect()
-    })
+    shlex::split(segment).unwrap_or_else(|| lenient_words(segment, false))
+}
+
+fn lenient_words(segment: &str, unescape: bool) -> Vec<String> {
+    segment
+        .split_whitespace()
+        .map(|token| {
+            token
+                .chars()
+                .filter(|ch| !matches!(ch, '"' | '\'') && !(unescape && *ch == '\\'))
+                .collect()
+        })
+        .collect()
+}
+
+fn shell_word_readings(segment: &str) -> Vec<Vec<String>> {
+    let parsed = if segment.contains("$'") {
+        crate::shell_expand::split_ansi_c_shell_words(segment).or_else(|| shlex::split(segment))
+    } else {
+        shlex::split(segment)
+    };
+    match parsed {
+        Some(words) => vec![words],
+        None => vec![lenient_words(segment, false), lenient_words(segment, true)],
+    }
 }
 
 /// Whether this is one direct, literal rm invocation. Only that shape may
@@ -2161,22 +2182,32 @@ fn walk_invocations(command: &str, quote_blind: bool) -> Option<Vec<Vec<String>>
             return false;
         }
         for segment in split_command_segments(command) {
-            let words = shell_words(&segment);
-            for (index, word) in words.iter().enumerate() {
-                let mut argv = words[index..].to_vec();
-                argv[0] = command_word(word);
-                out.push(argv);
-                // Re-parse a word only when it can be a command line of its
-                // own: the script body of `sh -c`/`bash -lc`, where nested
-                // whitespace, `;`, and `|` are real separators. Anything else
-                // is an argument — `echo 'x & rm -rf /etc'` names no `rm`, and
-                // re-parsing it both invented one and failed readable commands
-                // closed once a `&` made the word reproduce itself.
-                if word.contains(|ch: char| ch.is_whitespace() || matches!(ch, ';' | '&' | '|'))
-                    && let Some(script) = nested_shell_script(&words, index)
-                    && !collect(&script, depth + 1, quote_blind, out)
-                {
-                    return false;
+            for words in shell_word_readings(&segment) {
+                for (index, word) in words.iter().enumerate() {
+                    let mut argv = words[index..].to_vec();
+                    argv[0] = command_word(word);
+                    out.push(argv);
+                    // Re-parse a word only when it can be a command line of its
+                    // own: the script body of `sh -c`/`bash -lc`, where nested
+                    // whitespace, `;`, and `|` are real separators. Anything else
+                    // is an argument — `echo 'x & rm -rf /etc'` names no `rm`, and
+                    // re-parsing it both invented one and failed readable commands
+                    // closed once a `&` made the word reproduce itself.
+                    if word.contains(|ch: char| ch.is_whitespace() || matches!(ch, ';' | '&' | '|'))
+                        && let Some(script) = nested_shell_script(&words, index)
+                        && !collect(&script, depth + 1, quote_blind, out)
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        if quote_blind && depth == 0 {
+            for words in crate::shell_expand::expand_command(command).words {
+                for (index, word) in words.iter().enumerate() {
+                    let mut argv = words[index..].to_vec();
+                    argv[0] = command_word(word);
+                    out.push(argv);
                 }
             }
         }
@@ -2503,31 +2534,24 @@ fn target_contains_parent_escape(target: &str) -> bool {
 
 /// Check if a command is known to be safe
 fn is_safe_command(command: &str) -> bool {
-    let tokens = shell_words(command);
-    if let Some(start) = primary_token_index(&tokens) {
-        let refs = tokens[start..]
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
+    if contains_shell_composition(command) {
+        return false;
+    }
+
+    let normalized = normalize_windows_command_paths(command);
+    let tokens = shell_words(&normalized);
+    if primary_token_index(&tokens) == Some(0) {
+        let refs = tokens.iter().map(String::as_str).collect::<Vec<_>>();
         if is_codewhale_readonly_invocation(&refs) {
             return true;
         }
     }
 
-    // `starts_with` tests the WHOLE command line, so without this guard any
-    // pipeline or redirection beginning with a safe word was classified Safe
-    // and skipped the destructive floor entirely — `echo x | rm -rf "$HOME"`
-    // reported Safe. `shell_params_are_auto_review_routine` already refuses
-    // shell composition for exactly this reason ("Do not let shell composition
-    // hide an unsafe second stage"); this is the same rule, applied where the
-    // classification is actually made.
-    if contains_shell_composition(command) {
-        return false;
-    }
-
+    let literal_words = lex_readonly_command(normalized.trim())
+        .is_ok_and(|segments| segments.len() == 1 && segments[0].redirects.is_empty());
     SAFE_COMMANDS.iter().any(|entry| {
         leading_words_match(&tokens, entry).is_some_and(|words| {
-            safe_command_arguments_are_read_only(entry, &tokens, &tokens[words..])
+            safe_command_arguments_are_read_only(entry, &tokens, &tokens[words..], literal_words)
         })
     })
 }
@@ -2548,7 +2572,12 @@ fn leading_words_match(tokens: &[String], entry: &str) -> Option<usize> {
 /// Arguments that turn an otherwise read-only [`SAFE_COMMANDS`] entry into a
 /// command that runs other programs or writes files. `tokens` is the whole
 /// command and `args` what follows the entry's words.
-fn safe_command_arguments_are_read_only(entry: &str, tokens: &[String], args: &[String]) -> bool {
+fn safe_command_arguments_are_read_only(
+    entry: &str,
+    tokens: &[String],
+    args: &[String],
+    literal_words: bool,
+) -> bool {
     let has = |names: &[&str]| args.iter().any(|arg| names.contains(&arg.as_str()));
     let list_mode = has(&["-l", "--list"]);
     let only_options = |allowed: &[&str], operands_ok: bool| {
@@ -2560,7 +2589,7 @@ fn safe_command_arguments_are_read_only(entry: &str, tokens: &[String], args: &[
             }
         })
     };
-    match entry {
+    let read_only = match entry {
         // `env CMD` runs CMD; only the bare listing is a read.
         "env" => only_options(&["-0", "--null"], false),
         // `-exec`, `-fprint`, `-delete`, … act on every match.
@@ -2572,15 +2601,26 @@ fn safe_command_arguments_are_read_only(entry: &str, tokens: &[String], args: &[
         "uniq" => is_agent_readonly_uniq(tokens),
         // `hostname NAME` sets the host name.
         "hostname" => args.iter().all(|arg| arg.starts_with('-')),
-        // `--pre CMD` runs a preprocessor on every file searched.
-        "rg" => !args.iter().any(|arg| arg.starts_with("--pre")),
+        "rg" => !args
+            .iter()
+            .any(|arg| arg.starts_with("--pre") || arg.starts_with("--hostname-bin")),
+        "ag" => !args.iter().any(|arg| arg.starts_with("--pager")),
+        "info" => !args.iter().any(|arg| {
+            arg == "--output"
+                || arg.starts_with("--output=")
+                || (arg.starts_with('-') && !arg.starts_with("--") && arg.contains('o'))
+        }),
         // `-x` / `-X` / `--exec*` run a command per match.
         "fd" => !args.iter().any(|arg| {
             arg.starts_with("--exec")
                 || (arg.starts_with('-') && !arg.starts_with("--") && arg.contains(['x', 'X']))
         }),
-        // `+CMD` runs a pager command at startup, which can reach a shell.
-        "less" | "more" => !args.iter().any(|arg| arg.starts_with('+')),
+        "less" | "more" => !args.iter().any(|arg| {
+            let lower = arg.to_ascii_lowercase();
+            arg.starts_with('+')
+                || lower.starts_with("--log-file")
+                || (arg.starts_with('-') && !arg.starts_with("--") && lower.contains('o'))
+        }),
         // `-P`/`-H`/`-C` choose the pager, browser or config that man runs.
         "man" => only_options(
             &[
@@ -2598,7 +2638,9 @@ fn safe_command_arguments_are_read_only(entry: &str, tokens: &[String], args: &[
             true,
         ),
         // `--output` writes the diff or log to a file.
-        "git diff" | "git log" | "git show" => !args.iter().any(|arg| arg.starts_with("--output")),
+        "git diff" | "git log" | "git show" | "git stash list" => {
+            !args.iter().any(|arg| arg.starts_with("--output"))
+        }
         // Listing forms only: other forms delete, rename or create refs.
         "git branch" => only_options(
             &[
@@ -2626,8 +2668,9 @@ fn safe_command_arguments_are_read_only(entry: &str, tokens: &[String], args: &[
                 .all(|arg| !arg.starts_with('-') || matches!(arg.as_str(), "--push" | "--all")),
             Some(_) => false,
         },
-        _ => true,
-    }
+        _ => return true,
+    };
+    read_only && literal_words
 }
 
 /// A prefix grants one command's ordinary arguments. The scanner owns shell
@@ -2657,10 +2700,10 @@ pub(crate) fn prefix_grant_is_eligible(
         // Global Git options may precede the read subcommand; --output still
         // changes its authority. Reuse the existing guard for that flag.
         (tokens[0] != "git"
-            || safe_command_arguments_are_read_only("git log", tokens, &tokens[1..]))
+            || safe_command_arguments_are_read_only("git log", tokens, &tokens[1..], true))
             && SAFE_COMMANDS.iter().all(|entry| {
                 leading_words_match(tokens, entry).is_none_or(|words| {
-                    safe_command_arguments_are_read_only(entry, tokens, &tokens[words..])
+                    safe_command_arguments_are_read_only(entry, tokens, &tokens[words..], true)
                 })
             })
     };
@@ -4312,6 +4355,206 @@ mod tests {
             assert!(
                 !allow_list.contains(&prefix.as_str()),
                 "Expected 'git push'/'git checkout' NOT to match 'git status' allow_list, but got prefix '{prefix}' for '{cmd}'"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod shell_reading_tests {
+    use super::*;
+
+    const HIDDEN_DESTROYERS: &[(&str, &str)] = &[
+        (r#"mk""fs.ext4 -L \; /dev/sda1"#, "mkfs.ext4"),
+        (r#"shr""ed /dev/sda \;"#, "shred"),
+        (r#"d""d if=/dev/zero of=/dev/sda 2>\;"#, "dd"),
+        (r#"wip""efs -a /dev/sda \"#, "wipefs"),
+        (r#"r""m -rf /etc \;"#, "rm"),
+        (r#"m\kfs.ext4 /dev/sda1 \;"#, "mkfs.ext4"),
+        ("mk\"\"fs.ext4 /dev/sda1\necho \"", "mkfs.ext4"),
+        (r#"sh -c $'echo x\nwipefs -a /dev/sda'"#, "wipefs"),
+        (r#"sh -c $'echo x\nmkfs.ext4 /dev/sda1'"#, "mkfs.ext4"),
+        (r#"sh -c $'echo x\012shred /dev/sda'"#, "shred"),
+        (r#"sh -c $'echo x\x0add if=/dev/zero of=/dev/sda'"#, "dd"),
+    ];
+
+    fn names(argvs: Vec<Vec<String>>) -> Vec<String> {
+        argvs.into_iter().map(|argv| argv[0].clone()).collect()
+    }
+
+    #[test]
+    fn destroyer_walkers_read_commands_the_tokenizer_rejects() {
+        let mut missed = Vec::new();
+        for (command, name) in HIDDEN_DESTROYERS {
+            for (label, walk) in [
+                ("invocations", command_invocations as fn(&str) -> _),
+                ("floor", destroyer_floor_invocations),
+            ] {
+                let found = names(walk(command).expect("readable"));
+                if !found.iter().any(|found| found == name) {
+                    missed.push(format!("{label}: {command:?} hides {name}"));
+                }
+            }
+        }
+        assert!(missed.is_empty(), "not read: {missed:#?}");
+        let cr_found = names(
+            destroyer_floor_invocations(r#"sh -c $'echo x\rshred /dev/sda'"#).expect("readable"),
+        );
+        assert!(
+            cr_found.iter().any(|name| name == "shred"),
+            "missing shred: {cr_found:?}"
+        );
+    }
+
+    #[test]
+    fn destroyer_walkers_keep_quoted_text_as_data() {
+        for command in [
+            r#"git commit -m "mkfs.ext4 /dev/sda1""#,
+            r#"echo ";mkfs.ext4 /dev/sda1""#,
+            r#"echo "dd if=/dev/zero of=/dev/sda""#,
+            r"dir C:\",
+            r#"git commit -m $'echo x\nmkfs.ext4 /dev/sda1'"#,
+        ] {
+            for walk in [command_invocations, destroyer_floor_invocations] {
+                let found = names(walk(command).expect("readable"));
+                assert!(
+                    !found
+                        .iter()
+                        .any(|name| name.starts_with("mkfs") || name == "dd"),
+                    "{command:?} was read as a command: {found:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn argument_grammar_entries_need_words_the_shell_will_not_rewrite() {
+        let mut safe_shapes = Vec::new();
+        for command in [
+            r#"sed -n 1p {-e,"w out.txt"} in.txt"#,
+            r#"sed -n 1p $'-e' "w out.txt" in.txt"#,
+            "sed -n 1p $'-i' in.txt",
+            "sort in.txt {-o,out.txt}",
+            "sort in.txt $'-o' out.txt",
+            "find . {-delete,-print}",
+            "find . $'-delete'",
+            "rg foo {--pre=./x.sh,}",
+            "rg foo $'--pre=./x.sh' .",
+            "fd . {-x,rm}",
+            "git log {--output=out.txt,}",
+            "uniq in.txt {out.txt,}",
+        ] {
+            if analyze_command(command).level == SafetyLevel::Safe {
+                safe_shapes.push(command);
+            }
+        }
+        assert!(safe_shapes.is_empty(), "classified Safe: {safe_shapes:#?}");
+        for command in [
+            "ls *.rs",
+            "cat src/*.rs",
+            "echo $HOME",
+            "sed -n 1,5p file.txt",
+            "sort in.txt",
+            "find . -name '*.rs'",
+            "rg foo src",
+            "git log --oneline -5",
+            "git diff HEAD~1",
+        ] {
+            assert_eq!(
+                analyze_command(command).level,
+                SafetyLevel::Safe,
+                "{command:?} was not classified Safe"
+            );
+        }
+    }
+
+    #[test]
+    fn safe_table_rejects_prefixes_writable_options_and_windows_trailing_backslashes() {
+        for command in [
+            "FOO=1>/tmp/out codewhale --version",
+            "FOO=1&>/tmp/out codewhale --version",
+            "FOO=1>>/tmp/out codewhale --version",
+            "env ->/tmp/out codewhale --version",
+            "PATH=/tmp/bin codewhale --version",
+            "LD_PRELOAD=/tmp/lib.so codewhale --version",
+            "DYLD_INSERT_LIBRARIES=/tmp/lib.dylib codewhale --version",
+            "env -P/tmp/bin codewhale --version",
+            "env LD_PRELOAD=/tmp/lib.so codewhale --version",
+            "env \"-S/bin/sh -c id\" codewhale --version",
+            "codewhale '--version",
+            "git stash list --output=/tmp/out",
+            "git stash list --output /tmp/out",
+            "git stash list $FLAGS",
+            "ag --pager=\"sh -c id\" foo",
+            "ag --pager id foo",
+            "ag $FLAGS foo",
+            "info -o /tmp/out",
+            "info -o/tmp/out",
+            "info --output=/tmp/out",
+            "info --output /tmp/out",
+            "info $FLAGS",
+            "rg --hostname-bin=/tmp/tool foo",
+            "rg --hostname-bin /tmp/tool foo",
+            "less -o /tmp/out file",
+            "less -O /tmp/out file",
+            "less -o/tmp/out file",
+            "less -O/tmp/out file",
+            "less -No/tmp/out file",
+            "less --log-file=/tmp/out file",
+            "less --log-file /tmp/out file",
+            "less --LOG-FILE=/tmp/out file",
+            "more -o /tmp/out file",
+            "more --log-file=/tmp/out file",
+            "less $FLAGS file",
+            r"find C:\ -delete",
+            r"rg C:\ --pre=id foo",
+            r"rg C:\ --hostname-bin=id foo",
+            r"find \\?\ -delete",
+            r"rg \\?\ --pre=id foo",
+            r"less C:\ -o /tmp/out",
+        ] {
+            assert!(
+                !matches!(
+                    analyze_command(command).level,
+                    SafetyLevel::Safe | SafetyLevel::WorkspaceSafe
+                ),
+                "{command:?} must not be classified Safe"
+            );
+            assert!(
+                !is_parallel_readonly_command(command),
+                "{command:?} must not be parallel read-only"
+            );
+        }
+        for command in [
+            "git stash list --output=/tmp/out",
+            "ag --pager=id foo",
+            "info -o /tmp/out",
+            "rg --hostname-bin=id foo",
+            "less -o /tmp/out file",
+            "less --LOG-FILE=/tmp/out file",
+        ] {
+            let expansion = crate::shell_expand::expand_command(command);
+            assert!(
+                !prefix_grant_is_eligible(command, &expansion),
+                "{command:?} must not be prefix-grant eligible"
+            );
+        }
+        for command in [
+            "codewhale --version",
+            "codew -V",
+            "git stash list",
+            "ag foo src",
+            "info coreutils",
+            "less -R file.txt",
+            "more file.txt",
+            r"dir C:\",
+            r"find C:\ -name '*.rs'",
+            r"rg foo C:\src",
+        ] {
+            assert_eq!(
+                analyze_command(command).level,
+                SafetyLevel::Safe,
+                "{command:?} should stay Safe"
             );
         }
     }

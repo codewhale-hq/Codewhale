@@ -317,7 +317,7 @@ fn read_prefixes_do_not_inherit_write_arguments_but_preserve_read_flags_and_buil
 #[test]
 fn exact_grants_round_trip_quoted_data_and_reviewed_redirections() {
     for command in [
-        r#"git log "$FLAGS""#,
+        "git log '$FLAGS'",
         "cargo test 2>&1",
         "cargo test &>result.log",
         r#"grep -E "a|b" src"#,

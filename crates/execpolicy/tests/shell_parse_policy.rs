@@ -135,6 +135,25 @@ const HIDDEN_RM: &[&str] = &[
     "sg wheel 'rm x'",
     "gtimeout 5 rm x",
     "gnice -n 5 rm x",
+    "v=rm; $=v -f f",
+    "v=rm; $~v -f f",
+    "v=rm; $^v -f f",
+    "$'rm' -f f",
+    "/bin/(r)m -f f",
+    "/bin/r(m) -f f",
+    "/usr/bin/rm(N) -f f",
+    "setopt equals; =rm -f f",
+    "=rm -f f",
+    "rm# x",
+    "hash x=/bin/rm; x -f f",
+    "hash -p /bin/rm x; x -f f",
+    "alias x=rm\nx -f f",
+    "shopt -s expand_aliases\nalias x=rm\nx -f f",
+    "emulate -L sh; rm x",
+    "iex 'rm f'",
+    "Invoke-Expression 'rm f'",
+    "iex ('r'+'m f')",
+    "'rm f' | iex",
 ];
 
 /// Literal spellings that were already denied and must stay denied.
@@ -243,6 +262,17 @@ fn ordinary_commands_stay_allowed_next_to_a_deny_rule() {
             "for ((i = 0; i < 3; i++)); do echo $i; done",
             "echo $(echo \")\")",
             "watch -n 5 ls",
+            "arr=(a b)",
+            "arr+=(c)",
+            "f() { ls; }",
+            "f(){ ls; }",
+            "g++ x.cc",
+            "set -euo pipefail",
+            "hash -r",
+            "grep foo$ file",
+            "~/bin/tool --flag=a%b",
+            "./a.out x=1",
+            "FOO=bar ls",
         ] {
             let decision = engine
                 .check(context(command, AskForApproval::Never))
@@ -382,4 +412,33 @@ fn typed_deny_rule_skips_global_options_before_the_subcommand() {
         ..context("git -C . push", AskForApproval::Never)
     };
     assert!(engine.check(elsewhere).expect("policy check").allow);
+}
+
+#[test]
+fn subcommand_deny_rules_hold_against_glob_group_spellings() {
+    let engines = [
+        ExecPolicyEngine::new(vec![], vec!["git push".to_string()]),
+        ExecPolicyEngine::with_rulesets(vec![Ruleset::user(vec![], vec![]).with_ask_rules(vec![
+            ToolAskRule {
+                action: PermissionAction::Deny,
+                ..ToolAskRule::exec_shell("git push")
+            },
+        ])]),
+    ];
+    for engine in &engines {
+        for command in [
+            "git push",
+            "/usr/bin/git(N) push",
+            "/usr/bin/(g)it push",
+            "g=git; $=g push",
+        ] {
+            assert!(denied(engine, command), "{command} must be denied");
+        }
+        for command in ["git status", "git log --oneline -3"] {
+            let decision = engine
+                .check(context(command, AskForApproval::Never))
+                .expect("policy check");
+            assert!(decision.allow, "{command:?} was denied: {decision:?}");
+        }
+    }
 }

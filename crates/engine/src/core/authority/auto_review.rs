@@ -2889,6 +2889,17 @@ mod tests {
             "cat junk | dd of=/dev/sda",
             "timeout 30 mkfs /dev/sda1",
             r#"echo \";mkfs.ext4 /dev/sda1"#,
+            r#"mk""fs.ext4 -L \; /dev/sda1"#,
+            r#"shr""ed /dev/sda \;"#,
+            r#"d""d if=/dev/zero of=/dev/sda 2>\;"#,
+            r#"wip""efs -a /dev/sda \"#,
+            r#"m\kfs.ext4 /dev/sda1 \;"#,
+            "mk\"\"fs.ext4 /dev/sda1\necho \"",
+            r#"sh -c $'echo x\nwipefs -a /dev/sda'"#,
+            r#"sh -c $'echo x\nmkfs.ext4 /dev/sda1'"#,
+            r#"sh -c $'echo x\nshred /dev/sda'"#,
+            r#"sh -c $'echo x\ndd if=/dev/zero of=/dev/sda'"#,
+            r#"sh -c $'echo x\rwipefs -a /dev/sda'"#,
         ] {
             let ctx = ctx_for(
                 "exec_shell",
@@ -2897,6 +2908,41 @@ mod tests {
                 ApprovalMode::Suggest,
             );
             assert_safety_gate(&policy.evaluate(&ctx));
+        }
+    }
+
+    #[test]
+    fn auto_review_asks_for_prefixed_writable_and_windows_backslash_commands() {
+        let policy = AutoReviewPolicy::default();
+        for command in [
+            "FOO=1>/tmp/out codewhale --version",
+            "PATH=/tmp/bin codewhale --version",
+            "LD_PRELOAD=/tmp/lib.so codewhale --version",
+            "git stash list --output=/tmp/out",
+            "rg --hostname-bin=/tmp/tool foo",
+            "less -o /tmp/out file",
+            "less -O /tmp/out file",
+            "less --log-file=/tmp/out file",
+            "less --LOG-FILE=/tmp/out file",
+            "ag --pager=\"sh -c id\" foo",
+            "info -o /tmp/out",
+            r"find C:\ -delete",
+            r"rg C:\ --pre=id foo",
+            r"find \\?\ -delete",
+            r"rg \\?\ --pre=id foo",
+        ] {
+            let ctx = ctx_for(
+                "exec_shell",
+                json!({ "command": command }),
+                RunOrigin::Interactive,
+                ApprovalMode::Auto,
+            );
+            let decision = policy.evaluate(&ctx);
+            assert_eq!(
+                decision.action,
+                AutoReviewAction::AskUser,
+                "{command:?} should require review in Auto mode: {decision:?}"
+            );
         }
     }
 

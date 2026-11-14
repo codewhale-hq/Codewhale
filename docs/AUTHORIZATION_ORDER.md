@@ -75,6 +75,16 @@ same-layer deny.
 For chained shell commands, a trusted prefix never approves the whole chain. A
 typed deny that wins for any individual segment blocks the full invocation.
 
+Deny rules match commands by name against a static reading of the command
+line. While any deny rule is configured, a command whose command word cannot be
+read statically is refused (or prompts, where a person always sees the prompt):
+a variable or substitution, a glob or brace list, a parenthesis glued to the
+word, a word that is not a plain literal, or a call that rebinds names first
+(`alias`, `hash`, `setopt`, `shopt`). Deny rules do not cover a script file, a
+copy of a program under another name, or another program that does the same
+job; the limits are listed at the top of `crates/execpolicy/src/shell_expand.rs`.
+Containment is the sandbox's job, not the deny list's.
+
 ## Approval posture and missing prompts
 
 The execution-policy result is combined with the registered-tool baseline; the

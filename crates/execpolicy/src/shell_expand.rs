@@ -28,8 +28,10 @@
 //! Because nothing is evaluated, some command words cannot be known without
 //! running the shell: a parameter or command substitution (`$v`, `${v}`,
 //! `$(…)`), a glob or brace expansion (`r[m]`, `{rm,-f,x}`), ANSI-C escapes,
-//! and a shell that reads its script from a pipe, a here-string, or a process
-//! substitution. [`Expansion::dynamic`] reports that case so the policy engine
+//! a command word that is not a plain literal (`=rm`, `/bin/(r)m`), a builtin
+//! that rebinds names (`alias`, `hash x=…`, `setopt`), and a shell that reads
+//! its script from a pipe, a here-string, or a process substitution.
+//! [`Expansion::dynamic`] reports that case so the policy engine
 //! can fail closed instead of matching deny rules against text the shell will
 //! rewrite. [`Expansion::nested`] reports that some code runs inside another
 //! command (a substitution, `eval`, a `-c` payload, `find -exec`), which is
@@ -800,6 +802,10 @@ const RESERVED_PREFIXES: &[&str] = &[
     "if", "then", "elif", "else", "do", "while", "until", "!", "coproc",
 ];
 
+const REBINDING_BUILTINS: &[&str] = &[
+    "alias", "enable", "setopt", "unsetopt", "emulate", "shopt", "autoload", "zmodload",
+];
+
 /// Shells whose `-c` argument is a command line to be parsed, not an operand.
 const SHELL_NAMES: &[&str] = &[
     "sh", "bash", "zsh", "dash", "ksh", "ksh93", "mksh", "ash", "fish", "csh", "tcsh", "rbash",
@@ -811,6 +817,7 @@ const SHELL_NAMES: &[&str] = &[
 pub struct Expansion {
     /// Every command line found, as [`expanded_commands`] returns them.
     pub commands: Vec<String>,
+    pub words: Vec<Vec<String>>,
     /// A command word (or a shell's script) is only known at run time, so no
     /// deny rule can be matched against it reliably.
     pub dynamic: bool,
@@ -852,6 +859,7 @@ fn expanded_commands_for_platform(command: &str, windows: bool) -> Vec<String> {
 fn expand_for_platform(command: &str, windows: bool) -> Expansion {
     let mut expander = Expander {
         out: Vec::new(),
+        out_words: Vec::new(),
         seen: HashSet::new(),
         literal_backslashes: windows,
         dynamic: false,
@@ -870,6 +878,7 @@ fn expand_for_platform(command: &str, windows: bool) -> Expansion {
     }
     Expansion {
         commands: expander.out,
+        words: expander.out_words,
         dynamic: expander.dynamic,
         nested: expander.nested,
         arguments_dynamic: expander.arguments_dynamic,
@@ -880,6 +889,7 @@ fn expand_for_platform(command: &str, windows: bool) -> Expansion {
 
 struct Expander {
     out: Vec<String>,
+    out_words: Vec<Vec<String>>,
     seen: HashSet<String>,
     literal_backslashes: bool,
     dynamic: bool,
@@ -902,6 +912,7 @@ struct WordBuf {
     brace: bool,
     /// An unquoted `[` appeared, so the word may be a bracket glob.
     bracket: bool,
+    odd: bool,
 }
 
 impl WordBuf {
@@ -918,6 +929,7 @@ impl WordBuf {
                     || (self.brace && (self.text.contains(',') || self.text.contains("..")));
                 line.words.push(std::mem::take(&mut self.text));
                 line.dynamic.push(dynamic);
+                line.odd.push(self.odd);
             }
             self.started = false;
         }
@@ -925,6 +937,7 @@ impl WordBuf {
         self.dynamic = false;
         self.brace = false;
         self.bracket = false;
+        self.odd = false;
     }
 }
 
@@ -934,6 +947,7 @@ impl WordBuf {
 struct Line {
     words: Vec<String>,
     dynamic: Vec<bool>,
+    odd: Vec<bool>,
     heredoc: bool,
 }
 
@@ -965,6 +979,13 @@ impl Expander {
         }
         self.seen.insert(joined.clone());
         self.out.push(joined);
+        self.out_words.push(
+            tokens
+                .iter()
+                .filter(|token| !token.is_empty())
+                .cloned()
+                .collect(),
+        );
     }
 
     /// Word-split `input` into command lines and record each one, recursing
@@ -1080,18 +1101,14 @@ impl Expander {
                     uncertain |= i >= n;
                     i = (i + 1).min(n);
                 }
-                // `$'…'` (ANSI-C quoting) is literal text with C escapes. The
-                // escapes are not decoded here, so a word that uses them is
-                // not known statically (`$'\x72m'` is `rm`).
                 '$' if i + 1 < n && chars[i + 1] == '\'' => {
                     word.started = true;
                     word.quoted = true;
+                    word.dynamic = true;
                     i += 2;
                     while i < n && chars[i] != '\'' {
                         if chars[i] == '\\' && i + 1 < n {
-                            word.dynamic = true;
-                            word.text.push(chars[i + 1]);
-                            i += 2;
+                            i = push_ansi_c_escape(&chars, i, &mut word.text);
                         } else {
                             word.text.push(chars[i]);
                             i += 1;
@@ -1195,6 +1212,18 @@ impl Expander {
                 // command list of its own, not part of the surrounding word.
                 '(' | ')' => {
                     self.control = true;
+                    let glued = if c == '(' {
+                        (word.started || !word.text.is_empty())
+                            && chars.get(i + 1) != Some(&')')
+                            && !is_array_assignment_prefix(&word.text)
+                    } else {
+                        !(i > 0 && chars[i - 1] == '(')
+                            && chars.get(i + 1).is_some_and(|next| {
+                                !next.is_whitespace()
+                                    && !matches!(next, ';' | '|' | '&' | '(' | ')' | '<' | '>')
+                            })
+                    };
+                    uncertain |= glued;
                     word.flush(&mut line);
                     end_command(&mut commands, &mut line);
                     word.redirect_operand = false;
@@ -1293,6 +1322,9 @@ impl Expander {
                         '{' => word.brace = true,
                         _ => {}
                     }
+                    if !is_plain_word_char(c, !word.started && word.text.is_empty()) {
+                        word.odd = true;
+                    }
                     word.text.push(c);
                     word.started = true;
                     i += 1;
@@ -1355,12 +1387,22 @@ impl Expander {
             {
                 self.dynamic = true;
             }
+            if line.odd[head] && !matches!(tokens[head].as_str(), "[" | "[[") {
+                self.dynamic = true;
+            }
             let name = command_name(&tokens[head]);
             let args_dynamic = dynamic[head + 1..].iter().any(|dynamic| *dynamic);
             self.arguments_dynamic |= args_dynamic;
             match name.as_str() {
                 // `eval …` takes a *command line* as data. Parse it.
-                "eval" => self.code_payload(&tokens[head + 1..].join(" "), args_dynamic, depth),
+                "eval" | "iex" | "invoke-expression" => {
+                    self.dynamic |= name != "eval" && head + 1 == tokens.len();
+                    self.code_payload(&tokens[head + 1..].join(" "), args_dynamic, depth);
+                }
+                _ if REBINDING_BUILTINS.contains(&name.as_str()) => self.dynamic = true,
+                "hash" => {
+                    self.dynamic |= tokens[head + 1..].iter().any(|token| token != "-r");
+                }
                 "source" | "." => match tokens.get(head + 1) {
                     None if !line.heredoc => self.dynamic = true,
                     Some(_) if dynamic[head + 1] => self.dynamic = true,
@@ -1513,6 +1555,7 @@ impl Expander {
                         dynamic: (start..end)
                             .map(|at| line.dynamic[at] || tokens[at].contains("{}"))
                             .collect(),
+                        odd: line.odd[start..end].to_vec(),
                         heredoc: false,
                     };
                     self.record(&payload, depth + 1);
@@ -1627,13 +1670,28 @@ fn mark_replacement_operands(tokens: &[String], heads: &[usize], dynamic: &mut [
     }
 }
 
-/// True when `$` followed by `next` starts a parameter expansion (`$v`, `$1`,
-/// `$@`, `$"…"`), as opposed to a literal dollar sign.
+/// True unless the `$` is a literal one: it ends the word or precedes a
+/// separator. Everything else (`$v`, `$1`, `$@`, `$=v`, `$~v`, `$^v`, `$"…"`,
+/// and any flag character a shell may add) is read as an expansion.
 fn starts_parameter(next: Option<&char>) -> bool {
-    next.is_some_and(|c| {
-        c.is_ascii_alphanumeric()
-            || matches!(c, '_' | '@' | '*' | '#' | '?' | '$' | '!' | '-' | '"')
-    })
+    next.is_some_and(|c| !c.is_whitespace() && !matches!(c, ';' | '|' | '&' | ')' | '<' | '>'))
+}
+
+fn is_plain_word_char(c: char, leading: bool) -> bool {
+    c.is_alphanumeric()
+        || matches!(c, '_' | '.' | '/' | '+' | ':' | '@' | ',' | '-')
+        || (leading && c == '~')
+}
+
+fn is_array_assignment_prefix(text: &str) -> bool {
+    let name = text
+        .strip_suffix("+=")
+        .or_else(|| text.strip_suffix('='))
+        .unwrap_or("");
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 /// Unquoted heredocs expand substitutions, but quotes and ordinary lines are
@@ -1708,7 +1766,7 @@ fn end_command(commands: &mut Vec<Line>, line: &mut Line) {
         heredoc: line.heredoc,
         ..Line::default()
     };
-    for (word, dynamic) in line.words.into_iter().zip(line.dynamic) {
+    for ((word, dynamic), odd) in line.words.into_iter().zip(line.dynamic).zip(line.odd) {
         if matches!(word.as_str(), "{" | "}") {
             push_command(commands, &mut piece);
             continue;
@@ -1718,6 +1776,7 @@ fn end_command(commands: &mut Vec<Line>, line: &mut Line) {
         }
         piece.words.push(word);
         piece.dynamic.push(dynamic);
+        piece.odd.push(odd);
     }
     push_command(commands, &mut piece);
 }
@@ -1777,6 +1836,18 @@ fn read_substitution(chars: &[char], open_at: usize) -> (String, usize, bool) {
         let c = chars[i];
         match c {
             '\\' => i += 2,
+            '$' if chars.get(i + 1) == Some(&'\'') => {
+                i += 2;
+                while i < n && chars[i] != '\'' {
+                    if chars[i] == '\\' && i + 1 < n {
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                certain &= i < n;
+                i += 1;
+            }
             '\'' => {
                 i += 1;
                 while i < n && chars[i] != '\'' {
@@ -1845,6 +1916,216 @@ fn read_substitution(chars: &[char], open_at: usize) -> (String, usize, bool) {
     (chars[start..n.max(start)].iter().collect(), n, false)
 }
 
+fn push_ansi_c_escape(chars: &[char], backslash_idx: usize, out: &mut String) -> usize {
+    let next = chars[backslash_idx + 1];
+    match next {
+        'a' => {
+            out.push('\x07');
+            backslash_idx + 2
+        }
+        'b' => {
+            out.push('\x08');
+            backslash_idx + 2
+        }
+        'e' | 'E' => {
+            out.push('\x1b');
+            backslash_idx + 2
+        }
+        'f' => {
+            out.push('\x0c');
+            backslash_idx + 2
+        }
+        'n' => {
+            out.push('\n');
+            backslash_idx + 2
+        }
+        'r' => {
+            out.push('\r');
+            backslash_idx + 2
+        }
+        't' => {
+            out.push('\t');
+            backslash_idx + 2
+        }
+        'v' => {
+            out.push('\x0b');
+            backslash_idx + 2
+        }
+        '\\' | '\'' | '"' | '?' => {
+            out.push(next);
+            backslash_idx + 2
+        }
+        '0'..='7' => {
+            let mut val = 0u32;
+            let mut end = backslash_idx + 1;
+            while end < chars.len() && end < backslash_idx + 4 && ('0'..='7').contains(&chars[end])
+            {
+                val = (val << 3) | (chars[end] as u32 - '0' as u32);
+                end += 1;
+            }
+            out.push(char::from((val & 0xff) as u8));
+            end
+        }
+        'x' => {
+            let mut val = 0u32;
+            let mut end = backslash_idx + 2;
+            while end < chars.len() && end < backslash_idx + 4 {
+                if let Some(digit) = chars[end].to_digit(16) {
+                    val = (val << 4) | digit;
+                    end += 1;
+                } else {
+                    break;
+                }
+            }
+            if end > backslash_idx + 2 {
+                out.push(char::from((val & 0xff) as u8));
+                end
+            } else {
+                out.push('\\');
+                out.push('x');
+                backslash_idx + 2
+            }
+        }
+        'u' | 'U' => {
+            let max_digits = if next == 'u' { 4 } else { 8 };
+            let mut val = 0u32;
+            let mut end = backslash_idx + 2;
+            while end < chars.len() && end < backslash_idx + 2 + max_digits {
+                if let Some(digit) = chars[end].to_digit(16) {
+                    val = (val << 4) | digit;
+                    end += 1;
+                } else {
+                    break;
+                }
+            }
+            if end > backslash_idx + 2 {
+                if let Some(ch) = char::from_u32(val) {
+                    out.push(ch);
+                } else {
+                    out.extend(&chars[backslash_idx..end]);
+                }
+                end
+            } else {
+                out.push('\\');
+                out.push(next);
+                backslash_idx + 2
+            }
+        }
+        'c' if backslash_idx + 2 < chars.len()
+            && chars[backslash_idx + 2].is_ascii()
+            && chars[backslash_idx + 2] != '\'' =>
+        {
+            out.push(char::from((chars[backslash_idx + 2] as u8) & 0x1f));
+            backslash_idx + 3
+        }
+        _ => {
+            out.push('\\');
+            out.push(next);
+            backslash_idx + 2
+        }
+    }
+}
+
+pub(crate) fn split_ansi_c_shell_words(segment: &str) -> Option<Vec<String>> {
+    let chars: Vec<char> = segment.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut started = false;
+    while i < n {
+        let ch = chars[i];
+        if ch.is_whitespace() {
+            if started {
+                words.push(std::mem::take(&mut current));
+                started = false;
+            }
+            i += 1;
+            continue;
+        }
+        if ch == '#' && !started {
+            while i < n && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        started = true;
+        match ch {
+            '$' if i + 1 < n && chars[i + 1] == '\'' => {
+                i += 2;
+                while i < n && chars[i] != '\'' {
+                    if chars[i] == '\\' && i + 1 < n {
+                        i = push_ansi_c_escape(&chars, i, &mut current);
+                    } else {
+                        current.push(chars[i]);
+                        i += 1;
+                    }
+                }
+                if i >= n {
+                    return None;
+                }
+                i += 1;
+            }
+            '\'' => {
+                i += 1;
+                while i < n && chars[i] != '\'' {
+                    current.push(chars[i]);
+                    i += 1;
+                }
+                if i >= n {
+                    return None;
+                }
+                i += 1;
+            }
+            '"' => {
+                i += 1;
+                while i < n && chars[i] != '"' {
+                    if chars[i] == '\\' {
+                        if i + 1 >= n {
+                            return None;
+                        }
+                        let next = chars[i + 1];
+                        if matches!(next, '"' | '\\' | '$' | '`') {
+                            current.push(next);
+                            i += 2;
+                        } else if next == '\n' {
+                            i += 2;
+                        } else {
+                            current.push('\\');
+                            current.push(next);
+                            i += 2;
+                        }
+                    } else {
+                        current.push(chars[i]);
+                        i += 1;
+                    }
+                }
+                if i >= n {
+                    return None;
+                }
+                i += 1;
+            }
+            '\\' => {
+                if i + 1 >= n {
+                    return None;
+                }
+                if chars[i + 1] != '\n' {
+                    current.push(chars[i + 1]);
+                }
+                i += 2;
+            }
+            _ => {
+                current.push(ch);
+                i += 1;
+            }
+        }
+    }
+    if started {
+        words.push(current);
+    }
+    Some(words)
+}
+
 /// The final path component, so `/usr/bin/sudo` reads as `sudo`.
 fn basename(token: &str) -> &str {
     token
@@ -1857,6 +2138,7 @@ fn basename(token: &str) -> &str {
 fn is_env_assignment(token: &str) -> bool {
     match token.split_once('=') {
         Some((name, _)) => {
+            let name = name.strip_suffix('+').unwrap_or(name);
             !name.is_empty()
                 && !name.starts_with('-')
                 && name
@@ -2169,6 +2451,22 @@ mod tests {
     }
 
     #[test]
+    fn native_windows_command_words_are_plain_literals() {
+        for command in [
+            r"C:\Windows\System32\where.exe git",
+            r"C:\Git\bin\bash.exe -lc ls",
+            r".\build.bat --release",
+            r"\\server\share\tool.exe /q",
+        ] {
+            assert!(
+                !expand_for_platform(command, true).dynamic,
+                "{command} was unresolved"
+            );
+        }
+        assert!(expand_for_platform(r"%COMSPEC% /c dir", true).dynamic);
+    }
+
+    #[test]
     fn windows_scan_retains_native_paths_and_posix_deny_candidates() {
         for (command, expected) in [
             (
@@ -2444,5 +2742,37 @@ mod tests {
     #[test]
     fn plain_command_expands_to_itself() {
         assert_eq!(expand("git status -s"), vec!["git status -s".to_string()]);
+    }
+
+    #[test]
+    fn ansi_c_escapes_decode_control_and_newline_characters() {
+        for (command, expected_head) in [
+            (r#"sh -c $'echo x\nwipefs -a /dev/sda'"#, "wipefs"),
+            (r#"sh -c $'echo x\nmkfs.ext4 /dev/sda1'"#, "mkfs.ext4"),
+            (r#"sh -c $'echo x\rwipefs -a /dev/sda'"#, "wipefs"),
+            (r#"sh -c $'echo x\x0amkfs.ext4 /dev/sda1'"#, "mkfs.ext4"),
+            (r#"sh -c $'echo x\012shred /dev/sda'"#, "shred"),
+            (r#"sh -c $'echo x\u000add if=/dev/zero of=/dev/sda'"#, "dd"),
+            (r#"sh -c $'echo x\cJwipefs -a /dev/sda'"#, "wipefs"),
+            (r#"$(sh -c $'echo \'x\'\nwipefs -a /dev/sda')"#, "wipefs"),
+        ] {
+            let expansion = expand_for_platform(command, false);
+            assert!(
+                expansion
+                    .words
+                    .iter()
+                    .any(|words| words.first().map(String::as_str) == Some(expected_head)),
+                "{command}: {:?}",
+                expansion.words
+            );
+        }
+        assert!(
+            expand_for_platform(r#"sh -c $'echo\ta\tb'"#, false)
+                .words
+                .iter()
+                .any(|words| words == &["echo", "a", "b"])
+        );
+        assert!(expand_for_platform("$'rm' -f f", false).dynamic);
+        assert!(expand_for_platform("$'\\x72m' f", false).dynamic);
     }
 }
