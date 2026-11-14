@@ -26146,3 +26146,619 @@ async fn profile_constitution_runtime_admission_binds_the_complete_snapshot_to_r
     wait_for_terminal_turn(&manager, &turn.id).await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn async_completion_wake_coalesces_rapid_idle_subagent_completions() -> Result<()> {
+    use crate::tools::subagent::{SubAgentManager, SubAgentStatus};
+
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let mut harness = mock_engine_handle();
+    let subagent_manager = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
+        thread.workspace.clone(),
+        2,
+    )));
+    harness
+        .handle
+        .set_subagent_manager(subagent_manager.clone());
+    manager
+        .install_test_engine(&thread.id, harness.handle.clone())
+        .await?;
+    let mut rx_op = harness.rx_op;
+    let tx_event = harness.tx_event;
+
+    let (sub_a, sub_b) = {
+        let mut guard = subagent_manager.write().await;
+        let sub_a = guard.insert_test_terminal_direct_child("sub_a", &thread.workspace);
+        guard.assign_test_session_owner(&sub_a, &thread.id);
+        let sub_b = guard.insert_test_terminal_direct_child("sub_b", &thread.workspace);
+        guard.assign_test_session_owner(&sub_b, &thread.id);
+        (sub_a, sub_b)
+    };
+
+    for (index, agent_id) in [sub_a, sub_b].into_iter().enumerate() {
+        if index > 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tx_event
+            .send(EngineEvent::AgentComplete {
+                display_name: Some("worker".into()),
+                owner_session_id: thread.id.clone(),
+                id: agent_id,
+                result: "done".into(),
+                outcome: Some(SubAgentStatus::Completed),
+                parent_run_id: None,
+                spawn_depth: Some(1),
+                continuable: Some(false),
+                usage: None,
+            })
+            .await?;
+    }
+
+    let op = tokio::time::timeout(Duration::from_secs(2), rx_op.recv())
+        .await
+        .context("expected coalesced wake turn")?;
+    let Some(Op::SendMessage(spec)) = op else {
+        bail!("expected Op::SendMessage wake operation");
+    };
+    assert_eq!(
+        spec.provenance,
+        crate::core::ops::UserInputProvenance::Runtime
+    );
+    assert_eq!(spec.content, "[runtime] Background work finished");
+
+    tx_event
+        .send(EngineEvent::TurnStarted {
+            previous_source: None,
+            turn_id: "engine_wake_coalesced".into(),
+            created_at: Utc::now(),
+            route: None,
+            submission_id: None,
+        })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "processed coalesced subagents".to_string(),
+        })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage::default(),
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+
+    let turns =
+        wait_for_terminal_turn_count(&manager, &thread.id, 1, Duration::from_secs(2)).await?;
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].status, RuntimeTurnStatus::Completed);
+    let items = manager.store.list_items_for_turn(&turns[0].id)?;
+    let input_item = items
+        .iter()
+        .find(|item| item.kind == TurnItemKind::UserMessage)
+        .context("missing wake input item")?;
+    assert_eq!(
+        input_item.detail.as_deref(),
+        Some("[runtime] Background work finished")
+    );
+    assert_eq!(
+        input_item
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.get("input_provenance"))
+            .and_then(Value::as_str),
+        Some("async_completion_wake")
+    );
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert!(rx_op.try_recv().is_err());
+    assert_eq!(manager.store.list_turns_for_thread(&thread.id)?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn async_completion_wake_skips_cancelled_and_archived_threads() -> Result<()> {
+    use crate::tools::subagent::{SubAgentManager, SubAgentStatus};
+
+    let manager = test_manager(test_runtime_dir())?;
+    let archived_thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let mut archived_harness = mock_engine_handle();
+    let shared_subagents = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
+        archived_thread.workspace.clone(),
+        2,
+    )));
+    archived_harness
+        .handle
+        .set_subagent_manager(shared_subagents.clone());
+    manager
+        .install_test_engine(&archived_thread.id, archived_harness.handle.clone())
+        .await?;
+
+    let cancelled_thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let mut cancelled_harness = mock_engine_handle();
+    cancelled_harness
+        .handle
+        .set_subagent_manager(shared_subagents.clone());
+    manager
+        .install_test_engine(&cancelled_thread.id, cancelled_harness.handle.clone())
+        .await?;
+
+    let (sub_archived, sub_cancelled) = {
+        let mut guard = shared_subagents.write().await;
+        let a = guard.insert_test_terminal_direct_child("sub_arch", &archived_thread.workspace);
+        guard.assign_test_session_owner(&a, &archived_thread.id);
+        let b = guard.insert_test_terminal_direct_child("sub_canc", &cancelled_thread.workspace);
+        guard.assign_test_session_owner(&b, &cancelled_thread.id);
+        (a, b)
+    };
+
+    manager
+        .update_thread(
+            &archived_thread.id,
+            UpdateThreadRequest {
+                archived: Some(true),
+                ..Default::default()
+            },
+        )
+        .await?;
+    cancelled_harness
+        .handle
+        .cancel_with_reason(crate::core::engine::CancelReason::User);
+
+    archived_harness
+        .tx_event
+        .send(EngineEvent::AgentComplete {
+            display_name: None,
+            owner_session_id: archived_thread.id.clone(),
+            id: sub_archived,
+            result: "done".into(),
+            outcome: Some(SubAgentStatus::Completed),
+            parent_run_id: None,
+            spawn_depth: Some(1),
+            continuable: Some(false),
+            usage: None,
+        })
+        .await?;
+    cancelled_harness
+        .tx_event
+        .send(EngineEvent::AgentComplete {
+            display_name: None,
+            owner_session_id: cancelled_thread.id.clone(),
+            id: sub_cancelled,
+            result: "done".into(),
+            outcome: Some(SubAgentStatus::Completed),
+            parent_run_id: None,
+            spawn_depth: Some(1),
+            continuable: Some(false),
+            usage: None,
+        })
+        .await?;
+
+    tokio::time::sleep(Duration::from_millis(140)).await;
+    assert!(archived_harness.rx_op.try_recv().is_err());
+    assert!(cancelled_harness.rx_op.try_recv().is_err());
+    assert!(
+        manager
+            .store
+            .list_turns_for_thread(&archived_thread.id)?
+            .is_empty()
+    );
+    assert!(
+        manager
+            .store
+            .list_turns_for_thread(&cancelled_thread.id)?
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn async_completion_wake_waits_for_busy_turn_settlement_and_wakes_once() -> Result<()> {
+    use crate::tools::subagent::{SubAgentManager, SubAgentStatus};
+
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let mut harness = mock_engine_handle();
+    let subagent_manager = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
+        thread.workspace.clone(),
+        1,
+    )));
+    harness
+        .handle
+        .set_subagent_manager(subagent_manager.clone());
+    manager
+        .install_test_engine(&thread.id, harness.handle.clone())
+        .await?;
+    let mut rx_op = harness.rx_op;
+    let tx_event = harness.tx_event;
+
+    let first_turn = manager
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "primary user turn".into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let Some(Op::SendMessage(first_spec)) =
+        tokio::time::timeout(Duration::from_secs(2), rx_op.recv()).await?
+    else {
+        bail!("missing Turn 1 operation");
+    };
+    assert_eq!(first_spec.content, "primary user turn");
+
+    tx_event
+        .send(EngineEvent::TurnStarted {
+            previous_source: None,
+            turn_id: "engine_busy_1".into(),
+            created_at: Utc::now(),
+            route: None,
+            submission_id: None,
+        })
+        .await?;
+
+    let sub_busy = {
+        let mut guard = subagent_manager.write().await;
+        let id = guard.insert_test_terminal_direct_child("sub_busy", &thread.workspace);
+        guard.assign_test_session_owner(&id, &thread.id);
+        id
+    };
+    tx_event
+        .send(EngineEvent::AgentComplete {
+            display_name: None,
+            owner_session_id: thread.id.clone(),
+            id: sub_busy,
+            result: "done while busy".into(),
+            outcome: Some(SubAgentStatus::Completed),
+            parent_run_id: None,
+            spawn_depth: Some(1),
+            continuable: Some(false),
+            usage: None,
+        })
+        .await?;
+    manager.spawn_async_completion_wake(thread.id.clone());
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert!(rx_op.try_recv().is_err());
+
+    tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "finished primary user turn".to_string(),
+        })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage::default(),
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+    let settled_first = wait_for_terminal_turn(&manager, &first_turn.id).await?;
+    assert_eq!(settled_first.status, RuntimeTurnStatus::Completed);
+
+    let Some(Op::SendMessage(wake_spec)) =
+        tokio::time::timeout(Duration::from_secs(2), rx_op.recv()).await?
+    else {
+        bail!("missing deferred wake operation");
+    };
+    assert_eq!(
+        wake_spec.provenance,
+        crate::core::ops::UserInputProvenance::Runtime
+    );
+    assert_eq!(wake_spec.content, "[runtime] Background work finished");
+
+    tx_event
+        .send(EngineEvent::TurnStarted {
+            previous_source: None,
+            turn_id: "engine_busy_2".into(),
+            created_at: Utc::now(),
+            route: None,
+            submission_id: None,
+        })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "handled deferred wake".to_string(),
+        })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage::default(),
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+
+    let turns =
+        wait_for_terminal_turn_count(&manager, &thread.id, 2, Duration::from_secs(2)).await?;
+    assert_eq!(turns.len(), 2);
+    assert_eq!(turns[1].status, RuntimeTurnStatus::Completed);
+    let second_items = manager.store.list_items_for_turn(&turns[1].id)?;
+    assert!(second_items.iter().any(|item| {
+        item.metadata
+            .as_ref()
+            .and_then(|meta| meta.get("input_provenance"))
+            .and_then(Value::as_str)
+            == Some("async_completion_wake")
+    }));
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert!(rx_op.try_recv().is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn async_completion_wake_skips_turn_that_already_drained_subagent() -> Result<()> {
+    use crate::tools::subagent::{SubAgentManager, SubAgentStatus};
+
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let mut harness = mock_engine_handle();
+    let subagent_manager = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
+        thread.workspace.clone(),
+        1,
+    )));
+    harness
+        .handle
+        .set_subagent_manager(subagent_manager.clone());
+    manager
+        .install_test_engine(&thread.id, harness.handle.clone())
+        .await?;
+    let mut rx_op = harness.rx_op;
+    let tx_event = harness.tx_event;
+
+    let turn = manager
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "draining turn".into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), rx_op.recv()).await?,
+        Some(Op::SendMessage(_))
+    ));
+    tx_event
+        .send(EngineEvent::TurnStarted {
+            previous_source: None,
+            turn_id: "engine_drain_1".into(),
+            created_at: Utc::now(),
+            route: None,
+            submission_id: None,
+        })
+        .await?;
+
+    let sub_drained = {
+        let mut guard = subagent_manager.write().await;
+        let id = guard.insert_test_terminal_direct_child("sub_drained", &thread.workspace);
+        guard.assign_test_session_owner(&id, &thread.id);
+        id
+    };
+    tx_event
+        .send(EngineEvent::AgentComplete {
+            display_name: None,
+            owner_session_id: thread.id.clone(),
+            id: sub_drained,
+            result: "already absorbed".into(),
+            outcome: Some(SubAgentStatus::Completed),
+            parent_run_id: None,
+            spawn_depth: Some(1),
+            continuable: Some(false),
+            usage: None,
+        })
+        .await?;
+    tx_event
+        .send(EngineEvent::status(
+            "Resuming turn with 1 late sub-agent completion(s)",
+        ))
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "already consumed child completion".to_string(),
+        })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage::default(),
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+
+    let settled = wait_for_terminal_turn(&manager, &turn.id).await?;
+    assert_eq!(settled.status, RuntimeTurnStatus::Completed);
+    tokio::time::sleep(Duration::from_millis(140)).await;
+    assert!(rx_op.try_recv().is_err());
+    assert_eq!(manager.store.list_turns_for_thread(&thread.id)?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn async_completion_wake_monitors_background_shell_after_turn_settlement() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let harness = install_mock_engine(&manager, &thread.id).await;
+    let shell_manager = manager
+        .thread_shell_manager(&thread.id, true)
+        .await?
+        .context("expected thread shell manager")?;
+
+    {
+        let mut guard = shell_manager
+            .lock()
+            .map_err(|_| anyhow!("shell manager lock poisoned"))?;
+        guard.execute_with_options_env_for_session(
+            "sleep 0.12",
+            None,
+            5_000,
+            true,
+            None,
+            false,
+            None,
+            HashMap::new(),
+            &thread.id,
+        )?;
+    }
+
+    let mut rx_op = harness.rx_op;
+    let tx_event = harness.tx_event;
+    let thread_id = thread.id.clone();
+    let shell_mgr_for_mock = shell_manager.clone();
+    tokio::spawn(async move {
+        let mut index = 0usize;
+        while let Some(op) = rx_op.recv().await {
+            if let Op::SendMessage(spec) = op {
+                index += 1;
+                if index > 1 {
+                    assert_eq!(
+                        spec.provenance,
+                        crate::core::ops::UserInputProvenance::Runtime
+                    );
+                    if let Ok(mut guard) = shell_mgr_for_mock.lock() {
+                        let _ = guard.drain_finished_jobs_with_evidence_for_session(&thread_id);
+                    }
+                }
+                let _ = tx_event
+                    .send(EngineEvent::TurnStarted {
+                        previous_source: None,
+                        turn_id: format!("engine_shell_{index}"),
+                        created_at: Utc::now(),
+                        route: None,
+                        submission_id: None,
+                    })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageStarted { index: 0 })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageDelta {
+                        index: 0,
+                        content: format!("shell step {index}"),
+                    })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageComplete { index: 0 })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::TurnComplete {
+                        source_accounting: false,
+                        turn_id: None,
+                        submission_id: None,
+                        compaction_id: None,
+                        usage: Usage::default(),
+                        parent_route_usage: Usage::default(),
+                        routed_usage_dropped_records: 0,
+                        status: TurnOutcomeStatus::Completed,
+                        error: None,
+                        tool_catalog: None,
+                        base_url: None,
+                    })
+                    .await;
+            }
+        }
+    });
+
+    manager
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "launch background shell".into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    let turns =
+        wait_for_terminal_turn_count(&manager, &thread.id, 2, Duration::from_secs(5)).await?;
+    assert_eq!(turns.len(), 2);
+    assert_eq!(turns[0].status, RuntimeTurnStatus::Completed);
+    assert_eq!(turns[1].status, RuntimeTurnStatus::Completed);
+    let second_items = manager.store.list_items_for_turn(&turns[1].id)?;
+    assert!(second_items.iter().any(|item| {
+        item.metadata
+            .as_ref()
+            .and_then(|meta| meta.get("input_provenance"))
+            .and_then(Value::as_str)
+            == Some("async_completion_wake")
+    }));
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(manager.store.list_turns_for_thread(&thread.id)?.len(), 2);
+    Ok(())
+}

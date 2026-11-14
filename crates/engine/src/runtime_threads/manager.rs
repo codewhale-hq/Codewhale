@@ -1835,6 +1835,7 @@ pub(super) enum RuntimeTurnInputSource {
     Scheduled {
         task_id: String,
     },
+    AsyncCompletionWake,
 }
 
 impl RuntimeTurnInputSource {
@@ -1850,7 +1851,7 @@ impl RuntimeTurnInputSource {
             Self::GoalContinuation {
                 continuation_index, ..
             } if *continuation_index > 0 => crate::core::ops::UserInputProvenance::GoalContinuation,
-            Self::GoalContinuation { .. } | Self::Scheduled { .. } => {
+            Self::GoalContinuation { .. } | Self::Scheduled { .. } | Self::AsyncCompletionWake => {
                 crate::core::ops::UserInputProvenance::Runtime
             }
         }
@@ -1863,7 +1864,9 @@ impl RuntimeTurnInputSource {
             | Self::ExtensionCommand { .. }
             | Self::WatchEvent(_) => None,
             Self::AgentMail { message_id, .. } => Some(message_id),
-            Self::GoalContinuation { .. } | Self::Scheduled { .. } => None,
+            Self::GoalContinuation { .. } | Self::Scheduled { .. } | Self::AsyncCompletionWake => {
+                None
+            }
         }
     }
 
@@ -1874,6 +1877,7 @@ impl RuntimeTurnInputSource {
             | Self::Review(_)
             | Self::ExtensionCommand { .. }
             | Self::Scheduled { .. } => Some(prompt.to_string()),
+            Self::AsyncCompletionWake => Some("[runtime] Background work finished".to_string()),
             // The provider projection contains runtime-only framing. Persist
             // the bounded canonical mail summary instead, so history and app
             // clients never mistake that projection for typed user input.
@@ -1937,6 +1941,9 @@ impl RuntimeTurnInputSource {
             Self::Scheduled { task_id } => Some(json!({
                 "input_provenance": "scheduled",
                 "task_id": task_id,
+            })),
+            Self::AsyncCompletionWake => Some(json!({
+                "input_provenance": "async_completion_wake",
             })),
         }
     }
@@ -6594,6 +6601,695 @@ impl RuntimeThreadManager {
         let worker = tokio::spawn(async move {
             if let Err(error) = Box::pin(manager.deliver_next_wake_agent_mail(&thread_id)).await {
                 tracing::warn!(thread_id, %error, "Failed to deliver queued Agent Mail");
+            }
+        });
+        self.track_receipt_worker(worker);
+    }
+
+    const ASYNC_COMPLETION_WAKE_DEBOUNCE: std::time::Duration =
+        std::time::Duration::from_millis(75);
+    const IDLE_SHELL_WAKE_POLL_INTERVAL: std::time::Duration =
+        std::time::Duration::from_millis(150);
+    const ASYNC_COMPLETION_WAKE_PROMPT: &'static str = "[runtime] Background work finished";
+
+    pub(super) fn parse_resumed_subagent_completion_count(message: &str) -> Option<usize> {
+        let rest = message.strip_prefix("Resuming turn with ")?;
+        if !rest.contains("sub-agent completion(s)") {
+            return None;
+        }
+        rest.split_whitespace().next()?.parse::<usize>().ok()
+    }
+
+    fn async_wake_arm_op(
+        is_shell: bool,
+        manager_key: usize,
+        owner: Option<std::sync::Weak<Mutex<ActiveThreads>>>,
+        thread_id: &str,
+        arm: bool,
+    ) -> bool {
+        type WakeOwnerMap = HashMap<(usize, String), std::sync::Weak<Mutex<ActiveThreads>>>;
+        static ARMED_WAKES: std::sync::OnceLock<parking_lot::Mutex<WakeOwnerMap>> =
+            std::sync::OnceLock::new();
+        static ARMED_SHELL_MONITORS: std::sync::OnceLock<parking_lot::Mutex<WakeOwnerMap>> =
+            std::sync::OnceLock::new();
+        let table = if is_shell {
+            ARMED_SHELL_MONITORS.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+        } else {
+            ARMED_WAKES.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+        };
+        let mut guard = table.lock();
+        guard.retain(|_, existing| existing.upgrade().is_some());
+        let key = (manager_key, thread_id.to_string());
+        if arm {
+            let Some(owner) = owner else {
+                return false;
+            };
+            if guard.contains_key(&key) {
+                return false;
+            }
+            guard.insert(key, owner);
+            true
+        } else {
+            guard.remove(&key).is_some()
+        }
+    }
+
+    fn async_completion_wake_arm(&self, thread_id: &str) -> bool {
+        Self::async_wake_arm_op(
+            false,
+            Arc::as_ptr(&self.active) as usize,
+            Some(Arc::downgrade(&self.active)),
+            thread_id,
+            true,
+        )
+    }
+
+    fn async_completion_wake_release_key(manager_key: usize, thread_id: &str) {
+        let _ = Self::async_wake_arm_op(false, manager_key, None, thread_id, false);
+    }
+
+    fn async_shell_monitor_arm(&self, thread_id: &str) -> bool {
+        Self::async_wake_arm_op(
+            true,
+            Arc::as_ptr(&self.active) as usize,
+            Some(Arc::downgrade(&self.active)),
+            thread_id,
+            true,
+        )
+    }
+
+    fn async_shell_monitor_release_key(manager_key: usize, thread_id: &str) {
+        let _ = Self::async_wake_arm_op(true, manager_key, None, thread_id, false);
+    }
+
+    fn async_subagent_wake_op(
+        &self,
+        thread_id: &str,
+        op: u8,
+        agent_id: Option<&str>,
+        flag: bool,
+        count: usize,
+        ids: &[String],
+    ) -> (bool, Vec<String>, HashSet<String>) {
+        #[derive(Default)]
+        struct SubAgentWakeEntry {
+            owner: std::sync::Weak<Mutex<ActiveThreads>>,
+            pending: Vec<String>,
+            late_after_turn_complete: Vec<String>,
+            delivered: HashSet<String>,
+            active_turn_ids: Vec<String>,
+            active_turn_drained: usize,
+            saw_turn_complete: bool,
+        }
+
+        static STATES: std::sync::OnceLock<
+            parking_lot::Mutex<HashMap<(usize, String), SubAgentWakeEntry>>,
+        > = std::sync::OnceLock::new();
+        let table = STATES.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
+        let manager_key = Arc::as_ptr(&self.active) as usize;
+        let mut guard = table.lock();
+        guard.retain(|_, entry| entry.owner.upgrade().is_some());
+        let entry = guard
+            .entry((manager_key, thread_id.to_string()))
+            .or_insert_with(|| SubAgentWakeEntry {
+                owner: Arc::downgrade(&self.active),
+                ..Default::default()
+            });
+        entry.owner = Arc::downgrade(&self.active);
+
+        match op {
+            0 => {
+                entry.active_turn_ids.clear();
+                for pending_id in entry.pending.drain(..) {
+                    if !entry.delivered.contains(&pending_id)
+                        && !entry.active_turn_ids.contains(&pending_id)
+                    {
+                        entry.active_turn_ids.push(pending_id);
+                    }
+                }
+                for late in entry.late_after_turn_complete.drain(..) {
+                    if !entry.delivered.contains(&late) && !entry.active_turn_ids.contains(&late) {
+                        entry.active_turn_ids.push(late);
+                    }
+                }
+                entry.active_turn_drained = 0;
+                entry.saw_turn_complete = false;
+                (false, Vec::new(), HashSet::new())
+            }
+            1 => {
+                entry.saw_turn_complete = true;
+                (false, Vec::new(), HashSet::new())
+            }
+            2 => {
+                entry.active_turn_drained = entry.active_turn_drained.saturating_add(count);
+                (false, Vec::new(), HashSet::new())
+            }
+            3 => {
+                let Some(id) = agent_id else {
+                    return (false, Vec::new(), HashSet::new());
+                };
+                if entry.delivered.contains(id) {
+                    return (false, Vec::new(), HashSet::new());
+                }
+                if flag {
+                    if !entry.pending.iter().any(|existing| existing == id) {
+                        entry.pending.push(id.to_string());
+                    }
+                    (true, Vec::new(), HashSet::new())
+                } else if entry.saw_turn_complete {
+                    if !entry
+                        .late_after_turn_complete
+                        .iter()
+                        .any(|existing| existing == id)
+                    {
+                        entry.late_after_turn_complete.push(id.to_string());
+                    }
+                    (false, Vec::new(), HashSet::new())
+                } else {
+                    if !entry.active_turn_ids.iter().any(|existing| existing == id) {
+                        entry.active_turn_ids.push(id.to_string());
+                    }
+                    (false, Vec::new(), HashSet::new())
+                }
+            }
+            4 => {
+                let mut remaining_drain = entry.active_turn_drained;
+                let active_ids = std::mem::take(&mut entry.active_turn_ids);
+                for id in active_ids {
+                    if entry.delivered.contains(&id) {
+                        continue;
+                    }
+                    if remaining_drain > 0 {
+                        remaining_drain -= 1;
+                        entry.delivered.insert(id);
+                    } else if !entry.pending.iter().any(|existing| existing == &id) {
+                        entry.pending.push(id);
+                    }
+                }
+                for late in entry.late_after_turn_complete.drain(..) {
+                    if !entry.delivered.contains(&late)
+                        && !entry.pending.iter().any(|existing| existing == &late)
+                    {
+                        entry.pending.push(late);
+                    }
+                }
+                entry.active_turn_drained = 0;
+                entry.saw_turn_complete = false;
+                (!entry.pending.is_empty(), Vec::new(), HashSet::new())
+            }
+            5 => (false, Vec::new(), entry.delivered.clone()),
+            6 => (false, entry.pending.clone(), entry.delivered.clone()),
+            7 => {
+                let keep: HashSet<&str> = ids.iter().map(String::as_str).collect();
+                entry.pending.retain(|id| keep.contains(id.as_str()));
+                (false, Vec::new(), HashSet::new())
+            }
+            8 => {
+                let mark: HashSet<&str> = ids.iter().map(String::as_str).collect();
+                entry.pending.retain(|id| !mark.contains(id.as_str()));
+                for id in ids {
+                    entry.delivered.insert(id.clone());
+                }
+                (false, Vec::new(), HashSet::new())
+            }
+            _ => (false, Vec::new(), HashSet::new()),
+        }
+    }
+
+    pub(super) fn async_wake_on_turn_started(&self, thread_id: &str) {
+        let _ = self.async_subagent_wake_op(thread_id, 0, None, false, 0, &[]);
+    }
+
+    pub(super) fn async_wake_on_turn_complete(&self, thread_id: &str) {
+        let _ = self.async_subagent_wake_op(thread_id, 1, None, false, 0, &[]);
+    }
+
+    pub(super) fn async_wake_on_resumed_status(&self, thread_id: &str, count: usize) {
+        if count > 0 {
+            let _ = self.async_subagent_wake_op(thread_id, 2, None, false, count, &[]);
+        }
+    }
+
+    fn async_wake_on_agent_complete(
+        &self,
+        thread_id: &str,
+        agent_id: &str,
+        idle_now: bool,
+    ) -> bool {
+        self.async_subagent_wake_op(thread_id, 3, Some(agent_id), idle_now, 0, &[])
+            .0
+    }
+
+    fn async_wake_settle_turn(&self, thread_id: &str, turn_completed: bool) -> bool {
+        self.async_subagent_wake_op(thread_id, 4, None, turn_completed, 0, &[])
+            .0
+    }
+
+    fn async_wake_delivered_ids(&self, thread_id: &str) -> HashSet<String> {
+        self.async_subagent_wake_op(thread_id, 5, None, false, 0, &[])
+            .2
+    }
+
+    fn async_wake_pending_snapshot(&self, thread_id: &str) -> (Vec<String>, HashSet<String>) {
+        let (_, pending, delivered) =
+            self.async_subagent_wake_op(thread_id, 6, None, false, 0, &[]);
+        (pending, delivered)
+    }
+
+    fn async_wake_prune_pending(&self, thread_id: &str, keep_ids: &[String]) {
+        let _ = self.async_subagent_wake_op(thread_id, 7, None, false, 0, keep_ids);
+    }
+
+    fn async_wake_mark_delivered(&self, thread_id: &str, ids: &[String]) {
+        if !ids.is_empty() {
+            let _ = self.async_subagent_wake_op(thread_id, 8, None, false, 0, ids);
+        }
+    }
+
+    pub(super) fn weak_wake_manager(
+        &self,
+    ) -> Arc<dyn Fn() -> Option<RuntimeThreadManager> + Send + Sync> {
+        let host_profile = self.host_profile;
+        let config = self.config.clone();
+        let workspace = self.workspace.clone();
+        let plugin_registry = self.plugin_registry.clone();
+        let store = self.store.clone();
+        let weak_process_owner_lock = Arc::downgrade(&self._process_owner_lock);
+        let config_admission = self.config_admission.clone();
+        let engine_load = self.engine_load.clone();
+        let shutdown_drain = self.shutdown_drain.clone();
+        let engine_workers = self.engine_workers.clone();
+        let subagent_manager = self.subagent_manager.clone();
+        let turn_monitors = self.turn_monitors.clone();
+        let event_monitors = self.event_monitors.clone();
+        let event_reader_wake = self.event_reader_wake.clone();
+        let event_pump_stop = self.event_pump_stop.clone();
+        let weak_event_pump_owner = Arc::downgrade(&self._event_pump_owner);
+        let weak_active = Arc::downgrade(&self.active);
+        let event_emit = self.event_emit.clone();
+        let projection_locks = self.projection_locks.clone();
+        let event_tx = self.event_tx.clone();
+        let manager_cfg = self.manager_cfg.clone();
+        let runtime_mcp_servers = self.runtime_mcp_servers.clone();
+        let cancel_token = self.cancel_token.clone();
+        let task_manager = self.task_manager.clone();
+        let task_execution_lease = self.task_execution_lease.clone();
+        let automations = self.automations.clone();
+        let pending_approvals = self.pending_approvals.clone();
+        let grants = self.grants.clone();
+        let pending_user_inputs = self.pending_user_inputs.clone();
+        let pending_dynamic_tools = self.pending_dynamic_tools.clone();
+        let pending_commands = self.pending_commands.clone();
+        let recovery_receipts = self.recovery_receipts.clone();
+        let notices = self.notices.clone();
+        let recovery_flush = self.recovery_flush.clone();
+        let hook_base = self.hook_base.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let snapshot_test_hook = self.snapshot_test_hook.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let replay_test_hook = self.replay_test_hook.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let test_model_client = self.test_model_client.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let test_approval_decision_timeout_ms = self.test_approval_decision_timeout_ms.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let test_dynamic_tool_result_timeout_ms = self.test_dynamic_tool_result_timeout_ms.clone();
+
+        Arc::new(move || {
+            if cancel_token.is_cancelled() || event_pump_stop.is_cancelled() {
+                return None;
+            }
+            let process_owner_lock = weak_process_owner_lock.upgrade()?;
+            let event_pump_owner = weak_event_pump_owner.upgrade()?;
+            let active = weak_active.upgrade()?;
+            Some(RuntimeThreadManager {
+                host_profile,
+                config: config.clone(),
+                workspace: workspace.clone(),
+                plugin_registry: plugin_registry.clone(),
+                store: store.clone(),
+                _process_owner_lock: process_owner_lock,
+                config_admission: config_admission.clone(),
+                engine_load: engine_load.clone(),
+                shutdown_drain: shutdown_drain.clone(),
+                engine_workers: engine_workers.clone(),
+                subagent_manager: subagent_manager.clone(),
+                turn_monitors: turn_monitors.clone(),
+                event_monitors: event_monitors.clone(),
+                event_reader_wake: event_reader_wake.clone(),
+                event_pump_stop: event_pump_stop.clone(),
+                _event_pump_owner: event_pump_owner,
+                active,
+                event_emit: event_emit.clone(),
+                projection_locks: projection_locks.clone(),
+                event_tx: event_tx.clone(),
+                manager_cfg: manager_cfg.clone(),
+                runtime_mcp_servers: runtime_mcp_servers.clone(),
+                cancel_token: cancel_token.clone(),
+                task_manager: task_manager.clone(),
+                task_execution_lease: task_execution_lease.clone(),
+                automations: automations.clone(),
+                pending_approvals: pending_approvals.clone(),
+                grants: grants.clone(),
+                pending_user_inputs: pending_user_inputs.clone(),
+                pending_dynamic_tools: pending_dynamic_tools.clone(),
+                pending_commands: pending_commands.clone(),
+                recovery_receipts: recovery_receipts.clone(),
+                notices: notices.clone(),
+                recovery_flush: recovery_flush.clone(),
+                hook_base: hook_base.clone(),
+                #[cfg(any(test, feature = "test-support"))]
+                snapshot_test_hook: snapshot_test_hook.clone(),
+                #[cfg(any(test, feature = "test-support"))]
+                replay_test_hook: replay_test_hook.clone(),
+                #[cfg(any(test, feature = "test-support"))]
+                test_model_client: test_model_client.clone(),
+                #[cfg(any(test, feature = "test-support"))]
+                test_approval_decision_timeout_ms: test_approval_decision_timeout_ms.clone(),
+                #[cfg(any(test, feature = "test-support"))]
+                test_dynamic_tool_result_timeout_ms: test_dynamic_tool_result_timeout_ms.clone(),
+            })
+        })
+    }
+
+    pub(super) async fn handle_agent_complete_async_wake(
+        &self,
+        thread_id: &str,
+        agent_id: &str,
+        subagent_manager: &SharedSubAgentManager,
+        active_weak: &std::sync::Weak<Mutex<ActiveThreads>>,
+        identity: &std::sync::Weak<AsyncRwLock<mpsc::Receiver<EngineEvent>>>,
+    ) {
+        if self.cancel_token.is_cancelled()
+            || self.event_pump_stop.is_cancelled()
+            || self.is_acp_host()
+        {
+            return;
+        }
+        let delivered = self.async_wake_delivered_ids(thread_id);
+        let eligible = {
+            let guard = subagent_manager.read().await;
+            guard
+                .terminal_results_excluding_for_session(thread_id, &delivered)
+                .into_iter()
+                .any(|result| result.agent_id == agent_id)
+        };
+        if !eligible {
+            return;
+        }
+        let Some(active) = active_weak.upgrade() else {
+            return;
+        };
+        let (owns_receiver, engine_active, turn_is_active) = {
+            let guard = active.lock().await;
+            guard
+                .engines
+                .get(thread_id)
+                .map(|state| {
+                    let owns_receiver = identity
+                        .upgrade()
+                        .is_some_and(|receiver| Arc::ptr_eq(&receiver, &state.engine.rx_event));
+                    (
+                        owns_receiver,
+                        !state.engine.is_cancelled(),
+                        state.active_turn.is_some(),
+                    )
+                })
+                .unwrap_or((false, false, false))
+        };
+        if !owns_receiver || !engine_active {
+            return;
+        }
+        if self.async_wake_on_agent_complete(thread_id, agent_id, !turn_is_active) {
+            self.spawn_async_completion_wake(thread_id.to_string());
+        }
+    }
+
+    pub(super) async fn handle_non_acp_turn_settled_async_completions(
+        &self,
+        thread_id: &str,
+        turn_completed: bool,
+    ) {
+        let has_pending_subagent = self.async_wake_settle_turn(thread_id, turn_completed);
+        if !turn_completed
+            || self.cancel_token.is_cancelled()
+            || self.event_pump_stop.is_cancelled()
+            || self.is_acp_host()
+        {
+            return;
+        }
+        let Ok(thread) = self.get_thread(thread_id).await else {
+            return;
+        };
+        if thread.archived || thread.executor.is_some() {
+            return;
+        }
+        let (engine_ready, shell_manager) = {
+            let active = self.active.lock().await;
+            let engine_ready = active
+                .engines
+                .get(thread_id)
+                .is_some_and(|state| !state.engine.is_cancelled() && state.active_turn.is_none());
+            let shell_manager = active.shell_managers.get(thread_id).cloned();
+            (engine_ready, shell_manager)
+        };
+        if !engine_ready {
+            return;
+        }
+        let (has_finished_shell, may_have_shell) = shell_manager
+            .and_then(|manager| {
+                manager.lock().ok().map(|mut guard| {
+                    (
+                        guard.has_finished_unreported_jobs_for_session(thread_id),
+                        guard.may_have_undelivered_completion_for_session(thread_id),
+                    )
+                })
+            })
+            .unwrap_or((false, false));
+        if has_pending_subagent || has_finished_shell {
+            self.spawn_async_completion_wake(thread_id.to_string());
+        }
+        if may_have_shell {
+            self.spawn_idle_shell_completion_monitor(thread_id.to_string());
+        }
+    }
+
+    pub(super) async fn deliver_async_completion_wake(&self, thread_id: &str) -> Result<()> {
+        if self.cancel_token.is_cancelled()
+            || self.event_pump_stop.is_cancelled()
+            || self.is_acp_host()
+        {
+            return Ok(());
+        }
+        self.ensure_accepting_execution()?;
+        let thread = match self.get_thread(thread_id).await {
+            Ok(thread) => thread,
+            Err(_) => return Ok(()),
+        };
+        if thread.archived || thread.executor.is_some() {
+            return Ok(());
+        }
+        let (subagent_manager, shell_manager) = {
+            let active = self.active.lock().await;
+            let Some(state) = active.engines.get(thread_id) else {
+                return Ok(());
+            };
+            if state.engine.is_cancelled() || state.active_turn.is_some() {
+                return Ok(());
+            }
+            (
+                state.engine.subagent_manager(),
+                active.shell_managers.get(thread_id).cloned(),
+            )
+        };
+        let has_finished_shell = shell_manager.as_ref().is_some_and(|manager| {
+            manager
+                .lock()
+                .is_ok_and(|mut guard| guard.has_finished_unreported_jobs_for_session(thread_id))
+        });
+        let (pending_ids, delivered_ids) = self.async_wake_pending_snapshot(thread_id);
+        let claimed_subagent_ids = if pending_ids.is_empty() {
+            Vec::new()
+        } else {
+            let eligible_ids: HashSet<String> = {
+                let guard = subagent_manager.read().await;
+                guard
+                    .terminal_results_excluding_for_session(thread_id, &delivered_ids)
+                    .into_iter()
+                    .map(|result| result.agent_id)
+                    .collect()
+            };
+            let claimed: Vec<String> = pending_ids
+                .into_iter()
+                .filter(|id| eligible_ids.contains(id))
+                .collect();
+            self.async_wake_prune_pending(thread_id, &claimed);
+            claimed
+        };
+        if !has_finished_shell && claimed_subagent_ids.is_empty() {
+            return Ok(());
+        }
+        let request = StartTurnRequest {
+            prompt: Self::ASYNC_COMPLETION_WAKE_PROMPT.to_string(),
+            ..Default::default()
+        };
+        match Box::pin(self.start_turn_with_source(
+            thread_id,
+            request,
+            RuntimeTurnInputSource::AsyncCompletionWake,
+            None,
+            false,
+        ))
+        .await
+        {
+            Ok((_turn, _replayed)) => {
+                self.async_wake_mark_delivered(thread_id, &claimed_subagent_ids);
+                Ok(())
+            }
+            Err(error) if error.to_string().contains("already has an active") => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(super) fn spawn_async_completion_wake(&self, thread_id: String) {
+        if self.cancel_token.is_cancelled()
+            || self.event_pump_stop.is_cancelled()
+            || self.is_acp_host()
+        {
+            return;
+        }
+        if !self.async_completion_wake_arm(&thread_id) {
+            return;
+        }
+        let manager_key = Arc::as_ptr(&self.active) as usize;
+        let weak = self.weak_wake_manager();
+        let cancel = self.cancel_token.clone();
+        let stop = self.event_pump_stop.clone();
+        let worker = tokio::spawn(async move {
+            struct WakeArmGuard {
+                manager_key: usize,
+                thread_id: String,
+                armed: bool,
+            }
+            impl Drop for WakeArmGuard {
+                fn drop(&mut self) {
+                    if self.armed {
+                        RuntimeThreadManager::async_completion_wake_release_key(
+                            self.manager_key,
+                            &self.thread_id,
+                        );
+                    }
+                }
+            }
+            let mut guard = WakeArmGuard {
+                manager_key,
+                thread_id: thread_id.clone(),
+                armed: true,
+            };
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return,
+                _ = stop.cancelled() => return,
+                _ = tokio::time::sleep(Self::ASYNC_COMPLETION_WAKE_DEBOUNCE) => {}
+            }
+            guard.armed = false;
+            Self::async_completion_wake_release_key(manager_key, &thread_id);
+            let Some(manager) = weak() else {
+                return;
+            };
+            if let Err(error) = Box::pin(manager.deliver_async_completion_wake(&thread_id)).await {
+                tracing::warn!(
+                    thread_id,
+                    %error,
+                    "Failed to deliver coalesced async completion wake"
+                );
+            }
+        });
+        self.track_receipt_worker(worker);
+    }
+
+    pub(super) fn spawn_idle_shell_completion_monitor(&self, thread_id: String) {
+        if self.cancel_token.is_cancelled()
+            || self.event_pump_stop.is_cancelled()
+            || self.is_acp_host()
+        {
+            return;
+        }
+        if !self.async_shell_monitor_arm(&thread_id) {
+            return;
+        }
+        let manager_key = Arc::as_ptr(&self.active) as usize;
+        let weak = self.weak_wake_manager();
+        let cancel = self.cancel_token.clone();
+        let stop = self.event_pump_stop.clone();
+        let worker = tokio::spawn(async move {
+            struct ShellMonitorGuard {
+                manager_key: usize,
+                thread_id: String,
+            }
+            impl Drop for ShellMonitorGuard {
+                fn drop(&mut self) {
+                    RuntimeThreadManager::async_shell_monitor_release_key(
+                        self.manager_key,
+                        &self.thread_id,
+                    );
+                }
+            }
+            let _guard = ShellMonitorGuard {
+                manager_key,
+                thread_id: thread_id.clone(),
+            };
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => break,
+                    _ = stop.cancelled() => break,
+                    _ = tokio::time::sleep(Self::IDLE_SHELL_WAKE_POLL_INTERVAL) => {}
+                }
+                let Some(manager) = weak() else {
+                    break;
+                };
+                if manager.ensure_accepting_execution().is_err() || manager.is_acp_host() {
+                    break;
+                }
+                let Ok(thread) = manager.get_thread(&thread_id).await else {
+                    break;
+                };
+                if thread.archived || thread.executor.is_some() {
+                    break;
+                }
+                let (engine_alive, is_idle, shell_manager) = {
+                    let active = manager.active.lock().await;
+                    let engine_alive = active
+                        .engines
+                        .get(&thread_id)
+                        .is_some_and(|state| !state.engine.is_cancelled());
+                    let is_idle = active
+                        .engines
+                        .get(&thread_id)
+                        .is_some_and(|state| state.active_turn.is_none());
+                    let shell_manager = active.shell_managers.get(&thread_id).cloned();
+                    (engine_alive, is_idle, shell_manager)
+                };
+                if !engine_alive {
+                    break;
+                }
+                let Some(shell_manager) = shell_manager else {
+                    break;
+                };
+                let (has_finished, may_have_pending) = match shell_manager.lock() {
+                    Ok(mut guard) => (
+                        guard.has_finished_unreported_jobs_for_session(&thread_id),
+                        guard.may_have_undelivered_completion_for_session(&thread_id),
+                    ),
+                    Err(_) => break,
+                };
+                if !may_have_pending {
+                    break;
+                }
+                if has_finished && is_idle {
+                    manager.spawn_async_completion_wake(thread_id.clone());
+                }
             }
         });
         self.track_receipt_worker(worker);
@@ -15006,6 +15702,9 @@ source_usage_records: Default::default(),
             owner: Arc::downgrade(&self._process_owner_lock),
         };
         let input_settlement = self.user_input_settlement(&thread.id);
+        let allow_reactive_wake = !self.is_acp_host() && thread.executor.is_none();
+        let weak_wake_manager = self.weak_wake_manager();
+        let pump_cancel = self.cancel_token.clone();
         let handle = engine.clone();
         let thread_id = thread.id.clone();
         let pump = tokio::spawn(async move {
@@ -15015,6 +15714,51 @@ source_usage_records: Default::default(),
                     event = async { original.write().await.recv().await } => match event { Some(event) => event, None => break },
                     _ = stop.cancelled() => break,
                 };
+                if allow_reactive_wake
+                    && !stop.is_cancelled()
+                    && !pump_cancel.is_cancelled()
+                    && !handle.is_cancelled()
+                {
+                    enum WakeTurnSignal {
+                        Started,
+                        Complete,
+                        Resumed(usize),
+                    }
+                    let signal = match &event {
+                        EngineEvent::TurnStarted { .. } => Some(WakeTurnSignal::Started),
+                        EngineEvent::TurnComplete { .. } => Some(WakeTurnSignal::Complete),
+                        EngineEvent::Status { message } => {
+                            Self::parse_resumed_subagent_completion_count(message)
+                                .map(WakeTurnSignal::Resumed)
+                        }
+                        _ => None,
+                    };
+                    if let Some(signal) = signal
+                        && let Some(active_arc) = active.upgrade()
+                    {
+                        let owns_receiver = {
+                            let guard = active_arc.lock().await;
+                            guard.engines.get(&thread_id).is_some_and(|state| {
+                                identity.upgrade().is_some_and(|receiver| {
+                                    Arc::ptr_eq(&receiver, &state.engine.rx_event)
+                                })
+                            })
+                        };
+                        if owns_receiver && let Some(manager) = weak_wake_manager() {
+                            match signal {
+                                WakeTurnSignal::Started => {
+                                    manager.async_wake_on_turn_started(&thread_id);
+                                }
+                                WakeTurnSignal::Complete => {
+                                    manager.async_wake_on_turn_complete(&thread_id);
+                                }
+                                WakeTurnSignal::Resumed(count) => {
+                                    manager.async_wake_on_resumed_status(&thread_id, count);
+                                }
+                            }
+                        }
+                    }
+                }
                 if matches!(
                     &event,
                     EngineEvent::AgentSpawned { .. }
@@ -15057,6 +15801,30 @@ source_usage_records: Default::default(),
                         } else {
                             false
                         };
+                    if allow_reactive_wake
+                        && !stop.is_cancelled()
+                        && !pump_cancel.is_cancelled()
+                        && !handle.is_cancelled()
+                        && let EngineEvent::AgentComplete {
+                            owner_session_id,
+                            id,
+                            parent_run_id,
+                            ..
+                        } = &event
+                        && owner_session_id == &thread_id
+                        && parent_run_id.is_none()
+                        && let Some(manager) = weak_wake_manager()
+                    {
+                        manager
+                            .handle_agent_complete_async_wake(
+                                &thread_id,
+                                id,
+                                &sink.manager,
+                                &active,
+                                &identity,
+                            )
+                            .await;
+                    }
                     if !owns_origin {
                         continue;
                     }
@@ -18145,6 +18913,11 @@ source_usage_records: Default::default(),
         // next one, keeping every wake explicit and bounded to one turn.
         if !admitted_acp {
             self.spawn_agent_mail_safe_boundary_delivery(thread_id.clone());
+            self.handle_non_acp_turn_settled_async_completions(
+                &thread_id,
+                turn.status == RuntimeTurnStatus::Completed,
+            )
+            .await;
         }
 
         Ok(())
