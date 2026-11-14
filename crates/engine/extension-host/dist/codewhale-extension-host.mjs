@@ -19,7 +19,7 @@ var __export = (target, all) => {
 var define_BUILTIN_MODULE_DIGESTS_default;
 var init_define_BUILTIN_MODULE_DIGESTS = __esm({
   "<define:__BUILTIN_MODULE_DIGESTS__>"() {
-    define_BUILTIN_MODULE_DIGESTS_default = { creator: "036ac514a65083d2fd1f43f68722871eb94bef625a3d78cdbbadc6984e6ba491", harness: "ac65aa44a3824dcdb0060db426bf530a088fd593e58b9f4cfdaefbc09a5fa037", mcp: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39" };
+    define_BUILTIN_MODULE_DIGESTS_default = { creator: "876599587ccadf2c79b17a8650312d25bd0d46a13f3cb6fcb2f3aa45e6d5ec0e", harness: "ac65aa44a3824dcdb0060db426bf530a088fd593e58b9f4cfdaefbc09a5fa037", mcp: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39" };
   }
 });
 
@@ -18081,11 +18081,18 @@ var init_plugin_manager = __esm({
             if (!Array.isArray(answer.entries)) throw invalid5("list");
             return answer.entries;
           }
-          async listPlugins() {
+          async listPlugins(signal) {
             requireCreator(host2, this.ctx, "pluginManager");
-            const answer = record3(await host2.broker(this.ctx, "plugins", "status", {}), "status");
+            const answer = record3(await host2.broker(this.ctx, "plugins", "status", {}, signal), "status");
             if (!Array.isArray(answer.entries)) throw invalid5("status");
             return answer.entries;
+          }
+          async listTools(signal) {
+            requireCreator(host2, this.ctx, "pluginManager");
+            const answer = record3(await host2.broker(this.ctx, "plugins", "tools", {}, signal), "tools");
+            const list2 = answer.names ?? answer.tools;
+            if (!Array.isArray(list2)) throw invalid5("tools");
+            return list2.map((item) => String(item));
           }
           async setPluginEnabled(target, enabled) {
             requireCreator(host2, this.ctx, "pluginManager");

@@ -315,6 +315,13 @@ entries.push({
   note: `Pinned @deepseek-ai/dsh-plugin-manager@${creatorPin.version} lib/types/tools.js verbatim in src/dsh/upstream/creator/plugin-manager/tools.js; adapted behind Codewhale broker services in src/dsh/plugin-manager.ts and src/builtin/creator.ts.`,
 })
 entries.push({
+  name: '@deepseek-ai/dsh-tool-cordis',
+  version: creatorPin.version,
+  license: creatorPin.license,
+  text: creatorLicense,
+  note: `Pinned @deepseek-ai/dsh-tool-cordis@${creatorPin.version} lib/index.js verbatim in src/dsh/upstream/creator/tool-cordis/index.js; wired behind Codewhale broker services in src/builtin/creator.ts.`,
+})
+entries.push({
   name: '@deepseek-ai/dsh-sandbox',
   version: creatorPin.version,
   license: creatorPin.license,

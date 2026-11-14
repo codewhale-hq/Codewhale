@@ -3219,16 +3219,15 @@ pub fn render_status(manager: &ExtensionHostManager) -> String {
     out
 }
 
-/// A plugin was enabled, disabled, trusted, revoked or removed: reconcile the
-/// host now, so a disabled plugin's calls are cancelled and its code torn
-/// down without waiting for the next turn. No-op with the flag off.
+/// A plugin was enabled, disabled, trusted, revoked or removed: refresh the
+/// workspace view now, and when the extension host is enabled reconcile it so
+/// a disabled plugin's calls are cancelled and its code torn down without
+/// waiting for the next turn.
 pub fn plugins_changed(plugins: Arc<PluginRegistry>) {
+    let manager = manager();
+    manager.refresh_workspace(&plugins);
     if activation::extension_host_policy_enabled() {
-        let manager = manager();
-        manager.refresh_workspace(&plugins);
         manager.retry();
-        // An explicit plugin action, so also the moment to pick up an edit to
-        // `[plugins."<name>".config]`.
         manager.reload_and_reconcile_in_background();
     }
 }

@@ -161,11 +161,21 @@ pub const BUILTIN_MODULES: &[BuiltinModule] = &[
     },
     BuiltinModule {
         id: "creator",
-        source_sha256: "036ac514a65083d2fd1f43f68722871eb94bef625a3d78cdbbadc6984e6ba491",
-        tools: &[Tier0Tool {
-            name: "plugin_manager",
-            approval: ApprovalRequirement::Required,
-        }],
+        source_sha256: "876599587ccadf2c79b17a8650312d25bd0d46a13f3cb6fcb2f3aa45e6d5ec0e",
+        tools: &[
+            Tier0Tool {
+                name: "cordis_inspect_list",
+                approval: ApprovalRequirement::Auto,
+            },
+            Tier0Tool {
+                name: "cordis_inspect_query",
+                approval: ApprovalRequirement::Auto,
+            },
+            Tier0Tool {
+                name: "plugin_manager",
+                approval: ApprovalRequirement::Required,
+            },
+        ],
         services: &[DshService::Plugins],
     },
 ];

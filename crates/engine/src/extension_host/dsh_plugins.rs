@@ -53,6 +53,8 @@ enum PluginsMethod {
     Status(NoInput),
     #[serde(rename = "posture")]
     Posture(NoInput),
+    #[serde(rename = "tools")]
+    Tools(NoInput),
     #[serde(rename = "install")]
     Install(Map<String, Value>),
     #[serde(rename = "remove")]
@@ -65,7 +67,7 @@ enum PluginsMethod {
 
 impl BrokerMethods for PluginsMethod {
     const NAMES: &'static [&'static str] = &[
-        "list", "status", "posture", "install", "remove", "enable", "disable",
+        "list", "status", "posture", "tools", "install", "remove", "enable", "disable",
     ];
 }
 
@@ -75,6 +77,7 @@ impl PluginsMethod {
             Self::List(_) => "list",
             Self::Status(_) => "status",
             Self::Posture(_) => "posture",
+            Self::Tools(_) => "tools",
             Self::Install(_) => "install",
             Self::Remove(_) => "remove",
             Self::Enable(_) => "enable",
@@ -109,6 +112,10 @@ pub(super) fn serve(call: BrokerCall) -> BrokerFuture {
                     .act("posture", BrokerEffect::Read, None)
                     .await?;
                 posture(&tool, authority)
+            }
+            PluginsMethod::Tools(_) => {
+                call.context.act("tools", BrokerEffect::Read, None).await?;
+                tools(&call, &tool)
             }
             ref other @ (PluginsMethod::Install(ref input)
             | PluginsMethod::Remove(ref input)
@@ -453,6 +460,33 @@ fn posture(
         mode,
         permission_mode,
         admitted_by_person: tool.execution.human_decision.is_some(),
+    })
+    .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))
+}
+
+#[derive(Serialize)]
+struct ToolsResponse {
+    names: Vec<String>,
+    tools: Vec<String>,
+}
+
+fn tools(call: &BrokerCall, tool: &ToolContext) -> Result<Value, BrokerRefusal> {
+    let names: Vec<String> = call
+        .context
+        .caller_tools()
+        .iter()
+        .filter(|name| !super::dsh_broker::is_gate_tool(name))
+        .filter(|name| {
+            !tool
+                .disallowed_tools
+                .iter()
+                .any(|denied| denied.eq_ignore_ascii_case(name))
+        })
+        .cloned()
+        .collect();
+    serde_json::to_value(ToolsResponse {
+        names: names.clone(),
+        tools: names,
     })
     .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))
 }

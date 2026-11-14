@@ -1106,3 +1106,410 @@ async fn extension_creator_tool_honors_disallowed_tools() {
     }
     manager.shutdown().await;
 }
+
+#[tokio::test]
+async fn extension_creator_inspect_lists_a_new_row_without_a_card() {
+    let _home = crate::test_support::SealedHome::new();
+    let Some(node) = crate::extension_host::test_support::node_for_tests(
+        "extension_creator_inspect_lists_a_new_row_without_a_card",
+    ) else {
+        return;
+    };
+    let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(false);
+    let _available = CreatorAvailabilityGuard::set(None);
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("ws");
+    fs::create_dir_all(&workspace).unwrap();
+    let manager = creator_test_manager(node, temp.path().join("home"));
+    let _manager = crate::extension_host::TestManagerGuard::install(Arc::clone(&manager));
+
+    let user_plugins = temp.path().join("home/.codewhale/plugins");
+    fs::create_dir_all(&user_plugins).unwrap();
+
+    let mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn(
+            "call-inspect-1",
+            "cordis_inspect_query",
+            r#"{"platform":"host","provider":"Config","method":"listConfigs","input":{}}"#,
+        ),
+        canned::tool_call_turn(
+            "call-inspect-2",
+            "cordis_inspect_query",
+            r#"{"platform":"host","provider":"Config","method":"listConfigs","input":{}}"#,
+        ),
+        canned::simple_text_turn("All inspected."),
+    ]));
+    let mut cfg = deterministic_engine_config(&workspace);
+    cfg.features.enable(Feature::PluginCreator);
+    cfg.features.disable(Feature::ExtensionHost);
+    let reg_config = codewhale_plugins::discovery::DiscoveryConfig {
+        workspace: workspace.clone(),
+        user_plugins_dir: user_plugins.clone(),
+        workspace_plugins_dir: workspace.join(".codewhale/plugins"),
+        builtin_plugin_dirs: Vec::new(),
+        state_path: temp.path().join("state/plugin-state.json"),
+    };
+    let registry = Arc::new(codewhale_plugins::discovery::discover_with_config(
+        &reg_config,
+    ));
+    cfg.plugin_registry = Some(Arc::clone(&registry));
+    cfg.agent_preset = Some("creator".to_string());
+
+    let (engine, handle) = Engine::new_with_model_client(cfg, &Config::default(), mock.clone());
+    let config = Config::default();
+    let task = tokio::spawn(engine.run());
+
+    handle
+        .send(external_user_message_op(
+            "Inspect rows.",
+            AppMode::Agent,
+            &config,
+        ))
+        .await
+        .unwrap();
+
+    let mut outcomes = Vec::new();
+    let mut approvals = 0;
+    let mut rx = handle.rx_event.write().await;
+    loop {
+        match tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            Event::ApprovalRequired { id, .. } => {
+                approvals += 1;
+                handle.deny_tool_call(id).await.unwrap();
+            }
+            Event::ToolCallComplete {
+                model_call: Some(model_call),
+                result,
+                ..
+            } => {
+                let id = model_call.provider_id.clone();
+                match result {
+                    Ok(res) => outcomes.push((id.clone(), res.success, res.content)),
+                    Err(err) => outcomes.push((id.clone(), false, err.to_string())),
+                }
+                if id == "call-inspect-1" {
+                    let plugin_dir = user_plugins.join("fresh-plugin");
+                    let skill_dir = plugin_dir.join("skills/fresh-skill");
+                    fs::create_dir_all(&skill_dir).unwrap();
+                    fs::write(
+                        skill_dir.join("SKILL.md"),
+                        "---\nname: fresh-skill\ndescription: Fresh skill\n---\nBody\n",
+                    )
+                    .unwrap();
+                    fs::write(
+                        plugin_dir.join("plugin.toml"),
+                        "schema_version = 1\n[plugin]\nname = \"fresh-plugin\"\nversion = \"1.0.0\"\n\n[skills]\npath = \"skills\"\n",
+                    )
+                    .unwrap();
+                    let mut fresh_registry =
+                        codewhale_plugins::discovery::discover_with_config(&reg_config);
+                    let _ = fresh_registry.trust("fresh-plugin");
+                    let _ = fresh_registry.enable("fresh-plugin");
+                    crate::extension_host::plugins_changed(Arc::new(fresh_registry));
+                }
+            }
+            Event::TurnComplete { status, error, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                break;
+            }
+            _ => {}
+        }
+    }
+    handle.send(Op::Shutdown).await.unwrap();
+    task.await.unwrap();
+
+    assert_eq!(approvals, 0);
+    let requests = mock.captured_requests();
+    assert!(!requests.is_empty());
+    let first_tools = tool_names(&requests[0]);
+    assert!(first_tools.iter().any(|name| name == "cordis_inspect_list"));
+    assert!(
+        first_tools
+            .iter()
+            .any(|name| name == "cordis_inspect_query")
+    );
+    let first_req_tools = requests[0].tools.as_ref().unwrap();
+    assert_eq!(
+        first_req_tools
+            .iter()
+            .find(|t| t.name == "cordis_inspect_list")
+            .and_then(|t| t.defer_loading),
+        Some(false)
+    );
+    assert_eq!(
+        first_req_tools
+            .iter()
+            .find(|t| t.name == "cordis_inspect_query")
+            .and_then(|t| t.defer_loading),
+        Some(false)
+    );
+
+    let inspect1 = outcomes
+        .iter()
+        .find(|(id, _, _)| id == "call-inspect-1")
+        .expect("call-inspect-1 outcome");
+    assert!(inspect1.1);
+    assert!(!inspect1.2.contains("fresh-plugin"));
+
+    let inspect2 = outcomes
+        .iter()
+        .find(|(id, _, _)| id == "call-inspect-2")
+        .expect("call-inspect-2 outcome");
+    assert!(inspect2.1);
+    assert!(
+        inspect2.2.contains("fresh-plugin"),
+        "expected fresh-plugin in second inspect answer: {}",
+        inspect2.2
+    );
+    manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn extension_creator_inspect_runs_in_plan_without_a_card() {
+    let _home = crate::test_support::SealedHome::new();
+    let Some(node) = crate::extension_host::test_support::node_for_tests(
+        "extension_creator_inspect_runs_in_plan_without_a_card",
+    ) else {
+        return;
+    };
+    let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(false);
+    let _available = CreatorAvailabilityGuard::set(None);
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("ws");
+    fs::create_dir_all(&workspace).unwrap();
+    let manager = creator_test_manager(node, temp.path().join("home"));
+    let _manager = crate::extension_host::TestManagerGuard::install(Arc::clone(&manager));
+
+    let mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn("call-inspect-list", "cordis_inspect_list", "{}"),
+        canned::tool_call_turn(
+            "call-inspect-query",
+            "cordis_inspect_query",
+            r#"{"platform":"host","provider":"Service","method":"listService","input":{}}"#,
+        ),
+        canned::simple_text_turn("Plan inspection complete."),
+    ]));
+    let mut cfg = deterministic_engine_config(&workspace);
+    cfg.features.enable(Feature::PluginCreator);
+    cfg.features.disable(Feature::ExtensionHost);
+    cfg.plugin_registry = Some(Arc::new(codewhale_plugins::PluginRegistry::empty(
+        &workspace,
+    )));
+    cfg.agent_preset = Some("creator".to_string());
+
+    let (engine, handle) = Engine::new_with_model_client(cfg, &Config::default(), mock.clone());
+    let config = Config::default();
+    let task = tokio::spawn(engine.run());
+
+    handle
+        .send(external_user_message_op(
+            "Plan inspection.",
+            AppMode::Plan,
+            &config,
+        ))
+        .await
+        .unwrap();
+
+    let mut outcomes = Vec::new();
+    let mut approvals = 0;
+    let mut rx = handle.rx_event.write().await;
+    loop {
+        match tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            Event::ApprovalRequired { id, .. } => {
+                approvals += 1;
+                handle.deny_tool_call(id).await.unwrap();
+            }
+            Event::ToolCallComplete {
+                model_call: Some(model_call),
+                result,
+                ..
+            } => {
+                let id = model_call.provider_id.clone();
+                match result {
+                    Ok(res) => outcomes.push((id, res.success, res.content)),
+                    Err(err) => outcomes.push((id, false, err.to_string())),
+                }
+            }
+            Event::TurnComplete { status, error, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                break;
+            }
+            _ => {}
+        }
+    }
+    handle.send(Op::Shutdown).await.unwrap();
+    task.await.unwrap();
+
+    assert_eq!(approvals, 0);
+    let list_outcome = outcomes
+        .iter()
+        .find(|(id, _, _)| id == "call-inspect-list")
+        .expect("call-inspect-list outcome");
+    assert!(list_outcome.1, "list outcome failed: {list_outcome:?}");
+    assert!(list_outcome.2.contains("providers"));
+
+    let query_outcome = outcomes
+        .iter()
+        .find(|(id, _, _)| id == "call-inspect-query")
+        .expect("call-inspect-query outcome");
+    assert!(query_outcome.1, "query outcome failed: {query_outcome:?}");
+    assert!(query_outcome.2.contains("Service"));
+    manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn extension_creator_inspect_tools_lists_what_the_model_can_call() {
+    let _home = crate::test_support::SealedHome::new();
+    let Some(node) = crate::extension_host::test_support::node_for_tests(
+        "extension_creator_inspect_tools_lists_what_the_model_can_call",
+    ) else {
+        return;
+    };
+    let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(false);
+    let _available = CreatorAvailabilityGuard::set(None);
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("ws");
+    fs::create_dir_all(&workspace).unwrap();
+    let manager = creator_test_manager(node, temp.path().join("home"));
+    let _manager = crate::extension_host::TestManagerGuard::install(Arc::clone(&manager));
+
+    let mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn(
+            "call-tools",
+            "cordis_inspect_query",
+            r#"{"platform":"host","provider":"Tool","method":"listTools","input":{}}"#,
+        ),
+        canned::simple_text_turn("Tool inspection complete."),
+    ]));
+    let mut cfg = deterministic_engine_config(&workspace);
+    cfg.features.enable(Feature::PluginCreator);
+    cfg.features.disable(Feature::ExtensionHost);
+    cfg.plugin_registry = Some(Arc::new(codewhale_plugins::PluginRegistry::empty(
+        &workspace,
+    )));
+    cfg.agent_preset = Some("creator".to_string());
+
+    let (engine, handle) = Engine::new_with_model_client(cfg, &Config::default(), mock.clone());
+    let (outcomes, approvals) = run_turn_with_tool_outcomes(engine, handle, "Check tools.").await;
+    assert_eq!(approvals, 0);
+
+    let tools_outcome = outcomes
+        .iter()
+        .find(|(id, _, _)| id == "call-tools")
+        .expect("call-tools outcome");
+    assert!(tools_outcome.1, "tool query failed: {tools_outcome:?}");
+    assert!(
+        tools_outcome.2.contains("plugin_manager"),
+        "expected plugin_manager in Tool list: {}",
+        tools_outcome.2
+    );
+    assert!(
+        !tools_outcome.2.contains("dsh_broker_act"),
+        "hidden tool dsh_broker_act must not appear in Tool list: {}",
+        tools_outcome.2
+    );
+    assert!(
+        !tools_outcome.2.contains("dsh_broker_reach"),
+        "hidden tool dsh_broker_reach must not appear in Tool list: {}",
+        tools_outcome.2
+    );
+    manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn extension_creator_inspect_in_a_standard_conversation() {
+    let _home = crate::test_support::SealedHome::new();
+    let Some(node) = crate::extension_host::test_support::node_for_tests(
+        "extension_creator_inspect_in_a_standard_conversation",
+    ) else {
+        return;
+    };
+    let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(false);
+    let _available = CreatorAvailabilityGuard::set(None);
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("ws");
+    fs::create_dir_all(&workspace).unwrap();
+    let manager = creator_test_manager(node, temp.path().join("home"));
+    let _manager = crate::extension_host::TestManagerGuard::install(Arc::clone(&manager));
+
+    let mock = Arc::new(MockLlmClient::new(vec![
+        canned::simple_text_turn("Warmed."),
+        canned::tool_call_turn(
+            "call-search",
+            "tool_search",
+            r#"{"query":"cordis_inspect","match":"regex"}"#,
+        ),
+        canned::simple_text_turn("Found inspection tools."),
+    ]));
+    let mut cfg = deterministic_engine_config(&workspace);
+    cfg.features.enable(Feature::PluginCreator);
+    cfg.features.disable(Feature::ExtensionHost);
+    cfg.plugin_registry = Some(Arc::new(codewhale_plugins::PluginRegistry::empty(
+        &workspace,
+    )));
+    let (engine, handle) = Engine::new_with_model_client(cfg, &Config::default(), mock.clone());
+    let config = Config::default();
+    let task = tokio::spawn(engine.run());
+
+    let (warm_outcomes, warm_approvals) = run_prompt_with_outcomes(&handle, &config, "Warm.").await;
+    assert_eq!(warm_approvals, 0);
+    assert!(warm_outcomes.is_empty());
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !manager
+        .live_tool_names()
+        .iter()
+        .any(|name| name == "cordis_inspect_list")
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "creator module did not start in the background"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let (outcomes, approvals) = run_prompt_with_outcomes(&handle, &config, "Search.").await;
+    handle.send(Op::Shutdown).await.unwrap();
+    task.await.unwrap();
+    assert_eq!(approvals, 0);
+    let requests = mock.captured_requests();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        !tool_names(&requests[0])
+            .iter()
+            .any(|name| name == "cordis_inspect_list")
+    );
+    assert!(
+        !tool_names(&requests[1])
+            .iter()
+            .any(|name| name == "cordis_inspect_list")
+    );
+    let search_outcome = outcomes
+        .iter()
+        .find(|(id, _, _)| id == "call-search")
+        .expect("tool_search outcome");
+    assert!(
+        search_outcome.1
+            && search_outcome.2.contains("cordis_inspect_list")
+            && search_outcome.2.contains("cordis_inspect_query")
+    );
+    assert!(
+        tool_names(&requests[2])
+            .iter()
+            .any(|name| name == "cordis_inspect_list")
+    );
+    assert!(
+        tool_names(&requests[2])
+            .iter()
+            .any(|name| name == "cordis_inspect_query")
+    );
+    manager.shutdown().await;
+}

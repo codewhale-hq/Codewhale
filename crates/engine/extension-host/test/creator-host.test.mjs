@@ -527,22 +527,153 @@ test('a built-in module other than creator that injects pluginManager, sandboxPo
   }
 })
 
-test('the built-in module registers no tool but plugin_manager', async (t) => {
+test('the built-in module registers plugin_manager and the cordis inspection tools', async (t) => {
   const host = await startHost({ tier: 'builtin' })
   t.after(() => host.stop())
 
   const { result } = await activate(host, 'host:creator', creatorBundle)
   assert.equal(result.status, 'ok')
-  assert.deepEqual(result.tools, ['plugin_manager'])
+  assert.deepEqual(result.tools, ['cordis_inspect_list', 'cordis_inspect_query', 'plugin_manager'])
   assert.deepEqual(result.commands, [])
   const registrations = host.registry.filter((entry) => entry.op === 'register')
-  assert.equal(registrations.length, 1)
-  assert.equal(registrations[0].kind, 'tool')
-  assert.equal(registrations[0].spec.name, 'plugin_manager')
+  assert.equal(registrations.length, 3)
+  assert.deepEqual(registrations.map((r) => r.spec.name).sort(), ['cordis_inspect_list', 'cordis_inspect_query', 'plugin_manager'])
 })
 
 test('LICENSES.txt credits dsh-plugin-manager and dsh-sandbox', () => {
   const notices = readFileSync(licensesPath, 'utf8')
   assert.match(notices, /@deepseek-ai\/dsh-plugin-manager@0\.2\.2-rc\.1 \(MIT\)/)
   assert.match(notices, /@deepseek-ai\/dsh-sandbox@0\.2\.2-rc\.1 \(MIT\)/)
+  assert.match(notices, /@deepseek-ai\/dsh-tool-cordis@0\.2\.2-rc\.1 \(MIT\)/)
+})
+
+test('cordis tools are DSH\'s own definitions', async (t) => {
+  const host = await startHost({ tier: 'builtin' })
+  t.after(() => host.stop())
+
+  await activate(host, 'host:creator', creatorBundle)
+  const listTool = host.registry.find((r) => r.op === 'register' && r.spec.name === 'cordis_inspect_list')
+  const queryTool = host.registry.find((r) => r.op === 'register' && r.spec.name === 'cordis_inspect_query')
+  assert.ok(listTool)
+  assert.ok(queryTool)
+
+  const toolCordisSource = readFileSync(join(here, '..', 'src', 'dsh', 'upstream', 'creator', 'tool-cordis', 'index.js'), 'utf8')
+  const listMatch = toolCordisSource.match(/name:\s*"cordis_inspect_list",\s*\n\s*description:\s*"([^"]+)"/)
+  assert.ok(listMatch)
+  assert.equal(sha256Text(listTool.spec.description), sha256Text(listMatch[1]))
+
+  const queryMatch = toolCordisSource.match(/name:\s*"cordis_inspect_query",\s*\n\s*description:\s*"([^"]+)"/)
+  assert.ok(queryMatch)
+  assert.equal(sha256Text(queryTool.spec.description), sha256Text(queryMatch[1]))
+
+  assert.deepEqual(listTool.spec.input_schema, { type: 'object', properties: {} })
+  assert.deepEqual(queryTool.spec.input_schema.required, ['platform', 'provider', 'method'])
+  assert.deepEqual(Object.keys(queryTool.spec.input_schema.properties).sort(), ['input', 'method', 'platform', 'provider'])
+  assert.deepEqual(queryTool.spec.input_schema.properties.platform.enum, ['host', 'client'])
+})
+
+test('an unknown provider or method fails with DSH\'s wording', async (t) => {
+  const host = await startHost({ tier: 'builtin' })
+  t.after(() => host.stop())
+
+  await activate(host, 'host:creator', creatorBundle)
+  const queryTool = host.registry.find((r) => r.op === 'register' && r.spec.name === 'cordis_inspect_query')
+  assert.ok(queryTool)
+
+  await assert.rejects(
+    host.call('tool/call', makeCallParams(queryTool.handle, 'q-fail-1', { platform: 'host', provider: 'UnknownProvider', method: 'foo' }, { session_id: 's1' })),
+    /Host Cordis inspect provider "UnknownProvider" is not registered/,
+  )
+
+  await assert.rejects(
+    host.call('tool/call', makeCallParams(queryTool.handle, 'q-fail-2', { platform: 'host', provider: 'Service', method: 'unknownMethod' }, { session_id: 's1' })),
+    /Cordis inspect provider "Service" has no method "unknownMethod"/,
+  )
+})
+
+test('Config.listConfigs reflects a row added after the first query and drops extra fields', async (t) => {
+  let callCount = 0
+  const host = await startHost({
+    tier: 'builtin',
+    dshBroker: (params) => {
+      if (params.service === 'plugins' && params.method === 'status') {
+        callCount++
+        if (callCount === 1) {
+          return { entries: [] }
+        }
+        return {
+          entries: [
+            {
+              entryId: 'first-entry',
+              moduleName: 'first-plugin',
+              enabled: true,
+              fiberPhase: 'active',
+              diagnostic: 'leaky diagnostic',
+              patchId: 'leaky patch',
+              readOnlyReason: 'leaky reason',
+            },
+          ],
+        }
+      }
+      throw new Error(`unexpected method ${params.method}`)
+    },
+  })
+  t.after(() => host.stop())
+
+  await activate(host, 'host:creator', creatorBundle)
+  const queryTool = host.registry.find((r) => r.op === 'register' && r.spec.name === 'cordis_inspect_query')
+
+  const res1 = await host.call('tool/call', makeCallParams(queryTool.handle, 'q-cfg-1', { platform: 'host', provider: 'Config', method: 'listConfigs', input: { name: 'first-plugin' } }, { session_id: 's1' }))
+  const data1 = JSON.parse(res1.content[0].text)
+  assert.deepEqual(data1.data.entries, [])
+
+  const res2 = await host.call('tool/call', makeCallParams(queryTool.handle, 'q-cfg-2', { platform: 'host', provider: 'Config', method: 'listConfigs', input: { name: 'first-plugin' } }, { session_id: 's1' }))
+  const data2 = JSON.parse(res2.content[0].text)
+  assert.equal(data2.data.entries.length, 1)
+  assert.deepEqual(data2.data.entries[0], {
+    id: 'plugin:first-entry',
+    name: 'first-plugin',
+    kind: 'installed-plugin',
+    status: 'active',
+  })
+})
+
+test('Tool provider answers exactly the Rust-supplied caller tools as { name } entries', async (t) => {
+  const host = await startHost({
+    tier: 'builtin',
+    dshBroker: (params) => {
+      if (params.service === 'plugins' && params.method === 'tools') {
+        return { names: ['read_file', 'write_file'] }
+      }
+      throw new Error(`unexpected method ${params.method}`)
+    },
+  })
+  t.after(() => host.stop())
+
+  await activate(host, 'host:creator', creatorBundle)
+  const queryTool = host.registry.find((r) => r.op === 'register' && r.spec.name === 'cordis_inspect_query')
+
+  const res = await host.call('tool/call', makeCallParams(queryTool.handle, 'q-tool-1', { platform: 'host', provider: 'Tool', method: 'listTools' }, { session_id: 's1' }))
+  const data = JSON.parse(res.content[0].text)
+  assert.deepEqual(data.data, {
+    tools: [{ name: 'read_file' }, { name: 'write_file' }],
+  })
+
+  await assert.rejects(
+    host.call('tool/call', makeCallParams(queryTool.handle, 'q-tool-bad', { platform: 'host', provider: 'Tool', method: 'listTools', input: { extra: 'rogue' } }, { session_id: 's1' })),
+    /rejected input/,
+  )
+})
+
+test('cordis_inspect_query without an agent gets DSH\'s agent-backed error', async (t) => {
+  const host = await startHost({ tier: 'builtin' })
+  t.after(() => host.stop())
+
+  await activate(host, 'host:creator', creatorBundle)
+  const queryTool = host.registry.find((r) => r.op === 'register' && r.spec.name === 'cordis_inspect_query')
+
+  await assert.rejects(
+    host.call('tool/call', makeCallParams(queryTool.handle, 'q-no-agent', { platform: 'host', provider: 'Service', method: 'listService' }, { session_id: '' })),
+    /Cordis inspection requires an Agent-backed session/,
+  )
 })

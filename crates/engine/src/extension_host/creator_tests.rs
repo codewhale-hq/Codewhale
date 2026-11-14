@@ -116,7 +116,11 @@ async fn the_creator_module_starts_with_the_extension_host_switch_off_and_regist
     );
     assert_eq!(
         manager.live_tool_names(),
-        vec!["plugin_manager".to_string()]
+        vec![
+            "plugin_manager".to_string(),
+            "cordis_inspect_list".to_string(),
+            "cordis_inspect_query".to_string(),
+        ]
     );
     assert!(attachment.creator_ready());
     manager.shutdown().await;
@@ -184,7 +188,11 @@ async fn starting_the_creator_module_admits_no_plugin_tier_owner() {
     );
     assert_eq!(
         manager.live_tool_names(),
-        vec!["plugin_manager".to_string()]
+        vec![
+            "plugin_manager".to_string(),
+            "cordis_inspect_list".to_string(),
+            "cordis_inspect_query".to_string(),
+        ]
     );
     assert!(
         manager
@@ -317,7 +325,14 @@ async fn the_creator_tool_is_installed_for_the_sessions_own_agent_only() {
 
     let mut root_registry = ToolRegistryBuilder::new().build(ToolContext::new(temp.path()));
     let installed = root_attachment.install_creator_tools(&mut root_registry);
-    assert_eq!(installed, vec!["plugin_manager".to_string()]);
+    assert_eq!(
+        installed,
+        vec![
+            "plugin_manager".to_string(),
+            "cordis_inspect_list".to_string(),
+            "cordis_inspect_query".to_string(),
+        ]
+    );
     assert!(root_registry.contains("plugin_manager"));
     assert!(root_registry.contains(super::super::dsh_broker::ACT_TOOL));
     manager.shutdown().await;
@@ -371,7 +386,14 @@ async fn a_plugin_or_script_tool_named_plugin_manager_does_not_take_the_name() {
         .with_file_tools()
         .build(ToolContext::new(&workspace).with_plugin_registry(attachment.plugin_view()));
     let creator_installed = attachment.install_creator_tools(&mut tool_registry);
-    assert_eq!(creator_installed, vec!["plugin_manager".to_string()]);
+    assert_eq!(
+        creator_installed,
+        vec![
+            "plugin_manager".to_string(),
+            "cordis_inspect_list".to_string(),
+            "cordis_inspect_query".to_string(),
+        ]
+    );
 
     let builtins: HashSet<String> = tool_registry
         .names()
@@ -441,7 +463,11 @@ async fn disabled_plugin_manager_cannot_be_backfilled_by_plugin_or_script() {
         .build(ToolContext::new(&workspace).with_plugin_registry(attachment.plugin_view()));
     assert_eq!(
         attachment.install_creator_tools(&mut tool_registry),
-        vec!["plugin_manager".to_string()]
+        vec![
+            "plugin_manager".to_string(),
+            "cordis_inspect_list".to_string(),
+            "cordis_inspect_query".to_string(),
+        ]
     );
     let builtins: HashSet<String> = tool_registry
         .names()
@@ -463,7 +489,8 @@ async fn disabled_plugin_manager_cannot_be_backfilled_by_plugin_or_script() {
     tool_registry.load_plugins(&tools_dir);
     assert!(attachment.install_tools(&mut tool_registry).is_empty());
     assert!(!tool_registry.contains("plugin_manager"));
-    assert!(!tool_registry.contains("cordis_inspect_list"));
+    let cordis_list = tool_registry.get("cordis_inspect_list").unwrap();
+    assert_eq!(cordis_list.registration_origin(), "host:creator");
     manager.shutdown().await;
 }
 
@@ -483,7 +510,14 @@ async fn the_creator_tool_alone_registers_the_broker_act_tool() {
 
     let mut tool_registry = ToolRegistryBuilder::new().build(ToolContext::new(temp.path()));
     let installed = attachment.install_creator_tools(&mut tool_registry);
-    assert_eq!(installed, vec!["plugin_manager".to_string()]);
+    assert_eq!(
+        installed,
+        vec![
+            "plugin_manager".to_string(),
+            "cordis_inspect_list".to_string(),
+            "cordis_inspect_query".to_string(),
+        ]
+    );
     assert!(tool_registry.contains("plugin_manager"));
     assert!(tool_registry.contains(super::super::dsh_broker::ACT_TOOL));
     assert!(!tool_registry.contains("dsh_send"));

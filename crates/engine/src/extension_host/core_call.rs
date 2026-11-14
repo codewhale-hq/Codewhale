@@ -432,6 +432,11 @@ impl BrokerContext {
         &self.cancel
     }
 
+    #[must_use]
+    pub fn caller_tools(&self) -> &[String] {
+        &self.invocation.caller_tools
+    }
+
     pub fn record(&self, entry: Value) -> bool {
         self.invocation.push_act_record(self.service.name(), entry)
     }

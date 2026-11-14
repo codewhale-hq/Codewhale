@@ -1271,3 +1271,138 @@ async fn status_keeps_later_plugins_when_an_earlier_plugin_truncates_a_field() {
     assert_eq!(rows[1]["fiberPhase"], "active");
     assert!(rows[1].get("diagnostic").is_none(), "{rows:?}");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_tools_returns_the_invocation_caller_tools() {
+    let _policy = TestPolicyGuard::extension_host(true);
+    let mut f = PluginsFixture::new();
+    let specs = crate::tools::registry::ToolRegistryBuilder::new()
+        .with_file_tools()
+        .build(ToolContext::new(f.context.workspace.clone()))
+        .all();
+    let caller = f.gate.extension().unwrap().0.clone();
+    f.gate = f.gate.clone().for_extension(caller, specs);
+
+    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let ticket = plugin_ticket(&guard).unwrap();
+    let answer = f
+        .call_broker(&f.creator, HostTier::Builtin, &ticket, "tools", json!({}))
+        .await
+        .unwrap();
+    let names = answer["names"].as_array().unwrap();
+    assert!(names.iter().any(|name| name.as_str() == Some("read_file")));
+    assert!(names.iter().any(|name| name.as_str() == Some("write_file")));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_tools_leaves_out_hidden_and_disallowed_tools() {
+    let _policy = TestPolicyGuard::extension_host(true);
+    let mut f = PluginsFixture::new();
+    let mut specs = crate::tools::registry::ToolRegistryBuilder::new()
+        .with_file_tools()
+        .build(ToolContext::new(f.context.workspace.clone()))
+        .all();
+    specs.extend(BrokerActTool::all().to_vec());
+    let caller = f.gate.extension().unwrap().0.clone();
+    f.gate = f.gate.clone().for_extension(caller, specs);
+    f.context.disallowed_tools = vec!["read_file".to_string()];
+
+    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let ticket = plugin_ticket(&guard).unwrap();
+    let answer = f
+        .call_broker(&f.creator, HostTier::Builtin, &ticket, "tools", json!({}))
+        .await
+        .unwrap();
+    let names = answer["names"].as_array().unwrap();
+    assert!(!names.iter().any(|name| name.as_str() == Some("read_file")));
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.as_str() == Some("dsh_broker_act"))
+    );
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.as_str() == Some("dsh_broker_reach"))
+    );
+    assert!(names.iter().any(|name| name.as_str() == Some("write_file")));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_tools_is_refused_for_a_plugin_tier_owner_and_a_sub_agent() {
+    let _policy = TestPolicyGuard::extension_host(true);
+    let f = PluginsFixture::new();
+
+    let guard = f.begin(&f.plugin_owner, HostTier::Plugin, &f.context);
+    assert!(plugin_ticket(&guard).is_none());
+
+    let mut sub_context = f.context.clone();
+    sub_context.execution.owner_agent_id = Some("sub-agent-1".into());
+    let sub_guard = f.begin(&f.creator, HostTier::Builtin, &sub_context);
+    assert!(plugin_ticket(&sub_guard).is_none());
+
+    let creator_guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let creator_ticket = plugin_ticket(&creator_guard).unwrap();
+    let plugin_err = f
+        .call_broker(
+            &f.plugin_owner,
+            HostTier::Plugin,
+            &creator_ticket,
+            "tools",
+            json!({}),
+        )
+        .await;
+    assert_eq!(
+        refusal(&plugin_err),
+        (error_code::REFUSED, "ticket_refused".into())
+    );
+    let arm_err = serve(detached_call(f.plugin_owner.clone(), "tools", json!({}))).await;
+    assert!(matches!(
+        arm_err,
+        Err(super::super::dsh_broker::BrokerRefusal::Refused {
+            service: DshService::Plugins,
+            ..
+        })
+    ));
+    drop(creator_guard);
+    let revoked_err = f
+        .call_broker(
+            &f.creator,
+            HostTier::Builtin,
+            &creator_ticket,
+            "tools",
+            json!({}),
+        )
+        .await;
+    assert_eq!(
+        refusal(&revoked_err),
+        (error_code::REFUSED, "ticket_refused".into())
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_list_and_status_never_return_config_values() {
+    let _policy = TestPolicyGuard::extension_host(true);
+    let mut f = PluginsFixture::new();
+    let secret = "SECRET_VALUE_NEVER_LEAK_98765";
+    let body = format!(
+        "schema_version = 1\n[plugin]\nname = \"secretive\"\nversion = \"1.0.0\"\n[plugins.secretive.config]\napi_key = \"{secret}\"\n"
+    );
+    write_toml_plugin(&f.config.user_plugins_dir, "secretive", &body);
+    f.reload_registry();
+
+    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let ticket = plugin_ticket(&guard).unwrap();
+    let list = f
+        .call_broker(&f.creator, HostTier::Builtin, &ticket, "list", json!({}))
+        .await
+        .unwrap();
+    let status = f
+        .call_broker(&f.creator, HostTier::Builtin, &ticket, "status", json!({}))
+        .await
+        .unwrap();
+    let list_str = serde_json::to_string(&list).unwrap();
+    let status_str = serde_json::to_string(&status).unwrap();
+    assert!(!list_str.contains(secret));
+    assert!(!status_str.contains(secret));
+}

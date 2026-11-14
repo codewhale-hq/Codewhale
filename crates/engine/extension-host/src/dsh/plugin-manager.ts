@@ -70,11 +70,19 @@ export const builtinPluginManagerAdapter: DshAdapter = {
         return answer.entries
       }
 
-      async listPlugins(): Promise<unknown[]> {
+      async listPlugins(signal?: AbortSignal): Promise<unknown[]> {
         requireCreator(host, this.ctx, 'pluginManager')
-        const answer = record(await host.broker(this.ctx, 'plugins', 'status', {}), 'status')
+        const answer = record(await host.broker(this.ctx, 'plugins', 'status', {}, signal), 'status')
         if (!Array.isArray(answer.entries)) throw invalid('status')
         return answer.entries
+      }
+
+      async listTools(signal?: AbortSignal): Promise<string[]> {
+        requireCreator(host, this.ctx, 'pluginManager')
+        const answer = record(await host.broker(this.ctx, 'plugins', 'tools', {}, signal), 'tools')
+        const list = answer.names ?? answer.tools
+        if (!Array.isArray(list)) throw invalid('tools')
+        return list.map((item) => String(item))
       }
 
       async setPluginEnabled(target: unknown, enabled: unknown): Promise<ChangeResult> {

@@ -164,7 +164,7 @@ function toolProvider(sources: InspectSources): Provider | undefined {
   return {
     platform: 'host', id: 'Tool',
     description: 'Tools visible to the requesting agent.',
-    methods: [method('listTools', 'Return every tool schema currently callable by this agent.')],
+    methods: [method('listTools', 'Return the name of every tool currently callable by this agent.')],
     async run(_name, _input, agent, signal) {
       return { tools: [...await source(agent, signal)] }
     },
