@@ -102,7 +102,7 @@ Full Access（完全访问）会改变常规审批行为，但不会绕过硬性
 只读权限并不意味着“无法做研究”。
 
 可持久使用的 `github`、`automation` 和 `rlm` 动作族默认也是延迟的。
-`rlm` 掌管一个持久本地 Python 会话（一个清理过环境变量的子进程，而不是操作系统级沙箱）的
+`rlm` 掌管一个持久本地 Python 会话（经由与 `code_execution` 相同的启动器运行，沙箱策略与包装器同样适用）的
 `open`、`eval`、`configure` 和 `close` 动作。回复中内联的 ```` ```repl ```` 围栏也在同类内核中运行，
 但仅当 `code_execution` 出现在该回合的工具表面上（Plan 模式下永远不会）、围栏独占一行开头，
 并且在会话审批姿态下通过了 `code_execution` 的审批之后。

@@ -5,10 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Codewhale sandboxed Python REPL runtime"
+description = "Codewhale Python REPL runtime; the caller supplies the sandboxed command"
 
 [lints]
 workspace = true
+
+[features]
+test-support = []
 
 [dependencies]
 codewhale-dependencies = { path = "../dependencies", version = "0.10.3" }

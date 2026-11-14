@@ -29,13 +29,13 @@ impl Engine {
         // fence is not a way around that: it runs only when the tool is
         // on this turn's surface, and only after the same approval.
         let repl_fence_present = has_sendable_assistant_content
-            && codewhale_repl::sandbox::has_repl_block(current_text_visible);
+            && codewhale_repl::fence::has_repl_block(current_text_visible);
         let repl_fence_offered =
             code_execution_offered(progress.mode, &progress.tool_catalog, tool_policy);
         let mut repl_fence_skip_reason = (repl_fence_present && !repl_fence_offered)
             .then(|| "code execution is not available on this turn".to_string());
         let repl_blocks = if repl_fence_present && repl_fence_offered {
-            codewhale_repl::sandbox::extract_repl_blocks(current_text_visible)
+            codewhale_repl::fence::extract_repl_blocks(current_text_visible)
         } else {
             Vec::new()
         };
@@ -82,6 +82,20 @@ impl Engine {
         }
         if !repl_blocks.is_empty() && repl_fence_skip_reason.is_none() {
             let repl_deadline = self.nested_work_deadline();
+            let sandbox_context = match self.rlm_host.as_ref() {
+                Some(state) => Some(state.caller.context.clone()),
+                None => self.live_tool_context(tool_registry),
+            };
+            let Some(sandbox_context) = sandbox_context else {
+                let reason = "REPL init failed: no sandbox context for this turn".to_string();
+                let _ = self.send_event(Event::status(reason.clone())).await;
+                progress.turn_error = Some(reason);
+                return PhaseResult::Break;
+            };
+            let kernel_policy = sandbox_context.elevated_sandbox_policy.clone();
+            if self.repl_kernel_policy != kernel_policy {
+                self.repl_kernel = None;
+            }
             // A kernel left broken by a dropped turn refuses every round; kill it.
             drop(self.repl_kernel.take_if(|kernel| kernel.is_broken()));
             if self.repl_kernel.is_none() {
@@ -91,10 +105,17 @@ impl Engine {
                         Err("REPL startup cancelled".into())
                     }
                     () = wait_for_deadline(repl_deadline) => Err("parent turn deadline reached during REPL startup".into()),
-                    result = codewhale_repl::runtime::PythonRuntime::new(&self.session.workspace) => result,
+                    result = crate::rlm::kernel::spawn_kernel(
+                        &sandbox_context,
+                        None,
+                        Some(codewhale_repl::INLINE_ROUND_TIMEOUT),
+                    ) => result,
                 };
                 self.repl_kernel = match startup {
-                    Ok(runtime) => Some(runtime),
+                    Ok(runtime) => {
+                        self.repl_kernel_policy = kernel_policy;
+                        Some(runtime)
+                    }
                     Err(e) => {
                         let _ = self
                             .send_event(Event::status(format!("REPL init failed: {e}")))

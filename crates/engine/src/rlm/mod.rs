@@ -15,6 +15,7 @@
 use codewhale_models::Usage;
 
 pub mod bridge;
+pub(crate) mod kernel;
 pub mod prompt;
 pub mod session;
 pub mod turn;

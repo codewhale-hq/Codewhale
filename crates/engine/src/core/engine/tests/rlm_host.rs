@@ -598,7 +598,7 @@ async fn full_caller_channel_never_delays_original_cancel_or_loses_usage_and_ker
         r#type: "message".into(),
         role: "assistant".into(),
         content: vec![ContentBlock::Text {
-            text: "```repl\nprint(_os.environ['RLM_CONTEXT_FILE'])\n```".into(),
+            text: "```repl\nprint(len(content))\n```".into(),
             cache_control: None,
         }],
         model: "captured-model".into(),
@@ -665,18 +665,15 @@ async fn full_caller_channel_never_delays_original_cancel_or_loses_usage_and_ker
         crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
     );
     assert!(result.routed_usage_drop_records.is_empty());
-    let context_path = PathBuf::from(
+    assert_eq!(
         result
             .trace
             .first()
             .expect("completed round trace")
             .stdout_preview
             .trim(),
-    );
-    assert!(context_path.is_absolute());
-    assert!(
-        !context_path.exists(),
-        "cancelled nested Engine releases its owned kernel/context file"
+        "27",
+        "the kernel received its context over stdin"
     );
     assert_eq!(usage.snapshot().await.dropped_records, 0);
 }
@@ -819,14 +816,13 @@ async fn repeated_real_core_preparation_failures_have_bounded_receipts_without_p
 }
 
 #[tokio::test]
-async fn actual_expired_python_startup_releases_the_staged_context() {
+async fn actual_expired_python_startup_is_refused() {
     let mock = Arc::new(crate::llm_client::mock::MockLlmClient::new(Vec::new()));
     let caller = Arc::new(caller_for(mock.clone(), "captured-model"));
-    let prompt = format!("owned startup cleanup fixture {}", uuid::Uuid::new_v4());
     let result = Engine::new_rlm_admitted(
         caller,
         RlmInvocation {
-            prompt: prompt.clone(),
+            prompt: "startup fixture".to_string(),
             mode: RlmMode::Recursive { depth_remaining: 0 },
             prompt_policy: RlmPromptPolicy::Session,
             max_tokens: None,
@@ -845,24 +841,6 @@ async fn actual_expired_python_startup_releases_the_staged_context() {
             .to_string()
             .contains("Python startup failed")
     );
-    let prefix = format!("session_{}_", std::process::id());
-    for entry in std::fs::read_dir(std::env::temp_dir().join("deepseek_rlm_ctx")).unwrap() {
-        let entry = entry.unwrap();
-        // Only inspect this test process's similarly sized fixture files;
-        // parallel RLM tests keep their own unrelated kernels untouched.
-        if !entry.file_name().to_string_lossy().starts_with(&prefix) {
-            continue;
-        }
-        if let Ok(metadata) = entry.metadata()
-            && metadata.len() == u64::try_from(prompt.len()).unwrap()
-            && let Ok(content) = std::fs::read_to_string(entry.path())
-        {
-            assert_ne!(
-                content, prompt,
-                "failed startup must remove its staged file"
-            );
-        }
-    }
     assert_eq!(mock.call_count(), 0);
 }
 

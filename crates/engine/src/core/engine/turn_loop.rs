@@ -935,7 +935,7 @@ impl Engine {
                 approval_grouping_key: approval_grouping_key.0,
                 input: plan.input,
                 description: format!(
-                    "Run {what_runs} (a local subprocess, not OS-sandboxed): {}",
+                    "Run {what_runs} (a local subprocess under this session's sandbox policy): {}",
                     plan.approval_description
                 ),
                 intent_summary: None,

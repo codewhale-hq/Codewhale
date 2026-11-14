@@ -197,6 +197,7 @@ codewhale-runtime = { path = "../runtime", version = "0.10.3", features = [
     "test-thread-scoped-state",
 ] }
 codewhale-sandbox = { path = "../sandbox", version = "0.10.3", features = ["test-support"] }
+codewhale-repl = { path = "../repl", version = "0.10.3", features = ["test-support"] }
 codewhale-plugins = { path = "../plugins", version = "0.10.3", features = ["test-support"] }
 codewhale-skill-install = { path = "../skill-install", version = "0.10.3", features = ["test-support"] }
 codewhale-util = { path = "../util", version = "0.10.3", features = ["test-support"] }

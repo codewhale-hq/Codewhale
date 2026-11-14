@@ -1081,6 +1081,7 @@ pub struct Engine {
     /// Its context is refreshed before each run, while user-created Python
     /// state stays alive across model turns.
     repl_kernel: Option<codewhale_repl::PythonRuntime>,
+    repl_kernel_policy: Option<codewhale_sandbox::SandboxPolicy>,
     subagent_manager: SharedSubAgentManager,
     subagent_execution_limits: Option<SubAgentExecutionLimits>,
     /// The deterministic Auto-Review policy shared with every child runtime
@@ -2661,6 +2662,7 @@ impl Engine {
             instruction_guard_key: None,
             instruction_budget_error,
             repl_kernel: None,
+            repl_kernel_policy: None,
             subagent_manager,
             subagent_execution_limits,
             shared_auto_review_policy,
@@ -2849,7 +2851,7 @@ impl Engine {
         );
         let prior = self.applied_runtime_authority();
         self.apply_runtime_mode_policy(&authority);
-        self.discard_kernels_if_narrowed(&prior).await;
+        self.discard_kernels_if_policy_changed(&prior).await;
 
         let previous_source = self.session.snapshot_source.clone();
         self.session.snapshot_source = Some(crate::core::ops::SessionSnapshotSource::turn(
@@ -3169,7 +3171,7 @@ impl Engine {
         let prior = self.applied_runtime_authority();
         self.api_config.sandbox_mode = configured_sandbox_mode;
         self.apply_runtime_mode_policy(&authority);
-        self.discard_kernels_if_narrowed(&prior).await;
+        self.discard_kernels_if_policy_changed(&prior).await;
         if !changed {
             return false;
         }
@@ -3282,26 +3284,39 @@ impl Engine {
         }
     }
 
-    /// A Python kernel keeps whatever it imported, opened or started under the
-    /// posture it ran in. Once the posture grants less than `prior`, drop the
-    /// session kernel and every persistent RLM kernel so later code starts in
-    /// a fresh interpreter. Nothing takes a kernel out and puts it back, so a
-    /// round already in flight cannot restore one.
-    ///
-    /// Known limitation: these interpreters are approval-gated local
-    /// subprocesses, not OS-sandboxed; discarding them bounds reuse, it does
-    /// not undo effects of code that already ran.
-    async fn discard_kernels_if_narrowed(&mut self, prior: &LiveRuntimeAuthority) {
-        if !self.applied_runtime_authority().narrows(prior) {
+    async fn discard_kernels_if_policy_changed(&mut self, prior: &LiveRuntimeAuthority) {
+        let current = self.applied_runtime_authority();
+        if !current.narrows(prior)
+            && self.effective_sandbox_policy(prior) == self.effective_sandbox_policy(&current)
+        {
             return;
         }
         self.repl_kernel = None;
+        self.repl_kernel_policy = None;
         self.config
             .runtime_services
             .rlm_sessions
             .lock()
             .await
             .clear();
+    }
+
+    fn effective_sandbox_policy(
+        &self,
+        authority: &LiveRuntimeAuthority,
+    ) -> codewhale_sandbox::SandboxPolicy {
+        crate::core::authority::sandbox_policy_for_turn(
+            authority.mode,
+            crate::core::authority::agent_approval_mode_for_turn(
+                authority.auto_approve,
+                authority.approval_mode,
+            ),
+            authority.configured_sandbox_mode.as_deref(),
+            &self.session.workspace,
+            crate::core::authority::SandboxNetworkAccess::from_config(
+                self.api_config.sandbox_network_access,
+            ),
+        )
     }
 
     fn apply_runtime_mode_policy(&mut self, authority: &TurnAuthority) {
@@ -7249,7 +7264,7 @@ impl Engine {
         // after the UI changed modes (#3568).
         let prior = self.applied_runtime_authority();
         self.apply_runtime_mode_policy(&input_policy);
-        self.discard_kernels_if_narrowed(&prior).await;
+        self.discard_kernels_if_policy_changed(&prior).await;
 
         // Create turn context first so start event includes a stable turn id.
         // An active goal gets the host's goal allowance (#5994); turns with

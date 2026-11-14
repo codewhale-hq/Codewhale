@@ -360,12 +360,6 @@
   "crates/release/src/launch.rs": {
     "std_fs": 2
   },
-  "crates/repl/src/lib.rs": {
-    "std_fs": 2
-  },
-  "crates/repl/src/runtime.rs": {
-    "std_fs": 1
-  },
   "crates/runtime/src/artifacts.rs": {
     "std_fs": 2
   },

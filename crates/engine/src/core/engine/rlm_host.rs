@@ -40,7 +40,7 @@ pub struct RlmInvocation {
 pub struct CapturedRlmCaller {
     #[cfg(any(test, feature = "test-support"))]
     _fixture_workspace: Option<Arc<tempfile::TempDir>>,
-    context: ToolContext,
+    pub(super) context: ToolContext,
     authority: TurnAuthority,
     route: ValidatedRuntimeRoute,
     client: SharedModelClient,
@@ -466,9 +466,6 @@ impl Engine {
         };
         let mut kernel = None;
         if invocation.mode != RlmMode::Completion {
-            let path = tempfile::TempPath::try_from_path(codewhale_repl::write_context_file(
-                &invocation.prompt,
-            )?)?;
             let cancel = caller
                 .context
                 .cancel_token
@@ -478,15 +475,10 @@ impl Engine {
                 biased;
                 () = cancel.cancelled() => Err("RLM Python startup cancelled by its originating turn".to_string()),
                 () = wait_for_deadline(invocation.deadline) => Err("RLM Python startup exhausted its original wall-clock deadline".to_string()),
-                result = codewhale_repl::PythonRuntime::spawn_with_context(&path, &caller.context.workspace) => result,
+                result = crate::rlm::kernel::spawn_kernel(&caller.context, Some(&invocation.prompt), None) => result,
             };
             match startup {
-                Ok(runtime) => {
-                    // The successfully bootstrapped runtime owns this same
-                    // path. Before that handoff, TempPath cleans every Drop.
-                    let _context_path = path.keep()?;
-                    kernel = Some(runtime);
-                }
+                Ok(runtime) => kernel = Some(runtime),
                 Err(error) => return Err(anyhow!("RLM Python startup failed: {error}")),
             }
         }
@@ -503,6 +495,7 @@ impl Engine {
         engine.model_client_injected = caller.injected;
         handle.client_preflight_required = false;
         engine.repl_kernel = kernel;
+        engine.repl_kernel_policy = caller.context.elevated_sandbox_policy.clone();
         if !isolated {
             engine.extension_prompt_block = caller.extension_prompt_block.clone();
             engine.constitution_block = caller.constitution_block.clone();

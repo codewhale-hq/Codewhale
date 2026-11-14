@@ -1147,9 +1147,10 @@ async fn normal_repl_kernel_persists_across_user_turns() {
     assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
 
     let kernel = engine.repl_kernel.as_ref().expect("persistent kernel");
-    assert!(
-        kernel.round_count() >= 4,
-        "each REPL call should refresh context and then execute code"
+    assert_eq!(
+        kernel.round_count(),
+        2,
+        "both REPL calls should reuse the same persistent kernel across turns"
     );
     let final_text = engine
         .session
@@ -1300,7 +1301,7 @@ async fn narrowing_the_posture_discards_python_kernels() {
         client,
     );
     // Without a Python interpreter there is no kernel to discard.
-    let Ok(kernel) = codewhale_repl::runtime::PythonRuntime::new(&std::env::temp_dir()).await else {
+    let Ok(kernel) = codewhale_repl::runtime::PythonRuntime::unconfined(&std::env::temp_dir()).await else {
         return;
     };
     engine.repl_kernel = Some(kernel);
@@ -1363,7 +1364,7 @@ async fn a_broken_repl_kernel_is_replaced_by_the_next_turn() {
     engine.session.auto_approve = true;
 
     // What a turn dropped mid-round leaves behind.
-    let mut stale = codewhale_repl::PythonRuntime::new(&std::env::temp_dir()).await.expect("spawn");
+    let mut stale = codewhale_repl::PythonRuntime::unconfined(&std::env::temp_dir()).await.expect("spawn");
     let dropped = tokio::time::timeout(
         Duration::from_millis(50),
         stale.execute("import time\ntime.sleep(30)"),
@@ -1543,4 +1544,155 @@ async fn repl_fence_requires_code_execution_approval() {
             assert!(note, "a denied fence leaves a visible status note");
         }
     }
+}
+
+async fn fence_writes_marker_under_configured_sandbox(configured: Option<&str>) -> bool {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use codewhale_models::{ContentBlock, Message};
+
+    assert!(
+        codewhale_dependencies::resolve_python_interpreter().is_some(),
+        "the fixture needs a Python interpreter"
+    );
+    let workspace = tempdir().expect("tempdir");
+    let marker = workspace.path().join("fence-wrote-this");
+    let fence = format!(
+        "```repl\nopen({:?}, 'w').write('x')\nfinalize('done')\n```",
+        marker.display().to_string()
+    );
+    let mock = std::sync::Arc::new(MockLlmClient::new(vec![
+        canned::simple_text_turn(&fence),
+        canned::simple_text_turn("Done."),
+    ]));
+    let client: crate::core::model_client::SharedModelClient = mock.clone();
+    let (mut engine, _handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &Config::default(),
+        client,
+    );
+    let posture = engine.applied_runtime_authority();
+    engine
+        .apply_change_mode(
+            posture.mode,
+            posture.allow_shell,
+            posture.trust_mode,
+            true,
+            ApprovalMode::Bypass,
+            configured.map(str::to_string),
+        )
+        .await;
+    assert!(engine.session.auto_approve);
+
+    engine.session.add_message(Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "Compute.".to_string(),
+            cache_control: None,
+        }],
+    });
+    let registry = crate::tools::ToolRegistry::new(crate::tools::ToolContext::new(
+        workspace.path().to_path_buf(),
+    ));
+    let live = engine
+        .live_tool_context(Some(&registry))
+        .expect("live tool context");
+    match configured {
+        Some(_) => assert!(matches!(
+            live.elevated_sandbox_policy,
+            Some(codewhale_sandbox::SandboxPolicy::ReadOnly { .. })
+        )),
+        None => assert!(matches!(
+            live.elevated_sandbox_policy,
+            Some(codewhale_sandbox::SandboxPolicy::DangerFullAccess) | None
+        )),
+    }
+    let policy = test_tool_surface(
+        &engine,
+        registry,
+        Some(vec![catalog_tool(CODE_EXECUTION_TOOL_NAME)]),
+        AppMode::Agent,
+    );
+    let mut turn = crate::core::turn::TurnContext::new(4);
+    let _ = engine.run_turn(&mut turn, policy, None, None).await;
+    marker.exists()
+}
+
+#[tokio::test]
+async fn repl_fence_runs_under_the_configured_session_sandbox() {
+    assert!(
+        fence_writes_marker_under_configured_sandbox(None).await,
+        "without a configured sandbox the fence fixture must reach a kernel and write"
+    );
+    assert!(
+        !fence_writes_marker_under_configured_sandbox(Some("read-only")).await,
+        "a read-only session sandbox must hold for the REPL kernel"
+    );
+}
+
+#[tokio::test]
+async fn any_sandbox_policy_change_discards_python_kernels() {
+    use crate::llm_client::mock::MockLlmClient;
+    use crate::rlm::session::{ContextMeta, RlmSession};
+
+    let workspace = tempdir().expect("tempdir");
+    let client: crate::core::model_client::SharedModelClient =
+        std::sync::Arc::new(MockLlmClient::new(Vec::new()));
+    let (mut engine, _handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &Config::default(),
+        client,
+    );
+    let Ok(kernel) = codewhale_repl::PythonRuntime::unconfined(&std::env::temp_dir()).await else {
+        return;
+    };
+    let Ok(rlm_kernel) = codewhale_repl::PythonRuntime::unconfined(&std::env::temp_dir()).await
+    else {
+        return;
+    };
+    engine.repl_kernel = Some(kernel);
+    engine.config.runtime_services.rlm_sessions.lock().await.insert(
+        "ctx".to_string(),
+        std::sync::Arc::new(tokio::sync::Mutex::new(RlmSession::new(
+            "ctx".to_string(),
+            rlm_kernel,
+            ContextMeta::from_body("body", "text"),
+            None,
+        ))),
+    );
+    let posture = engine.applied_runtime_authority();
+
+    engine
+        .apply_change_mode(
+            posture.mode,
+            posture.allow_shell,
+            posture.trust_mode,
+            true,
+            ApprovalMode::Bypass,
+            posture.configured_sandbox_mode.clone(),
+        )
+        .await;
+    let widened = engine.applied_runtime_authority();
+    assert!(
+        !widened.narrows(&posture),
+        "fixture must widen, not narrow"
+    );
+    assert_ne!(
+        engine.effective_sandbox_policy(&posture),
+        engine.effective_sandbox_policy(&widened),
+        "fixture must change the sandbox policy"
+    );
+    assert!(
+        engine.repl_kernel.is_none(),
+        "a different sandbox policy drops the session kernel"
+    );
+    assert!(
+        engine
+            .config
+            .runtime_services
+            .rlm_sessions
+            .lock()
+            .await
+            .is_empty(),
+        "a different sandbox policy drops the RLM kernels"
+    );
 }

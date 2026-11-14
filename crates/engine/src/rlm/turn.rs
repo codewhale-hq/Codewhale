@@ -327,7 +327,6 @@ mod tests {
     use crate::llm_client::mock::MockLlmClient;
     use crate::rlm::bridge::RlmUsageAccumulator;
     use codewhale_models::{MessageRequest, MessageResponse};
-    use std::path::PathBuf;
     use std::sync::Arc;
     use tokio::sync::mpsc;
 
@@ -669,7 +668,7 @@ mod tests {
         assert!(codewhale_dependencies::Python::resolve().is_some());
         for pending_model in [true, false] {
             let partial = if pending_model {
-                "```repl\nprint(_os.environ['RLM_CONTEXT_FILE'])\n```"
+                "```repl\nprint(len(content))\n```"
             } else {
                 "```repl\nimport time\ntime.sleep(60)\nFINAL('too late')\n```"
             };
@@ -767,12 +766,11 @@ mod tests {
             if pending_model {
                 assert_eq!(result.trace.len(), 1, "keep completed rounds");
                 assert!(!result.trace[0].had_error);
-                let context_path = PathBuf::from(result.trace[0].stdout_preview.trim());
-                assert!(
-                    context_path.is_absolute(),
-                    "REPL must report its context path"
+                assert_eq!(
+                    result.trace[0].stdout_preview.trim(),
+                    "12",
+                    "the kernel received its context over stdin"
                 );
-                assert!(!context_path.exists(), "timeout must clean up context");
             }
             let mut saw_timeout = false;
             while let Ok(event) = rx.try_recv() {

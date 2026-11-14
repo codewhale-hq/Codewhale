@@ -17,8 +17,6 @@
 //! that happens to contain "REQ" or "FINAL" can't be confused with control
 //! messages.
 
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
@@ -28,9 +26,6 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use uuid::Uuid;
-
-use codewhale_dependencies::ExternalTool;
-use codewhale_runtime::child_env;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -152,6 +147,7 @@ const MAX_STDOUT_LINE_BYTES: usize = 32 * 1024 * 1024;
 /// reported, never buffered.
 const MAX_ROUND_STDOUT_BYTES: usize = 32 * 1024 * 1024;
 const ROUND_TIMEOUT: Duration = Duration::from_secs(180);
+const CONTEXT_LOAD_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(not(windows))]
 const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(windows)]
@@ -177,8 +173,6 @@ pub struct PythonRuntime {
     stderr_task: tokio::task::JoinHandle<()>,
     /// Per-spawn session id used in protocol sentinels.
     session_id: String,
-    /// Path to the file holding `context` (kept around for cleanup).
-    context_path: Option<PathBuf>,
     stdout_limit: usize,
     round_count: u64,
     started: Instant,
@@ -194,67 +188,25 @@ pub struct PythonRuntime {
 
 pub const AGENT_PROJECT_ENV: &str = "CODEWHALE_AGENT_PROJECT";
 
+pub const INLINE_ROUND_TIMEOUT: Duration = ROUND_TIMEOUT;
+
 impl PythonRuntime {
-    /// Spawn a REPL with no `context` variable and no LLM helpers wired up.
-    /// Used by the agent loop for inline `repl` blocks the model emits in
-    /// regular conversation.
-    pub async fn new(project: &Path) -> Result<Self, String> {
-        Self::spawn_inner(None, project, Some(ROUND_TIMEOUT)).await
-    }
-
-    /// Compatibility shim — older RLM code path used to pass a state file.
-    /// The state file is no longer used, but the path doubles as an extra
-    /// scratch location callers can rely on for cleanup symmetry.
-    pub fn with_state_path(_path: PathBuf) -> Self {
-        // Synchronous constructor is no longer meaningful: spawning Python
-        // is async. Callers in turn.rs already use `spawn_with_context` —
-        // this stub is kept only so the public surface compiles for any
-        // out-of-tree user. It returns a deliberately broken runtime that
-        // panics on first use, which is preferable to silently lying.
-        unreachable!(
-            "PythonRuntime::with_state_path is deprecated — \
-             use PythonRuntime::new() or PythonRuntime::spawn_with_context()"
-        )
-    }
-
-    /// Spawn a REPL with the long input preloaded from a file. Used by the
-    /// RLM turn loop.
-    pub async fn spawn_with_context(context_path: &Path, project: &Path) -> Result<Self, String> {
-        Self::spawn_inner(Some(context_path), project, None).await
-    }
-
-    async fn spawn_inner(
-        context_path: Option<&Path>,
-        project: &Path,
+    pub async fn spawn<F>(
+        context: Option<&str>,
         round_timeout: Option<Duration>,
-    ) -> Result<Self, String> {
+        command: F,
+    ) -> Result<Self, String>
+    where
+        F: FnOnce(Vec<String>) -> Result<tokio::process::Command, String>,
+    {
         let session_id = Uuid::new_v4().simple().to_string();
         let bootstrap = render_bootstrap(&session_id);
 
-        let mut cmd = codewhale_dependencies::Python::tokio_command().ok_or_else(|| {
-            "no Python interpreter found on PATH (tried python3, python, py -3). \
-             Install Python 3 and restart codewhale."
-                .to_string()
-        })?;
-        cmd.arg("-u")
-            .arg("-c")
-            .arg(&bootstrap)
-            .stdin(Stdio::piped())
+        let mut cmd = command(vec!["-u".to_string(), "-c".to_string(), bootstrap])?;
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-
-        let mut context_env = vec![(
-            OsString::from(AGENT_PROJECT_ENV),
-            project.as_os_str().to_os_string(),
-        )];
-        if let Some(path) = context_path {
-            context_env.push((
-                OsString::from("RLM_CONTEXT_FILE"),
-                path.as_os_str().to_os_string(),
-            ));
-        }
-        child_env::apply_to_tokio_command(&mut cmd, context_env);
 
         let mut child = cmd
             .spawn()
@@ -298,7 +250,6 @@ impl PythonRuntime {
             stderr_capture,
             stderr_task,
             session_id: session_id.clone(),
-            context_path: context_path.map(Path::to_path_buf),
             stdout_limit: DEFAULT_STDOUT_LIMIT,
             round_count: 0,
             started: Instant::now(),
@@ -306,25 +257,68 @@ impl PythonRuntime {
             broken: None,
         };
 
-        // Wait for `__RLM_READY_<sid>__` before handing control back. If
-        // Python failed to start (missing module, syntax error in the
-        // bootstrap, etc.), this is where we'll find out.
         let ready_sentinel = format!("__RLM_READY_{session_id}__");
         match tokio::time::timeout(SPAWN_READY_TIMEOUT, rt.read_until_ready(&ready_sentinel)).await
         {
-            Ok(Ok(())) => Ok(rt),
+            Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 let _ = rt.child.kill().await;
-                Err(format!("Python interpreter bootstrap failed: {e}"))
+                let detail = rt.drain_stderr().await;
+                return Err(startup_failure(
+                    format!("Python interpreter bootstrap failed: {e}"),
+                    &detail,
+                ));
             }
             Err(_) => {
                 let _ = rt.child.kill().await;
-                Err(format!(
+                return Err(format!(
                     "Python interpreter bootstrap did not signal ready within {}s",
                     SPAWN_READY_TIMEOUT.as_secs()
-                ))
+                ));
             }
         }
+        if let Some(body) = context
+            && let Err(error) = rt.load_context(body).await
+        {
+            let _ = rt.child.kill().await;
+            return Err(format!(
+                "Python interpreter could not load context: {error}"
+            ));
+        }
+        Ok(rt)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn unconfined(project: &std::path::Path) -> Result<Self, String> {
+        Self::unconfined_inner(None, project).await
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn unconfined_with_context(
+        context: &str,
+        project: &std::path::Path,
+    ) -> Result<Self, String> {
+        Self::unconfined_inner(Some(context), project).await
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    async fn unconfined_inner(
+        context: Option<&str>,
+        project: &std::path::Path,
+    ) -> Result<Self, String> {
+        use codewhale_dependencies::ExternalTool as _;
+        let round_timeout = context.is_none().then_some(ROUND_TIMEOUT);
+        Self::spawn(context, round_timeout, |args| {
+            let mut cmd = codewhale_dependencies::Python::tokio_command()
+                .ok_or_else(|| "no Python interpreter found".to_string())?;
+            cmd.args(args);
+            codewhale_runtime::child_env::apply_to_tokio_command(
+                &mut cmd,
+                [(AGENT_PROJECT_ENV, project.as_os_str())],
+            );
+            Ok(cmd)
+        })
+        .await
     }
 
     async fn read_until_ready(&mut self, ready_sentinel: &str) -> Result<(), String> {
@@ -392,39 +386,72 @@ impl PythonRuntime {
     /// the Python process. User-created variables, imports, and handles stay
     /// alive across the refresh, which is what lets the normal agent loop use
     /// one working kernel instead of rebuilding a throwaway REPL each turn.
-    ///
-    /// The payload travels through a temporary file rather than a generated
-    /// Python string so large transcripts neither bloat the command stream nor
-    /// acquire quoting semantics. The old owned file is released only after
-    /// the kernel has successfully loaded the replacement.
     pub async fn replace_context(&mut self, body: &str) -> Result<(), String> {
-        let path = crate::write_context_file(body)
-            .map_err(|e| format!("write refreshed REPL context: {e}"))?;
-        let path_literal = serde_json::to_string(&path.to_string_lossy())
-            .map_err(|e| format!("encode refreshed REPL context path: {e}"))?;
-        let code = format!("_replace_context_file({path_literal})");
+        self.load_context(body)
+            .await
+            .map_err(|error| format!("refresh REPL context failed: {error}"))
+    }
 
-        match self.execute(&code).await {
-            Ok(round) if !round.has_error => {
-                if let Some(previous) = self.context_path.replace(path) {
-                    let _ = tokio::fs::remove_file(previous).await;
+    async fn load_context(&mut self, body: &str) -> Result<(), String> {
+        if let Some(reason) = &self.broken {
+            return Err(format!(
+                "Python REPL is unusable after an earlier round failed ({reason}); start a new REPL"
+            ));
+        }
+        self.broken = Some("a context load was cancelled before it finished".to_string());
+        let frame = format!(
+            "__RLM_CTX_{}__::{}\n",
+            self.session_id,
+            ascii_json_string(body)
+        );
+        let ok_line = format!("__RLM_CTXOK_{}__", self.session_id);
+        let err_prefix = format!("__RLM_CTXERR_{}__::", self.session_id);
+        let exchange = async {
+            self.stdin
+                .write_all(frame.as_bytes())
+                .await
+                .map_err(|e| format!("stdin write: {e}"))?;
+            self.stdin
+                .flush()
+                .await
+                .map_err(|e| format!("stdin flush: {e}"))?;
+            loop {
+                let Some(line) = self.read_stdout_line_lossy().await? else {
+                    return Err(
+                        "Python interpreter closed stdout while loading context".to_string()
+                    );
+                };
+                let trimmed = line.trim_end_matches(['\n', '\r']);
+                if trimmed == ok_line {
+                    return Ok(None);
                 }
+                if let Some(rest) = trimmed.strip_prefix(&err_prefix) {
+                    return Ok(Some(
+                        serde_json::from_str::<String>(rest).unwrap_or_else(|_| rest.to_string()),
+                    ));
+                }
+            }
+        };
+        let outcome = tokio::time::timeout(CONTEXT_LOAD_TIMEOUT, exchange)
+            .await
+            .unwrap_or_else(|_| {
+                Err(format!(
+                    "loading context timed out after {}s",
+                    CONTEXT_LOAD_TIMEOUT.as_secs()
+                ))
+            });
+        match outcome {
+            Ok(None) => {
+                self.broken = None;
                 Ok(())
             }
-            Ok(round) => {
-                let _ = tokio::fs::remove_file(&path).await;
-                Err(format!(
-                    "refresh REPL context failed: {}{}",
-                    round.stdout,
-                    if round.stderr.is_empty() {
-                        String::new()
-                    } else {
-                        format!("\nstderr: {}", round.stderr)
-                    }
-                ))
+            Ok(Some(message)) => {
+                self.broken = None;
+                Err(message)
             }
             Err(error) => {
-                let _ = tokio::fs::remove_file(&path).await;
+                let _ = self.child.start_kill();
+                self.broken = Some(error.clone());
                 Err(error)
             }
         }
@@ -682,39 +709,26 @@ impl PythonRuntime {
     pub async fn shutdown(mut self) {
         let _ = self.stdin.shutdown().await;
         let _ = self.child.kill().await;
-        if let Some(path) = self.context_path.take() {
-            let _ = tokio::fs::remove_file(path).await;
-        }
     }
 }
 
 impl Drop for PythonRuntime {
     fn drop(&mut self) {
         self.stderr_task.abort();
-        // tokio sets `kill_on_drop(true)` on the child; the context file
-        // (if any) is removed on `shutdown()` — drop is best-effort.
-        if let Some(path) = self.context_path.take() {
-            let _ = std::fs::remove_file(path);
-        }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Bootstrap script
-// ---------------------------------------------------------------------------
-
-/// Render the Python bootstrap with session-specific sentinels baked in.
-/// The sentinels include a UUID to prevent user prints from being mistaken
-/// for control messages.
 fn render_bootstrap(session_id: &str) -> String {
     BOOTSTRAP_TEMPLATE.replace("__SID__", session_id)
 }
 
 const BOOTSTRAP_TEMPLATE: &str = r#"
+import sys as _sys
+_cwd_entries = [p for p in _sys.path if p in ("", ".")]
+_sys.path[:] = [p for p in _sys.path if p not in ("", ".")] + _cwd_entries
 import json as _json
 import os as _os
 import re as _re
-import sys as _sys
 import traceback as _traceback
 
 _SID = "__SID__"
@@ -723,6 +737,9 @@ _RESP = f"__RLM_RESP_{_SID}__::"
 _FINAL = f"__RLM_FINAL_{_SID}__::"
 _ERR = f"__RLM_ERR_{_SID}__::"
 _RUN = f"__RLM_RUN_{_SID}__::"
+_CTX = f"__RLM_CTX_{_SID}__::"
+_CTX_OK = f"__RLM_CTXOK_{_SID}__"
+_CTX_ERR = f"__RLM_CTXERR_{_SID}__::"
 _END = f"__RLM_END_{_SID}__"
 _DONE = f"__RLM_DONE_{_SID}__::"
 _READY = f"__RLM_READY_{_SID}__"
@@ -1084,29 +1101,19 @@ def evaluate_progress():
         "user_variables": vars_now,
     }
 
-# Load the long input from a file. This keeps the big string out of the
-# process command-line and out of the LLM's window.
-_ctx_file = _os.environ.get("RLM_CONTEXT_FILE","")
+# The long input arrives as a `__RLM_CTX_<sid>__::` frame on stdin, handled by
+# `_main_loop`, so no file or path has to be visible to the interpreter.
 _context = ""
-if _ctx_file:
-    try:
-        with open(_ctx_file, "r", encoding="utf-8", errors="replace") as f:
-            _context = f.read()
-    except Exception as e:
-        _sys.stderr.write(f"[bootstrap] failed to load context: {e}\n")
 content = _context
 
-def _replace_context_file(path):
-    """Atomically switch bounded helpers to a freshly written context file."""
+def _load_context(payload):
     global _context, content
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        _context = f.read()
+    _context = _json.loads(payload)
     content = _context
-    return context_meta()
 
 _BOOTSTRAP_NAMES = {
-    "_SID","_REQ","_RESP","_FINAL","_ERR","_RUN","_END","_DONE","_READY",
-    "_rpc","_ctx_file","_context","_slice_chars","_slice_lines","_replace_context_file","_BOOTSTRAP_NAMES","_main_loop",
+    "_SID","_REQ","_RESP","_FINAL","_ERR","_RUN","_CTX","_CTX_OK","_CTX_ERR","_END","_DONE","_READY",
+    "_rpc","_context","_slice_chars","_slice_lines","_load_context","_BOOTSTRAP_NAMES","_main_loop",
     "_emit_final","_json_safe","_slice_text","_prompt_with_slice",
     "_normalize_dependency_mode","_batch_dependency_error",
     "llm_query","llm_query_batched","rlm_query","rlm_query_batched",
@@ -1124,6 +1131,14 @@ def _main_loop():
         header = _sys.stdin.readline()
         if not header:
             return
+        if header.startswith(_CTX):
+            try:
+                _load_context(header[len(_CTX):])
+                _sys.stdout.write(_CTX_OK + "\n")
+            except BaseException as e:
+                _sys.stdout.write(_CTX_ERR + _json.dumps(str(e)) + "\n")
+            _sys.stdout.flush()
+            continue
         if not header.startswith(_RUN):
             continue
         round_id = header.rstrip("\n")[len(_RUN):]
@@ -1155,6 +1170,42 @@ _main_loop()
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn ascii_json_string(text: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for ch in text.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ' '..='~' => out.push(ch),
+            _ => {
+                let mut units = [0u16; 2];
+                for unit in ch.encode_utf16(&mut units) {
+                    let _ = write!(out, "\\u{unit:04x}");
+                }
+            }
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn startup_failure(message: String, stderr: &str) -> String {
+    let detail = stderr.trim();
+    if detail.is_empty() {
+        return message;
+    }
+    let cut = (0..=detail.len().min(2_000))
+        .rev()
+        .find(|&index| detail.is_char_boundary(index))
+        .unwrap_or(0);
+    format!("{message}: {}", &detail[..cut])
+}
 
 /// Append to a round's retained stdout without exceeding
 /// [`MAX_ROUND_STDOUT_BYTES`]; whatever does not fit is only counted.
@@ -1247,18 +1298,10 @@ mod tests {
         }
     }
 
-    fn write_temp_context(body: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("deepseek_repl_runtime_tests");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("ctx_{}_{}.txt", std::process::id(), Uuid::new_v4()));
-        std::fs::write(&path, body).unwrap();
-        path
-    }
-
     #[tokio::test]
     async fn a_command_run_from_the_kernel_carries_the_agent_project() {
         let project = std::env::temp_dir().join(format!("agent-project-{}", Uuid::new_v4()));
-        let mut rt = PythonRuntime::new(&project).await.expect("spawn");
+        let mut rt = PythonRuntime::unconfined(&project).await.expect("spawn");
         let round = rt
             .execute(
                 "import subprocess, sys\n\
@@ -1281,7 +1324,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawns_and_executes_simple_print() {
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt.execute("print('hello world')").await.expect("execute");
@@ -1294,7 +1337,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_utf8_stdout_decodes_lossy_and_runtime_survives() {
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1314,7 +1357,7 @@ mod tests {
 
     #[tokio::test]
     async fn variables_persist_across_rounds() {
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         rt.execute("x = [1, 2, 3]").await.expect("r1");
@@ -1326,7 +1369,7 @@ mod tests {
 
     #[tokio::test]
     async fn imports_persist_across_rounds() {
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         rt.execute("import math").await.expect("r1");
@@ -1336,9 +1379,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_loads_from_file() {
-        let path = write_temp_context("the quick brown fox");
-        let mut rt = PythonRuntime::spawn_with_context(&path, &std::env::temp_dir())
+    async fn context_loads_over_stdin() {
+        let body = "the quick brown fox";
+        let mut rt = PythonRuntime::unconfined_with_context(body, &std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1351,9 +1394,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn context_survives_framing_and_leaves_no_file_for_the_kernel() {
+        let body = "quote \" backslash \\ tab\t\r\nastral \u{1F600} caf\u{e9} nul\u{0} \u{7f}\n\
+                    __RLM_CTX_x__::{} __RLM_END_x__\n__RLM_DONE_x__::1\n";
+        let mut rt = PythonRuntime::unconfined_with_context(body, &std::env::temp_dir())
+            .await
+            .expect("spawn");
+        let round = rt
+            .execute(
+                "print(content.encode('utf-8').hex())\n\
+                 print('RLM_CONTEXT_FILE' in _os.environ)",
+            )
+            .await
+            .expect("execute");
+        let expected: String = body.bytes().map(|byte| format!("{byte:02x}")).collect();
+        assert!(round.stdout.contains(&expected), "{}", round.stdout);
+        assert!(round.stdout.contains("False"), "{}", round.stdout);
+        rt.replace_context(body).await.expect("replace");
+        let again = rt.execute("print(len(content))").await.expect("execute");
+        assert!(
+            again.stdout.contains(&body.chars().count().to_string()),
+            "{}",
+            again.stdout
+        );
+        rt.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_workspace_module_named_like_the_standard_library_does_not_run_at_start() {
+        use codewhale_dependencies::ExternalTool as _;
+        let workspace =
+            std::env::temp_dir().join(format!("repl-planted-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let marker = workspace.join("planted-ran");
+        std::fs::write(
+            workspace.join("json.py"),
+            format!(
+                "import pathlib\npathlib.Path({:?}).write_text('x')\n",
+                marker.to_string_lossy()
+            ),
+        )
+        .expect("planted module");
+        let mut rt = PythonRuntime::spawn(None, Some(INLINE_ROUND_TIMEOUT), |args| {
+            let mut cmd = codewhale_dependencies::Python::tokio_command()
+                .ok_or_else(|| "no Python interpreter found".to_string())?;
+            cmd.args(args).current_dir(&workspace);
+            codewhale_runtime::child_env::apply_to_tokio_command(
+                &mut cmd,
+                [(AGENT_PROJECT_ENV, workspace.as_os_str())],
+            );
+            Ok(cmd)
+        })
+        .await
+        .expect("spawn");
+        let round = rt.execute("print(1 + 1)").await.expect("execute");
+        assert!(round.stdout.contains('2'), "{}", round.stdout);
+        let planted_ran = marker.exists();
+        rt.shutdown().await;
+        let _ = std::fs::remove_dir_all(&workspace);
+        assert!(!planted_ran, "the workspace module ran at kernel start");
+
+        let refused =
+            PythonRuntime::spawn(None, None, |_| Err("sandbox refused".to_string())).await;
+        assert_eq!(refused.err().as_deref(), Some("sandbox refused"));
+    }
+
+    #[tokio::test]
     async fn context_aliases_keep_common_content_name_bounded() {
-        let path = write_temp_context("aleph-style");
-        let mut rt = PythonRuntime::spawn_with_context(&path, &std::env::temp_dir())
+        let body = "aleph-style";
+        let mut rt = PythonRuntime::unconfined_with_context(body, &std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1366,7 +1475,7 @@ mod tests {
 
     #[tokio::test]
     async fn replacing_context_keeps_kernel_variables_and_refreshes_helpers() {
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         rt.execute("remembered = {'answer': 42}")
@@ -1393,8 +1502,8 @@ mod tests {
 
     #[tokio::test]
     async fn context_chunk_helpers_report_full_coverage() {
-        let path = write_temp_context("abcdefghijklmnopqrstuvwxyz");
-        let mut rt = PythonRuntime::spawn_with_context(&path, &std::env::temp_dir())
+        let body = "abcdefghijklmnopqrstuvwxyz";
+        let mut rt = PythonRuntime::unconfined_with_context(body, &std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1411,8 +1520,8 @@ mod tests {
 
     #[tokio::test]
     async fn bounded_input_helpers_work() {
-        let path = write_temp_context("alpha\nbeta needle\ngamma needle\nomega");
-        let mut rt = PythonRuntime::spawn_with_context(&path, &std::env::temp_dir())
+        let body = "alpha\nbeta needle\ngamma needle\nomega";
+        let mut rt = PythonRuntime::unconfined_with_context(body, &std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1436,8 +1545,8 @@ mod tests {
 
     #[tokio::test]
     async fn new_chunk_helper_reports_full_coverage() {
-        let path = write_temp_context("abcdefghijklmnopqrstuvwxyz");
-        let mut rt = PythonRuntime::spawn_with_context(&path, &std::env::temp_dir())
+        let body = "abcdefghijklmnopqrstuvwxyz";
+        let mut rt = PythonRuntime::unconfined_with_context(body, &std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1454,7 +1563,7 @@ mod tests {
 
     #[tokio::test]
     async fn finalize_helper_is_captured_directly() {
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1475,7 +1584,7 @@ mod tests {
 
     #[tokio::test]
     async fn finalize_preserves_json_values_for_handles() {
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1497,7 +1606,7 @@ mod tests {
     #[tokio::test]
     async fn sub_query_accepts_timeout_keyword_for_agent_guesses() {
         let bridge = StubBridge::new();
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1519,8 +1628,8 @@ mod tests {
 
     #[tokio::test]
     async fn rlm_context_runtime_has_no_fixed_round_timeout() {
-        let path = write_temp_context("long input");
-        let rt = PythonRuntime::spawn_with_context(&path, &std::env::temp_dir())
+        let body = "long input";
+        let rt = PythonRuntime::unconfined_with_context(body, &std::env::temp_dir())
             .await
             .expect("spawn");
         assert!(
@@ -1532,7 +1641,7 @@ mod tests {
 
     #[tokio::test]
     async fn timed_out_round_kills_the_interpreter_and_refuses_later_rounds() {
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         rt.round_timeout = Some(Duration::from_millis(300));
@@ -1560,7 +1669,7 @@ mod tests {
 
     #[tokio::test]
     async fn another_rounds_done_sentinel_does_not_end_this_round() {
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1580,7 +1689,7 @@ mod tests {
 
     #[tokio::test]
     async fn inline_runtime_keeps_bounded_round_timeout() {
-        let rt = PythonRuntime::new(&std::env::temp_dir())
+        let rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         assert_eq!(rt.round_timeout(), Some(ROUND_TIMEOUT));
@@ -1589,7 +1698,7 @@ mod tests {
 
     #[tokio::test]
     async fn legacy_final_is_captured() {
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1602,7 +1711,7 @@ mod tests {
 
     #[tokio::test]
     async fn legacy_final_var_is_captured() {
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         rt.execute("answer = 'computed'").await.expect("r1");
@@ -1613,7 +1722,7 @@ mod tests {
 
     #[tokio::test]
     async fn errors_are_reported_without_killing_runtime() {
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         let r1 = rt.execute("raise ValueError('boom')").await.expect("r1");
@@ -1630,7 +1739,7 @@ mod tests {
         let bridge = StubBridge::new();
         let calls = Arc::clone(&bridge.calls);
 
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1687,7 +1796,7 @@ mod tests {
     /// set, so the calling code never saw the text.
     #[tokio::test]
     async fn rlm_query_keeps_partial_answer_from_an_exhausted_child() {
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1714,7 +1823,7 @@ mod tests {
         let bridge = StubBridge::new();
         let calls = Arc::clone(&bridge.calls);
 
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1741,7 +1850,7 @@ mod tests {
     #[tokio::test]
     async fn rpc_dispatcher_round_trips_batch() {
         let bridge = StubBridge::new();
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1762,7 +1871,7 @@ mod tests {
     #[tokio::test]
     async fn batched_helpers_require_independence_declaration() {
         let bridge = StubBridge::new();
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1786,7 +1895,7 @@ mod tests {
     #[tokio::test]
     async fn dependent_batch_mode_points_to_sequence_helper() {
         let bridge = StubBridge::new();
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1812,7 +1921,7 @@ mod tests {
         let bridge = StubBridge::new();
         let calls = Arc::clone(&bridge.calls);
 
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1841,7 +1950,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_dispatcher_returns_unavailable_sentinel() {
-        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+        let mut rt = PythonRuntime::unconfined(&std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt.execute("print(llm_query('hi'))").await.expect("execute");
@@ -1872,5 +1981,26 @@ mod tests {
         let out = truncate_stdout(&cjk, 1024);
         assert!(out.len() <= 1024, "len: {}", out.len());
         assert!(out.contains("bytes omitted"));
+    }
+
+    #[tokio::test]
+    async fn workspace_stdlib_module_does_not_shadow_bootstrap() {
+        let dir = std::env::temp_dir().join(format!("repl-shadow-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).expect("tempdir");
+        std::fs::write(
+            dir.join("json.py"),
+            "from pathlib import Path\nPath('planted-ran').write_text('yes')\n",
+        )
+        .expect("write");
+        let mut rt = PythonRuntime::unconfined(&dir).await.expect("spawn");
+        let round = rt
+            .execute("import json; print(json.dumps({'ok': 1}))")
+            .await
+            .expect("execute");
+        assert!(round.stdout.contains("\"ok\": 1"), "{}", round.stdout);
+        let planted_ran = dir.join("planted-ran").exists();
+        rt.shutdown().await;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!planted_ran);
     }
 }

@@ -33,7 +33,7 @@ pub struct RlmSession {
     pub final_count: usize,
     pub created_at: Instant,
     pub last_used_at: Instant,
-    pub context_path: PathBuf,
+    pub sandbox_policy: Option<codewhale_sandbox::SandboxPolicy>,
 }
 
 impl RlmSession {
@@ -42,7 +42,7 @@ impl RlmSession {
         name: String,
         kernel: PythonRuntime,
         context_meta: ContextMeta,
-        context_path: PathBuf,
+        sandbox_policy: Option<codewhale_sandbox::SandboxPolicy>,
     ) -> Self {
         let now = Instant::now();
         Self {
@@ -57,7 +57,7 @@ impl RlmSession {
             final_count: 0,
             created_at: now,
             last_used_at: now,
-            context_path,
+            sandbox_policy,
         }
     }
 }
