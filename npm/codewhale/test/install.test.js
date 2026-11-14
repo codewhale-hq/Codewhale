@@ -452,3 +452,61 @@ test("a body paused by a slow consumer is not reported as a stall", { timeout: 5
   await done;
   assert.equal(body, "first chunk rest of the body");
 });
+
+test("followRedirects and downloadText refuse plain HTTP and disallowed redirect targets without connecting", async (t) => {
+  const http = require("node:http");
+  const https = require("node:https");
+  const { PassThrough } = require("node:stream");
+  const { EventEmitter } = require("node:events");
+  let hits = 0;
+  const server = http.createServer((_req, res) => {
+    hits += 1;
+    res.writeHead(200);
+    res.end("unexpected");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  const localHttpUrl = `http://127.0.0.1:${server.address().port}/asset`;
+
+  await assert.rejects(
+    _internal.followRedirects(localHttpUrl, { env: {} }),
+    /requires HTTPS/,
+  );
+  await assert.rejects(
+    _internal.downloadText("http://user:secret@github.com/asset", { env: {} }),
+    (error) => {
+      assert.match(error.message, /requires HTTPS/);
+      assert.doesNotMatch(error.message, /secret/);
+      return true;
+    },
+  );
+
+  let nextRedirect = localHttpUrl;
+  t.mock.method(https, "request", (_opts, callback) => {
+    const req = new EventEmitter();
+    req.destroy = () => {};
+    req.end = () => {};
+    const res = new PassThrough();
+    res.statusCode = 302;
+    res.headers = { location: nextRedirect };
+    process.nextTick(() => {
+      callback(res);
+      res.end();
+    });
+    return req;
+  });
+
+  await assert.rejects(
+    _internal.followRedirects("https://github.com/start", { env: {} }),
+    /requires HTTPS/,
+  );
+  nextRedirect = "https://unlisted.example.test/asset";
+  await assert.rejects(
+    _internal.followRedirects("https://github.com/start", { env: {} }),
+    /not an allowed release host/,
+  );
+  assert.equal(hits, 0);
+});

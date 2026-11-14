@@ -8,8 +8,10 @@ const {
   checksumManifestUrl,
   CNB_BINARY_ASSET_NAMES,
   CNB_RELEASE_ASSET_NAMES,
+  redactUrl,
   releaseAssetUrl,
   usesCnbMirror,
+  validateReleaseUrl,
 } = require("./artifacts");
 
 const pkg = require("../package.json");
@@ -76,12 +78,13 @@ const limits = {
 // Reject first, then tear the request down: an error passed to `destroy()` can
 // surface on an emitter nobody listens to once a response has started.
 function armTotalTimeout(req, url, reject) {
+  const safeUrl = redactUrl(url);
   const fail = (error) => {
     reject(error);
     req.destroy();
   };
   const timer = setTimeout(
-    () => fail(new Error(`Request exceeded ${limits.totalMs} ms: ${url}`)),
+    () => fail(new Error(`Request exceeded ${limits.totalMs} ms: ${safeUrl}`)),
     limits.totalMs,
   );
   timer.unref();
@@ -89,43 +92,89 @@ function armTotalTimeout(req, url, reject) {
   req.on("close", clear);
   req.on("error", clear);
   req.on("timeout", () =>
-    fail(new Error(`Request timed out after ${limits.idleMs} ms without data: ${url}`)),
+    fail(new Error(`Request timed out after ${limits.idleMs} ms without data: ${safeUrl}`)),
   );
   return { clear, fail };
 }
 
-function requestStatus(url, method = "HEAD", redirects = 0) {
-  if (redirects > 10) {
-    throw new Error(`Too many redirects while checking ${url}`);
+function requestRelease(url, options = {}, redirects = 0) {
+  const method = options.method || "GET";
+  const readBody = Boolean(options.readBody);
+  const maxRedirects = options.maxRedirects == null ? 10 : options.maxRedirects;
+  const safeUrl = redactUrl(url);
+  if (redirects > maxRedirects) {
+    return Promise.reject(new Error(`Too many redirects while requesting ${safeUrl}`));
   }
-  const client = url.startsWith("https:") ? https : http;
+  let parsedUrl;
+  try {
+    parsedUrl = validateReleaseUrl(url);
+  } catch (err) {
+    return Promise.reject(err);
+  }
+  const client = parsedUrl.protocol === "https:" ? https : http;
+  const headers = {
+    ...(options.headers || {}),
+    "User-Agent": "codewhale-npm-release-check",
+  };
+  if (options.attachGitHubToken) {
+    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+    if (token && parsedUrl.origin === "https://api.github.com") {
+      headers.Authorization = `Bearer ${token}`;
+    }
+  }
   return new Promise((resolve, reject) => {
-    const req = client.request(
-      url,
-      {
-        method,
-        timeout: limits.idleMs,
-        headers: {
-          "User-Agent": "codewhale-npm-release-check",
-        },
-      },
-      (res) => {
-        const status = res.statusCode || 0;
-        const location = res.headers.location;
+    const onResponse = (res) => {
+      const status = res.statusCode || 0;
+      const location = res.headers && res.headers.location;
+      if (status >= 300 && status < 400 && location) {
         res.resume();
         clear();
-        if (status >= 300 && status < 400 && location) {
-          const next = new URL(location, url).toString();
-          resolve(requestStatus(next, method, redirects + 1));
+        let next;
+        try {
+          next = new URL(location, url).toString();
+        } catch (err) {
+          reject(new Error(`Invalid redirect location from ${safeUrl}: ${err.message}`));
           return;
         }
-        resolve(status);
-      },
-    );
-    const { clear } = armTotalTimeout(req, url, reject);
+        resolve(requestRelease(next, options, redirects + 1));
+        return;
+      }
+      if (!readBody) {
+        res.resume();
+        clear();
+        resolve({ status, url: safeUrl, body: "" });
+        return;
+      }
+      const chunks = [];
+      let size = 0;
+      res.setEncoding("utf8");
+      res.on("error", reject);
+      res.on("data", (chunk) => {
+        size += Buffer.byteLength(chunk);
+        if (size > limits.maxBodyBytes) {
+          guard.fail(new Error(`Response exceeds ${limits.maxBodyBytes} bytes: ${safeUrl}`));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on("end", () => resolve({ status, url: safeUrl, body: chunks.join("") }));
+    };
+    const req =
+      method === "GET"
+        ? client.get(url, { headers, timeout: limits.idleMs }, onResponse)
+        : client.request(url, { method, headers, timeout: limits.idleMs }, onResponse);
+    const guard = armTotalTimeout(req, url, reject);
+    const clear = guard.clear;
     req.on("error", reject);
-    req.end();
+    if (method !== "GET") {
+      req.end();
+    }
   });
+}
+
+async function requestStatus(url, method = "HEAD", redirects = 0) {
+  const result = await requestRelease(url, { method, readBody: false }, redirects);
+  return result.status;
 }
 
 async function verifyAsset(url, label) {
@@ -134,116 +183,43 @@ async function verifyAsset(url, label) {
     status = await requestStatus(url, "GET");
   }
   if (status < 200 || status >= 400) {
-    throw new Error(`${label} returned HTTP ${status} (${url})`);
+    throw new Error(`${label} returned HTTP ${status} (${redactUrl(url)})`);
   }
 }
 
 async function downloadText(url, redirects = 0) {
-  if (redirects > 10) {
-    throw new Error(`Too many redirects while downloading ${url}`);
+  const result = await requestRelease(url, { method: "GET", readBody: true }, redirects);
+  if (result.status !== 200) {
+    throw new Error(`Request failed with status ${result.status}: ${result.url}`);
   }
-  const client = url.startsWith("https:") ? https : http;
-  return new Promise((resolve, reject) => {
-    const req = client.get(
-      url,
-      {
-        timeout: limits.idleMs,
-        headers: {
-          "User-Agent": "codewhale-npm-release-check",
-        },
-      },
-      (res) => {
-        const status = res.statusCode || 0;
-        if (status >= 300 && status < 400 && res.headers.location) {
-          const next = new URL(res.headers.location, url).toString();
-          res.resume();
-          resolve(downloadText(next, redirects + 1));
-          return;
-        }
-        if (status !== 200) {
-          reject(new Error(`Request failed with status ${status}: ${url}`));
-          res.resume();
-          return;
-        }
-        const chunks = [];
-        let size = 0;
-        res.setEncoding("utf8");
-        res.on("error", reject);
-        res.on("data", (chunk) => {
-          size += Buffer.byteLength(chunk);
-          if (size > limits.maxBodyBytes) {
-            guard.fail(new Error(`Response exceeds ${limits.maxBodyBytes} bytes: ${url}`));
-            return;
-          }
-          chunks.push(chunk);
-        });
-        res.on("end", () => resolve(chunks.join("")));
-      },
-    );
-    const guard = armTotalTimeout(req, url, reject);
-    req.on("error", reject);
-  });
+  return result.body;
 }
 
 async function downloadJson(url, redirects = 0) {
-  if (redirects > 10) {
-    throw new Error(`Too many redirects while downloading ${url}`);
+  const result = await requestRelease(
+    url,
+    {
+      method: "GET",
+      readBody: true,
+      attachGitHubToken: true,
+      headers: {
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    },
+    redirects,
+  );
+  let parsed;
+  try {
+    parsed = result.body ? JSON.parse(result.body) : {};
+  } catch (error) {
+    throw new Error(`Invalid JSON from ${result.url}: ${error.message}`);
   }
-  const parsedUrl = new URL(url);
-  if (parsedUrl.protocol !== "https:") {
-    throw new Error("Release metadata requires HTTPS");
+  if (result.status < 200 || result.status >= 300) {
+    const message = parsed.message ? `: ${parsed.message}` : "";
+    throw new Error(`GitHub API request failed with status ${result.status}${message} (${result.url})`);
   }
-  return new Promise((resolve, reject) => {
-    const headers = {
-      Accept: "application/vnd.github+json",
-      "User-Agent": "codewhale-npm-release-check",
-      "X-GitHub-Api-Version": "2022-11-28",
-    };
-    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-    if (token && parsedUrl.origin === "https://api.github.com") {
-      headers.Authorization = `Bearer ${token}`;
-    }
-    const req = https
-      .get(url, { headers, timeout: limits.idleMs }, (res) => {
-        const status = res.statusCode || 0;
-        if (status >= 300 && status < 400 && res.headers.location) {
-          const next = new URL(res.headers.location, url).toString();
-          res.resume();
-          resolve(downloadJson(next, redirects + 1));
-          return;
-        }
-        const chunks = [];
-        let size = 0;
-        res.setEncoding("utf8");
-        res.on("error", reject);
-        res.on("data", (chunk) => {
-          size += Buffer.byteLength(chunk);
-          if (size > limits.maxBodyBytes) {
-            guard.fail(new Error(`Response exceeds ${limits.maxBodyBytes} bytes: ${url}`));
-            return;
-          }
-          chunks.push(chunk);
-        });
-        res.on("end", () => {
-          const body = chunks.join("");
-          let parsed;
-          try {
-            parsed = body ? JSON.parse(body) : {};
-          } catch (error) {
-            reject(new Error(`Invalid JSON from ${url}: ${error.message}`));
-            return;
-          }
-          if (status < 200 || status >= 300) {
-            const message = parsed.message ? `: ${parsed.message}` : "";
-            reject(new Error(`GitHub API request failed with status ${status}${message} (${url})`));
-            return;
-          }
-          resolve(parsed);
-        });
-      });
-    const guard = armTotalTimeout(req, url, reject);
-    req.on("error", reject);
-  });
+  return parsed;
 }
 
 function githubApiUrl(repo, path) {

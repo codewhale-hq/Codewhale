@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
+const crypto = require("crypto");
 const fs = require("fs");
 const fsp = require("fs/promises");
-const http = require("http");
+const https = require("https");
 const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
@@ -78,10 +79,98 @@ function runCommand(command, args, options = {}) {
   });
 }
 
-function serveDirectory(root) {
-  const server = http.createServer(async (request, response) => {
+function derLen(length) {
+  if (length < 0x80) return Buffer.from([length]);
+  const bytes = [];
+  let n = length;
+  while (n > 0) {
+    bytes.unshift(n & 0xff);
+    n >>= 8;
+  }
+  return Buffer.from([0x80 | bytes.length, ...bytes]);
+}
+
+function derTag(tag, content) {
+  return Buffer.concat([Buffer.from([tag]), derLen(content.length), content]);
+}
+
+function derSeq(...items) {
+  return derTag(0x30, Buffer.concat(items));
+}
+
+function derSet(...items) {
+  return derTag(0x31, Buffer.concat(items));
+}
+
+function derOid(bytes) {
+  return derTag(0x06, Buffer.from(bytes));
+}
+
+function derInt(bytes) {
+  const buf = Buffer.from(bytes);
+  return derTag(0x02, buf[0] & 0x80 ? Buffer.concat([Buffer.from([0]), buf]) : buf);
+}
+
+function derBitString(bytes) {
+  return derTag(0x03, Buffer.concat([Buffer.from([0x00]), bytes]));
+}
+
+function derUtcTime(date) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const s =
+    String(date.getUTCFullYear()).slice(-2) +
+    pad(date.getUTCMonth() + 1) +
+    pad(date.getUTCDate()) +
+    pad(date.getUTCHours()) +
+    pad(date.getUTCMinutes()) +
+    pad(date.getUTCSeconds()) +
+    "Z";
+  return derTag(0x17, Buffer.from(s, "ascii"));
+}
+
+async function createLoopbackCertificate(certDir) {
+  const { privateKey, publicKey } = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const spki = publicKey.export({ type: "spki", format: "der" });
+  const sigAlg = derSeq(derOid([0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02]));
+  const name = derSeq(
+    derSet(derSeq(derOid([0x55, 0x04, 0x03]), derTag(0x0c, Buffer.from("127.0.0.1", "utf8")))),
+  );
+  const now = new Date();
+  const later = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  const basicConstraints = derSeq(
+    derOid([0x55, 0x1d, 0x13]),
+    Buffer.from([0x01, 0x01, 0xff]),
+    derTag(0x04, derSeq(Buffer.from([0x01, 0x01, 0xff]))),
+  );
+  const subjectAltName = derSeq(
+    derOid([0x55, 0x1d, 0x11]),
+    derTag(0x04, derSeq(derTag(0x87, Buffer.from([127, 0, 0, 1])))),
+  );
+  const tbs = derSeq(
+    derTag(0xa0, derInt([0x02])),
+    derInt(crypto.randomBytes(8)),
+    sigAlg,
+    name,
+    derSeq(derUtcTime(now), derUtcTime(later)),
+    name,
+    spki,
+    derTag(0xa3, derSeq(basicConstraints, subjectAltName)),
+  );
+  const sig = crypto.sign("sha256", tbs, privateKey);
+  const certDer = derSeq(tbs, sigAlg, derBitString(sig));
+  const b64 = certDer.toString("base64").match(/.{1,64}/g).join("\n");
+  const certPem = `-----BEGIN CERTIFICATE-----\n${b64}\n-----END CERTIFICATE-----\n`;
+  const keyPem = privateKey.export({ type: "pkcs8", format: "pem" });
+  const caPath = path.join(certDir, "smoke-ca.pem");
+  await fsp.writeFile(caPath, certPem, "utf8");
+  return { cert: certPem, key: keyPem, caPath };
+}
+
+async function serveDirectory(root, certDir) {
+  const tls = await createLoopbackCertificate(certDir);
+  const server = https.createServer({ key: tls.key, cert: tls.cert }, async (request, response) => {
     try {
-      const requestUrl = new URL(request.url || "/", "http://127.0.0.1");
+      const requestUrl = new URL(request.url || "/", "https://127.0.0.1");
       const decodedPath = decodeURIComponent(requestUrl.pathname);
       const filePath = path.resolve(root, `.${decodedPath}`);
       const relative = path.relative(root, filePath);
@@ -114,7 +203,8 @@ function serveDirectory(root) {
     server.listen(0, "127.0.0.1", () => {
       const address = server.address();
       resolve({
-        baseUrl: `http://127.0.0.1:${address.port}/`,
+        baseUrl: `https://127.0.0.1:${address.port}/`,
+        caPath: tls.caPath,
         server,
       });
     });
@@ -182,12 +272,13 @@ async function main() {
       }
       await runCommand(process.execPath, prepareArgs);
     }
-    const served = await serveDirectory(releaseAssetsDir);
+    const served = await serveDirectory(releaseAssetsDir, tempRoot);
     server = served.server;
 
     const env = {
       CODEWHALE_FORCE_DOWNLOAD: "1",
       CODEWHALE_RELEASE_BASE_URL: served.baseUrl,
+      NODE_EXTRA_CA_CERTS: served.caPath,
     };
     const pack = await runCommand(
       "npm",
@@ -235,4 +326,5 @@ module.exports = {
   CLEANUP_MAX_RETRIES,
   CLEANUP_RETRY_DELAY_MS,
   removeSmokeWorkspace,
+  serveDirectory,
 };

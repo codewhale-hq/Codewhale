@@ -94,9 +94,9 @@ download() {
   attempt=1
   while :; do
     if [ "$download_tool" = curl ]; then
-      curl -fsSL "$url" -o "$out" && return 0
+      curl --proto '=https' --tlsv1.2 -fsSL "$url" -o "$out" && return 0
     else
-      wget -q "$url" -O "$out" && return 0
+      wget --https-only -q "$url" -O "$out" && return 0
     fi
     rm -f "$out"
     if [ "$attempt" -ge 3 ]; then

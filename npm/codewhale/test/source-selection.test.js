@@ -14,6 +14,7 @@ const {
   githubReleaseBaseUrl,
   hasExplicitReleaseBase,
   shouldRaceFirstPartyMirrors,
+  transportOptions,
 } = require("../scripts/artifacts");
 const { run, _internal } = require("../scripts/install");
 
@@ -710,7 +711,16 @@ test("source selection is visible in progress output", async () => {
   }
 });
 
+function allowLoopbackHttp(t) {
+  const previous = transportOptions.allowLoopbackHttp;
+  transportOptions.allowLoopbackHttp = true;
+  t.after(() => {
+    transportOptions.allowLoopbackHttp = previous;
+  });
+}
+
 test("aborting a losing manifest probe closes a body already in progress", async (t) => {
+  allowLoopbackHttp(t);
   const responseStarted = deferred();
   const responseClosed = deferred();
   const server = http.createServer((_req, res) => {
@@ -752,6 +762,7 @@ test("aborting a losing manifest probe closes a body already in progress", async
 });
 
 test("HTTP fixture never starts the losing source's full binary download", async (t) => {
+  allowLoopbackHttp(t);
   const dir = await makeTempDir(t);
   const cnbWhale = Buffer.from("fixture-cnb-whale");
   const cnbCodew = Buffer.from("fixture-cnb-codew");

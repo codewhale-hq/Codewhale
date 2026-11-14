@@ -557,3 +557,34 @@ for (const kind of ['website', 'archive']) {
     f.untouched();
   });
 }
+
+test('website: downloaders require HTTPS and TLS 1.2+', t => {
+  const f = fixture(t, 'website');
+  const argsFile = path.join(f.root, 'curl-args');
+  f.env.INSTALL_TEST_CURL_ARGS = argsFile;
+  executable(path.join(f.bin, 'curl'), `#!/bin/sh
+printf '%s\n' "$*" >> "$INSTALL_TEST_CURL_ARGS"
+url=""; output=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) shift; output="$1" ;;
+    http*) url="$1" ;;
+  esac
+  shift
+done
+printf '%s\n' "$url" >> "$INSTALL_TEST_DOWNLOADS"
+asset="$(basename "$url")"
+cp "$INSTALL_TEST_ASSETS/$asset" "$output"
+`);
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  const invocations = fs.readFileSync(argsFile, 'utf8').trim().split('\n');
+  assert.ok(invocations.length >= 2);
+  for (const line of invocations) {
+    assert.ok(line.includes('--proto =https'), `expected --proto =https in: ${line}`);
+    assert.ok(line.includes('--tlsv1.2'), `expected --tlsv1.2 in: ${line}`);
+  }
+  const websiteScript = fs.readFileSync(path.join(repo, 'web/public/install.sh'), 'utf8');
+  assert.match(websiteScript, /curl --proto '=https' --tlsv1\.2 -fsSL/);
+  assert.match(websiteScript, /wget --https-only -q/);
+});

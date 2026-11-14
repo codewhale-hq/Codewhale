@@ -6,6 +6,18 @@ const CHECKSUM_MANIFEST = "codewhale-artifacts-sha256.txt";
 const CHECKSUM_SIGNATURE = `${CHECKSUM_MANIFEST}.sig`;
 const BUNDLE_CHECKSUM_MANIFEST = "codewhale-bundles-sha256.txt";
 const WINDOWS_INSTALLER_ASSET = "CodeWhaleSetup.exe";
+const RELEASE_GITHUB_HOSTS = new Set([
+  "github.com",
+  "api.github.com",
+  "objects.githubusercontent.com",
+  "release-assets.githubusercontent.com",
+  "github-releases.githubusercontent.com",
+]);
+const RELEASE_CNB_HOST = "cnb.cool";
+const UPDATE_ALLOWED_HOSTS_ENV = "CODEWHALE_UPDATE_ALLOWED_HOSTS";
+const transportOptions = {
+  allowLoopbackHttp: false,
+};
 
 // Compatibility bridge introduced in v0.9.5: already-shipped v0.9.4 clients
 // require these names before
@@ -260,6 +272,94 @@ function checksumManifestUrl(version, repo = "codewhale-hq/CodeWhale") {
   return releaseAssetUrl(CHECKSUM_MANIFEST, version, repo);
 }
 
+function redactUrl(rawUrl) {
+  const input = String(rawUrl || "");
+  try {
+    const parsed = new URL(input);
+    if (parsed.username || parsed.password) {
+      parsed.username = "";
+      parsed.password = "";
+      return parsed.toString();
+    }
+    return input;
+  } catch {
+    return input.replace(/^([a-z][a-z0-9+\-.]*:\/\/)[^/@\s]+@/i, "$1");
+  }
+}
+
+function extraAllowedReleaseHosts(env = process.env) {
+  const extra = new Set();
+  const override = explicitReleaseBase(env);
+  if (override) {
+    try {
+      const parsed = new URL(override);
+      if (parsed.hostname) {
+        extra.add(parsed.hostname.toLowerCase());
+      }
+    } catch {
+    }
+  }
+  const configured = env && env[UPDATE_ALLOWED_HOSTS_ENV];
+  if (configured) {
+    for (const part of String(configured).split(",")) {
+      const host = part.trim().toLowerCase();
+      if (host) {
+        extra.add(host);
+      }
+    }
+  }
+  return extra;
+}
+
+function isAllowedReleaseHost(hostname, env = process.env) {
+  const host = String(hostname || "").toLowerCase();
+  if (!host) {
+    return false;
+  }
+  if (
+    RELEASE_GITHUB_HOSTS.has(host) ||
+    host === RELEASE_CNB_HOST ||
+    host.endsWith(`.${RELEASE_CNB_HOST}`)
+  ) {
+    return true;
+  }
+  return extraAllowedReleaseHosts(env).has(host);
+}
+
+function isLoopbackHost(hostname) {
+  const host = String(hostname || "").toLowerCase();
+  return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+}
+
+function validateReleaseUrl(rawUrl, options = {}) {
+  const env = options.env || process.env;
+  const allowLoopbackHttp =
+    options.allowLoopbackHttp === undefined
+      ? transportOptions.allowLoopbackHttp
+      : Boolean(options.allowLoopbackHttp);
+  const safeUrl = redactUrl(rawUrl);
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch (err) {
+    throw new Error(`Invalid release URL: ${safeUrl} (${err.message})`);
+  }
+  if (allowLoopbackHttp && parsed.protocol === "http:" && isLoopbackHost(parsed.hostname)) {
+    return parsed;
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error(`Release download requires HTTPS, not ${parsed.protocol}: ${safeUrl}`);
+  }
+  if (!isAllowedReleaseHost(parsed.hostname, env)) {
+    throw new Error(
+      `Release host "${parsed.hostname}" is not an allowed release host. ` +
+        "A private mirror's host is allowed when it is the CODEWHALE_RELEASE_BASE_URL HTTPS base URL; " +
+        `any other host can be added with ${UPDATE_ALLOWED_HOSTS_ENV}=host1,host2`,
+    );
+  }
+  return parsed;
+}
+
 function releaseBinaryDirectory() {
   return path.join(__dirname, "..", "bin", "downloads");
 }
@@ -309,14 +409,19 @@ module.exports = {
   firstPartyReleaseSources,
   githubReleaseBaseUrl,
   hasExplicitReleaseBase,
+  isAllowedReleaseHost,
   isCnbSupportedTarget,
   LEGACY_TUI_BRIDGE_ASSET_NAMES,
   openHarmonyDirections,
+  redactUrl,
   releaseAssetUrl,
   releaseAssetUrlFromBase,
   releaseBaseUrl,
   releaseBinaryDirectory,
   shouldRaceFirstPartyMirrors,
+  transportOptions,
+  UPDATE_ALLOWED_HOSTS_ENV,
   usesCnbMirror,
+  validateReleaseUrl,
   WINDOWS_INSTALLER_ASSET,
 };
