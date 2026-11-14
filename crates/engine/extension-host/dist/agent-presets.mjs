@@ -12821,7 +12821,8 @@ var init_compatibility = __esm({
         "avatars",
         "mcp",
         "logger",
-        "userQuestions"
+        "userQuestions",
+        "remote"
       ],
       row_bridges: {
         "@deepseek-ai/dsh-mcp-client": "mcp",

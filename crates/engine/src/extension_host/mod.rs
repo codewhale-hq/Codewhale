@@ -128,7 +128,8 @@ mod dsh_llm;
 mod dsh_network;
 mod dsh_plugins;
 mod dsh_remote;
-pub use dsh_remote::{RemoteClient, RemoteDenial, RemoteGrants, RemotePairing, remote_grants};
+pub(crate) use dsh_remote::end_remote_session;
+pub use dsh_remote::{RemoteClient, RemoteDenial, RemotePairing, RemoteSecret, RemoteState};
 mod dsh_settings;
 pub(crate) mod dsh_terminal;
 mod dsh_workspace;
@@ -1211,6 +1212,7 @@ impl HostEvents for Events {
         }
         drop(slot);
         shared.revoke_owner_state(&params.owner.plugin_id);
+        dsh_remote::withdraw_owner(&params.owner);
         shared.plugin_diagnostic(
             &params.owner.plugin_id,
             format!(
@@ -2206,6 +2208,7 @@ impl ExtensionHostManager {
         let host = shared.ready_host(HostTier::Plugin).ok();
         for owner in revoked {
             shared.revoke_owner_state(&owner.plugin_id);
+            dsh_remote::withdraw_owner(&owner);
             shared.plugin_diagnostic(
                 &owner.plugin_id,
                 format!("extension `{}` revoked", owner.plugin_id),
@@ -3506,6 +3509,7 @@ impl HostAttachment {
     }
 
     pub fn set_identity(&self, session_id: Option<String>, agent_id: Option<String>) {
+        let mut left = None;
         if let Some(state) = self
             .manager
             .shared
@@ -3514,8 +3518,14 @@ impl HostAttachment {
             .expect("attachments lock")
             .get_mut(&self.id)
         {
+            if state.session_id != session_id {
+                left = state.session_id.take();
+            }
             state.session_id = session_id;
             state.agent_id = agent_id;
+        }
+        if let Some(left) = left {
+            dsh_remote::end_remote_session(&left);
         }
     }
     pub fn plugin_view(&self) -> Arc<PluginRegistry> {

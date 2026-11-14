@@ -49,7 +49,8 @@
     "avatars",
     "mcp",
     "logger",
-    "userQuestions"
+    "userQuestions",
+    "remote"
   ],
   "row_bridges": {
     "@deepseek-ai/dsh-mcp-client": "mcp",

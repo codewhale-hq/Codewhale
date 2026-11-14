@@ -1,20 +1,31 @@
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
+use codewhale_config::OwnerRef;
+use codewhale_core::secret_eq::constant_time_eq;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use unicode_normalization::UnicodeNormalization;
 
+use super::ExtensionHostManager;
 use super::dsh_broker::{
-    BrokerCall, BrokerEffect, BrokerFuture, BrokerMethods, BrokerRefusal, decode,
+    self, BrokerCall, BrokerEffect, BrokerFuture, BrokerMethods, BrokerRefusal, decode,
 };
 use super::protocol::DshService;
+use super::tier::HostTier;
 
-pub const PAIRING_TTL: Duration = Duration::from_secs(10 * 60);
-pub const CLIENT_TTL: Duration = Duration::from_secs(30 * 60);
-pub const MAX_PENDING_PAIRINGS: usize = 4;
-const MAX_LABEL_CHARS: usize = 64;
+const PAIRING_TTL: Duration = Duration::from_secs(10 * 60);
+const CLIENT_TTL: Duration = Duration::from_secs(30 * 60);
+const MAX_PENDING_PER_SESSION: usize = 4;
+const MAX_PENDING_PER_PLUGIN: usize = 8;
+const MAX_PENDING_TOTAL: usize = 16;
+const MAX_GRANTS: usize = 64;
+const MAX_LABEL_CHARS: usize = 32;
+const LABEL_MARKS: &str = "-_.'()#+&";
+const HOST_NAME: &str = "codewhale";
 const GRANT_PREFIX: &str = "cwrg_";
 const PAIRING_PREFIX: &str = "cwrp_";
 const CLIENT_PREFIX: &str = "cwrc_";
@@ -42,373 +53,648 @@ impl BrokerMethods for RemoteMethod {
     const NAMES: &'static [&'static str] = &["status", "pair", "clients", "revoke"];
 }
 
+#[derive(Clone)]
+pub struct RemoteSecret(String);
+
+impl RemoteSecret {
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for RemoteSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RemoteSecret(..)")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteState {
+    AwaitingHost,
+    Paired,
+}
+
+impl RemoteState {
+    fn name(self) -> &'static str {
+        match self {
+            Self::AwaitingHost => "awaiting_host",
+            Self::Paired => "paired",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemotePairing {
     pub grant: String,
     pub plugin_id: String,
+    pub plugin_name: String,
     pub session_id: String,
-    pub label: String,
-    pub secret: String,
+    pub state: RemoteState,
+    pub plugin_label: String,
+    pub client_label: Option<String>,
     pub expires_in_seconds: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct RemoteClient {
     pub grant: String,
     pub session_id: String,
-    pub token: String,
+    pub token: RemoteSecret,
     pub expires_in_seconds: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteDenial {
     Unknown,
-    Expired,
-    Replayed,
+    NonLoopback,
     ForeignSession,
 }
 
-struct Client {
-    token_digest: [u8; 32],
-    label: String,
-    expires_at: Instant,
+#[cfg(test)]
+thread_local! {
+    static WALL_SKEW: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
+}
+
+#[derive(Clone, Copy)]
+struct Now {
+    mono: Instant,
+    wall: SystemTime,
+}
+
+impl Now {
+    fn read() -> Self {
+        let wall = SystemTime::now();
+        #[cfg(test)]
+        let wall = wall + WALL_SKEW.with(std::cell::Cell::get);
+        Self {
+            mono: Instant::now(),
+            wall,
+        }
+    }
+
+    fn after(self, ttl: Duration) -> Deadline {
+        Deadline {
+            mono: self.mono + ttl,
+            wall: self.wall + ttl,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Deadline {
+    mono: Instant,
+    wall: SystemTime,
+}
+
+impl Deadline {
+    fn passed(self, now: Now) -> bool {
+        now.mono >= self.mono || now.wall >= self.wall
+    }
+
+    fn seconds_left(self, now: Now) -> u64 {
+        self.mono
+            .saturating_duration_since(now.mono)
+            .min(self.wall.duration_since(now.wall).unwrap_or_default())
+            .as_secs()
+    }
+}
+
+enum Stage {
+    AwaitingHost {
+        presented: Option<[u8; 32]>,
+    },
+    Paired {
+        token: [u8; 32],
+        client_label: String,
+    },
 }
 
 struct Grant {
-    plugin_id: String,
+    owner: OwnerRef,
     session_id: String,
     label: String,
-    pairing_digest: [u8; 32],
-    pairing: Option<String>,
-    pairing_expires_at: Instant,
-    client: Option<Client>,
+    expires: Deadline,
+    stage: Stage,
 }
 
 impl Grant {
-    fn state(&self, now: Instant) -> &'static str {
-        match &self.client {
-            Some(client) if now < client.expires_at => "paired",
-            Some(_) => "expired",
-            None if now < self.pairing_expires_at => "awaiting_host",
-            None => "expired",
+    fn state(&self) -> RemoteState {
+        match self.stage {
+            Stage::AwaitingHost { .. } => RemoteState::AwaitingHost,
+            Stage::Paired { .. } => RemoteState::Paired,
         }
     }
 
-    fn retire_at(&self, pairing_ttl: Duration) -> Instant {
-        self.client
-            .as_ref()
-            .map_or(self.pairing_expires_at, |client| client.expires_at)
-            + pairing_ttl
+    fn held_by(&self, owner: &OwnerRef, session: &str) -> bool {
+        self.owner == *owner && self.session_id == session
     }
 }
 
-#[derive(Default)]
-struct Grants {
-    by_id: HashMap<String, Grant>,
-    by_pairing: HashMap<[u8; 32], String>,
-    by_client: HashMap<[u8; 32], String>,
-}
+type Table = HashMap<String, Grant>;
 
-impl Grants {
-    fn remove(&mut self, id: &str) -> Option<Grant> {
-        let grant = self.by_id.remove(id)?;
-        self.by_pairing.remove(&grant.pairing_digest);
-        if let Some(client) = &grant.client {
-            self.by_client.remove(&client.token_digest);
-        }
-        Some(grant)
-    }
-
-    fn prune(&mut self, now: Instant, pairing_ttl: Duration) {
-        let retired: Vec<String> = self
-            .by_id
-            .iter()
-            .filter(|(_, grant)| now >= grant.retire_at(pairing_ttl))
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in retired {
-            self.remove(&id);
-        }
-    }
-}
-
-pub struct RemoteGrants {
+struct RemoteGrants {
     pairing_ttl: Duration,
     client_ttl: Duration,
-    grants: Mutex<Grants>,
+    grants: Mutex<Table>,
 }
 
-pub fn remote_grants() -> &'static RemoteGrants {
+fn remote_grants() -> &'static RemoteGrants {
     static GRANTS: OnceLock<RemoteGrants> = OnceLock::new();
     GRANTS.get_or_init(|| RemoteGrants::new(PAIRING_TTL, CLIENT_TTL))
 }
 
 pub(super) fn serve(call: BrokerCall) -> BrokerFuture {
-    Box::pin(async move {
-        let (method, effect) = match decode::<RemoteMethod>(&call)? {
-            RemoteMethod::Status {} => ("status", BrokerEffect::Read),
-            RemoteMethod::Pair { .. } => ("pair", BrokerEffect::Reach),
-            RemoteMethod::Clients {} => ("clients", BrokerEffect::Read),
-            RemoteMethod::Revoke { .. } => ("revoke", BrokerEffect::Write),
-        };
-        call.context.act(method, effect, None).await?;
-        remote_grants().serve(&call)
-    })
+    Box::pin(async move { remote_grants().serve(&call).await })
+}
+
+pub(super) fn withdraw_owner(owner: &OwnerRef) -> usize {
+    remote_grants().withdraw_owner(owner)
+}
+
+pub(crate) fn end_remote_session(session_id: &str) -> usize {
+    remote_grants().revoke_session(session_id)
+}
+
+fn refused(message: &str) -> BrokerRefusal {
+    BrokerRefusal::Refused {
+        service: DshService::Remote,
+        message: message.to_string(),
+    }
+}
+
+fn invalid(message: impl Into<String>) -> BrokerRefusal {
+    BrokerRefusal::InvalidInput {
+        service: DshService::Remote,
+        message: message.into(),
+    }
+}
+
+fn prune_stale_generation(grants: &mut Table, owner: &OwnerRef) -> Result<(), BrokerRefusal> {
+    if grants.values().any(|grant| {
+        grant.owner.plugin_id == owner.plugin_id && grant.owner.generation > owner.generation
+    }) {
+        return Err(refused(
+            "the remote broker serves the plugin's current activation only",
+        ));
+    }
+    grants.retain(|_, grant| grant.owner.plugin_id != owner.plugin_id || grant.owner == *owner);
+    Ok(())
+}
+
+fn held_grant(grants: &Table, owner: &OwnerRef, session: &str, grant: &str) -> bool {
+    well_formed(grant, GRANT_PREFIX)
+        && grants
+            .get(grant)
+            .is_some_and(|row| row.held_by(owner, session))
 }
 
 impl RemoteGrants {
-    #[must_use]
-    pub fn new(pairing_ttl: Duration, client_ttl: Duration) -> Self {
+    fn new(pairing_ttl: Duration, client_ttl: Duration) -> Self {
         Self {
             pairing_ttl,
             client_ttl,
-            grants: Mutex::new(Grants::default()),
+            grants: Mutex::new(Table::new()),
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Grants> {
+    fn lock(&self) -> (std::sync::MutexGuard<'_, Table>, Now) {
         let mut grants = self
             .grants
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        grants.prune(Instant::now(), self.pairing_ttl);
-        grants
+        let now = Now::read();
+        grants.retain(|_, grant| !grant.expires.passed(now));
+        (grants, now)
     }
 
-    fn serve(&self, call: &BrokerCall) -> Result<Value, BrokerRefusal> {
-        let plugin = call.owner.plugin_id.as_str();
+    fn has_pairing_room(&self, grants: &Table, plugin: &str, session: &str) -> bool {
+        let pending = |counted: &dyn Fn(&Grant) -> bool| {
+            grants
+                .values()
+                .filter(|grant| grant.state() == RemoteState::AwaitingHost && counted(grant))
+                .count()
+        };
+        grants.len() < MAX_GRANTS
+            && pending(&|_| true) < MAX_PENDING_TOTAL
+            && pending(&|grant| grant.owner.plugin_id == plugin) < MAX_PENDING_PER_PLUGIN
+            && pending(&|grant| grant.owner.plugin_id == plugin && grant.session_id == session)
+                < MAX_PENDING_PER_SESSION
+    }
+
+    fn validate_pair(
+        &self,
+        grants: &Table,
+        call: &BrokerCall,
+        session: &str,
+        label: Option<&str>,
+    ) -> Result<String, BrokerRefusal> {
+        let execution = &call.context.tool().execution;
+        if execution.owner_agent_id.is_some() || execution.child_host.is_some() {
+            return Err(refused(
+                "remote pairing is offered to the main session only, not to a child agent",
+            ));
+        }
+        let label = plugin_label(label).map_err(invalid)?;
+        if !self.has_pairing_room(grants, &call.owner.plugin_id, session) {
+            return Err(refused(
+                "too many remote pairings are waiting; revoke one or try again later",
+            ));
+        }
+        Ok(label)
+    }
+
+    fn precheck(
+        &self,
+        call: &BrokerCall,
+        method: &RemoteMethod,
+    ) -> Result<(&'static str, BrokerEffect), BrokerRefusal> {
+        let owner = &call.owner;
+        if HostTier::Plugin.check_owner_id(&owner.plugin_id).is_err() {
+            return Err(refused("the remote broker serves reviewed plugins only"));
+        }
         let session = call.session_id.as_str();
-        match decode::<RemoteMethod>(call)? {
-            RemoteMethod::Status {} => Ok(self.status(plugin, session)),
-            RemoteMethod::Pair { label } => self.pair(plugin, session, label.as_deref()),
-            RemoteMethod::Clients {} => Ok(self.clients(plugin, session)),
-            RemoteMethod::Revoke { grant } => self.revoke(plugin, session, &grant),
+        let (mut grants, _) = self.lock();
+        prune_stale_generation(&mut grants, owner)?;
+        match method {
+            RemoteMethod::Status {} => Ok(("status", BrokerEffect::Read)),
+            RemoteMethod::Clients {} => Ok(("clients", BrokerEffect::Read)),
+            RemoteMethod::Pair { label } => {
+                self.validate_pair(&grants, call, session, label.as_deref())?;
+                Ok(("pair", BrokerEffect::Reach))
+            }
+            RemoteMethod::Revoke { grant } => {
+                if !held_grant(&grants, owner, session, grant) {
+                    return Err(invalid("no such remote grant for this plugin and session"));
+                }
+                Ok(("revoke", BrokerEffect::Write))
+            }
         }
     }
 
-    fn status(&self, plugin: &str, session: &str) -> Value {
-        let grants = self.lock();
-        let now = Instant::now();
-        let mut awaiting = 0;
-        let mut paired = 0;
-        for grant in grants.by_id.values() {
-            if grant.plugin_id != plugin || grant.session_id != session {
-                continue;
+    async fn serve(&self, call: &BrokerCall) -> Result<Value, BrokerRefusal> {
+        if call.context.cancel().is_cancelled() {
+            return Err(refused("the remote broker call was withdrawn"));
+        }
+        let method = decode::<RemoteMethod>(call)?;
+        let (method_name, effect) = self.precheck(call, &method)?;
+        call.context.act(method_name, effect, None).await?;
+        let owner = &call.owner;
+        let session = call.session_id.as_str();
+        let (mut grants, now) = self.lock();
+        prune_stale_generation(&mut grants, owner)?;
+        match method {
+            RemoteMethod::Status {} => Ok(status(&grants, owner, session)),
+            RemoteMethod::Pair { label } => {
+                self.pair(&mut grants, now, call, session, label.as_deref())
             }
-            match grant.state(now) {
-                "awaiting_host" => awaiting += 1,
-                "paired" => paired += 1,
-                _ => {}
+            RemoteMethod::Clients {} => Ok(clients(&grants, now, owner, session)),
+            RemoteMethod::Revoke { grant } => {
+                if !held_grant(&grants, owner, session, &grant) {
+                    return Err(invalid("no such remote grant for this plugin and session"));
+                }
+                grants.remove(&grant);
+                Ok(json!({ "grant": grant, "revoked": true }))
             }
         }
-        json!({
-            "transport": "runtime_http_sse",
-            "pairing": "host_presented",
-            "public_listener": false,
-            "tunnel": false,
-            "awaiting_host": awaiting,
-            "paired": paired,
-            "max_pending": MAX_PENDING_PAIRINGS,
-        })
     }
 
     fn pair(
         &self,
-        plugin: &str,
+        grants: &mut Table,
+        now: Now,
+        call: &BrokerCall,
         session: &str,
         label: Option<&str>,
     ) -> Result<Value, BrokerRefusal> {
-        let label = clean_label(label).map_err(|message| BrokerRefusal::InvalidInput {
-            service: DshService::Remote,
-            message,
-        })?;
-        let mut grants = self.lock();
-        let now = Instant::now();
-        let pending = grants
-            .by_id
-            .values()
-            .filter(|grant| {
-                grant.plugin_id == plugin
-                    && grant.session_id == session
-                    && grant.state(now) == "awaiting_host"
-            })
-            .count();
-        if pending >= MAX_PENDING_PAIRINGS {
-            return Err(BrokerRefusal::InvalidInput {
-                service: DshService::Remote,
-                message: format!(
-                    "this plugin already has {MAX_PENDING_PAIRINGS} pairings awaiting the host in this session; revoke one first"
-                ),
-            });
-        }
+        let label = self.validate_pair(grants, call, session, label)?;
         let id = random_capability(GRANT_PREFIX);
-        let secret = random_capability(PAIRING_PREFIX);
-        let pairing_digest = digest(&secret);
-        grants.by_pairing.insert(pairing_digest, id.clone());
-        grants.by_id.insert(
+        grants.insert(
             id.clone(),
             Grant {
-                plugin_id: plugin.to_string(),
+                owner: call.owner.clone(),
                 session_id: session.to_string(),
                 label: label.clone(),
-                pairing_digest,
-                pairing: Some(secret),
-                pairing_expires_at: now + self.pairing_ttl,
-                client: None,
+                expires: now.after(self.pairing_ttl),
+                stage: Stage::AwaitingHost { presented: None },
             },
         );
         Ok(json!({
             "grant": id,
             "label": label,
-            "state": "awaiting_host",
+            "state": RemoteState::AwaitingHost.name(),
             "expires_in_seconds": self.pairing_ttl.as_secs(),
         }))
     }
 
-    fn clients(&self, plugin: &str, session: &str) -> Value {
-        let grants = self.lock();
-        let now = Instant::now();
-        let mut rows: Vec<Value> = grants
-            .by_id
+    fn rows(&self) -> Vec<(OwnerRef, RemotePairing)> {
+        let (grants, now) = self.lock();
+        let mut rows: Vec<(OwnerRef, RemotePairing)> = grants
             .iter()
-            .filter(|(_, grant)| grant.plugin_id == plugin && grant.session_id == session)
             .map(|(id, grant)| {
-                let expires_at = grant
-                    .client
-                    .as_ref()
-                    .map_or(grant.pairing_expires_at, |client| client.expires_at);
-                json!({
-                    "grant": id,
-                    "label": grant.label,
-                    "client": grant.client.as_ref().map(|client| client.label.clone()),
-                    "state": grant.state(now),
-                    "expires_in_seconds": expires_at.saturating_duration_since(now).as_secs(),
-                })
+                (
+                    grant.owner.clone(),
+                    RemotePairing {
+                        grant: id.clone(),
+                        plugin_id: grant.owner.plugin_id.clone(),
+                        plugin_name: String::new(),
+                        session_id: grant.session_id.clone(),
+                        state: grant.state(),
+                        plugin_label: grant.label.clone(),
+                        client_label: match &grant.stage {
+                            Stage::AwaitingHost { .. } => None,
+                            Stage::Paired { client_label, .. } => Some(client_label.clone()),
+                        },
+                        expires_in_seconds: grant.expires.seconds_left(now),
+                    },
+                )
             })
             .collect();
-        rows.sort_by(|a, b| a["grant"].as_str().cmp(&b["grant"].as_str()));
-        json!({ "clients": rows })
-    }
-
-    fn revoke(&self, plugin: &str, session: &str, grant: &str) -> Result<Value, BrokerRefusal> {
-        let mut grants = self.lock();
-        let owned = grants
-            .by_id
-            .get(grant)
-            .is_some_and(|row| row.plugin_id == plugin && row.session_id == session);
-        if !owned {
-            return Err(BrokerRefusal::InvalidInput {
-                service: DshService::Remote,
-                message: "no such remote grant for this plugin and session".into(),
-            });
-        }
-        grants.remove(grant);
-        Ok(json!({ "grant": grant, "revoked": true }))
-    }
-
-    #[must_use]
-    pub fn awaiting_host(&self) -> Vec<RemotePairing> {
-        let grants = self.lock();
-        let now = Instant::now();
-        let mut rows: Vec<RemotePairing> = grants
-            .by_id
-            .iter()
-            .filter(|(_, grant)| grant.state(now) == "awaiting_host")
-            .filter_map(|(id, grant)| {
-                Some(RemotePairing {
-                    grant: id.clone(),
-                    plugin_id: grant.plugin_id.clone(),
-                    session_id: grant.session_id.clone(),
-                    label: grant.label.clone(),
-                    secret: grant.pairing.clone()?,
-                    expires_in_seconds: grant
-                        .pairing_expires_at
-                        .saturating_duration_since(now)
-                        .as_secs(),
-                })
-            })
-            .collect();
-        rows.sort_by(|a, b| a.grant.cmp(&b.grant));
+        rows.sort_by(|a, b| a.1.grant.cmp(&b.1.grant));
         rows
     }
 
-    pub fn redeem(&self, secret: &str, client_label: &str) -> Result<RemoteClient, RemoteDenial> {
-        let mut grants = self.lock();
-        let now = Instant::now();
-        let id = grants
-            .by_pairing
-            .get(&digest(secret))
-            .cloned()
-            .ok_or(RemoteDenial::Unknown)?;
-        let client_ttl = self.client_ttl;
-        let grant = grants.by_id.get_mut(&id).ok_or(RemoteDenial::Unknown)?;
-        if grant.client.is_some() {
-            return Err(RemoteDenial::Replayed);
+    fn admit(
+        &self,
+        find: impl Fn(&Table) -> Option<String>,
+        live: &dyn Fn(&OwnerRef) -> bool,
+    ) -> Result<String, RemoteDenial> {
+        let (id, owner) = {
+            let (grants, _) = self.lock();
+            let id = find(&grants).ok_or(RemoteDenial::Unknown)?;
+            let owner = grants[&id].owner.clone();
+            (id, owner)
+        };
+        if live(&owner) {
+            return Ok(id);
         }
-        if now >= grant.pairing_expires_at {
-            return Err(RemoteDenial::Expired);
+        self.lock().0.remove(&id);
+        Err(RemoteDenial::Unknown)
+    }
+
+    fn present(
+        &self,
+        grant: &str,
+        live: &dyn Fn(&OwnerRef) -> bool,
+    ) -> Result<RemoteSecret, RemoteDenial> {
+        if !well_formed(grant, GRANT_PREFIX) {
+            return Err(RemoteDenial::Unknown);
+        }
+        let id = self.admit(
+            |grants| grants.contains_key(grant).then(|| grant.to_string()),
+            live,
+        )?;
+        let (mut grants, _) = self.lock();
+        let Some(Stage::AwaitingHost { presented }) = grants.get_mut(&id).map(|row| &mut row.stage)
+        else {
+            return Err(RemoteDenial::Unknown);
+        };
+        let secret = random_capability(PAIRING_PREFIX);
+        *presented = Some(digest(&secret));
+        Ok(RemoteSecret(secret))
+    }
+
+    fn redeem(
+        &self,
+        secret: &str,
+        client_label: &str,
+        peer: IpAddr,
+        live: &dyn Fn(&OwnerRef) -> bool,
+    ) -> Result<RemoteClient, RemoteDenial> {
+        if !peer.is_loopback() {
+            return Err(RemoteDenial::NonLoopback);
+        }
+        if !well_formed(secret, PAIRING_PREFIX) {
+            return Err(RemoteDenial::Unknown);
+        }
+        let wanted = digest(secret);
+        let presented = |grant: &Grant| match &grant.stage {
+            Stage::AwaitingHost {
+                presented: Some(presented),
+            } => constant_time_eq(presented, &wanted),
+            _ => false,
+        };
+        let id = self.admit(|grants| find(grants, &presented), live)?;
+        let (mut grants, now) = self.lock();
+        let Some(grant) = grants.get_mut(&id) else {
+            return Err(RemoteDenial::Unknown);
+        };
+        if !presented(grant) {
+            return Err(RemoteDenial::Unknown);
         }
         let token = random_capability(CLIENT_PREFIX);
-        let token_digest = digest(&token);
-        grant.pairing = None;
-        grant.client = Some(Client {
-            token_digest,
-            label: clean_label(Some(client_label)).unwrap_or_default(),
-            expires_at: now + client_ttl,
-        });
-        let session_id = grant.session_id.clone();
-        grants.by_client.insert(token_digest, id.clone());
+        grant.stage = Stage::Paired {
+            token: digest(&token),
+            client_label: device_label(client_label),
+        };
+        grant.expires = now.after(self.client_ttl);
         Ok(RemoteClient {
             grant: id,
-            session_id,
-            token,
-            expires_in_seconds: client_ttl.as_secs(),
+            session_id: grant.session_id.clone(),
+            token: RemoteSecret(token),
+            expires_in_seconds: self.client_ttl.as_secs(),
         })
     }
 
-    pub fn authorize(&self, token: &str, session_id: &str) -> Result<String, RemoteDenial> {
-        let grants = self.lock();
-        let id = grants
-            .by_client
-            .get(&digest(token))
-            .ok_or(RemoteDenial::Unknown)?;
-        let grant = grants.by_id.get(id).ok_or(RemoteDenial::Unknown)?;
-        let client = grant.client.as_ref().ok_or(RemoteDenial::Unknown)?;
-        if Instant::now() >= client.expires_at {
-            return Err(RemoteDenial::Expired);
+    fn authorize(
+        &self,
+        token: &str,
+        session_id: &str,
+        live: &dyn Fn(&OwnerRef) -> bool,
+    ) -> Result<String, RemoteDenial> {
+        if !well_formed(token, CLIENT_PREFIX) {
+            return Err(RemoteDenial::Unknown);
+        }
+        let wanted = digest(token);
+        let paired = |grant: &Grant| match &grant.stage {
+            Stage::Paired { token, .. } => constant_time_eq(token, &wanted),
+            Stage::AwaitingHost { .. } => false,
+        };
+        let id = self.admit(|grants| find(grants, &paired), live)?;
+        let (grants, _) = self.lock();
+        let Some(grant) = grants.get(&id) else {
+            return Err(RemoteDenial::Unknown);
+        };
+        if !paired(grant) {
+            return Err(RemoteDenial::Unknown);
         }
         if grant.session_id != session_id {
             return Err(RemoteDenial::ForeignSession);
         }
-        Ok(id.clone())
+        Ok(id)
     }
 
-    pub fn revoke_session(&self, session_id: &str) -> usize {
-        let mut grants = self.lock();
-        let ids: Vec<String> = grants
-            .by_id
-            .iter()
-            .filter(|(_, grant)| grant.session_id == session_id)
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in &ids {
-            grants.remove(id);
-        }
-        ids.len()
+    fn withdraw(&self, grant: &str) -> bool {
+        well_formed(grant, GRANT_PREFIX) && self.lock().0.remove(grant).is_some()
+    }
+
+    fn withdraw_owner(&self, owner: &OwnerRef) -> usize {
+        self.drop_where(|grant| grant.owner == *owner)
+    }
+
+    fn revoke_session(&self, session_id: &str) -> usize {
+        self.drop_where(|grant| grant.session_id == session_id)
+    }
+
+    fn drop_where(&self, gone: impl Fn(&Grant) -> bool) -> usize {
+        let (mut grants, _) = self.lock();
+        let before = grants.len();
+        grants.retain(|_, grant| !gone(grant));
+        before - grants.len()
     }
 }
 
-fn clean_label(label: Option<&str>) -> Result<String, String> {
-    let label = label.unwrap_or("").trim();
-    if label.chars().any(char::is_control) {
-        return Err("a remote label may not contain control characters".into());
+fn status(grants: &Table, owner: &OwnerRef, session: &str) -> Value {
+    let count = |state: RemoteState| {
+        grants
+            .values()
+            .filter(|grant| grant.held_by(owner, session) && grant.state() == state)
+            .count()
+    };
+    json!({
+        "transport": "runtime_http_sse",
+        "pairing": "host_presented",
+        "public_listener": false,
+        "tunnel": false,
+        "awaiting_host": count(RemoteState::AwaitingHost),
+        "paired": count(RemoteState::Paired),
+        "max_pending": MAX_PENDING_PER_SESSION,
+    })
+}
+
+fn clients(grants: &Table, now: Now, owner: &OwnerRef, session: &str) -> Value {
+    let mut rows: Vec<Value> = grants
+        .iter()
+        .filter(|(_, grant)| grant.held_by(owner, session))
+        .map(|(id, grant)| {
+            json!({
+                "grant": id,
+                "label": grant.label,
+                "state": grant.state().name(),
+                "expires_in_seconds": grant.expires.seconds_left(now),
+            })
+        })
+        .collect();
+    rows.sort_by(|a, b| a["grant"].as_str().cmp(&b["grant"].as_str()));
+    json!({ "clients": rows })
+}
+
+fn find(grants: &Table, matches: &dyn Fn(&Grant) -> bool) -> Option<String> {
+    let mut found = None;
+    for (id, grant) in grants {
+        if matches(grant) {
+            found = Some(id.clone());
+        }
     }
+    found
+}
+
+impl ExtensionHostManager {
+    fn remote_owner_is_live(&self, owner: &OwnerRef) -> bool {
+        let registry = self.shared.registry.lock().expect("registry lock");
+        registry.tier_of(owner) == Some(HostTier::Plugin)
+            && dsh_broker::granted(&registry, owner, DshService::Remote)
+    }
+
+    #[must_use]
+    pub fn remote_pairings(&self) -> Vec<RemotePairing> {
+        let rows = remote_grants().rows();
+        let registry = self.shared.registry.lock().expect("registry lock");
+        rows.into_iter()
+            .filter_map(|(owner, mut row)| {
+                let entry = registry.owner(&owner.plugin_id).filter(|entry| {
+                    entry.owner == owner
+                        && registry.tier_of(&owner) == Some(HostTier::Plugin)
+                        && dsh_broker::granted(&registry, &owner, DshService::Remote)
+                })?;
+                row.plugin_name.clone_from(&entry.plugin_name);
+                Some(row)
+            })
+            .collect()
+    }
+
+    pub fn present_remote_pairing(&self, grant: &str) -> Result<RemoteSecret, RemoteDenial> {
+        remote_grants().present(grant, &|owner| self.remote_owner_is_live(owner))
+    }
+
+    pub fn redeem_remote_pairing(
+        &self,
+        secret: &str,
+        client_label: &str,
+        peer: IpAddr,
+    ) -> Result<RemoteClient, RemoteDenial> {
+        remote_grants().redeem(secret, client_label, peer, &|owner| {
+            self.remote_owner_is_live(owner)
+        })
+    }
+
+    pub fn authorize_remote_client(
+        &self,
+        token: &str,
+        session_id: &str,
+    ) -> Result<String, RemoteDenial> {
+        remote_grants().authorize(token, session_id, &|owner| self.remote_owner_is_live(owner))
+    }
+
+    pub fn withdraw_remote_grant(&self, grant: &str) -> bool {
+        remote_grants().withdraw(grant)
+    }
+}
+
+fn label_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == ' ' || LABEL_MARKS.contains(ch)
+}
+
+fn names_the_host(label: &str) -> bool {
+    label
+        .chars()
+        .filter(|ch| ch.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>()
+        .contains(HOST_NAME)
+}
+
+fn plugin_label(label: Option<&str>) -> Result<String, String> {
+    let label: String = label.unwrap_or("").trim().nfkc().collect();
     if label.chars().count() > MAX_LABEL_CHARS {
         return Err(format!(
             "a remote label is at most {MAX_LABEL_CHARS} characters"
         ));
     }
-    Ok(label.to_string())
+    if !label.chars().all(label_char) || label.contains("  ") {
+        return Err(format!(
+            "a remote label holds letters, digits, single spaces and {LABEL_MARKS} only"
+        ));
+    }
+    if names_the_host(&label) {
+        return Err("a remote label may not name the host".into());
+    }
+    Ok(label)
+}
+
+fn device_label(label: &str) -> String {
+    let mut cleaned = String::new();
+    for ch in label.nfkc().filter(|ch| label_char(*ch)) {
+        if ch == ' ' && (cleaned.is_empty() || cleaned.ends_with(' ')) {
+            continue;
+        }
+        if cleaned.chars().count() == MAX_LABEL_CHARS {
+            break;
+        }
+        cleaned.push(ch);
+    }
+    let cleaned = cleaned.trim_end();
+    if names_the_host(cleaned) {
+        String::new()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+fn well_formed(value: &str, prefix: &str) -> bool {
+    value.strip_prefix(prefix).is_some_and(|random| {
+        random.len() == 64 && random.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
 }
 
 fn digest(secret: &str) -> [u8; 32] {
@@ -424,157 +710,4 @@ fn random_capability(prefix: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use codewhale_config::OwnerRef;
-
-    fn call(plugin: &str, session: &str, method: &str, input: Value) -> BrokerCall {
-        let owner = OwnerRef {
-            plugin_id: plugin.into(),
-            generation: 1,
-            owner_token: "owner".into(),
-        };
-        BrokerCall {
-            context: super::super::dsh_broker::BrokerContext::detached_for_test(
-                &owner,
-                DshService::Remote,
-            ),
-            owner,
-            session_id: session.into(),
-            service: DshService::Remote,
-            method: method.into(),
-            input,
-        }
-    }
-
-    #[tokio::test]
-    async fn remote_grants_pair_present_redeem_once_and_revoke_bound_to_plugin_and_session() {
-        let grants = RemoteGrants::new(PAIRING_TTL, CLIENT_TTL);
-        let paired = grants
-            .serve(&call("a", "s1", "pair", json!({"label": "phone"})))
-            .unwrap();
-        let id = paired["grant"].as_str().unwrap().to_string();
-        assert_eq!(paired["state"], "awaiting_host");
-        assert!(!paired.to_string().contains(PAIRING_PREFIX));
-
-        let shown = grants.awaiting_host();
-        assert_eq!(shown.len(), 1);
-        assert_eq!(
-            (shown[0].plugin_id.as_str(), shown[0].session_id.as_str()),
-            ("a", "s1")
-        );
-        let client = grants.redeem(&shown[0].secret, "pixel").unwrap();
-        assert_eq!(client.session_id, "s1");
-        assert_eq!(
-            grants.redeem(&shown[0].secret, "pixel"),
-            Err(RemoteDenial::Replayed)
-        );
-        assert!(grants.awaiting_host().is_empty());
-        assert_eq!(grants.authorize(&client.token, "s1"), Ok(id.clone()));
-        assert_eq!(
-            grants.authorize(&client.token, "s2"),
-            Err(RemoteDenial::ForeignSession)
-        );
-
-        let listed = grants
-            .serve(&call("a", "s1", "clients", json!({})))
-            .unwrap();
-        assert_eq!(listed["clients"][0]["state"], "paired");
-        assert_eq!(listed["clients"][0]["client"], "pixel");
-        assert!(!listed.to_string().contains(CLIENT_PREFIX));
-        for (plugin, session) in [("b", "s1"), ("a", "s2")] {
-            assert_eq!(
-                grants
-                    .serve(&call(plugin, session, "clients", json!({})))
-                    .unwrap(),
-                json!({"clients": []})
-            );
-            assert!(matches!(
-                grants.serve(&call(plugin, session, "revoke", json!({"grant": id}))),
-                Err(BrokerRefusal::InvalidInput { .. })
-            ));
-        }
-        assert_eq!(grants.authorize(&client.token, "s1"), Ok(id.clone()));
-        assert_eq!(
-            grants
-                .serve(&call("a", "s1", "revoke", json!({"grant": id})))
-                .unwrap(),
-            json!({"grant": id, "revoked": true})
-        );
-        assert_eq!(
-            grants.authorize(&client.token, "s1"),
-            Err(RemoteDenial::Unknown)
-        );
-    }
-
-    #[tokio::test]
-    async fn remote_grants_refuse_stale_pairings_and_clients_and_cap_pending_pairings() {
-        let stale = RemoteGrants::new(Duration::ZERO, Duration::from_secs(60));
-        stale.serve(&call("a", "s", "pair", json!({}))).unwrap();
-        let secret = {
-            let grants = stale.grants.lock().unwrap();
-            grants.by_id.values().next().unwrap().pairing.clone()
-        };
-        assert!(stale.awaiting_host().is_empty());
-        assert_eq!(
-            stale.redeem(&secret.unwrap_or_default(), "x"),
-            Err(RemoteDenial::Unknown)
-        );
-
-        let expiring = RemoteGrants::new(Duration::from_secs(60), Duration::ZERO);
-        expiring.serve(&call("a", "s", "pair", json!({}))).unwrap();
-        let secret = expiring.awaiting_host()[0].secret.clone();
-        let client = expiring.redeem(&secret, "x").unwrap();
-        assert_eq!(
-            expiring.authorize(&client.token, "s"),
-            Err(RemoteDenial::Expired)
-        );
-
-        let capped = RemoteGrants::new(PAIRING_TTL, CLIENT_TTL);
-        for _ in 0..MAX_PENDING_PAIRINGS {
-            capped.serve(&call("a", "s", "pair", json!({}))).unwrap();
-        }
-        assert!(matches!(
-            capped.serve(&call("a", "s", "pair", json!({}))),
-            Err(BrokerRefusal::InvalidInput { .. })
-        ));
-        assert!(capped.serve(&call("b", "s", "pair", json!({}))).is_ok());
-        assert!(matches!(
-            capped.serve(&call("a", "s", "pair", json!({"label": "a\u{7}"}))),
-            Err(BrokerRefusal::InvalidInput { .. })
-        ));
-        assert_eq!(capped.revoke_session("s"), MAX_PENDING_PAIRINGS + 1);
-        assert!(capped.awaiting_host().is_empty());
-    }
-
-    #[tokio::test]
-    async fn remote_methods_decode_strictly_and_refuse_unknown_methods() {
-        let grants = RemoteGrants::new(PAIRING_TTL, CLIENT_TTL);
-        for method in ["listen", "tunnel", "expose", "anything"] {
-            assert!(matches!(
-                grants.serve(&call("a", "s", method, json!({}))),
-                Err(BrokerRefusal::UnknownMethod {
-                    service: DshService::Remote,
-                    ..
-                })
-            ));
-        }
-        for (method, input) in [
-            ("pair", json!({"label": 3})),
-            ("pair", json!({"label": "x", "public": true})),
-            ("revoke", json!({})),
-            ("status", Value::Null),
-        ] {
-            assert!(
-                matches!(
-                    grants.serve(&call("a", "s", method, input.clone())),
-                    Err(BrokerRefusal::InvalidInput { .. })
-                ),
-                "{method} {input}"
-            );
-        }
-        let status = grants.serve(&call("a", "s", "status", json!({}))).unwrap();
-        assert_eq!(status["public_listener"], false);
-        assert_eq!(status["transport"], "runtime_http_sse");
-    }
-}
+mod tests;

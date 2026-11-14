@@ -337,7 +337,8 @@
       "avatars",
       "mcp",
       "logger",
-      "userQuestions"
+      "userQuestions",
+      "remote"
     ],
     "events": [
       {

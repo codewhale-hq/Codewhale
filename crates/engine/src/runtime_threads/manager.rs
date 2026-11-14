@@ -5613,6 +5613,7 @@ impl RuntimeThreadManager {
     /// deleting a thread calls this, so a grant never outlives the
     /// conversation it was given in.
     pub(super) fn take_approval_grants(&self, thread_id: &str) -> Vec<RuntimeApprovalGrant> {
+        crate::extension_host::end_remote_session(thread_id);
         self.grants
             .revoke_thread(thread_id, "runtime", "thread archived or deleted")
             .iter()

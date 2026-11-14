@@ -2692,9 +2692,9 @@ async fn dsh_network_arm_refuses_foreign_tickets_unknown_methods_and_revoked_own
 
 #[tokio::test]
 async fn dsh_remote_broker_pairs_through_the_host_and_refuses_foreign_stale_and_unknown_calls() {
+    use super::RemoteDenial;
     use super::dsh_broker::TABLE;
     use super::protocol::DshService;
-    use super::{RemoteDenial, remote_grants};
     use std::collections::BTreeMap;
 
     let _grants = super::dsh_broker::TestGrants::only(&[DshService::Workspace, DshService::Remote]);
@@ -2727,8 +2727,10 @@ async fn dsh_remote_broker_pairs_through_the_host_and_refuses_foreign_stale_and_
     assert_eq!(paired["state"], "awaiting_host");
     assert!(!paired.to_string().contains("cwrp_"), "{paired}");
 
-    let presented = remote_grants()
-        .awaiting_host()
+    let loopback = std::net::IpAddr::from([127, 0, 0, 1]);
+    let presented = f
+        .manager
+        .remote_pairings()
         .into_iter()
         .find(|row| row.grant == grant)
         .expect("the host sees the pairing");
@@ -2736,17 +2738,24 @@ async fn dsh_remote_broker_pairs_through_the_host_and_refuses_foreign_stale_and_
         (presented.plugin_id.as_str(), presented.session_id.as_str()),
         ("a", "remote-session-a")
     );
-    let client = remote_grants().redeem(&presented.secret, "pixel").unwrap();
+    let secret = f.manager.present_remote_pairing(&grant).unwrap();
+    let client = f
+        .manager
+        .redeem_remote_pairing(secret.expose(), "pixel", loopback)
+        .unwrap();
+    let token = client.token.expose();
     assert_eq!(
-        remote_grants().redeem(&presented.secret, "pixel"),
-        Err(RemoteDenial::Replayed)
+        f.manager
+            .redeem_remote_pairing(secret.expose(), "pixel", loopback)
+            .unwrap_err(),
+        RemoteDenial::Unknown
     );
     assert_eq!(
-        remote_grants().authorize(&client.token, "remote-session-a"),
+        f.manager.authorize_remote_client(token, "remote-session-a"),
         Ok(grant.clone())
     );
     assert_eq!(
-        remote_grants().authorize(&client.token, "remote-session-b"),
+        f.manager.authorize_remote_client(token, "remote-session-b"),
         Err(RemoteDenial::ForeignSession)
     );
 
@@ -2809,7 +2818,7 @@ async fn dsh_remote_broker_pairs_through_the_host_and_refuses_foreign_stale_and_
         .unwrap();
     assert_eq!(listed_b, json!({"clients": []}));
     assert_eq!(
-        remote_grants().authorize(&client.token, "remote-session-a"),
+        f.manager.authorize_remote_client(token, "remote-session-a"),
         Ok(grant.clone())
     );
 
@@ -2829,8 +2838,8 @@ async fn dsh_remote_broker_pairs_through_the_host_and_refuses_foreign_stale_and_
         (error_code::REFUSED, "ticket_refused".into())
     );
     assert!(
-        remote_grants()
-            .authorize(&client.token, "remote-session-a")
+        f.manager
+            .authorize_remote_client(token, "remote-session-a")
             .is_ok(),
         "a paired client outlives the invocation that asked for it"
     );
@@ -2858,7 +2867,7 @@ async fn dsh_remote_broker_pairs_through_the_host_and_refuses_foreign_stale_and_
         .unwrap();
     assert_eq!(revoked, json!({"grant": grant, "revoked": true}));
     assert_eq!(
-        remote_grants().authorize(&client.token, "remote-session-a"),
+        f.manager.authorize_remote_client(token, "remote-session-a"),
         Err(RemoteDenial::Unknown)
     );
     drop(guard_a2);
