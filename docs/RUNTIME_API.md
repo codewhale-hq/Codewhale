@@ -3310,8 +3310,7 @@ refuses OpenAI Codex. An Engine without this route answers `404`.
 
 Reports which external agent CLIs this computer already has, without starting a
 session. It covers Claude, Codex, DeepSeek Harness, Antigravity (`agy acp`),
-OpenCode, Kimi Code, Mistral Vibe, Qoder, CodeBuddy, Grok and Qwen Code. `state` is `installed` or `not_installed`; a binary is
-looked up on `PATH` (absolute entries only; on Windows the spawnable PATHEXT suffixes `.com/.exe/.bat/.cmd` and `%APPDATA%\npm`) and in the usual per-user bin directories. For an installed
+OpenCode, Kimi Code, Mistral Vibe, Qoder, CodeBuddy, Grok, Qwen Code and GitHub Copilot CLI. `state` is `installed` or `not_installed`; a binary islooked up on `PATH` (absolute entries only; on Windows the spawnable PATHEXT suffixes `.com/.exe/.bat/.cmd` and `%APPDATA%\npm`) and in the usual per-user bin directories. For an installed
 agent the route runs `--version` and, where the CLI speaks Agent Client Protocol
 itself, one `initialize` request on stdin, concurrently. `acp` is `native` when
 that handshake answered, `adapter` for CLIs that need a separate adapter
