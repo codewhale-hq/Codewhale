@@ -312,6 +312,7 @@ mod tests {
             id: "shell_dead".to_string(),
             job_id: "shell_dead".to_string(),
             command: "cargo test".to_string(),
+            description: None,
             cwd: PathBuf::from("/tmp/repo"),
             status,
             started_at: Some(chrono::Utc::now()),

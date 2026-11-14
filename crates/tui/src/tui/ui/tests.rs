@@ -10338,6 +10338,7 @@ fn shell_live_output_update_matches_exact_task_id_only() {
             id: "shell_a".to_string(),
             job_id: "shell_a".to_string(),
             command: "cargo test --workspace".to_string(),
+            description: None,
             cwd: PathBuf::from("/tmp/repo"),
             status: ShellStatus::Running,
             exit_code: None,
@@ -10368,6 +10369,7 @@ fn shell_live_output_update_matches_exact_task_id_only() {
             id: "shell_b".to_string(),
             job_id: "shell_b".to_string(),
             command: "cargo test --workspace".to_string(),
+            description: None,
             cwd: PathBuf::from("/tmp/repo"),
             status: ShellStatus::Running,
             exit_code: None,
@@ -10441,6 +10443,7 @@ fn shell_live_output_update_marks_stale_running_job_static() {
             id: "shell_stale".to_string(),
             job_id: "shell_stale".to_string(),
             command: "cargo test --workspace".to_string(),
+            description: None,
             cwd: PathBuf::from("/tmp/repo"),
             status: ShellStatus::Running,
             exit_code: None,
@@ -10528,6 +10531,7 @@ fn shell_live_output_update_finalizes_background_exec_output() {
             id: "shell_a".to_string(),
             job_id: "shell_a".to_string(),
             command: "cargo test --workspace".to_string(),
+            description: None,
             cwd: PathBuf::from("/tmp/repo"),
             status: ShellStatus::Completed,
             exit_code: Some(0),
@@ -10622,6 +10626,7 @@ fn shell_live_output_update_skips_finalized_exec_cell() {
             id: "shell_a".to_string(),
             job_id: "shell_a".to_string(),
             command: "cargo test --workspace".to_string(),
+            description: None,
             cwd: PathBuf::from("/tmp/repo"),
             status: ShellStatus::Completed,
             exit_code: Some(0),
@@ -17420,6 +17425,7 @@ fn shell_job(
         id: id.to_string(),
         job_id: id.to_string(),
         command: command.to_string(),
+        description: None,
         cwd: std::path::PathBuf::from("/tmp"),
         status,
         exit_code,
@@ -31861,6 +31867,7 @@ fn background_notice_waits_for_finite_work_and_a_busy_parent() {
     app.is_loading = true;
     app.background_finished.push(FinishedWork::shell(
         "cargo build",
+        None,
         FinishedOutcome::Done,
         "exit 0 · 12s".to_string(),
         Duration::from_secs(12),
@@ -31887,6 +31894,7 @@ fn a_shell_finished_during_a_completed_turn_is_left_to_the_turn_notice() {
     let shell = |command: &str| {
         FinishedWork::shell(
             command,
+            None,
             FinishedOutcome::Done,
             "exit 0 · 45s".to_string(),
             Duration::from_secs(45),
@@ -35500,6 +35508,51 @@ fn background_review_failed_shell_receipt_uses_context_neutral_copy() {
     assert_eq!(
         app.status_toasts.back().unwrap().text,
         "shell · false · échec · code de sortie 2"
+    );
+}
+
+#[test]
+fn project_shell_jobs_prefers_description_for_row_label_and_finished_notice() {
+    use super::task_projection::project_shell_jobs;
+    use codewhale_engine::tools::shell::ShellStatus;
+
+    let mut app = create_test_app();
+    let mut described = shell_job(
+        "shell_desc",
+        "cargo test --workspace --locked",
+        ShellStatus::Completed,
+        Some(0),
+    );
+    described.description = Some("  run\n  workspace   tests  ".to_string());
+
+    let mut blank_desc = shell_job(
+        "shell_blank",
+        "  echo\n  fallback   cmd ",
+        ShellStatus::Running,
+        None,
+    );
+    blank_desc.description = Some("   \t ".to_string());
+
+    let mut entries = Vec::new();
+    assert!(project_shell_jobs(
+        &mut app,
+        &mut entries,
+        &[blank_desc, described]
+    ));
+    assert_eq!(entries[0].id, "shell_blank");
+    assert_eq!(entries[0].prompt_summary, "shell: echo fallback cmd");
+    assert_eq!(entries[1].id, "shell_desc");
+    assert_eq!(entries[1].prompt_summary, "shell: run workspace tests");
+    assert_eq!(app.background_finished.len(), 1);
+    assert_eq!(app.background_finished[0].name, "run workspace tests");
+    assert!(
+        app.status_toasts
+            .back()
+            .unwrap()
+            .text
+            .starts_with("shell · run workspace tests · "),
+        "{:?}",
+        app.status_toasts.back()
     );
 }
 

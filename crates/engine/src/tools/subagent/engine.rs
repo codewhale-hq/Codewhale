@@ -816,6 +816,11 @@ impl ChildAuthority {
             .collect::<Vec<_>>();
 
         for tool in &mut tools {
+            if tool.name == "bash"
+                && self.grant.shell == codewhale_agent_contract::worker_profile::ShellGrant::Inspect
+            {
+                crate::tools::shell::strip_readonly_bash_schema_properties(&mut tool.input_schema);
+            }
             if !is_action_family(&tool.name) {
                 continue;
             }

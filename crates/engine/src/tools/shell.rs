@@ -217,6 +217,8 @@ pub struct ShellJobSnapshot {
     pub id: String,
     pub job_id: String,
     pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub cwd: PathBuf,
     pub status: ShellStatus,
     /// Explicitly backgrounded or detached from the foreground waiter.
@@ -1131,6 +1133,7 @@ impl PtyDimensions {
 pub struct BackgroundShell {
     pub id: String,
     pub command: String,
+    pub description: Option<String>,
     pub working_dir: PathBuf,
     pub status: ShellStatus,
     background: bool,
@@ -1784,6 +1787,7 @@ impl BackgroundShell {
             id: self.id.clone(),
             job_id: self.id.clone(),
             command: self.command.clone(),
+            description: self.description.clone(),
             cwd: self.working_dir.clone(),
             status: self.status.clone(),
             background: self.background,
@@ -2109,6 +2113,7 @@ impl ShellManager {
             BackgroundShell {
                 id,
                 command: String::new(),
+                description: None,
                 working_dir: self.default_workspace.clone(),
                 status: ShellStatus::Completed,
                 background: true,
@@ -3050,6 +3055,7 @@ impl ShellManager {
         let mut bg_shell = BackgroundShell {
             id: task_id.clone(),
             command: original_command.to_string(),
+            description: None,
             working_dir: working_dir.to_path_buf(),
             status: ShellStatus::Running,
             background: true,
@@ -3647,6 +3653,15 @@ impl ShellManager {
         Ok(())
     }
 
+    pub fn tag_description(&mut self, task_id: &str, description: Option<String>) -> Result<()> {
+        let shell = self
+            .processes
+            .get_mut(task_id)
+            .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
+        shell.description = description;
+        Ok(())
+    }
+
     /// Inspect full output for a live or stale job.
     pub fn inspect_job(&mut self, task_id: &str) -> Result<ShellJobDetail> {
         if let Some(shell) = self.processes.get_mut(task_id) {
@@ -3861,6 +3876,7 @@ impl ShellManager {
                 id: id.clone(),
                 job_id: id,
                 command: command.into(),
+                description: None,
                 cwd,
                 status: ShellStatus::Killed,
                 background: true,
@@ -4445,9 +4461,21 @@ fn enforced_readonly_input(input: &serde_json::Value) -> bool {
         && fields.keys().all(|key| {
             matches!(
                 key.as_str(),
-                "action" | "command" | "cwd" | "timeout_ms" | "read_only"
+                "action"
+                    | "command"
+                    | "cwd"
+                    | "timeout_ms"
+                    | "read_only"
+                    | "description"
+                    | "background"
             )
         })
+        && fields
+            .get("description")
+            .is_none_or(|value| value.is_null() || value.is_string())
+        && fields
+            .get("background")
+            .is_none_or(|value| value == &serde_json::Value::Bool(false))
         && fields
             .get("action")
             .is_none_or(|action| action.as_str() == Some("run"))
@@ -4673,9 +4701,17 @@ fn exec_shell_input_is_parallel_readonly_shape(input: &serde_json::Value) -> boo
     let Some(fields) = input.as_object() else {
         return false;
     };
+    if fields.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "action" | "command" | "cwd" | "timeout_ms" | "description" | "background"
+        )
+    }) {
+        return false;
+    }
     if fields
-        .keys()
-        .any(|key| !matches!(key.as_str(), "action" | "command" | "cwd" | "timeout_ms"))
+        .get("description")
+        .is_some_and(|value| !value.is_null() && !value.is_string())
     {
         return false;
     }
@@ -5145,6 +5181,7 @@ fn persistent_services_enabled_for(context: &ToolContext) -> bool {
 async fn execute_foreground_via_background(
     context: &ToolContext,
     command: &str,
+    description: Option<String>,
     heavy_permit: Option<HeavyCommandPermit>,
     working_dir: Option<String>,
     timeout_ms: Option<u64>,
@@ -5212,6 +5249,7 @@ async fn execute_foreground_via_background(
             .get_mut(&task_id)
             .ok_or_else(|| anyhow!("foreground shell {task_id} is not tracked"))?;
         process.background = false;
+        process.description = description;
         // #6689: the receipt identity is what the manager recorded for this
         // spawn — the admitted command and the directory handed to the OS —
         // never the before-hook request. Only pipe-backed, unsandboxed local
@@ -5582,6 +5620,7 @@ fn contract_bash_error_status(result: &ShellResult, timeout_ms: Option<u64>) -> 
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish_contract_bash_result(
     result: ShellResult,
     timeout_ms: Option<u64>,
@@ -5589,6 +5628,8 @@ fn finish_contract_bash_result(
     execution_receipt: Option<serde_json::Value>,
     readonly_network: bool,
     network_restricted_hint: Option<&str>,
+    explicit_background: bool,
+    description: Option<&str>,
 ) -> Result<ToolResult, ToolError> {
     let sandbox_denied_hint = if network_restricted_hint.is_none() {
         shell_sandbox_denied_hint(context, &result)
@@ -5617,6 +5658,9 @@ fn finish_contract_bash_result(
         "sandboxed": result.sandboxed, "sandbox_type": result.sandbox_type,
         "task_id": result.task_id, "backgrounded": result.status == ShellStatus::Running,
     });
+    if let Some(description) = description {
+        metadata["description"] = json!(description);
+    }
     if let Some(receipt) = execution_receipt {
         metadata["execution_receipt"] = receipt;
     }
@@ -5629,20 +5673,26 @@ fn finish_contract_bash_result(
     }
     if result.status == ShellStatus::Running {
         let task_id = result.task_id.as_deref().unwrap_or("unknown");
-        let so_far = if output.trim().is_empty() {
-            "(no output yet)".to_string()
+        let lead = if explicit_background {
+            format!("Background task started: {task_id}.")
         } else {
-            tail_lines(output.trim(), 20)
+            let so_far = if output.trim().is_empty() {
+                "(no output yet)".to_string()
+            } else {
+                tail_lines(output.trim(), 20)
+            };
+            let notice = promotion_notice(context, task_id, result.duration_ms / 1_000, &output);
+            format!("{notice}\n\nOutput so far:\n{so_far}")
         };
-        let notice = promotion_notice(context, task_id, result.duration_ms / 1_000, &output);
         let completion = if context.owner_agent_id.is_some() {
             "Its completion stays in task/status and is not injected into the parent model."
         } else {
             "Its completion reaches you as a runtime event before your next step; if you end the turn first, a headless run stops it unseen."
         };
         return Ok(ToolResult::success(format!(
-            "{notice}\n\nOutput so far:\n{so_far}\n\n{completion} To see more output or block until it finishes, call `task_shell_wait` directly with task_id=\"{task_id}\"; do not sleep-poll with bash. To stop it, send the same call with cancel=true. It also stops when the session ends."
-        )).with_metadata(metadata));
+            "{lead}\n\n{completion} To see more output or block until it finishes, call `task_shell_wait` directly with task_id=\"{task_id}\"; do not sleep-poll with bash. To stop it, send the same call with cancel=true. It also stops when the session ends."
+        ))
+        .with_metadata(metadata));
     }
     if result.status != ShellStatus::Completed {
         // A nonzero exit, timeout, or kill stays a failed tool call, but it
@@ -5687,7 +5737,9 @@ impl ToolSpec for LowercaseBashTool {
             "properties": {
                 "command": { "type": "string", "description": guidance::runtime_command_guidance() },
                 "description": { "type": "string", "description": "Optional few-word summary shown to the user beside the command." },
+                "cwd": { "type": "string", "description": "Optional workspace-relative working directory." },
                 "timeout": { "type": "number", "description": "Optional seconds to wait in the foreground (default 30 seconds). A command still running then is not killed: it moves to the background by itself and you get its output so far, how long ago it last printed, its build phase, and a task_id. Call task_shell_wait directly with that task_id to read more or wait for it; do not sleep-poll with bash." },
+                "background": { "type": "boolean", "description": "Run immediately in the background and return a task_id (good for >5s or parallel jobs; incompatible with read_only=true). Call task_shell_wait to wait or cancel." },
                 "read_only": { "type": "boolean", "description": "Set true to run analysis code (including Python/SQLite) or a network fetch (curl) with mandatory native filesystem read-only isolation. Outbound network is on only in Full Access when the session sandbox, the network policy and your network grant allow it. Available during peer writes. Refused when native enforcement is unavailable; no background, stdin, external backend, or sandbox escalation." },
                 "sandbox_permissions": {
                     "type": "string",
@@ -5713,8 +5765,9 @@ impl ToolSpec for LowercaseBashTool {
     }
 
     fn approval_requirement_for(&self, input: &serde_json::Value) -> ApprovalRequirement {
-        let translated = contract_bash_legacy_input(input).unwrap_or_else(|_| input.clone());
-        BashTool::contract_delegate().approval_requirement_for(&translated)
+        contract_bash_legacy_input(input).map_or(ApprovalRequirement::Required, |translated| {
+            BashTool::contract_delegate().approval_requirement_for(&translated)
+        })
     }
 
     fn is_read_only_for(&self, input: &serde_json::Value) -> bool {
@@ -5723,7 +5776,18 @@ impl ToolSpec for LowercaseBashTool {
     }
 
     fn supports_parallel_for(&self, input: &serde_json::Value) -> bool {
-        self.is_read_only_for(input)
+        contract_bash_legacy_input(input).is_ok_and(|translated| {
+            BashTool::contract_delegate().is_read_only_for(&translated)
+                || translated
+                    .get("background")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+        })
+    }
+
+    fn starts_detached_for(&self, input: &serde_json::Value) -> bool {
+        contract_bash_legacy_input(input)
+            .is_ok_and(|translated| BashTool::contract_delegate().starts_detached_for(&translated))
     }
 
     fn refusal_before_approval(
@@ -5731,7 +5795,7 @@ impl ToolSpec for LowercaseBashTool {
         input: &serde_json::Value,
         context: &ToolContext,
     ) -> Option<ToolResult> {
-        let translated = contract_bash_legacy_input(input).ok()?;
+        let translated = contract_bash_legacy_input(input).unwrap_or_else(|_| input.clone());
         BashTool::contract_delegate().refusal_before_approval(&translated, context)
     }
 
@@ -5744,6 +5808,15 @@ impl ToolSpec for LowercaseBashTool {
         BashTool::contract_delegate()
             .execute(translated, context)
             .await
+    }
+}
+
+pub fn strip_readonly_bash_schema_properties(schema: &mut serde_json::Value) {
+    if let Some(properties) = schema
+        .get_mut("properties")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        properties.remove("background");
     }
 }
 
@@ -5782,7 +5855,9 @@ fn contract_bash_legacy_input(input: &serde_json::Value) -> Result<serde_json::V
                 key.as_str(),
                 "command"
                     | "description"
+                    | "cwd"
                     | "timeout"
+                    | "background"
                     | "read_only"
                     | "sandbox_permissions"
                     | "justification"
@@ -5797,8 +5872,16 @@ fn contract_bash_legacy_input(input: &serde_json::Value) -> Result<serde_json::V
         )));
     }
     let command = required_str(input, "command")?;
-    optional_str(input, "description")?;
     let mut translated = json!({"command": command});
+    if let Some(description) = optional_str(input, "description")?
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        translated["description"] = json!(description);
+    }
+    if let Some(cwd) = optional_str(input, "cwd")? {
+        translated["cwd"] = json!(cwd);
+    }
     if let Some(timeout) = input.get("timeout") {
         let seconds = timeout.as_f64().ok_or_else(|| {
             ToolError::invalid_input("Invalid timeout: expected a finite number of seconds")
@@ -5817,11 +5900,24 @@ fn contract_bash_legacy_input(input: &serde_json::Value) -> Result<serde_json::V
         }
         translated["timeout_ms"] = json!((millis as u64).max(1));
     }
+    let mut read_only = false;
     if let Some(value) = input.get("read_only") {
-        if !value.is_boolean() {
+        let Some(enabled) = value.as_bool() else {
             return Err(type_mismatch("read_only", value, "a boolean"));
-        }
+        };
+        read_only = enabled;
         translated["read_only"] = value.clone();
+    }
+    if let Some(value) = input.get("background") {
+        let enabled = value
+            .as_bool()
+            .ok_or_else(|| type_mismatch("background", value, "a boolean"))?;
+        if read_only && enabled {
+            return Err(ToolError::invalid_input(
+                "read_only=true accepts only foreground run with command, cwd and timeout_ms; background, input, interactive modes and sandbox escalation are incompatible",
+            ));
+        }
+        translated["background"] = json!(enabled);
     }
     for field in ["sandbox_permissions", "justification"] {
         if let Some(value) = input.get(field) {
@@ -5926,6 +6022,10 @@ impl ToolSpec for BashTool {
                 "command": {
                     "type": "string",
                     "description": guidance::runtime_command_guidance()
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional few-word summary shown to the user beside the command."
                 },
                 "read_only": { "type": "boolean", "description": "Set true to require native filesystem read-only execution, with outbound network only in Full Access when the session sandbox, the network policy and your network grant allow it. Only foreground run with command, cwd and timeout_ms; unavailable enforcement fails closed." },
                 "timeout_ms": {
@@ -6188,6 +6288,10 @@ impl ToolSpec for BashTool {
             }
         }
         let command = require_no_nul(required_str(&input, "command")?, "command")?;
+        let description = optional_str(&input, "description")?
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
         match context.shell_policy {
             ShellPolicy::None => {
                 return Ok(ToolResult::error(
@@ -6618,6 +6722,9 @@ impl ToolSpec for BashTool {
                 "resource_admission_wait_ms": admission_wait_ms,
                 "resource_admission_limit": admission_limit,
             });
+            if let Some(description) = description.as_deref() {
+                metadata["description"] = json!(description);
+            }
             attach_shell_owner_metadata(&mut metadata, context);
             attach_cargo_failure_summary(&mut metadata, command, &result);
             attach_python_build_dependency_hint(&mut metadata, python_dependency_hint);
@@ -6703,11 +6810,17 @@ impl ToolSpec for BashTool {
                     .attach_heavy_permit(task_id, permit)
                     .map_err(|error| ToolError::execution_failed(error.to_string()))?;
             }
+            if let (Ok(result), Some(description)) = (&result, description.clone())
+                && let Some(task_id) = result.task_id.as_deref()
+            {
+                let _ = manager.tag_description(task_id, Some(description));
+            }
             result
         } else {
             execute_foreground_via_background(
                 context,
                 command,
+                description.clone(),
                 heavy_permit,
                 working_dir,
                 timeout_ms,
@@ -6771,6 +6884,8 @@ impl ToolSpec for BashTool {
                         execution_receipt,
                         readonly_network,
                         network_restricted_hint,
+                        background,
+                        description.as_deref(),
                     );
                 }
                 let task_id_str = result.task_id.clone().unwrap_or_default();
@@ -6922,6 +7037,9 @@ impl ToolSpec for BashTool {
                         }),
                     }),
                 });
+                if let Some(description) = description.as_deref() {
+                    metadata["description"] = json!(description);
+                }
                 if let Some(receipt) = execution_receipt {
                     metadata["execution_receipt"] = receipt;
                 }

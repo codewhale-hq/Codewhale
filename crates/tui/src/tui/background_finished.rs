@@ -90,19 +90,31 @@ impl FinishedWork {
         }
     }
 
+    pub(crate) fn shell_display_label(command: &str, description: Option<&str>) -> String {
+        let normalized_description = description
+            .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|value| !value.is_empty());
+        if let Some(description) = normalized_description {
+            description
+        } else {
+            command.split_whitespace().collect::<Vec<_>>().join(" ")
+        }
+    }
+
     #[must_use]
     pub fn shell(
         command: &str,
+        description: Option<&str>,
         outcome: FinishedOutcome,
         summary: String,
         elapsed: Duration,
     ) -> Self {
-        let command = command.split_whitespace().collect::<Vec<_>>().join(" ");
-        let name = if command.chars().count() > SHELL_NAME_CHARS {
-            let kept: String = command.chars().take(SHELL_NAME_CHARS - 1).collect();
+        let label = Self::shell_display_label(command, description);
+        let name = if label.chars().count() > SHELL_NAME_CHARS {
+            let kept: String = label.chars().take(SHELL_NAME_CHARS - 1).collect();
             format!("{kept}…")
         } else {
-            command
+            label
         };
         Self {
             kind: FinishedKind::Shell,
@@ -318,6 +330,7 @@ mod tests {
         // A shell-only batch waits for the parent turn to go idle.
         let shells = vec![FinishedWork::shell(
             "cargo build",
+            None,
             FinishedOutcome::Done,
             "exit 0 · 12s".to_string(),
             Duration::from_secs(12),
@@ -399,6 +412,7 @@ mod tests {
         ] {
             let batch = vec![FinishedWork::shell(
                 "npm   test --\n  --watch=false",
+                None,
                 outcome,
                 summary.to_string(),
                 Duration::from_secs(12),
@@ -415,6 +429,7 @@ mod tests {
         let stopped = agent("cancelled", SubAgentStatus::Cancelled, "Stopped.");
         let stopped_shell = FinishedWork::shell(
             "sleep 99",
+            None,
             FinishedOutcome::Stopped,
             "killed".into(),
             Duration::ZERO,
@@ -461,6 +476,7 @@ mod tests {
     fn background_review_notifications_hide_commands_and_task_errors() {
         let shell = FinishedWork::shell(
             "mysql -psecret123 private_customer",
+            None,
             FinishedOutcome::Failed,
             "private output".into(),
             Duration::ZERO,
@@ -509,6 +525,31 @@ mod tests {
         assert!(!payload.render_inline().contains("shortpw"));
         assert!(!payload.detail().unwrap().contains("user:"));
         assert!(payload.detail().unwrap().contains("example.test"));
+    }
+
+    #[test]
+    fn shell_prefers_normalized_description_and_preserves_lock_privacy() {
+        let described = FinishedWork::shell(
+            "mysql -psecret123 private_customer",
+            Some("  run\t workspace   diagnostics  "),
+            FinishedOutcome::Done,
+            "exit 0 · 2s".into(),
+            Duration::from_secs(2),
+        );
+        assert_eq!(described.name, "run workspace diagnostics");
+
+        let fallback = FinishedWork::shell(
+            "  cargo   test\n -p codewhale-tui ",
+            Some("   \t\n "),
+            FinishedOutcome::Done,
+            "exit 0 · 2s".into(),
+            Duration::from_secs(2),
+        );
+        assert_eq!(fallback.name, "cargo test -p codewhale-tui");
+
+        let payload = background_finished_payload(Locale::En, &[described], false).unwrap();
+        assert!(!payload.render_inline().contains("diagnostics"));
+        assert!(!payload.render_inline().contains("secret123"));
     }
 
     #[test]
