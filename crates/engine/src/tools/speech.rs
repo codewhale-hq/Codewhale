@@ -164,9 +164,13 @@ impl ToolSpec for SpeechTool {
 
         let client = self.client.clone().ok_or_else(|| {
             ToolError::not_available(
-                "speech tool requires an active Xiaomi MiMo API client; configure provider = \"xiaomi-mimo\" and an API key first",
+                "speech tool requires an active Xiaomi MiMo or DeepSeek API client; configure provider = \"xiaomi-mimo\" or \"deepseek\" and an API key first",
             )
         })?;
+        let is_deepseek = matches!(
+            client.api_provider(),
+            ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
+        );
 
         let requested_format_raw = optional_str(&input, "format")?
             .map(str::trim)
@@ -174,6 +178,14 @@ impl ToolSpec for SpeechTool {
             .unwrap_or(DEFAULT_FORMAT);
         let requested_format =
             prepare_speech_format(requested_format_raw, SpeechSurface::Tool, context).await?;
+        let requested_format = if is_deepseek {
+            let (wire_format, _) =
+                crate::deepseek_media::normalize_deepseek_tts_format(&requested_format)
+                    .map_err(ToolError::invalid_input)?;
+            wire_format.to_string()
+        } else {
+            requested_format
+        };
         let output_raw = optional_str(&input, "output")?
             .map(str::trim)
             .filter(|value| !value.is_empty());
@@ -209,35 +221,76 @@ impl ToolSpec for SpeechTool {
             SpeechPreparation {
                 model: optional_str(&input, "model")?,
                 voice: raw_voice.as_deref(),
-                instruction: raw_instruction,
-                voice_prompt,
+                instruction: raw_instruction.clone(),
+                voice_prompt: voice_prompt.clone(),
                 has_clone_path: clone_voice.is_some(),
                 surface: SpeechSurface::Tool,
             },
             context,
         )
         .await?;
-        let model = plan.model;
+        let mut model = plan.model;
         let instruction = plan.instruction;
-        // Raw sample bytes/data URIs are never part of the host snapshot.
-        let voice = match plan.voice {
-            SpeechVoice::Clone => {
-                let clone_path = clone_voice.as_deref().ok_or_else(|| {
-                    ToolError::execution_failed(
-                        "speech adapter requested an uncaptured clone sample",
-                    )
-                })?;
-                let clone_path = context.resolve_path(clone_path)?;
-                Some(encode_voice_clone_data_uri(&clone_path).await?)
+        let voice = if is_deepseek {
+            if clone_voice.is_some()
+                || raw_instruction.is_some()
+                || voice_prompt.is_some()
+                || instruction.is_some()
+                || model.contains("voiceclone")
+                || model.contains("voicedesign")
+            {
+                return Err(ToolError::invalid_input(
+                    "DeepSeek TTS does not support voice cloning, voice design, or style instructions",
+                ));
             }
-            SpeechVoice::Omit => None,
-            SpeechVoice::Raw => Some(raw_voice.ok_or_else(|| {
-                ToolError::execution_failed("speech adapter requested an uncaptured voice")
-            })?),
-            SpeechVoice::Default => Some(DEFAULT_VOICE.to_string()),
+            if model == "mimo-v2.5-tts" || model == "mimo-v2-tts" {
+                model = crate::deepseek_media::DEEPSEEK_TTS_MODEL.to_string();
+            }
+            let selected_voice = match plan.voice {
+                SpeechVoice::Clone => {
+                    return Err(ToolError::invalid_input(
+                        "DeepSeek TTS does not support voice cloning",
+                    ));
+                }
+                SpeechVoice::Raw => raw_voice.as_deref(),
+                SpeechVoice::Default | SpeechVoice::Omit => None,
+            };
+            let normalized_voice =
+                crate::deepseek_media::normalize_deepseek_voice_id(selected_voice)
+                    .map_err(ToolError::invalid_input)?;
+            Some(normalized_voice.to_string())
+        } else {
+            match plan.voice {
+                SpeechVoice::Clone => {
+                    let clone_path = clone_voice.as_deref().ok_or_else(|| {
+                        ToolError::execution_failed(
+                            "speech adapter requested an uncaptured clone sample",
+                        )
+                    })?;
+                    let clone_path = context.resolve_path(clone_path)?;
+                    Some(encode_voice_clone_data_uri(&clone_path).await?)
+                }
+                SpeechVoice::Omit => None,
+                SpeechVoice::Raw => Some(raw_voice.ok_or_else(|| {
+                    ToolError::execution_failed("speech adapter requested an uncaptured voice")
+                })?),
+                SpeechVoice::Default => Some(DEFAULT_VOICE.to_string()),
+            }
         };
 
-        check_network_policy(context, client.base_url())?;
+        if is_deepseek && text.chars().count() > crate::deepseek_media::DEEPSEEK_TTS_MAX_CHARS {
+            return Err(ToolError::invalid_input(format!(
+                "speech text exceeds DeepSeek TTS limit of {} characters",
+                crate::deepseek_media::DEEPSEEK_TTS_MAX_CHARS
+            )));
+        }
+
+        let policy_base_url = if is_deepseek {
+            crate::deepseek_media::deepseek_root_url(client.base_url())
+        } else {
+            client.base_url().to_string()
+        };
+        check_network_policy(context, &policy_base_url)?;
 
         let response = client
             .synthesize_speech(SpeechSynthesisRequest {
@@ -272,21 +325,39 @@ impl ToolSpec for SpeechTool {
                 ))
             })?;
 
-        let result = json!({
-            "mode": "speech",
-            "success": true,
-            "api": "Xiaomi MiMo OpenAI-compatible chat/completions speech synthesis",
-            "base_url": openai_compatible_base_url(client.base_url()),
-            "model": response.model,
-            "format": response.audio_format,
-            "output": output_label,
-            "absolute_output": output_path.display().to_string(),
-            "bytes": response.audio_bytes.len(),
-            "voice": response.voice.as_deref().map(describe_speech_voice),
-            "transcript": response.transcript,
-            "supported_formats": SUPPORTED_SPEECH_FORMATS,
-            "supported_xiaomi_mimo_models": SUPPORTED_XIAOMI_MIMO_SPEECH_MODELS,
-        });
+        let result = if is_deepseek {
+            json!({
+                "mode": "speech",
+                "success": true,
+                "api": "DeepSeek Tools TTS (/v1/tools/tts)",
+                "base_url": crate::deepseek_media::deepseek_root_url(client.base_url()),
+                "model": response.model,
+                "format": response.audio_format,
+                "output": output_label,
+                "absolute_output": output_path.display().to_string(),
+                "bytes": response.audio_bytes.len(),
+                "voice": response.voice.as_deref().map(describe_speech_voice),
+                "transcript": response.transcript,
+                "supported_formats": ["wav", "pcm"],
+                "supported_deepseek_voices": crate::deepseek_media::DEEPSEEK_TTS_VOICES,
+            })
+        } else {
+            json!({
+                "mode": "speech",
+                "success": true,
+                "api": "Xiaomi MiMo OpenAI-compatible chat/completions speech synthesis",
+                "base_url": openai_compatible_base_url(client.base_url()),
+                "model": response.model,
+                "format": response.audio_format,
+                "output": output_label,
+                "absolute_output": output_path.display().to_string(),
+                "bytes": response.audio_bytes.len(),
+                "voice": response.voice.as_deref().map(describe_speech_voice),
+                "transcript": response.transcript,
+                "supported_formats": SUPPORTED_SPEECH_FORMATS,
+                "supported_xiaomi_mimo_models": SUPPORTED_XIAOMI_MIMO_SPEECH_MODELS,
+            })
+        };
         ToolResult::json(&result).map_err(|err| {
             ToolError::execution_failed(format!("failed to serialize result: {err}"))
         })
@@ -655,7 +726,9 @@ fn check_network_policy(context: &ToolContext, base_url: &str) -> Result<(), Too
     };
     let display_url = openai_compatible_base_url(base_url);
     let Some(host) = host_from_url(&display_url) else {
-        return Ok(());
+        return Err(ToolError::invalid_input(format!(
+            "invalid speech base URL '{base_url}'"
+        )));
     };
     match decider.evaluate(&host, "speech") {
         Decision::Allow => Ok(()),
@@ -769,9 +842,66 @@ mod tests {
         let schema = tool.input_schema();
         assert!(schema.to_string().contains("mimo-v2.5-tts-voiceclone"));
         assert!(schema.to_string().contains("pcm16"));
-        // #6516: the tool writes complete audio files only, so it no longer
-        // advertises a `stream` parameter it could only reject.
         assert!(schema["properties"].get("stream").is_none());
+    }
+
+    #[tokio::test]
+    async fn speech_tool_supports_deepseek_tts_and_rejects_clone_or_mp3() {
+        use crate::test_support::{EnvVarGuard, lock_test_env};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/tools/tts"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"RIFF_DEEPSEEK".to_vec()))
+            .mount(&server)
+            .await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        let _lock = lock_test_env();
+        let _cli_source = EnvVarGuard::remove(codewhale_config::CLI_API_KEY_SOURCE_ENV);
+        let _legacy_cli_source =
+            EnvVarGuard::remove(codewhale_config::LEGACY_CLI_API_KEY_SOURCE_ENV);
+        let _cli_key = EnvVarGuard::remove(codewhale_config::CLI_API_KEY_ENV);
+
+        let config: codewhale_runtime::config::Config = toml::from_str(&format!(
+            "provider = \"deepseek\"\n\n[providers.deepseek]\napi_key = \"ds-speech-key\"\nbase_url = \"{}/v1\"\nmodel = \"deepseek-v4\"\n",
+            server.uri()
+        ))
+        .expect("deepseek config parses");
+        let client = CodewhaleClient::new(&config).expect("client");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let tool = SpeechTool::new("speech", Some(client), None);
+
+        let result = tool
+            .execute(
+                json!({"text": "Hello from DeepSeek", "voice": "tide"}),
+                &ctx,
+            )
+            .await
+            .expect("deepseek speech tool succeeds");
+        assert!(result.success);
+        let parsed: Value = serde_json::from_str(&result.content).expect("json");
+        assert_eq!(parsed["model"], "deepseek-tts");
+        assert_eq!(parsed["voice"], "tide");
+        assert_eq!(parsed["format"], "wav");
+        assert_eq!(parsed["base_url"], server.uri());
+        assert_eq!(
+            std::fs::read(tmp.path().join("speech.wav")).unwrap(),
+            b"RIFF_DEEPSEEK"
+        );
+
+        assert!(
+            tool.execute(json!({"text": "Hello", "format": "mp3"}), &ctx)
+                .await
+                .is_err()
+        );
+        assert!(
+            tool.execute(json!({"text": "Hello", "instruction": "whisper"}), &ctx)
+                .await
+                .is_err()
+        );
     }
 }
 

@@ -18,6 +18,7 @@ pub mod compaction_archive;
 pub mod conversation_modes;
 pub mod core;
 pub mod cost_status;
+pub mod deepseek_media;
 pub mod diagnostics_messages;
 pub mod exec_events;
 pub mod extension_host;

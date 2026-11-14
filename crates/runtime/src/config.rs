@@ -12342,14 +12342,24 @@ pub fn provider_env_api_key_var(provider: ProviderKind) -> Option<&'static str> 
 /// The provider's ambient env key and the variable that supplied it,
 /// normalized with [`codewhale_secrets::normalize_api_key`] (#6528).
 fn provider_env_api_key_named(provider: ProviderKind) -> Option<(&'static str, String)> {
-    let names = provider.provider().env_vars();
-    names.iter().find_map(|name| {
-        std::env::var(name)
-            .ok()
-            .map(|value| codewhale_secrets::normalize_api_key(&value))
-            .filter(|value| !value.is_empty())
-            .map(|value| (*name, value))
-    })
+    let read = || {
+        let names = provider.provider().env_vars();
+        names.iter().find_map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|value| codewhale_secrets::normalize_api_key(&value))
+                .filter(|value| !value.is_empty())
+                .map(|value| (*name, value))
+        })
+    };
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        codewhale_util::test_env_lock::with_test_env_lock(read)
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        read()
+    }
 }
 
 /// Canonical durable-credential slot shared with the CLI dispatcher.
@@ -12555,13 +12565,23 @@ pub fn explicit_launch_provider_override() -> Option<String> {
 }
 
 pub fn explicit_cli_api_key_override() -> Option<String> {
-    (cli_api_key_source().as_deref() == Some("cli"))
-        .then(|| {
-            std::env::var(codewhale_config::CLI_API_KEY_ENV)
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
-        .flatten()
+    let read = || {
+        (cli_api_key_source().as_deref() == Some("cli"))
+            .then(|| {
+                std::env::var(codewhale_config::CLI_API_KEY_ENV)
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+            })
+            .flatten()
+    };
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        codewhale_util::test_env_lock::with_test_env_lock(read)
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        read()
+    }
 }
 
 pub fn cli_api_key_source() -> Option<String> {

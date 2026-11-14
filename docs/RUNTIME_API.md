@@ -3035,32 +3035,44 @@ answers `200` with `ok: false` and a machine-readable `reason`
 (`no_server`, `lsp_disabled`, `lsp_error`); malformed input is a 400 and a
 missing file a 404.
 
-**Voice** (host dictation, APPS-98)
-- `GET /v1/voice` — capability: `available`, detected `recorder` command,
-  resolved `asr` `{kind, model}`, `modes`, `send_phrases`,
-  `max_record_seconds`
+**Voice** (host dictation & uploaded voice / TTS, CW-8218)
+- `GET /v1/voice` — capability: `available` (host mic recorder),
+  `upload_available`, `tts_available`, detected `recorder` command, resolved
+  `asr` `{kind, model}`, `modes`, `send_phrases`, `max_record_seconds`,
+  `max_upload_bytes`, `tts_voices`
 - `POST /v1/voice/dictate` — record then transcribe → `{ ok, text }`
 - `POST /v1/voice/send` — same capture with the "send it" / 发送/發送
   suffix contract: `send: true` tells the client to submit (empty `text`
   with `send: true` means submit the client's current draft)
 - `POST /v1/voice/control` `{ "composer": "draft text" }` — assisted
   dictation that shows the model the composer text; `assisted: false` in the
-  response means a free ASR backend (local whisper/Groq) handled the audio
-  and the composer context was never seen
+  response means local whisper, Groq, or DeepSeek ASR handled the audio and the
+  composer context was never seen
+- `POST /v1/voice/transcribe` `{ "audio_base64", "mime_type", "mode",
+  "composer", "language" }` — transcribe client-uploaded WAV/OGG audio without
+  requiring a host microphone (`CODEWHALE_DISABLE_VOICE=1` does not block
+  uploaded audio)
+- `POST /v1/voice/tts` `{ "text", "voice", "voice_id", "format",
+  "filter_markdown" }` — synthesize speech audio via the active Xiaomi MiMo or
+  configured DeepSeek Tools TTS route and answer JSON `{ ok: true, mime_type,
+  audio_base64, voice_id, provider, model, format }` or `{ ok: false, reason,
+  message }`
 
-The runtime owns the host microphone and the ASR dispatch — the same
-implementation the TUI's `/voice` commands run, headless. Recording is one
-blocking capture per host (requests serialize; the loser gets
-`ok:false`/`no_speech`, not a fought-over device). Provider ASR resolves its
-key lazily so local-whisper and Groq paths work without provider auth.
-Interim and final transcription use the selected ASR backend. If local whisper
-or Groq fails, the error stays on that backend: the runtime never retries the
-recording or composer text with the active model provider. Select provider ASR
-explicitly to use that route.
+The runtime owns the host microphone, uploaded audio decoding, TTS synthesis,
+and ASR dispatch — the same implementation the TUI's `/voice` commands run,
+headless. Recording is one blocking capture per host (requests serialize; the
+loser gets `ok:false`/`no_speech`, not a fought-over device). Provider ASR
+resolves its key lazily so local-whisper and Groq paths work without provider
+auth; uploaded audio and TTS support DeepSeek `/v1/tools/asr` and
+`/v1/tools/tts` when configured. Interim and final transcription use the
+selected ASR backend. If local whisper or Groq fails, the error stays on that
+backend: the runtime never retries the recording or composer text with the
+active model provider. Select provider ASR explicitly to use that route.
 Failure is data: `no_recorder`, `no_speech`, `no_provider_auth`,
-`transcription_failed`. `CODEWHALE_DISABLE_VOICE=1` is an operator
-kill-switch — a headless `serve --http` host reports `available: false` and
-every dictate call fails closed.
+`invalid_input`, `transcription_failed`, `synthesis_failed`.
+`CODEWHALE_DISABLE_VOICE=1` is an operator kill-switch for host microphone
+recording (`available: false`), while uploaded audio continues to follow
+`upload_available`.
 
 ## Provider and model selection
 

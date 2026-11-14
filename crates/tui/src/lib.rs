@@ -9812,15 +9812,25 @@ async fn run_speech(config: &Config, args: SpeechArgs) -> Result<()> {
     let identity = config
         .active_provider_identity()
         .map_err(anyhow::Error::msg)?;
-    if identity.provider != ProviderKind::XiaomiMimo {
+    if !matches!(
+        identity.provider,
+        ProviderKind::XiaomiMimo | ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
+    ) {
         bail!(
-            "`speech` requires provider = \"xiaomi-mimo\" (current: {}). Run with `--provider xiaomi-mimo` or set it in config.",
+            "`speech` requires provider = \"xiaomi-mimo\" or \"deepseek\" (current: {}). Run with `--provider xiaomi-mimo` or `--provider deepseek` or set it in config.",
             identity.key.as_str()
         );
     }
 
     if text.trim().is_empty() {
         bail!("Speech text cannot be empty");
+    }
+    let is_deepseek = matches!(
+        identity.provider,
+        ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
+    );
+    if is_deepseek && (clone_voice.is_some() || instruction.is_some() || voice_prompt.is_some()) {
+        bail!("DeepSeek TTS does not support --clone-voice, --voice-prompt, or --instruction");
     }
     let features = config.features();
     let workspace = std::env::current_dir()?;
@@ -9845,22 +9855,49 @@ async fn run_speech(config: &Config, args: SpeechArgs) -> Result<()> {
     )
     .await
     .map_err(adapter_error)?;
-    let model = plan.model;
+    let mut model = plan.model;
+    if is_deepseek && (model == "mimo-v2.5-tts" || model == "mimo-v2-tts") {
+        model = codewhale_engine::deepseek_media::DEEPSEEK_TTS_MODEL.to_string();
+    }
     let instruction = plan.instruction;
     // Clone sample/voice data stays inside the existing Core/provider path.
-    let voice = match plan.voice {
-        SpeechVoice::Clone => Some(encode_voice_clone_sample_data_uri(
-            clone_voice
-                .as_deref()
-                .context("speech adapter requested an uncaptured clone sample")?,
-        )?),
-        SpeechVoice::Omit => None,
-        SpeechVoice::Raw => Some(voice.context("speech adapter requested an uncaptured voice")?),
-        SpeechVoice::Default => Some(DEFAULT_VOICE.to_string()),
+    let voice = if is_deepseek {
+        match plan.voice {
+            SpeechVoice::Clone => bail!("DeepSeek TTS does not support --clone-voice"),
+            SpeechVoice::Omit | SpeechVoice::Default => None,
+            SpeechVoice::Raw => {
+                let raw = voice.context("speech adapter requested an uncaptured voice")?;
+                let normalized =
+                    codewhale_engine::deepseek_media::normalize_deepseek_voice_id(Some(&raw))
+                        .map_err(anyhow::Error::msg)?;
+                Some(normalized.to_string())
+            }
+        }
+    } else {
+        match plan.voice {
+            SpeechVoice::Clone => Some(encode_voice_clone_sample_data_uri(
+                clone_voice
+                    .as_deref()
+                    .context("speech adapter requested an uncaptured clone sample")?,
+            )?),
+            SpeechVoice::Omit => None,
+            SpeechVoice::Raw => {
+                Some(voice.context("speech adapter requested an uncaptured voice")?)
+            }
+            SpeechVoice::Default => Some(DEFAULT_VOICE.to_string()),
+        }
     };
     let format = prepare_speech_format(&format, SpeechSurface::Cli, &context)
         .await
         .map_err(adapter_error)?;
+    let format = if is_deepseek {
+        let (wire_format, _) =
+            codewhale_engine::deepseek_media::normalize_deepseek_tts_format(&format)
+                .map_err(anyhow::Error::msg)?;
+        wire_format.to_string()
+    } else {
+        format
+    };
     let output = output.unwrap_or_else(|| {
         output_dir
             .or_else(|| config.speech_output_dir())

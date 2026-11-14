@@ -3233,6 +3233,14 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/voice/dictate", post(voice::voice_dictate))
         .route("/v1/voice/send", post(voice::voice_send))
         .route("/v1/voice/control", post(voice::voice_control))
+        .route(
+            "/v1/voice/transcribe",
+            post(voice::voice_transcribe).layer(DefaultBodyLimit::max(12 * 1024 * 1024)),
+        )
+        .route(
+            "/v1/voice/tts",
+            post(voice::voice_tts).layer(DefaultBodyLimit::max(64 * 1024)),
+        )
         .route("/v1/threads/{id}/resume", post(resume_thread))
         .route("/v1/threads/{id}/fork", post(fork_thread))
         .route("/v1/threads/{id}/undo", post(undo_thread_turn))

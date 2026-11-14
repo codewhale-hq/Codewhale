@@ -66,6 +66,10 @@ pub async fn capture_and_transcribe(
     let (asr_kind, _asr_model) = resolve_asr_choice(config);
     if asr_kind == "provider" {
         provider_key()?;
+    } else if asr_kind == "deepseek"
+        && codewhale_engine::deepseek_media::resolve_deepseek_config_auth(config).is_none()
+    {
+        return Err(tr(locale, MessageId::VoiceErrNoAuth).to_string());
     }
     // Show the localized recording status plus the live interim in the composer.
     let original_input = app.composer.input.clone();

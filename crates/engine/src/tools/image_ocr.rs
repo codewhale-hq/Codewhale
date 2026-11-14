@@ -71,9 +71,22 @@ impl ToolSpec for ImageOcrTool {
     }
 }
 
+fn local_ocr_disabled() -> bool {
+    let read = || std::env::var_os("CODEWHALE_LOCAL_OCR_UNAVAILABLE").is_some();
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        crate::test_support::with_test_env_lock(read)
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        read()
+    }
+}
+
 pub fn ocr_available() -> bool {
-    std::env::var_os("CODEWHALE_LOCAL_OCR_UNAVAILABLE").is_none()
-        && (codewhale_dependencies::resolve_tesseract().is_some() || native_ocr_available())
+    (!local_ocr_disabled()
+        && (codewhale_dependencies::resolve_tesseract().is_some() || native_ocr_available()))
+        || crate::deepseek_media::resolve_deepseek_ocr_auth().is_some()
 }
 
 const OCR_TIMEOUT: Duration = Duration::from_secs(120);
@@ -88,6 +101,7 @@ const NO_BACKEND: &str = "image_ocr: no local OCR backend is available. On macOS
 /// happens only in the captured Core worker.
 pub struct CapturedOcr {
     path: PathBuf,
+    source_name: Option<String>,
     captured_sha256: String,
     _staged: Option<StagedInput>,
     #[cfg(all(test, unix))]
@@ -148,6 +162,10 @@ impl CapturedOcr {
                 return Err(ToolError::invalid_input(NOT_AN_IMAGE));
             }
             let captured_sha256 = codewhale_runtime::hashing::sha256_hex(&bytes);
+            let source_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string);
             let stage_error = |error: std::io::Error| {
                 ToolError::execution_failed(format!("Failed to stage image OCR input: {error}"))
             };
@@ -168,6 +186,7 @@ impl CapturedOcr {
             }
             Ok(Self {
                 path: staged_path,
+                source_name,
                 captured_sha256,
                 _staged: Some(staged),
                 #[cfg(all(test, unix))]
@@ -184,6 +203,10 @@ impl CapturedOcr {
     pub fn for_test(path: &Path, native: TestNativeOcr, tesseract: Option<OsString>) -> Self {
         Self {
             path: path.to_path_buf(),
+            source_name: path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string),
             captured_sha256: codewhale_runtime::hashing::sha256_hex(
                 path.as_os_str().as_encoded_bytes(),
             ),
@@ -217,17 +240,21 @@ impl CapturedOcr {
         let fallback = if matches!(result, Ok(Some(_))) {
             None
         } else {
+            let resolve = || {
+                (!local_ocr_disabled())
+                    .then(codewhale_dependencies::resolve_tesseract)
+                    .flatten()
+                    .map(OsString::from)
+            };
             #[cfg(all(test, unix))]
             let supplied = self.overrides.as_ref().map(|value| value.tesseract.clone());
             #[cfg(all(test, unix))]
             {
-                supplied.unwrap_or_else(|| {
-                    codewhale_dependencies::resolve_tesseract().map(OsString::from)
-                })
+                supplied.unwrap_or_else(resolve)
             }
             #[cfg(not(all(test, unix)))]
             {
-                codewhale_dependencies::resolve_tesseract().map(OsString::from)
+                resolve()
             }
         };
         OcrNativeStep {
@@ -265,6 +292,9 @@ impl OcrNativeStep {
     }
     pub fn finish(self) -> OcrOutcome {
         self.outcome
+    }
+    pub(crate) fn finish_with_input(self) -> (CapturedOcr, OcrOutcome) {
+        (self.input, self.outcome)
     }
     pub async fn tesseract(
         self,
@@ -435,12 +465,20 @@ pub async fn ocr_image_path(image_path: &Path, context: &ToolContext) -> Result<
         ()=tokio::time::sleep_until(deadline)=>return Err(ToolError::Timeout {seconds:OCR_TIMEOUT.as_secs()}),
         result=native=>result.map_err(|error|ToolError::execution_failed(format!("Image OCR task: {error}")))?,
     };
-    let output = if step.needs_tesseract() {
-        step.tesseract(context.cancel_token.as_ref(), deadline)
-            .await
-    } else {
-        step.finish()
-    };
+    if step.needs_tesseract() {
+        let output = step
+            .tesseract(context.cancel_token.as_ref(), deadline)
+            .await;
+        if context
+            .cancel_token
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            return Err(ToolError::cancelled("Image OCR was cancelled"));
+        }
+        return output.into_rust_text();
+    }
+    let (captured, output) = step.finish_with_input();
     if context
         .cancel_token
         .as_ref()
@@ -448,7 +486,107 @@ pub async fn ocr_image_path(image_path: &Path, context: &ToolContext) -> Result<
     {
         return Err(ToolError::cancelled("Image OCR was cancelled"));
     }
+    if matches!(output, OcrOutcome::Native(Ok(None)))
+        && let Some((base_url, api_key)) = crate::deepseek_media::resolve_deepseek_ocr_auth()
+    {
+        return run_deepseek_ocr(
+            &captured.path,
+            captured.source_name.as_deref(),
+            &base_url,
+            &api_key,
+            context,
+            deadline,
+        )
+        .await;
+    }
     output.into_rust_text()
+}
+
+fn check_ocr_network_policy(context: &ToolContext, base_url: &str) -> Result<(), ToolError> {
+    let Some(decider) = context.network_policy.as_ref() else {
+        return Ok(());
+    };
+    let Some(host) = codewhale_net::network_policy::host_from_url(base_url) else {
+        return Err(ToolError::invalid_input(format!(
+            "invalid DeepSeek OCR base URL '{base_url}'"
+        )));
+    };
+    match decider.evaluate(&host, "image_ocr") {
+        codewhale_net::network_policy::Decision::Allow => Ok(()),
+        codewhale_net::network_policy::Decision::Deny => Err(ToolError::permission_denied(
+            format!("image_ocr network call to '{host}' blocked by network policy"),
+        )),
+        codewhale_net::network_policy::Decision::Prompt => {
+            Err(ToolError::permission_denied(format!(
+                "image_ocr network call to '{host}' requires approval; re-run after `/network allow {host}` or set network.default = \"allow\" in config"
+            )))
+        }
+    }
+}
+
+async fn run_deepseek_ocr(
+    path: &Path,
+    source_name: Option<&str>,
+    base_url: &str,
+    api_key: &str,
+    context: &ToolContext,
+    deadline: tokio::time::Instant,
+) -> Result<String, ToolError> {
+    check_ocr_network_policy(context, base_url)?;
+    if context
+        .cancel_token
+        .as_ref()
+        .is_some_and(CancellationToken::is_cancelled)
+    {
+        return Err(ToolError::cancelled("Image OCR was cancelled"));
+    }
+    if tokio::time::Instant::now() >= deadline {
+        return Err(ToolError::Timeout {
+            seconds: OCR_TIMEOUT.as_secs(),
+        });
+    }
+    let bytes = tokio::fs::read(path).await.map_err(|err| {
+        ToolError::execution_failed(format!("failed to read image for OCR: {err}"))
+    })?;
+    if bytes.len() > crate::deepseek_media::DEEPSEEK_OCR_MAX_BYTES {
+        return Err(ToolError::invalid_input(format!(
+            "image exceeds DeepSeek OCR limit of {} bytes",
+            crate::deepseek_media::DEEPSEEK_OCR_MAX_BYTES
+        )));
+    }
+    let mime_path = source_name.map(Path::new).unwrap_or(path);
+    let mime = crate::deepseek_media::ocr_mime_for_path(mime_path, &bytes)
+        .map_err(ToolError::invalid_input)?;
+    let file_name = source_name
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| path.file_name().and_then(|value| value.to_str()))
+        .unwrap_or("image");
+    let text = tokio::select! {
+        biased;
+        () = wait_cancel(context.cancel_token.as_ref()) => {
+            return Err(ToolError::cancelled("Image OCR was cancelled"));
+        }
+        () = tokio::time::sleep_until(deadline) => {
+            return Err(ToolError::Timeout {
+                seconds: OCR_TIMEOUT.as_secs(),
+            });
+        }
+        result = crate::deepseek_media::ocr_deepseek_bytes(
+            base_url,
+            api_key,
+            &bytes,
+            file_name,
+            mime,
+        ) => {
+            result.map_err(ToolError::execution_failed)?
+        }
+    };
+    if text.len() > MAX_OCR_TEXT {
+        return Err(ToolError::execution_failed(
+            "DeepSeek OCR output exceeded size limit",
+        ));
+    }
+    Ok(text)
 }
 async fn wait_cancel(cancel: Option<&CancellationToken>) {
     match cancel {
@@ -474,7 +612,7 @@ thread_local! {static TEST_OVERRIDES:std::cell::RefCell<Option<TestOverrides>>=c
 fn native_ocr_available() -> bool {
     // Classes can exist at link time while runtime Vision is unusable
     // (restricted CI hosts); probe the ObjC class table once to match real use.
-    macos_vision::vision_runtime_available()
+    !local_ocr_disabled() && macos_vision::vision_runtime_available()
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -796,6 +934,75 @@ mod tests {
             normalised.contains("HELLO") && normalised.contains("OCR"),
             "expected OCR to recover HELLO OCR; got {:?}",
             result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn deepseek_ocr_fallback_runs_when_opted_in_and_respects_network_policy() {
+        use crate::test_support::{EnvVarGuard, lock_test_env};
+        use codewhale_net::network_policy::{NetworkPolicy, NetworkPolicyDecider};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/tools/ocr"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "\n{\"id\":\"ocr-test\",\"object\":\"ocr\",\"page_count\":1,\"pages\":[{\"index\":0,\"text\":\"INVOICE 42\",\"finish_reason\":\"stop\"}]}",
+            ))
+            .mount(&server)
+            .await;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp_root = tmp.path().canonicalize().expect("canonical tempdir");
+        let image_path = tmp_root.join("sample.png");
+        fs::write(&image_path, b"\x89PNG\r\n\x1a\nfake-png").unwrap();
+        let spoof_path = tmp_root.join("spoof.png");
+        fs::write(&spoof_path, b"plaintext workspace file with png extension").unwrap();
+
+        let _lock = lock_test_env();
+        let _local_off = EnvVarGuard::set("CODEWHALE_LOCAL_OCR_UNAVAILABLE", "1");
+        let _opt_in = EnvVarGuard::set("CODEWHALE_DEEPSEEK_OCR", "1");
+        let _key = EnvVarGuard::set("DEEPSEEK_API_KEY", "ds-ocr-test-key");
+        let _base = EnvVarGuard::set("DEEPSEEK_BASE_URL", server.uri());
+
+        assert!(ocr_available());
+
+        let blocked_ctx = ToolContext::new(tmp_root.clone())
+            .with_network_policy(NetworkPolicyDecider::new(NetworkPolicy::default(), None));
+        let blocked = ocr_image_path(&image_path, &blocked_ctx).await;
+        assert!(
+            matches!(blocked, Err(ToolError::PermissionDenied { .. })),
+            "{blocked:?}"
+        );
+        let bad_url = check_ocr_network_policy(&blocked_ctx, "://bad");
+        assert!(
+            matches!(bad_url, Err(ToolError::InvalidInput { .. })),
+            "{bad_url:?}"
+        );
+
+        let allow_ctx = ToolContext::new(tmp_root);
+        let spoof = ocr_image_path(&spoof_path, &allow_ctx).await;
+        assert!(
+            matches!(spoof, Err(ToolError::InvalidInput { .. })),
+            "{spoof:?}"
+        );
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("requests")
+                .is_empty()
+        );
+        let recovered = ocr_image_path(&image_path, &allow_ctx)
+            .await
+            .expect("deepseek ocr fallback succeeds");
+        assert_eq!(recovered, "INVOICE 42");
+        let received = server.received_requests().await.expect("requests");
+        let raw = String::from_utf8_lossy(&received[0].body);
+        assert!(
+            raw.contains("name=\"file\"; filename=\"sample.png\""),
+            "{raw}"
         );
     }
 }

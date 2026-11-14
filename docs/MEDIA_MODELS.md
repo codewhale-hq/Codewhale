@@ -1,27 +1,31 @@
 # Speech, translation and video models
 
 > 简体中文：[zh_hans/MEDIA_MODELS.md](zh_hans/MEDIA_MODELS.md)。
-> Source and upstream documentation reviewed: 2026-10-06. Candidates below are
+> Source and upstream documentation reviewed: 2026-11-13. Candidates below are
 > not additional working Codewhale backends.
 
 ## Current source support
 
 | Task | Codewhale path | Limits |
 | --- | --- | --- |
-| Text to speech (TTS) | `speech` tool; `codewhale --provider xiaomi-mimo speech "Hello from Codewhale"`; CLI alias `tts` | The synthesis client requires Xiaomi MiMo. Models: `mimo-v2.5-tts`, `mimo-v2.5-tts-voicedesign`, `mimo-v2.5-tts-voiceclone`, legacy `mimo-v2-tts`. Design/cloning need their corresponding input. |
-| Speech to text (STT/ASR) | Terminal voice input, Runtime `/v1/voice/*`; GPUI uses that Runtime path | Explicit `CODEWHALE_ASR_MODEL`, otherwise detected local Whisper → Groq → configured provider. Local `tiny`; Groq `whisper-large-v3-turbo`; provider `mimo-v2.5-asr`. A chat endpoint does not prove ASR support. |
+| Text to speech (TTS) | `speech` tool; `codewhale --provider xiaomi-mimo speech "Hello from Codewhale"`; `codewhale --provider deepseek speech "Hello from Codewhale"`; CLI alias `tts`; Runtime `POST /v1/voice/tts` | Xiaomi MiMo (`mimo-v2.5-tts`, `mimo-v2.5-tts-voicedesign`, `mimo-v2.5-tts-voiceclone`, legacy `mimo-v2-tts`) and DeepSeek Tools `/v1/tools/tts` (`deepseek-tts`, voices `stella` / `tide`, formats `wav` / `pcm`). Voice design and cloning remain Xiaomi MiMo-only and require their corresponding input. |
+| Speech to text (STT/ASR) | Terminal voice input, Runtime `/v1/voice/*` including `POST /v1/voice/transcribe` (WAV/OGG); GPUI uses that Runtime path | Explicit `CODEWHALE_ASR_MODEL`, otherwise detected local Whisper → Groq → active DeepSeek (`/v1/tools/asr`, `deepseek-asr`) → configured provider (`mimo-v2.5-asr`). Local `tiny`; Groq `whisper-large-v3-turbo`; DeepSeek `deepseek-asr`. A chat endpoint does not prove ASR support. |
 | Video understanding | Media attachment/read paths and applicable provider capabilities | Reading video, translating subtitles and generating video are separate operations. |
 | Video generation | No first-class generation client/tool in the audited source | A remote catalogue row does not create an executable generation route. |
 
 `CODEWHALE_ASR_MODEL=local-whisper` explicitly selects offline recognition;
 its binary/model must already be installed. `groq` needs `GROQ_API_KEY`;
-`mimo` selects the configured provider endpoint. There is no config-file ASR
-selector or arbitrary model-ID override. A failed selected local/Groq backend
-does not silently upload to another provider. Setting a Qwen/Index model name
-in this variable does not install a new backend.
+`deepseek` selects DeepSeek Tools `/v1/tools/asr` (`deepseek-asr`); `mimo`
+selects the configured provider endpoint. When `CODEWHALE_ASR_MODEL` is unset
+and neither local Whisper nor `GROQ_API_KEY` is present, an active `deepseek`
+or `deepseek-anthropic` provider selects `deepseek-asr`. There is no
+config-file ASR selector or arbitrary model-ID override. A failed selected
+local/Groq/DeepSeek backend does not silently upload to another provider.
+Setting a Qwen/Index model name in this variable does not install a new backend.
 
 Owners: [speech tool](../crates/engine/src/tools/speech.rs),
-[synthesis client](../crates/engine/src/client.rs), [voice resolver](../crates/engine/src/voice.rs),
+[synthesis client](../crates/engine/src/client.rs), [DeepSeek media client](../crates/engine/src/deepseek_media.rs),
+[voice resolver](../crates/engine/src/voice.rs),
 [Runtime voice](../crates/app-server/src/runtime_api/voice.rs). Real microphone capture,
 synthesis and a complete customer voice journey require separate acceptance.
 

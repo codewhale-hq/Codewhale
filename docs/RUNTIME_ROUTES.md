@@ -253,6 +253,8 @@ registration index.
 | POST | `/v1/voice/control` |
 | POST | `/v1/voice/dictate` |
 | POST | `/v1/voice/send` |
+| POST | `/v1/voice/transcribe` |
+| POST | `/v1/voice/tts` |
 | GET / PUT | `/v1/whale/soul` |
 | GET | `/v1/workspace/diff` |
 | GET / PUT | `/v1/workspace/files` |
@@ -264,4 +266,4 @@ registration index.
 | GET / POST | `/v1/worktrees` |
 | POST | `/v1/worktrees/remove` |
 
-The source contains 244 distinct literal paths in this table.
+The source contains 246 distinct literal paths in this table.

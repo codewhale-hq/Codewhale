@@ -4573,9 +4573,22 @@ impl CodewhaleClient {
     ) -> Result<SpeechSynthesisResponse> {
         let _inference = self.acquire_remote_control_inference_permit().await;
         let _permit = self.acquire_provider_request_permit().await;
+        if matches!(
+            self.api_provider,
+            codewhale_config::ProviderKind::Deepseek
+                | codewhale_config::ProviderKind::DeepseekAnthropic
+        ) {
+            return crate::deepseek_media::synthesize_deepseek_with_client(
+                &self.http_client,
+                &self.base_url,
+                &self.api_key,
+                request,
+            )
+            .await;
+        }
         if self.api_provider != codewhale_config::ProviderKind::XiaomiMimo {
             anyhow::bail!(
-                "speech synthesis requires provider 'xiaomi-mimo' (current: {})",
+                "speech synthesis requires provider 'xiaomi-mimo' or 'deepseek' (current: {})",
                 self.api_provider.as_str()
             );
         }

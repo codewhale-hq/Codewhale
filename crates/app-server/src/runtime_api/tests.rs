@@ -23571,13 +23571,12 @@ async fn lsp_routes_serve_workspace_files_through_a_transport() -> Result<()> {
 
 #[tokio::test]
 async fn voice_routes_report_capability_and_fail_closed_without_a_recorder() -> Result<()> {
-    let _lock = lock_test_env();
-    // Deterministic: the operator kill-switch keeps the test off the host mic.
-    let _voice_off = EnvVarGuard::set("CODEWHALE_DISABLE_VOICE", "1");
-
     let tmp = tempfile::tempdir()?;
     let workspace = tmp.path().join("workspace");
     fs::create_dir_all(&workspace)?;
+
+    let _lock = lock_test_env();
+    let _voice_off = EnvVarGuard::set("CODEWHALE_DISABLE_VOICE", "1");
 
     let (addr, _runtime_threads, handle) =
         spawn_test_server_with_root_token_mobile_workspace_and_overrides(
@@ -23645,6 +23644,177 @@ async fn voice_routes_report_capability_and_fail_closed_without_a_recorder() -> 
         .await?;
     assert_eq!(outcome["ok"], false);
     assert_eq!(outcome["reason"], "no_recorder");
+
+    for path in ["/v1/voice/transcribe", "/v1/voice/tts"] {
+        let unauthorized = client.post(format!("{base}{path}")).send().await?.status();
+        assert_eq!(unauthorized, StatusCode::UNAUTHORIZED, "POST {path}");
+    }
+    assert!(status["upload_available"].is_boolean());
+    assert!(status["tts_available"].is_boolean());
+    assert_eq!(
+        status["max_upload_bytes"],
+        codewhale_engine::voice::UPLOAD_AUDIO_MAX_BYTES
+    );
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn voice_upload_transcribe_and_tts_use_deepseek_even_when_host_mic_disabled() -> Result<()> {
+    use base64::Engine as _;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/tools/asr"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "request_id": "req-rt-asr",
+            "text": "ship the branch send it",
+            "duration_ms": 880
+        })))
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/tools/tts"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"RIFF_RT_WAV".to_vec()))
+        .mount(&upstream)
+        .await;
+
+    let tmp = tempfile::tempdir()?;
+    let workspace = tmp.path().join("workspace");
+    fs::create_dir_all(&workspace)?;
+
+    let _lock = lock_test_env();
+    let _voice_off = EnvVarGuard::set("CODEWHALE_DISABLE_VOICE", "1");
+    let _asr_env = EnvVarGuard::remove("CODEWHALE_ASR_MODEL");
+    let _groq_env = EnvVarGuard::remove("GROQ_API_KEY");
+    let _cli_source = EnvVarGuard::remove(codewhale_config::CLI_API_KEY_SOURCE_ENV);
+    let _legacy_cli_source = EnvVarGuard::remove(codewhale_config::LEGACY_CLI_API_KEY_SOURCE_ENV);
+    let _cli_key = EnvVarGuard::remove(codewhale_config::CLI_API_KEY_ENV);
+    let _path = EnvVarGuard::set("PATH", "/nonexistent-voice-path");
+    let _base_env = EnvVarGuard::set("DEEPSEEK_BASE_URL", format!("{}/v1", upstream.uri()));
+    let _key_env = EnvVarGuard::set("DEEPSEEK_API_KEY", "ds-runtime-voice-key");
+
+    let mut config = Config::default().with_legacy_root(
+        Some("ds-runtime-voice-key".to_string()),
+        Some(format!("{}/v1", upstream.uri())),
+    );
+    config.provider = Some("deepseek".to_string());
+
+    let (addr, _runtime_threads, handle) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            tmp.path().join("runtime"),
+            tmp.path().join("sessions"),
+            Some("voice-ds-token".to_string()),
+            false,
+            workspace,
+            TestServerOverrides {
+                config: Some(config),
+                ..Default::default()
+            },
+        )
+        .await?
+        .context("deepseek voice test requires a loopback listener")?;
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}");
+
+    let status: Value = client
+        .get(format!("{base}/v1/voice"))
+        .bearer_auth("voice-ds-token")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(status["available"], false);
+    assert_eq!(status["upload_available"], true);
+    assert_eq!(status["tts_available"], true);
+    assert_eq!(status["asr"]["kind"], "deepseek");
+    assert_eq!(status["tts_voices"], json!(["stella", "tide"]));
+
+    let mut wav = Vec::with_capacity(44 + 640);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36u32 + 640u32).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&16000u32.to_le_bytes());
+    wav.extend_from_slice(&32000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&640u32.to_le_bytes());
+    wav.resize(44 + 640, 0);
+    let transcribed: Value = client
+        .post(format!("{base}/v1/voice/transcribe"))
+        .bearer_auth("voice-ds-token")
+        .json(&json!({
+            "audio_base64": base64::engine::general_purpose::STANDARD.encode(wav),
+            "mime_type": "audio/wav",
+            "mode": "send"
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(transcribed["ok"], true);
+    assert_eq!(transcribed["text"], "ship the branch");
+    assert_eq!(transcribed["send"], true);
+    assert_eq!(transcribed["asr"]["kind"], "deepseek");
+
+    let tts_json: Value = client
+        .post(format!("{base}/v1/voice/tts"))
+        .bearer_auth("voice-ds-token")
+        .json(&json!({
+            "text": "Ready for review",
+            "voice": "tide",
+            "format": "wav",
+            "filter_markdown": true
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(tts_json["ok"], true);
+    assert_eq!(tts_json["mime_type"], "audio/wav");
+    assert_eq!(tts_json["provider"], "deepseek");
+    assert_eq!(tts_json["model"], "deepseek-tts");
+    assert_eq!(tts_json["voice_id"], "tide");
+    assert_eq!(tts_json["format"], "wav");
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(tts_json["audio_base64"].as_str().context("audio_base64")?)?,
+        b"RIFF_RT_WAV"
+    );
+
+    let tts_empty: Value = client
+        .post(format!("{base}/v1/voice/tts"))
+        .bearer_auth("voice-ds-token")
+        .json(&json!({ "text": "   " }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(tts_empty["ok"], false);
+    assert_eq!(tts_empty["reason"], "invalid_input");
+
+    let tts_bad_voice: Value = client
+        .post(format!("{base}/v1/voice/tts"))
+        .bearer_auth("voice-ds-token")
+        .json(&json!({ "text": "hi", "voice": "nonexistent" }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(tts_bad_voice["ok"], false);
+    assert_eq!(tts_bad_voice["reason"], "invalid_input");
 
     handle.abort();
     Ok(())
