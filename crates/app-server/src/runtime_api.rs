@@ -10492,8 +10492,22 @@ async fn start_thread_watch_turn(
 
 async fn start_thread_turn(
     State(state): State<RuntimeApiState>,
+    caller: Option<axum::Extension<auth::RuntimeAuthCaller>>,
     Path(id): Path<String>,
     Json(value): Json<Value>,
+) -> Result<(StatusCode, Json<StartTurnResponse>), ApiError> {
+    let owner_composer = matches!(
+        caller,
+        Some(axum::Extension(auth::RuntimeAuthCaller::WebSession))
+    );
+    start_thread_turn_for_caller(State(state), Path(id), Json(value), owner_composer).await
+}
+
+async fn start_thread_turn_for_caller(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Json(value): Json<Value>,
+    owner_composer: bool,
 ) -> Result<(StatusCode, Json<StartTurnResponse>), ApiError> {
     if value.as_object().is_some_and(|object| {
         [
@@ -10501,6 +10515,8 @@ async fn start_thread_turn(
             "watchEvent",
             "input_provenance",
             "inputProvenance",
+            "input_authorship",
+            "inputAuthorship",
         ]
         .iter()
         .any(|key| object.contains_key(*key))
@@ -10513,6 +10529,8 @@ async fn start_thread_turn(
                 "watchEvent",
                 "input_provenance",
                 "inputProvenance",
+                "input_authorship",
+                "inputAuthorship",
             ]
             .iter()
             .any(|key| metadata.contains_key(*key))
@@ -10525,11 +10543,19 @@ async fn start_thread_turn(
     let req: StartTurnRequest = serde_json::from_value(value)
         .map_err(|error| ApiError::unprocessable(error.to_string()))?;
     let expected_workspace = req.expected_workspace.clone();
-    let (turn, replayed) = state
-        .runtime_threads
-        .start_turn_reporting_replay(&id, req)
-        .await
-        .map_err(map_thread_err)?;
+    let (turn, replayed) = if owner_composer {
+        state
+            .runtime_threads
+            .start_turn_owner_reporting_replay(&id, req)
+            .await
+            .map_err(map_thread_err)?
+    } else {
+        state
+            .runtime_threads
+            .start_turn_reporting_replay(&id, req)
+            .await
+            .map_err(map_thread_err)?
+    };
     let thread = state
         .runtime_threads
         .get_thread(&id)
@@ -10693,12 +10719,17 @@ async fn cancel_agent_mail(
 
 async fn steer_thread_turn(
     State(state): State<RuntimeApiState>,
+    caller: Option<axum::Extension<auth::RuntimeAuthCaller>>,
     Path((id, turn_id)): Path<(String, String)>,
     Json(req): Json<SteerTurnRequest>,
 ) -> Result<Json<TurnRecord>, ApiError> {
+    let owner_composer = matches!(
+        caller,
+        Some(axum::Extension(auth::RuntimeAuthCaller::WebSession))
+    );
     let turn = state
         .runtime_threads
-        .steer_turn(&id, &turn_id, req)
+        .steer_turn_for_caller(&id, &turn_id, req, owner_composer)
         .await
         .map_err(map_thread_err)?;
     Ok(Json(turn))

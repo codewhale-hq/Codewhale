@@ -2502,6 +2502,7 @@ async fn headless_exec_and_detached_runs_meet_auto_review_unattended_floor_witho
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -2580,6 +2581,7 @@ async fn headless_exec_and_detached_runs_meet_auto_review_unattended_floor_witho
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -2733,6 +2735,7 @@ async fn interactive_tui_turn_preserves_ask_and_auto_review_interactive_behavior
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -2835,6 +2838,7 @@ async fn interactive_tui_turn_preserves_ask_and_auto_review_interactive_behavior
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await

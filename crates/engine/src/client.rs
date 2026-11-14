@@ -5482,6 +5482,13 @@ impl LlmClient for CodewhaleClient {
         CodewhaleClient::effective_route_envelope(self, requested_model, dispatched_at)
     }
 
+    fn supports_catalog_reviewer_model(&self, candidate: &str) -> bool {
+        codewhale_config::provider_base_url_is_official(self.api_provider, &self.base_url)
+            && self
+                .resolve_model_route(candidate)
+                .is_ok_and(|resolved| resolved.protocol() == self.wire_format)
+    }
+
     async fn health_check(&self) -> Result<bool> {
         if model_listing_unavailable(self.api_provider, &self.base_url) {
             anyhow::bail!("Provider health is unobserved: no documented model-list endpoint");

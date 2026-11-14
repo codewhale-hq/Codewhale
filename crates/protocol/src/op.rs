@@ -404,6 +404,10 @@ pub enum Op {
         timeout_secs: u64,
     },
 
+    SetAutoReviewReviewerModel {
+        reviewer_model: Option<String>,
+    },
+
     SetSubagentRuntimeConfig {
         enabled: bool,
         max_subagents: u64,
@@ -578,6 +582,7 @@ impl Op {
             Self::SetCompaction { .. } => "set_compaction",
             Self::SetPermissionRuleset { .. } => "set_permission_ruleset",
             Self::SetStreamChunkTimeout { .. } => "set_stream_chunk_timeout",
+            Self::SetAutoReviewReviewerModel { .. } => "set_auto_review_reviewer_model",
             Self::SetSubagentRuntimeConfig { .. } => "set_subagent_runtime_config",
             Self::SetSearchProvider { .. } => "set_search_provider",
             Self::SetFleetRoster { .. } => "set_fleet_roster",
@@ -764,6 +769,9 @@ mod tests {
                 ruleset: json!({"rules": []}),
             },
             Op::SetStreamChunkTimeout { timeout_secs: 30 },
+            Op::SetAutoReviewReviewerModel {
+                reviewer_model: Some("claude-sonnet-5-5".into()),
+            },
             Op::SetSubagentRuntimeConfig {
                 enabled: true,
                 max_subagents: 4,

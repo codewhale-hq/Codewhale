@@ -333,6 +333,18 @@ pub fn persist_unset_root_key(config_path: Option<&Path>, key: &str) -> anyhow::
     Ok(path)
 }
 
+pub fn persist_unset_table_key(
+    config_path: Option<&Path>,
+    table_name: &str,
+    key: &str,
+) -> anyhow::Result<PathBuf> {
+    let path = config_toml_path(config_path)?;
+    mutate_config_document(&path, |doc| {
+        unset_document_value(doc, &[table_name, key]).map(|_| ())
+    })?;
+    Ok(path)
+}
+
 pub fn persist_root_bool_key(
     config_path: Option<&Path>,
     key: &str,

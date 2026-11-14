@@ -803,6 +803,8 @@ pub enum EventMsg {
         decision: ToolGateVerdict,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         risk: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reviewer_model: Option<String>,
         reason: String,
     },
     AdvisoryNote {
@@ -1581,6 +1583,7 @@ mod tests {
                 gate: ToolGate::AutoReviewGuardian,
                 decision: ToolGateVerdict::Denied,
                 risk: Some("high".into()),
+                reviewer_model: Some("claude-sonnet-5-5".into()),
                 reason: "no".into(),
             },
             EventMsg::AdvisoryNote {

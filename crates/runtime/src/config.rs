@@ -2534,6 +2534,8 @@ pub struct AutoReviewConfig {
     #[serde(default)]
     pub disabled: bool,
     #[serde(default)]
+    pub reviewer_model: Option<String>,
+    #[serde(default)]
     pub allow: Vec<AutoReviewRuleConfig>,
     #[serde(default)]
     pub block: Vec<AutoReviewRuleConfig>,
@@ -2553,10 +2555,28 @@ pub struct AutoReviewRuleConfig {
 
 impl AutoReviewConfig {
     fn validate(&self) -> Result<()> {
+        if let Some(reviewer_model) = self.reviewer_model.as_deref() {
+            validate_auto_review_reviewer_model(reviewer_model)?;
+        }
         validate_auto_review_rules("allow", &self.allow)?;
         validate_auto_review_rules("block", &self.block)?;
         Ok(())
     }
+}
+
+pub fn validate_auto_review_reviewer_model(raw: &str) -> Result<()> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || raw != trimmed
+        || trimmed
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        anyhow::bail!(
+            "Invalid auto_review.reviewer_model: expected a non-empty model identifier without whitespace or control characters."
+        );
+    }
+    Ok(())
 }
 
 impl AutoReviewRuleConfig {
@@ -6870,6 +6890,14 @@ impl Config {
     #[must_use]
     pub fn auto_review_disabled(&self) -> bool {
         self.auto_review.as_ref().is_some_and(|cfg| cfg.disabled)
+    }
+
+    pub fn auto_review_reviewer_model(&self) -> Option<&str> {
+        self.auto_review
+            .as_ref()
+            .and_then(|cfg| cfg.reviewer_model.as_deref())
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
     }
 
     /// Whether the user-memory feature is enabled. The default is **off**
@@ -13051,6 +13079,99 @@ disabled = true
         assert!(
             env_err.to_string().contains("auto_review.disabled = true"),
             "unexpected error for CODEWHALE_APPROVAL_POLICY: {env_err:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn auto_review_reviewer_model_parses_validates_merges_and_ignores_subagents() -> Result<()> {
+        let _lock = lock_test_env();
+        let temp = tempfile::tempdir()?;
+        let home = temp.path().join("home");
+        fs::create_dir_all(&home)?;
+        let _home = EnvVarGuard::set("CODEWHALE_HOME", home.as_os_str());
+        let _managed = EnvVarGuard::remove("CODEWHALE_MANAGED_CONFIG_PATH");
+        let user_config = home.join("config.toml");
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+reviewer_model = "claude-sonnet-5-5"
+
+[subagents]
+reviewer_model = "subagent-only-model"
+"#,
+        )?;
+        let loaded = Config::load(Some(user_config.clone()), None)?;
+        assert_eq!(
+            loaded.auto_review_reviewer_model(),
+            Some("claude-sonnet-5-5")
+        );
+
+        fs::write(
+            &user_config,
+            r#"
+[subagents]
+reviewer_model = "subagent-only-model"
+"#,
+        )?;
+        let without_ar_model = Config::load(Some(user_config.clone()), None)?;
+        assert_eq!(without_ar_model.auto_review_reviewer_model(), None);
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+reviewer_model = "  "
+"#,
+        )?;
+        let empty_err = Config::load(Some(user_config.clone()), None)
+            .expect_err("blank auto_review.reviewer_model must fail validation");
+        assert!(
+            empty_err.to_string().contains("reviewer_model"),
+            "{empty_err:#}"
+        );
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+reviewer_model = "bad model\nid"
+"#,
+        )?;
+        let ws_err = Config::load(Some(user_config.clone()), None)
+            .expect_err("whitespace in auto_review.reviewer_model must fail validation");
+        assert!(ws_err.to_string().contains("reviewer_model"), "{ws_err:#}");
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+reviewer_model = "gpt-5.5"
+
+[profiles.fast]
+[profiles.fast.auto_review]
+reviewer_model = "gpt-5.6"
+"#,
+        )?;
+        let profiled = Config::load(Some(user_config.clone()), Some("fast"))?;
+        assert_eq!(profiled.auto_review_reviewer_model(), Some("gpt-5.6"));
+
+        let managed_config = temp.path().join("managed.toml");
+        let _managed_set =
+            EnvVarGuard::set("CODEWHALE_MANAGED_CONFIG_PATH", managed_config.as_os_str());
+        fs::write(
+            &managed_config,
+            r#"
+[auto_review]
+reviewer_model = "managed-reviewer"
+"#,
+        )?;
+        let managed_loaded = Config::load(Some(user_config), Some("fast"))?;
+        assert_eq!(
+            managed_loaded.auto_review_reviewer_model(),
+            Some("managed-reviewer")
         );
         Ok(())
     }

@@ -1089,7 +1089,11 @@ impl Engine {
                 .observe_user_message(&steer, &self.session.workspace);
             self.add_session_message(self.user_text_message_with_turn_metadata(steer))
                 .await;
-            let _ = self.commit_pending_steer(pending);
+            let (_text, person_text) = self.commit_pending_steer_with_intent(pending);
+            if let Some(person_text) = person_text {
+                let index = self.session.messages.len().saturating_sub(1);
+                self.session.record_person_message(person_text, Some(index));
+            }
         }
         if let Some(guard) = progress.fleet_denial_guard.as_mut() {
             guard.reset();

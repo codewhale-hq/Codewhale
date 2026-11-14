@@ -27860,3 +27860,272 @@ async fn request_fields_cannot_grant_interactive_origin_or_owner_presence() -> R
     owner_mgr.shutdown_and_wait().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn runtime_api_web_composer_records_person_messages_while_mobile_device_master_and_smuggling_do_not()
+-> Result<()> {
+    use codewhale_engine::core::ops::TurnInputAuthorship;
+
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().to_path_buf();
+    let sessions_dir = root.join("sessions");
+    let workspace = root.join("workspace");
+    let token = "owner-only-turn-authorship-token".to_string();
+    let (web_state, web_nonce) = web::RuntimeWebState::new();
+    let (mobile_state, mobile_nonce) = mobile::RuntimeMobileState::new();
+    let Some((addr, runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root,
+            sessions_dir,
+            Some(token.clone()),
+            true,
+            workspace,
+            TestServerOverrides {
+                owner_host: true,
+                web: Some(web_state),
+                mobile: Some(mobile_state),
+                ..TestServerOverrides::default()
+            },
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let origin = format!("http://{addr}");
+    let client = codewhale_release::tls::reqwest_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+
+    let drive_token_resp: Value = client
+        .post(format!("{origin}/v1/auth/client-tokens"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "device_id": "paired-drive-device",
+            "intent": "drive"
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let drive_token = drive_token_resp["token"]
+        .as_str()
+        .context("drive token")?
+        .to_string();
+
+    let web_exchange = client
+        .get(format!("{origin}/__codewhale/bootstrap/{web_nonce}"))
+        .send()
+        .await?;
+    assert_eq!(web_exchange.status(), StatusCode::SEE_OTHER);
+    let web_proof = web_exchange
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|loc| loc.strip_prefix("/#p="))
+        .context("web proof")?
+        .to_string();
+    let web_cookie = web_exchange
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(';').next())
+        .context("web cookie")?
+        .to_string();
+
+    let mobile_exchange = client
+        .get(format!(
+            "{origin}/__codewhale/mobile/bootstrap/{mobile_nonce}"
+        ))
+        .send()
+        .await?;
+    assert_eq!(mobile_exchange.status(), StatusCode::SEE_OTHER);
+    let mobile_proof = mobile_exchange
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|loc| loc.strip_prefix("/mobile#"))
+        .and_then(|frag| {
+            frag.split('&')
+                .find_map(|p| p.strip_prefix("request_proof="))
+        })
+        .context("mobile proof")?
+        .to_string();
+    let mobile_cookie = mobile_exchange
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(';').next())
+        .context("mobile cookie")?
+        .to_string();
+
+    let created: Value = client
+        .post(format!("{origin}/v1/threads"))
+        .bearer_auth(&token)
+        .json(&json!({}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let thread_id = created["id"].as_str().context("thread id")?.to_string();
+
+    let mut harness = install_mock_engine(&runtime_threads, &thread_id).await;
+    let recorded_authorship = Arc::new(std::sync::Mutex::new(Vec::<TurnInputAuthorship>::new()));
+    let recorded_clone = recorded_authorship.clone();
+    let tx_event = harness.tx_event.clone();
+    tokio::spawn(async move {
+        while let Some(op) = harness.rx_op.recv().await {
+            if let Op::SendMessage(TurnSpec {
+                input_authorship, ..
+            }) = op
+            {
+                recorded_clone
+                    .lock()
+                    .expect("recorded_authorship lock")
+                    .push(input_authorship);
+                let _ = tx_event
+                    .send(EngineEvent::TurnStarted {
+                        previous_source: None,
+                        turn_id: "engine_turn_authorship".to_string(),
+                        created_at: chrono::Utc::now(),
+                        route: None,
+                        submission_id: None,
+                    })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageStarted { index: 0 })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageDelta {
+                        index: 0,
+                        content: "ok".to_string(),
+                    })
+                    .await;
+                sleep(Duration::from_millis(10)).await;
+                let _ = tx_event
+                    .send(EngineEvent::TurnComplete {
+                        source_accounting: false,
+                        turn_id: None,
+                        submission_id: None,
+                        compaction_id: None,
+                        usage: Usage::default(),
+                        parent_route_usage: Usage::default(),
+                        routed_usage_dropped_records: 0,
+                        status: TurnOutcomeStatus::Completed,
+                        error: None,
+                        tool_catalog: None,
+                        base_url: None,
+                    })
+                    .await;
+            }
+        }
+    });
+
+    let smuggled = client
+        .post(format!("{origin}/v1/threads/{thread_id}/turns"))
+        .bearer_auth(&drive_token)
+        .json(&json!({
+            "prompt": "smuggle attempt",
+            "metadata": { "input_authorship": "person" }
+        }))
+        .send()
+        .await?;
+    assert_eq!(smuggled.status(), StatusCode::BAD_REQUEST);
+
+    let wait_turn_done = |turn_id: String| {
+        let client = client.clone();
+        let token = token.clone();
+        let origin = origin.clone();
+        let thread_id = thread_id.clone();
+        async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let detail: Value = client
+                    .get(format!("{origin}/v1/threads/{thread_id}"))
+                    .bearer_auth(&token)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await?;
+                let status = detail["turns"]
+                    .as_array()
+                    .and_then(|turns| turns.iter().find(|turn| turn["id"] == turn_id))
+                    .and_then(|turn| turn.get("status"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if matches!(
+                    status.as_str(),
+                    "completed" | "failed" | "interrupted" | "canceled"
+                ) {
+                    return Ok::<String, anyhow::Error>(status);
+                }
+                anyhow::ensure!(
+                    tokio::time::Instant::now() < deadline,
+                    "timed out waiting for turn {turn_id}"
+                );
+                sleep(Duration::from_millis(20)).await;
+            }
+        }
+    };
+
+    let non_owner_requests = vec![
+        client
+            .post(format!("{origin}/v1/threads/{thread_id}/turns"))
+            .bearer_auth(&token)
+            .json(&json!({ "prompt": "from-master" })),
+        client
+            .post(format!("{origin}/v1/threads/{thread_id}/turns"))
+            .bearer_auth(&drive_token)
+            .json(&json!({ "prompt": "from-device" })),
+        client
+            .post(format!("{origin}/v1/threads/{thread_id}/turns"))
+            .header(header::COOKIE, &mobile_cookie)
+            .header(mobile::MOBILE_REQUEST_HEADER, &mobile_proof)
+            .header(header::ORIGIN, &origin)
+            .header("sec-fetch-site", "same-origin")
+            .json(&json!({ "prompt": "from-mobile" })),
+    ];
+    for req in non_owner_requests {
+        let resp = req.send().await?.error_for_status()?;
+        let turn: Value = resp.json().await?;
+        let turn_id = turn["turn"]["id"].as_str().context("turn id")?.to_string();
+        assert_eq!(wait_turn_done(turn_id).await?, "completed");
+    }
+
+    let web_turn_resp = client
+        .post(format!("{origin}/v1/threads/{thread_id}/turns"))
+        .header(header::COOKIE, &web_cookie)
+        .header(web::WEB_REQUEST_HEADER, &web_proof)
+        .header(header::ORIGIN, &origin)
+        .header("sec-fetch-site", "same-origin")
+        .json(&json!({ "prompt": "from-web-owner" }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let web_turn: Value = web_turn_resp.json().await?;
+    let web_turn_id = web_turn["turn"]["id"]
+        .as_str()
+        .context("web turn id")?
+        .to_string();
+    assert_eq!(wait_turn_done(web_turn_id).await?, "completed");
+
+    let captured = recorded_authorship
+        .lock()
+        .expect("recorded_authorship lock")
+        .clone();
+    assert_eq!(
+        captured,
+        vec![
+            TurnInputAuthorship::NotPerson,
+            TurnInputAuthorship::NotPerson,
+            TurnInputAuthorship::NotPerson,
+            TurnInputAuthorship::Person("from-web-owner".to_string()),
+        ]
+    );
+
+    handle.abort();
+    Ok(())
+}

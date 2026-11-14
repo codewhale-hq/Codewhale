@@ -871,6 +871,7 @@ pub async fn run_exec_agent(
             approval_mode: turn_approval_mode,
             verbosity: execution_config.verbosity.clone(),
             provenance: codewhale_engine::core::ops::UserInputProvenance::ExternalUser,
+            input_authorship: codewhale_engine::core::ops::TurnInputAuthorship::NotPerson,
             // Headless exec does not correlate submissions.
             submission_id: None,
         }))

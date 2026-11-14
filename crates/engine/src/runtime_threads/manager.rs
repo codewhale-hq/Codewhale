@@ -14026,6 +14026,23 @@ impl RuntimeThreadManager {
         self.start_turn_inner(thread_id, req, None).await
     }
 
+    pub async fn start_turn_owner(
+        &self,
+        thread_id: &str,
+        req: StartTurnRequest,
+    ) -> Result<TurnRecord> {
+        self.start_turn_with_source_for_caller(
+            thread_id,
+            req,
+            RuntimeTurnInputSource::ExternalUser,
+            None,
+            false,
+            true,
+        )
+        .await
+        .map(|(turn, _replayed)| turn)
+    }
+
     /// Start a turn and report whether the durable `operation_key` made it a
     /// replay of an already-accepted submission.
     ///
@@ -14040,6 +14057,22 @@ impl RuntimeThreadManager {
     ) -> Result<(TurnRecord, bool)> {
         self.start_turn_inner_reporting_replay(thread_id, req, None)
             .await
+    }
+
+    pub async fn start_turn_owner_reporting_replay(
+        &self,
+        thread_id: &str,
+        req: StartTurnRequest,
+    ) -> Result<(TurnRecord, bool)> {
+        self.start_turn_with_source_for_caller(
+            thread_id,
+            req,
+            RuntimeTurnInputSource::ExternalUser,
+            None,
+            false,
+            true,
+        )
+        .await
     }
 
     pub async fn start_turn_with_reserved_id(
@@ -14117,13 +14150,34 @@ impl RuntimeThreadManager {
         reserved_turn_id: Option<&str>,
         stored_image_bytes: bool,
     ) -> Result<(TurnRecord, bool)> {
-        self.start_turn_with_narrowing(
+        self.start_turn_with_source_for_caller(
+            thread_id,
+            req,
+            input_source,
+            reserved_turn_id,
+            stored_image_bytes,
+            false,
+        )
+        .await
+    }
+
+    pub(super) async fn start_turn_with_source_for_caller(
+        &self,
+        thread_id: &str,
+        req: StartTurnRequest,
+        input_source: RuntimeTurnInputSource,
+        reserved_turn_id: Option<&str>,
+        stored_image_bytes: bool,
+        owner_composer: bool,
+    ) -> Result<(TurnRecord, bool)> {
+        self.start_turn_with_narrowing_for_caller(
             thread_id,
             req,
             input_source,
             reserved_turn_id,
             stored_image_bytes,
             crate::core::engine::TurnNarrowing::Inherit,
+            owner_composer,
         )
         .await
     }
@@ -14154,6 +14208,29 @@ impl RuntimeThreadManager {
         reserved_turn_id: Option<&str>,
         stored_image_bytes: bool,
         narrowing: crate::core::engine::TurnNarrowing,
+    ) -> Result<(TurnRecord, bool)> {
+        self.start_turn_with_narrowing_for_caller(
+            thread_id,
+            req,
+            input_source,
+            reserved_turn_id,
+            stored_image_bytes,
+            narrowing,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn start_turn_with_narrowing_for_caller(
+        &self,
+        thread_id: &str,
+        req: StartTurnRequest,
+        input_source: RuntimeTurnInputSource,
+        reserved_turn_id: Option<&str>,
+        stored_image_bytes: bool,
+        narrowing: crate::core::engine::TurnNarrowing,
+        owner_composer: bool,
     ) -> Result<(TurnRecord, bool)> {
         // Heap-allocate the turn-start state machine. Its future holds two full
         // Config clones plus ThreadRecord/EngineHandle/TurnRecord/TurnItemRecord
@@ -14747,6 +14824,20 @@ source_usage_records: Default::default(),
             .engines
             .get(thread_id)
             .and_then(|state| state.hook_executor.clone());
+        let input_authorship = if owner_composer
+            && matches!(input_source, RuntimeTurnInputSource::ExternalUser)
+            && self.owner_surface_attached
+            && matches!(
+                self.host_profile,
+                crate::core::engine::EngineHostProfile::Normal
+            )
+            && !narrowing.is_acp()
+            && !cfg_snapshot.runtime_chat_isolated
+        {
+            crate::core::ops::TurnInputAuthorship::Person(prompt.clone())
+        } else {
+            crate::core::ops::TurnInputAuthorship::NotPerson
+        };
         let spec = TurnSpec {
             profile_constitution: req.profile_constitution,
             max_output_tokens,
@@ -14774,6 +14865,7 @@ source_usage_records: Default::default(),
             approval_mode: policy.permission,
             verbosity,
             provenance: input_source.provenance(),
+            input_authorship,
             // Durable-runtime submissions carry no host correlation token.
             submission_id: None,
         };
@@ -15060,6 +15152,17 @@ source_usage_records: Default::default(),
         turn_id: &str,
         req: SteerTurnRequest,
     ) -> Result<TurnRecord> {
+        self.steer_turn_for_caller(thread_id, turn_id, req, false)
+            .await
+    }
+
+    pub async fn steer_turn_for_caller(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        req: SteerTurnRequest,
+        owner_composer: bool,
+    ) -> Result<TurnRecord> {
         let _admission = self.config_admission.read().await;
         self.ensure_accepting_execution()?;
         let prompt = req.prompt.trim().to_string();
@@ -15161,9 +15264,24 @@ source_usage_records: Default::default(),
                     };
                 }
             };
+            let is_owner_steer = owner_composer
+                && self.owner_surface_attached
+                && matches!(
+                    self.host_profile,
+                    crate::core::engine::EngineHostProfile::Normal
+                )
+                && !active_turn.narrowing.is_acp()
+                && active_turn.run_origin
+                    == crate::core::authority::auto_review::RunOrigin::Interactive
+                && !self.config.read().runtime_chat_isolated;
+            let person_text = is_owner_steer.then(|| prompt.clone());
             // The reserved send has no await/failure point. From here the
             // engine and durable record agree even if the API caller drops.
-            let outcome_rx = permit.send_with_outcome(prompt.clone());
+            let outcome_rx = permit.send_with_outcome_and_authorship(
+                prompt.clone(),
+                is_owner_steer,
+                person_text,
+            );
             touch_lru(&mut active.lru, thread_id);
             queued_turn = turn.clone();
             self.spawn_steer_settlement(turn, item, prompt, outcome_rx)

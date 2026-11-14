@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Auto-Review reviewer:** the reviewer now judges each action against what you typed and the project's instructions (never against tool output), so a specific request clears it and a stated limit such as "don't push" blocks; choose its model with auto_review.reviewer_model.
+
 - **Multi-task background shell waiting (`task_shell_wait`):** `task_shell_wait` now accepts `task_ids` and `until` (`any` or `all`) to poll or wait on multiple background shell commands together while keeping `task_id` for single-task waits, `cancel=true`, and `gate` evidence.
 - **Sub-agent file edits across `/undo`:** Settled child sub-agent workspace writes (including `file_path` / `filePath` aliases and `File` tool actions) are now attributed to their parent turn across live turns, `/resume`, `/branch`, and runtime threads, so `/undo` restores delegated sub-agent edits together while still refusing when unattributed edits occurred during the turn or delegated work is still running.
 - **Auto-Review test and build runs:** Common workspace test and build commands (for example `python3 -m unittest`, `pytest`, `npm test`, `go test`, and `cargo clippy`), including forms ending in `2>&1` or `>/dev/null` and a trailing `head`, `tail`, or literal `grep` filter, now run in Auto-Review without escalation, and Auto-Review block messages explain how to take a safer route or switch Permissions to Ask. (CW-8148)

@@ -1052,6 +1052,7 @@ impl App {
             approval_policy_root_editable,
             approval_policy_requirements_managed,
             auto_review_disabled,
+            auto_review_reviewer_model: config.auto_review_reviewer_model().map(str::to_string),
             shell_access_editable,
             clipboard: ClipboardHandler::new(),
             approval_session_approved: HashSet::new(),

@@ -60,6 +60,7 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -303,6 +304,7 @@ async fn run_reasoning_only_turn_with_reprompts(
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await

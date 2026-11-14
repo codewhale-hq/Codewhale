@@ -3198,6 +3198,10 @@ pub struct SubAgentRuntime {
     pub parent_can_prompt: bool,
     pub parent_run_origin: crate::core::authority::auto_review::RunOrigin,
     pub parent_owner_present: bool,
+    pub parent_person_messages: std::sync::Arc<Vec<String>>,
+    pub parent_approved_plan: Option<String>,
+    pub parent_pinned_project_instructions:
+        std::sync::Arc<crate::project_context::PinnedProjectInstructions>,
     /// Durable approval evidence inherited from the parent session. Legacy
     /// runtimes that do not install a store cannot open child approval prompts.
     approval_receipt_store: Option<Result<crate::approval_log::ApprovalReceiptStore, String>>,
@@ -3289,6 +3293,9 @@ impl SubAgentRuntime {
             parent_can_prompt: false,
             parent_run_origin: crate::core::authority::auto_review::RunOrigin::Background,
             parent_owner_present: false,
+            parent_person_messages: std::sync::Arc::default(),
+            parent_approved_plan: None,
+            parent_pinned_project_instructions: std::sync::Arc::default(),
             approval_receipt_store: None,
             compaction: crate::compaction::CompactionConfig::default(),
             activation: None,
@@ -3343,6 +3350,19 @@ impl SubAgentRuntime {
             && parent_owner_present;
         self.parent_run_origin = parent_run_origin;
         self.parent_owner_present = owner_present;
+        self
+    }
+
+    #[must_use]
+    pub fn with_parent_review_context(
+        mut self,
+        person_messages: Vec<String>,
+        approved_plan: Option<String>,
+        pinned_project_instructions: crate::project_context::PinnedProjectInstructions,
+    ) -> Self {
+        self.parent_person_messages = std::sync::Arc::new(person_messages);
+        self.parent_approved_plan = approved_plan;
+        self.parent_pinned_project_instructions = std::sync::Arc::new(pinned_project_instructions);
         self
     }
 
@@ -3560,6 +3580,8 @@ impl SubAgentRuntime {
         runtime.foreground_children = None;
         runtime.parent_run_origin = crate::core::authority::auto_review::RunOrigin::Background;
         runtime.parent_owner_present = false;
+        runtime.parent_person_messages = std::sync::Arc::default();
+        runtime.parent_approved_plan = None;
         runtime
     }
 
@@ -3655,6 +3677,11 @@ impl SubAgentRuntime {
             approval_receipt_store: self.approval_receipt_store.clone(),
             compaction: self.compaction.clone(),
             activation: None,
+            parent_person_messages: std::sync::Arc::clone(&self.parent_person_messages),
+            parent_approved_plan: self.parent_approved_plan.clone(),
+            parent_pinned_project_instructions: std::sync::Arc::clone(
+                &self.parent_pinned_project_instructions,
+            ),
         }
     }
 

@@ -13,8 +13,8 @@
 use std::time::Duration;
 
 use crate::core::authority::auto_review::{
-    AutoReviewAction, DEFAULT_GUARDIAN_POLICY, ReviewerRiskLevel, ReviewerVerdict,
-    parse_reviewer_verdict,
+    AutoReviewAction, DEFAULT_GUARDIAN_POLICY, MAX_REVIEW_CONTEXT_BYTES, ReviewerRiskLevel,
+    ReviewerVerdict, parse_reviewer_verdict,
 };
 use crate::core::model_client::ModelClient;
 use crate::tools::spec::ToolError;
@@ -29,9 +29,6 @@ use tokio_util::sync::CancellationToken;
 /// separately from explicit denials (a timeout proves nothing about safety).
 const REVIEWER_TIMEOUT: Duration = Duration::from_secs(90);
 const REVIEWER_MAX_OUTPUT_TOKENS: u32 = 4096;
-/// Keep one exact held call comfortably inside every supported model context.
-/// Truncating tool input could hide the unsafe part, so oversized reviews deny.
-const MAX_REVIEW_CONTEXT_BYTES: usize = 64 * 1024;
 
 /// The reviewer's answer, with failure modes separated from explicit denials.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,41 +86,90 @@ impl ReviewerOutcome {
 pub struct ReviewerResult {
     pub outcome: ReviewerOutcome,
     pub usage: Option<Usage>,
+    pub reviewer_model: String,
 }
 
 impl ReviewerResult {
-    fn finish(outcome: ReviewerOutcome, usage: Option<Usage>) -> Self {
-        Self { outcome, usage }
+    fn finish(outcome: ReviewerOutcome, usage: Option<Usage>, reviewer_model: String) -> Self {
+        Self {
+            outcome,
+            usage,
+            reviewer_model,
+        }
     }
 
-    fn unavailable(reason: impl Into<String>, usage: Option<Usage>) -> Self {
+    fn unavailable(
+        reason: impl Into<String>,
+        usage: Option<Usage>,
+        reviewer_model: String,
+    ) -> Self {
         Self::finish(
             ReviewerOutcome::Unavailable {
                 reason: reason.into(),
             },
             usage,
+            reviewer_model,
         )
     }
 }
 
-/// Ask the model guardian for one decision. `context_text` carries the
-/// deterministic hold and the call under review; the system prompt is fixed.
+pub fn resolve_reviewer_model(configured: Option<&str>, client: &dyn ModelClient) -> String {
+    if let Some(explicit) = configured.map(str::trim).filter(|s| !s.is_empty()) {
+        return explicit.to_string();
+    }
+    let provider = client
+        .provider_name()
+        .trim()
+        .to_ascii_lowercase()
+        .replace('_', "-");
+    let candidates: &[&str] = match provider.as_str() {
+        "anthropic" => &["claude-sonnet-5-5", "claude-sonnet-4-6"],
+        "openai" => &["gpt-5.6", "gpt-5.5"],
+        "openai-codex" => &["gpt-6.1-sol", "gpt-5.3-codex", "gpt-5.6"],
+        "deepseek" | "deepseek-anthropic" => &["deepseek-v4-pro"],
+        "google" => &["gemini-3.1-pro-preview", "gemini-4-argon"],
+        "openrouter" => &["deepseek/deepseek-v4-pro"],
+        "xai" => &["grok-4.7"],
+        "zai" => &["GLM-5.3"],
+        "moonshot" => &["kimi-k3.1-pro"],
+        "minimax" | "minimax-anthropic" => &["MiniMax-M3"],
+        _ => &[],
+    };
+    for &candidate in candidates {
+        if client.supports_catalog_reviewer_model(candidate) {
+            return candidate.to_string();
+        }
+    }
+    client.model().to_string()
+}
+
 pub async fn consult_reviewer(
     client: &dyn ModelClient,
     context_text: &str,
     cancel_token: &CancellationToken,
 ) -> ReviewerResult {
+    consult_reviewer_with_model(client, None, context_text, cancel_token).await
+}
+
+pub async fn consult_reviewer_with_model(
+    client: &dyn ModelClient,
+    configured_model: Option<&str>,
+    context_text: &str,
+    cancel_token: &CancellationToken,
+) -> ReviewerResult {
+    let model = resolve_reviewer_model(configured_model, client);
     if context_text.len() > MAX_REVIEW_CONTEXT_BYTES {
         return ReviewerResult::unavailable(
             "the exact review context exceeded the guardian limit",
             None,
+            model,
         );
     }
     let deepseek = client.provider_name() == codewhale_config::ProviderKind::Deepseek.as_str();
     let reasoning_effort = deepseek.then(|| "low".to_string());
     let temperature = reasoning_effort.is_none().then_some(0.0);
     let request = MessageRequest {
-        model: client.model().to_string(),
+        model: model.clone(),
         messages: vec![Message {
             role: Role::User,
             content: vec![ContentBlock::Text {
@@ -145,24 +191,24 @@ pub async fn consult_reviewer(
         title: None,
     };
     if cancel_token.is_cancelled() {
-        return ReviewerResult::finish(ReviewerOutcome::Cancelled, None);
+        return ReviewerResult::finish(ReviewerOutcome::Cancelled, None, model);
     }
     let response = tokio::select! {
         biased;
         _ = cancel_token.cancelled() => {
-            return ReviewerResult::finish(ReviewerOutcome::Cancelled, None);
+            return ReviewerResult::finish(ReviewerOutcome::Cancelled, None, model);
         }
         response = tokio::time::timeout(REVIEWER_TIMEOUT, client.create_message_uncached(request)) => response,
     };
     let response = match response {
-        Err(_) => return ReviewerResult::unavailable("the reviewer timed out", None),
-        // Provider errors can include response bodies or credential-shaped
-        // details. The guardian needs only the fail-closed outcome.
-        Ok(Err(_)) => return ReviewerResult::unavailable("the reviewer request failed", None),
+        Err(_) => return ReviewerResult::unavailable("the reviewer timed out", None, model),
+        Ok(Err(_)) => {
+            return ReviewerResult::unavailable("the reviewer request failed", None, model);
+        }
         Ok(Ok(response)) => response,
     };
     let outcome = verdict_from_response(&response);
-    ReviewerResult::finish(outcome, Some(response.usage))
+    ReviewerResult::finish(outcome, Some(response.usage), model)
 }
 
 fn verdict_from_response(response: &MessageResponse) -> ReviewerOutcome {
@@ -310,8 +356,9 @@ mod tests {
         let SystemPrompt::Text(system) = request.system.expect("guardian policy") else {
             panic!("guardian system prompt must be text");
         };
-        assert!(system.contains("Never infer user intent"));
-        assert!(!system.contains("Prefer reversible work."));
+        assert!(system.contains("Judge the proposed call against"));
+        assert!(system.contains("Never invent facts"));
+        assert!(!system.contains("Never infer user intent"));
     }
 
     #[tokio::test]
@@ -413,5 +460,126 @@ mod tests {
         );
         assert!(result.usage.is_none());
         assert_eq!(mock.call_count(), 0);
+    }
+
+    struct RouteStubClient {
+        provider: &'static str,
+        session_model: &'static str,
+        supports_catalog: bool,
+        seen_models: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RouteStubClient {
+        fn new(
+            provider: &'static str,
+            session_model: &'static str,
+            supports_catalog: bool,
+        ) -> Self {
+            Self {
+                provider,
+                session_model,
+                supports_catalog,
+                seen_models: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ModelClient for RouteStubClient {
+        fn provider_name(&self) -> &str {
+            self.provider
+        }
+
+        fn model(&self) -> &str {
+            self.session_model
+        }
+
+        fn supports_catalog_reviewer_model(&self, _candidate: &str) -> bool {
+            self.supports_catalog
+        }
+
+        async fn create_message(&self, request: MessageRequest) -> anyhow::Result<MessageResponse> {
+            self.seen_models
+                .lock()
+                .expect("seen_models lock")
+                .push(request.model.clone());
+            Ok(response(
+                r#"{"risk_level":"low","decision":"allow","reason":"ok"}"#,
+                Usage::default(),
+            ))
+        }
+
+        async fn create_message_stream(
+            &self,
+            _request: MessageRequest,
+        ) -> anyhow::Result<crate::llm_client::StreamEventBox> {
+            unreachable!()
+        }
+
+        async fn health_check(&self) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_reviewer_model_honors_override_matches_catalog_and_falls_back_to_session() {
+        let custom = RouteStubClient::new("anthropic", "custom-claude", true);
+        assert_eq!(
+            resolve_reviewer_model(Some("  explicit-model "), &custom),
+            "explicit-model"
+        );
+        assert_eq!(resolve_reviewer_model(None, &custom), "claude-sonnet-5-5");
+
+        let expected_catalog = [
+            ("anthropic", "claude-sonnet-5-5"),
+            ("openai", "gpt-5.6"),
+            ("openai-codex", "gpt-6.1-sol"),
+            ("deepseek", "deepseek-v4-pro"),
+            ("deepseek-anthropic", "deepseek-v4-pro"),
+            ("google", "gemini-3.1-pro-preview"),
+            ("openrouter", "deepseek/deepseek-v4-pro"),
+            ("xai", "grok-4.7"),
+            ("zai", "GLM-5.3"),
+            ("moonshot", "kimi-k3.1-pro"),
+            ("minimax", "MiniMax-M3"),
+            ("minimax-anthropic", "MiniMax-M3"),
+        ];
+        for (provider, expected) in expected_catalog {
+            let client = RouteStubClient::new(provider, "session-fallback", true);
+            assert_eq!(
+                resolve_reviewer_model(None, &client),
+                expected,
+                "provider={provider}"
+            );
+            assert_eq!(
+                resolve_reviewer_model(Some("   "), &client),
+                expected,
+                "provider={provider}"
+            );
+
+            let unofficial = RouteStubClient::new(provider, "custom-route-model", false);
+            assert_eq!(
+                resolve_reviewer_model(None, &unofficial),
+                "custom-route-model",
+                "unofficial route must fall back to session model for {provider}"
+            );
+        }
+
+        let ollama = RouteStubClient::new("ollama", "qwen3-coder", true);
+        assert_eq!(resolve_reviewer_model(None, &ollama), "qwen3-coder");
+
+        let consulted = consult_reviewer_with_model(
+            &custom,
+            Some("chosen-reviewer"),
+            "{\"proposed_tool_call\":{}}",
+            &CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(consulted.reviewer_model, "chosen-reviewer");
+        assert!(matches!(consulted.outcome, ReviewerOutcome::Allow { .. }));
+        assert_eq!(
+            custom.seen_models.lock().expect("seen_models").as_slice(),
+            &["chosen-reviewer"]
+        );
     }
 }

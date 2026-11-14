@@ -967,6 +967,7 @@ pub enum Event {
         /// Reviewer risk tier when a guardian answered (`low`, `medium`,
         /// `high`, `critical`); `None` for deterministic gates and failures.
         risk: Option<String>,
+        reviewer_model: Option<String>,
         /// Bounded, control-stripped rationale safe to render as one line.
         reason: String,
     },

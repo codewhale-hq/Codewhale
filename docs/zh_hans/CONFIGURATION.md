@@ -1315,9 +1315,12 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
   action = "session.compact"
   ```
 
-- `[auto_review]`(表，可选)：工具调用审查策略——确定性底线加模型守卫层。这一层位于现有权限档位之上；它可以拦住或阻断工具调用，但不是自动推送、自动合并或托管审查服务。先检查阻断规则，然后是内置安全底线，再是允许规则。在 Ask 中，安全拦阻打开审批，会话授权或 allow 规则都无法应答它；在 Auto-Review 或非交互 `never` 档位中，它作为硬阻断失败关闭。Full Access 跳过内置底线。即使 allow 规则匹配，安全底线仍覆盖类似发布的动作、破坏性的后台/无头动作，以及请求体携带凭据文件或名称表明是机密的变量、或读取由这两者或 `env`/`printenv` 送入的 stdin 的 `curl`/`wget` 上传；超过 64 KiB 或 4,096 个词、且文本中任意位置含有 `curl` 或 `wget` 的 shell 命令、shell 输入或校验器，以及嵌套过深而无法读取的调用，同样会被拦住。在 Full Access 之外，它还会在每个档位拒绝含有隐藏 Unicode 字符（双向控制符、零宽及其他不可见字符、标签字符、孤立的变体选择符，以及 shell 输入中 ASCII 控制键之外的终端控制字符）的 shell 命令、shell 输入或校验器，并写出该码位及其位置。
+- `[auto_review]`(表，可选)：工具调用审查策略——确定性底线加模型守卫层。这一层位于现有权限档位之上；它可以拦住或阻断工具调用，但不是自动推送、自动合并或托管审查服务。`auto_review.reviewer_model`(字符串，可选，亦可通过 `/config auto_review.reviewer_model <model|default> [--save]` 设置)指定守卫模型，必须留在当前会话的提供商路由内；未设置时会为主要提供商路由自动选择有能力的目录模型或回退到当前会话模型，从不跨越提供商或账户。先检查阻断规则，然后是内置安全底线，再是允许规则(仅在 Auto-Review 下，即使命中 `auto_review.allow`，针对 `AGENTS.md`、`CLAUDE.md` 或已加载指令文件及其符号链接的文件/shell 修改也会被拦下交由守卫审查)。在 Ask 中，安全拦阻打开审批，会话授权或 allow 规则都无法应答它；在 Auto-Review 或非交互 `never` 档位中，它作为硬阻断失败关闭。Full Access 跳过内置底线。即使 allow 规则匹配，安全底线仍覆盖类似发布的动作、破坏性的后台/无头动作，以及请求体携带凭据文件或名称表明是机密的变量、或读取由这两者或 `env`/`printenv` 送入的 stdin 的 `curl`/`wget` 上传；超过 64 KiB 或 4,096 个词、且文本中任意位置含有 `curl` 或 `wget` 的 shell 命令、shell 输入或校验器，以及嵌套过深而无法读取的调用，同样会被拦住。在 Full Access 之外，它还会在每个档位拒绝含有隐藏 Unicode 字符（双向控制符、零宽及其他不可见字符、标签字符、孤立的变体选择符，以及 shell 输入中 ASCII 控制键之外的终端控制字符）的 shell 命令、shell 输入或校验器，并写出该码位及其位置。
 
   ```toml
+  [auto_review]
+  reviewer_model = "claude-sonnet-4-6"
+
   [[auto_review.allow]]
   id = "read-only-inspection"
   action_kind = "read"
@@ -1329,7 +1332,7 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
   reason = "Release and publish actions require maintainer review."
   ```
 
-  规则匹配器是精确 `tool` 和/或 `action_kind`。至少需要一个匹配器。`action_kind` 接受六个决策相关种类 `read`、`write`、`shell`、`external`、`publish` 和 `destructive`。无效名称让配置验证失败，而不是静默扩大到另一个策略类。在阻断规则中，旧名称保持保守兼容别名：`network`、`git`、`mcp_action`、`browser` 和 `unknown` 映射到 `external`；`secret` 映射到 `destructive`；`mcp_read` 映射到 `read`。允许规则中退役的窄种类验证失败，而不是扩大到更宽类别。退役的 `text_contains` 匹配器同样验证失败，而不是静默扩大旧的意图依赖规则。交互式 Auto-Review 中的回退拦阻升级为一次无状态守卫请求。请求包含确切被拦调用和确定性观察作为独立 JSON 字段。对话历史、技能指令、附加文件内容和其它展开的模型上下文被排除。守卫不推断用户意图，不算授权分数。它不暴露工具，返回风险级别、允许/拒绝和理由。高或关键风险即使模型说允许也不能自动运行。过大的确切调用被拒绝而不是截断。只做一次审查请求；不完整或格式错误的输出、超时、取消、provider 失败或空理由都失败关闭。确定性底线从不被模型审查，无头适配器使用仅确定性层级。固定的 Codex、Kimi 和 DeepSeek 源边界从[权限档位](MODES.md#权限姿态)链接。审查结果发出 `tool.auto_review` 审计事件，`gate = "guardian"`。
+  规则匹配器是精确 `tool` 和/或 `action_kind`。至少需要一个匹配器。`action_kind` 接受六个决策相关种类 `read`、`write`、`shell`、`external`、`publish` 和 `destructive`。无效名称让配置验证失败，而不是静默扩大到另一个策略类。在阻断规则中，旧名称保持保守兼容别名：`network`、`git`、`mcp_action`、`browser` 和 `unknown` 映射到 `external`；`secret` 映射到 `destructive`；`mcp_read` 映射到 `read`。允许规则中退役的窄种类验证失败，而不是扩大到更宽类别。退役的 `text_contains` 匹配器同样验证失败，而不是静默扩大旧的意图依赖规则。Auto-Review 中的回退拦阻升级为一次 64 KiB 预算内的无状态守卫请求，作为不受信任证据的独立 JSON 字段传入：由 Rust 记录的交互式用户输入(`person_messages`，最新在前)、已批准计划(`approved_plan`)、本回合此前经脱敏的非只读动作(`recent_actions`)、会话启动时固定的用户级与仓库级指令(附哈希，回合途中不重读)、确定性观察以及确切被拦调用(保留 `description`)。工具输出、助手文本、附加 `@` 文件内容、技能正文与非所有者/自动生成的提示均排除在 `person_messages` 之外。高或严重风险即使模型说允许也不能自动运行；过大的当前请求或确切调用直接返回不可用并失败关闭而不是截断。只做一次审查请求；不完整或格式错误的输出、超时、取消、provider 失败或空理由都失败关闭。确定性底线从不被模型审查，无头适配器使用仅确定性层级。固定的 Codex、Kimi 和 DeepSeek 源边界从[权限档位](MODES.md#权限姿态)链接。审查结果发出 `tool.auto_review` 审计事件(`gate = "guardian"`，并记录 `reviewer_model`)，对话记录回执也会显示解析出的审查模型。
 
   Auto-Review 决策在启用工具审计日志时发出 `tool.auto_review` 审计事件，`gate = "deterministic"`。未来的 PreToolUse/PostToolUse hooks 可以在这层周围添加观察者输入，但配置的 Auto-Review 策略在工具调用被允许继续之前评估。
   在受管配置的 `[auto_review]` 下设置 `disabled = true` 可关闭 Auto-Review：`Shift+Tab` 会跳过 Auto-Review，且 `--permission-mode auto-review`、`/auto` 和 `approval_policy = "auto"` 都会被拒绝。受管 `[auto_review]` 表会整体替换用户的 `[auto_review]` 表，而不是逐键合并。

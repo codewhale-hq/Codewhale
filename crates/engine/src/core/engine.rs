@@ -84,8 +84,8 @@ use super::authority::{
 };
 use super::events::{Event, TurnOutcomeStatus, TurnRoute};
 use super::ops::{
-    McpManagerUpdate, Op, ProviderRuntimeStatus, SessionContextBudget, SessionSnapshot, TurnSpec,
-    USER_SHELL_TOOL_ID_PREFIX, UserInputProvenance,
+    McpManagerUpdate, Op, ProviderRuntimeStatus, SessionContextBudget, SessionSnapshot,
+    TurnInputAuthorship, TurnSpec, USER_SHELL_TOOL_ID_PREFIX, UserInputProvenance,
 };
 use super::session::Session;
 use super::turn::{TurnContext, format_snapshot_label, post_turn_snapshot};
@@ -1811,17 +1811,48 @@ impl Engine {
         .with_rust_origin(self.turn_run_origin, self.turn_owner_present)
     }
 
-    pub(super) fn commit_pending_steer(&mut self, pending: handle::PendingSteer) -> String {
-        let (text, owner_steer) = pending.commit_with_owner_steer();
+    pub(super) fn commit_pending_steer_with_intent(
+        &mut self,
+        pending: handle::PendingSteer,
+    ) -> (String, Option<String>) {
+        let (text, owner_steer, person_text) = pending.commit_with_owner_intent();
         if owner_steer
             && self.owner_surface_attached
             && matches!(self.host_profile, EngineHostProfile::Normal)
             && !self.is_acp_turn()
+            && self.child_host.is_none()
+            && self.rlm_host.is_none()
+            && !self.api_config.runtime_chat_isolated
         {
             self.turn_run_origin = RunOrigin::Interactive;
             self.turn_owner_present = true;
+            (text, person_text)
+        } else {
+            (text, None)
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn commit_pending_steer(&mut self, pending: handle::PendingSteer) -> String {
+        let (text, _person_text) = self.commit_pending_steer_with_intent(pending);
         text
+    }
+
+    pub(super) fn accepts_owner_turn_input(
+        &self,
+        provenance: UserInputProvenance,
+        is_review: bool,
+    ) -> bool {
+        provenance == UserInputProvenance::ExternalUser
+            && !is_review
+            && self.turn_run_origin == RunOrigin::Interactive
+            && self.turn_owner_present
+            && self.owner_surface_attached
+            && matches!(self.host_profile, EngineHostProfile::Normal)
+            && !self.is_acp_turn()
+            && self.child_host.is_none()
+            && self.rlm_host.is_none()
+            && !self.api_config.runtime_chat_isolated
     }
 
     #[cfg(test)]
@@ -1954,6 +1985,7 @@ impl Engine {
             return false;
         }
         self.session.messages.truncate_to(mark.index);
+        self.session.truncate_intents_to(mark.index);
         self.session.bump_messages_revision();
         true
     }
@@ -2553,6 +2585,8 @@ impl Engine {
                 prompt_host,
                 Some((&raw, &instruction_settings, initial_instruction_budgets)),
             );
+            session.pinned_project_instructions =
+                crate::project_context::PinnedProjectInstructions::from_project_context(&raw);
             session.project_context = Some(raw);
             (prompt, Some(Arc::new(assembly)))
         };
@@ -2725,6 +2759,9 @@ impl Engine {
             }
             EngineHostSetup::Rlm(_) => None,
         });
+        if let Some(EngineHostSetup::Child(child)) = host.as_ref() {
+            Self::apply_child_parent_intent(&mut session, &child.authority.runtime);
+        }
         let (child_host, rlm_host) = match host {
             Some(EngineHostSetup::Child(child)) => {
                 (Some(child_host::ChildHostState::from(child)), None)
@@ -3546,6 +3583,26 @@ impl Engine {
         &self.session.id
     }
 
+    pub(super) fn apply_child_parent_intent(
+        session: &mut crate::core::session::Session,
+        runtime: &crate::tools::subagent::SubAgentRuntime,
+    ) {
+        session.pinned_project_instructions =
+            runtime.parent_pinned_project_instructions.as_ref().clone();
+        if runtime.has_foreground_ownership()
+            && runtime.parent_run_origin
+                == crate::core::authority::auto_review::RunOrigin::Interactive
+            && runtime.parent_owner_present
+        {
+            for msg in runtime.parent_person_messages.iter() {
+                session.record_person_message(msg.clone(), None);
+            }
+            if let Some(plan) = runtime.parent_approved_plan.as_deref() {
+                session.record_approved_plan(plan.to_string(), None);
+            }
+        }
+    }
+
     /// Install one restored history and invalidate every dependent prompt/token
     /// cache. Resume and conditional undo share this exact implementation.
     fn restore_session_history(
@@ -3556,6 +3613,7 @@ impl Engine {
     ) {
         self.session.snapshot_source = None;
         self.session.tool_activation_cache.clear();
+        self.session.clear_recorded_intents();
         let compaction_checkpoint =
             compaction_checkpoint_for_restore(&messages, system_prompt.clone());
         let restored_messages =
@@ -3990,6 +4048,7 @@ impl Engine {
                 hook_executor: self.config.hook_executor.clone(),
                 verbosity: self.config.verbosity.clone(),
                 provenance: UserInputProvenance::Runtime,
+                input_authorship: TurnInputAuthorship::NotPerson,
                 images: Vec::new(),
                 max_output_tokens: None,
                 // Background shell completion wake: no host submission to
@@ -4206,6 +4265,7 @@ impl Engine {
                                     hook_executor: self.config.hook_executor.clone(),
                                     verbosity: self.config.verbosity.clone(),
                                     provenance: UserInputProvenance::GoalContinuation,
+                                    input_authorship: TurnInputAuthorship::NotPerson,
                                     images: Vec::new(),
                                     max_output_tokens: None,
                                     // Engine-scheduled goal continuation: no host
@@ -4560,6 +4620,9 @@ impl Engine {
                         Op::SetStreamChunkTimeout { timeout_secs } => {
                             self.config.stream_chunk_timeout = Duration::from_secs(timeout_secs);
                         }
+                        Op::SetAutoReviewReviewerModel { reviewer_model } => {
+                            self.config.auto_review_policy.reviewer_model = reviewer_model;
+                        }
                         Op::SetSubagentRuntimeConfig {
                             enabled,
                             max_subagents,
@@ -4745,6 +4808,12 @@ impl Engine {
                                         &self.instruction_settings,
                                     )
                                 });
+                            self.session.pinned_project_instructions = self
+                                .session
+                                .project_context
+                                .as_ref()
+                                .map(crate::project_context::PinnedProjectInstructions::from_project_context)
+                                .unwrap_or_default();
                             self.session.rebuild_working_set();
                             self.reconcile_restored_work_bindings().await;
                             if self.mcp_pool.is_none()
@@ -4975,11 +5044,24 @@ impl Engine {
                                 .get(idx..)
                                 .map(<[_]>::to_vec)
                                 .unwrap_or_default();
+                            let saved_intents = self.session.recorded_intents.clone();
                             self.session.messages.truncate_to(idx);
+                            self.session.truncate_intents_to(idx);
                             self.session.bump_messages_revision();
                             // Now dispatch the new message as a normal send,
                             // reusing the engine's stored mode/model config.
                             let mode = self.current_mode;
+                            let edit_authorship = if self.owner_surface_attached
+                                && matches!(self.host_profile, EngineHostProfile::Normal)
+                                && !self.is_acp_turn()
+                                && self.child_host.is_none()
+                                && self.rlm_host.is_none()
+                                && !self.api_config.runtime_chat_isolated
+                            {
+                                TurnInputAuthorship::Person(new_message.clone())
+                            } else {
+                                TurnInputAuthorship::NotPerson
+                            };
                             let outcome = self
                                 .handle_send_message(TurnSpec {
                                     profile_constitution: None,
@@ -5006,6 +5088,7 @@ impl Engine {
                                     hook_executor: self.config.hook_executor.clone(),
                                     verbosity: self.config.verbosity.clone(),
                                     provenance: UserInputProvenance::ExternalUser,
+                                    input_authorship: edit_authorship,
                                     images: Vec::new(),
                                     max_output_tokens: None,
                                     submission_id,
@@ -5022,6 +5105,7 @@ impl Engine {
                                     .map(<[_]>::to_vec)
                                     .unwrap_or_default();
                                 self.session.messages.truncate_to(idx);
+                                self.session.recorded_intents = saved_intents;
                                 self.session.messages.push_batch(removed_exchange);
                                 self.session.messages.push_batch(appended);
                                 self.session.bump_messages_revision();
@@ -5783,6 +5867,7 @@ impl Engine {
                 hook_executor: self.config.hook_executor.clone(),
                 verbosity: self.config.verbosity.clone(),
                 provenance: UserInputProvenance::SubAgentHandoff,
+                input_authorship: TurnInputAuthorship::NotPerson,
                 images: Vec::new(),
                 max_output_tokens: None,
                 // Idle sub-agent completion resume: no host submission to
@@ -6609,7 +6694,12 @@ impl Engine {
                     Arc::clone(&self.shared_auto_review_policy),
                     self.config.terminal_chrome_enabled,
                 )
-                .with_parent_origin(self.turn_run_origin, self.turn_owner_present);
+                .with_parent_origin(self.turn_run_origin, self.turn_owner_present)
+                .with_parent_review_context(
+                    self.session.person_messages(),
+                    self.session.approved_plan().map(str::to_string),
+                    self.session.pinned_project_instructions.clone(),
+                );
                 if matches!(input_policy.mode, AppMode::Plan) {
                     rt.worker_profile = WorkerRuntimeProfile::for_role(FleetRole::Planner);
                 }
@@ -6994,6 +7084,7 @@ impl Engine {
             hook_executor,
             verbosity,
             provenance,
+            input_authorship,
             submission_id,
         } = spec;
         let route = *route;
@@ -7845,6 +7936,20 @@ impl Engine {
             };
             user_msg.content.splice(image_index..image_index, images);
             self.session.add_message(user_msg);
+            let user_msg_index = self.session.messages.len().saturating_sub(1);
+            if self.accepts_owner_turn_input(provenance, false) {
+                match input_authorship {
+                    TurnInputAuthorship::Person(raw_text) => {
+                        self.session
+                            .record_person_message(raw_text, Some(user_msg_index));
+                    }
+                    TurnInputAuthorship::ApprovedPlan(plan_text) => {
+                        self.session
+                            .record_approved_plan(plan_text, Some(user_msg_index));
+                    }
+                    TurnInputAuthorship::NotPerson => {}
+                }
+            }
             turn.unanswered_user_message = Some(self.mark_unanswered_user_message());
 
             if let Some(job) = self.child_job()
@@ -8513,6 +8618,11 @@ impl Engine {
         .with_permission_posture(
             Arc::clone(&self.shared_auto_review_policy),
             self.config.terminal_chrome_enabled,
+        )
+        .with_parent_review_context(
+            self.session.person_messages(),
+            self.session.approved_plan().map(str::to_string),
+            self.session.pinned_project_instructions.clone(),
         );
         if matches!(mode, AppMode::Plan) {
             rt.worker_profile = WorkerRuntimeProfile::for_role(FleetRole::Planner);

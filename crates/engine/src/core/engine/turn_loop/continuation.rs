@@ -83,12 +83,17 @@ impl Engine {
                         .permission_denial_rounds_without_progress = 0;
                 }
                 for pending in pending_steers.drain(..) {
-                    let steer = self.commit_pending_steer(pending).trim().to_string();
+                    let (raw_steer, person_text) = self.commit_pending_steer_with_intent(pending);
+                    let steer = raw_steer.trim().to_string();
                     self.session
                         .working_set
                         .observe_user_message(&steer, &self.session.workspace);
                     self.add_session_message(self.user_text_message_with_turn_metadata(steer))
                         .await;
+                    if let Some(person_text) = person_text {
+                        let index = self.session.messages.len().saturating_sub(1);
+                        self.session.record_person_message(person_text, Some(index));
+                    }
                 }
                 let _ = self
                     .send_event(Event::status("Continuing — queued steer input".to_string()))

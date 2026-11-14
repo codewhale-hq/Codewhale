@@ -344,6 +344,7 @@ pub(crate) fn apply_message_submit_outcome(
                 app.bump_history_cell(idx);
             }
             message.display = text;
+            message.owner_input = false;
             true
         }
         codewhale_engine::hooks::MessageSubmitOutcome::Blocked { reason } => {
@@ -2619,6 +2620,20 @@ async fn apply_command_result_inner(
             }
             AppAction::UpdatePromptSuggestion { enabled } => {
                 config.prompt_suggestion = Some(enabled);
+            }
+            AppAction::SetAutoReviewReviewerModel { reviewer_model } => {
+                app.auto_review_reviewer_model = reviewer_model.clone();
+                config
+                    .auto_review
+                    .get_or_insert_with(Default::default)
+                    .reviewer_model = reviewer_model.clone();
+                if engine_handle
+                    .try_send(Op::SetAutoReviewReviewerModel { reviewer_model })
+                    .is_err()
+                {
+                    app.status_message =
+                        Some("Engine busy — setting not applied; try again".to_string());
+                }
             }
             AppAction::UpdateNotification { update } => {
                 if let Err(error) = apply_notification_update(app, config, update) {

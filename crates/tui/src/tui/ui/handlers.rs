@@ -1834,6 +1834,7 @@ pub(crate) async fn apply_plan_handoff_with_checkpoint(
                 return Ok(());
             }
             QueuedMessage::new(plan_handoff_proceed_message(app, &plan), None)
+                .with_approved_plan(Some(plan.text))
         }
     };
     // Consume before ordinary composer admission. Its existing recovery owns

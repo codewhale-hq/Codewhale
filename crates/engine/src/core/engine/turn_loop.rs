@@ -1379,11 +1379,48 @@ impl Engine {
         tool_id: &str,
         turn: &mut TurnContext,
     ) -> Result<(), ToolError> {
-        let context_text = crate::core::authority::auto_review::build_reviewer_context(
+        let reviewer_model = super::reviewer::resolve_reviewer_model(
+            self.config.auto_review_policy.reviewer_model.as_deref(),
+            client,
+        );
+        let context_text = match crate::core::authority::auto_review::build_reviewer_context(
             context,
             held_reason,
             tool_input,
-        );
+        ) {
+            Ok(text) => text,
+            Err(reason) => {
+                let outcome = super::reviewer::ReviewerOutcome::Unavailable {
+                    reason: reason.to_string(),
+                };
+                let decision = outcome.audit_decision();
+                let risk = outcome.audit_risk();
+                let result = outcome.into_tool_result(context.tool_name.as_ref());
+                emit_tool_audit(json!({
+                    "event": "tool.auto_review",
+                    "gate": "guardian",
+                    "tool_id": tool_id,
+                    "reviewer_model": reviewer_model.as_str(),
+                    "decision": decision,
+                    "risk": risk,
+                    "reason": result.as_ref().map_or_else(|error| error.to_string(), Clone::clone),
+                }))
+                .await;
+                let _ = self
+                    .send_event(Event::ToolGateDecision {
+                        agent_id: None,
+                        tool_id: tool_id.to_string(),
+                        tool_name: context.tool_name.to_string(),
+                        gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                        decision: crate::core::events::ToolGateVerdict::Unavailable,
+                        risk: None,
+                        reviewer_model: Some(reviewer_model),
+                        reason: crate::core::events::bounded_gate_reason(reason),
+                    })
+                    .await;
+                return result.map(|_| ());
+            }
+        };
         let _ = self
             .send_event(Event::status(format!(
                 "Auto-Review checking '{}'",
@@ -1399,7 +1436,7 @@ impl Engine {
             .map_or_else(crate::cost_status::scope_token, |child| {
                 child.accounting_origin().0
             });
-        let review_route = client.effective_route_envelope(client.model(), chrono::Utc::now());
+        let review_route = client.effective_route_envelope(&reviewer_model, chrono::Utc::now());
         let origin = if let Some(child) = child_accounting.as_ref() {
             child.usage_origin()
         } else {
@@ -1439,7 +1476,12 @@ impl Engine {
         let started = Instant::now();
         let review = crate::llm_client::observe_request_retries(
             Some(observation),
-            super::reviewer::consult_reviewer(client, &context_text, &self.cancel_token),
+            super::reviewer::consult_reviewer_with_model(
+                client,
+                self.config.auto_review_policy.reviewer_model.as_deref(),
+                &context_text,
+                &self.cancel_token,
+            ),
         )
         .await;
         let wire = wire.drain();
@@ -1521,6 +1563,7 @@ impl Engine {
             "event": "tool.auto_review",
             "gate": "guardian",
             "tool_id": tool_id,
+            "reviewer_model": review.reviewer_model.as_str(),
             "decision": decision,
             "risk": risk,
             "reason": result.as_ref().map_or_else(|error| error.to_string(), Clone::clone),
@@ -1535,6 +1578,7 @@ impl Engine {
                     gate: crate::core::events::ToolGate::AutoReviewGuardian,
                     decision: verdict,
                     risk: risk.map(str::to_string),
+                    reviewer_model: Some(review.reviewer_model),
                     reason: crate::core::events::bounded_gate_reason(&reason),
                 })
                 .await;
@@ -2398,12 +2442,17 @@ impl Engine {
 
             if blocked_error.is_none() {
                 let review_context =
-                    crate::core::authority::auto_review::AutoReviewContext::from_turn_authority_async(
+                    crate::core::authority::auto_review::AutoReviewContext::from_turn_authority_with_intent_async(
                         &tool_name,
                         &tool_input,
                         &self.current_turn_authority(),
                         detached_start,
                         Some(&self.session.workspace),
+                        self.session.person_messages(),
+                        self.session.approved_plan().map(str::to_string),
+                        turn.recent_actions.clone(),
+                        Some(self.session.pinned_project_instructions.clone()),
+                        None,
                     )
                     .await;
                 match review_context {
@@ -2487,6 +2536,7 @@ impl Engine {
                                             crate::core::events::ToolGate::AutoReviewDeterministic,
                                         decision: crate::core::events::ToolGateVerdict::Denied,
                                         risk: None,
+                                        reviewer_model: None,
                                         reason: crate::core::events::bounded_gate_reason(&reason),
                                     })
                                     .await;
@@ -4782,6 +4832,51 @@ impl Engine {
                             Some(&output_for_context),
                             &self.session.workspace,
                         );
+                        let category = crate::core::authority::get_tool_category_for_call(
+                            &tool_name_for_ws,
+                            &tool_input,
+                        );
+                        let action_kind =
+                            crate::core::authority::auto_review::ToolActionKind::from_tool_call(
+                                &tool_name_for_ws,
+                                &tool_input,
+                                category,
+                                Some(&self.session.workspace),
+                            );
+                        if action_kind != crate::core::authority::auto_review::ToolActionKind::Read
+                        {
+                            let redacted_input =
+                                codewhale_sanitize::redact::redact_json_model_bound_secrets(
+                                    &tool_input,
+                                );
+                            let raw_summary = if let Some(cmd) = redacted_input
+                                .get("command")
+                                .or_else(|| redacted_input.get("cmd"))
+                                .and_then(serde_json::Value::as_str)
+                            {
+                                cmd.to_string()
+                            } else if let Some(path) = redacted_input
+                                .get("path")
+                                .or_else(|| redacted_input.get("file_path"))
+                                .and_then(serde_json::Value::as_str)
+                            {
+                                path.to_string()
+                            } else {
+                                serde_json::to_string(&redacted_input).unwrap_or_default()
+                            };
+                            let summary = self.redact_tool_output_for_transcript(&summarize_text(
+                                &raw_summary,
+                                240,
+                            ));
+                            if turn.recent_actions.len() >= 20 {
+                                turn.recent_actions.remove(0);
+                            }
+                            turn.recent_actions
+                                .push(crate::core::turn::RecentReviewAction {
+                                    tool_name: tool_name_for_ws.clone(),
+                                    summary,
+                                });
+                        }
                     }
 
                     // #136: post-edit LSP diagnostics hook. We only run

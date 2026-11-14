@@ -2642,8 +2642,16 @@ reasoning contract, and all four membership ids omit generic sampling fields.
 - `[auto_review]` (table, optional): tool-call review policy — a deterministic floor plus a model guardian tier.
   This layer sits on top of the existing permission posture; it can hold or block a
   tool call, but it is not an auto-push, auto-merge, or hosted review service.
+  `auto_review.reviewer_model` (string, optional; also settable live or saved
+  with `/config auto_review.reviewer_model <model|default> [--save]`) selects the
+  model for guardian reviews on your active provider route; when unset,
+  Codewhale selects a capable catalog model on that provider route (or falls
+  back to the active session model) without crossing providers or accounts.
   Block rules are checked first, then the built-in safety floor, then allow
-  rules. In Ask, a safety hold opens approval that no session grant or allow
+  rules (with file-tool and shell mutations targeting `AGENTS.md`, `CLAUDE.md`,
+  or loaded instruction files held for guardian review in Auto-Review even when
+  an `auto_review.allow` rule matches). In Ask, a safety hold opens approval that
+  no session grant or allow
   rule can answer; in Auto-Review or a non-interactive `never` posture it
   fails closed as a hard block. Full Access skips the built-in floor. The
   safety floor covers publish-like actions, destructive background/headless
@@ -2661,6 +2669,9 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   position.
 
   ```toml
+  [auto_review]
+  reviewer_model = "claude-sonnet-4-6" # optional; stays on your active provider route
+
   [[auto_review.allow]]
   id = "read-only-inspection"
   action_kind = "read"
@@ -2682,21 +2693,26 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   Retired narrow kinds in allow rules fail validation rather than widening to
   a broader class. The retired `text_contains` matcher likewise fails
   validation instead of silently broadening an old intent-dependent rule.
-  Fallback holds in interactive Auto-Review escalate to one stateless guardian
-  request. The request contains the exact held call and deterministic
-  observations as separate JSON fields. Conversation history, skill
-  instructions, attached file contents, and other expanded model context are
-  excluded. The guardian does not infer user intent or compute an authorization
-  score. It exposes no tools and returns a risk level, allow/deny, and a
-  rationale. High or critical risk cannot auto-run even if the model says
-  allow. An oversized exact call is denied rather than truncated. Exactly one
-  reviewer request is made; incomplete or malformed output, timeout,
-  cancellation, provider failure, or an empty rationale all fail closed. The
-  deterministic floor is never model-reviewed, and headless adapters use the
-  deterministic-only tier. The pinned Codex, Kimi, and DeepSeek source
-  boundaries are linked from [Permission Posture](MODES.md#permission-posture).
-  Reviewer outcomes emit `tool.auto_review` audit events with
-  `gate = "guardian"`.
+  Fallback holds in Auto-Review escalate to one stateless guardian request
+  within a 64 KiB context budget. The request passes untrusted-evidence JSON
+  fields containing the session-recorded typed owner composer prompts (newest
+  first), any approved plan text, earlier redacted non-read actions from the
+  same turn, session-start pinned user-level and repository-level instructions
+  with SHA-256 hashes (never re-read mid-session), deterministic observations,
+  and the exact held call (preserving `description`). Tool outputs, assistant
+  prose, attached `@`-file contents, skill bodies, and non-owner or generated
+  prompts (tasks, automations, `send_later`, goal continuations, subagent
+  briefs, reviews, and chat relays) are excluded from `person_messages`. High or
+  critical risk cannot auto-run even if the model says allow. An oversized
+  current request or exact held call returns unavailable (failing closed)
+  rather than being truncated. Exactly one reviewer request is made;
+  incomplete or malformed output, timeout, cancellation, provider failure, or an
+  empty rationale all fail closed. The deterministic floor is never
+  model-reviewed, and headless adapters use the deterministic-only tier. The
+  pinned Codex, Kimi, and DeepSeek source boundaries are linked from
+  [Permission Posture](MODES.md#permission-posture). Reviewer outcomes emit
+  `tool.auto_review` audit events with `gate = "guardian"` and `reviewer_model`,
+  and transcript receipts show the resolved reviewer model.
 
   Auto-review decisions emit `tool.auto_review` audit events with
   `gate = "deterministic"` when tool

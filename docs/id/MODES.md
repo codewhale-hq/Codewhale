@@ -1,6 +1,6 @@
 # Mode dan Postur Izin (Modes and Permission Postures)
 
-> Terjemahan ini belum mencakup pembaruan Auto-Review, asal giliran (*run origin*), dan kehadiran pemilik terkini; rujuk [docs/MODES.md](../MODES.md) untuk spesifikasi terbaru.
+> Terjemahan ini belum mencakup pembaruan Auto-Review (konteks maksud pemilik dan instruksi proyek pada penjaga model, perlindungan `AGENTS.md`/`CLAUDE.md` pada Auto-Review, serta `auto_review.reviewer_model`), asal giliran (*run origin*), dan kehadiran pemilik terkini; rujuk [docs/MODES.md](../MODES.md) untuk spesifikasi terbaru.
 
 Codewhale memiliki tiga konsep yang saling berhubungan:
 

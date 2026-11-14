@@ -116,6 +116,7 @@ async fn auto_review_asks_the_user_and_returns_the_answer() {
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -304,6 +305,7 @@ async fn full_access_permission_allow_runs_background_destructive_shell_without_
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -457,6 +459,7 @@ async fn yolo_mode_does_not_prompt_for_background_shell() {
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -598,6 +601,7 @@ async fn yolo_mode_executes_publish_like_shell_without_prompt() {
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -743,6 +747,7 @@ async fn yolo_mode_does_not_prompt_for_mcp_action() {
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await

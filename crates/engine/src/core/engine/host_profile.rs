@@ -609,6 +609,7 @@ mod tests {
                 hook_executor: None,
                 verbosity: None,
                 provenance: UserInputProvenance::ExternalUser,
+                input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
                 submission_id: None,
             })
         };

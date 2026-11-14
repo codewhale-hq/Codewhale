@@ -2265,6 +2265,7 @@ pub struct App {
     /// Unlike a user-owned config key, this source cannot be edited in-app.
     approval_policy_requirements_managed: bool,
     pub auto_review_disabled: bool,
+    pub auto_review_reviewer_model: Option<String>,
     /// True when the interactive shell switch is user-owned (unset or root
     /// config.toml). Profile / env / managed / project owners stay in charge
     /// even when a YOLO entry point asks for Full Access.

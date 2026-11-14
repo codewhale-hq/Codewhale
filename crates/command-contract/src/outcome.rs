@@ -174,6 +174,9 @@ pub enum ConfigAction {
     PromptSuggestionChanged {
         enabled: bool,
     },
+    AutoReviewReviewerModelChanged {
+        reviewer_model: Option<String>,
+    },
     NotificationChanged(crate::config::CommandNotificationUpdate),
 }
 pub type ConfigCommandResult = CommandResult<ConfigAction>;

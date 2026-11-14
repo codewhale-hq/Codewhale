@@ -126,6 +126,14 @@ pub struct TurnContext {
     pub context_recovery_rejection: Option<anyhow::Error>,
 
     pub auto_review_denials: AutoReviewDenials,
+
+    pub recent_actions: Vec<RecentReviewAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentReviewAction {
+    pub tool_name: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Default)]
@@ -208,6 +216,7 @@ impl TurnContext {
             pending_route: None,
             context_recovery_rejection: None,
             auto_review_denials: AutoReviewDenials::default(),
+            recent_actions: Vec::new(),
         }
     }
 

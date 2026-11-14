@@ -187,8 +187,13 @@ async fn execute_ordinary(state: RuntimeApiState, request: RuntimeOwnerRequest) 
             serde_json::to_value(value)?
         }
         RuntimeOwnerRequest::StartTurn { thread_id, body } => {
-            let (_, Json(value)) =
-                api(start_thread_turn(State(state), Path(thread_id), Json(decode(body)?)).await)?;
+            let (_, Json(value)) = api(start_thread_turn_for_caller(
+                State(state),
+                Path(thread_id),
+                Json(decode(body)?),
+                false,
+            )
+            .await)?;
             serde_json::to_value(value)?
         }
         RuntimeOwnerRequest::DecideApproval {
@@ -457,10 +462,14 @@ async fn execute_native(
             let mut body = serde_json::to_value(params.body)?;
             body["images"] = json!(images);
             body["expected_workspace"] = json!(selected);
-            RuntimeOwnerRequest::StartTurn {
-                thread_id: params.thread_id,
-                body,
-            }
+            let (_, Json(value)) = api(start_thread_turn_for_caller(
+                State(state),
+                Path(params.thread_id),
+                Json(decode(body)?),
+                true,
+            )
+            .await)?;
+            return Ok(serde_json::to_value(value)?);
         }
         N::InterruptTurn(params) => {
             native_thread(&state, &params.thread_id).await?;

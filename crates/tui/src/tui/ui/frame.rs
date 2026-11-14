@@ -946,6 +946,8 @@ pub(crate) async fn build_preview_request_inputs(
         skill_instruction: app.active_skill.clone(),
         skill_provenance: app.active_skill_provenance.clone(),
         extension_command: None,
+        approved_plan: None,
+        owner_input: false,
         history_echoed: false,
     };
     let mut git_cache = crate::tui::git_mention::GitMentionCache::default();

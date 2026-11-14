@@ -858,3 +858,160 @@ async fn runtime_turn_origin_table_and_unattended_auto_review_tasks() -> Result<
     tasks.shutdown_and_wait().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn runtime_threads_only_owner_attached_interactive_composer_records_person_messages()
+-> Result<()> {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let _env = crate::test_support::lock_test_env();
+    let root = tempfile::tempdir()?;
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(workspace.join(".git"))?;
+
+    let mut cfg = fixture_config();
+    cfg.set_feature("subagents", true)?;
+    let plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace));
+
+    let owner_mgr = Arc::new(RuntimeThreadManager::open_owner_host(
+        cfg.clone(),
+        workspace.clone(),
+        test_manager_config(root.path().join("rt-owner")),
+        plugins,
+        None,
+        None,
+    )?);
+    let bg_mgr = Arc::new(RuntimeThreadManager::open(
+        cfg.clone(),
+        workspace.clone(),
+        test_manager_config(root.path().join("rt-bg")),
+    )?);
+
+    let mock = Arc::new(MockLlmClient::new(Vec::new()));
+    mock.push_factory(|_| canned::simple_text_turn("task turn done"));
+    mock.push_factory(|_| canned::simple_text_turn("non-owner turn done"));
+    mock.push_factory(|_| {
+        canned::tool_call_turn(
+            "call-rt-env",
+            "File",
+            r#"{"action":"write","path":".env","content":"ok=1\n"}"#,
+        )
+    });
+    mock.push_factory(|request| {
+        assert_eq!(request.stream, Some(false));
+        let doc: serde_json::Value = serde_json::from_str(match &request.messages[0].content[0] {
+            codewhale_models::ContentBlock::Text { text, .. } => text.as_str(),
+            _ => panic!("guardian text"),
+        })
+        .expect("guardian json");
+        let pmsgs = doc["person_messages"].as_array().expect("person_messages");
+        assert_eq!(
+            pmsgs,
+            &[serde_json::json!("owner composer write env")],
+            "{doc:#}"
+        );
+        canned::simple_text_turn(
+            r#"{"risk_level":"low","decision":"allow","reason":"owner composer authorized"}"#,
+        )
+    });
+    mock.push_factory(|_| canned::simple_text_turn("owner turn done"));
+    owner_mgr.set_test_model_client(mock.clone());
+
+    let bg_mock = Arc::new(MockLlmClient::new(Vec::new()));
+    bg_mock.push_factory(|_| {
+        canned::tool_call_turn(
+            "call-bg-env",
+            "File",
+            r#"{"action":"write","path":".env","content":"bg=1\n"}"#,
+        )
+    });
+    bg_mock.push_factory(|request| {
+        assert_eq!(request.stream, Some(false));
+        let doc: serde_json::Value = serde_json::from_str(match &request.messages[0].content[0] {
+            codewhale_models::ContentBlock::Text { text, .. } => text.as_str(),
+            _ => panic!("guardian text"),
+        })
+        .expect("guardian json");
+        let pmsgs = doc["person_messages"].as_array().expect("person_messages");
+        assert!(
+            pmsgs.is_empty(),
+            "background thread must have no person_messages: {doc:#}"
+        );
+        canned::simple_text_turn(
+            r#"{"risk_level":"high","decision":"deny","reason":"no person authorization"}"#,
+        )
+    });
+    bg_mock.push_factory(|_| canned::simple_text_turn("bg thread turn done"));
+    bg_mgr.set_test_model_client(bg_mock.clone());
+
+    let thread = owner_mgr
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace.clone()),
+            permission_posture: Some("auto-review".to_string()),
+            ..Default::default()
+        })
+        .await?;
+
+    let task_turn = owner_mgr
+        .start_task_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "SPOOF TASK PROMPT".to_string(),
+                ..Default::default()
+            },
+            "task-intent-1",
+        )
+        .await?;
+    let settled_task = wait_for_terminal_turn(owner_mgr.as_ref(), &task_turn.id).await?;
+    assert_eq!(settled_task.status, RuntimeTurnStatus::Completed);
+
+    let non_owner_turn = owner_mgr
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "SPOOF NON OWNER COMPOSER".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let settled_non_owner = wait_for_terminal_turn(owner_mgr.as_ref(), &non_owner_turn.id).await?;
+    assert_eq!(settled_non_owner.status, RuntimeTurnStatus::Completed);
+
+    let bg_thread = bg_mgr
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace),
+            permission_posture: Some("auto-review".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let bg_turn = bg_mgr
+        .start_turn_owner(
+            &bg_thread.id,
+            StartTurnRequest {
+                prompt: "SPOOF BACKGROUND THREAD".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let settled_bg = wait_for_terminal_turn(bg_mgr.as_ref(), &bg_turn.id).await?;
+    assert_eq!(settled_bg.status, RuntimeTurnStatus::Completed);
+    assert_eq!(bg_mock.call_count(), 3);
+
+    let (owner_turn, _) = owner_mgr
+        .start_turn_owner_reporting_replay(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "owner composer write env".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let settled_owner = wait_for_terminal_turn(owner_mgr.as_ref(), &owner_turn.id).await?;
+    assert_eq!(settled_owner.status, RuntimeTurnStatus::Completed);
+    assert_eq!(mock.call_count(), 5);
+
+    bg_mgr.shutdown_and_wait().await?;
+    owner_mgr.shutdown_and_wait().await?;
+    Ok(())
+}

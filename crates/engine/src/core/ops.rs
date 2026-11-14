@@ -247,6 +247,14 @@ impl UserInputProvenance {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum TurnInputAuthorship {
+    #[default]
+    NotPerson,
+    Person(String),
+    ApprovedPlan(String),
+}
+
 /// Per-turn authority payload carried by [`Op::SendMessage`]. Extracted from
 /// the enum arm so new per-turn fields accrete here instead of widening the
 /// variant; the serializable twin is `codewhale_protocol::op::TurnSpec`.
@@ -300,6 +308,7 @@ pub struct TurnSpec {
     /// Structural input origin. This gates whether the turn may inherit
     /// YOLO/auto-approval authority; user-shaped text is not enough.
     pub provenance: UserInputProvenance,
+    pub input_authorship: TurnInputAuthorship,
     /// Host-supplied correlation token for this submission, echoed verbatim on
     /// the turn's `Event::TurnStarted`. Hosts that arm submit→`TurnStarted`
     /// window actions (e.g. a deferred stop replay) use the echo to bind those
@@ -399,13 +408,18 @@ pub enum Op {
     },
 
     /// Cancel a running sub-agent by id or session name.
-    CancelSubAgent { agent_id: String },
+    CancelSubAgent {
+        agent_id: String,
+    },
 
     /// Deliver an operator follow-up to one child on its own fork: live
     /// delivery to a running child, or a checkpoint continuation (new agent
     /// id) for an interrupted or completed child. Terminal failed/cancelled
     /// children answer with a receipt explaining why they cannot continue.
-    FollowUpSubAgent { agent_id: String, text: String },
+    FollowUpSubAgent {
+        agent_id: String,
+        text: String,
+    },
 
     StartFleetMember {
         start: Box<crate::tools::subagent::FleetMemberStart>,
@@ -432,10 +446,18 @@ pub enum Op {
     },
 
     /// Update auto-compaction settings
-    SetCompaction { config: CompactionConfig },
+    SetCompaction {
+        config: CompactionConfig,
+    },
 
     /// Update the SSE idle timeout used for subsequent streamed turns.
-    SetStreamChunkTimeout { timeout_secs: u64 },
+    SetStreamChunkTimeout {
+        timeout_secs: u64,
+    },
+
+    SetAutoReviewReviewerModel {
+        reviewer_model: Option<String>,
+    },
 
     /// Update sub-agent runtime controls for subsequent turns.
     SetSubagentRuntimeConfig {
@@ -495,7 +517,9 @@ pub enum Op {
     },
 
     /// Cancel one exact queued or running context-compaction request.
-    CancelCompaction { id: String },
+    CancelCompaction {
+        id: String,
+    },
 
     /// Get a snapshot of the current session state (messages, tokens, etc.)
     /// for saving to disk. Returns the result via the oneshot sender so
@@ -562,7 +586,9 @@ pub enum Op {
     /// When enabled, a fire-and-forget background task runs after each turn
     /// that contained tool calls and emits an `Event::AdvisoryNote` with
     /// concise observations. (#3982)
-    SetAdvisorEnabled { enabled: bool },
+    SetAdvisorEnabled {
+        enabled: bool,
+    },
 
     /// Shutdown the engine
     Shutdown,

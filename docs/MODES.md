@@ -255,29 +255,45 @@ Legacy note: `/set approval_mode ...` was retired in favor of `/config`.
   or literal `grep` filter, unless excluded by discard flags or your own rules),
   hard-blocks publish-like actions and destructive
   unattended work (`Background`, `Headless`, or any turn where `owner_present`
-  is false), and holds critical-path deletions (filesystem root, home folder,
-  the project root or any ancestor of it, and `.git` folders) so interactive
-  sessions with `owner_present` ask you while unattended or headless sessions
-  refuse; it is never model-reviewed and never waits for an approval card on
-  other holds or unattended work.
+  is false), holds writes, edits, deletes, or moves targeting `AGENTS.md` or
+  `CLAUDE.md` (including symlinks, subdirectories, and loaded user or
+  repository instruction files) for review even if an `auto_review.allow` rule
+  would otherwise waive them, and holds critical-path deletions (filesystem
+  root, home folder, the project root or any ancestor of it, and `.git`
+  folders) so interactive sessions with `owner_present` ask you while
+  unattended or headless sessions refuse; it is never model-reviewed and never
+  waits for an approval card on other holds or unattended work.
   Fallback holds — calls the deterministic engine could not prove safe —
-  escalate to a one-shot **model guardian** (v0.9.8) that returns risk,
-  allow/deny, and a rationale. The guardian sees the exact held call and
-  deterministic observations in separate JSON fields; conversation history,
-  skill instructions, attachments, and expanded model context are excluded. It
-  does not infer user intent or compute a generic user-intent score. High or
+  escalate to a one-shot **model reviewer** that returns risk, allow/deny, and a
+  rationale using `auto_review.reviewer_model` (when unset, it picks a capable
+  model on the session's active provider route when matched or falls back to the
+  session model without switching providers or accounts). The reviewer receives
+  structured untrusted-evidence JSON containing the exact `proposed_tool_call`
+  (including `description`), deterministic observations, redacted earlier
+  non-read `recent_actions` from the current turn, optional `approved_plan`,
+  pinned `project_instructions` captured at session start with separate user
+  and repository labels and SHA-256 hashes (never re-read from disk mid-session),
+  and typed `person_messages` from the conversation owner newest first (on
+  subagent turns, inherited from the root conversation rather than child
+  briefs; empty on agent-created `Background` threads). Attached `@file`
+  bodies, skill instructions, expanded context, tool outputs, and assistant
+  prose are never passed to the reviewer. Context is capped at 64 KiB; the
+  current request and exact proposed call are never truncated (exceeding the
+  cap alone fails closed as unavailable), and under budget pressure repository
+  instructions, user instructions, and then oldest middle `person_messages` trim
+  first while preserving the earliest typed limit and latest request. High or
   critical risk cannot auto-run even if the model says allow. It has no tools,
-  remembers no rules, and denies rather than truncates an oversized exact call.
-  Exactly one reviewer request is made; incomplete or malformed output, timeout,
-  cancellation, or provider failure fails closed. Repeated denials stop the
-  turn: after three guardian denials in a row, or ten among the turn's last
-  fifty reviews, the turn ends as interrupted with a status line, and calls still
-  in that batch are refused without another review. Only explicit denials count
-  (not timeouts or failures), an allowed review resets the run of three, the
-  count starts fresh with each turn, and a child agent counts its own turns.
-  Headless `exec` turns consult the model guardian for fallback non-destructive
-  holds while applying the deterministic unattended rules to destructive work;
-  ACP turns use deterministic rules only and refuse guardian consultation.
+  remembers no rules, and makes a single request with a fail-closed result on
+  incomplete or malformed output, timeout, cancellation, or provider failure.
+  Repeated denials stop the turn: after three guardian denials in a row, or ten
+  among the turn's last fifty reviews, the turn ends as interrupted with a
+  status line, and calls still in that batch are refused without another review.
+  Only explicit denials count (not timeouts or failures), an allowed review
+  resets the run of three, the count starts fresh with each turn, and a child
+  agent counts its own turns. Headless `exec` turns consult the model guardian
+  for fallback non-destructive holds while applying the deterministic
+  unattended rules to destructive work; ACP turns use deterministic rules only
+  and refuse guardian consultation.
   When `owner_present` is true (an interactive TUI or owner runtime surface
   turn), forced prompts — typed `permissions.toml` `ask` rules, `tool_call_before`
   hook `ask`, prompt-only tools such as Computer Use consent and script cards,
@@ -293,11 +309,14 @@ Legacy note: `/set approval_mode ...` was retired in favor of `/config`.
 The LLM reviewer is closest to OpenAI Codex's experimental Auto-Review at
 commit [`6fc6b9d6d2580d62622fc9884b5f5707f6505a5e`](https://github.com/openai/codex/tree/6fc6b9d6d2580d62622fc9884b5f5707f6505a5e).
 Codex's [guardian entry point](https://github.com/openai/codex/blob/6fc6b9d6d2580d62622fc9884b5f5707f6505a5e/codex-rs/core/src/guardian/mod.rs)
-reconstructs conversation context and runs a dedicated review session.
-Codewhale deliberately adopts only the exact-action structured decision,
-90-second deadline, fail-closed result, and per-turn denial circuit breaker. It
-does not copy Codex's transcript reconstruction, user-authorization score,
-reviewer tools, retries, persistent review session, or denial ledger.
+reconstructs full conversation transcripts and runs a dedicated review session.
+Codewhale passes only Rust-recorded owner `person_messages`, optional approved
+plan text, redacted earlier non-read actions, session-pinned instructions,
+deterministic observations, and the exact `proposed_tool_call` within a 64 KiB
+cap, paired with a 90-second deadline, fail-closed result, and per-turn denial
+circuit breaker. It excludes assistant prose and tool outputs and does not copy
+Codex's transcript reconstruction, user-authorization score, reviewer tools,
+retries, persistent review session, or denial ledger.
 
 Kimi Code at commit
 [`1414d4602898f406e540b23342cb18db23ff9efc`](https://github.com/MoonshotAI/kimi-code/tree/1414d4602898f406e540b23342cb18db23ff9efc)
@@ -364,7 +383,7 @@ auto-approve bit:
 Role posture and the execution envelope are checked before and after this
 gate and never widen. Every decision a person did not make at a prompt is
 written to the audit log and to the child's transcript as a one-line note
-(`Auto-Review allowed 'bash' (low risk, model guardian): …`), visible when
+(`Auto-Review allowed 'bash' (low risk, model guardian) [reviewer: <model>]: …`), visible when
 the worker is focused.
 
 ## Small-Screen Status Behavior

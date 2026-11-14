@@ -156,6 +156,14 @@ pub trait LlmClient: Send + Sync {
             dispatched_at,
         )
     }
+
+    fn supports_catalog_reviewer_model(&self, _candidate: &str) -> bool {
+        let Some(provider) = codewhale_config::ProviderKind::parse(self.provider_name()) else {
+            return false;
+        };
+        self.billing_base_url()
+            .is_some_and(|url| codewhale_config::provider_base_url_is_official(provider, url))
+    }
 }
 
 // === Authentication diagnostics ===

@@ -1053,6 +1053,7 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             gate,
             decision,
             risk,
+            reviewer_model,
             reason,
         } => wire::EventMsg::ToolGateDecision {
             thread_id,
@@ -1063,6 +1064,7 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             gate: gate_to_wire(*gate),
             decision: verdict_to_wire(*decision),
             risk: risk.clone(),
+            reviewer_model: reviewer_model.clone(),
             reason: reason.clone(),
         },
         Event::AdvisoryNote {
@@ -1236,6 +1238,11 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
         Op::SetStreamChunkTimeout { timeout_secs } => wire_op::Op::SetStreamChunkTimeout {
             timeout_secs: *timeout_secs,
         },
+        Op::SetAutoReviewReviewerModel { reviewer_model } => {
+            wire_op::Op::SetAutoReviewReviewerModel {
+                reviewer_model: reviewer_model.clone(),
+            }
+        }
         Op::SetSubagentRuntimeConfig {
             enabled,
             max_subagents,
@@ -1669,6 +1676,7 @@ mod tests {
                 gate: ToolGate::AutoReviewGuardian,
                 decision: ToolGateVerdict::Unavailable,
                 risk: None,
+                reviewer_model: None,
                 reason: "timeout".into(),
             },
             Event::WorkflowUi {
@@ -1795,6 +1803,9 @@ mod tests {
                 text: "go".into(),
             },
             Op::SetStreamChunkTimeout { timeout_secs: 30 },
+            Op::SetAutoReviewReviewerModel {
+                reviewer_model: Some("claude-sonnet-5-5".into()),
+            },
             Op::SetSubagentRuntimeConfig {
                 enabled: true,
                 max_subagents: 4,

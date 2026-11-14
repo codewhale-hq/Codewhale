@@ -152,6 +152,7 @@ pub struct SteerInput {
     pub(super) turn_id: Option<u64>,
     pub(super) replace_pending: bool,
     pub content: String,
+    pub(super) person_text: Option<String>,
     pub(super) outcome: Option<oneshot::Sender<SteerOutcome>>,
     pub(super) owner_steer: bool,
 }
@@ -177,6 +178,7 @@ pub enum SteerOutcome {
 pub struct PendingSteer {
     pub replace_pending: bool,
     pub content: String,
+    person_text: Option<String>,
     outcome: Option<oneshot::Sender<SteerOutcome>>,
     owner_steer: bool,
 }
@@ -185,6 +187,7 @@ impl PendingSteer {
     pub fn new(content: String, outcome: Option<oneshot::Sender<SteerOutcome>>) -> Self {
         Self {
             content,
+            person_text: None,
             outcome,
             replace_pending: false,
             owner_steer: false,
@@ -208,9 +211,10 @@ impl PendingSteer {
         std::mem::take(&mut self.content)
     }
 
-    pub(super) fn commit_with_owner_steer(self) -> (String, bool) {
+    pub(super) fn commit_with_owner_intent(mut self) -> (String, bool, Option<String>) {
         let owner_steer = self.owner_steer;
-        (self.commit(), owner_steer)
+        let person_text = self.person_text.take();
+        (self.commit(), owner_steer, person_text)
     }
 }
 
@@ -233,6 +237,7 @@ impl SteerInput {
         // settle and the verdict travels with the `PendingSteer`.
         let mut pending = PendingSteer::new(std::mem::take(&mut self.content), self.outcome.take());
         pending.replace_pending = self.replace_pending;
+        pending.person_text = self.person_text.take();
         pending.owner_steer = self.owner_steer;
         pending
     }
@@ -271,6 +276,18 @@ impl SteerPermit {
             turn_id: self.turn_id,
             replace_pending: false,
             content,
+            person_text: None,
+            outcome: None,
+            owner_steer: self.owner_steer,
+        });
+    }
+
+    pub fn send_with_person_text(self, content: String, person_text: Option<String>) {
+        self.permit.send(SteerInput {
+            turn_id: self.turn_id,
+            replace_pending: false,
+            content,
+            person_text,
             outcome: None,
             owner_steer: self.owner_steer,
         });
@@ -282,25 +299,40 @@ impl SteerPermit {
     /// first, and closes without a verdict only if the engine itself is gone
     /// (#6276).
     pub fn send_with_outcome(self, content: String) -> oneshot::Receiver<SteerOutcome> {
-        self.send_with_replacement_outcome(content, false)
+        let owner_steer = self.owner_steer;
+        self.send_with_replacement_outcome(content, None, false, owner_steer)
+    }
+
+    pub fn send_with_outcome_and_authorship(
+        self,
+        content: String,
+        owner_steer: bool,
+        person_text: Option<String>,
+    ) -> oneshot::Receiver<SteerOutcome> {
+        let allowed_owner_steer = self.owner_steer && owner_steer;
+        self.send_with_replacement_outcome(content, person_text, false, allowed_owner_steer)
     }
 
     pub fn send_replacing_with_outcome(self, content: String) -> oneshot::Receiver<SteerOutcome> {
-        self.send_with_replacement_outcome(content, true)
+        let owner_steer = self.owner_steer;
+        self.send_with_replacement_outcome(content, None, true, owner_steer)
     }
 
     fn send_with_replacement_outcome(
         self,
         content: String,
+        person_text: Option<String>,
         replace_pending: bool,
+        owner_steer: bool,
     ) -> oneshot::Receiver<SteerOutcome> {
         let (outcome_tx, outcome_rx) = oneshot::channel();
         self.permit.send(SteerInput {
             turn_id: self.turn_id,
             replace_pending,
             content,
+            person_text,
             outcome: Some(outcome_tx),
-            owner_steer: self.owner_steer,
+            owner_steer,
         });
         outcome_rx
     }
@@ -1128,6 +1160,17 @@ impl EngineHandle {
     /// Steer an in-flight turn with additional user input.
     pub async fn steer(&self, content: impl Into<String>) -> Result<()> {
         self.reserve_steer().await?.send(content.into());
+        Ok(())
+    }
+
+    pub async fn steer_with_person_text(
+        &self,
+        content: impl Into<String>,
+        person_text: Option<String>,
+    ) -> Result<()> {
+        self.reserve_steer()
+            .await?
+            .send_with_person_text(content.into(), person_text);
         Ok(())
     }
 

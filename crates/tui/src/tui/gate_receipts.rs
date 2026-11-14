@@ -28,6 +28,7 @@ pub fn tool_gate_receipt(
     gate: ToolGate,
     decision: ToolGateVerdict,
     risk: Option<&str>,
+    reviewer_model: Option<&str>,
     reason: &str,
 ) -> String {
     let id = match (gate, decision) {
@@ -48,12 +49,20 @@ pub fn tool_gate_receipt(
             ToolGateVerdict::Denied | ToolGateVerdict::Allowed | ToolGateVerdict::Unavailable,
         ) => MessageId::AutoReviewReceiptDeterministicBlocked,
     };
-    fill(
+    let mut rendered = fill(
         tr(locale, id),
         tool_name,
         risk.unwrap_or("unknown"),
         &bounded_gate_reason(reason),
-    )
+    );
+    if gate == ToolGate::AutoReviewGuardian
+        && let Some(model) = reviewer_model
+            .map(bounded_gate_reason)
+            .filter(|m| !m.is_empty())
+    {
+        rendered.push_str(&format!(" [reviewer: {model}]"));
+    }
+    rendered
 }
 
 /// The `tool.gate.decision` record `audit.log` keeps for the same decision.
@@ -67,6 +76,7 @@ pub fn tool_gate_audit_record(
     gate: ToolGate,
     decision: ToolGateVerdict,
     risk: Option<&str>,
+    reviewer_model: Option<&str>,
     reason: &str,
 ) -> serde_json::Value {
     serde_json::json!({
@@ -76,6 +86,7 @@ pub fn tool_gate_audit_record(
         "gate": gate.as_str(),
         "decision": decision.as_str(),
         "risk": risk,
+        "reviewer_model": reviewer_model,
         "reason": codewhale_sanitize::redact::redact_secrets(reason),
     })
 }
@@ -122,6 +133,7 @@ mod tests {
             ToolGate::AutoReviewDeterministic,
             ToolGateVerdict::Denied,
             None,
+            None,
             "blocked `curl -H 'Authorization: Bearer sk-live-abcdefghijklmnopqrstuv' x`",
         );
         assert_eq!(record["gate"], "auto_review_deterministic");
@@ -152,6 +164,7 @@ mod tests {
             ToolGate::AutoReviewGuardian,
             ToolGateVerdict::Allowed,
             Some("low"),
+            None,
             "reads a log file inside the workspace",
         );
         assert_eq!(
@@ -168,6 +181,7 @@ mod tests {
             ToolGate::AutoReviewGuardian,
             ToolGateVerdict::Denied,
             Some("high"),
+            None,
             "would push to a remote",
         );
         assert!(denied.starts_with("Auto-Review denied 'bash' (high risk, model guardian): "));
@@ -176,6 +190,7 @@ mod tests {
             "File",
             ToolGate::AutoReviewGuardian,
             ToolGateVerdict::Unavailable,
+            None,
             None,
             "guardian request timed out",
         );
@@ -195,6 +210,7 @@ mod tests {
             ToolGate::AutoReviewDeterministic,
             ToolGateVerdict::Denied,
             None,
+            None,
             "publish-like command",
         );
         assert_eq!(
@@ -212,6 +228,7 @@ mod tests {
             ToolGate::AutoReviewGuardian,
             ToolGateVerdict::Denied,
             Some("medium"),
+            None,
             &format!("evil\u{1b}]0;title\u{7}  {long}"),
         );
         assert!(!line.contains('\u{1b}'));
@@ -239,11 +256,63 @@ mod tests {
                 ToolGate::AutoReviewGuardian,
                 ToolGateVerdict::Allowed,
                 Some("low"),
+                None,
                 "REASON-SENTINEL",
             );
             assert!(line.contains("'bash'"), "{locale:?}: {line}");
             assert!(line.contains("REASON-SENTINEL"), "{locale:?}: {line}");
             assert!(!line.contains('{'), "{locale:?}: {line}");
         }
+    }
+
+    #[test]
+    fn guardian_receipt_and_audit_record_include_reviewer_model() {
+        let allowed = tool_gate_receipt(
+            Locale::En,
+            "bash",
+            ToolGate::AutoReviewGuardian,
+            ToolGateVerdict::Allowed,
+            Some("low"),
+            Some("claude-sonnet-5-5"),
+            "workspace test",
+        );
+        assert!(
+            allowed.ends_with("[reviewer: claude-sonnet-5-5]"),
+            "{allowed}"
+        );
+
+        let unavailable = tool_gate_receipt(
+            Locale::En,
+            "File",
+            ToolGate::AutoReviewGuardian,
+            ToolGateVerdict::Unavailable,
+            None,
+            Some("gpt-5.6"),
+            "timed out",
+        );
+        assert!(unavailable.contains("[reviewer: gpt-5.6]"), "{unavailable}");
+
+        let deterministic = tool_gate_receipt(
+            Locale::En,
+            "bash",
+            ToolGate::AutoReviewDeterministic,
+            ToolGateVerdict::Denied,
+            None,
+            Some("should-not-print"),
+            "blocked",
+        );
+        assert!(!deterministic.contains("[reviewer:"), "{deterministic}");
+
+        let audit = tool_gate_audit_record(
+            None,
+            "call-2",
+            "bash",
+            ToolGate::AutoReviewGuardian,
+            ToolGateVerdict::Denied,
+            Some("high"),
+            Some("deepseek-v4-pro"),
+            "blocked by reviewer",
+        );
+        assert_eq!(audit["reviewer_model"], "deepseek-v4-pro");
     }
 }

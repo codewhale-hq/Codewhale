@@ -5094,16 +5094,9 @@ pub(crate) async fn run_event_loop(
                         gate,
                         decision,
                         risk,
+                        reviewer_model,
                         reason,
                     } => {
-                        // A permission decision nobody was prompted for. It
-                        // goes to `audit.log` (what `/permissions` promises;
-                        // until 0.10.1 only `CODEWHALE_TOOL_AUDIT_LOG` got
-                        // it), written off the event loop (#6149). The
-                        // transcript gets a one-line receipt so the person
-                        // can see who decided and why, without a modal. It is
-                        // held until the tool card completes so it lands
-                        // under that card rather than inside a running run.
                         let mut audit = crate::tui::gate_receipts::tool_gate_audit_record(
                             agent_id.as_deref(),
                             &tool_id,
@@ -5111,6 +5104,7 @@ pub(crate) async fn run_event_loop(
                             gate,
                             decision,
                             risk.as_deref(),
+                            reviewer_model.as_deref(),
                             &reason,
                         );
                         audit["session_id"] = serde_json::json!(app.current_session_id);
@@ -5123,6 +5117,7 @@ pub(crate) async fn run_event_loop(
                             gate,
                             decision,
                             risk.as_deref(),
+                            reviewer_model.as_deref(),
                             &reason,
                         );
                         if let Some(agent_id) = agent_id {

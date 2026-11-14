@@ -1,5 +1,6 @@
 //! Private captured child configuration for the canonical Engine.
 use super::*;
+use crate::core::ops::TurnInputAuthorship;
 use crate::tools::subagent::engine::ChildAuthority;
 use anyhow::anyhow;
 
@@ -130,6 +131,9 @@ impl Engine {
         let system = state.system_prompt.clone();
         state.job = Some(job);
         self.restore_session_history(seed, Some(system), true);
+        if let Some(state) = self.child_host.as_ref() {
+            Self::apply_child_parent_intent(&mut self.session, &state.authority.runtime);
+        }
         Ok(())
     }
 
@@ -170,6 +174,7 @@ impl Engine {
             hook_executor: self.config.hook_executor.clone(),
             verbosity: None,
             provenance: UserInputProvenance::Runtime,
+            input_authorship: TurnInputAuthorship::NotPerson,
             submission_id: state
                 .job
                 .as_ref()

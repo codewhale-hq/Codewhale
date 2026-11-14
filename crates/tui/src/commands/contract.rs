@@ -5479,6 +5479,8 @@ mod tests {
             skill_instruction: None,
             skill_provenance: None,
             extension_command: None,
+            approved_plan: None,
+            owner_input: false,
             history_echoed: false,
         });
         {

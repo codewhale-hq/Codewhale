@@ -291,6 +291,8 @@ pub struct QueuedMessage {
         codewhale_engine::extension_host::command::ExtensionCommandRef,
         String,
     )>,
+    pub approved_plan: Option<String>,
+    pub owner_input: bool,
     /// True once this turn has been painted into `history` as `HistoryCell::User`.
     /// Queue/offline submit echoes before the model runs; Immediate prepare skips
     /// a second paint when this is set so drained queued turns do not double.
@@ -416,8 +418,25 @@ impl QueuedMessage {
             skill_instruction,
             skill_provenance: None,
             extension_command: None,
+            approved_plan: None,
+            owner_input: true,
             history_echoed: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_approved_plan(mut self, approved_plan: Option<String>) -> Self {
+        self.approved_plan = approved_plan;
+        if self.approved_plan.is_some() {
+            self.owner_input = false;
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn without_owner_input(mut self) -> Self {
+        self.owner_input = false;
+        self
     }
 
     #[must_use]
@@ -810,6 +829,9 @@ pub enum AppAction {
     /// Apply `/config prompt_suggestion` to the live Config.
     UpdatePromptSuggestion {
         enabled: bool,
+    },
+    SetAutoReviewReviewerModel {
+        reviewer_model: Option<String>,
     },
     /// Apply one `/config notifications` scalar to the live Config.
     UpdateNotification {

@@ -79,6 +79,9 @@ pub(crate) fn config_action_to_app_action(action: ConfigAction) -> AppAction {
         ConfigAction::PromptSuggestionChanged { enabled } => {
             AppAction::UpdatePromptSuggestion { enabled }
         }
+        ConfigAction::AutoReviewReviewerModelChanged { reviewer_model } => {
+            AppAction::SetAutoReviewReviewerModel { reviewer_model }
+        }
         ConfigAction::NotificationChanged(update) => AppAction::UpdateNotification {
             update: to_notification_update(update),
         },
@@ -145,6 +148,9 @@ pub(crate) fn app_action_to_config_action(action: AppAction) -> Option<ConfigAct
         }
         AppAction::UpdatePromptSuggestion { enabled } => {
             ConfigAction::PromptSuggestionChanged { enabled }
+        }
+        AppAction::SetAutoReviewReviewerModel { reviewer_model } => {
+            ConfigAction::AutoReviewReviewerModelChanged { reviewer_model }
         }
         AppAction::UpdateNotification { update } => {
             ConfigAction::NotificationChanged(from_notification_update(update))
