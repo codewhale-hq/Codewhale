@@ -1856,6 +1856,7 @@ impl Fixture {
             .await
     }
 
+    #[cfg(unix)]
     #[allow(clippy::too_many_arguments)]
     async fn broker_at(
         &self,

@@ -107,7 +107,7 @@ mod platform {
         pending_initialize: Option<RequestId>,
         native: Option<crate::native_runtime::NativeSelection>,
         publication: Arc<OwnerPublication>,
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         receive_test_hook:
             Option<tokio::sync::mpsc::UnboundedSender<tokio::sync::oneshot::Sender<()>>>,
     }
@@ -764,7 +764,7 @@ mod platform {
             pending_initialize: None,
             native,
             publication,
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             receive_test_hook: None,
         })))
     }
@@ -878,7 +878,7 @@ mod platform {
             self.process_received_line(line).await.map(Some)
         }
 
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         pub(crate) fn set_receive_test_hook(
             &mut self,
             hook: tokio::sync::mpsc::UnboundedSender<tokio::sync::oneshot::Sender<()>>,
@@ -887,7 +887,7 @@ mod platform {
         }
 
         async fn process_received_line(&mut self, line: String) -> Result<Value> {
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             if let Some(hook) = self.receive_test_hook.as_ref() {
                 let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
                 if hook.send(resume_tx).is_ok() {

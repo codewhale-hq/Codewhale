@@ -405,9 +405,9 @@ where
             crate::runtime_api::store_selected_control_socket(None, &params.expected_data_dir)
                 .await?;
         #[cfg(windows)]
-        let endpoint = codewhale_runtime::runtime_control::owner_work(
-            crate::daemon_socket::default_socket_path,
-        )
+        let endpoint = codewhale_runtime::runtime_control::owner_work(|| {
+            crate::daemon_socket::default_socket_path().map_err(Into::into)
+        })
         .await?;
         let observed = crate::daemon_client::connect(params.config_path, Some(endpoint)).await?;
         anyhow::ensure!(
