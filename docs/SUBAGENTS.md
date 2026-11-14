@@ -228,9 +228,10 @@ Optional fields:
 - `worktree_branch`: exact branch to create.
 - `worktree_base`: git ref to branch from; defaults to `HEAD`.
 - `worktree_path`: exact checkout path. Relative and absolute paths must stay
-  under the default sibling `.codewhale-worktrees/<repo>/` root (symlinks are
-  resolved before the check). Any worktree request keeps the approval card,
-  even for a read-only role.
+  under the default sibling `.codewhale-worktrees/<repo>/` root, and a link
+  anywhere on the way down to the checkout, including at the root itself, is
+  refused. Any worktree request keeps the approval card, even for a read-only
+  role, and that includes `workspace_policy: "worktree"`.
 
 `cwd` may be combined with `worktree`: the requested directory becomes the
 discovery anchor the repo root (and the new checkout) is resolved from

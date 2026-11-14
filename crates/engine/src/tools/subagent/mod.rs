@@ -3091,11 +3091,6 @@ pub struct SubAgentRuntime {
     /// without full parent auto-approve. Shell/network/MCP still gated.
     /// Set for Workflow-spawned children.
     pub accept_edits: bool,
-    /// Allow the built-in, non-custom verification tools after a worker
-    /// start has crossed the parent's approval boundary. This is not a
-    /// general shell grant: arbitrary commands and custom verifier programs
-    /// remain blocked unless the parent session is auto-approved.
-    pub accept_verification: bool,
     /// Native Agent-mode tool surface inherited from the parent turn. Carries
     /// feature/config-dependent families such as web search, patch, memory,
     /// vision, notify, and FIM so child catalogs stay in parity with the parent.
@@ -3259,7 +3254,6 @@ impl SubAgentRuntime {
             context,
             allow_shell,
             accept_edits: false,
-            accept_verification: false,
             agent_tool_surface_options: AgentToolSurfaceOptions::new(
                 ShellPolicy::from_legacy_allow_shell(allow_shell),
             ),
@@ -3597,10 +3591,6 @@ impl SubAgentRuntime {
             context: child_context,
             allow_shell: self.allow_shell,
             accept_edits: self.accept_edits,
-            // A parent-approved verification lease belongs to its
-            // direct worker only; nested children must cross their own
-            // approval boundary instead of silently inheriting it.
-            accept_verification: self.accept_verification && self.spawn_depth == 0,
             agent_tool_surface_options: self.agent_tool_surface_options.clone(),
             worker_profile: self.worker_profile.clone(),
             event_tx: self.event_tx.clone(),
@@ -3696,23 +3686,6 @@ impl SubAgentWorkLifecycle {
             return Ok(None);
         }
 
-        // A root verification lease is provenance, not delegated
-        // authority. Nested workers cannot inherit this bit.
-        if runtime.accept_verification && runtime.spawn_depth == 1 {
-            let reference = format!("operate-verification:{agent_id}");
-            if let Err(err) = lifecycle.work.record_operation_approval(
-                &lifecycle.session_id,
-                &lifecycle.external,
-                &reference,
-                "agent",
-                &format!("agent:{agent_id}:approval"),
-            ) {
-                let _ = lifecycle.reconcile_state(OwnerState::Failed, 1, None);
-                return Err(anyhow!(
-                    "failed to record sub-agent verification approval: {err}"
-                ));
-            }
-        }
         Ok(Some(lifecycle))
     }
 
@@ -15591,9 +15564,6 @@ async fn spawn_subagent_from_input(
     let reserved_agent_id = member.and_then(|(_, agent_id)| agent_id.map(str::to_string));
     let exact_fleet_binding =
         workflow_identity.and_then(|identity| identity.exact_fleet_binding.as_ref());
-    if start_requests_read_only_role(&input) {
-        runtime.accept_verification = false;
-    }
     if exact_fleet_binding.is_none() {
         refresh_spawn_route_sources(&mut runtime);
     }
@@ -18871,35 +18841,6 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
             )));
         }
     }
-    // Enforce the declared workspace policy: `worktree` materializes a real
-    // worktree request (the separate `worktree` field is the mechanism that
-    // actually creates one), and `shared` must not contradict an explicit
-    // worktree ask.
-    let worktree = match workspace_policy_str
-        .map(|policy| policy.trim().to_ascii_lowercase())
-        .as_deref()
-    {
-        None => worktree,
-        Some("worktree") => worktree.or(Some(SubAgentWorktreeRequest {
-            branch: None,
-            path: None,
-            base_ref: None,
-        })),
-        Some("shared") => {
-            if worktree.is_some() {
-                return Err(ToolError::invalid_input(
-                    "workspace_policy 'shared' conflicts with worktree isolation options; \
-                     use workspace_policy 'worktree' or drop the worktree fields.",
-                ));
-            }
-            worktree
-        }
-        Some(other) => {
-            return Err(ToolError::invalid_input(format!(
-                "Invalid workspace_policy '{other}'. Use shared or worktree."
-            )));
-        }
-    };
     let write_authority = match write_authority_str
         .map(|auth| auth.trim().to_ascii_lowercase())
         .as_deref()
@@ -21221,14 +21162,38 @@ fn parse_optional_worktree_request(
             "worktree=false conflicts with worktree isolation options".to_string(),
         ));
     }
-    if worktree_flag.unwrap_or(false) || isolation_wants_worktree || has_worktree_details {
-        Ok(Some(SubAgentWorktreeRequest {
-            branch,
-            path,
-            base_ref,
-        }))
-    } else {
-        Ok(None)
+    let requested =
+        if worktree_flag.unwrap_or(false) || isolation_wants_worktree || has_worktree_details {
+            Some(SubAgentWorktreeRequest {
+                branch,
+                path,
+                base_ref,
+            })
+        } else {
+            None
+        };
+
+    let workspace_policy = optional_input_str(input, &["workspace_policy", "workspacePolicy"])?
+        .map(|policy| policy.trim().to_ascii_lowercase());
+    match workspace_policy.as_deref() {
+        None => Ok(requested),
+        Some("worktree") => Ok(requested.or(Some(SubAgentWorktreeRequest {
+            branch: None,
+            path: None,
+            base_ref: None,
+        }))),
+        Some("shared") => {
+            if requested.is_some() {
+                return Err(ToolError::invalid_input(
+                    "workspace_policy 'shared' conflicts with worktree isolation options; \
+                     use workspace_policy 'worktree' or drop the worktree fields.",
+                ));
+            }
+            Ok(None)
+        }
+        Some(other) => Err(ToolError::invalid_input(format!(
+            "Invalid workspace_policy '{other}'. Use shared or worktree."
+        ))),
     }
 }
 

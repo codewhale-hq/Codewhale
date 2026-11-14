@@ -76,7 +76,7 @@ Fleet 角色是委派工作面向用户的词汇：父智能体通过 `agent` �
 
 - `worktree_branch`：要创建的确切分支。
 - `worktree_base`：要从中开出分支的 git ref；默认为 `HEAD`。
-- `worktree_path`：确切的检出路径。相对路径和绝对路径都必须位于默认的同级 `.codewhale-worktrees/<repo>/` 根目录之下（检查之前会先解析符号链接）。任何 worktree 请求都保留审批卡片，即使是只读角色。
+- `worktree_path`：确切的检出路径。相对路径和绝对路径都必须位于默认的同级 `.codewhale-worktrees/<repo>/` 根目录之下，并且通向该检出的路径上的任何符号链接（包括根目录本身）都会被拒绝。任何 worktree 请求都保留审批卡片，即使是只读角色，其中包括 `workspace_policy: "worktree"`。
 
 `cwd` 可以与 `worktree` 组合：所请求的目录成为发现锚点，仓库根（以及新的检出）由此解析（`prepare_child_workspace`）。没有 `worktree` 时，`cwd` 仍是对父工作区内已创建目录的手动逃生舱。
 

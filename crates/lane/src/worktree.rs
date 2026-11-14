@@ -30,7 +30,7 @@ pub struct ProvisionedWorktree {
 /// Refuse `path` when an existing component between `root` and `path` is a
 /// link. A path outside `root` (an explicit `--worktree-path`) is the caller's
 /// own choice and is not checked.
-fn reject_linked_below(root: &Path, path: &Path) -> Result<()> {
+pub fn reject_linked_below(root: &Path, path: &Path) -> Result<()> {
     let Ok(relative) = path.strip_prefix(root) else {
         return Ok(());
     };
@@ -40,7 +40,7 @@ fn reject_linked_below(root: &Path, path: &Path) -> Result<()> {
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 bail!(
-                    "refusing to create a lane worktree through the link {}",
+                    "refusing to create a worktree through the link {}",
                     current.display()
                 );
             }

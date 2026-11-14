@@ -493,10 +493,7 @@ impl ChildAuthority {
                             || Self::role_can_delegate_writes(&self.agent_type)
                             || self.workspace_write_carve_out_permits(registry, name, input))
                 }
-                ApprovalRequirement::Required => {
-                    self.runtime.accept_verification
-                        && Self::is_delegated_builtin_verification(name, input)
-                }
+                ApprovalRequirement::Required => false,
             })
     }
     pub fn role_can_delegate_writes(agent_type: &FleetRole) -> bool {
@@ -520,17 +517,6 @@ impl ChildAuthority {
         crate::core::authority::paths_within_workspace_write_carve_out(
             &registry.context().workspace,
             &raw_mutation_target_paths(name, input),
-        )
-    }
-
-    pub fn is_delegated_builtin_verification(name: &str, input: &Value) -> bool {
-        use crate::tools::execution_envelope::{VerificationBound, classify_verification};
-
-        // Reuse the same classifier as the execution envelope. This prevents a
-        // second, looser notion of "test command" from growing in this module.
-        matches!(
-            classify_verification(canonical_action_alias(name, input), input),
-            Some(VerificationBound::Default | VerificationBound::Filter)
         )
     }
 

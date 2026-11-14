@@ -54,9 +54,8 @@
 //!   forks a process, which `analyst`/`scout` were never granted), and
 //!   anything that can name a program is held to the raw-shell bar. Every
 //!   consumer of that contract — the catalog filter, the dispatch guard, and
-//!   `reject_unbounded_verification` / `is_delegated_builtin_verification` in
-//!   [`crate::tools::subagent`] — reads this one classifier rather than
-//!   re-deriving it.
+//!   `reject_unbounded_verification` in [`crate::tools::subagent`] — reads this
+//!   one classifier rather than re-deriving it.
 
 use serde_json::Value;
 

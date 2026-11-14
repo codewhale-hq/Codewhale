@@ -92,7 +92,7 @@ fn is_sibling_worktree_path(parent_workspace: &Path, canonical: &Path) -> bool {
     else {
         return false;
     };
-    if !worktree_path_within_root(&rebased, &default_root) {
+    if relative_to_root(&rebased, &default_root).is_none() {
         return false;
     }
     match (git_common_dir(parent_workspace), git_common_dir(canonical)) {
@@ -127,6 +127,7 @@ pub(super) fn create_isolated_worktree(
         )));
     }
     let worktree_path = resolve_worktree_path(&repo_root, &branch, request.path.as_ref())?;
+    ensure_worktree_path_unlinked(&repo_root, &worktree_path)?;
     // One worktree implementation: the Runtime lane's (#4176). It creates the
     // parent directory and captures git output instead of inheriting the TUI.
     codewhale_lane::provision_worktree(&codewhale_lane::WorktreeProvision {
@@ -138,12 +139,29 @@ pub(super) fn create_isolated_worktree(
     .map_err(|err| {
         ToolError::execution_failed(format!("Failed to create sub-agent worktree: {err:#}"))
     })?;
+    if let Err(err) = ensure_worktree_path_unlinked(&repo_root, &worktree_path) {
+        remove_unstarted_worktree(&worktree_path);
+        return Err(err);
+    }
     worktree_path.canonicalize().map_err(|err| {
         ToolError::execution_failed(format!(
             "Created worktree path '{}' could not be resolved: {err}",
             worktree_path.display()
         ))
     })
+}
+
+fn ensure_worktree_path_unlinked(repo_root: &Path, worktree_path: &Path) -> Result<(), ToolError> {
+    let base = repo_root.parent().unwrap_or(repo_root);
+    if worktree_path.strip_prefix(base).is_err() {
+        return Err(ToolError::invalid_input(format!(
+            "worktree_path '{}' must stay under {}",
+            worktree_path.display(),
+            base.display()
+        )));
+    }
+    codewhale_lane::reject_linked_below(base, worktree_path)
+        .map_err(|err| ToolError::invalid_input(format!("Invalid worktree_path: {err:#}")))
 }
 
 /// Remove a finished worker's isolated worktree (and its merged branch) when
@@ -233,8 +251,19 @@ pub(super) fn git_repo_root(workspace: &Path) -> Result<PathBuf, ToolError> {
         {
             let mut nested_roots = Vec::new();
             for entry in entries.flatten() {
+                if !entry
+                    .file_type()
+                    .is_ok_and(|ft| ft.is_dir() && !ft.is_symlink())
+                {
+                    continue;
+                }
                 let child = entry.path();
-                if !child.is_dir() || !path_looks_like_git_checkout(&child) {
+                if !path_looks_like_git_checkout(&child)
+                    || child
+                        .join(".git")
+                        .symlink_metadata()
+                        .is_ok_and(|meta| meta.file_type().is_symlink())
+                {
                     continue;
                 }
                 if child
@@ -244,7 +273,10 @@ pub(super) fn git_repo_root(workspace: &Path) -> Result<PathBuf, ToolError> {
                 {
                     continue;
                 }
-                if let Some(root) = try_git_toplevel(&child) {
+                if let Some(root) = try_git_toplevel(&child)
+                    && let Ok(canonical_root) = root.canonicalize()
+                    && relative_to_root(&canonical_root, dir).is_some()
+                {
                     nested_roots.push(root);
                 }
             }
@@ -370,7 +402,7 @@ fn resolve_worktree_path(
             let requested = normalize_path_lexically(&default_root.join(path));
             match relative_to_root(&requested, &default_root)
                 .map(|rest| normalize_path_lexically(&default_root.join(rest)))
-                .filter(|resolved| worktree_path_within_root(resolved, &default_root))
+                .filter(|resolved| resolved.starts_with(&default_root))
             {
                 Some(resolved) => resolved,
                 None => {
@@ -394,14 +426,6 @@ fn resolve_worktree_path(
         )));
     }
     Ok(normalized)
-}
-
-/// `candidate` (already lexically normalized) must sit under `root` both as
-/// written and after resolving symlinks in its nearest existing ancestor, so
-/// a symlink planted under the worktree root cannot redirect the checkout.
-fn worktree_path_within_root(candidate: &Path, root: &Path) -> bool {
-    candidate.starts_with(root)
-        && canonicalize_existing_prefix(candidate).starts_with(canonicalize_existing_prefix(root))
 }
 
 /// The part of `candidate` below `root`, or `None` when it is not under it.
@@ -454,29 +478,6 @@ fn windows_relative_to_root(candidate: &str, root: &str) -> Option<String> {
         return None;
     }
     Some(rest.to_string())
-}
-
-/// Canonicalize the deepest existing ancestor of `path` and re-append the
-/// components that do not exist yet.
-fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
-    let mut missing = Vec::new();
-    let mut cursor = path;
-    loop {
-        if let Ok(canonical) = cursor.canonicalize() {
-            let mut resolved = canonical;
-            for name in missing.iter().rev() {
-                resolved.push(name);
-            }
-            return resolved;
-        }
-        match (cursor.file_name(), cursor.parent()) {
-            (Some(name), Some(parent)) => {
-                missing.push(name.to_os_string());
-                cursor = parent;
-            }
-            _ => return path.to_path_buf(),
-        }
-    }
 }
 
 fn default_worktree_root(repo_root: &Path) -> PathBuf {

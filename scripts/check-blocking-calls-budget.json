@@ -261,7 +261,7 @@
     "thread_sleep": 1
   },
   "crates/engine/src/tools/subagent/worktree.rs": {
-    "path_canonicalize": 4
+    "path_canonicalize": 5
   },
   "crates/engine/src/tools/terminal_session.rs": {
     "path_canonicalize": 1,

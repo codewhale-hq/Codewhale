@@ -26,5 +26,6 @@ pub use runtime::{
     TmuxRuntime, backend_for, resolve_backend, run_lane_log_proxy,
 };
 pub use worktree::{
-    ProvisionedWorktree, WorktreeProvision, provision_worktree, remove_worktree_if_expired,
+    ProvisionedWorktree, WorktreeProvision, provision_worktree, reject_linked_below,
+    remove_worktree_if_expired,
 };

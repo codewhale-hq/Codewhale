@@ -12823,6 +12823,129 @@ fn create_isolated_worktree_keeps_absolute_paths_under_worktree_root() {
     assert!(path.exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn create_isolated_worktree_refuses_a_worktree_root_that_passes_through_a_link() {
+    let branch_count = |repo: &std::path::Path| {
+        let output = Command::new("git")
+            .args(["branch", "--list", "codex/*"])
+            .current_dir(repo)
+            .output()
+            .expect("git branch");
+        String::from_utf8_lossy(&output.stdout).lines().count()
+    };
+    let requests = || {
+        [
+            SubAgentWorktreeRequest {
+                branch: None,
+                path: None,
+                base_ref: None,
+            },
+            SubAgentWorktreeRequest {
+                branch: Some("codex/agent-linked".to_string()),
+                path: Some(PathBuf::from("linked")),
+                base_ref: None,
+            },
+            SubAgentWorktreeRequest {
+                branch: Some("codex/agent-dot".to_string()),
+                path: Some(PathBuf::from(".")),
+                base_ref: None,
+            },
+        ]
+    };
+
+    for link_at_repo_dir in [false, true] {
+        for dangling in [false, true] {
+            let (harness, repo) = git_repo_in_harness();
+            let outside = tempdir().expect("outside dir");
+            let target = if dangling {
+                outside.path().join("missing")
+            } else {
+                outside.path().to_path_buf()
+            };
+            let worktrees = harness.path().join(".codewhale-worktrees");
+            if link_at_repo_dir {
+                std::fs::create_dir_all(&worktrees).expect("worktree root");
+                std::os::unix::fs::symlink(&target, worktrees.join("repo")).expect("symlink");
+            } else {
+                std::os::unix::fs::symlink(&target, &worktrees).expect("symlink");
+            }
+            for request in requests() {
+                let err = create_isolated_worktree(&repo, &request, None, &FleetRole::Scout)
+                    .expect_err("a linked worktree root must be refused");
+                assert!(err.to_string().contains("link"), "unexpected error: {err}");
+            }
+            assert_eq!(
+                std::fs::read_dir(outside.path()).expect("outside").count(),
+                0,
+                "nothing is created behind the link"
+            );
+            assert_eq!(branch_count(&repo), 0, "no branch is left behind");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn create_isolated_worktree_does_not_adopt_a_linked_repository_outside_the_workspace() {
+    let harness = tempdir().expect("harness");
+    let outside = init_subagent_git_repo();
+    std::os::unix::fs::symlink(outside.path(), harness.path().join("linked-repo"))
+        .expect("symlink");
+    let outside_parent = outside
+        .path()
+        .canonicalize()
+        .expect("canonical outside")
+        .parent()
+        .expect("outside parent")
+        .to_path_buf();
+    let worktree_roots_before = std::fs::read_dir(&outside_parent)
+        .expect("outside parent")
+        .flatten()
+        .filter(|entry| entry.file_name() == ".codewhale-worktrees")
+        .count();
+
+    let adopted = git_repo_root(harness.path());
+    assert!(
+        adopted.is_err(),
+        "a repository reached through a link must not be adopted: {adopted:?}"
+    );
+
+    let err = create_isolated_worktree(
+        harness.path(),
+        &SubAgentWorktreeRequest {
+            branch: Some("codex/agent-linked-adopt".to_string()),
+            path: None,
+            base_ref: None,
+        },
+        None,
+        &FleetRole::Scout,
+    )
+    .expect_err("a linked repository outside the workspace must be refused");
+    assert!(
+        err.to_string().contains("git repository"),
+        "unexpected error: {err}"
+    );
+    let worktree_roots_after = std::fs::read_dir(&outside_parent)
+        .expect("outside parent")
+        .flatten()
+        .filter(|entry| entry.file_name() == ".codewhale-worktrees")
+        .count();
+    assert_eq!(
+        worktree_roots_before, worktree_roots_after,
+        "nothing is created beside the outside repository"
+    );
+    let branches = Command::new("git")
+        .args(["branch", "--list", "codex/*"])
+        .current_dir(outside.path())
+        .output()
+        .expect("git branch");
+    assert!(
+        String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
+        "no branch is created in the outside repository"
+    );
+}
+
 #[test]
 fn create_isolated_worktree_rejects_option_shaped_base_ref() {
     let (harness, repo) = git_repo_in_harness();
@@ -15311,6 +15434,34 @@ fn write_capable_or_unproven_starts_keep_the_approval_gate() {
     );
 }
 
+#[test]
+fn read_only_start_with_a_workspace_policy_worktree_keeps_the_approval_gate() {
+    let tmp = tempdir().expect("tempdir");
+    let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 1);
+    let tool = AgentTool::new(manager, stub_runtime());
+
+    for role in ["scout", "planner", "reviewer", "verifier", "consultant"] {
+        for key in ["workspace_policy", "workspacePolicy"] {
+            for value in ["worktree", " Worktree ", "WORKTREE", "bogus"] {
+                let mut input = json!({"action": "start", "type": role, "prompt": "x"});
+                input[key] = json!(value);
+                assert_eq!(
+                    tool.approval_requirement_for(&input),
+                    ApprovalRequirement::Required,
+                    "{input} must keep the approval gate"
+                );
+            }
+            let mut shared = json!({"action": "start", "type": role, "prompt": "x"});
+            shared[key] = json!("shared");
+            assert_eq!(
+                tool.approval_requirement_for(&shared),
+                ApprovalRequirement::Auto,
+                "{shared} provisions nothing"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn worker_child_inherits_workspace_write_carve_out_without_parent_auto_approve() {
     // #5186: a write-posture child that is NOT an explicit write-delegated
@@ -15395,9 +15546,9 @@ async fn worker_child_write_carve_out_requires_a_git_work_tree() {
 }
 
 #[tokio::test]
-async fn builder_child_verification_asks_like_shell_without_an_operate_lease() {
-    // Outside a root Operate lease, built-in verification, arbitrary shell
-    // and unbounded verification argv all reach the parent's approval.
+async fn builder_child_verification_asks_like_shell() {
+    // Built-in verification, arbitrary shell and unbounded verification argv
+    // all reach the parent's approval.
     let tmp = tempdir().expect("tempdir");
     let mut runtime = stub_runtime();
     runtime.context = ToolContext::new(tmp.path().to_path_buf());
@@ -15415,7 +15566,7 @@ async fn builder_child_verification_asks_like_shell_without_an_operate_lease() {
     let verification_err = registry
         .execute("agent_test", "Run", json!({"action": "tests"}))
         .await
-        .expect_err("built-in verification asks the parent outside an Operate lease");
+        .expect_err("built-in verification asks the parent");
     assert!(
         matches!(verification_err.downcast_ref::<ToolError>(), Some(ToolError::NotAvailable { message })
             if message == "child caller has no host that can answer this approval"),
@@ -15450,6 +15601,75 @@ async fn builder_child_verification_asks_like_shell_without_an_operate_lease() {
     );
     let replay = receipt_store.replay("workspace").unwrap();
     assert_eq!(replay.completed.len(), 3);
+    assert!(
+        replay
+            .completed
+            .iter()
+            .all(|receipt| receipt.outcome == crate::approval_log::ApprovalOutcome::Unavailable)
+    );
+    assert!(replay.unmatched_asks.is_empty());
+}
+
+#[tokio::test]
+async fn verifier_child_started_without_approval_still_asks_for_built_in_verification() {
+    let tmp = tempdir().expect("tempdir");
+    let marker = tmp.path().join("verification-marker.txt");
+    std::fs::write(
+        tmp.path().join("package.json"),
+        r#"{"name":"fixture","version":"1.0.0","scripts":{"lint":"echo ran > verification-marker.txt"}}"#,
+    )
+    .expect("package.json");
+
+    let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 1);
+    let tool = AgentTool::new(manager, stub_runtime());
+    assert_eq!(
+        tool.approval_requirement_for(
+            &json!({"action": "start", "type": "test", "prompt": "run the project checks"})
+        ),
+        ApprovalRequirement::Auto,
+        "a read-only verifier start opens no approval card"
+    );
+
+    let authority = codewhale_agent_contract::role::ChildAuthority::from_runtime_role(
+        "verifier",
+        codewhale_protocol::fleet::PermissionCeiling::preset("full").expect("preset"),
+    );
+    let mut runtime =
+        stub_runtime().with_agent_tool_surface_options(enabled_agent_surface_options());
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    runtime.context.auto_approve = false;
+    runtime.allow_shell = true;
+    runtime.worker_profile = WorkerRuntimeProfile::for_role(FleetRole::Verifier);
+    runtime.worker_profile.denied_tools = authority.disallowed_tools.clone();
+    let receipt_store = crate::approval_log::ApprovalReceiptStore::new(tmp.path().join("sessions"));
+    runtime = runtime.with_approval_receipt_store(Ok(receipt_store.clone()));
+    let registry = ChildCoreProbe::new(
+        runtime,
+        FleetRole::Verifier,
+        authority.allowed_tools.clone(),
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+
+    let calls = [
+        json!({"action": "verifiers"}),
+        json!({"action": "tests"}),
+        json!({"action": "tests", "args": "exact_fleet"}),
+    ];
+    for input in &calls {
+        let err = registry
+            .execute("agent_test", "Run", input.clone())
+            .await
+            .expect_err("built-in verification must reach the parent's approval");
+        assert!(
+            matches!(err.downcast_ref::<ToolError>(), Some(ToolError::NotAvailable { message })
+                if message == "child caller has no host that can answer this approval"),
+            "{input}: unexpected error: {err}"
+        );
+    }
+    assert!(!marker.exists(), "no workspace script may have run");
+    let replay = receipt_store.replay("workspace").unwrap();
+    assert_eq!(replay.completed.len(), calls.len());
     assert!(
         replay
             .completed
@@ -16160,7 +16380,6 @@ pub fn stub_runtime() -> SubAgentRuntime {
         context,
         allow_shell: true,
         accept_edits: false,
-        accept_verification: false,
         agent_tool_surface_options: AgentToolSurfaceOptions::new(ShellPolicy::Full),
         worker_profile: WorkerRuntimeProfile::for_role(FleetRole::Worker),
         event_tx: None,
@@ -16202,105 +16421,6 @@ pub fn stub_runtime() -> SubAgentRuntime {
         compaction: crate::compaction::CompactionConfig::default(),
         activation: None,
     }
-}
-
-#[test]
-fn worker_lifecycle_records_direct_operate_approval_without_delegating_authority() {
-    let todos = crate::tools::todo::new_shared_todo_list();
-    let plan = crate::tools::plan::new_shared_plan_state();
-    let work = crate::work_graph::new_shared_work_runtime(todos, plan);
-
-    let mut direct = stub_runtime();
-    direct.context.state_namespace = "worker-lifecycle".to_string();
-    direct.context.runtime.work = Some(work.clone());
-    direct.accept_verification = true;
-    direct.spawn_depth = 1;
-    let lifecycle =
-        SubAgentWorkLifecycle::register(&direct, "agent_01234567", "verify installed acceptance")
-            .expect("direct worker registration")
-            .expect("work runtime attached");
-    lifecycle
-        .reconcile_state(OwnerState::Running, 2, None)
-        .expect("running owner report");
-    let receipt = EvidenceRef::new(
-        EvidenceKind::Receipt {
-            owner: "worker".to_string(),
-        },
-        "worker:agent_01234567:result",
-        Some(512),
-        false,
-    )
-    .expect("safe worker receipt");
-    lifecycle
-        .reconcile_state(OwnerState::Completed, 3, Some(receipt))
-        .expect("terminal owner report");
-
-    let direct_graph = work
-        .capture(Some("worker-lifecycle"))
-        .expect("capture direct worker")
-        .expect("graph")
-        .graph;
-    assert_eq!(
-        direct_graph
-            .nodes
-            .iter()
-            .filter(|node| node.kind == crate::work_graph::NodeKind::Approval)
-            .count(),
-        1,
-        "direct Operate verification must leave one provenance record"
-    );
-    assert!(direct_graph.edges.iter().any(|edge| {
-        edge.kind == crate::work_graph::EdgeKind::RequiresApproval
-            && direct_graph
-                .node(&edge.from)
-                .is_some_and(|node| node.title == "verify installed acceptance")
-            && direct_graph
-                .node(&edge.to)
-                .is_some_and(|node| node.kind == crate::work_graph::NodeKind::Approval)
-    }));
-    let direct_operation = direct_graph
-        .nodes
-        .iter()
-        .find(|node| {
-            node.binding
-                .as_ref()
-                .is_some_and(|binding| binding.external == "worker:agent_01234567")
-        })
-        .expect("bound direct worker operation");
-    assert_eq!(
-        direct_operation.state,
-        crate::work_graph::NodeState::Completed
-    );
-    assert_eq!(
-        direct_operation
-            .binding
-            .as_ref()
-            .and_then(|binding| binding.last_observation.as_ref())
-            .and_then(|observation| observation.output.as_ref())
-            .and_then(EvidenceRef::raw_bytes),
-        Some(512)
-    );
-
-    let mut nested = direct.child_runtime();
-    nested.accept_verification = true;
-    nested.spawn_depth = 2;
-    SubAgentWorkLifecycle::register(&nested, "agent_89abcdef", "nested verification")
-        .expect("nested worker registration")
-        .expect("work runtime attached");
-    let nested_graph = work
-        .capture(Some("worker-lifecycle"))
-        .expect("capture nested worker")
-        .expect("graph")
-        .graph;
-    assert_eq!(
-        nested_graph
-            .nodes
-            .iter()
-            .filter(|node| node.kind == crate::work_graph::NodeKind::Approval)
-            .count(),
-        1,
-        "nested workers must not inherit Operate approval authority"
-    );
 }
 
 /// A minimal stub client. Test helpers below only ever check struct fields
