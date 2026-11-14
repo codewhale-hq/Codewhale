@@ -576,6 +576,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage,
+            title: None,
+            stop_details: None,
+            refusal: None,
         }
     }
 

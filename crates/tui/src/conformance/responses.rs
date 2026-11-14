@@ -348,6 +348,8 @@ fn message_for_case(case: &Value) -> MessageRequest {
         stream: Some(true),
         temperature: case["temperature"].as_f64().map(|value| value as f32),
         top_p: case["top_p"].as_f64().map(|value| value as f32),
+        safety_check: None,
+        title: None,
     }
 }
 

@@ -1965,7 +1965,9 @@ fn project_block(block: &ContentBlock) -> ExportBlock {
                 )
             }),
         },
-        ContentBlock::ServerToolUse { id, name, input } => ExportBlock::ServerToolCall {
+        ContentBlock::ServerToolUse {
+            id, name, input, ..
+        } => ExportBlock::ServerToolCall {
             id: id.clone(),
             name: name.clone(),
             input: input.clone(),
@@ -1973,6 +1975,11 @@ fn project_block(block: &ContentBlock) -> ExportBlock {
         ContentBlock::ToolSearchToolResult {
             tool_use_id,
             content,
+        }
+        | ContentBlock::WebSearchToolResult {
+            tool_use_id,
+            content,
+            ..
         } => ExportBlock::ToolSearchResult {
             tool_use_id: tool_use_id.clone(),
             content: content.clone(),
@@ -1980,9 +1987,36 @@ fn project_block(block: &ContentBlock) -> ExportBlock {
         ContentBlock::CodeExecutionToolResult {
             tool_use_id,
             content,
+        }
+        | ContentBlock::WebFetchToolResult {
+            tool_use_id,
+            content,
+            ..
         } => ExportBlock::CodeExecutionResult {
             tool_use_id: tool_use_id.clone(),
             content: content.clone(),
+        },
+        ContentBlock::WebSearchCall {
+            id,
+            kind,
+            action,
+            sources,
+            page,
+            ..
+        } => ExportBlock::ServerToolCall {
+            id: id.clone(),
+            name: kind
+                .clone()
+                .unwrap_or_else(|| "web_search_call".to_string()),
+            input: serde_json::json!({ "action": action, "sources": sources, "page": page }),
+        },
+        ContentBlock::ServerToolCalls { steps } => ExportBlock::ServerToolCall {
+            id: String::new(),
+            name: "server_tool_calls".to_string(),
+            input: serde_json::Value::Array(steps.clone()),
+        },
+        ContentBlock::File { file_id } => ExportBlock::Text {
+            text: format!("[file: {file_id}]"),
         },
     }
 }

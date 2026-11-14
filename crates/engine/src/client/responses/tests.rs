@@ -70,6 +70,8 @@ fn minimal_responses_request() -> MessageRequest {
         stream: None,
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     }
 }
 
@@ -535,22 +537,34 @@ async fn responses_stream_surfaces_notice_for_web_search_call_items() {
         .await
         .expect("semantic Responses stream opens");
 
-    let mut saw_notice = false;
+    let mut saw_web_search_call = false;
+    let mut saw_completed_status = false;
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while let Some(event) = stream.next().await {
-            if let Ok(StreamEvent::ContentBlockStart {
-                content_block: ContentBlockStart::Text { text },
-                ..
-            }) = event
-                && text.contains("not replayed")
-            {
-                saw_notice = true;
+            match event {
+                Ok(StreamEvent::ContentBlockStart {
+                    content_block:
+                        codewhale_models::ContentBlockStart::WebSearchCall { id, status, .. },
+                    ..
+                }) if id == "ws_1" && status == "in_progress" => {
+                    saw_web_search_call = true;
+                }
+                Ok(StreamEvent::ContentBlockDelta {
+                    delta: codewhale_models::Delta::WebSearchCallDelta { .. },
+                    ..
+                }) => {
+                    saw_completed_status = true;
+                }
+                _ => {}
             }
         }
     })
     .await
     .expect("stream terminates");
-    assert!(saw_notice, "web_search_call must surface a visible notice");
+    assert!(
+        saw_web_search_call && saw_completed_status,
+        "web_search_call must emit structured start and delta events: start={saw_web_search_call} delta={saw_completed_status}"
+    );
 }
 
 #[tokio::test]
@@ -1313,6 +1327,8 @@ fn codex_responses_body_uses_responses_reasoning_not_deepseek_thinking() {
         stream: None,
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
 
     let body = build_responses_body_for_provider(&request, ProviderKind::OpenaiCodex, None);
@@ -1566,6 +1582,8 @@ fn responses_input_includes_user_role_tool_results() {
         stream: None,
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
 
     let input = responses_input_for_provider(&request, ProviderKind::OpenaiCodex, None);
@@ -1604,6 +1622,8 @@ fn responses_input_encodes_tool_call_names() {
         stream: None,
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
 
     let input = responses_input_for_provider(&request, ProviderKind::OpenaiCodex, None);
@@ -1849,4 +1869,190 @@ fn responses_input_preserves_system_history_with_the_provider_role() {
             })
         );
     }
+}
+
+#[test]
+fn deepseek_responses_web_tools_guards_options_and_replay() {
+    let mut request = minimal_responses_request();
+    request.model = "deepseek-v4".to_string();
+    request.safety_check = Some(codewhale_models::SafetyCheckConfig {
+        level: "low".to_string(),
+    });
+    request.title = Some(codewhale_models::ConversationTitleConfig { enabled: true });
+    request.tools = Some(vec![
+        Tool {
+            tool_type: Some("deepseek_web_search".to_string()),
+            name: "deepseek_web_search".to_string(),
+            description: String::new(),
+            input_schema: json!({ "kind": "deep_search" }),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        },
+        Tool {
+            tool_type: Some("deepseek_read_url".to_string()),
+            name: "deepseek_read_url".to_string(),
+            description: String::new(),
+            input_schema: json!({}),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        },
+    ]);
+    request.tool_choice = Some(json!("auto"));
+    request.messages = vec![
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::File {
+                file_id: "file_resp_1".to_string(),
+            }],
+        },
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::WebSearchCall {
+                id: "ws_1".to_string(),
+                status: "completed".to_string(),
+                kind: Some("deep_search".to_string()),
+                action: Some(json!({ "type": "search", "query": "rust" })),
+                sources: Some(json!([{ "url": "https://example.com" }])),
+                page: Some(json!({ "url": "https://example.com" })),
+                signature: Some("sig_ws_1".to_string()),
+                error: None,
+            }],
+        },
+    ];
+
+    let body = build_responses_body_for_provider(&request, ProviderKind::Deepseek, None);
+    assert_eq!(body["tool_choice"], json!("auto"));
+    assert_eq!(body["safety_check"], json!({ "level": "low" }));
+    assert_eq!(body["title"], json!({ "enabled": true }));
+    assert_eq!(
+        body["tools"],
+        json!([
+            { "type": "deepseek_web_search", "kind": "deep_search" },
+            { "type": "deepseek_read_url" }
+        ])
+    );
+    assert_eq!(
+        body["input"][0]["content"][0],
+        json!({ "type": "input_file", "file_id": "file_resp_1" })
+    );
+    assert_eq!(body["input"][1]["type"], "web_search_call");
+    assert_eq!(body["input"][1]["signature"], "sig_ws_1");
+
+    let profile = profile_for_provider(ProviderKind::Deepseek);
+    let context = ResponsesReplayContext {
+        provider_id: "deepseek",
+        wire_model_id: "deepseek-v4",
+        reasoning_api_id: None,
+    };
+
+    for bad_choice in [
+        json!("required"),
+        json!({ "type": "required" }),
+        json!({ "type": "any" }),
+        json!({ "type": "deepseek_web_search" }),
+    ] {
+        let mut forced = request.clone();
+        forced.tool_choice = Some(bad_choice);
+        assert!(build_responses_wire_body(&forced, profile, context).is_err());
+    }
+
+    let openai_profile = profile_for_provider(ProviderKind::OpenaiCodex);
+    let openai_context = ResponsesReplayContext {
+        provider_id: "openai-codex",
+        wire_model_id: "gpt-5.4",
+        reasoning_api_id: None,
+    };
+    assert!(build_responses_wire_body(&request, openai_profile, openai_context).is_err());
+
+    let mut conflict = request.clone();
+    conflict.tools.as_mut().expect("tools").push(Tool {
+        tool_type: Some("web_search".to_string()),
+        name: "web_search".to_string(),
+        description: String::new(),
+        input_schema: json!({}),
+        allowed_callers: None,
+        defer_loading: None,
+        input_examples: None,
+        strict: None,
+        cache_control: None,
+    });
+    assert!(build_responses_wire_body(&conflict, profile, context).is_err());
+
+    let mut with_reminder = request;
+    with_reminder.messages.insert(
+        0,
+        Message {
+            role: Role::LatestReminder,
+            content: vec![ContentBlock::Text {
+                text: "Not allowed in responses".to_string(),
+                cache_control: None,
+            }],
+        },
+    );
+    assert!(build_responses_wire_body(&with_reminder, profile, context).is_err());
+}
+
+#[tokio::test]
+async fn deepseek_responses_stream_decodes_title_annotations_refusal_and_usage() {
+    let server = MockServer::start().await;
+    let sse_body = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"status\":\"in_progress\"}}\n\n",
+        "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"web_search_call\",\"id\":\"ws_1\",\"status\":\"in_progress\",\"kind\":\"search\"}}\n\n",
+        "data: {\"type\":\"response.output_text.annotation.added\",\"annotation\":{\"type\":\"url_citation\",\"url\":\"https://example.com\"}}\n\n",
+        "data: {\"type\":\"response.refusal.delta\",\"delta\":\"Unsafe query\"}\n\n",
+        "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_1\",\"status\":\"incomplete\",\"title\":\"Safety Refusal\",\"incomplete_details\":{\"reason\":\"content_filter\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"safety_tokens\":7,\"server_tool_use\":{\"tool_search\":1,\"tool_fetch\":2,\"tool_image_search\":1}}}}\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let mut client = CodewhaleClient::new(&test_codex_config(&server)).expect("client");
+    client.responses_profile_id = Some(profile_for_provider(ProviderKind::Deepseek).id);
+    let mut stream = client
+        .handle_responses_stream(
+            &client
+                .prepare_outbound_request(minimal_responses_request(), true)
+                .expect("prepare"),
+        )
+        .await
+        .expect("stream opens");
+
+    let mut events = Vec::new();
+    while let Some(ev) = stream.next().await {
+        events.push(ev.expect("stream event ok"));
+    }
+
+    assert!(events.iter().any(|ev| matches!(
+        ev,
+        StreamEvent::ContentBlockDelta {
+            delta: codewhale_models::Delta::CitationsDelta { .. },
+            ..
+        }
+    )));
+    assert!(events.iter().any(|ev| matches!(
+        ev,
+        StreamEvent::ContentBlockDelta {
+            delta: codewhale_models::Delta::RefusalDelta { refusal }, ..
+        } if refusal == "Unsafe query"
+    )));
+    assert!(events.iter().any(|ev| matches!(
+        ev,
+        StreamEvent::MessageDelta { delta, usage }
+            if delta.stop_reason.as_deref() == Some("incomplete:content_filter")
+            && delta.title.as_deref() == Some("Safety Refusal")
+            && usage.as_ref().and_then(|u| u.safety_tokens) == Some(7)
+            && usage.as_ref().and_then(|u| u.server_tool_use.as_ref()).and_then(|s| s.tool_fetch) == Some(2)
+    )));
 }

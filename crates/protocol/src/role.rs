@@ -45,6 +45,7 @@ pub enum Role {
     /// Assistant text that was visible before the turn was interrupted. Kept
     /// distinct from [`Role::Assistant`] so replay can mark it as incomplete.
     InterruptedAssistant,
+    LatestReminder,
     /// A role string this build does not know. Preserved verbatim so loading
     /// and re-saving a transcript is lossless.
     Unrecognized(String),
@@ -62,6 +63,7 @@ impl Role {
             Self::System => "system",
             Self::Developer => "developer",
             Self::InterruptedAssistant => INTERRUPTED_ASSISTANT_ROLE,
+            Self::LatestReminder => "latest_reminder",
             Self::Unrecognized(raw) => raw.as_str(),
         }
     }
@@ -81,6 +83,7 @@ impl From<&str> for Role {
             "system" => Self::System,
             "developer" => Self::Developer,
             INTERRUPTED_ASSISTANT_ROLE => Self::InterruptedAssistant,
+            "latest_reminder" => Self::LatestReminder,
             other => Self::Unrecognized(other.to_string()),
         }
     }
@@ -94,6 +97,7 @@ impl From<String> for Role {
             "system" => Self::System,
             "developer" => Self::Developer,
             INTERRUPTED_ASSISTANT_ROLE => Self::InterruptedAssistant,
+            "latest_reminder" => Self::LatestReminder,
             _ => Self::Unrecognized(value),
         }
     }
@@ -217,5 +221,17 @@ mod tests {
         assert_eq!("user", Role::User);
         assert_eq!(Role::User, "user".to_string());
         assert_ne!(Role::System, "user");
+    }
+
+    #[test]
+    fn latest_reminder_round_trips_distinct_from_system_and_user() {
+        assert_eq!(Role::from("latest_reminder"), Role::LatestReminder);
+        assert_eq!(Role::LatestReminder.as_str(), "latest_reminder");
+        let encoded = serde_json::to_string(&Role::LatestReminder).expect("serialize");
+        assert_eq!(encoded, "\"latest_reminder\"");
+        let decoded: Role = serde_json::from_str(&encoded).expect("deserialize");
+        assert_eq!(decoded, Role::LatestReminder);
+        assert_ne!(decoded, Role::User);
+        assert_ne!(decoded, Role::System);
     }
 }

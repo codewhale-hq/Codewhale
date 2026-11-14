@@ -202,7 +202,9 @@ fn project_block(block: &ContentBlock) -> StructcopyBlock {
                 StructcopyBlock::ImageOmitted
             }
         }
-        ContentBlock::ServerToolUse { id, name, input } => StructcopyBlock::ServerToolUse {
+        ContentBlock::ServerToolUse {
+            id, name, input, ..
+        } => StructcopyBlock::ServerToolUse {
             id: id.clone(),
             name: name.clone(),
             input: input.clone(),
@@ -210,6 +212,11 @@ fn project_block(block: &ContentBlock) -> StructcopyBlock {
         ContentBlock::ToolSearchToolResult {
             tool_use_id,
             content,
+        }
+        | ContentBlock::WebSearchToolResult {
+            tool_use_id,
+            content,
+            ..
         } => StructcopyBlock::ToolSearchToolResult {
             tool_use_id: tool_use_id.clone(),
             content: content.clone(),
@@ -217,10 +224,35 @@ fn project_block(block: &ContentBlock) -> StructcopyBlock {
         ContentBlock::CodeExecutionToolResult {
             tool_use_id,
             content,
+        }
+        | ContentBlock::WebFetchToolResult {
+            tool_use_id,
+            content,
+            ..
         } => StructcopyBlock::CodeExecutionToolResult {
             tool_use_id: tool_use_id.clone(),
             content: content.clone(),
         },
+        ContentBlock::WebSearchCall {
+            id,
+            kind,
+            action,
+            sources,
+            page,
+            ..
+        } => StructcopyBlock::ServerToolUse {
+            id: id.clone(),
+            name: kind
+                .clone()
+                .unwrap_or_else(|| "web_search_call".to_string()),
+            input: serde_json::json!({ "action": action, "sources": sources, "page": page }),
+        },
+        ContentBlock::ServerToolCalls { steps } => StructcopyBlock::ServerToolUse {
+            id: String::new(),
+            name: "server_tool_calls".to_string(),
+            input: serde_json::Value::Array(steps.clone()),
+        },
+        ContentBlock::File { file_id } => StructcopyBlock::Text(format!("[file: {file_id}]")),
     }
 }
 

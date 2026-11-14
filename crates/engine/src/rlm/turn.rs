@@ -354,6 +354,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         });
         let client: Arc<dyn Replies> = mock;
         let (tx, _rx) = mpsc::channel(8);
@@ -442,6 +445,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: usage.clone(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         });
         let client: Arc<dyn Replies> = mock.clone();
         let (tx, _rx) = mpsc::channel(8);
@@ -497,6 +503,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         });
         let client: Arc<dyn Replies> = mock;
         let (tx, _rx) = mpsc::channel(8);
@@ -546,6 +555,9 @@ mod tests {
             stop_reason: Some("end_turn".to_string()),
             stop_sequence: None,
             container: None,
+            title: None,
+            stop_details: None,
+            refusal: None,
             usage: Usage {
                 input_tokens: 5,
                 output_tokens: 5,
@@ -1016,6 +1028,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         });
         let (tx, _rx) = mpsc::channel(64);
         let result = run_fixture(

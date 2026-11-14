@@ -259,6 +259,45 @@ fn format_content_block(buf: &mut String, blk_idx: usize, block: &ContentBlock) 
                 "  [{blk_idx}] CodeExecutionToolResult (id={tool_use_id}, content={snippet})"
             );
         }
+        ContentBlock::WebSearchToolResult {
+            tool_use_id,
+            content,
+            ..
+        } => {
+            let snippet = truncate_str(&content.to_string(), TOOL_RESULT_SNIPPET_CHARS);
+            let _ = writeln!(
+                buf,
+                "  [{blk_idx}] WebSearchToolResult (id={tool_use_id}, content={snippet})"
+            );
+        }
+        ContentBlock::WebFetchToolResult {
+            tool_use_id,
+            content,
+            ..
+        } => {
+            let snippet = truncate_str(&content.to_string(), TOOL_RESULT_SNIPPET_CHARS);
+            let _ = writeln!(
+                buf,
+                "  [{blk_idx}] WebFetchToolResult (id={tool_use_id}, content={snippet})"
+            );
+        }
+        ContentBlock::WebSearchCall {
+            id, kind, status, ..
+        } => {
+            let _ = writeln!(
+                buf,
+                "  [{blk_idx}] WebSearchCall (id={}, kind={}, status={})",
+                id,
+                kind.as_deref().unwrap_or(""),
+                status
+            );
+        }
+        ContentBlock::ServerToolCalls { steps } => {
+            let _ = writeln!(buf, "  [{blk_idx}] ServerToolCalls (steps={})", steps.len());
+        }
+        ContentBlock::File { file_id } => {
+            let _ = writeln!(buf, "  [{blk_idx}] File (file_id={file_id})");
+        }
         ContentBlock::ImageUrl { .. } => {}
     }
 }
@@ -527,7 +566,9 @@ fn cascade_tool_pair_removals(messages: &[Message], remove_set: &mut FastHashSet
                 }
                 ContentBlock::ToolResult { tool_use_id, .. }
                 | ContentBlock::ToolSearchToolResult { tool_use_id, .. }
-                | ContentBlock::CodeExecutionToolResult { tool_use_id, .. } => {
+                | ContentBlock::CodeExecutionToolResult { tool_use_id, .. }
+                | ContentBlock::WebSearchToolResult { tool_use_id, .. }
+                | ContentBlock::WebFetchToolResult { tool_use_id, .. } => {
                     (&mut result_id_to_idx, tool_use_id.as_str())
                 }
                 _ => continue,
@@ -566,7 +607,9 @@ fn cascade_tool_pair_removals(messages: &[Message], remove_set: &mut FastHashSet
                     }
                     ContentBlock::ToolResult { tool_use_id, .. }
                     | ContentBlock::ToolSearchToolResult { tool_use_id, .. }
-                    | ContentBlock::CodeExecutionToolResult { tool_use_id, .. } => {
+                    | ContentBlock::CodeExecutionToolResult { tool_use_id, .. }
+                    | ContentBlock::WebSearchToolResult { tool_use_id, .. }
+                    | ContentBlock::WebFetchToolResult { tool_use_id, .. } => {
                         if let Some(&(call_idx, provider_id)) = block
                             .tool_call_key()
                             .and_then(|key| call_id_to_idx.get(&key))
@@ -717,6 +760,8 @@ pub async fn run_purge(
         stream: Some(false),
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
 
     let cost_scope = crate::cost_status::scope_token();
@@ -1188,6 +1233,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         }
     }
 
@@ -1205,6 +1253,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         }
     }
 

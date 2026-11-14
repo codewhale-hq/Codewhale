@@ -3115,6 +3115,8 @@ fn translation_message_request(
         stream: Some(false),
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     }
 }
 
@@ -3270,6 +3272,7 @@ impl CodewhaleClient {
         // (the OpenAI-shaped dialects) depending on which adapter ran.
         let outbound_dialect = WireDialect::from_wire_format(self.wire_format);
         role_placement::reject_unsupported_roles(&request.messages, outbound_dialect)?;
+        role_placement::validate_latest_reminder_messages(&request.messages)?;
         let clamp_output_cap = |mut request: MessageRequest, route_limits: Option<RouteLimits>| {
             let route_cap = self.effective_max_output_tokens_with_limits(
                 &request.model,
@@ -7166,6 +7169,10 @@ impl CodewhaleClient {
 mod anthropic;
 mod chat;
 mod deepseek_effort;
+mod deepseek_tools;
+pub use deepseek_tools::{
+    DEEPSEEK_READ_URL_TOOL, DEEPSEEK_WEB_SEARCH_TOOL, DeepseekFilesPurpose, DeepseekUploadedFile,
+};
 #[cfg(test)]
 mod ds4_tests;
 pub mod ollama_catalog;

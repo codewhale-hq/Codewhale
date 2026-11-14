@@ -1014,6 +1014,15 @@ pub enum Event {
         /// `<context_update>` snapshots appended this session.
         context_updates: u64,
     },
+
+    ConversationTitle {
+        title: String,
+    },
+
+    ContentFilterRefusal {
+        reason: String,
+        refusal: Option<String>,
+    },
 }
 
 /// Render the already-bounded name sample, marking an incomplete sample with

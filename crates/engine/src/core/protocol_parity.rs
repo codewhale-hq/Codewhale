@@ -1099,6 +1099,17 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             last_miss_reason: last_miss_reason.clone(),
             context_updates: *context_updates,
         },
+        Event::ConversationTitle { title } => wire::EventMsg::ConversationTitle {
+            thread_id,
+            session_id,
+            title: title.clone(),
+        },
+        Event::ContentFilterRefusal { reason, refusal } => wire::EventMsg::ContentFilterRefusal {
+            thread_id,
+            session_id,
+            reason: reason.clone(),
+            refusal: refusal.clone(),
+        },
     }
 }
 

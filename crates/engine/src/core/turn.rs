@@ -326,6 +326,7 @@ pub fn add_usage_to(total: &mut Usage, delta: &Usage) {
         add_optional_usage(total.output_audio_tokens, delta.output_audio_tokens);
     total.reasoning_replay_tokens =
         add_optional_usage(total.reasoning_replay_tokens, delta.reasoning_replay_tokens);
+    total.safety_tokens = add_optional_usage(total.safety_tokens, delta.safety_tokens);
     if let Some(delta) = delta.server_tool_use.as_ref() {
         let server_total = total.server_tool_use.get_or_insert_default();
         server_total.code_execution_requests = add_optional_usage(
@@ -336,6 +337,14 @@ pub fn add_usage_to(total: &mut Usage, delta: &Usage) {
             server_total.tool_search_requests,
             delta.tool_search_requests,
         );
+        server_total.web_search_requests =
+            add_optional_usage(server_total.web_search_requests, delta.web_search_requests);
+        server_total.web_fetch_requests =
+            add_optional_usage(server_total.web_fetch_requests, delta.web_fetch_requests);
+        server_total.tool_search = add_optional_usage(server_total.tool_search, delta.tool_search);
+        server_total.tool_fetch = add_optional_usage(server_total.tool_fetch, delta.tool_fetch);
+        server_total.tool_image_search =
+            add_optional_usage(server_total.tool_image_search, delta.tool_image_search);
     }
 }
 
@@ -448,6 +457,7 @@ mod usage_tests {
             server_tool_use: Some(ServerToolUsage {
                 code_execution_requests: Some(u32::MAX),
                 tool_search_requests: Some(2),
+                ..Default::default()
             }),
             ..Usage::default()
         });
@@ -456,6 +466,7 @@ mod usage_tests {
             server_tool_use: Some(ServerToolUsage {
                 code_execution_requests: Some(1),
                 tool_search_requests: Some(3),
+                ..Default::default()
             }),
             ..Usage::default()
         });

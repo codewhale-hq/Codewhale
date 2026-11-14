@@ -906,6 +906,8 @@ fn carries_tool_result(message: &Message) -> bool {
             ContentBlock::ToolResult { .. }
                 | ContentBlock::ToolSearchToolResult { .. }
                 | ContentBlock::CodeExecutionToolResult { .. }
+                | ContentBlock::WebSearchToolResult { .. }
+                | ContentBlock::WebFetchToolResult { .. }
         )
     })
 }

@@ -559,6 +559,7 @@ mod tests {
             output_audio_tokens: None,
 
             request_usages: Vec::new(),
+            safety_tokens: None,
         };
         usage.add(&api_usage);
         assert!(usage.cache_creation_input_tokens.is_none());
@@ -582,6 +583,7 @@ mod tests {
             output_audio_tokens: None,
 
             request_usages: Vec::new(),
+            safety_tokens: None,
         };
         usage.add(&api_usage);
         assert_eq!(usage.cache_read_input_tokens, Some(30));
@@ -608,6 +610,7 @@ mod tests {
             output_audio_tokens: None,
 
             request_usages: Vec::new(),
+            safety_tokens: None,
         };
         usage.add(&api_usage);
         // 0 is a valid observed value, must NOT be converted to None

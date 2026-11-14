@@ -1287,6 +1287,8 @@ mod dialect_seam_tests {
             stream: Some(true),
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         }
     }
 

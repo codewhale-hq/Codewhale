@@ -3250,7 +3250,9 @@ fn exec_stream_input_analysis(
                     }
                 }
                 ContentBlock::ToolSearchToolResult { content, .. }
-                | ContentBlock::CodeExecutionToolResult { content, .. } => {
+                | ContentBlock::CodeExecutionToolResult { content, .. }
+                | ContentBlock::WebSearchToolResult { content, .. }
+                | ContentBlock::WebFetchToolResult { content, .. } => {
                     analysis.tool_result_count += 1;
                     exec_stream_add_json_estimate(
                         content,
@@ -3258,7 +3260,10 @@ fn exec_stream_input_analysis(
                         &mut analysis.tool_result_estimated_tokens,
                     );
                 }
-                ContentBlock::ImageUrl { .. } => {}
+                ContentBlock::WebSearchCall { .. } | ContentBlock::ServerToolCalls { .. } => {
+                    analysis.tool_use_count += 1;
+                }
+                ContentBlock::File { .. } | ContentBlock::ImageUrl { .. } => {}
             }
         }
     }

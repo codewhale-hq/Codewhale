@@ -349,6 +349,9 @@ fn synthesize_message_response(turn: CannedTurn, model: &str) -> MessageResponse
         stop_sequence: None,
         container: None,
         usage: Usage::default(),
+        title: None,
+        stop_details: None,
+        refusal: None,
     }
 }
 
@@ -375,6 +378,9 @@ pub mod canned {
                 stop_sequence: None,
                 container: None,
                 usage: Usage::default(),
+                title: None,
+                stop_details: None,
+                refusal: None,
             },
         }
     }
@@ -451,6 +457,9 @@ pub mod canned {
             delta: MessageDelta {
                 stop_reason: Some(stop_reason.to_string()),
                 stop_sequence: None,
+                title: None,
+                stop_details: None,
+                refusal: None,
             },
             usage,
         }
@@ -517,6 +526,8 @@ mod tests {
             stream: Some(true),
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         }
     }
 
@@ -605,6 +616,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         });
 
         let resp = mock.create_message(empty_request()).await.unwrap();

@@ -9840,6 +9840,7 @@ async fn monitor_separates_lifecycle_start_from_billing_dispatch_and_unverified_
                 server_tool_use: Some(codewhale_models::ServerToolUsage {
                     code_execution_requests: Some(2),
                     tool_search_requests: Some(3),
+                    ..Default::default()
                 }),
                 ..Usage::default()
             },
@@ -9850,6 +9851,7 @@ async fn monitor_separates_lifecycle_start_from_billing_dispatch_and_unverified_
                 server_tool_use: Some(codewhale_models::ServerToolUsage {
                     code_execution_requests: Some(2),
                     tool_search_requests: Some(3),
+                    ..Default::default()
                 }),
                 ..Usage::default()
             },
@@ -9907,6 +9909,7 @@ async fn monitor_separates_lifecycle_start_from_billing_dispatch_and_unverified_
         Some(codewhale_models::ServerToolUsage {
             code_execution_requests: Some(2),
             tool_search_requests: Some(3),
+            ..Default::default()
         })
     );
 

@@ -36,6 +36,10 @@ use codewhale_models::{
 use codewhale_runtime::logging;
 
 use super::CodewhaleClient;
+use super::deepseek_tools::{
+    deepseek_web_tool_kind, validate_and_apply_safety_check_and_title,
+    validate_deepseek_web_tool_choice, validate_deepseek_web_tools,
+};
 use super::prepared::WireDialect;
 use super::reasoning_effort::apply_reasoning_effort;
 use super::role_placement::{RolePlacement, role_placement};
@@ -1209,17 +1213,43 @@ pub fn build_chat_wire_body_with_window(
     if let Some(top_p) = request.top_p {
         body["top_p"] = json!(top_p);
     }
+    super::role_placement::validate_latest_reminder_messages(&request.messages)?;
+    validate_and_apply_safety_check_and_title(
+        request,
+        &mut body,
+        matches!(
+            provider,
+            ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
+        ),
+    )?;
     let mut omitted_tool_names = Vec::new();
+    let mut has_deepseek_web_tools = false;
     let tool_name_limit = tool_name_limit(provider, ToolNameWire::OpenAiCompatible);
     check_history_tool_names(
         request,
         documented_tool_name_limit(provider, ToolNameWire::OpenAiCompatible),
     )?;
     if let Some(tools) = request.tools.as_ref() {
+        has_deepseek_web_tools = validate_deepseek_web_tools(tools, WireDialect::ChatCompletions)?;
+        if has_deepseek_web_tools
+            && request
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("web_search_options"))
+                .is_some()
+        {
+            bail!(
+                "web_search_options cannot be combined with deepseek_web_search or deepseek_read_url"
+            );
+        }
         let route_projection =
             chat_route_tool_projection(provider, base_url, strict_tools_disabled);
         let mut chat_tools = Vec::new();
         for tool in tools {
+            if let Some(kind) = deepseek_web_tool_kind(tool) {
+                chat_tools.push(json!({ "type": kind }));
+                continue;
+            }
             if tool_name_exceeds_limit(&tool.name, tool_name_limit) {
                 omitted_tool_names.push(to_api_tool_name(&tool.name));
                 continue;
@@ -1265,12 +1295,19 @@ pub fn build_chat_wire_body_with_window(
             "cannot force an omitted tool because its input schema is incompatible with this route"
         );
     }
-    if let Some(choice) = request.tool_choice.as_ref()
-        && let Some(mapped) = map_tool_choice_for_chat(choice)
-        && should_send_tool_choice_for_chat(provider, request.reasoning_effort.as_deref(), &mapped)
-        && body.get("tools").is_some()
-    {
-        body["tool_choice"] = mapped;
+    if let Some(choice) = request.tool_choice.as_ref() {
+        validate_deepseek_web_tool_choice(choice, has_deepseek_web_tools)?;
+        let mapped = map_tool_choice_for_chat(choice);
+        if let Some(mapped) = mapped
+            && should_send_tool_choice_for_chat(
+                provider,
+                request.reasoning_effort.as_deref(),
+                &mapped,
+            )
+            && body.get("tools").is_some()
+        {
+            body["tool_choice"] = mapped;
+        }
     }
     apply_route_reasoning_controls(
         &mut body,
@@ -1466,11 +1503,14 @@ impl CodewhaleClient {
                     stop_reason: None,
                     stop_sequence: None,
                     container: None,
+                    title: None,
+                    stop_details: None,
+                    refusal: None,
                     usage: Usage {
                         input_tokens: 0,
                         output_tokens: 0,
                         ..Usage::default()
-                    },
+                    }
                 },
             });
 
@@ -1936,6 +1976,8 @@ impl<'a> PromptBuilder<'a> {
             stream: None,
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         }
     }
 }
@@ -2804,8 +2846,10 @@ fn build_chat_messages_with_reasoning(
         let placement = role_placement(&message.role, WireDialect::ChatCompletions);
         let mut text_parts = Vec::new();
         let mut image_parts = Vec::new();
+        let mut file_parts = Vec::new();
         let mut thinking_parts = Vec::new();
         let mut tool_calls = Vec::new();
+        let mut server_tool_calls: Vec<Value> = Vec::new();
         let mut tool_call_infos = Vec::new();
         let mut tool_results: Vec<(String, String, String, Vec<Value>)> = Vec::new();
         let mut turn_meta_budget: Option<TurnMetaBudget> = None;
@@ -2828,6 +2872,12 @@ fn build_chat_messages_with_reasoning(
                         "image_url": {
                             "url": image_url.url.clone(),
                         },
+                    }));
+                }
+                ContentBlock::File { file_id } => {
+                    file_parts.push(json!({
+                        "type": "file",
+                        "file_id": file_id.clone(),
                     }));
                 }
                 ContentBlock::Thinking { thinking, .. } => thinking_parts.push(thinking.clone()),
@@ -2880,9 +2930,15 @@ fn build_chat_messages_with_reasoning(
                         content_blocks.clone().unwrap_or_default(),
                     ));
                 }
+                ContentBlock::ServerToolCalls { steps } => {
+                    server_tool_calls.extend(steps.iter().cloned());
+                }
                 ContentBlock::ServerToolUse { .. }
                 | ContentBlock::ToolSearchToolResult { .. }
-                | ContentBlock::CodeExecutionToolResult { .. } => {}
+                | ContentBlock::CodeExecutionToolResult { .. }
+                | ContentBlock::WebSearchToolResult { .. }
+                | ContentBlock::WebFetchToolResult { .. }
+                | ContentBlock::WebSearchCall { .. } => {}
             }
         }
 
@@ -2900,6 +2956,7 @@ fn build_chat_messages_with_reasoning(
             let mut reasoning_content = thinking_parts.join("\n");
             let has_text = !content.trim().is_empty();
             let has_tool_calls = !tool_calls.is_empty();
+            let has_server_tool_calls = !server_tool_calls.is_empty();
             // Reasoning replay must be a function of the stored message ONLY,
             // never of later history. DeepSeek's prefix cache hashes the raw
             // bytes of every message; flipping `reasoning_content` on/off
@@ -2923,7 +2980,7 @@ fn build_chat_messages_with_reasoning(
             // `tool_calls` are missing/null. Skip such entries even if they
             // carry reasoning-only metadata unless we can send a non-null
             // placeholder content field.
-            if !has_text && !has_tool_calls && !has_reasoning {
+            if !has_text && !has_tool_calls && !has_reasoning && !has_server_tool_calls {
                 pending_tool_calls.clear();
                 deferred_tool_result_images.clear();
                 continue;
@@ -2941,6 +2998,9 @@ fn build_chat_messages_with_reasoning(
             });
             if has_reasoning {
                 msg["reasoning_content"] = json!(reasoning_content);
+            }
+            if has_server_tool_calls {
+                msg["server_tool_calls"] = json!(server_tool_calls);
             }
             if has_tool_calls {
                 msg["tool_calls"] = json!(tool_calls);
@@ -2974,12 +3034,21 @@ fn build_chat_messages_with_reasoning(
                 }
                 out.push(msg);
             }
+        } else if placement == RolePlacement::LatestReminder {
+            let content = text_parts.join("\n");
+            if !content.trim().is_empty() {
+                out.push(json!({
+                    "role": "latest_reminder",
+                    "content": content,
+                }));
+            }
         } else if placement == RolePlacement::User {
             let content = text_parts.join("\n");
             let has_text = !content.trim().is_empty();
             let has_images = !image_parts.is_empty();
-            if has_text || has_images {
-                let wire_content = if has_images {
+            let has_files = !file_parts.is_empty();
+            if has_text || has_images || has_files {
+                let wire_content = if has_images || has_files {
                     let mut parts = Vec::new();
                     if has_text {
                         parts.push(json!({
@@ -2988,6 +3057,7 @@ fn build_chat_messages_with_reasoning(
                         }));
                     }
                     parts.extend(image_parts);
+                    parts.extend(file_parts);
                     json!(parts)
                 } else {
                     json!(content)
@@ -3933,7 +4003,28 @@ fn parse_chat_message_for_route(
         }
     }
 
+    if let Some(steps) = message
+        .get("server_tool_calls")
+        .and_then(Value::as_array)
+        .filter(|s| !s.is_empty())
+    {
+        content_blocks.push(ContentBlock::ServerToolCalls {
+            steps: steps.clone(),
+        });
+    }
+
     let usage = parse_usage(payload.get("usage"));
+    let title = message
+        .get("title")
+        .or_else(|| choice.get("title"))
+        .or_else(|| payload.get("title"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let refusal = message
+        .get("refusal")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
 
     Ok(MessageResponse {
         id,
@@ -3948,6 +4039,9 @@ fn parse_chat_message_for_route(
         stop_sequence: None,
         container: None,
         usage,
+        title,
+        stop_details: None,
+        refusal,
     })
 }
 
@@ -4212,28 +4306,64 @@ fn parse_sse_chunk_with_reasoning_style(
 
     let Some(choices) = chunk.get("choices").and_then(Value::as_array) else {
         // Usage-only chunk (sent at end with stream_options)
+        let title = chunk
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         if let Some(usage_val) = chunk.get("usage") {
             let usage = parse_usage(Some(usage_val));
             events.push(StreamEvent::MessageDelta {
                 delta: MessageDelta {
                     stop_reason: None,
                     stop_sequence: None,
+                    title,
+                    stop_details: None,
+                    refusal: None,
                 },
                 usage: Some(usage),
+            });
+        } else if title.is_some() {
+            events.push(StreamEvent::MessageDelta {
+                delta: MessageDelta {
+                    stop_reason: None,
+                    stop_sequence: None,
+                    title,
+                    stop_details: None,
+                    refusal: None,
+                },
+                usage: None,
             });
         }
         return events;
     };
 
     if choices.is_empty() {
+        let title = chunk
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         if let Some(usage_val) = chunk.get("usage") {
             let usage = parse_usage(Some(usage_val));
             events.push(StreamEvent::MessageDelta {
                 delta: MessageDelta {
                     stop_reason: None,
                     stop_sequence: None,
+                    title,
+                    stop_details: None,
+                    refusal: None,
                 },
                 usage: Some(usage),
+            });
+        } else if title.is_some() {
+            events.push(StreamEvent::MessageDelta {
+                delta: MessageDelta {
+                    stop_reason: None,
+                    stop_sequence: None,
+                    title,
+                    stop_details: None,
+                    refusal: None,
+                },
+                usage: None,
             });
         }
         return events;
@@ -4339,6 +4469,76 @@ fn parse_sse_chunk_with_reasoning_style(
                 (None, _) => {}
             }
 
+            if let Some(annotations) = delta.get("annotations").and_then(Value::as_array) {
+                for citation in annotations {
+                    if !*text_started {
+                        if *thinking_started {
+                            events.push(StreamEvent::ContentBlockStop {
+                                index: *content_index,
+                            });
+                            *content_index += 1;
+                            *thinking_started = false;
+                        }
+                        events.push(StreamEvent::ContentBlockStart {
+                            index: *content_index,
+                            content_block: ContentBlockStart::Text {
+                                text: String::new(),
+                            },
+                        });
+                        *text_started = true;
+                    }
+                    events.push(StreamEvent::ContentBlockDelta {
+                        index: *content_index,
+                        delta: Delta::CitationsDelta {
+                            citation: citation.clone(),
+                        },
+                    });
+                }
+            }
+
+            if let Some(refusal) = delta
+                .get("refusal")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                events.push(StreamEvent::ContentBlockDelta {
+                    index: *content_index,
+                    delta: Delta::RefusalDelta {
+                        refusal: refusal.to_string(),
+                    },
+                });
+            }
+
+            if let Some(steps) = delta
+                .get("server_tool_calls")
+                .and_then(Value::as_array)
+                .filter(|s| !s.is_empty())
+            {
+                if *text_started {
+                    events.push(StreamEvent::ContentBlockStop {
+                        index: *content_index,
+                    });
+                    *content_index += 1;
+                    *text_started = false;
+                }
+                if *thinking_started {
+                    events.push(StreamEvent::ContentBlockStop {
+                        index: *content_index,
+                    });
+                    *content_index += 1;
+                    *thinking_started = false;
+                }
+                let block_index = *content_index;
+                *content_index += 1;
+                events.push(StreamEvent::ContentBlockStart {
+                    index: block_index,
+                    content_block: ContentBlockStart::ServerToolCalls {
+                        steps: steps.clone(),
+                    },
+                });
+                events.push(StreamEvent::ContentBlockStop { index: block_index });
+            }
+
             // Handle tool calls
             if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for tc in tool_calls {
@@ -4432,6 +4632,46 @@ fn parse_sse_chunk_with_reasoning_style(
             }
         }
 
+        if let Some(server_tool_event) = choice.get("server_tool_event")
+            && !server_tool_event.is_null()
+        {
+            if *text_started {
+                events.push(StreamEvent::ContentBlockStop {
+                    index: *content_index,
+                });
+                *content_index += 1;
+                *text_started = false;
+            }
+            if *thinking_started {
+                events.push(StreamEvent::ContentBlockStop {
+                    index: *content_index,
+                });
+                *content_index += 1;
+                *thinking_started = false;
+            }
+            let block_index = *content_index;
+            *content_index += 1;
+            events.push(StreamEvent::ContentBlockStart {
+                index: block_index,
+                content_block: ContentBlockStart::ServerToolCalls {
+                    steps: vec![server_tool_event.clone()],
+                },
+            });
+            events.push(StreamEvent::ContentBlockStop { index: block_index });
+        }
+
+        let chunk_title = delta
+            .and_then(|d| d.get("title"))
+            .or_else(|| choice.get("title"))
+            .or_else(|| chunk.get("title"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let chunk_refusal = delta
+            .and_then(|d| d.get("refusal"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
         // Handle finish reason
         if let Some(reason) = finish_reason {
             if reasoning_stream_style == ReasoningStreamStyle::InlineTags {
@@ -4483,8 +4723,22 @@ fn parse_sse_chunk_with_reasoning_style(
                 delta: MessageDelta {
                     stop_reason: Some(reason),
                     stop_sequence: None,
+                    title: chunk_title,
+                    stop_details: None,
+                    refusal: chunk_refusal,
                 },
                 usage: chunk_usage,
+            });
+        } else if chunk_title.is_some() {
+            events.push(StreamEvent::MessageDelta {
+                delta: MessageDelta {
+                    stop_reason: None,
+                    stop_sequence: None,
+                    title: chunk_title,
+                    stop_details: None,
+                    refusal: None,
+                },
+                usage: None,
             });
         }
     }
@@ -4712,6 +4966,8 @@ mod arcee_waf_message_encoding_tests {
             stream: None,
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         }
     }
 
@@ -4811,6 +5067,8 @@ mod minimax_reasoning_replay_tests {
             stream: None,
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         }
     }
 
@@ -7246,6 +7504,8 @@ mod image_block_wire_tests {
             stream: None,
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         }
     }
 
@@ -7748,6 +8008,8 @@ mod mistral_reasoning_tests {
             stream: None,
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         }
     }
 
@@ -8189,6 +8451,8 @@ mod google_thought_signature_tests {
             stream: None,
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         }
     }
 

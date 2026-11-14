@@ -535,7 +535,9 @@ fn steps_from_messages(messages: &[Message]) -> (Vec<ToolStep>, Vec<TurnPosture>
                 ContentBlock::ToolUse {
                     id, name, input, ..
                 }
-                | ContentBlock::ServerToolUse { id, name, input } => {
+                | ContentBlock::ServerToolUse {
+                    id, name, input, ..
+                } => {
                     let key = block.tool_call_key().expect("tool use key");
                     let unambiguous = !key.as_str().trim().is_empty()
                         && call_counts.get(&key) == Some(&1)

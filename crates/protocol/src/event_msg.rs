@@ -827,6 +827,18 @@ pub enum EventMsg {
         last_miss_reason: String,
         context_updates: u64,
     },
+    ConversationTitle {
+        thread_id: ThreadId,
+        session_id: SessionId,
+        title: String,
+    },
+    ContentFilterRefusal {
+        thread_id: ThreadId,
+        session_id: SessionId,
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        refusal: Option<String>,
+    },
 }
 
 /// Envelope that carries an `EventMsg` over the wire / channel with a
@@ -897,6 +909,8 @@ pub const EVENT_KINDS: &[&str] = &[
     "tool_gate_decision",
     "advisory_note",
     "prefix_cache_change",
+    "conversation_title",
+    "content_filter_refusal",
 ];
 
 impl EventMsg {
@@ -959,6 +973,8 @@ impl EventMsg {
             Self::ToolGateDecision { .. } => "tool_gate_decision",
             Self::AdvisoryNote { .. } => "advisory_note",
             Self::PrefixCacheChange { .. } => "prefix_cache_change",
+            Self::ConversationTitle { .. } => "conversation_title",
+            Self::ContentFilterRefusal { .. } => "content_filter_refusal",
         }
     }
 
@@ -1020,7 +1036,9 @@ impl EventMsg {
             | Self::LspRepairUpdate { thread_id, .. }
             | Self::ToolGateDecision { thread_id, .. }
             | Self::AdvisoryNote { thread_id, .. }
-            | Self::PrefixCacheChange { thread_id, .. } => thread_id,
+            | Self::PrefixCacheChange { thread_id, .. }
+            | Self::ConversationTitle { thread_id, .. }
+            | Self::ContentFilterRefusal { thread_id, .. } => thread_id,
         }
     }
 
@@ -1082,7 +1100,9 @@ impl EventMsg {
             | Self::LspRepairUpdate { session_id, .. }
             | Self::ToolGateDecision { session_id, .. }
             | Self::AdvisoryNote { session_id, .. }
-            | Self::PrefixCacheChange { session_id, .. } => session_id,
+            | Self::PrefixCacheChange { session_id, .. }
+            | Self::ConversationTitle { session_id, .. }
+            | Self::ContentFilterRefusal { session_id, .. } => session_id,
         }
     }
 }
@@ -1571,8 +1591,8 @@ mod tests {
                 tool_call_count: 2,
             },
             EventMsg::PrefixCacheChange {
-                thread_id: t,
-                session_id: s,
+                thread_id: t.clone(),
+                session_id: s.clone(),
                 description: "d".into(),
                 system_prompt_changed: false,
                 tools_changed: true,
@@ -1582,6 +1602,17 @@ mod tests {
                 pin_reason: "initial".into(),
                 last_miss_reason: String::new(),
                 context_updates: 0,
+            },
+            EventMsg::ConversationTitle {
+                thread_id: t.clone(),
+                session_id: s.clone(),
+                title: "Conversation".into(),
+            },
+            EventMsg::ContentFilterRefusal {
+                thread_id: t,
+                session_id: s,
+                reason: "content_filter".into(),
+                refusal: Some("Blocked by safety policy".into()),
             },
         ]
     }

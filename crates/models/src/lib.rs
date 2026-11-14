@@ -62,9 +62,9 @@ const COMPACTION_THRESHOLD_PERCENT: u32 = 80;
 // is not evidence that a re-export can be removed.
 #[allow(unused_imports)]
 pub use codewhale_core::request::{
-    CacheControl, ContentBlock, INTERRUPTED_ASSISTANT_CONTEXT_PREFIX, INTERRUPTED_ASSISTANT_ROLE,
-    ImageUrlContent, Message, MessageRequest, OpaqueReasoningState, SystemBlock, SystemPrompt,
-    Tool, ToolCallKey, ToolCaller,
+    CacheControl, ContentBlock, ConversationTitleConfig, INTERRUPTED_ASSISTANT_CONTEXT_PREFIX,
+    INTERRUPTED_ASSISTANT_ROLE, ImageUrlContent, Message, MessageRequest, OpaqueReasoningState,
+    SafetyCheckConfig, SystemBlock, SystemPrompt, Tool, ToolCallKey, ToolCaller,
 };
 #[allow(unused_imports)]
 pub use codewhale_core::role::Role;
@@ -84,6 +84,16 @@ pub struct ServerToolUsage {
     pub code_execution_requests: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_search_requests: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search_requests: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_fetch_requests: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_search: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_fetch: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_image_search: Option<u32>,
 }
 
 /// Response payload for a message request.
@@ -99,6 +109,12 @@ pub struct MessageResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container: Option<ContainerInfo>,
     pub usage: Usage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_details: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
 }
 
 /// True when the provider ended generation because its output allowance was
@@ -150,18 +166,30 @@ pub fn stop_contradicts_output_ceiling(
         && reason.is_some_and(|reason| reason.trim().eq_ignore_ascii_case("stop"))
 }
 
+#[must_use]
+pub fn is_refusal_stop_reason(reason: Option<&str>) -> bool {
+    reason.is_some_and(|reason| {
+        matches!(
+            reason.trim().to_ascii_lowercase().as_str(),
+            "refusal" | "content_filter" | "incomplete:content_filter"
+        )
+    })
+}
+
 /// True when the provider explicitly reported that it did not complete the
 /// response. Responses API reasons carry an `incomplete:` prefix so unknown
 /// future reasons cannot accidentally be accepted as a finished answer.
 #[must_use]
 pub fn is_incomplete_stop_reason(reason: Option<&str>) -> bool {
     is_output_limit_stop_reason(reason)
+        || is_refusal_stop_reason(reason)
         || reason.is_some_and(|reason| {
             let reason = reason.trim().to_ascii_lowercase();
             reason.starts_with("incomplete:")
                 || matches!(
                     reason.as_str(),
                     "content_filter"
+                        | "refusal"
                         | "model_context_window_exceeded"
                         | "insufficient_system_resource"
                         | "aborted"
@@ -207,6 +235,8 @@ pub struct Usage {
     pub reasoning_replay_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_tool_use: Option<ServerToolUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safety_tokens: Option<u32>,
 }
 
 /// Map known models to their approximate context window sizes.
@@ -576,11 +606,42 @@ pub enum ContentBlockStart {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<ToolCaller>,
     },
+    #[serde(rename = "web_search_tool_result")]
+    WebSearchToolResult {
+        tool_use_id: String,
+        content: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+    },
+    #[serde(rename = "web_fetch_tool_result")]
+    WebFetchToolResult {
+        tool_use_id: String,
+        content: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
+    #[serde(rename = "web_search_call")]
+    WebSearchCall {
+        id: String,
+        status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<serde_json::Value>,
+    },
+    #[serde(rename = "server_tool_calls")]
+    ServerToolCalls { steps: Vec<serde_json::Value> },
 }
 
 // Variant names match legacy streaming spec, suppressing style warning
-#[allow(clippy::enum_variant_names)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type")]
 /// Delta events emitted during streaming responses.
@@ -599,13 +660,42 @@ pub enum Delta {
     /// returns an encrypted item on the exact originating route.
     #[serde(rename = "reasoning_state_delta")]
     ReasoningStateDelta { state: OpaqueReasoningState },
+    #[serde(rename = "citations_delta")]
+    CitationsDelta { citation: serde_json::Value },
+    #[serde(rename = "refusal_delta")]
+    RefusalDelta { refusal: String },
+    #[serde(rename = "web_search_call_delta")]
+    WebSearchCallDelta {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sources: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        page: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<serde_json::Value>,
+    },
+    #[serde(rename = "server_tool_calls_delta")]
+    ServerToolCallsDelta { steps: Vec<serde_json::Value> },
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 /// Delta payload for message-level updates.
 pub struct MessageDelta {
     pub stop_reason: Option<String>,
     pub stop_sequence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_details: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
 }
 
 #[cfg(test)]
@@ -887,6 +977,8 @@ mod tests {
             stream: Some(true),
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         };
         let via_core_path: codewhale_core::request::MessageRequest = via_tui_path.clone();
         assert_eq!(
@@ -1531,5 +1623,45 @@ mod tests {
         assert!(auto_compact_default_for_model("deepseek-v4-pro"));
         assert!(auto_compact_default_for_model("mimo-v2.5-pro"));
         assert!(!auto_compact_default_for_model("unknown-model"));
+    }
+
+    #[test]
+    fn deepseek_chatbot_models_usage_and_refusal_helpers() {
+        assert!(is_refusal_stop_reason(Some("refusal")));
+        assert!(is_refusal_stop_reason(Some("content_filter")));
+        assert!(!is_refusal_stop_reason(Some("end_turn")));
+        assert!(is_incomplete_stop_reason(Some("refusal")));
+
+        let usage: Usage = serde_json::from_value(serde_json::json!({
+            "input_tokens": 120,
+            "output_tokens": 45,
+            "safety_tokens": 12,
+            "server_tool_use": {
+                "web_search_requests": 2,
+                "web_fetch_requests": 1,
+                "tool_search": 2,
+                "tool_fetch": 1,
+                "tool_image_search": 3
+            }
+        }))
+        .expect("usage deserializes");
+        assert_eq!(usage.safety_tokens, Some(12));
+        let server_tool_use = usage.server_tool_use.expect("server_tool_use present");
+        assert_eq!(server_tool_use.web_search_requests, Some(2));
+        assert_eq!(server_tool_use.web_fetch_requests, Some(1));
+        assert_eq!(server_tool_use.tool_search, Some(2));
+        assert_eq!(server_tool_use.tool_fetch, Some(1));
+        assert_eq!(server_tool_use.tool_image_search, Some(3));
+
+        let delta: MessageDelta = serde_json::from_value(serde_json::json!({
+            "stop_reason": "refusal",
+            "title": "Rust 2024 Summary",
+            "refusal": "Policy blocked output",
+            "stop_details": {"reason": "safety"}
+        }))
+        .expect("delta deserializes");
+        assert_eq!(delta.title.as_deref(), Some("Rust 2024 Summary"));
+        assert_eq!(delta.refusal.as_deref(), Some("Policy blocked output"));
+        assert!(delta.stop_details.is_some());
     }
 }

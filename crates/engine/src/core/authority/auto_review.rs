@@ -4270,6 +4270,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         });
         let _ = consult_reviewer(
             &mock,

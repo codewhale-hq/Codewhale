@@ -134,6 +134,8 @@ fn plugin_oauth_reviewed_provider_real_client_refresh_chat_catalog_and_revocatio
             let input = codewhale_models::MessageRequest {
                 model:"fixture-model".into(), messages:vec![codewhale_models::Message { role:codewhale_models::Role::User, content:vec![codewhale_models::ContentBlock::Text { text:"hello".into(), cache_control:None }] }], max_tokens:8,
                 system:None, tools:None, tool_choice:None, metadata:None, thinking:None, reasoning_effort:None, stream:Some(false), temperature:None, top_p:None,
+                safety_check: None,
+                title: None,
             };
             client.create_message(input.clone()).await.unwrap();
             let mut stream_input = input.clone();

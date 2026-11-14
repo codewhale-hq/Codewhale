@@ -380,6 +380,8 @@ pub async fn run_advisor_for_turn(
         stream: Some(false),
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
 
     let observation = match usage_context.source.observe_route(&route) {

@@ -160,12 +160,30 @@ fn entry_for_blocks(default_kind: PeekEntryKind, blocks: &[ContentBlock]) -> Pee
             // rather than their shape: the size is the honest number, and any
             // field of the payload could be a credential.
             ContentBlock::ToolSearchToolResult { content, .. }
-            | ContentBlock::CodeExecutionToolResult { content, .. } => {
+            | ContentBlock::CodeExecutionToolResult { content, .. }
+            | ContentBlock::WebSearchToolResult { content, .. }
+            | ContentBlock::WebFetchToolResult { content, .. } => {
                 kind = PeekEntryKind::Tool;
                 parts.push(format!(
                     "[tool result: {} chars]",
                     content.to_string().len()
                 ));
+            }
+            ContentBlock::WebSearchCall {
+                kind: call_kind, ..
+            } => {
+                kind = PeekEntryKind::Tool;
+                parts.push(format!(
+                    "[web search call: {}]",
+                    call_kind.as_deref().unwrap_or("search")
+                ));
+            }
+            ContentBlock::ServerToolCalls { steps } => {
+                kind = PeekEntryKind::Tool;
+                parts.push(format!("[server tool calls: {} steps]", steps.len()));
+            }
+            ContentBlock::File { file_id } => {
+                parts.push(format!("[file: {file_id}]"));
             }
             ContentBlock::ImageUrl { .. } => {
                 kind = PeekEntryKind::Tool;

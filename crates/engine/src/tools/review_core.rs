@@ -836,6 +836,8 @@ pub async fn run_review_core(
                 stream: Some(false),
                 temperature: None,
                 top_p: None,
+                safety_check: None,
+                title: None,
             },
             request.accounting_origin.clone(),
             request.accounting_owner,
@@ -1117,6 +1119,8 @@ async fn refute_claims(
                 stream: Some(false),
                 temperature: None,
                 top_p: None,
+                safety_check: None,
+                title: None,
             },
             request.accounting_origin.clone(),
             request.accounting_owner,
@@ -1421,6 +1425,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         }
     }
 

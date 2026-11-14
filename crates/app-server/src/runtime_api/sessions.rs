@@ -1056,7 +1056,9 @@ pub(super) fn session_to_detail(session: SavedSession) -> SessionDetailResponse 
                         }
                         obj
                     }
-                    codewhale_models::ContentBlock::ServerToolUse { id, name, input } => {
+                    codewhale_models::ContentBlock::ServerToolUse {
+                        id, name, input, ..
+                    } => {
                         json!({ "type": "tool_use", "id": id, "name": name, "input": input })
                     }
                     codewhale_models::ContentBlock::ToolSearchToolResult {
@@ -1068,10 +1070,23 @@ pub(super) fn session_to_detail(session: SavedSession) -> SessionDetailResponse 
                     codewhale_models::ContentBlock::CodeExecutionToolResult {
                         tool_use_id,
                         content,
+                    }
+                    | codewhale_models::ContentBlock::WebSearchToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    }
+                    | codewhale_models::ContentBlock::WebFetchToolResult {
+                        tool_use_id,
+                        content,
+                        ..
                     } => {
                         json!({ "type": "tool_result", "tool_use_id": tool_use_id, "content": content })
                     }
-                    codewhale_models::ContentBlock::ImageUrl { .. } => Value::Null,
+                    codewhale_models::ContentBlock::WebSearchCall { .. }
+                    | codewhale_models::ContentBlock::ServerToolCalls { .. }
+                    | codewhale_models::ContentBlock::File { .. }
+                    | codewhale_models::ContentBlock::ImageUrl { .. } => Value::Null,
                 })
                 .collect();
             json!({

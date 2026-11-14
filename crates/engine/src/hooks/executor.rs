@@ -3883,6 +3883,7 @@ NOEQUAL line dropped
             output_audio_tokens: None,
 
             request_usages: Vec::new(),
+            safety_tokens: None,
         };
 
         let payload = super::turn_end_payload(TurnEndPayloadInput {
@@ -4341,6 +4342,7 @@ printf '%s\n' '{{"text":"stdout is not a mutation contract"}}'
             output_audio_tokens: None,
 
             request_usages: Vec::new(),
+            safety_tokens: None,
         };
         let context = submit_context(&dir).with_tokens(15);
         let payload = super::turn_end_payload(TurnEndPayloadInput {

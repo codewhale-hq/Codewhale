@@ -89,6 +89,8 @@ fn seed(app: &mut App) {
                     id: "server-only".into(),
                     name: "server".into(),
                     input: json!({"x":1}),
+                    kind: None,
+                    caller: None,
                 },
                 ContentBlock::ToolSearchToolResult {
                     tool_use_id: "search".into(),

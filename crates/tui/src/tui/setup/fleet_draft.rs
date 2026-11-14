@@ -239,6 +239,8 @@ pub(crate) fn profile_drafting_request(
         stream: Some(false),
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     }
 }
 
@@ -310,6 +312,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         }
     }
 

@@ -374,7 +374,9 @@ fn compact_content_block(block: &ContentBlock) -> Value {
                 ),
             })
         }
-        ContentBlock::ServerToolUse { id, name, input } => json!({
+        ContentBlock::ServerToolUse {
+            id, name, input, ..
+        } => json!({
             "type": "server_tool_use",
             "id": id,
             "name": name,
@@ -395,6 +397,44 @@ fn compact_content_block(block: &ContentBlock) -> Value {
             "type": "code_execution_tool_result",
             "tool_use_id": tool_use_id,
             "content": content,
+        }),
+        ContentBlock::WebSearchToolResult {
+            tool_use_id,
+            content,
+            kind,
+        } => json!({
+            "type": "web_search_tool_result",
+            "tool_use_id": tool_use_id,
+            "content": content,
+            "kind": kind,
+        }),
+        ContentBlock::WebFetchToolResult {
+            tool_use_id,
+            content,
+            kind,
+            signature,
+        } => json!({
+            "type": "web_fetch_tool_result",
+            "tool_use_id": tool_use_id,
+            "content": content,
+            "kind": kind,
+            "signature": signature,
+        }),
+        ContentBlock::WebSearchCall {
+            id, status, kind, ..
+        } => json!({
+            "type": "web_search_call",
+            "id": id,
+            "status": status,
+            "kind": kind,
+        }),
+        ContentBlock::ServerToolCalls { steps } => json!({
+            "type": "server_tool_calls",
+            "steps": steps,
+        }),
+        ContentBlock::File { file_id } => json!({
+            "type": "file",
+            "file_id": file_id,
         }),
         ContentBlock::ImageUrl { .. } => serde_json::Value::Null,
     }

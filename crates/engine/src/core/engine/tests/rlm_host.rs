@@ -99,6 +99,9 @@ impl crate::core::model_client::ModelClient for ReplyStream {
             delta: codewhale_models::MessageDelta {
                 stop_reason: response.stop_reason,
                 stop_sequence: response.stop_sequence,
+                title: None,
+                stop_details: None,
+                refusal: None,
             },
             usage: Some(response.usage),
         });
@@ -597,6 +600,9 @@ async fn full_caller_channel_never_delays_original_cancel_or_loses_usage_and_ker
         stop_reason: Some("end_turn".into()),
         stop_sequence: None,
         container: None,
+        title: None,
+        stop_details: None,
+        refusal: None,
         usage: Usage {
             input_tokens: 7,
             output_tokens: 11,

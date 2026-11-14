@@ -891,7 +891,12 @@ pub fn latest_assistant_text(messages: &[Message]) -> Option<String> {
                     | ContentBlock::ToolResult { .. }
                     | ContentBlock::ServerToolUse { .. }
                     | ContentBlock::ToolSearchToolResult { .. }
-                    | ContentBlock::CodeExecutionToolResult { .. } => None,
+                    | ContentBlock::CodeExecutionToolResult { .. }
+                    | ContentBlock::WebSearchToolResult { .. }
+                    | ContentBlock::WebFetchToolResult { .. }
+                    | ContentBlock::WebSearchCall { .. }
+                    | ContentBlock::ServerToolCalls { .. }
+                    | ContentBlock::File { .. } => None,
                     ContentBlock::ImageUrl { .. } => None,
                 })
                 .collect::<Vec<_>>()

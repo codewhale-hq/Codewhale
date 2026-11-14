@@ -18100,6 +18100,25 @@ fn checkpoint_messages_to_text(messages: &[Message]) -> String {
                     content,
                     ..
                 } => parts.push(format!("[code execution result {tool_use_id}: {content}]")),
+                ContentBlock::WebSearchToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } => parts.push(format!("[web search result {tool_use_id}: {content}]")),
+                ContentBlock::WebFetchToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } => parts.push(format!("[web fetch result {tool_use_id}: {content}]")),
+                ContentBlock::WebSearchCall { id, kind, .. } => parts.push(format!(
+                    "[web search call {} ({})]",
+                    id,
+                    kind.as_deref().unwrap_or("search")
+                )),
+                ContentBlock::ServerToolCalls { steps } => {
+                    parts.push(format!("[server tool calls: {} steps]", steps.len()))
+                }
+                ContentBlock::File { file_id } => parts.push(format!("[file {file_id}]")),
                 ContentBlock::ImageUrl { .. } => parts.push("[image]".to_string()),
                 ContentBlock::Thinking { .. } => {}
             }

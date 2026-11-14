@@ -1507,6 +1507,8 @@ async fn auto_route_inventory_recommendation(
         stream: Some(false),
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
 
     // Freeze pricing at the last application seam before the provider future
@@ -2281,6 +2283,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage,
+            title: None,
+            stop_details: None,
+            refusal: None,
         }
     }
 

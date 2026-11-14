@@ -10013,6 +10013,8 @@ async fn test_api_connectivity(config: &Config) -> Result<()> {
         stream: Some(false),
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
 
     // Use tokio timeout to catch hanging requests. The timeout is typed so

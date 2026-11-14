@@ -1427,6 +1427,11 @@ fn extract_paths_from_message(message: &Message) -> Vec<String> {
             | ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
             | ContentBlock::CodeExecutionToolResult { .. }
+            | ContentBlock::WebSearchToolResult { .. }
+            | ContentBlock::WebFetchToolResult { .. }
+            | ContentBlock::WebSearchCall { .. }
+            | ContentBlock::ServerToolCalls { .. }
+            | ContentBlock::File { .. }
             | ContentBlock::ImageUrl { .. } => {}
         }
     }

@@ -552,6 +552,118 @@ async fn injected_chat_content_filter_never_becomes_a_completed_answer() {
 }
 
 #[tokio::test]
+async fn injected_deepseek_delayed_refusal_and_title_emit_events_without_persisting_refused_text() {
+    use crate::llm_client::mock::MockLlmClient;
+    use codewhale_models::{Delta, MessageDelta, StreamEvent};
+
+    let workspace = tempdir().expect("tempdir");
+    let refused_turn = vec![
+        vec![
+            StreamEvent::MessageStart {
+                message: codewhale_models::MessageResponse {
+                    id: "mock_msg_delayed_refusal".to_string(),
+                    r#type: "message".to_string(),
+                    role: "assistant".to_string(),
+                    content: vec![],
+                    model: "deepseek-v4".to_string(),
+                    stop_reason: None,
+                    stop_sequence: None,
+                    container: None,
+                    title: None,
+                    stop_details: None,
+                    refusal: None,
+                    usage: Usage::default(),
+                },
+            },
+            StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: codewhale_models::ContentBlockStart::Text {
+                    text: String::new(),
+                },
+            },
+            StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: Delta::TextDelta {
+                    text: "Partial text before delayed safety trigger".to_string(),
+                },
+            },
+            StreamEvent::ContentBlockStop { index: 0 },
+            StreamEvent::MessageDelta {
+                delta: MessageDelta {
+                    stop_reason: Some("refusal".to_string()),
+                    stop_sequence: None,
+                    title: Some("Generated Topic".to_string()),
+                    refusal: Some("Blocked by safety check".to_string()),
+                    stop_details: Some(serde_json::json!({"reason": "safety"})),
+                },
+                usage: Some(Usage {
+                    input_tokens: 15,
+                    output_tokens: 8,
+                    safety_tokens: Some(4),
+                    ..Default::default()
+                }),
+            },
+            StreamEvent::MessageStop,
+        ],
+    ];
+    let mock = std::sync::Arc::new(MockLlmClient::new(refused_turn));
+    let client: crate::core::model_client::SharedModelClient = mock.clone();
+    let (engine, handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &Config::default(),
+        client,
+    );
+    let task = tokio::spawn(engine.run());
+    handle
+        .send(external_user_message_op(
+            "Trigger delayed refusal.",
+            AppMode::Agent,
+            &Config::default(),
+        ))
+        .await
+        .expect("send turn");
+
+    let mut saw_title = false;
+    let mut saw_refusal_event = false;
+    let mut rx = handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timed out waiting for delayed refusal trajectory")
+    {
+        match event {
+            Event::MessageComplete { .. } => {
+                panic!("refused turn must not emit MessageComplete")
+            }
+            Event::ConversationTitle { title, .. } if title == "Generated Topic" => {
+                saw_title = true;
+            }
+            Event::ContentFilterRefusal {
+                reason,
+                refusal,
+            } => {
+                assert_eq!(reason, "refusal");
+                assert_eq!(refusal.as_deref(), Some("Blocked by safety check"));
+                saw_refusal_event = true;
+            }
+            Event::TurnComplete { status, error, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Failed);
+                let error = error.expect("refused turn needs error");
+                assert!(error.contains("Model response incomplete"), "{error}");
+                assert!(error.contains("refusal"), "{error}");
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+
+    assert!(saw_title, "expected ConversationTitle event");
+    assert!(saw_refusal_event, "expected ContentFilterRefusal event");
+    handle.send(Op::Shutdown).await.expect("shutdown engine");
+    task.await.expect("engine task");
+}
+
+#[tokio::test]
 async fn injected_model_complete_tool_block_at_max_output_tokens_executes() {
     use crate::llm_client::mock::{MockLlmClient, canned};
 
@@ -791,6 +903,9 @@ fn guardian_fixture_response(text: &str) -> codewhale_models::MessageResponse {
         stop_reason: Some("end_turn".to_string()),
         stop_sequence: None,
         container: None,
+        title: None,
+        stop_details: None,
+        refusal: None,
         usage: Usage {
             input_tokens: 17,
             output_tokens: 3,

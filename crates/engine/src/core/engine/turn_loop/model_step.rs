@@ -524,11 +524,13 @@ impl Engine {
             current_thinking_signature,
             current_thinking_state,
             mut completed_thinking,
+            server_blocks,
             mut tool_uses,
             usage,
             usage_reported,
             accounting,
             stop_reason,
+            refusal_text,
             pending_message_complete,
             last_text_index,
             stream_errors,
@@ -783,11 +785,17 @@ impl Engine {
             } else {
                 self.settle_unadmitted_tool_calls(&tool_uses, &incomplete_tool_result(reason))
                     .await;
-                // Do not emit MessageComplete: hosts must retain the visible
-                // fragment as interrupted/failed rather than recording it as
-                // a completed assistant item.
-                self.add_interrupted_assistant_text(&current_text_visible)
-                    .await;
+                if codewhale_models::is_refusal_stop_reason(stop_reason.as_deref()) {
+                    let _ = self
+                        .send_event(Event::ContentFilterRefusal {
+                            reason: reason.to_string(),
+                            refusal: refusal_text.clone(),
+                        })
+                        .await;
+                } else {
+                    self.add_interrupted_assistant_text(&current_text_visible)
+                        .await;
+                }
                 let error = if self.child_host.is_some() {
                     crate::tools::subagent::incomplete_subagent_response_failure(
                         stop_reason.as_deref(),
@@ -962,6 +970,7 @@ impl Engine {
                 cache_control: None,
             });
         }
+        content_blocks.extend(server_blocks);
         for tool in &tool_uses {
             content_blocks.push(ContentBlock::ToolUse {
                 execution_id: Some(tool.execution_id.clone()),

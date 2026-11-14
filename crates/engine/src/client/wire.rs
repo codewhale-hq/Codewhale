@@ -14,6 +14,32 @@ pub fn saturating_u32(value: u64) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 
+pub fn parse_server_tool_usage(usage: Option<&Value>) -> Option<ServerToolUsage> {
+    usage.and_then(|u| u.get("server_tool_use")).map(|server| {
+        let counter = |key: &str| server.get(key).and_then(Value::as_u64).map(saturating_u32);
+        ServerToolUsage {
+            code_execution_requests: counter("code_execution_requests"),
+            tool_search_requests: counter("tool_search_requests"),
+            web_search_requests: counter("web_search_requests"),
+            web_fetch_requests: counter("web_fetch_requests"),
+            tool_search: counter("tool_search"),
+            tool_fetch: counter("tool_fetch"),
+            tool_image_search: counter("tool_image_search"),
+        }
+    })
+}
+
+pub fn parse_safety_tokens(usage: Option<&Value>) -> Option<u32> {
+    usage
+        .and_then(|u| {
+            u.pointer("/output_tokens_details/safety_tokens")
+                .or_else(|| u.pointer("/completion_tokens_details/safety_tokens"))
+                .or_else(|| u.get("safety_tokens"))
+        })
+        .and_then(Value::as_u64)
+        .map(saturating_u32)
+}
+
 pub fn parse_usage(usage: Option<&Value>) -> Usage {
     let input_tokens = usage
         .and_then(|u| u.get("input_tokens").or_else(|| u.get("prompt_tokens")))
@@ -89,20 +115,8 @@ pub fn parse_usage(usage: Option<&Value>) -> Usage {
         .filter(|reasoning| *reasoning <= output_tokens)
         .map(saturating_u32);
 
-    let server_tool_use = usage.and_then(|u| u.get("server_tool_use")).map(|server| {
-        let code_execution_requests = server
-            .get("code_execution_requests")
-            .and_then(Value::as_u64)
-            .map(saturating_u32);
-        let tool_search_requests = server
-            .get("tool_search_requests")
-            .and_then(Value::as_u64)
-            .map(saturating_u32);
-        ServerToolUsage {
-            code_execution_requests,
-            tool_search_requests,
-        }
-    });
+    let server_tool_use = parse_server_tool_usage(usage);
+    let safety_tokens = parse_safety_tokens(usage);
 
     Usage {
         input_tokens: saturating_u32(input_tokens),
@@ -113,6 +127,7 @@ pub fn parse_usage(usage: Option<&Value>) -> Usage {
         reasoning_tokens,
         reasoning_replay_tokens: None,
         server_tool_use,
+        safety_tokens,
 
         input_audio_tokens: usage
             .and_then(|usage| {
@@ -489,6 +504,29 @@ pub async fn bounded_error_text(response: reqwest::Response, max_bytes: usize) -
         buf.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
     }
     String::from_utf8_lossy(&buf).into_owned()
+}
+
+pub(super) async fn read_bounded_response_bytes(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> anyhow::Result<Vec<u8>> {
+    use futures_util::StreamExt;
+    if response
+        .content_length()
+        .is_some_and(|len| len > max_bytes as u64)
+    {
+        anyhow::bail!("response body exceeds {max_bytes} byte limit");
+    }
+    let mut stream = response.bytes_stream();
+    let mut buf = Vec::with_capacity(max_bytes.min(8192));
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if buf.len().saturating_add(chunk.len()) > max_bytes {
+            anyhow::bail!("response body exceeds {max_bytes} byte limit");
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
 }
 
 pub fn system_to_instructions(system: Option<SystemPrompt>) -> Option<String> {
@@ -1144,5 +1182,34 @@ mod tests {
             assert_eq!(extract_sse_data_value("event: message"), None);
             assert_eq!(extract_sse_data_value(": heartbeat"), None);
         }
+    }
+
+    #[test]
+    fn parse_usage_extracts_deepseek_server_tool_and_safety_counters() {
+        let usage = parse_usage(Some(&serde_json::json!({
+            "prompt_tokens": 120,
+            "completion_tokens": 40,
+            "completion_tokens_details": {
+                "reasoning_tokens": 10,
+                "safety_tokens": 6
+            },
+            "server_tool_use": {
+                "tool_search": 2,
+                "tool_fetch": 1,
+                "tool_image_search": 3,
+                "web_search_requests": 2,
+                "web_fetch_requests": 1
+            }
+        })));
+        assert_eq!(usage.input_tokens, 120);
+        assert_eq!(usage.output_tokens, 40);
+        assert_eq!(usage.reasoning_tokens, Some(10));
+        assert_eq!(usage.safety_tokens, Some(6));
+        let server = usage.server_tool_use.expect("server_tool_use");
+        assert_eq!(server.tool_search, Some(2));
+        assert_eq!(server.tool_fetch, Some(1));
+        assert_eq!(server.tool_image_search, Some(3));
+        assert_eq!(server.web_search_requests, Some(2));
+        assert_eq!(server.web_fetch_requests, Some(1));
     }
 }

@@ -141,6 +141,8 @@ pub async fn consult_reviewer(
         stream: Some(false),
         temperature,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
     if cancel_token.is_cancelled() {
         return ReviewerResult::finish(ReviewerOutcome::Cancelled, None);
@@ -225,6 +227,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage,
+            title: None,
+            stop_details: None,
+            refusal: None,
         }
     }
 

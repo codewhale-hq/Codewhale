@@ -877,7 +877,9 @@ fn add_message_entries(builder: &mut ReportBuilder, messages: &[Message]) {
             match block {
                 ContentBlock::ToolResult { .. }
                 | ContentBlock::ToolSearchToolResult { .. }
-                | ContentBlock::CodeExecutionToolResult { .. } => {
+                | ContentBlock::CodeExecutionToolResult { .. }
+                | ContentBlock::WebSearchToolResult { .. }
+                | ContentBlock::WebFetchToolResult { .. } => {
                     tool_result_tokens += tokens;
                     tool_result_count += 1;
                 }
@@ -932,10 +934,22 @@ fn content_block_text(block: &ContentBlock) -> String {
         ContentBlock::Thinking { thinking, .. } => thinking.clone(),
         ContentBlock::ToolResult { content, .. } => content.clone(),
         ContentBlock::ToolSearchToolResult { content, .. }
-        | ContentBlock::CodeExecutionToolResult { content, .. } => content.to_string(),
+        | ContentBlock::CodeExecutionToolResult { content, .. }
+        | ContentBlock::WebSearchToolResult { content, .. }
+        | ContentBlock::WebFetchToolResult { content, .. } => content.to_string(),
         ContentBlock::ToolUse { input, .. } | ContentBlock::ServerToolUse { input, .. } => {
             input.to_string()
         }
+        ContentBlock::WebSearchCall {
+            action,
+            sources,
+            page,
+            ..
+        } => serde_json::json!({ "action": action, "sources": sources, "page": page }).to_string(),
+        ContentBlock::ServerToolCalls { steps } => {
+            serde_json::Value::Array(steps.clone()).to_string()
+        }
+        ContentBlock::File { file_id } => file_id.clone(),
         ContentBlock::ImageUrl { image_url } => image_url.url.clone(),
     }
 }

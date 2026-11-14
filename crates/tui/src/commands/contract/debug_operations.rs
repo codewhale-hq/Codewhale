@@ -385,6 +385,10 @@ pub(crate) fn plan_undo_range(input: UndoRangeInput) -> anyhow::Result<UndoRange
                         | ContentBlock::ToolResult { .. }
                         | ContentBlock::ToolSearchToolResult { .. }
                         | ContentBlock::CodeExecutionToolResult { .. }
+                        | ContentBlock::WebSearchToolResult { .. }
+                        | ContentBlock::WebFetchToolResult { .. }
+                        | ContentBlock::WebSearchCall { .. }
+                        | ContentBlock::ServerToolCalls { .. }
                 )
             });
         if !has_tools {
@@ -449,7 +453,11 @@ pub(crate) fn plan_undo_range(input: UndoRangeInput) -> anyhow::Result<UndoRange
                 },
                 ContentBlock::ServerToolUse { .. }
                 | ContentBlock::ToolSearchToolResult { .. }
-                | ContentBlock::CodeExecutionToolResult { .. } => all_readonly = false,
+                | ContentBlock::CodeExecutionToolResult { .. }
+                | ContentBlock::WebSearchToolResult { .. }
+                | ContentBlock::WebFetchToolResult { .. }
+                | ContentBlock::WebSearchCall { .. }
+                | ContentBlock::ServerToolCalls { .. } => all_readonly = false,
                 _ => {}
             }
         }

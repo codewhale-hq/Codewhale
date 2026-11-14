@@ -119,6 +119,8 @@ pub fn classify_user_turn_prompt(message: &Message) -> UserTurnPromptKind {
             ContentBlock::ToolResult { .. }
                 | ContentBlock::ToolSearchToolResult { .. }
                 | ContentBlock::CodeExecutionToolResult { .. }
+                | ContentBlock::WebSearchToolResult { .. }
+                | ContentBlock::WebFetchToolResult { .. }
         )
     }) {
         return UserTurnPromptKind::NotPrompt;

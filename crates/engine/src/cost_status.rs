@@ -586,6 +586,10 @@ pub fn child_usage_metadata_fields(
         "child_output_audio_tokens".into(),
         serde_json::json!(usage.output_audio_tokens),
     );
+    fields.insert(
+        "child_safety_tokens".into(),
+        serde_json::json!(usage.safety_tokens),
+    );
     let requests = if usage.request_usages.len() > 1024
         || usage
             .request_usages
@@ -940,7 +944,8 @@ pub fn child_usage_from_metadata(metadata: &serde_json::Value) -> Option<Usage> 
                 | "reasoning_tokens"
                 | "reasoning_replay_tokens"
                 | "input_audio_tokens"
-                | "output_audio_tokens" => token_value(value),
+                | "output_audio_tokens"
+                | "safety_tokens" => token_value(value),
                 "request_usages" => value.as_array().is_some_and(|nested| nested.is_empty()),
                 "server_tool_use" => {
                     value.is_null()
@@ -948,7 +953,13 @@ pub fn child_usage_from_metadata(metadata: &serde_json::Value) -> Option<Usage> 
                             tools.iter().all(|(key, value)| {
                                 matches!(
                                     key.as_str(),
-                                    "code_execution_requests" | "tool_search_requests"
+                                    "code_execution_requests"
+                                        | "tool_search_requests"
+                                        | "web_search_requests"
+                                        | "web_fetch_requests"
+                                        | "tool_search"
+                                        | "tool_fetch"
+                                        | "tool_image_search"
                                 ) && token_value(value)
                             })
                         })
@@ -982,6 +993,7 @@ pub fn child_usage_from_metadata(metadata: &serde_json::Value) -> Option<Usage> 
 
         input_audio_tokens: u32_field(metadata, "child_input_audio_tokens"),
         output_audio_tokens: u32_field(metadata, "child_output_audio_tokens"),
+        safety_tokens: u32_field(metadata, "child_safety_tokens"),
         request_usages,
     })
 }

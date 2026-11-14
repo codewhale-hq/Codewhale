@@ -89,6 +89,9 @@ mod tests {
             stop_reason: Some("end_turn".to_string()),
             stop_sequence: None,
             container: None,
+            title: None,
+            stop_details: None,
+            refusal: None,
             usage: Usage {
                 input_tokens: 42,
                 output_tokens: 7,
@@ -103,6 +106,7 @@ mod tests {
                 output_audio_tokens: None,
 
                 request_usages: Vec::new(),
+                safety_tokens: None,
             },
         }
     }
@@ -121,6 +125,8 @@ mod tests {
             stream: None,
             temperature: Some(0.0),
             top_p: None,
+            safety_check: None,
+            title: None,
         }
     }
 

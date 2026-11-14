@@ -160,11 +160,13 @@ struct StreamOutcome {
     /// blocks are parked here instead of being overwritten by the next one.
     /// Redacted thinking blocks park here the moment they arrive.
     completed_thinking: Vec<ContentBlock>,
+    server_blocks: Vec<ContentBlock>,
     tool_uses: Vec<ToolUseState>,
     usage: Usage,
     usage_reported: bool,
     accounting: Option<crate::cost_status::RuntimeUsageRecord>,
     stop_reason: Option<String>,
+    refusal_text: Option<String>,
     pending_message_complete: bool,
     last_text_index: Option<usize>,
     stream_errors: u32,
@@ -714,6 +716,7 @@ fn merge_stream_usage(total: &mut Usage, update: Usage) {
         &mut total.reasoning_replay_tokens,
         update.reasoning_replay_tokens,
     );
+    max_optional(&mut total.safety_tokens, update.safety_tokens);
     if let Some(update) = update.server_tool_use {
         let current = total.server_tool_use.get_or_insert_default();
         max_optional(
@@ -724,6 +727,11 @@ fn merge_stream_usage(total: &mut Usage, update: Usage) {
             &mut current.tool_search_requests,
             update.tool_search_requests,
         );
+        max_optional(&mut current.web_search_requests, update.web_search_requests);
+        max_optional(&mut current.web_fetch_requests, update.web_fetch_requests);
+        max_optional(&mut current.tool_search, update.tool_search);
+        max_optional(&mut current.tool_fetch, update.tool_fetch);
+        max_optional(&mut current.tool_image_search, update.tool_image_search);
     }
 }
 
@@ -4925,7 +4933,10 @@ impl Engine {
         // it arrives. Anthropic replays the whole sequence unmodified, so a
         // later block must never overwrite an earlier one.
         let mut completed_thinking: Vec<ContentBlock> = Vec::new();
+        let mut server_blocks: Vec<(u32, ContentBlock)> = Vec::new();
         let mut tool_uses: Vec<ToolUseState> = Vec::new();
+        let mut conversation_title: Option<String> = None;
+        let mut refusal_text = String::new();
         let mut usage = Usage {
             input_tokens: 0,
             output_tokens: 0,
@@ -5140,6 +5151,17 @@ impl Engine {
                     usage_reported |= reported;
                     attempt_usage_reported |= reported;
                     merge_stream_usage(&mut usage, message.usage);
+                    if let Some(title) = message.title.filter(|t| !t.trim().is_empty())
+                        && conversation_title.as_deref() != Some(title.as_str())
+                    {
+                        conversation_title = Some(title.clone());
+                        let _ = self
+                            .send_stream_event(Event::ConversationTitle { title })
+                            .await;
+                    }
+                    if let Some(refusal) = message.refusal.filter(|r| !r.is_empty()) {
+                        refusal_text.push_str(&refusal);
+                    }
                 }
                 StreamEvent::ContentBlockStart {
                     index,
@@ -5269,22 +5291,103 @@ impl Engine {
                             input_parse_error: None,
                         });
                     }
-                    ContentBlockStart::ServerToolUse { id, name, input } => {
-                        codewhale_runtime::logging::info(format!(
-                            "Server tool '{name}' block start. Initial input: {input:?}"
+                    ContentBlockStart::ServerToolUse {
+                        id,
+                        name,
+                        input,
+                        kind,
+                        caller,
+                    } => {
+                        if matches!(
+                            name.as_str(),
+                            crate::client::DEEPSEEK_WEB_SEARCH_TOOL
+                                | crate::client::DEEPSEEK_READ_URL_TOOL
+                        ) {
+                            current_block_kind = None;
+                            server_blocks.push((
+                                index,
+                                ContentBlock::ServerToolUse {
+                                    id,
+                                    name,
+                                    input,
+                                    kind,
+                                    caller,
+                                },
+                            ));
+                        } else {
+                            codewhale_runtime::logging::info(format!(
+                                "Server tool '{name}' block start. Initial input: {input:?}"
+                            ));
+                            current_block_kind = Some(ContentBlockKind::ToolUse);
+                            current_tool_indices.insert(index, tool_uses.len());
+                            tool_uses.push(ToolUseState {
+                                execution_id: self.new_tool_execution_id(),
+                                id,
+                                name,
+                                input,
+                                caller,
+                                thought_signature: None,
+                                input_buffer: String::new(),
+                                input_parse_error: None,
+                            });
+                        }
+                    }
+                    ContentBlockStart::WebSearchToolResult {
+                        tool_use_id,
+                        content,
+                        kind,
+                    } => {
+                        current_block_kind = None;
+                        server_blocks.push((
+                            index,
+                            ContentBlock::WebSearchToolResult {
+                                tool_use_id,
+                                content,
+                                kind,
+                            },
                         ));
-                        current_block_kind = Some(ContentBlockKind::ToolUse);
-                        current_tool_indices.insert(index, tool_uses.len());
-                        tool_uses.push(ToolUseState {
-                            execution_id: self.new_tool_execution_id(),
-                            id,
-                            name,
-                            input,
-                            caller: None,
-                            thought_signature: None,
-                            input_buffer: String::new(),
-                            input_parse_error: None,
-                        });
+                    }
+                    ContentBlockStart::WebFetchToolResult {
+                        tool_use_id,
+                        content,
+                        kind,
+                        signature,
+                    } => {
+                        current_block_kind = None;
+                        server_blocks.push((
+                            index,
+                            ContentBlock::WebFetchToolResult {
+                                tool_use_id,
+                                content,
+                                kind,
+                                signature,
+                            },
+                        ));
+                    }
+                    ContentBlockStart::WebSearchCall {
+                        id,
+                        status,
+                        kind,
+                        action,
+                    } => {
+                        current_block_kind = None;
+                        server_blocks.push((
+                            index,
+                            ContentBlock::WebSearchCall {
+                                id,
+                                status,
+                                kind,
+                                action,
+                                sources: None,
+                                page: None,
+                                signature: None,
+                                error: None,
+                            },
+                        ));
+                    }
+                    ContentBlockStart::ServerToolCalls { steps } => {
+                        current_block_kind = None;
+                        server_blocks.push((index, ContentBlock::ServerToolCalls { steps }));
                     }
                 },
                 StreamEvent::ContentBlockDelta { index, delta } => match delta {
@@ -5357,6 +5460,66 @@ impl Engine {
                             // unconditionally overwrote (#6213 T4).
                         }
                     }
+                    Delta::CitationsDelta { .. } => {}
+                    Delta::RefusalDelta { refusal } => {
+                        refusal_text.push_str(&refusal);
+                    }
+                    Delta::WebSearchCallDelta {
+                        status,
+                        kind,
+                        action,
+                        sources,
+                        page,
+                        signature,
+                        error,
+                    } => {
+                        if let Some((
+                            _,
+                            ContentBlock::WebSearchCall {
+                                status: existing_status,
+                                kind: existing_kind,
+                                action: existing_action,
+                                sources: existing_sources,
+                                page: existing_page,
+                                signature: existing_signature,
+                                error: existing_error,
+                                ..
+                            },
+                        )) = server_blocks.iter_mut().rev().find(|(idx, blk)| {
+                            *idx == index && matches!(blk, ContentBlock::WebSearchCall { .. })
+                        }) {
+                            if let Some(status) = status {
+                                *existing_status = status;
+                            }
+                            if kind.is_some() {
+                                *existing_kind = kind;
+                            }
+                            if action.is_some() {
+                                *existing_action = action;
+                            }
+                            if sources.is_some() {
+                                *existing_sources = sources;
+                            }
+                            if page.is_some() {
+                                *existing_page = page;
+                            }
+                            if signature.is_some() {
+                                *existing_signature = signature;
+                            }
+                            if error.is_some() {
+                                *existing_error = error;
+                            }
+                        }
+                    }
+                    Delta::ServerToolCallsDelta { steps } => {
+                        if let Some((_, ContentBlock::ServerToolCalls { steps: existing })) =
+                            server_blocks.iter_mut().rev().find(|(idx, blk)| {
+                                *idx == index && matches!(blk, ContentBlock::ServerToolCalls { .. })
+                            })
+                        {
+                            *existing = steps;
+                        }
+                    }
                 },
                 StreamEvent::ContentBlockStop { index } => {
                     let stopped_kind = current_block_kind.take();
@@ -5417,6 +5580,17 @@ impl Engine {
                 } => {
                     if let Some(reason) = delta.stop_reason {
                         stop_reason = Some(reason);
+                    }
+                    if let Some(title) = delta.title.filter(|t| !t.trim().is_empty())
+                        && conversation_title.as_deref() != Some(title.as_str())
+                    {
+                        conversation_title = Some(title.clone());
+                        let _ = self
+                            .send_stream_event(Event::ConversationTitle { title })
+                            .await;
+                    }
+                    if let Some(refusal) = delta.refusal.filter(|r| !r.is_empty()) {
+                        refusal_text.push_str(&refusal);
                     }
                     if let Some(u) = delta_usage {
                         let reported = usage_has_reported_data(&u);
@@ -5507,11 +5681,13 @@ impl Engine {
             current_thinking_signature,
             current_thinking_state,
             completed_thinking,
+            server_blocks: server_blocks.into_iter().map(|(_, block)| block).collect(),
             tool_uses,
             usage,
             usage_reported,
             accounting,
             stop_reason,
+            refusal_text: (!refusal_text.trim().is_empty()).then_some(refusal_text),
             pending_message_complete,
             last_text_index,
             stream_errors,
@@ -6646,14 +6822,23 @@ fn stream_event_has_actionable_content(event: &StreamEvent) -> bool {
             // A redacted thinking block is provider-owned encrypted content —
             // its arrival is actionable reasoning output even without text.
             ContentBlockStart::RedactedThinking { .. } => true,
-            ContentBlockStart::ToolUse { .. } | ContentBlockStart::ServerToolUse { .. } => true,
+            ContentBlockStart::ToolUse { .. }
+            | ContentBlockStart::ServerToolUse { .. }
+            | ContentBlockStart::WebSearchToolResult { .. }
+            | ContentBlockStart::WebFetchToolResult { .. }
+            | ContentBlockStart::WebSearchCall { .. }
+            | ContentBlockStart::ServerToolCalls { .. } => true,
         },
         StreamEvent::ContentBlockDelta { delta, .. } => match delta {
             Delta::TextDelta { text } => !text.is_empty(),
             Delta::ThinkingDelta { thinking } => !thinking.is_empty(),
             Delta::InputJsonDelta { partial_json } => !partial_json.is_empty(),
             Delta::SignatureDelta { signature } => !signature.is_empty(),
-            Delta::ReasoningStateDelta { .. } => true,
+            Delta::ReasoningStateDelta { .. }
+            | Delta::CitationsDelta { .. }
+            | Delta::WebSearchCallDelta { .. }
+            | Delta::ServerToolCallsDelta { .. } => true,
+            Delta::RefusalDelta { refusal } => !refusal.is_empty(),
         },
         StreamEvent::ToolProjectionWarning { .. }
         | StreamEvent::MessageStart { .. }
@@ -6684,8 +6869,32 @@ fn stream_event_content_bytes(event: &StreamEvent) -> usize {
             ContentBlockStart::ToolUse {
                 id, name, input, ..
             }
-            | ContentBlockStart::ServerToolUse { id, name, input } => {
-                id.len() + name.len() + initial_input_bytes(input)
+            | ContentBlockStart::ServerToolUse {
+                id, name, input, ..
+            } => id.len() + name.len() + initial_input_bytes(input),
+            ContentBlockStart::WebSearchToolResult {
+                tool_use_id,
+                content,
+                ..
+            }
+            | ContentBlockStart::WebFetchToolResult {
+                tool_use_id,
+                content,
+                ..
+            } => tool_use_id.len() + content.to_string().len(),
+            ContentBlockStart::WebSearchCall {
+                id,
+                status,
+                kind,
+                action,
+            } => {
+                id.len()
+                    + status.len()
+                    + kind.as_ref().map_or(0, String::len)
+                    + action.as_ref().map_or(0, |v| v.to_string().len())
+            }
+            ContentBlockStart::ServerToolCalls { steps } => {
+                steps.iter().map(|s| s.to_string().len()).sum()
             }
         },
         StreamEvent::ContentBlockDelta { delta, .. } => match delta {
@@ -6693,7 +6902,11 @@ fn stream_event_content_bytes(event: &StreamEvent) -> usize {
             Delta::ThinkingDelta { thinking } => thinking.len(),
             Delta::InputJsonDelta { partial_json } => partial_json.len(),
             Delta::SignatureDelta { signature } => signature.len(),
-            Delta::ReasoningStateDelta { .. } => 0,
+            Delta::RefusalDelta { refusal } => refusal.len(),
+            Delta::ReasoningStateDelta { .. }
+            | Delta::CitationsDelta { .. }
+            | Delta::WebSearchCallDelta { .. }
+            | Delta::ServerToolCallsDelta { .. } => 0,
         },
         _ => 0,
     }
@@ -7059,6 +7272,8 @@ mod tests {
                             id: format!("call_{index}"),
                             name: "web_search".into(),
                             input: json!({}),
+                            kind: None,
+                            caller: None,
                         }
                     } else {
                         ContentBlockStart::ToolUse {

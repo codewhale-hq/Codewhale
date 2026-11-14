@@ -23754,12 +23754,14 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
         server_tool_use: Some(codewhale_models::ServerToolUsage {
             code_execution_requests: Some(2),
             tool_search_requests: Some(1),
+            ..Default::default()
         }),
 
         input_audio_tokens: None,
         output_audio_tokens: None,
 
         request_usages: Vec::new(),
+        safety_tokens: None,
     };
 
     // The shared producer emits every class.
@@ -36261,4 +36263,30 @@ async fn single_pump_handoff_closes_its_child_window() {
         got.is_some(),
         "control: one handoff, key after resume is delivered"
     );
+}
+
+#[test]
+fn server_title_and_refusal_strip_ansi_and_control_sequences() {
+    let mut app = create_test_app();
+    let before = app.history.len();
+
+    super::event_loop::apply_conversation_title(
+        &mut app,
+        "\x1b]0;spoofed\x07\x1b[31mSafe\r\nTitle\t\x08Here",
+    );
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Title: Safe Title Here")
+    );
+
+    super::event_loop::apply_content_filter_refusal(
+        &mut app,
+        "content_filter",
+        Some("\x1b[2J\x1b]8;;https://evil.example\x07Blocked\x07\r\nLine2"),
+    );
+    assert_eq!(app.history.len(), before + 1);
+    let HistoryCell::System { content } = &app.history[before] else {
+        panic!("expected HistoryCell::System");
+    };
+    assert_eq!(content, "Content filtered: Blocked\nLine2");
 }

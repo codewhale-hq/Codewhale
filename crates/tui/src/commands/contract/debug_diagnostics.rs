@@ -107,6 +107,7 @@ impl CommandDebugDiagnosticsContext for DebugDiagnosticsAdapter<'_> {
                     output_audio_tokens: None,
 
                     request_usages: Vec::new(),
+                    safety_tokens: None,
                 });
                 DebugCacheTurn {
                     provider: rec.provider.map(|provider| provider.as_str().to_string()),
@@ -381,6 +382,8 @@ pub(crate) fn observe_cache_for_app(
         stream: Some(true),
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
     let inspection = inspect_prompt_for_request(&request);
     let key = CacheWarmupKey::from_inspection(

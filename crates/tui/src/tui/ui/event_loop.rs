@@ -4272,6 +4272,12 @@ pub(crate) async fn run_event_loop(
                             }
                         }
                     }
+                    EngineEvent::ConversationTitle { title } => {
+                        apply_conversation_title(app, &title);
+                    }
+                    EngineEvent::ContentFilterRefusal { reason, refusal } => {
+                        apply_content_filter_refusal(app, &reason, refusal.as_deref());
+                    }
                     EngineEvent::LspRepairUpdate {
                         diagnostics_found,
                         files,
@@ -8020,6 +8026,8 @@ pub(crate) async fn run_cache_warmup(app: &App, config: &Config) -> Result<Cache
         stream: None,
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
     let warmup = build_cache_warmup_request(&request);
     let inspection = inspect_prompt_for_request(&warmup);
@@ -9337,4 +9345,39 @@ pub(super) fn apply_engine_status(app: &mut App, message: String) -> bool {
     }
     app.status_message = Some(message);
     false
+}
+
+pub(super) fn sanitize_server_ui_text(raw: &str, single_line: bool) -> String {
+    let mut stripped = String::new();
+    codewhale_sanitize::sanitize::strip_ansi_into(raw, &mut stripped);
+    if single_line {
+        stripped
+            .chars()
+            .map(|ch| match ch {
+                '\n' | '\r' | '\t' => ' ',
+                ch if ch.is_control() => ' ',
+                ch => ch,
+            })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        stripped
+            .chars()
+            .filter(|&ch| ch == '\n' || ch == '\t' || !ch.is_control())
+            .collect()
+    }
+}
+
+pub(super) fn apply_conversation_title(app: &mut App, title: &str) {
+    let sanitized = sanitize_server_ui_text(title, true);
+    app.status_message = Some(format!("Title: {sanitized}"));
+}
+
+pub(super) fn apply_content_filter_refusal(app: &mut App, reason: &str, refusal: Option<&str>) {
+    let detail = sanitize_server_ui_text(refusal.unwrap_or(reason), false);
+    app.add_message(HistoryCell::System {
+        content: format!("Content filtered: {detail}"),
+    });
 }

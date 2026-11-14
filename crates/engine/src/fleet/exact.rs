@@ -769,6 +769,8 @@ impl FleetRouterCaller for LiveFleetRouter {
             stream: Some(false),
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         };
 
         let route = self

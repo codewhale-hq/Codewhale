@@ -592,9 +592,30 @@ pub fn estimate_tokens_for_message(message: &Message, include_thinking: bool) ->
                 compact_json_len(input).unwrap_or_default() / 4
             }
             ContentBlock::ToolSearchToolResult { content, .. }
-            | ContentBlock::CodeExecutionToolResult { content, .. } => {
+            | ContentBlock::CodeExecutionToolResult { content, .. }
+            | ContentBlock::WebSearchToolResult { content, .. }
+            | ContentBlock::WebFetchToolResult { content, .. } => {
                 compact_json_len(content).unwrap_or_default() / 4
             }
+            ContentBlock::WebSearchCall {
+                sources,
+                page,
+                action,
+                ..
+            } => {
+                (sources.as_ref().and_then(compact_json_len).unwrap_or(0)
+                    + page.as_ref().and_then(compact_json_len).unwrap_or(0)
+                    + action.as_ref().and_then(compact_json_len).unwrap_or(0))
+                    / 4
+            }
+            ContentBlock::ServerToolCalls { steps } => {
+                steps
+                    .iter()
+                    .map(|step| compact_json_len(step).unwrap_or_default())
+                    .sum::<usize>()
+                    / 4
+            }
+            ContentBlock::File { file_id } => file_id.len() / 4,
         })
         .sum::<usize>()
 }
@@ -1551,6 +1572,8 @@ fn is_orphaned_result_block(block: &ContentBlock) -> bool {
         ContentBlock::ToolResult { .. }
             | ContentBlock::ToolSearchToolResult { .. }
             | ContentBlock::CodeExecutionToolResult { .. }
+            | ContentBlock::WebSearchToolResult { .. }
+            | ContentBlock::WebFetchToolResult { .. }
     )
 }
 
@@ -1886,6 +1909,8 @@ pub fn compaction_summary_request(
         // pass fails.
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     }
 }
 
@@ -3716,6 +3741,9 @@ mod tests {
                 stop_reason: None,
                 stop_sequence: None,
                 container: None,
+                title: None,
+                stop_details: None,
+                refusal: None,
                 usage: Usage {
                     input_tokens: 17,
                     output_tokens: 3,
@@ -3766,6 +3794,9 @@ mod tests {
                 stop_sequence: None,
                 container: None,
                 usage: codewhale_models::Usage::default(),
+                title: None,
+                stop_details: None,
+                refusal: None,
             })
         }
 
@@ -4507,6 +4538,9 @@ mod tests {
                 stop_sequence: None,
                 container: None,
                 usage: codewhale_models::Usage::default(),
+                title: None,
+                stop_details: None,
+                refusal: None,
             })
         }
 
@@ -4584,6 +4618,8 @@ mod tests {
                 id: "server-call".into(),
                 name: "code_execution".into(),
                 input: json!({"code": payload}),
+                kind: None,
+                caller: None,
             },
             ContentBlock::CodeExecutionToolResult {
                 tool_use_id: "server-call".into(),

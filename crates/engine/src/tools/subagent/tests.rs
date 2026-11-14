@@ -15729,6 +15729,9 @@ fn incomplete_response_failure_keeps_the_provider_stop_cause() {
         stop_sequence: None,
         container: None,
         usage: Usage::default(),
+        title: None,
+        stop_details: None,
+        refusal: None,
     };
 
     let failure = incomplete_subagent_response_failure(response.stop_reason.as_deref());
