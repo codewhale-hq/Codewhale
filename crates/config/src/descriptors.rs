@@ -333,6 +333,16 @@ mod tests {
     }
 
     #[test]
+    fn synap_is_a_descriptor_row() {
+        let row = provider_descriptor("linkrra").expect("synap");
+        assert_eq!(row.id, "synap");
+        assert_eq!(row.wire, DescriptorWire::OpenaiCompatible);
+        assert_eq!(row.base_url, "https://synap402.com/v1");
+        assert_eq!(row.api_key_env, "SYNAP_API_KEY");
+        assert_eq!(row.default_model, "qwen3-coder-30b");
+    }
+
+    #[test]
     fn opper_is_a_descriptor_row() {
         let row = provider_descriptor("opper").expect("opper");
         assert_eq!(row.id, "opper");
@@ -438,7 +448,7 @@ mod tests {
         // reusing its name; compatible-host lookup remains separately scoped.
         assert!(provider_descriptor("openai").is_none());
         assert!(provider_descriptor("deepseek").is_none());
-        assert_eq!(bundled_provider_descriptors().len(), 16);
+        assert_eq!(bundled_provider_descriptors().len(), 17);
         let wafer = provider_descriptor("wafer").expect("wafer");
         assert_eq!(wafer.base_url, "https://pass.wafer.ai/v1");
         assert_eq!(wafer.default_model, "GLM-5.3");

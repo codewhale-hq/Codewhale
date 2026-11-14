@@ -64,6 +64,7 @@ against the vendor's own docs before trusting any value here:
 | Cheaper Inference | `https://api.cheaperinference.com/v1` | `gpt-5.4-mini`, `claude-sonnet-5`, `gemini-3.1-pro` | `CHEAPER_INFERENCE_API_KEY` |
 | Yolo-Auto | `https://yolo-auto.com/v1` | `qwen3.8-flash`; `yolo` / `yolo-small` | `YOLO_AUTO_API_KEY` |
 | Standard Compute | `https://api.stdcmpt.com/v1` | `standardcompute` (router); `deepseek/deepseek-v4-pro`, `anthropic/claude-sonnet-5.5` | `STANDARDCOMPUTE_API_KEY` |
+| Synap | `https://synap402.com/v1` | `qwen3-coder-30b`; live catalog via `/v1/models` | `SYNAP_API_KEY` |
 | Wafer | `https://pass.wafer.ai/v1` | `GLM-5.3` (default), `GLM-5.2`, `Kimi-K3`, `DeepSeek-V4-Pro` | `WAFER_API_KEY` |
 | Runcrate | `https://api.runcrate.ai/v1` | `deepseek-ai/DeepSeek-V4.1-Flash`, `zai-org/GLM-5.3`, `openai/gpt-oss-120b` | `RUNCRATE_API_KEY` |
 | Opper | `https://api.opper.ai/v3/compat` | `claude-sonnet-4-6`, `gpt-5.4-mini` (pool names); `anthropic/claude-sonnet-4-6` | `OPPER_API_KEY` |
@@ -117,6 +118,12 @@ The `standardcompute` model id routes each request across models and providers;
 vendor-prefixed ids such as `deepseek/deepseek-v4-pro` pin one model. The
 authority is `GET https://api.stdcmpt.com/v1/models`.
 Docs: <https://docs.standardcompute.com/quickstart>.
+
+Synap is an OpenAI-compatible model gateway. Its public `GET /v1/models`
+response is the authority for available model ids and current token prices;
+`qwen3-coder-30b` is the bundled starting model. Create an API key in the
+[account page](https://synap402.com/account.html#keys) and see the
+[integration docs](https://synap402.com/docs).
 
 Wafer is an OpenAI-compatible serverless catalog. Chat Completions go to
 `https://pass.wafer.ai/v1/chat/completions`. Model ids are case-sensitive and
