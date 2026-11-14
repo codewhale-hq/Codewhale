@@ -69,6 +69,15 @@ fn redact_json_secrets_at(
     depth: usize,
     policy: RedactionPolicy,
 ) -> serde_json::Value {
+    redact_json_secrets_inner(value, depth, policy, false)
+}
+
+fn redact_json_secrets_inner(
+    value: &serde_json::Value,
+    depth: usize,
+    policy: RedactionPolicy,
+    if_shaped_scope: bool,
+) -> serde_json::Value {
     if depth > MAX_REDACT_JSON_DEPTH {
         return serde_json::Value::String(REDACTED.to_string());
     }
@@ -77,10 +86,15 @@ fn redact_json_secrets_at(
             object
                 .iter()
                 .map(|(key, value)| {
-                    let value = if key_is_sensitive(key) {
-                        serde_json::Value::String(REDACTED.to_string())
-                    } else {
-                        redact_json_secrets_at(value, depth + 1, policy)
+                    let sensitivity = key_sensitivity(key);
+                    let value = match sensitivity {
+                        KeySensitivity::Certain => serde_json::Value::String(REDACTED.to_string()),
+                        KeySensitivity::IfShaped => {
+                            redact_json_secrets_inner(value, depth + 1, policy, true)
+                        }
+                        KeySensitivity::None => {
+                            redact_json_secrets_inner(value, depth + 1, policy, false)
+                        }
                     };
                     (key.clone(), value)
                 })
@@ -89,11 +103,15 @@ fn redact_json_secrets_at(
         serde_json::Value::Array(items) => serde_json::Value::Array(
             items
                 .iter()
-                .map(|item| redact_json_secrets_at(item, depth + 1, policy))
+                .map(|item| redact_json_secrets_inner(item, depth + 1, policy, if_shaped_scope))
                 .collect(),
         ),
         serde_json::Value::String(text) => {
-            serde_json::Value::String(redact_secrets_with(text, policy))
+            if if_shaped_scope && value_looks_like_credential(text) {
+                serde_json::Value::String(REDACTED.to_string())
+            } else {
+                serde_json::Value::String(redact_secrets_with(text, policy))
+            }
         }
         scalar => scalar.clone(),
     }
@@ -203,7 +221,6 @@ const PRIVATE_KEY_LABEL: &str = "PRIVATE KEY";
 const PRIVATE_KEY_LABEL_WINDOW: usize = 48;
 const PRIVATE_KEY_FOOTER: &str = "-----END";
 const PEM_DASHES: &str = "-----";
-const MAX_PEM_LOOKAHEAD_LINES: usize = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum UnclosedPrivateKey {
@@ -312,11 +329,18 @@ fn looks_like_pem_body(line: &str) -> bool {
             run = 0;
         }
     }
-    false
+    let core = strip_pem_line_wrapper(line);
+    core.len() >= 16
+        && core
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='))
+        && core
+            .chars()
+            .any(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || matches!(c, '+' | '/' | '='))
 }
 
 fn has_upcoming_pem_body(rest: &str) -> bool {
-    for line in rest.split_inclusive('\n').take(MAX_PEM_LOOKAHEAD_LINES) {
+    for line in rest.split_inclusive('\n') {
         if looks_like_pem_body(line) {
             return true;
         }
@@ -327,11 +351,8 @@ fn has_upcoming_pem_body(rest: &str) -> bool {
     false
 }
 
-fn is_pem_preamble_line(line: &str) -> bool {
+fn strip_pem_line_wrapper(line: &str) -> &str {
     let line = line.trim_end_matches(['\n', '\r']);
-    if line.contains(PRIVATE_KEY_HEADER_START) || line.contains(PRIVATE_KEY_FOOTER) {
-        return false;
-    }
     let mut s = line.trim_start();
     if let Some((num, rest)) = s.split_once('│')
         && num.len() <= 12
@@ -357,14 +378,47 @@ fn is_pem_preamble_line(line: &str) -> bool {
     if let Some(rest) = s.strip_prefix(['+', '-', '>', '#']) {
         s = rest.trim_start();
     }
-    let rest = s.trim_matches(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '\\'));
+    let mut rest = s.trim();
+    loop {
+        let trimmed =
+            rest.trim_matches(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '\\'));
+        let without_concat = trimmed.strip_suffix('+').map_or(trimmed, str::trim_end);
+        let without_escape = without_concat
+            .strip_suffix("\\u000a")
+            .or_else(|| without_concat.strip_suffix("\\u000A"))
+            .or_else(|| without_concat.strip_suffix("\\u000d"))
+            .or_else(|| without_concat.strip_suffix("\\u000D"))
+            .or_else(|| without_concat.strip_suffix("\\n"))
+            .or_else(|| without_concat.strip_suffix("\\r"))
+            .unwrap_or(without_concat);
+        if without_escape.len() == rest.len() {
+            return without_escape;
+        }
+        rest = without_escape;
+    }
+}
+
+fn is_pem_armor_header_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "version" | "comment" | "messageid" | "hash" | "charset" | "proc-type" | "dek-info"
+    )
+}
+
+fn is_pem_preamble_line(line: &str) -> bool {
+    let raw = line.trim_end_matches(['\n', '\r']);
+    if raw.contains(PRIVATE_KEY_HEADER_START) || raw.contains(PRIVATE_KEY_FOOTER) {
+        return false;
+    }
+    let rest = strip_pem_line_wrapper(raw);
     if rest.is_empty() {
         return true;
     }
-    let Some((key, _)) = rest.split_once(':') else {
+    let Some((key, value)) = rest.split_once(':') else {
         return false;
     };
-    !rest.contains("://")
+    !value.starts_with("//")
+        && (!rest.contains("://") || is_pem_armor_header_key(key))
         && !rest.ends_with(['{', ';'])
         && !key.is_empty()
         && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
@@ -438,6 +492,49 @@ pub fn mask_private_keys(text: &str, placeholder: &str) -> Option<String> {
         .map(|(masked, _)| masked)
 }
 
+fn split_horizontal_whitespace_preserving(line: &str) -> (Vec<&str>, Vec<&str>) {
+    let mut tokens = Vec::new();
+    let mut seps = Vec::new();
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let ws_start = i;
+        while i < bytes.len() && matches!(bytes[i], b' ' | b'\t') {
+            i += 1;
+        }
+        seps.push(&line[ws_start..i]);
+        if i == bytes.len() {
+            return (tokens, seps);
+        }
+        let tok_start = i;
+        while i < bytes.len() && !matches!(bytes[i], b' ' | b'\t') {
+            i += 1;
+        }
+        tokens.push(&line[tok_start..i]);
+    }
+    seps.push("");
+    (tokens, seps)
+}
+
+#[derive(Clone, Copy)]
+struct SanitizeContainerArm {
+    close: char,
+    sensitivity: KeySensitivity,
+    in_object: bool,
+}
+
+const MAX_SANITIZE_CONTAINER_DEPTH: usize = 64;
+
+fn pop_sanitize_containers(containers: &mut Vec<SanitizeContainerArm>, token: &str) {
+    for ch in token.chars() {
+        if matches!(ch, ']' | '}')
+            && let Some(pos) = containers.iter().rposition(|c| c.close == ch)
+        {
+            containers.truncate(pos);
+        }
+    }
+}
+
 /// Redact a single line (which may include a trailing newline).
 fn redact_line(line: &str, policy: RedactionPolicy) -> String {
     // Preserve any trailing newline so callers keep their line structure.
@@ -456,28 +553,83 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
     // when the sensitive key owns the line's first separator.
     let mut changed = false;
     let mut spaced = SpacedAssignment::None;
-    let mut masked: Vec<String> = Vec::new();
-    for word in body.split(' ') {
+    let mut containers: Vec<SanitizeContainerArm> = Vec::new();
+    let (words, seps) = split_horizontal_whitespace_preserving(body);
+    let mut masked: Vec<String> = Vec::with_capacity(words.len());
+    for word in &words {
         let trimmed = trim_word_punctuation(word);
-        if spaced == SpacedAssignment::FlagValue && !trimmed.is_empty() {
+        if let SpacedAssignment::FlagValue(sensitivity) = spaced
+            && !trimmed.is_empty()
+        {
             if matches!(trimmed, "=" | ":") {
-                masked.push(word.to_string());
-                spaced = SpacedAssignment::AwaitingValue;
+                masked.push((*word).to_string());
+                spaced = SpacedAssignment::AwaitingValue(sensitivity);
                 continue;
             }
             spaced = SpacedAssignment::None;
             let core = credential_word_core(trimmed);
             let target = if core.is_empty() { trimmed } else { core };
             if !trimmed.starts_with('-')
-                && (policy == RedactionPolicy::KeyBased || value_looks_like_credential(target))
+                && ((policy == RedactionPolicy::KeyBased && sensitivity == KeySensitivity::Certain)
+                    || value_looks_like_credential(target))
             {
                 masked.push(word.replacen(target, REDACTED, 1));
                 changed = true;
                 continue;
             }
         }
-        if spaced == SpacedAssignment::AwaitingValue && !trimmed.is_empty() {
-            match policy {
+        if let SpacedAssignment::AwaitingValue(sensitivity) = spaced
+            && !trimmed.is_empty()
+        {
+            if let Some(open) = trimmed.chars().rfind(|c| matches!(c, '[' | '{')) {
+                let close = if open == '{' { '}' } else { ']' };
+                if !trimmed.contains(close) && containers.len() < MAX_SANITIZE_CONTAINER_DEPTH {
+                    let in_object = open == '{';
+                    containers.push(SanitizeContainerArm {
+                        close,
+                        sensitivity,
+                        in_object,
+                    });
+                    if trimmed.chars().all(|c| matches!(c, '[' | '{' | '"' | '\'')) {
+                        spaced = if in_object {
+                            SpacedAssignment::None
+                        } else {
+                            SpacedAssignment::AwaitingValue(sensitivity)
+                        };
+                        masked.push((*word).to_string());
+                        continue;
+                    }
+                }
+            }
+            if trimmed
+                .chars()
+                .all(|c| matches!(c, ']' | '}' | ',' | ';' | '"' | '\''))
+            {
+                pop_sanitize_containers(&mut containers, word);
+                spaced = containers
+                    .last()
+                    .filter(|c| !c.in_object)
+                    .map_or(SpacedAssignment::None, |c| {
+                        SpacedAssignment::AwaitingValue(c.sensitivity)
+                    });
+                masked.push((*word).to_string());
+                continue;
+            }
+            if let Some(container) = containers.last()
+                && container.in_object
+                && trimmed.ends_with(':')
+                && !trimmed.ends_with("://")
+            {
+                masked.push((*word).to_string());
+                spaced = SpacedAssignment::AwaitingValue(container.sensitivity);
+                continue;
+            }
+            let effective_policy = if sensitivity == KeySensitivity::IfShaped {
+                RedactionPolicy::CredentialShaped
+            } else {
+                policy
+            };
+            match effective_policy {
                 RedactionPolicy::KeyBased => {
                     // The value may run to the end of the line, so drop the
                     // remainder rather than masking one word and leaking the
@@ -492,7 +644,7 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
                     // word (`Bearer`) keeps the assignment open for its token.
                     let core = credential_word_core(trimmed);
                     if is_auth_scheme_word(core) {
-                        masked.push(word.to_string());
+                        masked.push((*word).to_string());
                         continue;
                     }
                     if value_looks_like_credential(core) {
@@ -502,12 +654,58 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
                         masked.push(redacted);
                         changed = true;
                     } else {
-                        masked.push(word.to_string());
+                        masked.push((*word).to_string());
                     }
-                    spaced = SpacedAssignment::None;
+                    pop_sanitize_containers(&mut containers, word);
+                    spaced = containers
+                        .last()
+                        .filter(|c| !c.in_object)
+                        .map_or(SpacedAssignment::None, |c| {
+                            SpacedAssignment::AwaitingValue(c.sensitivity)
+                        });
                     continue;
                 }
             }
+        }
+        if let Some(container) = containers.last().copied() {
+            if trimmed
+                .chars()
+                .all(|c| matches!(c, ']' | '}' | ',' | ';' | '"' | '\''))
+            {
+                pop_sanitize_containers(&mut containers, word);
+                spaced = containers
+                    .last()
+                    .filter(|c| !c.in_object)
+                    .map_or(SpacedAssignment::None, |c| {
+                        SpacedAssignment::AwaitingValue(c.sensitivity)
+                    });
+                masked.push((*word).to_string());
+                continue;
+            }
+            if container.in_object
+                && trimmed.ends_with(':')
+                && !trimmed.ends_with("://")
+                && !trimmed[..trimmed.len() - 1].contains(['=', ':'])
+            {
+                masked.push((*word).to_string());
+                spaced = SpacedAssignment::AwaitingValue(container.sensitivity);
+                continue;
+            }
+        }
+        let next_spaced = spaced.advance(trimmed);
+        if (!containers.is_empty() || !matches!(next_spaced, SpacedAssignment::None))
+            && let Some(redacted) = redact_inline_keyed_assignment(trimmed, policy)
+        {
+            changed = true;
+            masked.push(word.replace(trimmed, &redacted));
+            spaced = next_spaced;
+            if matches!(spaced, SpacedAssignment::None) {
+                pop_sanitize_containers(&mut containers, word);
+                if let Some(c) = containers.last().filter(|c| !c.in_object) {
+                    spaced = SpacedAssignment::AwaitingValue(c.sensitivity);
+                }
+            }
+            continue;
         }
         if let Some(redacted) = redact_inline_keyed_assignment(trimmed, policy) {
             changed = true;
@@ -526,13 +724,22 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
             masked.push(redacted);
             spaced = SpacedAssignment::None;
         } else {
-            masked.push(word.to_string());
+            masked.push((*word).to_string());
             spaced = spaced.advance(trimmed);
         }
     }
 
     if changed {
-        format!("{}{newline}", masked.join(" "))
+        let mut out = String::with_capacity(body.len() + newline.len());
+        out.push_str(seps[0]);
+        for (idx, piece) in masked.iter().enumerate() {
+            out.push_str(piece);
+            if idx + 1 < seps.len() {
+                out.push_str(seps[idx + 1]);
+            }
+        }
+        out.push_str(newline);
+        out
     } else {
         format!("{body}{newline}")
     }
@@ -544,10 +751,30 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
 enum SpacedAssignment {
     None,
     /// The previous word was a bare sensitive key awaiting its separator.
-    SensitiveKey,
+    SensitiveKey(KeySensitivity),
     /// A sensitive key and its separator are both behind us.
-    AwaitingValue,
-    FlagValue,
+    AwaitingValue(KeySensitivity),
+    FlagValue(KeySensitivity),
+}
+
+fn trailing_key_sensitivity(chunk: &str) -> KeySensitivity {
+    let mut current = chunk;
+    for _ in 0..3 {
+        let (core, _, _) = split_value_quotes(
+            current.trim_matches(|c| matches!(c, '{' | '}' | '[' | ']' | '(' | ')')),
+        );
+        if !core.contains(['=', ':']) {
+            return key_sensitivity(core);
+        }
+        let Some((outer, rest)) = core.split_once(['=', ':']) else {
+            return KeySensitivity::None;
+        };
+        if rest.starts_with("//") || key_sensitivity(outer) != KeySensitivity::None {
+            return KeySensitivity::None;
+        }
+        current = rest;
+    }
+    KeySensitivity::None
 }
 
 impl SpacedAssignment {
@@ -559,34 +786,40 @@ impl SpacedAssignment {
         }
         let chunk = last_escaped_chunk(trimmed);
         if matches!(chunk, "=" | ":") {
-            return if self == Self::SensitiveKey {
-                Self::AwaitingValue
-            } else {
-                Self::None
+            return match self {
+                Self::SensitiveKey(sensitivity) => Self::AwaitingValue(sensitivity),
+                _ => Self::None,
             };
         }
         // `api_key=` / `api_key:` with the value in the next word. A word whose
         // separator is *not* final was already offered to
         // `redact_inline_keyed_assignment`, so it is not an assignment we own.
         if let Some(key) = chunk.strip_suffix('=').or_else(|| chunk.strip_suffix(':')) {
-            return if !key.contains(['=', ':']) && key_is_sensitive(key) {
-                Self::AwaitingValue
+            let sensitivity = trailing_key_sensitivity(key);
+            return if sensitivity.is_armed() {
+                Self::AwaitingValue(sensitivity)
             } else {
                 Self::None
             };
         }
-        if !chunk.contains(['=', ':']) && key_is_sensitive(chunk) {
-            return if chunk.starts_with('-') {
-                Self::FlagValue
-            } else {
-                Self::SensitiveKey
-            };
+        if !chunk.contains(['=', ':']) {
+            let sensitivity = key_sensitivity(chunk);
+            if sensitivity.is_armed() {
+                return if chunk.starts_with('-') {
+                    Self::FlagValue(sensitivity)
+                } else {
+                    Self::SensitiveKey(sensitivity)
+                };
+            }
         }
         Self::None
     }
 }
 
-fn last_escaped_chunk(text: &str) -> &str {
+/// Return the trailing slice of `text` after its last backslash escape delimiter
+/// (such as `\n`, `\r`, `\t`, or `\u00XX`), or all of `text` when none exists.
+#[must_use]
+pub fn last_escaped_chunk(text: &str) -> &str {
     let mut chunk_start = 0;
     let mut cursor = 0;
     while let Some(rel) = text[cursor..].find('\\') {
@@ -678,9 +911,92 @@ fn trim_word_punctuation(word: &str) -> &str {
     word.trim_matches(|c| matches!(c, '"' | '\'' | ',' | ';'))
 }
 
-/// Whether `raw`, normalized the way a config/env/JSON key is, matches a
-/// [`SENSITIVE_KEY_HINTS`] credential identifier.
-fn key_is_sensitive(raw: &str) -> bool {
+/// How strongly a normalized key name indicates credential material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeySensitivity {
+    /// Not credential-bearing (e.g. prose or a usage metric such as `max_tokens`).
+    None,
+    /// Sensitive when paired with a credential-shaped value (e.g. `tokens`).
+    IfShaped,
+    /// Always names a credential (`api_key`, `api_tokens`, `password`).
+    Certain,
+}
+
+impl KeySensitivity {
+    /// Whether this key sensitivity arms a following value for inspection.
+    #[must_use]
+    pub const fn is_armed(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
+const TOKEN_METRIC_NAMES: &[&str] = &[
+    "tokenizer",
+    "tokenization",
+    "tokenized",
+    "max_tokens",
+    "maxtokens",
+    "min_tokens",
+    "mintokens",
+    "input_tokens",
+    "inputtokens",
+    "output_tokens",
+    "outputtokens",
+    "prompt_tokens",
+    "prompttokens",
+    "completion_tokens",
+    "completiontokens",
+    "total_tokens",
+    "totaltokens",
+    "num_tokens",
+    "numtokens",
+    "count_tokens",
+    "counttokens",
+    "cache_tokens",
+    "cached_tokens",
+    "reasoning_tokens",
+    "thought_tokens",
+    "context_tokens",
+    "billable_tokens",
+    "subtokens",
+    "tokens_used",
+    "tokens_left",
+    "tokens_remaining",
+    "tokens_limit",
+    "tokens_per_sec",
+    "tokens_per_second",
+    "token_count",
+    "tokencount",
+    "token_counts",
+    "token_limit",
+    "tokenlimit",
+    "token_limits",
+    "token_budget",
+    "tokenbudget",
+    "token_budgets",
+    "token_usage",
+    "token_used",
+    "token_total",
+    "token_totals",
+    "token_window",
+    "token_windows",
+];
+
+fn is_token_metric_name(key_norm: &str) -> bool {
+    TOKEN_METRIC_NAMES.iter().any(|metric| {
+        key_norm == *metric
+            || key_norm
+                .strip_suffix(metric)
+                .is_some_and(|prefix| prefix.ends_with('_'))
+            || key_norm
+                .strip_prefix(metric)
+                .is_some_and(|suffix| suffix.starts_with('_'))
+    })
+}
+
+/// Classify how strongly `raw` names a credential rather than prose or a token metric.
+#[must_use]
+pub fn key_sensitivity(raw: &str) -> KeySensitivity {
     let key_norm = normalize_sensitive_key(raw);
     // `Authorization failed: <reason>` is a status label, not a credential
     // key; masking it hid every provider refusal reason (xAI's out-of-credits
@@ -701,11 +1017,39 @@ fn key_is_sensitive(raw: &str) -> bool {
                 | "missing"
         )
     });
-    !key_norm.is_empty()
-        && !names_an_outcome
-        && SENSITIVE_KEY_HINTS
-            .iter()
-            .any(|hint| key_matches_sensitive_hint(&key_norm, hint))
+    if key_norm.is_empty() || names_an_outcome {
+        return KeySensitivity::None;
+    }
+    if SENSITIVE_KEY_HINTS
+        .iter()
+        .any(|hint| *hint != "token" && key_matches_sensitive_hint(&key_norm, hint))
+    {
+        return KeySensitivity::Certain;
+    }
+    if key_norm.contains("token") {
+        if key_norm == "tokens" {
+            return KeySensitivity::IfShaped;
+        }
+        if is_token_metric_name(&key_norm) {
+            return KeySensitivity::None;
+        }
+        if key_matches_sensitive_hint(&key_norm, "token")
+            || key_norm.ends_with("tokens")
+            || key_norm.ends_with("token")
+            || key_norm
+                .split(['_', '-'])
+                .any(|segment| matches!(segment, "token" | "tokens"))
+        {
+            return KeySensitivity::Certain;
+        }
+    }
+    KeySensitivity::None
+}
+
+/// Whether `raw`, normalized the way a config/env/JSON key is, matches a
+/// [`SENSITIVE_KEY_HINTS`] credential identifier.
+fn key_is_sensitive(raw: &str) -> bool {
+    key_sensitivity(raw).is_armed()
 }
 
 /// Normalize the identifier boundaries commonly used by config, env, and JSON
@@ -799,42 +1143,83 @@ fn key_matches_sensitive_hint(key_norm: &str, hint: &str) -> bool {
     matches!(hint, "secret" | "password" | "passwd") && key_norm.ends_with(hint)
 }
 
+const MAX_NESTED_ASSIGNMENT_DEPTH: u8 = 3;
+
 fn redact_single_keyed_assignment(word: &str, policy: RedactionPolicy) -> Option<String> {
+    redact_single_keyed_assignment_at(word, policy, 0)
+}
+
+fn redact_single_keyed_assignment_at(
+    word: &str,
+    policy: RedactionPolicy,
+    depth: u8,
+) -> Option<String> {
     let sep_idx = word.find(['=', ':'])?;
     let (raw_key, rest) = word.split_at(sep_idx);
     let raw_value = &rest[1..];
-    if raw_value.is_empty() || !key_is_sensitive(raw_key) {
+    if raw_value.is_empty() {
         return None;
     }
-    let (core, lead_quote, trail_quote) = split_value_quotes(raw_value);
-    match policy {
-        RedactionPolicy::KeyBased => {
-            if lead_quote.is_empty() && !trail_quote.is_empty() {
+    let sensitivity = key_sensitivity(raw_key);
+    if sensitivity.is_armed() {
+        let (core, lead_quote, trail_quote) = split_value_quotes(raw_value);
+        let shaped_only =
+            policy == RedactionPolicy::CredentialShaped || sensitivity == KeySensitivity::IfShaped;
+        return match shaped_only {
+            false => {
+                if lead_quote.is_empty() && !trail_quote.is_empty() {
+                    Some(format!(
+                        "{}{}{}{}",
+                        raw_key,
+                        &rest[..1],
+                        REDACTED,
+                        trail_quote
+                    ))
+                } else {
+                    Some(format!("{}{}{}", raw_key, &rest[..1], REDACTED))
+                }
+            }
+            true => {
+                if !value_looks_like_credential(core) {
+                    return None;
+                }
                 Some(format!(
-                    "{}{}{}{}",
+                    "{}{}{lead_quote}{REDACTED}{trail_quote}",
                     raw_key,
-                    &rest[..1],
-                    REDACTED,
-                    trail_quote
+                    &rest[..1]
                 ))
-            } else {
-                Some(format!("{}{}{}", raw_key, &rest[..1], REDACTED))
             }
-        }
-        RedactionPolicy::CredentialShaped => {
-            if !value_looks_like_credential(core) {
-                return None;
-            }
-            Some(format!(
-                "{}{}{lead_quote}{REDACTED}{trail_quote}",
+        };
+    }
+    if depth < MAX_NESTED_ASSIGNMENT_DEPTH && !raw_value.starts_with("//") {
+        let (core, lead_quote, trail_quote) = split_value_quotes(raw_value);
+        if core.contains('\\')
+            && let Some(redacted) = redact_backslash_assignments_at(core, policy, depth + 1)
+        {
+            return Some(format!(
+                "{}{}{lead_quote}{redacted}{trail_quote}",
                 raw_key,
                 &rest[..1]
-            ))
+            ));
+        }
+        if !core.contains("://")
+            && let Some(redacted) = redact_single_keyed_assignment_at(core, policy, depth + 1)
+        {
+            return Some(format!(
+                "{}{}{lead_quote}{redacted}{trail_quote}",
+                raw_key,
+                &rest[..1]
+            ));
         }
     }
+    None
 }
 
-fn escape_delimiter_end(text: &str, idx: usize) -> Option<usize> {
+/// If `text` at byte offset `idx` begins a backslash escape delimiter (such as
+/// `\n`, `\r`, `\t`, `\b`, `\f`, or delimiter `\u00XX`), return the byte index
+/// immediately following that escape sequence.
+#[must_use]
+pub fn escape_delimiter_end(text: &str, idx: usize) -> Option<usize> {
     let after = text.get(idx + 1..)?;
     if after.starts_with(['n', 'r', 't', 'b', 'f']) {
         return Some(idx + 2);
@@ -848,7 +1233,24 @@ fn escape_delimiter_end(text: &str, idx: usize) -> Option<usize> {
         && let Some(hex) = rest.get(..4)
         && hex.chars().all(|c| c.is_ascii_hexdigit())
         && hex[..2] == *"00"
-        && u8::from_str_radix(&hex[2..4], 16).is_ok_and(|b| b <= 0x20)
+        && u8::from_str_radix(&hex[2..4], 16).is_ok_and(|b| {
+            b <= 0x20
+                || matches!(
+                    b,
+                    b'<' | b'>'
+                        | b'&'
+                        | b'?'
+                        | b','
+                        | b';'
+                        | b'|'
+                        | b'('
+                        | b')'
+                        | b'['
+                        | b']'
+                        | b'{'
+                        | b'}'
+                )
+        })
     {
         return Some(idx + 6);
     }
@@ -856,8 +1258,43 @@ fn escape_delimiter_end(text: &str, idx: usize) -> Option<usize> {
 }
 
 fn redact_backslash_assignments(text: &str, policy: RedactionPolicy) -> Option<String> {
+    redact_backslash_assignments_at(text, policy, 0)
+}
+
+fn redact_backslash_chunk(
+    chunk: &str,
+    pending_arm: &mut Option<KeySensitivity>,
+    policy: RedactionPolicy,
+    depth: u8,
+) -> Option<String> {
+    if let Some(sensitivity) = pending_arm.take() {
+        let (core, lead_quote, trail_quote) = split_value_quotes(chunk);
+        if !core.is_empty() {
+            let shaped_only = policy == RedactionPolicy::CredentialShaped
+                || sensitivity == KeySensitivity::IfShaped;
+            if !shaped_only || value_looks_like_credential(core) {
+                return Some(format!("{lead_quote}{REDACTED}{trail_quote}"));
+            }
+        }
+    }
+    if let Some(key) = chunk.strip_suffix('=').or_else(|| chunk.strip_suffix(':')) {
+        let sensitivity = trailing_key_sensitivity(key);
+        if sensitivity.is_armed() {
+            *pending_arm = Some(sensitivity);
+            return None;
+        }
+    }
+    redact_single_keyed_assignment_at(chunk, policy, depth)
+}
+
+fn redact_backslash_assignments_at(
+    text: &str,
+    policy: RedactionPolicy,
+    depth: u8,
+) -> Option<String> {
     let mut out = String::new();
     let mut changed = false;
+    let mut pending_arm: Option<KeySensitivity> = None;
     let mut chunk_start = 0;
     let mut cursor = 0;
     while let Some(rel) = text[cursor..].find('\\') {
@@ -865,7 +1302,9 @@ fn redact_backslash_assignments(text: &str, policy: RedactionPolicy) -> Option<S
         if let Some(delim_end) = escape_delimiter_end(text, idx) {
             let chunk = &text[chunk_start..idx];
             if !changed {
-                if let Some(redacted) = redact_single_keyed_assignment(chunk, policy) {
+                if let Some(redacted) =
+                    redact_backslash_chunk(chunk, &mut pending_arm, policy, depth)
+                {
                     out.reserve(text.len());
                     out.push_str(&text[..chunk_start]);
                     out.push_str(&redacted);
@@ -873,7 +1312,9 @@ fn redact_backslash_assignments(text: &str, policy: RedactionPolicy) -> Option<S
                     changed = true;
                 }
             } else {
-                if let Some(redacted) = redact_single_keyed_assignment(chunk, policy) {
+                if let Some(redacted) =
+                    redact_backslash_chunk(chunk, &mut pending_arm, policy, depth)
+                {
                     out.push_str(&redacted);
                 } else {
                     out.push_str(chunk);
@@ -892,7 +1333,7 @@ fn redact_backslash_assignments(text: &str, policy: RedactionPolicy) -> Option<S
         return None;
     }
     let tail = &text[chunk_start..];
-    if let Some(redacted) = redact_single_keyed_assignment(tail, policy) {
+    if let Some(redacted) = redact_backslash_chunk(tail, &mut pending_arm, policy, depth) {
         if !changed {
             out.reserve(text.len());
             out.push_str(&text[..chunk_start]);
@@ -913,7 +1354,7 @@ fn redact_inline_keyed_assignment(word: &str, policy: RedactionPolicy) -> Option
         return mask_bare_secret_tokens(&redacted, REDACTED).or(Some(redacted));
     }
     if let Some(redacted) = redact_single_keyed_assignment(word, policy) {
-        return Some(redacted);
+        return mask_bare_secret_tokens(&redacted, REDACTED).or(Some(redacted));
     }
     if word.contains(STRUCTURAL_DELIMITERS) {
         return None;
@@ -929,40 +1370,66 @@ fn is_auth_scheme_word(word: &str) -> bool {
     )
 }
 
+fn leading_escaped_quote_len(value: &str) -> usize {
+    let backslashes = value.bytes().take_while(|&b| b == b'\\').count();
+    if matches!(value.as_bytes().get(backslashes), Some(b'"' | b'\'')) {
+        backslashes + 1
+    } else {
+        0
+    }
+}
+
+fn trailing_escaped_quote_len(value: &str) -> usize {
+    let Some(quote) = value.as_bytes().last().copied() else {
+        return 0;
+    };
+    if !matches!(quote, b'"' | b'\'') {
+        return 0;
+    }
+    let before = &value[..value.len() - 1];
+    let backslashes = before.bytes().rev().take_while(|&b| b == b'\\').count();
+    backslashes + 1
+}
+
 /// Split a matching pair of surrounding quotes off a value, returning the
 /// inner text and the quotes to restore (empty when unquoted or unbalanced).
-fn split_value_quotes(value: &str) -> (&str, &str, &str) {
-    for quote in ["\\\"", "\\'", "\"", "'"] {
-        if value.len() >= quote.len() * 2 && value.starts_with(quote) && value.ends_with(quote) {
-            return (&value[quote.len()..value.len() - quote.len()], quote, quote);
-        }
-    }
-    for esc in ["\\\"", "\\'"] {
-        let outer = &esc[1..];
-        if value.len() > esc.len() + outer.len()
-            && value.starts_with(esc)
-            && value.ends_with(outer)
-            && value[..value.len() - 1].ends_with(esc)
-        {
+#[must_use]
+pub fn split_value_quotes(value: &str) -> (&str, &str, &str) {
+    let lead_len = leading_escaped_quote_len(value);
+    let trail_len = trailing_escaped_quote_len(value);
+    if lead_len > 0
+        && trail_len > 0
+        && value.len() >= lead_len + trail_len
+        && value.as_bytes()[lead_len - 1] == value.as_bytes()[value.len() - 1]
+    {
+        if lead_len == trail_len {
             return (
-                &value[esc.len()..value.len() - esc.len() - 1],
-                esc,
-                &value[value.len() - esc.len() - 1..],
+                &value[lead_len..value.len() - trail_len],
+                &value[..lead_len],
+                &value[value.len() - trail_len..],
             );
         }
-    }
-    // A leading quote without its partner (the word pass strips the outer
-    // punctuation of `"x",` to `"x`): treat the remainder as the value.
-    for quote in ["\\\"", "\\'", "\"", "'"] {
-        if let Some(inner) = value.strip_prefix(quote) {
-            return (inner, "", "");
+        if lead_len > trail_len && trail_len == 1 {
+            let inner_trail = trailing_escaped_quote_len(&value[..value.len() - 1]);
+            if inner_trail > 1
+                && value.len() > lead_len + inner_trail + 1
+                && value.as_bytes()[lead_len - 1] == value.as_bytes()[value.len() - 2]
+            {
+                let total_trail = inner_trail + 1;
+                return (
+                    &value[lead_len..value.len() - total_trail],
+                    &value[..lead_len],
+                    &value[value.len() - total_trail..],
+                );
+            }
         }
     }
-    if !value.ends_with("\\\"")
-        && !value.ends_with("\\'")
-        && let Some(inner) = value.strip_suffix(['"', '\''])
-    {
-        return (inner, "", &value[inner.len()..]);
+    if lead_len > 0 {
+        return (&value[lead_len..], &value[..lead_len], "");
+    }
+    if trail_len == 1 {
+        let inner_len = value.len() - 1;
+        return (&value[..inner_len], "", &value[inner_len..]);
     }
     (value, "", "")
 }
@@ -1093,11 +1560,19 @@ fn redact_keyed_assignment(body: &str, policy: RedactionPolicy) -> Option<String
     let key_norm = raw_key
         .trim()
         .trim_matches(|c| matches!(c, '"' | '\'' | '[' | ']'));
-    if !key_is_sensitive(key_norm) {
+    let sensitivity = if let Some(last_word) = key_norm.split_whitespace().last()
+        && key_norm.split_whitespace().count() > 1
+        && last_word.starts_with('-')
+    {
+        key_sensitivity(last_word)
+    } else {
+        key_sensitivity(key_norm)
+    };
+    if !sensitivity.is_armed() {
         return None;
     }
 
-    if policy == RedactionPolicy::CredentialShaped {
+    if policy == RedactionPolicy::CredentialShaped || sensitivity == KeySensitivity::IfShaped {
         // Replace only the value span, keep the key bytes, separator spacing,
         // quote style, and trailing punctuation, and only when the value is
         // credential-shaped: the model must still be able to quote the line.
@@ -1815,5 +2290,77 @@ mod assigned_secret_tests {
         let inline_short = "run --api-key=short claude-3-5-sonnet-20241022";
         assert_eq!(redact_model_bound_secrets(inline_short), inline_short);
         assert_eq!(redact_secrets(inline_short), "run --api-key=[redacted]");
+
+        let pgp_comment = format!(
+            "     1│ -----BEGIN PGP PRIVATE KEY BLOCK-----\n     2│ Version: GnuPG v2\n     3│ Comment: https://gnupg.org\n     4│ \n     5│ {b64_64}\n     6│ -----END PGP PRIVATE KEY BLOCK-----\n"
+        );
+        assert_masked(&pgp_comment, b64_64);
+
+        let long_preamble = format!(
+            "     1│ -----BEGIN PGP PRIVATE KEY BLOCK-----\n     2│ \n     3│ \n     4│ \n     5│ \n     6│ \n     7│ \n     8│ \n     9│ \n    10│ \n    11│ {b64_64}\n    12│ -----END PGP PRIVATE KEY BLOCK-----\n"
+        );
+        assert_masked(&long_preamble, b64_64);
+
+        let b64_16 = "MIIEpAIBAAKCAQEA";
+        let short_wrapped_pem = format!(
+            "     1│ -----BEGIN PRIVATE KEY-----\n     2│ {b64_16}\n     3│ {b64_16}\n     4│ -----END PRIVATE KEY-----\n"
+        );
+        assert_masked(&short_wrapped_pem, b64_16);
+
+        for (input, secret) in [
+            (format!("{{\"stdout\":\"API_KEY={HEX}\"}}"), HEX),
+            (
+                format!("{{\"stdout\":\"ok\\u003cAPI_KEY={HEX}\\u003e\"}}"),
+                HEX,
+            ),
+            (
+                format!("\\\\\\\"api_key\\\\\\\":\\\\\\\"{HEX}\\\\\\\""),
+                HEX,
+            ),
+            (
+                format!("{{\"stdout\":\"ok\\n\\\"api_key\\\":\\n\\\"{HEX}\\\"\"}}"),
+                HEX,
+            ),
+            (
+                format!("{{\"stdout\":\"\\\"api_key\\\": \\\"{HEX}\\\"\"}}"),
+                HEX,
+            ),
+            (format!("{{\"api_tokens\": \"{HEX}\"}}"), HEX),
+            (format!("{{\"api_tokens\": [ \"{HEX}\" ]}}"), HEX),
+            (
+                format!("{{\"api_tokens\": {{ \"prod\": \"{HEX}\" }}}}"),
+                HEX,
+            ),
+            (format!("tokens={HEX}"), HEX),
+            (format!("tokens = {HEX}"), HEX),
+        ] {
+            assert_masked(&input, secret);
+        }
+
+        for (input, secret) in [
+            ("API_TOKENS=hunter2", "hunter2"),
+            ("ACCESS_TOKENS=my_short_secret", "my_short_secret"),
+            (
+                "ACCESS_TOKENS=secret_token_without_digits",
+                "secret_token_without_digits",
+            ),
+            ("SLACK_BOT_TOKENS=short_alpha_secret", "short_alpha_secret"),
+        ] {
+            let out = redact_secrets(input);
+            assert!(!out.contains(secret), "{input}: {out}");
+            assert!(out.contains(REDACTED), "{input}: {out}");
+        }
+
+        for safe in [
+            "run --max-tokens=8192 claude-3-5-sonnet-20241022",
+            "set --tokenizer=bpe crates/engine/src/v2.rs",
+            "run --token-limit=4096 /Users/alice/src/v2",
+            "eval --tokens=5 deadbeef12345678",
+            "tokenizer=sentencepiece-v2",
+        ] {
+            for out in both_policies(safe) {
+                assert_eq!(out, safe, "{safe}");
+            }
+        }
     }
 }
