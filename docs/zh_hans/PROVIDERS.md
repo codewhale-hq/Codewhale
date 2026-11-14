@@ -27,6 +27,7 @@ DeepSeek 仍是默认提供商，但 `ProviderKind::ALL` 中的每个条目都�
 | Yolo-Auto | `https://yolo-auto.com/v1` | `qwen3.8-flash`；`yolo` / `yolo-small` | `YOLO_AUTO_API_KEY` |
 | Cheaper Inference | `https://api.cheaperinference.com/v1` | `gpt-5.4-mini`、`claude-sonnet-5`、`gemini-3.1-pro` | `CHEAPER_INFERENCE_API_KEY` |
 | Standard Compute | `https://api.stdcmpt.com/v1` | `standardcompute`（路由）；`deepseek/deepseek-v4-pro`、`anthropic/claude-sonnet-5.5` | `STANDARDCOMPUTE_API_KEY` |
+| Synap | `https://synap402.com/v1` | `qwen3-coder-30b`；实时目录见 `/v1/models` | `SYNAP_API_KEY` |
 | Wafer | `https://pass.wafer.ai/v1` | `GLM-5.3`（默认）、`GLM-5.2`、`Kimi-K3`、`DeepSeek-V4-Pro` | `WAFER_API_KEY` |
 | Runcrate | `https://api.runcrate.ai/v1` | `deepseek-ai/DeepSeek-V4.1-Flash`、`zai-org/GLM-5.3`、`openai/gpt-oss-120b` | `RUNCRATE_API_KEY` |
 | Opper | `https://api.opper.ai/v3/compat` | `claude-sonnet-4-6`、`gpt-5.4-mini`（池名称）；`anthropic/claude-sonnet-4-6` | `OPPER_API_KEY` |
@@ -39,6 +40,7 @@ Tsubasa 只实现了 `GET /v1/models` 和 Chat Completions。它的两个公开�
 `codewhale config set providers.tsubasa.context_window 32768`。
 Cheaper Inference 是 OpenAI 兼容网关，模型 ID 不带前缀（例如 `gpt-5.4-mini`、`claude-sonnet-5`），以带密钥请求 `GET https://api.cheaperinference.com/v1/models` 的结果为准；价格随模型和路由而变，请以提供商的实时目录为准。
 Standard Compute 提供按月固定套餐和算力预算。默认情况下，预算用尽后请求返回 HTTP 402；符合条件的套餐可启用按量付费，通过额外预付费用继续请求，详见其[预算政策](https://docs.standardcompute.com/budgets-and-limits)。模型 ID `standardcompute` 会在多个模型和提供商之间路由每个请求；带厂商前缀的 ID（例如 `deepseek/deepseek-v4-pro`）则固定使用单个模型，以 `GET https://api.stdcmpt.com/v1/models` 的结果为准。
+Synap 是 OpenAI 兼容模型网关。可用模型 ID 和当前 token 价格以公开的 `GET https://synap402.com/v1/models` 为准，内置起始模型为 `qwen3-coder-30b`。请在[账户页面](https://synap402.com/account.html#keys)创建 API 密钥，集成文档见 <https://synap402.com/docs>。
 Wafer 是 OpenAI 兼容的无服务器目录。Chat Completions 发往 `https://pass.wafer.ai/v1/chat/completions`。模型 ID 区分大小写，默认是 `GLM-5.3`。模型列表以公开的 `GET https://pass.wafer.ai/v1/models` 为准。每次请求默认零数据保留，不需要额外请求头。推理需要 `WAFER_API_KEY`；公开列表不能验证密钥。在 [app.wafer.ai](https://app.wafer.ai) 创建密钥。文档见 <https://docs.wafer.ai/serverless>。
 
 Runcrate 是 OpenAI 兼容网关，一个密钥即可使用来自多家实验室的模型。模型 ID 区分大小写，形如 `deepseek-ai/DeepSeek-V4.1-Flash`。模型列表以 `GET https://api.runcrate.ai/v1/models` 的结果为准。配置好 Runcrate 后，运行 `codewhale models --update --provider runcrate` 即可匿名刷新。推理仍需要 `RUNCRATE_API_KEY`，公开列表无法验证密钥。文档见 <https://www.runcrate.ai/docs/getting-started/quickstart>。

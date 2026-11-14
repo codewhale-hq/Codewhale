@@ -2312,6 +2312,21 @@
       ]
     },
     {
+      "id": "synap",
+      "label": "Synap",
+      "wire": "openai-compatible",
+      "base_url": "https://synap402.com/v1",
+      "api_key_env": "SYNAP_API_KEY",
+      "default_model": "qwen3-coder-30b",
+      "discovery": "models_endpoint",
+      "docs_url": "https://synap402.com/docs",
+      "credential_url": "https://synap402.com/account.html#keys",
+      "guidance": "OpenAI-compatible host (Chat Completions + GET /v1/models). Live /v1/models is the authority for model ids and prices. Store SYNAP_API_KEY, not a raw key.",
+      "aliases": [
+        "linkrra"
+      ]
+    },
+    {
       "id": "tsubasa",
       "label": "Tsubasa",
       "wire": "openai-compatible",
