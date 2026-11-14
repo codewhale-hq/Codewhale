@@ -81,14 +81,17 @@ pub fn fleet_search_roots(workspace: &std::path::Path) -> Vec<FleetSearchRoot> {
     if let Ok(home) = personal_fleet_root() {
         roots.push(FleetSearchRoot::new("codewhale_home", home));
     }
-    roots.push(FleetSearchRoot::new(
-        "workspace",
-        workspace.join(".codewhale"),
-    ));
-    roots.push(FleetSearchRoot::new(
-        "workspace_root",
-        workspace.to_path_buf(),
-    ));
+    roots.push(
+        FleetSearchRoot::new(
+            "workspace",
+            codewhale_util::files::workspace_state_dir(workspace),
+        )
+        .with_reader(super::store::read_repository_fleet_file),
+    );
+    roots.push(
+        FleetSearchRoot::new("workspace_root", workspace.to_path_buf())
+            .with_reader(super::store::read_repository_fleet_file),
+    );
     roots
 }
 

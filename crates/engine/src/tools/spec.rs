@@ -1301,7 +1301,7 @@ impl ToolContext {
         let mut existing_ancestor = candidate.clone();
         let mut suffix_parts: Vec<std::ffi::OsString> = Vec::new();
 
-        while !existing_ancestor.exists() {
+        while fs::symlink_metadata(&existing_ancestor).is_err() {
             if let Some(file_name) = existing_ancestor.file_name() {
                 suffix_parts.push(file_name.to_owned());
             }
@@ -1316,11 +1316,38 @@ impl ToolContext {
             }
         }
         let ancestor_normalized = normalize_path(&existing_ancestor);
+        let follows_in_workspace = self.follow_symlinks
+            && (ancestor_normalized.starts_with(&workspace_plain)
+                || ancestor_normalized.starts_with(&workspace_normalized));
 
-        let canonical_ancestor = if existing_ancestor.exists() {
-            existing_ancestor
-                .canonicalize()
-                .unwrap_or(existing_ancestor)
+        let canonical_ancestor = if fs::symlink_metadata(&existing_ancestor).is_ok() {
+            match existing_ancestor.canonicalize() {
+                Ok(canonical) => canonical,
+                Err(_) if follows_in_workspace => existing_ancestor,
+                Err(_) => {
+                    let mut landing =
+                        resolve_unresolvable_link(&existing_ancestor).map_err(|_| {
+                            ToolError::PathEscape {
+                                path: existing_ancestor.clone(),
+                            }
+                        })?;
+                    landing.extend(suffix_parts.iter().rev());
+                    if !landing.starts_with(workspace_canonical)
+                        && !landing.starts_with(&workspace_normalized)
+                        && !self.is_trusted_external_path(&landing)
+                    {
+                        return Err(ToolError::PathEscape { path: landing });
+                    }
+                    let spelled = match (
+                        existing_ancestor.parent().map(Path::canonicalize),
+                        existing_ancestor.file_name(),
+                    ) {
+                        (Some(Ok(parent)), Some(name)) => Some(parent.join(name)),
+                        _ => None,
+                    };
+                    spelled.unwrap_or(existing_ancestor)
+                }
+            }
         } else {
             existing_ancestor
         };
@@ -1332,10 +1359,7 @@ impl ToolContext {
         }
         let canonical = normalize_path(&canonical);
 
-        if self.follow_symlinks
-            && (ancestor_normalized.starts_with(&workspace_plain)
-                || ancestor_normalized.starts_with(&workspace_normalized))
-        {
+        if follows_in_workspace {
             return Ok(canonical);
         }
 
@@ -1464,6 +1488,96 @@ pub async fn lsp_diagnostics_for_paths(context: &ToolContext, paths: &[PathBuf])
     }
 
     render_blocks(&blocks)
+}
+
+const MAX_LINK_HOPS: usize = 40;
+
+fn resolve_unresolvable_link(link: &Path) -> std::io::Result<PathBuf> {
+    let mut link = link.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    for _ in 0..MAX_LINK_HOPS {
+        let target = fs::read_link(&link)?;
+        let parent = link
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .canonicalize()?;
+        let joined = parent.join(&target);
+        let mut ancestor = PathBuf::new();
+        let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+        let mut missing = false;
+        for component in joined.components() {
+            match component {
+                Component::Prefix(prefix) => {
+                    if missing {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "parent traversal in unresolved link target",
+                        ));
+                    }
+                    ancestor.push(prefix.as_os_str());
+                }
+                Component::RootDir => {
+                    if missing {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "parent traversal in unresolved link target",
+                        ));
+                    }
+                    ancestor.push(component.as_os_str());
+                }
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if missing {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "parent traversal in unresolved link target",
+                        ));
+                    }
+                    let next_candidate = ancestor.join(component.as_os_str());
+                    if fs::symlink_metadata(&next_candidate).is_err() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "parent traversal in unresolved link target",
+                        ));
+                    }
+                    ancestor = next_candidate;
+                }
+                Component::Normal(name) => {
+                    if missing {
+                        suffix.push(name.to_owned());
+                    } else {
+                        let next_candidate = ancestor.join(name);
+                        if fs::symlink_metadata(&next_candidate).is_ok() {
+                            ancestor = next_candidate;
+                        } else {
+                            missing = true;
+                            suffix.push(name.to_owned());
+                        }
+                    }
+                }
+            }
+        }
+        if fs::symlink_metadata(&ancestor).is_err() {
+            let mut landing = normalize_path(&joined);
+            landing.extend(tail.iter());
+            return Ok(landing);
+        }
+        match ancestor.canonicalize() {
+            Ok(mut landing) => {
+                landing.extend(suffix);
+                landing.extend(tail);
+                return Ok(landing);
+            }
+            Err(_) => {
+                let mut rest = suffix;
+                rest.extend(tail);
+                tail = rest;
+                link = ancestor;
+            }
+        }
+    }
+    Err(std::io::Error::other("too many levels of symbolic links"))
 }
 
 pub fn normalize_path(path: &Path) -> PathBuf {

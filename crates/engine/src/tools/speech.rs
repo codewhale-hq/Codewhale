@@ -263,14 +263,8 @@ impl ToolSpec for SpeechTool {
                 ))
             })?;
         }
-        tokio::fs::write(&output_path, &response.audio_bytes)
-            .await
-            .map_err(|err| {
-                ToolError::execution_failed(format!(
-                    "failed to write audio file {}: {err}",
-                    output_path.display()
-                ))
-            })?;
+        let audio_len = response.audio_bytes.len();
+        super::file::run_blocking_write_atomic(&output_path, response.audio_bytes).await?;
 
         let result = json!({
             "mode": "speech",
@@ -281,7 +275,7 @@ impl ToolSpec for SpeechTool {
             "format": response.audio_format,
             "output": output_label,
             "absolute_output": output_path.display().to_string(),
-            "bytes": response.audio_bytes.len(),
+            "bytes": audio_len,
             "voice": response.voice.as_deref().map(describe_speech_voice),
             "transcript": response.transcript,
             "supported_formats": SUPPORTED_SPEECH_FORMATS,

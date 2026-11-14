@@ -879,13 +879,19 @@ fn authority_mutation_paths(name: &str, input: &Value) -> Result<Option<Vec<Stri
         return Ok(None);
     }
     Ok(Some(
-        input
-            .get("path")
-            .or_else(|| input.get("output_path"))
-            .and_then(Value::as_str)
+        mutation_target_path(name, input)
             .map(|path| vec![path.to_string()])
             .unwrap_or_default(),
     ))
+}
+
+pub(crate) fn mutation_target_path<'a>(name: &str, input: &'a Value) -> Option<&'a str> {
+    let field = if name == "pandoc_convert" {
+        "output_path"
+    } else {
+        "path"
+    };
+    input.get(field).and_then(Value::as_str)
 }
 
 /// Builder for constructing a `ToolRegistry` with common tools.

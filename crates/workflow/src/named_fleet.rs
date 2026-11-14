@@ -28,24 +28,61 @@ use crate::fleet_exact::{
 };
 use crate::fleet_snapshot::QualifiedFleetId;
 
+pub type FleetFileReader = fn(&Path) -> std::io::Result<String>;
+
+fn read_followed(path: &Path) -> std::io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
 /// One labelled place fleet files are looked up.
 ///
 /// The label is what makes a Fleet identity *qualified*: `workspace/glm-pair`
 /// and `codewhale_home/glm-pair` are different Fleets, and the loader refuses
 /// to guess between them for exact definitions.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct FleetSearchRoot {
     /// Non-secret origin label, e.g. `workspace` or `codewhale_home`.
     pub origin: String,
     /// Directory that contains a `fleets/` subdirectory.
     pub root: PathBuf,
+    reader: FleetFileReader,
 }
+
+impl PartialEq for FleetSearchRoot {
+    fn eq(&self, other: &Self) -> bool {
+        self.origin == other.origin && self.root == other.root
+    }
+}
+
+impl Eq for FleetSearchRoot {}
 
 impl FleetSearchRoot {
     pub fn new(origin: impl Into<String>, root: impl Into<PathBuf>) -> Self {
         Self {
             origin: origin.into(),
             root: root.into(),
+            reader: read_followed,
+        }
+    }
+
+    #[must_use]
+    pub fn with_reader(mut self, reader: FleetFileReader) -> Self {
+        self.reader = reader;
+        self
+    }
+
+    pub(crate) fn read_candidate(&self, path: &Path) -> std::io::Result<Option<String>> {
+        match (self.reader)(path) {
+            Ok(text) => Ok(Some(text)),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::IsADirectory
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
         }
     }
 }
@@ -183,7 +220,15 @@ impl FleetDocument {
             path: path.display().to_string(),
             message: e.to_string(),
         })?;
-        let mut document = Self::parse(&text).map_err(|e| match e {
+        Self::from_source(path, &text, expect_name)
+    }
+
+    fn from_source(
+        path: &Path,
+        text: &str,
+        expect_name: Option<&str>,
+    ) -> Result<Self, NamedFleetError> {
+        let mut document = Self::parse(text).map_err(|e| match e {
             NamedFleetError::Parse { message, .. } => NamedFleetError::Parse {
                 path: path.display().to_string(),
                 message,
@@ -230,7 +275,7 @@ impl FleetDocument {
         let (requested_origin, bare_name) = split_qualified_fleet_name(name)?;
         let file_name = format!("{bare_name}.toml");
 
-        let mut candidates: Vec<(&FleetSearchRoot, PathBuf)> = Vec::new();
+        let mut candidates: Vec<(&FleetSearchRoot, PathBuf, String)> = Vec::new();
         for root in search_roots {
             if let Some(origin) = requested_origin
                 && !root.origin.eq_ignore_ascii_case(origin)
@@ -238,12 +283,18 @@ impl FleetDocument {
                 continue;
             }
             let path = root.root.join("fleets").join(&file_name);
-            if path.is_file() {
-                candidates.push((root, path));
+            let text = root
+                .read_candidate(&path)
+                .map_err(|e| NamedFleetError::Io {
+                    path: path.display().to_string(),
+                    message: e.to_string(),
+                })?;
+            if let Some(text) = text {
+                candidates.push((root, path, text));
             }
         }
 
-        let Some((first_root, first_path)) = candidates.first() else {
+        let Some((first_root, first_path, first_text)) = candidates.first() else {
             return Err(NamedFleetError::NotFound(name.to_string()));
         };
 
@@ -255,23 +306,15 @@ impl FleetDocument {
             // in a path the exact schema was never meant to touch. The
             // ambiguity that actually matters is "one of these is exact", and
             // the probe answers exactly that.
-            let mut any_exact = false;
-            for (_, path) in &candidates {
-                let text = std::fs::read_to_string(path).map_err(|e| NamedFleetError::Io {
-                    path: path.display().to_string(),
-                    message: e.to_string(),
-                })?;
-                if declared_schema_kind(&text).is_some() {
-                    any_exact = true;
-                    break;
-                }
-            }
+            let any_exact = candidates
+                .iter()
+                .any(|(_, _, text)| declared_schema_kind(text).is_some());
             if any_exact {
                 return Err(NamedFleetError::AmbiguousFleet {
                     name: bare_name.to_string(),
                     origins: candidates
                         .iter()
-                        .map(|(root, path)| {
+                        .map(|(root, path, _)| {
                             format!("{}/{bare_name} ({})", root.origin, path.display())
                         })
                         .collect(),
@@ -281,7 +324,7 @@ impl FleetDocument {
             // is parsed.
         }
 
-        let document = Self::load(first_path, Some(bare_name))?;
+        let document = Self::from_source(first_path, first_text, Some(bare_name))?;
         Ok((
             document,
             QualifiedFleetId {
@@ -547,15 +590,35 @@ fn parse_fleet_toml_minimal(text: &str) -> Result<NamedFleet, NamedFleetError> {
 /// Load fleet by name from search paths (first hit wins).
 pub fn load_named_fleet(
     name: &str,
-    search_roots: &[PathBuf],
+    search_roots: &[FleetSearchRoot],
 ) -> Result<NamedFleet, NamedFleetError> {
     validate_fleet_file_stem(name)?;
     let file_name = format!("{name}.toml");
     for root in search_roots {
-        let path = root.join("fleets").join(&file_name);
-        if path.is_file() {
-            return load_named_fleet_file(&path, Some(name));
+        let path = root.root.join("fleets").join(&file_name);
+        let Some(text) = root
+            .read_candidate(&path)
+            .map_err(|e| NamedFleetError::Io {
+                path: path.display().to_string(),
+                message: e.to_string(),
+            })?
+        else {
+            continue;
+        };
+        let fleet = parse_named_fleet(&text).map_err(|e| match e {
+            NamedFleetError::Parse { message, .. } => NamedFleetError::Parse {
+                path: path.display().to_string(),
+                message,
+            },
+            other => other,
+        })?;
+        if fleet.name != name {
+            return Err(NamedFleetError::NameMismatch {
+                declared: fleet.name,
+                expected: name.to_string(),
+            });
         }
+        return Ok(fleet);
     }
     Err(NamedFleetError::NotFound(name.to_string()))
 }
@@ -685,14 +748,76 @@ release_lead = "manager"
                     .contains(tmp.path().to_string_lossy().as_ref())
             );
         }
-        let err = load_named_fleet("../outside", std::slice::from_ref(&ws)).expect_err("legacy");
+        let root_ref = FleetSearchRoot::new("workspace", &ws);
+        let err =
+            load_named_fleet("../outside", std::slice::from_ref(&root_ref)).expect_err("legacy");
         assert!(matches!(err, NamedFleetError::InvalidName), "{err:?}");
 
         // A plain name still loads.
         std::fs::write(ws.join("fleets").join("stopship.toml"), STOPSHIP_TOML).expect("fleet");
         FleetDocument::load_by_name("stopship", &roots).expect("plain name");
         FleetDocument::load_by_name("workspace/stopship", &roots).expect("qualified name");
-        load_named_fleet("stopship", std::slice::from_ref(&ws)).expect("legacy plain name");
+        load_named_fleet("stopship", std::slice::from_ref(&root_ref)).expect("legacy plain name");
+    }
+
+    #[test]
+    fn a_search_root_reader_decides_what_a_candidate_may_read() {
+        fn refuse(_: &Path) -> std::io::Result<String> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "refused",
+            ))
+        }
+        fn missing(_: &Path) -> std::io::Result<String> {
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        }
+        let tmp = tempfile::tempdir().expect("tmp");
+        let refusing = [FleetSearchRoot::new("workspace", tmp.path()).with_reader(refuse)];
+        assert!(matches!(
+            FleetDocument::load_by_name("stopship", &refusing),
+            Err(NamedFleetError::Io { .. })
+        ));
+        assert!(matches!(
+            load_named_fleet("stopship", &refusing),
+            Err(NamedFleetError::Io { .. })
+        ));
+        let absent = [FleetSearchRoot::new("workspace", tmp.path()).with_reader(missing)];
+        assert!(matches!(
+            FleetDocument::load_by_name("stopship", &absent),
+            Err(NamedFleetError::NotFound(_))
+        ));
+        assert!(matches!(
+            load_named_fleet("stopship", &absent),
+            Err(NamedFleetError::NotFound(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_named_fleet_refuses_symlinked_file_when_reader_rejects_links() {
+        fn refuse_symlink(path: &Path) -> std::io::Result<String> {
+            if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Refusing symlinked file {}", path.display()),
+                ));
+            }
+            std::fs::read_to_string(path)
+        }
+        let ws = tempfile::tempdir().expect("ws");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::create_dir_all(ws.path().join("fleets")).expect("fleets dir");
+        std::fs::write(outside.path().join("x.toml"), "name = \"OUTSIDE\"\n").expect("outside");
+        std::os::unix::fs::symlink(
+            outside.path().join("x.toml"),
+            ws.path().join("fleets").join("x.toml"),
+        )
+        .expect("symlink");
+        let roots = [FleetSearchRoot::new("workspace", ws.path()).with_reader(refuse_symlink)];
+        assert!(matches!(
+            load_named_fleet("x", &roots),
+            Err(NamedFleetError::Io { .. })
+        ));
     }
 
     #[test]
@@ -810,7 +935,8 @@ model = "glm-5-turbo"
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..");
-        let fleet = load_named_fleet("stopship", &[root]).expect("load workspace fleet");
+        let search_root = FleetSearchRoot::new("workspace", &root);
+        let fleet = load_named_fleet("stopship", &[search_root]).expect("load workspace fleet");
         fleet.validate_stopship_roles().unwrap();
     }
 

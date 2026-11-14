@@ -66,7 +66,7 @@ pub use js_authoring::{
 };
 pub use model_policy::*;
 pub use named_fleet::{
-    FleetDocument, FleetSchema, FleetSearchRoot, NamedFleet, NamedFleetError,
+    FleetDocument, FleetFileReader, FleetSchema, FleetSearchRoot, NamedFleet, NamedFleetError,
     STOPSHIP_REQUIRED_ROLES, exact_schema_revision, load_named_fleet, load_named_fleet_file,
     parse_named_fleet, split_qualified_fleet_name, validate_fleet_file_stem,
 };

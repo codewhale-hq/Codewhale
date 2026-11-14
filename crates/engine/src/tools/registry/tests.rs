@@ -2537,3 +2537,63 @@ fn dynamic_tools_never_replace_registered_tools() {
         "first lookup"
     );
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn scoped_worker_convert_output_is_judged_on_the_field_it_writes() {
+    use std::os::unix::fs::PermissionsExt;
+    let _env = crate::test_support::lock_test_env();
+    let bin = tempdir().expect("bin");
+    let stub = bin.path().join("pandoc");
+    std::fs::write(
+        &stub,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'pandoc 3.1.9'; exit 0; fi\nsrc=\"$2\"\nout=\"\"\nwhile [ $# -gt 0 ]; do if [ \"$1\" = \"--output\" ]; then out=\"$2\"; fi; shift; done\nif [ -n \"$out\" ]; then cat \"$src\" > \"$out\"; else cat \"$src\"; fi\n",
+    )
+    .expect("stub");
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let search = std::env::join_paths(std::iter::once(bin.path().to_path_buf()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .expect("path");
+    let _path = crate::test_support::EnvVarGuard::set("PATH", search);
+
+    let tmp = tempdir().expect("tempdir");
+    std::fs::create_dir(tmp.path().join("src")).expect("src");
+    std::fs::create_dir(tmp.path().join("ops")).expect("ops");
+    std::fs::write(tmp.path().join("src/in.md"), "PAYLOAD\n").expect("source");
+    std::fs::write(tmp.path().join("ops/outside.txt"), "original\n").expect("fixture");
+    let registry = ToolRegistryBuilder::new()
+        .with_tool(Arc::new(crate::tools::pandoc::PandocConvertTool))
+        .build(scoped_context(tmp.path()));
+
+    registry
+        .execute_full(
+            "pandoc_convert",
+            json!({"source_path": "src/in.md", "target_format": "plain", "output_path": "src/out.txt"}),
+        )
+        .await
+        .expect("an output inside the write scope");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("src/out.txt")).unwrap(),
+        "PAYLOAD\n"
+    );
+
+    for input in [
+        json!({"source_path": "src/in.md", "target_format": "plain", "output_path": "ops/outside.txt"}),
+        json!({
+            "source_path": "src/in.md",
+            "target_format": "plain",
+            "output_path": "ops/outside.txt",
+            "path": "src/unused.txt"
+        }),
+    ] {
+        registry
+            .execute_full("pandoc_convert", input)
+            .await
+            .expect_err("an output outside the write scope must be refused");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("ops/outside.txt")).unwrap(),
+            "original\n"
+        );
+    }
+}

@@ -47,6 +47,8 @@ pub mod lsp;
 pub mod mcp_registry;
 pub mod native_memory;
 pub mod notify;
+#[cfg(all(test, unix))]
+mod output_link_tests;
 pub mod pandoc;
 pub mod pdf;
 pub mod plan;

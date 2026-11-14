@@ -21775,7 +21775,7 @@ fn is_internal_coordination_state_tool(name: &str) -> bool {
 
 /// Raw target paths of a write-capable call, before claim normalization:
 /// the patch preflight's touched files for `apply_patch`/`File.patch`, else
-/// the `path`/`output_path` field. Feeds the child write carve-out (#5186);
+/// the field the tool writes through. Feeds the child write carve-out (#5186);
 /// claim enforcement keeps using the normalized [`mutation_paths`].
 fn raw_mutation_target_paths(name: &str, input: &Value) -> Vec<String> {
     if name == "apply_patch"
@@ -21789,10 +21789,7 @@ fn raw_mutation_target_paths(name: &str, input: &Value) -> Vec<String> {
             .map(|preflight| preflight.touched_files)
             .unwrap_or_default();
     }
-    input
-        .get("path")
-        .or_else(|| input.get("output_path"))
-        .and_then(Value::as_str)
+    crate::tools::registry::mutation_target_path(name, input)
         .map(|path| vec![path.to_string()])
         .unwrap_or_default()
 }
@@ -21808,11 +21805,7 @@ fn mutation_paths(name: &str, input: &Value, workspace: &Path) -> Result<Vec<Str
         codewhale_tools::patch_preflight::preflight_apply_patch(&patch_input)
             .map_err(|err| anyhow!(err.to_string()))?
             .touched_files
-    } else if let Some(path) = input
-        .get("path")
-        .or_else(|| input.get("output_path"))
-        .and_then(Value::as_str)
-    {
+    } else if let Some(path) = crate::tools::registry::mutation_target_path(name, input) {
         vec![path.to_string()]
     } else {
         Vec::new()

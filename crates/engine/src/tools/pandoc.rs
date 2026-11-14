@@ -38,6 +38,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio::process::Command as TokioCommand;
 
+use super::file::{reject_primitive_unknown, run_blocking_write_atomic};
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_str, required_str,
@@ -123,6 +124,11 @@ impl ToolSpec for PandocConvertTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+        reject_primitive_unknown(
+            &input,
+            "pandoc_convert",
+            &["source_path", "target_format", "output_path"],
+        )?;
         let source_path_str = required_str(&input, "source_path")?;
         let target_format = required_str(&input, "target_format")?.trim().to_lowercase();
         let output_path_str = optional_str(&input, "output_path")?;
@@ -177,11 +183,27 @@ impl ToolSpec for PandocConvertTool {
         })?;
         require_sandbox_support(&pandoc).await?;
 
+        let staging = if resolved_output_path.is_some() {
+            Some(
+                tempfile::Builder::new()
+                    .prefix("codewhale-pandoc-")
+                    .tempdir()
+                    .map_err(|e| {
+                        ToolError::execution_failed(format!(
+                            "failed to prepare pandoc output staging: {e}"
+                        ))
+                    })?,
+            )
+        } else {
+            None
+        };
+        let staged_output = staging.as_ref().map(|dir| dir.path().join("converted"));
+
         let mut cmd = TokioCommand::new(&pandoc);
         cmd.args(pandoc_args(
             &source_path,
             &target_format,
-            resolved_output_path.as_deref(),
+            staged_output.as_deref(),
         ));
         // Kill the converter if the timeout below drops the output()
         // future: pandoc on a pathological document would otherwise keep
@@ -207,6 +229,13 @@ impl ToolSpec for PandocConvertTool {
         }
 
         let summary = if let Some(out) = resolved_output_path {
+            let staged = staged_output.as_deref().ok_or_else(|| {
+                ToolError::execution_failed("pandoc output staging was not prepared")
+            })?;
+            let converted = tokio::fs::read(staged).await.map_err(|e| {
+                ToolError::execution_failed(format!("failed to read pandoc output: {e}"))
+            })?;
+            run_blocking_write_atomic(&out, converted).await?;
             format!(
                 "Converted {} → {} via pandoc; wrote {}",
                 source_path.display(),

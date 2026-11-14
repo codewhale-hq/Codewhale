@@ -1384,12 +1384,8 @@ fn run_workflow_command(
                 workspace.clone()
             };
 
-            // A fleet is an optional pin layer, not a requirement: role-only
-            // tasks resolve against the built-in roster and the session route
-            // (matching the TUI tool path). When a fleet IS given, it is
-            // loaded and validated before the run starts.
             if let Some(name) = fleet.as_deref() {
-                let roots = named_fleet_search_roots(&workspace);
+                let roots = codewhale_engine::fleet::exact::fleet_search_roots(&workspace);
                 let loaded =
                     codewhale_workflow::load_named_fleet(name, &roots).with_context(|| {
                         format!("load Fleet `{name}` from {}", display_roots(&roots))
@@ -1535,23 +1531,10 @@ fn validate_workflow_source_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The same roots, in the same order, as the TUI's `fleet_search_roots`:
-/// `$CODEWHALE_HOME`, then `<workspace>/.codewhale` (where the Fleet store
-/// saves folder Fleets), then the workspace root for checked-in rosters.
-fn named_fleet_search_roots(workspace: &Path) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Ok(home) = codewhale_config::codewhale_home() {
-        roots.push(home);
-    }
-    roots.push(workspace.join(".codewhale"));
-    roots.push(workspace.to_path_buf());
-    roots
-}
-
-fn display_roots(roots: &[PathBuf]) -> String {
+fn display_roots(roots: &[codewhale_workflow::FleetSearchRoot]) -> String {
     roots
         .iter()
-        .map(|root| root.display().to_string())
+        .map(|root| root.root.display().to_string())
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -9701,13 +9684,13 @@ verbosity = "concise"
     #[test]
     fn named_fleet_search_roots_include_the_saved_workspace_dir() {
         let workspace = Path::new("/ws");
-        let roots = named_fleet_search_roots(workspace);
+        let roots = codewhale_engine::fleet::exact::fleet_search_roots(workspace);
         let tail: Vec<&Path> = roots
             .iter()
             .rev()
             .take(2)
             .rev()
-            .map(PathBuf::as_path)
+            .map(|root| root.root.as_path())
             .collect();
         assert_eq!(tail, [Path::new("/ws/.codewhale"), Path::new("/ws")]);
     }

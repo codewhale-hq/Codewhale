@@ -38,8 +38,6 @@
 //! into the same [`CapturedReasoningRouter`]** the named store produces. There
 //! is one runtime representation of the service, whichever way it was written.
 
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -211,7 +209,7 @@ impl ReasoningRouterProfile {
         }
         let file_name = format!("{bare}.toml");
 
-        let mut candidates: Vec<(&FleetSearchRoot, PathBuf)> = Vec::new();
+        let mut candidates: Vec<(&FleetSearchRoot, String)> = Vec::new();
         for root in search_roots {
             if let Some(origin) = requested_origin
                 && !root.origin.eq_ignore_ascii_case(origin)
@@ -219,12 +217,18 @@ impl ReasoningRouterProfile {
                 continue;
             }
             let path = root.root.join(REASONING_ROUTER_DIR).join(&file_name);
-            if path.is_file() {
-                candidates.push((root, path));
+            let text = root
+                .read_candidate(&path)
+                .map_err(|error| ReasoningRouterError::Io {
+                    path: path.display().to_string(),
+                    message: error.to_string(),
+                })?;
+            if let Some(text) = text {
+                candidates.push((root, text));
             }
         }
 
-        let Some((first_root, first_path)) = candidates.first() else {
+        let Some((first_root, text)) = candidates.first() else {
             return Err(ReasoningRouterError::NotFound {
                 name: name.trim().to_string(),
             });
@@ -242,12 +246,7 @@ impl ReasoningRouterProfile {
             });
         }
 
-        let text =
-            std::fs::read_to_string(first_path).map_err(|error| ReasoningRouterError::Io {
-                path: first_path.display().to_string(),
-                message: error.to_string(),
-            })?;
-        let profile = Self::parse(&text)?;
+        let profile = Self::parse(text)?;
         if profile.name != bare {
             return Err(ReasoningRouterError::NameMismatch {
                 declared: profile.name.clone(),

@@ -603,7 +603,38 @@ fn personal_fleets_dir() -> Result<PathBuf, FleetStoreError> {
 }
 
 fn workspace_fleets_dir(workspace: &Path) -> PathBuf {
-    workspace.join(".codewhale").join(FLEET_DIR)
+    codewhale_util::files::workspace_state_path(workspace, Path::new(FLEET_DIR)).1
+}
+
+pub fn read_repository_fleet_file(path: &Path) -> std::io::Result<String> {
+    let root = path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    if root
+        .file_name()
+        .is_some_and(|name| name == codewhale_paths::CODEWHALE_APP_DIR)
+    {
+        let metadata = fs::symlink_metadata(root)?;
+        if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Refusing symlinked path {}", root.display()),
+            ));
+        }
+    }
+    codewhale_util::fs_confined::read_to_string(root, path)
+}
+
+fn read_store_file(path: &Path) -> std::io::Result<String> {
+    if personal_fleets_dir()
+        .ok()
+        .is_some_and(|personal| path.starts_with(personal))
+    {
+        fs::read_to_string(path)
+    } else {
+        read_repository_fleet_file(path)
+    }
 }
 
 /// The fleet directory for a scope, creating it if needed.
@@ -658,11 +689,13 @@ pub fn list_fleets(workspace: &Path) -> Vec<FleetEntry> {
     if let Ok(dir) = personal_fleets_dir() {
         collect_entries(&dir, FleetScope::Personal, &mut entries);
     }
-    collect_entries(
-        &workspace_fleets_dir(workspace),
-        FleetScope::Workspace,
-        &mut entries,
-    );
+    if reject_linked_workspace_dir(FleetScope::Workspace, workspace).is_ok() {
+        collect_entries(
+            &workspace_fleets_dir(workspace),
+            FleetScope::Workspace,
+            &mut entries,
+        );
+    }
     entries.sort_by(|a, b| {
         a.scope
             .label()
@@ -687,18 +720,18 @@ fn collect_entries(dir: &Path, scope: FleetScope, out: &mut Vec<FleetEntry>) {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let text = fs::read_to_string(&path).ok();
-        let parse_error = text
-            .as_deref()
-            .and_then(|text| FleetFile::parse(text).err())
-            .map(|e| e.to_string());
+        let read = read_store_file(&path);
+        let text = read.as_deref().ok();
+        let parse_error = match &read {
+            Ok(text) => FleetFile::parse(text).err().map(|e| e.to_string()),
+            Err(e) => Some(e.to_string()),
+        };
         let legacy = parse_error.as_deref().is_some_and(|err| {
             err.contains("unknown schema") || err.contains("invalid fleet TOML")
         });
         // The row shows the Fleet's own display name, never the file slug —
         // a file saved as `Temp Fleet` must not appear as `temp-fleet`.
         let name = text
-            .as_deref()
             .and_then(|text| toml::from_str::<toml::Value>(text).ok())
             .and_then(|value| {
                 value
@@ -735,7 +768,6 @@ pub fn v2_fleet_candidates(name: &str, workspace: &Path) -> Vec<(FleetScope, Pat
         (FleetScope::Workspace, workspace),
     ] {
         if let Some(path) = path
-            && path.is_file()
             && declares_v2_schema(&path)
         {
             found.push((scope, path));
@@ -748,7 +780,7 @@ pub fn v2_fleet_candidates(name: &str, workspace: &Path) -> Vec<(FleetScope, Pat
 /// the file cannot be read; `Some(None)` when it is readable but declares no
 /// schema (or is not valid TOML).
 pub fn read_declared_schema(path: &Path) -> Option<Option<String>> {
-    fs::read_to_string(path)
+    read_store_file(path)
         .ok()
         .map(|text| codewhale_workflow::fleet_exact::declared_schema_kind(&text))
 }
@@ -782,7 +814,7 @@ pub fn load_fleet(
     let Some((scope, path)) = found.pop() else {
         return Err(FleetStoreError::NotFound(name.to_string()));
     };
-    let text = fs::read_to_string(&path).map_err(|e| FleetStoreError::Io {
+    let text = read_store_file(&path).map_err(|e| FleetStoreError::Io {
         path: path.display().to_string(),
         message: e.to_string(),
     })?;
@@ -806,17 +838,27 @@ pub fn load_fleet_in_scope(
         FleetScope::Workspace => workspace_fleets_dir(workspace),
     };
     let path = dir.join(format!("{}.toml", slugify(name)));
-    if !path.is_file() {
-        return Err(FleetStoreError::NotFound(format!(
-            "{} ({})",
-            name,
-            scope.label()
-        )));
-    }
-    let text = fs::read_to_string(&path).map_err(|e| FleetStoreError::Io {
-        path: path.display().to_string(),
-        message: e.to_string(),
-    })?;
+    let text = match read_store_file(&path) {
+        Ok(text) => text,
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::IsADirectory
+            ) =>
+        {
+            return Err(FleetStoreError::NotFound(format!(
+                "{} ({})",
+                name,
+                scope.label()
+            )));
+        }
+        Err(e) => {
+            return Err(FleetStoreError::Io {
+                path: path.display().to_string(),
+                message: e.to_string(),
+            });
+        }
+    };
     let fleet = FleetFile::parse(&text).map_err(|e| FleetStoreError::Parse {
         path: path.display().to_string(),
         message: e.to_string(),
@@ -828,7 +870,7 @@ pub fn load_fleet_in_scope(
 /// open entry, so the saved scope is exact). API surface for the path-based
 /// editor flows; currently exercised by tests.
 pub fn load_fleet_at(path: &Path) -> Result<(FleetFile, FleetScope), FleetStoreError> {
-    let text = fs::read_to_string(path).map_err(|e| FleetStoreError::Io {
+    let text = read_store_file(path).map_err(|e| FleetStoreError::Io {
         path: path.display().to_string(),
         message: e.to_string(),
     })?;
@@ -859,7 +901,7 @@ pub fn save_fleet(
         // other non-empty file at this slug (a legacy roster or exact fleet,
         // a Fleet from a newer build, a Fleet mid-edit that no longer parses)
         // is left unchanged.
-        let text = fs::read_to_string(&path).map_err(|e| FleetStoreError::Io {
+        let text = read_store_file(&path).map_err(|e| FleetStoreError::Io {
             path: path.display().to_string(),
             message: e.to_string(),
         })?;
@@ -983,7 +1025,7 @@ pub fn selected_fleet(workspace: &Path) -> Option<SelectedFleet> {
 
 fn read_selection_result(dir: &Path) -> Result<Option<String>, FleetStoreError> {
     let path = dir.join(SELECTED_FILE);
-    let text = match fs::read_to_string(&path) {
+    let text = match read_store_file(&path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {

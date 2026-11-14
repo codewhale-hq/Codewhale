@@ -695,7 +695,10 @@ async fn acquire_file_mutation(
 /// rename (and a retry loop on Windows) must not park a Tokio worker
 /// (blocking-call convention, #6149). Error shape matches the historical
 /// inline call.
-async fn run_blocking_write_atomic(path: &Path, contents: Vec<u8>) -> Result<(), ToolError> {
+pub(super) async fn run_blocking_write_atomic(
+    path: &Path,
+    contents: Vec<u8>,
+) -> Result<(), ToolError> {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
         codewhale_util::utils::write_atomic_workspace(&path, &contents).map_err(|e| {
@@ -939,7 +942,11 @@ async fn contract_mutation_result(
     }))
 }
 
-fn reject_primitive_unknown(input: &Value, tool: &str, allowed: &[&str]) -> Result<(), ToolError> {
+pub(super) fn reject_primitive_unknown(
+    input: &Value,
+    tool: &str,
+    allowed: &[&str],
+) -> Result<(), ToolError> {
     let object = input
         .as_object()
         .ok_or_else(|| ToolError::invalid_input(format!("{tool} input must be an object")))?;

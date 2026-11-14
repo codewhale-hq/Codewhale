@@ -247,7 +247,7 @@
     "std_fs": 1
   },
   "crates/engine/src/tools/spec.rs": {
-    "path_canonicalize": 8
+    "path_canonicalize": 10
   },
   "crates/engine/src/tools/speech.rs": {
     "std_fs": 1
@@ -580,8 +580,5 @@
   },
   "crates/workflow/src/named_fleet.rs": {
     "std_fs": 3
-  },
-  "crates/workflow/src/reasoning_router.rs": {
-    "std_fs": 1
   }
 }

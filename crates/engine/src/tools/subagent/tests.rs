@@ -29062,3 +29062,38 @@ async fn a_write_capable_child_needs_a_network_grant_and_the_core_approval_for_a
         }
     }
 }
+
+#[test]
+fn claim_and_carve_out_paths_name_the_file_convert_writes() {
+    let workspace = tempdir().expect("tempdir");
+    let input = serde_json::json!({
+        "source_path": "src/in.md",
+        "target_format": "plain",
+        "output_path": "ops/outside.txt",
+        "path": "src/unused.txt"
+    });
+    assert_eq!(
+        raw_mutation_target_paths("pandoc_convert", &input),
+        vec!["ops/outside.txt".to_string()]
+    );
+    assert_eq!(
+        mutation_paths("pandoc_convert", &input, workspace.path()).expect("claim paths"),
+        vec!["ops/outside.txt".to_string()]
+    );
+    let only_path = serde_json::json!({
+        "source_path": "src/in.md",
+        "target_format": "plain",
+        "path": "src/unused.txt"
+    });
+    assert!(raw_mutation_target_paths("pandoc_convert", &only_path).is_empty());
+    assert!(
+        mutation_paths("pandoc_convert", &only_path, workspace.path())
+            .expect("claim paths")
+            .is_empty()
+    );
+    let write = serde_json::json!({"path": "src/new.txt", "output_path": "ops/other.txt"});
+    assert_eq!(
+        raw_mutation_target_paths("write", &write),
+        vec!["src/new.txt".to_string()]
+    );
+}
