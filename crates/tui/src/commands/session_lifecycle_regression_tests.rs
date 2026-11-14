@@ -41,7 +41,7 @@ fn new_session(app: &mut App, arg: Option<&str>) -> CommandResult {
 pub(crate) async fn acknowledge_new_session(app: &mut App, result: &CommandResult) {
     use codewhale_engine::core::engine::{Engine, EngineConfig};
     use codewhale_engine::core::ops::Op;
-    let Some(AppAction::NewSession { sync, force }) = result.action.as_ref() else {
+    let Some(AppAction::NewSession { sync, force, draft }) = result.action.as_ref() else {
         panic!("expected new-session request");
     };
     let config = Config::default();
@@ -85,7 +85,7 @@ pub(crate) async fn acknowledge_new_session(app: &mut App, result: &CommandResul
         .get_session_snapshot()
         .await
         .expect("current fixture acknowledgement");
-    crate::tui::ui::begin_fresh_session(app, &handle, sync.clone(), *force)
+    crate::tui::ui::begin_fresh_session(app, &handle, sync.clone(), *force, draft.clone())
         .expect("prepare fresh transition");
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while app.pending_fresh_session.is_some() {
@@ -407,6 +407,7 @@ async fn new_session_from_resumed_state_creates_distinct_empty_session() {
                     ..
                 },
             force: false,
+            draft: None,
         }) => {
             assert_eq!(session_id.as_deref(), Some(new_id.as_str()));
             assert!(messages.is_empty());
@@ -1225,7 +1226,9 @@ async fn new_without_argument_starts_standard_from_a_creator_session() {
 
     let explicit = new_session(&mut app, Some("standard --force"));
     match explicit.action.as_ref() {
-        Some(AppAction::NewSession { sync, force: true }) => assert_eq!(sync.agent_preset, None),
+        Some(AppAction::NewSession {
+            sync, force: true, ..
+        }) => assert_eq!(sync.agent_preset, None),
         other => panic!("expected a forced NewSession, got {other:?}"),
     }
 }

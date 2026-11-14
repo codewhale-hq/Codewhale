@@ -80,6 +80,7 @@ pub(in crate::commands) fn new_portable(
             codewhale_command_contract::outcome::SessionAction::NewSession {
                 sync: receipt.sync,
                 force,
+                draft: None,
             },
         ),
         Err(error) => CommandResult::error(error),

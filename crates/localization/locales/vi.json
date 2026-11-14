@@ -576,7 +576,7 @@
   "PluginKimiMarketplaceRemoteUnsupported": "Nguồn Kimi từ xa phải kết thúc bằng .tar.gz hoặc .tgz để Codewhale cài đặt; .zip được nhận diện nhưng không được hỗ trợ.",
   "PluginKimiMarketplaceGzipTarball": "URL tarball gzip",
   "CmdPluginDescription": "Kiểm tra và quản lý gói plugin đáng tin cậy; công cụ thực thi cũ vẫn được tách riêng",
-  "CmdPluginBundleUsage": "Cách dùng: /plugin [list|show <name>|validate [name]|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
+  "CmdPluginBundleUsage": "Cách dùng: /plugin [list|show <name>|create [idea]|validate [name]|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
   "CmdPluginBundleNoneFound": "Không tìm thấy gói plugin Codewhale nào.",
   "CmdPluginBundleListHeader": "Gói plugin ({count}):",
   "CmdPluginLegacyListHeader": "Công cụ plugin thực thi cũ ({count}) trong {dir}:",

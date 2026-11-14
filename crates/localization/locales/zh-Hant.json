@@ -574,7 +574,7 @@
   "PluginKimiMarketplaceZipUnsupported": "Codewhale 的已審查安裝程式不支援 Kimi ZIP 套件；請從本機目錄安裝，或匯入上游 Kimi 受管外掛。",
   "PluginKimiMarketplaceRemoteUnsupported": "供 Codewhale 安裝的 Kimi 遠端來源必須以 .tar.gz 或 .tgz 結尾；可辨識 .zip，但目前不支援。",
   "PluginKimiMarketplaceGzipTarball": "gzip 壓縮 tar 套件 URL",
-  "CmdPluginBundleUsage": "用法：/plugin [list|show <name>|validate [name]|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
+  "CmdPluginBundleUsage": "用法：/plugin [list|show <name>|create [idea]|validate [name]|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
   "CmdPluginBundleNoneFound": "未發現 Codewhale 外掛包。",
   "CmdPluginBundleListHeader": "外掛包（{count}）：",
   "CmdPluginLegacyListHeader": "{dir} 中的舊版可執行外掛工具（{count}）：",

@@ -575,7 +575,7 @@
   "PluginKimiMarketplaceRemoteUnsupported": "Les sources Kimi distantes doivent finir par .tar.gz ou .tgz pour l’installation Codewhale ; .zip est reconnu mais non pris en charge.",
   "PluginKimiMarketplaceGzipTarball": "URL d’archive tar gzip",
   "CmdPluginDescription": "Inspecter et gérer les bundles de plugins de confiance ; les outils exécutables hérités restent à part",
-  "CmdPluginBundleUsage": "Usage : /plugin [list|show <name>|validate [name]|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
+  "CmdPluginBundleUsage": "Usage : /plugin [list|show <name>|create [idea]|validate [name]|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
   "CmdPluginBundleNoneFound": "Aucun bundle de plugins Codewhale trouvé.",
   "CmdPluginBundleListHeader": "Bundles de plugins ({count}) :",
   "CmdPluginLegacyListHeader": "Outils de plugins exécutables hérités ({count}) dans {dir} :",

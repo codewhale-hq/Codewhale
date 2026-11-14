@@ -324,7 +324,7 @@ fn new_composes_exact_baseline_outcomes() {
     assert!(result.message.is_none());
     assert!(matches!(
         result.action,
-        Some(SessionAction::NewSession { sync: codewhale_command_contract::facets::SessionSyncPayload { session_id: Some(ref id), .. }, force: true }) if id == "new-123"
+        Some(SessionAction::NewSession { sync: codewhale_command_contract::facets::SessionSyncPayload { session_id: Some(ref id), .. }, force: true, .. }) if id == "new-123"
     ));
     assert_eq!(canned.fresh_forces, [true]);
     assert_eq!(canned.fresh_modes, [None]);

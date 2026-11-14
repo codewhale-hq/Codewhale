@@ -575,7 +575,7 @@
   "PluginKimiMarketplaceRemoteUnsupported": "Віддалене джерело Kimi для встановлення Codewhale має закінчуватися на .tar.gz або .tgz; .zip розпізнається, але не підтримується.",
   "PluginKimiMarketplaceGzipTarball": "URL gzip-архіву tar",
   "CmdPluginDescription": "Переглянути й керувати довіреними наборами плагінів; застарілі виконувані інструменти лишаються окремо",
-  "CmdPluginBundleUsage": "Використання: /plugin [list|show <name>|validate [name]|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
+  "CmdPluginBundleUsage": "Використання: /plugin [list|show <name>|create [idea]|validate [name]|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
   "CmdPluginBundleNoneFound": "Наборів плагінів Codewhale не знайдено.",
   "CmdPluginBundleListHeader": "Набори плагінів ({count}):",
   "CmdPluginLegacyListHeader": "Застарілі виконувані інструменти-плагіни ({count}) в {dir}:",

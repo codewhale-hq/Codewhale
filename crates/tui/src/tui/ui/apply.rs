@@ -1816,8 +1816,8 @@ async fn apply_command_result_inner(
                 app.launch.dismiss();
                 app.launch.status = None;
             }
-            AppAction::NewSession { sync, force } => {
-                if let Err(error) = begin_fresh_session(app, engine_handle, sync, force) {
+            AppAction::NewSession { sync, force, draft } => {
+                if let Err(error) = begin_fresh_session(app, engine_handle, sync, force, draft) {
                     surface_session_load_failure(app, error);
                 }
             }

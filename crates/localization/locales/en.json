@@ -576,7 +576,7 @@
   "PluginKimiMarketplaceZipUnsupported": "Kimi ZIP bundles are not supported by Codewhale's reviewed installer; install from a local directory or import an upstream Kimi-managed plugin.",
   "PluginKimiMarketplaceRemoteUnsupported": "Kimi remote sources must end in .tar.gz or .tgz for Codewhale installation; .zip is recognized but not supported.",
   "PluginKimiMarketplaceGzipTarball": "gzip tarball URL",
-  "CmdPluginBundleUsage": "Usage: /plugin [list|show <name>|validate [name]|export <name> <dir>|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
+  "CmdPluginBundleUsage": "Usage: /plugin [list|show <name>|create [idea]|validate [name]|export <name> <dir>|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
   "CmdPluginBundleNoneFound": "No Codewhale plugin bundles found.",
   "CmdPluginBundleListHeader": "Plugin bundles ({count}):",
   "CmdPluginLegacyListHeader": "Legacy plugin tools ({count}) in {dir}:",

@@ -575,7 +575,7 @@
   "PluginKimiMarketplaceRemoteUnsupported": "Sumber jarak jauh Kimi harus berakhiran .tar.gz atau .tgz untuk dipasang Codewhale; .zip dikenali tetapi tidak didukung.",
   "PluginKimiMarketplaceGzipTarball": "URL tarball gzip",
   "CmdPluginDescription": "Periksa dan kelola bundel plugin tepercaya; alat eksekusi lama tetap terpisah",
-  "CmdPluginBundleUsage": "Penggunaan: /plugin [list|show <name>|validate [name]|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
+  "CmdPluginBundleUsage": "Penggunaan: /plugin [list|show <name>|create [idea]|validate [name]|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
   "CmdPluginBundleNoneFound": "Tidak ada bundel plugin Codewhale yang ditemukan.",
   "CmdPluginBundleListHeader": "Bundel plugin ({count}):",
   "CmdPluginLegacyListHeader": "Alat plugin eksekusi lama ({count}) di {dir}:",

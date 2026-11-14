@@ -576,7 +576,7 @@
   "PluginKimiMarketplaceRemoteUnsupported": "Codewhale でインストールする Kimi リモートソースは .tar.gz または .tgz で終わる必要があります。.zip は認識されますが未対応です。",
   "PluginKimiMarketplaceGzipTarball": "gzip tarball の URL",
   "CmdPluginDescription": "信頼済みプラグインバンドルを確認・管理します。従来の実行可能ツールは別に扱われます",
-  "CmdPluginBundleUsage": "使い方: /plugin [list|show <name>|validate [name]|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
+  "CmdPluginBundleUsage": "使い方: /plugin [list|show <name>|create [idea]|validate [name]|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
   "CmdPluginBundleNoneFound": "Codewhale プラグインバンドルは見つかりませんでした。",
   "CmdPluginBundleListHeader": "プラグインバンドル ({count}):",
   "CmdPluginLegacyListHeader": "従来の実行可能プラグインツール ({count}) — {dir}:",

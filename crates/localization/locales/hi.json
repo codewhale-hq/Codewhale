@@ -575,7 +575,7 @@
   "PluginKimiMarketplaceRemoteUnsupported": "Codewhale इंस्टॉलेशन के लिए रिमोट Kimi स्रोत .tar.gz या .tgz पर समाप्त होना चाहिए; .zip पहचाना जाता है, पर समर्थित नहीं है।",
   "PluginKimiMarketplaceGzipTarball": "gzip टारबॉल URL",
   "CmdPluginDescription": "विश्वसनीय प्लगिन बंडल देखें और प्रबंधित करें; लीगेसी एक्ज़िक्यूटेबल टूल अलग रहते हैं",
-  "CmdPluginBundleUsage": "उपयोग: /plugin [list|show <name>|validate [name]|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
+  "CmdPluginBundleUsage": "उपयोग: /plugin [list|show <name>|create [idea]|validate [name]|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
   "CmdPluginBundleNoneFound": "कोई Codewhale प्लगिन बंडल नहीं मिला।",
   "CmdPluginBundleListHeader": "प्लगिन बंडल ({count}):",
   "CmdPluginLegacyListHeader": "{dir} में लीगेसी एक्ज़िक्यूटेबल प्लगिन टूल ({count}):",

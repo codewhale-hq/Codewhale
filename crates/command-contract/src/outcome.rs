@@ -102,6 +102,7 @@ pub enum SessionAction {
     NewSession {
         sync: SessionSyncPayload,
         force: bool,
+        draft: Option<String>,
     },
     SendMessage(String),
     RemoteControl(SessionRemoteControlAction),

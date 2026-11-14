@@ -86,7 +86,9 @@ pub(in crate::commands) fn host_result(result: SessionCommandResult) -> CommandR
                 codewhale_app_server::remote_control::RemoteControlAction::Stop
             }
         }),
-        SessionAction::NewSession { sync, force } => AppAction::NewSession { sync, force },
+        SessionAction::NewSession { sync, force, draft } => {
+            AppAction::NewSession { sync, force, draft }
+        }
         SessionAction::SyncSession(sync) => AppAction::SyncSession {
             session_id: sync.session_id,
             messages: sync.messages,

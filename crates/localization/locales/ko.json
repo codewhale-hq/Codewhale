@@ -576,7 +576,7 @@
   "PluginKimiMarketplaceRemoteUnsupported": "Codewhale에서 설치할 Kimi 원격 소스는 .tar.gz 또는 .tgz로 끝나야 합니다. .zip은 인식하지만 지원하지 않습니다.",
   "PluginKimiMarketplaceGzipTarball": "gzip tarball 주소",
   "CmdPluginDescription": "신뢰한 플러그인 번들을 검사하고 관리합니다. 기존 실행형 도구는 별도로 유지됩니다",
-  "CmdPluginBundleUsage": "사용법: /plugin [list|show <name>|validate [name]|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
+  "CmdPluginBundleUsage": "사용법: /plugin [list|show <name>|create [idea]|validate [name]|install <spec>|update <name>|uninstall <name>|trust <name> [review-token]|enable <name>|disable <name>|revoke <name>|reload|tools [name]]",
   "CmdPluginBundleNoneFound": "Codewhale 플러그인 번들을 찾지 못했습니다.",
   "CmdPluginBundleListHeader": "플러그인 번들 ({count}개):",
   "CmdPluginLegacyListHeader": "{dir}의 기존 실행형 플러그인 도구 ({count}개):",
