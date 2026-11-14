@@ -49,6 +49,16 @@ const PARKED_POLL_CAP: Duration = Duration::from_secs(2);
 // v4 binds execution to a trusted Runtime scope. Older executors must not
 // ignore its eligibility or generation fence.
 const CURRENT_TASK_SCHEMA_VERSION: u32 = 4;
+const DENY_RULES_TASK_SCHEMA_VERSION: u32 = 5;
+const MAX_SUPPORTED_TASK_SCHEMA_VERSION: u32 = DENY_RULES_TASK_SCHEMA_VERSION;
+
+const fn required_task_schema_version(disallowed_tools: &[String]) -> u32 {
+    if disallowed_tools.is_empty() {
+        CURRENT_TASK_SCHEMA_VERSION
+    } else {
+        DENY_RULES_TASK_SCHEMA_VERSION
+    }
+}
 const STORE_REFRESH_INTERVAL: Duration = Duration::from_millis(200);
 /// How long a worker with nothing claimable naps between queue-fingerprint
 /// checks. An in-process notify still wakes it at once; this only bounds how
@@ -2374,9 +2384,10 @@ impl TaskManager {
             req.auto_approve,
         )?;
         validate_preallocated_task_id(&task_id)?;
+        let disallowed_tools = normalize_deny_rules(req.disallowed_tools);
 
         let task = TaskRecord {
-            schema_version: CURRENT_TASK_SCHEMA_VERSION,
+            schema_version: required_task_schema_version(&disallowed_tools),
             // 16 random hex chars (was 8; ~60 bits of entropy once UUIDv4's
             // fixed version nibble is discounted): task ids live in durable
             // state that accumulates across restarts, and a collision
@@ -2403,7 +2414,7 @@ impl TaskManager {
             // (GHSA-72w5-pf8h-xfp4).
             auto_approve: req.auto_approve.unwrap_or(false),
             permission_posture: req.permission_posture,
-            disallowed_tools: normalize_deny_rules(req.disallowed_tools),
+            disallowed_tools,
             status: TaskStatus::Queued,
             created_at: Utc::now(),
             started_at: None,
@@ -3903,6 +3914,12 @@ impl TaskManager {
 
     fn persist_task_locked(&self, task: &TaskRecord) -> Result<()> {
         let path = self.tasks_dir.join(format!("{}.json", task.id));
+        let min_version = required_task_schema_version(&task.disallowed_tools);
+        if task.schema_version < min_version {
+            let mut updated = task.clone();
+            updated.schema_version = min_version;
+            return write_json_atomic(&path, &updated);
+        }
         write_json_atomic(&path, task)
     }
 }
@@ -3924,7 +3941,7 @@ fn read_bound_task_file(path: &Path, task_id: &str) -> Result<Option<TaskRecord>
         Err(error) => return Err(error).context("read bound task"),
     };
     let task: TaskRecord = serde_json::from_slice(&bytes).context("decode bound task")?;
-    if task.id != task_id || task.schema_version > CURRENT_TASK_SCHEMA_VERSION {
+    if task.id != task_id || task.schema_version > MAX_SUPPORTED_TASK_SCHEMA_VERSION {
         bail!("Bound task identity or schema does not match its durable admission");
     }
     Ok(Some(task))
@@ -4016,11 +4033,11 @@ fn load_state(tasks_dir: &Path, queue_path: &Path) -> Result<LoadedTaskState> {
                 .with_context(|| format!("Failed to read task file {}", path.display()))?;
             let task: TaskRecord = serde_json::from_str(&content)
                 .with_context(|| format!("Failed to parse task file {}", path.display()))?;
-            if task.schema_version > CURRENT_TASK_SCHEMA_VERSION {
+            if task.schema_version > MAX_SUPPORTED_TASK_SCHEMA_VERSION {
                 bail!(
                     "Task schema v{} is newer than supported v{}",
                     task.schema_version,
-                    CURRENT_TASK_SCHEMA_VERSION
+                    MAX_SUPPORTED_TASK_SCHEMA_VERSION
                 );
             }
             ensure_safe_storage_id("task id", &task.id)?;
@@ -8591,6 +8608,70 @@ mod tests {
             .expect("a terminal store fault ends the turn");
         assert_eq!(status, RuntimeTurnStatus::Failed);
         assert!(error.is_some_and(|message| message.contains(path)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn denied_task_uses_v5_schema_while_open_task_stays_v4() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path().to_path_buf();
+        let manager =
+            TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
+                .await?;
+
+        let open = manager
+            .add_task(NewTaskRequest {
+                disallowed_tools: vec!["   ".to_string()],
+                ..NewTaskRequest::from_prompt("open task")
+            })
+            .await?;
+        let mut restricted_req = NewTaskRequest::from_prompt("restricted task");
+        restricted_req.disallowed_tools = vec!["shell".to_string(), " shell ".to_string()];
+        let restricted = manager.add_task(restricted_req).await?;
+
+        assert_eq!(open.schema_version, CURRENT_TASK_SCHEMA_VERSION);
+        assert!(open.disallowed_tools.is_empty());
+        assert_eq!(restricted.schema_version, DENY_RULES_TASK_SCHEMA_VERSION);
+        assert_eq!(restricted.disallowed_tools, vec!["shell"]);
+
+        let _ = wait_for_terminal_state(&manager, &open.id, Duration::from_secs(10)).await?;
+        let _ = wait_for_terminal_state(&manager, &restricted.id, Duration::from_secs(10)).await?;
+        manager.shutdown_and_wait().await?;
+        drop(manager);
+
+        let open_json: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+            root.join("tasks").join(format!("{}.json", open.id)),
+        )?)?;
+        assert_eq!(open_json["schema_version"], CURRENT_TASK_SCHEMA_VERSION);
+        assert!(open_json.get("disallowed_tools").is_none());
+
+        let restricted_path = root.join("tasks").join(format!("{}.json", restricted.id));
+        let mut restricted_json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&restricted_path)?)?;
+        assert_eq!(
+            restricted_json["schema_version"],
+            DENY_RULES_TASK_SCHEMA_VERSION
+        );
+        assert_eq!(restricted_json["disallowed_tools"], json!(["shell"]));
+
+        let reloaded =
+            TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
+                .await?;
+        let reloaded_task = reloaded.get_task(&restricted.id).await?;
+        assert_eq!(reloaded_task.schema_version, DENY_RULES_TASK_SCHEMA_VERSION);
+        assert_eq!(reloaded_task.disallowed_tools, vec!["shell"]);
+        reloaded.shutdown_and_wait().await?;
+        drop(reloaded);
+
+        restricted_json["schema_version"] = json!(MAX_SUPPORTED_TASK_SCHEMA_VERSION + 1);
+        fs::write(
+            &restricted_path,
+            serde_json::to_string_pretty(&restricted_json)?,
+        )?;
+        match TaskManager::start_with_executor(test_config(root), Arc::new(MockExecutor)).await {
+            Ok(_) => panic!("manager should reject task schema v6"),
+            Err(err) => assert!(err.to_string().contains("newer than supported"), "{err:#}"),
+        }
         Ok(())
     }
 }

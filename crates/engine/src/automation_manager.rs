@@ -44,8 +44,43 @@ impl std::fmt::Debug for ThreadEventSink {
 // v2 pins provider identity. Older runtimes must reject a pinned definition
 // instead of silently sending its model through their current provider.
 pub const CURRENT_AUTOMATION_SCHEMA_VERSION: u32 = 3;
+const DENY_RULES_AUTOMATION_SCHEMA_VERSION: u32 = 4;
+const MAX_SUPPORTED_AUTOMATION_SCHEMA_VERSION: u32 = DENY_RULES_AUTOMATION_SCHEMA_VERSION;
 const CURRENT_RUN_SCHEMA_VERSION: u32 = 3;
+const DENY_RULES_RUN_SCHEMA_VERSION: u32 = 4;
+const MAX_SUPPORTED_RUN_SCHEMA_VERSION: u32 = DENY_RULES_RUN_SCHEMA_VERSION;
 const CURRENT_TRIGGER_SCHEMA_VERSION: u32 = 3;
+const DENY_RULES_TRIGGER_SCHEMA_VERSION: u32 = 4;
+const MAX_SUPPORTED_TRIGGER_SCHEMA_VERSION: u32 = DENY_RULES_TRIGGER_SCHEMA_VERSION;
+
+pub const fn required_automation_schema_version(disallowed_tools: &[String]) -> u32 {
+    if disallowed_tools.is_empty() {
+        CURRENT_AUTOMATION_SCHEMA_VERSION
+    } else {
+        DENY_RULES_AUTOMATION_SCHEMA_VERSION
+    }
+}
+
+const fn required_run_schema_version(dispatch: Option<&AutomationDispatch>) -> u32 {
+    match dispatch {
+        Some(dispatch) if !dispatch.request.disallowed_tools.is_empty() => {
+            DENY_RULES_RUN_SCHEMA_VERSION
+        }
+        _ => CURRENT_RUN_SCHEMA_VERSION,
+    }
+}
+
+const fn required_trigger_schema_version(record: &DelayedTriggerRecord) -> u32 {
+    let dispatch_denied = match &record.dispatch {
+        Some(dispatch) => !dispatch.request.disallowed_tools.is_empty(),
+        None => false,
+    };
+    if record.disallowed_tools.is_empty() && !dispatch_denied {
+        CURRENT_TRIGGER_SCHEMA_VERSION
+    } else {
+        DENY_RULES_TRIGGER_SCHEMA_VERSION
+    }
+}
 const DEFAULT_AUTOMATION_MODE: &str = "agent";
 const DEFAULT_AUTOMATION_ALLOW_SHELL: bool = false;
 const DEFAULT_AUTOMATION_TRUST_MODE: bool = false;
@@ -1368,7 +1403,12 @@ impl AutomationManager {
             }
         } else {
             automation.execution_scope = Some(scope.to_string());
-            automation.schema_version = CURRENT_AUTOMATION_SCHEMA_VERSION;
+            automation.schema_version =
+                automation
+                    .schema_version
+                    .max(required_automation_schema_version(
+                        &automation.disallowed_tools,
+                    ));
             automation.updated_at = Utc::now();
             if automation.status == AutomationStatus::Active {
                 let schedule = AutomationSchedule::parse_rrule(&automation.rrule)?;
@@ -1456,8 +1496,9 @@ impl AutomationManager {
             None
         };
 
+        let disallowed_tools = crate::task_manager::normalize_deny_rules(req.disallowed_tools);
         let record = AutomationRecord {
-            schema_version: CURRENT_AUTOMATION_SCHEMA_VERSION,
+            schema_version: required_automation_schema_version(&disallowed_tools),
             execution_scope: self.execution_scope.clone(),
             id: Uuid::new_v4().to_string(),
             name: req.name.trim().to_string(),
@@ -1473,7 +1514,7 @@ impl AutomationManager {
             auto_approve: req.auto_approve,
             delivery_mode: req.delivery_mode,
             destination_thread_id: normalize_optional_string(req.destination_thread_id),
-            disallowed_tools: crate::task_manager::normalize_deny_rules(req.disallowed_tools),
+            disallowed_tools,
             status,
             created_at: now,
             updated_at: now,
@@ -1497,16 +1538,24 @@ impl AutomationManager {
     }
 
     fn save_automation_unlocked(&self, record: &AutomationRecord) -> Result<()> {
-        if record.model_provider.is_some() || record.model_provider_id.is_some() {
-            if record
+        if (record.model_provider.is_some() || record.model_provider_id.is_some())
+            && record
                 .model
                 .as_deref()
                 .is_none_or(|model| model.trim().is_empty())
-            {
-                bail!("A pinned automation provider requires an explicit model");
-            }
+        {
+            bail!("A pinned automation provider requires an explicit model");
+        }
+        let min_version = if !record.disallowed_tools.is_empty() {
+            DENY_RULES_AUTOMATION_SCHEMA_VERSION
+        } else if record.model_provider.is_some() || record.model_provider_id.is_some() {
+            CURRENT_AUTOMATION_SCHEMA_VERSION
+        } else {
+            record.schema_version
+        };
+        if record.schema_version < min_version {
             let mut record = record.clone();
-            record.schema_version = record.schema_version.max(CURRENT_AUTOMATION_SCHEMA_VERSION);
+            record.schema_version = min_version;
             return write_json_atomic(&self.automation_path(&record.id)?, &record);
         }
         write_json_atomic(&self.automation_path(&record.id)?, record)
@@ -1617,8 +1666,14 @@ impl AutomationManager {
         if existing.execution_scope.is_some()
             || existing.model_provider.is_some()
             || existing.model_provider_id.is_some()
+            || !existing.disallowed_tools.is_empty()
         {
-            existing.schema_version = CURRENT_AUTOMATION_SCHEMA_VERSION;
+            existing.schema_version =
+                existing
+                    .schema_version
+                    .max(required_automation_schema_version(
+                        &existing.disallowed_tools,
+                    ));
         }
 
         existing.updated_at = Utc::now();
@@ -1989,7 +2044,14 @@ impl AutomationManager {
         let dir = self.runs_dir_for(&run.automation_id)?;
         fs::create_dir_all(&dir).with_context(|| format!("Failed to create {}", dir.display()))?;
         let path = self.run_path(run)?;
-        write_json_atomic(&path, run)?;
+        let min_version = required_run_schema_version(run.dispatch.as_ref());
+        if run.schema_version < min_version {
+            let mut updated = run.clone();
+            updated.schema_version = min_version;
+            write_json_atomic(&path, &updated)?;
+        } else {
+            write_json_atomic(&path, run)?;
+        }
         // Rewrites of a legacy-named run migrate it to the sortable name; drop
         // the old file so the run never exists twice.
         let legacy = self.legacy_run_path(&run.automation_id, &run.id)?;
@@ -2559,8 +2621,13 @@ impl AutomationManager {
         if req.message.trim().is_empty() {
             bail!("Trigger message must not be empty");
         }
+        let disallowed_tools = crate::task_manager::normalize_deny_rules(req.disallowed_tools);
         let record = DelayedTriggerRecord {
-            schema_version: CURRENT_TRIGGER_SCHEMA_VERSION,
+            schema_version: if disallowed_tools.is_empty() {
+                CURRENT_TRIGGER_SCHEMA_VERSION
+            } else {
+                DENY_RULES_TRIGGER_SCHEMA_VERSION
+            },
             execution_scope: self.execution_scope.clone(),
             trigger_id: format!("trig_{}", Uuid::new_v4().simple()),
             fire_at: req.fire_at,
@@ -2568,7 +2635,7 @@ impl AutomationManager {
             workspace: req.workspace,
             owner_session_id: req.owner_session_id,
             destination_thread_id: normalize_optional_string(req.destination_thread_id),
-            disallowed_tools: crate::task_manager::normalize_deny_rules(req.disallowed_tools),
+            disallowed_tools,
             status: DelayedTriggerStatus::Pending,
             created_at: now,
             fired_at: None,
@@ -2590,11 +2657,11 @@ impl AutomationManager {
             .with_context(|| format!("Trigger '{trigger_id}' not found"))?;
         let record: DelayedTriggerRecord = serde_json::from_str(&raw)
             .with_context(|| format!("Failed to parse trigger '{trigger_id}'"))?;
-        if record.schema_version > CURRENT_TRIGGER_SCHEMA_VERSION {
+        if record.schema_version > MAX_SUPPORTED_TRIGGER_SCHEMA_VERSION {
             bail!(
                 "Trigger schema v{} is newer than supported v{}",
                 record.schema_version,
-                CURRENT_TRIGGER_SCHEMA_VERSION
+                MAX_SUPPORTED_TRIGGER_SCHEMA_VERSION
             );
         }
         Ok(record)
@@ -2622,6 +2689,12 @@ impl AutomationManager {
 
     fn save_trigger_unlocked(&self, record: &DelayedTriggerRecord) -> Result<()> {
         let path = self.trigger_path(&record.trigger_id)?;
+        let min_version = required_trigger_schema_version(record);
+        if record.schema_version < min_version {
+            let mut updated = record.clone();
+            updated.schema_version = min_version;
+            return write_json_atomic(&path, &updated);
+        }
         write_json_atomic(&path, record)
     }
 
@@ -2648,6 +2721,14 @@ impl AutomationManager {
                 .and_then(|raw| serde_json::from_str::<DelayedTriggerRecord>(&raw).ok())
             {
                 Some(record) => {
+                    if record.schema_version > MAX_SUPPORTED_TRIGGER_SCHEMA_VERSION {
+                        tracing::warn!(
+                            "Skipping trigger file {} with unsupported schema v{}",
+                            path.display(),
+                            record.schema_version
+                        );
+                        continue;
+                    }
                     if let Some(filter) = status_filter
                         && record.status != filter
                     {
@@ -2883,11 +2964,17 @@ fn bind_run_dispatch(
     if automation.execution_scope.is_none() {
         bail!("Automation execution ownership is unverified");
     }
-    run.schema_version = CURRENT_RUN_SCHEMA_VERSION;
+    let request = automation_task_request(automation);
+    let min_version = if request.disallowed_tools.is_empty() {
+        CURRENT_RUN_SCHEMA_VERSION
+    } else {
+        DENY_RULES_RUN_SCHEMA_VERSION
+    };
+    run.schema_version = run.schema_version.max(min_version);
     run.task_id = Some(crate::task_manager::TaskManager::new_task_id());
     run.dispatch = Some(AutomationDispatch {
         execution_scope: automation.execution_scope.clone(),
-        request: automation_task_request(automation),
+        request,
         task_data_dir: task_data_dir
             .canonicalize()
             .context("resolve task store before automation admission")?,
@@ -3295,7 +3382,6 @@ where
                     {
                         return Ok(None);
                     }
-                    current.schema_version = CURRENT_TRIGGER_SCHEMA_VERSION;
                     current.status = DelayedTriggerStatus::Dispatching;
                     current.task_id = Some(crate::task_manager::TaskManager::new_task_id());
                     current.dispatch = Some(AutomationDispatch {
@@ -3322,6 +3408,9 @@ where
                         suppress_report: false,
                         schedule: None,
                     });
+                    current.schema_version = current
+                        .schema_version
+                        .max(required_trigger_schema_version(&current));
                     manager.save_trigger_unlocked(&current)?;
                     Ok(Some(current))
                 })
@@ -3592,7 +3681,9 @@ async fn reconcile_run_statuses_shared(
             suppress_report: false,
             schedule: None,
         });
-        run.schema_version = CURRENT_RUN_SCHEMA_VERSION;
+        run.schema_version = run
+            .schema_version
+            .max(required_run_schema_version(Some(&*dispatch)));
         dispatch.accepted = true;
         dispatch.suppress_report = watcher_noop;
         if let Err(error) = with_manager_blocking(automations, {
@@ -3642,11 +3733,11 @@ fn read_automation_file(path: &Path) -> Result<AutomationRecord> {
         .with_context(|| format!("Failed to read automation {}", path.display()))?;
     let record: AutomationRecord = serde_json::from_str(&raw)
         .with_context(|| format!("Failed to parse automation {}", path.display()))?;
-    if record.schema_version > CURRENT_AUTOMATION_SCHEMA_VERSION {
+    if record.schema_version > MAX_SUPPORTED_AUTOMATION_SCHEMA_VERSION {
         bail!(
             "Automation schema v{} is newer than supported v{}",
             record.schema_version,
-            CURRENT_AUTOMATION_SCHEMA_VERSION
+            MAX_SUPPORTED_AUTOMATION_SCHEMA_VERSION
         );
     }
     Ok(record)
@@ -3657,11 +3748,11 @@ fn read_run_file(path: &Path) -> Result<AutomationRunRecord> {
         fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
     let run: AutomationRunRecord = serde_json::from_str(&raw)
         .with_context(|| format!("Failed to parse {}", path.display()))?;
-    if run.schema_version > CURRENT_RUN_SCHEMA_VERSION {
+    if run.schema_version > MAX_SUPPORTED_RUN_SCHEMA_VERSION {
         bail!(
             "Automation run schema v{} is newer than supported v{}",
             run.schema_version,
-            CURRENT_RUN_SCHEMA_VERSION
+            MAX_SUPPORTED_RUN_SCHEMA_VERSION
         );
     }
     Ok(run)
@@ -5678,6 +5769,263 @@ model = "private-model"
             "parent_trigger_id": null
         }))?;
         assert_eq!(record.owner_session_id, None);
+        Ok(())
+    }
+
+    #[test]
+    fn denied_automation_and_run_use_v4_schema_while_open_stay_v3() -> Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let manager = AutomationManager::open_for_test(tempdir.path().join("automations"))?;
+
+        let open = manager.create_automation(CreateAutomationRequest {
+            destination_thread_id: None,
+            name: "Open".to_string(),
+            prompt: "prompt".to_string(),
+            rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
+            cwds: Vec::new(),
+            model: None,
+            model_provider: None,
+            model_provider_id: None,
+            mode: None,
+            allow_shell: None,
+            trust_mode: None,
+            auto_approve: None,
+            delivery_mode: None,
+            status: Some(AutomationStatus::Active),
+            disallowed_tools: vec!["   ".to_string()],
+        })?;
+        assert_eq!(open.schema_version, CURRENT_AUTOMATION_SCHEMA_VERSION);
+        assert!(open.disallowed_tools.is_empty());
+
+        let open_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(manager.automation_path(&open.id)?)?)?;
+        assert_eq!(
+            open_disk["schema_version"],
+            CURRENT_AUTOMATION_SCHEMA_VERSION
+        );
+        assert!(open_disk.get("disallowed_tools").is_none());
+
+        let mut open_run = new_run_record(&open.id, Utc::now(), Utc::now());
+        bind_run_dispatch(&mut open_run, &open, tempdir.path(), true)?;
+        manager.save_run(&open_run)?;
+        let open_run_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(manager.run_path(&open_run)?)?)?;
+        assert_eq!(open_run.schema_version, CURRENT_RUN_SCHEMA_VERSION);
+        assert_eq!(open_run_disk["schema_version"], CURRENT_RUN_SCHEMA_VERSION);
+
+        let restricted = manager.create_automation(CreateAutomationRequest {
+            destination_thread_id: None,
+            name: "Restricted".to_string(),
+            prompt: "prompt".to_string(),
+            rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
+            cwds: Vec::new(),
+            model: None,
+            model_provider: None,
+            model_provider_id: None,
+            mode: None,
+            allow_shell: None,
+            trust_mode: None,
+            auto_approve: None,
+            delivery_mode: None,
+            status: Some(AutomationStatus::Active),
+            disallowed_tools: vec![
+                "shell".to_string(),
+                " shell ".to_string(),
+                "mcp_secret_*".to_string(),
+            ],
+        })?;
+        assert_eq!(
+            restricted.schema_version,
+            DENY_RULES_AUTOMATION_SCHEMA_VERSION
+        );
+        assert_eq!(restricted.disallowed_tools, vec!["shell", "mcp_secret_*"]);
+
+        let updated = manager.update_automation(
+            &restricted.id,
+            UpdateAutomationRequest {
+                allow_shell: Some(false),
+                ..Default::default()
+            },
+        )?;
+        assert_eq!(updated.schema_version, DENY_RULES_AUTOMATION_SCHEMA_VERSION);
+        assert_eq!(updated.disallowed_tools, vec!["shell", "mcp_secret_*"]);
+
+        let auto_path = manager.automation_path(&restricted.id)?;
+        let mut restricted_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&auto_path)?)?;
+        assert_eq!(
+            restricted_disk["schema_version"],
+            DENY_RULES_AUTOMATION_SCHEMA_VERSION
+        );
+        assert_eq!(
+            restricted_disk["disallowed_tools"],
+            serde_json::json!(["shell", "mcp_secret_*"])
+        );
+        assert_eq!(
+            manager.get_automation(&restricted.id)?.schema_version,
+            DENY_RULES_AUTOMATION_SCHEMA_VERSION
+        );
+
+        let mut restricted_run = new_run_record(&restricted.id, Utc::now(), Utc::now());
+        bind_run_dispatch(&mut restricted_run, &restricted, tempdir.path(), true)?;
+        assert_eq!(restricted_run.schema_version, DENY_RULES_RUN_SCHEMA_VERSION);
+        manager.save_run(&restricted_run)?;
+        let run_path = manager.run_path(&restricted_run)?;
+        let mut run_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&run_path)?)?;
+        assert_eq!(run_disk["schema_version"], DENY_RULES_RUN_SCHEMA_VERSION);
+        assert_eq!(
+            run_disk["dispatch"]["request"]["disallowed_tools"],
+            serde_json::json!(["shell", "mcp_secret_*"])
+        );
+        assert_eq!(manager.list_runs(&restricted.id, None)?.len(), 1);
+
+        run_disk["schema_version"] = serde_json::json!(MAX_SUPPORTED_RUN_SCHEMA_VERSION + 1);
+        fs::write(&run_path, serde_json::to_string_pretty(&run_disk)?)?;
+        assert!(
+            manager
+                .list_runs(&restricted.id, None)
+                .unwrap_err()
+                .to_string()
+                .contains("newer than supported")
+        );
+
+        restricted_disk["schema_version"] =
+            serde_json::json!(MAX_SUPPORTED_AUTOMATION_SCHEMA_VERSION + 1);
+        fs::write(&auto_path, serde_json::to_string_pretty(&restricted_disk)?)?;
+        assert!(
+            manager
+                .get_automation(&restricted.id)
+                .unwrap_err()
+                .to_string()
+                .contains("newer than supported")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn denied_delayed_trigger_uses_v4_and_preserves_deny_rules_when_fired() -> Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let task_dir = tempdir.path().join("tasks");
+        let task_manager = TaskManager::start_with_executor(
+            automation_task_config(task_dir.clone()),
+            std::sync::Arc::new(AutomationNoopExecutor),
+        )
+        .await?;
+        let manager = AutomationManager::open_for_test(tempdir.path().join("automations"))?;
+
+        let open = manager.create_trigger(CreateDelayedTriggerRequest {
+            fire_at: Utc::now() + Duration::hours(1),
+            message: "open later".to_string(),
+            workspace: None,
+            owner_session_id: Some("session-open".to_string()),
+            parent_trigger_id: None,
+            destination_thread_id: None,
+            disallowed_tools: vec!["   ".to_string()],
+        })?;
+        assert_eq!(open.schema_version, CURRENT_TRIGGER_SCHEMA_VERSION);
+        assert!(open.disallowed_tools.is_empty());
+        let open_disk: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+            manager.trigger_path(&open.trigger_id)?,
+        )?)?;
+        assert_eq!(open_disk["schema_version"], CURRENT_TRIGGER_SCHEMA_VERSION);
+        assert!(open_disk.get("disallowed_tools").is_none());
+
+        let mut restricted = manager.create_trigger(CreateDelayedTriggerRequest {
+            fire_at: Utc::now() + Duration::hours(1),
+            message: "restricted later".to_string(),
+            workspace: Some(tempdir.path().to_path_buf()),
+            owner_session_id: Some("session-deny".to_string()),
+            parent_trigger_id: None,
+            destination_thread_id: None,
+            disallowed_tools: vec!["shell".to_string(), " mcp_secret_* ".to_string()],
+        })?;
+        assert_eq!(restricted.schema_version, DENY_RULES_TRIGGER_SCHEMA_VERSION);
+        assert_eq!(restricted.disallowed_tools, vec!["shell", "mcp_secret_*"]);
+        restricted.fire_at = Utc::now() - Duration::minutes(1);
+        manager.save_trigger(&restricted)?;
+
+        let trigger_path = manager.trigger_path(&restricted.trigger_id)?;
+        let initial_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&trigger_path)?)?;
+        assert_eq!(
+            initial_disk["schema_version"],
+            DENY_RULES_TRIGGER_SCHEMA_VERSION
+        );
+        assert_eq!(
+            initial_disk["disallowed_tools"],
+            serde_json::json!(["shell", "mcp_secret_*"])
+        );
+
+        let shared = Arc::new(Mutex::new(manager));
+        fire_due_triggers_with(&shared, &task_dir, |claimed| async move {
+            assert_eq!(claimed.status, DelayedTriggerStatus::Dispatching);
+            assert_eq!(claimed.schema_version, DENY_RULES_TRIGGER_SCHEMA_VERSION);
+            assert_eq!(
+                claimed
+                    .dispatch
+                    .as_ref()
+                    .expect("dispatch")
+                    .request
+                    .disallowed_tools,
+                vec!["shell", "mcp_secret_*"]
+            );
+            anyhow::bail!("pause at dispatching boundary")
+        })
+        .await?;
+
+        let dispatching_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&trigger_path)?)?;
+        assert_eq!(dispatching_disk["status"], "dispatching");
+        assert_eq!(
+            dispatching_disk["schema_version"],
+            DENY_RULES_TRIGGER_SCHEMA_VERSION
+        );
+        assert_eq!(
+            dispatching_disk["dispatch"]["request"]["disallowed_tools"],
+            serde_json::json!(["shell", "mcp_secret_*"])
+        );
+
+        fire_due_triggers_shared(&shared, &task_manager).await?;
+
+        let manager = shared.lock().await;
+        let fired = manager.get_trigger(&restricted.trigger_id)?;
+        assert_eq!(fired.status, DelayedTriggerStatus::Fired);
+        assert_eq!(fired.schema_version, DENY_RULES_TRIGGER_SCHEMA_VERSION);
+        assert_eq!(fired.disallowed_tools, vec!["shell", "mcp_secret_*"]);
+        assert_eq!(
+            fired
+                .dispatch
+                .as_ref()
+                .expect("dispatch")
+                .request
+                .disallowed_tools,
+            vec!["shell", "mcp_secret_*"]
+        );
+
+        let task = task_manager
+            .get_task(fired.task_id.as_deref().expect("fired task id"))
+            .await?;
+        assert_eq!(task.schema_version, 5);
+        assert_eq!(task.disallowed_tools, vec!["shell", "mcp_secret_*"]);
+
+        let mut future_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&trigger_path)?)?;
+        future_disk["schema_version"] = serde_json::json!(MAX_SUPPORTED_TRIGGER_SCHEMA_VERSION + 1);
+        fs::write(&trigger_path, serde_json::to_string_pretty(&future_disk)?)?;
+        assert!(
+            manager
+                .get_trigger(&restricted.trigger_id)
+                .unwrap_err()
+                .to_string()
+                .contains("newer than supported")
+        );
+        let listed = manager.list_triggers(None, None)?;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].trigger_id, open.trigger_id);
+
+        drop(manager);
+        task_manager.shutdown();
         Ok(())
     }
 

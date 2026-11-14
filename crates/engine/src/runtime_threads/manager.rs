@@ -8004,8 +8004,9 @@ impl RuntimeThreadManager {
             }
             None => None,
         };
+        let disallowed_tools = crate::task_manager::normalize_deny_rules(req.disallowed_tools);
         let thread = ThreadRecord {
-            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            schema_version: super::required_thread_schema_version(&disallowed_tools),
             id: match reserved_id {
                 Some(id) => validated_record_id(&id, "reserved history thread id")?.to_string(),
                 None => runtime_record_id("thr"),
@@ -8017,7 +8018,7 @@ impl RuntimeThreadManager {
             model_provider_id,
             reasoning_effort,
             allowed_tools: req.allowed_tools,
-            disallowed_tools: crate::task_manager::normalize_deny_rules(req.disallowed_tools),
+            disallowed_tools,
             add_dirs,
             workspace,
             mode,
@@ -11913,7 +11914,7 @@ impl RuntimeThreadManager {
                 };
                 if !turn_seed.image_content.is_empty() {
                     item.set_image_content(turn_seed.image_content.clone());
-                    thread.schema_version = IMAGE_RUNTIME_SCHEMA_VERSION;
+                    thread.schema_version = thread.schema_version.max(IMAGE_RUNTIME_SCHEMA_VERSION);
                 }
                 seed_items.push(item);
                 item_ids.push(item_id);

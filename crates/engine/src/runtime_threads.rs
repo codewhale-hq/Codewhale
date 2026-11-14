@@ -227,7 +227,16 @@ const IMAGE_RUNTIME_SCHEMA_VERSION: u32 = 3;
 const OUTPUT_LIMIT_RUNTIME_SCHEMA_VERSION: u32 = 4;
 const PREFIX_CHECKPOINT_RUNTIME_SCHEMA_VERSION: u32 = 5;
 const SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION: u32 = 6;
-const MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION: u32 = SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION;
+const DISALLOWED_TOOLS_RUNTIME_SCHEMA_VERSION: u32 = 7;
+const MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION: u32 = DISALLOWED_TOOLS_RUNTIME_SCHEMA_VERSION;
+
+pub(crate) const fn required_thread_schema_version(disallowed_tools: &[String]) -> u32 {
+    if disallowed_tools.is_empty() {
+        CURRENT_RUNTIME_SCHEMA_VERSION
+    } else {
+        DISALLOWED_TOOLS_RUNTIME_SCHEMA_VERSION
+    }
+}
 
 fn is_zero_u64(value: &u64) -> bool {
     *value == 0
@@ -2528,6 +2537,19 @@ impl RuntimeThreadStore {
 
     pub fn save_thread(&self, thread: &ThreadRecord) -> Result<()> {
         let path = self.thread_path(&thread.id)?;
+        let min_version = required_thread_schema_version(&thread.disallowed_tools);
+        if thread.schema_version < min_version {
+            let mut updated = thread.clone();
+            updated.schema_version = min_version;
+            return write_json_atomic(&path, &updated).with_context(|| {
+                RuntimeStoreRecordFailure::new(
+                    RuntimeStoreOperation::Write,
+                    RuntimeStoreRecordKind::Thread,
+                    &updated.id,
+                    &path,
+                )
+            });
+        }
         write_json_atomic(&path, thread).with_context(|| {
             RuntimeStoreRecordFailure::new(
                 RuntimeStoreOperation::Write,

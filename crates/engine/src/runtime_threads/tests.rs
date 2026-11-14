@@ -1899,7 +1899,57 @@ mod recovery {
             "{:?}",
             tool_names(&requests[1])
         );
-        close_engines(&manager).await?;
+        manager.shutdown_and_wait().await?;
+        drop(manager);
+
+        let open_disk: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+            dir.path()
+                .join("runtime")
+                .join("threads")
+                .join(format!("{}.json", open.id)),
+        )?)?;
+        assert_eq!(open_disk["schema_version"], CURRENT_RUNTIME_SCHEMA_VERSION);
+        assert!(open_disk.get("disallowed_tools").is_none());
+
+        let restricted_path = dir
+            .path()
+            .join("runtime")
+            .join("threads")
+            .join(format!("{}.json", restricted.id));
+        let mut restricted_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&restricted_path)?)?;
+        assert_eq!(
+            restricted_disk["schema_version"],
+            DISALLOWED_TOOLS_RUNTIME_SCHEMA_VERSION
+        );
+        assert_eq!(restricted_disk["disallowed_tools"], json!(["file"]));
+
+        let reopened = RuntimeThreadManager::open(
+            config(),
+            dir.path().join("workspace"),
+            test_manager_config(dir.path().join("runtime")),
+        )?;
+        let reloaded = reopened.get_thread(&restricted.id).await?;
+        assert_eq!(
+            reloaded.schema_version,
+            DISALLOWED_TOOLS_RUNTIME_SCHEMA_VERSION
+        );
+        assert_eq!(reloaded.disallowed_tools, vec!["file"]);
+
+        restricted_disk["schema_version"] = json!(MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION + 1);
+        fs::write(
+            &restricted_path,
+            serde_json::to_string_pretty(&restricted_disk)?,
+        )?;
+        let err = reopened
+            .get_thread(&restricted.id)
+            .await
+            .expect_err("schema v8 must be rejected");
+        assert!(
+            format!("{err:#}").contains("newer than supported"),
+            "{err:#}"
+        );
+        reopened.shutdown_and_wait().await?;
         Ok(())
     }
 

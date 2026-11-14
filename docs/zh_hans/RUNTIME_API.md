@@ -1038,7 +1038,8 @@ Runtime 前缀恢复验证与后续写入所需的完整文档条件保持独立
   "model_provider": "openai-codex",
   "model": "gpt-5.6",
   "reasoning_effort": "high",
-  "allowed_tools": ["read_file", "search"]
+  "allowed_tools": ["read_file", "search"],
+  "disallowed_tools": ["shell"]
 }
 ```
 
@@ -1046,8 +1047,10 @@ Runtime 前缀恢复验证与后续写入所需的完整文档条件保持独立
 `low`、`medium`、`high`、`xhigh`、`ultra` 或 `max`；已记录的兼容
 别名会被接受，并以规范形式持久化）。`allowed_tools` 是一份对模型可见的允许名单。
 省略它会保留常规的已配置目录；显式空数组（`"allowed_tools": []`）
-则不会向模型暴露任何工具。
-两个字段都是加性（additive）的：省略它们的旧线程记录与客户端
+则不会向模型暴露任何工具。`disallowed_tools`（也接受 `disallowedTools`）
+为线程记录持久化的工具禁用规则（为空时从存储记录中省略）；被禁用的工具即使列在
+`allowed_tools` 中也仍会被拦截，非空规则会参与创建幂等性指纹计算。
+这些字段都是加性（additive）的：省略它们的旧线程记录与客户端
 保持之前的行为。
 
 `GET /v1/threads/summary` 是 VS Code Agent View 使用的只读摘要表面。

@@ -415,8 +415,9 @@ validation as turn operation keys and are scoped to the Runtime store owner.
 Exact retries return the original thread, including after response loss or
 restart; a different effective request with the same key returns HTTP 409.
 The fingerprint includes the resolved model/provider, workspace, reasoning,
-permission and shell policy, tool allowlist, archival state, prompt/task fields,
-dynamic tools and environments. Creation defaults are resolved before comparison.
+permission and shell policy, tool allowlist, tool denylist, archival state,
+prompt/task fields, dynamic tools and environments. Creation defaults are
+resolved before comparison.
 Operation records retain only fingerprints and reserved identity, never the raw
 key. Missing committed thread data is an error, never permission to create a
 replacement. Clients must require this capability before relying on creation
@@ -1357,7 +1358,8 @@ provider, model, workspace, and permission fields:
   "model_provider": "openai-codex",
   "model": "gpt-5.6",
   "reasoning_effort": "high",
-  "allowed_tools": ["read_file", "search"]
+  "allowed_tools": ["read_file", "search"],
+  "disallowed_tools": ["shell"]
 }
 ```
 
@@ -1366,8 +1368,11 @@ provider, model, workspace, and permission fields:
 aliases are accepted and persisted canonically). `allowed_tools` is a
 model-visible allowlist. Omitting it keeps the normal configured catalog; an
 explicit empty array (`"allowed_tools": []`) exposes no tools to the model.
-Both fields are additive: older thread records and clients that omit them
-retain their previous behavior.
+`disallowed_tools` (also accepted as `disallowedTools`) attaches persistent
+tool deny rules to the thread (omitted from stored records when empty); denied
+tools remain blocked even if listed in `allowed_tools`, and non-empty rules
+participate in creation idempotency fingerprints. These fields are additive:
+older thread records and clients that omit them retain their previous behavior.
 
 ### Sessions on other agents (external agent threads)
 
