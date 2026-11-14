@@ -24873,6 +24873,201 @@ api_key = "refresh-fixture-key"
 }
 
 #[tokio::test]
+async fn provider_models_refresh_with_vllm_base_url_env_persists_across_restart() -> Result<()> {
+    let _env = codewhale_engine::test_support::lock_test_env();
+    let _guards: Vec<_> = [
+        "CODEWHALE_CONFIG_PATH",
+        "DEEPSEEK_CONFIG_PATH",
+        "CODEWHALE_BASE_URL",
+        "DEEPSEEK_BASE_URL",
+        "CODEWHALE_PROVIDER",
+        "DEEPSEEK_PROVIDER",
+        "CODEWHALE_MODEL",
+        "DEEPSEEK_MODEL",
+        "CODEWHALE_PROFILE",
+        "DEEPSEEK_PROFILE",
+        codewhale_config::CLI_API_KEY_ENV,
+    ]
+    .into_iter()
+    .map(codewhale_engine::test_support::EnvVarGuard::remove)
+    .collect();
+    let _cloud_facts =
+        codewhale_engine::test_support::EnvVarGuard::set("CODEWHALE_DISABLE_CLOUD_FACTS", "1");
+    struct CatalogReset;
+    impl Drop for CatalogReset {
+        fn drop(&mut self) {
+            codewhale_engine::provider_catalog_live::reset_cache_for_test();
+            codewhale_engine::provider_lake::clear_live_snapshot();
+        }
+    }
+    let _live = codewhale_engine::provider_lake::lock_live_snapshot();
+    let _reset = CatalogReset;
+    codewhale_engine::provider_lake::clear_live_snapshot();
+
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    let workspace = root.path().join("workspace");
+    let sessions_dir = home.join("sessions");
+    fs::create_dir_all(&home)?;
+    fs::create_dir_all(&workspace)?;
+
+    let catalog_path = root.path().join("models-dev.json");
+    fs::write(
+        &catalog_path,
+        json!({"models": {}, "providers": {}}).to_string(),
+    )?;
+    let _catalog = codewhale_engine::test_support::EnvVarGuard::set(
+        "CODEWHALE_MODELS_DEV_PATH",
+        &catalog_path,
+    );
+    let _home = codewhale_engine::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home);
+
+    let upstream = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/v1/models"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
+            json!({"object": "list", "data": [{"id": "gpui-fixture", "object": "model"}]}),
+        ))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let vllm_base_url = format!("{}/v1", upstream.uri());
+    let _vllm = codewhale_engine::test_support::EnvVarGuard::set("VLLM_BASE_URL", &vllm_base_url);
+    codewhale_engine::provider_catalog_live::reset_cache_for_test();
+
+    let config_path = home.join("config.toml");
+    let (addr, _, handle) = spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+        root.path().join("server1"),
+        sessions_dir.clone(),
+        None,
+        false,
+        workspace.clone(),
+        TestServerOverrides {
+            config_path: Some(config_path.clone()),
+            ..TestServerOverrides::default()
+        },
+    )
+    .await?
+    .expect("loopback server required");
+
+    let client = codewhale_release::tls::reqwest_client_builder()
+        .timeout(Duration::from_secs(5))
+        .build()?;
+    let refresh_resp = client
+        .post(format!("http://{addr}/v1/providers/vllm/models/refresh"))
+        .json(&json!({}))
+        .send()
+        .await?;
+    assert_eq!(refresh_resp.status(), StatusCode::OK);
+    let receipt: Value = refresh_resp.json().await?;
+    assert_eq!(receipt["provider"], "vllm");
+    assert_eq!(receipt["outcome"], "updated");
+    assert_eq!(receipt["model_count"], 1);
+    assert_eq!(
+        upstream.received_requests().await.as_ref().map(Vec::len),
+        Some(1)
+    );
+
+    let immediate: Value = client
+        .get(format!("http://{addr}/v1/providers/vllm/models?limit=250"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(immediate["provider"], "vllm");
+    assert_eq!(immediate["total"], 1);
+    assert!(
+        immediate["models"]
+            .as_array()
+            .context("models array")?
+            .iter()
+            .any(|model| model["id"] == "gpui-fixture"),
+        "expected gpui-fixture immediately after refresh, got {immediate}"
+    );
+
+    let providers_before_restart: Value = client
+        .get(format!("http://{addr}/v1/providers"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let vllm_entry_before = providers_before_restart["providers"]
+        .as_array()
+        .context("providers array")?
+        .iter()
+        .find(|entry| entry["id"] == "vllm")
+        .context("vllm provider entry")?;
+    assert_eq!(vllm_entry_before["has_model_catalog"], true);
+
+    handle.abort();
+    let _ = handle.await;
+
+    codewhale_engine::provider_catalog_live::reset_cache_for_test();
+    codewhale_engine::provider_lake::clear_live_snapshot();
+    let restarted_config =
+        codewhale_plugins::providers::load_config(Some(config_path.clone()), None)?;
+    codewhale_engine::provider_catalog_live::maybe_load_persisted_cache_for_config(
+        &restarted_config,
+    );
+
+    let (addr_restarted, _, handle_restarted) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root.path().join("server2"),
+            sessions_dir,
+            None,
+            false,
+            workspace,
+            TestServerOverrides {
+                config_path: Some(config_path),
+                ..TestServerOverrides::default()
+            },
+        )
+        .await?
+        .expect("loopback server required");
+
+    let after_restart: Value = client
+        .get(format!(
+            "http://{addr_restarted}/v1/providers/vllm/models?limit=250"
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(after_restart["provider"], "vllm");
+    assert_eq!(after_restart["total"], 1);
+    assert!(
+        after_restart["models"]
+            .as_array()
+            .context("models array after restart")?
+            .iter()
+            .any(|model| model["id"] == "gpui-fixture"),
+        "expected gpui-fixture after restart, got {after_restart}"
+    );
+
+    let providers_after_restart: Value = client
+        .get(format!("http://{addr_restarted}/v1/providers"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let vllm_entry_after = providers_after_restart["providers"]
+        .as_array()
+        .context("providers array after restart")?
+        .iter()
+        .find(|entry| entry["id"] == "vllm")
+        .context("vllm provider entry after restart")?;
+    assert_eq!(vllm_entry_after["has_model_catalog"], true);
+
+    handle_restarted.abort();
+    let _ = handle_restarted.await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn mcp_management_selected_connection_and_retry_preserve_siblings() -> Result<()> {
     use axum::response::IntoResponse as _;
     use std::sync::atomic::{AtomicUsize, Ordering};
