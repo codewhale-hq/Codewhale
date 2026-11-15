@@ -535,6 +535,7 @@ pub const OP_KINDS: &[&str] = &[
     "set_compaction",
     "set_permission_ruleset",
     "set_stream_chunk_timeout",
+    "set_auto_review_reviewer_model",
     "set_subagent_runtime_config",
     "set_search_provider",
     "set_fleet_roster",

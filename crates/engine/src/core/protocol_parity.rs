@@ -1864,8 +1864,12 @@ mod tests {
             serde_json::to_value(ops[0].to_protocol()).unwrap(),
             json!({"kind": "set_goal_status", "status": "paused", "clear": false})
         );
+        let snapshot = ops
+            .iter()
+            .find(|op| matches!(op, Op::GetSessionSnapshot { .. }))
+            .unwrap();
         assert_eq!(
-            serde_json::to_value(ops[8].to_protocol()).unwrap(),
+            serde_json::to_value(snapshot.to_protocol()).unwrap(),
             json!({"kind": "get_session_snapshot"}),
             "reply channels must not leak onto the wire"
         );
