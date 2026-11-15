@@ -9175,6 +9175,11 @@ impl Engine {
         call: child_host::ChildProbeCall,
     ) -> Result<RichToolResult> {
         let control = self.begin_turn_control_for_provenance(UserInputProvenance::Runtime);
+        let (turn_run_origin, turn_owner_present) =
+            self.mint_turn_origin(control.origin, UserInputProvenance::Runtime);
+        let previous_origin = std::mem::replace(&mut self.turn_run_origin, turn_run_origin);
+        let previous_owner_present =
+            std::mem::replace(&mut self.turn_owner_present, turn_owner_present);
         let mut turn = TurnContext::new(1);
         let mut uses = [ToolUseState {
             execution_id: call.execution_id,
@@ -9263,6 +9268,8 @@ impl Engine {
         surface.cache = self.session.tool_activation_cache.clone();
         surface.policy.catalog = catalog;
         surface.policy.active_names = active;
+        self.turn_owner_present = previous_owner_present;
+        self.turn_run_origin = previous_origin;
         drop(control);
         answer.map_err(anyhow::Error::new)
     }

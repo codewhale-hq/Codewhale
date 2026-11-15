@@ -27017,12 +27017,38 @@ mod child_permission_gate {
         ]);
         let live =
             crate::core::engine::LivePosture::for_tests(&std::env::temp_dir(), ApprovalMode::Auto);
-        let (registry, mut rx, manager) = worker_registry_with_live_posture(
+        let (mut registry, mut rx, manager) = worker_registry_with_live_posture(
             ApprovalMode::Auto,
             false,
             true,
             Some((client, config)),
             Some(live.clone()),
+        );
+        registry.gate_runtime = registry
+            .gate_runtime
+            .clone()
+            .with_foreground_children(Arc::new(ForegroundChildRegistry::new()))
+            .with_parent_origin(
+                crate::core::authority::auto_review::RunOrigin::Interactive,
+                true,
+            );
+        let allowed = registry
+            .execute(
+                "agent_gate",
+                "bash",
+                json!({"command": guardian_marker_pipeline("allowed")}),
+            )
+            .await
+            .expect("Auto Review allows an unforced harmless pipeline");
+        assert!(allowed.contains("allowed"), "{allowed}");
+        assert_eq!(drain_gate_receipts(&mut rx).len(), 1);
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("mock requests")
+                .len(),
+            1
         );
         let input = json!({"command": GUARDIAN_PIPELINE});
         let (receipt_store, session_id) = receipt_context(&registry);
@@ -27103,8 +27129,8 @@ mod child_permission_gate {
                     .await
                     .expect("mock requests")
                     .len(),
-                denied_count,
-                "each Auto stage reviews once before its exact human Ask"
+                1,
+                "forced exact typed Ask prompts the interactive owner directly without an extra reviewer call"
             );
 
             if denied_count == 1 {
