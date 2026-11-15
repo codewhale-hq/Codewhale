@@ -2098,6 +2098,8 @@ impl Engine {
             let mut resources = vec![ResourceClaim::GlobalExclusive];
             let mut blocked_error: Option<ToolError> = None;
             let mut guard_result: Option<ToolResult> = None;
+            let mut creator_gate: Option<crate::extension_host::creator_policy::CreatorGatePlan> =
+                None;
             // #3026: set by a hook `ask` decision; applied AFTER the
             // registry-based approval computation below so it cannot be
             // clobbered by it.
@@ -2463,6 +2465,114 @@ impl Engine {
                     .as_ref()
                     .is_none_or(|child| child.authority.runtime.parent_can_prompt);
 
+            let is_creator_changing = tool_registry
+                .and_then(|registry| registry.get(&tool_name))
+                .as_deref()
+                .is_some_and(|spec| {
+                    crate::extension_host::creator_policy::is_creator_changing_spec_call(
+                        spec,
+                        &tool_input,
+                    )
+                });
+            if is_creator_changing {
+                let is_subagent = self.child_host.is_some()
+                    || tool_registry
+                        .is_some_and(|registry| registry.context().owner_agent_id.is_some());
+                if blocked_error.is_none() && is_subagent {
+                    blocked_error = Some(ToolError::permission_denied(
+                        "Subagents cannot change plugins or plugin state; ask the root agent or user."
+                            .to_string(),
+                    ));
+                }
+                if blocked_error.is_none() && source != ToolCallSource::Model {
+                    blocked_error = Some(ToolError::permission_denied(
+                        "plugin_manager changes are only allowed as direct tool calls.".to_string(),
+                    ));
+                }
+                if blocked_error.is_none() && mode == AppMode::Plan {
+                    blocked_error = Some(ToolError::permission_denied(format!(
+                        "'{tool_name}' changes plugin state and is not available in Plan mode: Plan has no write-capable plugin actions (read-only list_* actions remain available). The user can change modes with /mode."
+                    )));
+                }
+                if blocked_error.is_none() && batch_approval_mode == ApprovalMode::Never {
+                    blocked_error = Some(ToolError::permission_denied(
+                        "Changing plugins is not permitted in Never approval mode.".to_string(),
+                    ));
+                }
+                if blocked_error.is_none() {
+                    if let Some(gate_context) = self.live_tool_context(tool_registry) {
+                        match crate::extension_host::creator_policy::plan_change_async(
+                            &gate_context,
+                            &tool_input,
+                            &self.cancel_token,
+                        )
+                        .await
+                        {
+                            Ok(plan) => {
+                                approval_description = plan.card_description.clone();
+                                let requires_human_card = !plan.in_agent_scope
+                                    || plan.unseen_network_fetch
+                                    || !matches!(
+                                        batch_approval_mode,
+                                        ApprovalMode::Bypass | ApprovalMode::Auto
+                                    );
+                                if self.current_turn_authority().run_origin()
+                                    == RunOrigin::Background
+                                    && requires_human_card
+                                {
+                                    approval_required = false;
+                                    approval_force_prompt = false;
+                                    blocked_error = Some(ToolError::permission_denied(format!(
+                                        "Plugin change `{}` requires user confirmation, which is unavailable in background runs.",
+                                        plan.action.as_str()
+                                    )));
+                                } else if requires_human_card {
+                                    if !plan.in_agent_scope || plan.unseen_network_fetch {
+                                        if !(matches!(
+                                            batch_approval_mode,
+                                            ApprovalMode::Suggest
+                                                | ApprovalMode::AcceptEdits
+                                                | ApprovalMode::Bypass
+                                        ) || (batch_approval_mode == ApprovalMode::Auto
+                                            && owner_can_prompt))
+                                        {
+                                            approval_required = false;
+                                            approval_force_prompt = false;
+                                            blocked_error = Some(ToolError::permission_denied(
+                                                plan.outside_scope_reason.clone().unwrap_or_else(
+                                                    || {
+                                                        format!(
+                                                            "This plugin {} is outside agent scope and requires a person's confirmation, and the current {} posture has no one to ask.",
+                                                            plan.action.as_str(),
+                                                            batch_approval_mode
+                                                                .permission_chip_label()
+                                                        )
+                                                    },
+                                                ),
+                                            ));
+                                        } else {
+                                            approval_required = true;
+                                            approval_force_prompt = true;
+                                        }
+                                    } else {
+                                        approval_required = true;
+                                        approval_force_prompt = true;
+                                    }
+                                }
+                                creator_gate = Some(plan);
+                            }
+                            Err(error) => {
+                                blocked_error = Some(error);
+                            }
+                        }
+                    } else {
+                        blocked_error = Some(ToolError::not_available(
+                            "plugin_manager requires an effective tool context".to_string(),
+                        ));
+                    }
+                }
+            }
+
             if blocked_error.is_none()
                 && batch_approval_mode == ApprovalMode::Auto
                 && approval_force_prompt
@@ -2542,6 +2652,7 @@ impl Engine {
                             } else if !hook_requires_approval
                                 && !approval_force_prompt
                                 && !preserve_extension_approval_for_auto_review
+                                && !is_creator_changing
                             {
                                 approval_required = false;
                             }
@@ -2554,7 +2665,13 @@ impl Engine {
                                     blocked_error = Some(ToolError::permission_denied(reason));
                                 } else {
                                     approval_required = true;
-                                    approval_description = reason;
+                                    if is_creator_changing {
+                                        approval_description = format!(
+                                            "{approval_description}\nAdditional policy hold: {reason}"
+                                        );
+                                    } else {
+                                        approval_description = reason;
+                                    }
                                     approval_force_prompt = true;
                                 }
                             }
@@ -2626,7 +2743,7 @@ impl Engine {
                         registered_spec.as_deref(),
                     )
                 } else {
-                    direct_extension_caller.is_some() && approval_required
+                    direct_extension_caller.is_some() && approval_required && !is_creator_changing
                 };
                 let review_context = review_context.map(|review_context| {
                     let review_context = review_context.with_typed_narrow_allow(typed_narrow_allow);
@@ -2646,7 +2763,10 @@ impl Engine {
                 });
                 match review_context {
                     Err(error) => blocked_error = Some(error),
-                    Ok(review_context) => {
+                    Ok(mut review_context) => {
+                        review_context.creator_review = creator_gate
+                            .as_ref()
+                            .and_then(|gate| gate.auto_review_summary.clone());
                         let (decision, audit_event) = auto_review_plan_decision_for_context(
                             &self.config.auto_review_policy,
                             &review_context,
@@ -2669,12 +2789,16 @@ impl Engine {
                                 ),
                                 crate::extension_host::core_call::OriginApproval::ForcePrompt
                             );
+                        let creator_outside_scope = creator_gate
+                            .as_ref()
+                            .is_some_and(|gate| !gate.in_agent_scope || gate.unseen_network_fetch);
                         let forced_human_prompt = approval_force_prompt
                             || crate::tools::approval_cache::computer_use_user_gate(
                                 &tool_name,
                                 &tool_input,
                             )
                             .is_some()
+                            || creator_outside_scope
                             || extension_forces_prompt;
                         let hard_auto_review_block = audit_event
                             .get("decision")
@@ -2714,7 +2838,13 @@ impl Engine {
                                     || owner_can_prompt =>
                             {
                                 approval_required = true;
-                                approval_description = reason;
+                                if is_creator_changing {
+                                    approval_description = format!(
+                                        "{approval_description}\nAdditional policy hold: {reason}"
+                                    );
+                                } else {
+                                    approval_description = reason;
+                                }
                                 approval_force_prompt = true;
                                 grants_outside_workspace_read =
                                     audit_event.get("rule_id").and_then(Value::as_str)
@@ -2896,7 +3026,13 @@ impl Engine {
                             )));
                         } else {
                             approval_required = true;
-                            approval_description = reason;
+                            if is_creator_changing {
+                                approval_description = format!(
+                                    "{approval_description}\nAdditional repository policy hold: {reason}"
+                                );
+                            } else {
+                                approval_description = reason;
+                            }
                             approval_force_prompt = true;
                         }
                     }
@@ -3105,6 +3241,7 @@ impl Engine {
                 blocked_error,
                 guard_result,
                 grants_outside_workspace_read,
+                creator_gate,
             });
         }
         let cache = &mut self.session.tool_activation_cache;
@@ -3897,7 +4034,19 @@ impl Engine {
                                     "policy": model_requested_policy.as_ref().map(|policy| format!("{policy:?}")),
                                     "caller": caller_type_for_tool_use(tool_caller.as_ref()),
                                 })).await;
-                                if let Some(policy) = model_requested_policy {
+                                if plan.creator_gate.is_some()
+                                    && by != crate::approval_log::ApprovalDecider::User
+                                {
+                                    nested_gate_env.tool_call_budget.refund();
+                                    (
+                                        Some(Err(ToolError::permission_denied(
+                                            "Changing plugins requires a person's explicit approval on the card; remembered grants or automatic posture cannot stand in."
+                                                .to_string(),
+                                        ))),
+                                        None,
+                                        None,
+                                    )
+                                } else if let Some(policy) = model_requested_policy {
                                     let elevated_context = Some(
                                         batch_tool_context
                                             .clone()
@@ -4084,6 +4233,59 @@ impl Engine {
                                         .to_string(),
                                 ))
                             });
+                        }
+                    }
+
+                    let mut context_override = context_override;
+                    if result_override.is_none()
+                        && let Some(gate_plan) = plan.creator_gate.as_ref()
+                    {
+                        let live_authority = self.applied_runtime_authority();
+                        let decider = match approval_stamp {
+                            Some(ToolApprovalStamp::ApprovedByUser)
+                                if live_authority.mode() != AppMode::Plan
+                                    && live_authority.approval_mode() != ApprovalMode::Never =>
+                            {
+                                Ok(crate::extension_host::creator_policy::CreatorDecider::Person)
+                            }
+                            None if live_authority.mode() == AppMode::Agent
+                                && live_authority.approval_mode() == ApprovalMode::Bypass =>
+                            {
+                                Ok(crate::extension_host::creator_policy::CreatorDecider::Agent(
+                                    codewhale_plugins::host_services::AgentPosture::FullAccess,
+                                ))
+                            }
+                            None if live_authority.mode() == AppMode::Agent
+                                && live_authority.approval_mode() == ApprovalMode::Auto =>
+                            {
+                                Ok(crate::extension_host::creator_policy::CreatorDecider::Agent(
+                                    codewhale_plugins::host_services::AgentPosture::AutoReview,
+                                ))
+                            }
+                            _ => Err(ToolError::permission_denied(
+                                "Permissions changed or did not authorize this plugin change; retry with the current permissions."
+                                    .to_string(),
+                            )),
+                        };
+                        match decider
+                            .and_then(|decider| gate_plan.build_carrier(decider, live_authority))
+                        {
+                            Ok(carrier) => {
+                                if let Some(context) = context_override
+                                    .take()
+                                    .or_else(|| batch_tool_context.clone())
+                                {
+                                    context_override = Some(context.with_creator_decision(carrier));
+                                } else {
+                                    result_override = Some(Err(ToolError::not_available(
+                                        "plugin_manager requires an effective tool context"
+                                            .to_string(),
+                                    )));
+                                }
+                            }
+                            Err(err) => {
+                                result_override = Some(Err(err));
+                            }
                         }
                     }
 
@@ -4692,6 +4894,15 @@ impl Engine {
         if let Some(error) = plan.blocked_error {
             return NestedCallVerdict::Refused {
                 error,
+                decision: NestedDecision::Refused,
+            };
+        }
+        if plan.creator_gate.is_some() {
+            nested_gate_env.tool_call_budget.refund();
+            return NestedCallVerdict::Refused {
+                error: ToolError::permission_denied(
+                    "plugin_manager changes are only allowed as direct tool calls.".to_string(),
+                ),
                 decision: NestedDecision::Refused,
             };
         }

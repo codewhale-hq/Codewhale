@@ -136,7 +136,7 @@ pub(super) fn auto_approval_decider(
         false,
         false,
         approval_force_prompt,
-        false,
+        "",
     ) {
         ApprovalRequestDisposition::AutoApprove => {
             codewhale_engine::approval_log::ApprovalDecider::Posture
@@ -157,8 +157,7 @@ pub(super) fn resolve_ui_approval_disposition(
         is_session_approved_for_tool(app, tool_name, grouping_key),
         is_session_denied_for_key(app, approval_key),
         approval_force_prompt,
-        // This namespace is minted by the Engine, not by plugin card text.
-        approval_key.starts_with("extcall:ext:"),
+        approval_key,
     );
     // Full Access holds a required prompt only because a programme with no
     // person at the card must not be stranded by one. This surface always has

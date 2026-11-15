@@ -13,8 +13,12 @@ use codewhale_plugins::host_services::{
 };
 use codewhale_skill_install::install::INSTALLED_FROM_MARKER;
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 use super::super::core_call::{BrokerContext, InvocationGuard};
+use super::super::creator_policy::{
+    AdmittedChangeKind, CreatorDecider, CreatorDecisionCarrier, plan_change_async,
+};
 use super::super::dsh_broker::{BrokerActTool, TABLE};
 use super::super::protocol::{DshBrokerParams, DshService, RpcErrorWire, error_code};
 use super::super::registry::OwnerState;
@@ -23,7 +27,7 @@ use super::super::test_support::fake_authority;
 use super::super::tier::HostCohort;
 use super::super::{ExtensionHostManager, ExtensionHostOptions, TestManagerGuard};
 use super::{MAX_TEXT_BYTES, clean_diagnostic_fragment, diagnostic_path, sanitize_inline, serve};
-use crate::core::engine::{HumanDecision, LivePosture};
+use crate::core::engine::{HumanDecision, LivePosture, LiveRuntimeAuthority};
 use crate::rlm::session::SessionObjectSnapshot;
 use crate::tools::codemode::{ExtensionCaller, NestedCallGate, NestedCallVerdict, NestedDecision};
 use crate::tools::spec::{ToolContext, ToolError};
@@ -1547,59 +1551,130 @@ fn copy_dir_tree(src: &Path, dst: &Path) {
     }
 }
 
-type GateCallLog = Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
-
-fn install_gate(
-    f: &mut PluginsFixture,
-    on_call: impl Fn(&Value, &LivePosture) -> NestedCallVerdict + Send + Sync + 'static,
-) -> GateCallLog {
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let seen_ref = Arc::clone(&seen);
-    let asked_ref = Arc::clone(&f.asked);
-    let posture_ref = f.posture.clone();
-    f.gate = NestedCallGate::answering_for_test(move |name, input| {
-        asked_ref.fetch_add(1, Ordering::SeqCst);
-        let target = input
-            .get("target")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        seen_ref.lock().unwrap().push((name.to_string(), target));
-        let mut verdict = on_call(input, &posture_ref);
-        if let NestedCallVerdict::Run {
-            name: ref mut verdict_name,
-            ..
-        } = verdict
-            && verdict_name.is_empty()
-        {
-            *verdict_name = name.to_string();
-        }
-        verdict
-    })
-    .for_extension(
-        ExtensionCaller {
-            origin: "extension:creator".to_string(),
-            tool: "creator_tool".to_string(),
-            scope: "ext:host:creator@digest".to_string(),
-        },
-        BrokerActTool::all().to_vec(),
-    );
-    seen
+fn broker_to_pm_input(method: &str, input: &Value) -> Value {
+    let mut map = input.as_object().cloned().unwrap_or_default();
+    map.insert("action".to_string(), json!(method));
+    Value::Object(map)
 }
 
-fn allow_verdict(input: &Value, decision: NestedDecision) -> NestedCallVerdict {
-    NestedCallVerdict::Run {
-        name: String::new(),
-        input: input.clone(),
-        supports_parallel: false,
-        decision,
-        hook_context: None,
+fn decider_for_posture(authority: &LiveRuntimeAuthority) -> CreatorDecider {
+    match authority.approval_mode() {
+        ApprovalMode::Bypass => CreatorDecider::Agent(AgentPosture::FullAccess),
+        ApprovalMode::Auto => CreatorDecider::Agent(AgentPosture::AutoReview),
+        _ => CreatorDecider::Person,
     }
 }
 
-fn deny_verdict(reason: &str) -> NestedCallVerdict {
-    NestedCallVerdict::Refused {
-        error: ToolError::permission_denied(reason),
-        decision: NestedDecision::Denied,
+fn synthetic_carrier_for(
+    method: &str,
+    input: &Value,
+    decider: CreatorDecider,
+    admitted_authority: LiveRuntimeAuthority,
+    in_agent_scope: bool,
+) -> CreatorDecisionCarrier {
+    let raw_target = input
+        .get("target")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let change = match method {
+        "install" => AdmittedChangeKind::LocalInstall {
+            raw_target: raw_target.clone(),
+            canon_source: PathBuf::from(&raw_target),
+            is_dsh: false,
+            plugin_name: "synthetic".to_string(),
+            pre_hash: "0".repeat(64),
+            capability_hash: "0".repeat(64),
+            want_enabled: input
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+            expected_gate_target: format!("synthetic {} {raw_target}", "0".repeat(64)),
+            shown_service_lines: Vec::new(),
+            preview_warnings: Vec::new(),
+            remaining_writes: Arc::new(AtomicUsize::new(1)),
+        },
+        "remove" => AdmittedChangeKind::Remove {
+            plugin_id: "synthetic/id".to_string(),
+            plugin_name: raw_target,
+            expected_gate_target: "synthetic synthetic/id".to_string(),
+            remaining_writes: Arc::new(AtomicUsize::new(1)),
+        },
+        "enable" | "disable" => AdmittedChangeKind::Toggle {
+            enabled: method == "enable",
+            plugin_id: "synthetic/id".to_string(),
+            plugin_name: raw_target,
+            content_hash: "0".repeat(64),
+            capability_hash: "0".repeat(64),
+            expected_gate_target: "synthetic".to_string(),
+            shown_service_lines: Vec::new(),
+            shown_service_token: None,
+            remaining_writes: Arc::new(AtomicUsize::new(1)),
+        },
+        other => panic!("unsupported broker change method {other}"),
+    };
+    CreatorDecisionCarrier {
+        decider,
+        admitted_authority,
+        in_agent_scope,
+        change,
+    }
+}
+
+impl PluginsFixture {
+    async fn admit_context(
+        &self,
+        base: &ToolContext,
+        method: &str,
+        input: &Value,
+        decider: CreatorDecider,
+    ) -> Result<ToolContext, ToolError> {
+        let pm_input = broker_to_pm_input(method, input);
+        let plan = plan_change_async(base, &pm_input, &CancellationToken::new()).await?;
+        let authority = base
+            .live_posture
+            .as_ref()
+            .expect("live_posture on fixture")
+            .read();
+        let carrier = plan.build_carrier(decider, authority)?;
+        Ok(base.clone().with_creator_decision(carrier))
+    }
+
+    async fn call_admitted(
+        &self,
+        base: &ToolContext,
+        method: &str,
+        input: Value,
+    ) -> Result<Value, RpcErrorWire> {
+        let decider = decider_for_posture(&self.posture.read());
+        let admitted = self
+            .admit_context(base, method, &input, decider)
+            .await
+            .expect("admit_context should succeed");
+        let guard = self.begin(&self.creator, HostCohort::Builtin, &admitted);
+        let ticket = plugin_ticket(&guard).unwrap();
+        self.call_broker(&self.creator, HostCohort::Builtin, &ticket, method, input)
+            .await
+    }
+
+    async fn call_admitted_with_receipts(
+        &self,
+        base: &ToolContext,
+        method: &str,
+        input: Value,
+    ) -> (Result<Value, RpcErrorWire>, Value) {
+        let decider = decider_for_posture(&self.posture.read());
+        let admitted = self
+            .admit_context(base, method, &input, decider)
+            .await
+            .expect("admit_context should succeed");
+        let guard = self.begin(&self.creator, HostCohort::Builtin, &admitted);
+        let ticket = plugin_ticket(&guard).unwrap();
+        let res = self
+            .call_broker(&self.creator, HostCohort::Builtin, &ticket, method, input)
+            .await;
+        let receipts = guard.receipts().unwrap_or(Value::Null);
+        (res, receipts)
     }
 }
 
@@ -1642,9 +1717,6 @@ async fn full_access_installs_a_folder_in_the_project_and_records_the_agent() {
     )));
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    let gate_calls = install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
 
     let src = write_skill_bundle(
         &f.config.workspace,
@@ -1652,19 +1724,14 @@ async fn full_access_installs_a_folder_in_the_project_and_records_the_agent() {
         "agent-skill",
         "1.2.3",
     );
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
-
-    let installed = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+    let (installed, receipts) = f
+        .call_admitted_with_receipts(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
-        .await
-        .unwrap();
+        .await;
+    let installed = installed.unwrap();
     assert_eq!(installed["application"], "applied", "{installed}");
     assert_eq!(installed["stage"], "enable");
     assert_eq!(installed["changed"], true);
@@ -1684,10 +1751,15 @@ async fn full_access_installs_a_folder_in_the_project_and_records_the_agent() {
             .any(|w| w == "approved by the agent in Full Access"),
         "{warnings:?}"
     );
-    assert_eq!(f.asked.load(Ordering::SeqCst), 1);
-    assert_eq!(gate_calls.lock().unwrap().len(), 1);
+    assert_eq!(f.asked.load(Ordering::SeqCst), 0);
+    assert_eq!(receipts["broker_acts"]["total"], 2, "{receipts}");
+    let acts = receipts["broker_acts"]["acts"].as_array().unwrap();
+    let gate_act = acts.iter().find(|act| act.get("effect").is_some()).unwrap();
+    assert_eq!(gate_act["effect"], "write");
+    assert_eq!(gate_act["outcome"], "allowed");
+    assert_eq!(gate_act["decider"], "agent");
+    assert_eq!(gate_act["posture"], "full_access");
 
-    drop(guard);
     f.reload_registry();
     let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
@@ -1728,13 +1800,12 @@ async fn full_access_installs_a_folder_in_the_project_and_records_the_agent() {
         "{receipt}"
     );
 
+    drop(guard);
     let deco_src = f.config.workspace.join("deco-src");
     copy_dir_tree(&dsh_template_dir("decoration"), &deco_src);
     let deco = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": deco_src.to_string_lossy()}),
         )
@@ -1753,13 +1824,34 @@ async fn full_access_installs_a_folder_in_the_project_and_records_the_agent() {
 
     let mcp_src = f.config.workspace.join("mcp-src");
     copy_dir_tree(&dsh_template_dir("mcp"), &mcp_src);
+    let mcp_input = json!({"target": mcp_src.to_string_lossy()});
+    let mcp_plan = plan_change_async(
+        &f.context,
+        &broker_to_pm_input("install", &mcp_input),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(mcp_plan.in_agent_scope);
+    let mcp_ctx = f
+        .context
+        .clone()
+        .with_creator_decision(synthetic_carrier_for(
+            "install",
+            &mcp_input,
+            CreatorDecider::Agent(AgentPosture::FullAccess),
+            f.posture.read(),
+            true,
+        ));
+    let mcp_guard = f.begin(&f.creator, HostCohort::Builtin, &mcp_ctx);
+    let mcp_ticket = plugin_ticket(&mcp_guard).unwrap();
     let mcp = f
         .call_broker(
             &f.creator,
             HostCohort::Builtin,
-            &ticket,
+            &mcp_ticket,
             "install",
-            json!({"target": mcp_src.to_string_lossy()}),
+            mcp_input,
         )
         .await
         .unwrap();
@@ -1768,6 +1860,7 @@ async fn full_access_installs_a_folder_in_the_project_and_records_the_agent() {
     assert_eq!(mcp["changed"], true);
     assert_eq!(mcp["enabled"], true);
     assert_eq!(mcp["error"]["code"], "operation-error");
+    drop(mcp_guard);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1808,9 +1901,6 @@ async fn full_access_refuses_what_the_agent_did_not_write() {
 
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
 
     let outside = write_skill_bundle(f._temp.path(), "outside-src", "outside-plugin", "1.0.0");
     let git_hidden = write_skill_bundle(
@@ -1854,40 +1944,87 @@ async fn full_access_refuses_what_the_agent_did_not_write() {
     .collect();
 
     let state_before = fs::read(&f.config.state_path).unwrap();
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
 
     for (label, target) in targets {
-        let res = f
-            .call_broker(
-                &f.creator,
-                HostCohort::Builtin,
-                &ticket,
-                "install",
-                json!({"target": target}),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res["application"], "failed", "{label}: {res}");
-        assert_eq!(res["changed"], false, "{label}: {res}");
-        assert_eq!(res["error"]["code"], "operation-error", "{label}: {res}");
+        let input = json!({"target": target});
+        let plan = plan_change_async(
+            &f.context,
+            &broker_to_pm_input("install", &input),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect(label);
+        assert!(!plan.in_agent_scope, "{label}");
         assert!(
-            res["error"]["diagnostic"]
-                .as_str()
-                .unwrap()
-                .contains("ask the person: step to Ask, or use the Plugins page"),
-            "{label}: {res}"
+            plan.build_carrier(
+                CreatorDecider::Agent(AgentPosture::FullAccess),
+                f.posture.read()
+            )
+            .is_err(),
+            "{label}"
         );
+
+        let mut forged = plan
+            .build_carrier(CreatorDecider::Person, f.posture.read())
+            .expect(label);
+        forged.decider = CreatorDecider::Agent(AgentPosture::FullAccess);
+        forged.in_agent_scope = true;
+        let forged_ctx = f.context.clone().with_creator_decision(forged);
+        let guard = f.begin(&f.creator, HostCohort::Builtin, &forged_ctx);
+        let ticket = plugin_ticket(&guard).unwrap();
+        let res = f
+            .call_broker(&f.creator, HostCohort::Builtin, &ticket, "install", input)
+            .await;
+        if label == "npm spec" {
+            assert_eq!(refusal(&res), (error_code::REFUSED, "refused".into()));
+        } else {
+            let res = res.unwrap();
+            assert_eq!(res["application"], "failed", "{label}: {res}");
+            assert_eq!(res["changed"], false, "{label}: {res}");
+            assert_eq!(res["error"]["code"], "operation-error", "{label}: {res}");
+            assert!(
+                res["error"]["diagnostic"]
+                    .as_str()
+                    .unwrap()
+                    .contains("ask the person: step to Ask, or use the Plugins page"),
+                "{label}: {res}"
+            );
+        }
     }
 
     for method in ["disable", "remove"] {
+        let person_input = json!({"target": "person-plug"});
+        let person_plan = plan_change_async(
+            &f.context,
+            &broker_to_pm_input(method, &person_input),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(!person_plan.in_agent_scope, "{method} person");
+        assert!(
+            person_plan
+                .build_carrier(
+                    CreatorDecider::Agent(AgentPosture::FullAccess),
+                    f.posture.read()
+                )
+                .is_err()
+        );
+        let mut forged_person = person_plan
+            .build_carrier(CreatorDecider::Person, f.posture.read())
+            .unwrap();
+        forged_person.decider = CreatorDecider::Agent(AgentPosture::FullAccess);
+        forged_person.in_agent_scope = true;
+        let forged_person_ctx = f.context.clone().with_creator_decision(forged_person);
+        let p_guard = f.begin(&f.creator, HostCohort::Builtin, &forged_person_ctx);
+        let p_ticket = plugin_ticket(&p_guard).unwrap();
         let person_res = f
             .call_broker(
                 &f.creator,
                 HostCohort::Builtin,
-                &ticket,
+                &p_ticket,
                 method,
-                json!({"target": "person-plug"}),
+                person_input,
             )
             .await
             .unwrap();
@@ -1904,13 +2041,55 @@ async fn full_access_refuses_what_the_agent_did_not_write() {
             "{person_res}"
         );
 
+        let builtin_input = json!({"target": "core-pack"});
+        if method == "remove" {
+            assert!(
+                plan_change_async(
+                    &f.context,
+                    &broker_to_pm_input(method, &builtin_input),
+                    &CancellationToken::new(),
+                )
+                .await
+                .is_err(),
+                "{method} builtin"
+            );
+        } else {
+            let builtin_plan = plan_change_async(
+                &f.context,
+                &broker_to_pm_input(method, &builtin_input),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            assert!(!builtin_plan.in_agent_scope, "{method} builtin");
+            assert!(
+                builtin_plan
+                    .build_carrier(
+                        CreatorDecider::Agent(AgentPosture::FullAccess),
+                        f.posture.read()
+                    )
+                    .is_err()
+            );
+        }
+        let forged_builtin_ctx = f
+            .context
+            .clone()
+            .with_creator_decision(synthetic_carrier_for(
+                method,
+                &builtin_input,
+                CreatorDecider::Agent(AgentPosture::FullAccess),
+                f.posture.read(),
+                true,
+            ));
+        let b_guard = f.begin(&f.creator, HostCohort::Builtin, &forged_builtin_ctx);
+        let b_ticket = plugin_ticket(&b_guard).unwrap();
         let builtin_res = f
             .call_broker(
                 &f.creator,
                 HostCohort::Builtin,
-                &ticket,
+                &b_ticket,
                 method,
-                json!({"target": "core-pack"}),
+                builtin_input,
             )
             .await
             .unwrap();
@@ -1945,30 +2124,27 @@ async fn ask_asks_once_and_records_the_person() {
     let mut f = PluginsFixture::new();
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Suggest);
-    let gate_calls = install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Approved)
-    });
 
     let src = write_skill_bundle(f._temp.path(), "ext-ask-src", "ext-ask", "0.9.0");
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
-
-    let res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+    let (res, receipts) = f
+        .call_admitted_with_receipts(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
-        .await
-        .unwrap();
+        .await;
+    let res = res.unwrap();
     assert_eq!(res["application"], "applied", "{res}");
     assert_eq!(res["stage"], "enable");
     assert_eq!(res["changed"], true);
     assert_eq!(res["enabled"], true);
-    assert_eq!(f.asked.load(Ordering::SeqCst), 1);
-    assert_eq!(gate_calls.lock().unwrap().len(), 1);
+    assert_eq!(f.asked.load(Ordering::SeqCst), 0);
+    assert_eq!(receipts["broker_acts"]["total"], 2, "{receipts}");
+    let acts = receipts["broker_acts"]["acts"].as_array().unwrap();
+    let gate_act = acts.iter().find(|act| act.get("effect").is_some()).unwrap();
+    assert_eq!(gate_act["outcome"], "allowed");
+    assert_eq!(gate_act["decider"], "person");
+    assert_eq!(gate_act["posture"], "approval_card");
     let warnings = res["warnings"].as_array().unwrap();
     assert!(
         warnings.iter().any(|w| w == "enabled for every project"),
@@ -1979,7 +2155,6 @@ async fn ask_asks_once_and_records_the_person() {
         "{warnings:?}"
     );
 
-    drop(guard);
     f.reload_registry();
     let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
@@ -1996,13 +2171,12 @@ async fn ask_asks_once_and_records_the_person() {
         .unwrap();
     assert_eq!(entry["codewhale"]["approved_by"]["kind"], "person");
     assert_eq!(entry["codewhale"]["approved_by"]["via"], "approval_card");
+    drop(guard);
 
     let disabled_src = write_skill_bundle(f._temp.path(), "ext-off-src", "ext-off", "0.1.0");
     let res_off = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": disabled_src.to_string_lossy(), "enabled": false}),
         )
@@ -2012,7 +2186,7 @@ async fn ask_asks_once_and_records_the_person() {
     assert_eq!(res_off["stage"], "install");
     assert_eq!(res_off["changed"], true);
     assert_eq!(res_off["enabled"], false);
-    assert_eq!(f.asked.load(Ordering::SeqCst), 2);
+    assert_eq!(f.asked.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2023,28 +2197,18 @@ async fn a_no_on_the_card_changes_nothing() {
 
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
-    {
-        let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-        let ticket = plugin_ticket(&guard).unwrap();
-        let init = f
-            .call_broker(
-                &f.creator,
-                HostCohort::Builtin,
-                &ticket,
-                "install",
-                json!({"target": existing.to_string_lossy()}),
-            )
-            .await
-            .unwrap();
-        assert_eq!(init["application"], "applied");
-    }
+    let init = f
+        .call_admitted(
+            &f.context,
+            "install",
+            json!({"target": existing.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(init["application"], "applied");
 
     let state_before = fs::read(&f.config.state_path).unwrap();
     f.posture.switch_for_tests(ApprovalMode::Suggest);
-    install_gate(&mut f, |_, _| deny_verdict("denied by user"));
     f.asked.store(0, Ordering::SeqCst);
 
     let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
@@ -2060,11 +2224,11 @@ async fn a_no_on_the_card_changes_nothing() {
             .await;
         assert_eq!(
             refusal(&err),
-            (error_code::DENIED, "denied".into()),
+            (error_code::REFUSED, "refused".into()),
             "{method}"
         );
     }
-    assert_eq!(f.asked.load(Ordering::SeqCst), 4);
+    assert_eq!(f.asked.load(Ordering::SeqCst), 0);
     assert_eq!(fs::read(&f.config.state_path).unwrap(), state_before);
     assert!(!f.config.user_plugins_dir.join("deny-install").exists());
     assert!(f.config.user_plugins_dir.join("seeded-plug").is_dir());
@@ -2075,20 +2239,13 @@ async fn auto_review_records_the_agent_with_its_posture() {
     let mut f = PluginsFixture::new();
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Auto);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
 
     let in_ws = write_skill_bundle(&f.config.workspace, "auto-in", "auto-in", "1.0.0");
     let out_ws = write_skill_bundle(f._temp.path(), "auto-out", "auto-out", "1.0.0");
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
 
     let ok = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": in_ws.to_string_lossy()}),
         )
@@ -2103,9 +2260,8 @@ async fn auto_review_records_the_agent_with_its_posture() {
             .any(|w| w == "approved by the agent in Auto-Review"),
         "{ok}"
     );
-    assert_eq!(f.asked.load(Ordering::SeqCst), 1);
+    assert_eq!(f.asked.load(Ordering::SeqCst), 0);
 
-    drop(guard);
     f.reload_registry();
     let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
@@ -2122,20 +2278,46 @@ async fn auto_review_records_the_agent_with_its_posture() {
         .unwrap();
     assert_eq!(entry["codewhale"]["approved_by"]["kind"], "agent");
     assert_eq!(entry["codewhale"]["approved_by"]["posture"], "auto_review");
+    drop(guard);
 
+    let out_input = json!({"target": out_ws.to_string_lossy()});
+    let out_plan = plan_change_async(
+        &f.context,
+        &broker_to_pm_input("install", &out_input),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(!out_plan.in_agent_scope);
+    assert!(
+        out_plan
+            .build_carrier(
+                CreatorDecider::Agent(AgentPosture::AutoReview),
+                f.posture.read()
+            )
+            .is_err()
+    );
+    let mut forged = out_plan
+        .build_carrier(CreatorDecider::Person, f.posture.read())
+        .unwrap();
+    forged.decider = CreatorDecider::Agent(AgentPosture::AutoReview);
+    forged.in_agent_scope = true;
+    let forged_ctx = f.context.clone().with_creator_decision(forged);
+    let forged_guard = f.begin(&f.creator, HostCohort::Builtin, &forged_ctx);
+    let forged_ticket = plugin_ticket(&forged_guard).unwrap();
     let refused = f
         .call_broker(
             &f.creator,
             HostCohort::Builtin,
-            &ticket,
+            &forged_ticket,
             "install",
-            json!({"target": out_ws.to_string_lossy()}),
+            out_input,
         )
         .await
         .unwrap();
     assert_eq!(refused["application"], "failed", "{refused}");
     assert_eq!(refused["changed"], false);
-    assert_eq!(f.asked.load(Ordering::SeqCst), 1);
+    assert_eq!(f.asked.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2149,24 +2331,15 @@ async fn plan_changes_nothing() {
     );
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
-    {
-        let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-        let ticket = plugin_ticket(&guard).unwrap();
-        let res = f
-            .call_broker(
-                &f.creator,
-                HostCohort::Builtin,
-                &ticket,
-                "install",
-                json!({"target": existing.to_string_lossy()}),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res["application"], "applied");
-    }
+    let res = f
+        .call_admitted(
+            &f.context,
+            "install",
+            json!({"target": existing.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res["application"], "applied");
 
     let state_before = fs::read(&f.config.state_path).unwrap();
     let new_src = write_skill_bundle(&f.config.workspace, "plan-new", "plan-new", "1.0.0");
@@ -2176,36 +2349,33 @@ async fn plan_changes_nothing() {
         ("plan", AppMode::Plan, ApprovalMode::Suggest),
     ] {
         f.posture.switch_mode_for_tests(mode, approval_mode);
-        let card_prompts = Arc::new(AtomicUsize::new(0));
-        let card_prompts_in_gate = Arc::clone(&card_prompts);
-        let gate_calls = install_gate(&mut f, move |input, posture| {
-            let live = posture.read();
-            if live.mode() == AppMode::Plan || live.approval_mode() == ApprovalMode::Never {
-                return deny_verdict("blocked by plan or never posture");
-            }
-            card_prompts_in_gate.fetch_add(1, Ordering::SeqCst);
-            allow_verdict(input, NestedDecision::Approved)
-        });
-        let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-        let ticket = plugin_ticket(&guard).unwrap();
         for (method, input) in [
             ("install", json!({"target": new_src.to_string_lossy()})),
             ("disable", json!({"target": "plan-existing"})),
             ("enable", json!({"target": "plan-existing"})),
             ("remove", json!({"target": "plan-existing"})),
         ] {
+            let carrier = synthetic_carrier_for(
+                method,
+                &input,
+                CreatorDecider::Person,
+                f.posture.read(),
+                false,
+            );
+            let ctx = f.context.clone().with_creator_decision(carrier);
+            let guard = f.begin(&f.creator, HostCohort::Builtin, &ctx);
+            let ticket = plugin_ticket(&guard).unwrap();
             let err = f
                 .call_broker(&f.creator, HostCohort::Builtin, &ticket, method, input)
                 .await;
             assert_eq!(
                 refusal(&err),
-                (error_code::DENIED, "denied".into()),
+                (error_code::REFUSED, "refused".into()),
                 "{label} {method}"
             );
         }
-        assert_eq!(card_prompts.load(Ordering::SeqCst), 0, "{label}");
-        assert_eq!(gate_calls.lock().unwrap().len(), 4, "{label}");
     }
+    assert_eq!(f.asked.load(Ordering::SeqCst), 0);
     assert_eq!(fs::read(&f.config.state_path).unwrap(), state_before);
     assert!(!f.config.user_plugins_dir.join("plan-new").exists());
     assert!(f.config.user_plugins_dir.join("plan-existing").is_dir());
@@ -2217,24 +2387,15 @@ async fn the_dial_moved_to_plan_during_the_card_changes_nothing() {
     let seeded = write_skill_bundle(&f.config.workspace, "dial-seed", "dial-seed", "1.0.0");
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
-    {
-        let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-        let ticket = plugin_ticket(&guard).unwrap();
-        let res = f
-            .call_broker(
-                &f.creator,
-                HostCohort::Builtin,
-                &ticket,
-                "install",
-                json!({"target": seeded.to_string_lossy()}),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res["application"], "applied");
-    }
+    let res = f
+        .call_admitted(
+            &f.context,
+            "install",
+            json!({"target": seeded.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res["application"], "applied");
 
     let state_before = fs::read(&f.config.state_path).unwrap();
     let candidate = write_skill_bundle(f._temp.path(), "dial-cand", "dial-cand", "1.0.0");
@@ -2245,20 +2406,24 @@ async fn the_dial_moved_to_plan_during_the_card_changes_nothing() {
         ("enable", json!({"target": "dial-seed"})),
         ("remove", json!({"target": "dial-seed"})),
     ] {
-        f.posture.switch_for_tests(ApprovalMode::Suggest);
-        install_gate(&mut f, |input, posture| {
-            posture.switch_for_tests(ApprovalMode::Never);
-            allow_verdict(input, NestedDecision::Approved)
-        });
-        let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-        let ticket = plugin_ticket(&guard).unwrap();
-        let res = f
-            .call_broker(&f.creator, HostCohort::Builtin, &ticket, method, input)
+        f.posture
+            .switch_mode_for_tests(AppMode::Agent, ApprovalMode::Suggest);
+        let admitted = f
+            .admit_context(&f.context, method, &input, CreatorDecider::Person)
             .await
             .unwrap();
-        assert_eq!(res["application"], "failed", "{method}: {res}");
-        assert_eq!(res["changed"], false, "{method}: {res}");
-        assert_eq!(res["error"]["code"], "operation-error", "{method}: {res}");
+        f.posture
+            .switch_mode_for_tests(AppMode::Plan, ApprovalMode::Suggest);
+        let guard = f.begin(&f.creator, HostCohort::Builtin, &admitted);
+        let ticket = plugin_ticket(&guard).unwrap();
+        let err = f
+            .call_broker(&f.creator, HostCohort::Builtin, &ticket, method, input)
+            .await;
+        assert_eq!(
+            refusal(&err),
+            (error_code::REFUSED, "refused".into()),
+            "{method}"
+        );
         assert_eq!(fs::read(&f.config.state_path).unwrap(), state_before);
         assert!(!f.config.user_plugins_dir.join("dial-cand").exists());
         assert!(f.config.user_plugins_dir.join("dial-seed").is_dir());
@@ -2271,12 +2436,6 @@ async fn the_arm_calls_the_gate_itself() {
     let src = write_skill_bundle(f._temp.path(), "gate-src", "gate-plug", "1.0.0");
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Suggest);
-    let gate_calls = install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Approved)
-    });
-
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
 
     for (method, input) in [
         ("install", json!({"target": src.to_string_lossy()})),
@@ -2284,40 +2443,29 @@ async fn the_arm_calls_the_gate_itself() {
         ("enable", json!({"target": "gate-plug"})),
         ("remove", json!({"target": "gate-plug"})),
     ] {
-        let res = f
-            .call_broker(&f.creator, HostCohort::Builtin, &ticket, method, input)
-            .await
-            .unwrap();
+        let (res, receipts) = f
+            .call_admitted_with_receipts(&f.context, method, input)
+            .await;
+        let res = res.unwrap();
         assert_eq!(res["application"], "applied", "{method}: {res}");
-    }
-    assert_eq!(f.asked.load(Ordering::SeqCst), 4);
-    assert_eq!(gate_calls.lock().unwrap().len(), 4);
-
-    let receipts = guard.receipts().expect("receipts");
-    assert_eq!(receipts["broker_acts"]["total"], 8, "{receipts}");
-    let acts = receipts["broker_acts"]["acts"].as_array().unwrap();
-    let gate_acts: Vec<&Value> = acts
-        .iter()
-        .filter(|act| act.get("effect").is_some())
-        .collect();
-    let outcome_acts: Vec<&Value> = acts
-        .iter()
-        .filter(|act| act.get("application").is_some())
-        .collect();
-    assert_eq!(gate_acts.len(), 4, "{receipts}");
-    assert_eq!(outcome_acts.len(), 4, "{receipts}");
-    for ((gate_act, outcome_act), method) in gate_acts
-        .iter()
-        .zip(outcome_acts.iter())
-        .zip(["install", "disable", "enable", "remove"])
-    {
+        assert_eq!(receipts["broker_acts"]["total"], 2, "{method}: {receipts}");
+        let acts = receipts["broker_acts"]["acts"].as_array().unwrap();
+        let gate_act = acts.iter().find(|act| act.get("effect").is_some()).unwrap();
+        let outcome_act = acts
+            .iter()
+            .find(|act| act.get("application").is_some())
+            .unwrap();
         assert_eq!(gate_act["method"], method, "{gate_act}");
+        assert_eq!(gate_act["effect"], "write", "{gate_act}");
         assert_eq!(gate_act["outcome"], "allowed", "{gate_act}");
+        assert_eq!(gate_act["decider"], "person", "{gate_act}");
+        assert_eq!(gate_act["posture"], "approval_card", "{gate_act}");
         assert_eq!(outcome_act["method"], method, "{outcome_act}");
         assert_eq!(outcome_act["application"], "applied", "{outcome_act}");
         assert_eq!(outcome_act["approver"], "person", "{outcome_act}");
         assert_eq!(outcome_act["posture"], "approval_card", "{outcome_act}");
     }
+    assert_eq!(f.asked.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2325,9 +2473,6 @@ async fn an_install_whose_tree_differs_from_its_receipt_fails() {
     let mut f = PluginsFixture::new();
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
 
     let src = write_skill_bundle(
         &f.config.workspace,
@@ -2342,13 +2487,9 @@ async fn an_install_whose_tree_differs_from_its_receipt_fails() {
         );
     }));
 
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
     let res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
@@ -2378,53 +2519,35 @@ async fn the_act_names_the_full_hash_before_the_path() {
         .content_hash;
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Suggest);
-    let gate_calls = install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Approved)
-    });
 
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
-
-    let installed = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+    let (installed, install_receipts) = f
+        .call_admitted_with_receipts(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
-        .await
-        .unwrap();
-    assert_eq!(installed["application"], "applied");
+        .await;
+    assert_eq!(installed.unwrap()["application"], "applied");
     let disabled = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "disable",
-            json!({"target": "hash-plug"}),
-        )
+        .call_admitted(&f.context, "disable", json!({"target": "hash-plug"}))
         .await
         .unwrap();
     assert_eq!(disabled["application"], "applied");
-    let enabled = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "enable",
-            json!({"target": "hash-plug"}),
-        )
-        .await
-        .unwrap();
-    assert_eq!(enabled["application"], "applied");
+    let (enabled, enable_receipts) = f
+        .call_admitted_with_receipts(&f.context, "enable", json!({"target": "hash-plug"}))
+        .await;
+    assert_eq!(enabled.unwrap()["application"], "applied");
 
     let reg = discover_with_config(&f.config);
     let loaded = reg.get("hash-plug").unwrap();
-    let calls = gate_calls.lock().unwrap();
-    assert_eq!(calls.len(), 3);
 
-    let install_target = calls[0].1.as_deref().unwrap();
+    let install_target = install_receipts["broker_acts"]["acts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|act| act.get("effect").is_some())
+        .and_then(|act| act["target"].as_str())
+        .unwrap();
     let src_str = src.to_string_lossy();
     let expected_install_prefix = format!("hash-plug {expected_hash} {src_str}");
     assert_eq!(install_target, expected_install_prefix);
@@ -2433,7 +2556,13 @@ async fn the_act_names_the_full_hash_before_the_path() {
             < install_target.find(src_str.as_ref()).unwrap()
     );
 
-    let enable_target = calls[2].1.as_deref().unwrap();
+    let enable_target = enable_receipts["broker_acts"]["acts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|act| act.get("effect").is_some())
+        .and_then(|act| act["target"].as_str())
+        .unwrap();
     assert_eq!(
         enable_target,
         format!("hash-plug {} {}", loaded.content_hash, loaded.id.as_str())
@@ -2456,35 +2585,33 @@ async fn bytes_changed_after_the_gate_fail_as_changed_after_review() {
     );
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
-    {
-        let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-        let ticket = plugin_ticket(&guard).unwrap();
-        let init = f
-            .call_broker(
-                &f.creator,
-                HostCohort::Builtin,
-                &ticket,
-                "install",
-                json!({"target": stable_src.to_string_lossy(), "enabled": false}),
-            )
-            .await
-            .unwrap();
-        assert_eq!(init["application"], "applied");
-    }
+    let init = f
+        .call_admitted(
+            &f.context,
+            "install",
+            json!({"target": stable_src.to_string_lossy(), "enabled": false}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(init["application"], "applied");
 
     f.posture.switch_for_tests(ApprovalMode::Suggest);
-    let src_in_gate = src.clone();
-    install_gate(&mut f, move |input, _| {
-        let _ = fs::write(
-            src_in_gate.join("skills/helper/SKILL.md"),
-            "---\nname: helper\ndescription: raced\n---\nchanged\n",
-        );
-        allow_verdict(input, NestedDecision::Approved)
-    });
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let install_input = json!({"target": src.to_string_lossy()});
+    let admitted_install = f
+        .admit_context(
+            &f.context,
+            "install",
+            &install_input,
+            CreatorDecider::Person,
+        )
+        .await
+        .unwrap();
+    fs::write(
+        src.join("skills/helper/SKILL.md"),
+        "---\nname: helper\ndescription: raced\n---\nchanged\n",
+    )
+    .unwrap();
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &admitted_install);
     let ticket = plugin_ticket(&guard).unwrap();
     let install_res = f
         .call_broker(
@@ -2492,7 +2619,7 @@ async fn bytes_changed_after_the_gate_fail_as_changed_after_review() {
             HostCohort::Builtin,
             &ticket,
             "install",
-            json!({"target": src.to_string_lossy()}),
+            install_input,
         )
         .await
         .unwrap();
@@ -2502,15 +2629,17 @@ async fn bytes_changed_after_the_gate_fail_as_changed_after_review() {
     assert!(!f.config.user_plugins_dir.join("race-install").exists());
 
     let installed_dir = f.config.user_plugins_dir.join("race-enable");
-    install_gate(&mut f, move |input, _| {
-        fs::write(
-            installed_dir.join("skills/helper/SKILL.md"),
-            "---\nname: helper\ndescription: raced\n---\nchanged on disk\n",
-        )
+    let enable_input = json!({"target": "race-enable"});
+    let admitted_enable = f
+        .admit_context(&f.context, "enable", &enable_input, CreatorDecider::Person)
+        .await
         .unwrap();
-        allow_verdict(input, NestedDecision::Approved)
-    });
-    let guard2 = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    fs::write(
+        installed_dir.join("skills/helper/SKILL.md"),
+        "---\nname: helper\ndescription: raced\n---\nchanged on disk\n",
+    )
+    .unwrap();
+    let guard2 = f.begin(&f.creator, HostCohort::Builtin, &admitted_enable);
     let ticket2 = plugin_ticket(&guard2).unwrap();
     let enable_res = f
         .call_broker(
@@ -2518,7 +2647,7 @@ async fn bytes_changed_after_the_gate_fail_as_changed_after_review() {
             HostCohort::Builtin,
             &ticket2,
             "enable",
-            json!({"target": "race-enable"}),
+            enable_input,
         )
         .await
         .unwrap();
@@ -2542,20 +2671,21 @@ async fn the_dial_moved_during_the_card_decides_who_is_recorded() {
     f.reload_registry();
 
     f.posture.switch_for_tests(ApprovalMode::Suggest);
-    install_gate(&mut f, |input, posture| {
-        posture.switch_for_tests(ApprovalMode::Bypass);
-        allow_verdict(input, NestedDecision::Approved)
-    });
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let in_input = json!({"target": in_ws.to_string_lossy()});
+    let admitted_in = f
+        .admit_context(&f.context, "install", &in_input, CreatorDecider::Person)
+        .await
+        .unwrap();
+    f.posture.switch_for_tests(ApprovalMode::Bypass);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &admitted_in);
     let ticket = plugin_ticket(&guard).unwrap();
-
     let ask_to_full = f
         .call_broker(
             &f.creator,
             HostCohort::Builtin,
             &ticket,
             "install",
-            json!({"target": in_ws.to_string_lossy()}),
+            in_input,
         )
         .await
         .unwrap();
@@ -2565,31 +2695,31 @@ async fn the_dial_moved_during_the_card_decides_who_is_recorded() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|w| w == "approved by the agent in Full Access"),
+            .any(|w| w == "approved by you"),
         "{ask_to_full}"
     );
     let reg = discover_with_config(&f.config);
     assert!(matches!(
         reg.get("move-in").unwrap().approved_by,
-        Some(codewhale_plugins::host_services::PluginApprover::Agent(_))
+        Some(codewhale_plugins::host_services::PluginApprover::Person { .. })
     ));
 
-    f.posture.switch_for_tests(ApprovalMode::Suggest);
-    let ask_to_full_outside = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "install",
-            json!({"target": out_ws.to_string_lossy()}),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        ask_to_full_outside["application"], "failed",
-        "{ask_to_full_outside}"
+    let out_plan = plan_change_async(
+        &f.context,
+        &broker_to_pm_input("install", &json!({"target": out_ws.to_string_lossy()})),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(!out_plan.in_agent_scope);
+    assert!(
+        out_plan
+            .build_carrier(
+                CreatorDecider::Agent(AgentPosture::FullAccess),
+                f.posture.read()
+            )
+            .is_err()
     );
-    assert_eq!(ask_to_full_outside["changed"], false);
     assert!(!f.config.user_plugins_dir.join("move-out").exists());
 
     f.posture.switch_for_tests(ApprovalMode::Bypass);
@@ -2598,29 +2728,27 @@ async fn the_dial_moved_during_the_card_decides_who_is_recorded() {
         posture_for_hook.switch_for_tests(ApprovalMode::Suggest);
     }));
     let full_to_ask = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": hook_ws.to_string_lossy()}),
         )
         .await
         .unwrap();
-    assert_eq!(full_to_ask["application"], "applied", "{full_to_ask}");
+    assert_eq!(full_to_ask["application"], "failed", "{full_to_ask}");
+    assert_eq!(full_to_ask["changed"], true);
+    assert_eq!(full_to_ask["enabled"], false);
     assert!(
-        full_to_ask["warnings"]
-            .as_array()
+        full_to_ask["error"]["diagnostic"]
+            .as_str()
             .unwrap()
-            .iter()
-            .any(|w| w == "approved by you"),
+            .contains("permission mode changed after installation"),
         "{full_to_ask}"
     );
     let reg2 = discover_with_config(&f.config);
-    assert!(matches!(
-        reg2.get("move-hook").unwrap().approved_by,
-        Some(codewhale_plugins::host_services::PluginApprover::Person { .. })
-    ));
+    let hook_loaded = reg2.get("move-hook").unwrap();
+    assert!(!hook_loaded.enabled);
+    assert!(hook_loaded.approved_by.is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2723,18 +2851,10 @@ async fn the_managed_policy_answers_overridden() {
     );
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
-
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
 
     let installed_off = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src2.to_string_lossy(), "enabled": false}),
         )
@@ -2750,10 +2870,8 @@ async fn the_managed_policy_answers_overridden() {
     .unwrap();
 
     let overridden_install = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
@@ -2776,13 +2894,7 @@ async fn the_managed_policy_answers_overridden() {
     );
 
     let overridden_enable = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "enable",
-            json!({"target": "policy-plug-2"}),
-        )
+        .call_admitted(&f.context, "enable", json!({"target": "policy-plug-2"}))
         .await
         .unwrap();
     assert_eq!(
@@ -2801,17 +2913,10 @@ async fn removal_keeps_the_data_folder_and_says_where() {
     let src = write_skill_bundle(&f.config.workspace, "rem-src", "rem-plug", "1.0.0");
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
 
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
     let inst = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
@@ -2827,13 +2932,7 @@ async fn removal_keeps_the_data_folder_and_says_where() {
     fs::write(data_dir.join("keep.txt"), "user state").unwrap();
 
     let removed = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "remove",
-            json!({"target": "rem-plug"}),
-        )
+        .call_admitted(&f.context, "remove", json!({"target": "rem-plug"}))
         .await
         .unwrap();
     assert_eq!(removed["application"], "applied", "{removed}");
@@ -2861,17 +2960,10 @@ async fn no_second_store() {
     let src = write_skill_bundle(&f.config.workspace, "store-src", "store-plug", "1.0.0");
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
 
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
     let res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
@@ -2906,24 +2998,12 @@ async fn no_second_store() {
     assert!(loaded.install_nonce.is_some());
 
     let off = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "disable",
-            json!({"target": "store-plug"}),
-        )
+        .call_admitted(&f.context, "disable", json!({"target": "store-plug"}))
         .await
         .unwrap();
     assert_eq!(off["application"], "applied", "{off}");
     let removed = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "remove",
-            json!({"target": "store-plug"}),
-        )
+        .call_admitted(&f.context, "remove", json!({"target": "store-plug"}))
         .await
         .unwrap();
     assert_eq!(removed["application"], "applied", "{removed}");
@@ -2947,7 +3027,8 @@ async fn no_second_store() {
 #[tokio::test(flavor = "current_thread")]
 async fn the_agent_cannot_turn_off_or_remove_a_record_not_its_own_and_a_person_can() {
     use codewhale_plugins::host_services::{
-        AgentApproval, AgentPosture, PersonVia, PluginApprover, ReviewApproval,
+        AgentApproval, AgentPosture as PluginAgentPosture, PersonVia, PluginApprover,
+        ReviewApproval,
     };
 
     let mut f = PluginsFixture::new();
@@ -3030,7 +3111,7 @@ async fn the_agent_cannot_turn_off_or_remove_a_record_not_its_own_and_a_person_c
         PluginApprover::person(PersonVia::ApprovalCard),
     );
     let other_agent = PluginApprover::Agent(AgentApproval {
-        posture: AgentPosture::FullAccess,
+        posture: PluginAgentPosture::FullAccess,
         workspace: f
             ._temp
             .path()
@@ -3073,11 +3154,6 @@ async fn the_agent_cannot_turn_off_or_remove_a_record_not_its_own_and_a_person_c
 
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Approved)
-    });
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
 
     for (method, target) in [
         ("disable", "person-plug"),
@@ -3088,14 +3164,34 @@ async fn the_agent_cannot_turn_off_or_remove_a_record_not_its_own_and_a_person_c
         ("remove", "cli-plug"),
         ("disable", "legacy-plug"),
     ] {
-        let res = f
-            .call_broker(
-                &f.creator,
-                HostCohort::Builtin,
-                &ticket,
-                method,
-                json!({"target": target}),
+        let input = json!({"target": target});
+        let plan = plan_change_async(
+            &f.context,
+            &broker_to_pm_input(method, &input),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(!plan.in_agent_scope, "{method} {target}");
+        assert!(
+            plan.build_carrier(
+                CreatorDecider::Agent(AgentPosture::FullAccess),
+                f.posture.read()
             )
+            .is_err(),
+            "{method} {target}"
+        );
+
+        let mut forged = plan
+            .build_carrier(CreatorDecider::Person, f.posture.read())
+            .unwrap();
+        forged.decider = CreatorDecider::Agent(AgentPosture::FullAccess);
+        forged.in_agent_scope = true;
+        let forged_ctx = f.context.clone().with_creator_decision(forged);
+        let guard = f.begin(&f.creator, HostCohort::Builtin, &forged_ctx);
+        let ticket = plugin_ticket(&guard).unwrap();
+        let res = f
+            .call_broker(&f.creator, HostCohort::Builtin, &ticket, method, input)
             .await
             .unwrap();
         assert_eq!(res["application"], "failed", "{method} {target}: {res}");
@@ -3109,13 +3205,35 @@ async fn the_agent_cannot_turn_off_or_remove_a_record_not_its_own_and_a_person_c
         );
     }
 
+    let legacy_rm_input = json!({"target": "legacy-plug"});
+    assert!(
+        plan_change_async(
+            &f.context,
+            &broker_to_pm_input("remove", &legacy_rm_input),
+            &CancellationToken::new(),
+        )
+        .await
+        .is_err()
+    );
+    let legacy_ctx = f
+        .context
+        .clone()
+        .with_creator_decision(synthetic_carrier_for(
+            "remove",
+            &legacy_rm_input,
+            CreatorDecider::Agent(AgentPosture::FullAccess),
+            f.posture.read(),
+            true,
+        ));
+    let legacy_guard = f.begin(&f.creator, HostCohort::Builtin, &legacy_ctx);
+    let legacy_ticket = plugin_ticket(&legacy_guard).unwrap();
     let legacy_remove = f
         .call_broker(
             &f.creator,
             HostCohort::Builtin,
-            &ticket,
+            &legacy_ticket,
             "remove",
-            json!({"target": "legacy-plug"}),
+            legacy_rm_input,
         )
         .await
         .unwrap();
@@ -3125,16 +3243,27 @@ async fn the_agent_cannot_turn_off_or_remove_a_record_not_its_own_and_a_person_c
     let saved_state = fs::read(&f.config.state_path).unwrap();
     fs::write(&f.config.state_path, "{corrupt json").unwrap();
     f.reload_registry();
-    let corrupt_guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let corrupt_ticket = plugin_ticket(&corrupt_guard).unwrap();
     for method in ["disable", "remove"] {
+        let input = json!({"target": "person-plug"});
+        let corrupt_ctx = f
+            .context
+            .clone()
+            .with_creator_decision(synthetic_carrier_for(
+                method,
+                &input,
+                CreatorDecider::Agent(AgentPosture::FullAccess),
+                f.posture.read(),
+                true,
+            ));
+        let corrupt_guard = f.begin(&f.creator, HostCohort::Builtin, &corrupt_ctx);
+        let corrupt_ticket = plugin_ticket(&corrupt_guard).unwrap();
         let res = f
             .call_broker(
                 &f.creator,
                 HostCohort::Builtin,
                 &corrupt_ticket,
                 method,
-                json!({"target": "person-plug"}),
+                input,
             )
             .await
             .unwrap();
@@ -3152,9 +3281,6 @@ async fn the_agent_cannot_turn_off_or_remove_a_record_not_its_own_and_a_person_c
     f.reload_registry();
 
     f.posture.switch_for_tests(ApprovalMode::Suggest);
-    let ask_guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ask_ticket = plugin_ticket(&ask_guard).unwrap();
-
     for (method, target) in [
         ("disable", "person-plug"),
         ("enable", "person-plug"),
@@ -3163,13 +3289,7 @@ async fn the_agent_cannot_turn_off_or_remove_a_record_not_its_own_and_a_person_c
         ("remove", "cli-plug"),
     ] {
         let res = f
-            .call_broker(
-                &f.creator,
-                HostCohort::Builtin,
-                &ask_ticket,
-                method,
-                json!({"target": target}),
-            )
+            .call_admitted(&f.context, method, json!({"target": target}))
             .await
             .unwrap();
         assert_eq!(
@@ -3177,7 +3297,7 @@ async fn the_agent_cannot_turn_off_or_remove_a_record_not_its_own_and_a_person_c
             "person {method} {target}: {res}"
         );
     }
-    assert_eq!(f.asked.load(Ordering::SeqCst), 5);
+    assert_eq!(f.asked.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -3186,18 +3306,10 @@ async fn remove_then_install_of_the_same_bytes_is_a_new_record() {
     let src = write_skill_bundle(&f.config.workspace, "reinst-src", "reinst-plug", "1.0.0");
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
-
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
 
     let first = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
@@ -3212,22 +3324,14 @@ async fn remove_then_install_of_the_same_bytes_is_a_new_record() {
         .unwrap();
 
     let removed = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "remove",
-            json!({"target": "reinst-plug"}),
-        )
+        .call_admitted(&f.context, "remove", json!({"target": "reinst-plug"}))
         .await
         .unwrap();
     assert_eq!(removed["application"], "applied");
 
     let second = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
@@ -3275,19 +3379,11 @@ async fn an_agent_approved_plugin_with_code_runs_in_agent_cohort_and_promotes_on
     let _ = _engine.set_creator_demand(true);
 
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Approved)
-    });
     let src = write_native_bundle(&f.config.workspace, "native-src", "native-plug", "1.0.0");
 
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
-
     let agent_install = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
@@ -3313,13 +3409,7 @@ async fn an_agent_approved_plugin_with_code_runs_in_agent_cohort_and_promotes_on
 
     f.posture.switch_for_tests(ApprovalMode::Suggest);
     let person_enable = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "enable",
-            json!({"target": "native-plug"}),
-        )
+        .call_admitted(&f.context, "enable", json!({"target": "native-plug"}))
         .await
         .unwrap();
     assert_eq!(person_enable["application"], "applied", "{person_enable}");
@@ -3349,18 +3439,11 @@ async fn a_plugin_without_code_is_applied() {
     let mut f = PluginsFixture::new();
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
     let src = write_skill_bundle(&f.config.workspace, "no-code-src", "no-code-plug", "1.0.0");
 
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
     let res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
@@ -3373,6 +3456,7 @@ async fn a_plugin_without_code_is_applied() {
 #[tokio::test(flavor = "current_thread")]
 async fn a_remote_source_is_not_fetched_before_the_gate() {
     use codewhale_net::network_policy::{NetworkPolicy, NetworkPolicyDecider};
+    use codewhale_skill_install::bounded_tar::test_archives::archive_from_entries;
 
     let mut f = PluginsFixture::new();
     f.reload_registry();
@@ -3382,17 +3466,16 @@ async fn a_remote_source_is_not_fetched_before_the_gate() {
         ("plan", AppMode::Plan, ApprovalMode::Suggest),
     ] {
         f.posture.switch_mode_for_tests(mode, approval_mode);
-        let card_prompts = Arc::new(AtomicUsize::new(0));
-        let card_prompts_in_gate = Arc::clone(&card_prompts);
-        let gate_calls = install_gate(&mut f, move |_, posture| {
-            let live = posture.read();
-            if live.mode() == AppMode::Plan || live.approval_mode() == ApprovalMode::Never {
-                return deny_verdict("should not ask in plan or never");
-            }
-            card_prompts_in_gate.fetch_add(1, Ordering::SeqCst);
-            deny_verdict("unexpected")
-        });
-        let plan_guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+        let input = json!({"target": "github:nonexistent-owner-zz/nonexistent-repo-zz"});
+        let carrier = synthetic_carrier_for(
+            "install",
+            &input,
+            CreatorDecider::Person,
+            f.posture.read(),
+            false,
+        );
+        let ctx = f.context.clone().with_creator_decision(carrier);
+        let plan_guard = f.begin(&f.creator, HostCohort::Builtin, &ctx);
         let plan_ticket = plugin_ticket(&plan_guard).unwrap();
         let plan_err = f
             .call_broker(
@@ -3400,62 +3483,162 @@ async fn a_remote_source_is_not_fetched_before_the_gate() {
                 HostCohort::Builtin,
                 &plan_ticket,
                 "install",
-                json!({"target": "github:nonexistent-owner-zz/nonexistent-repo-zz"}),
+                input,
             )
             .await;
         assert_eq!(
             refusal(&plan_err),
-            (error_code::DENIED, "denied".into()),
+            (error_code::REFUSED, "refused".into()),
             "{label}"
         );
-        assert_eq!(card_prompts.load(Ordering::SeqCst), 0, "{label}");
-        assert_eq!(gate_calls.lock().unwrap().len(), 1, "{label}");
+        assert_eq!(f.asked.load(Ordering::SeqCst), 0, "{label}");
     }
 
     f.posture
         .switch_mode_for_tests(AppMode::Agent, ApprovalMode::Suggest);
     f.asked.store(0, Ordering::SeqCst);
-    let seen = install_gate(&mut f, |_, _| deny_verdict("denied remote fetch"));
-    let ask_guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ask_ticket = plugin_ticket(&ask_guard).unwrap();
+
+    let remote_input = json!({"target": "https://127.0.0.1:9/never-fetched.tgz"});
+    let plan = plan_change_async(
+        &f.context,
+        &broker_to_pm_input("install", &remote_input),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(!plan.in_agent_scope);
+    assert!(plan.unseen_network_fetch);
+    assert!(plan.auto_review_summary.is_none());
+    assert!(plan.card_description.contains("127.0.0.1"));
+    assert!(
+        plan.build_carrier(
+            CreatorDecider::Agent(AgentPosture::FullAccess),
+            f.posture.read()
+        )
+        .is_err()
+    );
+
+    let unapproved_guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let unapproved_ticket = plugin_ticket(&unapproved_guard).unwrap();
     let ask_err = f
         .call_broker(
             &f.creator,
             HostCohort::Builtin,
-            &ask_ticket,
+            &unapproved_ticket,
             "install",
-            json!({"target": "https://127.0.0.1:9/never-fetched.tgz"}),
+            remote_input.clone(),
         )
         .await;
-    assert_eq!(refusal(&ask_err), (error_code::DENIED, "denied".into()));
-    assert_eq!(f.asked.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        seen.lock().unwrap()[0].1.as_deref(),
-        Some("https://127.0.0.1:9/never-fetched.tgz from 127.0.0.1")
-    );
+    assert_eq!(refusal(&ask_err), (error_code::REFUSED, "refused".into()));
+    assert_eq!(f.asked.load(Ordering::SeqCst), 0);
 
     let blocked_ctx = f
         .context
         .clone()
         .with_network_policy(NetworkPolicyDecider::new(NetworkPolicy::default(), None));
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Approved)
-    });
-    let policy_guard = f.begin(&f.creator, HostCohort::Builtin, &blocked_ctx);
-    let policy_ticket = plugin_ticket(&policy_guard).unwrap();
     let policy_blocked = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &policy_ticket,
-            "install",
-            json!({"target": "https://127.0.0.1:9/never-fetched.tgz"}),
-        )
+        .call_admitted(&blocked_ctx, "install", remote_input)
         .await
         .unwrap();
     assert_eq!(policy_blocked["application"], "failed", "{policy_blocked}");
     assert_eq!(policy_blocked["changed"], false, "{policy_blocked}");
     assert_eq!(policy_blocked["error"]["code"], "operation-error");
+
+    let archive = archive_from_entries(&[
+        (
+            "remote-skill/plugin.toml",
+            b"schema_version = 1\n[plugin]\nname = \"remote-skill\"\nversion = \"1.0.0\"\n",
+        ),
+        (
+            "remote-skill/skills/helper/SKILL.md",
+            b"---\nname: helper\ndescription: remote skill\n---\nbody\n",
+        ),
+    ]);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let hits_srv = Arc::clone(&hits);
+    let server = std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        hits_srv.fetch_add(1, Ordering::SeqCst);
+        let mut request = Vec::new();
+        let mut buf = [0_u8; 1024];
+        loop {
+            use std::io::Read as _;
+            let read = stream.read(&mut buf).unwrap_or(0);
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buf[..read]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        use std::io::Write as _;
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            archive.len()
+        );
+        let _ = stream.write_all(head.as_bytes());
+        let _ = stream.write_all(&archive);
+        let _ = stream.flush();
+    });
+
+    let url = format!("http://127.0.0.1:{port}/remote-skill.tar.gz");
+    let allow_policy = NetworkPolicy {
+        allow: vec!["127.0.0.1".to_string()],
+        ..NetworkPolicy::default()
+    };
+    let allow_ctx = f
+        .context
+        .clone()
+        .with_network_policy(NetworkPolicyDecider::new(allow_policy, None));
+    let remote_ok_input = json!({"target": url});
+    let ok_plan = plan_change_async(
+        &allow_ctx,
+        &broker_to_pm_input("install", &remote_ok_input),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(ok_plan.unseen_network_fetch);
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+    let ok_carrier = ok_plan
+        .build_carrier(CreatorDecider::Person, f.posture.read())
+        .unwrap();
+    let admitted_allow_ctx = allow_ctx.with_creator_decision(ok_carrier);
+    let ok_guard = f.begin(&f.creator, HostCohort::Builtin, &admitted_allow_ctx);
+    let ok_ticket = plugin_ticket(&ok_guard).unwrap();
+    let installed = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ok_ticket,
+            "install",
+            remote_ok_input,
+        )
+        .await
+        .unwrap();
+    assert_eq!(installed["application"], "applied", "{installed}");
+    assert_eq!(installed["stage"], "install");
+    assert_eq!(installed["changed"], true);
+    assert_eq!(installed["enabled"], false);
+    assert!(
+        installed["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().is_some_and(|s| s.contains("/plugin trust"))),
+        "{installed}"
+    );
+    let reg = discover_with_config(&f.config);
+    let loaded = reg.get("remote-skill").unwrap();
+    assert!(!loaded.enabled);
+    assert!(loaded.approved_by.is_none());
+    let _ = server.join();
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -3478,18 +3661,11 @@ async fn a_row_that_is_not_the_only_row_is_refused_and_a_sole_row_switches_the_p
 
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
 
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
     for src in [&two_src, &one_src] {
         let res = f
-            .call_broker(
-                &f.creator,
-                HostCohort::Builtin,
-                &ticket,
+            .call_admitted(
+                &f.context,
                 "install",
                 json!({"target": src.to_string_lossy()}),
             )
@@ -3499,27 +3675,54 @@ async fn a_row_that_is_not_the_only_row_is_refused_and_a_sole_row_switches_the_p
     }
 
     for method in ["disable", "enable"] {
-        for payload in [
-            json!({"target": "two", "row": "two/skills"}),
-            json!({"target": "two/skills"}),
-        ] {
-            let res = f
-                .call_broker(&f.creator, HostCohort::Builtin, &ticket, method, payload)
-                .await
-                .unwrap();
-            assert_eq!(res["application"], "failed", "{method}: {res}");
-            assert_eq!(res["changed"], false);
-            assert_eq!(
-                res["error"]["diagnostic"],
-                "Codewhale switches a plugin as a whole; use set_bundle"
-            );
-        }
+        let with_row = f
+            .call_admitted(
+                &f.context,
+                method,
+                json!({"target": "two", "row": "two/skills"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(with_row["application"], "failed", "{method}: {with_row}");
+        assert_eq!(with_row["changed"], false);
+        assert_eq!(
+            with_row["error"]["diagnostic"],
+            "Codewhale switches a plugin as a whole; use set_bundle"
+        );
 
-        let missing_row = f
+        let slash_payload = json!({"target": "two/skills"});
+        let slash_ctx = f
+            .context
+            .clone()
+            .with_creator_decision(synthetic_carrier_for(
+                method,
+                &slash_payload,
+                CreatorDecider::Agent(AgentPosture::FullAccess),
+                f.posture.read(),
+                true,
+            ));
+        let slash_guard = f.begin(&f.creator, HostCohort::Builtin, &slash_ctx);
+        let slash_ticket = plugin_ticket(&slash_guard).unwrap();
+        let slash_res = f
             .call_broker(
                 &f.creator,
                 HostCohort::Builtin,
-                &ticket,
+                &slash_ticket,
+                method,
+                slash_payload,
+            )
+            .await
+            .unwrap();
+        assert_eq!(slash_res["application"], "failed", "{method}: {slash_res}");
+        assert_eq!(slash_res["changed"], false);
+        assert_eq!(
+            slash_res["error"]["diagnostic"],
+            "Codewhale switches a plugin as a whole; use set_bundle"
+        );
+
+        let missing_row = f
+            .call_admitted(
+                &f.context,
                 method,
                 json!({"target": "two", "row": "two/nonexistent"}),
             )
@@ -3536,10 +3739,8 @@ async fn a_row_that_is_not_the_only_row_is_refused_and_a_sole_row_switches_the_p
     }
 
     let off = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "disable",
             json!({"target": "one", "row": "one/skills"}),
         )
@@ -3550,11 +3751,22 @@ async fn a_row_that_is_not_the_only_row_is_refused_and_a_sole_row_switches_the_p
     assert_eq!(off["changed"], true);
     assert_eq!(off["enabled"], false);
 
+    let on_admitted = f
+        .admit_context(
+            &f.context,
+            "enable",
+            &json!({"target": "one"}),
+            CreatorDecider::Agent(AgentPosture::FullAccess),
+        )
+        .await
+        .unwrap();
+    let on_guard = f.begin(&f.creator, HostCohort::Builtin, &on_admitted);
+    let on_ticket = plugin_ticket(&on_guard).unwrap();
     let on = f
         .call_broker(
             &f.creator,
             HostCohort::Builtin,
-            &ticket,
+            &on_ticket,
             "enable",
             json!({"target": "one/skills"}),
         )
@@ -3573,20 +3785,27 @@ async fn approved_builds_answers_stale_approval_and_invalid_specs_fail() {
     let dup = write_skill_bundle(&f.config.workspace, "stale-dup", "stale-plug", "2.0.0");
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
 
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
-
+    let stale_input = json!({"target": src.to_string_lossy(), "approved_builds": ["dep-a"]});
+    let stale_ctx = f
+        .context
+        .clone()
+        .with_creator_decision(synthetic_carrier_for(
+            "install",
+            &stale_input,
+            CreatorDecider::Agent(AgentPosture::FullAccess),
+            f.posture.read(),
+            true,
+        ));
+    let stale_guard = f.begin(&f.creator, HostCohort::Builtin, &stale_ctx);
+    let stale_ticket = plugin_ticket(&stale_guard).unwrap();
     let stale = f
         .call_broker(
             &f.creator,
             HostCohort::Builtin,
-            &ticket,
+            &stale_ticket,
             "install",
-            json!({"target": src.to_string_lossy(), "approved_builds": ["dep-a"]}),
+            stale_input,
         )
         .await
         .unwrap();
@@ -3595,10 +3814,8 @@ async fn approved_builds_answers_stale_approval_and_invalid_specs_fail() {
     assert_eq!(stale["error"]["code"], "stale-approval");
 
     let reg_warn = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy(), "registry": "https://registry.example"}),
         )
@@ -3613,10 +3830,8 @@ async fn approved_builds_answers_stale_approval_and_invalid_specs_fail() {
     );
 
     let already = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": dup.to_string_lossy()}),
         )
@@ -3632,13 +3847,26 @@ async fn approved_builds_answers_stale_approval_and_invalid_specs_fail() {
         "http://example.com/pkg.tgz",
         "relative/dir",
     ] {
+        let bad_input = json!({"target": bad});
+        let bad_ctx = f
+            .context
+            .clone()
+            .with_creator_decision(synthetic_carrier_for(
+                "install",
+                &bad_input,
+                CreatorDecider::Agent(AgentPosture::FullAccess),
+                f.posture.read(),
+                true,
+            ));
+        let guard = f.begin(&f.creator, HostCohort::Builtin, &bad_ctx);
+        let ticket = plugin_ticket(&guard).unwrap();
         let invalid = f
             .call_broker(
                 &f.creator,
                 HostCohort::Builtin,
                 &ticket,
                 "install",
-                json!({"target": bad}),
+                bad_input,
             )
             .await
             .unwrap();
@@ -3654,17 +3882,10 @@ async fn the_recorded_source_path_reads_back_for_update() {
     let src = write_skill_bundle(&f.config.workspace, "upd-src", "upd-plug", "1.0.0");
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
 
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
     let v1 = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
@@ -3690,25 +3911,13 @@ async fn the_recorded_source_path_reads_back_for_update() {
     )
     .unwrap();
     let rm = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "remove",
-            json!({"target": "upd-plug"}),
-        )
+        .call_admitted(&f.context, "remove", json!({"target": "upd-plug"}))
         .await
         .unwrap();
     assert_eq!(rm["application"], "applied");
 
     let v2 = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "install",
-            json!({"target": recorded_source}),
-        )
+        .call_admitted(&f.context, "install", json!({"target": recorded_source}))
         .await
         .unwrap();
     assert_eq!(v2["application"], "applied", "{v2}");
@@ -3728,19 +3937,12 @@ async fn cancellation_half_done_removal_missing_identity_and_oversized_bundle() 
 
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
 
     let mut no_tool_call = f.context.clone();
     no_tool_call.origin_tool_call_id = None;
-    let nt_guard = f.begin(&f.creator, HostCohort::Builtin, &no_tool_call);
-    let nt_ticket = plugin_ticket(&nt_guard).unwrap();
     let missing_id = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &nt_ticket,
+        .call_admitted(
+            &no_tool_call,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
@@ -3749,33 +3951,63 @@ async fn cancellation_half_done_removal_missing_identity_and_oversized_bundle() 
     assert_eq!(missing_id["application"], "failed", "{missing_id}");
     assert_eq!(missing_id["changed"], false);
     assert!(!f.config.user_plugins_dir.join("edge-plug").exists());
-    drop(nt_guard);
 
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
-
+    let big_input = json!({"target": big_src.to_string_lossy()});
+    assert!(
+        plan_change_async(
+            &f.context,
+            &broker_to_pm_input("install", &big_input),
+            &CancellationToken::new(),
+        )
+        .await
+        .is_err()
+    );
+    let big_ctx = f
+        .context
+        .clone()
+        .with_creator_decision(synthetic_carrier_for(
+            "install",
+            &big_input,
+            CreatorDecider::Agent(AgentPosture::FullAccess),
+            f.posture.read(),
+            true,
+        ));
+    let big_guard = f.begin(&f.creator, HostCohort::Builtin, &big_ctx);
+    let big_ticket = plugin_ticket(&big_guard).unwrap();
     let too_big = f
         .call_broker(
             &f.creator,
             HostCohort::Builtin,
-            &ticket,
+            &big_ticket,
             "install",
-            json!({"target": big_src.to_string_lossy()}),
+            big_input,
         )
         .await
         .unwrap();
     assert_eq!(too_big["application"], "failed", "{too_big}");
     assert_eq!(too_big["changed"], false);
     assert!(!f.config.user_plugins_dir.join("big-plug").exists());
+    drop(big_guard);
 
+    let cancel_admitted = f
+        .admit_context(
+            &f.context,
+            "install",
+            &json!({"target": src.to_string_lossy()}),
+            CreatorDecider::Agent(AgentPosture::FullAccess),
+        )
+        .await
+        .unwrap();
     super::set_post_install_hook_for_test(Box::new(|_, cancel| {
         cancel.cancel();
     }));
+    let cancel_guard = f.begin(&f.creator, HostCohort::Builtin, &cancel_admitted);
+    let cancel_ticket = plugin_ticket(&cancel_guard).unwrap();
     let cancelled = f
         .call_broker(
             &f.creator,
             HostCohort::Builtin,
-            &ticket,
+            &cancel_ticket,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
@@ -3798,13 +4030,12 @@ async fn cancellation_half_done_removal_missing_identity_and_oversized_bundle() 
         .clone();
     assert!(!loaded_after_cancel.enabled);
     assert!(!loaded_after_cancel.trusted());
+    drop(cancel_guard);
 
     let rm_src = write_skill_bundle(&f.config.workspace, "half-src", "half-plug", "1.0.0");
     let half_inst = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": rm_src.to_string_lossy()}),
         )
@@ -3815,13 +4046,7 @@ async fn cancellation_half_done_removal_missing_identity_and_oversized_bundle() 
         let _ = fs::remove_file(plugin.canonical_root.join(INSTALLED_FROM_MARKER));
     }));
     let half_rm = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "remove",
-            json!({"target": "half-plug"}),
-        )
+        .call_admitted(&f.context, "remove", json!({"target": "half-plug"}))
         .await
         .unwrap();
     assert_eq!(half_rm["application"], "failed", "{half_rm}");
@@ -3863,19 +4088,8 @@ async fn a_drive_letter_target_is_inside_the_project_on_canonical_paths() {
     };
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
     let res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "install",
-            json!({"target": flipped}),
-        )
+        .call_admitted(&f.context, "install", json!({"target": flipped}))
         .await
         .unwrap();
     assert_eq!(res["application"], "applied", "{res}");
@@ -3902,10 +4116,27 @@ async fn a_junction_in_the_source_is_refused() {
 
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Suggest);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Approved)
-    });
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let junc_input = json!({"target": src.to_string_lossy()});
+    assert!(
+        plan_change_async(
+            &f.context,
+            &broker_to_pm_input("install", &junc_input),
+            &CancellationToken::new(),
+        )
+        .await
+        .is_err()
+    );
+    let junc_ctx = f
+        .context
+        .clone()
+        .with_creator_decision(synthetic_carrier_for(
+            "install",
+            &junc_input,
+            CreatorDecider::Person,
+            f.posture.read(),
+            false,
+        ));
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &junc_ctx);
     let ticket = plugin_ticket(&guard).unwrap();
     let res = f
         .call_broker(
@@ -3913,7 +4144,7 @@ async fn a_junction_in_the_source_is_refused() {
             HostCohort::Builtin,
             &ticket,
             "install",
-            json!({"target": src.to_string_lossy()}),
+            junc_input,
         )
         .await
         .unwrap();
@@ -3929,17 +4160,10 @@ async fn fresh_home_without_user_plugins_dir_installs_local_project_plugin() {
     let src = write_skill_bundle(&f.config.workspace, "fresh-home-src", "fresh-home", "1.0.0");
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
 
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
     let res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
@@ -3957,7 +4181,6 @@ async fn fresh_home_without_user_plugins_dir_installs_local_project_plugin() {
             .is_some_and(|n| !n.is_empty()),
         "{receipt}"
     );
-    drop(guard);
     f.reload_registry();
     let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
@@ -3991,11 +4214,34 @@ async fn dangling_user_plugins_dir_symlink_fails_closed_in_agent_mode() {
     );
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
 
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let install_input = json!({"target": src.to_string_lossy()});
+    let plan = plan_change_async(
+        &f.context,
+        &broker_to_pm_input("install", &install_input),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(!plan.in_agent_scope);
+    assert!(
+        plan.build_carrier(
+            CreatorDecider::Agent(AgentPosture::FullAccess),
+            f.posture.read()
+        )
+        .is_err()
+    );
+    let dangling_ctx = f
+        .context
+        .clone()
+        .with_creator_decision(synthetic_carrier_for(
+            "install",
+            &install_input,
+            CreatorDecider::Agent(AgentPosture::FullAccess),
+            f.posture.read(),
+            true,
+        ));
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &dangling_ctx);
     let ticket = plugin_ticket(&guard).unwrap();
     let res = f
         .call_broker(
@@ -4003,7 +4249,7 @@ async fn dangling_user_plugins_dir_symlink_fails_closed_in_agent_mode() {
             HostCohort::Builtin,
             &ticket,
             "install",
-            json!({"target": src.to_string_lossy()}),
+            install_input,
         )
         .await
         .unwrap();
@@ -4025,36 +4271,26 @@ async fn plan_and_never_skip_fs_probes_and_nonexistent_path_does_not_leak() {
         ("plan", AppMode::Plan, ApprovalMode::Suggest),
     ] {
         f.posture.switch_mode_for_tests(mode, approval_mode);
-        let gate_calls = install_gate(&mut f, |_, posture| {
-            let live = posture.read();
-            if live.mode() == AppMode::Plan || live.approval_mode() == ApprovalMode::Never {
-                return deny_verdict("blocked by plan or never posture");
-            }
-            deny_verdict("unexpected")
-        });
-        let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+        let input = json!({"target": nonexistent.to_string_lossy()});
+        let carrier = synthetic_carrier_for(
+            "install",
+            &input,
+            CreatorDecider::Person,
+            f.posture.read(),
+            false,
+        );
+        let ctx = f.context.clone().with_creator_decision(carrier);
+        let guard = f.begin(&f.creator, HostCohort::Builtin, &ctx);
         let ticket = plugin_ticket(&guard).unwrap();
         let err = f
-            .call_broker(
-                &f.creator,
-                HostCohort::Builtin,
-                &ticket,
-                "install",
-                json!({"target": nonexistent.to_string_lossy()}),
-            )
+            .call_broker(&f.creator, HostCohort::Builtin, &ticket, "install", input)
             .await;
         assert_eq!(
             refusal(&err),
-            (error_code::DENIED, "denied".into()),
+            (error_code::REFUSED, "refused".into()),
             "{label}"
         );
-        let calls = gate_calls.lock().unwrap();
-        assert_eq!(calls.len(), 1, "{label}");
-        assert_eq!(
-            calls[0].1.as_deref(),
-            Some(nonexistent.to_string_lossy().as_ref()),
-            "{label}"
-        );
+        assert_eq!(f.asked.load(Ordering::SeqCst), 0, "{label}");
     }
 }
 
@@ -4073,38 +4309,58 @@ async fn ask_defers_external_non_bundle_and_symlink_ancestor_until_after_write_g
         "this is not = [valid toml",
     );
 
-    let targets: Vec<(String, &'static str)> = [
-        (
-            nonexistent.to_string_lossy().into_owned(),
-            "operation-error",
-        ),
-        (non_bundle.to_string_lossy().into_owned(), "not-bundle"),
-        (bad_toml_dir.to_string_lossy().into_owned(), "not-bundle"),
-    ]
-    .into_iter()
-    .chain({
-        #[cfg(unix)]
-        {
-            let via_ancestor_link = f._temp.path().join("ancestor-wrap");
-            fs::create_dir_all(&via_ancestor_link).unwrap();
-            let _linked_bundle =
-                write_skill_bundle(&via_ancestor_link, "nested", "ancestor-linked", "1.0.0");
-            let parent_link = f._temp.path().join("parent-symlink");
-            std::os::unix::fs::symlink(&via_ancestor_link, &parent_link).unwrap();
-            Some((
-                parent_link.join("nested").to_string_lossy().into_owned(),
-                "operation-error",
-            ))
-        }
-        #[cfg(not(unix))]
-        {
-            None
-        }
-    })
-    .collect();
+    let invalid_before_card = vec![
+        nonexistent.to_string_lossy().into_owned(),
+        non_bundle.to_string_lossy().into_owned(),
+        bad_toml_dir.to_string_lossy().into_owned(),
+    ];
+    for raw_target in &invalid_before_card {
+        assert!(
+            plan_change_async(
+                &f.context,
+                &broker_to_pm_input("install", &json!({"target": raw_target})),
+                &CancellationToken::new(),
+            )
+            .await
+            .is_err(),
+            "{raw_target}"
+        );
+    }
 
-    for (raw_target, _) in &targets {
-        let gate_calls = install_gate(&mut f, |_, _| deny_verdict("denied before inspection"));
+    #[cfg(unix)]
+    let extra_target = {
+        let via_ancestor_link = f._temp.path().join("ancestor-wrap");
+        fs::create_dir_all(&via_ancestor_link).unwrap();
+        let _linked_bundle =
+            write_skill_bundle(&via_ancestor_link, "nested", "ancestor-linked", "1.0.0");
+        let parent_link = f._temp.path().join("parent-symlink");
+        std::os::unix::fs::symlink(&via_ancestor_link, &parent_link).unwrap();
+        let linked_path = parent_link.join("nested").to_string_lossy().into_owned();
+        let linked_plan = plan_change_async(
+            &f.context,
+            &broker_to_pm_input("install", &json!({"target": linked_path})),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(!linked_plan.in_agent_scope);
+        let linked_res = f
+            .call_admitted(&f.context, "install", json!({"target": linked_path}))
+            .await
+            .unwrap();
+        assert_eq!(linked_res["application"], "failed", "{linked_res}");
+        assert_eq!(linked_res["changed"], false);
+        assert_eq!(linked_res["error"]["code"], "operation-error");
+        Some(linked_path)
+    };
+    #[cfg(not(unix))]
+    let extra_target: Option<String> = None;
+    let targets: Vec<String> = invalid_before_card
+        .into_iter()
+        .chain(extra_target)
+        .collect();
+
+    for raw_target in &targets {
         let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
         let ticket = plugin_ticket(&guard).unwrap();
         let err = f
@@ -4116,35 +4372,35 @@ async fn ask_defers_external_non_bundle_and_symlink_ancestor_until_after_write_g
                 json!({"target": raw_target}),
             )
             .await;
-        assert_eq!(refusal(&err), (error_code::DENIED, "denied".into()));
-        let calls = gate_calls.lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].1.as_deref(), Some(raw_target.as_str()));
-    }
+        assert_eq!(refusal(&err), (error_code::REFUSED, "refused".into()));
 
-    for (raw_target, expected_code) in &targets {
-        let gate_calls = install_gate(&mut f, |input, _| {
-            allow_verdict(input, NestedDecision::Approved)
-        });
-        let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-        let ticket = plugin_ticket(&guard).unwrap();
+        let syn_input = json!({"target": raw_target});
+        let syn_ctx = f
+            .context
+            .clone()
+            .with_creator_decision(synthetic_carrier_for(
+                "install",
+                &syn_input,
+                CreatorDecider::Person,
+                f.posture.read(),
+                false,
+            ));
+        let syn_guard = f.begin(&f.creator, HostCohort::Builtin, &syn_ctx);
+        let syn_ticket = plugin_ticket(&syn_guard).unwrap();
         let res = f
             .call_broker(
                 &f.creator,
                 HostCohort::Builtin,
-                &ticket,
+                &syn_ticket,
                 "install",
-                json!({"target": raw_target}),
+                syn_input,
             )
             .await
             .unwrap();
         assert_eq!(res["application"], "failed", "{raw_target}: {res}");
         assert_eq!(res["changed"], false);
-        assert_eq!(res["error"]["code"], *expected_code, "{raw_target}: {res}");
-        let calls = gate_calls.lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].1.as_deref(), Some(raw_target.as_str()));
     }
+    assert_eq!(f.asked.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -4171,10 +4427,36 @@ async fn local_dsh_with_unresolved_npm_deps_gates_reach_refuses_agent_and_denies
     f.reload_registry();
 
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    let agent_calls = install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
-    let agent_guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let install_input = json!({"target": dsh_src.to_string_lossy()});
+    let plan = plan_change_async(
+        &f.context,
+        &broker_to_pm_input("install", &install_input),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(!plan.in_agent_scope);
+    assert!(plan.unseen_network_fetch);
+    assert!(plan.auto_review_summary.is_none());
+    assert!(plan.card_description.contains("registry.npmjs.org"));
+    let agent_err = plan
+        .build_carrier(
+            CreatorDecider::Agent(AgentPosture::FullAccess),
+            f.posture.read(),
+        )
+        .unwrap_err();
+    assert!(
+        agent_err.to_string().contains("registry.npmjs.org"),
+        "{agent_err}"
+    );
+
+    let mut forged = plan
+        .build_carrier(CreatorDecider::Person, f.posture.read())
+        .unwrap();
+    forged.decider = CreatorDecider::Agent(AgentPosture::FullAccess);
+    forged.in_agent_scope = true;
+    let forged_ctx = f.context.clone().with_creator_decision(forged);
+    let agent_guard = f.begin(&f.creator, HostCohort::Builtin, &forged_ctx);
     let agent_ticket = plugin_ticket(&agent_guard).unwrap();
     let agent_res = f
         .call_broker(
@@ -4182,28 +4464,17 @@ async fn local_dsh_with_unresolved_npm_deps_gates_reach_refuses_agent_and_denies
             HostCohort::Builtin,
             &agent_ticket,
             "install",
-            json!({"target": dsh_src.to_string_lossy()}),
+            install_input.clone(),
         )
-        .await
-        .unwrap();
-    assert_eq!(agent_res["application"], "failed", "{agent_res}");
-    assert_eq!(agent_res["changed"], false);
-    assert_eq!(agent_res["error"]["code"], "operation-error");
-    assert!(
-        agent_res["error"]["diagnostic"]
-            .as_str()
-            .unwrap()
-            .contains("registry.npmjs.org"),
-        "{agent_res}"
-    );
-    assert_eq!(agent_calls.lock().unwrap().len(), 0);
+        .await;
+    assert_eq!(refusal(&agent_res), (error_code::REFUSED, "refused".into()));
+    assert_eq!(f.asked.load(Ordering::SeqCst), 0);
 
     f.posture.switch_for_tests(ApprovalMode::Suggest);
     let expected_reach = format!(
         "{} npm dependencies from registry.npmjs.org",
         dsh_src.to_string_lossy()
     );
-    let deny_reach_calls = install_gate(&mut f, |_, _| deny_verdict("denied npm reach"));
     let deny_guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let deny_ticket = plugin_ticket(&deny_guard).unwrap();
     let reach_denied = f
@@ -4212,37 +4483,22 @@ async fn local_dsh_with_unresolved_npm_deps_gates_reach_refuses_agent_and_denies
             HostCohort::Builtin,
             &deny_ticket,
             "install",
-            json!({"target": dsh_src.to_string_lossy()}),
+            install_input.clone(),
         )
         .await;
     assert_eq!(
         refusal(&reach_denied),
-        (error_code::DENIED, "denied".into())
-    );
-    assert_eq!(
-        deny_reach_calls.lock().unwrap().as_slice(),
-        &[("dsh_broker_reach".to_string(), Some(expected_reach.clone()))]
+        (error_code::REFUSED, "refused".into())
     );
 
-    let prompt_calls = install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Approved)
-    });
     let prompt_ctx = f
         .context
         .clone()
         .with_network_policy(NetworkPolicyDecider::new(NetworkPolicy::default(), None));
-    let prompt_guard = f.begin(&f.creator, HostCohort::Builtin, &prompt_ctx);
-    let prompt_ticket = plugin_ticket(&prompt_guard).unwrap();
-    let prompt_res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &prompt_ticket,
-            "install",
-            json!({"target": dsh_src.to_string_lossy()}),
-        )
-        .await
-        .unwrap();
+    let (prompt_res, prompt_receipts) = f
+        .call_admitted_with_receipts(&prompt_ctx, "install", install_input.clone())
+        .await;
+    let prompt_res = prompt_res.unwrap();
     assert_eq!(prompt_res["application"], "failed", "{prompt_res}");
     assert_eq!(prompt_res["changed"], false);
     assert_eq!(prompt_res["error"]["code"], "operation-error");
@@ -4254,10 +4510,17 @@ async fn local_dsh_with_unresolved_npm_deps_gates_reach_refuses_agent_and_denies
             .contains("network approval required for registry.npmjs.org"),
         "{prompt_res}"
     );
-    assert_eq!(
-        prompt_calls.lock().unwrap().as_slice(),
-        &[("dsh_broker_reach".to_string(), Some(expected_reach.clone()))]
-    );
+    let reach_acts: Vec<Value> = prompt_receipts["broker_acts"]["acts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|act| act["effect"] == "reach")
+        .cloned()
+        .collect();
+    assert_eq!(reach_acts.len(), 1, "{prompt_receipts}");
+    assert_eq!(reach_acts[0]["target"], expected_reach);
+    assert_eq!(reach_acts[0]["outcome"], "allowed");
+    assert_eq!(reach_acts[0]["decider"], "person");
 
     let deny_policy = NetworkPolicy {
         default: Decision::Deny.into(),
@@ -4267,16 +4530,8 @@ async fn local_dsh_with_unresolved_npm_deps_gates_reach_refuses_agent_and_denies
         .context
         .clone()
         .with_network_policy(NetworkPolicyDecider::new(deny_policy, None));
-    let deny_policy_guard = f.begin(&f.creator, HostCohort::Builtin, &deny_policy_ctx);
-    let deny_policy_ticket = plugin_ticket(&deny_policy_guard).unwrap();
     let deny_res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &deny_policy_ticket,
-            "install",
-            json!({"target": dsh_src.to_string_lossy()}),
-        )
+        .call_admitted(&deny_policy_ctx, "install", install_input)
         .await
         .unwrap();
     assert_eq!(deny_res["application"], "failed", "{deny_res}");
@@ -4297,26 +4552,19 @@ async fn remote_dial_move_during_reach_leaves_nothing_on_disk() {
     let mut f = PluginsFixture::new();
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Suggest);
-    install_gate(&mut f, |input, posture| {
-        posture.switch_for_tests(ApprovalMode::Never);
-        allow_verdict(input, NestedDecision::Approved)
-    });
-
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
-    let res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "install",
-            json!({"target": "https://127.0.0.1:9/remote.tgz"}),
-        )
+    let input = json!({"target": "https://127.0.0.1:9/remote.tgz"});
+    let admitted = f
+        .admit_context(&f.context, "install", &input, CreatorDecider::Person)
         .await
         .unwrap();
-    assert_eq!(res["application"], "failed", "{res}");
-    assert_eq!(res["changed"], false);
-    assert_eq!(res["error"]["code"], "operation-error");
+    f.posture.switch_for_tests(ApprovalMode::Never);
+
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &admitted);
+    let ticket = plugin_ticket(&guard).unwrap();
+    let res = f
+        .call_broker(&f.creator, HostCohort::Builtin, &ticket, "install", input)
+        .await;
+    assert_eq!(refusal(&res), (error_code::REFUSED, "refused".into()));
     assert_eq!(fs::read_dir(&f.config.user_plugins_dir).unwrap().count(), 0);
 }
 
@@ -4326,17 +4574,10 @@ async fn toggle_enable_missing_identity_and_managed_policy_upgrade_keep_state_at
     let src = write_skill_bundle(&f.config.workspace, "atomic-src", "atomic-plug", "1.0.0");
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
 
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
     let installed = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy(), "enabled": false}),
         )
@@ -4344,21 +4585,13 @@ async fn toggle_enable_missing_identity_and_managed_policy_upgrade_keep_state_at
         .unwrap();
     assert_eq!(installed["application"], "applied", "{installed}");
     assert_eq!(installed["enabled"], false);
-    drop(guard);
 
     let mut ctx_without_identity = f.context.clone();
     ctx_without_identity.origin_turn_id = None;
     ctx_without_identity.origin_tool_call_id = None;
-    let missing_id_calls = install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
-    let no_id_guard = f.begin(&f.creator, HostCohort::Builtin, &ctx_without_identity);
-    let no_id_ticket = plugin_ticket(&no_id_guard).unwrap();
     let no_id_res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &no_id_ticket,
+        .call_admitted(
+            &ctx_without_identity,
             "enable",
             json!({"target": "atomic-plug"}),
         )
@@ -4368,8 +4601,7 @@ async fn toggle_enable_missing_identity_and_managed_policy_upgrade_keep_state_at
     assert_eq!(no_id_res["changed"], false);
     assert_eq!(no_id_res["enabled"], false);
     assert_eq!(no_id_res["error"]["code"], "operation-error");
-    assert_eq!(missing_id_calls.lock().unwrap().len(), 0);
-    drop(no_id_guard);
+    assert_eq!(f.asked.load(Ordering::SeqCst), 0);
 
     let policy_path = f.config.state_path.with_file_name("managed-policy.json");
     fs::write(
@@ -4378,19 +4610,8 @@ async fn toggle_enable_missing_identity_and_managed_policy_upgrade_keep_state_at
     )
     .unwrap();
     f.posture.switch_for_tests(ApprovalMode::Suggest);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Approved)
-    });
-    let ask_guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ask_ticket = plugin_ticket(&ask_guard).unwrap();
     let overridden = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ask_ticket,
-            "enable",
-            json!({"target": "atomic-plug"}),
-        )
+        .call_admitted(&f.context, "enable", json!({"target": "atomic-plug"}))
         .await
         .unwrap();
     assert_eq!(overridden["application"], "overridden", "{overridden}");
@@ -4431,17 +4652,10 @@ async fn remove_rejects_ambiguous_target_non_sole_row_and_symlinked_install_mark
 
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
 
     let inst_two = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": two_src.to_string_lossy()}),
         )
@@ -4449,44 +4663,84 @@ async fn remove_rejects_ambiguous_target_non_sole_row_and_symlinked_install_mark
         .unwrap();
     assert_eq!(inst_two["application"], "applied", "{inst_two}");
 
+    let row_input = json!({"target": "rm-two/skills"});
+    assert!(
+        plan_change_async(
+            &f.context,
+            &broker_to_pm_input("remove", &row_input),
+            &CancellationToken::new(),
+        )
+        .await
+        .is_err()
+    );
+    let row_ctx = f
+        .context
+        .clone()
+        .with_creator_decision(synthetic_carrier_for(
+            "remove",
+            &row_input,
+            CreatorDecider::Agent(AgentPosture::FullAccess),
+            f.posture.read(),
+            true,
+        ));
+    let row_guard = f.begin(&f.creator, HostCohort::Builtin, &row_ctx);
+    let row_ticket = plugin_ticket(&row_guard).unwrap();
     let row_rm = f
         .call_broker(
             &f.creator,
             HostCohort::Builtin,
-            &ticket,
+            &row_ticket,
             "remove",
-            json!({"target": "rm-two/skills"}),
+            row_input,
         )
         .await
         .unwrap();
     assert_eq!(row_rm["application"], "failed", "{row_rm}");
     assert_eq!(row_rm["error"]["code"], "operation-error");
 
-    let ambig_rm = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "remove",
-            json!({"target": "shared-plug"}),
+    for (method, target) in [("remove", "shared-plug"), ("enable", "shared-plug")] {
+        let ambig_input = json!({"target": target});
+        let plan = plan_change_async(
+            &f.context,
+            &broker_to_pm_input(method, &ambig_input),
+            &CancellationToken::new(),
         )
         .await
         .unwrap();
-    assert_eq!(ambig_rm["application"], "failed", "{ambig_rm}");
-    assert_eq!(ambig_rm["error"]["code"], "operation-error");
-
-    let ambig_en = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "enable",
-            json!({"target": "shared-plug"}),
-        )
-        .await
-        .unwrap();
-    assert_eq!(ambig_en["application"], "failed", "{ambig_en}");
-    assert_eq!(ambig_en["error"]["code"], "operation-error");
+        assert!(!plan.in_agent_scope, "{method}");
+        assert!(
+            plan.build_carrier(
+                CreatorDecider::Agent(AgentPosture::FullAccess),
+                f.posture.read()
+            )
+            .is_err(),
+            "{method}"
+        );
+        let ambig_ctx = f
+            .context
+            .clone()
+            .with_creator_decision(synthetic_carrier_for(
+                method,
+                &ambig_input,
+                CreatorDecider::Agent(AgentPosture::FullAccess),
+                f.posture.read(),
+                true,
+            ));
+        let ambig_guard = f.begin(&f.creator, HostCohort::Builtin, &ambig_ctx);
+        let ambig_ticket = plugin_ticket(&ambig_guard).unwrap();
+        let res = f
+            .call_broker(
+                &f.creator,
+                HostCohort::Builtin,
+                &ambig_ticket,
+                method,
+                ambig_input,
+            )
+            .await
+            .unwrap();
+        assert_eq!(res["application"], "failed", "{method}: {res}");
+        assert_eq!(res["error"]["code"], "operation-error", "{method}: {res}");
+    }
 
     #[cfg(unix)]
     {
@@ -4500,13 +4754,35 @@ async fn remove_rejects_ambiguous_target_non_sole_row_and_symlinked_install_mark
         );
         std::os::unix::fs::symlink(&target_marker, sym_dir.join(INSTALLED_FROM_MARKER)).unwrap();
         f.reload_registry();
+        let sym_input = json!({"target": "sym-marker"});
+        assert!(
+            plan_change_async(
+                &f.context,
+                &broker_to_pm_input("remove", &sym_input),
+                &CancellationToken::new(),
+            )
+            .await
+            .is_err()
+        );
+        let sym_ctx = f
+            .context
+            .clone()
+            .with_creator_decision(synthetic_carrier_for(
+                "remove",
+                &sym_input,
+                CreatorDecider::Agent(AgentPosture::FullAccess),
+                f.posture.read(),
+                true,
+            ));
+        let sym_guard = f.begin(&f.creator, HostCohort::Builtin, &sym_ctx);
+        let sym_ticket = plugin_ticket(&sym_guard).unwrap();
         let sym_rm = f
             .call_broker(
                 &f.creator,
                 HostCohort::Builtin,
-                &ticket,
+                &sym_ticket,
                 "remove",
-                json!({"target": "sym-marker"}),
+                sym_input,
             )
             .await
             .unwrap();
@@ -4538,17 +4814,10 @@ async fn disable_and_remove_synchronously_revoke_tickets_and_cross_workspace_use
 
     let src = write_skill_bundle(&f.config.workspace, "sync-rev-src", "sync-rev", "1.0.0");
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
 
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
     let inst = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
@@ -4594,13 +4863,7 @@ async fn disable_and_remove_synchronously_revoke_tickets_and_cross_workspace_use
     assert!(tickets_with_plug > tickets_before_plug);
 
     let disabled = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "disable",
-            json!({"target": "sync-rev"}),
-        )
+        .call_admitted(&f.context, "disable", json!({"target": "sync-rev"}))
         .await
         .unwrap();
     assert_eq!(disabled["application"], "applied", "{disabled}");
@@ -4647,13 +4910,7 @@ async fn disable_and_remove_synchronously_revoke_tickets_and_cross_workspace_use
     assert!(tickets_before_rm > tickets_before_stale);
 
     let removed = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "remove",
-            json!({"target": "sync-rev"}),
-        )
+        .call_admitted(&f.context, "remove", json!({"target": "sync-rev"}))
         .await
         .unwrap();
     assert_eq!(removed["application"], "applied", "{removed}");
@@ -4750,21 +5007,10 @@ async fn remote_dsh_with_external_npm_deps_discloses_npm_reach_before_npm_access
         .clone()
         .with_network_policy(NetworkPolicyDecider::new(net_policy, None));
 
-    let prompt_calls = install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Approved)
-    });
-    let prompt_guard = f.begin(&f.creator, HostCohort::Builtin, &net_ctx);
-    let prompt_ticket = plugin_ticket(&prompt_guard).unwrap();
-    let prompt_res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &prompt_ticket,
-            "install",
-            json!({"target": url}),
-        )
-        .await
-        .unwrap();
+    let (prompt_res, prompt_receipts) = f
+        .call_admitted_with_receipts(&net_ctx, "install", json!({"target": url}))
+        .await;
+    let prompt_res = prompt_res.unwrap();
     assert_eq!(prompt_res["application"], "failed", "{prompt_res}");
     assert_eq!(prompt_res["changed"], false);
     assert_eq!(prompt_res["error"]["code"], "operation-error");
@@ -4776,31 +5022,40 @@ async fn remote_dsh_with_external_npm_deps_discloses_npm_reach_before_npm_access
             .contains("network approval required for registry.npmjs.org"),
         "{prompt_res}"
     );
-    assert_eq!(
-        prompt_calls.lock().unwrap().as_slice(),
-        &[
-            (
-                "dsh_broker_reach".to_string(),
-                Some(expected_archive_reach.clone())
-            ),
-            (
-                "dsh_broker_reach".to_string(),
-                Some(expected_npm_reach.clone())
-            ),
-        ]
-    );
+    let prompt_reaches: Vec<Value> = prompt_receipts["broker_acts"]["acts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|act| act["effect"] == "reach")
+        .cloned()
+        .collect();
+    assert_eq!(prompt_reaches.len(), 2, "{prompt_receipts}");
+    assert_eq!(prompt_reaches[0]["target"], expected_archive_reach);
+    assert_eq!(prompt_reaches[0]["outcome"], "allowed");
+    assert_eq!(prompt_reaches[0]["decider"], "person");
+    assert_eq!(prompt_reaches[1]["target"], expected_npm_reach);
+    assert_eq!(prompt_reaches[1]["outcome"], "allowed");
+    assert_eq!(prompt_reaches[1]["decider"], "person");
     assert_eq!(fs::read_dir(&f.config.user_plugins_dir).unwrap().count(), 0);
 
-    let expected_npm_reach_for_deny = expected_npm_reach.clone();
-    let deny_calls = install_gate(&mut f, move |input, _| {
-        let target = input.get("target").and_then(Value::as_str).unwrap_or("");
-        if target == expected_npm_reach_for_deny {
-            deny_verdict("denied remote npm reach")
-        } else {
-            allow_verdict(input, NestedDecision::Approved)
-        }
-    });
-    let deny_guard = f.begin(&f.creator, HostCohort::Builtin, &net_ctx);
+    let one_slot_plan = plan_change_async(
+        &net_ctx,
+        &broker_to_pm_input("install", &json!({"target": url})),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let mut one_slot_carrier = one_slot_plan
+        .build_carrier(CreatorDecider::Person, f.posture.read())
+        .unwrap();
+    if let AdmittedChangeKind::UnseenFetchInstall {
+        remaining_reach, ..
+    } = &mut one_slot_carrier.change
+    {
+        *remaining_reach = Arc::new(AtomicUsize::new(1));
+    }
+    let deny_ctx = net_ctx.with_creator_decision(one_slot_carrier);
+    let deny_guard = f.begin(&f.creator, HostCohort::Builtin, &deny_ctx);
     let deny_ticket = plugin_ticket(&deny_guard).unwrap();
     let deny_res = f
         .call_broker(
@@ -4811,14 +5066,20 @@ async fn remote_dsh_with_external_npm_deps_discloses_npm_reach_before_npm_access
             json!({"target": url}),
         )
         .await;
-    assert_eq!(refusal(&deny_res), (error_code::DENIED, "denied".into()));
-    assert_eq!(
-        deny_calls.lock().unwrap().as_slice(),
-        &[
-            ("dsh_broker_reach".to_string(), Some(expected_archive_reach)),
-            ("dsh_broker_reach".to_string(), Some(expected_npm_reach)),
-        ]
-    );
+    assert_eq!(refusal(&deny_res), (error_code::REFUSED, "refused".into()));
+    let deny_receipts = deny_guard.receipts().unwrap();
+    let deny_reaches: Vec<Value> = deny_receipts["broker_acts"]["acts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|act| act["effect"] == "reach")
+        .cloned()
+        .collect();
+    assert_eq!(deny_reaches.len(), 2, "{deny_receipts}");
+    assert_eq!(deny_reaches[0]["target"], expected_archive_reach);
+    assert_eq!(deny_reaches[0]["outcome"], "allowed");
+    assert_eq!(deny_reaches[1]["target"], expected_npm_reach);
+    assert_eq!(deny_reaches[1]["outcome"], "refused");
     assert_eq!(fs::read_dir(&f.config.user_plugins_dir).unwrap().count(), 0);
     let _ = server.join();
 }
@@ -4850,16 +5111,9 @@ async fn plugins_install_prefers_dsh_package_when_plugin_json_also_present() {
 
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
-    install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
     let installed = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": dsh_dual.to_string_lossy(), "enabled": false}),
         )
@@ -4874,7 +5128,6 @@ async fn plugins_install_prefers_dsh_package_when_plugin_json_also_present() {
             .is_some_and(|spec| spec.starts_with("dsh:")),
         "{receipt}"
     );
-    drop(guard);
 
     let dsh_dual_npm = f.config.workspace.join("dsh-dual-npm");
     copy_dir_tree(&dsh_template_dir("decoration"), &dsh_dual_npm);
@@ -4912,16 +5165,16 @@ async fn plugins_install_prefers_dsh_package_when_plugin_json_also_present() {
     .unwrap();
 
     f.reload_registry();
-    let npm_calls = install_gate(&mut f, |input, _| {
-        allow_verdict(input, NestedDecision::Auto)
-    });
-    let npm_guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let npm_ticket = plugin_ticket(&npm_guard).unwrap();
+    f.posture.switch_for_tests(ApprovalMode::Suggest);
+    let blocked_ctx = f.context.clone().with_network_policy(
+        codewhale_net::network_policy::NetworkPolicyDecider::new(
+            codewhale_net::network_policy::NetworkPolicy::default(),
+            None,
+        ),
+    );
     let npm_res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &npm_ticket,
+        .call_admitted(
+            &blocked_ctx,
             "install",
             json!({"target": dsh_dual_npm.to_string_lossy()}),
         )
@@ -4937,7 +5190,159 @@ async fn plugins_install_prefers_dsh_package_when_plugin_json_also_present() {
             .contains("registry.npmjs.org"),
         "{npm_res}"
     );
-    assert_eq!(npm_calls.lock().unwrap().len(), 0);
+    assert_eq!(f.asked.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_call_admitted_as_a_list_cannot_change_anything() {
+    let mut f = PluginsFixture::new();
+    let src = write_skill_bundle(&f.config.workspace, "list-src", "list-plug", "1.0.0");
+    f.reload_registry();
+    f.posture.switch_for_tests(ApprovalMode::Bypass);
+
+    let seeded = f
+        .call_admitted(
+            &f.context,
+            "install",
+            json!({"target": src.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(seeded["application"], "applied");
+
+    let list_input = json!({"action": "list_plugins"});
+    assert!(
+        plan_change_async(&f.context, &list_input, &CancellationToken::new())
+            .await
+            .is_err()
+    );
+
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let ticket = plugin_ticket(&guard).unwrap();
+    let listed = f
+        .call_broker(&f.creator, HostCohort::Builtin, &ticket, "list", json!({}))
+        .await
+        .unwrap();
+    assert!(listed["entries"].is_array());
+
+    for (method, input) in [
+        ("install", json!({"target": src.to_string_lossy()})),
+        ("disable", json!({"target": "list-plug"})),
+        ("enable", json!({"target": "list-plug"})),
+        ("remove", json!({"target": "list-plug"})),
+    ] {
+        let err = f
+            .call_broker(&f.creator, HostCohort::Builtin, &ticket, method, input)
+            .await;
+        assert_eq!(
+            refusal(&err),
+            (error_code::REFUSED, "refused".into()),
+            "{method}"
+        );
+    }
+    assert_eq!(f.asked.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn one_admitted_change_admits_one_act() {
+    let mut f = PluginsFixture::new();
+    let src = write_skill_bundle(&f.config.workspace, "once-src", "once-plug", "1.0.0");
+    f.reload_registry();
+    f.posture.switch_for_tests(ApprovalMode::Bypass);
+
+    let install_input = json!({"target": src.to_string_lossy()});
+    let once_ctx = f
+        .admit_context(
+            &f.context,
+            "install",
+            &install_input,
+            CreatorDecider::Agent(AgentPosture::FullAccess),
+        )
+        .await
+        .unwrap();
+
+    let g1 = f.begin(&f.creator, HostCohort::Builtin, &once_ctx);
+    let t1 = plugin_ticket(&g1).unwrap();
+    let ok = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &t1,
+            "install",
+            install_input.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ok["application"], "applied");
+    drop(g1);
+
+    let g_rm = f.begin(&f.creator, HostCohort::Builtin, &once_ctx);
+    let t_rm = plugin_ticket(&g_rm).unwrap();
+    let wrong_action = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &t_rm,
+            "remove",
+            json!({"target": "once-plug"}),
+        )
+        .await;
+    assert_eq!(
+        refusal(&wrong_action),
+        (error_code::REFUSED, "refused".into())
+    );
+    drop(g_rm);
+
+    f.call_admitted(&f.context, "remove", json!({"target": "once-plug"}))
+        .await
+        .unwrap();
+
+    let g2 = f.begin(&f.creator, HostCohort::Builtin, &once_ctx);
+    let t2 = plugin_ticket(&g2).unwrap();
+    let replay = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &t2,
+            "install",
+            install_input,
+        )
+        .await;
+    assert_eq!(refusal(&replay), (error_code::REFUSED, "refused".into()));
+    assert!(!f.config.user_plugins_dir.join("once-plug").exists());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn arm_refuses_without_carried_decision() {
+    let mut f = PluginsFixture::new();
+    let src = write_skill_bundle(&f.config.workspace, "nod-src", "nod-plug", "1.0.0");
+    f.reload_registry();
+    f.posture.switch_for_tests(ApprovalMode::Bypass);
+
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let ticket = plugin_ticket(&guard).unwrap();
+
+    let list_ok = f
+        .call_broker(&f.creator, HostCohort::Builtin, &ticket, "list", json!({}))
+        .await;
+    assert!(list_ok.is_ok());
+
+    for (method, input) in [
+        ("install", json!({"target": src.to_string_lossy()})),
+        ("disable", json!({"target": "nod-plug"})),
+        ("enable", json!({"target": "nod-plug"})),
+        ("remove", json!({"target": "nod-plug"})),
+    ] {
+        let err = f
+            .call_broker(&f.creator, HostCohort::Builtin, &ticket, method, input)
+            .await;
+        assert_eq!(
+            refusal(&err),
+            (error_code::REFUSED, "refused".into()),
+            "{method}"
+        );
+    }
+    assert_eq!(f.asked.load(Ordering::SeqCst), 0);
 }
 
 fn install_gate_with_pool(
@@ -5261,17 +5666,21 @@ async fn plugins_answering_required_dsh_connector_succeeds_and_lists_tools_for_n
 
     let src = f.config.workspace.join("mcp-ok-src");
     copy_mcp_template_bundle(&src, &server.url(), Some(true), false);
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let input = json!({"target": src.to_string_lossy()});
+    let admitted = f
+        .admit_context(
+            &f.context,
+            "install",
+            &input,
+            decider_for_posture(&f.posture.read()),
+        )
+        .await
+        .unwrap();
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &admitted);
     let ticket = plugin_ticket(&guard).unwrap();
 
     let res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "install",
-            json!({"target": src.to_string_lossy()}),
-        )
+        .call_broker(&f.creator, HostCohort::Builtin, &ticket, "install", input)
         .await
         .unwrap();
     assert_eq!(res["application"], "applied", "{res}");
@@ -5328,14 +5737,9 @@ async fn plugins_silent_required_dsh_connector_fails_with_connector_defined_on_d
     let server = McpStubServer::spawn(McpStubBehavior::Fail500).await;
     let src = f.config.workspace.join("mcp-fail-src");
     copy_mcp_template_bundle(&src, &server.url(), Some(true), false);
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
-
     let res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
@@ -5373,14 +5777,9 @@ async fn plugins_bundle_without_flag_makes_no_attempt_and_warns_with_prefix() {
         let server = McpStubServer::spawn(McpStubBehavior::Fail500).await;
         let src = f.config.workspace.join("mcp-optional-src");
         copy_mcp_template_bundle(&src, &server.url(), flag, false);
-        let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-        let ticket = plugin_ticket(&guard).unwrap();
-
         let res = f
-            .call_broker(
-                &f.creator,
-                HostCohort::Builtin,
-                &ticket,
+            .call_admitted(
+                &f.context,
                 "install",
                 json!({"target": src.to_string_lossy()}),
             )
@@ -5431,7 +5830,7 @@ async fn plugins_refused_install_makes_no_attempt() {
             json!({"target": src.to_string_lossy()}),
         )
         .await;
-    assert_eq!(refusal(&res), (error_code::DENIED, "denied".into()));
+    assert_eq!(refusal(&res), (error_code::REFUSED, "refused".into()));
     assert_eq!(server.hits(), 0);
 }
 
@@ -5454,13 +5853,9 @@ async fn plugins_enable_of_required_connector_attempts_live_connection() {
     let src = f.config.workspace.join("mcp-enable-src");
     copy_mcp_template_bundle(&src, &server.url(), Some(true), false);
 
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
     let installed_disabled = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy(), "enabled": false}),
         )
@@ -5478,13 +5873,7 @@ async fn plugins_enable_of_required_connector_attempts_live_connection() {
     );
 
     let enabled = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "enable",
-            json!({"target": "demo-mcp"}),
-        )
+        .call_admitted(&f.context, "enable", json!({"target": "demo-mcp"}))
         .await
         .unwrap();
     assert_eq!(enabled["application"], "applied", "{enabled}");
@@ -5526,10 +5915,8 @@ async fn plugins_enable_of_required_connector_attempts_live_connection() {
     )
     .unwrap();
     let dead_installed = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": dead_src.to_string_lossy(), "enabled": false}),
         )
@@ -5537,13 +5924,7 @@ async fn plugins_enable_of_required_connector_attempts_live_connection() {
         .unwrap();
     assert_eq!(dead_installed["application"], "applied");
     let dead_enabled = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "enable",
-            json!({"target": "demo-dead"}),
-        )
+        .call_admitted(&f.context, "enable", json!({"target": "demo-dead"}))
         .await
         .unwrap();
     assert_eq!(dead_enabled["application"], "failed", "{dead_enabled}");
@@ -5565,14 +5946,10 @@ async fn plugins_turned_off_row_never_attempts_connection() {
     let server = McpStubServer::spawn(McpStubBehavior::Fail500).await;
     let dsh_src = f.config.workspace.join("mcp-row-off-src");
     copy_mcp_template_bundle(&dsh_src, &server.url(), Some(true), true);
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
 
     let dsh_res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": dsh_src.to_string_lossy()}),
         )
@@ -5590,10 +5967,8 @@ async fn plugins_turned_off_row_never_attempts_connection() {
         ),
     );
     let toml_res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": toml_src.to_string_lossy()}),
         )
@@ -5655,14 +6030,10 @@ async fn plugins_pool_fork_leaves_session_live_connections_untouched() {
     .await;
     let src = f.config.workspace.join("mcp-fork-src");
     copy_mcp_template_bundle(&src, &plugin_server.url(), Some(true), false);
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
 
     let res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
@@ -5706,15 +6077,11 @@ async fn plugins_attempt_stops_at_the_deadline_and_on_cancel() {
 
     let src = f.config.workspace.join("mcp-deadline-src");
     copy_mcp_template_bundle(&src, &hang_deadline.url(), Some(true), false);
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
 
     let started = std::time::Instant::now();
     let deadline_res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
@@ -5740,7 +6107,16 @@ async fn plugins_attempt_stops_at_the_deadline_and_on_cancel() {
     });
     let cancel_src = f_cancel.config.workspace.join("mcp-cancel-src");
     copy_mcp_template_bundle(&cancel_src, &hang_cancel.url(), Some(true), false);
-    let cancel_guard = f_cancel.begin(&f_cancel.creator, HostCohort::Builtin, &f_cancel.context);
+    let cancel_admitted = f_cancel
+        .admit_context(
+            &f_cancel.context,
+            "install",
+            &json!({"target": cancel_src.to_string_lossy()}),
+            decider_for_posture(&f_cancel.posture.read()),
+        )
+        .await
+        .unwrap();
+    let cancel_guard = f_cancel.begin(&f_cancel.creator, HostCohort::Builtin, &cancel_admitted);
     let cancel_ticket = plugin_ticket(&cancel_guard).unwrap();
 
     let (cx, _violations, cancel) = HostRequestContext::for_test(101);
@@ -5795,11 +6171,17 @@ async fn plugins_attempt_stops_at_the_deadline_and_on_cancel() {
             "stdio-cx-cancel",
             &cx_pid_file,
         );
-        let cx_guard = f_stdio_cancel.begin(
-            &f_stdio_cancel.creator,
-            HostCohort::Builtin,
-            &f_stdio_cancel.context,
-        );
+        let cx_admitted = f_stdio_cancel
+            .admit_context(
+                &f_stdio_cancel.context,
+                "install",
+                &json!({"target": cx_src.to_string_lossy()}),
+                decider_for_posture(&f_stdio_cancel.posture.read()),
+            )
+            .await
+            .unwrap();
+        let cx_guard =
+            f_stdio_cancel.begin(&f_stdio_cancel.creator, HostCohort::Builtin, &cx_admitted);
         let cx_ticket = plugin_ticket(&cx_guard).unwrap();
         let (cx_stdio, _violations_stdio, cx_token) = HostRequestContext::for_test(102);
         let pid_watch = cx_pid_file.clone();
@@ -5858,11 +6240,17 @@ async fn plugins_attempt_stops_at_the_deadline_and_on_cancel() {
             "stdio-withdraw",
             &withdraw_pid_file,
         );
-        let withdraw_guard = f_withdraw.begin(
-            &f_withdraw.creator,
-            HostCohort::Builtin,
-            &f_withdraw.context,
-        );
+        let withdraw_admitted = f_withdraw
+            .admit_context(
+                &f_withdraw.context,
+                "install",
+                &json!({"target": withdraw_src.to_string_lossy()}),
+                decider_for_posture(&f_withdraw.posture.read()),
+            )
+            .await
+            .unwrap();
+        let withdraw_guard =
+            f_withdraw.begin(&f_withdraw.creator, HostCohort::Builtin, &withdraw_admitted);
         let withdraw_ticket = plugin_ticket(&withdraw_guard).unwrap();
         let (cx_withdraw, _violations_withdraw, _token_withdraw) =
             HostRequestContext::for_test(103);
@@ -5946,14 +6334,10 @@ async fn plugins_required_connector_blocked_by_network_policy_fails_without_card
         let server = McpStubServer::spawn(McpStubBehavior::Fail500).await;
         let src = f.config.workspace.join("mcp-policy-src");
         copy_mcp_template_bundle(&src, &server.url(), Some(true), false);
-        let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-        let ticket = plugin_ticket(&guard).unwrap();
 
         let res = f
-            .call_broker(
-                &f.creator,
-                HostCohort::Builtin,
-                &ticket,
+            .call_admitted(
+                &f.context,
                 "install",
                 json!({"target": src.to_string_lossy()}),
             )
@@ -5968,12 +6352,10 @@ async fn plugins_required_connector_blocked_by_network_policy_fails_without_card
         assert!(diag.contains("127.0.0.1"), "{res}");
         assert_eq!(server.hits(), 0, "blocked host must never dial or retry");
         let calls = gate_calls.lock().unwrap();
-        assert_eq!(
-            calls.len(),
-            1,
-            "only the install gate asks a card: {calls:?}"
+        assert!(
+            calls.is_empty(),
+            "MCP network policy failure must not ask a nested approval card: {calls:?}"
         );
-        assert_eq!(calls[0].0, "dsh_broker_act");
     }
 }
 
@@ -5997,14 +6379,10 @@ async fn plugins_multiple_required_connectors_bounded_together_and_report_all_fa
             fail_server.url()
         ),
     );
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
 
     let res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": multi_fail_src.to_string_lossy()}),
         )
@@ -6036,14 +6414,10 @@ async fn plugins_multiple_required_connectors_bounded_together_and_report_all_fa
             hang_b.url()
         ),
     );
-    let guard_bound = f_bound.begin(&f_bound.creator, HostCohort::Builtin, &f_bound.context);
-    let ticket_bound = plugin_ticket(&guard_bound).unwrap();
     let started = std::time::Instant::now();
     let res_bound = f_bound
-        .call_broker(
-            &f_bound.creator,
-            HostCohort::Builtin,
-            &ticket_bound,
+        .call_admitted(
+            &f_bound.context,
             "install",
             json!({"target": multi_hang_src.to_string_lossy()}),
         )
@@ -6117,13 +6491,9 @@ async fn plugins_live_turn_network_policy_overrides_pool_and_ignores_dynamic_ser
         .context
         .clone()
         .with_network_policy(NetworkPolicyDecider::new(deny_policy.clone(), None));
-    let deny_guard = f_deny.begin(&f_deny.creator, HostCohort::Builtin, &deny_ctx);
-    let deny_ticket = plugin_ticket(&deny_guard).unwrap();
     let deny_res = f_deny
-        .call_broker(
-            &f_deny.creator,
-            HostCohort::Builtin,
-            &deny_ticket,
+        .call_admitted(
+            &deny_ctx,
             "install",
             json!({"target": src_deny.to_string_lossy()}),
         )
@@ -6183,13 +6553,9 @@ async fn plugins_live_turn_network_policy_overrides_pool_and_ignores_dynamic_ser
         .context
         .clone()
         .with_network_policy(NetworkPolicyDecider::new(allow_policy, None));
-    let allow_guard = f_allow.begin(&f_allow.creator, HostCohort::Builtin, &allow_ctx);
-    let allow_ticket = plugin_ticket(&allow_guard).unwrap();
     let allow_res = f_allow
-        .call_broker(
-            &f_allow.creator,
-            HostCohort::Builtin,
-            &allow_ticket,
+        .call_admitted(
+            &allow_ctx,
             "install",
             json!({"target": src_allow.to_string_lossy()}),
         )
@@ -6325,13 +6691,9 @@ done
 "##,
     );
 
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
     let ready_res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+        .call_admitted(
+            &f.context,
             "install",
             json!({"target": ready_src.to_string_lossy()}),
         )
@@ -6357,14 +6719,10 @@ done
         &hang_pid_file,
     );
 
-    let guard_hang = f_hang.begin(&f_hang.creator, HostCohort::Builtin, &f_hang.context);
-    let ticket_hang = plugin_ticket(&guard_hang).unwrap();
     let started = std::time::Instant::now();
     let hang_res = f_hang
-        .call_broker(
-            &f_hang.creator,
-            HostCohort::Builtin,
-            &ticket_hang,
+        .call_admitted(
+            &f_hang.context,
             "install",
             json!({"target": hang_src.to_string_lossy()}),
         )
@@ -6434,19 +6792,14 @@ async fn plugins_mixed_dsh_bundle_qualifies_required_native_mcp_connector() {
     );
     fs::write(src.join("cordis.patch.yml"), patch).unwrap();
 
-    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
-    let ticket = plugin_ticket(&guard).unwrap();
-
-    let res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+    let (res, receipts_ok) = f
+        .call_admitted_with_receipts(
+            &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
-        .await
-        .unwrap();
+        .await;
+    let res = res.unwrap();
     assert_eq!(res["application"], "applied", "{res}");
     assert_eq!(res["stage"], "enable");
     assert_eq!(res["changed"], true);
@@ -6472,13 +6825,7 @@ async fn plugins_mixed_dsh_bundle_qualifies_required_native_mcp_connector() {
     );
 
     let idempotent = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
-            "enable",
-            json!({"target": "my-decoration"}),
-        )
+        .call_admitted(&f.context, "enable", json!({"target": "my-decoration"}))
         .await
         .unwrap();
     assert_eq!(idempotent["application"], "applied", "{idempotent}");
@@ -6520,42 +6867,40 @@ async fn plugins_mixed_dsh_bundle_qualifies_required_native_mcp_connector() {
     );
     fs::write(dead_src.join("cordis.patch.yml"), dead_patch).unwrap();
 
-    let dead_res = f
-        .call_broker(
-            &f.creator,
-            HostCohort::Builtin,
-            &ticket,
+    let (dead_res, receipts_dead) = f
+        .call_admitted_with_receipts(
+            &f.context,
             "install",
             json!({"target": dead_src.to_string_lossy()}),
         )
-        .await
-        .unwrap();
+        .await;
+    let dead_res = dead_res.unwrap();
     assert_eq!(dead_res["application"], "failed", "{dead_res}");
     assert_eq!(dead_res["stage"], "enable");
     assert_eq!(dead_res["enabled"], true);
     assert_eq!(dead_res["error"]["code"], "operation-error");
 
-    let receipts = guard.seal_receipts().unwrap();
-    let acts = receipts["broker_acts"]["acts"].as_array().unwrap();
+    let acts_ok = receipts_ok["broker_acts"]["acts"].as_array().unwrap();
     assert!(
-        acts.iter().any(|act| {
+        acts_ok.iter().any(|act| {
             act["service"] == "plugins"
                 && act["method"] == "mcp_connect"
                 && act["plugin"] == "my-decoration"
                 && act["server"] == "demo"
                 && act["outcome"] == "connected"
         }),
-        "{receipts}"
+        "{receipts_ok}"
     );
+    let acts_dead = receipts_dead["broker_acts"]["acts"].as_array().unwrap();
     assert!(
-        acts.iter().any(|act| {
+        acts_dead.iter().any(|act| {
             act["service"] == "plugins"
                 && act["method"] == "mcp_connect"
                 && act["plugin"] == "my-decoration-dead"
                 && act["server"] == "demo"
                 && act["outcome"] == "failed"
         }),
-        "{receipts}"
+        "{receipts_dead}"
     );
 
     f.manager.shutdown().await;

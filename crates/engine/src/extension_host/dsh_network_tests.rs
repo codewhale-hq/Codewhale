@@ -1916,7 +1916,7 @@ fn the_first_send_card_cannot_be_skipped_by_a_grant_or_a_posture() {
         if owner_present {
             authority = authority.with_rust_origin(RunOrigin::Interactive, true);
         }
-        resolve_approval_request_disposition(&authority, granted, false, true, true)
+        resolve_approval_request_disposition(&authority, granted, false, true, "extcall:ext:test")
     };
     for granted in [false, true] {
         assert_eq!(

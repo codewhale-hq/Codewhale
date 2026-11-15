@@ -20,7 +20,7 @@ The interactive engine evaluates a model-requested tool call in this order:
 |---:|---|---|
 | 1 | Effective configuration and posture | User settings, command/runtime overrides, and the project overlay resolve before the turn. A project overlay may tighten `approval_policy`, `sandbox_mode`, or shell availability, but may not loosen them. |
 | 2 | Mode and tool admission | Plan-mode restrictions, input parse errors, per-command tool deny/allow lists, caller restrictions, and missing execution registrations fail before policy rules are considered. A tool present in both command lists is denied. |
-| 3 | Preparation, then `tool_call_before` hooks | Registry preparation is side-effect free. Foreground hooks then fold as `deny > ask > allow`, and a strict matching hook that produces no verdict fails closed. The last `updatedInput` wins; the engine prepares the rewritten input again before later gates inspect it. |
+| 3 | Preparation, then `tool_call_before` hooks | Registry preparation is side-effect free (including `plugin_manager` read-only target resolution and scope checks, with zero network fetches before human approval). Foreground hooks then fold as `deny > ask > allow`, and a strict matching hook that produces no verdict fails closed. The last `updatedInput` wins; the engine prepares the rewritten input again before later gates inspect it. |
 | 4 | Registered-tool baseline | The prepared tool's `ApprovalRequirement` establishes its ordinary approval need. A hook `ask` is applied after that assignment so the baseline cannot erase it. Non-bypassable registered holds remain forced in postures that can prompt; Full Access auto-approves them instead of opening a contradictory modal. Plan mode also blocks write-capable tools here. |
 | 5 | Typed `permissions.toml` rule | A matching `deny` blocks. In Ask and Accept Edits, a matching `allow` may clear ordinary registry approval (never a hook `ask` or non-bypassable registered hold). In Auto-Review, broad typed allow rules (`exec_shell`/`bash` without a command, glob patterns such as `*`, `python*`, or `npm run *`, bare broad runners such as `python`, `node`, `npm run`, `cargo run`, `agent`/`subagent`/`spawn_agent`, `*`, and write/edit/patch rules with no `path`) are suspended without altering `permissions.toml` and resume when leaving Auto-Review; only narrow typed allows (unwrapped statically expanded `exec_shell`/`bash` segments with exact or non-flag operand arguments, or exact non-agent non-extension tool names with explicit `path` for file tools) clear ordinary registry approval and skip the Auto-Review reviewer when no safety floor, soft rule, hook hold, extension hold, or `auto_review.review_all_shell` applies. A matching `ask` forces review in postures that can prompt, including Auto-Review when `owner_present` is true (on runtime threads, only the owner's surface can answer it), and refuses naming the rule when `owner_present` is false or in Never. Full Access/auto-approval is not downgraded into a prompt, while an explicit typed `deny` still blocks. |
 | 6 | Auto-review policy and built-in safety floor | The engine assigns each turn's run origin (`Interactive` with owner present vs `Headless`, `Background`, or unattended; never configurable by request or host fields). Configured block rules run before the built-in floor, then named soft rules, extension holds, `auto_review.review_all_shell` (when enabled), active narrow typed allow clearance, configured narrow `auto_review.allow` rules, and the deterministic fallback. Broad `[[auto_review.allow]]` rules (`shell`, `external`, `write`, `destructive`, or `publish` without a specific non-shell/non-agent tool, or `tool` matching `exec_shell`, `bash`, `agent`, or `*`) are ignored with a warning in Auto-Review, while specific non-shell/non-agent tool allow rules remain active. Setting `auto_review.review_all_shell = true` in user/managed config sends every shell command (including benign and narrow-allowed shell calls, after safety floor, block, soft-rule, and extension gates) to the Auto-Review reviewer. This layer runs after typed permissions and can add a prompt or block, but cannot remove an earlier hold. The built-in floor refuses a shell command, shell input or verifier containing a hidden Unicode character (`hidden_unicode`), and holds publish-like actions, destructive unattended/background/headless actions and `curl`/`wget` credential uploads without prompting (blocking without opening an approval card in Auto-Review and Never). When `owner_present` is true in Auto-Review and no hard block (`hidden_unicode` or configured `block` rule) applies, non-extension forced prompts (typed `ask` rules, `tool_call_before` hook `ask`, and prompt-only tools such as Computer Use consent/script cards) surface the approval card instead of consulting the guardian or failing closed; when `owner_present` is false, forced prompts refuse without registering a pending approval. Held extension acts (`core/call`, broker acts, and held plugin host tools) route to the Auto-Review reviewer with their host-minted plugin identity instead of skipping review or failing closed, and cannot bypass via routine tiers, typed/auto-review allow rules, or one-use retry grants (while independent typed rules, hook holds, and safety-floor blocks still apply). For eligible non-child, non-extension calls, an interactive owner can approve one exact Auto-Review-blocked call for a one-use retry (bound to `(tool_name, call_digest)` and still subject to every earlier and later gate). After 3 consecutive blocks, 20 total blocks in the conversation, or 3 consecutive unavailable reviews with `owner_present`, Auto-Review pauses to Ask and continues the batch; unattended runs continue past blocks without falling back to Ask and stop as interrupted at 20 total blocks or 10 consecutive unavailable checks. Headless `exec` still consults the model guardian on non-floor fallback holds, whereas ACP uses deterministic rules only. Full Access skips the built-in floor. |
@@ -93,17 +93,18 @@ two should not be interpreted independently.
 - Ask and Auto-Review may surface tool safety approvals. In Auto-Review with
   `owner_present` true, forced prompts (typed `permissions.toml` `ask` rules,
   `tool_call_before` hook `ask`, prompt-only tool gates such as Computer Use
-  consent/script cards, and repository-law holds that require a person) open the
-  normal approval card unless a hard block (`hidden_unicode` or a configured
-  `auto_review.block` rule) applies; on runtime threads, only the owner's surface
-  may answer that card. Held extension calls in Auto-Review (both interactive and
-  headless) route through the Auto-Review reviewer with their host-minted plugin
-  identity and never clear via routine tiers or allow rules, while independent
-  forced prompts on them still follow the same interactive-vs-unattended rule.
-  Unattended and headless runs (`Background`, `Headless`, or `owner_present`
-  false) refuse forced prompts naming the rule and register no pending
-  approval, while non-forced fallback holds in Auto-Review continue to route
-  through deterministic rules and the model guardian without prompting. Model-authored user
+  consent/script cards, repository-law holds that require a person, and forced
+  creator prompts) open the normal approval card unless a hard block
+  (`hidden_unicode` or a configured `auto_review.block` rule) applies; on
+  runtime threads, only the owner's surface may answer that card. Held extension
+  calls in Auto-Review (both interactive and headless) route through the
+  Auto-Review reviewer with their host-minted plugin identity and never clear via
+  routine tiers or allow rules, while independent forced prompts on them still
+  follow the same interactive-vs-unattended rule. Unattended and headless runs
+  (`Background`, `Headless`, or `owner_present` false) refuse forced prompts
+  naming the rule and register no pending approval, while non-forced fallback
+  holds in Auto-Review continue to route through deterministic rules and the
+  model guardian without prompting. Model-authored user
   questions (`request_user_input`) are a separate channel and reach the user in
   every interactive posture, Auto-Review included. Only headless `exec` runs,
   which have no responder, withhold the tool. Runtime threads (app
@@ -111,6 +112,22 @@ two should not be interpreted independently.
   the turn until someone answers or cancels it through the app or runtime API,
   or until a positive `tools.user_input_timeout_seconds` expires. An omitted or
   zero timeout waits indefinitely, the same way an Ask-posture approval parks.
+- Creator `plugin_manager` read queries (`list_plugins`, `list_bundles`,
+  `list_version_exemptions`) execute across postures without prompts. State-changing
+  calls (`install_bundle`, `remove_bundle`, `set_bundle`, `set_plugin`) require an
+  interactive top-level direct call (`Plan`, `Never`, `Background`, sub-agents,
+  and nested `execute_tools` refuse with `PermissionDenied`): inside-workspace
+  local changes route through the human card in `Ask`/`Accept Edits`, through the
+  Auto-Review guardian (or configured `auto_review.allow` rules) in
+  `Auto-Review`, and run under `Full Access` (recording agent posture in
+  `plugins/state.json`), whereas outside-scope targets (paths outside the project,
+  remote specs or local folders with unresolved npm dependencies fetched from a
+  registry, person-approved plugins, or built-in switches) skip the Auto-Review
+  guardian and require a forced human `creator-human:` card even under
+  `Auto-Review` allow rules or `Full Access`. Remembered non-user grants, hooks,
+  and typed `allow` rules never waive that card, and unseen remote/npm-dependency
+  fetches never run before `"yes"` and always land disabled (`enabled = false`)
+  and untrusted until explicitly reviewed and enabled.
 - Full Access and YOLO-compatible auto-approval paths do not let a typed `ask`
   downgrade the session into prompting. Non-bypassable registered holds
   auto-approve in Full Access. Typed deny, catastrophic background/headless

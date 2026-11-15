@@ -122,6 +122,7 @@
 pub mod command;
 pub mod composition_review;
 pub mod core_call;
+pub(crate) mod creator_policy;
 mod dsh_attachments;
 pub mod dsh_broker;
 mod dsh_catalog;

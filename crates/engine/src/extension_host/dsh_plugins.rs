@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use codewhale_config::{AppMode, PluginAuthority};
@@ -11,15 +10,17 @@ use codewhale_net::network_policy::NetworkPolicy;
 use codewhale_plugins::activation::{PolicyScope, extension_host_policy_enabled};
 use codewhale_plugins::agent_plugin::resolve_manifest_path;
 use codewhale_plugins::host_services::{
-    AgentApproval, AgentPosture, PersonVia, PluginApprover, ReviewApproval, approver_label, offered,
+    AgentPosture, HostServiceReview, PluginApprover, ReviewApproval, approver_label, offered,
 };
+#[cfg(any(test, feature = "test-support"))]
+use codewhale_plugins::host_services::{HostService, TestOffer};
 use codewhale_plugins::install::dsh::{has_unresolved_npm_dependencies, try_is_dsh_package};
 use codewhale_plugins::install::{
     DEFAULT_MAX_SIZE_BYTES, NpmDepsNetworkError, PluginArchiveMismatch, PluginContentMismatch,
     PluginInstallError, PluginInstallSource, PluginNameConflict, RemoteDownloadOutcome,
     RemotePreviewOutcome, clean_dir_is_strictly_inside, download_remote_install_archive,
-    has_regular_install_marker, installed_by_the_agent, path_is_within, preview_dsh,
-    preview_dsh_with_network, stage_downloaded_remote_install,
+    has_regular_install_marker, installed_by_the_agent, preview_dsh, preview_dsh_with_network,
+    stage_downloaded_remote_install,
 };
 use codewhale_plugins::manifest::PluginManifest;
 use codewhale_plugins::mutation::{
@@ -28,15 +29,18 @@ use codewhale_plugins::mutation::{
 use codewhale_plugins::registry::PluginRegistry;
 use codewhale_plugins::types::{LoadedPlugin, PluginDiagnosticLevel, PluginScope};
 use codewhale_runtime::runtime_policy::approval_wire;
-use codewhale_sanitize::redact::redact_model_bound_secrets;
-use codewhale_sanitize::sanitize::{is_bidi_control, sanitize_text, strip_ansi_into};
-use codewhale_util::bundle_file::open_bundle_file;
 use codewhale_util::path_identity::metadata_is_link_or_reparse;
-use codewhale_util::utils::truncate_with_ellipsis;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::creator_policy::{
+    AdmittedChangeKind, CreatorDecider, CreatorDecisionCarrier, ScrubContext, TargetLookup,
+    agent_denial_reason, agent_posture_wire, cap_text, dir_is_in_user_plugins,
+    ensure_no_links_in_tree, has_symlink_or_reparse_ancestor_or_target, non_empty_version,
+    parse_install_target_syntax, person_via_wire, remote_target_display, resolve_plugin_by_target,
+    scrub_message, scrub_warning, strip_path_prefix_clean, strip_path_with_replacement,
+};
+pub(super) use super::creator_policy::{clean_diagnostic_fragment, sanitize_inline};
 use super::dsh_broker::{
     BrokerCall, BrokerEffect, BrokerFuture, BrokerMethods, BrokerRefusal, builtin_services, decode,
 };
@@ -61,8 +65,6 @@ const MAX_TARGET_BYTES: usize = 4096;
 const MAX_REGISTRY_BYTES: usize = 1024;
 const MAX_ROW_BYTES: usize = 512;
 const MAX_APPROVED_BUILDS: usize = 64;
-const MAX_BUNDLE_FILES: usize = 16_384;
-const MAX_CONVERSION_JSON_BYTES: u64 = 1024 * 1024;
 const HOST_LOAD_TIMEOUT_PER_ROW: Duration = Duration::from_secs(5);
 const HOST_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const MAX_HOST_WAIT: Duration = Duration::from_secs(60);
@@ -506,7 +508,10 @@ fn posture(
     serde_json::to_value(PostureResponse {
         mode,
         permission_mode,
-        admitted_by_person: tool.execution.human_decision.is_some(),
+        admitted_by_person: tool.execution.creator_decision.as_ref().map_or_else(
+            || tool.execution.human_decision.is_some(),
+            |carrier| carrier.decider == CreatorDecider::Person,
+        ),
     })
     .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))
 }
@@ -598,22 +603,6 @@ fn approver_view(approver: &PluginApprover, outside_reach: bool) -> ApproverView
         posture,
         this_project,
         label: approver_label(Some(approver)),
-    }
-}
-
-fn person_via_wire(via: PersonVia) -> &'static str {
-    match via {
-        PersonVia::Terminal => "terminal",
-        PersonVia::App => "app",
-        PersonVia::ApprovalCard => "approval_card",
-    }
-}
-
-fn agent_posture_wire(posture: AgentPosture) -> &'static str {
-    match posture {
-        AgentPosture::FullAccess => "full_access",
-        AgentPosture::AutoReview => "auto_review",
-        AgentPosture::CommandLine => "command_line",
     }
 }
 
@@ -861,101 +850,6 @@ fn strip_plugin_root(text: &str, root: &Path) -> String {
     strip_path_prefix_clean(text, root)
 }
 
-fn strip_path_with_replacement(text: &str, target: &Path, replacement: &str) -> String {
-    let raw = target.to_string_lossy();
-    if raw.is_empty() {
-        return text.to_string();
-    }
-    let mut out = text.replace(raw.as_ref(), replacement);
-    if let Some(unprefixed) = raw.strip_prefix("/private/") {
-        out = out.replace(&format!("/{unprefixed}"), replacement);
-    }
-    if let Some(unprefixed) = raw.strip_prefix(r"\\?\") {
-        out = out.replace(unprefixed, replacement);
-    }
-    out
-}
-
-fn strip_path_prefix_clean(text: &str, root: &Path) -> String {
-    let raw = root.to_string_lossy();
-    if raw.is_empty() {
-        return text.to_string();
-    }
-    let mut out = strip_single_root(text, raw.as_ref());
-    if let Some(unprefixed) = raw.strip_prefix("/private/") {
-        out = strip_single_root(&out, &format!("/{unprefixed}"));
-    }
-    if let Some(unprefixed) = raw.strip_prefix(r"\\?\") {
-        out = strip_single_root(&out, unprefixed);
-    }
-    out
-}
-
-fn strip_single_root(text: &str, root: &str) -> String {
-    let trimmed = root.trim_end_matches(['/', '\\']);
-    if trimmed.is_empty() {
-        return text.to_string();
-    }
-    text.replace(&format!("{trimmed}/"), "")
-        .replace(&format!("{trimmed}\\"), "")
-        .replace(trimmed, "<plugin-root>")
-}
-
-fn clean_diagnostic_fragment(raw: &str) -> String {
-    let mut no_ansi = String::with_capacity(raw.len());
-    strip_ansi_into(raw, &mut no_ansi);
-    let paths_scrubbed = scrub_outside_paths(&no_ansi);
-    let redacted = redact_model_bound_secrets(&sanitize_text(&paths_scrubbed));
-    collapse_controls(&redacted)
-}
-
-fn sanitize_inline(raw: &str, max_bytes: usize, truncated: &mut bool) -> String {
-    let mut no_ansi = String::with_capacity(raw.len());
-    strip_ansi_into(raw, &mut no_ansi);
-    let redacted = redact_model_bound_secrets(&sanitize_text(&no_ansi));
-    cap_text(collapse_controls(&redacted), max_bytes, truncated)
-}
-
-fn collapse_controls(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    let mut last_was_space = false;
-    for ch in raw.chars() {
-        if matches!(ch, '\r' | '\n' | '\t') {
-            if !last_was_space {
-                out.push(' ');
-                last_was_space = true;
-            }
-            continue;
-        }
-        if ch.is_control() || is_bidi_control(ch) {
-            continue;
-        }
-        last_was_space = ch == ' ';
-        out.push(ch);
-    }
-    out.trim().to_string()
-}
-
-fn cap_text(cleaned: String, max_bytes: usize, truncated: &mut bool) -> String {
-    if cleaned.len() > max_bytes {
-        *truncated = true;
-        truncate_with_ellipsis(&cleaned, max_bytes, "...")
-    } else {
-        cleaned
-    }
-}
-
-fn scrub_outside_paths(text: &str) -> String {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        Regex::new(
-            r#"(^|[\s(\['"=:<`{,|])((?:file://[^\s)\]'";,>`}|]+)|(?:/(?:etc|usr|var|tmp|home|Users|Volumes|private|opt|root|proc|sys|dev|mnt|media|srv|bin|sbin|lib|lib64|System|Library|Applications)(?:/[^\s)\]'";,>`}|]*)?)|(?:/[A-Za-z0-9._~@-]+/[^\s)\]'";,>`}|]*)|(?:[A-Za-z]:[/\\][^\s)\]'";,>`}|]*)|(?:\\\\[^\s)\]'";,>`}|]+))"#,
-        )
-        .expect("outside-path regex")
-    });
-    re.replace_all(text, "${1}<outside-path>").into_owned()
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ChangeResult {
@@ -980,64 +874,6 @@ struct ManagementErrorWire {
     code: &'static str,
     diagnostic: String,
     message: String,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PendingApprover {
-    Agent(AgentPosture),
-    Person,
-    Nobody,
-}
-
-impl PendingApprover {
-    fn as_approver(
-        self,
-        call: &BrokerCall,
-        tool: &ToolContext,
-        workspace: &Path,
-    ) -> Option<PluginApprover> {
-        match self {
-            Self::Agent(posture) => Some(build_agent_approval(call, tool, posture, workspace)),
-            Self::Person => Some(PluginApprover::person(PersonVia::ApprovalCard)),
-            Self::Nobody => None,
-        }
-    }
-}
-
-struct ScrubContext<'a> {
-    workspace: &'a Path,
-    canon_workspace: Option<&'a Path>,
-    plugin_root: Option<&'a Path>,
-    user_plugins_dir: Option<&'a Path>,
-    state_path: Option<&'a Path>,
-}
-
-enum PreGateLocal {
-    Ready {
-        plugin_name: String,
-        source_package: Option<String>,
-        version: Option<String>,
-        pre_hash: String,
-        reach_gated: bool,
-    },
-    Deferred {
-        deferred_error: Option<(&'static str, String)>,
-    },
-}
-
-enum PreparedSource {
-    Local {
-        source: PluginInstallSource,
-        source_dir: PathBuf,
-        pre_gate: PreGateLocal,
-        canon_workspace: Option<PathBuf>,
-    },
-    Remote {
-        source: PluginInstallSource,
-        label: String,
-        host: String,
-        canon_workspace: Option<PathBuf>,
-    },
 }
 
 enum PreparedExisting {
@@ -1182,38 +1018,97 @@ fn validate_approved_builds(builds: Option<&[String]>) -> Result<bool, BrokerRef
     Ok(true)
 }
 
-fn approver_from_posture(authority: &LiveRuntimeAuthority) -> PendingApprover {
-    if authority.mode() == AppMode::Plan {
-        return PendingApprover::Nobody;
+fn require_carried_decision(
+    tool: &ToolContext,
+    current_authority: &LiveRuntimeAuthority,
+    method: &str,
+) -> Result<CreatorDecisionCarrier, BrokerRefusal> {
+    if current_authority.mode() == AppMode::Plan
+        || current_authority.approval_mode() == ApprovalMode::Never
+    {
+        return Err(BrokerRefusal::Refused {
+            service: DshService::Plugins,
+            message: "cannot change plugins in this mode".to_string(),
+        });
     }
-    match authority.approval_mode() {
-        ApprovalMode::Suggest | ApprovalMode::AcceptEdits => PendingApprover::Person,
-        ApprovalMode::Auto => PendingApprover::Agent(AgentPosture::AutoReview),
-        ApprovalMode::Bypass => PendingApprover::Agent(AgentPosture::FullAccess),
-        ApprovalMode::Never => PendingApprover::Nobody,
+    let Some(carrier) = tool.execution.creator_decision.clone() else {
+        return Err(BrokerRefusal::Refused {
+            service: DshService::Plugins,
+            message: "plugin changes require an admitted engine decision".to_string(),
+        });
+    };
+    if current_authority.narrows(&carrier.admitted_authority) {
+        return Err(BrokerRefusal::Refused {
+            service: DshService::Plugins,
+            message: "cannot continue after session permissions were narrowed".to_string(),
+        });
     }
+    if matches!(carrier.decider, CreatorDecider::Agent(_))
+        && (!carrier.in_agent_scope || carrier.is_unseen_fetch())
+    {
+        return Err(BrokerRefusal::Refused {
+            service: DshService::Plugins,
+            message: "agent decision cannot authorize an outside-scope plugin change".to_string(),
+        });
+    }
+    let expected_method = match &carrier.change {
+        AdmittedChangeKind::LocalInstall { .. } | AdmittedChangeKind::UnseenFetchInstall { .. } => {
+            "install"
+        }
+        AdmittedChangeKind::Remove { .. } => "remove",
+        AdmittedChangeKind::Toggle { enabled: true, .. } => "enable",
+        AdmittedChangeKind::Toggle { enabled: false, .. } => "disable",
+    };
+    if method != expected_method {
+        return Err(BrokerRefusal::Refused {
+            service: DshService::Plugins,
+            message: "plugin change decision does not match the requested method".to_string(),
+        });
+    }
+    Ok(carrier)
 }
 
-fn build_agent_approval(
-    call: &BrokerCall,
-    tool: &ToolContext,
-    posture: AgentPosture,
-    workspace: &Path,
-) -> PluginApprover {
-    let thread_id = tool
-        .execution
+fn call_thread_id(call: &BrokerCall, tool: &ToolContext) -> String {
+    tool.execution
         .runtime
         .active_thread_id
         .clone()
         .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| call.session_id.clone());
-    PluginApprover::Agent(AgentApproval {
-        posture,
-        workspace: workspace.to_string_lossy().into_owned(),
-        thread_id: Some(thread_id),
-        turn_id: tool.origin_turn_id.clone(),
-        tool_call_id: tool.origin_tool_call_id.clone(),
-    })
+        .unwrap_or_else(|| call.session_id.clone())
+}
+
+fn approver_from_carrier(
+    call: &BrokerCall,
+    tool: &ToolContext,
+    carrier: &CreatorDecisionCarrier,
+    canon_workspace: &Path,
+) -> Result<PluginApprover, String> {
+    carrier.trust_approver(
+        canon_workspace,
+        call_thread_id(call, tool),
+        tool.origin_turn_id.clone(),
+        tool.origin_tool_call_id.clone(),
+    )
+}
+
+enum CarrierLiveCheck {
+    Valid(ToolContext),
+    Narrowed,
+    Unavailable,
+}
+
+fn check_live_after_act(call: &BrokerCall, carrier: &CreatorDecisionCarrier) -> CarrierLiveCheck {
+    let (tool, refreshed) = live(call);
+    let Some(refreshed) = refreshed else {
+        return CarrierLiveCheck::Unavailable;
+    };
+    if refreshed.mode() == AppMode::Plan
+        || refreshed.approval_mode() == ApprovalMode::Never
+        || refreshed.narrows(&carrier.admitted_authority)
+    {
+        return CarrierLiveCheck::Narrowed;
+    }
+    CarrierLiveCheck::Valid(tool)
 }
 
 fn has_agent_call_identity(call: &BrokerCall, tool: &ToolContext) -> bool {
@@ -1239,267 +1134,6 @@ fn network_policy_for(tool: &ToolContext) -> NetworkPolicy {
         .as_ref()
         .map(|decider| decider.policy().clone())
         .unwrap_or_default()
-}
-
-async fn ensure_no_links_in_tree(root: &Path) -> Result<(), String> {
-    let root_meta = tokio::fs::symlink_metadata(root)
-        .await
-        .map_err(|error| format!("failed to inspect install source: {error}"))?;
-    if metadata_is_link_or_reparse(&root_meta) || root_meta.file_type().is_symlink() {
-        return Err(
-            "symbolic links and reparse points are not allowed in plugin bundles".to_string(),
-        );
-    }
-    if !root_meta.is_dir() {
-        return Err("not-bundle: install source must be a directory".to_string());
-    }
-    let mut queue = vec![root.to_path_buf()];
-    let mut seen_entries = 0usize;
-    while let Some(dir) = queue.pop() {
-        let mut reader = tokio::fs::read_dir(&dir)
-            .await
-            .map_err(|error| format!("failed to read install source: {error}"))?;
-        while let Some(entry) = reader
-            .next_entry()
-            .await
-            .map_err(|error| format!("failed to read install source entry: {error}"))?
-        {
-            seen_entries += 1;
-            if seen_entries > MAX_BUNDLE_FILES {
-                return Err(format!(
-                    "plugin bundle exceeds maximum entry count ({MAX_BUNDLE_FILES})"
-                ));
-            }
-            let path = entry.path();
-            let meta = tokio::fs::symlink_metadata(&path)
-                .await
-                .map_err(|error| format!("failed to inspect install source entry: {error}"))?;
-            if metadata_is_link_or_reparse(&meta) || meta.file_type().is_symlink() {
-                return Err(
-                    "symbolic links and reparse points are not allowed in plugin bundles"
-                        .to_string(),
-                );
-            }
-            if meta.is_dir() {
-                queue.push(path);
-            }
-        }
-    }
-    Ok(())
-}
-
-fn read_dsh_source_package(root: &Path) -> Option<String> {
-    let file = open_bundle_file(&root.join("CONVERSION.json")).ok()?;
-    let mut body = String::new();
-    file.take(MAX_CONVERSION_JSON_BYTES + 1)
-        .read_to_string(&mut body)
-        .ok()?;
-    if body.len() as u64 > MAX_CONVERSION_JSON_BYTES {
-        return None;
-    }
-    let parsed: Value = serde_json::from_str(&body).ok()?;
-    parsed
-        .get("source")
-        .and_then(|source| source.get("package"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
-enum TargetLookup<'a> {
-    Found(&'a LoadedPlugin),
-    Missing,
-    Ambiguous {
-        message: String,
-        first: &'a LoadedPlugin,
-    },
-}
-
-fn resolve_plugin_by_target<'a>(registry: &'a PluginRegistry, target: &str) -> TargetLookup<'a> {
-    if let Some(plugin) = registry.get(target) {
-        return TargetLookup::Found(plugin);
-    }
-    let matches: Vec<&LoadedPlugin> = registry
-        .list()
-        .into_iter()
-        .filter(|plugin| {
-            read_dsh_source_package(&plugin.canonical_root)
-                .as_deref()
-                .is_some_and(|pkg| pkg == target)
-        })
-        .collect();
-    match matches.len() {
-        0 => TargetLookup::Missing,
-        1 => TargetLookup::Found(matches[0]),
-        _ => {
-            let names: Vec<_> = matches.iter().map(|plugin| plugin.name()).collect();
-            TargetLookup::Ambiguous {
-                message: format!(
-                    "target `{target}` matches multiple installed plugins ({}); specify the plugin name or id",
-                    names.join(", ")
-                ),
-                first: matches[0],
-            }
-        }
-    }
-}
-
-fn non_empty_version(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
-}
-
-fn is_test_loopback_http_url(spec: &str) -> bool {
-    cfg!(test)
-        && spec.strip_prefix("http://127.0.0.1:").is_some_and(|rest| {
-            rest.split('/')
-                .next()
-                .is_some_and(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
-        })
-}
-
-fn parse_install_target_syntax(spec: &str) -> Result<PluginInstallSource, (&'static str, String)> {
-    if spec.starts_with("http://") && !is_test_loopback_http_url(spec) {
-        return Err((
-            "invalid-spec",
-            "install target URL must use https://, not http://".to_string(),
-        ));
-    }
-    let parsed = PluginInstallSource::parse_syntax(spec)
-        .map_err(|error| ("invalid-spec", format!("invalid install spec: {error}")))?;
-    match &parsed {
-        PluginInstallSource::LocalPath(path) | PluginInstallSource::Dsh(path) => {
-            if !path.is_absolute() {
-                return Err((
-                    "invalid-spec",
-                    "local or DSH install target must be an absolute directory path, or a valid npm/git/github/https spec".to_string(),
-                ));
-            }
-        }
-        PluginInstallSource::Remote(remote) => {
-            if let codewhale_skill_install::install::InstallSource::DirectUrl(url) = remote
-                && !url.starts_with("https://")
-                && !is_test_loopback_http_url(url)
-            {
-                return Err((
-                    "invalid-spec",
-                    "install target URL must use https://".to_string(),
-                ));
-            }
-        }
-    }
-    Ok(parsed)
-}
-
-async fn dir_is_in_user_plugins(dir: &Path, user_plugins_dir: Option<&Path>) -> bool {
-    let Some(up) = user_plugins_dir else {
-        return false;
-    };
-    let Ok(cdir) = tokio::fs::canonicalize(dir).await else {
-        return true;
-    };
-    match tokio::fs::canonicalize(up).await {
-        Ok(cup) => path_is_within(&cup, &cdir, true),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            tokio::fs::symlink_metadata(up).await.is_ok()
-        }
-        Err(_) => true,
-    }
-}
-
-fn is_macos_system_root_link(prefix: &Path) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        prefix == Path::new("/var") || prefix == Path::new("/tmp") || prefix == Path::new("/etc")
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = prefix;
-        false
-    }
-}
-
-async fn has_symlink_or_reparse_ancestor_or_target(path: &Path) -> Result<bool, std::io::Error> {
-    let mut prefix = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::ParentDir => return Ok(true),
-            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
-                prefix.push(component.as_os_str());
-            }
-            std::path::Component::CurDir => {}
-            std::path::Component::Normal(part) => {
-                prefix.push(part);
-                let meta = tokio::fs::symlink_metadata(&prefix).await?;
-                if metadata_is_link_or_reparse(&meta) && !is_macos_system_root_link(&prefix) {
-                    return Ok(true);
-                }
-            }
-        }
-    }
-    Ok(false)
-}
-
-async fn dir_has_clean_root_manifest(dir: &Path) -> bool {
-    let Ok(meta) = tokio::fs::symlink_metadata(dir).await else {
-        return false;
-    };
-    if metadata_is_link_or_reparse(&meta) || !meta.is_dir() {
-        return false;
-    }
-    let mut clean_candidates = Vec::new();
-    for rel in [
-        "plugin.json",
-        "kimi.plugin.json",
-        "plugin.toml",
-        ".claude-plugin/plugin.json",
-        ".plugin/plugin.json",
-        ".github/plugin/plugin.json",
-    ] {
-        if let Some(parent) = Path::new(rel)
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-        {
-            let parent_dir = dir.join(parent);
-            let Ok(pmeta) = tokio::fs::symlink_metadata(&parent_dir).await else {
-                continue;
-            };
-            if metadata_is_link_or_reparse(&pmeta) || !pmeta.is_dir() {
-                continue;
-            }
-        }
-        clean_candidates.push(dir.join(rel));
-    }
-    let dir_owned = dir.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        if clean_candidates
-            .iter()
-            .any(|candidate| open_bundle_file(candidate).is_ok())
-        {
-            return true;
-        }
-        let pkg = dir_owned.join("package.json");
-        open_bundle_file(&pkg).is_ok() && try_is_dsh_package(&dir_owned).unwrap_or(false)
-    })
-    .await
-    .unwrap_or(false)
-}
-
-fn remote_target_display(source: &PluginInstallSource, raw: &str) -> (String, String) {
-    match source {
-        PluginInstallSource::Remote(
-            codewhale_skill_install::install::InstallSource::GitHubRepo(repo),
-        ) => (repo.clone(), "github.com".to_string()),
-        PluginInstallSource::Remote(
-            codewhale_skill_install::install::InstallSource::DirectUrl(url),
-        ) => {
-            let host = reqwest::Url::parse(url)
-                .ok()
-                .and_then(|parsed| parsed.host_str().map(str::to_string))
-                .unwrap_or_else(|| "unknown-host".to_string());
-            (raw.to_string(), host)
-        }
-        _ => (raw.to_string(), "unknown-host".to_string()),
-    }
 }
 
 fn classify_install_error(error: &anyhow::Error) -> &'static str {
@@ -1543,54 +1177,6 @@ fn classify_error_message(message: &str) -> &'static str {
     } else {
         "operation-error"
     }
-}
-
-fn scrub_message(raw: &str, scrub: &ScrubContext<'_>) -> String {
-    let mut text = raw.to_string();
-    if let Some(plugin_root) = scrub.plugin_root {
-        text = strip_path_prefix_clean(&text, plugin_root);
-    }
-    if let Some(canon_workspace) = scrub.canon_workspace {
-        text = strip_path_with_replacement(&text, canon_workspace, "<project>");
-    }
-    text = strip_path_with_replacement(&text, scrub.workspace, "<project>");
-    if let Some(user_plugins_dir) = scrub.user_plugins_dir {
-        text = strip_path_with_replacement(&text, user_plugins_dir, "<plugins-dir>");
-    }
-    if let Some(state_path) = scrub.state_path {
-        let name = state_path
-            .file_name()
-            .map(|leaf| leaf.to_string_lossy().into_owned())
-            .filter(|leaf| !leaf.is_empty())
-            .unwrap_or_else(|| "plugin-state.json".to_string());
-        text = strip_path_with_replacement(&text, state_path, &name);
-        if let Some(parent) = state_path.parent() {
-            text = strip_path_prefix_clean(&text, parent);
-        }
-    }
-    let mut truncated = false;
-    cap_text(
-        clean_diagnostic_fragment(&text),
-        MAX_DIAGNOSTIC_BYTES,
-        &mut truncated,
-    )
-}
-
-fn scrub_warning(raw: &str, scrub: &ScrubContext<'_>) -> String {
-    let mut text = raw.to_string();
-    if let Some(plugin_root) = scrub.plugin_root {
-        text = strip_path_prefix_clean(&text, plugin_root);
-    }
-    if let Some(canon_workspace) = scrub.canon_workspace {
-        text = strip_path_with_replacement(&text, canon_workspace, "<project>");
-    }
-    text = strip_path_with_replacement(&text, scrub.workspace, "<project>");
-    let mut truncated = false;
-    cap_text(
-        clean_diagnostic_fragment(&text),
-        MAX_TEXT_BYTES,
-        &mut truncated,
-    )
 }
 
 fn change_ok(
@@ -1701,34 +1287,6 @@ fn is_managed_policy_error(msg: &str) -> bool {
     msg.contains("Managed plugin policy") || msg.contains("forbidden by the managed plugin policy")
 }
 
-fn agent_denial_reason(
-    plugin: &LoadedPlugin,
-    state_error: Option<&str>,
-    installed_by_agent: bool,
-) -> &'static str {
-    if state_error.is_some() {
-        return "this plugin has no valid review record";
-    }
-    match plugin.approved_by.as_ref() {
-        None => "this plugin has no valid agent review record",
-        Some(PluginApprover::Person { .. }) => "this plugin was approved by a person",
-        Some(PluginApprover::CommandLine) => "this plugin was approved from the command line",
-        Some(PluginApprover::Agent(agent)) if agent.posture == AgentPosture::CommandLine => {
-            "this plugin was approved from the command line"
-        }
-        Some(PluginApprover::Agent(_)) if !plugin.trusted() => {
-            "this plugin has no current valid agent review record"
-        }
-        Some(PluginApprover::Agent(_)) if plugin.outside_reach => {
-            "this plugin was approved by the agent of another project"
-        }
-        Some(PluginApprover::Agent(_)) if !installed_by_agent => {
-            "this plugin was not installed by the agent from a folder in this project"
-        }
-        Some(PluginApprover::Agent(_)) => "this plugin is not owned by this agent",
-    }
-}
-
 fn is_existing_own(
     registry: &PluginRegistry,
     plugin: &LoadedPlugin,
@@ -1746,10 +1304,7 @@ fn is_existing_own(
     if valid_agent && installed_own {
         (true, None)
     } else {
-        (
-            false,
-            Some(agent_denial_reason(plugin, None, installed_own)),
-        )
+        (false, Some(agent_denial_reason(plugin, None)))
     }
 }
 
@@ -2583,9 +2138,23 @@ async fn prepare_local_source_and_hash_with_network(
     .map_err(|_| ("operation-error", "source preview task failed".to_string()))?
 }
 
+struct LocalAdmittedInstall {
+    raw_target: String,
+    parsed: PluginInstallSource,
+    canon_source: PathBuf,
+    is_dsh: bool,
+    plugin_name: String,
+    pre_hash: String,
+    want_enabled: bool,
+    expected_gate_target: String,
+    shown_service_lines: Vec<String>,
+    base_warnings: Vec<String>,
+    registry_ignored: bool,
+}
+
 async fn install(
     call: &BrokerCall,
-    mut tool: ToolContext,
+    tool: ToolContext,
     authority: Option<LiveRuntimeAuthority>,
     input: InstallInput,
 ) -> Result<Value, BrokerRefusal> {
@@ -2594,9 +2163,10 @@ async fn install(
         validate_optional_str(input.registry.as_deref(), "registry", MAX_REGISTRY_BYTES)?;
     let has_approved_builds = validate_approved_builds(input.approved_builds.as_deref())?;
     let initial_registry = live_registry(call, &tool)?;
-    let Some(mut current_authority) = authority else {
+    let Some(current_authority) = authority else {
         return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
     };
+    let carrier = require_carried_decision(&tool, &current_authority, "install")?;
 
     let mut base_warnings = Vec::new();
     let registry_ignored = registry_opt.is_some();
@@ -2649,1139 +2219,219 @@ async fn install(
         }
     };
 
-    let pending = approver_from_posture(&current_authority);
-    let policy = extension_host_policy_enabled();
-    #[cfg(any(test, feature = "test-support"))]
-    let env_scope = crate::test_support::env_scope_ticket();
-    let prepared = match &parsed {
-        PluginInstallSource::LocalPath(dir) | PluginInstallSource::Dsh(dir) => {
-            if matches!(pending, PendingApprover::Nobody) {
-                PreparedSource::Local {
-                    source: parsed.clone(),
-                    source_dir: dir.clone(),
-                    pre_gate: PreGateLocal::Deferred {
-                        deferred_error: None,
-                    },
-                    canon_workspace: None,
-                }
-            } else {
-                if matches!(pending, PendingApprover::Agent(_))
-                    && !has_agent_call_identity(call, &tool)
-                {
-                    record_outcome(call, "install", None, None, None, "failed");
-                    return change_with_outcome(ChangeOutcome {
-                        application: "failed",
-                        stage: "install",
-                        target: raw_target,
-                        changed: false,
-                        enabled: None,
-                        code: "operation-error",
-                        diagnostic:
-                            "An approval by the agent must name the thread, turn and tool call that made it"
-                                .to_string(),
-                        bundle: None,
-                        version: None,
-                        warnings: base_warnings,
-                    });
-                }
-                let registry_snapshot = Arc::clone(&initial_registry);
-                let dir_path = dir.clone();
-                let dir_probe = dir.clone();
-                let dir_info = tokio::task::spawn_blocking(move || {
-                    #[cfg(any(test, feature = "test-support"))]
-                    let _env_scope = crate::test_support::join_env_scope(env_scope);
-                    let _scope = PolicyScope::propagate(policy);
-                    let fresh =
-                        registry_snapshot.rediscover_for_workspace(registry_snapshot.workspace());
-                    let canon_ws = std::fs::canonicalize(fresh.workspace()).ok();
-                    let in_project = clean_dir_is_strictly_inside(&dir_probe, fresh.workspace());
-                    let user_plugins_dir = fresh.user_plugins_dir().map(Path::to_path_buf);
-                    (fresh, canon_ws, in_project, user_plugins_dir)
-                })
-                .await
-                .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
-                let (fresh, canon_ws, in_project, user_plugins_dir) = dir_info;
-                let ancestor_clean = !has_symlink_or_reparse_ancestor_or_target(&dir_path)
-                    .await
-                    .unwrap_or(true);
-                let in_user_plugins =
-                    dir_is_in_user_plugins(&dir_path, user_plugins_dir.as_deref()).await;
-                let (is_own, reason) = if !in_project || !ancestor_clean {
-                    (
-                        false,
-                        Some(
-                            "source folder is outside this project, under .git, or reached through a link or reparse point",
-                        ),
-                    )
-                } else if in_user_plugins {
-                    (
-                        false,
-                        Some("source folder is inside the user plugin folder"),
-                    )
-                } else {
-                    (true, None)
-                };
-                if !is_own && matches!(pending, PendingApprover::Agent(_)) {
-                    let reason = reason.unwrap_or("plugin source is not owned by the agent");
-                    record_outcome(call, "install", None, None, None, "failed");
-                    return change_with_outcome(ChangeOutcome {
-                        application: "failed",
-                        stage: "install",
-                        target: raw_target,
-                        changed: false,
-                        enabled: None,
-                        code: "operation-error",
-                        diagnostic: format!("{reason}; {ASK_PERSON_HINT}"),
-                        bundle: None,
-                        version: None,
-                        warnings: base_warnings,
-                    });
-                }
-                let has_clean_manifest = if is_own {
-                    true
-                } else if ancestor_clean {
-                    dir_has_clean_root_manifest(&dir_path).await
-                } else {
-                    false
-                };
-                let (parsed_refined, has_npm_deps, refine_error, tree_clean) =
-                    if is_own || (ancestor_clean && has_clean_manifest) {
-                        if ensure_no_links_in_tree(&dir_path).await.is_ok() {
-                            let (refined, npm_deps, refine_err) =
-                                refine_local_dsh_source(parsed.clone(), dir_path.clone()).await?;
-                            (refined, npm_deps, refine_err, true)
-                        } else {
-                            (parsed.clone(), false, None, false)
-                        }
-                    } else {
-                        (parsed.clone(), false, None, false)
-                    };
-                if is_own && matches!(pending, PendingApprover::Agent(_)) && has_npm_deps {
-                    record_outcome(call, "install", None, None, None, "failed");
-                    return change_with_outcome(ChangeOutcome {
-                        application: "failed",
-                        stage: "install",
-                        target: raw_target,
-                        changed: false,
-                        enabled: None,
-                        code: "operation-error",
-                        diagnostic: format!(
-                            "DSH plugin requires downloading external npm dependencies from registry.npmjs.org; {ASK_PERSON_HINT}"
-                        ),
-                        bundle: None,
-                        version: None,
-                        warnings: base_warnings,
-                    });
-                }
-                let pre_gate = if !is_own && (!ancestor_clean || !has_clean_manifest || !tree_clean)
-                {
-                    PreGateLocal::Deferred {
-                        deferred_error: None,
-                    }
-                } else {
-                    let mut reach_gated = false;
-                    let mut preview_network = None;
-                    if matches!(pending, PendingApprover::Person) && has_npm_deps {
-                        let reach_target =
-                            format!("{raw_target} npm dependencies from registry.npmjs.org");
-                        call.context
-                            .act("install", BrokerEffect::Reach, Some(&reach_target))
-                            .await?;
-                        if call.context.cancel().is_cancelled() {
-                            record_outcome(call, "install", None, None, None, "cancelled");
-                            return cancelled_result(
-                                "install",
-                                raw_target,
-                                None,
-                                None,
-                                base_warnings,
-                            );
-                        }
-                        let (refreshed_tool, refreshed_auth) = live(call);
-                        tool = refreshed_tool;
-                        let Some(refreshed_auth) = refreshed_auth else {
-                            return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
-                        };
-                        current_authority = refreshed_auth;
-                        match approver_from_posture(&current_authority) {
-                            PendingApprover::Nobody => {
-                                record_outcome(call, "install", None, None, None, "failed");
-                                return change_with_outcome(ChangeOutcome {
-                                    application: "failed",
-                                    stage: "install",
-                                    target: raw_target,
-                                    changed: false,
-                                    enabled: None,
-                                    code: "operation-error",
-                                    diagnostic:
-                                        "permission mode changed during review and no longer allows plugin installation"
-                                            .to_string(),
-                                    bundle: None,
-                                    version: None,
-                                    warnings: base_warnings,
-                                });
-                            }
-                            PendingApprover::Agent(_) => {
-                                record_outcome(call, "install", None, None, None, "failed");
-                                return change_with_outcome(ChangeOutcome {
-                                    application: "failed",
-                                    stage: "install",
-                                    target: raw_target,
-                                    changed: false,
-                                    enabled: None,
-                                    code: "operation-error",
-                                    diagnostic: format!(
-                                        "DSH plugin requires downloading external npm dependencies from registry.npmjs.org; {ASK_PERSON_HINT}"
-                                    ),
-                                    bundle: None,
-                                    version: None,
-                                    warnings: base_warnings,
-                                });
-                            }
-                            PendingApprover::Person => {}
-                        }
-                        reach_gated = true;
-                        preview_network = Some(network_policy_for(&tool));
-                    }
-                    let scrub = ScrubContext {
-                        workspace: fresh.workspace(),
-                        canon_workspace: canon_ws.as_deref(),
-                        plugin_root: Some(&dir_path),
-                        user_plugins_dir: fresh.user_plugins_dir(),
-                        state_path: fresh.state_path(),
-                    };
-                    let preview = if let Some(err) = refine_error {
-                        Err(err)
-                    } else {
-                        prepare_local_source_and_hash_with_network(
-                            &parsed_refined,
-                            &dir_path,
-                            preview_network.as_ref(),
-                        )
-                        .await
-                    };
-                    match preview {
-                        Ok((plugin_name, source_package, version, pre_hash)) => {
-                            if is_own {
-                                let fresh_ref = Arc::clone(&fresh);
-                                let pname = plugin_name.clone();
-                                let spkg = source_package.clone();
-                                let collision = tokio::task::spawn_blocking(move || {
-                                    #[cfg(any(test, feature = "test-support"))]
-                                    let _env_scope = crate::test_support::join_env_scope(env_scope);
-                                    let _scope = PolicyScope::propagate(policy);
-                                    if let Some(existing) = fresh_ref.get(&pname) {
-                                        return Some((
-                                            existing.name().to_string(),
-                                            existing.scope.as_str(),
-                                        ));
-                                    }
-                                    if let Some(pkg) = spkg.as_deref() {
-                                        match resolve_plugin_by_target(&fresh_ref, pkg) {
-                                            TargetLookup::Found(existing) => {
-                                                return Some((
-                                                    existing.name().to_string(),
-                                                    existing.scope.as_str(),
-                                                ));
-                                            }
-                                            TargetLookup::Ambiguous { first, .. } => {
-                                                return Some((
-                                                    first.name().to_string(),
-                                                    first.scope.as_str(),
-                                                ));
-                                            }
-                                            TargetLookup::Missing => {}
-                                        }
-                                    }
-                                    None
-                                })
-                                .await
-                                .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
-                                if let Some((existing_name, scope)) = collision {
-                                    record_outcome(
-                                        call,
-                                        "install",
-                                        Some(&existing_name),
-                                        Some(&pre_hash),
-                                        None,
-                                        "failed",
-                                    );
-                                    return change_with_outcome(ChangeOutcome {
-                                        application: "failed",
-                                        stage: "install",
-                                        target: raw_target,
-                                        changed: false,
-                                        enabled: None,
-                                        code: "already-installed",
-                                        diagnostic: format!(
-                                            "plugin `{existing_name}` is already installed ({scope} scope); remove it first, then install"
-                                        ),
-                                        bundle: Some(existing_name),
-                                        version,
-                                        warnings: base_warnings,
-                                    });
-                                }
-                            }
-                            PreGateLocal::Ready {
-                                plugin_name,
-                                source_package,
-                                version,
-                                pre_hash,
-                                reach_gated,
-                            }
-                        }
-                        Err((code, msg)) => {
-                            if !is_own && !reach_gated {
-                                PreGateLocal::Deferred {
-                                    deferred_error: Some((code, msg)),
-                                }
-                            } else {
-                                record_outcome(call, "install", None, None, None, "failed");
-                                return change_with_outcome(ChangeOutcome {
-                                    application: "failed",
-                                    stage: "install",
-                                    target: raw_target,
-                                    changed: false,
-                                    enabled: None,
-                                    code,
-                                    diagnostic: scrub_message(&msg, &scrub),
-                                    bundle: None,
-                                    version: None,
-                                    warnings: base_warnings,
-                                });
-                            }
-                        }
-                    }
-                };
-                PreparedSource::Local {
-                    source: parsed_refined,
-                    source_dir: dir_path,
-                    pre_gate,
-                    canon_workspace: canon_ws,
-                }
-            }
-        }
-        PluginInstallSource::Remote(_) => {
-            let (label, host) = remote_target_display(&parsed, &raw_target);
-            let ws = initial_registry.workspace().to_path_buf();
-            let canon_ws = tokio::fs::canonicalize(&ws).await.ok();
-            PreparedSource::Remote {
-                source: parsed.clone(),
-                label,
-                host,
-                canon_workspace: canon_ws,
-            }
-        }
-    };
-
-    match prepared {
-        PreparedSource::Remote {
-            source,
-            label,
-            host,
-            canon_workspace,
+    match carrier.change.clone() {
+        AdmittedChangeKind::LocalInstall {
+            raw_target: approved_target,
+            canon_source,
+            is_dsh,
+            plugin_name,
+            pre_hash,
+            want_enabled,
+            expected_gate_target,
+            shown_service_lines,
+            ..
         } => {
-            let scrub = ScrubContext {
-                workspace: initial_registry.workspace(),
-                canon_workspace: canon_workspace.as_deref(),
-                plugin_root: None,
-                user_plugins_dir: initial_registry.user_plugins_dir(),
-                state_path: initial_registry.state_path(),
-            };
-            if matches!(pending, PendingApprover::Agent(_)) {
-                record_outcome(call, "install", Some(&label), None, None, "failed");
-                return change_with_outcome(ChangeOutcome {
-                    application: "failed",
-                    stage: "install",
-                    target: raw_target,
-                    changed: false,
-                    enabled: None,
-                    code: "operation-error",
-                    diagnostic: format!(
-                        "a remote plugin source is not written by this project's agent; {ASK_PERSON_HINT}"
-                    ),
-                    bundle: None,
-                    version: None,
-                    warnings: base_warnings,
+            if raw_target != approved_target || input.enabled != want_enabled {
+                return Err(BrokerRefusal::Refused {
+                    service: DshService::Plugins,
+                    message: "plugin install input changed after approval".to_string(),
                 });
             }
-
-            let reach_target = format!("{label} from {host}");
-            call.context
-                .act("install", BrokerEffect::Reach, Some(&reach_target))
-                .await?;
-
-            if call.context.cancel().is_cancelled() {
-                record_outcome(call, "install", Some(&label), None, None, "cancelled");
-                return cancelled_result("install", raw_target, None, None, base_warnings);
-            }
-            let (refreshed_tool, refreshed_auth) = live(call);
-            tool = refreshed_tool;
-            let Some(refreshed_auth) = refreshed_auth else {
-                return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
-            };
-            current_authority = refreshed_auth;
-            match approver_from_posture(&current_authority) {
-                PendingApprover::Nobody => {
-                    record_outcome(call, "install", Some(&label), None, None, "failed");
-                    return change_with_outcome(ChangeOutcome {
-                        application: "failed",
-                        stage: "install",
-                        target: raw_target,
-                        changed: false,
-                        enabled: None,
-                        code: "operation-error",
-                        diagnostic:
-                            "permission mode changed during review and no longer allows plugin installation"
-                                .to_string(),
-                        bundle: None,
-                        version: None,
-                        warnings: base_warnings,
-                    });
-                }
-                PendingApprover::Agent(_) => {
-                    record_outcome(call, "install", Some(&label), None, None, "failed");
-                    return change_with_outcome(ChangeOutcome {
-                        application: "failed",
-                        stage: "install",
-                        target: raw_target,
-                        changed: false,
-                        enabled: None,
-                        code: "operation-error",
-                        diagnostic: format!(
-                            "a remote plugin source is not written by this project's agent; {ASK_PERSON_HINT}"
-                        ),
-                        bundle: None,
-                        version: None,
-                        warnings: base_warnings,
-                    });
-                }
-                PendingApprover::Person => {}
-            }
-
-            let network = network_policy_for(&tool);
-            let PluginInstallSource::Remote(remote_source) = source else {
-                return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
-            };
-            let prepared_res = match download_remote_install_archive(
-                remote_source,
-                DEFAULT_MAX_SIZE_BYTES,
-                &network,
-            )
-            .await
-            {
-                Ok(RemoteDownloadOutcome::Downloaded {
-                    archive,
-                    has_npm_deps,
-                }) => {
-                    let stage_network = if has_npm_deps {
-                        let npm_reach = format!("{label} npm dependencies from registry.npmjs.org");
-                        call.context
-                            .act("install", BrokerEffect::Reach, Some(&npm_reach))
-                            .await?;
-                        if call.context.cancel().is_cancelled() {
-                            record_outcome(call, "install", Some(&label), None, None, "cancelled");
-                            return cancelled_result(
-                                "install",
-                                raw_target,
-                                None,
-                                None,
-                                base_warnings,
-                            );
-                        }
-                        let (refreshed_tool, refreshed_auth) = live(call);
-                        tool = refreshed_tool;
-                        let Some(refreshed_auth) = refreshed_auth else {
-                            return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
-                        };
-                        current_authority = refreshed_auth;
-                        match approver_from_posture(&current_authority) {
-                            PendingApprover::Nobody => {
-                                record_outcome(call, "install", Some(&label), None, None, "failed");
-                                return change_with_outcome(ChangeOutcome {
-                                    application: "failed",
-                                    stage: "install",
-                                    target: raw_target,
-                                    changed: false,
-                                    enabled: None,
-                                    code: "operation-error",
-                                    diagnostic:
-                                        "permission mode changed during review and no longer allows plugin installation"
-                                            .to_string(),
-                                    bundle: None,
-                                    version: None,
-                                    warnings: base_warnings,
-                                });
-                            }
-                            PendingApprover::Agent(_) => {
-                                record_outcome(call, "install", Some(&label), None, None, "failed");
-                                return change_with_outcome(ChangeOutcome {
-                                    application: "failed",
-                                    stage: "install",
-                                    target: raw_target,
-                                    changed: false,
-                                    enabled: None,
-                                    code: "operation-error",
-                                    diagnostic: format!(
-                                        "a remote plugin source is not written by this project's agent; {ASK_PERSON_HINT}"
-                                    ),
-                                    bundle: None,
-                                    version: None,
-                                    warnings: base_warnings,
-                                });
-                            }
-                            PendingApprover::Person => {}
-                        }
-                        Some(network_policy_for(&tool))
-                    } else {
-                        None
-                    };
-                    match stage_downloaded_remote_install(
-                        archive,
-                        DEFAULT_MAX_SIZE_BYTES,
-                        stage_network.as_ref(),
-                    )
-                    .await
-                    {
-                        Ok(RemotePreviewOutcome::Ready(prepared)) => Ok(prepared),
-                        Ok(RemotePreviewOutcome::NeedsApproval(blocked_host)) => Err((
-                            "operation-error",
-                            format!("network approval required for {blocked_host}"),
-                        )),
-                        Ok(RemotePreviewOutcome::NetworkDenied(denied_host)) => Err((
-                            "operation-error",
-                            format!("network access denied for {denied_host}"),
-                        )),
-                        Err(error) => Err((
-                            classify_install_error(&error),
-                            scrub_message(&format!("{error:#}"), &scrub),
-                        )),
-                    }
-                }
-                Ok(RemoteDownloadOutcome::NeedsApproval(blocked_host)) => Err((
-                    "operation-error",
-                    format!("network approval required for {blocked_host}"),
-                )),
-                Ok(RemoteDownloadOutcome::NetworkDenied(denied_host)) => Err((
-                    "operation-error",
-                    format!("network access denied for {denied_host}"),
-                )),
-                Err(error) => Err((
-                    classify_install_error(&error),
-                    scrub_message(&format!("{error:#}"), &scrub),
-                )),
-            };
-            let prepared = match prepared_res {
-                Ok(prepared) => prepared,
-                Err((code, msg)) => {
-                    record_outcome(call, "install", Some(&label), None, None, "failed");
-                    return change_with_outcome(ChangeOutcome {
-                        application: "failed",
-                        stage: "install",
-                        target: raw_target,
-                        changed: false,
-                        enabled: None,
-                        code,
-                        diagnostic: msg,
-                        bundle: None,
-                        version: None,
-                        warnings: base_warnings,
-                    });
-                }
-            };
-
-            let fresh_snapshot = Arc::clone(&initial_registry);
-            let prepared_name = prepared.name.clone();
-            let pre_collision = tokio::task::spawn_blocking(move || {
-                #[cfg(any(test, feature = "test-support"))]
-                let _env_scope = crate::test_support::join_env_scope(env_scope);
-                let _scope = PolicyScope::propagate(policy);
-                let fresh = fresh_snapshot.rediscover_for_workspace(fresh_snapshot.workspace());
-                fresh
-                    .get(&prepared_name)
-                    .map(|p| (p.name().to_string(), p.scope.as_str()))
-            })
-            .await
-            .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
-            if let Some((existing_name, scope)) = pre_collision {
-                record_outcome(
-                    call,
-                    "install",
-                    Some(&existing_name),
-                    Some(&prepared.content_hash),
-                    None,
-                    "failed",
-                );
-                return change_with_outcome(ChangeOutcome {
-                    application: "failed",
-                    stage: "install",
-                    target: raw_target,
-                    changed: false,
-                    enabled: None,
-                    code: "already-installed",
-                    diagnostic: format!(
-                        "plugin `{existing_name}` is already installed ({scope} scope); remove it first, then install"
-                    ),
-                    bundle: Some(existing_name),
-                    version: None,
-                    warnings: base_warnings,
-                });
-            }
-
-            let write_target =
-                format!("{} {} {}", prepared.name, prepared.content_hash, raw_target);
-            call.context
-                .act("install", BrokerEffect::Write, Some(&write_target))
-                .await?;
-
-            if call.context.cancel().is_cancelled() {
-                record_outcome(
-                    call,
-                    "install",
-                    Some(&prepared.name),
-                    Some(&prepared.content_hash),
-                    None,
-                    "cancelled",
-                );
-                return cancelled_result(
-                    "install",
-                    raw_target,
-                    Some(prepared.name),
-                    None,
-                    base_warnings,
-                );
-            }
-            let (refreshed_tool, refreshed_auth) = live(call);
-            tool = refreshed_tool;
-            let Some(refreshed_auth) = refreshed_auth else {
-                return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
-            };
-            match approver_from_posture(&refreshed_auth) {
-                PendingApprover::Nobody => {
-                    record_outcome(
-                        call,
-                        "install",
-                        Some(&prepared.name),
-                        Some(&prepared.content_hash),
-                        None,
-                        "failed",
-                    );
-                    return change_with_outcome(ChangeOutcome {
-                        application: "failed",
-                        stage: "install",
-                        target: raw_target,
-                        changed: false,
-                        enabled: None,
-                        code: "operation-error",
-                        diagnostic:
-                            "permission mode changed during review and no longer allows plugin installation"
-                                .to_string(),
-                        bundle: Some(prepared.name),
-                        version: None,
-                        warnings: base_warnings,
-                    });
-                }
-                PendingApprover::Agent(_) => {
-                    record_outcome(
-                        call,
-                        "install",
-                        Some(&prepared.name),
-                        Some(&prepared.content_hash),
-                        None,
-                        "failed",
-                    );
-                    return change_with_outcome(ChangeOutcome {
-                        application: "failed",
-                        stage: "install",
-                        target: raw_target,
-                        changed: false,
-                        enabled: None,
-                        code: "operation-error",
-                        diagnostic: format!(
-                            "a remote plugin source is not written by this project's agent; {ASK_PERSON_HINT}"
-                        ),
-                        bundle: Some(prepared.name),
-                        version: None,
-                        warnings: base_warnings,
-                    });
-                }
-                PendingApprover::Person => {}
-            }
-
-            let post_network = network_policy_for(&tool);
-            let fresh_snapshot = Arc::clone(&initial_registry);
-            let mut registry_for_exec = tokio::task::spawn_blocking(move || {
-                #[cfg(any(test, feature = "test-support"))]
-                let _env_scope = crate::test_support::join_env_scope(env_scope);
-                let _scope = PolicyScope::propagate(policy);
-                (*fresh_snapshot.rediscover_for_workspace(fresh_snapshot.workspace())).clone()
-            })
-            .await
-            .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
-
-            let prepared_name_for_exec = prepared.name.clone();
-            let expected_hash = prepared.content_hash.clone();
-            let exec_result = execute(
-                PluginMutationRequest::InstallRemoteExact {
-                    prepared,
-                    expected_content_hash: expected_hash.clone(),
-                },
-                &PluginMutationContext {
-                    network: &post_network,
-                    max_size: DEFAULT_MAX_SIZE_BYTES,
-                },
-                &mut registry_for_exec,
-            )
-            .await;
-
-            let receipt = match exec_result {
-                Ok(receipt) => receipt,
-                Err(error) => {
-                    let is_mismatch = error.downcast_ref::<PluginContentMismatch>().is_some()
-                        || error.downcast_ref::<PluginArchiveMismatch>().is_some();
-                    let code = classify_install_error(&error);
-                    let msg = if is_mismatch {
-                        "changed after review".to_string()
-                    } else if code == "already-installed" {
-                        format!(
-                            "plugin `{prepared_name_for_exec}` is already installed; remove it first, then install"
-                        )
-                    } else {
-                        scrub_message(&format!("{error:#}"), &scrub)
-                    };
-                    record_outcome(
-                        call,
-                        "install",
-                        Some(&prepared_name_for_exec),
-                        Some(&expected_hash),
-                        None,
-                        "failed",
-                    );
-                    return change_with_outcome(ChangeOutcome {
-                        application: "failed",
-                        stage: "install",
-                        target: raw_target,
-                        changed: false,
-                        enabled: None,
-                        code,
-                        diagnostic: msg,
-                        bundle: Some(prepared_name_for_exec),
-                        version: None,
-                        warnings: base_warnings,
-                    });
-                }
-            };
-
-            match receipt.outcome {
-                PluginMutationOutcome::NeedsApproval(blocked_host) => {
-                    record_outcome(
-                        call,
-                        "install",
-                        Some(&prepared_name_for_exec),
-                        Some(&expected_hash),
-                        None,
-                        "failed",
-                    );
-                    return change_with_outcome(ChangeOutcome {
-                        application: "failed",
-                        stage: "install",
-                        target: raw_target,
-                        changed: false,
-                        enabled: None,
-                        code: "operation-error",
-                        diagnostic: format!("network approval required for {blocked_host}"),
-                        bundle: Some(prepared_name_for_exec),
-                        version: None,
-                        warnings: base_warnings,
-                    });
-                }
-                PluginMutationOutcome::NetworkDenied(denied_host) => {
-                    record_outcome(
-                        call,
-                        "install",
-                        Some(&prepared_name_for_exec),
-                        Some(&expected_hash),
-                        None,
-                        "failed",
-                    );
-                    return change_with_outcome(ChangeOutcome {
-                        application: "failed",
-                        stage: "install",
-                        target: raw_target,
-                        changed: false,
-                        enabled: None,
-                        code: "operation-error",
-                        diagnostic: format!("network access denied for {denied_host}"),
-                        bundle: Some(prepared_name_for_exec),
-                        version: None,
-                        warnings: base_warnings,
-                    });
-                }
-                PluginMutationOutcome::Installed => {}
-                _ => {
-                    record_outcome(
-                        call,
-                        "install",
-                        Some(&prepared_name_for_exec),
-                        Some(&expected_hash),
-                        None,
-                        "failed",
-                    );
-                    return change_with_outcome(ChangeOutcome {
-                        application: "failed",
-                        stage: "install",
-                        target: raw_target,
-                        changed: false,
-                        enabled: None,
-                        code: "operation-error",
-                        diagnostic: "unexpected remote install outcome".to_string(),
-                        bundle: Some(prepared_name_for_exec),
-                        version: None,
-                        warnings: base_warnings,
-                    });
-                }
-            }
-
-            if let Some(installed_dir) = receipt.path.as_deref() {
-                #[cfg(test)]
-                fire_post_install_hook_for_test(installed_dir, call.context.cancel());
-                let _ = installed_dir;
-            }
-            let installed_hash = receipt.installed_content_hash.unwrap_or_default();
-            finish_post_install(
+            install_local_admitted(
                 call,
-                PostInstallInput {
-                    reg_after_place: Arc::new(registry_for_exec),
-                    installed_name: receipt.name,
-                    expected_installed_hash: installed_hash,
-                    version: None,
+                tool,
+                initial_registry,
+                carrier,
+                LocalAdmittedInstall {
                     raw_target,
-                    want_enabled: input.enabled,
-                    warnings: base_warnings,
-                    is_own: false,
-                    source_dir: None,
-                    canon_workspace,
+                    parsed,
+                    canon_source,
+                    is_dsh,
+                    plugin_name,
+                    pre_hash,
+                    want_enabled,
+                    expected_gate_target,
+                    shown_service_lines,
+                    base_warnings,
                     registry_ignored,
                 },
             )
             .await
         }
-        PreparedSource::Local {
-            mut source,
-            source_dir,
-            pre_gate,
-            canon_workspace,
+        AdmittedChangeKind::UnseenFetchInstall {
+            raw_target: approved_spec,
+            is_remote,
+            canon_source,
+            remote_label,
+            remote_host,
+            ..
         } => {
-            let (gate_target, audit_name, audit_hash, audit_version, mut reach_gated) =
-                match &pre_gate {
-                    PreGateLocal::Ready {
-                        plugin_name,
-                        pre_hash,
-                        version,
-                        reach_gated,
-                        ..
-                    } => (
-                        format!("{plugin_name} {pre_hash} {raw_target}"),
-                        Some(plugin_name.clone()),
-                        Some(pre_hash.clone()),
-                        version.clone(),
-                        *reach_gated,
-                    ),
-                    PreGateLocal::Deferred { .. } => (raw_target.clone(), None, None, None, false),
-                };
-            call.context
-                .act("install", BrokerEffect::Write, Some(&gate_target))
-                .await?;
-
-            if call.context.cancel().is_cancelled() {
-                record_outcome(
-                    call,
-                    "install",
-                    audit_name.as_deref(),
-                    audit_hash.as_deref(),
-                    None,
-                    "cancelled",
-                );
-                return cancelled_result(
-                    "install",
-                    raw_target,
-                    audit_name,
-                    audit_version,
-                    base_warnings,
-                );
-            }
-
-            let (refreshed_tool, refreshed_auth) = live(call);
-            tool = refreshed_tool;
-            let Some(refreshed_auth) = refreshed_auth else {
-                return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
-            };
-            let after_pending = approver_from_posture(&refreshed_auth);
-            if matches!(after_pending, PendingApprover::Nobody) {
-                record_outcome(
-                    call,
-                    "install",
-                    audit_name.as_deref(),
-                    audit_hash.as_deref(),
-                    None,
-                    "failed",
-                );
-                return change_with_outcome(ChangeOutcome {
-                    application: "failed",
-                    stage: "install",
-                    target: raw_target,
-                    changed: false,
-                    enabled: None,
-                    code: "operation-error",
-                    diagnostic:
-                        "permission mode changed during review and no longer allows plugin installation"
-                            .to_string(),
-                    bundle: audit_name,
-                    version: audit_version,
-                    warnings: base_warnings,
+            if raw_target != approved_spec {
+                return Err(BrokerRefusal::Refused {
+                    service: DshService::Plugins,
+                    message: "plugin install target changed after approval".to_string(),
                 });
             }
-
-            let reg_snapshot2 = Arc::clone(&initial_registry);
-            let dir_check2 = source_dir.clone();
-            let verify2 = tokio::task::spawn_blocking(move || {
-                #[cfg(any(test, feature = "test-support"))]
-                let _env_scope = crate::test_support::join_env_scope(env_scope);
-                let _scope = PolicyScope::propagate(policy);
-                let fresh = reg_snapshot2.rediscover_for_workspace(reg_snapshot2.workspace());
-                let canon_ws = std::fs::canonicalize(fresh.workspace()).ok();
-                let in_project = clean_dir_is_strictly_inside(&dir_check2, fresh.workspace());
-                let user_plugins_dir = fresh.user_plugins_dir().map(Path::to_path_buf);
-                (fresh, canon_ws, in_project, user_plugins_dir)
-            })
-            .await
-            .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
-            let (fresh2, canon_ws2, in_project2, user_plugins_dir2) = verify2;
-            let ancestor_clean2 = !has_symlink_or_reparse_ancestor_or_target(&source_dir)
+            if is_remote {
+                install_remote_unseen(
+                    call,
+                    RemoteUnseenInstall {
+                        initial_registry,
+                        carrier,
+                        raw_target,
+                        parsed,
+                        remote_label,
+                        remote_host,
+                        base_warnings,
+                        registry_ignored,
+                    },
+                )
                 .await
-                .unwrap_or(true);
-            let in_user_plugins2 =
-                dir_is_in_user_plugins(&source_dir, user_plugins_dir2.as_deref()).await;
-            let still_own = in_project2 && ancestor_clean2 && !in_user_plugins2;
-            let effective_canon_ws = canon_workspace.or(canon_ws2);
-            let scrub = ScrubContext {
-                workspace: fresh2.workspace(),
-                canon_workspace: effective_canon_ws.as_deref(),
-                plugin_root: Some(&source_dir),
-                user_plugins_dir: fresh2.user_plugins_dir(),
-                state_path: fresh2.state_path(),
-            };
-
-            if matches!(after_pending, PendingApprover::Agent(_))
-                && !has_agent_call_identity(call, &tool)
-            {
-                record_outcome(
+            } else {
+                install_local_dsh_unseen(
                     call,
-                    "install",
-                    audit_name.as_deref(),
-                    audit_hash.as_deref(),
-                    None,
-                    "failed",
-                );
-                return change_with_outcome(ChangeOutcome {
-                    application: "failed",
-                    stage: "install",
-                    target: raw_target,
-                    changed: false,
-                    enabled: None,
-                    code: "operation-error",
-                    diagnostic:
-                        "An approval by the agent must name the thread, turn and tool call that made it"
-                            .to_string(),
-                    bundle: audit_name,
-                    version: audit_version,
-                    warnings: base_warnings,
-                });
+                    LocalDshUnseenInstall {
+                        initial_registry,
+                        carrier,
+                        raw_target,
+                        parsed,
+                        canon_source,
+                        base_warnings,
+                        registry_ignored,
+                    },
+                )
+                .await
             }
-            if matches!(after_pending, PendingApprover::Agent(_)) && !still_own {
-                record_outcome(
-                    call,
-                    "install",
-                    audit_name.as_deref(),
-                    audit_hash.as_deref(),
-                    None,
-                    "failed",
-                );
-                return change_with_outcome(ChangeOutcome {
-                    application: "failed",
-                    stage: "install",
-                    target: raw_target,
-                    changed: false,
-                    enabled: None,
-                    code: "operation-error",
-                    diagnostic: format!(
-                        "source folder is no longer cleanly inside this project; {ASK_PERSON_HINT}"
-                    ),
-                    bundle: audit_name,
-                    version: audit_version,
-                    warnings: base_warnings,
-                });
-            }
+        }
+        _ => Err(BrokerRefusal::Refused {
+            service: DshService::Plugins,
+            message: "plugin change decision is not an install decision".to_string(),
+        }),
+    }
+}
 
-            let mut post_network = network_policy_for(&tool);
-            let (plugin_name, source_package, version, pre_hash) = match pre_gate {
-                PreGateLocal::Deferred { deferred_error } => {
-                    if let Some((code, msg)) = deferred_error {
-                        record_outcome(call, "install", None, None, None, "failed");
-                        return change_with_outcome(ChangeOutcome {
-                            application: "failed",
-                            stage: "install",
-                            target: raw_target,
-                            changed: false,
-                            enabled: None,
-                            code,
-                            diagnostic: scrub_message(&msg, &scrub),
-                            bundle: None,
-                            version: None,
-                            warnings: base_warnings,
-                        });
-                    }
-                    let clean_root = has_symlink_or_reparse_ancestor_or_target(&source_dir)
-                        .await
-                        .is_ok_and(|b| !b)
-                        && ensure_no_links_in_tree(&source_dir).await.is_ok();
-                    let (refined_source, deferred_npm_deps, post_refine_error) = if clean_root {
-                        refine_local_dsh_source(source.clone(), source_dir.clone()).await?
-                    } else {
-                        (source, false, None)
-                    };
-                    source = refined_source;
-                    if deferred_npm_deps {
-                        if matches!(after_pending, PendingApprover::Agent(_)) {
-                            record_outcome(call, "install", None, None, None, "failed");
-                            return change_with_outcome(ChangeOutcome {
-                                application: "failed",
-                                stage: "install",
-                                target: raw_target,
-                                changed: false,
-                                enabled: None,
-                                code: "operation-error",
-                                diagnostic: format!(
-                                    "DSH plugin requires downloading external npm dependencies from registry.npmjs.org; {ASK_PERSON_HINT}"
-                                ),
-                                bundle: None,
-                                version: None,
-                                warnings: base_warnings,
-                            });
-                        }
-                        let reach_target =
-                            format!("{raw_target} npm dependencies from registry.npmjs.org");
-                        call.context
-                            .act("install", BrokerEffect::Reach, Some(&reach_target))
-                            .await?;
-                        if call.context.cancel().is_cancelled() {
-                            record_outcome(call, "install", None, None, None, "cancelled");
-                            return cancelled_result(
-                                "install",
-                                raw_target,
-                                None,
-                                None,
-                                base_warnings,
-                            );
-                        }
-                        let (refreshed_tool, refreshed_auth) = live(call);
-                        tool = refreshed_tool;
-                        let Some(refreshed_auth) = refreshed_auth else {
-                            return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
-                        };
-                        match approver_from_posture(&refreshed_auth) {
-                            PendingApprover::Nobody => {
-                                record_outcome(call, "install", None, None, None, "failed");
-                                return change_with_outcome(ChangeOutcome {
-                                    application: "failed",
-                                    stage: "install",
-                                    target: raw_target,
-                                    changed: false,
-                                    enabled: None,
-                                    code: "operation-error",
-                                    diagnostic:
-                                        "permission mode changed during review and no longer allows plugin installation"
-                                            .to_string(),
-                                    bundle: None,
-                                    version: None,
-                                    warnings: base_warnings,
-                                });
-                            }
-                            PendingApprover::Agent(_) => {
-                                record_outcome(call, "install", None, None, None, "failed");
-                                return change_with_outcome(ChangeOutcome {
-                                    application: "failed",
-                                    stage: "install",
-                                    target: raw_target,
-                                    changed: false,
-                                    enabled: None,
-                                    code: "operation-error",
-                                    diagnostic: format!(
-                                        "DSH plugin requires downloading external npm dependencies from registry.npmjs.org; {ASK_PERSON_HINT}"
-                                    ),
-                                    bundle: None,
-                                    version: None,
-                                    warnings: base_warnings,
-                                });
-                            }
-                            PendingApprover::Person => {}
-                        }
-                        reach_gated = true;
-                        post_network = network_policy_for(&tool);
-                    }
-                    let preview_net = if reach_gated {
-                        Some(&post_network)
-                    } else {
-                        None
-                    };
-                    let post_preview = if let Some(err) = post_refine_error {
-                        Err(err)
-                    } else {
-                        prepare_local_source_and_hash_with_network(
-                            &source,
-                            &source_dir,
-                            preview_net,
-                        )
-                        .await
-                    };
-                    match post_preview {
-                        Ok(values) => values,
-                        Err((code, msg)) => {
-                            record_outcome(call, "install", None, None, None, "failed");
-                            return change_with_outcome(ChangeOutcome {
-                                application: "failed",
-                                stage: "install",
-                                target: raw_target,
-                                changed: false,
-                                enabled: None,
-                                code,
-                                diagnostic: scrub_message(&msg, &scrub),
-                                bundle: None,
-                                version: None,
-                                warnings: base_warnings,
-                            });
-                        }
-                    }
+struct RemoteUnseenInstall {
+    initial_registry: Arc<PluginRegistry>,
+    carrier: CreatorDecisionCarrier,
+    raw_target: String,
+    parsed: PluginInstallSource,
+    remote_label: String,
+    remote_host: String,
+    base_warnings: Vec<String>,
+    registry_ignored: bool,
+}
+
+async fn install_remote_unseen(
+    call: &BrokerCall,
+    input: RemoteUnseenInstall,
+) -> Result<Value, BrokerRefusal> {
+    let RemoteUnseenInstall {
+        initial_registry,
+        carrier,
+        raw_target,
+        parsed,
+        remote_label,
+        remote_host,
+        base_warnings,
+        registry_ignored,
+    } = input;
+    if carrier.decider != CreatorDecider::Person {
+        return Err(BrokerRefusal::Refused {
+            service: DshService::Plugins,
+            message: "remote plugin install requires a person's approval".to_string(),
+        });
+    }
+    let PluginInstallSource::Remote(remote_source) = parsed else {
+        return Err(BrokerRefusal::Refused {
+            service: DshService::Plugins,
+            message: "plugin install target does not match the approved remote fetch".to_string(),
+        });
+    };
+    let (label, host) = remote_target_display(
+        &PluginInstallSource::Remote(remote_source.clone()),
+        &raw_target,
+    );
+    if label != remote_label || host != remote_host {
+        return Err(BrokerRefusal::Refused {
+            service: DshService::Plugins,
+            message: "remote install host or spec changed after approval".to_string(),
+        });
+    }
+
+    let policy = extension_host_policy_enabled();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_scope = crate::test_support::env_scope_ticket();
+    let ws = initial_registry.workspace().to_path_buf();
+    let canon_workspace = tokio::fs::canonicalize(&ws).await.ok();
+    let scrub = ScrubContext {
+        workspace: initial_registry.workspace(),
+        canon_workspace: canon_workspace.as_deref(),
+        plugin_root: None,
+        user_plugins_dir: initial_registry.user_plugins_dir(),
+        state_path: initial_registry.state_path(),
+    };
+
+    let reach_target = format!("{label} from {host}");
+    call.context
+        .act("install", BrokerEffect::Reach, Some(&reach_target))
+        .await?;
+
+    if call.context.cancel().is_cancelled() {
+        record_outcome(call, "install", Some(&label), None, None, "cancelled");
+        return cancelled_result("install", raw_target, None, None, base_warnings);
+    }
+    let mut tool = match check_live_after_act(call, &carrier) {
+        CarrierLiveCheck::Valid(refreshed) => refreshed,
+        CarrierLiveCheck::Unavailable => {
+            return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
+        }
+        CarrierLiveCheck::Narrowed => {
+            record_outcome(call, "install", Some(&label), None, None, "failed");
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target,
+                changed: false,
+                enabled: None,
+                code: "operation-error",
+                diagnostic:
+                    "permission mode changed during review and no longer allows plugin installation"
+                        .to_string(),
+                bundle: None,
+                version: None,
+                warnings: base_warnings,
+            });
+        }
+    };
+
+    let network = network_policy_for(&tool);
+    let prepared_res = match download_remote_install_archive(
+        remote_source,
+        DEFAULT_MAX_SIZE_BYTES,
+        &network,
+    )
+    .await
+    {
+        Ok(RemoteDownloadOutcome::Downloaded {
+            archive,
+            has_npm_deps,
+        }) => {
+            let stage_network = if has_npm_deps {
+                let npm_reach = format!("{label} npm dependencies from registry.npmjs.org");
+                call.context
+                    .act("install", BrokerEffect::Reach, Some(&npm_reach))
+                    .await?;
+                if call.context.cancel().is_cancelled() {
+                    record_outcome(call, "install", Some(&label), None, None, "cancelled");
+                    return cancelled_result("install", raw_target, None, None, base_warnings);
                 }
-                PreGateLocal::Ready {
-                    plugin_name,
-                    source_package,
-                    version,
-                    pre_hash,
-                    ..
-                } => {
-                    if !reach_gated
-                        && matches!(source, PluginInstallSource::Dsh(_))
-                        && has_unresolved_npm_dependencies(&source_dir).unwrap_or(false)
-                    {
-                        record_outcome(
-                            call,
-                            "install",
-                            Some(&plugin_name),
-                            Some(&pre_hash),
-                            None,
-                            "failed",
-                        );
+                match check_live_after_act(call, &carrier) {
+                    CarrierLiveCheck::Valid(refreshed) => tool = refreshed,
+                    CarrierLiveCheck::Unavailable => {
+                        return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
+                    }
+                    CarrierLiveCheck::Narrowed => {
+                        record_outcome(call, "install", Some(&label), None, None, "failed");
                         return change_with_outcome(ChangeOutcome {
                             application: "failed",
                             stage: "install",
@@ -3789,107 +2439,949 @@ async fn install(
                             changed: false,
                             enabled: None,
                             code: "operation-error",
-                            diagnostic: "changed after review".to_string(),
-                            bundle: Some(plugin_name),
-                            version,
+                            diagnostic:
+                                "permission mode changed during review and no longer allows plugin installation"
+                                    .to_string(),
+                            bundle: None,
+                            version: None,
                             warnings: base_warnings,
                         });
                     }
-                    let preview_net = if reach_gated {
-                        Some(&post_network)
-                    } else {
-                        None
-                    };
-                    match prepare_local_source_and_hash_with_network(
-                        &source,
-                        &source_dir,
-                        preview_net,
-                    )
-                    .await
-                    {
-                        Ok((cur_name, _, _, cur_hash)) => {
-                            if cur_hash != pre_hash || cur_name != plugin_name {
-                                record_outcome(
-                                    call,
-                                    "install",
-                                    Some(&plugin_name),
-                                    Some(&cur_hash),
-                                    None,
-                                    "failed",
-                                );
-                                return change_with_outcome(ChangeOutcome {
-                                    application: "failed",
-                                    stage: "install",
-                                    target: raw_target,
-                                    changed: false,
-                                    enabled: None,
-                                    code: "operation-error",
-                                    diagnostic: "changed after review".to_string(),
-                                    bundle: Some(plugin_name),
-                                    version,
-                                    warnings: base_warnings,
-                                });
-                            }
-                        }
-                        Err((code, msg)) => {
-                            record_outcome(
-                                call,
-                                "install",
-                                Some(&plugin_name),
-                                Some(&pre_hash),
-                                None,
-                                "failed",
-                            );
-                            return change_with_outcome(ChangeOutcome {
-                                application: "failed",
-                                stage: "install",
-                                target: raw_target,
-                                changed: false,
-                                enabled: None,
-                                code,
-                                diagnostic: scrub_message(&msg, &scrub),
-                                bundle: Some(plugin_name),
-                                version,
-                                warnings: base_warnings,
-                            });
-                        }
-                    }
-                    (plugin_name, source_package, version, pre_hash)
                 }
+                Some(network_policy_for(&tool))
+            } else {
+                None
             };
+            match stage_downloaded_remote_install(
+                archive,
+                DEFAULT_MAX_SIZE_BYTES,
+                stage_network.as_ref(),
+            )
+            .await
+            {
+                Ok(RemotePreviewOutcome::Ready(prepared)) => Ok(prepared),
+                Ok(RemotePreviewOutcome::NeedsApproval(blocked_host)) => Err((
+                    "operation-error",
+                    format!("network approval required for {blocked_host}"),
+                )),
+                Ok(RemotePreviewOutcome::NetworkDenied(denied_host)) => Err((
+                    "operation-error",
+                    format!("network access denied for {denied_host}"),
+                )),
+                Err(error) => Err((
+                    classify_install_error(&error),
+                    scrub_message(&format!("{error:#}"), &scrub),
+                )),
+            }
+        }
+        Ok(RemoteDownloadOutcome::NeedsApproval(blocked_host)) => Err((
+            "operation-error",
+            format!("network approval required for {blocked_host}"),
+        )),
+        Ok(RemoteDownloadOutcome::NetworkDenied(denied_host)) => Err((
+            "operation-error",
+            format!("network access denied for {denied_host}"),
+        )),
+        Err(error) => Err((
+            classify_install_error(&error),
+            scrub_message(&format!("{error:#}"), &scrub),
+        )),
+    };
 
-            let collision = {
-                let fresh_ref = Arc::clone(&fresh2);
-                let pname = plugin_name.clone();
-                let spkg = source_package.clone();
-                tokio::task::spawn_blocking(move || {
-                    #[cfg(any(test, feature = "test-support"))]
-                    let _env_scope = crate::test_support::join_env_scope(env_scope);
-                    let _scope = PolicyScope::propagate(policy);
-                    if let Some(p) = fresh_ref.get(&pname) {
-                        return Some((p.name().to_string(), p.scope.as_str()));
-                    }
-                    if let Some(pkg) = spkg.as_deref() {
-                        match resolve_plugin_by_target(&fresh_ref, pkg) {
-                            TargetLookup::Found(p) => {
-                                return Some((p.name().to_string(), p.scope.as_str()));
-                            }
-                            TargetLookup::Ambiguous { first, .. } => {
-                                return Some((first.name().to_string(), first.scope.as_str()));
-                            }
-                            TargetLookup::Missing => {}
-                        }
-                    }
-                    None
-                })
-                .await
-                .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?
+    let prepared = match prepared_res {
+        Ok(prepared) => prepared,
+        Err((code, msg)) => {
+            record_outcome(call, "install", Some(&label), None, None, "failed");
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target,
+                changed: false,
+                enabled: None,
+                code,
+                diagnostic: msg,
+                bundle: None,
+                version: None,
+                warnings: base_warnings,
+            });
+        }
+    };
+
+    let fresh_snapshot = Arc::clone(&initial_registry);
+    let prepared_name = prepared.name.clone();
+    let pre_collision = tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _env_scope = crate::test_support::join_env_scope(env_scope);
+        let _scope = PolicyScope::propagate(policy);
+        let fresh = fresh_snapshot.rediscover_for_workspace(fresh_snapshot.workspace());
+        fresh
+            .get(&prepared_name)
+            .map(|p| (p.name().to_string(), p.scope.as_str()))
+    })
+    .await
+    .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
+    if let Some((existing_name, scope)) = pre_collision {
+        record_outcome(
+            call,
+            "install",
+            Some(&existing_name),
+            Some(&prepared.content_hash),
+            None,
+            "failed",
+        );
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: "install",
+            target: raw_target,
+            changed: false,
+            enabled: None,
+            code: "already-installed",
+            diagnostic: format!(
+                "plugin `{existing_name}` is already installed ({scope} scope); remove it first, then install"
+            ),
+            bundle: Some(existing_name),
+            version: None,
+            warnings: base_warnings,
+        });
+    }
+
+    let write_target = format!("{} {} {}", prepared.name, prepared.content_hash, raw_target);
+    call.context
+        .act("install", BrokerEffect::Write, Some(&write_target))
+        .await?;
+
+    if call.context.cancel().is_cancelled() {
+        record_outcome(
+            call,
+            "install",
+            Some(&prepared.name),
+            Some(&prepared.content_hash),
+            None,
+            "cancelled",
+        );
+        return cancelled_result(
+            "install",
+            raw_target,
+            Some(prepared.name),
+            None,
+            base_warnings,
+        );
+    }
+    match check_live_after_act(call, &carrier) {
+        CarrierLiveCheck::Valid(refreshed) => tool = refreshed,
+        CarrierLiveCheck::Unavailable => {
+            return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
+        }
+        CarrierLiveCheck::Narrowed => {
+            record_outcome(
+                call,
+                "install",
+                Some(&prepared.name),
+                Some(&prepared.content_hash),
+                None,
+                "failed",
+            );
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target,
+                changed: false,
+                enabled: None,
+                code: "operation-error",
+                diagnostic:
+                    "permission mode changed during review and no longer allows plugin installation"
+                        .to_string(),
+                bundle: Some(prepared.name),
+                version: None,
+                warnings: base_warnings,
+            });
+        }
+    }
+
+    let post_network = network_policy_for(&tool);
+    let fresh_snapshot = Arc::clone(&initial_registry);
+    let mut registry_for_exec = tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _env_scope = crate::test_support::join_env_scope(env_scope);
+        let _scope = PolicyScope::propagate(policy);
+        (*fresh_snapshot.rediscover_for_workspace(fresh_snapshot.workspace())).clone()
+    })
+    .await
+    .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
+
+    let prepared_name_for_exec = prepared.name.clone();
+    let expected_hash = prepared.content_hash.clone();
+    let exec_result = execute(
+        PluginMutationRequest::InstallRemoteExact {
+            prepared,
+            expected_content_hash: expected_hash.clone(),
+        },
+        &PluginMutationContext {
+            network: &post_network,
+            max_size: DEFAULT_MAX_SIZE_BYTES,
+        },
+        &mut registry_for_exec,
+    )
+    .await;
+
+    let receipt = match exec_result {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            let is_mismatch = error.downcast_ref::<PluginContentMismatch>().is_some()
+                || error.downcast_ref::<PluginArchiveMismatch>().is_some();
+            let code = classify_install_error(&error);
+            let msg = if is_mismatch {
+                "changed after review".to_string()
+            } else if code == "already-installed" {
+                format!(
+                    "plugin `{prepared_name_for_exec}` is already installed; remove it first, then install"
+                )
+            } else {
+                scrub_message(&format!("{error:#}"), &scrub)
             };
-            if let Some((existing_name, scope)) = collision {
+            record_outcome(
+                call,
+                "install",
+                Some(&prepared_name_for_exec),
+                Some(&expected_hash),
+                None,
+                "failed",
+            );
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target,
+                changed: false,
+                enabled: None,
+                code,
+                diagnostic: msg,
+                bundle: Some(prepared_name_for_exec),
+                version: None,
+                warnings: base_warnings,
+            });
+        }
+    };
+
+    match receipt.outcome {
+        PluginMutationOutcome::NeedsApproval(blocked_host) => {
+            record_outcome(
+                call,
+                "install",
+                Some(&prepared_name_for_exec),
+                Some(&expected_hash),
+                None,
+                "failed",
+            );
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target,
+                changed: false,
+                enabled: None,
+                code: "operation-error",
+                diagnostic: format!("network approval required for {blocked_host}"),
+                bundle: Some(prepared_name_for_exec),
+                version: None,
+                warnings: base_warnings,
+            });
+        }
+        PluginMutationOutcome::NetworkDenied(denied_host) => {
+            record_outcome(
+                call,
+                "install",
+                Some(&prepared_name_for_exec),
+                Some(&expected_hash),
+                None,
+                "failed",
+            );
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target,
+                changed: false,
+                enabled: None,
+                code: "operation-error",
+                diagnostic: format!("network access denied for {denied_host}"),
+                bundle: Some(prepared_name_for_exec),
+                version: None,
+                warnings: base_warnings,
+            });
+        }
+        PluginMutationOutcome::Installed => {}
+        _ => {
+            record_outcome(
+                call,
+                "install",
+                Some(&prepared_name_for_exec),
+                Some(&expected_hash),
+                None,
+                "failed",
+            );
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target,
+                changed: false,
+                enabled: None,
+                code: "operation-error",
+                diagnostic: "unexpected remote install outcome".to_string(),
+                bundle: Some(prepared_name_for_exec),
+                version: None,
+                warnings: base_warnings,
+            });
+        }
+    }
+
+    if let Some(installed_dir) = receipt.path.as_deref() {
+        #[cfg(test)]
+        fire_post_install_hook_for_test(installed_dir, call.context.cancel());
+        let _ = installed_dir;
+    }
+    let installed_hash = receipt.installed_content_hash.unwrap_or_default();
+    finish_post_install(
+        call,
+        PostInstallInput {
+            reg_after_place: Arc::new(registry_for_exec),
+            installed_name: receipt.name,
+            expected_installed_hash: installed_hash,
+            version: None,
+            raw_target,
+            want_enabled: false,
+            warnings: base_warnings,
+            carrier,
+            shown_service_lines: Vec::new(),
+            source_dir: None,
+            canon_workspace,
+            registry_ignored,
+        },
+    )
+    .await
+}
+
+struct LocalDshUnseenInstall {
+    initial_registry: Arc<PluginRegistry>,
+    carrier: CreatorDecisionCarrier,
+    raw_target: String,
+    parsed: PluginInstallSource,
+    canon_source: Option<PathBuf>,
+    base_warnings: Vec<String>,
+    registry_ignored: bool,
+}
+
+async fn install_local_dsh_unseen(
+    call: &BrokerCall,
+    input: LocalDshUnseenInstall,
+) -> Result<Value, BrokerRefusal> {
+    let LocalDshUnseenInstall {
+        initial_registry,
+        carrier,
+        raw_target,
+        parsed,
+        canon_source,
+        base_warnings,
+        registry_ignored,
+    } = input;
+    if carrier.decider != CreatorDecider::Person {
+        return Err(BrokerRefusal::Refused {
+            service: DshService::Plugins,
+            message: "DSH install with external npm dependencies requires a person's approval"
+                .to_string(),
+        });
+    }
+    let (PluginInstallSource::LocalPath(dir_path) | PluginInstallSource::Dsh(dir_path)) = parsed
+    else {
+        return Err(BrokerRefusal::Refused {
+            service: DshService::Plugins,
+            message: "plugin install target does not match the approved folder".to_string(),
+        });
+    };
+
+    let policy = extension_host_policy_enabled();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_scope = crate::test_support::env_scope_ticket();
+    let ancestor_bad = has_symlink_or_reparse_ancestor_or_target(&dir_path)
+        .await
+        .unwrap_or(true);
+    if ancestor_bad || ensure_no_links_in_tree(&dir_path).await.is_err() {
+        record_outcome(call, "install", None, None, None, "failed");
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: "install",
+            target: raw_target,
+            changed: false,
+            enabled: None,
+            code: "operation-error",
+            diagnostic: "symbolic links and reparse points are not allowed in plugin bundles"
+                .to_string(),
+            bundle: None,
+            version: None,
+            warnings: base_warnings,
+        });
+    }
+
+    let snap = Arc::clone(&initial_registry);
+    let probe = dir_path.clone();
+    let (fresh, canon_ws, canon_actual, actual_is_dsh) = tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _env_scope = crate::test_support::join_env_scope(env_scope);
+        let _scope = PolicyScope::propagate(policy);
+        let fresh = snap.rediscover_for_workspace(snap.workspace());
+        let canon_ws = std::fs::canonicalize(fresh.workspace()).ok();
+        let canon_actual = std::fs::canonicalize(&probe).ok();
+        let is_dsh = try_is_dsh_package(&probe).unwrap_or(false);
+        (fresh, canon_ws, canon_actual, is_dsh)
+    })
+    .await
+    .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
+
+    if !actual_is_dsh
+        || canon_source
+            .as_ref()
+            .is_some_and(|exp| canon_actual.as_ref() != Some(exp))
+    {
+        record_outcome(call, "install", None, None, None, "failed");
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: "install",
+            target: raw_target,
+            changed: false,
+            enabled: None,
+            code: "operation-error",
+            diagnostic: "changed after review".to_string(),
+            bundle: None,
+            version: None,
+            warnings: base_warnings,
+        });
+    }
+
+    let scrub = ScrubContext {
+        workspace: fresh.workspace(),
+        canon_workspace: canon_ws.as_deref(),
+        plugin_root: Some(&dir_path),
+        user_plugins_dir: fresh.user_plugins_dir(),
+        state_path: fresh.state_path(),
+    };
+
+    let reach_target = format!("{raw_target} npm dependencies from registry.npmjs.org");
+    call.context
+        .act("install", BrokerEffect::Reach, Some(&reach_target))
+        .await?;
+
+    if call.context.cancel().is_cancelled() {
+        record_outcome(call, "install", None, None, None, "cancelled");
+        return cancelled_result("install", raw_target, None, None, base_warnings);
+    }
+    let tool = match check_live_after_act(call, &carrier) {
+        CarrierLiveCheck::Valid(refreshed) => refreshed,
+        CarrierLiveCheck::Unavailable => {
+            return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
+        }
+        CarrierLiveCheck::Narrowed => {
+            record_outcome(call, "install", None, None, None, "failed");
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target,
+                changed: false,
+                enabled: None,
+                code: "operation-error",
+                diagnostic:
+                    "permission mode changed during review and no longer allows plugin installation"
+                        .to_string(),
+                bundle: None,
+                version: None,
+                warnings: base_warnings,
+            });
+        }
+    };
+
+    let net = network_policy_for(&tool);
+    let dsh_source = PluginInstallSource::Dsh(dir_path.clone());
+    let (plugin_name, source_package, version, pre_hash) =
+        match prepare_local_source_and_hash_with_network(&dsh_source, &dir_path, Some(&net)).await {
+            Ok(values) => values,
+            Err((code, msg)) => {
+                record_outcome(call, "install", None, None, None, "failed");
+                return change_with_outcome(ChangeOutcome {
+                    application: "failed",
+                    stage: "install",
+                    target: raw_target,
+                    changed: false,
+                    enabled: None,
+                    code,
+                    diagnostic: scrub_message(&msg, &scrub),
+                    bundle: None,
+                    version: None,
+                    warnings: base_warnings,
+                });
+            }
+        };
+
+    if let Some((existing_name, scope)) = check_local_collision(
+        Arc::clone(&fresh),
+        plugin_name.clone(),
+        source_package.clone(),
+        policy,
+        #[cfg(any(test, feature = "test-support"))]
+        env_scope,
+    )
+    .await?
+    {
+        record_outcome(
+            call,
+            "install",
+            Some(&existing_name),
+            Some(&pre_hash),
+            None,
+            "failed",
+        );
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: "install",
+            target: raw_target,
+            changed: false,
+            enabled: None,
+            code: "already-installed",
+            diagnostic: format!(
+                "plugin `{existing_name}` is already installed ({scope} scope); remove it first, then install"
+            ),
+            bundle: Some(existing_name),
+            version,
+            warnings: base_warnings,
+        });
+    }
+
+    let gate_target = format!("{plugin_name} {pre_hash} {raw_target}");
+    call.context
+        .act("install", BrokerEffect::Write, Some(&gate_target))
+        .await?;
+
+    if call.context.cancel().is_cancelled() {
+        record_outcome(
+            call,
+            "install",
+            Some(&plugin_name),
+            Some(&pre_hash),
+            None,
+            "cancelled",
+        );
+        return cancelled_result(
+            "install",
+            raw_target,
+            Some(plugin_name),
+            version,
+            base_warnings,
+        );
+    }
+    let tool = match check_live_after_act(call, &carrier) {
+        CarrierLiveCheck::Valid(refreshed) => refreshed,
+        CarrierLiveCheck::Unavailable => {
+            return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
+        }
+        CarrierLiveCheck::Narrowed => {
+            record_outcome(
+                call,
+                "install",
+                Some(&plugin_name),
+                Some(&pre_hash),
+                None,
+                "failed",
+            );
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target,
+                changed: false,
+                enabled: None,
+                code: "operation-error",
+                diagnostic:
+                    "permission mode changed during review and no longer allows plugin installation"
+                        .to_string(),
+                bundle: Some(plugin_name),
+                version,
+                warnings: base_warnings,
+            });
+        }
+    };
+
+    let post_network = network_policy_for(&tool);
+    if has_symlink_or_reparse_ancestor_or_target(&dir_path)
+        .await
+        .unwrap_or(true)
+        || ensure_no_links_in_tree(&dir_path).await.is_err()
+    {
+        record_outcome(
+            call,
+            "install",
+            Some(&plugin_name),
+            Some(&pre_hash),
+            None,
+            "failed",
+        );
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: "install",
+            target: raw_target,
+            changed: false,
+            enabled: None,
+            code: "operation-error",
+            diagnostic: "changed after review".to_string(),
+            bundle: Some(plugin_name),
+            version,
+            warnings: base_warnings,
+        });
+    }
+    match prepare_local_source_and_hash_with_network(&dsh_source, &dir_path, Some(&post_network))
+        .await
+    {
+        Ok((cur_name, _, _, cur_hash)) if cur_name == plugin_name && cur_hash == pre_hash => {}
+        Ok((_, _, _, cur_hash)) => {
+            record_outcome(
+                call,
+                "install",
+                Some(&plugin_name),
+                Some(&cur_hash),
+                None,
+                "failed",
+            );
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target,
+                changed: false,
+                enabled: None,
+                code: "operation-error",
+                diagnostic: "changed after review".to_string(),
+                bundle: Some(plugin_name),
+                version,
+                warnings: base_warnings,
+            });
+        }
+        Err((code, msg)) => {
+            record_outcome(
+                call,
+                "install",
+                Some(&plugin_name),
+                Some(&pre_hash),
+                None,
+                "failed",
+            );
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target,
+                changed: false,
+                enabled: None,
+                code,
+                diagnostic: scrub_message(&msg, &scrub),
+                bundle: Some(plugin_name),
+                version,
+                warnings: base_warnings,
+            });
+        }
+    }
+
+    let snap2 = Arc::clone(&initial_registry);
+    let fresh2 = tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _env_scope = crate::test_support::join_env_scope(env_scope);
+        let _scope = PolicyScope::propagate(policy);
+        snap2.rediscover_for_workspace(snap2.workspace())
+    })
+    .await
+    .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
+
+    if let Some((existing_name, scope)) = check_local_collision(
+        Arc::clone(&fresh2),
+        plugin_name.clone(),
+        source_package,
+        policy,
+        #[cfg(any(test, feature = "test-support"))]
+        env_scope,
+    )
+    .await?
+    {
+        record_outcome(
+            call,
+            "install",
+            Some(&existing_name),
+            Some(&pre_hash),
+            None,
+            "failed",
+        );
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: "install",
+            target: raw_target,
+            changed: false,
+            enabled: None,
+            code: "already-installed",
+            diagnostic: format!(
+                "plugin `{existing_name}` is already installed ({scope} scope); remove it first, then install"
+            ),
+            bundle: Some(existing_name),
+            version,
+            warnings: base_warnings,
+        });
+    }
+
+    let mut reg_for_exec = (*fresh2).clone();
+    let exec_result = execute(
+        PluginMutationRequest::InstallExact {
+            source: dsh_source,
+            expected_content_hash: pre_hash.clone(),
+        },
+        &PluginMutationContext {
+            network: &post_network,
+            max_size: DEFAULT_MAX_SIZE_BYTES,
+        },
+        &mut reg_for_exec,
+    )
+    .await;
+
+    let receipt = match unwrap_local_install_exec(
+        call,
+        LocalInstallExecCheck {
+            exec_result,
+            plugin_name: &plugin_name,
+            pre_hash: &pre_hash,
+            raw_target: &raw_target,
+            version: &version,
+            base_warnings: &base_warnings,
+            scrub: &scrub,
+        },
+    )? {
+        Ok(receipt) => receipt,
+        Err(failure) => return Ok(failure),
+    };
+
+    if let Some(installed_dir) = receipt.path.as_deref() {
+        #[cfg(test)]
+        fire_post_install_hook_for_test(installed_dir, call.context.cancel());
+        let _ = installed_dir;
+    }
+    let installed_hash = receipt.installed_content_hash.unwrap_or_default();
+    finish_post_install(
+        call,
+        PostInstallInput {
+            reg_after_place: Arc::new(reg_for_exec),
+            installed_name: receipt.name,
+            expected_installed_hash: installed_hash,
+            version,
+            raw_target,
+            want_enabled: false,
+            warnings: base_warnings,
+            carrier,
+            shown_service_lines: Vec::new(),
+            source_dir: Some(dir_path),
+            canon_workspace: canon_ws,
+            registry_ignored,
+        },
+    )
+    .await
+}
+
+async fn install_local_admitted(
+    call: &BrokerCall,
+    tool: ToolContext,
+    initial_registry: Arc<PluginRegistry>,
+    carrier: CreatorDecisionCarrier,
+    admitted: LocalAdmittedInstall,
+) -> Result<Value, BrokerRefusal> {
+    let LocalAdmittedInstall {
+        raw_target,
+        parsed,
+        canon_source,
+        is_dsh,
+        plugin_name,
+        pre_hash,
+        want_enabled,
+        expected_gate_target,
+        shown_service_lines,
+        base_warnings,
+        registry_ignored,
+    } = admitted;
+    let is_agent = matches!(carrier.decider, CreatorDecider::Agent(_));
+    if is_agent && !has_agent_call_identity(call, &tool) {
+        record_outcome(
+            call,
+            "install",
+            Some(&plugin_name),
+            Some(&pre_hash),
+            None,
+            "failed",
+        );
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: "install",
+            target: raw_target,
+            changed: false,
+            enabled: None,
+            code: "operation-error",
+            diagnostic:
+                "An approval by the agent must name the thread, turn and tool call that made it"
+                    .to_string(),
+            bundle: Some(plugin_name),
+            version: None,
+            warnings: base_warnings,
+        });
+    }
+    let explicit_dsh = matches!(&parsed, PluginInstallSource::Dsh(_));
+    let (PluginInstallSource::LocalPath(dir_path) | PluginInstallSource::Dsh(dir_path)) = parsed
+    else {
+        return Err(BrokerRefusal::Refused {
+            service: DshService::Plugins,
+            message: "plugin install target does not match the approved folder".to_string(),
+        });
+    };
+
+    let policy = extension_host_policy_enabled();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_scope = crate::test_support::env_scope_ticket();
+    let ancestor_clean = !has_symlink_or_reparse_ancestor_or_target(&dir_path)
+        .await
+        .unwrap_or(true);
+    let tree_clean = ensure_no_links_in_tree(&dir_path).await.is_ok();
+    let snap = Arc::clone(&initial_registry);
+    let probe = dir_path.clone();
+    let (
+        fresh,
+        canon_ws,
+        in_project,
+        user_plugins_dir,
+        canon_actual,
+        parsed_refined,
+        actual_is_dsh,
+        has_npm,
+    ) = tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _env_scope = crate::test_support::join_env_scope(env_scope);
+        let _scope = PolicyScope::propagate(policy);
+        let fresh = snap.rediscover_for_workspace(snap.workspace());
+        let canon_ws = std::fs::canonicalize(fresh.workspace()).ok();
+        let in_project = clean_dir_is_strictly_inside(&probe, fresh.workspace());
+        let user_plugins_dir = fresh.user_plugins_dir().map(Path::to_path_buf);
+        let canon_actual = std::fs::canonicalize(&probe).ok();
+        let actual_dsh = if explicit_dsh {
+            true
+        } else {
+            try_is_dsh_package(&probe).unwrap_or(false)
+        };
+        let refined = if actual_dsh {
+            PluginInstallSource::Dsh(probe.clone())
+        } else {
+            PluginInstallSource::LocalPath(probe.clone())
+        };
+        let has_npm = actual_dsh && has_unresolved_npm_dependencies(&probe).unwrap_or(true);
+        (
+            fresh,
+            canon_ws,
+            in_project,
+            user_plugins_dir,
+            canon_actual,
+            refined,
+            actual_dsh,
+            has_npm,
+        )
+    })
+    .await
+    .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
+
+    let in_user_plugins = dir_is_in_user_plugins(&dir_path, user_plugins_dir.as_deref()).await;
+    let is_own = in_project && ancestor_clean && !in_user_plugins;
+    if is_agent && !is_own {
+        record_outcome(
+            call,
+            "install",
+            Some(&plugin_name),
+            Some(&pre_hash),
+            None,
+            "failed",
+        );
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: "install",
+            target: raw_target,
+            changed: false,
+            enabled: None,
+            code: "operation-error",
+            diagnostic: format!(
+                "source folder is outside this project, inside user plugins, under .git, or reached through a link; {ASK_PERSON_HINT}"
+            ),
+            bundle: Some(plugin_name),
+            version: None,
+            warnings: base_warnings,
+        });
+    }
+    if !ancestor_clean
+        || !tree_clean
+        || canon_actual.as_ref() != Some(&canon_source)
+        || actual_is_dsh != is_dsh
+        || has_npm
+    {
+        record_outcome(
+            call,
+            "install",
+            Some(&plugin_name),
+            Some(&pre_hash),
+            None,
+            "failed",
+        );
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: "install",
+            target: raw_target,
+            changed: false,
+            enabled: None,
+            code: "operation-error",
+            diagnostic: "changed after review".to_string(),
+            bundle: Some(plugin_name),
+            version: None,
+            warnings: base_warnings,
+        });
+    }
+
+    let scrub = ScrubContext {
+        workspace: fresh.workspace(),
+        canon_workspace: canon_ws.as_deref(),
+        plugin_root: Some(&dir_path),
+        user_plugins_dir: fresh.user_plugins_dir(),
+        state_path: fresh.state_path(),
+    };
+    let (source_package, version) =
+        match prepare_local_source_and_hash_with_network(&parsed_refined, &dir_path, None).await {
+            Ok((cur_name, spkg, ver, cur_hash))
+                if cur_name == plugin_name && cur_hash == pre_hash =>
+            {
+                (spkg, ver)
+            }
+            Ok((_, _, ver, cur_hash)) => {
                 record_outcome(
                     call,
                     "install",
-                    Some(&existing_name),
+                    Some(&plugin_name),
+                    Some(&cur_hash),
+                    None,
+                    "failed",
+                );
+                return change_with_outcome(ChangeOutcome {
+                    application: "failed",
+                    stage: "install",
+                    target: raw_target,
+                    changed: false,
+                    enabled: None,
+                    code: "operation-error",
+                    diagnostic: "changed after review".to_string(),
+                    bundle: Some(plugin_name),
+                    version: ver,
+                    warnings: base_warnings,
+                });
+            }
+            Err(_) => {
+                record_outcome(
+                    call,
+                    "install",
+                    Some(&plugin_name),
                     Some(&pre_hash),
                     None,
                     "failed",
@@ -3900,184 +3392,501 @@ async fn install(
                     target: raw_target,
                     changed: false,
                     enabled: None,
-                    code: "already-installed",
-                    diagnostic: format!(
-                        "plugin `{existing_name}` is already installed ({scope} scope); remove it first, then install"
-                    ),
-                    bundle: Some(existing_name),
-                    version,
+                    code: "operation-error",
+                    diagnostic: "changed after review".to_string(),
+                    bundle: Some(plugin_name),
+                    version: None,
                     warnings: base_warnings,
                 });
             }
+        };
 
-            if call.context.cancel().is_cancelled() {
-                record_outcome(
-                    call,
-                    "install",
-                    Some(&plugin_name),
-                    Some(&pre_hash),
-                    None,
-                    "cancelled",
-                );
-                return cancelled_result(
-                    "install",
-                    raw_target,
-                    Some(plugin_name),
-                    version,
-                    base_warnings,
-                );
-            }
+    if let Some((existing_name, scope)) = check_local_collision(
+        Arc::clone(&fresh),
+        plugin_name.clone(),
+        source_package.clone(),
+        policy,
+        #[cfg(any(test, feature = "test-support"))]
+        env_scope,
+    )
+    .await?
+    {
+        record_outcome(
+            call,
+            "install",
+            Some(&existing_name),
+            Some(&pre_hash),
+            None,
+            "failed",
+        );
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: "install",
+            target: raw_target,
+            changed: false,
+            enabled: None,
+            code: "already-installed",
+            diagnostic: format!(
+                "plugin `{existing_name}` is already installed ({scope} scope); remove it first, then install"
+            ),
+            bundle: Some(existing_name),
+            version,
+            warnings: base_warnings,
+        });
+    }
 
-            let exec_network = if reach_gated {
-                post_network
-            } else {
-                NetworkPolicy::default()
-            };
-            let mut reg_for_exec = (*fresh2).clone();
-            let exec_result = execute(
-                PluginMutationRequest::InstallExact {
-                    source,
-                    expected_content_hash: pre_hash.clone(),
-                },
-                &PluginMutationContext {
-                    network: &exec_network,
-                    max_size: DEFAULT_MAX_SIZE_BYTES,
-                },
-                &mut reg_for_exec,
-            )
-            .await;
+    call.context
+        .act("install", BrokerEffect::Write, Some(&expected_gate_target))
+        .await?;
 
-            let receipt = match exec_result {
-                Ok(receipt) => receipt,
-                Err(error) => {
-                    let is_mismatch = error.downcast_ref::<PluginContentMismatch>().is_some()
-                        || error.downcast_ref::<PluginArchiveMismatch>().is_some();
-                    let code = classify_install_error(&error);
-                    let msg = if is_mismatch {
-                        "changed after review".to_string()
-                    } else if code == "already-installed" {
-                        format!(
-                            "plugin `{plugin_name}` is already installed; remove it first, then install"
-                        )
-                    } else {
-                        scrub_message(&format!("{error:#}"), &scrub)
-                    };
-                    record_outcome(
-                        call,
-                        "install",
-                        Some(&plugin_name),
-                        Some(&pre_hash),
-                        None,
-                        "failed",
-                    );
-                    return change_with_outcome(ChangeOutcome {
-                        application: "failed",
-                        stage: "install",
-                        target: raw_target,
-                        changed: false,
-                        enabled: None,
-                        code,
-                        diagnostic: msg,
-                        bundle: Some(plugin_name),
-                        version,
-                        warnings: base_warnings,
-                    });
-                }
-            };
-
-            match receipt.outcome {
-                PluginMutationOutcome::NeedsApproval(blocked_host) => {
-                    record_outcome(
-                        call,
-                        "install",
-                        Some(&plugin_name),
-                        Some(&pre_hash),
-                        None,
-                        "failed",
-                    );
-                    return change_with_outcome(ChangeOutcome {
-                        application: "failed",
-                        stage: "install",
-                        target: raw_target,
-                        changed: false,
-                        enabled: None,
-                        code: "operation-error",
-                        diagnostic: format!("network approval required for {blocked_host}"),
-                        bundle: Some(plugin_name),
-                        version,
-                        warnings: base_warnings,
-                    });
-                }
-                PluginMutationOutcome::NetworkDenied(denied_host) => {
-                    record_outcome(
-                        call,
-                        "install",
-                        Some(&plugin_name),
-                        Some(&pre_hash),
-                        None,
-                        "failed",
-                    );
-                    return change_with_outcome(ChangeOutcome {
-                        application: "failed",
-                        stage: "install",
-                        target: raw_target,
-                        changed: false,
-                        enabled: None,
-                        code: "operation-error",
-                        diagnostic: format!("network access denied for {denied_host}"),
-                        bundle: Some(plugin_name),
-                        version,
-                        warnings: base_warnings,
-                    });
-                }
-                PluginMutationOutcome::Installed => {}
-                _ => {
-                    record_outcome(
-                        call,
-                        "install",
-                        Some(&plugin_name),
-                        Some(&pre_hash),
-                        None,
-                        "failed",
-                    );
-                    return change_with_outcome(ChangeOutcome {
-                        application: "failed",
-                        stage: "install",
-                        target: raw_target,
-                        changed: false,
-                        enabled: None,
-                        code: "operation-error",
-                        diagnostic: "unexpected local install outcome".to_string(),
-                        bundle: Some(plugin_name),
-                        version,
-                        warnings: base_warnings,
-                    });
-                }
-            }
-
-            if let Some(installed_dir) = receipt.path.as_deref() {
-                #[cfg(test)]
-                fire_post_install_hook_for_test(installed_dir, call.context.cancel());
-                let _ = installed_dir;
-            }
-            let installed_hash = receipt.installed_content_hash.unwrap_or_default();
-            finish_post_install(
+    if call.context.cancel().is_cancelled() {
+        record_outcome(
+            call,
+            "install",
+            Some(&plugin_name),
+            Some(&pre_hash),
+            None,
+            "cancelled",
+        );
+        return cancelled_result(
+            "install",
+            raw_target,
+            Some(plugin_name),
+            version,
+            base_warnings,
+        );
+    }
+    let tool = match check_live_after_act(call, &carrier) {
+        CarrierLiveCheck::Valid(refreshed) => refreshed,
+        CarrierLiveCheck::Unavailable => {
+            return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
+        }
+        CarrierLiveCheck::Narrowed => {
+            record_outcome(
                 call,
-                PostInstallInput {
-                    reg_after_place: Arc::new(reg_for_exec),
-                    installed_name: receipt.name,
-                    expected_installed_hash: installed_hash,
-                    version,
-                    raw_target,
-                    want_enabled: input.enabled,
-                    warnings: base_warnings,
-                    is_own: still_own,
-                    source_dir: Some(source_dir),
-                    canon_workspace: effective_canon_ws,
-                    registry_ignored,
-                },
+                "install",
+                Some(&plugin_name),
+                Some(&pre_hash),
+                None,
+                "failed",
+            );
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target,
+                changed: false,
+                enabled: None,
+                code: "operation-error",
+                diagnostic:
+                    "permission mode changed during review and no longer allows plugin installation"
+                        .to_string(),
+                bundle: Some(plugin_name),
+                version,
+                warnings: base_warnings,
+            });
+        }
+    };
+    if is_agent && !has_agent_call_identity(call, &tool) {
+        record_outcome(
+            call,
+            "install",
+            Some(&plugin_name),
+            Some(&pre_hash),
+            None,
+            "failed",
+        );
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: "install",
+            target: raw_target,
+            changed: false,
+            enabled: None,
+            code: "operation-error",
+            diagnostic:
+                "An approval by the agent must name the thread, turn and tool call that made it"
+                    .to_string(),
+            bundle: Some(plugin_name),
+            version,
+            warnings: base_warnings,
+        });
+    }
+
+    let ancestor_clean2 = !has_symlink_or_reparse_ancestor_or_target(&dir_path)
+        .await
+        .unwrap_or(true);
+    let tree_clean2 = ensure_no_links_in_tree(&dir_path).await.is_ok();
+    let snap2 = Arc::clone(&initial_registry);
+    let probe2 = dir_path.clone();
+    let (fresh2, canon_ws2, in_project2, user_plugins_dir2, canon_actual2, has_npm2) =
+        tokio::task::spawn_blocking(move || {
+            #[cfg(any(test, feature = "test-support"))]
+            let _env_scope = crate::test_support::join_env_scope(env_scope);
+            let _scope = PolicyScope::propagate(policy);
+            let fresh = snap2.rediscover_for_workspace(snap2.workspace());
+            let canon_ws = std::fs::canonicalize(fresh.workspace()).ok();
+            let in_project = clean_dir_is_strictly_inside(&probe2, fresh.workspace());
+            let user_plugins_dir = fresh.user_plugins_dir().map(Path::to_path_buf);
+            let canon_actual = std::fs::canonicalize(&probe2).ok();
+            let has_npm = is_dsh && has_unresolved_npm_dependencies(&probe2).unwrap_or(true);
+            (
+                fresh,
+                canon_ws,
+                in_project,
+                user_plugins_dir,
+                canon_actual,
+                has_npm,
             )
-            .await
+        })
+        .await
+        .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
+    let in_user_plugins2 = dir_is_in_user_plugins(&dir_path, user_plugins_dir2.as_deref()).await;
+    let still_own = in_project2 && ancestor_clean2 && !in_user_plugins2;
+    let effective_canon_ws = canon_ws.as_ref().or(canon_ws2.as_ref()).cloned();
+
+    if is_agent && !still_own {
+        record_outcome(
+            call,
+            "install",
+            Some(&plugin_name),
+            Some(&pre_hash),
+            None,
+            "failed",
+        );
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: "install",
+            target: raw_target,
+            changed: false,
+            enabled: None,
+            code: "operation-error",
+            diagnostic: format!(
+                "source folder is no longer cleanly inside this project; {ASK_PERSON_HINT}"
+            ),
+            bundle: Some(plugin_name),
+            version,
+            warnings: base_warnings,
+        });
+    }
+    if !ancestor_clean2 || !tree_clean2 || canon_actual2.as_ref() != Some(&canon_source) || has_npm2
+    {
+        record_outcome(
+            call,
+            "install",
+            Some(&plugin_name),
+            Some(&pre_hash),
+            None,
+            "failed",
+        );
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: "install",
+            target: raw_target,
+            changed: false,
+            enabled: None,
+            code: "operation-error",
+            diagnostic: "changed after review".to_string(),
+            bundle: Some(plugin_name),
+            version,
+            warnings: base_warnings,
+        });
+    }
+
+    match prepare_local_source_and_hash_with_network(&parsed_refined, &dir_path, None).await {
+        Ok((cur_name, _, _, cur_hash)) if cur_name == plugin_name && cur_hash == pre_hash => {}
+        _ => {
+            record_outcome(
+                call,
+                "install",
+                Some(&plugin_name),
+                Some(&pre_hash),
+                None,
+                "failed",
+            );
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target,
+                changed: false,
+                enabled: None,
+                code: "operation-error",
+                diagnostic: "changed after review".to_string(),
+                bundle: Some(plugin_name),
+                version,
+                warnings: base_warnings,
+            });
+        }
+    }
+
+    if let Some((existing_name, scope)) = check_local_collision(
+        Arc::clone(&fresh2),
+        plugin_name.clone(),
+        source_package,
+        policy,
+        #[cfg(any(test, feature = "test-support"))]
+        env_scope,
+    )
+    .await?
+    {
+        record_outcome(
+            call,
+            "install",
+            Some(&existing_name),
+            Some(&pre_hash),
+            None,
+            "failed",
+        );
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: "install",
+            target: raw_target,
+            changed: false,
+            enabled: None,
+            code: "already-installed",
+            diagnostic: format!(
+                "plugin `{existing_name}` is already installed ({scope} scope); remove it first, then install"
+            ),
+            bundle: Some(existing_name),
+            version,
+            warnings: base_warnings,
+        });
+    }
+
+    if call.context.cancel().is_cancelled() {
+        record_outcome(
+            call,
+            "install",
+            Some(&plugin_name),
+            Some(&pre_hash),
+            None,
+            "cancelled",
+        );
+        return cancelled_result(
+            "install",
+            raw_target,
+            Some(plugin_name),
+            version,
+            base_warnings,
+        );
+    }
+
+    let exec_network = NetworkPolicy::default();
+    let mut reg_for_exec = (*fresh2).clone();
+    let exec_result = execute(
+        PluginMutationRequest::InstallExact {
+            source: parsed_refined,
+            expected_content_hash: pre_hash.clone(),
+        },
+        &PluginMutationContext {
+            network: &exec_network,
+            max_size: DEFAULT_MAX_SIZE_BYTES,
+        },
+        &mut reg_for_exec,
+    )
+    .await;
+
+    let receipt = match unwrap_local_install_exec(
+        call,
+        LocalInstallExecCheck {
+            exec_result,
+            plugin_name: &plugin_name,
+            pre_hash: &pre_hash,
+            raw_target: &raw_target,
+            version: &version,
+            base_warnings: &base_warnings,
+            scrub: &scrub,
+        },
+    )? {
+        Ok(receipt) => receipt,
+        Err(failure) => return Ok(failure),
+    };
+
+    if let Some(installed_dir) = receipt.path.as_deref() {
+        #[cfg(test)]
+        fire_post_install_hook_for_test(installed_dir, call.context.cancel());
+        let _ = installed_dir;
+    }
+    let installed_hash = receipt.installed_content_hash.unwrap_or_default();
+    finish_post_install(
+        call,
+        PostInstallInput {
+            reg_after_place: Arc::new(reg_for_exec),
+            installed_name: receipt.name,
+            expected_installed_hash: installed_hash,
+            version,
+            raw_target,
+            want_enabled,
+            warnings: base_warnings,
+            carrier,
+            shown_service_lines,
+            source_dir: Some(dir_path),
+            canon_workspace: effective_canon_ws,
+            registry_ignored,
+        },
+    )
+    .await
+}
+
+async fn check_local_collision(
+    fresh_ref: Arc<PluginRegistry>,
+    pname: String,
+    spkg: Option<String>,
+    policy: bool,
+    #[cfg(any(test, feature = "test-support"))] env_scope: Option<
+        crate::test_support::EnvScopeTicket,
+    >,
+) -> Result<Option<(String, &'static str)>, BrokerRefusal> {
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _env_scope = crate::test_support::join_env_scope(env_scope);
+        let _scope = PolicyScope::propagate(policy);
+        if let Some(p) = fresh_ref.get(&pname) {
+            return Some((p.name().to_string(), p.scope.as_str()));
+        }
+        if let Some(pkg) = spkg.as_deref() {
+            match resolve_plugin_by_target(&fresh_ref, pkg) {
+                TargetLookup::Found(p) => {
+                    return Some((p.name().to_string(), p.scope.as_str()));
+                }
+                TargetLookup::Ambiguous { first, .. } => {
+                    return Some((first.name().to_string(), first.scope.as_str()));
+                }
+                TargetLookup::Missing => {}
+            }
+        }
+        None
+    })
+    .await
+    .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))
+}
+
+struct LocalInstallExecCheck<'a> {
+    exec_result: anyhow::Result<codewhale_plugins::mutation::PluginMutationReceipt>,
+    plugin_name: &'a str,
+    pre_hash: &'a str,
+    raw_target: &'a str,
+    version: &'a Option<String>,
+    base_warnings: &'a [String],
+    scrub: &'a ScrubContext<'a>,
+}
+
+fn unwrap_local_install_exec(
+    call: &BrokerCall,
+    input: LocalInstallExecCheck<'_>,
+) -> Result<Result<codewhale_plugins::mutation::PluginMutationReceipt, Value>, BrokerRefusal> {
+    let LocalInstallExecCheck {
+        exec_result,
+        plugin_name,
+        pre_hash,
+        raw_target,
+        version,
+        base_warnings,
+        scrub,
+    } = input;
+    let receipt = match exec_result {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            let is_mismatch = error.downcast_ref::<PluginContentMismatch>().is_some()
+                || error.downcast_ref::<PluginArchiveMismatch>().is_some();
+            let code = classify_install_error(&error);
+            let msg = if is_mismatch {
+                "changed after review".to_string()
+            } else if code == "already-installed" {
+                format!(
+                    "plugin `{plugin_name}` is already installed; remove it first, then install"
+                )
+            } else {
+                scrub_message(&format!("{error:#}"), scrub)
+            };
+            record_outcome(
+                call,
+                "install",
+                Some(plugin_name),
+                Some(pre_hash),
+                None,
+                "failed",
+            );
+            return Ok(Err(change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target.to_string(),
+                changed: false,
+                enabled: None,
+                code,
+                diagnostic: msg,
+                bundle: Some(plugin_name.to_string()),
+                version: version.clone(),
+                warnings: base_warnings.to_vec(),
+            })?));
+        }
+    };
+
+    match receipt.outcome {
+        PluginMutationOutcome::NeedsApproval(blocked_host) => {
+            record_outcome(
+                call,
+                "install",
+                Some(plugin_name),
+                Some(pre_hash),
+                None,
+                "failed",
+            );
+            Ok(Err(change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target.to_string(),
+                changed: false,
+                enabled: None,
+                code: "operation-error",
+                diagnostic: format!("network approval required for {blocked_host}"),
+                bundle: Some(plugin_name.to_string()),
+                version: version.clone(),
+                warnings: base_warnings.to_vec(),
+            })?))
+        }
+        PluginMutationOutcome::NetworkDenied(denied_host) => {
+            record_outcome(
+                call,
+                "install",
+                Some(plugin_name),
+                Some(pre_hash),
+                None,
+                "failed",
+            );
+            Ok(Err(change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target.to_string(),
+                changed: false,
+                enabled: None,
+                code: "operation-error",
+                diagnostic: format!("network access denied for {denied_host}"),
+                bundle: Some(plugin_name.to_string()),
+                version: version.clone(),
+                warnings: base_warnings.to_vec(),
+            })?))
+        }
+        PluginMutationOutcome::Installed => Ok(Ok(receipt)),
+        _ => {
+            record_outcome(
+                call,
+                "install",
+                Some(plugin_name),
+                Some(pre_hash),
+                None,
+                "failed",
+            );
+            Ok(Err(change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target.to_string(),
+                changed: false,
+                enabled: None,
+                code: "operation-error",
+                diagnostic: "unexpected local install outcome".to_string(),
+                bundle: Some(plugin_name.to_string()),
+                version: version.clone(),
+                warnings: base_warnings.to_vec(),
+            })?))
         }
     }
 }
@@ -4090,7 +3899,8 @@ struct PostInstallInput {
     raw_target: String,
     want_enabled: bool,
     warnings: Vec<String>,
-    is_own: bool,
+    carrier: CreatorDecisionCarrier,
+    shown_service_lines: Vec<String>,
     source_dir: Option<PathBuf>,
     canon_workspace: Option<PathBuf>,
     registry_ignored: bool,
@@ -4108,7 +3918,8 @@ async fn finish_post_install(
         raw_target,
         want_enabled,
         mut warnings,
-        is_own: allow_agent,
+        carrier,
+        shown_service_lines,
         source_dir,
         canon_workspace,
         registry_ignored,
@@ -4116,12 +3927,12 @@ async fn finish_post_install(
     let policy = extension_host_policy_enabled();
     #[cfg(any(test, feature = "test-support"))]
     let env_scope = crate::test_support::env_scope_ticket();
+    #[cfg(any(test, feature = "test-support"))]
+    let test_offered: Vec<HostService> = HostService::ALL
+        .into_iter()
+        .filter(|service| offered(*service))
+        .collect();
 
-    let (tool, authority) = live(call);
-    let Some(authority) = authority else {
-        return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
-    };
-    let pending = approver_from_posture(&authority);
     if call.context.cancel().is_cancelled() {
         let fresh = tokio::task::spawn_blocking(move || {
             #[cfg(any(test, feature = "test-support"))]
@@ -4156,78 +3967,162 @@ async fn finish_post_install(
         });
     }
 
-    let Some(approver) = pending.as_approver(call, &tool, reg_after_place.workspace()) else {
-        let fresh = tokio::task::spawn_blocking(move || {
-            #[cfg(any(test, feature = "test-support"))]
-            let _env_scope = crate::test_support::join_env_scope(env_scope);
-            let _scope = PolicyScope::propagate(policy);
-            reg_after_place.rediscover_for_workspace(reg_after_place.workspace())
-        })
-        .await
-        .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
-        super::plugins_changed(fresh);
-        record_outcome(
-            call,
-            "install",
-            Some(&installed_name),
-            Some(&expected_installed_hash),
-            None,
-            "failed",
-        );
-        return change_with_outcome(ChangeOutcome {
-            application: "failed",
-            stage: "install",
-            target: raw_target,
-            changed: true,
-            enabled: Some(false),
-            code: "operation-error",
-            diagnostic:
-                "permission mode changed after installation, so the plugin remains disabled and untrusted"
-                    .to_string(),
-            bundle: Some(installed_name),
-            version,
-            warnings,
-        });
+    let tool = match check_live_after_act(call, &carrier) {
+        CarrierLiveCheck::Valid(refreshed) => refreshed,
+        CarrierLiveCheck::Unavailable => {
+            return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
+        }
+        CarrierLiveCheck::Narrowed => {
+            let fresh = tokio::task::spawn_blocking(move || {
+                #[cfg(any(test, feature = "test-support"))]
+                let _env_scope = crate::test_support::join_env_scope(env_scope);
+                let _scope = PolicyScope::propagate(policy);
+                reg_after_place.rediscover_for_workspace(reg_after_place.workspace())
+            })
+            .await
+            .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
+            super::plugins_changed(fresh);
+            record_outcome(
+                call,
+                "install",
+                Some(&installed_name),
+                Some(&expected_installed_hash),
+                None,
+                "failed",
+            );
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target,
+                changed: true,
+                enabled: Some(false),
+                code: "operation-error",
+                diagnostic:
+                    "permission mode changed after installation, so the plugin remains disabled and untrusted"
+                        .to_string(),
+                bundle: Some(installed_name),
+                version,
+                warnings,
+            });
+        }
     };
-    if !allow_agent && matches!(approver, PluginApprover::Agent(_)) {
-        let fresh = tokio::task::spawn_blocking(move || {
+
+    if carrier.is_unseen_fetch() {
+        let name_for_commit = installed_name.clone();
+        let expected_hash_clone = expected_installed_hash.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
             #[cfg(any(test, feature = "test-support"))]
             let _env_scope = crate::test_support::join_env_scope(env_scope);
             let _scope = PolicyScope::propagate(policy);
-            reg_after_place.rediscover_for_workspace(reg_after_place.workspace())
+            let fresh_arc = reg_after_place.rediscover_for_workspace(reg_after_place.workspace());
+            let Some(loaded) = fresh_arc.get(&name_for_commit).cloned() else {
+                return Err(fresh_arc);
+            };
+            if loaded.content_hash != expected_hash_clone {
+                return Err(fresh_arc);
+            }
+            Ok((fresh_arc, loaded))
         })
         .await
         .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
-        super::plugins_changed(fresh);
+
+        let (final_reg, final_loaded) = match outcome {
+            Ok(pair) => pair,
+            Err(fresh) => {
+                super::plugins_changed(fresh);
+                record_outcome(
+                    call,
+                    "install",
+                    Some(&installed_name),
+                    Some(&expected_installed_hash),
+                    None,
+                    "failed",
+                );
+                return change_with_outcome(ChangeOutcome {
+                    application: "failed",
+                    stage: "install",
+                    target: raw_target,
+                    changed: true,
+                    enabled: Some(false),
+                    code: "operation-error",
+                    diagnostic: "changed after review".to_string(),
+                    bundle: Some(installed_name),
+                    version,
+                    warnings,
+                });
+            }
+        };
+        super::plugins_changed(Arc::clone(&final_reg));
+        warnings.push(format!(
+            "installed disabled and untrusted because it fetched unseen bytes from the network; review it and turn it on from the Plugins page or `/plugin trust {}`",
+            final_loaded.name()
+        ));
         record_outcome(
             call,
             "install",
-            Some(&installed_name),
-            Some(&expected_installed_hash),
+            Some(final_loaded.name()),
+            Some(&final_loaded.content_hash),
             None,
-            "failed",
+            "applied",
         );
-        return change_with_outcome(ChangeOutcome {
-            application: "failed",
-            stage: "install",
-            target: raw_target,
-            changed: true,
-            enabled: Some(false),
-            code: "operation-error",
-            diagnostic: format!(
-                "permission mode changed to agent approval on a remote plugin, so it remains disabled and untrusted; {ASK_PERSON_HINT}"
-            ),
-            bundle: Some(installed_name),
-            version,
+        return change_ok(
+            "install",
+            raw_target,
+            true,
+            Some(final_loaded.enabled),
+            Some(final_loaded.name().to_string()),
+            non_empty_version(&final_loaded.manifest.plugin.version).or(version),
             warnings,
-        });
+        );
     }
+
+    let ws_for_approver = canon_workspace
+        .as_deref()
+        .unwrap_or_else(|| reg_after_place.workspace());
+    let approver = match approver_from_carrier(call, &tool, &carrier, ws_for_approver) {
+        Ok(approver) => approver,
+        Err(msg) => {
+            let fresh = tokio::task::spawn_blocking(move || {
+                #[cfg(any(test, feature = "test-support"))]
+                let _env_scope = crate::test_support::join_env_scope(env_scope);
+                let _scope = PolicyScope::propagate(policy);
+                reg_after_place.rediscover_for_workspace(reg_after_place.workspace())
+            })
+            .await
+            .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
+            super::plugins_changed(fresh);
+            record_outcome(
+                call,
+                "install",
+                Some(&installed_name),
+                Some(&expected_installed_hash),
+                None,
+                "failed",
+            );
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "install",
+                target: raw_target,
+                changed: true,
+                enabled: Some(false),
+                code: "operation-error",
+                diagnostic: msg,
+                bundle: Some(installed_name),
+                version,
+                warnings,
+            });
+        }
+    };
 
     let approver_for_commit = approver.clone();
     let name_for_commit = installed_name.clone();
     let expected_hash_clone = expected_installed_hash.clone();
     enum PostCommit {
         Mismatch(Arc<PluginRegistry>),
+        ServiceReviewChanged {
+            registry: Arc<PluginRegistry>,
+            enabled: bool,
+        },
         Failed {
             registry: Arc<PluginRegistry>,
             enabled: bool,
@@ -4247,6 +4142,8 @@ async fn finish_post_install(
     let outcome = tokio::task::spawn_blocking(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _env_scope = crate::test_support::join_env_scope(env_scope);
+        #[cfg(any(test, feature = "test-support"))]
+        let _test_offer = TestOffer::only(&test_offered);
         let _scope = PolicyScope::propagate(policy);
         let fresh_arc = reg_after_place.rediscover_for_workspace(reg_after_place.workspace());
         let Some(loaded) = fresh_arc.get(&name_for_commit).cloned() else {
@@ -4257,12 +4154,18 @@ async fn finish_post_install(
         }
         let mut reg = (*fresh_arc).clone();
         let selector = loaded.id.as_str().to_string();
-        let host_services = match &approver_for_commit {
-            PluginApprover::Agent(_) => reg
-                .host_service_review_for(&selector, &approver_for_commit)
-                .map(|review| review.token),
-            PluginApprover::Person { .. } | PluginApprover::CommandLine => None,
-        };
+        let post_review = reg.host_service_review_for(&selector, &approver_for_commit);
+        let post_lines = post_review
+            .as_ref()
+            .map(HostServiceReview::text)
+            .unwrap_or_default();
+        if post_lines != shown_service_lines {
+            return PostCommit::ServiceReviewChanged {
+                registry: fresh_arc,
+                enabled: loaded.enabled,
+            };
+        }
+        let host_services = post_review.map(|review| review.token);
         let approval = ReviewApproval {
             approved_by: approver_for_commit.clone(),
             host_services,
@@ -4333,6 +4236,29 @@ async fn finish_post_install(
                 enabled: Some(false),
                 code: "operation-error",
                 diagnostic: "changed after review".to_string(),
+                bundle: Some(installed_name),
+                version,
+                warnings,
+            })
+        }
+        PostCommit::ServiceReviewChanged { registry, enabled } => {
+            super::plugins_changed(registry);
+            record_outcome(
+                call,
+                "install",
+                Some(&installed_name),
+                Some(&expected_installed_hash),
+                Some(&approver),
+                "failed",
+            );
+            change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "enable",
+                target: raw_target,
+                changed: true,
+                enabled: Some(enabled),
+                code: "operation-error",
+                diagnostic: "the services it asks for changed after review".to_string(),
                 bundle: Some(installed_name),
                 version,
                 warnings,
@@ -4603,6 +4529,26 @@ async fn remove(
     let Some(current_authority) = authority else {
         return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
     };
+    let carrier = require_carried_decision(&tool, &current_authority, "remove")?;
+    let (approved_plugin_id, approved_plugin_name, expected_gate_target) = match &carrier.change {
+        AdmittedChangeKind::Remove {
+            plugin_id,
+            plugin_name,
+            expected_gate_target,
+            ..
+        } => (
+            plugin_id.clone(),
+            plugin_name.clone(),
+            expected_gate_target.clone(),
+        ),
+        _ => {
+            return Err(BrokerRefusal::Refused {
+                service: DshService::Plugins,
+                message: "plugin change decision is not a remove decision".to_string(),
+            });
+        }
+    };
+    let is_agent = matches!(carrier.decider, CreatorDecider::Agent(_));
 
     let (initial_plugin, is_own, own_denial_reason, has_marker) = match load_existing_plugin(
         Arc::clone(&initial_registry),
@@ -4761,8 +4707,31 @@ async fn remove(
         PluginScope::User => {}
     }
 
-    let pending = approver_from_posture(&current_authority);
-    if !is_own && matches!(pending, PendingApprover::Agent(_)) {
+    if is_agent && !has_agent_call_identity(call, &tool) {
+        record_outcome(
+            call,
+            "remove",
+            Some(&bundle_name),
+            Some(&initial_plugin.content_hash),
+            None,
+            "failed",
+        );
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: "remove",
+            target: raw_target,
+            changed: false,
+            enabled: Some(initial_plugin.enabled),
+            code: "operation-error",
+            diagnostic:
+                "An approval by the agent must name the thread, turn and tool call that made it"
+                    .to_string(),
+            bundle: Some(bundle_name),
+            version,
+            warnings: Vec::new(),
+        });
+    }
+    if !is_own && is_agent {
         let reason =
             own_denial_reason.unwrap_or("this plugin was not installed and approved by this agent");
         record_outcome(
@@ -4788,6 +4757,15 @@ async fn remove(
     }
 
     let gate_target = format!("{bundle_name} {}", initial_plugin.id.as_str());
+    if initial_plugin.id.as_str() != approved_plugin_id
+        || bundle_name != approved_plugin_name
+        || gate_target != expected_gate_target
+    {
+        return Err(BrokerRefusal::Refused {
+            service: DshService::Plugins,
+            message: "plugin remove target changed after review".to_string(),
+        });
+    }
     call.context
         .act("remove", BrokerEffect::Write, Some(&gate_target))
         .await?;
@@ -4804,36 +4782,36 @@ async fn remove(
         return cancelled_result("remove", raw_target, Some(bundle_name), version, Vec::new());
     }
 
-    let (refreshed_tool, refreshed_auth) = live(call);
-    tool = refreshed_tool;
-    let Some(refreshed_auth) = refreshed_auth else {
-        return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
+    tool = match check_live_after_act(call, &carrier) {
+        CarrierLiveCheck::Valid(refreshed) => refreshed,
+        CarrierLiveCheck::Unavailable => {
+            return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
+        }
+        CarrierLiveCheck::Narrowed => {
+            record_outcome(
+                call,
+                "remove",
+                Some(&bundle_name),
+                Some(&initial_plugin.content_hash),
+                None,
+                "failed",
+            );
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: "remove",
+                target: raw_target,
+                changed: false,
+                enabled: Some(initial_plugin.enabled),
+                code: "operation-error",
+                diagnostic:
+                    "permission mode changed during review and no longer allows removing plugins"
+                        .to_string(),
+                bundle: Some(bundle_name),
+                version,
+                warnings: Vec::new(),
+            });
+        }
     };
-    let after_pending = approver_from_posture(&refreshed_auth);
-    if matches!(after_pending, PendingApprover::Nobody) {
-        record_outcome(
-            call,
-            "remove",
-            Some(&bundle_name),
-            Some(&initial_plugin.content_hash),
-            None,
-            "failed",
-        );
-        return change_with_outcome(ChangeOutcome {
-            application: "failed",
-            stage: "remove",
-            target: raw_target,
-            changed: false,
-            enabled: Some(initial_plugin.enabled),
-            code: "operation-error",
-            diagnostic:
-                "permission mode changed during review and no longer allows removing plugins"
-                    .to_string(),
-            bundle: Some(bundle_name),
-            version,
-            warnings: Vec::new(),
-        });
-    }
 
     let (plugin_now, still_own, reason_now, still_has_marker, canon_ws_now) =
         match load_existing_plugin(Arc::clone(&initial_registry), raw_target.clone(), None).await? {
@@ -4915,7 +4893,31 @@ async fn remove(
             ),
         };
 
-    if matches!(after_pending, PendingApprover::Agent(_)) && !still_own {
+    if is_agent && !has_agent_call_identity(call, &tool) {
+        record_outcome(
+            call,
+            "remove",
+            Some(&bundle_name),
+            Some(&plugin_now.content_hash),
+            None,
+            "failed",
+        );
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: "remove",
+            target: raw_target,
+            changed: false,
+            enabled: Some(plugin_now.enabled),
+            code: "operation-error",
+            diagnostic:
+                "An approval by the agent must name the thread, turn and tool call that made it"
+                    .to_string(),
+            bundle: Some(bundle_name),
+            version,
+            warnings: Vec::new(),
+        });
+    }
+    if is_agent && !still_own {
         let reason = reason_now.unwrap_or("this plugin is not owned by this agent");
         record_outcome(
             call,
@@ -5086,8 +5088,10 @@ async fn remove(
             let data_warning = format!(
                 "kept plugin data folder at ~/.codewhale/extension-host/data/plugins/{safe_leaf}"
             );
-            let approver_used =
-                after_pending.as_approver(call, &tool, initial_registry.workspace());
+            let ws_for_approver = canon_ws_now
+                .as_deref()
+                .unwrap_or_else(|| final_reg.workspace());
+            let approver_used = approver_from_carrier(call, &tool, &carrier, ws_for_approver).ok();
             record_outcome(
                 call,
                 "remove",
@@ -5162,6 +5166,51 @@ async fn toggle(
     let Some(current_authority) = authority else {
         return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
     };
+    let carrier = require_carried_decision(&tool, &current_authority, method_name)?;
+    let (
+        approved_enabled,
+        approved_plugin_id,
+        approved_plugin_name,
+        approved_content_hash,
+        approved_capability_hash,
+        expected_gate_target,
+        shown_service_lines,
+        shown_service_token,
+    ) = match &carrier.change {
+        AdmittedChangeKind::Toggle {
+            enabled,
+            plugin_id,
+            plugin_name,
+            content_hash,
+            capability_hash,
+            expected_gate_target,
+            shown_service_lines,
+            shown_service_token,
+            ..
+        } => (
+            *enabled,
+            plugin_id.clone(),
+            plugin_name.clone(),
+            content_hash.clone(),
+            capability_hash.clone(),
+            expected_gate_target.clone(),
+            shown_service_lines.clone(),
+            shown_service_token.clone(),
+        ),
+        _ => {
+            return Err(BrokerRefusal::Refused {
+                service: DshService::Plugins,
+                message: "plugin change decision is not a switch decision".to_string(),
+            });
+        }
+    };
+    if approved_enabled != want_enabled {
+        return Err(BrokerRefusal::Refused {
+            service: DshService::Plugins,
+            message: "plugin change decision does not match enable/disable state".to_string(),
+        });
+    }
+    let is_agent = matches!(carrier.decider, CreatorDecider::Agent(_));
 
     let (initial_plugin, is_own, own_denial_reason, _) = match load_existing_plugin(
         Arc::clone(&initial_registry),
@@ -5226,7 +5275,7 @@ async fn toggle(
 
     let bundle_name = initial_plugin.name().to_string();
     let version = non_empty_version(&initial_plugin.manifest.plugin.version);
-    if initial_plugin.scope == PluginScope::Builtin {
+    if initial_plugin.scope == PluginScope::Builtin && is_agent {
         record_outcome(
             call,
             method_name,
@@ -5251,8 +5300,7 @@ async fn toggle(
         });
     }
 
-    let pending = approver_from_posture(&current_authority);
-    if matches!(pending, PendingApprover::Agent(_)) && !has_agent_call_identity(call, &tool) {
+    if is_agent && !has_agent_call_identity(call, &tool) {
         record_outcome(
             call,
             method_name,
@@ -5276,7 +5324,7 @@ async fn toggle(
             warnings: Vec::new(),
         });
     }
-    if !is_own && matches!(pending, PendingApprover::Agent(_)) {
+    if !is_own && is_agent {
         let reason =
             own_denial_reason.unwrap_or("this plugin was not installed and approved by this agent");
         record_outcome(
@@ -5310,6 +5358,37 @@ async fn toggle(
     } else {
         format!("{bundle_name} {}", initial_plugin.id.as_str())
     };
+    if initial_plugin.id.as_str() != approved_plugin_id || bundle_name != approved_plugin_name {
+        return Err(BrokerRefusal::Refused {
+            service: DshService::Plugins,
+            message: "plugin switch target changed after review".to_string(),
+        });
+    }
+    if initial_plugin.content_hash != approved_content_hash
+        || initial_plugin.capability_hash != approved_capability_hash
+        || gate_target != expected_gate_target
+    {
+        record_outcome(
+            call,
+            method_name,
+            Some(&bundle_name),
+            Some(&initial_plugin.content_hash),
+            None,
+            "failed",
+        );
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: method_name,
+            target: raw_target,
+            changed: false,
+            enabled: Some(initial_plugin.enabled),
+            code: "operation-error",
+            diagnostic: "changed after review".to_string(),
+            bundle: Some(bundle_name),
+            version,
+            warnings: Vec::new(),
+        });
+    }
     call.context
         .act(method_name, BrokerEffect::Write, Some(&gate_target))
         .await?;
@@ -5332,36 +5411,36 @@ async fn toggle(
         );
     }
 
-    let (refreshed_tool, refreshed_auth) = live(call);
-    tool = refreshed_tool;
-    let Some(refreshed_auth) = refreshed_auth else {
-        return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
+    tool = match check_live_after_act(call, &carrier) {
+        CarrierLiveCheck::Valid(refreshed) => refreshed,
+        CarrierLiveCheck::Unavailable => {
+            return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
+        }
+        CarrierLiveCheck::Narrowed => {
+            record_outcome(
+                call,
+                method_name,
+                Some(&bundle_name),
+                Some(&initial_plugin.content_hash),
+                None,
+                "failed",
+            );
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: method_name,
+                target: raw_target,
+                changed: false,
+                enabled: Some(initial_plugin.enabled),
+                code: "operation-error",
+                diagnostic:
+                    "permission mode changed during review and no longer allows changing plugin state"
+                        .to_string(),
+                bundle: Some(bundle_name),
+                version,
+                warnings: Vec::new(),
+            });
+        }
     };
-    let after_pending = approver_from_posture(&refreshed_auth);
-    if matches!(after_pending, PendingApprover::Nobody) {
-        record_outcome(
-            call,
-            method_name,
-            Some(&bundle_name),
-            Some(&initial_plugin.content_hash),
-            None,
-            "failed",
-        );
-        return change_with_outcome(ChangeOutcome {
-            application: "failed",
-            stage: method_name,
-            target: raw_target,
-            changed: false,
-            enabled: Some(initial_plugin.enabled),
-            code: "operation-error",
-            diagnostic:
-                "permission mode changed during review and no longer allows changing plugin state"
-                    .to_string(),
-            bundle: Some(bundle_name),
-            version,
-            warnings: Vec::new(),
-        });
-    }
 
     let (plugin_now, still_own, reason_now, canon_ws_now) =
         match load_existing_plugin(Arc::clone(&initial_registry), raw_target.clone(), row).await? {
@@ -5420,7 +5499,31 @@ async fn toggle(
             } => (plugin, is_own, own_denial_reason, canon_workspace),
         };
 
-    if matches!(after_pending, PendingApprover::Agent(_)) && !has_agent_call_identity(call, &tool) {
+    if plugin_now.scope == PluginScope::Builtin && is_agent {
+        record_outcome(
+            call,
+            method_name,
+            Some(&bundle_name),
+            Some(&plugin_now.content_hash),
+            None,
+            "failed",
+        );
+        return change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: method_name,
+            target: raw_target,
+            changed: false,
+            enabled: Some(plugin_now.enabled),
+            code: "management-required",
+            diagnostic: format!(
+                "built-in plugin `{bundle_name}` ships with Codewhale and cannot be switched here"
+            ),
+            bundle: Some(bundle_name),
+            version,
+            warnings: Vec::new(),
+        });
+    }
+    if is_agent && !has_agent_call_identity(call, &tool) {
         record_outcome(
             call,
             method_name,
@@ -5444,7 +5547,7 @@ async fn toggle(
             warnings: Vec::new(),
         });
     }
-    if matches!(after_pending, PendingApprover::Agent(_)) && !still_own {
+    if is_agent && !still_own {
         let reason = reason_now.unwrap_or("this plugin is not owned by this agent");
         record_outcome(
             call,
@@ -5497,9 +5600,38 @@ async fn toggle(
     let policy = extension_host_policy_enabled();
     #[cfg(any(test, feature = "test-support"))]
     let env_scope = crate::test_support::env_scope_ticket();
-    let Some(approver) = after_pending.as_approver(call, &tool, initial_registry.workspace())
-    else {
-        return Err(BrokerRefusal::NotAvailable(DshService::Plugins));
+    #[cfg(any(test, feature = "test-support"))]
+    let test_offered: Vec<HostService> = HostService::ALL
+        .into_iter()
+        .filter(|service| offered(*service))
+        .collect();
+    let ws_for_approver = canon_ws_now
+        .as_deref()
+        .unwrap_or_else(|| initial_registry.workspace());
+    let approver = match approver_from_carrier(call, &tool, &carrier, ws_for_approver) {
+        Ok(approver) => approver,
+        Err(msg) => {
+            record_outcome(
+                call,
+                method_name,
+                Some(&bundle_name),
+                Some(&plugin_now.content_hash),
+                None,
+                "failed",
+            );
+            return change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: method_name,
+                target: raw_target,
+                changed: false,
+                enabled: Some(plugin_now.enabled),
+                code: "operation-error",
+                diagnostic: msg,
+                bundle: Some(bundle_name),
+                version,
+                warnings: Vec::new(),
+            });
+        }
     };
     let approver_for_commit = approver.clone();
     let selector = plugin_now.id.as_str().to_string();
@@ -5509,6 +5641,11 @@ async fn toggle(
     let canon_ws_clone = canon_ws_now.clone();
 
     enum ToggleOutcome {
+        ServiceReviewChanged {
+            registry: Arc<PluginRegistry>,
+            changed: bool,
+            enabled: bool,
+        },
         Failed {
             registry: Arc<PluginRegistry>,
             changed: bool,
@@ -5532,6 +5669,8 @@ async fn toggle(
     let outcome = tokio::task::spawn_blocking(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _env_scope = crate::test_support::join_env_scope(env_scope);
+        #[cfg(any(test, feature = "test-support"))]
+        let _test_offer = TestOffer::only(&test_offered);
         let _scope = PolicyScope::propagate(policy);
         let fresh = base_reg.rediscover_for_workspace(base_reg.workspace());
         let mut reg = (*fresh).clone();
@@ -5541,13 +5680,21 @@ async fn toggle(
                 Some(PluginApprover::Agent(_))
             );
         let changed = if want_enabled {
-            let commit_res = if !was_trusted || needs_person_upgrade {
-                let host_services = match &approver_for_commit {
-                    PluginApprover::Agent(_) => reg
-                        .host_service_review_for(&selector, &approver_for_commit)
-                        .map(|review| review.token),
-                    PluginApprover::Person { .. } | PluginApprover::CommandLine => None,
+            let post_review = reg.host_service_review_for(&selector, &approver_for_commit);
+            let post_lines = post_review
+                .as_ref()
+                .map(HostServiceReview::text)
+                .unwrap_or_default();
+            let post_token = post_review.as_ref().map(|review| review.token.clone());
+            if post_lines != shown_service_lines || post_token != shown_service_token {
+                return ToggleOutcome::ServiceReviewChanged {
+                    registry: fresh,
+                    changed: false,
+                    enabled: was_enabled,
                 };
+            }
+            let commit_res = if !was_trusted || needs_person_upgrade {
+                let host_services = post_review.map(|review| review.token);
                 reg.trust_and_enable_by(
                     &selector,
                     ReviewApproval {
@@ -5634,6 +5781,33 @@ async fn toggle(
     .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
 
     match outcome {
+        ToggleOutcome::ServiceReviewChanged {
+            registry: fresh,
+            changed,
+            enabled,
+        } => {
+            super::plugins_changed(fresh);
+            record_outcome(
+                call,
+                method_name,
+                Some(&bundle_name),
+                Some(&plugin_now.content_hash),
+                Some(&approver),
+                "failed",
+            );
+            change_with_outcome(ChangeOutcome {
+                application: "failed",
+                stage: method_name,
+                target: raw_target,
+                changed,
+                enabled: Some(enabled),
+                code: "operation-error",
+                diagnostic: "the services it asks for changed after review".to_string(),
+                bundle: Some(bundle_name),
+                version,
+                warnings: Vec::new(),
+            })
+        }
         ToggleOutcome::Overridden {
             registry: fresh,
             changed,

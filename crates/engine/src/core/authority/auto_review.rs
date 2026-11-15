@@ -564,6 +564,7 @@ pub struct AutoReviewContext<'a> {
     pub recent_actions: Vec<crate::core::turn::RecentReviewAction>,
     pub pinned_instructions: Option<crate::project_context::PinnedProjectInstructions>,
     pub environment: Option<String>,
+    pub creator_review: Option<crate::extension_host::creator_policy::CreatorReviewSummary>,
 }
 
 impl<'a> AutoReviewContext<'a> {
@@ -1016,6 +1017,7 @@ impl<'a> AutoReviewContext<'a> {
             recent_actions: Vec::new(),
             pinned_instructions: None,
             environment: None,
+            creator_review: None,
             tool_name,
         }
     }
@@ -2111,6 +2113,14 @@ pub fn build_reviewer_context_for_retry(
             Value::String(soft_rule.as_str().to_string()),
         );
     }
+    let plugin_review = ctx.creator_review.as_ref().map(|summary| {
+        let mut obj = match serde_json::to_value(summary) {
+            Ok(Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        obj.insert("untrusted_evidence".to_string(), Value::Bool(true));
+        redact_json_model_bound_secrets(&Value::Object(obj))
+    });
 
     type InstructionRenderEntry = (String, String, bool);
 
@@ -2138,6 +2148,9 @@ pub fn build_reviewer_context_for_retry(
             environment,
         );
         root.insert("proposed_tool_call".to_string(), proposed_tool_call.clone());
+        if let Some(review) = &plugin_review {
+            root.insert("plugin_review".to_string(), review.clone());
+        }
         root.insert(
             "deterministic_observations".to_string(),
             deterministic_observations.clone(),

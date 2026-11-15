@@ -119,6 +119,11 @@ impl HostToolSpec {
         }
     }
 
+    fn is_creator_plugin_manager(&self) -> bool {
+        self.registration.owner.plugin_id == super::creator_policy::CREATOR_PLUGIN_ID
+            && self.registration.name == super::creator_policy::PLUGIN_MANAGER_TOOL_NAME
+    }
+
     /// Check `input` against the schema the plugin registered the tool with.
     /// The error is the ordinary invalid-input tool error, so the model sees
     /// what to correct; the host is never reached.
@@ -442,16 +447,20 @@ impl ToolSpec for HostToolSpec {
         self.approval()
     }
 
-    fn approval_requirement_for(&self, _input: &Value) -> ApprovalRequirement {
-        self.approval()
+    fn approval_requirement_for(&self, input: &Value) -> ApprovalRequirement {
+        if self.is_creator_plugin_manager() && super::creator_policy::is_list_action(input) {
+            ApprovalRequirement::Auto
+        } else {
+            self.approval()
+        }
     }
 
     fn is_read_only(&self) -> bool {
         false
     }
 
-    fn is_read_only_for(&self, _input: &Value) -> bool {
-        false
+    fn is_read_only_for(&self, input: &Value) -> bool {
+        self.is_creator_plugin_manager() && super::creator_policy::is_list_action(input)
     }
 
     fn defer_loading(&self) -> bool {
@@ -474,15 +483,26 @@ impl ToolSpec for HostToolSpec {
         // Before the user is asked to approve it: a call the schema refuses is
         // returned to the model to correct and never becomes an approval card.
         self.check_input(&input)?;
+        let read_only = self.is_read_only_for(&input);
+        let approval = self.approval_requirement_for(&input);
+        let description = if self.is_creator_plugin_manager() {
+            super::creator_policy::initial_prepared_description(&input)
+        } else {
+            self.approval_text()
+        };
         Ok(PreparedToolCall {
             name: self.registration.name.clone(),
             // Rust composes the card; the extension cannot supply approval text.
-            description: self.approval_text(),
-            read_only: false,
+            description,
+            read_only,
             supports_parallel: false,
             starts_detached: false,
-            approval: self.approval(),
-            resources: vec![crate::tools::spec::ResourceClaim::GlobalExclusive],
+            approval,
+            resources: if read_only {
+                Vec::new()
+            } else {
+                vec![crate::tools::spec::ResourceClaim::GlobalExclusive]
+            },
             input,
         })
     }

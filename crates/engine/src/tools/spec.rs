@@ -601,6 +601,8 @@ pub struct ToolExecutionState {
     pub child_host: Option<Arc<crate::tools::subagent::engine::ChildAuthority>>,
     /// Set only on the context of one call a person approved on a card.
     pub human_decision: Option<crate::core::engine::HumanDecision>,
+    /// Carried authorization for a changing `plugin_manager` call.
+    pub creator_decision: Option<crate::extension_host::creator_policy::CreatorDecisionCarrier>,
     pub mcp_always_binding: Option<u64>,
     pub account_fence: Option<Arc<crate::profile_constitution::AccountFence>>,
     /// Shared shell manager for background tasks and streaming IO.
@@ -804,6 +806,7 @@ impl ToolContext {
                 acp_host: None,
                 child_host: None,
                 human_decision: None,
+                creator_decision: None,
                 mcp_always_binding: None,
                 account_fence: None,
                 shell_manager,
@@ -1434,6 +1437,16 @@ impl ToolContext {
     #[must_use]
     pub fn with_human_decision(mut self, decision: crate::core::engine::HumanDecision) -> Self {
         self.human_decision = Some(decision);
+        self
+    }
+
+    /// Carry the turn loop's `plugin_manager` admission decision onto the tool context.
+    #[must_use]
+    pub fn with_creator_decision(
+        mut self,
+        decision: crate::extension_host::creator_policy::CreatorDecisionCarrier,
+    ) -> Self {
+        self.creator_decision = Some(decision);
         self
     }
 

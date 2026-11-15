@@ -1103,9 +1103,9 @@ pub enum ApprovalRequestDisposition {
 /// closed), then the full-access policy-hold denial, then the `Never` denial —
 /// the live posture wins over any remembered grant (approvals J) — then
 /// auto-approval (full access or a session grant), and only finally a modal.
-/// Extension-origin forced calls reach that modal under Full Access and
-/// interactive Auto-Review with the owner present; no remembered grant can
-/// satisfy them. `extension_origin` comes from Rust-minted approval keys,
+/// Extension-origin and creator human-decision forced calls reach that modal
+/// under Full Access and interactive Auto-Review with the owner present; no
+/// remembered grant can satisfy them. `approval_key` is a Rust-minted key,
 /// never an extension label or a claim supplied by the host.
 #[must_use]
 pub fn resolve_approval_request_disposition(
@@ -1113,7 +1113,7 @@ pub fn resolve_approval_request_disposition(
     session_approved: bool,
     session_denied: bool,
     approval_force_prompt: bool,
-    extension_origin: bool,
+    approval_key: &str,
 ) -> ApprovalRequestDisposition {
     if session_denied {
         return ApprovalRequestDisposition::AutoDenySessionDenied;
@@ -1129,7 +1129,10 @@ pub fn resolve_approval_request_disposition(
     // itself. What remains is the posture question: how does this authority
     // treat an ordinary promptable tool?
     let posture = resolve_tool_permission(authority, ApprovalRequirement::Suggest, false);
-    if approval_force_prompt && !extension_origin && posture == ToolPermission::Allow {
+    if approval_force_prompt
+        && !crate::tools::approval_cache::forces_full_access_prompt_for_key(approval_key)
+        && posture == ToolPermission::Allow
+    {
         return ApprovalRequestDisposition::AutoDenyFullAccessPolicyHold;
     }
     // The live posture wins over any remembered grant: a conversation grant
@@ -1243,6 +1246,9 @@ pub fn get_tool_category(name: &str) -> ToolCategory {
 /// Categorize a concrete call after resolving an action-based canonical tool.
 #[must_use]
 pub fn get_tool_category_for_call(name: &str, params: &Value) -> ToolCategory {
+    if name == "plugin_manager" && crate::extension_host::creator_policy::is_list_action(params) {
+        return ToolCategory::Safe;
+    }
     get_tool_category(canonical_action_alias(name, params))
 }
 
@@ -1796,43 +1802,43 @@ mod tests {
 
         // Session denial wins over everything, including full access.
         assert_eq!(
-            resolve_approval_request_disposition(&full_access, true, true, false, false),
+            resolve_approval_request_disposition(&full_access, true, true, false, ""),
             ApprovalRequestDisposition::AutoDenySessionDenied
         );
         // Forced hold under full access fails closed instead of auto-approving.
         assert_eq!(
-            resolve_approval_request_disposition(&full_access, true, false, true, false),
+            resolve_approval_request_disposition(&full_access, true, false, true, ""),
             ApprovalRequestDisposition::AutoDenyFullAccessPolicyHold
         );
         // Full access and session grants auto-approve ordinary requests.
         assert_eq!(
-            resolve_approval_request_disposition(&full_access, false, false, false, false),
+            resolve_approval_request_disposition(&full_access, false, false, false, ""),
             ApprovalRequestDisposition::AutoApprove
         );
         assert_eq!(
-            resolve_approval_request_disposition(&ask, true, false, false, false),
+            resolve_approval_request_disposition(&ask, true, false, false, ""),
             ApprovalRequestDisposition::AutoApprove
         );
         // The live Never posture wins over a remembered session grant
         // (approvals J, CURRENT_DECISIONS §21), and denies everything else
         // promptable.
         assert_eq!(
-            resolve_approval_request_disposition(&never, true, false, false, false),
+            resolve_approval_request_disposition(&never, true, false, false, ""),
             ApprovalRequestDisposition::AutoDenyNeverPosture
         );
         assert_eq!(
-            resolve_approval_request_disposition(&never, false, false, false, false),
+            resolve_approval_request_disposition(&never, false, false, false, ""),
             ApprovalRequestDisposition::AutoDenyNeverPosture
         );
         for force_prompt in [false, true] {
             assert_eq!(
-                resolve_approval_request_disposition(&auto, false, false, force_prompt, false),
+                resolve_approval_request_disposition(&auto, false, false, force_prompt, ""),
                 ApprovalRequestDisposition::AutoDenyAutoReview
             );
         }
         // Ask posture with no grant opens the modal.
         assert_eq!(
-            resolve_approval_request_disposition(&ask, false, false, false, false),
+            resolve_approval_request_disposition(&ask, false, false, false, ""),
             ApprovalRequestDisposition::Prompt
         );
     }
@@ -1862,6 +1868,7 @@ mod tests {
             true,
             ApprovalMode::Bypass,
         );
+        let full_access_headless = authority(AppMode::Agent, true, ApprovalMode::Bypass);
         let never = TurnAuthority::for_tui_surface(
             AppMode::Agent,
             false,
@@ -1881,7 +1888,7 @@ mod tests {
             .with_rust_origin(RunOrigin::Interactive, false);
 
         for owner_present in [&auto_interactive, &auto_attached] {
-            for is_extension in [false, true] {
+            for approval_key in ["", "extcall:ext:test", "creator-human:install"] {
                 for session_approved in [false, true] {
                     assert_eq!(
                         resolve_approval_request_disposition(
@@ -1889,7 +1896,7 @@ mod tests {
                             session_approved,
                             false,
                             true,
-                            is_extension,
+                            approval_key,
                         ),
                         ApprovalRequestDisposition::Prompt
                     );
@@ -1899,7 +1906,7 @@ mod tests {
                             session_approved,
                             true,
                             true,
-                            is_extension,
+                            approval_key,
                         ),
                         ApprovalRequestDisposition::AutoDenySessionDenied
                     );
@@ -1910,7 +1917,7 @@ mod tests {
                         false,
                         false,
                         false,
-                        is_extension,
+                        approval_key,
                     ),
                     ApprovalRequestDisposition::AutoDenyAutoReview
                 );
@@ -1922,7 +1929,7 @@ mod tests {
             &auto_headless,
             &auto_interactive_unattached,
         ] {
-            for is_extension in [false, true] {
+            for approval_key in ["", "extcall:ext:test", "creator-human:install"] {
                 for force_prompt in [false, true] {
                     assert_eq!(
                         resolve_approval_request_disposition(
@@ -1930,7 +1937,7 @@ mod tests {
                             false,
                             false,
                             force_prompt,
-                            is_extension,
+                            approval_key,
                         ),
                         ApprovalRequestDisposition::AutoDenyAutoReview
                     );
@@ -1939,27 +1946,67 @@ mod tests {
         }
 
         assert_eq!(
-            resolve_approval_request_disposition(&ask, false, false, true, false),
+            resolve_approval_request_disposition(&ask, false, false, true, ""),
             ApprovalRequestDisposition::Prompt
         );
         assert_eq!(
-            resolve_approval_request_disposition(&accept_edits, false, false, true, false),
+            resolve_approval_request_disposition(&accept_edits, false, false, true, ""),
             ApprovalRequestDisposition::Prompt
         );
         assert_eq!(
-            resolve_approval_request_disposition(&plan, false, false, true, false),
+            resolve_approval_request_disposition(&plan, false, false, true, ""),
             ApprovalRequestDisposition::Prompt
         );
         assert_eq!(
-            resolve_approval_request_disposition(&full_access, false, false, true, false),
+            resolve_approval_request_disposition(&full_access, false, false, true, ""),
             ApprovalRequestDisposition::AutoDenyFullAccessPolicyHold
         );
         assert_eq!(
-            resolve_approval_request_disposition(&full_access, false, false, true, true),
+            resolve_approval_request_disposition(
+                &full_access,
+                false,
+                false,
+                true,
+                "extcall:ext:test",
+            ),
             ApprovalRequestDisposition::Prompt
         );
         assert_eq!(
-            resolve_approval_request_disposition(&never, false, false, true, false),
+            resolve_approval_request_disposition(
+                &full_access,
+                false,
+                false,
+                true,
+                "creator-human:install",
+            ),
+            ApprovalRequestDisposition::Prompt
+        );
+        assert_eq!(
+            resolve_approval_request_disposition(&full_access_headless, false, false, true, ""),
+            ApprovalRequestDisposition::AutoDenyFullAccessPolicyHold
+        );
+        assert_eq!(
+            resolve_approval_request_disposition(
+                &full_access_headless,
+                false,
+                false,
+                true,
+                "creator-human:install",
+            ),
+            ApprovalRequestDisposition::Prompt
+        );
+        assert_eq!(
+            resolve_approval_request_disposition(&never, false, false, true, ""),
+            ApprovalRequestDisposition::AutoDenyNeverPosture
+        );
+        assert_eq!(
+            resolve_approval_request_disposition(
+                &never,
+                false,
+                false,
+                true,
+                "creator-human:install",
+            ),
             ApprovalRequestDisposition::AutoDenyNeverPosture
         );
     }

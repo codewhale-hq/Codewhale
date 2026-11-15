@@ -23,6 +23,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
+#[path = "tests/creator_gate.rs"]
+mod creator_gate;
 #[path = "tests/extension_creator.rs"]
 mod extension_creator;
 #[path = "tests/extension_hooks.rs"]

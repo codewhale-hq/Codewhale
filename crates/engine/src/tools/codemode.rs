@@ -534,6 +534,13 @@ pub fn refusal_before_gate(name: &str, input: &Value, gated: bool) -> Option<Str
             "Computer Use call `{name}` grants consent or runs a script; it needs its own approval card, so call it directly and let the user decide"
         ));
     }
+    if crate::extension_host::creator_policy::is_creator_plugin_manager_name(&lower)
+        && !crate::extension_host::creator_policy::is_list_action(input)
+    {
+        return Some(format!(
+            "`{name}` changes plugins and is not available inside execute_tools programs; call it directly"
+        ));
+    }
     if McpPool::is_mcp_tool(name)
         && name.ends_with(&format!("_{}", crate::mcp::AUTHENTICATE_TOOL_NAME))
     {

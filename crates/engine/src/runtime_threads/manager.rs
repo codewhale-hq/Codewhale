@@ -18671,8 +18671,7 @@ source_usage_records: Default::default(),
                         grant.is_some(),
                         deny_grant.is_some(),
                         approval_force_prompt,
-                        // Rust mints this namespace; tool text cannot claim origin.
-                        approval_key.starts_with("extcall:ext:"),
+                        &approval_key,
                     );
 
                     let denied_posture = match disposition {

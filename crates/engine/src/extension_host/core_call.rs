@@ -132,6 +132,7 @@ const REFUSED_NAMES: &[&str] = &[
     "send_later",
     "start_mcp_server",
     "start_registry_mcp_server",
+    "plugin_manager",
 ];
 
 /// Read-only, workspace-local tools an extension's call may run without a
@@ -501,8 +502,9 @@ impl BrokerContext {
         effect: BrokerEffect,
         target: Option<&str>,
     ) -> Result<(), BrokerRefusal> {
+        let raw_target = target;
         let target: Option<String> =
-            target.map(|target| target.chars().take(dsh_broker::MAX_ACT_TARGET).collect());
+            raw_target.map(|target| target.chars().take(dsh_broker::MAX_ACT_TARGET).collect());
         let record = |outcome: &str| -> bool {
             let mut entry =
                 json!({ "method": method, "effect": effect.name(), "outcome": outcome });
@@ -523,6 +525,45 @@ impl BrokerContext {
                 return Err(self.withdrawn());
             }
             return Ok(());
+        }
+        if self.service == DshService::Plugins {
+            if let Err(refusal) = self.count() {
+                record(refusal.code());
+                return Err(refusal);
+            }
+            let mut live_tool = (*self.tool).clone();
+            let live_authority = live_tool.refresh_live_posture();
+            match super::creator_policy::admit_broker_act(
+                &live_tool,
+                live_authority.as_ref(),
+                method,
+                effect,
+                raw_target,
+            ) {
+                Ok((decider, posture)) => {
+                    let mut entry = json!({
+                        "method": method,
+                        "effect": effect.name(),
+                        "outcome": "allowed",
+                        "decider": decider,
+                        "posture": posture,
+                    });
+                    if let Some(target) = &target {
+                        entry["target"] = json!(target);
+                    }
+                    if !self.record(entry) {
+                        return Err(self.withdrawn());
+                    }
+                    return Ok(());
+                }
+                Err(message) => {
+                    record("refused");
+                    return Err(BrokerRefusal::Refused {
+                        service: self.service,
+                        message,
+                    });
+                }
+            }
         }
         let gate_tool = effect.gate_tool();
         if !self.invocation.gates.contains(&gate_tool) {
