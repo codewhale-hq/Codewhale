@@ -3498,6 +3498,11 @@ pub struct RuntimeThreadManager {
     pub(super) pending_approvals: Arc<parking_lot::Mutex<HashMap<String, PendingApprovalEntry>>>,
     /// Session approval grants per thread id.
     pub(super) grants: crate::core::authority::grants::GrantStore,
+    pub(super) auto_review_blocks: Arc<
+        parking_lot::Mutex<
+            HashMap<String, Vec<crate::core::authority::auto_review::AutoReviewBlockedAction>>,
+        >,
+    >,
     pub(super) pending_user_inputs:
         Arc<parking_lot::Mutex<HashMap<(String, String), PendingUserInputEntry>>>,
     pub(super) pending_dynamic_tools:
@@ -4506,6 +4511,7 @@ impl RuntimeThreadManager {
             automations: Arc::new(parking_lot::Mutex::new(None)),
             pending_approvals: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             grants,
+            auto_review_blocks: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             pending_user_inputs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             pending_dynamic_tools: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             pending_commands: Arc::new(parking_lot::Mutex::new(HashMap::new())),
@@ -5799,6 +5805,7 @@ impl RuntimeThreadManager {
     /// conversation it was given in.
     pub(super) fn take_approval_grants(&self, thread_id: &str) -> Vec<RuntimeApprovalGrant> {
         crate::extension_host::end_remote_session(thread_id);
+        self.auto_review_blocks.lock().remove(thread_id);
         self.grants
             .revoke_thread(thread_id, "runtime", "thread archived or deleted")
             .iter()
@@ -5830,6 +5837,94 @@ impl RuntimeThreadManager {
         )
         .await?;
         Ok(true)
+    }
+
+    pub async fn list_auto_review_blocks(
+        &self,
+        thread_id: &str,
+        expected_workspace: Option<&Path>,
+    ) -> Result<Vec<crate::core::authority::auto_review::AutoReviewBlockedAction>> {
+        let thread = self
+            .store
+            .load_thread(thread_id)
+            .with_context(|| format!("Thread not found: {thread_id}"))?;
+        require_thread_workspace(&thread, expected_workspace)?;
+        let engine = {
+            let active = self.active.lock().await;
+            active
+                .engines
+                .get(thread_id)
+                .map(|state| state.engine.clone())
+        };
+        if let Some(engine) = engine {
+            let blocks = engine.list_auto_review_blocks();
+            self.auto_review_blocks
+                .lock()
+                .insert(thread_id.to_string(), blocks.clone());
+            return Ok(blocks);
+        }
+        Ok(self
+            .auto_review_blocks
+            .lock()
+            .get(thread_id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    pub async fn approve_auto_review_retry(
+        &self,
+        thread_id: &str,
+        target: &str,
+        responder: Option<ApprovalResponder>,
+        expected_workspace: Option<&Path>,
+    ) -> Result<crate::core::authority::auto_review::AutoReviewRetryGrant> {
+        if !(self.owner_surface_attached
+            && responder.is_some_and(ApprovalResponder::is_owner_surface))
+        {
+            return Err(ApprovalOwnerRequired.into());
+        }
+        let thread = self
+            .store
+            .load_thread(thread_id)
+            .with_context(|| format!("Thread not found: {thread_id}"))?;
+        require_thread_workspace(&thread, expected_workspace)?;
+        anyhow::ensure!(!thread.archived, "thread {thread_id} is archived");
+        let policy = RuntimePolicyProjection::from_persisted(
+            &thread.mode,
+            thread.permission_posture.as_deref(),
+            thread.auto_approve,
+        );
+        if policy.permission != codewhale_execpolicy::ApprovalMode::Auto {
+            return Err(crate::core::engine::AutoReviewRetryApprovalError::NotInAutoReview.into());
+        }
+        let engine = {
+            let active = self.active.lock().await;
+            active
+                .engines
+                .get(thread_id)
+                .map(|state| state.engine.clone())
+        };
+        let Some(engine) = engine else {
+            return Err(
+                crate::core::engine::AutoReviewRetryApprovalError::InvalidTarget(format!(
+                    "no blocked action matching '{target}'"
+                ))
+                .into(),
+            );
+        };
+        let grant = engine.approve_auto_review_retry(target)?;
+        self.auto_review_blocks
+            .lock()
+            .insert(thread_id.to_string(), engine.list_auto_review_blocks());
+        self.emit_event(
+            thread_id,
+            None,
+            None,
+            "auto_review.retry_approved",
+            json!({ "grant": &grant }),
+        )
+        .await?;
+        Ok(grant)
     }
 
     #[must_use]
@@ -7091,6 +7186,7 @@ impl RuntimeThreadManager {
         let automations = self.automations.clone();
         let pending_approvals = self.pending_approvals.clone();
         let grants = self.grants.clone();
+        let auto_review_blocks = self.auto_review_blocks.clone();
         let pending_user_inputs = self.pending_user_inputs.clone();
         let pending_dynamic_tools = self.pending_dynamic_tools.clone();
         let pending_commands = self.pending_commands.clone();
@@ -7148,6 +7244,7 @@ impl RuntimeThreadManager {
                 automations: automations.clone(),
                 pending_approvals: pending_approvals.clone(),
                 grants: grants.clone(),
+                auto_review_blocks: auto_review_blocks.clone(),
                 pending_user_inputs: pending_user_inputs.clone(),
                 pending_dynamic_tools: pending_dynamic_tools.clone(),
                 pending_commands: pending_commands.clone(),
@@ -9705,6 +9802,7 @@ impl RuntimeThreadManager {
         }
 
         if let Some(engine) = evicted_engine {
+            self.auto_review_blocks.lock().remove(&thread.id);
             let _ = engine.send(Op::Shutdown).await;
         }
 
@@ -9725,6 +9823,11 @@ impl RuntimeThreadManager {
                 approval_mode: policy.permission,
                 configured_sandbox_mode: configured_sandbox_mode.clone(),
             });
+            self.auto_review_blocks
+                .lock()
+                .insert(thread.id.clone(), engine.list_auto_review_blocks());
+        } else if changes.get("workspace").is_some() {
+            self.auto_review_blocks.lock().remove(&thread.id);
         }
 
         if !changes.is_empty() {
@@ -19120,6 +19223,78 @@ source_usage_records: Default::default(),
                     }
                     latest_goal_snapshot = Some(snapshot);
                 }
+                EngineEvent::ToolGateDecision {
+                    agent_id, decision, ..
+                } => {
+                    if agent_id.is_none()
+                        && decision != crate::core::events::ToolGateVerdict::Allowed
+                    {
+                        self.auto_review_blocks
+                            .lock()
+                            .insert(thread_id.clone(), engine.list_auto_review_blocks());
+                    }
+                }
+                EngineEvent::AutoReviewPaused {
+                    reason,
+                    approval_mode,
+                } => {
+                    let posture = match approval_mode {
+                        codewhale_execpolicy::ApprovalMode::Suggest => "ask",
+                        codewhale_execpolicy::ApprovalMode::AcceptEdits => "accept_edits",
+                        codewhale_execpolicy::ApprovalMode::Bypass => "full_access",
+                        codewhale_execpolicy::ApprovalMode::Auto => "auto_review",
+                        codewhale_execpolicy::ApprovalMode::Never => "never",
+                    };
+                    let updated_thread = {
+                        let _thread_mutation = self.store.thread_mutation.lock();
+                        let mut thread = self.store.load_thread(&thread_id)?;
+                        if thread.permission_posture.as_deref() != Some(posture)
+                            || (posture != "full_access" && thread.auto_approve)
+                        {
+                            thread.permission_posture = Some(posture.to_string());
+                            if posture != "full_access" {
+                                thread.auto_approve = false;
+                            }
+                            thread.updated_at = Utc::now();
+                            self.store.save_thread(&thread)?;
+                            Some(thread)
+                        } else {
+                            None
+                        }
+                    };
+                    self.auto_review_blocks
+                        .lock()
+                        .insert(thread_id.clone(), engine.list_auto_review_blocks());
+                    if let Some(thread) = updated_thread {
+                        self.emit_event(
+                            &thread_id,
+                            Some(&turn_id),
+                            None,
+                            "thread.updated",
+                            json!({
+                                "thread": thread,
+                                "changes": {
+                                    "permission_posture": posture,
+                                    "auto_approve": false,
+                                },
+                            }),
+                        )
+                        .await?;
+                    }
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        None,
+                        "auto_review.paused",
+                        json!({
+                            "reason": &reason,
+                            "permission_posture": posture,
+                        }),
+                    )
+                    .await?;
+                    self.publish_status_item(&thread_id, &turn_id, reason, &settled_approval_calls)
+                        .await?;
+                }
                 _ => {}
             }
         }
@@ -19936,10 +20111,16 @@ source_usage_records: Default::default(),
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub async fn install_test_engine(&self, thread_id: &str, engine: EngineHandle) -> Result<()> {
+    pub async fn install_test_engine(
+        &self,
+        thread_id: &str,
+        mut engine: EngineHandle,
+    ) -> Result<()> {
         let thread = self.get_thread(thread_id).await?;
         let config = self.read_config().clone();
         let route = self.resolved_route_for_thread(&config, &thread)?;
+        engine.set_host_profile(self.host_profile);
+        engine.set_owner_surface_attached(self.owner_surface_attached);
         {
             let mut selected = self.subagent_manager.lock().await;
             if let Some(manager) = selected.as_ref() {
@@ -19966,6 +20147,68 @@ source_usage_records: Default::default(),
         );
         touch_lru(&mut active.lru, thread_id);
         Ok(())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn register_auto_review_block_for_test(
+        &self,
+        thread_id: &str,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+        rule: Option<&str>,
+        reason: &str,
+        verdict: &str,
+        approvable: bool,
+    ) -> Result<Option<String>> {
+        let engine = {
+            let active = self.active.lock().await;
+            active
+                .engines
+                .get(thread_id)
+                .map(|state| state.engine.clone())
+        };
+        if let Some(engine) = engine {
+            engine.set_auto_review_authority_for_test(codewhale_execpolicy::ApprovalMode::Auto);
+            let receipt_id = engine.record_auto_review_block_for_test(
+                "tool-test-1",
+                tool_name,
+                tool_input,
+                rule,
+                reason,
+                "auto_review",
+                verdict,
+                approvable,
+            );
+            self.auto_review_blocks
+                .lock()
+                .insert(thread_id.to_string(), engine.list_auto_review_blocks());
+            return Ok(receipt_id);
+        }
+        let call_digest =
+            crate::core::authority::auto_review::auto_review_call_digest(tool_name, tool_input);
+        let action_summary =
+            crate::core::authority::auto_review::auto_review_action_summary(tool_name, tool_input);
+        let mut guard = self.auto_review_blocks.lock();
+        let entry = guard.entry(thread_id.to_string()).or_default();
+        let seq = entry.len() + 1;
+        let receipt_id = format!("ar-{seq}");
+        entry.push(
+            crate::core::authority::auto_review::AutoReviewBlockedAction {
+                receipt_id: receipt_id.clone(),
+                call_digest,
+                tool_id: format!("tool-test-{seq}"),
+                tool_name: tool_name.to_string(),
+                action_summary,
+                rule: rule.map(str::to_string),
+                reason: reason.to_string(),
+                gate: "auto_review".to_string(),
+                verdict: verdict.to_string(),
+                approved: false,
+                approvable,
+            },
+        );
+        Ok(approvable.then_some(receipt_id))
     }
 }
 

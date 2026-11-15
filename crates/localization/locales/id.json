@@ -2683,5 +2683,16 @@
   "AccountModelsReady": "Terhubung ke {model} melalui akun Codewhale Anda.",
   "AccountModelsConnectFailed": "Tidak dapat menghubungkan model akun: {error}",
   "AccountModelsCancelled": "Penyiapan model dibatalkan. Model Anda saat ini tetap sama.",
-  "AccountModelsLoadFailed": "Tidak dapat memeriksa model akun. Coba lagi atau hubungkan penyedia di komputer ini."
+  "AccountModelsLoadFailed": "Tidak dapat memeriksa model akun. Coba lagi atau hubungkan penyedia di komputer ini.",
+  "AutoReviewReceiptRetryHint": "Tekan r saat prompt kosong atau jalankan /permissions blocked approve {id} untuk mengizinkan satu kali coba ulang.",
+  "AutoReviewPausedReceipt": "Auto-Review dijeda ({reason}); izin beralih ke Ask. Shift+Tab atau /auto untuk melanjutkan.",
+  "AutoReviewRetryApprovedStatus": "Menyetujui satu kali coba ulang untuk '{tool}' [{id}].",
+  "AutoReviewRetryFailedStatus": "Tidak dapat menyetujui coba ulang Auto-Review [{id}]: {error}",
+  "PermissionsBlockedHeader": "Tindakan Auto-Review yang diblokir ({count}):",
+  "PermissionsBlockedEmpty": "Tidak ada tindakan Auto-Review yang diblokir dalam percakapan ini.",
+  "PermissionsBlockedEntry": "{index}. [{id}] {tool} ({rule}) — {summary} | {reason} ({status})",
+  "PermissionsBlockedStatusApprovable": "dapat disetujui",
+  "PermissionsBlockedStatusApproved": "disetujui",
+  "PermissionsBlockedStatusNotApprovable": "tidak dapat disetujui",
+  "PermissionsBlockedHint": "Jalankan /permissions blocked approve <receipt-id> (atau tekan r saat prompt kosong untuk yang terbaru) untuk mengizinkan satu kali coba ulang."
 }

@@ -1050,7 +1050,12 @@ fn windows_auto_review_node_image_kill_is_denied_before_any_shell_effect() {
                     assert_eq!(results.len(), 1, "one provider ID gets one result");
                     assert_eq!(results[0].1, Some(true));
                     assert!(results[0].0.contains("Node launcher"), "{results:?}");
-                    assert!(results[0].0.contains("do not work around"), "{results:?}");
+                    assert!(
+                        !results[0].0.contains("do not work around")
+                            && results[0].0.contains("You may take a different route")
+                            && results[0].0.contains("approve it from the receipt"),
+                        "{results:?}"
+                    );
                     canned::simple_text_turn("Use an owned server PID instead.")
                 });
                 let config = {
@@ -1183,7 +1188,13 @@ async fn auto_review_guardian_deny_returns_one_paired_failed_result() {
         assert_eq!(tool_results[0].1, Some(true));
         assert!(tool_results[0].0.contains(DENIAL), "{tool_results:?}");
         assert!(
-            tool_results[0].0.contains("Do not work around this denial"),
+            tool_results[0].0.contains("Auto-Review blocked this:")
+                && tool_results[0].0.contains("The person can approve it from the receipt"),
+            "{tool_results:?}"
+        );
+        assert!(
+            !tool_results[0].0.contains("Do not work around")
+                && !tool_results[0].0.contains("do not work around"),
             "{tool_results:?}"
         );
         let request_json = serde_json::to_string(request).expect("serialize follow-up request");

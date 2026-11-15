@@ -10,6 +10,32 @@ use super::observer_hooks::{
 use super::task_projection::refresh_active_task_panel;
 use super::*;
 
+pub(super) fn apply_approve_auto_review_retry(
+    app: &mut App,
+    engine_handle: &EngineHandle,
+    target: &str,
+) {
+    match engine_handle.approve_auto_review_retry(target) {
+        Ok(grant) => {
+            app.mark_auto_review_receipt_approved(&grant.receipt_id);
+            let msg = tr(app.ui_locale, MessageId::AutoReviewRetryApprovedStatus)
+                .replace("{tool}", &grant.tool_name)
+                .replace("{id}", &grant.receipt_id);
+            app.add_message(HistoryCell::System {
+                content: msg.clone(),
+            });
+            app.status_message = Some(msg);
+            app.needs_redraw = true;
+        }
+        Err(error) => {
+            let msg = tr(app.ui_locale, MessageId::AutoReviewRetryFailedStatus)
+                .replace("{id}", target)
+                .replace("{error}", &error.to_string());
+            app.push_status_toast(msg, StatusToastLevel::Warning, Some(8_000));
+        }
+    }
+}
+
 /// Record the model frozen into a child's runtime at spawn time.
 ///
 /// This is child-route evidence, not an inference from the parent session. A
@@ -1960,6 +1986,9 @@ async fn apply_command_result_inner(
                         );
                     }
                 }
+            }
+            AppAction::ApproveAutoReviewRetry { target } => {
+                apply_approve_auto_review_retry(app, engine_handle, &target);
             }
             AppAction::PluginRegistryChanged => {
                 // Revoke a disabled or untrusted plugin's host code now, not at

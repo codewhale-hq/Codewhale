@@ -27038,3 +27038,227 @@ async fn subagent_mailbox_file_writes_are_attributed_for_turn_undo() -> Result<(
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn runtime_auto_review_blocks_approve_owner_only_and_paused_posture() -> Result<()> {
+    use crate::core::engine::AutoReviewRetryApprovalError;
+    use crate::runtime_threads::manager::{ApprovalOwnerRequired, ApprovalResponder};
+    use codewhale_execpolicy::ApprovalMode;
+
+    let tmp = tempfile::tempdir()?;
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace));
+    let unattached = test_manager(tmp.path().join("unattached"))?;
+    let owner_mgr = RuntimeThreadManager::open_owner_host(
+        Config::default(),
+        workspace.clone(),
+        test_manager_config(tmp.path().join("owner")),
+        plugins,
+        None,
+        None,
+    )?;
+
+    let thread = owner_mgr
+        .create_thread(CreateThreadRequest {
+            permission_posture: Some("auto-review".to_string()),
+            workspace: Some(workspace),
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(thread.permission_posture.as_deref(), Some("auto_review"));
+
+    let mut harness = mock_engine_handle();
+    owner_mgr
+        .install_test_engine(&thread.id, harness.handle.clone())
+        .await?;
+
+    let receipt_1 = owner_mgr
+        .register_auto_review_block_for_test(
+            &thread.id,
+            "Bash",
+            &serde_json::json!({ "action": "run", "command": "rm -rf /tmp/x" }),
+            Some("guardian"),
+            "dangerous shell command",
+            "denied",
+            true,
+        )
+        .await?
+        .context("approvable block must allocate receipt id")?;
+    let receipt_2 = owner_mgr
+        .register_auto_review_block_for_test(
+            &thread.id,
+            "MCPTool",
+            &serde_json::json!({ "server": "ext", "tool": "drop_table" }),
+            Some("guardian"),
+            "external tool blocked",
+            "denied",
+            false,
+        )
+        .await?;
+    assert!(receipt_2.is_none());
+
+    let blocks = owner_mgr.list_auto_review_blocks(&thread.id, None).await?;
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0].receipt_id, receipt_1);
+    assert!(blocks[0].approvable);
+    assert!(!blocks[0].approved);
+    assert_eq!(blocks[1].receipt_id, "ar-2");
+    assert!(!blocks[1].approvable);
+    let non_approvable_digest = blocks[1].call_digest.clone();
+
+    let unattached_err = unattached
+        .approve_auto_review_retry(
+            &thread.id,
+            &receipt_1,
+            Some(ApprovalResponder::Desktop),
+            None,
+        )
+        .await
+        .expect_err("unattached manager must reject retry approval");
+    assert!(
+        unattached_err.is::<ApprovalOwnerRequired>(),
+        "{unattached_err:#}"
+    );
+
+    for responder in [
+        None,
+        Some(ApprovalResponder::Phone),
+        Some(ApprovalResponder::Acp),
+    ] {
+        let err = owner_mgr
+            .approve_auto_review_retry(&thread.id, &receipt_1, responder, None)
+            .await
+            .expect_err("non-owner responder must be rejected");
+        assert!(err.is::<ApprovalOwnerRequired>(), "{err:#}");
+    }
+
+    let non_approvable_err = owner_mgr
+        .approve_auto_review_retry(
+            &thread.id,
+            &non_approvable_digest,
+            Some(ApprovalResponder::Desktop),
+            None,
+        )
+        .await
+        .expect_err("non-approvable block must fail");
+    assert!(
+        matches!(
+            non_approvable_err.downcast_ref::<AutoReviewRetryApprovalError>(),
+            Some(AutoReviewRetryApprovalError::InvalidTarget(_))
+        ),
+        "{non_approvable_err:#}"
+    );
+
+    let grant = owner_mgr
+        .approve_auto_review_retry(&thread.id, &receipt_1, Some(ApprovalResponder::Tui), None)
+        .await?;
+    assert_eq!(grant.receipt_id, receipt_1);
+    assert_eq!(grant.tool_name, "Bash");
+    assert!(!grant.call_digest.is_empty());
+
+    let dup_err = owner_mgr
+        .approve_auto_review_retry(&thread.id, &receipt_1, Some(ApprovalResponder::Tui), None)
+        .await
+        .expect_err("duplicate retry approval must fail");
+    assert!(
+        matches!(
+            dup_err.downcast_ref::<AutoReviewRetryApprovalError>(),
+            Some(AutoReviewRetryApprovalError::InvalidTarget(_))
+        ),
+        "{dup_err:#}"
+    );
+
+    let after_approve = owner_mgr.list_auto_review_blocks(&thread.id, None).await?;
+    assert!(after_approve[0].approved);
+
+    let events_after_approve = owner_mgr.events_since(&thread.id, None)?;
+    assert!(
+        events_after_approve
+            .iter()
+            .any(|event| event.event == "auto_review.retry_approved"),
+        "expected auto_review.retry_approved event"
+    );
+
+    let pause_turn = owner_mgr
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "trigger pause".into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), harness.rx_op.recv())
+        .await?
+        .context("expected SendMessage op")?;
+    harness
+        .tx_event
+        .send(EngineEvent::AutoReviewPaused {
+            reason: "3 consecutive blocked actions".to_string(),
+            approval_mode: ApprovalMode::Suggest,
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "switched to ask".to_string(),
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage::default(),
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+    let pause_terminal = wait_for_terminal_turn(&owner_mgr, &pause_turn.id).await?;
+    assert_eq!(pause_terminal.status, RuntimeTurnStatus::Completed);
+
+    let events = owner_mgr.events_since(&thread.id, None)?;
+    let paused_ev = events
+        .iter()
+        .find(|event| event.event == "auto_review.paused")
+        .context("expected auto_review.paused event after EngineEvent::AutoReviewPaused")?;
+    assert_eq!(paused_ev.payload["permission_posture"], "ask");
+    assert_eq!(paused_ev.payload["reason"], "3 consecutive blocked actions");
+
+    let refreshed = owner_mgr.get_thread(&thread.id).await?;
+    assert_eq!(refreshed.permission_posture.as_deref(), Some("ask"));
+    assert!(!refreshed.auto_approve);
+
+    let after_pause_err = owner_mgr
+        .approve_auto_review_retry(&thread.id, "ar-2", Some(ApprovalResponder::Tui), None)
+        .await
+        .expect_err("retry approval must be rejected after pause moves out of auto_review");
+    assert!(
+        matches!(
+            after_pause_err.downcast_ref::<AutoReviewRetryApprovalError>(),
+            Some(AutoReviewRetryApprovalError::NotInAutoReview)
+        ),
+        "{after_pause_err:#}"
+    );
+
+    drop(harness);
+    owner_mgr.shutdown_and_wait().await?;
+    unattached.shutdown_and_wait().await?;
+    Ok(())
+}

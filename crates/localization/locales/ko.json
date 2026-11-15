@@ -2683,5 +2683,16 @@
   "AccountModelsReady": "Codewhale 계정으로 {model}에 연결했습니다.",
   "AccountModelsConnectFailed": "계정 모델을 연결하지 못했습니다: {error}",
   "AccountModelsCancelled": "모델 설정을 취소했습니다. 현재 모델은 그대로 유지됩니다.",
-  "AccountModelsLoadFailed": "계정 모델을 확인하지 못했습니다. 다시 시도하거나 이 컴퓨터에서 공급자를 연결하세요."
+  "AccountModelsLoadFailed": "계정 모델을 확인하지 못했습니다. 다시 시도하거나 이 컴퓨터에서 공급자를 연결하세요.",
+  "AutoReviewReceiptRetryHint": "입력창이 비어 있을 때 r을 누르거나 /permissions blocked approve {id}를 실행하면 한 번 다시 시도할 수 있습니다.",
+  "AutoReviewPausedReceipt": "Auto-Review가 일시 중지되었습니다({reason}). 권한이 Ask로 전환되었습니다. 재개하려면 Shift+Tab 또는 /auto를 사용하세요.",
+  "AutoReviewRetryApprovedStatus": "'{tool}' [{id}]에 대한 1회 재시도를 승인했습니다.",
+  "AutoReviewRetryFailedStatus": "Auto-Review 재시도 [{id}]를 승인할 수 없습니다: {error}",
+  "PermissionsBlockedHeader": "차단된 Auto-Review 작업 ({count}):",
+  "PermissionsBlockedEmpty": "이 대화에서 차단된 Auto-Review 작업이 기록되지 않았습니다.",
+  "PermissionsBlockedEntry": "{index}. [{id}] {tool} ({rule}) — {summary} | {reason} ({status})",
+  "PermissionsBlockedStatusApprovable": "승인 가능",
+  "PermissionsBlockedStatusApproved": "승인됨",
+  "PermissionsBlockedStatusNotApprovable": "승인 불가",
+  "PermissionsBlockedHint": "한 번 재시도를 허용하려면 /permissions blocked approve <receipt-id>를 실행하거나 입력창이 비어 있을 때 최신 항목에 r을 누르세요."
 }

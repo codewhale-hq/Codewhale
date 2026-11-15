@@ -2683,5 +2683,16 @@
   "AccountModelsReady": "已透過 Codewhale 帳戶連接 {model}。",
   "AccountModelsConnectFailed": "無法連接帳戶模型：{error}",
   "AccountModelsCancelled": "已取消模型設定，目前的模型保持不變。",
-  "AccountModelsLoadFailed": "無法檢查帳戶模型。請重試或在此電腦上連接供應商。"
+  "AccountModelsLoadFailed": "無法檢查帳戶模型。請重試或在此電腦上連接供應商。",
+  "AutoReviewReceiptRetryHint": "輸入框為空時按 r，或執行 /permissions blocked approve {id} 以允許重試一次。",
+  "AutoReviewPausedReceipt": "Auto-Review 已暫停（{reason}）；權限已切換為 Ask。按 Shift+Tab 或執行 /auto 可恢復。",
+  "AutoReviewRetryApprovedStatus": "已核准重試一次 '{tool}' [{id}]。",
+  "AutoReviewRetryFailedStatus": "無法核准 Auto-Review 重試 [{id}]：{error}",
+  "PermissionsBlockedHeader": "已封鎖的 Auto-Review 操作（{count}）：",
+  "PermissionsBlockedEmpty": "目前對話中尚未記錄被封鎖的 Auto-Review 操作。",
+  "PermissionsBlockedEntry": "{index}. [{id}] {tool} ({rule}) — {summary} | {reason} ({status})",
+  "PermissionsBlockedStatusApprovable": "可核准",
+  "PermissionsBlockedStatusApproved": "已核准",
+  "PermissionsBlockedStatusNotApprovable": "不可核准",
+  "PermissionsBlockedHint": "執行 /permissions blocked approve <receipt-id>（或在輸入框為空時按 r 核准最新一筆）以允許重試一次。"
 }

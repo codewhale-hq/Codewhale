@@ -1625,6 +1625,10 @@ async fn child_gate_observation_is_owned_once_and_full_channel_respects_original
             risk: Some("high".into()),
             reviewer_model: Some("claude-sonnet-5-5".into()),
             reason: "actual reviewer held the call".into(),
+            rule: Some("guardian".into()),
+            receipt_id: Some("child-receipt".into()),
+            call_digest: Some("child-digest".into()),
+            action_summary: Some("child summary".into()),
         };
         sender
             .send(Event::status("preexisting caller observation"))
@@ -1671,7 +1675,8 @@ async fn child_gate_observation_is_owned_once_and_full_channel_respects_original
         assert!(
             matches!(receiver.recv().await, Some(Event::ToolGateDecision {
             agent_id: Some(owner), tool_id, gate: ToolGate::AutoReviewGuardian,
-            decision: ToolGateVerdict::Denied, risk: Some(risk), reason, ..
+            decision: ToolGateVerdict::Denied, risk: Some(risk), reason,
+            receipt_id: None, call_digest: None, ..
         }) if owner == authority.owner_agent_id && tool_id == "canonical-call"
             && risk == "high" && reason == "actual reviewer held the call")
         );

@@ -2683,5 +2683,16 @@
   "AccountModelsReady": "Conectado a {model} pela sua conta Codewhale.",
   "AccountModelsConnectFailed": "Não foi possível conectar os modelos da conta: {error}",
   "AccountModelsCancelled": "Configuração do modelo cancelada. Seu modelo atual foi mantido.",
-  "AccountModelsLoadFailed": "Não foi possível verificar os modelos da conta. Tente novamente ou conecte um provedor neste computador."
+  "AccountModelsLoadFailed": "Não foi possível verificar os modelos da conta. Tente novamente ou conecte um provedor neste computador.",
+  "AutoReviewReceiptRetryHint": "Pressione r com o campo vazio ou execute /permissions blocked approve {id} para permitir uma nova tentativa.",
+  "AutoReviewPausedReceipt": "Auto-Review pausado ({reason}); permissões alteradas para Ask. Shift+Tab ou /auto para retomar.",
+  "AutoReviewRetryApprovedStatus": "Uma nova tentativa de '{tool}' [{id}] foi aprovada.",
+  "AutoReviewRetryFailedStatus": "Não foi possível aprovar a nova tentativa do Auto-Review [{id}]: {error}",
+  "PermissionsBlockedHeader": "Ações do Auto-Review bloqueadas ({count}):",
+  "PermissionsBlockedEmpty": "Nenhuma ação do Auto-Review bloqueada registrada nesta conversa.",
+  "PermissionsBlockedEntry": "{index}. [{id}] {tool} ({rule}) — {summary} | {reason} ({status})",
+  "PermissionsBlockedStatusApprovable": "aprovável",
+  "PermissionsBlockedStatusApproved": "aprovada",
+  "PermissionsBlockedStatusNotApprovable": "não aprovável",
+  "PermissionsBlockedHint": "Execute /permissions blocked approve <receipt-id> (ou pressione r com o campo vazio para a mais recente) para permitir uma nova tentativa."
 }

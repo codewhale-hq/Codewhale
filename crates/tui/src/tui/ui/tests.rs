@@ -36587,3 +36587,76 @@ async fn tui_composer_authorship_drops_inlined_files_skills_and_non_owner_bridge
         TurnInputAuthorship::NotPerson
     );
 }
+
+#[test]
+fn auto_review_tui_r_retry_and_pause_posture_sync() {
+    let _lock = crate::test_support::lock_test_env();
+    let root = tempfile::tempdir().unwrap();
+    let _home =
+        crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path().join(".codewhale"));
+
+    let mut app = create_test_app();
+    app.mode = AppMode::Agent;
+    app.set_agent_runtime_baseline(false, false, ApprovalMode::Auto);
+    app.vim_enabled = false;
+    app.input.clear();
+
+    assert!(!super::event_loop::queue_auto_review_retry_from_r(&mut app));
+
+    app.record_auto_review_blocked_receipt(
+        None,
+        "tool-non-approvable".into(),
+        "MCPTool".into(),
+        "auto_review_guardian".into(),
+        "denied".into(),
+        Some("guardian".into()),
+        "no retry receipt".into(),
+        None,
+        "ext:drop".into(),
+    );
+    assert!(!super::event_loop::queue_auto_review_retry_from_r(&mut app));
+
+    app.record_auto_review_blocked_receipt(
+        Some("ar-1".into()),
+        "tool-1".into(),
+        "Bash".into(),
+        "auto_review_guardian".into(),
+        "denied".into(),
+        Some("guardian".into()),
+        "dangerous".into(),
+        Some("digest-1".into()),
+        "rm -rf /tmp/x".into(),
+    );
+
+    app.input = "draft".into();
+    assert!(!super::event_loop::queue_auto_review_retry_from_r(&mut app));
+    app.input.clear();
+
+    app.view_stack.push(HelpView::new_for_locale(app.ui_locale));
+    assert!(!super::event_loop::queue_auto_review_retry_from_r(&mut app));
+    app.view_stack.pop();
+
+    app.approval_mode = ApprovalMode::Suggest;
+    assert!(!super::event_loop::queue_auto_review_retry_from_r(&mut app));
+    app.approval_mode = ApprovalMode::Auto;
+
+    app.mode = AppMode::Plan;
+    assert!(!super::event_loop::queue_auto_review_retry_from_r(&mut app));
+    app.mode = AppMode::Agent;
+
+    app.vim_enabled = true;
+    app.vim_enter_normal();
+    assert!(!super::event_loop::queue_auto_review_retry_from_r(&mut app));
+    app.vim_enabled = false;
+
+    assert!(super::event_loop::queue_auto_review_retry_from_r(&mut app));
+    assert_eq!(app.pending_auto_review_retry.as_deref(), Some("ar-1"));
+
+    app.sync_auto_review_paused_posture(ApprovalMode::Suggest);
+    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
+    assert!(app.pending_auto_review_retry.is_none());
+    assert!(app.latest_approvable_auto_review_block().is_none());
+    assert!(app.set_mode(AppMode::Plan));
+    assert!(app.set_mode(AppMode::Agent));
+    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
+}

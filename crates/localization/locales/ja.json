@@ -2683,5 +2683,16 @@
   "AccountModelsReady": "Codewhale アカウント経由で {model} に接続しました。",
   "AccountModelsConnectFailed": "アカウントモデルに接続できませんでした：{error}",
   "AccountModelsCancelled": "モデル設定をキャンセルしました。現在のモデルは変わりません。",
-  "AccountModelsLoadFailed": "アカウントモデルを確認できませんでした。再試行するか、このコンピューターでプロバイダーを接続してください。"
+  "AccountModelsLoadFailed": "アカウントモデルを確認できませんでした。再試行するか、このコンピューターでプロバイダーを接続してください。",
+  "AutoReviewReceiptRetryHint": "入力欄が空の状態で r を押すか、/permissions blocked approve {id} を実行すると 1 回だけ再試行を許可できます。",
+  "AutoReviewPausedReceipt": "Auto-Review が一時停止しました（{reason}）。権限は Ask に切り替わりました。再開するには Shift+Tab または /auto を実行してください。",
+  "AutoReviewRetryApprovedStatus": "'{tool}' [{id}] の 1 回限りの再試行を承認しました。",
+  "AutoReviewRetryFailedStatus": "Auto-Review の再試行 [{id}] を承認できませんでした: {error}",
+  "PermissionsBlockedHeader": "ブロックされた Auto-Review 操作 ({count}):",
+  "PermissionsBlockedEmpty": "この会話ではブロックされた Auto-Review 操作は記録されていません。",
+  "PermissionsBlockedEntry": "{index}. [{id}] {tool} ({rule}) — {summary} | {reason} ({status})",
+  "PermissionsBlockedStatusApprovable": "承認可能",
+  "PermissionsBlockedStatusApproved": "承認済み",
+  "PermissionsBlockedStatusNotApprovable": "承認不可",
+  "PermissionsBlockedHint": "1 回だけ再試行を許可するには /permissions blocked approve <receipt-id> を実行してください（最新項目は入力欄が空の状態で r を押しても許可できます）。"
 }

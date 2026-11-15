@@ -479,12 +479,13 @@ fn auto_review_scenario_2() {
     }
     // from auto_review_block_error_preserves_reason_and_names_the_safe_next_step
     {
-        let error = auto_review_block_tool_error("policy reason");
+        let error = auto_review_block_tool_error("policy reason", Some("no-rm"));
         let message = error.to_string();
 
-        assert!(message.contains("policy reason."), "{message}");
-        assert!(message.contains("do not work around it"), "{message}");
-        assert!(message.contains("take a safer approach"), "{message}");
+        assert!(message.contains("Auto-Review blocked this: policy reason [no-rm]."), "{message}");
+        assert!(message.contains("take a different route"), "{message}");
+        assert!(message.contains("approve it from the receipt"), "{message}");
+        assert!(!message.contains("do not work around"), "{message}");
     }
 }
 
@@ -2899,4 +2900,1067 @@ async fn interactive_tui_turn_preserves_ask_and_auto_review_interactive_behavior
         resolve_approval_request_disposition(&full_access, false, false, false, false),
         ApprovalRequestDisposition::AutoApprove
     );
+}
+
+#[tokio::test]
+async fn auto_review_s2_block_text_invites_other_route_or_approval_without_bypass_hints() {
+    use crate::core::authority::auto_review::format_auto_review_block_message;
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use codewhale_models::{ContentBlock, MessageResponse, Usage};
+
+    let _lock = lock_test_env();
+    let with_rule = format_auto_review_block_message("publish blocked.", Some("publish_like"));
+    assert!(with_rule.contains("publish blocked [publish_like]"), "{with_rule}");
+    assert!(with_rule.contains("different route"), "{with_rule}");
+    assert!(with_rule.contains("approve it from the receipt"), "{with_rule}");
+    assert!(!with_rule.to_ascii_lowercase().contains("work around"), "{with_rule}");
+    assert!(!with_rule.contains("Full Access"), "{with_rule}");
+
+    let workspace = tempdir().expect("tempdir");
+    let nonexistent = workspace.path().join("absent-for-unavailable");
+    let rm_args = serde_json::to_string(&json!({
+        "action": "run",
+        "command": format!("rm -rf \"{}\"", nonexistent.display()),
+        "background": false,
+    }))
+    .expect("serialize rm args");
+    let mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn(
+            "call_pub_block",
+            "Bash",
+            r#"{"action":"run","command":"npm publish --dry-run","background":false}"#,
+        ),
+        canned::tool_call_turn("call_unavail_block", "Bash", &rm_args),
+        canned::simple_text_turn("stopped"),
+    ]));
+    mock.push_message_response(MessageResponse {
+        id: "guardian-malformed".to_string(),
+        r#type: "message".to_string(),
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "not-valid-json".to_string(),
+            cache_control: None,
+        }],
+        model: "mock-model".to_string(),
+        stop_reason: Some("end_turn".to_string()),
+        stop_sequence: None,
+        container: None,
+        usage: Usage::default(),
+        title: None,
+        stop_details: None,
+        refusal: None,
+    });
+    let config = Config::default();
+    let (mut engine, mut handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &config,
+        mock.clone(),
+    );
+    engine.attach_owner_surface_for_tests(&mut handle);
+    let task = tokio::spawn(engine.run());
+    handle
+        .send(auto_review_message_op("test block messages", &config))
+        .await
+        .expect("send turn");
+
+    let mut errors = Vec::new();
+    let mut rx = handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("event timeout")
+    {
+        match event {
+            Event::ToolCallComplete {
+                id,
+                result: Err(error),
+                ..
+            } => {
+                errors.push((id, error.to_string()));
+            }
+            Event::TurnComplete { status, error, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+    handle.send(Op::Shutdown).await.expect("shutdown");
+    tokio::time::timeout(model_turn_event_timeout(), task)
+        .await
+        .expect("shutdown timeout")
+        .expect("engine task");
+
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    let det_msg = &errors[0].1;
+    assert!(det_msg.contains("publish-like"), "{det_msg}");
+    assert!(det_msg.contains("different route"), "{det_msg}");
+    assert!(det_msg.contains("approve it from the receipt"), "{det_msg}");
+    assert!(!det_msg.to_ascii_lowercase().contains("work around"), "{det_msg}");
+    assert!(!det_msg.contains("Full Access"), "{det_msg}");
+
+    let unavail_msg = &errors[1].1;
+    assert!(unavail_msg.contains("unavailable"), "{unavail_msg}");
+    assert!(unavail_msg.contains("fail closed"), "{unavail_msg}");
+    assert!(!unavail_msg.to_ascii_lowercase().contains("work around"), "{unavail_msg}");
+    assert!(!unavail_msg.contains("Full Access"), "{unavail_msg}");
+}
+
+#[tokio::test]
+async fn auto_review_s2_owner_approve_retry_one_use_exact_call_and_gate_preservation() {
+    use crate::core::engine::AutoReviewRetryApprovalError;
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use codewhale_execpolicy::{ExecPolicyEngine, PermissionAction, Ruleset, ToolAskRule};
+    use codewhale_models::{ContentBlock, MessageResponse, Usage};
+
+    let _lock = lock_test_env();
+    let config = Config::default();
+    let workspace = tempdir().expect("tempdir");
+    let target_a = workspace.path().join("target-a");
+    let target_b = workspace.path().join("target-b");
+    let target_c = workspace.path().join("target-c");
+    let args_a = serde_json::to_string(&json!({
+        "action": "run",
+        "command": format!("rm -rf \"{}\"", target_a.display()),
+        "background": false,
+    }))
+    .expect("args a");
+    let args_b = serde_json::to_string(&json!({
+        "action": "run",
+        "command": format!("rm -rf \"{}\"", target_b.display()),
+        "background": false,
+    }))
+    .expect("args b");
+    let args_c = serde_json::to_string(&json!({
+        "action": "run",
+        "command": format!("rm -rf \"{}\"", target_c.display()),
+        "background": false,
+    }))
+    .expect("args c");
+
+    let guardian_reply = |id: &str, json_text: &str| MessageResponse {
+        id: id.to_string(),
+        r#type: "message".to_string(),
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: json_text.to_string(),
+            cache_control: None,
+        }],
+        model: "mock-model".to_string(),
+        stop_reason: Some("end_turn".to_string()),
+        stop_sequence: None,
+        container: None,
+        usage: Usage::default(),
+        title: None,
+        stop_details: None,
+        refusal: None,
+    };
+
+    let mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn("call_block_a", "Bash", &args_a),
+        canned::simple_text_turn("blocked once"),
+        canned::tool_call_turn("call_mismatch_b", "Bash", &args_b),
+        canned::simple_text_turn("mismatch blocked"),
+        canned::tool_call_turn("call_retry_a", "Bash", &args_a),
+        canned::simple_text_turn("retried a"),
+        canned::tool_call_turn("call_replay_a", "Bash", &args_a),
+        canned::simple_text_turn("replay blocked"),
+        canned::tool_call_turn("call_block_c", "Bash", &args_c),
+        canned::simple_text_turn("blocked c"),
+        canned::tool_call_turn("call_retry_c_denied", "Bash", &args_c),
+        canned::simple_text_turn("c denied again"),
+    ]));
+    mock.push_message_response(guardian_reply(
+        "g-deny-a",
+        r#"{"risk_level":"high","decision":"deny","reason":"verify target first"}"#,
+    ));
+    mock.push_message_response(guardian_reply(
+        "g-deny-b",
+        r#"{"risk_level":"medium","decision":"deny","reason":"wrong target"}"#,
+    ));
+    mock.push_message_response(guardian_reply(
+        "g-allow-a-retry",
+        r#"{"risk_level":"high","decision":"allow","reason":"approved exact target"}"#,
+    ));
+    mock.push_message_response(guardian_reply(
+        "g-allow-a-replay-high",
+        r#"{"risk_level":"high","decision":"allow","reason":"high risk replay"}"#,
+    ));
+    mock.push_message_response(guardian_reply(
+        "g-deny-c",
+        r#"{"risk_level":"high","decision":"deny","reason":"needs c check"}"#,
+    ));
+    mock.push_message_response(guardian_reply(
+        "g-deny-c-still",
+        r#"{"risk_level":"high","decision":"deny","reason":"still dangerous"}"#,
+    ));
+
+    let (mut engine, mut handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &config,
+        mock.clone(),
+    );
+    engine.attach_owner_surface_for_tests(&mut handle);
+    let task = tokio::spawn(engine.run());
+
+    let run_turn = |prompt: &str| {
+        let h = &handle;
+        let p = prompt.to_string();
+        let cfg = &config;
+        async move {
+            h.send(auto_review_message_op(&p, cfg))
+                .await
+                .expect("send turn");
+            let mut receipts = Vec::new();
+            let mut completed_ok = None;
+            let mut rx = h.rx_event.write().await;
+            while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+                .await
+                .expect("event timeout")
+            {
+                match event {
+                    Event::ToolGateDecision {
+                        receipt_id,
+                        call_digest,
+                        decision,
+                        ..
+                    } => {
+                        receipts.push((decision, receipt_id, call_digest));
+                    }
+                    Event::ToolCallComplete { result, .. } => {
+                        completed_ok = Some(result.is_ok());
+                    }
+                    Event::TurnComplete { status, error, .. } => {
+                        assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            (receipts, completed_ok)
+        }
+    };
+
+    let (t1_receipts, t1_ok) = run_turn("turn 1 block").await;
+    assert_eq!(t1_ok, Some(false));
+    let receipt_a = t1_receipts[0].1.clone().expect("receipt_id for block a");
+    let digest_a = t1_receipts[0].2.clone().expect("call_digest for block a");
+
+    let grant_a = handle
+        .approve_auto_review_retry(&receipt_a)
+        .expect("owner approve retry a");
+    assert_eq!(grant_a.receipt_id, receipt_a);
+    assert_eq!(grant_a.call_digest, digest_a);
+    assert!(matches!(
+        handle.approve_auto_review_retry(&receipt_a),
+        Err(AutoReviewRetryApprovalError::InvalidTarget(_))
+    ));
+
+    let (_, t2_ok) = run_turn("turn 2 mismatch b").await;
+    assert_eq!(t2_ok, Some(false));
+
+    let (_, t3_ok) = run_turn("turn 3 exact retry a").await;
+    assert_eq!(t3_ok, Some(true), "approved high-risk exact retry must execute");
+
+    let (_, t4_ok) = run_turn("turn 4 replay a without approval").await;
+    assert_eq!(t4_ok, Some(false), "one-use grant must be consumed on first retry");
+
+    let (t5_receipts, t5_ok) = run_turn("turn 5 block c").await;
+    assert_eq!(t5_ok, Some(false));
+    let receipt_c = t5_receipts[0].1.clone().expect("receipt_id c");
+    handle
+        .approve_auto_review_retry(&receipt_c)
+        .expect("approve c retry");
+    let (_, t6_ok) = run_turn("turn 6 guardian deny c overrides approval").await;
+    assert_eq!(t6_ok, Some(false), "guardian deny must still block on retry");
+
+    handle.send(Op::Shutdown).await.expect("shutdown");
+    tokio::time::timeout(model_turn_event_timeout(), task)
+        .await
+        .expect("shutdown timeout")
+        .expect("engine task");
+
+    let captured = mock.captured_requests();
+    let guardian_payloads: Vec<String> = captured
+        .iter()
+        .filter(|req| {
+            req.messages.iter().any(|msg| {
+                msg.content.iter().any(|block| matches!(
+                    block,
+                    ContentBlock::Text { text, .. } if text.contains("proposed_tool_call")
+                ))
+            })
+        })
+        .map(|req| {
+            req.messages
+                .iter()
+                .flat_map(|msg| msg.content.iter())
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect();
+    assert_eq!(guardian_payloads.len(), 6, "{guardian_payloads:#?}");
+    assert!(
+        guardian_payloads[0].contains("\"person_approved_retry\":false")
+            && !guardian_payloads[0].contains("\"person_approved_retry\":true"),
+        "initial blocked call must not carry retry approval: {}",
+        guardian_payloads[0]
+    );
+    assert!(
+        guardian_payloads[1].contains("\"person_approved_retry\":false")
+            && !guardian_payloads[1].contains("\"person_approved_retry\":true"),
+        "byte-different args must not consume or carry grant: {}",
+        guardian_payloads[1]
+    );
+    assert!(
+        guardian_payloads[2].contains("\"person_approved_retry\":true"),
+        "retried exact call must carry person_approved_retry: {}",
+        guardian_payloads[2]
+    );
+    assert!(
+        guardian_payloads[3].contains("\"person_approved_retry\":false")
+            && !guardian_payloads[3].contains("\"person_approved_retry\":true"),
+        "second replay must not carry consumed grant: {}",
+        guardian_payloads[3]
+    );
+    assert!(
+        guardian_payloads[5].contains("\"person_approved_retry\":true"),
+        "denied retry c still sent person_approved_retry to guardian: {}",
+        guardian_payloads[5]
+    );
+
+    let agent_retry_notice_seen = captured.iter().any(|req| {
+        req.messages.iter().any(|msg| {
+            msg.content.iter().any(|block| matches!(
+                block,
+                ContentBlock::Text { text, .. } if text.contains("Person approved one-time retry")
+            ))
+        })
+    });
+    assert!(agent_retry_notice_seen, "agent must be told person approved the call");
+
+    let mut deny_rule = ToolAskRule::exec_shell("rm -rf");
+    deny_rule.action = PermissionAction::Deny;
+    let deny_engine_cfg = EngineConfig {
+        exec_policy_engine: ExecPolicyEngine::with_rulesets(vec![
+            Ruleset::user(vec![], vec![]).with_ask_rules(vec![deny_rule]),
+        ]),
+        ..deterministic_engine_config(workspace.path())
+    };
+    let deny_mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn("call_typed_deny_after_grant", "Bash", &args_a),
+        canned::simple_text_turn("blocked by typed deny"),
+    ]));
+    let (mut deny_engine, mut deny_handle) =
+        Engine::new_with_model_client(deny_engine_cfg, &config, deny_mock.clone());
+    deny_engine.attach_owner_surface_for_tests(&mut deny_handle);
+    deny_handle.set_auto_review_authority_for_test(ApprovalMode::Auto);
+    let synthetic_id = deny_handle
+        .record_auto_review_block_for_test(
+            "pre",
+            "Bash",
+            &serde_json::from_str::<serde_json::Value>(&args_a).unwrap(),
+            Some("guardian"),
+            "held",
+            "auto_review_guardian",
+            "denied",
+            true,
+        )
+        .expect("synthetic receipt");
+    deny_handle
+        .approve_auto_review_retry(&synthetic_id)
+        .expect("grant before typed deny test");
+    let deny_task = tokio::spawn(deny_engine.run());
+    deny_handle
+        .send(auto_review_message_op("retry hits typed deny", &config))
+        .await
+        .expect("send typed deny turn");
+    let mut typed_deny_err = None;
+    let mut rx = deny_handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timeout")
+    {
+        match event {
+            Event::ToolCallComplete { result: Err(e), .. } => {
+                typed_deny_err = Some(e.to_string());
+            }
+            Event::TurnComplete { .. } => break,
+            _ => {}
+        }
+    }
+    drop(rx);
+    deny_handle.send(Op::Shutdown).await.expect("shutdown");
+    let _ = tokio::time::timeout(model_turn_event_timeout(), deny_task).await;
+    assert!(typed_deny_err.is_some(), "typed deny rule must block retried call");
+    assert_eq!(deny_mock.call_count(), 2, "typed deny must stop before guardian consult");
+
+    let crit_args = serde_json::to_string(&json!({
+        "action": "run",
+        "command": format!("rm -rf \"{}\"", workspace.path().display()),
+        "background": false,
+    }))
+    .expect("crit args");
+    let crit_mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn("call_crit_retry", "Bash", &crit_args),
+        canned::simple_text_turn("after crit ask"),
+    ]));
+    let (mut crit_engine, mut crit_handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &config,
+        crit_mock.clone(),
+    );
+    crit_engine.attach_owner_surface_for_tests(&mut crit_handle);
+    crit_handle.set_auto_review_authority_for_test(ApprovalMode::Auto);
+    let crit_id = crit_handle
+        .record_auto_review_block_for_test(
+            "crit-pre",
+            "Bash",
+            &serde_json::from_str::<serde_json::Value>(&crit_args).unwrap(),
+            Some("guardian"),
+            "held",
+            "auto_review_guardian",
+            "denied",
+            true,
+        )
+        .expect("crit receipt");
+    crit_handle
+        .approve_auto_review_retry(&crit_id)
+        .expect("grant before crit test");
+    let crit_task = tokio::spawn(crit_engine.run());
+    crit_handle
+        .send(auto_review_message_op("retry hits critical path", &config))
+        .await
+        .expect("send crit turn");
+    let mut saw_crit_prompt = false;
+    let mut rx = crit_handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timeout")
+    {
+        match event {
+            Event::ApprovalRequired { id, .. } => {
+                saw_crit_prompt = true;
+                crit_handle.deny_tool_call(&id).await.expect("deny crit card");
+            }
+            Event::TurnComplete { .. } => break,
+            _ => {}
+        }
+    }
+    drop(rx);
+    crit_handle.send(Op::Shutdown).await.expect("shutdown");
+    let _ = tokio::time::timeout(model_turn_event_timeout(), crit_task).await;
+    assert!(
+        saw_crit_prompt,
+        "critical path check must still prompt even when retry grant exists"
+    );
+}
+
+#[tokio::test]
+async fn auto_review_s2_boundary_revocation_and_child_extension_isolation() {
+    use crate::core::authority::auto_review::{
+        AutoReviewConversationState, AutoReviewOutcomeEffect,
+    };
+    use crate::core::engine::AutoReviewRetryApprovalError;
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let _lock = lock_test_env();
+    let config = Config::default();
+    let workspace = tempdir().expect("tempdir");
+
+    let unattached_mock = Arc::new(MockLlmClient::new(Vec::new()));
+    let (_u_engine, u_handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &config,
+        unattached_mock,
+    );
+    u_handle.set_auto_review_authority_for_test(ApprovalMode::Auto);
+    let u_receipt = u_handle.record_auto_review_block_for_test(
+        "t1",
+        "Bash",
+        &json!({"action":"run","command":"npm publish"}),
+        Some("publish_like"),
+        "blocked",
+        "auto_review_deterministic",
+        "denied",
+        false,
+    );
+    assert!(u_receipt.is_none(), "unattended run must not emit retry receipt");
+    assert!(matches!(
+        u_handle.approve_auto_review_retry("ar-1"),
+        Err(AutoReviewRetryApprovalError::OwnerRequired)
+    ));
+
+    let mode_mock = Arc::new(MockLlmClient::new(Vec::new()));
+    let (mut mode_engine, mut mode_handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &config,
+        mode_mock,
+    );
+    mode_engine.attach_owner_surface_for_tests(&mut mode_handle);
+    let args = json!({"action":"run","command":"rm -rf /tmp/nonexistent-boundary"});
+    mode_handle.set_auto_review_authority_for_test(ApprovalMode::Auto);
+    let receipt_id = mode_handle
+        .record_auto_review_block_for_test(
+            "t2",
+            "Bash",
+            &args,
+            Some("guardian"),
+            "blocked",
+            "auto_review_guardian",
+            "denied",
+            true,
+        )
+        .expect("receipt");
+    mode_handle
+        .approve_auto_review_retry(&receipt_id)
+        .expect("approve");
+    let mode_task = tokio::spawn(mode_engine.run());
+    mode_handle
+        .send(Op::ChangeMode {
+            mode: AppMode::Agent,
+            allow_shell: true,
+            trust_mode: false,
+            auto_approve: false,
+            approval_mode: ApprovalMode::Suggest,
+            configured_sandbox_mode: None,
+        })
+        .await
+        .expect("switch to Ask");
+    mode_handle
+        .send(Op::ChangeMode {
+            mode: AppMode::Agent,
+            allow_shell: true,
+            trust_mode: false,
+            auto_approve: false,
+            approval_mode: ApprovalMode::Auto,
+            configured_sandbox_mode: None,
+        })
+        .await
+        .expect("switch back to Auto");
+    assert!(
+        matches!(
+            mode_handle.approve_auto_review_retry(&receipt_id),
+            Err(AutoReviewRetryApprovalError::InvalidTarget(_))
+        ),
+        "leaving Auto mode must revoke/keep grant spent rather than re-approving"
+    );
+    mode_handle.reset_auto_review_state_for_boundary();
+    assert!(mode_handle.list_auto_review_blocks().is_empty());
+    mode_handle.send(Op::Shutdown).await.expect("shutdown");
+    let _ = tokio::time::timeout(model_turn_event_timeout(), mode_task).await;
+
+    let mut parent_state = AutoReviewConversationState::default();
+    let parent_rec = parent_state.record_block(
+        true,
+        true,
+        false,
+        true,
+        "p-call",
+        "Bash",
+        &args,
+        Some("guardian"),
+        "blocked",
+        "auto_review_guardian",
+        "denied",
+    );
+    let pid = parent_rec.receipt_id.expect("parent receipt");
+    parent_state.approve_retry(&pid).expect("parent approve");
+    assert!(parent_state.has_pending_retry_grants());
+
+    let mut child_state = AutoReviewConversationState::default();
+    for i in 0..4 {
+        let child_rec = child_state.record_block(
+            true,
+            true,
+            true,
+            true,
+            &format!("c-call-{i}"),
+            "Bash",
+            &args,
+            Some("guardian"),
+            "blocked",
+            "auto_review_guardian",
+            "denied",
+        );
+        assert!(child_rec.receipt_id.is_none());
+        assert!(child_rec.call_digest.is_none());
+        assert_eq!(child_rec.effect, AutoReviewOutcomeEffect::Continue);
+    }
+    assert!(child_state.blocked_actions().is_empty());
+    assert!(child_state.take_retry_grant("Bash", &args).is_none());
+
+    let ext_rec = parent_state.record_block(
+        true,
+        true,
+        false,
+        false,
+        "ext-call",
+        "ext_plugin_call",
+        &json!({"x": 1}),
+        Some("guardian"),
+        "blocked",
+        "auto_review_guardian",
+        "denied",
+    );
+    assert!(ext_rec.receipt_id.is_none());
+    let blocks = parent_state.blocked_actions();
+    let ext_entry = blocks.last().expect("ext entry");
+    assert!(!ext_entry.approvable);
+    assert!(parent_state.approve_retry(&ext_entry.receipt_id).is_err());
+
+    assert!(parent_state.take_retry_grant("Bash", &args).is_some());
+    assert!(!parent_state.has_pending_retry_grants());
+    assert_eq!(
+        parent_state.take_retry_notices().len(),
+        1,
+        "first take_retry_notices returns notice once"
+    );
+    assert!(parent_state.take_retry_notices().is_empty());
+
+    let _ = canned::simple_text_turn("unused");
+}
+
+#[tokio::test]
+async fn auto_review_s2_interactive_fallback_to_ask_trips_and_resumes() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use codewhale_models::{ContentBlock, MessageResponse, Usage};
+
+    let _lock = lock_test_env();
+    let config = Config::default();
+    let workspace = tempdir().expect("tempdir");
+
+    let multi_batch_turn = {
+        let mut events = vec![canned::message_start("msg_batch_4")];
+        for idx in 0..4u32 {
+            let p = workspace.path().join(format!("absent-{idx}"));
+            let args = serde_json::to_string(&json!({
+                "action": "run",
+                "command": format!("rm -rf \"{}\"", p.display()),
+                "background": false,
+            }))
+            .expect("args");
+            let call_id = format!("call_batch_{idx}");
+            events.push(canned::tool_use_block_start(idx, &call_id, "Bash"));
+            events.push(canned::tool_input_delta(idx, &args));
+            events.push(canned::block_stop(idx));
+        }
+        events.push(canned::message_delta("tool_use", None));
+        events.push(canned::message_stop());
+        events
+    };
+    let deny_resp = |id: &str| MessageResponse {
+        id: id.to_string(),
+        r#type: "message".to_string(),
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: r#"{"risk_level":"high","decision":"deny","reason":"risky delete"}"#.to_string(),
+            cache_control: None,
+        }],
+        model: "mock-model".to_string(),
+        stop_reason: Some("end_turn".to_string()),
+        stop_sequence: None,
+        container: None,
+        usage: Usage::default(),
+        title: None,
+        stop_details: None,
+        refusal: None,
+    };
+    let mock = Arc::new(MockLlmClient::new(vec![
+        multi_batch_turn,
+        canned::simple_text_turn("after batch pause"),
+    ]));
+    for i in 0..3 {
+        mock.push_message_response(deny_resp(&format!("g-batch-deny-{i}")));
+    }
+
+    let (mut engine, mut handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &config,
+        mock.clone(),
+    );
+    engine.attach_owner_surface_for_tests(&mut handle);
+    let task = tokio::spawn(engine.run());
+    handle
+        .send(auto_review_message_op("four calls batch", &config))
+        .await
+        .expect("send batch turn");
+
+    let mut paused_events = Vec::new();
+    let mut approval_prompts = Vec::new();
+    let mut tool_completes = Vec::new();
+    let mut fourth_result: Option<(String, Result<String, String>)> = None;
+    let mut rx = handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timeout")
+    {
+        match event {
+            Event::AutoReviewPaused {
+                reason,
+                approval_mode,
+            } => {
+                paused_events.push((reason, approval_mode));
+            }
+            Event::ApprovalRequired { id, tool_name, .. } => {
+                approval_prompts.push((id.clone(), tool_name));
+                handle.approve_tool_call(&id).await.expect("approve 4th card");
+            }
+            Event::ToolCallComplete {
+                model_call,
+                id,
+                result,
+                ..
+            } => {
+                let mapped = result.map(|ok| ok.content).map_err(|err| err.to_string());
+                tool_completes.push((id.clone(), mapped.clone()));
+                if model_call
+                    .as_ref()
+                    .is_some_and(|call| call.provider_id == "call_batch_3")
+                {
+                    fourth_result = Some((id, mapped));
+                }
+            }
+            Event::TurnComplete { status, error, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+
+    assert_eq!(paused_events.len(), 1, "{paused_events:?}");
+    assert_eq!(paused_events[0].1, ApprovalMode::Suggest);
+    assert_eq!(
+        handle.runtime_permission_authority().approval_mode,
+        ApprovalMode::Suggest
+    );
+    assert_eq!(approval_prompts.len(), 1, "4th call must open Ask card");
+    let (fourth_exec_id, fourth_outcome) = fourth_result.unwrap_or_else(|| {
+        panic!("4th call completion missing; prompts={approval_prompts:?}; completes={tool_completes:?}")
+    });
+    assert_eq!(fourth_exec_id, approval_prompts[0].0);
+    assert!(
+        fourth_outcome.is_ok(),
+        "approved 4th call must execute: {fourth_outcome:?}; completes={tool_completes:?}"
+    );
+    assert_eq!(mock.call_count(), 5);
+
+    handle
+        .send(Op::ChangeMode {
+            mode: AppMode::Agent,
+            allow_shell: true,
+            trust_mode: false,
+            auto_approve: false,
+            approval_mode: ApprovalMode::Auto,
+            configured_sandbox_mode: None,
+        })
+        .await
+        .expect("resume Auto");
+
+    let unavail_args = serde_json::to_string(&json!({
+        "action": "run",
+        "command": format!("rm -rf \"{}\"", workspace.path().join("absent-u").display()),
+        "background": false,
+    }))
+    .expect("args");
+    for _ in 0..3 {
+        mock.push_message_response(MessageResponse {
+            id: "g-bad-json".to_string(),
+            r#type: "message".to_string(),
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "broken".to_string(),
+                cache_control: None,
+            }],
+            model: "mock-model".to_string(),
+            stop_reason: Some("end_turn".to_string()),
+            stop_sequence: None,
+            container: None,
+            usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
+        });
+    }
+    mock.push_turn(canned::tool_call_turn("u1", "Bash", &unavail_args));
+    mock.push_turn(canned::simple_text_turn("t1"));
+    mock.push_turn(canned::tool_call_turn("u2", "Bash", &unavail_args));
+    mock.push_turn(canned::simple_text_turn("t2"));
+    mock.push_turn(canned::tool_call_turn("u3", "Bash", &unavail_args));
+    mock.push_turn(canned::simple_text_turn("t3"));
+
+    for idx in 1..=3 {
+        handle
+            .send(auto_review_message_op(&format!("u turn {idx}"), &config))
+            .await
+            .expect("send u turn");
+        let mut saw_pause = false;
+        let mut rx = handle.rx_event.write().await;
+        while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+            .await
+            .expect("timeout")
+        {
+            match event {
+                Event::AutoReviewPaused { approval_mode, .. } => {
+                    assert_eq!(approval_mode, ApprovalMode::Suggest);
+                    saw_pause = true;
+                }
+                Event::TurnComplete { .. } => break,
+                _ => {}
+            }
+        }
+        assert_eq!(saw_pause, idx == 3, "paused must fire exactly on 3rd unavailable");
+    }
+
+    handle
+        .send(Op::ChangeMode {
+            mode: AppMode::Agent,
+            allow_shell: true,
+            trust_mode: false,
+            auto_approve: false,
+            approval_mode: ApprovalMode::Auto,
+            configured_sandbox_mode: None,
+        })
+        .await
+        .expect("resume Auto before 20-total check");
+
+    for step in 0..10 {
+        let p = workspace.path().join(format!("allow-{step}"));
+        let allow_args = serde_json::to_string(&json!({
+            "action": "run",
+            "command": format!("rm -rf \"{}\"", p.display()),
+            "background": false,
+        }))
+        .expect("args");
+        for b in 0..2 {
+            mock.push_turn(canned::tool_call_turn(
+                &format!("det_{step}_{b}"),
+                "Bash",
+                r#"{"action":"run","command":"npm publish --dry-run","background":false}"#,
+            ));
+            mock.push_turn(canned::simple_text_turn("ok"));
+        }
+        if step < 9 {
+            mock.push_turn(canned::tool_call_turn(&format!("allow_{step}"), "Bash", &allow_args));
+            mock.push_turn(canned::simple_text_turn("allowed"));
+            mock.push_message_response(MessageResponse {
+                id: format!("g-allow-{step}"),
+                r#type: "message".to_string(),
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: r#"{"risk_level":"low","decision":"allow","reason":"ok"}"#.to_string(),
+                    cache_control: None,
+                }],
+                model: "mock-model".to_string(),
+                stop_reason: Some("end_turn".to_string()),
+                stop_sequence: None,
+                container: None,
+                usage: Usage::default(),
+                title: None,
+                stop_details: None,
+                refusal: None,
+            });
+        }
+    }
+    let mut paused_at_20 = false;
+    for round in 0..29 {
+        handle
+            .send(auto_review_message_op(&format!("mixed {round}"), &config))
+            .await
+            .expect("send mixed");
+        let mut rx = handle.rx_event.write().await;
+        while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+            .await
+            .expect("timeout")
+        {
+            match event {
+                Event::AutoReviewPaused { reason, approval_mode } => {
+                    assert!(reason.contains("20"), "{reason}");
+                    assert_eq!(approval_mode, ApprovalMode::Suggest);
+                    paused_at_20 = true;
+                }
+                Event::TurnComplete { .. } => break,
+                _ => {}
+            }
+        }
+        if paused_at_20 {
+            assert_eq!(round, 28, "expected 20th block after 9*(2+1)+2 = 29 turns");
+            break;
+        }
+    }
+    assert!(paused_at_20, "20 mixed blocks across turns must trigger Ask fallback");
+
+    handle.send(Op::Shutdown).await.expect("shutdown");
+    let _ = tokio::time::timeout(model_turn_event_timeout(), task).await;
+}
+
+#[tokio::test]
+async fn auto_review_s2_unattended_continues_past_blocks_and_stops_at_bounds() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use codewhale_models::{ContentBlock, MessageResponse, Usage};
+
+    let _lock = lock_test_env();
+    let config = Config::default();
+    let workspace = tempdir().expect("tempdir");
+
+    let continue_turn = {
+        let mut events = Vec::new();
+        for idx in 0..5 {
+            events.push(canned::tool_call_turn(
+                &format!("unatt_block_{idx}"),
+                "Bash",
+                r#"{"action":"run","command":"npm publish --dry-run","background":false}"#,
+            ));
+        }
+        events.push(canned::simple_text_turn("took safe alternative route"));
+        events
+    };
+    let mock_cont = Arc::new(MockLlmClient::new(continue_turn));
+    let (cont_engine, cont_handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &config,
+        mock_cont,
+    );
+    let cont_task = tokio::spawn(cont_engine.run());
+    cont_handle
+        .send(auto_review_message_op("unattended continues past 5 blocks", &config))
+        .await
+        .expect("send unattended cont");
+    let mut saw_pause = false;
+    let mut saw_prompt = false;
+    let mut rx = cont_handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timeout")
+    {
+        match event {
+            Event::AutoReviewPaused { .. } => saw_pause = true,
+            Event::ApprovalRequired { .. } => saw_prompt = true,
+            Event::TurnComplete { status, error, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+    assert!(!saw_pause && !saw_prompt);
+    cont_handle.send(Op::Shutdown).await.expect("shutdown");
+    let _ = tokio::time::timeout(model_turn_event_timeout(), cont_task).await;
+
+    let mut twenty_turns = Vec::new();
+    for i in 0..22 {
+        twenty_turns.push(canned::tool_call_turn(
+            &format!("stop20_{i}"),
+            "Bash",
+            r#"{"action":"run","command":"npm publish --dry-run","background":false}"#,
+        ));
+    }
+    twenty_turns.push(canned::simple_text_turn("unreachable"));
+    let mock_20 = Arc::new(MockLlmClient::new(twenty_turns));
+    let (stop20_engine, stop20_handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &config,
+        mock_20,
+    );
+    let stop20_task = tokio::spawn(stop20_engine.run());
+    stop20_handle
+        .send(auto_review_message_op("unattended stops at 20", &config))
+        .await
+        .expect("send 20");
+    let mut final_20 = None;
+    let mut rx = stop20_handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timeout")
+    {
+        match event {
+            Event::AutoReviewPaused { .. } | Event::ApprovalRequired { .. } => {
+                panic!("unattended run must never pause to Ask or prompt");
+            }
+            Event::TurnComplete { status, error, .. } => {
+                final_20 = Some((status, error));
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+    let (st20, err20) = final_20.expect("final turn complete");
+    assert_eq!(st20, TurnOutcomeStatus::Interrupted);
+    let err20 = err20.expect("blocked summary error");
+    assert!(err20.contains("20") && err20.contains("Blocked actions"), "{err20}");
+    stop20_handle.send(Op::Shutdown).await.expect("shutdown");
+    let _ = tokio::time::timeout(model_turn_event_timeout(), stop20_task).await;
+
+    let _ = std::fs::create_dir(workspace.path().join(".git"));
+    let unavail_args = r#"{"action":"write","path":".env","content":"x=1\n"}"#.to_string();
+    let mut ten_turns = Vec::new();
+    for i in 0..12 {
+        ten_turns.push(canned::tool_call_turn(&format!("u10_{i}"), "File", &unavail_args));
+    }
+    ten_turns.push(canned::simple_text_turn("unreachable"));
+    let mock_10 = Arc::new(MockLlmClient::new(ten_turns));
+    for i in 0..10 {
+        mock_10.push_message_response(MessageResponse {
+            id: format!("bad-{i}"),
+            r#type: "message".to_string(),
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "not-json".to_string(),
+                cache_control: None,
+            }],
+            model: "mock-model".to_string(),
+            stop_reason: Some("end_turn".to_string()),
+            stop_sequence: None,
+            container: None,
+            usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
+        });
+    }
+    let (stop10_engine, stop10_handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &config,
+        mock_10,
+    );
+    let stop10_task = tokio::spawn(stop10_engine.run());
+    stop10_handle
+        .send(auto_review_message_op("unattended stops at 10 unavail", &config))
+        .await
+        .expect("send 10");
+    let mut final_10 = None;
+    let mut rx = stop10_handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timeout")
+    {
+        match event {
+            Event::AutoReviewPaused { .. } | Event::ApprovalRequired { .. } => {
+                panic!("unattended run must never pause to Ask or prompt");
+            }
+            Event::TurnComplete { status, error, .. } => {
+                final_10 = Some((status, error));
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+    let (st10, err10) = final_10.expect("final 10 complete");
+    assert_eq!(st10, TurnOutcomeStatus::Interrupted);
+    let err10 = err10.expect("unavail stop summary");
+    assert!(
+        err10.contains("10 consecutive unavailable") && err10.contains("Blocked actions"),
+        "{err10}"
+    );
+    stop10_handle.send(Op::Shutdown).await.expect("shutdown");
+    let _ = tokio::time::timeout(model_turn_event_timeout(), stop10_task).await;
 }

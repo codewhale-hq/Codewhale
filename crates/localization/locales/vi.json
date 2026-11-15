@@ -2683,5 +2683,16 @@
   "AccountModelsReady": "Đã kết nối {model} qua tài khoản Codewhale của bạn.",
   "AccountModelsConnectFailed": "Không thể kết nối mô hình tài khoản: {error}",
   "AccountModelsCancelled": "Đã hủy thiết lập mô hình. Mô hình hiện tại được giữ nguyên.",
-  "AccountModelsLoadFailed": "Không thể kiểm tra mô hình tài khoản. Hãy thử lại hoặc kết nối nhà cung cấp trên máy tính này."
+  "AccountModelsLoadFailed": "Không thể kiểm tra mô hình tài khoản. Hãy thử lại hoặc kết nối nhà cung cấp trên máy tính này.",
+  "AutoReviewReceiptRetryHint": "Nhấn r khi ô nhập trống hoặc chạy /permissions blocked approve {id} để cho phép thử lại một lần.",
+  "AutoReviewPausedReceipt": "Auto-Review đã tạm dừng ({reason}); quyền đã chuyển sang Ask. Dùng Shift+Tab hoặc /auto để tiếp tục.",
+  "AutoReviewRetryApprovedStatus": "Đã phê duyệt một lần thử lại cho '{tool}' [{id}].",
+  "AutoReviewRetryFailedStatus": "Không thể phê duyệt lần thử lại Auto-Review [{id}]: {error}",
+  "PermissionsBlockedHeader": "Các hành động Auto-Review bị chặn ({count}):",
+  "PermissionsBlockedEmpty": "Không có hành động Auto-Review bị chặn nào được ghi lại trong cuộc trò chuyện này.",
+  "PermissionsBlockedEntry": "{index}. [{id}] {tool} ({rule}) — {summary} | {reason} ({status})",
+  "PermissionsBlockedStatusApprovable": "có thể phê duyệt",
+  "PermissionsBlockedStatusApproved": "đã phê duyệt",
+  "PermissionsBlockedStatusNotApprovable": "không thể phê duyệt",
+  "PermissionsBlockedHint": "Chạy /permissions blocked approve <receipt-id> (hoặc nhấn r khi ô nhập trống cho mục mới nhất) để cho phép thử lại một lần."
 }

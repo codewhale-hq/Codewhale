@@ -23,6 +23,30 @@ use super::{
     RuntimePermissionAuthority, UserInputResponse,
 };
 use crate::approval_log::ApprovalDecider;
+use crate::core::authority::auto_review::{AutoReviewBlockedAction, AutoReviewRetryGrant};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutoReviewRetryApprovalError {
+    OwnerRequired,
+    NotInAutoReview,
+    InvalidTarget(String),
+}
+
+impl std::fmt::Display for AutoReviewRetryApprovalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OwnerRequired => {
+                f.write_str("owner surface is required to approve Auto-Review retry")
+            }
+            Self::NotInAutoReview => {
+                f.write_str("Auto-Review retry can only be approved while Auto-Review is active")
+            }
+            Self::InvalidTarget(msg) => f.write_str(msg),
+        }
+    }
+}
+
+impl std::error::Error for AutoReviewRetryApprovalError {}
 
 // This bounds host delivery/acknowledgement, never the person's time to
 // answer. No active waiter may consume a reply after its caller abandoned it.
@@ -604,8 +628,14 @@ impl EngineHandle {
             .live_runtime_authority
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let approval_changed = state.authority.approval_mode != authority.approval_mode;
+        let mode_changed = state.authority.mode != authority.mode;
         state.revision = state.revision.wrapping_add(1).max(1);
         state.authority = authority;
+        if (approval_changed && state.authority.approval_mode != ApprovalMode::Auto) || mode_changed
+        {
+            self.auto_review_state.lock().revoke_retry_grants();
+        }
     }
 
     pub fn publish_turn_authority(
@@ -1266,6 +1296,79 @@ impl EngineHandle {
         rx.await
             .map_err(|_| anyhow::anyhow!("Engine dropped MCP reload oneshot"))?
             .map_err(anyhow::Error::msg)
+    }
+
+    #[must_use]
+    pub fn list_auto_review_blocks(&self) -> Vec<AutoReviewBlockedAction> {
+        self.auto_review_state.lock().blocked_actions()
+    }
+
+    pub fn approve_auto_review_retry(
+        &self,
+        target: &str,
+    ) -> std::result::Result<AutoReviewRetryGrant, AutoReviewRetryApprovalError> {
+        if !self.owner_surface_attached
+            || !matches!(
+                self.host_profile,
+                super::host_profile::EngineHostProfile::Normal
+            )
+        {
+            return Err(AutoReviewRetryApprovalError::OwnerRequired);
+        }
+        if self.runtime_permission_authority().approval_mode != ApprovalMode::Auto {
+            return Err(AutoReviewRetryApprovalError::NotInAutoReview);
+        }
+        self.auto_review_state
+            .lock()
+            .approve_retry(target)
+            .map_err(AutoReviewRetryApprovalError::InvalidTarget)
+    }
+
+    pub fn reset_auto_review_state_for_boundary(&self) {
+        self.auto_review_state
+            .lock()
+            .reset_for_conversation_boundary();
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_auto_review_authority_for_test(&self, approval_mode: ApprovalMode) {
+        self.publish_turn_authority(
+            AppMode::Agent,
+            true,
+            false,
+            approval_mode == ApprovalMode::Bypass,
+            approval_mode,
+            None,
+        );
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_auto_review_block_for_test(
+        &self,
+        tool_id: &str,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+        rule: Option<&str>,
+        reason: &str,
+        gate: &str,
+        verdict: &str,
+        approvable: bool,
+    ) -> Option<String> {
+        let recorded = self.auto_review_state.lock().record_block(
+            true,
+            self.owner_surface_attached,
+            false,
+            approvable,
+            tool_id,
+            tool_name,
+            tool_input,
+            rule,
+            reason,
+            gate,
+            verdict,
+        );
+        recorded.receipt_id
     }
 }
 

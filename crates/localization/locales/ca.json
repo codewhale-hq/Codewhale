@@ -2683,5 +2683,16 @@
   "AccountModelsReady": "Connectat a {model} mitjançant el teu compte de Codewhale.",
   "AccountModelsConnectFailed": "No s’han pogut connectar els models del compte: {error}",
   "AccountModelsCancelled": "S’ha cancel·lat la configuració del model. Es manté el model actual.",
-  "AccountModelsLoadFailed": "No s’han pogut comprovar els models del compte. Torna-ho a provar o connecta un proveïdor en aquest ordinador."
+  "AccountModelsLoadFailed": "No s’han pogut comprovar els models del compte. Torna-ho a provar o connecta un proveïdor en aquest ordinador.",
+  "AutoReviewReceiptRetryHint": "Premeu r amb el camp buit o executeu /permissions blocked approve {id} per permetre un reintent.",
+  "AutoReviewPausedReceipt": "Auto-Review s'ha aturat ({reason}); els permisos han canviat a Ask. Shift+Tab o /auto per reprendre.",
+  "AutoReviewRetryApprovedStatus": "S'ha aprovat un reintent de '{tool}' [{id}].",
+  "AutoReviewRetryFailedStatus": "No s'ha pogut aprovar el reintent d'Auto-Review [{id}]: {error}",
+  "PermissionsBlockedHeader": "Accions d'Auto-Review bloquejades ({count}):",
+  "PermissionsBlockedEmpty": "No hi ha cap acció d'Auto-Review bloquejada registrada en aquesta conversa.",
+  "PermissionsBlockedEntry": "{index}. [{id}] {tool} ({rule}) — {summary} | {reason} ({status})",
+  "PermissionsBlockedStatusApprovable": "aprovable",
+  "PermissionsBlockedStatusApproved": "aprovada",
+  "PermissionsBlockedStatusNotApprovable": "no aprovable",
+  "PermissionsBlockedHint": "Executeu /permissions blocked approve <receipt-id> (o premeu r amb el camp buit per a l'última) per permetre un reintent."
 }

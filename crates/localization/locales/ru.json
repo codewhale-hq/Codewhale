@@ -2683,5 +2683,16 @@
   "AccountModelsReady": "Модель {model} подключена через ваш аккаунт Codewhale.",
   "AccountModelsConnectFailed": "Не удалось подключить модели аккаунта: {error}",
   "AccountModelsCancelled": "Настройка модели отменена. Текущая модель не изменилась.",
-  "AccountModelsLoadFailed": "Не удалось проверить модели аккаунта. Повторите попытку или подключите провайдера на этом компьютере."
+  "AccountModelsLoadFailed": "Не удалось проверить модели аккаунта. Повторите попытку или подключите провайдера на этом компьютере.",
+  "AutoReviewReceiptRetryHint": "Нажмите r при пустой строке ввода или выполните /permissions blocked approve {id}, чтобы разрешить одну повторную попытку.",
+  "AutoReviewPausedReceipt": "Auto-Review приостановлен ({reason}); разрешения переключены на Ask. Нажмите Shift+Tab или выполните /auto для возобновления.",
+  "AutoReviewRetryApprovedStatus": "Одобрена одна повторная попытка для '{tool}' [{id}].",
+  "AutoReviewRetryFailedStatus": "Не удалось одобрить повторную попытку Auto-Review [{id}]: {error}",
+  "PermissionsBlockedHeader": "Заблокированные действия Auto-Review ({count}):",
+  "PermissionsBlockedEmpty": "В этом разговоре не зафиксировано заблокированных действий Auto-Review.",
+  "PermissionsBlockedEntry": "{index}. [{id}] {tool} ({rule}) — {summary} | {reason} ({status})",
+  "PermissionsBlockedStatusApprovable": "можно одобрить",
+  "PermissionsBlockedStatusApproved": "одобрено",
+  "PermissionsBlockedStatusNotApprovable": "нельзя одобрить",
+  "PermissionsBlockedHint": "Выполните /permissions blocked approve <receipt-id> (или нажмите r при пустом вводе для последнего действия), чтобы разрешить одну повторную попытку."
 }

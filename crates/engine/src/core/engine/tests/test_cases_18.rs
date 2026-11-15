@@ -913,6 +913,9 @@ fn engine_handle_try_send_does_not_block_when_op_channel_is_full() {
                 None,
             ),
         ))),
+        auto_review_state: Arc::new(parking_lot::Mutex::new(
+            crate::core::authority::auto_review::AutoReviewConversationState::default(),
+        )),
         compaction_cancellation: Arc::new(StdMutex::new(CompactionCancellationState::default())),
         turn_heartbeat: turn_heartbeat::TurnHeartbeat::new(),
         subagent_manager: crate::tools::subagent::new_shared_subagent_manager(

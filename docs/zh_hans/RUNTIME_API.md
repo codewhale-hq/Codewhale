@@ -1386,6 +1386,24 @@ Runtime 重启后，线程的授权保持暂停，匹配的调用会再次提示
 恢复该线程。无法读取的授权存储不含任何授权，因此每次调用都会提示。一个强制的
 （不可绕过的）提示永不会被授权回答。
 
+**Auto-Review 阻断与一次性重试授权**
+- `GET /v1/threads/{id}/auto-review/blocks` 返回 `{ thread_id, blocks[] }`，
+  列出线程上记录的 Auto-Review 阻断回执（`receipt_id`、`call_digest`、
+  `tool_id`、`tool_name`、`action_summary`、`rule`、`reason`、`gate`、
+  `verdict`、`approved`、`approvable`）。
+- `POST /v1/threads/{id}/auto-review/approve` 请求体为
+  `{ "target": "<receipt_id_or_call_digest>", "client"?: "desktop"|"tui"|"web"|"phone"|"acp" }`，
+  要求已附着所有者运行时且调用方为所有者界面（否则返回 `403 owner_required`，
+  浏览器 cookie 的 `"desktop"`/`"phone"` 亦被拒绝），要求线程仍处于 Auto-Review
+  （否则返回 `409 not_in_auto_review`）；找不到目标时返回 `404`，已批准或
+  不可批准时返回 `409`；成功后铸造一条绑定到精确 `(tool_name, call_digest)` 的
+  一次性重试授权并返回 `{ ok, thread_id, grant }`，同时发出
+  `auto_review.retry_approved`。重试用完即失效，并仍走全部非 Auto-Review 关卡
+  （在守护者审查时附带 `person_approved_retry`，守护者明确拒绝或不可用时仍阻断）。
+  子智能体与扩展调用不可创建、读取或消费重试授权。若所有者在场的交互式运行时
+  触发阈值（连续 3 次阻断、累计 20 次阻断或连续 3 次审查不可用），会自动将线程的
+  `permission_posture` 切至 `ask` 并发出 `auto_review.paused` 与 `thread.updated`。
+
 **用户输入**
 - `POST /v1/user-input/{thread_id}/{input_id}`，请求体
   `{ "answers": [{ "id": "question-id", "label": "Choice", "value": "Choice" }] }`

@@ -26781,7 +26781,15 @@ mod child_permission_gate {
             err.to_string().contains("would rewrite shared history"),
             "{err}"
         );
-        assert!(err.to_string().contains("Do not work around"), "{err}");
+        assert!(
+            err.to_string().contains("Auto-Review blocked this:"),
+            "{err}"
+        );
+        assert!(
+            !err.to_string().contains("Do not work around")
+                && !err.to_string().contains("do not work around"),
+            "{err}"
+        );
         let receipts = drain_gate_receipts(&mut rx);
         assert_eq!(receipts.len(), 1, "{receipts:?}");
         assert_eq!(receipts[0].1, ToolGateVerdict::Denied);

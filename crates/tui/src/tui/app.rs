@@ -2508,6 +2508,9 @@ pub struct App {
     /// id then `(tool_id, text)`, rendered under the matching tool card when
     /// that child is focused. Session-resident only.
     pub child_gate_receipts: std::collections::HashMap<String, Vec<(String, String)>>,
+    pub auto_review_blocked_receipts:
+        Vec<codewhale_engine::core::authority::auto_review::AutoReviewBlockedAction>,
+    pub pending_auto_review_retry: Option<String>,
     /// User messages queued while a turn is running
     pub queued_messages: VecDeque<QueuedMessage>,
     pub held_restored_queue: usize,
@@ -4358,6 +4361,98 @@ impl App {
         };
         self.set_agent_runtime_baseline(self.mode_prefs.agent_allow_shell, trust_mode, next);
         self.record_permission_change(&permission_before);
+    }
+
+    pub fn sync_auto_review_paused_posture(&mut self, next: ApprovalMode) {
+        let trust_mode = if next == ApprovalMode::Bypass {
+            true
+        } else if self.mode_prefs.agent_approval_mode == ApprovalMode::Bypass {
+            false
+        } else {
+            self.mode_prefs.agent_trust_mode
+        };
+        self.revoke_approvable_auto_review_receipts();
+        self.set_agent_runtime_baseline(self.mode_prefs.agent_allow_shell, trust_mode, next);
+        if !self.approval_policy_locked() {
+            let _ = Self::persist_permission_posture(next);
+        }
+        self.needs_redraw = true;
+    }
+
+    pub fn revoke_approvable_auto_review_receipts(&mut self) {
+        for entry in &mut self.auto_review_blocked_receipts {
+            if !entry.approved {
+                entry.approvable = false;
+            }
+        }
+        self.pending_auto_review_retry = None;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_auto_review_blocked_receipt(
+        &mut self,
+        receipt_id: Option<String>,
+        tool_id: String,
+        tool_name: String,
+        gate: String,
+        verdict: String,
+        rule: Option<String>,
+        reason: String,
+        call_digest: Option<String>,
+        action_summary: String,
+    ) {
+        let approvable = receipt_id.as_deref().is_some_and(|id| !id.is_empty())
+            && call_digest
+                .as_deref()
+                .is_some_and(|digest| !digest.is_empty());
+        if let Some(ref id) = receipt_id
+            && !id.is_empty()
+            && self
+                .auto_review_blocked_receipts
+                .iter()
+                .any(|entry| entry.receipt_id == *id)
+        {
+            return;
+        }
+        if self.auto_review_blocked_receipts.len() >= 100 {
+            self.auto_review_blocked_receipts.remove(0);
+        }
+        self.auto_review_blocked_receipts.push(
+            codewhale_engine::core::authority::auto_review::AutoReviewBlockedAction {
+                receipt_id: receipt_id.unwrap_or_default(),
+                call_digest: call_digest.unwrap_or_default(),
+                tool_id,
+                tool_name,
+                action_summary,
+                rule,
+                reason,
+                gate,
+                verdict,
+                approved: false,
+                approvable,
+            },
+        );
+    }
+
+    pub fn mark_auto_review_receipt_approved(&mut self, target: &str) {
+        if target.is_empty() {
+            return;
+        }
+        for entry in &mut self.auto_review_blocked_receipts {
+            if entry.receipt_id == target || entry.call_digest == target {
+                entry.approved = true;
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn latest_approvable_auto_review_block(
+        &self,
+    ) -> Option<&codewhale_engine::core::authority::auto_review::AutoReviewBlockedAction> {
+        self.auto_review_blocked_receipts
+            .iter()
+            .rev()
+            .find(|entry| entry.approvable && !entry.approved && !entry.receipt_id.is_empty())
     }
 
     #[must_use]

@@ -2683,5 +2683,16 @@
   "AccountModelsReady": "Über dein Codewhale-Konto mit {model} verbunden.",
   "AccountModelsConnectFailed": "Kontomodelle konnten nicht verbunden werden: {error}",
   "AccountModelsCancelled": "Modelleinrichtung abgebrochen. Dein aktuelles Modell bleibt unverändert.",
-  "AccountModelsLoadFailed": "Kontomodelle konnten nicht geprüft werden. Versuche es erneut oder verbinde einen Anbieter auf diesem Computer."
+  "AccountModelsLoadFailed": "Kontomodelle konnten nicht geprüft werden. Versuche es erneut oder verbinde einen Anbieter auf diesem Computer.",
+  "AutoReviewReceiptRetryHint": "Drücken Sie r bei leerem Eingabefeld oder führen Sie /permissions blocked approve {id} aus, um einen erneuten Versuch zu erlauben.",
+  "AutoReviewPausedReceipt": "Auto-Review pausiert ({reason}); Berechtigungen wurden auf Ask umgestellt. Shift+Tab oder /auto zum Fortsetzen.",
+  "AutoReviewRetryApprovedStatus": "Ein erneuter Versuch von '{tool}' [{id}] wurde genehmigt.",
+  "AutoReviewRetryFailedStatus": "Auto-Review-Wiederholung [{id}] konnte nicht genehmigt werden: {error}",
+  "PermissionsBlockedHeader": "Blockierte Auto-Review-Aktionen ({count}):",
+  "PermissionsBlockedEmpty": "In diesem Gespräch wurden keine blockierten Auto-Review-Aktionen aufgezeichnet.",
+  "PermissionsBlockedEntry": "{index}. [{id}] {tool} ({rule}) — {summary} | {reason} ({status})",
+  "PermissionsBlockedStatusApprovable": "genehmigungsfähig",
+  "PermissionsBlockedStatusApproved": "genehmigt",
+  "PermissionsBlockedStatusNotApprovable": "nicht genehmigungsfähig",
+  "PermissionsBlockedHint": "Führen Sie /permissions blocked approve <receipt-id> aus (oder drücken Sie r bei leerem Eingabefeld für die neueste), um einen erneuten Versuch zu erlauben."
 }

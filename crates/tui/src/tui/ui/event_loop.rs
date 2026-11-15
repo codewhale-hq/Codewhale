@@ -643,6 +643,31 @@ pub(super) fn handle_transcript_space(app: &mut App) -> bool {
     true
 }
 
+pub(super) fn queue_auto_review_retry_from_r(app: &mut App) -> bool {
+    if !app.view_stack.is_empty()
+        || app.is_history_search_active()
+        || app.vim_is_normal_mode()
+        || app.vim_is_visual_mode()
+        || !app.input.is_empty()
+        || app.mode != AppMode::Agent
+        || app.approval_mode != ApprovalMode::Auto
+        || !visible_slash_menu_entries(app, SLASH_MENU_LIMIT).is_empty()
+        || !crate::tui::file_mention::visible_mention_menu_entries(app, app.mention_menu_limit)
+            .is_empty()
+    {
+        return false;
+    }
+    let Some(target) = app
+        .latest_approvable_auto_review_block()
+        .filter(|entry| !entry.receipt_id.is_empty())
+        .map(|entry| entry.receipt_id.clone())
+    else {
+        return false;
+    };
+    app.pending_auto_review_retry = Some(target);
+    true
+}
+
 /// Route plain input that must be decided before the composer sees it.
 ///
 /// The raw-paste fallback intentionally holds the first ASCII character for
@@ -680,6 +705,11 @@ pub(super) fn flush_paste_burst_before_composer(app: &mut App, now: Instant) -> 
         }
         codewhale_tui_kit::paste_burst::FlushResult::Typed(' ')
             if app.input.is_empty() && handle_transcript_space(app) =>
+        {
+            true
+        }
+        codewhale_tui_kit::paste_burst::FlushResult::Typed('r')
+            if app.input.is_empty() && queue_auto_review_retry_from_r(app) =>
         {
             true
         }
@@ -5096,22 +5126,67 @@ pub(crate) async fn run_event_loop(
                         risk,
                         reviewer_model,
                         reason,
+                        rule,
+                        receipt_id,
+                        call_digest,
+                        action_summary,
                     } => {
-                        let mut audit = crate::tui::gate_receipts::tool_gate_audit_record(
-                            agent_id.as_deref(),
-                            &tool_id,
-                            &tool_name,
-                            gate,
-                            decision,
-                            risk.as_deref(),
-                            reviewer_model.as_deref(),
-                            &reason,
-                        );
+                        let mut audit =
+                            crate::tui::gate_receipts::tool_gate_audit_record_with_metadata(
+                                agent_id.as_deref(),
+                                &tool_id,
+                                &tool_name,
+                                gate,
+                                decision,
+                                risk.as_deref(),
+                                reviewer_model.as_deref(),
+                                &reason,
+                                rule.as_deref(),
+                                receipt_id.as_deref(),
+                                call_digest.as_deref(),
+                                action_summary.as_deref(),
+                            );
                         audit["session_id"] = serde_json::json!(app.current_session_id);
                         tokio::task::spawn_blocking(move || {
                             log_sensitive_event("tool.gate.decision", audit);
                         });
-                        let receipt = crate::tui::gate_receipts::tool_gate_receipt(
+                        let receipt_hint_id = if agent_id.is_none() {
+                            if matches!(
+                                decision,
+                                codewhale_engine::core::events::ToolGateVerdict::Denied
+                                    | codewhale_engine::core::events::ToolGateVerdict::Unavailable
+                            ) {
+                                let verdict_label = match decision {
+                                    codewhale_engine::core::events::ToolGateVerdict::Unavailable => {
+                                        "unavailable"
+                                    }
+                                    codewhale_engine::core::events::ToolGateVerdict::Denied => {
+                                        "denied"
+                                    }
+                                    codewhale_engine::core::events::ToolGateVerdict::Allowed => {
+                                        "allowed"
+                                    }
+                                }
+                                .to_string();
+                                let summary =
+                                    action_summary.clone().unwrap_or_else(|| tool_name.clone());
+                                app.record_auto_review_blocked_receipt(
+                                    receipt_id.clone(),
+                                    tool_id.clone(),
+                                    tool_name.clone(),
+                                    gate.as_str().to_string(),
+                                    verdict_label,
+                                    rule.clone(),
+                                    reason.clone(),
+                                    call_digest.clone(),
+                                    summary,
+                                );
+                            }
+                            receipt_id.as_deref()
+                        } else {
+                            None
+                        };
+                        let receipt = crate::tui::gate_receipts::tool_gate_receipt_with_retry_info(
                             app.ui_locale,
                             &tool_name,
                             gate,
@@ -5119,11 +5194,9 @@ pub(crate) async fn run_event_loop(
                             risk.as_deref(),
                             reviewer_model.as_deref(),
                             &reason,
+                            receipt_hint_id,
                         );
                         if let Some(agent_id) = agent_id {
-                            // A child's decision belongs to the child's
-                            // conversation: it renders under that tool card
-                            // in focus mode, not in the main transcript.
                             app.child_gate_receipts
                                 .entry(agent_id.clone())
                                 .or_default()
@@ -5138,6 +5211,23 @@ pub(crate) async fn run_event_loop(
                         } else {
                             app.pending_gate_receipts.push((tool_id, receipt));
                         }
+                    }
+                    EngineEvent::AutoReviewPaused {
+                        reason,
+                        approval_mode,
+                    } => {
+                        app.sync_auto_review_paused_posture(approval_mode);
+                        let notice = crate::tui::gate_receipts::auto_review_paused_receipt(
+                            app.ui_locale,
+                            &reason,
+                        );
+                        app.add_message(HistoryCell::System {
+                            content: notice.clone(),
+                        });
+                        app.push_status_toast_record(
+                            StatusToast::new(notice, StatusToastLevel::Warning, Some(12_000))
+                                .for_event("auto-review-paused"),
+                        );
                     }
                 }
             }
@@ -5522,6 +5612,9 @@ pub(crate) async fn run_event_loop(
 
         let now = Instant::now();
         flush_paste_burst_before_composer(app, now);
+        if let Some(target) = app.pending_auto_review_retry.take() {
+            super::apply::apply_approve_auto_review_retry(app, &engine_handle, &target);
+        }
         crate::tui::work_surface::poll_terminal(app);
         app.sync_status_message_to_toasts();
         // Drain background-LLM cost (compaction summaries, seam
@@ -6851,6 +6944,9 @@ pub(crate) async fn run_event_loop(
 
             let now = event_observed_at;
             flush_paste_burst_before_composer(app, now);
+            if let Some(target) = app.pending_auto_review_retry.take() {
+                super::apply::apply_approve_auto_review_retry(app, &engine_handle, &target);
+            }
 
             // On Windows, AltGr is delivered as `Ctrl+Alt`; treat
             // AltGr-typed chars (e.g. European layouts producing `@`, `\`,
@@ -7062,6 +7158,17 @@ pub(crate) async fn run_event_loop(
                     if key.modifiers == KeyModifiers::NONE && app.input.is_empty() =>
                 {
                     let _ = handle_transcript_space(app);
+                    continue;
+                }
+                KeyCode::Char('r')
+                    if key.modifiers == KeyModifiers::NONE
+                        && !slash_menu_open
+                        && !mention_menu_open
+                        && queue_auto_review_retry_from_r(app) =>
+                {
+                    if let Some(target) = app.pending_auto_review_retry.take() {
+                        super::apply::apply_approve_auto_review_retry(app, &engine_handle, &target);
+                    }
                     continue;
                 }
                 KeyCode::Char('t') | KeyCode::Char('T')

@@ -463,6 +463,13 @@ impl Engine {
             .await;
         }
 
+        for notice in self.take_auto_review_retry_notices() {
+            self.add_session_message(
+                self.runtime_text_message_with_turn_metadata(notice, UserInputProvenance::Runtime),
+            )
+            .await;
+        }
+
         // Three-zone prefix contract (#2264): freeze baseline on first
         // turn, verify against it on subsequent turns. Operates alongside
         // PrefixStabilityManager as an independent diagnostic layer.

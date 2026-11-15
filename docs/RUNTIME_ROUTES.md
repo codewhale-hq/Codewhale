@@ -190,6 +190,8 @@ registration index.
 | POST | `/v1/threads/{id}/agent-mail/{message_id}/deliver` |
 | POST | `/v1/threads/{id}/agent-mail/{message_id}/read` |
 | DELETE | `/v1/threads/{id}/approval-grants/{grant_id}` |
+| POST | `/v1/threads/{id}/auto-review/approve` |
+| GET | `/v1/threads/{id}/auto-review/blocks` |
 | POST | `/v1/threads/{id}/commands` |
 | DELETE / GET | `/v1/threads/{id}/commands/{operation_key}` |
 | POST | `/v1/threads/{id}/commands/builtin` |
@@ -266,4 +268,4 @@ registration index.
 | GET / POST | `/v1/worktrees` |
 | POST | `/v1/worktrees/remove` |
 
-The source contains 246 distinct literal paths in this table.
+The source contains 248 distinct literal paths in this table.

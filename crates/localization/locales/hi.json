@@ -2683,5 +2683,16 @@
   "AccountModelsReady": "आपके Codewhale खाते से {model} कनेक्ट हो गया।",
   "AccountModelsConnectFailed": "खाते के मॉडल कनेक्ट नहीं हो सके: {error}",
   "AccountModelsCancelled": "मॉडल सेटअप रद्द किया गया। आपका मौजूदा मॉडल नहीं बदला है।",
-  "AccountModelsLoadFailed": "खाते के मॉडल जाँचे नहीं जा सके। फिर से कोशिश करें या इस कंप्यूटर पर प्रदाता कनेक्ट करें।"
+  "AccountModelsLoadFailed": "खाते के मॉडल जाँचे नहीं जा सके। फिर से कोशिश करें या इस कंप्यूटर पर प्रदाता कनेक्ट करें।",
+  "AutoReviewReceiptRetryHint": "एक बार पुनः प्रयास की अनुमति देने के लिए खाली प्रॉम्प्ट पर r दबाएँ या /permissions blocked approve {id} चलाएँ।",
+  "AutoReviewPausedReceipt": "Auto-Review रुका ({reason}); अनुमतियाँ Ask पर स्विच हो गईं। फिर शुरू करने के लिए Shift+Tab या /auto दबाएँ।",
+  "AutoReviewRetryApprovedStatus": "'{tool}' [{id}] के लिए एक पुनः प्रयास स्वीकृत किया गया।",
+  "AutoReviewRetryFailedStatus": "Auto-Review पुनः प्रयास [{id}] स्वीकृत नहीं किया जा सका: {error}",
+  "PermissionsBlockedHeader": "अवरुद्ध Auto-Review कार्रवाइयाँ ({count}):",
+  "PermissionsBlockedEmpty": "इस बातचीत में कोई अवरुद्ध Auto-Review कार्रवाई दर्ज नहीं है।",
+  "PermissionsBlockedEntry": "{index}. [{id}] {tool} ({rule}) — {summary} | {reason} ({status})",
+  "PermissionsBlockedStatusApprovable": "स्वीकृति योग्य",
+  "PermissionsBlockedStatusApproved": "स्वीकृत",
+  "PermissionsBlockedStatusNotApprovable": "स्वीकृति योग्य नहीं",
+  "PermissionsBlockedHint": "एक पुनः प्रयास की अनुमति देने के लिए /permissions blocked approve <receipt-id> चलाएँ (या नवीनतम के लिए खाली प्रॉम्प्ट पर r दबाएँ)।"
 }

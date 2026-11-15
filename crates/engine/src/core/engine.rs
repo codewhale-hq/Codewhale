@@ -802,6 +802,8 @@ pub struct EngineHandle {
     /// change publishes here before its mailbox op is queued, so gates never
     /// consult a stale per-turn copy.
     live_runtime_authority: Arc<StdMutex<LiveRuntimeAuthorityState>>,
+    auto_review_state:
+        Arc<parking_lot::Mutex<crate::core::authority::auto_review::AutoReviewConversationState>>,
     /// Out-of-band authority for one exact compaction request. The engine can
     /// be awaiting a provider while its bounded op mailbox is unable to drain,
     /// so cancellation cannot depend on processing a later mailbox entry.
@@ -1094,6 +1096,8 @@ pub struct Engine {
     /// The deterministic Auto-Review policy shared with every child runtime
     /// so children are gated by the same rules as the parent turn.
     shared_auto_review_policy: Arc<crate::core::authority::auto_review::AutoReviewPolicy>,
+    auto_review_state:
+        Arc<parking_lot::Mutex<crate::core::authority::auto_review::AutoReviewConversationState>>,
     shell_manager: SharedShellManager,
     /// Read-before-edit snapshots live for the session, not for one turn's
     /// transient `ToolContext` (#4475).
@@ -2381,6 +2385,9 @@ impl Engine {
         let live_runtime_authority = Arc::new(StdMutex::new(LiveRuntimeAuthorityState::new(
             initial_authority,
         )));
+        let auto_review_state = Arc::new(parking_lot::Mutex::new(
+            crate::core::authority::auto_review::AutoReviewConversationState::default(),
+        ));
         let compaction_cancellation =
             Arc::new(StdMutex::new(CompactionCancellationState::default()));
         let tool_exec_lock = Arc::new(RwLock::new(()));
@@ -2795,6 +2802,7 @@ impl Engine {
             subagent_manager,
             subagent_execution_limits,
             shared_auto_review_policy,
+            auto_review_state: Arc::clone(&auto_review_state),
             shell_manager,
             file_read_tracker,
             mcp_pool,
@@ -2886,6 +2894,7 @@ impl Engine {
             shared_paused,
             client_preflight_required: true,
             live_runtime_authority,
+            auto_review_state,
             compaction_cancellation,
             turn_heartbeat: Arc::clone(&engine.turn_heartbeat),
             subagent_manager: Arc::clone(&engine.subagent_manager),
@@ -3313,6 +3322,15 @@ impl Engine {
         self.api_config.sandbox_mode = configured_sandbox_mode;
         self.apply_runtime_mode_policy(&authority);
         self.discard_kernels_if_policy_changed(&prior).await;
+        if prior.approval_mode != effective_approval {
+            if effective_approval == ApprovalMode::Auto {
+                self.auto_review_state.lock().reset_for_auto_resume();
+            } else {
+                self.auto_review_state.lock().revoke_retry_grants();
+            }
+        } else if prior.mode != authority.mode {
+            self.auto_review_state.lock().revoke_retry_grants();
+        }
         if !changed {
             return false;
         }
@@ -3370,6 +3388,52 @@ impl Engine {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .authority
             .clone()
+    }
+
+    pub(super) fn auto_review_stop_reason(&self) -> Option<String> {
+        (self.session.approval_mode == ApprovalMode::Auto)
+            .then(|| {
+                self.auto_review_state
+                    .lock()
+                    .stop_reason()
+                    .map(str::to_string)
+            })
+            .flatten()
+    }
+
+    pub(super) fn take_auto_review_retry_notices(&self) -> Vec<String> {
+        if self.child_host.is_some() {
+            return Vec::new();
+        }
+        self.auto_review_state.lock().take_retry_notices()
+    }
+
+    pub(super) async fn pause_auto_review_to_ask(&mut self, reason: &str) {
+        self.apply_change_mode(
+            self.current_mode,
+            self.session.allow_shell,
+            self.session.trust_mode,
+            false,
+            ApprovalMode::Suggest,
+            self.api_config.sandbox_mode.clone(),
+        )
+        .await;
+        let authority = self.applied_runtime_authority();
+        {
+            let mut state = self
+                .live_runtime_authority
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.revision = state.revision.wrapping_add(1).max(1);
+            state.applied_revision = state.revision;
+            state.authority = authority;
+        }
+        let _ = self
+            .send_event(Event::AutoReviewPaused {
+                reason: reason.to_string(),
+                approval_mode: ApprovalMode::Suggest,
+            })
+            .await;
     }
 
     async fn apply_runtime_authority(&mut self, authority: LiveRuntimeAuthority) -> bool {
@@ -4721,7 +4785,7 @@ impl Engine {
                             // must be finalized here or they keep gating writers in
                             // the new conversation (#5372). Same-session reloads
                             // keep their id and are deliberately left untouched.
-                            if let Some(closed_session_id) = closed_session_id {
+                            if let Some(ref closed_session_id) = closed_session_id {
                                 let manager = self.subagent_manager.clone();
                                 let session_id = closed_session_id.clone();
                                 let finalized =
@@ -4746,7 +4810,7 @@ impl Engine {
                                 };
                                 crate::tools::subagent::settle_requested_children_for_session(
                                     &self.subagent_manager,
-                                    &closed_session_id,
+                                    closed_session_id,
                                     None,
                                 )
                                 .await;
@@ -4816,6 +4880,13 @@ impl Engine {
                                 .unwrap_or_default();
                             self.session.rebuild_working_set();
                             self.reconcile_restored_work_bindings().await;
+                            if closed_session_id.is_some() {
+                                self.auto_review_state
+                                    .lock()
+                                    .reset_for_conversation_boundary();
+                            } else if plugin_workspace_changed {
+                                self.auto_review_state.lock().revoke_retry_grants();
+                            }
                             if self.mcp_pool.is_none()
                                 && let Err(error) = self
                                     .start_mcp_session_boot(McpConnectRefresh::IfChanged)
@@ -4859,6 +4930,7 @@ impl Engine {
                                 Some(crate::core::ops::SessionSnapshotSource::control(control));
                             self.session.rebuild_working_set();
                             self.reconcile_restored_work_bindings().await;
+                            self.auto_review_state.lock().revoke_retry_grants();
                             let _ = tx.send(Some(self.session_snapshot()));
                             self.emit_session_updated().await;
                         }
@@ -11705,6 +11777,9 @@ pub fn mock_engine_handle() -> MockEngineHandle {
         shared_paused,
         client_preflight_required: false,
         live_runtime_authority,
+        auto_review_state: Arc::new(parking_lot::Mutex::new(
+            crate::core::authority::auto_review::AutoReviewConversationState::default(),
+        )),
         compaction_cancellation,
         turn_heartbeat: turn_heartbeat::TurnHeartbeat::new(),
         subagent_manager: crate::tools::subagent::new_shared_subagent_manager(
@@ -12150,6 +12225,7 @@ mod approval_publication;
 mod compaction;
 mod context;
 pub mod handle;
+pub use handle::AutoReviewRetryApprovalError;
 mod run_completion;
 pub use run_completion::EngineRunCompletion;
 pub mod preview;

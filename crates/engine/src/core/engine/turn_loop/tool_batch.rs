@@ -172,7 +172,7 @@ impl Engine {
             }
         }
 
-        if let Some(stop) = turn.auto_review_denials.stop().map(str::to_string) {
+        if let Some(stop) = self.auto_review_stop_reason() {
             let _ = self.send_event(Event::status(stop.clone())).await;
             return PhaseResult::Return((TurnOutcomeStatus::Interrupted, Some(stop)));
         }

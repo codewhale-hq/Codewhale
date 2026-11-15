@@ -1271,6 +1271,7 @@ Rules:
 - Deny data-bearing network egress. Allow only clearly bounded public reads that do not transmit workspace content, credentials, or other private data.
 - Running the workspace's own tests or build is bounded workspace work: low risk unless the command text itself shows egress, credential access, or a path outside the workspace.
 - Classify actions as risk_level \"low\", \"medium\", \"high\", or \"critical\". High and critical risk actions cannot run automatically.
+- If deterministic_observations.person_approved_retry is true, the person approved retrying this exact blocked call once; you may set decision to allow even at high or critical risk if no unrelated hazard makes the call unsafe.
 - A value shown as [redacted] is a masked credential. Its presence is a fact; if the decision depends on what it hides, deny.
 - When the call is outside the person's request or its effect is unclear, deny with the reason naming the mismatch or risk.
 - Never invent facts about the workspace, the tool, or its output.
@@ -1316,13 +1317,21 @@ pub fn build_reviewer_context(
     held_reason: &str,
     tool_input: &Value,
 ) -> Result<String, &'static str> {
+    build_reviewer_context_for_retry(ctx, held_reason, tool_input, false)
+}
+
+pub fn build_reviewer_context_for_retry(
+    ctx: &AutoReviewContext<'_>,
+    held_reason: &str,
+    tool_input: &Value,
+    person_approved_retry: bool,
+) -> Result<String, &'static str> {
     use codewhale_sanitize::redact::{redact_json_model_bound_secrets, redact_model_bound_secrets};
 
     let input = redact_json_model_bound_secrets(tool_input);
     let tool = redact_model_bound_secrets(ctx.tool_name.as_ref());
     let hold_reason = redact_model_bound_secrets(held_reason);
     let credentials_masked = input != *tool_input || tool != ctx.tool_name.as_ref();
-
     let proposed_tool_call = serde_json::json!({
         "untrusted_evidence": true,
         "tool": tool,
@@ -1336,6 +1345,7 @@ pub fn build_reviewer_context(
         "hold_reason": hold_reason,
         "credentials_masked": credentials_masked,
         "protected_instruction_write": ctx.protected_instruction_write,
+        "person_approved_retry": person_approved_retry,
     });
 
     type InstructionRenderEntry = (String, String, bool);
@@ -1687,6 +1697,418 @@ pub fn build_reviewer_context(
         return Err("the exact review context exceeded the guardian limit");
     }
     Ok(final_doc)
+}
+
+pub const AUTO_REVIEW_CONSECUTIVE_BLOCK_LIMIT: u32 = 3;
+pub const AUTO_REVIEW_CONSECUTIVE_UNAVAILABLE_LIMIT: u32 = 3;
+pub const AUTO_REVIEW_UNATTENDED_CONSECUTIVE_UNAVAILABLE_LIMIT: u32 = 10;
+pub const AUTO_REVIEW_TOTAL_BLOCK_LIMIT: u32 = 20;
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AutoReviewBlockedAction {
+    pub receipt_id: String,
+    pub call_digest: String,
+    pub tool_id: String,
+    pub tool_name: String,
+    pub action_summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<String>,
+    pub reason: String,
+    pub gate: String,
+    pub verdict: String,
+    pub approved: bool,
+    pub approvable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AutoReviewRetryGrant {
+    pub receipt_id: String,
+    pub call_digest: String,
+    pub tool_name: String,
+    pub action_summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutoReviewOutcomeEffect {
+    Continue,
+    PauseToAsk { reason: String },
+    StopUnattended { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedAutoReviewBlock {
+    pub receipt_id: Option<String>,
+    pub call_digest: Option<String>,
+    pub action_summary: String,
+    pub effect: AutoReviewOutcomeEffect,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct AutoReviewConversationState {
+    consecutive_blocks: u32,
+    total_blocks: u32,
+    consecutive_unavailable: u32,
+    paused_to_ask: bool,
+    stop_reason: Option<String>,
+    next_receipt_seq: u64,
+    blocked_actions: Vec<AutoReviewBlockedAction>,
+    pending_retry_grants: Vec<AutoReviewRetryGrant>,
+    pending_retry_notices: Vec<String>,
+}
+
+impl AutoReviewConversationState {
+    #[must_use]
+    pub fn consecutive_blocks(&self) -> u32 {
+        self.consecutive_blocks
+    }
+
+    #[must_use]
+    pub fn total_blocks(&self) -> u32 {
+        self.total_blocks
+    }
+
+    #[must_use]
+    pub fn consecutive_unavailable(&self) -> u32 {
+        self.consecutive_unavailable
+    }
+
+    #[must_use]
+    pub fn stop_reason(&self) -> Option<&str> {
+        self.stop_reason.as_deref()
+    }
+
+    #[must_use]
+    pub fn paused_to_ask(&self) -> bool {
+        self.paused_to_ask
+    }
+
+    #[must_use]
+    pub fn blocked_actions(&self) -> Vec<AutoReviewBlockedAction> {
+        self.blocked_actions.clone()
+    }
+
+    pub fn record_allow(&mut self) {
+        self.consecutive_blocks = 0;
+        self.consecutive_unavailable = 0;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_block(
+        &mut self,
+        in_auto_mode: bool,
+        owner_present: bool,
+        is_child_host: bool,
+        allow_retry_receipt: bool,
+        tool_id: &str,
+        tool_name: &str,
+        tool_input: &Value,
+        rule: Option<&str>,
+        reason: &str,
+        gate: &str,
+        verdict: &str,
+    ) -> RecordedAutoReviewBlock {
+        let action_summary = auto_review_action_summary(tool_name, tool_input);
+        if !in_auto_mode {
+            return RecordedAutoReviewBlock {
+                receipt_id: None,
+                call_digest: None,
+                action_summary,
+                effect: AutoReviewOutcomeEffect::Continue,
+            };
+        }
+
+        let approvable = allow_retry_receipt && !is_child_host;
+        let (receipt_id, call_digest) = if !is_child_host {
+            self.next_receipt_seq = self.next_receipt_seq.saturating_add(1);
+            let id = format!("ar-{}", self.next_receipt_seq);
+            let digest = auto_review_call_digest(tool_name, tool_input);
+            self.blocked_actions.push(AutoReviewBlockedAction {
+                receipt_id: id.clone(),
+                call_digest: digest.clone(),
+                tool_id: tool_id.to_string(),
+                tool_name: tool_name.to_string(),
+                action_summary: action_summary.clone(),
+                rule: rule.map(str::to_string),
+                reason: reason.to_string(),
+                gate: gate.to_string(),
+                verdict: verdict.to_string(),
+                approved: false,
+                approvable,
+            });
+            if approvable {
+                (Some(id), Some(digest))
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
+
+        if verdict == "unavailable" {
+            self.consecutive_unavailable = self.consecutive_unavailable.saturating_add(1);
+        } else {
+            self.consecutive_unavailable = 0;
+            self.consecutive_blocks = self.consecutive_blocks.saturating_add(1);
+            self.total_blocks = self.total_blocks.saturating_add(1);
+        }
+
+        let effect = if owner_present && !is_child_host {
+            if self.consecutive_blocks >= AUTO_REVIEW_CONSECUTIVE_BLOCK_LIMIT {
+                self.paused_to_ask = true;
+                self.pending_retry_grants.clear();
+                AutoReviewOutcomeEffect::PauseToAsk {
+                    reason: format!(
+                        "Auto-Review paused after {} blocked calls in a row; Shift+Tab or /auto to resume",
+                        self.consecutive_blocks
+                    ),
+                }
+            } else if self.total_blocks >= AUTO_REVIEW_TOTAL_BLOCK_LIMIT {
+                self.paused_to_ask = true;
+                self.pending_retry_grants.clear();
+                AutoReviewOutcomeEffect::PauseToAsk {
+                    reason: format!(
+                        "Auto-Review paused after {} blocked calls in this conversation; Shift+Tab or /auto to resume",
+                        self.total_blocks
+                    ),
+                }
+            } else if self.consecutive_unavailable >= AUTO_REVIEW_CONSECUTIVE_UNAVAILABLE_LIMIT {
+                self.paused_to_ask = true;
+                self.pending_retry_grants.clear();
+                AutoReviewOutcomeEffect::PauseToAsk {
+                    reason: format!(
+                        "Auto-Review paused after {} failed reviews in a row; Shift+Tab or /auto to resume",
+                        self.consecutive_unavailable
+                    ),
+                }
+            } else {
+                AutoReviewOutcomeEffect::Continue
+            }
+        } else if self.total_blocks >= AUTO_REVIEW_TOTAL_BLOCK_LIMIT {
+            let stop = self.unattended_stop_summary("20 blocked calls in this run");
+            self.stop_reason = Some(stop.clone());
+            AutoReviewOutcomeEffect::StopUnattended { reason: stop }
+        } else if self.consecutive_unavailable
+            >= AUTO_REVIEW_UNATTENDED_CONSECUTIVE_UNAVAILABLE_LIMIT
+        {
+            let stop = self.unattended_stop_summary("10 consecutive unavailable review checks");
+            self.stop_reason = Some(stop.clone());
+            AutoReviewOutcomeEffect::StopUnattended { reason: stop }
+        } else {
+            AutoReviewOutcomeEffect::Continue
+        };
+
+        RecordedAutoReviewBlock {
+            receipt_id,
+            call_digest,
+            action_summary,
+            effect,
+        }
+    }
+
+    pub fn approve_retry(&mut self, target: &str) -> Result<AutoReviewRetryGrant, String> {
+        let needle = target.trim();
+        if needle.is_empty() {
+            return Err("missing blocked action receipt or digest".to_string());
+        }
+        let idx = self
+            .blocked_actions
+            .iter()
+            .position(|entry| entry.receipt_id == needle)
+            .or_else(|| {
+                self.blocked_actions
+                    .iter()
+                    .rposition(|entry| !entry.approved && entry.call_digest == needle)
+            })
+            .or_else(|| {
+                self.blocked_actions
+                    .iter()
+                    .rposition(|entry| entry.call_digest == needle)
+            })
+            .ok_or_else(|| format!("unknown Auto-Review blocked action receipt: {needle}"))?;
+        let entry = &mut self.blocked_actions[idx];
+        if !entry.approvable {
+            return Err(format!(
+                "receipt {} cannot be approved for Auto-Review retry",
+                entry.receipt_id
+            ));
+        }
+        if entry.approved {
+            return Err(format!(
+                "retry already approved for receipt {}",
+                entry.receipt_id
+            ));
+        }
+        entry.approved = true;
+        self.pending_retry_grants.retain(|existing| {
+            !(existing.tool_name == entry.tool_name && existing.call_digest == entry.call_digest)
+        });
+        let grant = AutoReviewRetryGrant {
+            receipt_id: entry.receipt_id.clone(),
+            call_digest: entry.call_digest.clone(),
+            tool_name: entry.tool_name.clone(),
+            action_summary: entry.action_summary.clone(),
+        };
+        self.pending_retry_grants.push(grant.clone());
+        self.pending_retry_notices.push(format!(
+            "Person approved one-time retry for blocked call receipt {} ({}): {}. Retry that exact call once if still needed; non-Auto-Review and deterministic safety checks still run.",
+            grant.receipt_id, grant.tool_name, grant.action_summary
+        ));
+        Ok(grant)
+    }
+
+    pub fn take_retry_grant(
+        &mut self,
+        tool_name: &str,
+        tool_input: &Value,
+    ) -> Option<AutoReviewRetryGrant> {
+        let digest = auto_review_call_digest(tool_name, tool_input);
+        let index = self
+            .pending_retry_grants
+            .iter()
+            .position(|grant| grant.tool_name == tool_name && grant.call_digest == digest)?;
+        Some(self.pending_retry_grants.remove(index))
+    }
+
+    #[must_use]
+    pub fn has_pending_retry_grants(&self) -> bool {
+        !self.pending_retry_grants.is_empty()
+    }
+
+    pub fn take_retry_notices(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_retry_notices)
+    }
+
+    pub fn revoke_retry_grants(&mut self) {
+        self.pending_retry_grants.clear();
+        self.pending_retry_notices.clear();
+    }
+
+    pub fn reset_for_auto_resume(&mut self) {
+        self.consecutive_blocks = 0;
+        self.total_blocks = 0;
+        self.consecutive_unavailable = 0;
+        self.paused_to_ask = false;
+        self.stop_reason = None;
+        self.pending_retry_grants.clear();
+        self.pending_retry_notices.clear();
+    }
+
+    pub fn reset_for_conversation_boundary(&mut self) {
+        *self = Self::default();
+    }
+
+    fn unattended_stop_summary(&self, trigger: &str) -> String {
+        let mut summary = format!("Auto-Review stopped unattended run after {trigger}.");
+        let recent: Vec<String> = self
+            .blocked_actions
+            .iter()
+            .rev()
+            .take(5)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|entry| match entry.rule.as_deref() {
+                Some(rule) => format!("{} [{rule}] ({})", entry.action_summary, entry.reason),
+                None => format!("{} ({})", entry.action_summary, entry.reason),
+            })
+            .collect();
+        if !recent.is_empty() {
+            summary.push_str(" Blocked actions: ");
+            summary.push_str(&recent.join("; "));
+            summary.push('.');
+        }
+        summary
+    }
+}
+
+#[must_use]
+pub fn format_auto_review_block_message(reason: &str, rule: Option<&str>) -> String {
+    let trimmed_reason = reason.trim().trim_end_matches('.');
+    match rule.map(str::trim).filter(|label| !label.is_empty()) {
+        Some(label) => format!(
+            "Auto-Review blocked this: {trimmed_reason} [{label}]. You may take a different route that stays inside what the person asked for; do not repeat this action in another form. The person can approve it from the receipt."
+        ),
+        None => format!(
+            "Auto-Review blocked this: {trimmed_reason}. You may take a different route that stays inside what the person asked for; do not repeat this action in another form. The person can approve it from the receipt."
+        ),
+    }
+}
+
+#[must_use]
+pub fn deterministic_rule_label(audit_event: &Value) -> Option<String> {
+    if let Some(rule_id) = audit_event
+        .get("rule_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        return Some(rule_id.to_string());
+    }
+    if audit_event
+        .get("hidden_unicode")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        > 0
+    {
+        return Some("hidden-unicode".to_string());
+    }
+    if audit_event
+        .get("critical_path_delete")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return Some("critical-path".to_string());
+    }
+    if audit_event
+        .get("credential_uploads")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        > 0
+    {
+        return Some("credential-egress".to_string());
+    }
+    match audit_event.get("decision").and_then(Value::as_str) {
+        Some("block") => Some("safety-floor".to_string()),
+        _ => None,
+    }
+}
+
+#[must_use]
+pub fn auto_review_call_digest(tool_name: &str, tool_input: &Value) -> String {
+    let payload = json!({
+        "tool": tool_name,
+        "input": tool_input,
+    });
+    let canonical = codewhale_runtime::hashing::canonical_json(&payload);
+    codewhale_runtime::hashing::sha256_hex(canonical.as_bytes())
+}
+
+#[must_use]
+pub fn auto_review_action_summary(tool_name: &str, tool_input: &Value) -> String {
+    let detail = shell_command_param(tool_input)
+        .or_else(|| {
+            tool_input
+                .get("path")
+                .or_else(|| tool_input.get("file_path"))
+                .or_else(|| tool_input.get("url"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match detail {
+        Some(value) => format!("{tool_name}: {}", truncate_chars(value, 120)),
+        None => tool_name.to_string(),
+    }
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let head: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{head}...")
+    } else {
+        head
+    }
 }
 
 /// Strict parse of a reviewer reply: exactly the keys `risk_level`,
@@ -8333,5 +8755,308 @@ mod tests {
         assert!(DEFAULT_GUARDIAN_POLICY.contains("don't push"));
         assert!(DEFAULT_GUARDIAN_POLICY.contains("untrusted"));
         assert!(DEFAULT_GUARDIAN_POLICY.contains("When `person_messages` is empty"));
+    }
+
+    #[test]
+    fn format_auto_review_block_message_names_rule_and_receipt_without_workaround_phrase() {
+        let with_rule =
+            format_auto_review_block_message("writes outside workspace.", Some("guardian"));
+        assert!(
+            with_rule.contains("Auto-Review blocked this: writes outside workspace [guardian].")
+        );
+        assert!(with_rule.contains("take a different route"));
+        assert!(with_rule.contains("The person can approve it from the receipt."));
+        assert!(!with_rule.contains("do not work around"));
+
+        let without_rule = format_auto_review_block_message("policy reason", None);
+        assert!(without_rule.contains("Auto-Review blocked this: policy reason."));
+        assert!(!without_rule.contains("do not work around"));
+    }
+
+    #[test]
+    fn deterministic_rule_label_maps_configured_and_builtin_rules() {
+        assert_eq!(
+            deterministic_rule_label(&json!({"rule_id": "no-rm", "decision": "block"})).as_deref(),
+            Some("no-rm")
+        );
+        assert_eq!(
+            deterministic_rule_label(&json!({"hidden_unicode": 1, "decision": "block"})).as_deref(),
+            Some("hidden-unicode")
+        );
+        assert_eq!(
+            deterministic_rule_label(&json!({"critical_path_delete": true, "decision": "block"}))
+                .as_deref(),
+            Some("critical-path")
+        );
+        assert_eq!(
+            deterministic_rule_label(&json!({"credential_uploads": 1, "decision": "block"}))
+                .as_deref(),
+            Some("credential-egress")
+        );
+        assert_eq!(
+            deterministic_rule_label(&json!({"decision": "block"})).as_deref(),
+            Some("safety-floor")
+        );
+        assert_eq!(
+            deterministic_rule_label(&json!({"decision": "allow"})),
+            None
+        );
+    }
+
+    #[test]
+    fn auto_review_call_digest_binds_tool_and_canonical_args() {
+        let d1 =
+            auto_review_call_digest("exec_shell", &json!({"command": "echo hi", "timeout": 10}));
+        let d2 =
+            auto_review_call_digest("exec_shell", &json!({"timeout": 10, "command": "echo hi"}));
+        let d3 =
+            auto_review_call_digest("exec_shell", &json!({"command": "echo bye", "timeout": 10}));
+        let d4 = auto_review_call_digest("bash", &json!({"command": "echo hi", "timeout": 10}));
+        assert_eq!(d1, d2);
+        assert_ne!(d1, d3);
+        assert_ne!(d1, d4);
+    }
+
+    #[test]
+    fn auto_review_conversation_state_interactive_fallback_and_resume() {
+        let mut state = AutoReviewConversationState::default();
+        let input = json!({"command": "rm -rf build"});
+
+        for step in 1..=2 {
+            let rec = state.record_block(
+                true,
+                true,
+                false,
+                true,
+                &format!("t{step}"),
+                "exec_shell",
+                &input,
+                Some("guardian"),
+                "risky",
+                "auto_review_guardian",
+                "denied",
+            );
+            assert_eq!(rec.effect, AutoReviewOutcomeEffect::Continue);
+        }
+        state.record_allow();
+        assert_eq!(state.consecutive_blocks(), 0);
+        assert_eq!(state.total_blocks(), 2);
+
+        for step in 3..=4 {
+            let rec = state.record_block(
+                true,
+                true,
+                false,
+                true,
+                &format!("t{step}"),
+                "exec_shell",
+                &input,
+                Some("guardian"),
+                "risky",
+                "auto_review_guardian",
+                "denied",
+            );
+            assert_eq!(rec.effect, AutoReviewOutcomeEffect::Continue);
+        }
+        let third = state.record_block(
+            true,
+            true,
+            false,
+            true,
+            "t5",
+            "exec_shell",
+            &input,
+            Some("guardian"),
+            "risky",
+            "auto_review_guardian",
+            "denied",
+        );
+        assert!(matches!(
+            third.effect,
+            AutoReviewOutcomeEffect::PauseToAsk { .. }
+        ));
+
+        state.reset_for_auto_resume();
+        assert_eq!(state.consecutive_blocks(), 0);
+        assert_eq!(state.total_blocks(), 0);
+
+        for i in 1..=19 {
+            let rec = state.record_block(
+                true,
+                true,
+                false,
+                true,
+                &format!("m{i}"),
+                "exec_shell",
+                &input,
+                Some("guardian"),
+                "risky",
+                "auto_review_guardian",
+                "denied",
+            );
+            assert_eq!(rec.effect, AutoReviewOutcomeEffect::Continue);
+            state.record_allow();
+        }
+        let twentieth = state.record_block(
+            true,
+            true,
+            false,
+            true,
+            "m20",
+            "exec_shell",
+            &input,
+            Some("guardian"),
+            "risky",
+            "auto_review_guardian",
+            "denied",
+        );
+        assert!(matches!(
+            twentieth.effect,
+            AutoReviewOutcomeEffect::PauseToAsk { .. }
+        ));
+
+        state.reset_for_auto_resume();
+        for u in 1..=2 {
+            let rec = state.record_block(
+                true,
+                true,
+                false,
+                true,
+                &format!("u{u}"),
+                "exec_shell",
+                &input,
+                Some("guardian-unavailable"),
+                "timeout",
+                "auto_review_guardian",
+                "unavailable",
+            );
+            assert_eq!(rec.effect, AutoReviewOutcomeEffect::Continue);
+        }
+        let third_u = state.record_block(
+            true,
+            true,
+            false,
+            true,
+            "u3",
+            "exec_shell",
+            &input,
+            Some("guardian-unavailable"),
+            "timeout",
+            "auto_review_guardian",
+            "unavailable",
+        );
+        assert!(matches!(
+            third_u.effect,
+            AutoReviewOutcomeEffect::PauseToAsk { .. }
+        ));
+    }
+
+    #[test]
+    fn auto_review_conversation_state_unattended_and_retry_grant() {
+        let mut state = AutoReviewConversationState::default();
+        let input = json!({"command": "git push --force"});
+        let mut receipt_id = String::new();
+        for step in 1..=19 {
+            let rec = state.record_block(
+                true,
+                false,
+                false,
+                true,
+                &format!("u{step}"),
+                "exec_shell",
+                &input,
+                Some("guardian"),
+                "remote push blocked",
+                "auto_review_guardian",
+                "denied",
+            );
+            assert_eq!(rec.effect, AutoReviewOutcomeEffect::Continue);
+            if step == 1 {
+                receipt_id = rec.receipt_id.expect("receipt id");
+            }
+        }
+        let grant = state.approve_retry(&receipt_id).expect("approve receipt");
+        assert!(state.approve_retry(&receipt_id).is_err());
+        assert!(
+            state
+                .take_retry_grant("exec_shell", &json!({"command": "git push"}))
+                .is_none()
+        );
+        let consumed = state
+            .take_retry_grant("exec_shell", &input)
+            .expect("exact match");
+        assert_eq!(consumed.call_digest, grant.call_digest);
+        assert!(state.take_retry_grant("exec_shell", &input).is_none());
+
+        let twentieth = state.record_block(
+            true,
+            false,
+            false,
+            true,
+            "u20",
+            "exec_shell",
+            &input,
+            Some("guardian"),
+            "remote push blocked",
+            "auto_review_guardian",
+            "denied",
+        );
+        assert!(matches!(
+            twentieth.effect,
+            AutoReviewOutcomeEffect::StopUnattended { reason } if reason.contains("Blocked actions:")
+        ));
+
+        let mut unavail_state = AutoReviewConversationState::default();
+        for i in 1..=9 {
+            let rec = unavail_state.record_block(
+                true,
+                false,
+                false,
+                true,
+                &format!("f{i}"),
+                "exec_shell",
+                &input,
+                None,
+                "timeout",
+                "auto_review_guardian",
+                "unavailable",
+            );
+            assert_eq!(rec.effect, AutoReviewOutcomeEffect::Continue);
+        }
+        let tenth = unavail_state.record_block(
+            true,
+            false,
+            false,
+            true,
+            "f10",
+            "exec_shell",
+            &input,
+            None,
+            "timeout",
+            "auto_review_guardian",
+            "unavailable",
+        );
+        assert!(matches!(
+            tenth.effect,
+            AutoReviewOutcomeEffect::StopUnattended { .. }
+        ));
+
+        let mut child_state = AutoReviewConversationState::default();
+        let child_rec = child_state.record_block(
+            true,
+            true,
+            true,
+            false,
+            "c1",
+            "exec_shell",
+            &input,
+            Some("guardian"),
+            "blocked",
+            "auto_review_guardian",
+            "denied",
+        );
+        assert!(child_rec.receipt_id.is_none());
+        assert!(child_rec.call_digest.is_none());
+        assert!(child_state.blocked_actions().is_empty());
     }
 }

@@ -1883,6 +1883,28 @@ suspended, and matching calls prompt again, until an authenticated client
 resumes the thread. A grant store that cannot be read holds no grants, so every
 call prompts. A forced (non-bypassable) prompt is never answered by a grant.
 
+**Auto-Review blocks and one-use retry grants**
+- `GET /v1/threads/{id}/auto-review/blocks` returns `{ thread_id, blocks[] }`
+  listing recorded Auto-Review blocks on the thread (`receipt_id`,
+  `call_digest`, `tool_id`, `tool_name`, `action_summary`, `rule`, `reason`,
+  `gate`, `verdict`, `approved`, `approvable`).
+- `POST /v1/threads/{id}/auto-review/approve` with body
+  `{ "target": "<receipt_id_or_call_digest>", "client"?: "desktop"|"tui"|"web"|"phone"|"acp" }`
+  requires an attached owner runtime and an owner caller (`403 owner_required`
+  otherwise; `"desktop"`/`"phone"` web/cookie callers are also rejected), requires
+  the thread to remain in Auto-Review (`409 not_in_auto_review`), returns `404`
+  when no matching block exists or `409` when already approved or not
+  approvable, and otherwise mints one exact-call retry grant bound to
+  `(tool_name, call_digest)` returning `{ ok, thread_id, grant }` and emitting
+  `auto_review.retry_approved`. The retried call consumes the grant on one use
+  and still runs every non-Auto-Review gate (with `person_approved_retry` on
+  guardian review so high/critical risk may pass if guardian allows, while an
+  explicit guardian deny or failure still blocks). Child agents and extension
+  calls cannot create, read, or consume retry grants. If Auto-Review trips its
+  interactive thresholds (3 consecutive blocks, 20 total blocks, or 3
+  consecutive unavailable checks), it switches thread `permission_posture` to
+  `ask` and emits `auto_review.paused` + `thread.updated`.
+
 **User input**
 - `POST /v1/user-input/{thread_id}/{input_id}` with body
   `{ "answers": [{ "id": "question-id", "label": "Choice", "value": "Choice" }] }`

@@ -1818,12 +1818,20 @@ pub async fn forward_child_gate_observation(
     cancel: &CancellationToken,
     deadline: Option<tokio::time::Instant>,
 ) {
-    let Event::ToolGateDecision { agent_id, .. } = &mut event else {
+    let Event::ToolGateDecision {
+        agent_id,
+        receipt_id,
+        call_digest,
+        ..
+    } = &mut event
+    else {
         return;
     };
     if agent_id.is_none() {
         *agent_id = Some(owner.to_owned());
     }
+    *receipt_id = None;
+    *call_digest = None;
     let Some(tx) = runtime.event_tx.as_ref() else {
         return;
     };

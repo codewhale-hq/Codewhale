@@ -1569,6 +1569,27 @@ struct DecideApprovalResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct ApproveAutoReviewRetryBody {
+    #[serde(alias = "receipt_id", alias = "call_digest")]
+    target: String,
+    #[serde(default)]
+    client: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+}
+
+#[derive(Debug, Serialize)]
+struct ApproveAutoReviewRetryResponse {
+    ok: bool,
+    thread_id: String,
+    grant: codewhale_engine::core::authority::auto_review::AutoReviewRetryGrant,
+}
+
+#[derive(Debug, Serialize)]
+struct AutoReviewBlocksResponse {
+    thread_id: String,
+    blocks: Vec<codewhale_engine::core::authority::auto_review::AutoReviewBlockedAction>,
+}
+
+#[derive(Debug, Deserialize)]
 struct SubmitUserInputBody {
     answers: Vec<codewhale_engine::tools::user_input::UserInputAnswer>,
 }
@@ -3340,6 +3361,14 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/v1/threads/{id}/approval-grants/{grant_id}",
             delete(revoke_approval_grant),
+        )
+        .route(
+            "/v1/threads/{id}/auto-review/blocks",
+            get(list_auto_review_blocks),
+        )
+        .route(
+            "/v1/threads/{id}/auto-review/approve",
+            post(approve_auto_review_retry),
         )
         .route(
             "/v1/user-input/{thread_id}/{input_id}",
@@ -7024,14 +7053,48 @@ async fn list_approvals(
     Ok(Json(rows))
 }
 
+fn resolve_approval_responder(
+    auth_caller: auth::RuntimeAuthCaller,
+    client: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+) -> Result<Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>, ApiError> {
+    use codewhale_engine::runtime_threads::manager::ApprovalResponder;
+
+    match auth_caller {
+        auth::RuntimeAuthCaller::MasterOrLocal => Ok(client),
+        auth::RuntimeAuthCaller::WebSession => match client {
+            None | Some(ApprovalResponder::Web) => Ok(Some(ApprovalResponder::Web)),
+            Some(_) => Err(
+                ApiError::forbidden("web session cannot claim another client surface")
+                    .with_code("owner_required"),
+            ),
+        },
+        auth::RuntimeAuthCaller::MobileSession => {
+            if client.is_some_and(ApprovalResponder::is_owner_surface) {
+                return Err(
+                    ApiError::forbidden("only the owner surface may answer this approval")
+                        .with_code("owner_required"),
+                );
+            }
+            Ok(Some(ApprovalResponder::Phone))
+        }
+        auth::RuntimeAuthCaller::DeviceClient => {
+            if client.is_some_and(ApprovalResponder::is_owner_surface) {
+                return Err(
+                    ApiError::forbidden("only the owner surface may answer this approval")
+                        .with_code("owner_required"),
+                );
+            }
+            Ok(client)
+        }
+    }
+}
+
 async fn decide_approval(
     State(state): State<RuntimeApiState>,
     axum::Extension(auth_caller): axum::Extension<auth::RuntimeAuthCaller>,
     Path(approval_id): Path<String>,
     Json(req): Json<DecideApprovalBody>,
 ) -> Result<Json<DecideApprovalResponse>, ApiError> {
-    use codewhale_engine::runtime_threads::manager::ApprovalResponder;
-
     let decision = match req.decision.as_str() {
         "allow" => ExternalApprovalDecision::Allow {
             remember: req.remember,
@@ -7045,36 +7108,7 @@ async fn decide_approval(
             )));
         }
     };
-    let responder = match auth_caller {
-        auth::RuntimeAuthCaller::MasterOrLocal => req.client,
-        auth::RuntimeAuthCaller::WebSession => match req.client {
-            None | Some(ApprovalResponder::Web) => Some(ApprovalResponder::Web),
-            Some(_) => {
-                return Err(
-                    ApiError::forbidden("web session cannot claim another client surface")
-                        .with_code("owner_required"),
-                );
-            }
-        },
-        auth::RuntimeAuthCaller::MobileSession => {
-            if req.client.is_some_and(ApprovalResponder::is_owner_surface) {
-                return Err(
-                    ApiError::forbidden("only the owner surface may answer this approval")
-                        .with_code("owner_required"),
-                );
-            }
-            Some(ApprovalResponder::Phone)
-        }
-        auth::RuntimeAuthCaller::DeviceClient => {
-            if req.client.is_some_and(ApprovalResponder::is_owner_surface) {
-                return Err(
-                    ApiError::forbidden("only the owner surface may answer this approval")
-                        .with_code("owner_required"),
-                );
-            }
-            req.client
-        }
-    };
+    let responder = resolve_approval_responder(auth_caller, req.client)?;
     Ok(Json(
         settle_approval_request(&state, approval_id, None, decision, responder).await?,
     ))
@@ -7165,6 +7199,37 @@ async fn revoke_approval_grant(
     Ok(Json(
         json!({ "ok": true, "grant_id": grant_id, "revoked": true }),
     ))
+}
+
+async fn list_auto_review_blocks(
+    State(state): State<RuntimeApiState>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<AutoReviewBlocksResponse>, ApiError> {
+    let blocks = state
+        .runtime_threads
+        .list_auto_review_blocks(&thread_id, None)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(AutoReviewBlocksResponse { thread_id, blocks }))
+}
+
+async fn approve_auto_review_retry(
+    State(state): State<RuntimeApiState>,
+    axum::Extension(auth_caller): axum::Extension<auth::RuntimeAuthCaller>,
+    Path(thread_id): Path<String>,
+    Json(req): Json<ApproveAutoReviewRetryBody>,
+) -> Result<Json<ApproveAutoReviewRetryResponse>, ApiError> {
+    let responder = resolve_approval_responder(auth_caller, req.client)?;
+    let grant = state
+        .runtime_threads
+        .approve_auto_review_retry(&thread_id, &req.target, responder, None)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(ApproveAutoReviewRetryResponse {
+        ok: true,
+        thread_id,
+        grant,
+    }))
 }
 
 async fn submit_user_input(
@@ -15139,6 +15204,29 @@ fn external_agent_refusal(err: &anyhow::Error) -> Option<ApiError> {
 fn map_thread_err(err: anyhow::Error) -> ApiError {
     if err.is::<codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch>() {
         return ApiError::forbidden(err.to_string()).with_code("workspace_mismatch");
+    }
+    if err.is::<codewhale_engine::runtime_threads::manager::ApprovalOwnerRequired>() {
+        return ApiError::forbidden(err.to_string()).with_code("owner_required");
+    }
+    if let Some(error) =
+        err.downcast_ref::<codewhale_engine::core::engine::AutoReviewRetryApprovalError>()
+    {
+        use codewhale_engine::core::engine::AutoReviewRetryApprovalError;
+        return match error {
+            AutoReviewRetryApprovalError::OwnerRequired => {
+                ApiError::forbidden(error.to_string()).with_code("owner_required")
+            }
+            AutoReviewRetryApprovalError::NotInAutoReview => {
+                ApiError::conflict(error.to_string()).with_code("not_in_auto_review")
+            }
+            AutoReviewRetryApprovalError::InvalidTarget(detail) => {
+                if detail.contains("no blocked action") {
+                    ApiError::not_found(error.to_string())
+                } else {
+                    ApiError::conflict(error.to_string())
+                }
+            }
+        };
     }
     if let Some(refusal) = external_agent_refusal(&err).or_else(|| mode_refusal(&err)) {
         return refusal;

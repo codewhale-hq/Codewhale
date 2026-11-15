@@ -2683,5 +2683,16 @@
   "AccountModelsReady": "Connected to {model} through your Codewhale account.",
   "AccountModelsConnectFailed": "Couldn’t connect account models: {error}",
   "AccountModelsCancelled": "Model setup cancelled. Your current model is unchanged.",
-  "AccountModelsLoadFailed": "Couldn’t check account models. Try again or connect a provider on this computer."
+  "AccountModelsLoadFailed": "Couldn’t check account models. Try again or connect a provider on this computer.",
+  "AutoReviewReceiptRetryHint": "Press r on an empty prompt or run /permissions blocked approve {id} to allow one retry.",
+  "AutoReviewPausedReceipt": "Auto-Review paused ({reason}); permissions switched to Ask. Shift+Tab or /auto to resume.",
+  "AutoReviewRetryApprovedStatus": "Approved one retry of '{tool}' [{id}].",
+  "AutoReviewRetryFailedStatus": "Could not approve Auto-Review retry [{id}]: {error}",
+  "PermissionsBlockedHeader": "Blocked Auto-Review actions ({count}):",
+  "PermissionsBlockedEmpty": "No blocked Auto-Review actions recorded in this conversation.",
+  "PermissionsBlockedEntry": "{index}. [{id}] {tool} ({rule}) — {summary} | {reason} ({status})",
+  "PermissionsBlockedStatusApprovable": "approvable",
+  "PermissionsBlockedStatusApproved": "approved",
+  "PermissionsBlockedStatusNotApprovable": "not approvable",
+  "PermissionsBlockedHint": "Run /permissions blocked approve <receipt-id> (or press r on an empty prompt for the latest) to allow one retry."
 }

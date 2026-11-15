@@ -1160,6 +1160,8 @@ impl App {
             pending_tool_uses: Vec::new(),
             pending_gate_receipts: Vec::new(),
             child_gate_receipts: std::collections::HashMap::new(),
+            auto_review_blocked_receipts: Vec::new(),
+            pending_auto_review_retry: None,
             queued_messages: VecDeque::new(),
             held_restored_queue: 0,
             queued_draft: None,

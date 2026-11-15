@@ -1055,6 +1055,10 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             risk,
             reviewer_model,
             reason,
+            rule,
+            receipt_id,
+            call_digest,
+            action_summary,
         } => wire::EventMsg::ToolGateDecision {
             thread_id,
             session_id,
@@ -1066,6 +1070,19 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             risk: risk.clone(),
             reviewer_model: reviewer_model.clone(),
             reason: reason.clone(),
+            rule: rule.clone(),
+            receipt_id: receipt_id.clone(),
+            call_digest: call_digest.clone(),
+            action_summary: action_summary.clone(),
+        },
+        Event::AutoReviewPaused {
+            reason,
+            approval_mode,
+        } => wire::EventMsg::AutoReviewPaused {
+            thread_id,
+            session_id,
+            reason: reason.clone(),
+            approval_mode: approval_mode_str(*approval_mode).to_string(),
         },
         Event::AdvisoryNote {
             turn_id,
@@ -1678,6 +1695,14 @@ mod tests {
                 risk: None,
                 reviewer_model: None,
                 reason: "timeout".into(),
+                rule: Some("guardian-unavailable".into()),
+                receipt_id: Some("ar-1".into()),
+                call_digest: Some("d1".into()),
+                action_summary: Some("bash: ls".into()),
+            },
+            Event::AutoReviewPaused {
+                reason: "Auto-Review paused after 3 blocked calls in a row; Shift+Tab or /auto to resume".into(),
+                approval_mode: ApprovalMode::Suggest,
             },
             Event::WorkflowUi {
                 owner_session_id: "owner".into(),

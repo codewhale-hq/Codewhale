@@ -128,6 +128,9 @@ pub type SessionCommandResult = CommandResult<SessionAction>;
 pub enum ConfigAction {
     /// A permission rule was safely removed; the host reloads active rules.
     PermissionRulesChanged,
+    ApproveAutoReviewRetry {
+        target: String,
+    },
     // Auth flows (no host observation needed).
     OpenModelConnectionSetup,
     StartAccountConnect,

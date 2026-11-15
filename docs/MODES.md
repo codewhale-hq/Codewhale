@@ -269,29 +269,42 @@ Legacy note: `/set approval_mode ...` was retired in favor of `/config`.
   model on the session's active provider route when matched or falls back to the
   session model without switching providers or accounts). The reviewer receives
   structured untrusted-evidence JSON containing the exact `proposed_tool_call`
-  (including `description`), deterministic observations, redacted earlier
-  non-read `recent_actions` from the current turn, optional `approved_plan`,
-  pinned `project_instructions` captured at session start with separate user
-  and repository labels and SHA-256 hashes (never re-read from disk mid-session),
-  and typed `person_messages` from the conversation owner newest first (on
-  subagent turns, inherited from the root conversation rather than child
-  briefs; empty on agent-created `Background` threads). Attached `@file`
-  bodies, skill instructions, expanded context, tool outputs, and assistant
-  prose are never passed to the reviewer. Context is capped at 64 KiB; the
-  current request and exact proposed call are never truncated (exceeding the
-  cap alone fails closed as unavailable), and under budget pressure repository
-  instructions, user instructions, and then oldest middle `person_messages` trim
-  first while preserving the earliest typed limit and latest request. High or
-  critical risk cannot auto-run even if the model says allow. It has no tools,
-  remembers no rules, and makes a single request with a fail-closed result on
-  incomplete or malformed output, timeout, cancellation, or provider failure.
-  Repeated denials stop the turn: after three guardian denials in a row, or ten
-  among the turn's last fifty reviews, the turn ends as interrupted with a
-  status line, and calls still in that batch are refused without another review.
-  Only explicit denials count (not timeouts or failures), an allowed review
-  resets the run of three, the count starts fresh with each turn, and a child
-  agent counts its own turns. Headless `exec` turns consult the model guardian
-  for fallback non-destructive holds while applying the deterministic
+  (including `description`), deterministic observations (including
+  `person_approved_retry`), redacted earlier non-read `recent_actions` from the
+  current turn, optional `approved_plan`, pinned `project_instructions` captured
+  at session start with separate user and repository labels and SHA-256 hashes
+  (never re-read from disk mid-session), and typed `person_messages` from the
+  conversation owner newest first (on subagent turns, inherited from the root
+  conversation rather than child briefs; empty on agent-created `Background`
+  threads). Attached `@file` bodies, skill instructions, expanded context, tool
+  outputs, and assistant prose are never passed to the reviewer. Context is
+  capped at 64 KiB; the current request and exact proposed call are never
+  truncated (exceeding the cap alone fails closed as unavailable), and under
+  budget pressure repository instructions, user instructions, and then oldest
+  middle `person_messages` trim first while preserving the earliest typed limit
+  and latest request. High or critical risk cannot auto-run unless you approve a
+  one-use retry of that exact call, and an explicit guardian denial still
+  blocks even then. It has no tools, remembers no rules, and makes a single
+  request with a fail-closed result on incomplete or malformed output, timeout,
+  cancellation, or provider failure. Every Auto-Review block names the rule and
+  reason and invites either another route or, on interactive owner-present
+  blocks eligible for retry, one-use owner approval of that exact call via the
+  block receipt (`r` in an empty composer), `/permissions blocked`, or the
+  Runtime API (`POST /v1/threads/{id}/auto-review/approve`). Each retry grant is
+  bound to the exact canonical `(tool_name, call_digest)`, is consumed once on
+  retry, still passes every non-Auto-Review gate (hooks, typed permissions, repo
+  law, deterministic floor, and sandbox), never extends to children or extension
+  calls, and clears when leaving Auto-Review or resetting the conversation. When
+  `owner_present` is true (and not a child worker), 3 consecutive blocks, 20
+  total blocks in the conversation, or 3 consecutive unavailable reviewer checks
+  switches Permissions to Ask (`AutoReviewPaused`) and continues in Ask
+  (switching back to Auto-Review resets the counters). Unattended runs
+  (`owner_present` false) never fall back to Ask; they continue past blocks and
+  end as interrupted with a blocked-actions summary at 20 total blocks or 10
+  consecutive unavailable reviewer checks. An allowed review resets consecutive
+  block and unavailable counts, while an explicit guardian denial resets the
+  consecutive unavailable count. Headless `exec` turns consult the model
+  guardian for fallback non-destructive holds while applying the deterministic
   unattended rules to destructive work; ACP turns use deterministic rules only
   and refuse guardian consultation.
   When `owner_present` is true (an interactive TUI or owner runtime surface

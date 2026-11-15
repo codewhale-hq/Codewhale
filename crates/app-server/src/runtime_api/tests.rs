@@ -28129,3 +28129,321 @@ async fn runtime_api_web_composer_records_person_messages_while_mobile_device_ma
     handle.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn runtime_api_auto_review_blocks_and_approve_enforce_owner_surface_and_state() -> Result<()>
+{
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().to_path_buf();
+    let sessions_dir = root.join("sessions");
+    let workspace = root.join("workspace");
+    let token = "auto-review-owner-api-token".to_string();
+    let (web_state, web_nonce) = web::RuntimeWebState::new();
+    let (mobile_state, mobile_nonce) = mobile::RuntimeMobileState::new();
+    let Some((addr, runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root,
+            sessions_dir,
+            Some(token.clone()),
+            true,
+            workspace,
+            TestServerOverrides {
+                owner_host: true,
+                web: Some(web_state),
+                mobile: Some(mobile_state),
+                ..TestServerOverrides::default()
+            },
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    assert!(runtime_threads.is_owner_surface_attached_for_test());
+    let origin = format!("http://{addr}");
+    let client = codewhale_release::tls::reqwest_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+
+    let drive_token_resp: Value = client
+        .post(format!("{origin}/v1/auth/client-tokens"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "device_id": "paired-drive-device",
+            "intent": "drive"
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let drive_token = drive_token_resp["token"]
+        .as_str()
+        .context("drive token")?
+        .to_string();
+
+    let web_exchange = client
+        .get(format!("{origin}/__codewhale/bootstrap/{web_nonce}"))
+        .send()
+        .await?;
+    assert_eq!(web_exchange.status(), StatusCode::SEE_OTHER);
+    let web_proof = web_exchange
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|loc| loc.strip_prefix("/#p="))
+        .context("web proof")?
+        .to_string();
+    let web_cookie = web_exchange
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(';').next())
+        .context("web cookie")?
+        .to_string();
+
+    let mobile_exchange = client
+        .get(format!(
+            "{origin}/__codewhale/mobile/bootstrap/{mobile_nonce}"
+        ))
+        .send()
+        .await?;
+    assert_eq!(mobile_exchange.status(), StatusCode::SEE_OTHER);
+    let mobile_fragment = mobile_exchange
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|loc| loc.strip_prefix("/mobile#"))
+        .context("mobile fragment")?;
+    let mobile_proof = mobile_fragment
+        .split('&')
+        .find_map(|p| p.strip_prefix("request_proof="))
+        .context("mobile proof")?
+        .to_string();
+    let mobile_cookie = mobile_exchange
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(';').next())
+        .context("mobile cookie")?
+        .to_string();
+
+    let created: Value = client
+        .post(format!("{origin}/v1/threads"))
+        .bearer_auth(&token)
+        .json(&json!({ "permission_posture": "auto-review" }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let thread_id = created["id"].as_str().context("thread id")?.to_string();
+
+    let missing_engine_resp = client
+        .post(format!(
+            "{origin}/v1/threads/{thread_id}/auto-review/approve"
+        ))
+        .bearer_auth(&token)
+        .json(&json!({ "target": "ar-missing", "client": "desktop" }))
+        .send()
+        .await?;
+    assert_eq!(missing_engine_resp.status(), StatusCode::NOT_FOUND);
+
+    let harness = install_mock_engine(&runtime_threads, &thread_id).await;
+
+    let receipt_1 = runtime_threads
+        .register_auto_review_block_for_test(
+            &thread_id,
+            "Bash",
+            &json!({ "action": "run", "command": "rm -rf /tmp/y" }),
+            Some("guardian"),
+            "dangerous shell command",
+            "denied",
+            true,
+        )
+        .await?
+        .context("expected receipt_1")?;
+    let _receipt_2 = runtime_threads
+        .register_auto_review_block_for_test(
+            &thread_id,
+            "MCPTool",
+            &json!({ "server": "ext", "tool": "drop_table" }),
+            Some("guardian"),
+            "external tool denied",
+            "denied",
+            false,
+        )
+        .await?;
+
+    let blocks_resp: Value = client
+        .get(format!(
+            "{origin}/v1/threads/{thread_id}/auto-review/blocks"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(blocks_resp["thread_id"], thread_id);
+    let blocks = blocks_resp["blocks"].as_array().context("blocks array")?;
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0]["receipt_id"], receipt_1);
+    assert_eq!(blocks[0]["approvable"], true);
+    assert_eq!(blocks[1]["approvable"], false);
+    let non_approvable_id = blocks[1]["receipt_id"].as_str().context("r2")?.to_string();
+
+    let assert_owner_required = |resp: reqwest::Response| async {
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body: Value = resp.json().await?;
+        assert_eq!(body["error"]["code"], "owner_required", "{body:#}");
+        Result::<()>::Ok(())
+    };
+
+    assert_owner_required(
+        client
+            .post(format!(
+                "{origin}/v1/threads/{thread_id}/auto-review/approve"
+            ))
+            .bearer_auth(&drive_token)
+            .json(&json!({ "target": receipt_1, "client": "desktop" }))
+            .send()
+            .await?,
+    )
+    .await?;
+
+    for mobile_client in ["desktop", "phone"] {
+        assert_owner_required(
+            client
+                .post(format!(
+                    "{origin}/v1/threads/{thread_id}/auto-review/approve"
+                ))
+                .header(header::COOKIE, &mobile_cookie)
+                .header(mobile::MOBILE_REQUEST_HEADER, &mobile_proof)
+                .header(header::ORIGIN, &origin)
+                .header("sec-fetch-site", "same-origin")
+                .json(&json!({ "target": receipt_1, "client": mobile_client }))
+                .send()
+                .await?,
+        )
+        .await?;
+    }
+
+    assert_owner_required(
+        client
+            .post(format!(
+                "{origin}/v1/threads/{thread_id}/auto-review/approve"
+            ))
+            .bearer_auth(&token)
+            .json(&json!({ "target": receipt_1 }))
+            .send()
+            .await?,
+    )
+    .await?;
+
+    for non_owner_client in ["phone", "acp"] {
+        assert_owner_required(
+            client
+                .post(format!(
+                    "{origin}/v1/threads/{thread_id}/auto-review/approve"
+                ))
+                .bearer_auth(&token)
+                .json(&json!({ "target": receipt_1, "client": non_owner_client }))
+                .send()
+                .await?,
+        )
+        .await?;
+    }
+
+    let unknown_target = client
+        .post(format!(
+            "{origin}/v1/threads/{thread_id}/auto-review/approve"
+        ))
+        .bearer_auth(&token)
+        .json(&json!({ "target": "ar-does-not-exist", "client": "desktop" }))
+        .send()
+        .await?;
+    assert_eq!(unknown_target.status(), StatusCode::CONFLICT);
+
+    let non_approvable_resp = client
+        .post(format!(
+            "{origin}/v1/threads/{thread_id}/auto-review/approve"
+        ))
+        .bearer_auth(&token)
+        .json(&json!({ "target": non_approvable_id, "client": "desktop" }))
+        .send()
+        .await?;
+    assert_eq!(non_approvable_resp.status(), StatusCode::CONFLICT);
+
+    let web_ok = client
+        .post(format!(
+            "{origin}/v1/threads/{thread_id}/auto-review/approve"
+        ))
+        .header(header::COOKIE, &web_cookie)
+        .header(web::WEB_REQUEST_HEADER, &web_proof)
+        .header(header::ORIGIN, &origin)
+        .header("sec-fetch-site", "same-origin")
+        .json(&json!({ "target": receipt_1 }))
+        .send()
+        .await?;
+    assert_eq!(web_ok.status(), StatusCode::OK);
+    let ok_body: Value = web_ok.json().await?;
+    assert_eq!(ok_body["ok"], true);
+    assert_eq!(ok_body["thread_id"], thread_id);
+    assert_eq!(ok_body["grant"]["receipt_id"], receipt_1);
+    assert_eq!(ok_body["grant"]["tool_name"], "Bash");
+    assert!(
+        ok_body["grant"]["call_digest"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    );
+
+    let duplicate_resp = client
+        .post(format!(
+            "{origin}/v1/threads/{thread_id}/auto-review/approve"
+        ))
+        .bearer_auth(&token)
+        .json(&json!({ "target": receipt_1, "client": "tui" }))
+        .send()
+        .await?;
+    assert_eq!(duplicate_resp.status(), StatusCode::CONFLICT);
+
+    let receipt_3 = runtime_threads
+        .register_auto_review_block_for_test(
+            &thread_id,
+            "Bash",
+            &json!({ "action": "run", "command": "chmod 777 /tmp/z" }),
+            Some("guardian"),
+            "broad chmod",
+            "denied",
+            true,
+        )
+        .await?
+        .context("expected receipt_3")?;
+
+    let patched = client
+        .patch(format!("{origin}/v1/threads/{thread_id}"))
+        .bearer_auth(&token)
+        .json(&json!({ "permission_posture": "ask" }))
+        .send()
+        .await?;
+    assert_eq!(patched.status(), StatusCode::OK);
+
+    let after_posture_change = client
+        .post(format!(
+            "{origin}/v1/threads/{thread_id}/auto-review/approve"
+        ))
+        .bearer_auth(&token)
+        .json(&json!({ "target": receipt_3, "client": "desktop" }))
+        .send()
+        .await?;
+    assert_eq!(after_posture_change.status(), StatusCode::CONFLICT);
+    let err_body: Value = after_posture_change.json().await?;
+    assert_eq!(
+        err_body["error"]["code"], "not_in_auto_review",
+        "{err_body:#}"
+    );
+
+    drop(harness);
+    handle.abort();
+    Ok(())
+}

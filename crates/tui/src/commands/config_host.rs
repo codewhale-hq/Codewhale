@@ -30,6 +30,9 @@ use codewhale_runtime::config::SearchProvider;
 pub(crate) fn config_action_to_app_action(action: ConfigAction) -> AppAction {
     match action {
         ConfigAction::PermissionRulesChanged => AppAction::PermissionRulesChanged,
+        ConfigAction::ApproveAutoReviewRetry { target } => {
+            AppAction::ApproveAutoReviewRetry { target }
+        }
         ConfigAction::OpenModelConnectionSetup => AppAction::OpenModelConnectionSetup,
         ConfigAction::StartAccountConnect => AppAction::StartAccountConnect,
         ConfigAction::StartAccountLogin => AppAction::StartAccountLogin,
@@ -93,6 +96,9 @@ pub(crate) fn config_action_to_app_action(action: ConfigAction) -> AppAction {
 pub(crate) fn app_action_to_config_action(action: AppAction) -> Option<ConfigAction> {
     Some(match action {
         AppAction::PermissionRulesChanged => ConfigAction::PermissionRulesChanged,
+        AppAction::ApproveAutoReviewRetry { target } => {
+            ConfigAction::ApproveAutoReviewRetry { target }
+        }
         AppAction::OpenModelConnectionSetup => ConfigAction::OpenModelConnectionSetup,
         AppAction::StartAccountConnect => ConfigAction::StartAccountConnect,
         AppAction::StartAccountLogin => ConfigAction::StartAccountLogin,

@@ -2683,5 +2683,16 @@
   "AccountModelsReady": "Conectado a {model} mediante tu cuenta de Codewhale.",
   "AccountModelsConnectFailed": "No se pudieron conectar los modelos de la cuenta: {error}",
   "AccountModelsCancelled": "Configuración del modelo cancelada. Se conserva tu modelo actual.",
-  "AccountModelsLoadFailed": "No se pudieron consultar los modelos de la cuenta. Reintenta o conecta un proveedor en esta computadora."
+  "AccountModelsLoadFailed": "No se pudieron consultar los modelos de la cuenta. Reintenta o conecta un proveedor en esta computadora.",
+  "AutoReviewReceiptRetryHint": "Presiona r con el campo vacío o ejecuta /permissions blocked approve {id} para permitir un reintento.",
+  "AutoReviewPausedReceipt": "Auto-Review se pausó ({reason}); los permisos cambiaron a Ask. Shift+Tab o /auto para reanudar.",
+  "AutoReviewRetryApprovedStatus": "Se aprobó un reintento de '{tool}' [{id}].",
+  "AutoReviewRetryFailedStatus": "No se pudo aprobar el reintento de Auto-Review [{id}]: {error}",
+  "PermissionsBlockedHeader": "Acciones de Auto-Review bloqueadas ({count}):",
+  "PermissionsBlockedEmpty": "No se registraron acciones de Auto-Review bloqueadas en esta conversación.",
+  "PermissionsBlockedEntry": "{index}. [{id}] {tool} ({rule}) — {summary} | {reason} ({status})",
+  "PermissionsBlockedStatusApprovable": "aprobable",
+  "PermissionsBlockedStatusApproved": "aprobada",
+  "PermissionsBlockedStatusNotApprovable": "no aprobable",
+  "PermissionsBlockedHint": "Ejecuta /permissions blocked approve <receipt-id> (o presiona r con el campo vacío para la más reciente) para permitir un reintento."
 }

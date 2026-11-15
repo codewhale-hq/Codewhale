@@ -970,6 +970,15 @@ pub enum Event {
         reviewer_model: Option<String>,
         /// Bounded, control-stripped rationale safe to render as one line.
         reason: String,
+        rule: Option<String>,
+        receipt_id: Option<String>,
+        call_digest: Option<String>,
+        action_summary: Option<String>,
+    },
+
+    AutoReviewPaused {
+        reason: String,
+        approval_mode: codewhale_execpolicy::ApprovalMode,
     },
 
     /// Fired fire-and-forget after `TurnComplete` when the advisor is enabled

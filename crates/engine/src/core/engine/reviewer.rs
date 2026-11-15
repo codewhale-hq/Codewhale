@@ -5,7 +5,7 @@
 //! blocks that never reach a model. Only deterministic *fallback holds* — the
 //! `AskUser` outcomes Auto posture would otherwise turn into bare permission
 //! denials — escalate to a one-shot reviewer request. A denial returns the
-//! rationale to the agent with an explicit "do not work around" instruction;
+//! rule and rationale while inviting another route or person approval,
 //! and any reviewer failure (timeout, transport error, unparseable answer)
 //! is a denial — fail closed. The reviewer is deliberately stateless: each
 //! proposed call stands on its own deterministic context.
@@ -65,12 +65,15 @@ impl ReviewerOutcome {
         }
     }
 
-    pub fn into_tool_result(self, tool_name: &str) -> Result<String, ToolError> {
+    pub fn into_tool_result(self, _tool_name: &str) -> Result<String, ToolError> {
         match self {
             Self::Allow { reason, .. } => Ok(reason),
-            Self::Deny { reason, .. } => Err(ToolError::permission_denied(format!(
-                "Auto-Review guardian denied tool '{tool_name}': {reason}. Do not work around this denial: take a materially safer route that stays inside what the person asked for, or stop and say what you need. If the call is needed as written, the person can switch Permissions to Ask to approve it."
-            ))),
+            Self::Deny { reason, .. } => Err(ToolError::permission_denied(
+                crate::core::authority::auto_review::format_auto_review_block_message(
+                    &reason,
+                    Some("guardian"),
+                ),
+            )),
             Self::Unavailable { reason } => Err(ToolError::permission_denied(format!(
                 "Auto-Review guardian unavailable ({reason}); the call was denied (fail closed). Try again once the reviewer is reachable, or the person can switch Permissions to Ask where a prompt can be answered."
             ))),
@@ -148,7 +151,7 @@ pub async fn consult_reviewer(
     context_text: &str,
     cancel_token: &CancellationToken,
 ) -> ReviewerResult {
-    consult_reviewer_with_model(client, None, context_text, cancel_token).await
+    consult_reviewer_with_model_and_retry(client, None, context_text, cancel_token, false).await
 }
 
 pub async fn consult_reviewer_with_model(
@@ -156,6 +159,39 @@ pub async fn consult_reviewer_with_model(
     configured_model: Option<&str>,
     context_text: &str,
     cancel_token: &CancellationToken,
+) -> ReviewerResult {
+    consult_reviewer_with_model_and_retry(
+        client,
+        configured_model,
+        context_text,
+        cancel_token,
+        false,
+    )
+    .await
+}
+
+pub async fn consult_reviewer_with_retry_approval(
+    client: &dyn ModelClient,
+    context_text: &str,
+    cancel_token: &CancellationToken,
+    person_approved_retry: bool,
+) -> ReviewerResult {
+    consult_reviewer_with_model_and_retry(
+        client,
+        None,
+        context_text,
+        cancel_token,
+        person_approved_retry,
+    )
+    .await
+}
+
+pub async fn consult_reviewer_with_model_and_retry(
+    client: &dyn ModelClient,
+    configured_model: Option<&str>,
+    context_text: &str,
+    cancel_token: &CancellationToken,
+    person_approved_retry: bool,
 ) -> ReviewerResult {
     let model = resolve_reviewer_model(configured_model, client);
     if context_text.len() > MAX_REVIEW_CONTEXT_BYTES {
@@ -207,11 +243,14 @@ pub async fn consult_reviewer_with_model(
         }
         Ok(Ok(response)) => response,
     };
-    let outcome = verdict_from_response(&response);
+    let outcome = verdict_from_response(&response, person_approved_retry);
     ReviewerResult::finish(outcome, Some(response.usage), model)
 }
 
-fn verdict_from_response(response: &MessageResponse) -> ReviewerOutcome {
+fn verdict_from_response(
+    response: &MessageResponse,
+    person_approved_retry: bool,
+) -> ReviewerOutcome {
     if is_incomplete_stop_reason(response.stop_reason.as_deref()) {
         return ReviewerOutcome::Unavailable {
             reason: "the reviewer answer was incomplete".to_string(),
@@ -231,7 +270,9 @@ fn verdict_from_response(response: &MessageResponse) -> ReviewerOutcome {
             action: AutoReviewAction::Allow,
             risk,
             reason,
-        }) if risk.may_auto_run() => ReviewerOutcome::Allow { risk, reason },
+        }) if risk.may_auto_run() || person_approved_retry => {
+            ReviewerOutcome::Allow { risk, reason }
+        }
         Some(ReviewerVerdict {
             action: AutoReviewAction::Allow,
             risk,
@@ -378,10 +419,39 @@ mod tests {
             }
         );
         assert!(matches!(
-            verdict_from_response(&response(
-                r#"{"risk_level":"high","decision":"allow","reason":"the request mentions it"}"#,
-                Usage::default(),
-            )),
+            verdict_from_response(
+                &response(
+                    r#"{"risk_level":"high","decision":"allow","reason":"the request mentions it"}"#,
+                    Usage::default(),
+                ),
+                false,
+            ),
+            ReviewerOutcome::Deny {
+                risk: ReviewerRiskLevel::High,
+                ..
+            }
+        ));
+        assert_eq!(
+            verdict_from_response(
+                &response(
+                    r#"{"risk_level":"high","decision":"allow","reason":"person approved retry"}"#,
+                    Usage::default(),
+                ),
+                true,
+            ),
+            ReviewerOutcome::Allow {
+                risk: ReviewerRiskLevel::High,
+                reason: "person approved retry".to_string(),
+            }
+        );
+        assert!(matches!(
+            verdict_from_response(
+                &response(
+                    r#"{"risk_level":"high","decision":"deny","reason":"still dangerous"}"#,
+                    Usage::default(),
+                ),
+                true,
+            ),
             ReviewerOutcome::Deny {
                 risk: ReviewerRiskLevel::High,
                 ..
@@ -417,19 +487,32 @@ mod tests {
 
     #[test]
     fn block_texts_name_a_way_forward_without_full_access() {
-        for outcome in [
-            ReviewerOutcome::Deny {
-                risk: ReviewerRiskLevel::High,
-                reason: "writes outside the workspace".to_string(),
-            },
-            ReviewerOutcome::Unavailable {
-                reason: "timeout".to_string(),
-            },
-        ] {
-            let text = outcome.into_tool_result("bash").unwrap_err().to_string();
-            assert!(text.contains("Permissions to Ask"), "{text}");
-            assert!(!text.contains("Full Access"), "{text}");
+        let deny = ReviewerOutcome::Deny {
+            risk: ReviewerRiskLevel::High,
+            reason: "writes outside the workspace".to_string(),
         }
+        .into_tool_result("bash")
+        .unwrap_err()
+        .to_string();
+        assert!(deny.contains("Auto-Review blocked this:"), "{deny}");
+        assert!(deny.contains("writes outside the workspace"), "{deny}");
+        assert!(deny.contains("[guardian]"), "{deny}");
+        assert!(
+            deny.contains("The person can approve it from the receipt"),
+            "{deny}"
+        );
+        assert!(!deny.contains("do not work around"), "{deny}");
+        assert!(!deny.contains("Full Access"), "{deny}");
+
+        let unavailable = ReviewerOutcome::Unavailable {
+            reason: "timeout".to_string(),
+        }
+        .into_tool_result("bash")
+        .unwrap_err()
+        .to_string();
+        assert!(unavailable.contains("Permissions to Ask"), "{unavailable}");
+        assert!(!unavailable.contains("Full Access"), "{unavailable}");
+        assert!(!unavailable.contains("do not work around"), "{unavailable}");
     }
 
     #[tokio::test]

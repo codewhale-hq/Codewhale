@@ -639,6 +639,9 @@ pub enum AppAction {
     /// Reload the active user permission rules after `/permissions` safely
     /// removes one from the sibling `permissions.toml`.
     PermissionRulesChanged,
+    ApproveAutoReviewRetry {
+        target: String,
+    },
     /// Rebuild the engine's Skill/MCP catalogue from the App's newly replaced
     /// immutable plugin snapshot after trust, enable, revoke, or reload.
     PluginRegistryChanged,
