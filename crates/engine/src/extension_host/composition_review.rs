@@ -59,11 +59,18 @@ pub fn review(input: &Value) -> Result<Value, String> {
         &[],
     )?;
     // A bounded process runner, not another Engine or session runtime.
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|_| "composition review worker is unavailable")?
-        .block_on(run(launch, input))
+    std::thread::Builder::new()
+        .name("dsh-composition-review".to_string())
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|_| "composition review worker is unavailable".to_string())?
+                .block_on(run(launch, input))
+        })
+        .map_err(|_| "composition review worker is unavailable".to_string())?
+        .join()
+        .map_err(|_| "composition review worker failed".to_string())?
 }
 
 async fn bounded_read(pipe: impl AsyncRead + Unpin, limit: usize) -> Result<Vec<u8>, String> {

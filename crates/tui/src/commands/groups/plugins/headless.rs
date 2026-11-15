@@ -9,7 +9,6 @@ use codewhale_plugins::PluginRegistry;
 use codewhale_plugins::host_services::{
     AgentPosture, PersonVia, PluginApprover, ReviewApproval, approver_label,
 };
-use codewhale_plugins::install::PluginInstallSource;
 use codewhale_plugins::types::LoadedPlugin;
 
 use super::render::{ReviewTextContext, escape_review_text, render_bundle_detail};
@@ -20,7 +19,6 @@ const AGENT_POSTURE: &str = "CODEWHALE_AGENT_POSTURE";
 const AGENT_THREAD_ID: &str = "CODEWHALE_AGENT_THREAD_ID";
 const AGENT_TURN_ID: &str = "CODEWHALE_AGENT_TURN_ID";
 const AGENT_TOOL_CALL_ID: &str = "CODEWHALE_AGENT_TOOL_CALL_ID";
-const INSTALLED_FROM: &str = ".installed-from";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct AgentRunProvenance {
@@ -266,29 +264,7 @@ fn trust_as(
 }
 
 fn installed_by_the_agent(plugin: &LoadedPlugin, project: &Path) -> Result<()> {
-    let source = std::fs::read_to_string(plugin.canonical_root.join(INSTALLED_FROM))
-        .ok()
-        .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
-        .and_then(|marker| marker.get("spec")?.as_str().map(str::to_string))
-        .and_then(|spec| PluginInstallSource::parse(&spec).ok());
-    let folder = match source {
-        Some(PluginInstallSource::LocalPath(folder) | PluginInstallSource::Dsh(folder))
-            if folder.is_absolute() =>
-        {
-            Some(folder)
-        }
-        _ => None,
-    };
-    let inside = folder.is_some_and(|folder| {
-        match (
-            std::fs::canonicalize(folder),
-            std::fs::canonicalize(project),
-        ) {
-            (Ok(folder), Ok(project)) => folder.starts_with(project),
-            _ => false,
-        }
-    });
-    if !inside {
+    if !codewhale_plugins::install::installed_by_the_agent(&plugin.canonical_root, project) {
         bail!(
             "The agent may approve only a plugin it installed with `codewhale install` from a folder inside its project, and `{}` was not installed that way. Nothing was changed; ask the person to review it.",
             text(plugin.name())

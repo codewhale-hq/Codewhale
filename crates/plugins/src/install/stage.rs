@@ -102,8 +102,7 @@ pub(super) fn stage_local_copy(
         .canonicalize()
         .with_context(|| format!("failed to resolve {}", source.display()))?;
     if let Ok(canonical_plugins) = user_plugins_dir.canonicalize()
-        && (canonical_source == canonical_plugins
-            || canonical_source.starts_with(&canonical_plugins))
+        && crate::install::path_is_within(&canonical_plugins, &canonical_source, true)
     {
         bail!(
             "cannot install a bundle from inside the user plugins directory {}; \

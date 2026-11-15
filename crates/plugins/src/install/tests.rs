@@ -889,6 +889,12 @@ async fn local_update_reuses_staging_and_preserves_the_installed_bundle_on_failu
     .unwrap();
     let target = plugins.join("demo");
     let original_marker = fs::read(target.join(INSTALLED_FROM_MARKER)).unwrap();
+    let original_json: serde_json::Value = serde_json::from_slice(&original_marker).unwrap();
+    let mut prev_nonce = original_json["install_nonce"]
+        .as_str()
+        .filter(|nonce| !nonce.is_empty())
+        .expect("install writes an install_nonce")
+        .to_string();
     assert!(matches!(
         update("demo", &plugins, DEFAULT_MAX_SIZE_BYTES, &allow_all())
             .await
@@ -913,10 +919,17 @@ async fn local_update_reuses_staging_and_preserves_the_installed_bundle_on_failu
             PluginUpdateResult::Updated(_)
         ));
         assert_eq!(fs::read(target.join("data.txt")).unwrap(), b"v1");
-        assert_eq!(
-            fs::read(target.join(INSTALLED_FROM_MARKER)).unwrap(),
-            original_marker
-        );
+        let mut repaired_json: serde_json::Value =
+            serde_json::from_slice(&fs::read(target.join(INSTALLED_FROM_MARKER)).unwrap()).unwrap();
+        let next_nonce = repaired_json["install_nonce"]
+            .as_str()
+            .filter(|nonce| !nonce.is_empty())
+            .expect("repair writes a fresh install_nonce")
+            .to_string();
+        assert_ne!(next_nonce, prev_nonce);
+        prev_nonce = next_nonce;
+        repaired_json["install_nonce"] = original_json["install_nonce"].clone();
+        assert_eq!(repaired_json, original_json);
     }
 
     fs::write(source.join("data.txt"), b"v2").unwrap();
@@ -3342,4 +3355,63 @@ async fn a_hook_from_plugin_json_is_in_the_review_and_the_capability_hash() {
     )
     .unwrap();
     assert!(dsh::convert_package(&empty_only, &tmp.path().join("out-empty-only")).is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepare_remote_install_leaves_plugins_dir_empty_and_checks_exact_hash() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins = tmp.path().join("user-plugins");
+    let bytes = remote_bundle_bytes("remote-preview", b"hello");
+    let url = serve_bodies(vec![bytes]);
+    let source = match PluginInstallSource::parse(&url).unwrap() {
+        PluginInstallSource::Remote(remote) => remote,
+        other => panic!("expected remote source, got {other:?}"),
+    };
+
+    let needs_approval = prepare_remote_install(
+        source.clone(),
+        DEFAULT_MAX_SIZE_BYTES,
+        &NetworkPolicy::default(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        needs_approval,
+        RemotePreviewOutcome::NeedsApproval(_)
+    ));
+    assert!(!plugins.exists());
+
+    let prepared = match prepare_remote_install(source, DEFAULT_MAX_SIZE_BYTES, &loopback_policy())
+        .await
+        .unwrap()
+    {
+        RemotePreviewOutcome::Ready(prepared) => prepared,
+        other => panic!("expected ready remote preview, got {other:?}"),
+    };
+    assert_eq!(prepared.name, "remote-preview");
+    assert!(!plugins.exists());
+
+    let mismatch = install_prepared_remote(
+        &prepared,
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &loopback_policy(),
+        &no_conflict(),
+        "0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .unwrap_err();
+    assert!(mismatch.downcast_ref::<PluginContentMismatch>().is_some());
+    assert!(!plugins.join("remote-preview").exists());
+
+    let outcome = install_prepared_remote(
+        &prepared,
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &loopback_policy(),
+        &no_conflict(),
+        &prepared.content_hash,
+    )
+    .unwrap();
+    assert!(matches!(outcome, PluginInstallOutcome::Installed(_)));
+    assert!(plugins.join("remote-preview").is_dir());
 }

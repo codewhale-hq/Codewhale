@@ -922,6 +922,8 @@ pub struct InstalledFromMarker {
     #[serde(default)]
     #[expect(dead_code)]
     content_digest: Option<String>,
+    #[serde(default)]
+    install_nonce: Option<String>,
 }
 
 impl InstalledFromMarker {
@@ -930,6 +932,10 @@ impl InstalledFromMarker {
             .as_deref()
             .filter(|s| !s.is_empty())
             .unwrap_or(self.checksum.as_str())
+    }
+
+    pub fn install_nonce(&self) -> Option<&str> {
+        self.install_nonce.as_deref().filter(|s| !s.is_empty())
     }
 }
 
@@ -949,7 +955,47 @@ pub fn write_installed_from_v2(
     content_digest: &str,
     installed_name: &str,
 ) -> Result<()> {
-    let body = serde_json::json!({
+    write_installed_from_marker_v2(
+        skill_dir,
+        spec,
+        url,
+        source_checksum,
+        content_digest,
+        installed_name,
+        None,
+    )
+}
+
+pub fn write_installed_from_v2_with_nonce(
+    skill_dir: &Path,
+    spec: &str,
+    url: Option<&str>,
+    source_checksum: &str,
+    content_digest: &str,
+    installed_name: &str,
+    install_nonce: &str,
+) -> Result<()> {
+    write_installed_from_marker_v2(
+        skill_dir,
+        spec,
+        url,
+        source_checksum,
+        content_digest,
+        installed_name,
+        Some(install_nonce),
+    )
+}
+
+fn write_installed_from_marker_v2(
+    skill_dir: &Path,
+    spec: &str,
+    url: Option<&str>,
+    source_checksum: &str,
+    content_digest: &str,
+    installed_name: &str,
+    install_nonce: Option<&str>,
+) -> Result<()> {
+    let mut body = serde_json::json!({
         "schema_version": 2,
         "spec": spec,
         "url": url,
@@ -958,6 +1004,12 @@ pub fn write_installed_from_v2(
         "installed_name": installed_name,
         "registry_version": null,
     });
+    if let (Some(nonce), Some(object)) = (install_nonce, body.as_object_mut()) {
+        object.insert(
+            "install_nonce".to_string(),
+            serde_json::Value::String(nonce.to_string()),
+        );
+    }
     fs::write(skill_dir.join(INSTALLED_FROM_MARKER), body.to_string()).with_context(|| {
         format!(
             "failed to write {} for {}",

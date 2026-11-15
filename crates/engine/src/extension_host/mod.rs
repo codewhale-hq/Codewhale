@@ -165,7 +165,7 @@ pub mod test_support;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -185,8 +185,8 @@ use self::supervisor::{HostEvents, HostProcess, HostRequestContext};
 use self::tier::{BuiltinModule, HostCohort, HostTier, PluginCohort};
 use codewhale_config::PluginAuthority;
 use codewhale_config::{EntryRef, OwnerRef};
-use codewhale_plugins::PluginRegistry;
 use codewhale_plugins::activation::{self, PluginActivationCapability};
+use codewhale_plugins::{PluginRegistry, types::LoadedPlugin};
 
 /// The host bundle, embedded so every distribution channel carries it.
 const BUNDLE: &[u8] = include_bytes!("../../extension-host/dist/codewhale-extension-host.mjs");
@@ -884,6 +884,13 @@ impl ManagerShared {
             }
             slot => Err(slot.status()),
         }
+    }
+
+    fn clear_plugin_diagnostics(&self, plugin_id: &str) {
+        self.diagnostics
+            .lock()
+            .expect("diagnostics lock")
+            .retain(|entry| entry.plugin_id.as_deref() != Some(plugin_id));
     }
 
     /// The shared fast liveness guard: current policy, running host, exact
@@ -1772,28 +1779,43 @@ impl ExtensionHostManager {
     /// log. The command renderer escapes each field before displaying it.
     #[must_use]
     pub fn owner_report(&self, plugin_id: &str) -> Option<OwnerReport> {
+        self.owner_report_for(plugin_id, None)
+    }
+
+    #[must_use]
+    pub(super) fn owner_report_for(
+        &self,
+        plugin_id: &str,
+        expected_authority: Option<&PluginAuthority>,
+    ) -> Option<OwnerReport> {
         let registry = self.shared.registry.lock().expect("registry lock");
-        let (state, cohort) = registry
-            .owner(plugin_id)
-            .map(|entry| {
-                let state = match &entry.state {
-                    OwnerState::Failed(reason) => {
-                        OwnerState::Failed(bounded_diagnostic(reason.clone()))
-                    }
-                    OwnerState::Faulted(reason) => {
-                        OwnerState::Faulted(bounded_diagnostic(reason.clone()))
-                    }
-                    state => state.clone(),
-                };
-                (Some(state), Some(entry.cohort.clone()))
+        let matching_entry = registry.owner(plugin_id).filter(|entry| {
+            expected_authority.is_none_or(|expected| {
+                entry.authority.as_ref().is_some_and(|auth| {
+                    auth.plugin_id == expected.plugin_id
+                        && auth.content_hash == expected.content_hash
+                        && auth.capability_hash == expected.capability_hash
+                        && auth.state_generation == expected.state_generation
+                        && auth.state_path == expected.state_path
+                })
             })
-            .unwrap_or((None, None));
-        let tools = registry
-            .live_tools()
-            .into_iter()
-            .filter(|tool| tool.owner.plugin_id == plugin_id)
-            .map(|tool| tool.name)
-            .collect();
+        });
+        let cohort = matching_entry.map(|entry| entry.cohort.clone());
+        let state = matching_entry.map(|entry| match &entry.state {
+            OwnerState::Failed(reason) => OwnerState::Failed(bounded_diagnostic(reason.clone())),
+            OwnerState::Faulted(reason) => OwnerState::Faulted(bounded_diagnostic(reason.clone())),
+            state => state.clone(),
+        });
+        let tools = if state.is_some() {
+            registry
+                .live_tools()
+                .into_iter()
+                .filter(|tool| tool.owner.plugin_id == plugin_id)
+                .map(|tool| tool.name)
+                .collect()
+        } else {
+            Vec::new()
+        };
         drop(registry);
         let mut diagnostics: Vec<_> = self
             .shared
@@ -2050,38 +2072,30 @@ impl ExtensionHostManager {
     /// Replace the snapshot of every engine attached to `plugins`'s
     /// workspace: a plugin was enabled, disabled, trusted or revoked there.
     fn refresh_workspace(&self, plugins: &Arc<PluginRegistry>) {
-        let ids: Vec<_> = self
-            .shared
-            .attachments
-            .lock()
-            .expect("attachments lock")
-            .iter()
-            .filter(|(_, state)| state.plugins.workspace() == plugins.workspace())
-            .map(|(id, _)| *id)
-            .collect();
-        for id in ids {
-            self.shared.core_calls.revoke_attachment(id);
-        }
-        for state in self
-            .shared
-            .attachments
-            .lock()
-            .expect("attachments lock")
-            .values_mut()
+        let mut ids_to_revoke = Vec::new();
         {
-            if state.plugins.workspace() == plugins.workspace() {
+            let mut attachments = self.shared.attachments.lock().expect("attachments lock");
+            for (&id, state) in attachments.iter_mut() {
+                let next = if state.plugins.workspace() == plugins.workspace() {
+                    Some(plugins.retain_native_selection_from(state.plugins.as_ref()))
+                } else {
+                    state.plugins.sync_user_plugins_from(plugins.as_ref())
+                };
+                let Some(next) = next else {
+                    continue;
+                };
+                ids_to_revoke.push(id);
                 state.selection_cancel.cancel();
                 state.selection_cancel = CancellationToken::new();
                 state.revision += 1;
-                let view = plugins.retain_native_selection_from(state.plugins.as_ref());
-                let id = state
+                let attachment_id = state
                     .plugins
                     .caller_selection()
                     .expect("attached caller")
                     .attachment_id;
-                state.plugins = Arc::new(view.bind_caller(
+                state.plugins = Arc::new(next.bind_caller(
                     codewhale_plugins::composition_scope::SelectionRevision {
-                        attachment_id: id,
+                        attachment_id,
                         revision: state.revision,
                     },
                 ));
@@ -2089,7 +2103,90 @@ impl ExtensionHostManager {
                 state.selection = Default::default();
             }
         }
+        for id in ids_to_revoke {
+            self.shared.core_calls.revoke_attachment(id);
+        }
         command::bump_epoch();
+    }
+
+    fn revoke_stale_or_removed_owners(self: &Arc<Self>, plugins: &PluginRegistry) {
+        let mut plugin_lookup: HashMap<&str, &LoadedPlugin> = HashMap::new();
+        for plugin in plugins.list() {
+            plugin_lookup.insert(plugin.id.as_str(), plugin);
+        }
+        let plugins_state_path = plugins.state_path();
+        let to_revoke: Vec<(String, OwnerRef, HostCohort)> = {
+            let registry = self.shared.registry.lock().expect("registry lock");
+            registry
+                .owners()
+                .filter(|entry| entry.tier() == HostTier::Plugin)
+                .filter_map(|entry| {
+                    let auth = entry.authority.as_ref()?;
+                    let same_workspace = auth.workspace == plugins.workspace();
+                    let shared_user_scope = (entry.owner.plugin_id.starts_with("user/")
+                        || entry.owner.plugin_id.starts_with("builtin/"))
+                        && plugins_state_path.is_some_and(|sp| auth.state_path == sp);
+                    if !same_workspace && !shared_user_scope {
+                        return None;
+                    }
+                    let current = plugin_lookup.get(entry.owner.plugin_id.as_str()).copied();
+                    let matches_current = current.is_some_and(|plugin| {
+                        let expected_cohort = HostCohort::from_plugin_cohort(
+                            codewhale_plugins::host_services::cohort_of(
+                                plugin.approved_by.as_ref(),
+                            ),
+                        );
+                        plugin.active()
+                            && plugin.inventory.native > 0
+                            && !plugin.outside_reach
+                            && entry.cohort == expected_cohort
+                            && plugin.content_hash == auth.content_hash
+                            && plugin.capability_hash == auth.capability_hash
+                            && plugin.state_generation == auth.state_generation
+                            && plugins_state_path.is_some_and(|sp| sp == auth.state_path)
+                    });
+                    (!matches_current).then(|| {
+                        (
+                            entry.owner.plugin_id.clone(),
+                            entry.owner.clone(),
+                            entry.cohort.clone(),
+                        )
+                    })
+                })
+                .collect()
+        };
+        if to_revoke.is_empty() {
+            return;
+        }
+        let mut live_owners = Vec::new();
+        {
+            let mut registry = self.shared.registry.lock().expect("registry lock");
+            for (plugin_id, owner, cohort) in &to_revoke {
+                if registry.revoke_owner(plugin_id).is_some() {
+                    live_owners.push((owner.clone(), cohort.clone()));
+                }
+                registry.forget_owner(plugin_id);
+            }
+        }
+        for (plugin_id, owner, cohort) in &to_revoke {
+            self.shared.revoke_owner_state(plugin_id);
+            self.shared.clear_plugin_diagnostics(plugin_id);
+            dsh_remote::withdraw_owner(owner);
+            if let Ok(host) = self.shared.ready_host(cohort) {
+                host.revoke_calls_of(plugin_id);
+            }
+        }
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            for (owner, cohort) in live_owners {
+                let Ok(host) = self.shared.ready_host(&cohort) else {
+                    continue;
+                };
+                let shared = Arc::clone(&self.shared);
+                handle.spawn(async move {
+                    shared.deactivate_owner(&host, &owner).await;
+                });
+            }
+        }
     }
 
     /// Add the live tools of the owners attachment `id` desires to
@@ -3786,6 +3883,7 @@ pub fn plugins_changed(plugins: Arc<PluginRegistry>) {
     let manager = manager();
     manager.refresh_workspace(&plugins);
     if activation::extension_host_policy_enabled() {
+        manager.revoke_stale_or_removed_owners(&plugins);
         manager.retry_cohort(&HostCohort::reviewed());
         manager.retry_cohort(&HostCohort::agent(plugins.workspace()));
         manager.reload_and_reconcile_in_background();
@@ -3879,6 +3977,16 @@ pub fn owner_report(plugin_id: &str) -> Option<OwnerReport> {
         return None;
     }
     manager().owner_report(plugin_id)
+}
+
+pub(super) fn owner_report_for_authority(
+    plugin_id: &str,
+    expected: Option<&PluginAuthority>,
+) -> Option<OwnerReport> {
+    if !activation::extension_host_policy_enabled() {
+        return None;
+    }
+    manager().owner_report_for(plugin_id, expected)
 }
 
 /// Where a built-in module's source is expected:

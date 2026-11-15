@@ -3485,6 +3485,18 @@ pub fn plan_npm_install(
 // Entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Return whether a DSH package imports declared external npm dependencies not bundled in `node_modules`.
+pub fn has_unresolved_npm_dependencies(package: &Path) -> Result<bool> {
+    let package = Package::open(package)?;
+    let loaded = load_bundle(&package)?;
+    let (_, seeds) = super::npm_deps::collect_unresolved_seeds(
+        &package.root,
+        &loaded.manifest,
+        &loaded.entries,
+    )?;
+    Ok(!seeds.is_empty())
+}
+
 /// Convert the DSH bundle package at `package` into a fresh native bundle at
 /// `output`. `output` must not exist; nothing is written unless every
 /// component validated, and a failed write removes what it created.

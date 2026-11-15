@@ -70,7 +70,7 @@ pub(super) fn stage_tarball_with_network(
 #[derive(Debug)]
 pub(super) struct TarballScan {
     plugin_root: String,
-    is_dsh: bool,
+    pub(super) is_dsh: bool,
 }
 
 #[cfg(test)]
@@ -84,7 +84,7 @@ fn oversized_if_stream_limit(err: anyhow::Error, max_size: u64) -> anyhow::Error
     })
 }
 
-fn scan_tarball_for_bundle(
+pub(super) fn scan_tarball_for_bundle(
     bytes: &[u8],
     max_size: u64,
     bundle_path: Option<&str>,
@@ -192,7 +192,12 @@ fn scan_bundle_entries(
 }
 
 /// Second pass: extract only entries under the scanned bundle root.
-fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) -> Result<()> {
+pub(super) fn extract_into(
+    scan: &TarballScan,
+    bytes: &[u8],
+    dest: &Path,
+    max_size: u64,
+) -> Result<()> {
     extract_entries(scan, bytes, dest, max_size)
         .map_err(|err| oversized_if_stream_limit(err, max_size))
 }
