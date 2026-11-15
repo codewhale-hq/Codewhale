@@ -2326,3 +2326,406 @@ async fn s4_recent_actions_subagents_model_ignored_and_oversized_request_unavail
     handle.send(Op::Shutdown).await.expect("shutdown");
     task.await.expect("engine shutdown");
 }
+
+#[tokio::test]
+async fn auto_review_first_outside_workspace_read_prompts_once_and_resets_on_mode_exit() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let workspace = tempdir().expect("tempdir");
+    let outside = tempdir().expect("outside tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("git marker");
+    fs::write(workspace.path().join(".claude.json"), "{\"token\":\"secret\"}\n")
+        .expect("write claude json");
+    let outside_1 = outside.path().join("note1.txt");
+    let outside_2 = outside.path().join("note2.txt");
+    fs::write(&outside_1, "outside line 1\n").expect("write outside 1");
+    fs::write(&outside_2, "outside line 2\n").expect("write outside 2");
+
+    let config = Config::default();
+    let mock = std::sync::Arc::new(MockLlmClient::new(Vec::new()));
+
+    let cmd1 = serde_json::json!({"command": format!("cat {}", outside_1.display())}).to_string();
+    mock.push_factory(move |_| canned::tool_call_turn("call-out-1", "Bash", &cmd1));
+    mock.push_factory(|_| canned::simple_text_turn("turn1 complete"));
+
+    let cmd2 = serde_json::json!({"command": format!("cat {}", outside_2.display())}).to_string();
+    mock.push_factory(move |_| canned::tool_call_turn("call-out-2", "Bash", &cmd2));
+    mock.push_factory(|_| canned::simple_text_turn("turn2 complete"));
+
+    mock.push_factory(|_| {
+        canned::tool_call_turn("call-cred", "Bash", r#"{"command":"cat .claude.json"}"#)
+    });
+    mock.push_factory(|_| {
+        canned::simple_text_turn(
+            r#"{"risk_level":"low","decision":"allow","reason":"explicit inspection"}"#,
+        )
+    });
+    mock.push_factory(|_| canned::simple_text_turn("turn3 complete"));
+
+    let cmd4 = serde_json::json!({"command": format!("cat {}", outside_1.display())}).to_string();
+    mock.push_factory(move |_| canned::tool_call_turn("call-out-3", "Bash", &cmd4));
+    mock.push_factory(|_| canned::simple_text_turn("turn4 complete"));
+
+    let (mut engine, mut handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &config,
+        mock.clone(),
+    );
+    engine.attach_owner_surface_for_tests(&mut handle);
+    let task = tokio::spawn(engine.run());
+
+    let mut op1 = auto_review_message_op("read outside note 1", &config);
+    if let Op::SendMessage(ref mut spec) = op1 {
+        spec.input_authorship =
+            crate::core::ops::TurnInputAuthorship::Person("read outside note 1".to_string());
+    }
+    handle.send(op1).await.expect("send op1");
+    let mut saw_first_prompt = None;
+    let mut saw_first_guardian = false;
+    let mut rx = handle.rx_event.write().await;
+    while let Some(ev) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timeout turn 1")
+    {
+        match ev {
+            Event::ApprovalRequired {
+                id,
+                approval_force_prompt,
+                ..
+            } => {
+                saw_first_prompt = Some(approval_force_prompt);
+                handle.approve_tool_call(&id).await.expect("approve first read");
+            }
+            Event::ToolGateDecision {
+                gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                ..
+            } => saw_first_guardian = true,
+            Event::TurnComplete { status, error, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+    assert_eq!(saw_first_prompt, Some(true));
+    assert!(!saw_first_guardian);
+
+    let mut op2 = auto_review_message_op("read outside note 2", &config);
+    if let Op::SendMessage(ref mut spec) = op2 {
+        spec.input_authorship =
+            crate::core::ops::TurnInputAuthorship::Person("read outside note 2".to_string());
+    }
+    handle.send(op2).await.expect("send op2");
+    let mut saw_second_prompt = false;
+    let mut saw_second_guardian = false;
+    let mut rx = handle.rx_event.write().await;
+    while let Some(ev) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timeout turn 2")
+    {
+        match ev {
+            Event::ApprovalRequired { .. } => saw_second_prompt = true,
+            Event::ToolGateDecision {
+                gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                ..
+            } => saw_second_guardian = true,
+            Event::TurnComplete { status, error, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+    assert!(!saw_second_prompt);
+    assert!(!saw_second_guardian);
+
+    let mut op3 = auto_review_message_op("read credential file", &config);
+    if let Op::SendMessage(ref mut spec) = op3 {
+        spec.input_authorship =
+            crate::core::ops::TurnInputAuthorship::Person("read credential file".to_string());
+    }
+    handle.send(op3).await.expect("send op3");
+    let mut saw_cred_guardian = false;
+    let mut rx = handle.rx_event.write().await;
+    while let Some(ev) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timeout turn 3")
+    {
+        match ev {
+            Event::ToolGateDecision {
+                gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                decision: crate::core::events::ToolGateVerdict::Allowed,
+                ..
+            } => saw_cred_guardian = true,
+            Event::TurnComplete { status, error, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+    assert!(saw_cred_guardian);
+
+    handle
+        .send(Op::ChangeMode {
+            mode: AppMode::Agent,
+            allow_shell: true,
+            trust_mode: false,
+            auto_approve: false,
+            approval_mode: ApprovalMode::Suggest,
+            configured_sandbox_mode: None,
+        })
+        .await
+        .expect("switch to Suggest");
+    handle
+        .send(Op::ChangeMode {
+            mode: AppMode::Agent,
+            allow_shell: true,
+            trust_mode: false,
+            auto_approve: false,
+            approval_mode: ApprovalMode::Auto,
+            configured_sandbox_mode: None,
+        })
+        .await
+        .expect("switch back to Auto");
+
+    let mut op4 = auto_review_message_op("read outside note 1 after mode switch", &config);
+    if let Op::SendMessage(ref mut spec) = op4 {
+        spec.input_authorship = crate::core::ops::TurnInputAuthorship::Person(
+            "read outside note 1 after mode switch".to_string(),
+        );
+    }
+    handle.send(op4).await.expect("send op4");
+    let mut saw_reset_prompt = None;
+    let mut rx = handle.rx_event.write().await;
+    while let Some(ev) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timeout turn 4")
+    {
+        match ev {
+            Event::ApprovalRequired {
+                id,
+                approval_force_prompt,
+                ..
+            } => {
+                saw_reset_prompt = Some(approval_force_prompt);
+                handle.approve_tool_call(&id).await.expect("approve after reset");
+            }
+            Event::TurnComplete { status, error, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+    assert_eq!(saw_reset_prompt, Some(true));
+
+    handle.send(Op::Shutdown).await.expect("shutdown");
+    task.await.expect("engine shutdown");
+}
+
+#[tokio::test]
+async fn auto_review_outside_workspace_read_routes_to_guardian_without_owner_surface() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let workspace = tempdir().expect("tempdir");
+    let outside = tempdir().expect("outside tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("git marker");
+    let outside_note = outside.path().join("note.txt");
+    fs::write(&outside_note, "outside note\n").expect("write outside note");
+
+    let config = Config::default();
+    let mock = std::sync::Arc::new(MockLlmClient::new(Vec::new()));
+    let cmd = serde_json::json!({"command": format!("cat {}", outside_note.display())}).to_string();
+    mock.push_factory(move |_| canned::tool_call_turn("call-ext-non-owner", "Bash", &cmd));
+    mock.push_factory(|_| {
+        canned::simple_text_turn(
+            r#"{"risk_level":"low","decision":"allow","reason":"explicit read"}"#,
+        )
+    });
+    mock.push_factory(|_| canned::simple_text_turn("done"));
+
+    let (engine, handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &config,
+        mock.clone(),
+    );
+    let task = tokio::spawn(engine.run());
+
+    let mut op = auto_review_message_op("read outside note", &config);
+    if let Op::SendMessage(ref mut spec) = op {
+        spec.input_authorship =
+            crate::core::ops::TurnInputAuthorship::Person("read outside note".to_string());
+    }
+    handle.send(op).await.expect("send op");
+
+    let mut saw_approval_prompt = false;
+    let mut saw_guardian_allowed = false;
+    let mut saw_blocked = false;
+    let mut rx = handle.rx_event.write().await;
+    while let Some(ev) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timeout non-owner read")
+    {
+        match ev {
+            Event::ApprovalRequired { .. } => saw_approval_prompt = true,
+            Event::ToolGateDecision {
+                gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                decision: crate::core::events::ToolGateVerdict::Allowed,
+                ..
+            } => saw_guardian_allowed = true,
+            Event::ToolGateDecision {
+                decision: crate::core::events::ToolGateVerdict::Denied,
+                ..
+            } => saw_blocked = true,
+            Event::TurnComplete { status, error, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+    assert!(!saw_approval_prompt);
+    assert!(!saw_blocked);
+    assert!(saw_guardian_allowed);
+
+    handle.send(Op::Shutdown).await.expect("shutdown");
+    task.await.expect("engine shutdown");
+}
+
+#[tokio::test]
+async fn auto_review_non_git_snapshots_and_protected_paths_in_turn_loop() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let workspace = tempdir().expect("tempdir");
+    fs::write(workspace.path().join("trash.txt"), "remove me\n").expect("write trash");
+    let config = Config::default();
+
+    let mock_on = std::sync::Arc::new(MockLlmClient::new(Vec::new()));
+    mock_on.push_factory(|_| {
+        canned::tool_call_turn(
+            "call-write-notes",
+            "File",
+            r#"{"action":"write","path":"notes.txt","content":"hello world\n"}"#,
+        )
+    });
+    mock_on.push_factory(|_| canned::simple_text_turn("w1 done"));
+
+    mock_on.push_factory(|_| {
+        canned::tool_call_turn(
+            "call-write-vscode",
+            "File",
+            r#"{"action":"write","path":".vscode/settings.json","content":"{\"a\":1}\n"}"#,
+        )
+    });
+    mock_on.push_factory(|_| {
+        canned::simple_text_turn(
+            r#"{"risk_level":"low","decision":"allow","reason":"explicit editor config"}"#,
+        )
+    });
+    mock_on.push_factory(|_| canned::simple_text_turn("w2 done"));
+
+    mock_on.push_factory(|_| {
+        canned::tool_call_turn(
+            "call-empty-notes",
+            "File",
+            r#"{"action":"write","path":"notes.txt","content":""}"#,
+        )
+    });
+    mock_on.push_factory(|_| {
+        canned::simple_text_turn(
+            r#"{"risk_level":"low","decision":"allow","reason":"explicit truncate"}"#,
+        )
+    });
+    mock_on.push_factory(|_| canned::simple_text_turn("w3 done"));
+
+    mock_on.push_factory(|_| {
+        canned::tool_call_turn(
+            "call-delete-notes",
+            "File",
+            r#"{"action":"patch","patch":"--- a/trash.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-remove me\n"}"#,
+        )
+    });
+    mock_on.push_factory(|_| {
+        canned::simple_text_turn(
+            r#"{"risk_level":"low","decision":"allow","reason":"explicit delete"}"#,
+        )
+    });
+    mock_on.push_factory(|_| canned::simple_text_turn("w4 done"));
+
+    let mut cfg_on = deterministic_engine_config(workspace.path());
+    cfg_on.snapshots_enabled = true;
+    let (mut engine_on, mut handle_on) =
+        Engine::new_with_model_client(cfg_on, &config, mock_on.clone());
+    engine_on.attach_owner_surface_for_tests(&mut handle_on);
+    let task_on = tokio::spawn(engine_on.run());
+
+    async fn run_turn(h: EngineHandle, msg: &str) -> usize {
+        let mut op = auto_review_message_op(msg, &Config::default());
+        if let Op::SendMessage(ref mut spec) = op {
+            spec.input_authorship =
+                crate::core::ops::TurnInputAuthorship::Person(msg.to_string());
+        }
+        h.send(op).await.expect("send turn");
+        let mut guardian_count = 0usize;
+        let mut rx = h.rx_event.write().await;
+        while let Some(ev) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+            .await
+            .expect("timeout non-git turn")
+        {
+            match ev {
+                Event::ToolGateDecision {
+                    gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                    ..
+                } => guardian_count += 1,
+                Event::TurnComplete { status, error, .. } => {
+                    assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                    break;
+                }
+                _ => {}
+            }
+        }
+        guardian_count
+    }
+
+    assert_eq!(run_turn(handle_on.clone(), "write notes.txt").await, 0);
+    assert_eq!(run_turn(handle_on.clone(), "write .vscode/settings.json").await, 1);
+    assert_eq!(run_turn(handle_on.clone(), "empty notes.txt").await, 1);
+    assert_eq!(run_turn(handle_on.clone(), "delete notes.txt").await, 1);
+
+    handle_on.send(Op::Shutdown).await.expect("shutdown on");
+    task_on.await.expect("engine_on shutdown");
+
+    let mock_off = std::sync::Arc::new(MockLlmClient::new(Vec::new()));
+    mock_off.push_factory(|_| {
+        canned::tool_call_turn(
+            "call-write-other",
+            "File",
+            r#"{"action":"write","path":"other.txt","content":"hello\n"}"#,
+        )
+    });
+    mock_off.push_factory(|_| {
+        canned::simple_text_turn(
+            r#"{"risk_level":"low","decision":"allow","reason":"explicit write without snapshots"}"#,
+        )
+    });
+    mock_off.push_factory(|_| canned::simple_text_turn("w5 done"));
+
+    let (mut engine_off, mut handle_off) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &config,
+        mock_off.clone(),
+    );
+    engine_off.attach_owner_surface_for_tests(&mut handle_off);
+    let task_off = tokio::spawn(engine_off.run());
+
+    assert_eq!(run_turn(handle_off.clone(), "write other.txt").await, 1);
+
+    handle_off.send(Op::Shutdown).await.expect("shutdown off");
+    task_off.await.expect("engine_off shutdown");
+}

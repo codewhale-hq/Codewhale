@@ -119,7 +119,8 @@
     "path_canonicalize": 2
   },
   "crates/engine/src/core/authority/auto_review.rs": {
-    "path_canonicalize": 5
+    "path_canonicalize": 5,
+    "std_fs": 1
   },
   "crates/engine/src/core/authority/auto_review/routine.rs": {
     "path_canonicalize": 2

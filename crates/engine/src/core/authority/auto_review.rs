@@ -545,10 +545,15 @@ pub struct AutoReviewContext<'a> {
     pub owner_present: bool,
     pub approval_mode: ApprovalMode,
     pub workspace_trusted: bool,
+    pub snapshots_enabled: bool,
     pub write_targets_bounded: bool,
+    pub protected_path_write: bool,
     pub outbound_web_request: bool,
     pub unrecoverable_deletes: Vec<String>,
     pub protected_instruction_write: bool,
+    pub outside_workspace_shell_read: bool,
+    pub outside_workspace_read_approved: bool,
+    owner_can_prompt: bool,
     critical_path_delete: Option<CriticalPathKind>,
     hidden_unicode: Vec<(ExecutionInput, usize, char)>,
     credential_uploads: Vec<String>,
@@ -616,6 +621,40 @@ impl<'a> AutoReviewContext<'a> {
         pinned_instructions: Option<crate::project_context::PinnedProjectInstructions>,
         environment: Option<String>,
     ) -> Result<Self, crate::tools::spec::ToolError> {
+        Self::from_turn_authority_with_options_async(
+            tool_name,
+            params,
+            authority,
+            detached_start,
+            workspace,
+            person_messages,
+            approved_plan,
+            recent_actions,
+            pinned_instructions,
+            environment,
+            true,
+            false,
+            !detached_start && authority.owner_present(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn from_turn_authority_with_options_async(
+        tool_name: &str,
+        params: &Value,
+        authority: &crate::core::authority::TurnAuthority,
+        detached_start: bool,
+        workspace: Option<&std::path::Path>,
+        person_messages: Vec<String>,
+        approved_plan: Option<String>,
+        recent_actions: Vec<crate::core::turn::RecentReviewAction>,
+        pinned_instructions: Option<crate::project_context::PinnedProjectInstructions>,
+        environment: Option<String>,
+        snapshots_enabled: bool,
+        outside_workspace_read_approved: bool,
+        owner_can_prompt: bool,
+    ) -> Result<Self, crate::tools::spec::ToolError> {
         let (run_origin, owner_present) = if detached_start {
             (RunOrigin::Background, false)
         } else {
@@ -624,7 +663,7 @@ impl<'a> AutoReviewContext<'a> {
         let loaded_paths = pinned_instructions
             .as_ref()
             .map(|pinned| pinned.loaded_paths.clone());
-        let mut ctx = Self::from_tool_call_with_owner_presence_async(
+        let mut ctx = Self::from_tool_call_with_owner_presence_and_snapshots_async(
             tool_name,
             params,
             run_origin,
@@ -632,6 +671,7 @@ impl<'a> AutoReviewContext<'a> {
             authority.approval_mode,
             workspace,
             loaded_paths,
+            snapshots_enabled,
         )
         .await?;
         if run_origin != RunOrigin::Background {
@@ -641,6 +681,9 @@ impl<'a> AutoReviewContext<'a> {
         ctx.recent_actions = recent_actions;
         ctx.pinned_instructions = pinned_instructions;
         ctx.environment = environment.filter(|text| !text.trim().is_empty());
+        ctx.outside_workspace_read_approved = outside_workspace_read_approved;
+        ctx.owner_can_prompt =
+            ctx.run_origin == RunOrigin::Interactive && owner_present && owner_can_prompt;
         Ok(ctx)
     }
 
@@ -672,6 +715,30 @@ impl<'a> AutoReviewContext<'a> {
         workspace: Option<&std::path::Path>,
         loaded_instruction_paths: Option<Vec<std::path::PathBuf>>,
     ) -> Result<Self, crate::tools::spec::ToolError> {
+        Self::from_tool_call_with_owner_presence_and_snapshots_async(
+            tool_name,
+            params,
+            run_origin,
+            owner_present,
+            approval_mode,
+            workspace,
+            loaded_instruction_paths,
+            true,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn from_tool_call_with_owner_presence_and_snapshots_async(
+        tool_name: &str,
+        params: &Value,
+        run_origin: RunOrigin,
+        owner_present: bool,
+        approval_mode: ApprovalMode,
+        workspace: Option<&std::path::Path>,
+        loaded_instruction_paths: Option<Vec<std::path::PathBuf>>,
+        snapshots_enabled: bool,
+    ) -> Result<Self, crate::tools::spec::ToolError> {
         let tool_name = tool_name.to_owned();
         let params = params.clone();
         let workspace = workspace.map(std::path::Path::to_path_buf);
@@ -683,7 +750,7 @@ impl<'a> AutoReviewContext<'a> {
             let trusted = workspace
                 .as_deref()
                 .is_some_and(codewhale_runtime::config::is_workspace_trusted);
-            AutoReviewContext::<'static>::from_tool_call_inner(
+            AutoReviewContext::<'static>::from_tool_call_inner_with_options(
                 Cow::Owned(tool_name),
                 &params,
                 run_origin,
@@ -692,6 +759,8 @@ impl<'a> AutoReviewContext<'a> {
                 trusted,
                 workspace.as_deref(),
                 loaded_instruction_paths.as_deref().unwrap_or(&[]),
+                codewhale_paths::user_home().as_deref(),
+                snapshots_enabled,
             )
         })
         .await
@@ -726,6 +795,33 @@ impl<'a> AutoReviewContext<'a> {
 
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
+    pub fn from_tool_call_with_snapshots_and_home(
+        tool_name: &'a str,
+        params: &Value,
+        run_origin: RunOrigin,
+        owner_present: bool,
+        approval_mode: ApprovalMode,
+        workspace_trusted: bool,
+        workspace: Option<&std::path::Path>,
+        home: Option<&std::path::Path>,
+        snapshots_enabled: bool,
+    ) -> Self {
+        Self::from_tool_call_inner_with_options(
+            Cow::Borrowed(tool_name),
+            params,
+            run_origin,
+            owner_present,
+            approval_mode,
+            workspace_trusted,
+            workspace,
+            &[],
+            home,
+            snapshots_enabled,
+        )
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
     pub fn from_tool_call_with_loaded_instructions(
         tool_name: &'a str,
         params: &Value,
@@ -747,6 +843,7 @@ impl<'a> AutoReviewContext<'a> {
         )
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     #[allow(clippy::too_many_arguments)]
     fn from_tool_call_inner(
         tool_name: Cow<'a, str>,
@@ -758,6 +855,34 @@ impl<'a> AutoReviewContext<'a> {
         workspace: Option<&std::path::Path>,
         loaded_instruction_paths: &[std::path::PathBuf],
     ) -> Self {
+        let home = codewhale_paths::user_home();
+        Self::from_tool_call_inner_with_options(
+            tool_name,
+            params,
+            run_origin,
+            owner_present,
+            approval_mode,
+            workspace_trusted,
+            workspace,
+            loaded_instruction_paths,
+            home.as_deref(),
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_tool_call_inner_with_options(
+        tool_name: Cow<'a, str>,
+        params: &Value,
+        run_origin: RunOrigin,
+        owner_present: bool,
+        approval_mode: ApprovalMode,
+        workspace_trusted: bool,
+        workspace: Option<&std::path::Path>,
+        loaded_instruction_paths: &[std::path::PathBuf],
+        home: Option<&std::path::Path>,
+        snapshots_enabled: bool,
+    ) -> Self {
         let name = tool_name.as_ref();
         let category = get_tool_category_for_call(name, params);
         let risk = if matches!(category, ToolCategory::Safe | ToolCategory::McpRead)
@@ -768,8 +893,21 @@ impl<'a> AutoReviewContext<'a> {
             classify_risk(name, category, params)
         };
         let action_kind = ToolActionKind::from_tool_call(name, params, category, workspace);
-        let auto_review_signals =
+        let mut auto_review_signals =
             AutoReviewCallSignals::inspect(name, params, category, action_kind);
+        if auto_review_signals.soft_rule.is_none()
+            && matches!(category, ToolCategory::Shell)
+            && path_guards::command_reads_credential_file_with_home(
+                name,
+                params,
+                workspace,
+                home,
+                cfg!(windows),
+            )
+        {
+            auto_review_signals.soft_rule = Some(AutoReviewSoftRule::PrintCredentials);
+        }
+        let interactive_owner_present = run_origin == RunOrigin::Interactive && owner_present;
         Self {
             category,
             risk,
@@ -785,9 +923,10 @@ impl<'a> AutoReviewContext<'a> {
                 None
             },
             run_origin,
-            owner_present: run_origin == RunOrigin::Interactive && owner_present,
+            owner_present: interactive_owner_present,
             approval_mode,
             workspace_trusted,
+            snapshots_enabled,
             outbound_web_request: matches!(
                 codewhale_execpolicy::canonical_action::canonical_action_alias(name, params),
                 "web_search" | "fetch_url" | "web_run" | "web.run"
@@ -795,10 +934,30 @@ impl<'a> AutoReviewContext<'a> {
             write_targets_bounded: workspace
                 .zip(file_write_target_paths(name, params))
                 .is_some_and(|(workspace, paths)| {
-                    crate::core::authority::paths_within_workspace_write_carve_out(
-                        workspace, &paths,
-                    )
+                    if approval_mode == ApprovalMode::Auto {
+                        crate::core::authority::auto_review_write_targets_bounded_with_home(
+                            workspace,
+                            home,
+                            snapshots_enabled,
+                            &paths,
+                        )
+                    } else {
+                        crate::core::authority::paths_within_workspace_write_carve_out(
+                            workspace, &paths,
+                        )
+                    }
                 }),
+            protected_path_write: if approval_mode == ApprovalMode::Auto {
+                path_guards::protected_path_write_with_home(
+                    name,
+                    params,
+                    workspace,
+                    home,
+                    cfg!(windows),
+                )
+            } else {
+                false
+            },
             unrecoverable_deletes: {
                 let deletes = file_write_delete_paths(name, params, workspace);
                 if deletes.is_empty() {
@@ -819,6 +978,19 @@ impl<'a> AutoReviewContext<'a> {
             } else {
                 false
             },
+            outside_workspace_shell_read: if approval_mode == ApprovalMode::Auto {
+                path_guards::outside_workspace_shell_read_with_home(
+                    name,
+                    params,
+                    workspace,
+                    home,
+                    cfg!(windows),
+                )
+            } else {
+                false
+            },
+            outside_workspace_read_approved: false,
+            owner_can_prompt: interactive_owner_present,
             critical_path_delete: (approval_mode == ApprovalMode::Auto)
                 .then(|| critical_path_delete_for_call(name, params, workspace))
                 .flatten(),
@@ -846,6 +1018,18 @@ impl<'a> AutoReviewContext<'a> {
             environment: None,
             tool_name,
         }
+    }
+
+    #[must_use]
+    pub fn with_outside_workspace_read_approved(mut self, approved: bool) -> Self {
+        self.outside_workspace_read_approved = approved;
+        self
+    }
+
+    #[must_use]
+    pub fn with_owner_can_prompt(mut self, owner_can_prompt: bool) -> Self {
+        self.owner_can_prompt = self.owner_present && owner_can_prompt;
+        self
     }
 
     #[must_use]
@@ -1124,10 +1308,14 @@ impl AutoReviewPolicy {
             "run_origin": ctx.run_origin.as_str(),
             "approval_mode": ctx.approval_mode.label(),
             "workspace_trusted": ctx.workspace_trusted,
+            "snapshots_enabled": ctx.snapshots_enabled,
             "write_targets_bounded": ctx.write_targets_bounded,
+            "protected_path_write": ctx.protected_path_write,
             "outbound_web_request": ctx.outbound_web_request,
             "unrecoverable_deletes": ctx.unrecoverable_deletes.len(),
             "protected_instruction_write": ctx.protected_instruction_write,
+            "outside_workspace_shell_read": ctx.outside_workspace_shell_read,
+            "outside_workspace_read_approved": ctx.outside_workspace_read_approved,
             "critical_path_delete": ctx.critical_path_delete.is_some(),
             "hidden_unicode": ctx.hidden_unicode.len(),
             "credential_uploads": ctx.credential_uploads.len(),
@@ -1279,6 +1467,21 @@ fn deterministic_fallback(
         }
     }
 
+    if ctx.approval_mode == ApprovalMode::Auto && ctx.protected_instruction_write {
+        return AutoReviewDecision::new(
+            AutoReviewAction::AskUser,
+            "modifying instruction files (AGENTS.md / CLAUDE.md) requires review in Auto-Review",
+        );
+    }
+
+    if ctx.approval_mode == ApprovalMode::Auto && ctx.protected_path_write {
+        return AutoReviewDecision::new(
+            AutoReviewAction::AskUser,
+            "modifying protected configuration or repository metadata requires review in Auto-Review",
+        )
+        .with_rule("protected-path-write");
+    }
+
     if ctx.approval_mode == ApprovalMode::Auto
         && ctx.action_kind == ToolActionKind::Write
         && !ctx.write_targets_bounded
@@ -1310,13 +1513,6 @@ fn deterministic_fallback(
         );
     }
 
-    if ctx.approval_mode == ApprovalMode::Auto && ctx.protected_instruction_write {
-        return AutoReviewDecision::new(
-            AutoReviewAction::AskUser,
-            "modifying instruction files (AGENTS.md / CLAUDE.md) requires review in Auto-Review",
-        );
-    }
-
     if ctx.approval_mode == ApprovalMode::Auto {
         if let Some(rule) = ctx.soft_rule {
             return AutoReviewDecision::new(AutoReviewAction::AskUser, rule.hold_reason())
@@ -1327,6 +1523,19 @@ fn deterministic_fallback(
                 AutoReviewAction::AskUser,
                 "extension tool calls require review in Auto-Review",
             );
+        }
+        if ctx.outside_workspace_shell_read && !ctx.outside_workspace_read_approved {
+            if ctx.owner_can_prompt {
+                return AutoReviewDecision::safety_prompt(
+                    "shell read outside the workspace requires owner confirmation",
+                )
+                .with_rule("outside_workspace_shell_read");
+            }
+            return AutoReviewDecision::new(
+                AutoReviewAction::AskUser,
+                "shell read outside the workspace requires review without an interactive owner",
+            )
+            .with_rule("outside_workspace_shell_read");
         }
         if policy.review_all_shell
             && (ctx.action_kind == ToolActionKind::Shell || ctx.category == ToolCategory::Shell)
@@ -1462,6 +1671,44 @@ fn file_write_delete_paths(
             workspace.is_some_and(|workspace| workspace.join(path).symlink_metadata().is_ok());
         (empty && exists).then(|| path.to_string())
     };
+    let edit_empties_existing = |entry: &Value| -> Option<String> {
+        let workspace = workspace?;
+        let path = entry
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|path| !path.is_empty())?;
+        let new_text = entry
+            .get("new_string")
+            .or_else(|| entry.get("new_str"))
+            .and_then(Value::as_str)?;
+        if !new_text.trim().is_empty() {
+            return None;
+        }
+        let old_text = entry
+            .get("old_string")
+            .or_else(|| entry.get("old_str"))
+            .and_then(Value::as_str)?;
+        let target = workspace.join(path);
+        if target
+            .metadata()
+            .ok()
+            .is_none_or(|meta| !meta.is_file() || meta.len() > 1_048_576)
+        {
+            return None;
+        }
+        let current = std::fs::read_to_string(target).ok()?;
+        let replace_all = entry
+            .get("replace_all")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let updated = if replace_all {
+            current.replace(old_text, new_text)
+        } else {
+            current.replacen(old_text, new_text, 1)
+        };
+        updated.trim().is_empty().then(|| path.to_string())
+    };
     match codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, input) {
         "apply_patch" => {
             let mut paths = codewhale_tools::patch_preflight::preflight_apply_patch(input)
@@ -1479,6 +1726,45 @@ fn file_write_delete_paths(
             paths
         }
         "write_file" => empties_existing(input).into_iter().collect(),
+        "edit_file" => {
+            let mut paths: Vec<String> = edit_empties_existing(input).into_iter().collect();
+            if let Some(edits) = input.get("edits").and_then(Value::as_array) {
+                for entry in edits {
+                    let entry = &*codewhale_tools::param_alias::with_canonical_path_argument(entry);
+                    if let Some(path) = edit_empties_existing(entry)
+                        && !paths.contains(&path)
+                    {
+                        paths.push(path);
+                    }
+                }
+            }
+            paths
+        }
+        "delete_file" => input
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .into_iter()
+            .collect(),
+        _ if tool_name.eq_ignore_ascii_case("File")
+            && input
+                .get("action")
+                .and_then(Value::as_str)
+                .is_some_and(|a| {
+                    matches!(a.to_ascii_lowercase().as_str(), "delete" | "remove")
+                }) =>
+        {
+            input
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+                .into_iter()
+                .collect()
+        }
         _ => Vec::new(),
     }
 }
@@ -1789,6 +2075,8 @@ pub fn build_reviewer_context_for_retry(
         "hold_reason": hold_reason,
         "credentials_masked": credentials_masked,
         "protected_instruction_write": ctx.protected_instruction_write,
+        "protected_path_write": ctx.protected_path_write,
+        "outside_workspace_shell_read": ctx.outside_workspace_shell_read,
         "typed_narrow_allow": ctx.typed_narrow_allow,
         "person_approved_retry": person_approved_retry,
     });
@@ -2499,6 +2787,7 @@ pub struct AutoReviewConversationState {
     blocked_actions: Vec<AutoReviewBlockedAction>,
     pending_retry_grants: Vec<AutoReviewRetryGrant>,
     pending_retry_notices: Vec<String>,
+    outside_workspace_read_approved: bool,
 }
 
 impl AutoReviewConversationState {
@@ -2761,9 +3050,18 @@ impl AutoReviewConversationState {
         std::mem::take(&mut self.pending_retry_notices)
     }
 
+    pub fn outside_workspace_read_approved(&self) -> bool {
+        self.outside_workspace_read_approved
+    }
+
+    pub fn mark_outside_workspace_read_approved(&mut self) {
+        self.outside_workspace_read_approved = true;
+    }
+
     pub fn revoke_retry_grants(&mut self) {
         self.pending_retry_grants.clear();
         self.pending_retry_notices.clear();
+        self.outside_workspace_read_approved = false;
     }
 
     pub fn reset_for_auto_resume(&mut self) {
@@ -2774,6 +3072,7 @@ impl AutoReviewConversationState {
         self.stop_reason = None;
         self.pending_retry_grants.clear();
         self.pending_retry_notices.clear();
+        self.outside_workspace_read_approved = false;
     }
 
     pub fn reset_for_conversation_boundary(&mut self) {
@@ -2962,6 +3261,8 @@ fn reviewer_reply_body(text: &str) -> &str {
     inner.trim()
 }
 
+#[path = "auto_review/path_guards.rs"]
+mod path_guards;
 #[path = "auto_review/protected_instructions.rs"]
 mod protected_instructions;
 
@@ -3240,15 +3541,52 @@ fn names_secret_variable(value: &str) -> bool {
 
 fn names_credential_file(text: &str) -> bool {
     text.split(|ch: char| ",{}|&>".contains(ch)).any(|path| {
-        let components: Vec<String> = path
-            .split(|ch: char| ch.is_whitespace() || "@<=/\\:;\"'()`[]".contains(ch))
+        let raw_components: Vec<&str> = path
+            .split(|ch: char| ch.is_whitespace() || "@<=/\\;\"'()`[]".contains(ch))
             .filter(|component| !component.is_empty())
-            .map(str::to_ascii_lowercase)
             .collect();
-        !components.last().is_some_and(|last| last.ends_with(".pub"))
-            && components
+        let components: Vec<String> = raw_components
+            .iter()
+            .map(|component| crate::core::authority::normalize_auto_review_segment(component))
+            .filter(|component| !component.is_empty())
+            .collect();
+        if components.last().is_some_and(|last| last.ends_with(".pub")) {
+            return false;
+        }
+        let single_hit = components.iter().any(|component| {
+            crate::core::authority::is_credential_file_name(component)
+                || crate::core::authority::auto_review_segment_matches(component, ".claude.json")
+        }) || raw_components.iter().any(|raw| {
+            crate::core::authority::auto_review_segment_matches(raw, ".claude.json")
+                || [
+                    ".ssh",
+                    ".aws",
+                    ".gnupg",
+                    ".kube",
+                    ".docker",
+                    ".netrc",
+                    ".npmrc",
+                    ".pypirc",
+                    ".git-credentials",
+                ]
                 .iter()
-                .any(|component| crate::core::authority::is_credential_file_name(component))
+                .any(|target| crate::core::authority::auto_review_segment_matches(raw, target))
+                || crate::core::authority::parse_8_3_alias(
+                    &crate::core::authority::normalize_auto_review_segment(raw),
+                )
+                .is_some_and(|(prefix, _, _)| {
+                    crate::core::authority::is_credential_8_3_prefix(prefix)
+                })
+        });
+        single_hit
+            || raw_components.windows(3).any(|window| {
+                [".config", "gh", "hosts.yml"]
+                    .iter()
+                    .zip(window.iter())
+                    .all(|(target, raw)| {
+                        crate::core::authority::auto_review_segment_matches(raw, target)
+                    })
+            })
     })
 }
 
@@ -12188,5 +12526,714 @@ mod tests {
             narrow_policy.evaluate(&web_with_narrow_allow).action,
             AutoReviewAction::Allow
         );
+    }
+
+    #[test]
+    fn auto_review_protected_paths_require_guardian_across_tools_aliases_and_symlinks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = dir.path().join("ws");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(ws.join(".git")).expect("create .git");
+        std::fs::create_dir_all(ws.join("src")).expect("create src");
+        std::fs::create_dir_all(ws.join(".vscode")).expect("create .vscode");
+        std::fs::create_dir_all(ws.join(".claude")).expect("create .claude");
+        std::fs::create_dir_all(ws.join(".github/workflows")).expect("create workflows");
+        std::fs::create_dir_all(home.join(".config/gh")).expect("create home gh");
+        std::fs::create_dir_all(home.join("Library/LaunchAgents")).expect("create launch agents");
+        std::fs::create_dir_all(home.join(".config/fish/conf.d")).expect("create fish conf.d");
+        std::fs::create_dir_all(home.join(".config/systemd/user")).expect("create systemd user");
+        std::fs::create_dir_all(home.join(".config/autostart")).expect("create autostart");
+        std::fs::create_dir_all(home.join(".cargo")).expect("create cargo");
+        std::fs::write(ws.join("src/main.rs"), "fn main() {}\n").expect("write main.rs");
+        std::fs::write(ws.join("AGENTS.md"), "repo agents\n").expect("write AGENTS.md");
+        std::fs::write(ws.join(".vscode/settings.json"), "{}\n").expect("write settings");
+        std::fs::write(home.join(".bashrc"), "export PATH=$PATH\n").expect("write bashrc");
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                ws.join(".vscode/settings.json"),
+                ws.join("alias_settings.json"),
+            )
+            .expect("symlink workspace settings");
+            std::os::unix::fs::symlink(home.join(".bashrc"), ws.join("alias_rc"))
+                .expect("symlink home bashrc");
+        }
+
+        let mut policy = AutoReviewPolicy::default();
+        for tool in [
+            "write_file",
+            "edit_file",
+            "apply_patch",
+            "File",
+            "exec_shell",
+        ] {
+            policy.allow_rules.push(
+                AutoReviewRule::allow(format!("allow-{tool}"), "broad test allow")
+                    .tool_name(tool.to_string()),
+            );
+        }
+
+        let file_targets = [
+            ".git/config",
+            ".codewhale/hooks.toml",
+            ".vscode/settings.json",
+            ".claude/settings.json",
+            ".mcp.json",
+            ".claude.json",
+            ".github/workflows/ci.yml",
+            ".config/gh/hosts.yml",
+            ".gitconfig",
+            ".bashrc",
+            ".zshrc",
+            ".profile",
+            ".bash_profile",
+            ".zprofile",
+            ".zshenv",
+            ".bash_login",
+            "Library/LaunchAgents/com.example.plist",
+            ".config/autostart/app.desktop",
+            ".cargo/config.toml",
+            ".cargo/config",
+            ".config/fish/config.fish",
+            ".config/fish/conf.d/custom.fish",
+            ".config/systemd/user/app.service",
+            "Start Menu/Programs/Startup/run.bat",
+            "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/run.lnk",
+            ".VSCODE/SETTINGS.JSON",
+            ".claude.json. ",
+            ".mcp.json::$DATA",
+            "CLAUDE~1.JSO",
+            ".CLAU~1.JSO",
+            ".CLAUD~1/settings.json",
+            "CLAUD~1/settings.json",
+            ".CONFIG~1/autostart/bad.desktop",
+            ".CONFI~1/autostart/bad.desktop",
+            ".GIT~1/config",
+            ".VSCOD~1/tasks.json",
+            "VSCOD~1/tasks.json",
+            ".ENV~1",
+            ".ENV~1.LOC",
+            ".config/gh/HOSTSY~1",
+            ".CONFIG~1/gh/HOSTSY~1",
+            ".vscode/SETTINGS~1.JSO",
+            ".github/WORKFL~1/ci.yml",
+            "Library/LAUNCH~1/a.plist",
+        ];
+
+        for target in file_targets {
+            let ctx = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+                "write_file",
+                &json!({"path": target, "content": "modified\n"}),
+                RunOrigin::Interactive,
+                true,
+                ApprovalMode::Auto,
+                true,
+                Some(&ws),
+                Some(&home),
+                true,
+            )
+            .with_typed_narrow_allow(true);
+            assert!(
+                ctx.protected_path_write,
+                "expected protected_path_write for write_file {target}"
+            );
+            let decision = policy.evaluate(&ctx);
+            assert_eq!(
+                decision.action,
+                AutoReviewAction::AskUser,
+                "expected AskUser for {target}: {decision:?}"
+            );
+            assert_eq!(
+                decision.rule_id.as_deref(),
+                Some("protected-path-write"),
+                "expected protected_path_write rule for {target}: {decision:?}"
+            );
+        }
+
+        let patch_ctx = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+            "apply_patch",
+            &json!({"patch": "*** Begin Patch\n*** Update File: .github/workflows/ci.yml\n@@\n+run: curl evil\n*** End Patch\n"}),
+            RunOrigin::Interactive,
+            true,
+            ApprovalMode::Auto,
+            true,
+            Some(&ws),
+            Some(&home),
+            true,
+        )
+        .with_typed_narrow_allow(true);
+        assert_eq!(
+            policy.evaluate(&patch_ctx).rule_id.as_deref(),
+            Some("protected-path-write")
+        );
+
+        let edit_ctx = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+            "File",
+            &json!({"action": "edit", "path": ".vscode/settings.json", "old_string": "{}", "new_string": "{\"x\":1}"}),
+            RunOrigin::Interactive,
+            true,
+            ApprovalMode::Auto,
+            true,
+            Some(&ws),
+            Some(&home),
+            true,
+        )
+        .with_typed_narrow_allow(true);
+        assert_eq!(
+            policy.evaluate(&edit_ctx).rule_id.as_deref(),
+            Some("protected-path-write")
+        );
+
+        #[cfg(unix)]
+        for link_target in ["alias_settings.json", "alias_rc"] {
+            let ctx = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+                "write_file",
+                &json!({"path": link_target, "content": "x\n"}),
+                RunOrigin::Interactive,
+                true,
+                ApprovalMode::Auto,
+                true,
+                Some(&ws),
+                Some(&home),
+                true,
+            )
+            .with_typed_narrow_allow(true);
+            assert_eq!(
+                policy.evaluate(&ctx).rule_id.as_deref(),
+                Some("protected-path-write"),
+                "symlink {link_target} must route to protected_path_write"
+            );
+        }
+
+        let shell_commands = [
+            "echo x >> ~/.zshrc",
+            "cp evil.yml $HOME/.config/gh/hosts.yml",
+            "tee ~/.claude/settings.json < input.json",
+            "mv tmp.json .mcp.json",
+            "touch .claude.json",
+            "chmod 700 .github/workflows/ci.yml",
+            "install -m 644 bad .cargo/config.toml",
+            "truncate -s 0 .gitconfig",
+            "sed -i '' 's/a/b/' .bashrc",
+            "perl -i -pe 's/a/b/' .profile",
+            "dd of=.zprofile",
+            "tar -xf bundle.tar -C .vscode",
+            "unzip evil.zip -d .claude",
+            "echo hi > CLAUDE~1.JSO",
+            "echo hi > ~/.config/fish/conf.d/pwn.fish",
+            "echo hi > ~/Library/LaunchAgents/evil.plist",
+            "ln -sf target .bash_login",
+            "python3 -c \"open('.mcp.json', 'w').write('x')\"",
+            "echo evil <> .git/config",
+            ": <> .vscode/settings.json",
+            "sh -c \"echo evil <> .git/config\"",
+            "3<> .mcp.json",
+            "echo x > ~/.CLAUD~1/settings.json",
+            "echo x > ~/.config/gh/HOSTSY~1",
+            "echo x > ~/.ENV~1",
+        ];
+
+        for cmd in shell_commands {
+            let ctx = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+                "exec_shell",
+                &json!({"command": cmd}),
+                RunOrigin::Interactive,
+                true,
+                ApprovalMode::Auto,
+                true,
+                Some(&ws),
+                Some(&home),
+                true,
+            )
+            .with_typed_narrow_allow(true);
+            assert!(
+                ctx.protected_path_write,
+                "expected protected_path_write for shell `{cmd}`"
+            );
+            let decision = policy.evaluate(&ctx);
+            assert_eq!(
+                decision.action,
+                AutoReviewAction::AskUser,
+                "expected AskUser for shell `{cmd}`: {decision:?}"
+            );
+            assert_eq!(
+                decision.rule_id.as_deref(),
+                Some("protected-path-write"),
+                "expected protected_path_write rule for shell `{cmd}`: {decision:?}"
+            );
+        }
+
+        for inst_target in ["AGENTS.md", ".codewhale/agents.md"] {
+            let inst_ctx = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+                "write_file",
+                &json!({"path": inst_target, "content": "hijack\n"}),
+                RunOrigin::Interactive,
+                true,
+                ApprovalMode::Auto,
+                true,
+                Some(&ws),
+                Some(&home),
+                true,
+            )
+            .with_typed_narrow_allow(true);
+            let inst_decision = AutoReviewPolicy::default().evaluate(&inst_ctx);
+            assert_eq!(inst_decision.action, AutoReviewAction::AskUser);
+            assert!(
+                inst_decision.reason.contains("instruction files"),
+                "{inst_target}: {inst_decision:?}"
+            );
+            assert_ne!(
+                inst_decision.rule_id.as_deref(),
+                Some("protected-path-write")
+            );
+        }
+
+        for ordinary_target in ["src/main.rs", "src/c~1.txt", "src/gi~1.txt"] {
+            let ordinary_ctx = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+                "write_file",
+                &json!({"path": ordinary_target, "content": "fn main() { println!(\"ok\"); }\n"}),
+                RunOrigin::Interactive,
+                true,
+                ApprovalMode::Auto,
+                true,
+                Some(&ws),
+                Some(&home),
+                true,
+            );
+            assert!(
+                !ordinary_ctx.protected_path_write,
+                "did not expect protected_path_write for {ordinary_target}"
+            );
+            assert_eq!(
+                AutoReviewPolicy::default().evaluate(&ordinary_ctx).action,
+                AutoReviewAction::Allow
+            );
+        }
+    }
+
+    #[test]
+    fn non_auto_modes_preserve_carve_out_and_git_requirement() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let non_git_ws = dir.path().join("non_git");
+        let git_ws = dir.path().join("git_ws");
+        std::fs::create_dir_all(&non_git_ws).expect("create non_git");
+        std::fs::create_dir_all(git_ws.join(".git")).expect("create git_ws");
+
+        let plain = vec!["src/main.rs".to_string()];
+        assert!(
+            !crate::core::authority::paths_within_workspace_write_carve_out(&non_git_ws, &plain),
+            "carve-out for Accept Edits still requires a git work tree"
+        );
+        assert!(
+            crate::core::authority::paths_within_workspace_write_carve_out(&git_ws, &plain),
+            "carve-out for Accept Edits allows ordinary file in git work tree"
+        );
+        assert!(
+            crate::core::authority::paths_within_workspace_write_carve_out(
+                &git_ws,
+                &[".vscode/settings.json".to_string()],
+            ),
+            "non-Auto carve-out keeps existing excluded set untouched"
+        );
+        assert!(
+            !crate::core::authority::paths_within_workspace_write_carve_out(
+                &git_ws,
+                &[".git/config".to_string()],
+            ),
+            "non-Auto carve-out continues excluding .git"
+        );
+        for non_auto in [
+            ApprovalMode::Suggest,
+            ApprovalMode::AcceptEdits,
+            ApprovalMode::Bypass,
+        ] {
+            let vscode_ctx = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+                "write_file",
+                &json!({"path": ".vscode/settings.json", "content": "{}"}),
+                RunOrigin::Interactive,
+                true,
+                non_auto,
+                true,
+                Some(&git_ws),
+                None,
+                true,
+            );
+            let decision = AutoReviewPolicy::default().evaluate(&vscode_ctx);
+            assert_ne!(decision.rule_id.as_deref(), Some("protected-path-write"));
+            assert_eq!(decision.action, AutoReviewAction::AskUser);
+
+            let outside_read = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+                "exec_shell",
+                &json!({"command": "cat /etc/hosts"}),
+                RunOrigin::Interactive,
+                true,
+                non_auto,
+                true,
+                Some(&git_ws),
+                None,
+                true,
+            );
+            let outside_decision = AutoReviewPolicy::default().evaluate(&outside_read);
+            assert_ne!(
+                outside_decision.rule_id.as_deref(),
+                Some("outside_workspace_shell_read")
+            );
+        }
+    }
+
+    #[test]
+    fn auto_review_non_git_workspace_snapshot_and_unsafe_root_boundaries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home_parent = dir.path().join("users");
+        let fake_home = home_parent.join("dev");
+        let desktop_ws = fake_home.join("Desktop");
+        let docs_ws = fake_home.join("Documents");
+        let non_git_safe = dir.path().join("safe_project");
+        std::fs::create_dir_all(&fake_home).expect("create home");
+        std::fs::create_dir_all(fake_home.join(".git")).expect("create home git");
+        std::fs::create_dir_all(desktop_ws.join(".git")).expect("create desktop git");
+        std::fs::create_dir_all(docs_ws.join(".git")).expect("create docs git");
+        std::fs::create_dir_all(&non_git_safe).expect("create non_git_safe");
+        std::fs::write(non_git_safe.join("notes.txt"), "keep me\n").expect("write notes");
+
+        let policy = AutoReviewPolicy::default();
+
+        let snap_on_write = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+            "write_file",
+            &json!({"path": "notes.txt", "content": "updated content\n"}),
+            RunOrigin::Interactive,
+            true,
+            ApprovalMode::Auto,
+            true,
+            Some(&non_git_safe),
+            Some(&fake_home),
+            true,
+        );
+        assert!(snap_on_write.write_targets_bounded);
+        assert_eq!(
+            policy.evaluate(&snap_on_write).action,
+            AutoReviewAction::Allow
+        );
+
+        let snap_off_write = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+            "write_file",
+            &json!({"path": "notes.txt", "content": "updated content\n"}),
+            RunOrigin::Interactive,
+            true,
+            ApprovalMode::Auto,
+            true,
+            Some(&non_git_safe),
+            Some(&fake_home),
+            false,
+        )
+        .with_typed_narrow_allow(true);
+        assert!(!snap_off_write.write_targets_bounded);
+        assert_eq!(
+            policy.evaluate(&snap_off_write).action,
+            AutoReviewAction::AskUser
+        );
+
+        let empty_write = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+            "write_file",
+            &json!({"path": "notes.txt", "content": ""}),
+            RunOrigin::Interactive,
+            true,
+            ApprovalMode::Auto,
+            true,
+            Some(&non_git_safe),
+            Some(&fake_home),
+            true,
+        )
+        .with_typed_narrow_allow(true);
+        assert!(!empty_write.unrecoverable_deletes.is_empty());
+        assert_eq!(
+            policy.evaluate(&empty_write).action,
+            AutoReviewAction::AskUser
+        );
+
+        let empty_edit = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+            "edit_file",
+            &json!({"path": "notes.txt", "old_string": "keep me\n", "new_string": ""}),
+            RunOrigin::Interactive,
+            true,
+            ApprovalMode::Auto,
+            true,
+            Some(&non_git_safe),
+            Some(&fake_home),
+            true,
+        )
+        .with_typed_narrow_allow(true);
+        assert!(!empty_edit.unrecoverable_deletes.is_empty());
+        assert_eq!(
+            policy.evaluate(&empty_edit).action,
+            AutoReviewAction::AskUser
+        );
+
+        let delete_patch = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+            "apply_patch",
+            &json!({"patch": "--- a/notes.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-keep me\n"}),
+            RunOrigin::Interactive,
+            true,
+            ApprovalMode::Auto,
+            true,
+            Some(&non_git_safe),
+            Some(&fake_home),
+            true,
+        );
+        assert!(!delete_patch.unrecoverable_deletes.is_empty());
+        assert_eq!(
+            policy.evaluate(&delete_patch).action,
+            AutoReviewAction::AskUser
+        );
+
+        let delete_file_call = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+            "File",
+            &json!({"action": "delete", "path": "notes.txt"}),
+            RunOrigin::Interactive,
+            true,
+            ApprovalMode::Auto,
+            true,
+            Some(&non_git_safe),
+            Some(&fake_home),
+            true,
+        );
+        assert!(!delete_file_call.unrecoverable_deletes.is_empty());
+        assert_eq!(
+            policy.evaluate(&delete_file_call).action,
+            AutoReviewAction::AskUser
+        );
+
+        for unsafe_ws in [
+            std::path::Path::new("/"),
+            fake_home.as_path(),
+            home_parent.as_path(),
+            desktop_ws.as_path(),
+            docs_ws.as_path(),
+        ] {
+            let ctx = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+                "write_file",
+                &json!({"path": "hello.txt", "content": "hi\n"}),
+                RunOrigin::Interactive,
+                true,
+                ApprovalMode::Auto,
+                true,
+                Some(unsafe_ws),
+                Some(&fake_home),
+                true,
+            );
+            assert!(
+                !ctx.write_targets_bounded,
+                "expected unsafe root {} to keep write_targets_bounded=false",
+                unsafe_ws.display()
+            );
+            assert_eq!(policy.evaluate(&ctx).action, AutoReviewAction::AskUser);
+        }
+    }
+
+    #[test]
+    fn auto_review_shell_credential_files_and_first_outside_workspace_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = dir.path().join("ws");
+        let home = dir.path().join("home");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(ws.join(".git")).expect("create .git");
+        std::fs::create_dir_all(ws.join("src")).expect("create src");
+        std::fs::create_dir_all(&outside).expect("create outside");
+        std::fs::create_dir_all(home.join(".config/gh")).expect("create home gh");
+        std::fs::write(ws.join("src/main.rs"), "fn main() {}\n").expect("write main.rs");
+        std::fs::write(outside.join("note.txt"), "public info\n").expect("write outside");
+        std::fs::write(home.join(".claude.json"), "{}\n").expect("write claude json");
+        std::fs::write(home.join(".config/gh/hosts.yml"), "github.com:\n").expect("write hosts");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.join("note.txt"), ws.join("escape_link.txt"))
+            .expect("symlink outside");
+
+        let mut policy = AutoReviewPolicy::default();
+        policy
+            .allow_rules
+            .push(AutoReviewRule::allow("allow-shell", "broad test allow").tool_name("exec_shell"));
+
+        for cred_cmd in [
+            "cat ~/.claude.json",
+            "cat ~/.config/gh/hosts.yml",
+            "cat CLAUDE~1.JSO",
+            "cat .CLAU~1.JSO",
+            "cat ~/.config/gh/HOSTSY~1",
+            "cat ~/.CONFIG~1/gh/HOSTSY~1",
+            "cat ~/.ENV~1",
+            "cat ~/.claude.json::$DATA",
+            "cat ~/.config/gh/hosts.yml. ",
+            "cd ~/.config/gh && cat hosts.yml",
+        ] {
+            let ctx = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+                "exec_shell",
+                &json!({"command": cred_cmd}),
+                RunOrigin::Interactive,
+                true,
+                ApprovalMode::Auto,
+                true,
+                Some(&ws),
+                Some(&home),
+                true,
+            )
+            .with_outside_workspace_read_approved(true);
+            assert_eq!(
+                ctx.soft_rule,
+                Some(AutoReviewSoftRule::PrintCredentials),
+                "expected PrintCredentials for `{cred_cmd}`"
+            );
+            let decision = policy.evaluate(&ctx);
+            assert_eq!(decision.action, AutoReviewAction::AskUser);
+            assert_eq!(decision.rule_id.as_deref(), Some("print-credentials"));
+        }
+
+        let mut outside_cmds = vec![
+            format!("cat {}", outside.join("note.txt").display()),
+            format!("ls {}", outside.display()),
+            "head ~/.zshrc".to_string(),
+            format!("wc -l < {}", outside.join("note.txt").display()),
+            format!(": <> {}", outside.join("note.txt").display()),
+            format!("cd {} && ls", outside.display()),
+            format!(
+                "ln -s {} local.txt && cat local.txt",
+                outside.join("note.txt").display()
+            ),
+            format!("sed -n '1,5p' {}", outside.join("note.txt").display()),
+            format!(
+                "python3 -c \"print(open('{}').read())\"",
+                outside.join("note.txt").display()
+            ),
+        ];
+        #[cfg(unix)]
+        outside_cmds.push("cat escape_link.txt".to_string());
+
+        for cmd in &outside_cmds {
+            let ctx = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+                "exec_shell",
+                &json!({"command": cmd}),
+                RunOrigin::Interactive,
+                true,
+                ApprovalMode::Auto,
+                true,
+                Some(&ws),
+                Some(&home),
+                true,
+            )
+            .with_typed_narrow_allow(true);
+            assert!(
+                ctx.outside_workspace_shell_read,
+                "expected outside_workspace_shell_read for `{cmd}`"
+            );
+            let interactive_decision = policy.evaluate(&ctx);
+            assert_eq!(interactive_decision.action, AutoReviewAction::AskUser);
+            assert!(interactive_decision.force_prompt_in_auto);
+            assert!(interactive_decision.built_in_safety_gate);
+            assert_eq!(
+                interactive_decision.rule_id.as_deref(),
+                Some("outside_workspace_shell_read")
+            );
+
+            let child_or_non_owner = ctx.clone().with_owner_can_prompt(false);
+            let child_decision = policy.evaluate(&child_or_non_owner);
+            assert_eq!(child_decision.action, AutoReviewAction::AskUser);
+            assert!(!child_decision.force_prompt_in_auto);
+            assert!(!child_decision.built_in_safety_gate);
+            assert_eq!(
+                child_decision.rule_id.as_deref(),
+                Some("outside_workspace_shell_read")
+            );
+            assert!(matches!(
+                crate::core::engine::auto_review_plan_decision_for_context(
+                    &policy,
+                    &child_or_non_owner
+                )
+                .0,
+                crate::core::engine::AutoReviewPlanDecision::ConsultReviewer { .. }
+            ));
+
+            let headless = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+                "exec_shell",
+                &json!({"command": cmd}),
+                RunOrigin::Headless,
+                false,
+                ApprovalMode::Auto,
+                true,
+                Some(&ws),
+                Some(&home),
+                true,
+            );
+            let headless_decision = AutoReviewPolicy::default().evaluate(&headless);
+            assert_eq!(headless_decision.action, AutoReviewAction::AskUser);
+            assert!(!headless_decision.force_prompt_in_auto);
+            assert!(!headless_decision.built_in_safety_gate);
+            assert!(matches!(
+                crate::core::engine::auto_review_plan_decision_for_context(
+                    &AutoReviewPolicy::default(),
+                    &headless
+                )
+                .0,
+                crate::core::engine::AutoReviewPlanDecision::ConsultReviewer { .. }
+            ));
+        }
+
+        let approved_read = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+            "exec_shell",
+            &json!({"command": format!("cat {}", outside.join("note.txt").display())}),
+            RunOrigin::Interactive,
+            true,
+            ApprovalMode::Auto,
+            true,
+            Some(&ws),
+            Some(&home),
+            true,
+        )
+        .with_outside_workspace_read_approved(true);
+        assert_eq!(
+            AutoReviewPolicy::default().evaluate(&approved_read).action,
+            AutoReviewAction::Allow
+        );
+
+        for in_ws_or_pseudo in [
+            "cat /dev/null",
+            "wc -l </dev/stdin",
+            "cargo test >/dev/null 2>&1",
+            "cat <<< /etc/hosts",
+            "cat <<'EOF'",
+            "grep '/api/v1' src/main.rs",
+            "git diff origin/main",
+            "ls src",
+        ] {
+            let ctx = AutoReviewContext::from_tool_call_with_snapshots_and_home(
+                "exec_shell",
+                &json!({"command": in_ws_or_pseudo}),
+                RunOrigin::Interactive,
+                true,
+                ApprovalMode::Auto,
+                true,
+                Some(&ws),
+                Some(&home),
+                true,
+            );
+            assert!(
+                !ctx.outside_workspace_shell_read,
+                "did not expect outside_workspace_shell_read for `{in_ws_or_pseudo}`"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_review_conversation_state_resets_outside_workspace_read_grant() {
+        let mut state = AutoReviewConversationState::default();
+        assert!(!state.outside_workspace_read_approved());
+        state.mark_outside_workspace_read_approved();
+        assert!(state.outside_workspace_read_approved());
+        state.revoke_retry_grants();
+        assert!(!state.outside_workspace_read_approved());
+
+        state.mark_outside_workspace_read_approved();
+        assert!(state.outside_workspace_read_approved());
+        state.reset_for_auto_resume();
+        assert!(!state.outside_workspace_read_approved());
     }
 }

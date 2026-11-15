@@ -145,7 +145,7 @@ fn text_mentions_instruction_mutator_keyword(text: &str, windows_mode: bool) -> 
         .any(|kw| text.to_ascii_lowercase().contains(kw))
 }
 
-fn dequote_shell_word(raw: &str, windows_mode: bool) -> String {
+pub(super) fn dequote_shell_word(raw: &str, windows_mode: bool) -> String {
     let mut out = String::with_capacity(raw.len());
     let chars: Vec<char> = raw.chars().collect();
     let mut i = 0usize;
@@ -202,7 +202,7 @@ fn dequote_shell_word(raw: &str, windows_mode: bool) -> String {
     out
 }
 
-fn extract_shell_output_redirects(stmt: &str, windows_mode: bool) -> Vec<String> {
+pub(super) fn extract_shell_output_redirects(stmt: &str, windows_mode: bool) -> Vec<String> {
     let chars: Vec<char> = stmt.chars().collect();
     let mut targets = Vec::new();
     let mut i = 0usize;
@@ -243,9 +243,10 @@ fn extract_shell_output_redirects(stmt: &str, windows_mode: bool) -> Vec<String>
             i += 1;
             continue;
         }
-        if ch == '>' {
-            i += 1;
-            if i < chars.len() && (chars[i] == '>' || chars[i] == '|') {
+        let is_rw_redirect = ch == '<' && i + 1 < chars.len() && chars[i + 1] == '>';
+        if ch == '>' || is_rw_redirect {
+            i += if is_rw_redirect { 2 } else { 1 };
+            if !is_rw_redirect && i < chars.len() && (chars[i] == '>' || chars[i] == '|') {
                 i += 1;
             }
             while i < chars.len() && chars[i].is_ascii_whitespace() {
@@ -253,7 +254,7 @@ fn extract_shell_output_redirects(stmt: &str, windows_mode: bool) -> Vec<String>
             }
             if i < chars.len() && chars[i] == '&' {
                 i += 1;
-                while i < chars.len() && chars[i].is_ascii_digit() {
+                while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '-') {
                     i += 1;
                 }
                 continue;

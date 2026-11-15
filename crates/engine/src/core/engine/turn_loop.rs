@@ -2656,9 +2656,14 @@ impl Engine {
                 Some(crate::repo_law::RepoLawPlanDecision::ForcePrompt(_))
             ) && !repo_law_blocks_now;
 
+            let mut grants_outside_workspace_read = false;
             if blocked_error.is_none() {
+                let outside_workspace_read_approved = self
+                    .auto_review_state
+                    .lock()
+                    .outside_workspace_read_approved();
                 let review_context =
-                    crate::core::authority::auto_review::AutoReviewContext::from_turn_authority_with_intent_async(
+                    crate::core::authority::auto_review::AutoReviewContext::from_turn_authority_with_options_async(
                         &tool_name,
                         &tool_input,
                         &self.current_turn_authority(),
@@ -2669,6 +2674,9 @@ impl Engine {
                         turn.recent_actions.clone(),
                         Some(self.session.pinned_project_instructions.clone()),
                         self.config.auto_review_policy.formatted_environment(),
+                        self.config.snapshots_enabled,
+                        outside_workspace_read_approved,
+                        owner_can_prompt,
                     )
                     .await;
                 let effective_extension_caller =
@@ -2771,6 +2779,9 @@ impl Engine {
                                 approval_required = true;
                                 approval_description = reason;
                                 approval_force_prompt = true;
+                                grants_outside_workspace_read =
+                                    audit_event.get("rule_id").and_then(Value::as_str)
+                                        == Some("outside_workspace_shell_read");
                             }
                             AutoReviewPlanDecision::Block(reason)
                                 if batch_approval_mode == ApprovalMode::Auto
@@ -3156,6 +3167,7 @@ impl Engine {
                 resources,
                 blocked_error,
                 guard_result,
+                grants_outside_workspace_read,
             });
         }
         let cache = &mut self.session.tool_activation_cache;
@@ -3930,6 +3942,11 @@ impl Engine {
                             .await
                         {
                             Ok(ApprovalResult::Approved(by)) => {
+                                if plan.grants_outside_workspace_read {
+                                    self.auto_review_state
+                                        .lock()
+                                        .mark_outside_workspace_read_approved();
+                                }
                                 let decision = if model_requested_policy.is_some() {
                                     "approved_with_requested_policy"
                                 } else {

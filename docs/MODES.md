@@ -263,10 +263,27 @@ Legacy note: `/set approval_mode ...` was retired in favor of `/config`.
   `ci-or-pr-bypass`, `print-credentials`, `secret-commit`, and `deploy-wrapper`)
   and writes, edits, deletes, or moves targeting `AGENTS.md`, `CLAUDE.md`, or
   loaded instruction files for guardian review ahead of `auto_review.allow`
-  rules, and holds critical-path deletions (filesystem
-  root, home folder, the project root or any ancestor of it, and `.git`
-  folders) so interactive sessions with `owner_present` ask you while
-  unattended or headless sessions refuse; the built-in floor is never
+  rules, holds file or shell writes targeting protected repository,
+  credential, IDE/agent, workflow, shell startup, or autostart paths
+  (`.git`, `.codewhale/`, `.vscode/`, `.claude/`, `.mcp.json`, `.claude.json`,
+  `.github/workflows/`, `.gitconfig`, `.config/gh/hosts.yml`, shell rc/profile
+  files, `Library/LaunchAgents/`, `.config/autostart/`, `.cargo/config.toml`,
+  `.config/fish/`, `.config/systemd/user/`, and Windows `Startup`, including
+  symlink and path-alias targets) for guardian review ahead of narrow allow
+  rules and routine checks, evaluates bounded workspace writes in non-git
+  folders as safe only when local snapshots are enabled (`snapshots_enabled`)
+  and the workspace root is not `/` or a user home/top-level folder (while
+  still routing file deletions or full-file empties in non-git folders to
+  guardian review, and leaving Accept Edits' git-work-tree carve-out
+  unchanged), includes `.claude.json` and `.config/gh/hosts.yml` in the
+  `print-credentials` rule, prompts once per Auto-Review session when an
+  interactive owner can confirm the first shell read resolving outside the
+  workspace (ignoring standard pseudo-devices such as `/dev/null`, routing
+  unattended/non-prompting runs to the guardian, and resetting when leaving
+  Auto-Review or rewinding/resetting the session), and holds critical-path
+  deletions (filesystem root, home folder, the project root or any ancestor of
+  it, and `.git` folders) so interactive sessions with `owner_present` ask you
+  while unattended or headless sessions refuse; the built-in floor is never
   model-reviewed and never waits for an approval card on other holds or
   unattended work.
   Fallback holds — calls the deterministic engine could not prove safe,

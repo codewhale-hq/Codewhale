@@ -286,6 +286,7 @@ pub(super) struct ToolExecutionPlan {
     pub(super) resources: Vec<ResourceClaim>,
     pub(super) blocked_error: Option<ToolError>,
     pub(super) guard_result: Option<ToolResult>,
+    pub(super) grants_outside_workspace_read: bool,
 }
 
 pub(super) enum ToolExecutionBatch {

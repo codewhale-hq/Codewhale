@@ -616,6 +616,7 @@ fn make_plan_at(
         )))],
         blocked_error: None,
         guard_result: None,
+        grants_outside_workspace_read: false,
     }
 }
 
