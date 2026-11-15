@@ -2093,9 +2093,33 @@ impl McpConnection {
         backend: McpBackend,
         auth_context: Arc<dyn AuthContext>,
     ) -> Result<Self> {
+        Self::connect_with_backend_auth_and_cancel(
+            name,
+            config,
+            global_timeouts,
+            network_policy,
+            backend,
+            auth_context,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+    }
+
+    pub async fn connect_with_backend_auth_and_cancel(
+        name: String,
+        config: McpServerConfig,
+        global_timeouts: &McpTimeouts,
+        network_policy: Option<&NetworkPolicyDecider>,
+        backend: McpBackend,
+        auth_context: Arc<dyn AuthContext>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<Self> {
         let connect_timeout_secs = config.effective_connect_timeout(global_timeouts);
         let read_timeout_secs = config.effective_read_timeout(global_timeouts);
-        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let cancel_token = cancel.child_token();
+        if cancel_token.is_cancelled() {
+            anyhow::bail!("MCP connection '{name}' was cancelled");
+        }
         let authority_revocation_reason = Arc::new(std::sync::Mutex::new(None));
         if let Some(source) = config.reviewed_plugin_source() {
             source.validate_before_use(&name, "connect")?;
@@ -2114,8 +2138,12 @@ impl McpConnection {
             )
         });
         let http_client = if config.url.is_some() {
-            Some(
-                prepare_mcp_http_client(
+            let client_res = tokio::select! {
+                biased;
+                () = cancel_token.cancelled() => {
+                    anyhow::bail!("MCP connection '{name}' was cancelled");
+                }
+                res = prepare_mcp_http_client(
                     &name,
                     &config,
                     global_timeouts,
@@ -2123,36 +2151,44 @@ impl McpConnection {
                     &cancel_token,
                     connect_timeout_secs,
                     Arc::clone(&auth_context),
-                )
-                .await?,
-            )
+                ) => res?,
+            };
+            Some(client_res)
         } else {
             None
         };
         let transport: Box<dyn McpTransport> = if backend == McpBackend::Host {
-            Box::new(
-                crate::extension_host::mcp::SdkTransport::connect_with_http_and_auth_context(
+            let sdk_transport = tokio::select! {
+                biased;
+                () = cancel_token.cancelled() => {
+                    anyhow::bail!("MCP connection '{name}' was cancelled");
+                }
+                res = crate::extension_host::mcp::SdkTransport::connect_with_http_and_auth_context(
                     &name,
                     &config,
                     cancel_token.clone(),
                     Duration::from_secs(connect_timeout_secs),
                     http_client,
                     Arc::clone(&auth_context),
-                )
-                .await?,
-            )
+                ) => res?,
+            };
+            Box::new(sdk_transport)
         } else if let Some(url) = &config.url {
             let client = http_client.expect("prepared HTTP authority");
             if is_legacy_sse_transport(&config) {
-                Box::new(
-                    SseTransport::connect(
+                let sse_transport = tokio::select! {
+                    biased;
+                    () = cancel_token.cancelled() => {
+                        anyhow::bail!("MCP connection '{name}' was cancelled");
+                    }
+                    res = SseTransport::connect(
                         client,
                         url.clone(),
                         cancel_token.clone(),
                         Duration::from_secs(connect_timeout_secs),
-                    )
-                    .await?,
-                )
+                    ) => res?,
+                };
+                Box::new(sse_transport)
             } else {
                 let mut http = HttpTransport::new(
                     client,
@@ -2165,13 +2201,21 @@ impl McpConnection {
                 // (e.g. Hindsight, #1629). Failures are non-fatal — the
                 // `initialize` POST will proceed and may capture a session
                 // ID from the response instead.
-                if let Err(e) = http.try_establish_session().await {
-                    tracing::debug!(
-                        target: "mcp",
-                        server = %name,
-                        error = %e,
-                        "session-establishment GET skipped; proceeding with POST initialize"
-                    );
+                tokio::select! {
+                    biased;
+                    () = cancel_token.cancelled() => {
+                        anyhow::bail!("MCP connection '{name}' was cancelled");
+                    }
+                    res = http.try_establish_session() => {
+                        if let Err(e) = res {
+                            tracing::debug!(
+                                target: "mcp",
+                                server = %name,
+                                error = %e,
+                                "session-establishment GET skipped; proceeding with POST initialize"
+                            );
+                        }
+                    }
                 }
                 Box::new(http)
             }
@@ -2186,13 +2230,6 @@ impl McpConnection {
         } else {
             anyhow::bail!("MCP server '{name}' config must have either 'command' or 'url'");
         };
-        // Revalidate after transport construction as well: remote setup may
-        // await DNS/TLS/SSE preflight, and a concurrent process can revoke the
-        // receipt during that interval. Initialization and catalog discovery
-        // never start under a stale generation.
-        if let Some(source) = config.reviewed_plugin_source() {
-            source.validate_before_use(&name, "initialize")?;
-        }
         let authority_watch = authority_watch.map(PendingAuthorityWatch::disarm);
 
         let mut conn = Self {
@@ -2213,7 +2250,7 @@ impl McpConnection {
             instructions: None,
             discovery_timeout: Duration::from_secs(connect_timeout_secs),
             read_timeout_secs,
-            cancel_token,
+            cancel_token: cancel_token.clone(),
             authority_revocation_reason,
             authority_watch,
             catalog_generation: 0,
@@ -2223,20 +2260,48 @@ impl McpConnection {
             decision_key: None,
         };
 
+        let setup_result: Result<()> = tokio::select! {
+            biased;
+            () = cancel_token.cancelled() => {
+                Err(anyhow::anyhow!("MCP connection '{name}' was cancelled"))
+            }
+            res = conn.finish_connect(backend, connect_timeout_secs) => res,
+        };
+        if let Err(error) = setup_result {
+            conn.transport.shutdown().await;
+            return Err(error);
+        }
+        if cancel_token.is_cancelled() {
+            conn.transport.shutdown().await;
+            anyhow::bail!("MCP connection '{name}' was cancelled");
+        }
+        conn.state = ConnectionState::Ready;
+        Ok(conn)
+    }
+
+    async fn finish_connect(
+        &mut self,
+        backend: McpBackend,
+        connect_timeout_secs: u64,
+    ) -> Result<()> {
+        if let Some(source) = self.config.reviewed_plugin_source() {
+            source.validate_before_use(&self.name, "initialize")?;
+        }
+
         // The reviewed Computer Use plugin accepts consent and script calls
         // only with a decision attested by its host. Its keys travel as the
         // first message on the plugin's own stdin, never in its environment.
         if backend == McpBackend::Rust
-            && conn.config.url.is_none()
-            && conn.config.command.is_some()
-            && conn
+            && self.config.url.is_none()
+            && self.config.command.is_some()
+            && self
                 .config
                 .reviewed_plugin_source()
                 .is_some_and(|source| source.plugin_name() == COMPUTER_USE_PLUGIN_NAME)
         {
             let decision_key = random_key()?;
             let ledger_key = computer_use_ledger_key().await;
-            conn.send(serde_json::json!({
+            self.send(serde_json::json!({
                 "jsonrpc": "2.0",
                 "method": COMPUTER_USE_HOST_KEYS_METHOD,
                 "params": {
@@ -2245,32 +2310,32 @@ impl McpConnection {
                 }
             }))
             .await?;
-            conn.decision_key = Some(decision_key);
+            self.decision_key = Some(decision_key);
         }
 
         // Initialize with timeout
         let connect_deadline = Duration::from_secs(connect_timeout_secs);
         let initialize_started = std::time::Instant::now();
-        let initialized = tokio::time::timeout(connect_deadline, conn.initialize())
+        let initialized = tokio::time::timeout(connect_deadline, self.initialize())
             .await
             .map_err(anyhow::Error::from)
             .and_then(|result| result);
         if let Err(error) = initialized {
             if initialize_started.elapsed() >= connect_deadline {
                 return Err(error.context(format!(
-                    "MCP server '{name}' didn't start within {connect_timeout_secs}s; retry with /mcp restart, or raise its connect_timeout"
+                    "MCP server '{}' didn't start within {connect_timeout_secs}s; retry with /mcp restart, or raise its connect_timeout",
+                    self.name
                 )));
             }
             return Err(error);
         }
 
-        conn.discover_all()
+        self.discover_all()
             .await
-            .with_context(|| format!("MCP server '{name}' discovery failed"))?;
+            .with_context(|| format!("MCP server '{}' discovery failed", self.name))?;
 
-        conn.ensure_not_disconnected()?;
-        conn.state = ConnectionState::Ready;
-        Ok(conn)
+        self.ensure_not_disconnected()?;
+        Ok(())
     }
 
     /// Send initialize request and wait for response
@@ -4194,6 +4259,23 @@ impl McpPool {
         &self,
         plugins: Arc<codewhale_plugins::PluginRegistry>,
     ) -> Result<Self> {
+        self.fork_for_plugins_inner(plugins, false, None)
+    }
+
+    pub fn fork_isolated_for_plugins(
+        &self,
+        plugins: Arc<codewhale_plugins::PluginRegistry>,
+        network_policy_override: Option<NetworkPolicyDecider>,
+    ) -> Result<Self> {
+        self.fork_for_plugins_inner(plugins, true, network_policy_override)
+    }
+
+    fn fork_for_plugins_inner(
+        &self,
+        plugins: Arc<codewhale_plugins::PluginRegistry>,
+        isolated: bool,
+        network_policy_override: Option<NetworkPolicyDecider>,
+    ) -> Result<Self> {
         let workspace = checked_workspace_path(plugins.workspace())?;
         let config = match self.config_sources.first() {
             Some(primary) => {
@@ -4210,10 +4292,10 @@ impl McpPool {
         let mut pool = Self::new_with_auth_context(config, Arc::clone(&self.auth_context))
             .with_backend(self.backend)
             .with_disallowed_tools(self.disallowed_tools.clone());
-        pool.network_policy = self.network_policy.clone();
+        pool.network_policy = network_policy_override.or_else(|| self.network_policy.clone());
         pool.oauth_callback_port = self.oauth_callback_port;
         pool.oauth_callback_url = self.oauth_callback_url.clone();
-        if self.workspace.as_deref() == Some(workspace.as_path()) {
+        if !isolated && self.workspace.as_deref() == Some(workspace.as_path()) {
             pool.dynamic_servers = Arc::clone(&self.dynamic_servers);
         }
         pool.config_sources = self.config_sources.clone();
@@ -4228,6 +4310,11 @@ impl McpPool {
         pool.workspace = Some(workspace);
         pool.plugin_registry = Some(plugins);
         Ok(pool)
+    }
+
+    #[must_use]
+    pub fn static_server_config(&self, server_name: &str) -> Option<&McpServerConfig> {
+        self.config.servers.get(server_name)
     }
     pub fn validate_native_caller(
         &self,
@@ -4259,6 +4346,26 @@ impl McpPool {
     }
     /// Get or create a connection to a server
     pub async fn get_or_connect(&mut self, server_name: &str) -> Result<&mut McpConnection> {
+        self.get_or_connect_inner(server_name, &tokio_util::sync::CancellationToken::new())
+            .await
+    }
+
+    pub async fn get_or_connect_with_cancel(
+        &mut self,
+        server_name: &str,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<&mut McpConnection> {
+        self.get_or_connect_inner(server_name, cancel).await
+    }
+
+    async fn get_or_connect_inner(
+        &mut self,
+        server_name: &str,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<&mut McpConnection> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("MCP connection '{server_name}' was cancelled");
+        }
         // Lazy auto-reload (#1267 part 2): cheap mtime-then-hash check before
         // each connection lookup. Transient FS errors are logged but not
         // propagated so a brief hiccup can't take down the whole tool dispatch.
@@ -4325,13 +4432,14 @@ impl McpPool {
             anyhow::bail!("Failed to connect MCP server '{server_name}': server is disabled");
         }
 
-        let mut connection = match McpConnection::connect_with_backend_and_auth_context(
+        let mut connection = match McpConnection::connect_with_backend_auth_and_cancel(
             server_name.to_string(),
             server_config,
             &self.config.timeouts,
             self.network_policy.as_ref(),
             self.backend,
             Arc::clone(&self.auth_context),
+            cancel.clone(),
         )
         .await
         {

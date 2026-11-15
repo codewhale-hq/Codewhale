@@ -6785,8 +6785,8 @@ function reviewedMcpModule() {
         if (typeof timeout !== "number" || !Number.isInteger(timeout) || timeout < 1e3 || timeout > 864e5 || timeout % 1e3 !== 0) throw new Error("MCP timeout must be whole seconds within Core bounds");
         options.execute_timeout = timeout / 1e3;
       }
-      if (config.failOnStartupError === true) throw new Error("failOnStartupError requires explicit Core MCP connection qualification before activation");
-      if (config.failOnStartupError !== void 0 && config.failOnStartupError !== false) throw new Error("MCP startup gate must be a boolean");
+      if (config.failOnStartupError !== void 0 && typeof config.failOnStartupError !== "boolean") throw new Error("MCP startup gate must be a boolean");
+      if (config.failOnStartupError === true) options.required = true;
       let server;
       if (config.transport === "stdio") {
         const cwd = config.cwd ?? "";

@@ -1,13 +1,15 @@
 // Real HostRoot/Loader; Core admission is a recorded fake. Rust pool tests are separate.
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
+import {createHash} from 'node:crypto'
 import {join} from 'node:path'
-import {mkdtempSync,writeFileSync,rmSync} from 'node:fs'
+import {mkdirSync,mkdtempSync,writeFileSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {startHost,activate,owner,sha256File,FIXTURES} from './harness.mjs'
 const directory=join(FIXTURES,'raw-dsh-mcp')
 const entry=tag=>{const path=join(directory,'native',`${tag}.mjs`);return {path,sha256:sha256File(path)}}
 function plugin(t,body){const dir=mkdtempSync(join(tmpdir(),'cw-mcp-proposal-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));const path=join(dir,'index.mjs');writeFileSync(path,`export const inject=['mcp'];export function apply(ctx){${body}}`);return path}
+function compositionPlugin(t,rows){const dir=mkdtempSync(join(tmpdir(),'cw-mcp-dsh-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));mkdirSync(join(dir,'source'));mkdirSync(join(dir,'native'));const source=JSON.stringify([{insert:rows}]);const sha256=createHash('sha256').update(source).digest('hex');writeFileSync(join(dir,'native','spec.json'),JSON.stringify({version:1,layers:[{path:'patch.json',sha256,source}],modules:[],files:{}}));const path=join(dir,'native','index.mjs');writeFileSync(path,`import {mountReviewedComposition} from '@codewhale/dsh-composition';import spec from './spec.json' with {type:'json'};export async function apply(ctx){await mountReviewedComposition(ctx,new URL('../source/',import.meta.url).href,spec)}`);return path}
 
 test('raw MCP and skills mount with all authored registries under exact sibling scopes',async t=>{
  const host=await startHost();t.after(()=>host.stop());const ref=owner('raw-dsh-mcp')
@@ -51,4 +53,27 @@ test('a raw Native module cannot install a competing runtimeLoop service',async 
  const {result}=await activate(host,'runtime-refused',path)
  assert.equal(result.status,'failed');assert.match(result.diagnostic,/runtimeLoop.*core owns/)
  assert.equal(host.coreCalls.length,0);assert.equal(host.registry.length,0)
+})
+
+test('raw DSH MCP failOnStartupError maps true to net.codewhale.required and refuses non-booleans',async t=>{
+ const host=await startHost();t.after(()=>host.stop())
+ const path=compositionPlugin(t,[{id:'req',name:'@deepseek-ai/dsh-mcp-client',config:{serverName:'req',transport:'streamable-http',url:'http://127.0.0.1:3000/mcp',failOnStartupError:true}}])
+ const {result}=await activate(host,'raw-dsh-mcp-required',path)
+ assert.equal(result.status,'ok',result.diagnostic)
+ const mcp=host.registry.find(r=>r.op==='register'&&r.kind==='mcp_server'&&r.spec.name==='req')
+ assert.ok(mcp,'expected registered mcp_server')
+ assert.deepEqual(JSON.parse(mcp.spec.description),{type:'streamable-http',url:'http://127.0.0.1:3000/mcp',headers:{},extensions:{'net.codewhale':{required:true}}})
+
+ const offPath=compositionPlugin(t,[{id:'off',name:'@deepseek-ai/dsh-mcp-client',config:{serverName:'off',transport:'streamable-http',url:'http://127.0.0.1:3000/mcp',failOnStartupError:false}}])
+ const offRes=await activate(host,'raw-dsh-mcp-off',offPath)
+ assert.equal(offRes.result.status,'ok',offRes.result.diagnostic)
+ const offMcp=host.registry.find(r=>r.op==='register'&&r.kind==='mcp_server'&&r.spec.name==='off')
+ assert.deepEqual(JSON.parse(offMcp.spec.description),{type:'streamable-http',url:'http://127.0.0.1:3000/mcp',headers:{}})
+
+ for(const bad of ['true',1,{enable:true},null]){
+  const badPath=compositionPlugin(t,[{id:'bad',name:'@deepseek-ai/dsh-mcp-client',config:{serverName:'bad',transport:'streamable-http',url:'http://127.0.0.1:3000/mcp',failOnStartupError:bad}}])
+  const failed=await activate(host,`raw-dsh-mcp-bad-${String(bad)}`,badPath)
+  assert.equal(failed.result.status,'failed')
+  assert.match(failed.result.diagnostic,/MCP startup gate must be a boolean/)
+ }
 })

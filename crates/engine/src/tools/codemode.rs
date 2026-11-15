@@ -334,6 +334,10 @@ impl NestedCallGate {
             .map(|gate| (&gate.caller, gate.specs.as_slice()))
     }
 
+    pub fn mcp_pool(&self) -> Option<Arc<AsyncMutex<McpPool>>> {
+        self.mcp_pool.clone()
+    }
+
     pub async fn checkpoint(
         &self,
         caller: crate::core::events::SessionCheckpointCaller,

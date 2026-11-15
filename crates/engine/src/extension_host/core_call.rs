@@ -443,6 +443,11 @@ impl BrokerContext {
         &self.invocation.caller_tools
     }
 
+    #[must_use]
+    pub fn mcp_pool(&self) -> Option<Arc<tokio::sync::Mutex<crate::mcp::McpPool>>> {
+        self.invocation.gate.mcp_pool()
+    }
+
     pub fn record(&self, entry: Value) -> bool {
         self.invocation.push_act_record(self.service.name(), entry)
     }
@@ -1665,6 +1670,7 @@ impl CoreCalls {
             broker_token,
             armed: true,
         };
+        let arm_cancel = withdraw.child_token();
         let call = BrokerCall {
             owner: params.owner.clone(),
             session_id,
@@ -1675,7 +1681,7 @@ impl CoreCalls {
                 invocation: Arc::clone(&invocation),
                 tool,
                 service,
-                cancel: withdraw.clone(),
+                cancel: arm_cancel.clone(),
                 broker_token,
             },
         };
@@ -1687,21 +1693,24 @@ impl CoreCalls {
                 }
             }
         };
-        let outcome = tokio::select! {
+        let arm_future = arm(call);
+        tokio::pin!(arm_future);
+        let outcome = match tokio::select! {
             biased;
-            () = cx.cancel.cancelled() => {
-                rollback.rollback("cancelled");
-                return Err(cancelled("dsh/broker was cancelled by its host"));
+            () = cx.cancel.cancelled() => Err(("cancelled", cancelled("dsh/broker was cancelled by its host"))),
+            () = withdraw.cancelled() => Err(("invocation_ended", cancelled("dsh/broker invocation ended"))),
+            () = withdrawn => Err(("grant_revoked", BrokerRefusal::NotGranted(service).wire())),
+            outcome = &mut arm_future => Ok(outcome),
+        } {
+            Ok(outcome) => outcome,
+            Err((reason, wire)) => {
+                if matches!(service, DshService::Plugins) {
+                    arm_cancel.cancel();
+                    let _ = tokio::time::timeout(Duration::from_secs(5), &mut arm_future).await;
+                }
+                rollback.rollback(reason);
+                return Err(wire);
             }
-            () = withdraw.cancelled() => {
-                rollback.rollback("invocation_ended");
-                return Err(cancelled("dsh/broker invocation ended"));
-            }
-            () = withdrawn => {
-                rollback.rollback("grant_revoked");
-                return Err(BrokerRefusal::NotGranted(service).wire());
-            }
-            outcome = arm(call) => outcome,
         };
         if cx.cancel.is_cancelled() {
             rollback.rollback("cancelled");

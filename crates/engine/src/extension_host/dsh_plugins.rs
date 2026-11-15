@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use codewhale_config::{AppMode, PluginAuthority};
 use codewhale_execpolicy::ApprovalMode;
+use codewhale_mcp::config::McpServerConfig;
 use codewhale_net::network_policy::NetworkPolicy;
 use codewhale_plugins::activation::{PolicyScope, extension_host_policy_enabled};
 use codewhale_plugins::agent_plugin::resolve_manifest_path;
@@ -42,6 +43,9 @@ use super::dsh_broker::{
 use super::protocol::DshService;
 use super::registry::OwnerState;
 use crate::core::engine::LiveRuntimeAuthority;
+use crate::mcp::{
+    McpPool, McpServerConfigExt, format_mcp_error_for_display, qualified_plugin_server_name,
+};
 use crate::tools::spec::ToolContext;
 
 const LOG: &str = "codewhale::dsh_plugins";
@@ -62,6 +66,7 @@ const MAX_CONVERSION_JSON_BYTES: u64 = 1024 * 1024;
 const HOST_LOAD_TIMEOUT_PER_ROW: Duration = Duration::from_secs(5);
 const HOST_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const MAX_HOST_WAIT: Duration = Duration::from_secs(60);
+const MAX_TOOL_WARNINGS_PER_CONNECTOR: usize = 20;
 const HOST_OFF_DIAGNOSTIC: &str =
     "the extension host is switched off in this process, so native plugin code did not start";
 const ASK_PERSON_HINT: &str = "ask the person: step to Ask, or use the Plugins page";
@@ -1061,6 +1066,36 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static POST_DISABLE_TEST_HOOK: std::cell::RefCell<Option<PostDisableTestHook>> =
         const { std::cell::RefCell::new(None) };
+    static MCP_CONNECT_DEADLINE_FOR_TEST: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) struct McpConnectDeadlineGuard {
+    previous: Option<Duration>,
+}
+
+#[cfg(test)]
+impl Drop for McpConnectDeadlineGuard {
+    fn drop(&mut self) {
+        MCP_CONNECT_DEADLINE_FOR_TEST.with(|cell| {
+            cell.set(self.previous);
+        });
+    }
+}
+
+#[cfg(test)]
+pub(super) fn set_mcp_connect_deadline_for_test(deadline: Duration) -> McpConnectDeadlineGuard {
+    let previous = MCP_CONNECT_DEADLINE_FOR_TEST.with(|cell| cell.replace(Some(deadline)));
+    McpConnectDeadlineGuard { previous }
+}
+
+fn mcp_connect_deadline() -> Duration {
+    #[cfg(test)]
+    if let Some(override_deadline) = MCP_CONNECT_DEADLINE_FOR_TEST.with(|cell| cell.get()) {
+        return override_deadline;
+    }
+    super::tool::TOOL_CALL_DEADLINE
 }
 
 #[cfg(test)]
@@ -1855,6 +1890,606 @@ async fn refine_local_dsh_source(
     })
     .await
     .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))
+}
+
+enum McpActivationError {
+    Cancelled,
+    Failed(String),
+}
+
+struct EnableActivation<'a> {
+    method: &'static str,
+    stage: &'static str,
+    target: String,
+    changed: bool,
+    registry: &'a Arc<PluginRegistry>,
+    loaded: &'a LoadedPlugin,
+    approver: &'a PluginApprover,
+    version: Option<String>,
+    warnings: Vec<String>,
+}
+
+fn record_mcp_attempt(
+    call: &BrokerCall,
+    plugin_name: &str,
+    server_name: &str,
+    qualified: &str,
+    outcome: &str,
+) {
+    let _ = call.context.record(json!({
+        "method": "mcp_connect",
+        "plugin": plugin_name,
+        "server": server_name,
+        "qualified": qualified,
+        "outcome": outcome,
+    }));
+}
+
+fn record_remaining_timeouts(
+    call: &BrokerCall,
+    plugin_name: &str,
+    servers: &[(&str, &McpServerConfig)],
+    first_detail: &str,
+    failures: &mut Vec<String>,
+) {
+    for (index, (server_name, _)) in servers.iter().enumerate() {
+        let qualified = qualified_plugin_server_name(plugin_name, server_name);
+        record_mcp_attempt(call, plugin_name, server_name, &qualified, "timed_out");
+        let detail = if index == 0 {
+            first_detail
+        } else {
+            "not attempted before call deadline elapsed"
+        };
+        failures.push(format!("`{server_name}`: {detail}"));
+    }
+}
+
+fn format_connected_tools_warning(
+    server_name: &str,
+    tool_names: &[String],
+    scrub: &ScrubContext<'_>,
+) -> String {
+    let mut clean_server_trunc = false;
+    let clean_server = sanitize_inline(server_name, MAX_NAME_BYTES, &mut clean_server_trunc);
+    if tool_names.is_empty() {
+        return scrub_warning(
+            &format!("connector `{clean_server}` connected with no tools"),
+            scrub,
+        );
+    }
+    let mut listed = Vec::new();
+    let mut listed_bytes = 0usize;
+    for raw_name in tool_names {
+        if listed.len() >= MAX_TOOL_WARNINGS_PER_CONNECTOR {
+            break;
+        }
+        let mut name_truncated = false;
+        let clean_name = sanitize_inline(raw_name, MAX_ENTRY_ID_BYTES, &mut name_truncated);
+        if clean_name.is_empty() {
+            continue;
+        }
+        let next_bytes = listed_bytes + clean_name.len() + usize::from(!listed.is_empty()) * 2;
+        if next_bytes > MAX_TEXT_BYTES.saturating_sub(96) && !listed.is_empty() {
+            break;
+        }
+        listed_bytes = next_bytes;
+        listed.push(clean_name);
+    }
+    let remaining = tool_names.len().saturating_sub(listed.len());
+    let summary = if listed.is_empty() {
+        format!(
+            "connector `{clean_server}` connected ({} tools)",
+            tool_names.len()
+        )
+    } else if remaining > 0 {
+        format!(
+            "connector `{clean_server}` tools: {} (+{remaining} more)",
+            listed.join(", ")
+        )
+    } else {
+        format!("connector `{clean_server}` tools: {}", listed.join(", "))
+    };
+    scrub_warning(&summary, scrub)
+}
+
+async fn connect_required_plugin_mcp_servers(
+    call: &BrokerCall,
+    forked: &mut McpPool,
+    plugin_name: &str,
+    required_servers: &[(&str, &McpServerConfig)],
+    deadline: tokio::time::Instant,
+    scrub: &ScrubContext<'_>,
+) -> Result<Vec<String>, McpActivationError> {
+    let mut connected_warnings = Vec::new();
+    let mut failures = Vec::new();
+    for (index, (server_name, server_config)) in required_servers.iter().enumerate() {
+        let qualified = qualified_plugin_server_name(plugin_name, server_name);
+        if call.context.cancel().is_cancelled() {
+            record_mcp_attempt(call, plugin_name, server_name, &qualified, "cancelled");
+            return Err(McpActivationError::Cancelled);
+        }
+        let is_reviewed_plugin_server =
+            forked.static_server_config(&qualified).is_some_and(|cfg| {
+                cfg.reviewed_plugin_source()
+                    .is_some_and(|src| src.plugin_name() == plugin_name)
+            });
+        if !is_reviewed_plugin_server {
+            record_mcp_attempt(call, plugin_name, server_name, &qualified, "failed");
+            failures.push(format!(
+                "`{server_name}`: missing reviewed plugin MCP entry `{qualified}`"
+            ));
+            continue;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            record_remaining_timeouts(
+                call,
+                plugin_name,
+                &required_servers[index..],
+                "call deadline elapsed before connecting",
+                &mut failures,
+            );
+            break;
+        }
+        let attempt_cancel = tokio_util::sync::CancellationToken::new();
+        let timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watcher_cancel = attempt_cancel.clone();
+        let turn_cancel = call.context.cancel().clone();
+        let watcher_timed_out = Arc::clone(&timed_out);
+        let watcher = tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                () = turn_cancel.cancelled() => {
+                    watcher_cancel.cancel();
+                }
+                () = tokio::time::sleep_until(deadline) => {
+                    watcher_timed_out.store(true, std::sync::atomic::Ordering::SeqCst);
+                    watcher_cancel.cancel();
+                }
+            }
+        });
+        let connect_res = forked
+            .get_or_connect_with_cancel(&qualified, &attempt_cancel)
+            .await;
+        watcher.abort();
+        let _ = watcher.await;
+        if call.context.cancel().is_cancelled() {
+            record_mcp_attempt(call, plugin_name, server_name, &qualified, "cancelled");
+            return Err(McpActivationError::Cancelled);
+        }
+        if timed_out.load(std::sync::atomic::Ordering::SeqCst) && connect_res.is_err() {
+            record_remaining_timeouts(
+                call,
+                plugin_name,
+                &required_servers[index..],
+                "timed out waiting for required MCP connector response",
+                &mut failures,
+            );
+            break;
+        }
+        match connect_res {
+            Ok(conn) => {
+                let raw_tools: Vec<String> = conn
+                    .tools()
+                    .iter()
+                    .filter(|tool| server_config.is_tool_enabled(&tool.name))
+                    .map(|tool| McpPool::mcp_model_tool_name(&qualified, &tool.name))
+                    .collect();
+                let allowed_tools: Vec<String> = raw_tools
+                    .into_iter()
+                    .filter(|tool_name| forked.tool_allowed(tool_name))
+                    .collect();
+                record_mcp_attempt(call, plugin_name, server_name, &qualified, "connected");
+                connected_warnings.push(format_connected_tools_warning(
+                    server_name,
+                    &allowed_tools,
+                    scrub,
+                ));
+            }
+            Err(error) => {
+                record_mcp_attempt(call, plugin_name, server_name, &qualified, "failed");
+                let reason = scrub_message(&format_mcp_error_for_display(&error), scrub);
+                failures.push(format!("`{server_name}`: {reason}"));
+            }
+        }
+    }
+    if !failures.is_empty() {
+        let joined = if failures.len() == 1 {
+            format!("required MCP connector {}", failures[0])
+        } else {
+            format!("required MCP connectors failed: {}", failures.join("; "))
+        };
+        let mut truncated = false;
+        return Err(McpActivationError::Failed(cap_text(
+            joined,
+            MAX_DIAGNOSTIC_BYTES,
+            &mut truncated,
+        )));
+    }
+    Ok(connected_warnings)
+}
+
+fn find_settled_attachment_registry(
+    attachments: &std::sync::Mutex<BTreeMap<u64, super::AttachmentState>>,
+    workspace: &Path,
+    plugin_id: &str,
+    content_hash: &str,
+) -> (Option<Arc<PluginRegistry>>, bool) {
+    let guard = attachments.lock().expect("attachments lock");
+    let mut matching_workspace_pending = false;
+    for state in guard.values() {
+        if state.plugins.workspace() != workspace {
+            continue;
+        }
+        let Some(loaded) = state.plugins.get(plugin_id) else {
+            continue;
+        };
+        if !loaded.active() || loaded.content_hash != content_hash {
+            continue;
+        }
+        if let Some(sel) = state.plugins.caller_selection()
+            && state.selection.revision == Some(sel)
+            && state.selection.desired.get(plugin_id) == Some(&loaded.content_hash)
+        {
+            return (Some(Arc::clone(&state.plugins)), false);
+        }
+        matching_workspace_pending = true;
+    }
+    (None, matching_workspace_pending)
+}
+
+async fn resolve_plugin_enabled_servers(
+    call: &BrokerCall,
+    registry: &Arc<PluginRegistry>,
+    plugin: &LoadedPlugin,
+    remaining: Duration,
+    deadline: tokio::time::Instant,
+    scrub: &ScrubContext<'_>,
+) -> Result<(Arc<PluginRegistry>, Vec<(String, McpServerConfig)>), McpActivationError> {
+    let mut servers: BTreeMap<String, McpServerConfig> = plugin
+        .manifest
+        .mcp_servers
+        .iter()
+        .flatten()
+        .filter(|(_, config)| config.is_enabled())
+        .map(|(name, config)| (name.clone(), config.clone()))
+        .collect();
+    if plugin.inventory.native == 0 {
+        return Ok((Arc::clone(registry), servers.into_iter().collect()));
+    }
+
+    let shared = &super::manager().shared;
+    let live_native: Vec<(String, McpServerConfig)> = {
+        let owners = shared.registry.lock().expect("registry lock");
+        owners
+            .live_mcp()
+            .into_iter()
+            .filter(|reg| {
+                reg.owner.plugin_id == plugin.id.as_str()
+                    && reg.content_hash == plugin.content_hash
+                    && reg.config.is_enabled()
+            })
+            .map(|reg| (reg.name, reg.config))
+            .collect()
+    };
+    if live_native.is_empty() {
+        return Ok((Arc::clone(registry), servers.into_iter().collect()));
+    }
+
+    let mut live_seen = HashSet::new();
+    let live_required: Vec<(&str, &McpServerConfig)> = live_native
+        .iter()
+        .filter(|(_, cfg)| cfg.required)
+        .map(|(name, cfg)| (name.as_str(), cfg))
+        .collect();
+    for (name, _) in &live_native {
+        if !live_seen.insert(name.as_str()) || servers.contains_key(name) {
+            for (req_name, _) in &live_required {
+                let qualified = qualified_plugin_server_name(plugin.name(), req_name);
+                record_mcp_attempt(call, plugin.name(), req_name, &qualified, "failed");
+            }
+            return Err(McpActivationError::Failed(scrub_message(
+                &format!("duplicate plugin MCP server definition `{name}`"),
+                scrub,
+            )));
+        }
+    }
+
+    let mut timed_out_waiting_settlement = false;
+    let registry_for_fork = loop {
+        if call.context.cancel().is_cancelled() {
+            return Err(McpActivationError::Cancelled);
+        }
+        let (settled, pending) = find_settled_attachment_registry(
+            &shared.attachments,
+            registry.workspace(),
+            plugin.id.as_str(),
+            &plugin.content_hash,
+        );
+        if let Some(settled_registry) = settled {
+            break settled_registry;
+        }
+        if !pending {
+            break Arc::clone(registry);
+        }
+        if remaining.is_zero() || tokio::time::Instant::now() >= deadline {
+            timed_out_waiting_settlement = true;
+            break Arc::clone(registry);
+        }
+        tokio::select! {
+            biased;
+            () = call.context.cancel().cancelled() => return Err(McpActivationError::Cancelled),
+            () = tokio::time::sleep_until(deadline) => {
+                timed_out_waiting_settlement = true;
+                break Arc::clone(registry);
+            }
+            () = tokio::time::sleep(HOST_POLL_INTERVAL) => {}
+        }
+    };
+
+    if timed_out_waiting_settlement && !live_required.is_empty() {
+        let mut failures = Vec::new();
+        record_remaining_timeouts(
+            call,
+            plugin.name(),
+            &live_required,
+            "timed out waiting for extension attachment selection",
+            &mut failures,
+        );
+        return Err(McpActivationError::Failed(scrub_message(
+            &failures.join("; "),
+            scrub,
+        )));
+    }
+
+    let admitted = match super::native_mcp::for_plugins(&registry_for_fork) {
+        Ok(entries) => entries,
+        Err(error) => {
+            for (req_name, _) in &live_required {
+                let qualified = qualified_plugin_server_name(plugin.name(), req_name);
+                record_mcp_attempt(call, plugin.name(), req_name, &qualified, "failed");
+            }
+            return Err(McpActivationError::Failed(scrub_message(&error, scrub)));
+        }
+    };
+
+    let mut admitted_names = HashSet::new();
+    for (name, cfg, authority, _) in admitted {
+        if authority.plugin_id == plugin.id && cfg.is_enabled() {
+            if servers.contains_key(&name) {
+                for (req_name, _) in &live_required {
+                    let qualified = qualified_plugin_server_name(plugin.name(), req_name);
+                    record_mcp_attempt(call, plugin.name(), req_name, &qualified, "failed");
+                }
+                return Err(McpActivationError::Failed(scrub_message(
+                    &format!("native MCP connector `{name}` collides with manifest entry"),
+                    scrub,
+                )));
+            }
+            admitted_names.insert(name.clone());
+            servers.insert(name, cfg);
+        }
+    }
+
+    let mut missing_required = Vec::new();
+    for (name, _) in &live_required {
+        if !admitted_names.contains(*name) {
+            let qualified = qualified_plugin_server_name(plugin.name(), name);
+            record_mcp_attempt(call, plugin.name(), name, &qualified, "failed");
+            missing_required.push(format!("`{name}`"));
+        }
+    }
+    if !missing_required.is_empty() {
+        return Err(McpActivationError::Failed(scrub_message(
+            &format!(
+                "required native MCP connector(s) were not admitted by the extension host: {}",
+                missing_required.join(", ")
+            ),
+            scrub,
+        )));
+    }
+
+    Ok((registry_for_fork, servers.into_iter().collect()))
+}
+
+async fn activate_plugin_mcp_connectors(
+    call: &BrokerCall,
+    registry: &Arc<PluginRegistry>,
+    plugin: &LoadedPlugin,
+    scrub: &ScrubContext<'_>,
+    warnings: &mut Vec<String>,
+) -> Result<(), McpActivationError> {
+    let remaining = mcp_connect_deadline();
+    let deadline = tokio::time::Instant::now() + remaining;
+    let (registry_for_fork, enabled_servers) =
+        resolve_plugin_enabled_servers(call, registry, plugin, remaining, deadline, scrub).await?;
+    if enabled_servers.is_empty() {
+        return Ok(());
+    }
+
+    let required_servers: Vec<(&str, &McpServerConfig)> = enabled_servers
+        .iter()
+        .filter(|(_, config)| config.required)
+        .map(|(name, config)| (name.as_str(), config))
+        .collect();
+    let optional_servers: Vec<(&str, &McpServerConfig)> = enabled_servers
+        .iter()
+        .filter(|(_, config)| !config.required)
+        .map(|(name, config)| (name.as_str(), config))
+        .collect();
+
+    let mut connected_warnings = Vec::new();
+    if !required_servers.is_empty() {
+        if call.context.cancel().is_cancelled() {
+            return Err(McpActivationError::Cancelled);
+        }
+        let Some(session_pool) = call.context.mcp_pool() else {
+            let mut failures = Vec::new();
+            for (server_name, _) in &required_servers {
+                let qualified = qualified_plugin_server_name(plugin.name(), server_name);
+                record_mcp_attempt(call, plugin.name(), server_name, &qualified, "failed");
+                failures.push(format!("`{server_name}`"));
+            }
+            return Err(McpActivationError::Failed(scrub_message(
+                &format!(
+                    "the session MCP pool is unavailable to verify required MCP connector(s): {}",
+                    failures.join(", ")
+                ),
+                scrub,
+            )));
+        };
+
+        if remaining.is_zero() || tokio::time::Instant::now() >= deadline {
+            let mut failures = Vec::new();
+            record_remaining_timeouts(
+                call,
+                plugin.name(),
+                &required_servers,
+                "call deadline elapsed before connecting",
+                &mut failures,
+            );
+            return Err(McpActivationError::Failed(scrub_message(
+                &failures.join("; "),
+                scrub,
+            )));
+        }
+
+        let live_network_policy = call.context.tool().network_policy.clone();
+        let mut forked = tokio::select! {
+            biased;
+            () = call.context.cancel().cancelled() => return Err(McpActivationError::Cancelled),
+            () = tokio::time::sleep_until(deadline) => {
+                let mut failures = Vec::new();
+                record_remaining_timeouts(
+                    call,
+                    plugin.name(),
+                    &required_servers,
+                    "timed out waiting for MCP pool lock before deadline",
+                    &mut failures,
+                );
+                return Err(McpActivationError::Failed(scrub_message(
+                    &failures.join("; "),
+                    scrub,
+                )));
+            }
+            fork_res = async {
+                let guard = session_pool.lock().await;
+                guard.fork_isolated_for_plugins(
+                    Arc::clone(&registry_for_fork),
+                    live_network_policy,
+                )
+            } => match fork_res {
+                Ok(pool) => pool,
+                Err(error) => {
+                    let diag = scrub_message(&format_mcp_error_for_display(&error), scrub);
+                    for (server_name, _) in &required_servers {
+                        let qualified = qualified_plugin_server_name(plugin.name(), server_name);
+                        record_mcp_attempt(call, plugin.name(), server_name, &qualified, "failed");
+                    }
+                    return Err(McpActivationError::Failed(diag));
+                }
+            }
+        };
+
+        let connect_outcome = connect_required_plugin_mcp_servers(
+            call,
+            &mut forked,
+            plugin.name(),
+            &required_servers,
+            deadline,
+            scrub,
+        )
+        .await;
+        forked.shutdown_all().await;
+        connected_warnings = connect_outcome?;
+    }
+
+    warnings.extend(connected_warnings);
+    for (server_name, _) in optional_servers {
+        let mut clean_server_trunc = false;
+        let clean_server = sanitize_inline(server_name, MAX_NAME_BYTES, &mut clean_server_trunc);
+        let qualified = qualified_plugin_server_name(plugin.name(), server_name);
+        let prefix = McpPool::mcp_model_tool_name(&qualified, "");
+        warnings.push(scrub_warning(
+            &format!(
+                "connector `{clean_server}` was not started upfront; expected tools start with `{prefix}`"
+            ),
+            scrub,
+        ));
+    }
+    warnings.push("connector tools become callable from the next message on".to_string());
+    Ok(())
+}
+
+async fn finish_enabled_activation(
+    call: &BrokerCall,
+    mut activation: EnableActivation<'_>,
+    scrub: &ScrubContext<'_>,
+) -> std::ops::ControlFlow<Result<Value, BrokerRefusal>, Vec<String>> {
+    let expected_authority = activation
+        .registry
+        .authority_for(activation.loaded.id.as_str());
+    if let Err(host_err) =
+        observe_native_activation(call, activation.loaded, expected_authority.as_ref(), scrub).await
+    {
+        record_outcome(
+            call,
+            activation.method,
+            Some(activation.loaded.name()),
+            Some(&activation.loaded.content_hash),
+            Some(activation.approver),
+            "failed",
+        );
+        return std::ops::ControlFlow::Break(change_with_outcome(ChangeOutcome {
+            application: "failed",
+            stage: activation.stage,
+            target: activation.target,
+            changed: activation.changed,
+            enabled: Some(activation.loaded.enabled),
+            code: "operation-error",
+            diagnostic: host_err,
+            bundle: Some(activation.loaded.name().to_string()),
+            version: non_empty_version(&activation.loaded.manifest.plugin.version)
+                .or(activation.version),
+            warnings: activation.warnings,
+        }));
+    }
+    let (outcome_tag, diagnostic) = match activate_plugin_mcp_connectors(
+        call,
+        activation.registry,
+        activation.loaded,
+        scrub,
+        &mut activation.warnings,
+    )
+    .await
+    {
+        Ok(()) => return std::ops::ControlFlow::Continue(activation.warnings),
+        Err(McpActivationError::Cancelled) => (
+            "cancelled",
+            "operation cancelled before required MCP connector verification finished".to_string(),
+        ),
+        Err(McpActivationError::Failed(diag)) => ("failed", diag),
+    };
+    record_outcome(
+        call,
+        activation.method,
+        Some(activation.loaded.name()),
+        Some(&activation.loaded.content_hash),
+        Some(activation.approver),
+        outcome_tag,
+    );
+    std::ops::ControlFlow::Break(change_with_outcome(ChangeOutcome {
+        application: "failed",
+        stage: activation.stage,
+        target: activation.target,
+        changed: activation.changed,
+        enabled: Some(activation.loaded.enabled),
+        code: "operation-error",
+        diagnostic,
+        bundle: Some(activation.loaded.name().to_string()),
+        version: non_empty_version(&activation.loaded.manifest.plugin.version)
+            .or(activation.version),
+        warnings: activation.warnings,
+    }))
 }
 
 async fn prepare_local_source_and_hash_with_network(
@@ -3787,31 +4422,27 @@ async fn finish_post_install(
                 user_plugins_dir: final_reg.user_plugins_dir(),
                 state_path: final_reg.state_path(),
             };
-            let expected_authority = final_reg.authority_for(final_loaded.id.as_str());
-            if let Err(host_err) =
-                observe_native_activation(call, &final_loaded, expected_authority.as_ref(), &scrub)
-                    .await
-            {
-                record_outcome(
+            if want_enabled && final_loaded.enabled {
+                match finish_enabled_activation(
                     call,
-                    "install",
-                    Some(final_loaded.name()),
-                    Some(&final_loaded.content_hash),
-                    Some(&approver),
-                    "failed",
-                );
-                return change_with_outcome(ChangeOutcome {
-                    application: "failed",
-                    stage: "enable",
-                    target: raw_target,
-                    changed: true,
-                    enabled: Some(final_loaded.enabled),
-                    code: "operation-error",
-                    diagnostic: host_err,
-                    bundle: Some(final_loaded.name().to_string()),
-                    version: non_empty_version(&final_loaded.manifest.plugin.version).or(version),
-                    warnings,
-                });
+                    EnableActivation {
+                        method: "install",
+                        stage: "enable",
+                        target: raw_target.clone(),
+                        changed: true,
+                        registry: &final_reg,
+                        loaded: &final_loaded,
+                        approver: &approver,
+                        version: version.clone(),
+                        warnings,
+                    },
+                    &scrub,
+                )
+                .await
+                {
+                    std::ops::ControlFlow::Continue(updated) => warnings = updated,
+                    std::ops::ControlFlow::Break(early) => return early,
+                }
             }
             record_outcome(
                 call,
@@ -5089,37 +5720,30 @@ async fn toggle(
                 user_plugins_dir: final_reg.user_plugins_dir(),
                 state_path: final_reg.state_path(),
             };
-            let expected_authority = final_reg.authority_for(final_loaded.id.as_str());
-            if want_enabled
-                && let Err(host_err) = observe_native_activation(
+            let warnings = if want_enabled && final_loaded.enabled {
+                match finish_enabled_activation(
                     call,
-                    &final_loaded,
-                    expected_authority.as_ref(),
+                    EnableActivation {
+                        method: method_name,
+                        stage: method_name,
+                        target: raw_target.clone(),
+                        changed,
+                        registry: &final_reg,
+                        loaded: &final_loaded,
+                        approver: &approver,
+                        version: version.clone(),
+                        warnings,
+                    },
                     &scrub,
                 )
                 .await
-            {
-                record_outcome(
-                    call,
-                    method_name,
-                    Some(final_loaded.name()),
-                    Some(&final_loaded.content_hash),
-                    Some(&approver),
-                    "failed",
-                );
-                return change_with_outcome(ChangeOutcome {
-                    application: "failed",
-                    stage: method_name,
-                    target: raw_target,
-                    changed,
-                    enabled: Some(final_loaded.enabled),
-                    code: "operation-error",
-                    diagnostic: host_err,
-                    bundle: Some(final_loaded.name().to_string()),
-                    version: non_empty_version(&final_loaded.manifest.plugin.version).or(version),
-                    warnings,
-                });
-            }
+                {
+                    std::ops::ControlFlow::Continue(updated) => updated,
+                    std::ops::ControlFlow::Break(early) => return early,
+                }
+            } else {
+                warnings
+            };
             record_outcome(
                 call,
                 method_name,

@@ -43,6 +43,7 @@ struct PluginsFixture {
 
 impl PluginsFixture {
     fn new() -> Self {
+        let options = ExtensionHostOptions::default();
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("project");
         let user_plugins_dir = temp.path().join("user");
@@ -60,7 +61,7 @@ impl PluginsFixture {
             state_path: temp.path().join("state/plugin-state.json"),
         };
 
-        let manager = Arc::new(ExtensionHostManager::new(ExtensionHostOptions::default()));
+        let manager = Arc::new(ExtensionHostManager::new(options));
         let (creator, mcp, plugin_owner) = {
             let mut registry = manager.shared.registry.lock().unwrap();
             let creator = registry
@@ -1763,7 +1764,9 @@ async fn full_access_installs_a_folder_in_the_project_and_records_the_agent() {
         .await
         .unwrap();
     assert_eq!(mcp["application"], "failed", "{mcp}");
-    assert_eq!(mcp["changed"], false);
+    assert_eq!(mcp["stage"], "enable");
+    assert_eq!(mcp["changed"], true);
+    assert_eq!(mcp["enabled"], true);
     assert_eq!(mcp["error"]["code"], "operation-error");
 }
 
@@ -3776,10 +3779,18 @@ async fn cancellation_half_done_removal_missing_identity_and_oversized_bundle() 
             "install",
             json!({"target": src.to_string_lossy()}),
         )
-        .await;
-    assert_eq!(
-        refusal(&cancelled),
-        (error_code::CANCELLED, "cancelled".into())
+        .await
+        .unwrap();
+    assert_eq!(cancelled["application"], "failed", "{cancelled}");
+    assert_eq!(cancelled["changed"], true, "{cancelled}");
+    assert_eq!(cancelled["enabled"], false, "{cancelled}");
+    assert_eq!(cancelled["error"]["code"], "operation-error", "{cancelled}");
+    assert!(
+        cancelled["error"]["diagnostic"]
+            .as_str()
+            .unwrap()
+            .contains("cancelled after installation"),
+        "{cancelled}"
     );
     let loaded_after_cancel = discover_with_config(&f.config)
         .get("edge-plug")
@@ -4927,4 +4938,1625 @@ async fn plugins_install_prefers_dsh_package_when_plugin_json_also_present() {
         "{npm_res}"
     );
     assert_eq!(npm_calls.lock().unwrap().len(), 0);
+}
+
+fn install_gate_with_pool(
+    f: &mut PluginsFixture,
+    mcp_pool: Option<Arc<tokio::sync::Mutex<crate::mcp::McpPool>>>,
+    on_call: impl Fn(&Value, &LivePosture) -> NestedCallVerdict + Send + Sync + 'static,
+) -> GateCallLog {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_ref = Arc::clone(&seen);
+    let asked_ref = Arc::clone(&f.asked);
+    let posture_ref = f.posture.clone();
+    let (tx_event, mut rx_event) = tokio::sync::mpsc::channel(64);
+    tokio::spawn(async move { while rx_event.recv().await.is_some() {} });
+    let (gate, mut requests) =
+        NestedCallGate::new(mcp_pool, tx_event, std::time::Duration::from_secs(60));
+    tokio::spawn(async move {
+        while let Some(request) = requests.recv().await {
+            let request = match request {
+                crate::tools::codemode::NestedCallRequest::Tool(request) => request,
+                crate::tools::codemode::NestedCallRequest::UserQuestion { reply, .. } => {
+                    let _ = reply.send(Err(ToolError::not_available(
+                        "fixture has no user question backend",
+                    )));
+                    continue;
+                }
+                crate::tools::codemode::NestedCallRequest::Checkpoint { reply, .. } => {
+                    let _ = reply.send(Err(ToolError::not_available(
+                        "fixture has no session checkpoint backend",
+                    )));
+                    continue;
+                }
+            };
+            asked_ref.fetch_add(1, Ordering::SeqCst);
+            let target = request
+                .input
+                .get("target")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            seen_ref
+                .lock()
+                .unwrap()
+                .push((request.name.clone(), target));
+            let mut verdict = on_call(&request.input, &posture_ref);
+            if let NestedCallVerdict::Run {
+                name: ref mut verdict_name,
+                ..
+            } = verdict
+                && verdict_name.is_empty()
+            {
+                *verdict_name = request.name.clone();
+            }
+            let _ = request.reply.send(verdict);
+        }
+    });
+    f.gate = gate.for_extension(
+        ExtensionCaller {
+            origin: "extension:creator".to_string(),
+            tool: "creator_tool".to_string(),
+            scope: "ext:host:creator@digest".to_string(),
+        },
+        BrokerActTool::all().to_vec(),
+    );
+    seen
+}
+
+#[derive(Clone)]
+enum McpStubBehavior {
+    Ready(Vec<Value>),
+    Fail500,
+    Hang,
+}
+
+struct McpStubServer {
+    addr: std::net::SocketAddr,
+    hits: Arc<AtomicUsize>,
+    post_hits: Arc<AtomicUsize>,
+    init_hits: Arc<AtomicUsize>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for McpStubServer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn read_stub_http_request(socket: &mut tokio::net::TcpStream) -> Option<String> {
+    use tokio::io::AsyncReadExt as _;
+
+    let mut request = Vec::new();
+    let mut buf = [0u8; 1024];
+    let header_end = loop {
+        let n = socket.read(&mut buf).await.ok()?;
+        if n == 0 {
+            return None;
+        }
+        request.extend_from_slice(&buf[..n]);
+        if let Some(pos) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+            break pos + 4;
+        }
+    };
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    let total_len = header_end + content_length;
+    while request.len() < total_len {
+        let n = socket.read(&mut buf).await.ok()?;
+        if n == 0 {
+            return None;
+        }
+        request.extend_from_slice(&buf[..n]);
+    }
+    String::from_utf8(request).ok()
+}
+
+async fn write_stub_sse_response(socket: &mut tokio::net::TcpStream, payload: Value) {
+    use tokio::io::AsyncWriteExt as _;
+
+    let body = format!("event: message\ndata: {payload}\n\n");
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = socket.write_all(response.as_bytes()).await;
+}
+
+impl McpStubServer {
+    async fn spawn(behavior: McpStubBehavior) -> Self {
+        use tokio::io::AsyncWriteExt as _;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let post_hits = Arc::new(AtomicUsize::new(0));
+        let init_hits = Arc::new(AtomicUsize::new(0));
+        let hits_task = Arc::clone(&hits);
+        let post_task = Arc::clone(&post_hits);
+        let init_task = Arc::clone(&init_hits);
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                hits_task.fetch_add(1, Ordering::SeqCst);
+                let post_conn = Arc::clone(&post_task);
+                let init_conn = Arc::clone(&init_task);
+                let behavior_conn = behavior.clone();
+                tokio::spawn(async move {
+                    match behavior_conn {
+                        McpStubBehavior::Hang => {
+                            let _keep_open = socket;
+                            std::future::pending::<()>().await;
+                        }
+                        McpStubBehavior::Fail500 => {
+                            if let Some(request) = read_stub_http_request(&mut socket).await {
+                                if request.starts_with("POST ") {
+                                    post_conn.fetch_add(1, Ordering::SeqCst);
+                                }
+                                let _ = socket
+                                    .write_all(
+                                        b"HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                                    )
+                                    .await;
+                            }
+                        }
+                        McpStubBehavior::Ready(tools) => {
+                            if let Some(request) = read_stub_http_request(&mut socket).await {
+                                if request.starts_with("POST ") {
+                                    post_conn.fetch_add(1, Ordering::SeqCst);
+                                }
+                                if request.starts_with("GET ") {
+                                    let _ = socket
+                                        .write_all(
+                                            b"HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                                        )
+                                        .await;
+                                    return;
+                                }
+                                let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+                                let Ok(value) = serde_json::from_str::<Value>(body) else {
+                                    return;
+                                };
+                                let method = value["method"].as_str().unwrap_or("");
+                                if method == "notifications/initialized" {
+                                    let _ = socket
+                                        .write_all(
+                                            b"HTTP/1.1 202 Accepted\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                                        )
+                                        .await;
+                                    return;
+                                }
+                                let id = value["id"].clone();
+                                let result = match method {
+                                    "initialize" => {
+                                        init_conn.fetch_add(1, Ordering::SeqCst);
+                                        json!({
+                                            "protocolVersion": "2024-11-05",
+                                            "serverInfo": {"name": "stub-mcp", "version": "1.0.0"},
+                                            "capabilities": {"tools": {}, "resources": {}, "prompts": {}}
+                                        })
+                                    }
+                                    "tools/list" => json!({ "tools": tools }),
+                                    "resources/list" => json!({"resources": []}),
+                                    "resources/templates/list" => json!({"resourceTemplates": []}),
+                                    "prompts/list" => json!({"prompts": []}),
+                                    other => panic!("unexpected MCP method in stub: {other}"),
+                                };
+                                write_stub_sse_response(
+                                    &mut socket,
+                                    json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id,
+                                        "result": result
+                                    }),
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        Self {
+            addr,
+            hits,
+            post_hits,
+            init_hits,
+            task,
+        }
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}/mcp", self.addr)
+    }
+
+    fn hits(&self) -> usize {
+        self.hits.load(Ordering::SeqCst)
+    }
+
+    fn post_hits(&self) -> usize {
+        self.post_hits.load(Ordering::SeqCst)
+    }
+
+    fn init_hits(&self) -> usize {
+        self.init_hits.load(Ordering::SeqCst)
+    }
+}
+
+fn dead_loopback_url() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    format!("http://127.0.0.1:{port}/mcp")
+}
+
+fn copy_mcp_template_bundle(
+    dest: &Path,
+    url: &str,
+    fail_on_startup_error: Option<bool>,
+    row_disabled: bool,
+) {
+    copy_dir_tree(&dsh_template_dir("mcp"), dest);
+    let disabled_line = if row_disabled {
+        "      disabled: true\n"
+    } else {
+        ""
+    };
+    let startup_line = match fail_on_startup_error {
+        Some(flag) => format!("        failOnStartupError: {flag}\n"),
+        None => String::new(),
+    };
+    let patch = format!(
+        "- insert:\n    - id: demo-mcp\n{disabled_line}      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: demo\n        transport: streamable-http\n        url: {url}\n{startup_line}"
+    );
+    fs::write(dest.join("cordis.patch.yml"), patch).unwrap();
+}
+
+fn fixture_mcp_pool(f: &PluginsFixture) -> Arc<tokio::sync::Mutex<crate::mcp::McpPool>> {
+    let mcp_path = f._temp.path().join("global-mcp.json");
+    if !mcp_path.exists() {
+        fs::write(&mcp_path, "{}").unwrap();
+    }
+    let pool = crate::mcp::McpPool::from_config_path_with_workspace(&mcp_path, &f.config.workspace)
+        .unwrap()
+        .with_backend(codewhale_config::McpBackend::Rust);
+    Arc::new(tokio::sync::Mutex::new(pool))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_answering_required_dsh_connector_succeeds_and_lists_tools_for_next_message() {
+    let _policy = TestPolicyGuard::extension_host(false);
+    let mut f = PluginsFixture::new();
+    f.reload_registry();
+    f.posture.switch_for_tests(ApprovalMode::Bypass);
+    let pool = fixture_mcp_pool(&f);
+    install_gate_with_pool(&mut f, Some(pool), |input, _| {
+        allow_verdict(input, NestedDecision::Auto)
+    });
+
+    let server = McpStubServer::spawn(McpStubBehavior::Ready(vec![
+        json!({
+            "name": "read_wiki",
+            "description": "Read docs",
+            "inputSchema": {"type": "object"}
+        }),
+        json!({
+            "name": "\x1b[31mhostile\u{202e}_tool_Bearer sk-secret123456",
+            "description": "Hostile name",
+            "inputSchema": {"type": "object"}
+        }),
+    ]))
+    .await;
+
+    let src = f.config.workspace.join("mcp-ok-src");
+    copy_mcp_template_bundle(&src, &server.url(), Some(true), false);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let ticket = plugin_ticket(&guard).unwrap();
+
+    let res = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "install",
+            json!({"target": src.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res["application"], "applied", "{res}");
+    assert_eq!(res["stage"], "enable");
+    assert_eq!(res["changed"], true);
+    assert_eq!(res["enabled"], true);
+    assert_eq!(res["bundle"], "demo-mcp");
+    assert_eq!(server.init_hits(), 1);
+
+    let qualified = crate::mcp::qualified_plugin_server_name("demo-mcp", "demo");
+    let expected_tool = crate::mcp::McpPool::mcp_model_tool_name(&qualified, "read_wiki");
+    let warnings: Vec<&str> = res["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        warnings.iter().any(|w| w.contains(&expected_tool)),
+        "expected {expected_tool} in warnings: {warnings:?}"
+    );
+    assert!(
+        warnings.iter().any(|w| w.contains("next message on")),
+        "expected next-message guidance in warnings: {warnings:?}"
+    );
+    let joined = warnings.join("\n");
+    assert!(!joined.contains('\x1b'), "{warnings:?}");
+    assert!(!joined.contains('\u{202e}'), "{warnings:?}");
+    assert!(!joined.contains("sk-secret123456"), "{warnings:?}");
+
+    let receipts = guard.seal_receipts().unwrap();
+    let acts = receipts["broker_acts"]["acts"].as_array().unwrap();
+    assert!(
+        acts.iter().any(|act| {
+            act["service"] == "plugins"
+                && act["method"] == "mcp_connect"
+                && act["server"] == "demo"
+                && act["outcome"] == "connected"
+        }),
+        "{receipts}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_silent_required_dsh_connector_fails_with_connector_defined_on_disk() {
+    let mut f = PluginsFixture::new();
+    f.reload_registry();
+    f.posture.switch_for_tests(ApprovalMode::Bypass);
+    let pool = fixture_mcp_pool(&f);
+    install_gate_with_pool(&mut f, Some(pool), |input, _| {
+        allow_verdict(input, NestedDecision::Auto)
+    });
+
+    let server = McpStubServer::spawn(McpStubBehavior::Fail500).await;
+    let src = f.config.workspace.join("mcp-fail-src");
+    copy_mcp_template_bundle(&src, &server.url(), Some(true), false);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let ticket = plugin_ticket(&guard).unwrap();
+
+    let res = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "install",
+            json!({"target": src.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res["application"], "failed", "{res}");
+    assert_eq!(res["stage"], "enable");
+    assert_eq!(res["changed"], true);
+    assert_eq!(res["enabled"], true);
+    assert_eq!(res["error"]["code"], "operation-error");
+    assert!(
+        res["error"]["diagnostic"]
+            .as_str()
+            .is_some_and(|d| d.contains("demo")),
+        "{res}"
+    );
+
+    let fresh = discover_with_config(&f.config);
+    let plugin = fresh.get("demo-mcp").expect("connector remains defined");
+    assert!(plugin.enabled);
+    assert!(plugin.manifest.mcp_servers.as_ref().unwrap()["demo"].required);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_bundle_without_flag_makes_no_attempt_and_warns_with_prefix() {
+    for flag in [Some(false), None] {
+        let mut f = PluginsFixture::new();
+        f.reload_registry();
+        f.posture.switch_for_tests(ApprovalMode::Bypass);
+        let pool = fixture_mcp_pool(&f);
+        install_gate_with_pool(&mut f, Some(pool), |input, _| {
+            allow_verdict(input, NestedDecision::Auto)
+        });
+
+        let server = McpStubServer::spawn(McpStubBehavior::Fail500).await;
+        let src = f.config.workspace.join("mcp-optional-src");
+        copy_mcp_template_bundle(&src, &server.url(), flag, false);
+        let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+        let ticket = plugin_ticket(&guard).unwrap();
+
+        let res = f
+            .call_broker(
+                &f.creator,
+                HostCohort::Builtin,
+                &ticket,
+                "install",
+                json!({"target": src.to_string_lossy()}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res["application"], "applied", "{res}");
+        assert_eq!(server.hits(), 0, "optional connector must not connect");
+
+        let qualified = crate::mcp::qualified_plugin_server_name("demo-mcp", "demo");
+        let expected_prefix = format!("mcp_{qualified}_");
+        let warnings: Vec<&str> = res["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(
+            warnings.iter().any(|w| w.contains(&expected_prefix)),
+            "expected {expected_prefix} in warnings: {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("next message on")),
+            "{warnings:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_refused_install_makes_no_attempt() {
+    let mut f = PluginsFixture::new();
+    f.reload_registry();
+    f.posture.switch_for_tests(ApprovalMode::Suggest);
+    let pool = fixture_mcp_pool(&f);
+    install_gate_with_pool(&mut f, Some(pool), |_, _| deny_verdict("not approved"));
+
+    let server = McpStubServer::spawn(McpStubBehavior::Fail500).await;
+    let src = f.config.workspace.join("mcp-refused-src");
+    copy_mcp_template_bundle(&src, &server.url(), Some(true), false);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let ticket = plugin_ticket(&guard).unwrap();
+
+    let res = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "install",
+            json!({"target": src.to_string_lossy()}),
+        )
+        .await;
+    assert_eq!(refusal(&res), (error_code::DENIED, "denied".into()));
+    assert_eq!(server.hits(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_enable_of_required_connector_attempts_live_connection() {
+    let mut f = PluginsFixture::new();
+    f.reload_registry();
+    f.posture.switch_for_tests(ApprovalMode::Bypass);
+    let pool = fixture_mcp_pool(&f);
+    install_gate_with_pool(&mut f, Some(pool), |input, _| {
+        allow_verdict(input, NestedDecision::Auto)
+    });
+
+    let server = McpStubServer::spawn(McpStubBehavior::Ready(vec![json!({
+        "name": "ping",
+        "description": "Ping tool",
+        "inputSchema": {"type": "object"}
+    })]))
+    .await;
+    let src = f.config.workspace.join("mcp-enable-src");
+    copy_mcp_template_bundle(&src, &server.url(), Some(true), false);
+
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let ticket = plugin_ticket(&guard).unwrap();
+    let installed_disabled = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "install",
+            json!({"target": src.to_string_lossy(), "enabled": false}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        installed_disabled["application"], "applied",
+        "{installed_disabled}"
+    );
+    assert_eq!(installed_disabled["enabled"], false);
+    assert_eq!(
+        server.hits(),
+        0,
+        "install with enabled: false must not attempt connection"
+    );
+
+    let enabled = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "enable",
+            json!({"target": "demo-mcp"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(enabled["application"], "applied", "{enabled}");
+    assert_eq!(enabled["stage"], "enable");
+    assert_eq!(enabled["enabled"], true);
+    assert_eq!(server.init_hits(), 1);
+    let qualified = crate::mcp::qualified_plugin_server_name("demo-mcp", "demo");
+    let expected_tool = crate::mcp::McpPool::mcp_model_tool_name(&qualified, "ping");
+    let warnings: Vec<&str> = enabled["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        warnings.iter().any(|w| w.contains(&expected_tool)),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings.iter().any(|w| w.contains("next message on")),
+        "{warnings:?}"
+    );
+
+    let dead_src = f.config.workspace.join("mcp-enable-dead-src");
+    let dead_url = dead_loopback_url();
+    copy_mcp_template_bundle(&dead_src, &dead_url, Some(true), false);
+    let pkg = serde_json::json!({
+        "name": "@local/demo-dead",
+        "version": "1.0.0",
+        "private": true,
+        "type": "module",
+        "exports": { "./locale/*.json": "./locale/*.json", "./icon": "./icon.svg" },
+        "files": ["cordis.patch.yml", "locale/*.json", "icon.svg"],
+        "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+    });
+    fs::write(
+        dead_src.join("package.json"),
+        serde_json::to_string_pretty(&pkg).unwrap(),
+    )
+    .unwrap();
+    let dead_installed = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "install",
+            json!({"target": dead_src.to_string_lossy(), "enabled": false}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dead_installed["application"], "applied");
+    let dead_enabled = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "enable",
+            json!({"target": "demo-dead"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dead_enabled["application"], "failed", "{dead_enabled}");
+    assert_eq!(dead_enabled["stage"], "enable");
+    assert_eq!(dead_enabled["enabled"], true);
+    assert_eq!(dead_enabled["error"]["code"], "operation-error");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_turned_off_row_never_attempts_connection() {
+    let mut f = PluginsFixture::new();
+    f.reload_registry();
+    f.posture.switch_for_tests(ApprovalMode::Bypass);
+    let pool = fixture_mcp_pool(&f);
+    install_gate_with_pool(&mut f, Some(pool), |input, _| {
+        allow_verdict(input, NestedDecision::Auto)
+    });
+
+    let server = McpStubServer::spawn(McpStubBehavior::Fail500).await;
+    let dsh_src = f.config.workspace.join("mcp-row-off-src");
+    copy_mcp_template_bundle(&dsh_src, &server.url(), Some(true), true);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let ticket = plugin_ticket(&guard).unwrap();
+
+    let dsh_res = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "install",
+            json!({"target": dsh_src.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dsh_res["application"], "applied", "{dsh_res}");
+    assert_eq!(server.hits(), 0);
+
+    let toml_src = write_toml_plugin(
+        &f.config.workspace,
+        "mcp-toml-off-src",
+        &format!(
+            "schema_version = 1\n[plugin]\nname = \"toml-off\"\nversion = \"1.0.0\"\n\n[mcp_servers.off]\nurl = \"{}\"\nenabled = false\n\n[capabilities]\nnetwork_hosts = [\"127.0.0.1\"]\n",
+            server.url()
+        ),
+    );
+    let toml_res = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "install",
+            json!({"target": toml_src.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(toml_res["application"], "applied", "{toml_res}");
+    assert_eq!(server.hits(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_pool_fork_leaves_session_live_connections_untouched() {
+    let mut f = PluginsFixture::new();
+    f.reload_registry();
+    f.posture.switch_for_tests(ApprovalMode::Bypass);
+
+    let existing_server = McpStubServer::spawn(McpStubBehavior::Ready(vec![json!({
+        "name": "existing_tool",
+        "description": "Existing tool",
+        "inputSchema": {"type": "object"}
+    })]))
+    .await;
+    let mcp_path = f._temp.path().join("global-mcp.json");
+    fs::write(
+        &mcp_path,
+        json!({
+            "servers": {
+                "existing": {
+                    "url": existing_server.url(),
+                    "connect_timeout": 5
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut raw_pool =
+        crate::mcp::McpPool::from_config_path_with_workspace(&mcp_path, &f.config.workspace)
+            .unwrap()
+            .with_backend(codewhale_config::McpBackend::Rust);
+    assert!(
+        raw_pool
+            .get_or_connect("existing")
+            .await
+            .unwrap()
+            .is_ready()
+    );
+    assert_eq!(existing_server.init_hits(), 1);
+
+    let pool = Arc::new(tokio::sync::Mutex::new(raw_pool));
+    install_gate_with_pool(&mut f, Some(Arc::clone(&pool)), |input, _| {
+        allow_verdict(input, NestedDecision::Auto)
+    });
+
+    let plugin_server = McpStubServer::spawn(McpStubBehavior::Ready(vec![json!({
+        "name": "demo_tool",
+        "description": "Demo tool",
+        "inputSchema": {"type": "object"}
+    })]))
+    .await;
+    let src = f.config.workspace.join("mcp-fork-src");
+    copy_mcp_template_bundle(&src, &plugin_server.url(), Some(true), false);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let ticket = plugin_ticket(&guard).unwrap();
+
+    let res = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "install",
+            json!({"target": src.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res["application"], "applied", "{res}");
+    assert_eq!(plugin_server.init_hits(), 1);
+    assert_eq!(
+        existing_server.init_hits(),
+        1,
+        "session live connection must not be re-initialized during fork connect"
+    );
+
+    let guard_pool = pool.lock().await;
+    let snapshot = guard_pool.manager_snapshot(&mcp_path, false, &std::collections::HashMap::new());
+    let existing_row = snapshot
+        .servers
+        .iter()
+        .find(|row| row.name == "existing")
+        .expect("existing session server still present");
+    assert!(existing_row.connected);
+    let qualified = crate::mcp::qualified_plugin_server_name("demo-mcp", "demo");
+    assert!(
+        !snapshot.servers.iter().any(|row| row.name == qualified),
+        "forked plugin pool must not mutate session pool config"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_attempt_stops_at_the_deadline_and_on_cancel() {
+    let hang_deadline = McpStubServer::spawn(McpStubBehavior::Hang).await;
+    let deadline_guard =
+        super::set_mcp_connect_deadline_for_test(std::time::Duration::from_millis(250));
+    let mut f = PluginsFixture::new();
+    f.reload_registry();
+    f.posture.switch_for_tests(ApprovalMode::Bypass);
+    let pool = fixture_mcp_pool(&f);
+    install_gate_with_pool(&mut f, Some(pool), |input, _| {
+        allow_verdict(input, NestedDecision::Auto)
+    });
+
+    let src = f.config.workspace.join("mcp-deadline-src");
+    copy_mcp_template_bundle(&src, &hang_deadline.url(), Some(true), false);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let ticket = plugin_ticket(&guard).unwrap();
+
+    let started = std::time::Instant::now();
+    let deadline_res = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "install",
+            json!({"target": src.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "call must stop at tool_call_deadline instead of waiting 30s MCP connect timeout: {elapsed:?}"
+    );
+    assert_eq!(deadline_res["application"], "failed", "{deadline_res}");
+    assert_eq!(deadline_res["error"]["code"], "operation-error");
+    assert!(hang_deadline.hits() >= 1);
+    drop(deadline_guard);
+
+    let hang_cancel = McpStubServer::spawn(McpStubBehavior::Hang).await;
+    let mut f_cancel = PluginsFixture::new();
+    f_cancel.reload_registry();
+    f_cancel.posture.switch_for_tests(ApprovalMode::Bypass);
+    let pool_cancel = fixture_mcp_pool(&f_cancel);
+    install_gate_with_pool(&mut f_cancel, Some(pool_cancel), |input, _| {
+        allow_verdict(input, NestedDecision::Auto)
+    });
+    let cancel_src = f_cancel.config.workspace.join("mcp-cancel-src");
+    copy_mcp_template_bundle(&cancel_src, &hang_cancel.url(), Some(true), false);
+    let cancel_guard = f_cancel.begin(&f_cancel.creator, HostCohort::Builtin, &f_cancel.context);
+    let cancel_ticket = plugin_ticket(&cancel_guard).unwrap();
+
+    let (cx, _violations, cancel) = HostRequestContext::for_test(101);
+    let cancel_trigger = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        cancel_trigger.cancel();
+    });
+    let cancel_started = std::time::Instant::now();
+    let cancel_err = f_cancel
+        .manager
+        .shared
+        .core_calls
+        .serve_broker_in(
+            TABLE,
+            &f_cancel.manager.shared,
+            HostCohort::Builtin,
+            7,
+            DshBrokerParams {
+                owner: f_cancel.creator.clone(),
+                ticket: cancel_ticket,
+                service: "plugins".to_string(),
+                method: "install".to_string(),
+                input: json!({"target": cancel_src.to_string_lossy()}),
+            },
+            cx,
+        )
+        .await
+        .expect_err("cancel must end hanging MCP attempt");
+    let cancel_elapsed = cancel_started.elapsed();
+    assert!(
+        cancel_elapsed < std::time::Duration::from_secs(3),
+        "cancel must end prompt without waiting connect timeout: {cancel_elapsed:?}"
+    );
+    assert_eq!(cancel_err.code, error_code::CANCELLED, "{cancel_err:?}");
+
+    #[cfg(unix)]
+    {
+        let mut f_stdio_cancel = PluginsFixture::new();
+        f_stdio_cancel.reload_registry();
+        f_stdio_cancel
+            .posture
+            .switch_for_tests(ApprovalMode::Bypass);
+        let pool_stdio_cancel = fixture_mcp_pool(&f_stdio_cancel);
+        install_gate_with_pool(&mut f_stdio_cancel, Some(pool_stdio_cancel), |input, _| {
+            allow_verdict(input, NestedDecision::Auto)
+        });
+        let cx_pid_file = f_stdio_cancel._temp.path().join("stdio-cx-cancel.pid");
+        let cx_src = write_hanging_stdio_plugin(
+            &f_stdio_cancel.config.workspace,
+            "stdio-cx-cancel-src",
+            "stdio-cx-cancel",
+            &cx_pid_file,
+        );
+        let cx_guard = f_stdio_cancel.begin(
+            &f_stdio_cancel.creator,
+            HostCohort::Builtin,
+            &f_stdio_cancel.context,
+        );
+        let cx_ticket = plugin_ticket(&cx_guard).unwrap();
+        let (cx_stdio, _violations_stdio, cx_token) = HostRequestContext::for_test(102);
+        let pid_watch = cx_pid_file.clone();
+        let token_trigger = cx_token.clone();
+        tokio::spawn(async move {
+            let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !tokio::fs::try_exists(&pid_watch).await.unwrap_or(false) {
+                assert!(
+                    std::time::Instant::now() < wait_deadline,
+                    "stdio child did not record PID before cancel"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            token_trigger.cancel();
+        });
+        let started_cx = std::time::Instant::now();
+        let stdio_cx_err = f_stdio_cancel
+            .manager
+            .shared
+            .core_calls
+            .serve_broker_in(
+                TABLE,
+                &f_stdio_cancel.manager.shared,
+                HostCohort::Builtin,
+                7,
+                DshBrokerParams {
+                    owner: f_stdio_cancel.creator.clone(),
+                    ticket: cx_ticket,
+                    service: "plugins".to_string(),
+                    method: "install".to_string(),
+                    input: json!({"target": cx_src.to_string_lossy()}),
+                },
+                cx_stdio,
+            )
+            .await
+            .expect_err("cx.cancel must end hanging stdio MCP attempt");
+        let elapsed_cx = started_cx.elapsed();
+        assert!(
+            elapsed_cx < std::time::Duration::from_secs(4),
+            "stdio cx.cancel must finish promptly with drain: {elapsed_cx:?}"
+        );
+        assert_eq!(stdio_cx_err.code, error_code::CANCELLED, "{stdio_cx_err:?}");
+        assert_pid_reaped(&cx_pid_file, "cx.cancel").await;
+
+        let mut f_withdraw = PluginsFixture::new();
+        f_withdraw.reload_registry();
+        f_withdraw.posture.switch_for_tests(ApprovalMode::Bypass);
+        let pool_withdraw = fixture_mcp_pool(&f_withdraw);
+        install_gate_with_pool(&mut f_withdraw, Some(pool_withdraw), |input, _| {
+            allow_verdict(input, NestedDecision::Auto)
+        });
+        let withdraw_pid_file = f_withdraw._temp.path().join("stdio-withdraw.pid");
+        let withdraw_src = write_hanging_stdio_plugin(
+            &f_withdraw.config.workspace,
+            "stdio-withdraw-src",
+            "stdio-withdraw",
+            &withdraw_pid_file,
+        );
+        let withdraw_guard = f_withdraw.begin(
+            &f_withdraw.creator,
+            HostCohort::Builtin,
+            &f_withdraw.context,
+        );
+        let withdraw_ticket = plugin_ticket(&withdraw_guard).unwrap();
+        let (cx_withdraw, _violations_withdraw, _token_withdraw) =
+            HostRequestContext::for_test(103);
+        let withdraw_pid_watch = withdraw_pid_file.clone();
+        tokio::spawn(async move {
+            let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !tokio::fs::try_exists(&withdraw_pid_watch)
+                .await
+                .unwrap_or(false)
+            {
+                assert!(
+                    std::time::Instant::now() < wait_deadline,
+                    "stdio child did not record PID before withdraw"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            drop(withdraw_guard);
+        });
+        let started_withdraw = std::time::Instant::now();
+        let withdraw_err = f_withdraw
+            .manager
+            .shared
+            .core_calls
+            .serve_broker_in(
+                TABLE,
+                &f_withdraw.manager.shared,
+                HostCohort::Builtin,
+                7,
+                DshBrokerParams {
+                    owner: f_withdraw.creator.clone(),
+                    ticket: withdraw_ticket,
+                    service: "plugins".to_string(),
+                    method: "install".to_string(),
+                    input: json!({"target": withdraw_src.to_string_lossy()}),
+                },
+                cx_withdraw,
+            )
+            .await
+            .expect_err("withdraw cancel must end hanging stdio MCP attempt");
+        let elapsed_withdraw = started_withdraw.elapsed();
+        assert!(
+            elapsed_withdraw < std::time::Duration::from_secs(4),
+            "stdio withdraw must finish promptly with drain: {elapsed_withdraw:?}"
+        );
+        assert_eq!(withdraw_err.code, error_code::CANCELLED, "{withdraw_err:?}");
+        assert!(
+            withdraw_err.message.contains("invocation ended"),
+            "{withdraw_err:?}"
+        );
+        assert_pid_reaped(&withdraw_pid_file, "withdraw").await;
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_required_connector_blocked_by_network_policy_fails_without_card() {
+    use codewhale_net::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+
+    for policy in [
+        NetworkPolicy {
+            default: Decision::Deny.into(),
+            ..NetworkPolicy::default()
+        },
+        NetworkPolicy::default(),
+    ] {
+        let mut f = PluginsFixture::new();
+        f.reload_registry();
+        f.posture.switch_for_tests(ApprovalMode::Suggest);
+        let mcp_path = f._temp.path().join("global-mcp.json");
+        fs::write(&mcp_path, "{}").unwrap();
+        let pool =
+            crate::mcp::McpPool::from_config_path_with_workspace(&mcp_path, &f.config.workspace)
+                .unwrap()
+                .with_backend(codewhale_config::McpBackend::Rust)
+                .with_network_policy(NetworkPolicyDecider::new(policy, None));
+        let gate_calls = install_gate_with_pool(
+            &mut f,
+            Some(Arc::new(tokio::sync::Mutex::new(pool))),
+            |input, _| allow_verdict(input, NestedDecision::Approved),
+        );
+
+        let server = McpStubServer::spawn(McpStubBehavior::Fail500).await;
+        let src = f.config.workspace.join("mcp-policy-src");
+        copy_mcp_template_bundle(&src, &server.url(), Some(true), false);
+        let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+        let ticket = plugin_ticket(&guard).unwrap();
+
+        let res = f
+            .call_broker(
+                &f.creator,
+                HostCohort::Builtin,
+                &ticket,
+                "install",
+                json!({"target": src.to_string_lossy()}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res["application"], "failed", "{res}");
+        assert_eq!(res["stage"], "enable");
+        assert_eq!(res["changed"], true);
+        assert_eq!(res["enabled"], true);
+        assert_eq!(res["error"]["code"], "operation-error");
+        let diag = res["error"]["diagnostic"].as_str().unwrap();
+        assert!(diag.contains("127.0.0.1"), "{res}");
+        assert_eq!(server.hits(), 0, "blocked host must never dial or retry");
+        let calls = gate_calls.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            1,
+            "only the install gate asks a card: {calls:?}"
+        );
+        assert_eq!(calls[0].0, "dsh_broker_act");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_multiple_required_connectors_bounded_together_and_report_all_failures() {
+    let mut f = PluginsFixture::new();
+    f.reload_registry();
+    f.posture.switch_for_tests(ApprovalMode::Bypass);
+    let pool = fixture_mcp_pool(&f);
+    install_gate_with_pool(&mut f, Some(pool), |input, _| {
+        allow_verdict(input, NestedDecision::Auto)
+    });
+
+    let fail_server = McpStubServer::spawn(McpStubBehavior::Fail500).await;
+    let dead_url = dead_loopback_url();
+    let multi_fail_src = write_toml_plugin(
+        &f.config.workspace,
+        "multi-fail-src",
+        &format!(
+            "schema_version = 1\n[plugin]\nname = \"multi-fail\"\nversion = \"1.0.0\"\n\n[mcp_servers.alpha]\nurl = \"{dead_url}\"\nrequired = true\n\n[mcp_servers.beta]\nurl = \"{}\"\nrequired = true\n\n[capabilities]\nnetwork_hosts = [\"127.0.0.1\"]\n",
+            fail_server.url()
+        ),
+    );
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let ticket = plugin_ticket(&guard).unwrap();
+
+    let res = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "install",
+            json!({"target": multi_fail_src.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res["application"], "failed", "{res}");
+    assert_eq!(res["error"]["code"], "operation-error");
+    let diag = res["error"]["diagnostic"].as_str().unwrap();
+    assert!(diag.contains("alpha"), "{diag}");
+    assert!(diag.contains("beta"), "{diag}");
+    assert_eq!(fail_server.post_hits(), 1);
+
+    let hang_a = McpStubServer::spawn(McpStubBehavior::Hang).await;
+    let hang_b = McpStubServer::spawn(McpStubBehavior::Hang).await;
+    let _deadline = super::set_mcp_connect_deadline_for_test(std::time::Duration::from_millis(250));
+    let mut f_bound = PluginsFixture::new();
+    f_bound.reload_registry();
+    f_bound.posture.switch_for_tests(ApprovalMode::Bypass);
+    let pool_bound = fixture_mcp_pool(&f_bound);
+    install_gate_with_pool(&mut f_bound, Some(pool_bound), |input, _| {
+        allow_verdict(input, NestedDecision::Auto)
+    });
+    let multi_hang_src = write_toml_plugin(
+        &f_bound.config.workspace,
+        "multi-hang-src",
+        &format!(
+            "schema_version = 1\n[plugin]\nname = \"multi-hang\"\nversion = \"1.0.0\"\n\n[mcp_servers.alpha]\nurl = \"{}\"\nrequired = true\n\n[mcp_servers.beta]\nurl = \"{}\"\nrequired = true\n\n[capabilities]\nnetwork_hosts = [\"127.0.0.1\"]\n",
+            hang_a.url(),
+            hang_b.url()
+        ),
+    );
+    let guard_bound = f_bound.begin(&f_bound.creator, HostCohort::Builtin, &f_bound.context);
+    let ticket_bound = plugin_ticket(&guard_bound).unwrap();
+    let started = std::time::Instant::now();
+    let res_bound = f_bound
+        .call_broker(
+            &f_bound.creator,
+            HostCohort::Builtin,
+            &ticket_bound,
+            "install",
+            json!({"target": multi_hang_src.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "multiple required connectors must share one call deadline: {elapsed:?}"
+    );
+    assert_eq!(res_bound["application"], "failed", "{res_bound}");
+    let diag_bound = res_bound["error"]["diagnostic"].as_str().unwrap();
+    assert!(diag_bound.contains("alpha"), "{diag_bound}");
+    assert!(diag_bound.contains("beta"), "{diag_bound}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_live_turn_network_policy_overrides_pool_and_ignores_dynamic_servers() {
+    use codewhale_net::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+
+    let dyn_off_server = McpStubServer::spawn(McpStubBehavior::Fail500).await;
+    let req_ok_server = McpStubServer::spawn(McpStubBehavior::Ready(vec![json!({
+        "name": "ping",
+        "description": "Ping tool",
+        "inputSchema": {"type": "object"}
+    })]))
+    .await;
+    let allow_policy = NetworkPolicy {
+        default: Decision::Allow.into(),
+        allow: vec!["127.0.0.1".to_string()],
+        ..NetworkPolicy::default()
+    };
+    let deny_policy = NetworkPolicy {
+        default: Decision::Deny.into(),
+        ..NetworkPolicy::default()
+    };
+
+    let mut f_deny = PluginsFixture::new();
+    f_deny.reload_registry();
+    f_deny.posture.switch_for_tests(ApprovalMode::Bypass);
+    let mcp_path_deny = f_deny._temp.path().join("global-mcp-deny.json");
+    fs::write(&mcp_path_deny, "{}").unwrap();
+    let pool_deny = crate::mcp::McpPool::from_config_path_with_workspace(
+        &mcp_path_deny,
+        &f_deny.config.workspace,
+    )
+    .unwrap()
+    .with_backend(codewhale_config::McpBackend::Rust)
+    .with_network_policy(NetworkPolicyDecider::new(allow_policy.clone(), None));
+    let spoof_cfg: codewhale_mcp::config::McpServerConfig =
+        serde_json::from_value(json!({ "url": dyn_off_server.url() })).unwrap();
+    pool_deny.dynamic_servers.write().insert(
+        crate::mcp::qualified_plugin_server_name("mixed-dyn", "dyn-off"),
+        spoof_cfg.clone(),
+    );
+    install_gate_with_pool(
+        &mut f_deny,
+        Some(Arc::new(tokio::sync::Mutex::new(pool_deny))),
+        |input, _| allow_verdict(input, NestedDecision::Auto),
+    );
+    let src_deny = write_toml_plugin(
+        &f_deny.config.workspace,
+        "mixed-dyn-deny-src",
+        &format!(
+            "schema_version = 1\n[plugin]\nname = \"mixed-dyn\"\nversion = \"1.0.0\"\n\n[mcp_servers.dyn-off]\nurl = \"{}\"\nenabled = false\n\n[mcp_servers.req-ok]\nurl = \"{}\"\nrequired = true\n\n[capabilities]\nnetwork_hosts = [\"127.0.0.1\"]\n",
+            dyn_off_server.url(),
+            req_ok_server.url(),
+        ),
+    );
+    let deny_ctx = f_deny
+        .context
+        .clone()
+        .with_network_policy(NetworkPolicyDecider::new(deny_policy.clone(), None));
+    let deny_guard = f_deny.begin(&f_deny.creator, HostCohort::Builtin, &deny_ctx);
+    let deny_ticket = plugin_ticket(&deny_guard).unwrap();
+    let deny_res = f_deny
+        .call_broker(
+            &f_deny.creator,
+            HostCohort::Builtin,
+            &deny_ticket,
+            "install",
+            json!({"target": src_deny.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deny_res["application"], "failed", "{deny_res}");
+    assert_eq!(deny_res["error"]["code"], "operation-error");
+    assert!(
+        deny_res["error"]["diagnostic"]
+            .as_str()
+            .unwrap()
+            .contains("127.0.0.1"),
+        "{deny_res}"
+    );
+    assert_eq!(
+        req_ok_server.hits(),
+        0,
+        "live turn Deny policy must override stale pool Allow policy"
+    );
+    assert_eq!(dyn_off_server.hits(), 0);
+
+    let mut f_allow = PluginsFixture::new();
+    f_allow.reload_registry();
+    f_allow.posture.switch_for_tests(ApprovalMode::Bypass);
+    let mcp_path_allow = f_allow._temp.path().join("global-mcp-allow.json");
+    fs::write(&mcp_path_allow, "{}").unwrap();
+    let pool_allow = crate::mcp::McpPool::from_config_path_with_workspace(
+        &mcp_path_allow,
+        &f_allow.config.workspace,
+    )
+    .unwrap()
+    .with_backend(codewhale_config::McpBackend::Rust)
+    .with_network_policy(NetworkPolicyDecider::new(deny_policy, None));
+    pool_allow.dynamic_servers.write().insert(
+        crate::mcp::qualified_plugin_server_name("mixed-dyn", "dyn-off"),
+        spoof_cfg.clone(),
+    );
+    pool_allow.dynamic_servers.write().insert(
+        crate::mcp::qualified_plugin_server_name("mixed-dyn", "req-ok"),
+        spoof_cfg,
+    );
+    install_gate_with_pool(
+        &mut f_allow,
+        Some(Arc::new(tokio::sync::Mutex::new(pool_allow))),
+        |input, _| allow_verdict(input, NestedDecision::Auto),
+    );
+    let src_allow = write_toml_plugin(
+        &f_allow.config.workspace,
+        "mixed-dyn-allow-src",
+        &format!(
+            "schema_version = 1\n[plugin]\nname = \"mixed-dyn\"\nversion = \"1.0.0\"\n\n[mcp_servers.dyn-off]\nurl = \"{}\"\nenabled = false\n\n[mcp_servers.req-ok]\nurl = \"{}\"\nrequired = true\n\n[capabilities]\nnetwork_hosts = [\"127.0.0.1\"]\n",
+            dyn_off_server.url(),
+            req_ok_server.url(),
+        ),
+    );
+    let allow_ctx = f_allow
+        .context
+        .clone()
+        .with_network_policy(NetworkPolicyDecider::new(allow_policy, None));
+    let allow_guard = f_allow.begin(&f_allow.creator, HostCohort::Builtin, &allow_ctx);
+    let allow_ticket = plugin_ticket(&allow_guard).unwrap();
+    let allow_res = f_allow
+        .call_broker(
+            &f_allow.creator,
+            HostCohort::Builtin,
+            &allow_ticket,
+            "install",
+            json!({"target": src_allow.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(allow_res["application"], "applied", "{allow_res}");
+    assert_eq!(allow_res["enabled"], true);
+    assert_eq!(req_ok_server.init_hits(), 1);
+    assert_eq!(
+        dyn_off_server.hits(),
+        0,
+        "isolated plugin fork must ignore pre-populated dynamic_servers entries"
+    );
+}
+
+#[cfg(unix)]
+fn write_stdio_script_plugin(
+    root: &Path,
+    dir_name: &str,
+    plugin_name: &str,
+    script_name: &str,
+    pid_file: &Path,
+    script_template: &str,
+) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let src = write_toml_plugin(
+        root,
+        dir_name,
+        &format!(
+            "schema_version = 1\n[plugin]\nname = \"{plugin_name}\"\nversion = \"1.0.0\"\n\n[mcp_servers.stdio]\ncommand = \"sh\"\nargs = [\"{script_name}\"]\nrequired = true\n"
+        ),
+    );
+    let pid_escaped = pid_file.display().to_string().replace('\'', "'\\''");
+    let script_path = src.join(script_name);
+    fs::write(
+        &script_path,
+        script_template.replace("__PID_FILE__", &pid_escaped),
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    src
+}
+
+#[cfg(unix)]
+fn write_hanging_stdio_plugin(
+    root: &Path,
+    dir_name: &str,
+    plugin_name: &str,
+    pid_file: &Path,
+) -> PathBuf {
+    write_stdio_script_plugin(
+        root,
+        dir_name,
+        plugin_name,
+        "hang.sh",
+        pid_file,
+        r##"#!/bin/sh
+pid_file='__PID_FILE__'
+tmp_file="${pid_file}.tmp"
+printf '%s\n' "$$" > "$tmp_file"
+mv "$tmp_file" "$pid_file"
+while IFS= read -r _line; do
+  :
+done
+"##,
+    )
+}
+
+#[cfg(unix)]
+async fn assert_pid_reaped(pid_file: &Path, context: &str) {
+    let pid: u32 = fs::read_to_string(pid_file)
+        .unwrap_or_else(|err| panic!("{context}: missing stdio PID file: {err}"))
+        .trim()
+        .parse()
+        .unwrap();
+    let alive = tokio::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .await
+        .unwrap();
+    assert!(
+        !alive.success(),
+        "{context}: stdio child {pid} must already be reaped before call returns"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_required_stdio_connector_reaps_child_before_returning_on_ready_and_timeout() {
+    let mut f = PluginsFixture::new();
+    f.reload_registry();
+    f.posture.switch_for_tests(ApprovalMode::Bypass);
+    let pool = fixture_mcp_pool(&f);
+    install_gate_with_pool(&mut f, Some(pool), |input, _| {
+        allow_verdict(input, NestedDecision::Auto)
+    });
+
+    let ready_pid_file = f._temp.path().join("stdio-ready.pid");
+    let ready_src = write_stdio_script_plugin(
+        &f.config.workspace,
+        "stdio-ready-src",
+        "stdio-ready",
+        "server.sh",
+        &ready_pid_file,
+        r##"#!/bin/sh
+pid_file='__PID_FILE__'
+tmp_file="${pid_file}.tmp"
+printf '%s\n' "$$" > "$tmp_file"
+mv "$tmp_file" "$pid_file"
+while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":[[:space:]]*\([^,}]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"stdio-ready","version":"1.0.0"}}}\n' "$id"
+      ;;
+    *'"method":"notifications/'*)
+      ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"ping","description":"Ping tool","inputSchema":{"type":"object"}}]}}\n' "$id"
+      ;;
+    *'"method":"resources/templates/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resourceTemplates":[]}}\n' "$id"
+      ;;
+    *'"method":"resources/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resources":[]}}\n' "$id"
+      ;;
+    *'"method":"prompts/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"prompts":[]}}\n' "$id"
+      ;;
+  esac
+done
+"##,
+    );
+
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let ticket = plugin_ticket(&guard).unwrap();
+    let ready_res = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "install",
+            json!({"target": ready_src.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ready_res["application"], "applied", "{ready_res}");
+    assert_eq!(ready_res["enabled"], true);
+    assert_pid_reaped(&ready_pid_file, "ready").await;
+
+    let _deadline = super::set_mcp_connect_deadline_for_test(std::time::Duration::from_millis(800));
+    let mut f_hang = PluginsFixture::new();
+    f_hang.reload_registry();
+    f_hang.posture.switch_for_tests(ApprovalMode::Bypass);
+    let pool_hang = fixture_mcp_pool(&f_hang);
+    install_gate_with_pool(&mut f_hang, Some(pool_hang), |input, _| {
+        allow_verdict(input, NestedDecision::Auto)
+    });
+    let hang_pid_file = f_hang._temp.path().join("stdio-hang.pid");
+    let hang_src = write_hanging_stdio_plugin(
+        &f_hang.config.workspace,
+        "stdio-hang-src",
+        "stdio-hang",
+        &hang_pid_file,
+    );
+
+    let guard_hang = f_hang.begin(&f_hang.creator, HostCohort::Builtin, &f_hang.context);
+    let ticket_hang = plugin_ticket(&guard_hang).unwrap();
+    let started = std::time::Instant::now();
+    let hang_res = f_hang
+        .call_broker(
+            &f_hang.creator,
+            HostCohort::Builtin,
+            &ticket_hang,
+            "install",
+            json!({"target": hang_src.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(4),
+        "hanging stdio connect must stop near deadline: {elapsed:?}"
+    );
+    assert_eq!(hang_res["application"], "failed", "{hang_res}");
+    assert_eq!(hang_res["error"]["code"], "operation-error");
+    assert_pid_reaped(&hang_pid_file, "timeout").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_mixed_dsh_bundle_qualifies_required_native_mcp_connector() {
+    let Some(node) = super::super::test_support::node_for_tests(
+        "plugins_mixed_dsh_bundle_qualifies_required_native_mcp_connector",
+    ) else {
+        return;
+    };
+    let _policy = TestPolicyGuard::extension_host(true);
+    let mut f = PluginsFixture::new();
+    f.manager = Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
+        runtime: codewhale_config::extension_host::ExtensionHostRuntime::Node,
+        node_override: Some(node),
+        root: Some(f._temp.path().join("host-root")),
+        ..Default::default()
+    }));
+    {
+        let mut reg = f.manager.shared.registry.lock().unwrap();
+        f.creator = reg
+            .begin_owner(
+                HostCohort::Builtin,
+                "host:creator",
+                "creator",
+                None,
+                "digest",
+            )
+            .unwrap();
+        reg.mark_active(&f.creator);
+    }
+    let _manager = TestManagerGuard::install(Arc::clone(&f.manager));
+    let initial_reg = f.reload_registry();
+    let _engine = f.manager.attach(initial_reg);
+    let _ = _engine.set_creator_demand(true);
+
+    f.posture.switch_for_tests(ApprovalMode::Bypass);
+    let pool = fixture_mcp_pool(&f);
+    install_gate_with_pool(&mut f, Some(pool), |input, _| {
+        allow_verdict(input, NestedDecision::Auto)
+    });
+
+    let server = McpStubServer::spawn(McpStubBehavior::Ready(vec![json!({
+        "name": "read_mixed",
+        "description": "Mixed native/DSH connector tool",
+        "inputSchema": {"type": "object"}
+    })]))
+    .await;
+
+    let src = f.config.workspace.join("mixed-ok-src");
+    copy_dir_tree(&dsh_template_dir("decoration"), &src);
+    let patch = format!(
+        "- insert:\n    - id: my-decoration\n      name: '@local/my-decoration'\n    - id: demo-mcp\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: demo\n        transport: streamable-http\n        url: {}\n        failOnStartupError: true\n",
+        server.url()
+    );
+    fs::write(src.join("cordis.patch.yml"), patch).unwrap();
+
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let ticket = plugin_ticket(&guard).unwrap();
+
+    let res = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "install",
+            json!({"target": src.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res["application"], "applied", "{res}");
+    assert_eq!(res["stage"], "enable");
+    assert_eq!(res["changed"], true);
+    assert_eq!(res["enabled"], true);
+    assert_eq!(res["bundle"], "my-decoration");
+    assert_eq!(server.init_hits(), 1);
+
+    let qualified = crate::mcp::qualified_plugin_server_name("my-decoration", "demo");
+    let expected_tool = crate::mcp::McpPool::mcp_model_tool_name(&qualified, "read_mixed");
+    let warnings: Vec<&str> = res["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        warnings.iter().any(|w| w.contains(&expected_tool)),
+        "expected {expected_tool} in warnings: {warnings:?}"
+    );
+    assert!(
+        warnings.iter().any(|w| w.contains("next message on")),
+        "expected next-message guidance in warnings: {warnings:?}"
+    );
+
+    let idempotent = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "enable",
+            json!({"target": "my-decoration"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(idempotent["application"], "applied", "{idempotent}");
+    assert_eq!(idempotent["stage"], "enable");
+    assert_eq!(idempotent["enabled"], true);
+    assert_eq!(server.init_hits(), 2);
+
+    let dead_src = f.config.workspace.join("mixed-dead-src");
+    copy_dir_tree(&dsh_template_dir("decoration"), &dead_src);
+    let dead_pkg = json!({
+        "name": "@local/my-decoration-dead",
+        "version": "1.0.0",
+        "private": true,
+        "type": "module",
+        "exports": {
+            ".": "./index.js",
+            "./client": "./client.js",
+            "./locale/*.json": "./locale/*.json",
+            "./icon": "./icon.svg"
+        },
+        "files": ["index.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg"],
+        "dsh": {
+            "bundle": { "patch": "./cordis.patch.yml" },
+            "client": {
+                "platform": "web",
+                "immediately": true,
+                "inject": ["@deepseek-ai/dsh-client-ui-conversation"]
+            }
+        }
+    });
+    fs::write(
+        dead_src.join("package.json"),
+        serde_json::to_string_pretty(&dead_pkg).unwrap(),
+    )
+    .unwrap();
+    let dead_patch = format!(
+        "- insert:\n    - id: my-decoration-dead\n      name: '@local/my-decoration-dead'\n    - id: demo-mcp\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: demo\n        transport: streamable-http\n        url: {}\n        failOnStartupError: true\n",
+        dead_loopback_url()
+    );
+    fs::write(dead_src.join("cordis.patch.yml"), dead_patch).unwrap();
+
+    let dead_res = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "install",
+            json!({"target": dead_src.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dead_res["application"], "failed", "{dead_res}");
+    assert_eq!(dead_res["stage"], "enable");
+    assert_eq!(dead_res["enabled"], true);
+    assert_eq!(dead_res["error"]["code"], "operation-error");
+
+    let receipts = guard.seal_receipts().unwrap();
+    let acts = receipts["broker_acts"]["acts"].as_array().unwrap();
+    assert!(
+        acts.iter().any(|act| {
+            act["service"] == "plugins"
+                && act["method"] == "mcp_connect"
+                && act["plugin"] == "my-decoration"
+                && act["server"] == "demo"
+                && act["outcome"] == "connected"
+        }),
+        "{receipts}"
+    );
+    assert!(
+        acts.iter().any(|act| {
+            act["service"] == "plugins"
+                && act["method"] == "mcp_connect"
+                && act["plugin"] == "my-decoration-dead"
+                && act["server"] == "demo"
+                && act["outcome"] == "failed"
+        }),
+        "{receipts}"
+    );
+
+    f.manager.shutdown().await;
 }
