@@ -1833,16 +1833,14 @@ async fn full_access_installs_a_folder_in_the_project_and_records_the_agent() {
     .await
     .unwrap();
     assert!(mcp_plan.in_agent_scope);
-    let mcp_ctx = f
-        .context
-        .clone()
-        .with_creator_decision(synthetic_carrier_for(
-            "install",
-            &mcp_input,
-            CreatorDecider::Agent(AgentPosture::FullAccess),
-            f.posture.read(),
-            true,
-        ));
+    let mcp_ctx = f.context.clone().with_creator_decision(
+        mcp_plan
+            .build_carrier(
+                CreatorDecider::Agent(AgentPosture::FullAccess),
+                f.posture.read(),
+            )
+            .unwrap(),
+    );
     let mcp_guard = f.begin(&f.creator, HostCohort::Builtin, &mcp_ctx);
     let mcp_ticket = plugin_ticket(&mcp_guard).unwrap();
     let mcp = f

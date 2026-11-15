@@ -2828,7 +2828,8 @@ impl Engine {
                             AutoReviewPlanDecision::Allow => {
                                 if !hook_requires_approval
                                     && !approval_force_prompt
-                                    && !preserve_extension_approval_for_auto_review
+                                    && (!preserve_extension_approval_for_auto_review
+                                        || is_creator_changing)
                                 {
                                     approval_required = false;
                                 }
