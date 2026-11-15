@@ -590,12 +590,14 @@ fn modelstudio_reasoning_effort_for_model(effort: &str) -> Option<&'static str> 
 /// layer so they can remove fields that are invalid for their exact endpoint.
 ///
 /// A `custom` route carrying a DeepSeek model id borrows only the effort
-/// spelling, not the `thinking` toggle: gateways reject the toggle object on
-/// `/v1/chat/completions`, and an OpenAI-compatible endpoint's request dialect
-/// is not knowable from the model id. The cost of that choice is that `off`
-/// sends nothing on such a route, because the compatibility wire has no
-/// standard disable spelling; the first-party `deepseek` identity still
-/// disables thinking explicitly.
+/// spelling, not the `thinking` toggle. An OpenAI-compatible endpoint's request
+/// dialect is not knowable from the model id, and the gateway this was
+/// reproduced against rejects the toggle object outright on
+/// `/v1/chat/completions`. Two costs follow, both accepted deliberately:
+/// `off` cannot be expressed on such a route (the compatibility wire has no
+/// standard disable spelling, so it sends nothing), and a compatible
+/// endpoint's own tolerance of the toggle is neither probed nor assumed. The
+/// first-party `deepseek` identity still disables thinking explicitly.
 pub(super) fn apply_route_reasoning_controls(
     body: &mut Value,
     provider: ProviderKind,
@@ -611,8 +613,15 @@ pub(super) fn apply_route_reasoning_controls(
         provider
     };
     apply_reasoning_effort(body, effort, reasoning_provider);
-    if gateway_carries_deepseek_model && let Some(object) = body.as_object_mut() {
-        object.remove("thinking");
+    if gateway_carries_deepseek_model {
+        if let Some(object) = body.as_object_mut() {
+            object.remove("thinking");
+        }
+        if effort.is_some_and(|effort| !reasoning_effort_enables_thinking(Some(effort))) {
+            logging::warn(
+                "Disabling thinking is not expressible on an OpenAI-compatible gateway; the request asks for no reasoning controls and the model's own default applies",
+            );
+        }
     }
     codewhale_config::local_reasoning::apply_local_reasoning_controls(
         body, provider, model, effort,

@@ -4014,7 +4014,7 @@ impl CodewhaleClient {
         });
         chat::apply_route_reasoning_controls(
             &mut body,
-            self.api_provider,
+            self.chat_shape_provider(&model),
             &self.base_url,
             &model,
             Some("off"),
