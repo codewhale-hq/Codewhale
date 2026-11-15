@@ -4248,7 +4248,16 @@ mod tests {
     #[tokio::test]
     async fn auto_review_shell_propagates_agent_posture_and_provenance_env_while_ask_and_full_access_keep_command_line()
      {
-        let cmd = "printf '%s|%s|%s|%s|%s' \"$CODEWHALE_AGENT_PROJECT\" \"$CODEWHALE_AGENT_POSTURE\" \"$CODEWHALE_AGENT_THREAD_ID\" \"$CODEWHALE_AGENT_TURN_ID\" \"$CODEWHALE_AGENT_TOOL_CALL_ID\"";
+        let cmd = {
+            let kind = codewhale_sandbox::shell_dispatcher::global_dispatcher().kind();
+            if kind.is_powershell() {
+                "Write-Output ('{0}|{1}|{2}|{3}|{4}' -f $env:CODEWHALE_AGENT_PROJECT,$env:CODEWHALE_AGENT_POSTURE,$env:CODEWHALE_AGENT_THREAD_ID,$env:CODEWHALE_AGENT_TURN_ID,$env:CODEWHALE_AGENT_TOOL_CALL_ID)"
+            } else if matches!(kind, codewhale_sandbox::shell_dispatcher::ShellKind::Cmd) {
+                "powershell -NoProfile -Command \"Write-Output ('{0}|{1}|{2}|{3}|{4}' -f $env:CODEWHALE_AGENT_PROJECT,$env:CODEWHALE_AGENT_POSTURE,$env:CODEWHALE_AGENT_THREAD_ID,$env:CODEWHALE_AGENT_TURN_ID,$env:CODEWHALE_AGENT_TOOL_CALL_ID)\""
+            } else {
+                "printf '%s|%s|%s|%s|%s' \"$CODEWHALE_AGENT_PROJECT\" \"$CODEWHALE_AGENT_POSTURE\" \"$CODEWHALE_AGENT_THREAD_ID\" \"$CODEWHALE_AGENT_TURN_ID\" \"$CODEWHALE_AGENT_TOOL_CALL_ID\""
+            }
+        };
 
         let auto_outcome = run_extension_auto_review_fixture(ExtensionAutoReviewSpec {
             tool_call_name: "bash".to_string(),
