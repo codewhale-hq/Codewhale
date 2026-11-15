@@ -106,6 +106,58 @@ async fn named_ds4_translation_keeps_the_disabled_thinking_toggle() -> Result<()
     Ok(())
 }
 
+/// The mirror of the test above on an ordinary compatible gateway. Translation
+/// always asks for `off`; on a gateway that must arrive as `none` with no
+/// `thinking` object, because the object is what such an endpoint rejects.
+/// Without this case a future shaper could re-add the toggle on the translation
+/// path and only the gateway would notice.
+#[tokio::test]
+async fn a_gateway_translation_asks_for_none_instead_of_the_thinking_toggle() -> Result<()> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "chatcmpl-gateway-translate",
+            "object": "chat.completion",
+            "model": "DeepSeek-V4.1-Flash",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "Hola"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = super::tests::custom_mock_client_for_identity(&server, "aicraft");
+    client
+        .translate_with_usage(
+            "hello",
+            "DeepSeek-V4.1-Flash",
+            "Spanish",
+            &crate::cost_status::NativeUsageSource::capture(
+                format!("gateway-translate-test:{}", uuid::Uuid::new_v4()),
+                crate::cost_status::UsageSpendOwner::Auxiliary,
+            ),
+        )
+        .await?;
+
+    let requests = server.received_requests().await.expect("recorded request");
+    assert_eq!(requests.len(), 1);
+    let body: Value = serde_json::from_slice(&requests[0].body)?;
+    assert!(
+        body.get("thinking").is_none(),
+        "a gateway rejects DeepSeek's toggle object: {body}"
+    );
+    assert_eq!(
+        body.get("reasoning_effort").and_then(Value::as_str),
+        Some("none"),
+        "translation asks for off, which a gateway expresses as none: {body}"
+    );
+    Ok(())
+}
+
 fn request(effort: &str) -> MessageRequest {
     MessageRequest {
         model: "deepseek-v4-flash".to_string(),

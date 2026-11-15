@@ -1742,7 +1742,9 @@
 
     /// A `custom` row pointed at DeepSeek's own host is DeepSeek: it keeps the
     /// native toggle, so `off` still disables thinking there rather than
-    /// degrading to the compatibility spelling.
+    /// degrading to the compatibility spelling. The host decides, so a
+    /// non-canonical path is still DeepSeek and a trailing slash or surrounding
+    /// whitespace does not change the answer.
     #[test]
     fn a_custom_row_on_the_official_deepseek_host_keeps_the_thinking_toggle() {
         for base_url in [
@@ -1750,6 +1752,8 @@
             "https://api.deepseek.com",
             "https://api.deepseek.com/beta",
             "https://api.deepseek.com/v1/",
+            "https://api.deepseek.com/openai",
+            "  https://API.DeepSeek.com/v1  ",
         ] {
             for (effort, thinking, wire_effort) in [
                 ("off", "disabled", None),
@@ -1777,12 +1781,15 @@
         }
     }
 
-    /// The fourth host in the strict-tools list is a lookalike, not DeepSeek.
+    /// A host that merely resembles DeepSeek's does not inherit the dialect, and
+    /// neither does an http downgrade or a userinfo trick. The legacy typo host
+    /// is the one exception: it is in the host set on purpose, for continuity
+    /// with the strict-tools and Responses lists (see `docs/REBRAND.md`).
     #[test]
     fn a_lookalike_host_does_not_inherit_the_deepseek_dialect() {
         for base_url in [
             "https://api.deepseek.com.evil.example/v1",
-            "https://api.deepseek.com/v2",
+            "https://api.deepseek.com@evil.example/v1",
             "http://api.deepseek.com/v1",
         ] {
             let mut body = json!({});
@@ -1803,36 +1810,53 @@
                 "{base_url}"
             );
         }
+
+        let mut body = json!({});
+        chat::apply_route_reasoning_controls(
+            &mut body,
+            ProviderKind::Custom,
+            "https://api.deepseeki.com/v1",
+            "deepseek-flash",
+            Some("off"),
+        );
+        assert_eq!(
+            body.pointer("/thinking/type").and_then(Value::as_str),
+            Some("disabled"),
+            "the legacy typo host stays in the set: {body}"
+        );
     }
 
-    /// The `deepseek` identity sends its toggle for any host, because nothing in
-    /// the request pipeline checks the host for that label. Pinned so a future
-    /// endpoint-aware change is a deliberate one.
+    /// The `deepseek` identity sends its toggle for any host: nothing in the
+    /// request pipeline checks the host for that label. Both a first-party host
+    /// and a relay are pinned, so adding endpoint awareness to this identity is
+    /// a deliberate change rather than a silent one.
     #[test]
     fn the_deepseek_identity_keeps_its_thinking_toggle() {
-        for (effort, thinking, wire_effort) in [
-            ("off", "disabled", None),
-            ("low", "enabled", Some("low")),
-            ("high", "enabled", Some("high")),
-            ("max", "enabled", Some("max")),
-        ] {
-            let mut body = json!({});
-            chat::apply_route_reasoning_controls(
-                &mut body,
-                ProviderKind::Deepseek,
-                "https://api.deepseek.com/beta",
-                "deepseek-flash",
-                Some(effort),
-            );
-            assert_eq!(
-                body.pointer("/thinking/type").and_then(Value::as_str),
-                Some(thinking),
-                "{effort}"
-            );
-            assert_eq!(
-                body.get("reasoning_effort").and_then(Value::as_str),
-                wire_effort,
-                "{effort}"
-            );
+        for base_url in ["https://api.deepseek.com/beta", "https://relay.example/v1"] {
+            for (effort, thinking, wire_effort) in [
+                ("off", "disabled", None),
+                ("low", "enabled", Some("low")),
+                ("high", "enabled", Some("high")),
+                ("max", "enabled", Some("max")),
+            ] {
+                let mut body = json!({});
+                chat::apply_route_reasoning_controls(
+                    &mut body,
+                    ProviderKind::Deepseek,
+                    base_url,
+                    "deepseek-flash",
+                    Some(effort),
+                );
+                assert_eq!(
+                    body.pointer("/thinking/type").and_then(Value::as_str),
+                    Some(thinking),
+                    "{base_url} {effort}"
+                );
+                assert_eq!(
+                    body.get("reasoning_effort").and_then(Value::as_str),
+                    wire_effort,
+                    "{base_url} {effort}"
+                );
+            }
         }
     }

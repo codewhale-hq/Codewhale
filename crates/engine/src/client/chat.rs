@@ -585,40 +585,55 @@ fn modelstudio_reasoning_effort_for_model(effort: &str) -> Option<&'static str> 
     }
 }
 
-/// Whether `base_url` is one of DeepSeek's own Chat Completions hosts.
+/// Whether `base_url` points at one of DeepSeek's own Chat Completions hosts.
 ///
-/// Same host set `deepseek_base_url_supports_strict_tools` matches. A `custom`
-/// row pointed here speaks DeepSeek's native dialect even though its provider
-/// label says otherwise, so it must not lose the `thinking` toggle.
-fn is_exact_deepseek_chat_route(base_url: &str) -> bool {
-    let trimmed = base_url.trim_end_matches('/').to_ascii_lowercase();
-    matches!(
-        trimmed.as_str(),
-        "https://api.deepseek.com"
-            | "https://api.deepseek.com/v1"
-            | "https://api.deepseek.com/beta"
-            | "https://api.deepseeki.com"
-            | "https://api.deepseeki.com/v1"
-            | "https://api.deepseeki.com/beta"
-    )
+/// The decision is the host's, not the path's: `https://api.deepseek.com/openai`
+/// is still DeepSeek, and treating a non-canonical path as a gateway would send
+/// `reasoning_effort: "none"` to the real endpoint, which documents no such tier
+/// on this wire. Scheme stays exact so an http downgrade cannot claim the
+/// dialect.
+///
+/// The host set deliberately includes the legacy typo host `api.deepseeki.com`,
+/// which `docs/REBRAND.md` records as not an official endpoint and kept only for
+/// existing configs (#1079). `deepseek_base_url_supports_strict_tools`, the beta
+/// path guard, and the Responses dialect all accept it too; excluding it here
+/// would make the same host DeepSeek for strict tools and Responses but not for
+/// reasoning, silently dropping the toggle those configs rely on.
+fn is_deepseek_chat_host(base_url: &str) -> bool {
+    let trimmed = base_url.trim();
+    let Some((scheme, authority_and_path)) = trimmed.split_once("://") else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("https") {
+        return false;
+    }
+    let authority = authority_and_path.split('/').next().unwrap_or_default();
+    let host_and_port = authority.rsplit('@').next().unwrap_or_default();
+    let host = host_and_port.split(':').next().unwrap_or_default();
+    host.eq_ignore_ascii_case("api.deepseek.com") || host.eq_ignore_ascii_case("api.deepseeki.com")
 }
 
 /// Final reasoning-control pass shared by streaming and non-streaming Chat
-/// Completions requests. Route-specific shapers run after the generic provider
-/// layer so they can remove fields that are invalid for their exact endpoint.
+/// Completions requests. Route-specific shapers run first so they can remove
+/// fields that are invalid for their exact endpoint; the gateway cleanup below
+/// runs last, so nothing in this function can re-add what it removes.
 ///
 /// Which dialect a route speaks is decided by the endpoint, not by the model id.
 /// A route labeled `deepseek` speaks DeepSeek's, and so does a `custom` row
-/// pointed at DeepSeek's own host. A `custom` row pointed anywhere else is an
-/// unknown compatible endpoint: it keeps the documented `reasoning_effort`
-/// spelling and loses the native `thinking` object, which the gateway this was
-/// reproduced against rejects outright on `/v1/chat/completions`.
+/// pointed at DeepSeek's own host. A `custom` row pointed anywhere else may
+/// still carry a DeepSeek model id, but the endpoint's dialect is unknown: it
+/// keeps the documented `reasoning_effort` spelling and loses the native
+/// `thinking` object, which the gateway this was reproduced against rejects
+/// outright on `/v1/chat/completions`.
 ///
-/// `off` is expressed as `reasoning_effort: "none"` on such a route. That is the
-/// OpenAI compatibility spelling this repository already maps `off` to for other
-/// compatible routes, and it was verified against the gateway above to stop
-/// thinking rather than merely omit the control. A gateway that refuses `"none"`
-/// reports its own error instead of silently thinking anyway.
+/// `off` is expressed as `reasoning_effort: "none"` on such a route, the OpenAI
+/// compatibility spelling this repository already maps `off` to for other
+/// compatible routes. On the gateway this was verified against, `none` stopped
+/// thinking (`reasoning_tokens: 0`, no reasoning field) rather than merely
+/// omitting the control. A gateway that validates the field fails loudly; one
+/// that silently ignores unknown values would fall back to its own default
+/// while the replay gate skips `reasoning_content` for `off` — which is why this
+/// mapping is only self-consistent on gateways that implement `none`.
 pub(super) fn apply_route_reasoning_controls(
     body: &mut Value,
     provider: ProviderKind,
@@ -626,27 +641,16 @@ pub(super) fn apply_route_reasoning_controls(
     model: &str,
     effort: Option<&str>,
 ) {
-    let custom_speaks_deepseek_dialect =
+    let custom_claims_deepseek_model =
         provider == ProviderKind::Custom && requires_reasoning_content(model);
     let gateway_drops_deepseek_dialect =
-        custom_speaks_deepseek_dialect && !is_exact_deepseek_chat_route(base_url);
-    let reasoning_provider = if provider == ProviderKind::Deepseek || custom_speaks_deepseek_dialect
-    {
+        custom_claims_deepseek_model && !is_deepseek_chat_host(base_url);
+    let reasoning_provider = if provider == ProviderKind::Deepseek || custom_claims_deepseek_model {
         ProviderKind::Deepseek
     } else {
         provider
     };
     apply_reasoning_effort(body, effort, reasoning_provider);
-    if gateway_drops_deepseek_dialect {
-        if let Some(object) = body.as_object_mut() {
-            object.remove("thinking");
-        }
-        if effort.is_some_and(|effort| !reasoning_effort_enables_thinking(Some(effort)))
-            && body.get("reasoning_effort").is_none()
-        {
-            body["reasoning_effort"] = json!("none");
-        }
-    }
     codewhale_config::local_reasoning::apply_local_reasoning_controls(
         body, provider, model, effort,
     );
@@ -660,6 +664,16 @@ pub(super) fn apply_route_reasoning_controls(
     apply_zai_route_reasoning_controls(body, provider, base_url, model, effort);
     apply_mistral_route_reasoning_controls(body, provider, base_url, model, effort);
     apply_google_reasoning_effort(body, base_url, model, effort);
+    if gateway_drops_deepseek_dialect {
+        if let Some(object) = body.as_object_mut() {
+            object.remove("thinking");
+        }
+        if effort.is_some_and(|effort| !reasoning_effort_enables_thinking(Some(effort)))
+            && body.get("reasoning_effort").is_none()
+        {
+            body["reasoning_effort"] = json!("none");
+        }
+    }
 }
 
 /// Mistral's polymorphic reasoning-content contract is only proven on its
