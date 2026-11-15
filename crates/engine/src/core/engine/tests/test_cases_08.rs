@@ -1480,7 +1480,7 @@ fn auto_review_scenario() {
         let (decision, audit) = auto_review_plan_decision(
             &crate::core::authority::auto_review::AutoReviewPolicy::default(),
             "exec_shell",
-            &json!({"command": "git push origin main"}),
+            &json!({"command": "npm publish"}),
             crate::core::authority::auto_review::RunOrigin::Interactive,
             ApprovalMode::Auto,
             true,
@@ -1496,6 +1496,33 @@ fn auto_review_scenario() {
         );
         assert_eq!(audit["action_kind"], "publish");
         assert_eq!(audit["decision"], "hold_for_review");
+
+        let (interactive_push, interactive_audit) = auto_review_plan_decision(
+            &crate::core::authority::auto_review::AutoReviewPolicy::default(),
+            "exec_shell",
+            &json!({"command": "git push origin main"}),
+            crate::core::authority::auto_review::RunOrigin::Interactive,
+            ApprovalMode::Auto,
+            true,
+            None,
+        );
+        assert!(matches!(
+            interactive_push,
+            AutoReviewPlanDecision::ConsultReviewer(_)
+        ));
+        assert_eq!(interactive_audit["decision"], "ask_user");
+
+        let (unattended_push, unattended_audit) = auto_review_plan_decision(
+            &crate::core::authority::auto_review::AutoReviewPolicy::default(),
+            "exec_shell",
+            &json!({"command": "git push origin main"}),
+            crate::core::authority::auto_review::RunOrigin::Headless,
+            ApprovalMode::Auto,
+            true,
+            None,
+        );
+        assert!(matches!(unattended_push, AutoReviewPlanDecision::Block(_)));
+        assert_eq!(unattended_audit["decision"], "hold_for_review");
     }
     // from auto_review_classifier_allow_executes_without_prompting
     {
@@ -2084,6 +2111,7 @@ async fn s4_dont_push_survives_64k_instructions_pinning_resists_disk_edit_and_ag
         reviewer_model: Some("chosen-guardian".to_string()),
         allow: vec![allow_file_rule],
         block: Vec::new(),
+        environment: Vec::new(),
     });
 
     let seen_repo_sha = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));

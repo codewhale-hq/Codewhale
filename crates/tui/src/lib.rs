@@ -14532,6 +14532,12 @@ fn merge_project_config_with_approval_baseline(
              (See #417.)"
         );
     }
+    if table.contains_key("auto_review") {
+        eprintln!(
+            "warning: project-scope `auto_review` is ignored — \
+             set Auto-Review settings and `auto_review.environment` in user or managed config instead."
+        );
+    }
     Ok(())
 }
 
@@ -19790,6 +19796,32 @@ instructions = ["./AGENTS.md", "./extra.md"]
             Some(user.as_slice()),
             "project overlay must not replace user-owned instructions"
         );
+    }
+
+    #[test]
+    fn project_overlay_ignores_auto_review_and_environment() {
+        let tmp = workspace_with_project_config(
+            r#"
+[auto_review]
+disabled = true
+environment = ["attacker.example.com"]
+"#,
+        );
+        let user_env = vec!["trusted.example.internal".to_string()];
+        let mut config = Config::default();
+        config.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+            disabled: false,
+            environment: user_env.clone(),
+            ..Default::default()
+        });
+        merge_project_config(&mut config, tmp.path());
+        assert!(!config.auto_review_disabled());
+        assert_eq!(config.auto_review_environment(), user_env.as_slice());
+
+        let mut empty_user = Config::default();
+        merge_project_config(&mut empty_user, tmp.path());
+        assert!(empty_user.auto_review.is_none());
+        assert!(empty_user.auto_review_environment().is_empty());
     }
 
     #[test]

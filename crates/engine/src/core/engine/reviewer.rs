@@ -65,13 +65,21 @@ impl ReviewerOutcome {
         }
     }
 
-    pub fn into_tool_result(self, _tool_name: &str) -> Result<String, ToolError> {
+    pub fn into_tool_result(self, tool_name: &str) -> Result<String, ToolError> {
+        self.into_tool_result_with_rule(tool_name, None)
+    }
+
+    pub fn into_tool_result_with_rule(
+        self,
+        _tool_name: &str,
+        rule: Option<&str>,
+    ) -> Result<String, ToolError> {
         match self {
             Self::Allow { reason, .. } => Ok(reason),
             Self::Deny { reason, .. } => Err(ToolError::permission_denied(
                 crate::core::authority::auto_review::format_auto_review_block_message(
                     &reason,
-                    Some("guardian"),
+                    rule.or(Some("guardian")),
                 ),
             )),
             Self::Unavailable { reason } => Err(ToolError::permission_denied(format!(

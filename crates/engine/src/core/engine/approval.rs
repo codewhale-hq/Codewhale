@@ -3700,6 +3700,7 @@ mod tests {
             reviewer_model: None,
             allow: vec![allow_bash, allow_write, allow_broker, allow_direct],
             block: Vec::new(),
+            environment: Vec::new(),
         });
 
         let exec_policy_for_workspace: WorkspaceExecPolicyBuilder =
@@ -3976,6 +3977,7 @@ mod tests {
             reviewer_model: None,
             allow: Vec::new(),
             block: vec![block_write],
+            environment: Vec::new(),
         });
 
         let hooks = tempfile::tempdir().expect("hook directory");

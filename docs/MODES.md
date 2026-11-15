@@ -252,26 +252,39 @@ Legacy note: `/set approval_mode ...` was retired in favor of `/config`.
   floor** (configured block rules plus the built-in safety floor) allows
   proven-safe calls (including explicit routine workspace test and build
   commands with trailing `2>&1` or `>/dev/null` and a single `head`, `tail`,
-  or literal `grep` filter, unless excluded by discard flags or your own rules),
-  hard-blocks publish-like actions and destructive
-  unattended work (`Background`, `Headless`, or any turn where `owner_present`
-  is false), holds writes, edits, deletes, or moves targeting `AGENTS.md` or
-  `CLAUDE.md` (including symlinks, subdirectories, and loaded user or
-  repository instruction files) for review even if an `auto_review.allow` rule
-  would otherwise waive them, and holds critical-path deletions (filesystem
+  or literal `grep` filter — excluding `cargo run`, non-routine `make` targets,
+  `git add`, `git commit`, discard flags, or your own block rules), hard-blocks
+  package and release publishing (`npm publish`, `cargo publish`, `gh release`,
+  and release tools) as well as destructive unattended work (`Background`,
+  `Headless`, or any turn where `owner_present` is false) and any unattended
+  repository push or tag mutation (`!owner_present`), holds repository-remote
+  pushes in interactive sessions (`owner_present`) plus named soft rules
+  (`force-push`, `git-tag`, `deploy-branch`, `git-discard`, `infra-destroy`,
+  `ci-or-pr-bypass`, `print-credentials`, `secret-commit`, and `deploy-wrapper`)
+  and writes, edits, deletes, or moves targeting `AGENTS.md`, `CLAUDE.md`, or
+  loaded instruction files for guardian review ahead of `auto_review.allow`
+  rules, and holds critical-path deletions (filesystem
   root, home folder, the project root or any ancestor of it, and `.git`
   folders) so interactive sessions with `owner_present` ask you while
-  unattended or headless sessions refuse; it is never model-reviewed and never
-  waits for an approval card on other holds or unattended work.
-  Fallback holds — calls the deterministic engine could not prove safe —
-  escalate to a one-shot **model reviewer** that returns risk, allow/deny, and a
-  rationale using `auto_review.reviewer_model` (when unset, it picks a capable
-  model on the session's active provider route when matched or falls back to the
-  session model without switching providers or accounts). The reviewer receives
+  unattended or headless sessions refuse; the built-in floor is never
+  model-reviewed and never waits for an approval card on other holds or
+  unattended work.
+  Fallback holds — calls the deterministic engine could not prove safe,
+  interactive repository pushes, outbound web requests, and named soft-rule
+  holds — escalate to a one-shot **model reviewer** that returns risk,
+  allow/deny, and a rationale using `auto_review.reviewer_model` (when unset, it
+  picks a capable model on the session's active provider route when matched or
+  falls back to the session model without switching providers or accounts).
+  Soft-rule holds carry the rule name in hold observations, block reasons, and
+  receipts and require an explicit request from you for that action rather than
+  broad instructions. The reviewer receives
   structured untrusted-evidence JSON containing the exact `proposed_tool_call`
   (including `description`), deterministic observations (including
-  `person_approved_retry`), redacted earlier non-read `recent_actions` from the
-  current turn, optional `approved_plan`, pinned `project_instructions` captured
+  `person_approved_retry` and any triggering `soft_rule`), redacted earlier
+  non-read `recent_actions` from the current turn, optional `approved_plan`,
+  optional user/managed-configured `environment` scope entries (project
+  `.codewhale/config.toml` overlays cannot set or modify
+  `auto_review.environment`), pinned `project_instructions` captured
   at session start with separate user and repository labels and SHA-256 hashes
   (never re-read from disk mid-session), and typed `person_messages` from the
   conversation owner newest first (on subagent turns, inherited from the root

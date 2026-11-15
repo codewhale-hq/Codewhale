@@ -1379,6 +1379,7 @@ impl Engine {
         context: &crate::core::authority::auto_review::AutoReviewContext<'_>,
         tool_input: &Value,
         held_reason: &str,
+        soft_rule: Option<&str>,
         tool_id: &str,
         turn: &mut TurnContext,
         in_auto_mode: bool,
@@ -1618,6 +1619,7 @@ impl Engine {
                 )
             }
             super::reviewer::ReviewerOutcome::Deny { reason, .. } => {
+                let effective_rule = soft_rule.unwrap_or("guardian");
                 let recorded = self.auto_review_state.lock().record_block(
                     in_auto_mode,
                     owner_present,
@@ -1626,7 +1628,7 @@ impl Engine {
                     tool_id,
                     context.tool_name.as_ref(),
                     tool_input,
-                    Some("guardian"),
+                    Some(effective_rule),
                     reason,
                     "auto_review_guardian",
                     "denied",
@@ -1635,7 +1637,7 @@ impl Engine {
                     Some((
                         crate::core::events::ToolGateVerdict::Denied,
                         reason.clone(),
-                        Some("guardian".to_string()),
+                        Some(effective_rule.to_string()),
                         recorded.receipt_id,
                         recorded.call_digest,
                         (!recorded.action_summary.is_empty()).then_some(recorded.action_summary),
@@ -1673,11 +1675,15 @@ impl Engine {
                 (None, AutoReviewOutcomeEffect::Continue)
             }
         };
-        let result = review.outcome.into_tool_result(context.tool_name.as_ref());
+        let result = review.outcome.into_tool_result_with_rule(
+            context.tool_name.as_ref(),
+            Some(soft_rule.unwrap_or("guardian")),
+        );
         emit_tool_audit(json!({
             "event": "tool.auto_review",
             "gate": "guardian",
             "tool_id": tool_id,
+            "rule_id": soft_rule,
             "reviewer_model": review.reviewer_model.as_str(),
             "decision": decision,
             "risk": risk,
@@ -2592,7 +2598,7 @@ impl Engine {
                         self.session.approved_plan().map(str::to_string),
                         turn.recent_actions.clone(),
                         Some(self.session.pinned_project_instructions.clone()),
-                        None,
+                        self.config.auto_review_policy.formatted_environment(),
                     )
                     .await;
                 let effective_extension_caller =
@@ -2775,12 +2781,18 @@ impl Engine {
                                 }
                             }
                             AutoReviewPlanDecision::ConsultReviewer(held_reason) => {
+                                let soft_rule = audit_event
+                                    .get("rule_id")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::trim)
+                                    .filter(|id| !id.is_empty());
                                 if let Err(failure) = self
                                     .consult_auto_review_guardian(
                                         client,
                                         &review_context,
                                         &tool_input,
                                         &held_reason,
+                                        soft_rule,
                                         &tool_id,
                                         turn,
                                         batch_approval_mode == ApprovalMode::Auto,

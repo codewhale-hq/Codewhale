@@ -2002,9 +2002,9 @@ async fn auto_review_forced_prompts_reach_interactive_owner_and_hard_blocks_stay
     let blocked_push_workspace = tempdir().expect("tempdir");
     let blocked_push_mock = Arc::new(MockLlmClient::new(vec![
         canned::tool_call_turn(
-            "call_push_unforced",
+            "call_publish_unforced",
             "Bash",
-            r#"{"action":"run","command":"git push"}"#,
+            r#"{"action":"run","command":"npm publish"}"#,
         ),
         canned::simple_text_turn("blocked"),
     ]));
@@ -3963,4 +3963,160 @@ async fn auto_review_s2_unattended_continues_past_blocks_and_stops_at_bounds() {
     );
     stop10_handle.send(Op::Shutdown).await.expect("shutdown");
     let _ = tokio::time::timeout(model_turn_event_timeout(), stop10_task).await;
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn auto_review_s7_routes_interactive_push_with_environment_and_rule_name_and_blocks_unattended_push() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let _lock = lock_test_env();
+    let workspace = tempdir().expect("tempdir");
+    let mut config = Config::default();
+    config.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+        reviewer_model: Some("s7-guardian".to_string()),
+        environment: vec![
+            "trusted remote: github.com/acme/repo".to_string(),
+            "trusted staging host: https://staging.acme.internal".to_string(),
+        ],
+        ..Default::default()
+    });
+
+    let seen_guardian_doc = Arc::new(std::sync::Mutex::new(None::<Value>));
+    let seen_guardian_cb = seen_guardian_doc.clone();
+
+    let interactive_mock = Arc::new(MockLlmClient::new(Vec::new()));
+    interactive_mock.push_factory(|_| {
+        canned::tool_call_turn(
+            "call_force_push",
+            "Bash",
+            r#"{"action":"run","command":"git push --force origin feature-x","background":false}"#,
+        )
+    });
+    interactive_mock.push_factory(move |request| {
+        let text = match &request.messages[0].content[0] {
+            ContentBlock::Text { text, .. } => text.as_str(),
+            _ => panic!("expected guardian prompt text"),
+        };
+        let doc: Value = serde_json::from_str(text).expect("valid guardian json");
+        *seen_guardian_cb.lock().expect("lock") = Some(doc);
+        canned::simple_text_turn(
+            r#"{"risk_level":"high","decision":"deny","reason":"force-push requires an explicit request"}"#,
+        )
+    });
+    interactive_mock.push_factory(|_| canned::simple_text_turn("blocked"));
+
+    let mut engine_config = deterministic_engine_config(workspace.path());
+    engine_config.auto_review_policy =
+        crate::core::authority::auto_review::AutoReviewPolicy::from_config(&config);
+    let (mut engine, mut handle) =
+        Engine::new_with_model_client(engine_config.clone(), &config, interactive_mock.clone());
+    engine.attach_owner_surface_for_tests(&mut handle);
+    let task = tokio::spawn(engine.run());
+
+    handle
+        .send(auto_review_message_op("ship this branch", &config))
+        .await
+        .expect("send interactive turn");
+
+    let mut gate_rule = None;
+    let mut tool_err = None;
+    let mut rx = handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("interactive timeout")
+    {
+        match event {
+            Event::ToolGateDecision {
+                gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                decision: crate::core::events::ToolGateVerdict::Denied,
+                rule,
+                ..
+            } => {
+                gate_rule = rule;
+            }
+            Event::ToolCallComplete { result, .. } => {
+                tool_err = Some(result.expect_err("denied push must return error"));
+            }
+            Event::TurnComplete { .. } => break,
+            _ => {}
+        }
+    }
+    drop(rx);
+    handle.send(Op::Shutdown).await.expect("shutdown interactive");
+    let _ = tokio::time::timeout(model_turn_event_timeout(), task).await;
+
+    let doc = seen_guardian_doc
+        .lock()
+        .expect("lock")
+        .take()
+        .expect("guardian request must fire for interactive push");
+    assert_eq!(doc["deterministic_observations"]["soft_rule"], "force-push");
+    let env_text = doc["environment"]["content"]
+        .as_str()
+        .expect("environment content in guardian doc");
+    assert!(env_text.contains("github.com/acme/repo"), "{env_text}");
+    assert!(
+        env_text.contains("https://staging.acme.internal"),
+        "{env_text}"
+    );
+    assert_eq!(gate_rule.as_deref(), Some("force-push"));
+    let err_msg = tool_err.expect("tool error").to_string();
+    assert!(err_msg.contains("[force-push]"), "{err_msg}");
+    assert_eq!(interactive_mock.call_count(), 3);
+
+    let headless_mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn(
+            "call_headless_push",
+            "Bash",
+            r#"{"action":"run","command":"git push origin feature-x","background":false}"#,
+        ),
+        canned::simple_text_turn("blocked"),
+    ]));
+    let (headless_handle, headless_task) = spawn_engine_with_authoritative_route_config(
+        engine_config,
+        &config,
+        EngineHostProfile::Headless,
+        Arc::new(parking_lot::RwLock::new(config.clone())),
+        Some(headless_mock.clone()),
+        None,
+        CancellationToken::new(),
+    );
+    let mut headless_spec = match auto_review_message_op("push unattended", &config) {
+        Op::SendMessage(spec) => spec,
+        _ => unreachable!(),
+    };
+    headless_spec.input_authorship = crate::core::ops::TurnInputAuthorship::NotPerson;
+    headless_handle
+        .send(Op::SendMessage(headless_spec))
+        .await
+        .expect("send headless turn");
+
+    let mut headless_err = None;
+    let mut headless_rx = headless_handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), headless_rx.recv())
+        .await
+        .expect("headless timeout")
+    {
+        match event {
+            Event::ToolCallComplete { result, .. } => {
+                headless_err = Some(result.expect_err("unattended push must be hard blocked"));
+            }
+            Event::TurnComplete { .. } => break,
+            _ => {}
+        }
+    }
+    drop(headless_rx);
+    headless_handle
+        .send(Op::Shutdown)
+        .await
+        .expect("shutdown headless");
+    let _ = tokio::time::timeout(model_turn_event_timeout(), headless_task).await;
+    assert!(
+        headless_err
+            .expect("headless error")
+            .to_string()
+            .contains("Built-in safety gate")
+    );
+    assert_eq!(headless_mock.call_count(), 2);
 }

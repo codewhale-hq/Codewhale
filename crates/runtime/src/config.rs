@@ -2539,6 +2539,8 @@ pub struct AutoReviewConfig {
     pub allow: Vec<AutoReviewRuleConfig>,
     #[serde(default)]
     pub block: Vec<AutoReviewRuleConfig>,
+    #[serde(default)]
+    pub environment: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -2560,8 +2562,21 @@ impl AutoReviewConfig {
         }
         validate_auto_review_rules("allow", &self.allow)?;
         validate_auto_review_rules("block", &self.block)?;
+        validate_auto_review_environment(&self.environment)?;
         Ok(())
     }
+}
+
+pub fn validate_auto_review_environment(entries: &[String]) -> Result<()> {
+    for (index, entry) in entries.iter().enumerate() {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() || entry.chars().any(char::is_control) {
+            anyhow::bail!(
+                "Invalid auto_review.environment[{index}]: expected a non-empty entry without control characters."
+            );
+        }
+    }
+    Ok(())
 }
 
 pub fn validate_auto_review_reviewer_model(raw: &str) -> Result<()> {
@@ -6898,6 +6913,13 @@ impl Config {
             .and_then(|cfg| cfg.reviewer_model.as_deref())
             .map(str::trim)
             .filter(|model| !model.is_empty())
+    }
+
+    #[must_use]
+    pub fn auto_review_environment(&self) -> &[String] {
+        self.auto_review
+            .as_ref()
+            .map_or(&[], |cfg| cfg.environment.as_slice())
     }
 
     /// Whether the user-memory feature is enabled. The default is **off**
@@ -13168,10 +13190,85 @@ reviewer_model = "gpt-5.6"
 reviewer_model = "managed-reviewer"
 "#,
         )?;
-        let managed_loaded = Config::load(Some(user_config), Some("fast"))?;
+        let managed_loaded = Config::load(Some(user_config.clone()), Some("fast"))?;
         assert_eq!(
             managed_loaded.auto_review_reviewer_model(),
             Some("managed-reviewer")
+        );
+        drop(_managed_set);
+        let _ = fs::remove_file(&managed_config);
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+environment = [
+    "trusted git remote: origin = https://github.com/org/repo",
+    "trusted staging host: https://staging.example.internal",
+]
+"#,
+        )?;
+        let env_loaded = Config::load(Some(user_config.clone()), None)?;
+        assert_eq!(
+            env_loaded.auto_review_environment(),
+            &[
+                "trusted git remote: origin = https://github.com/org/repo".to_string(),
+                "trusted staging host: https://staging.example.internal".to_string(),
+            ]
+        );
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+environment = ["   "]
+"#,
+        )?;
+        let blank_env_err = Config::load(Some(user_config.clone()), None)
+            .expect_err("blank auto_review.environment entry must fail validation");
+        assert!(
+            blank_env_err
+                .to_string()
+                .contains("auto_review.environment"),
+            "{blank_env_err:#}"
+        );
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+environment = ["bad\nline"]
+"#,
+        )?;
+        let control_env_err = Config::load(Some(user_config.clone()), None)
+            .expect_err("control chars in auto_review.environment must fail validation");
+        assert!(
+            control_env_err
+                .to_string()
+                .contains("auto_review.environment"),
+            "{control_env_err:#}"
+        );
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+environment = ["user remote: github.com/acme/repo"]
+"#,
+        )?;
+        let _managed_env_set =
+            EnvVarGuard::set("CODEWHALE_MANAGED_CONFIG_PATH", managed_config.as_os_str());
+        fs::write(
+            &managed_config,
+            r#"
+[auto_review]
+environment = ["managed remote: github.internal/corp/repo"]
+"#,
+        )?;
+        let managed_env = Config::load(Some(user_config), None)?;
+        assert_eq!(
+            managed_env.auto_review_environment(),
+            &["managed remote: github.internal/corp/repo".to_string()]
         );
         Ok(())
     }

@@ -1315,11 +1315,15 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
   action = "session.compact"
   ```
 
-- `[auto_review]`(表，可选)：工具调用审查策略——确定性底线加模型守卫层。这一层位于现有权限档位之上；它可以拦住或阻断工具调用，但不是自动推送、自动合并或托管审查服务。`auto_review.reviewer_model`(字符串，可选，亦可通过 `/config auto_review.reviewer_model <model|default> [--save]` 设置)指定守卫模型，必须留在当前会话的提供商路由内；未设置时会为主要提供商路由自动选择有能力的目录模型或回退到当前会话模型，从不跨越提供商或账户。先检查阻断规则，然后是内置安全底线，再是允许规则(仅在 Auto-Review 下，即使命中 `auto_review.allow`，针对 `AGENTS.md`、`CLAUDE.md` 或已加载指令文件及其符号链接的文件/shell 修改也会被拦下交由守卫审查)。在 Ask 中，安全拦阻打开审批，会话授权或 allow 规则都无法应答它；在 Auto-Review 或非交互 `never` 档位中，它作为硬阻断失败关闭。Full Access 跳过内置底线。即使 allow 规则匹配，安全底线仍覆盖类似发布的动作、破坏性的后台/无头动作，以及请求体携带凭据文件或名称表明是机密的变量、或读取由这两者或 `env`/`printenv` 送入的 stdin 的 `curl`/`wget` 上传；超过 64 KiB 或 4,096 个词、且文本中任意位置含有 `curl` 或 `wget` 的 shell 命令、shell 输入或校验器，以及嵌套过深而无法读取的调用，同样会被拦住。在 Full Access 之外，它还会在每个档位拒绝含有隐藏 Unicode 字符（双向控制符、零宽及其他不可见字符、标签字符、孤立的变体选择符，以及 shell 输入中 ASCII 控制键之外的终端控制字符）的 shell 命令、shell 输入或校验器，并写出该码位及其位置。
+- `[auto_review]`(表，可选)：工具调用审查策略——确定性底线加模型守卫层。这一层位于现有权限档位之上；它可以拦住或阻断工具调用，但不是自动推送、自动合并或托管审查服务。`auto_review.reviewer_model`(字符串，可选，亦可通过 `/config auto_review.reviewer_model <model|default> [--save]` 设置)指定守卫模型，必须留在当前会话的提供商路由内；未设置时会为主要提供商路由自动选择有能力的目录模型或回退到当前会话模型，从不跨越提供商或账户。`auto_review.environment`（字符串数组，可选，仅限用户与受管配置）记录受信任的环境范围说明（例如受信任的仓库远端、账户、主机或存储桶），在守卫审查推送与出站网络请求时作为 `environment` 字段传入上下文；条目不能为空白且不能包含控制字符，项目级 `.codewhale/config.toml` 不能设置或修改 `[auto_review]` 或 `auto_review.environment`（遇到项目级 `[auto_review]` 表会带警告忽略）。评估顺序为：先检查阻断规则，然后是内置安全底线，再是 Auto-Review 命名软规则（`force-push`、`git-tag`、`deploy-branch`、`git-discard`、`infra-destroy`、`ci-or-pr-bypass`、`print-credentials`、`secret-commit`、`deploy-wrapper`）和受保护指令文件修改，最后才检查允许规则。在 Ask 与 Accept Edits 中，安全拦阻打开审批，会话授权或 allow 规则都无法应答它；在 Auto-Review 或非交互 `never` 档位中，它作为硬阻断失败关闭。Full Access 跳过内置底线。在 Auto-Review 下，包发布与发行版发布（如 `npm publish`、`cargo publish`、`gh release` 及发布工具）、破坏性的后台/无头工作、检测到的凭据上传与隐藏 Unicode 仍由内置安全底线硬阻断；仓库远端 `git push` 在 `owner_present` 为真的交互回合交由守卫结合你的请求和 `auto_review.environment` 审查，在无人值守回合（`!owner_present`）由安全底线硬阻断。命名软规则在 `allow` 规则之前对常见的 git/shell/部署形态保持拦截，并在阻断原因与回执中写出规则名称，需要用户对当前动作提出具体请求才能放行。在 Full Access 之外，安全检查还会在每个档位拒绝含有隐藏 Unicode 字符（双向控制符、零宽及其他不可见字符、标签字符、孤立变体选择符及 shell 输入中 ASCII 控制键之外的终端控制字符）的 shell 命令、shell 输入或校验器，并写出码位与位置。
 
   ```toml
   [auto_review]
   reviewer_model = "claude-sonnet-4-6"
+  environment = [
+    "trusted git remote: github.com/org/repo",
+    "trusted staging API: https://staging.example.internal",
+  ]
 
   [[auto_review.allow]]
   id = "read-only-inspection"

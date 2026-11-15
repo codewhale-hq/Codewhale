@@ -2647,30 +2647,39 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   model for guardian reviews on your active provider route; when unset,
   Codewhale selects a capable catalog model on that provider route (or falls
   back to the active session model) without crossing providers or accounts.
-  Block rules are checked first, then the built-in safety floor, then allow
-  rules (with file-tool and shell mutations targeting `AGENTS.md`, `CLAUDE.md`,
-  or loaded instruction files held for guardian review in Auto-Review even when
-  an `auto_review.allow` rule matches). In Ask, a safety hold opens approval that
-  no session grant or allow
+  `auto_review.environment` (array of strings, optional; user and managed config
+  only) lists trusted environment context lines (such as trusted remotes,
+  accounts, hosts, or buckets) passed in the guardian's `environment` field to
+  judge pushes and outbound network requests in context. Entries cannot be
+  blank or contain control characters, and project `.codewhale/config.toml`
+  files cannot set or alter `[auto_review]` or `auto_review.environment` (a
+  project-scope `[auto_review]` table is ignored with a warning).
+  Block rules are checked first, then the built-in safety floor, then named
+  soft rules in Auto-Review (`force-push`, `git-tag`, `deploy-branch`,
+  `git-discard`, `infra-destroy`, `ci-or-pr-bypass`, `print-credentials`,
+  `secret-commit`, and `deploy-wrapper`) and instruction-file writes, then allow
+  rules. In Ask and Accept Edits, a safety hold opens approval that no session grant or allow
   rule can answer; in Auto-Review or a non-interactive `never` posture it
-  fails closed as a hard block. Full Access skips the built-in floor. The
-  safety floor covers publish-like actions, destructive background/headless
-  actions, and `curl`/`wget` uploads whose request body carries a credential
-  file or a secret-named variable, or reads stdin fed from one of those or
-  from `env`/`printenv`, even if an allow rule matches; a shell command,
-  shell input or verifier over 64 KiB or 4,096 words whose text contains
-  `curl` or `wget` anywhere, or one nested too deeply to read, is held too.
-  Outside Full
-  Access it also refuses, in every posture, a
-  shell command, shell input or verifier containing a hidden Unicode character
-  (bidirectional controls, zero-width and other invisible characters, tag
-  characters, stray variation selectors, and terminal control characters
-  except ASCII control keys in shell input), naming the code point and its
-  position.
+  fails closed as a hard block. Full Access skips the built-in floor. In
+  Auto-Review, package and release publishing (`npm publish`, `cargo publish`,
+  `gh release`, and release tools), destructive unattended work, and
+  detected credential uploads or hidden Unicode remain on the deterministic
+  safety floor; repository-remote `git push` calls are judged by the guardian
+  against your request and `auto_review.environment` when `owner_present` is
+  true, and are hard-blocked on unattended turns (`!owner_present`). Soft rules
+  hold common shell and git forms before `allow` rules, carry the rule name in
+  block reasons and receipts, and require a specific person request rather than
+  broad authorization. Outside Full Access, hidden Unicode checks also refuse
+  shell commands, shell input, or verifiers containing invisible or
+  bidirectional control characters, naming the code point and its position.
 
   ```toml
   [auto_review]
   reviewer_model = "claude-sonnet-4-6" # optional; stays on your active provider route
+  environment = [
+    "trusted git remote: github.com/org/repo",
+    "trusted staging API: https://staging.example.internal",
+  ]
 
   [[auto_review.allow]]
   id = "read-only-inspection"
