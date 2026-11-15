@@ -3,6 +3,7 @@
 //! The JS VM stays in `codewhale-workflow-js`; this module supplies the TUI
 //! driver that turns each `task(...)` call into a real `SubAgentManager` spawn.
 
+mod experimental_search;
 mod plan_schema;
 #[cfg(test)]
 mod shortlist_tests;
@@ -56,6 +57,7 @@ use crate::work_graph::{
 };
 use codewhale_agent_contract::role::{FleetRole, public_role_label};
 use codewhale_util::utils::spawn_supervised;
+use experimental_search::ExperimentalSearch;
 
 /// Keep promoted artifacts compact without clipping ordinary evidence reports.
 /// A 900-character cap cut six-line source receipts in half during live Fleet
@@ -1424,6 +1426,66 @@ async fn start_workflow(
         WorkflowFleetBinding::None
     };
     let run_id = format!("workflow_{}", &Uuid::new_v4().to_string()[..8]);
+    let search_requested = args.get("evolution").is_some() || args.get("evaluator").is_some();
+    let manifest_path = args
+        .pointer("/evolution/manifestPath")
+        .or_else(|| args.pointer("/evaluator/manifestPath"))
+        .and_then(Value::as_str);
+    if args.get("evolution").is_some() && args.get("evaluator").is_some() {
+        return Err(ToolError::invalid_input(
+            "choose one experimental search caller",
+        ));
+    }
+    if search_requested
+        && (manifest_path.is_none()
+            || args.get("strategy").and_then(Value::as_str) != Some("search"))
+    {
+        return Err(ToolError::invalid_input(
+            "experimental search requires strategy=search and a manifestPath",
+        ));
+    }
+    let experiment = if let Some(path) = manifest_path {
+        if source.source != include_str!("../../../../../workflows/operate_best_of_n.workflow.js") {
+            return Err(ToolError::invalid_input(
+                "experimental search requires the checked-in best-of-N Workflow source",
+            ));
+        }
+        let brief = args
+            .get("brief")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ToolError::invalid_input("experimental search requires an explicit brief")
+            })?
+            .to_string();
+        let model = args
+            .get("model")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ToolError::invalid_input("experimental search requires an explicit model")
+            })?
+            .to_string();
+        let path = PathBuf::from(path);
+        let resume_from = args
+            .pointer("/evolution/resumeFrom")
+            .and_then(Value::as_str)
+            .map(PathBuf::from);
+        let workspace = context.workspace.clone();
+        let id = run_id.clone();
+        Some(
+            tokio::task::spawn_blocking(move || {
+                if let Some(checkpoint) = resume_from {
+                    ExperimentalSearch::resume(&checkpoint, &path, &workspace, &id, &brief, &model)
+                } else {
+                    ExperimentalSearch::freeze(&path, &workspace, &id, &brief, &model)
+                }
+            })
+            .await
+            .map_err(|error| ToolError::execution_failed(error.to_string()))?
+            .map_err(ToolError::invalid_input)?,
+        )
+    } else {
+        None
+    };
     let gate_specs = source
         .spec
         .as_ref()
@@ -1533,6 +1595,13 @@ async fn start_workflow(
         gate_specs,
         context.workspace.clone(),
     );
+    if let Some(experiment) = experiment {
+        *driver
+            .experiment
+            .lock()
+            .map_err(|_| ToolError::execution_failed("experimental search lock poisoned"))? =
+            Some(Arc::new(Mutex::new(experiment)));
+    }
     let vm_cancel = WorkflowRunCancel::new();
     let controller = Arc::new(
         WorkflowRunController::new(driver.clone(), vm_cancel.clone()).with_parent_completion(!wait),
@@ -4019,6 +4088,7 @@ struct SubAgentWorkflowDriver {
     /// Workspace root, for durable `responseSchema` raw-output artifacts
     /// written beside the run report (#5583).
     workspace: PathBuf,
+    experiment: Mutex<Option<Arc<Mutex<ExperimentalSearch>>>>,
 }
 
 /// A single-consumer handoff remains reserved during admission. If routing,
@@ -4103,6 +4173,7 @@ impl SubAgentWorkflowDriver {
             fleet_name,
             fleet,
             workspace,
+            experiment: Mutex::new(None),
         });
         spawn_completion_pump(driver.clone(), completion_rx);
         driver
@@ -4826,6 +4897,20 @@ impl SubAgentWorkflowDriver {
             )?;
             None
         };
+        if let Some(experiment) = self
+            .experiment
+            .lock()
+            .map_err(|_| DriverError::Unavailable("experimental search lock poisoned".to_string()))?
+            .clone()
+        {
+            experiment
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("experimental search lock poisoned".to_string())
+                })?
+                .admit(&request)
+                .map_err(DriverError::Rejected)?;
+        }
         // Take a concurrent slot (`max_concurrent` live children per run). A task that
         // has to wait is announced first, so a surface can show it queued
         // instead of leaving it invisible until a slot frees.
@@ -5059,6 +5144,270 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
             self.record_dispatch_failure(label, phase, err.to_string(), queue_ticket);
         }
         result
+    }
+
+    async fn experimental_search(&self, request: Value) -> Result<Value, DriverError> {
+        let experiment = self
+            .experiment
+            .lock()
+            .map_err(|_| DriverError::Unavailable("experimental search lock poisoned".to_string()))?
+            .clone()
+            .ok_or_else(|| {
+                DriverError::Rejected(
+                    "experimental search was not frozen before candidate admission".to_string(),
+                )
+            })?;
+        let action = request
+            .get("action")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                DriverError::Rejected("experimental search action is required".to_string())
+            })?;
+        if action == "summary" {
+            return experiment
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("experimental search lock poisoned".to_string())
+                })
+                .map(|experiment| experiment.summary());
+        }
+        if action == "resume_state" {
+            return experiment
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("experimental search lock poisoned".to_string())
+                })?
+                .resume_state()
+                .map_err(DriverError::Rejected);
+        }
+        if action == "checkpoint" {
+            let generation = request
+                .get("generation")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| DriverError::Rejected("generation is required".to_string()))?
+                as u32;
+            let state = request
+                .get("state")
+                .ok_or_else(|| DriverError::Rejected("checkpoint state is required".to_string()))?;
+            return experiment
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("experimental search lock poisoned".to_string())
+                })?
+                .checkpoint(generation, state)
+                .map_err(DriverError::Rejected);
+        }
+        if action == "apply_policy" {
+            let candidate_id = request
+                .get("candidate_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| DriverError::Rejected("candidate_id is required".to_string()))?;
+            let generation = request
+                .get("generation")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| DriverError::Rejected("generation is required".to_string()))?
+                as u32;
+            let policy = request
+                .get("policy")
+                .ok_or_else(|| DriverError::Rejected("policy is required".to_string()))?;
+            let lineage = request.get("lineage").unwrap_or(&Value::Null);
+            return experiment
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("experimental search lock poisoned".to_string())
+                })?
+                .apply_policy(candidate_id, generation, policy, lineage)
+                .map_err(DriverError::Rejected);
+        }
+        if action == "policy_status" {
+            let candidate_id = request
+                .get("candidate_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| DriverError::Rejected("candidate_id is required".to_string()))?;
+            return experiment
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("experimental search lock poisoned".to_string())
+                })?
+                .policy_status(candidate_id)
+                .map_err(DriverError::Rejected);
+        }
+        if action == "select_generation" {
+            let generation = request
+                .get("generation")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| DriverError::Rejected("generation is required".to_string()))?
+                as u32;
+            let ids = request
+                .get("candidate_ids")
+                .and_then(Value::as_array)
+                .ok_or_else(|| DriverError::Rejected("candidate_ids are required".to_string()))?
+                .iter()
+                .map(|id| {
+                    id.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| DriverError::Rejected("invalid candidate_id".to_string()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let review_values = request
+                .get("dev_reviews")
+                .and_then(Value::as_object)
+                .ok_or_else(|| DriverError::Rejected("dev_reviews are required".to_string()))?;
+            let mut dev_reviews = HashMap::new();
+            for id in &ids {
+                let verdict = review_values
+                    .get(id)
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        DriverError::Rejected("DEV review verdict is required".to_string())
+                    })?;
+                if !matches!(verdict, "pass" | "fail" | "unknown" | "not_requested") {
+                    return Err(DriverError::Rejected(
+                        "invalid DEV review verdict".to_string(),
+                    ));
+                }
+                dev_reviews.insert(id.clone(), verdict.to_string());
+            }
+            let mut task_costs = HashMap::new();
+            let mut task_tokens = HashMap::new();
+            let mut task_succeeded = HashMap::new();
+            for record in self
+                .task_records
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("workflow task ledger lock poisoned".to_string())
+                })?
+                .values()
+            {
+                if let Some(label) = &record.label {
+                    task_tokens.insert(
+                        label.clone(),
+                        record.usage.as_ref().and_then(|usage| usage.total_tokens),
+                    );
+                    if task_costs
+                        .insert(
+                            label.clone(),
+                            record.usage.as_ref().and_then(|usage| usage.cost_microusd),
+                        )
+                        .is_some()
+                    {
+                        return Err(DriverError::Rejected(
+                            "duplicate experimental task label".to_string(),
+                        ));
+                    }
+                    task_succeeded.insert(
+                        label.clone(),
+                        record.status == IrWorkflowRunStatus::Succeeded,
+                    );
+                }
+            }
+            return experiment
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("experimental search lock poisoned".to_string())
+                })?
+                .select_generation(
+                    generation,
+                    &ids,
+                    &task_costs,
+                    &task_tokens,
+                    &task_succeeded,
+                    &dev_reviews,
+                )
+                .map_err(DriverError::Rejected);
+        }
+        if action != "evaluate" && action != "replay" {
+            return Err(DriverError::Rejected(
+                "unsupported experimental search action".to_string(),
+            ));
+        }
+        let candidate_id = request
+            .get("candidate_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DriverError::Rejected("candidate_id is required".to_string()))?
+            .to_string();
+        let generation = request
+            .get("generation")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| DriverError::Rejected("generation is required".to_string()))?
+            as u32;
+        let replay = action == "replay";
+        let record = if replay {
+            None
+        } else {
+            let record = self
+                .task_records
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("workflow task ledger lock poisoned".to_string())
+                })?
+                .values()
+                .find(|record| record.label.as_deref() == Some(&candidate_id))
+                .cloned()
+                .ok_or_else(|| {
+                    DriverError::Rejected("candidate task label was not observed".to_string())
+                })?;
+            if record.status != IrWorkflowRunStatus::Succeeded {
+                return Err(DriverError::Rejected(
+                    "candidate worker did not complete".to_string(),
+                ));
+            }
+            Some(record)
+        };
+        let manager = self.manager.clone();
+        let cancel = self.runtime.cancel_token.clone();
+        let lineage = request.get("lineage").cloned().unwrap_or(Value::Null);
+        let policy = request.get("policy").cloned().unwrap_or(Value::Null);
+        let value = tokio::task::spawn_blocking(move || {
+            let result = record
+                .as_ref()
+                .map(|record| {
+                    manager
+                        .blocking_read()
+                        .get_result(&record.agent_id)
+                        .map_err(|error| error.to_string())
+                })
+                .transpose()?;
+            experiment
+                .lock()
+                .map_err(|_| "experimental search lock poisoned".to_string())?
+                .evaluate(
+                    &candidate_id,
+                    generation,
+                    &lineage,
+                    &policy,
+                    result.as_ref(),
+                    replay,
+                    &cancel,
+                )
+        })
+        .await
+        .map_err(|error| DriverError::Unavailable(error.to_string()))?
+        .map_err(DriverError::Rejected)?;
+        Ok(json!({
+            "candidate_id": value.get("candidate_id"),
+            "status": value.get("status"),
+            "reason": value.get("reason"),
+            "patch_sha256": value.get("patch_sha256"),
+            "artifact_id": value.get("artifact_id"),
+            "candidate_tree_hash": value.get("candidate_tree_hash"),
+            "policy_id": value.get("policy_id"),
+            "evaluation_id": value.get("evaluation_id"),
+            "safety_status": value.get("safety_status"),
+            "task_status": value.get("task_status"),
+            "execution_status": value.get("execution_status"),
+            "review_material": value.get("review_material"),
+            "review_complete": value.get("review_complete"),
+            "review_material_sha256": value.get("review_material_sha256"),
+            "review_material_bytes": value.get("review_material_bytes"),
+            "public_failure_feedback": value.get("public_failure_feedback"),
+            "changed_paths": value.get("changed_paths"),
+            "test_count": value.get("test_count"),
+            "receipt": value.get("receipt_path"),
+            "patch_excerpt": value.get("patch_excerpt"),
+            "usage": value.get("usage"),
+            "lineage": value.get("lineage")
+        }))
     }
 
     fn cancel_all(&self) {
@@ -7038,6 +7387,7 @@ mod tests {
             thinking: None,
             cwd: None,
             worktree: true,
+            worktree_base: None,
             write_authority: Some("worktree_write".to_string()),
             write_roots: vec!["src".to_string()],
             exact_files: Vec::new(),
@@ -7100,6 +7450,7 @@ permissions = "read_only"
             thinking: None,
             cwd: None,
             worktree: false,
+            worktree_base: None,
             write_authority: None,
             write_roots: Vec::new(),
             exact_files: Vec::new(),
@@ -8026,6 +8377,7 @@ permissions = "read_only"
             thinking: None,
             cwd: None,
             worktree: false,
+            worktree_base: None,
             write_authority: Some("read_only".to_string()),
             write_roots: Vec::new(),
             exact_files: Vec::new(),
@@ -10139,6 +10491,7 @@ reviewer = "reviewer"
             thinking: None,
             cwd: None,
             worktree: false,
+            worktree_base: None,
             write_authority: Some("workspace_write".to_string()),
             write_roots: vec!["src".to_string()],
             exact_files: Vec::new(),
@@ -10318,6 +10671,7 @@ reviewer = "reviewer"
             thinking: None,
             cwd: None,
             worktree: false,
+            worktree_base: None,
             write_authority: Some("workspace_write".to_string()),
             write_roots: vec!["src".to_string()],
             exact_files: Vec::new(),
@@ -10443,6 +10797,7 @@ reviewer = "reviewer"
             thinking: None,
             cwd: None,
             worktree: false,
+            worktree_base: None,
             write_authority: Some("workspace_write".to_string()),
             write_roots: vec!["src".to_string()],
             exact_files: Vec::new(),
@@ -10578,6 +10933,7 @@ reviewer = "reviewer"
             thinking: None,
             cwd: None,
             worktree: false,
+            worktree_base: None,
             write_authority: Some("workspace_write".to_string()),
             write_roots: vec!["src".to_string()],
             exact_files: Vec::new(),
@@ -10902,6 +11258,7 @@ reviewer = "reviewer"
             thinking: None,
             cwd: None,
             worktree: false,
+            worktree_base: None,
             write_authority: Some("read_only".to_string()),
             write_roots: Vec::new(),
             exact_files: Vec::new(),

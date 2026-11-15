@@ -317,6 +317,15 @@ pub struct ExecEnv {
     pub policy: SandboxPolicy,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SandboxResourceLimits {
+    pub address_space_bytes: u64,
+    pub file_size_bytes: u64,
+    pub open_files: u64,
+    pub processes: u64,
+    pub cpu_seconds: u64,
+}
+
 impl ExecEnv {
     /// Get the program to execute (first element of command).
     pub fn program(&self) -> &str {
@@ -343,6 +352,42 @@ impl ExecEnv {
             return bwrap::spawn(move || command.spawn())?;
         }
         command.spawn()
+    }
+
+    pub fn spawn_background_limited(
+        &self,
+        command: std::process::Command,
+        limits: SandboxResourceLimits,
+    ) -> std::io::Result<std::process::Child> {
+        #[cfg(unix)]
+        let mut command = command;
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                command.pre_exec(move || {
+                    for (resource, value) in [
+                        (libc::RLIMIT_AS, limits.address_space_bytes),
+                        (libc::RLIMIT_FSIZE, limits.file_size_bytes),
+                        (libc::RLIMIT_NOFILE, limits.open_files),
+                        (libc::RLIMIT_NPROC, limits.processes),
+                        (libc::RLIMIT_CPU, limits.cpu_seconds),
+                    ] {
+                        let limit = libc::rlimit {
+                            rlim_cur: value as libc::rlim_t,
+                            rlim_max: value as libc::rlim_t,
+                        };
+                        if libc::setrlimit(resource, &raw const limit) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    Ok(())
+                });
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = limits;
+        self.spawn_background(command)
     }
 
     #[cfg(not(target_env = "ohos"))]

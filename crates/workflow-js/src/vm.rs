@@ -720,6 +720,42 @@ async fn tools_call_host(
     envelope.to_string()
 }
 
+async fn experimental_search_host(
+    call_json: String,
+    driver: Arc<dyn WorkflowDriver>,
+    cancel: CancelHandle,
+    host_runtime: Handle,
+) -> String {
+    let outcome = async {
+        let request: serde_json::Value = serde_json::from_str(&call_json)
+            .map_err(|error| TaskError::new(TaskErrorKind::Admission, error.to_string()))?;
+        if !request.is_object() {
+            return Err(TaskError::new(
+                TaskErrorKind::Admission,
+                "experimentalSearch(): expected an object",
+            ));
+        }
+        call_on_host(
+            &host_runtime,
+            &cancel,
+            TaskError::new(
+                TaskErrorKind::Cancelled,
+                "experimentalSearch(): run cancelled",
+            ),
+            move || async move { driver.experimental_search(request).await },
+        )
+        .await?
+        .map_err(|error| TaskError::new(TaskErrorKind::from(&error), error.to_string()))
+    }
+    .await;
+    match outcome {
+        Ok(result) => serde_json::json!({"result": result}).to_string(),
+        Err(TaskError { kind, message }) => {
+            serde_json::json!({"error": message, "error_kind": kind.as_str()}).to_string()
+        }
+    }
+}
+
 async fn tools_call_host_inner(
     call_json: String,
     invoker: Arc<dyn ToolInvoker>,
@@ -794,6 +830,21 @@ fn install_host(
                 let cancel = task_cancel.clone();
                 let host_runtime = task_runtime.clone();
                 async move { task_host(opts_json, driver, cancel, host_runtime).await }
+            })),
+        )
+        .map_err(init_err)?;
+
+    let search_driver = driver.clone();
+    let search_cancel = cancel.clone();
+    let search_runtime = host_runtime.clone();
+    globals
+        .set(
+            "__workflow_experimental_search",
+            Func::from(Async(move |call_json: String| {
+                let driver = search_driver.clone();
+                let cancel = search_cancel.clone();
+                let runtime = search_runtime.clone();
+                async move { experimental_search_host(call_json, driver, cancel, runtime).await }
             })),
         )
         .map_err(init_err)?;
@@ -1208,6 +1259,8 @@ struct TaskOptions {
     cwd: Option<String>,
     #[serde(default)]
     worktree: bool,
+    #[serde(alias = "worktree_base")]
+    worktree_base: Option<String>,
     /// `agent`-tool alias for worktree isolation: "shared" | "worktree".
     #[serde(default, alias = "workspace_policy")]
     workspace_policy: Option<String>,
@@ -1311,6 +1364,9 @@ fn parse_task_options(
     if write_authority.as_deref() == Some("worktree_write") && !options.worktree {
         return Err("task(): writeAuthority worktree_write requires worktree: true".to_string());
     }
+    if options.worktree_base.is_some() && !options.worktree {
+        return Err("task(): worktreeBase requires worktree: true".to_string());
+    }
     let role_kind = role.as_deref().and_then(task_role_kind);
     let type_kind = options.subagent_type.as_deref().and_then(task_role_kind);
     if let (Some(role_kind), Some(type_kind)) = (role_kind, type_kind)
@@ -1348,6 +1404,7 @@ fn parse_task_options(
         thinking: options.thinking,
         cwd,
         worktree: options.worktree,
+        worktree_base: options.worktree_base,
         write_authority,
         write_roots: options.write_roots,
         exact_files: options.exact_files,
@@ -1602,6 +1659,7 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
   // Capture temporary host bindings into this closure, then strip them from
   // globalThis so scripts only see the documented Workflow surface (#4129).
   const hostTask = __workflow_task;
+  const hostExperimentalSearch = __workflow_experimental_search;
   const hostLog = __workflow_log;
   const hostEverySlotFailed = __workflow_every_slot_failed;
   const hostSlotDropped = __workflow_slot_dropped;
@@ -1702,6 +1760,19 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
       throw err;
     }
     return envelope.value;
+  };
+
+  globalThis.task.experimentalSearch = async (request) => {
+    if (request === null || typeof request !== "object") {
+      throw new TypeError("experimentalSearch(): expected an object");
+    }
+    const envelope = JSON.parse(await hostExperimentalSearch(JSON.stringify(request)));
+    if (envelope.error !== undefined) {
+      const err = new Error(envelope.error);
+      err.kind = envelope.error_kind;
+      throw err;
+    }
+    return envelope.result;
   };
 
   globalThis.parallel = (thunks, opts) => {
@@ -1862,6 +1933,7 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
 
   for (const name of [
     "__workflow_task",
+    "__workflow_experimental_search",
     "__workflow_log",
     "__workflow_every_slot_failed",
     "__workflow_slot_dropped",

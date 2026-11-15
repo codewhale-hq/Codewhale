@@ -55,6 +55,9 @@ pub struct TaskRequest {
     pub cwd: Option<String>,
     /// Run the child in a fresh git worktree for parallel edits.
     pub worktree: bool,
+    /// Optional immutable Git commit to seed that worktree.
+    #[serde(default)]
+    pub worktree_base: Option<String>,
     /// Explicit child mutation authority. A write-capable value remains
     /// fail-closed unless at least one bounded scope below is declared.
     #[serde(default)]
@@ -276,6 +279,15 @@ pub trait WorkflowDriver: Send + Sync {
     /// Admit and start one task. Errors surface as a JS throw on the
     /// corresponding `task()` call.
     async fn spawn_task(&self, request: TaskRequest) -> Result<SpawnedTask, DriverError>;
+
+    async fn experimental_search(
+        &self,
+        _request: serde_json::Value,
+    ) -> Result<serde_json::Value, DriverError> {
+        Err(DriverError::Rejected(
+            "experimental search requires a host-frozen evaluator manifest".to_string(),
+        ))
+    }
 
     /// Cancel every in-flight task belonging to this run. Idempotent.
     fn cancel_all(&self);
