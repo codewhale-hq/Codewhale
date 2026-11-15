@@ -1418,35 +1418,6 @@ async fn observe_native_activation(
     }
 }
 
-type LocalDshRefineResult = (PluginInstallSource, bool, Option<(&'static str, String)>);
-
-async fn refine_local_dsh_source(
-    source: PluginInstallSource,
-    dir: PathBuf,
-) -> Result<LocalDshRefineResult, BrokerRefusal> {
-    tokio::task::spawn_blocking(move || match source {
-        PluginInstallSource::LocalPath(path) => match try_is_dsh_package(&path) {
-            Ok(true) => {
-                let npm_deps = has_unresolved_npm_dependencies(&dir).unwrap_or(false);
-                (PluginInstallSource::Dsh(path), npm_deps, None)
-            }
-            Ok(false) => (PluginInstallSource::LocalPath(path), false, None),
-            Err(error) => (
-                PluginInstallSource::LocalPath(path),
-                false,
-                Some(("not-bundle", format!("not-bundle: {error:#}"))),
-            ),
-        },
-        other => {
-            let npm_deps = matches!(other, PluginInstallSource::Dsh(_))
-                && has_unresolved_npm_dependencies(&dir).unwrap_or(false);
-            (other, npm_deps, None)
-        }
-    })
-    .await
-    .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))
-}
-
 enum McpActivationError {
     Cancelled,
     Failed(String),

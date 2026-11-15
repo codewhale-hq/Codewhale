@@ -5345,6 +5345,25 @@ async fn arm_refuses_without_carried_decision() {
     assert_eq!(f.asked.load(Ordering::SeqCst), 0);
 }
 
+type GateCallLog = Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
+
+fn allow_verdict(input: &Value, decision: NestedDecision) -> NestedCallVerdict {
+    NestedCallVerdict::Run {
+        name: String::new(),
+        input: input.clone(),
+        supports_parallel: false,
+        decision,
+        hook_context: None,
+    }
+}
+
+fn deny_verdict(message: &str) -> NestedCallVerdict {
+    NestedCallVerdict::Refused {
+        error: ToolError::permission_denied(message),
+        decision: NestedDecision::Denied,
+    }
+}
+
 fn install_gate_with_pool(
     f: &mut PluginsFixture,
     mcp_pool: Option<Arc<tokio::sync::Mutex<crate::mcp::McpPool>>>,
