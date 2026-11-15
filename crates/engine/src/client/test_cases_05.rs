@@ -148,25 +148,26 @@
 
     /// Request-body capture per effort level on direct and custom DeepSeek chat
     /// route: the wire must carry the documented low/high/max ladder, never an
-    /// invented value (#52). Only the first-party route carries the `thinking`
-    /// toggle; a gateway borrows the effort spelling and nothing else.
+    /// invented value (#52). Only the `deepseek`-shaped route carries the
+    /// `thinking` toggle; a gateway borrows the effort spelling and expresses
+    /// `off` as `none`.
     #[tokio::test]
     async fn deepseek_chat_wire_body_tracks_the_documented_effort_ladder() {
-        for (effort, expected_effort, expected_thinking) in [
-            (Some("low"), Some("low"), Some("enabled")),
-            (Some("medium"), Some("high"), Some("enabled")),
-            (Some("high"), Some("high"), Some("enabled")),
-            (Some("max"), Some("max"), Some("enabled")),
-            (Some("off"), None, Some("disabled")),
-            (None, None, None),
+        for (effort, expected_effort, expected_thinking, gateway_effort) in [
+            (Some("low"), Some("low"), Some("enabled"), Some("low")),
+            (Some("medium"), Some("high"), Some("enabled"), Some("high")),
+            (Some("high"), Some("high"), Some("enabled"), Some("high")),
+            (Some("max"), Some("max"), Some("enabled"), Some("max")),
+            (Some("off"), None, Some("disabled"), Some("none")),
+            (None, None, None, None),
         ] {
             for (custom, stream) in [(false, false), (false, true), (true, false), (true, true)] {
                 let body = capture_deepseek_chat_body_for_effort(effort, custom, stream).await;
                 assert_eq!(body["max_tokens"], 64);
                 assert_eq!(
                     body.get("reasoning_effort").and_then(Value::as_str),
-                    expected_effort,
-                    "reasoning_effort on the wire for {effort:?}: {body}"
+                    if custom { gateway_effort } else { expected_effort },
+                    "reasoning_effort on the wire for {effort:?} (custom={custom}): {body}"
                 );
                 let expected_toggle = if custom { None } else { expected_thinking };
                 assert_eq!(
@@ -1714,7 +1715,7 @@
     #[test]
     fn openai_compatible_gateway_gets_no_deepseek_thinking_dialect_from_a_model_name() {
         for (effort, expected_effort) in [
-            ("off", None),
+            ("off", Some("none")),
             ("low", Some("low")),
             ("high", Some("high")),
             ("max", Some("max")),
@@ -1734,13 +1735,81 @@
             assert_eq!(
                 body.get("reasoning_effort").and_then(Value::as_str),
                 expected_effort,
-                "the compatibility wire documents reasoning_effort ({effort}): {body}"
+                "the compatibility wire expresses the tier in its own spelling ({effort}): {body}"
             );
         }
     }
 
+    /// A `custom` row pointed at DeepSeek's own host is DeepSeek: it keeps the
+    /// native toggle, so `off` still disables thinking there rather than
+    /// degrading to the compatibility spelling.
     #[test]
-    fn the_first_party_deepseek_route_keeps_its_thinking_toggle() {
+    fn a_custom_row_on_the_official_deepseek_host_keeps_the_thinking_toggle() {
+        for base_url in [
+            "https://api.deepseek.com/v1",
+            "https://api.deepseek.com",
+            "https://api.deepseek.com/beta",
+            "https://api.deepseek.com/v1/",
+        ] {
+            for (effort, thinking, wire_effort) in [
+                ("off", "disabled", None),
+                ("max", "enabled", Some("max")),
+            ] {
+                let mut body = json!({});
+                chat::apply_route_reasoning_controls(
+                    &mut body,
+                    ProviderKind::Custom,
+                    base_url,
+                    "deepseek-flash",
+                    Some(effort),
+                );
+                assert_eq!(
+                    body.pointer("/thinking/type").and_then(Value::as_str),
+                    Some(thinking),
+                    "{base_url} {effort}"
+                );
+                assert_eq!(
+                    body.get("reasoning_effort").and_then(Value::as_str),
+                    wire_effort,
+                    "{base_url} {effort}"
+                );
+            }
+        }
+    }
+
+    /// The fourth host in the strict-tools list is a lookalike, not DeepSeek.
+    #[test]
+    fn a_lookalike_host_does_not_inherit_the_deepseek_dialect() {
+        for base_url in [
+            "https://api.deepseek.com.evil.example/v1",
+            "https://api.deepseek.com/v2",
+            "http://api.deepseek.com/v1",
+        ] {
+            let mut body = json!({});
+            chat::apply_route_reasoning_controls(
+                &mut body,
+                ProviderKind::Custom,
+                base_url,
+                "deepseek-flash",
+                Some("off"),
+            );
+            assert!(
+                body.get("thinking").is_none(),
+                "{base_url} must not inherit the native dialect: {body}"
+            );
+            assert_eq!(
+                body.get("reasoning_effort").and_then(Value::as_str),
+                Some("none"),
+                "{base_url}"
+            );
+        }
+    }
+
+    /// The `deepseek` identity sends its toggle for any host, because nothing in
+    /// the request pipeline checks the host for that label. Pinned so a future
+    /// endpoint-aware change is a deliberate one.
+    #[test]
+    fn the_deepseek_identity_keeps_its_thinking_toggle() {
         for (effort, thinking, wire_effort) in [
             ("off", "disabled", None),
             ("low", "enabled", Some("low")),

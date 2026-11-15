@@ -585,19 +585,40 @@ fn modelstudio_reasoning_effort_for_model(effort: &str) -> Option<&'static str> 
     }
 }
 
+/// Whether `base_url` is one of DeepSeek's own Chat Completions hosts.
+///
+/// Same host set `deepseek_base_url_supports_strict_tools` matches. A `custom`
+/// row pointed here speaks DeepSeek's native dialect even though its provider
+/// label says otherwise, so it must not lose the `thinking` toggle.
+fn is_exact_deepseek_chat_route(base_url: &str) -> bool {
+    let trimmed = base_url.trim_end_matches('/').to_ascii_lowercase();
+    matches!(
+        trimmed.as_str(),
+        "https://api.deepseek.com"
+            | "https://api.deepseek.com/v1"
+            | "https://api.deepseek.com/beta"
+            | "https://api.deepseeki.com"
+            | "https://api.deepseeki.com/v1"
+            | "https://api.deepseeki.com/beta"
+    )
+}
+
 /// Final reasoning-control pass shared by streaming and non-streaming Chat
 /// Completions requests. Route-specific shapers run after the generic provider
 /// layer so they can remove fields that are invalid for their exact endpoint.
 ///
-/// A `custom` route carrying a DeepSeek model id borrows only the effort
-/// spelling, not the `thinking` toggle. An OpenAI-compatible endpoint's request
-/// dialect is not knowable from the model id, and the gateway this was
-/// reproduced against rejects the toggle object outright on
-/// `/v1/chat/completions`. Two costs follow, both accepted deliberately:
-/// `off` cannot be expressed on such a route (the compatibility wire has no
-/// standard disable spelling, so it sends nothing), and a compatible
-/// endpoint's own tolerance of the toggle is neither probed nor assumed. The
-/// first-party `deepseek` identity still disables thinking explicitly.
+/// Which dialect a route speaks is decided by the endpoint, not by the model id.
+/// A route labeled `deepseek` speaks DeepSeek's, and so does a `custom` row
+/// pointed at DeepSeek's own host. A `custom` row pointed anywhere else is an
+/// unknown compatible endpoint: it keeps the documented `reasoning_effort`
+/// spelling and loses the native `thinking` object, which the gateway this was
+/// reproduced against rejects outright on `/v1/chat/completions`.
+///
+/// `off` is expressed as `reasoning_effort: "none"` on such a route. That is the
+/// OpenAI compatibility spelling this repository already maps `off` to for other
+/// compatible routes, and it was verified against the gateway above to stop
+/// thinking rather than merely omit the control. A gateway that refuses `"none"`
+/// reports its own error instead of silently thinking anyway.
 pub(super) fn apply_route_reasoning_controls(
     body: &mut Value,
     provider: ProviderKind,
@@ -605,22 +626,25 @@ pub(super) fn apply_route_reasoning_controls(
     model: &str,
     effort: Option<&str>,
 ) {
-    let gateway_carries_deepseek_model =
+    let custom_speaks_deepseek_dialect =
         provider == ProviderKind::Custom && requires_reasoning_content(model);
-    let reasoning_provider = if gateway_carries_deepseek_model {
+    let gateway_drops_deepseek_dialect =
+        custom_speaks_deepseek_dialect && !is_exact_deepseek_chat_route(base_url);
+    let reasoning_provider = if provider == ProviderKind::Deepseek || custom_speaks_deepseek_dialect
+    {
         ProviderKind::Deepseek
     } else {
         provider
     };
     apply_reasoning_effort(body, effort, reasoning_provider);
-    if gateway_carries_deepseek_model {
+    if gateway_drops_deepseek_dialect {
         if let Some(object) = body.as_object_mut() {
             object.remove("thinking");
         }
-        if effort.is_some_and(|effort| !reasoning_effort_enables_thinking(Some(effort))) {
-            logging::warn(
-                "Disabling thinking is not expressible on an OpenAI-compatible gateway; the request asks for no reasoning controls and the model's own default applies",
-            );
+        if effort.is_some_and(|effort| !reasoning_effort_enables_thinking(Some(effort)))
+            && body.get("reasoning_effort").is_none()
+        {
+            body["reasoning_effort"] = json!("none");
         }
     }
     codewhale_config::local_reasoning::apply_local_reasoning_controls(
