@@ -19767,6 +19767,7 @@ async fn plugin_api_404s_for_unknown_selector() -> Result<()> {
 
 #[tokio::test]
 async fn plugin_catalog_over_http_lists_and_toggles_feature_rows() -> Result<()> {
+    let _creator_guard = codewhale_engine::conversation_modes::CreatorAvailabilityGuard::set(None);
     let tmp = tempfile::tempdir()?;
     let root = tmp.path().join("runtime");
     let workspace = tmp.path().join("ws");

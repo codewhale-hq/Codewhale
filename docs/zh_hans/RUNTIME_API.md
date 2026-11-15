@@ -1122,12 +1122,12 @@ fork 还可能包含 `backtrack_depth_from_tail` 与 `dropped_turn_id`，而
   "default": "standard",
   "modes": [
     {"id": "standard", "name": "Standard", "description": "The everyday Codewhale agent with its normal tools and skills.", "source": "builtin", "available": true},
-    {"id": "creator", "name": "Creator", "description": "Build, inspect and test Codewhale plugins in this conversation, with the plugin authoring tools and guides loaded.", "source": "builtin", "available": false, "reason": "Creator mode is not ready in this build."}
+    {"id": "creator", "name": "Creator", "description": "Build, inspect and test Codewhale plugins in this conversation, with the plugin authoring tools and guides loaded.", "source": "builtin", "available": true}
   ]
 }
 ```
 
-仅当 `available` 为 `false` 时才有 `reason`；客户端应将该行显示为禁用并展示原因。
+仅当 `available` 为 `false` 时才有 `reason`（例如在 `[features]` 中关闭了 `plugin_creator`，或未找到受支持的 Node.js / Bun 插件运行时）；客户端应将该行显示为禁用并展示原因。
 线程的模式是其 `agent_preset` 字符串，可在 `POST /v1/threads` 时设置，或在线程尚无
 任何回合时通过 `PATCH /v1/threads/{id}` 修改。没有 `agent_preset` 的线程记录即
 `standard`（线程记录对 `standard` 省略该字段；`GET /v1/threads/summary` 的每一行总是

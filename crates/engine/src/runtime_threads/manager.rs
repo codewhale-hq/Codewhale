@@ -3060,6 +3060,7 @@ pub(super) struct ActiveThreadState {
     /// Real engines client-preflight before an in-progress record is written.
     /// Explicitly injected test engines own their client seam.
     pub(super) client_preflight_required: bool,
+    pub(super) plugin_creator_enabled: bool,
 }
 
 #[derive(Default)]
@@ -4265,9 +4266,45 @@ impl RuntimeThreadManager {
         }
         crate::tools::workflow::set_session_workflow_config(&self.workspace, workflow_table);
 
+        let new_plugin_creator_enabled = self
+            .read_config()
+            .features()
+            .enabled(codewhale_runtime::features::Feature::PluginCreator);
+        let stale_creator_engines: Vec<(String, EngineHandle)> = {
+            let mut active = self.active.lock().await;
+            let stale_ids: Vec<String> = active
+                .engines
+                .iter()
+                .filter_map(|(id, state)| {
+                    (state.active_turn.is_none()
+                        && state.plugin_creator_enabled != new_plugin_creator_enabled)
+                        .then_some(id.clone())
+                })
+                .collect();
+            let mut removed = Vec::with_capacity(stale_ids.len());
+            for id in stale_ids {
+                active.lru.retain(|entry| entry != &id);
+                if let Some(state) = active.engines.remove(&id) {
+                    removed.push((id, state.engine));
+                }
+            }
+            removed
+        };
+        let evicted_creator_threads: HashSet<&str> = stale_creator_engines
+            .iter()
+            .map(|(thread_id, _)| thread_id.as_str())
+            .collect();
+        for (thread_id, engine) in &stale_creator_engines {
+            self.auto_review_blocks.lock().remove(thread_id);
+            let _ = engine.send(Op::Shutdown).await;
+        }
+
         let settings = codewhale_runtime::settings::Settings::load().unwrap_or_default();
         let stream_chunk_timeout_secs = self.read_config().stream_chunk_timeout_secs();
         for (thread_id, engine, route, active_turn_id) in validated {
+            if evicted_creator_threads.contains(thread_id.as_str()) {
+                continue;
+            }
             let provider = route.identity.provider;
             let route_limits = known_route_limits(route.candidate.limits());
             let mut engine_compaction = runtime_compaction_config(
@@ -15791,6 +15828,45 @@ source_usage_records: Default::default(),
         Ok(RuntimeEventReplay { base_seq, batches })
     }
 
+    async fn cached_or_evict_stale_creator_engine(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<EngineHandle>> {
+        let plugin_creator_enabled = self
+            .read_config()
+            .features()
+            .enabled(codewhale_runtime::features::Feature::PluginCreator);
+        let stale_engine = {
+            let mut active = self.active.lock().await;
+            self.ensure_accepting_execution()?;
+            let stale = match active.engines.get(thread_id) {
+                Some(state) => {
+                    state.active_turn.is_none()
+                        && state.plugin_creator_enabled != plugin_creator_enabled
+                }
+                None => false,
+            };
+            if stale {
+                active.lru.retain(|entry| entry != thread_id);
+                active.engines.remove(thread_id).map(|state| state.engine)
+            } else if let Some(engine) = active
+                .engines
+                .get(thread_id)
+                .map(|state| state.engine.clone())
+            {
+                touch_lru(&mut active.lru, thread_id);
+                return Ok(Some(engine));
+            } else {
+                None
+            }
+        };
+        if let Some(engine) = stale_engine {
+            self.auto_review_blocks.lock().remove(thread_id);
+            let _ = engine.send(Op::Shutdown).await;
+        }
+        Ok(None)
+    }
+
     async fn ensure_engine_loaded(&self, thread_hint: &ThreadRecord) -> Result<EngineHandle> {
         self.ensure_accepting_execution()?;
         if let Some(environment) = thread_hint.environment.as_ref() {
@@ -15803,17 +15879,11 @@ source_usage_records: Default::default(),
                 executor.agent_id
             );
         }
+        if let Some(engine) = self
+            .cached_or_evict_stale_creator_engine(&thread_hint.id)
+            .await?
         {
-            let mut active = self.active.lock().await;
-            self.ensure_accepting_execution()?;
-            if let Some(engine) = active
-                .engines
-                .get(thread_hint.id.as_str())
-                .map(|state| state.engine.clone())
-            {
-                touch_lru(&mut active.lru, &thread_hint.id);
-                return Ok(engine);
-            }
+            return Ok(engine);
         }
 
         // Only one cache-miss build may run at a time. Recheck after taking
@@ -15821,17 +15891,11 @@ source_usage_records: Default::default(),
         let _engine_load = self.engine_load.lock().await;
         self.ensure_accepting_execution()?;
         loop {
+            if let Some(engine) = self
+                .cached_or_evict_stale_creator_engine(&thread_hint.id)
+                .await?
             {
-                let mut active = self.active.lock().await;
-                self.ensure_accepting_execution()?;
-                if let Some(engine) = active
-                    .engines
-                    .get(thread_hint.id.as_str())
-                    .map(|state| state.engine.clone())
-                {
-                    touch_lru(&mut active.lru, &thread_hint.id);
-                    return Ok(engine);
-                }
+                return Ok(engine);
             }
             let thread = {
                 let _thread_mutation = self.store.thread_mutation.lock();
@@ -15952,6 +16016,8 @@ source_usage_records: Default::default(),
                 manager
             };
             let features = cfg.features();
+            let plugin_creator_enabled =
+                features.enabled(codewhale_runtime::features::Feature::PluginCreator);
             let engine_cfg = EngineConfig {
                 user_input_responder: true,
                 session_checkpoint_backend: Some(
@@ -16296,6 +16362,7 @@ source_usage_records: Default::default(),
                     route_model,
                     hook_executor: Some(Arc::clone(&thread_hooks)),
                     client_preflight_required: true,
+                    plugin_creator_enabled,
                 },
             );
             touch_lru(&mut active.lru, &thread.id);
@@ -20215,6 +20282,9 @@ source_usage_records: Default::default(),
                 route_model: route.model,
                 hook_executor: None,
                 client_preflight_required: false,
+                plugin_creator_enabled: config
+                    .features()
+                    .enabled(codewhale_runtime::features::Feature::PluginCreator),
             },
         );
         touch_lru(&mut active.lru, thread_id);

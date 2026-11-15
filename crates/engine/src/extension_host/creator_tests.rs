@@ -22,10 +22,7 @@ use super::super::{
     materialize_bundle,
 };
 use super::{BUILTIN_MODULES, BuiltinModule, DshService};
-use crate::conversation_modes::{
-    CREATOR_KEY_OFF_REASON, CREATOR_LOADS_ITS_OWN_TOOLS, CREATOR_NOT_READY_REASON,
-    creator_unavailable_reason,
-};
+use crate::conversation_modes::{CREATOR_KEY_OFF_REASON, creator_unavailable_reason};
 use crate::tools::codemode::{ExtensionCaller, NestedCallGate};
 use crate::tools::registry::ToolRegistryBuilder;
 use crate::tools::spec::ToolContext;
@@ -129,23 +126,19 @@ async fn the_creator_module_starts_with_the_extension_host_switch_off_and_regist
 #[tokio::test]
 async fn nothing_starts_while_creator_is_unavailable() {
     let _unforced = crate::conversation_modes::CreatorAvailabilityGuard::unforced();
+    crate::conversation_modes::clear_probe_cache_for_tests();
     let _policy = TestPolicyGuard::extension_host(false);
     assert_eq!(
         creator_unavailable_reason(ExtensionHostOptions::default(), false).await,
         Some(CREATOR_KEY_OFF_REASON.to_string())
     );
-    if !CREATOR_LOADS_ITS_OWN_TOOLS {
-        assert_eq!(
-            creator_unavailable_reason(ExtensionHostOptions::default(), true).await,
-            Some(CREATOR_NOT_READY_REASON.to_string())
-        );
-    }
     let missing_runtime = ExtensionHostOptions {
         runtime: ExtensionHostRuntime::Node,
         node_override: Some(Path::new("/nonexistent/node-binary-cw-8091").to_path_buf()),
         ..Default::default()
     };
     let no_runtime_reason = creator_unavailable_reason(missing_runtime.clone(), true).await;
+    crate::conversation_modes::clear_probe_cache_for_tests();
     assert!(no_runtime_reason.is_some());
 
     let temp = tempfile::tempdir().unwrap();

@@ -17,6 +17,11 @@ fn print_frame(label: &str, tui: &mut Harness) {
 fn plugin_create_uses_engine_mode_availability_and_lists_help_in_real_terminal() {
     let workspace = make_sealed_workspace().expect("sealed workspace");
     std::fs::write(workspace.home().join(".codewhale/.onboarded"), "").unwrap();
+    std::fs::write(
+        workspace.home().join(".codewhale/config.toml"),
+        "[notifications]\nmethod = \"off\"\ncompletion_sound = \"off\"\n\n[extension_host]\nruntime = \"node\"\nnode = \"/nonexistent/codewhale-no-node\"\n",
+    )
+    .unwrap();
     let trust = workspace.workspace().join(".deepseek");
     std::fs::create_dir_all(&trust).unwrap();
     std::fs::write(trust.join("trusted"), "").unwrap();
@@ -49,12 +54,15 @@ fn plugin_create_uses_engine_mode_availability_and_lists_help_in_real_terminal()
     print_frame("/plugin help in the shipped binary", &mut tui);
 
     tui.type_line("/plugin create a word counter").unwrap();
-    tui.wait_for_text("Not ready yet in this version.", WAIT)
+    tui.wait_for_text("Creator mode needs a plugin runtime", WAIT)
         .unwrap();
     print_frame("/plugin create in the shipped binary", &mut tui);
     let frame = tui.frame().text();
+    let normalized = frame.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        frame.contains("Creator mode is not available: Not ready yet in this version."),
+        normalized.contains(
+            "Creator mode is not available: Creator mode needs a plugin runtime (Node.js or Bun)"
+        ),
         "{frame}"
     );
     assert!(

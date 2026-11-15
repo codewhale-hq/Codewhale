@@ -8471,6 +8471,7 @@ fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
             route_model: DEFAULT_TEXT_MODEL.to_string(),
             hook_executor: None,
             client_preflight_required: false,
+            plugin_creator_enabled: true,
         },
     );
     active.engines.insert(
@@ -8494,6 +8495,7 @@ fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
             route_model: DEFAULT_TEXT_MODEL.to_string(),
             hook_executor: None,
             client_preflight_required: false,
+            plugin_creator_enabled: true,
         },
     );
     active.lru.push_back("thr_a".to_string());

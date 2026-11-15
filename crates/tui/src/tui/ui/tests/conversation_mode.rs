@@ -1,5 +1,5 @@
 use super::*;
-use codewhale_engine::conversation_modes::{CREATOR_NOT_READY_REASON, CreatorAvailabilityGuard};
+use codewhale_engine::conversation_modes::{CREATOR_KEY_OFF_REASON, CreatorAvailabilityGuard};
 use codewhale_engine::core::engine::Engine;
 use codewhale_engine::core::ops::Op;
 
@@ -104,22 +104,19 @@ async fn unknown_and_unavailable_modes_are_refused_with_their_words() {
             "{refusal}"
         );
     }
-    let _missing = CreatorAvailabilityGuard::set(Some(CREATOR_NOT_READY_REASON));
+    let _missing = CreatorAvailabilityGuard::set(Some(CREATOR_KEY_OFF_REASON));
     let refusal =
         crate::tui::conversation_mode::set_in_place(&mut app, &config, &engine.handle, "creator")
             .await
             .expect_err("unavailable");
-    assert!(
-        refusal.contains("Not ready yet in this version."),
-        "{refusal}"
-    );
+    assert!(refusal.contains(CREATOR_KEY_OFF_REASON), "{refusal}");
     assert_eq!(app.conversation_mode, None);
 }
 
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn a_saved_unavailable_mode_loads_its_history_and_says_why() {
-    let _guard = CreatorAvailabilityGuard::set(Some(CREATOR_NOT_READY_REASON));
+    let _guard = CreatorAvailabilityGuard::set(Some(CREATOR_KEY_OFF_REASON));
     let hostile = [
         "creator".to_string(),
         "nonsense".to_string(),
@@ -155,7 +152,7 @@ async fn a_saved_unavailable_mode_loads_its_history_and_says_why() {
     apply_loaded_session(&mut app, &mut Config::default(), &session).expect("loads");
     assert!(app.history.iter().any(|cell| matches!(
         cell,
-        HistoryCell::System { content } if content.contains("Not ready yet in this version.")
+        HistoryCell::System { content } if content.contains(CREATOR_KEY_OFF_REASON)
     )));
 
     let mut standard = create_test_app();

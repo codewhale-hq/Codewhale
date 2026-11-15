@@ -368,7 +368,7 @@ impl ModalView for ModePickerView {
 mod tests {
     use super::*;
     use codewhale_engine::conversation_modes::{
-        self, CREATOR_NOT_READY_REASON, CreatorAvailabilityGuard,
+        self, CREATOR_KEY_OFF_REASON, CreatorAvailabilityGuard,
     };
     use crossterm::event::KeyModifiers;
     use ratatui::{Terminal, backend::TestBackend};
@@ -377,7 +377,7 @@ mod tests {
         ModePickerView::from_table(
             current,
             Locale::En,
-            &conversation_modes::table(Some(CREATOR_NOT_READY_REASON.to_string())),
+            &conversation_modes::table(Some(CREATOR_KEY_OFF_REASON.to_string())),
             conversation,
             locked,
         )
@@ -621,7 +621,7 @@ mod tests {
     async fn creator_row_is_listed_disabled_with_its_reason_while_unavailable() {
         let runtime_missing =
             "Creator mode needs a plugin runtime (Node.js or Bun), and none was found.";
-        for reason in [CREATOR_NOT_READY_REASON, runtime_missing] {
+        for reason in [CREATOR_KEY_OFF_REASON, runtime_missing] {
             let _guard = CreatorAvailabilityGuard::set(Some(reason));
             let table = conversation_modes::current_table(Default::default(), true).await;
             let view = ModePickerView::from_table(AppMode::Agent, Locale::En, &table, None, false);
@@ -631,13 +631,12 @@ mod tests {
                 text.contains("Creator mode"),
                 "listed, never hidden: {text}"
             );
-            let shown = if reason == CREATOR_NOT_READY_REASON {
-                "Not ready yet in this version."
+            let shown = if reason == CREATOR_KEY_OFF_REASON {
+                "Plugin creator is off in [features]"
             } else {
                 "Creator mode needs a plugin runtime"
             };
             assert!(text.contains(shown), "{text}");
-            assert!(!text.contains(CREATOR_NOT_READY_REASON));
             let mut view =
                 ModePickerView::from_table(AppMode::Agent, Locale::En, &table, None, false);
             assert_eq!(view.entries().len(), 3);

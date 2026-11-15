@@ -882,7 +882,11 @@ async fn extension_tool_is_deferred_gated_and_attributed_on_the_model_path() {
 
     handle.send(Op::Shutdown).await.expect("shutdown engine");
     task.await.expect("engine task");
-    assert_eq!(manager.spawn_attempts(), 1, "one host for the process");
+    assert_eq!(
+        manager.tier_spawn_attempts(crate::extension_host::tier::HostTier::Plugin),
+        1,
+        "one host for the process"
+    );
     manager.shutdown().await;
 }
 
@@ -1038,7 +1042,10 @@ async fn extension_host_flag_off_never_spawns_the_host() {
     );
     handle.send(Op::Shutdown).await.expect("shutdown engine");
     task.await.expect("engine task");
-    assert_eq!(manager.spawn_attempts(), 0);
+    assert_eq!(
+        manager.tier_spawn_attempts(crate::extension_host::tier::HostTier::Plugin),
+        0
+    );
     assert_eq!(manager.status(), crate::extension_host::HostStatus::Idle);
 }
 

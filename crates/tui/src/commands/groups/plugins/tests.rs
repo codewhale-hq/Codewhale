@@ -2224,15 +2224,13 @@ fn plugin_create_without_an_idea_starts_creator_with_an_empty_composer() {
 
 #[test]
 fn plugin_create_says_why_when_creator_is_unavailable_and_changes_nothing() {
-    use codewhale_engine::conversation_modes::{
-        CREATOR_NOT_READY_REASON, CreatorAvailabilityGuard,
-    };
+    use codewhale_engine::conversation_modes::{CREATOR_KEY_OFF_REASON, CreatorAvailabilityGuard};
 
     let _home = crate::test_support::SealedHome::new();
     let root = TempDir::new().unwrap();
 
     for (forced_reason, expected_substring) in [
-        (CREATOR_NOT_READY_REASON, "Not ready yet in this version."),
+        (CREATOR_KEY_OFF_REASON, CREATOR_KEY_OFF_REASON),
         (
             "No plugin runtime was found.",
             "No plugin runtime was found.",
@@ -2380,14 +2378,12 @@ fn plugin_help_lists_create() {
 
 #[test]
 fn plugin_create_and_new_creator_give_the_same_refusal() {
-    use codewhale_engine::conversation_modes::{
-        CREATOR_NOT_READY_REASON, CreatorAvailabilityGuard,
-    };
+    use codewhale_engine::conversation_modes::{CREATOR_KEY_OFF_REASON, CreatorAvailabilityGuard};
 
     let _home = crate::test_support::SealedHome::new();
     let root = TempDir::new().unwrap();
 
-    for reason in [CREATOR_NOT_READY_REASON, "No plugin runtime was found."] {
+    for reason in [CREATOR_KEY_OFF_REASON, "No plugin runtime was found."] {
         let _guard = CreatorAvailabilityGuard::set(Some(reason));
         let (mut app, _temp) = create_test_app(root.path());
         app.current_session_id = Some("old-session".to_string());

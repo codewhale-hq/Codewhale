@@ -1604,12 +1604,12 @@ a conversation:
   "default": "standard",
   "modes": [
     {"id": "standard", "name": "Standard", "description": "The everyday Codewhale agent with its normal tools and skills.", "source": "builtin", "available": true},
-    {"id": "creator", "name": "Creator", "description": "Build, inspect and test Codewhale plugins in this conversation, with the plugin authoring tools and guides loaded.", "source": "builtin", "available": false, "reason": "Creator mode is not ready in this build."}
+    {"id": "creator", "name": "Creator", "description": "Build, inspect and test Codewhale plugins in this conversation, with the plugin authoring tools and guides loaded.", "source": "builtin", "available": true}
   ]
 }
 ```
 
-`reason` appears only when `available` is `false`; a client lists the row
+`reason` appears only when `available` is `false` (for example, when `[features] plugin_creator` is disabled or no supported Node.js or Bun plugin runtime is found); a client lists the row
 disabled and shows it. A thread's mode is its `agent_preset` string. Set it on
 `POST /v1/threads`, or with `PATCH /v1/threads/{id}` while the thread has no
 turn. A thread record with no `agent_preset` is `standard`, and the thread

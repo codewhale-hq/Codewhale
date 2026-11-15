@@ -338,10 +338,13 @@ fn exec_conversation_mode_flag_sets_a_new_session_mode() {
     }
     {
         let _unavailable = CreatorAvailabilityGuard::set(Some(
-            codewhale_engine::conversation_modes::CREATOR_NOT_READY_REASON,
+            codewhale_engine::conversation_modes::CREATOR_KEY_OFF_REASON,
         ));
         let refused = resolve(Some("creator")).expect_err("unavailable");
-        assert!(refused.contains("Not ready yet in this version."), "{refused}");
+        assert!(
+            refused.contains(codewhale_engine::conversation_modes::CREATOR_KEY_OFF_REASON),
+            "{refused}"
+        );
     }
 
     let mut saved = saved_exec_session("deepseek", "deepseek-v4-pro");
@@ -385,7 +388,7 @@ fn exec_conversation_mode_flag_that_differs_from_a_resumed_session_is_refused_be
         ))
     };
     let _unavailable = CreatorAvailabilityGuard::set(Some(
-        codewhale_engine::conversation_modes::CREATOR_NOT_READY_REASON,
+        codewhale_engine::conversation_modes::CREATOR_KEY_OFF_REASON,
     ));
     let standard = saved_exec_session("deepseek", "deepseek-v4-pro");
     let mut creator = saved_exec_session("deepseek", "deepseek-v4-pro");
