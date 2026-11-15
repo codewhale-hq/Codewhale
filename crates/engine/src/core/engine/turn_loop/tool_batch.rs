@@ -51,7 +51,12 @@ impl Engine {
         let mcp_pool = if !fleet_report_response
             && self.config.features.enabled(Feature::Mcp)
             && tool_uses.iter().any(|tool| {
-                McpPool::is_mcp_tool(&tool.name) || tool.name == EXECUTE_TOOLS_TOOL_NAME
+                McpPool::is_mcp_tool(&tool.name)
+                    || tool.name == EXECUTE_TOOLS_TOOL_NAME
+                    || tool_policy
+                        .registry
+                        .get(&tool.name)
+                        .is_some_and(|spec| spec.extension_caller().is_some())
             }) {
             match self.ensure_mcp_pool().await {
                 Ok(pool) => Some(pool),
