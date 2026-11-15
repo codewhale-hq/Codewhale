@@ -13292,7 +13292,7 @@ mod tests {
             assert_eq!(decision.rule_id.as_deref(), Some("print-credentials"));
         }
 
-        let mut outside_cmds = vec![
+        let outside_cmds = [
             format!("cat {}", outside.join("note.txt").display()),
             format!("ls {}", outside.display()),
             "head ~/.zshrc".to_string(),
@@ -13308,9 +13308,9 @@ mod tests {
                 "python3 -c \"print(open('{}').read())\"",
                 outside.join("note.txt").display()
             ),
+            #[cfg(unix)]
+            "cat escape_link.txt".to_string(),
         ];
-        #[cfg(unix)]
-        outside_cmds.push("cat escape_link.txt".to_string());
 
         for cmd in &outside_cmds {
             let ctx = AutoReviewContext::from_tool_call_with_snapshots_and_home(
