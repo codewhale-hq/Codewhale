@@ -4401,7 +4401,36 @@ impl App {
         call_digest: Option<String>,
         action_summary: String,
     ) {
-        let approvable = receipt_id.as_deref().is_some_and(|id| !id.is_empty())
+        self.record_auto_review_blocked_receipt_for_agent(
+            None,
+            receipt_id,
+            tool_id,
+            tool_name,
+            gate,
+            verdict,
+            rule,
+            reason,
+            call_digest,
+            action_summary,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_auto_review_blocked_receipt_for_agent(
+        &mut self,
+        agent_id: Option<String>,
+        receipt_id: Option<String>,
+        tool_id: String,
+        tool_name: String,
+        gate: String,
+        verdict: String,
+        rule: Option<String>,
+        reason: String,
+        call_digest: Option<String>,
+        action_summary: String,
+    ) {
+        let approvable = agent_id.is_none()
+            && receipt_id.as_deref().is_some_and(|id| !id.is_empty())
             && call_digest
                 .as_deref()
                 .is_some_and(|digest| !digest.is_empty());
@@ -4430,6 +4459,7 @@ impl App {
                 verdict,
                 approved: false,
                 approvable,
+                agent_id,
             },
         );
     }

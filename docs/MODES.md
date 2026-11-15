@@ -398,7 +398,19 @@ auto-approve bit:
   policy (proven-safe calls run; publish-like and destructive background work
   is hard-blocked) and, for holds it cannot prove safe, the same one-shot
   model guardian using the child's own session client. No prompt is ever
-  opened for a child; an unavailable guardian denies, fail closed.
+  opened for a child; an unavailable guardian denies, fail closed. When a child
+  returns to an Auto-Review parent after running one or more tool calls, the
+  guardian reviews its executed action list once (tool names and compacted,
+  redacted call inputs only — never tool results or child report prose)
+  against the root owner messages (`person_messages`), approved plan, and
+  pinned project instructions. If the reviewer flags a concern or cannot run
+  (unavailable, timed out, cancelled, or over the guardian context budget),
+  the engine prepends a sanitized `[Auto-Review warning: ...]` banner at the
+  top of the report delivered back to the parent. Auto-Review blocks from
+  child calls and return reviews are recorded in the parent's blocked-actions
+  list (`/permissions blocked` and `GET /v1/threads/{id}/auto-review/blocks`)
+  as `[sub-agent <id>]` entries with retry approval disallowed
+  (`approvable: false`).
 - **Ask** and **Accept Edits**: a call the role may delegate runs. A held call is raised as an
   approval prompt in the parent's UI (`agent:<id>:approval:<n>`) when the
   host is an interactive TUI; the worker waits visibly (`waiting for user`)

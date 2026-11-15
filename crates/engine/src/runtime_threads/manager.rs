@@ -19223,12 +19223,8 @@ source_usage_records: Default::default(),
                     }
                     latest_goal_snapshot = Some(snapshot);
                 }
-                EngineEvent::ToolGateDecision {
-                    agent_id, decision, ..
-                } => {
-                    if agent_id.is_none()
-                        && decision != crate::core::events::ToolGateVerdict::Allowed
-                    {
+                EngineEvent::ToolGateDecision { decision, .. } => {
+                    if decision != crate::core::events::ToolGateVerdict::Allowed {
                         self.auto_review_blocks
                             .lock()
                             .insert(thread_id.clone(), engine.list_auto_review_blocks());
@@ -20206,6 +20202,7 @@ source_usage_records: Default::default(),
                 verdict: verdict.to_string(),
                 approved: false,
                 approvable,
+                agent_id: None,
             },
         );
         Ok(approvable.then_some(receipt_id))

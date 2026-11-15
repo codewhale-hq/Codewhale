@@ -36660,3 +36660,31 @@ fn auto_review_tui_r_retry_and_pause_posture_sync() {
     assert!(app.set_mode(AppMode::Agent));
     assert_eq!(app.approval_mode, ApprovalMode::Suggest);
 }
+
+#[test]
+fn child_auto_review_block_receipt_stays_non_approvable() {
+    let mut app = create_test_app();
+    app.mode = AppMode::Agent;
+    app.set_agent_runtime_baseline(false, false, ApprovalMode::Auto);
+    app.vim_enabled = false;
+    app.input.clear();
+
+    app.record_auto_review_blocked_receipt_for_agent(
+        Some("agent-child-1".into()),
+        None,
+        "subagent-return:agent-child-1".into(),
+        "subagent_return".into(),
+        "auto_review_guardian".into(),
+        "denied".into(),
+        Some("subagent-return".into()),
+        "flagged call".into(),
+        None,
+        "[sub-agent agent-child-1] return review (1 actions)".into(),
+    );
+    assert_eq!(app.auto_review_blocked_receipts.len(), 1);
+    let entry = &app.auto_review_blocked_receipts[0];
+    assert_eq!(entry.agent_id.as_deref(), Some("agent-child-1"));
+    assert!(!entry.approvable);
+    assert!(app.latest_approvable_auto_review_block().is_none());
+    assert!(!super::event_loop::queue_auto_review_retry_from_r(&mut app));
+}

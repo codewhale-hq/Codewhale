@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use crate::core::authority::auto_review::{
     AutoReviewAction, DEFAULT_GUARDIAN_POLICY, MAX_REVIEW_CONTEXT_BYTES, ReviewerRiskLevel,
-    ReviewerVerdict, parse_reviewer_verdict,
+    ReviewerVerdict, SUBAGENT_RETURN_GUARDIAN_POLICY, parse_reviewer_verdict,
 };
 use crate::core::model_client::ModelClient;
 use crate::tools::spec::ToolError;
@@ -194,9 +194,45 @@ pub async fn consult_reviewer_with_retry_approval(
     .await
 }
 
+pub async fn consult_subagent_return_reviewer(
+    client: &dyn ModelClient,
+    configured_model: Option<&str>,
+    context_text: &str,
+    cancel_token: &CancellationToken,
+) -> ReviewerResult {
+    consult_reviewer_inner(
+        client,
+        configured_model,
+        SUBAGENT_RETURN_GUARDIAN_POLICY,
+        context_text,
+        cancel_token,
+        false,
+    )
+    .await
+}
+
 pub async fn consult_reviewer_with_model_and_retry(
     client: &dyn ModelClient,
     configured_model: Option<&str>,
+    context_text: &str,
+    cancel_token: &CancellationToken,
+    person_approved_retry: bool,
+) -> ReviewerResult {
+    consult_reviewer_inner(
+        client,
+        configured_model,
+        DEFAULT_GUARDIAN_POLICY,
+        context_text,
+        cancel_token,
+        person_approved_retry,
+    )
+    .await
+}
+
+async fn consult_reviewer_inner(
+    client: &dyn ModelClient,
+    configured_model: Option<&str>,
+    system_policy: &str,
     context_text: &str,
     cancel_token: &CancellationToken,
     person_approved_retry: bool,
@@ -222,7 +258,7 @@ pub async fn consult_reviewer_with_model_and_retry(
             }],
         }],
         max_tokens: REVIEWER_MAX_OUTPUT_TOKENS,
-        system: Some(SystemPrompt::Text(DEFAULT_GUARDIAN_POLICY.to_string())),
+        system: Some(SystemPrompt::Text(system_policy.to_string())),
         tools: None,
         tool_choice: None,
         metadata: None,

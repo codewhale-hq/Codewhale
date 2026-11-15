@@ -27262,3 +27262,135 @@ async fn runtime_auto_review_blocks_approve_owner_only_and_paused_posture() -> R
     unattached.shutdown_and_wait().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn runtime_threads_syncs_child_auto_review_blocks_without_retry_grant() -> Result<()> {
+    use crate::core::engine::AutoReviewRetryApprovalError;
+    use crate::runtime_threads::manager::ApprovalResponder;
+
+    let tmp = tempfile::tempdir()?;
+    let workspace = tmp.path().join("ws");
+    std::fs::create_dir_all(&workspace)?;
+    let plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace));
+    let owner_mgr = RuntimeThreadManager::open_owner_host(
+        Config::default(),
+        workspace.clone(),
+        test_manager_config(tmp.path().join("owner")),
+        plugins,
+        None,
+        None,
+    )?;
+    let thread = owner_mgr
+        .create_thread(CreateThreadRequest {
+            permission_posture: Some("auto-review".to_string()),
+            workspace: Some(workspace),
+            ..Default::default()
+        })
+        .await?;
+    let mut harness = mock_engine_handle();
+    owner_mgr
+        .install_test_engine(&thread.id, harness.handle.clone())
+        .await?;
+    let turn = owner_mgr
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "delegate task".into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), harness.rx_op.recv())
+        .await?
+        .context("expected SendMessage op")?;
+    owner_mgr
+        .register_auto_review_block_for_test(
+            &thread.id,
+            "subagent_return",
+            &serde_json::json!({"agent_id": "agent_child_rt"}),
+            Some("subagent-return"),
+            "unexpected network script",
+            "denied",
+            false,
+        )
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::ToolGateDecision {
+            agent_id: Some("agent_child_rt".to_string()),
+            tool_id: "subagent-return:agent_child_rt".to_string(),
+            tool_name: "subagent_return".to_string(),
+            gate: crate::core::events::ToolGate::AutoReviewGuardian,
+            decision: crate::core::events::ToolGateVerdict::Denied,
+            risk: Some("high".to_string()),
+            reviewer_model: Some("mock".to_string()),
+            reason: "unexpected network script".to_string(),
+            rule: Some("subagent-return".to_string()),
+            receipt_id: None,
+            call_digest: None,
+            action_summary: Some("return review (1 actions)".to_string()),
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "done".to_string(),
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage::default(),
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+    let terminal = wait_for_terminal_turn(&owner_mgr, &turn.id).await?;
+    assert_eq!(terminal.status, RuntimeTurnStatus::Completed);
+    let synced_blocks = owner_mgr
+        .auto_review_blocks
+        .lock()
+        .get(&thread.id)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(synced_blocks.len(), 1);
+    let blocks = owner_mgr.list_auto_review_blocks(&thread.id, None).await?;
+    assert_eq!(blocks.len(), 1);
+    assert!(!blocks[0].approvable);
+    let approve_err = owner_mgr
+        .approve_auto_review_retry(
+            &thread.id,
+            &blocks[0].receipt_id,
+            Some(ApprovalResponder::Tui),
+            None,
+        )
+        .await
+        .expect_err("child return block cannot be approved for parent retry");
+    assert!(
+        matches!(
+            approve_err.downcast_ref::<AutoReviewRetryApprovalError>(),
+            Some(AutoReviewRetryApprovalError::InvalidTarget(_))
+        ),
+        "{approve_err:#}"
+    );
+    drop(harness);
+    owner_mgr.shutdown_and_wait().await?;
+    Ok(())
+}

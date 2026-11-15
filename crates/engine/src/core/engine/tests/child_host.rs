@@ -2120,3 +2120,198 @@ async fn detached_background_subagent_receives_no_parent_person_intent() {
     result.unwrap();
     assert_eq!(mock.call_count(), 3);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn child_auto_review_blocks_propagate_to_parent_without_retry_grant_or_pause() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    let dir = tempdir().unwrap();
+    let _home = crate::test_support::SealedHome::at(dir.path());
+    std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+    let mut api_parent =
+        Config::default().with_legacy_root(Some("child-local-fixture".into()), None);
+    api_parent.allow_shell = Some(true);
+    let (mut parent, mut parent_handle) = Engine::new(
+        EngineConfig {
+            workspace: dir.path().into(),
+            session_id: Some("origin-session".into()),
+            allow_shell: true,
+            snapshots_enabled: false,
+            memory_enabled: false,
+            ..Default::default()
+        },
+        &api_parent,
+    );
+    parent.config.features.disable(Feature::Mcp);
+    parent.attach_owner_surface_for_tests(&mut parent_handle);
+    parent_handle.set_auto_review_authority_for_test(ApprovalMode::Auto);
+    let (_, _, captured, _) = fixture(dir.path(), None);
+
+    let mut runtime = captured
+        .runtime
+        .clone()
+        .with_foreground_children(Arc::new(
+            crate::tools::subagent::ForegroundChildRegistry::new(),
+        ))
+        .with_parent_origin(
+            crate::core::authority::auto_review::RunOrigin::Interactive,
+            true,
+        )
+        .with_parent_review_context(
+            vec!["inspect only".to_string()],
+            None,
+            crate::project_context::PinnedProjectInstructions {
+                user_level: None,
+                user_sha256: None,
+                repository_level: None,
+                repository_sha256: None,
+                loaded_paths: Vec::new(),
+            },
+        )
+        .with_parent_auto_review_state(Arc::clone(&parent.auto_review_state));
+    runtime.worker_profile =
+        codewhale_agent_contract::worker_profile::WorkerRuntimeProfile::for_role(FleetRole::Worker);
+    runtime.context.live_posture = None;
+    runtime.context.approval_mode = ApprovalMode::Auto;
+    runtime.context.auto_approve = false;
+
+    let child_authority = ChildAuthority::capture(
+        runtime,
+        FleetRole::Worker,
+        "child-block-prop".into(),
+        "worker".into(),
+        None,
+    );
+    let mut owned_authority = child_authority.as_ref().clone();
+    {
+        let mut manager = owned_authority.runtime.manager.write().await;
+        owned_authority.owner_agent_id =
+            manager.insert_test_running_agent("core-child-block-prop", dir.path());
+        manager.assign_test_session_owner(&owned_authority.owner_agent_id, "origin-session");
+    }
+    let child_agent_id = owned_authority.owner_agent_id.clone();
+    let api = owned_authority
+        .runtime
+        .api_config
+        .as_deref()
+        .unwrap()
+        .clone();
+    let authority = Arc::new(owned_authority);
+    let job = crate::tools::subagent::engine::ChildJob::admitted(
+        authority.clone(),
+        crate::tools::subagent::SubAgentAssignment {
+            objective: "try sensitive steps".into(),
+            role: None,
+            native_preset: None,
+        },
+        Instant::now(),
+        6,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+    let (mut core, handle) = Engine::new_child_admitted(
+        EngineConfig {
+            workspace: dir.path().into(),
+            model: DEFAULT_TEXT_MODEL.into(),
+            max_steps: job.max_steps,
+            allow_shell: true,
+            ..Default::default()
+        },
+        &api,
+        authority,
+        SystemPrompt::Text("try sensitive steps".into()),
+        None,
+    )
+    .unwrap();
+
+    let mock = Arc::new(MockLlmClient::new(Vec::new()).with_model(DEFAULT_TEXT_MODEL));
+    mock.push_factory(|_| {
+        canned::tool_call_turn("call-child-det", "bash", r#"{"command":"npm publish"}"#)
+    });
+    mock.push_factory(|_| {
+        canned::tool_call_turn(
+            "call-child-guard-1",
+            "File",
+            r#"{"action":"write","path":".env","content":"SECRET=1\n"}"#,
+        )
+    });
+    mock.push_factory(|_| {
+        canned::simple_text_turn(
+            r#"{"risk_level":"high","decision":"deny","reason":"writing .env rejected"}"#,
+        )
+    });
+    mock.push_factory(|_| {
+        canned::tool_call_turn(
+            "call-child-guard-2",
+            "File",
+            r#"{"action":"write","path":".env","content":"SECRET=2\n"}"#,
+        )
+    });
+    mock.push_factory(|_| {
+        canned::simple_text_turn(
+            r#"{"risk_level":"high","decision":"deny","reason":"still rejected"}"#,
+        )
+    });
+    mock.push_factory(|_| {
+        canned::tool_call_turn(
+            "call-child-guard-3",
+            "File",
+            r#"{"action":"write","path":".env","content":"SECRET=3\n"}"#,
+        )
+    });
+    mock.push_factory(|_| {
+        canned::simple_text_turn(
+            r#"{"risk_level":"high","decision":"deny","reason":"third block no pause"}"#,
+        )
+    });
+    mock.push_factory(|_| canned::simple_text_turn("Child completed after blocks."));
+
+    core.model_client = Some(mock.clone());
+    core.install_child_job(job.clone(), Vec::new()).unwrap();
+    let spec = core
+        .child_turn_spec(
+            "try sensitive steps".into(),
+            job.authority.grant.scope.clone(),
+        )
+        .unwrap();
+    handle.send(Op::SendMessage(spec)).await.unwrap();
+
+    let child_auto_review = Arc::clone(&core.auto_review_state);
+    let collect = async {
+        let mut receiver = handle.rx_event.write().await;
+        let mut events = Vec::new();
+        while let Some(event) = receiver.recv().await {
+            events.push(event);
+        }
+        events
+    };
+    let (result, events) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(Box::pin(core.run_child()), collect)
+    })
+    .await
+    .expect("child finishes");
+    result.unwrap();
+
+    assert!(child_auto_review.lock().blocked_actions().is_empty());
+    let blocks = parent_handle.list_auto_review_blocks();
+    assert_eq!(blocks.len(), 4, "{blocks:?}");
+    let prefix = format!("[sub-agent {child_agent_id}] ");
+    for block in &blocks {
+        assert_eq!(block.agent_id.as_deref(), Some(child_agent_id.as_str()));
+        assert!(!block.approvable, "{block:?}");
+        assert!(block.action_summary.starts_with(&prefix), "{block:?}");
+        assert!(matches!(
+            parent_handle.approve_auto_review_retry(&block.receipt_id),
+            Err(AutoReviewRetryApprovalError::InvalidTarget(_))
+        ));
+    }
+    assert_eq!(
+        parent_handle.runtime_permission_authority().approval_mode,
+        ApprovalMode::Auto
+    );
+    assert!(!events.iter().any(|e| matches!(
+        e,
+        Event::ApprovalRequired { .. } | Event::AutoReviewPaused { .. }
+    )));
+}

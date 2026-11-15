@@ -39,6 +39,18 @@ impl From<ChildHostSetup> for ChildHostState {
         }
     }
 }
+impl ChildHostState {
+    pub(super) fn record_executed_action(&self, tool_name: &str, tool_input: &Value) {
+        let action = crate::core::authority::auto_review::AutoReviewChildAction::from_tool_call(
+            tool_name, tool_input,
+        );
+        self.authority
+            .executed_actions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(action);
+    }
+}
 impl Engine {
     pub(super) fn new_tool_execution_id(&self) -> String {
         self.child_host.as_ref().map_or_else(

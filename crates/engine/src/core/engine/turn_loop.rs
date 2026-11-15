@@ -1373,6 +1373,58 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn record_auto_review_block(
+        &self,
+        in_auto_mode: bool,
+        owner_present: bool,
+        is_child_host: bool,
+        allow_retry_receipt: bool,
+        tool_id: &str,
+        tool_name: &str,
+        tool_input: &Value,
+        rule: Option<&str>,
+        reason: &str,
+        gate: &str,
+        verdict: &str,
+    ) -> crate::core::authority::auto_review::RecordedAutoReviewBlock {
+        let recorded = self.auto_review_state.lock().record_block(
+            in_auto_mode,
+            owner_present,
+            is_child_host,
+            allow_retry_receipt,
+            tool_id,
+            tool_name,
+            tool_input,
+            rule,
+            reason,
+            gate,
+            verdict,
+        );
+        if in_auto_mode
+            && is_child_host
+            && let Some(child_host) = self.child_host.as_ref()
+            && let Some(parent_state) = child_host
+                .authority
+                .runtime
+                .parent_auto_review_state
+                .as_ref()
+        {
+            parent_state.lock().record_child_block(
+                &child_host.authority.owner_agent_id,
+                tool_id,
+                tool_name,
+                tool_input,
+                &recorded.action_summary,
+                rule,
+                reason,
+                gate,
+                verdict,
+            );
+        }
+        recorded
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn consult_auto_review_guardian(
         &self,
         client: &dyn crate::core::model_client::ModelClient,
@@ -1413,7 +1465,7 @@ impl Engine {
                     let risk = outcome.audit_risk();
                     let is_child_host = self.child_host.is_some();
                     let owner_present = self.current_turn_authority().owner_present();
-                    let recorded = self.auto_review_state.lock().record_block(
+                    let recorded = self.record_auto_review_block(
                         in_auto_mode,
                         owner_present,
                         is_child_host,
@@ -1620,7 +1672,7 @@ impl Engine {
             }
             super::reviewer::ReviewerOutcome::Deny { reason, .. } => {
                 let effective_rule = soft_rule.unwrap_or("guardian");
-                let recorded = self.auto_review_state.lock().record_block(
+                let recorded = self.record_auto_review_block(
                     in_auto_mode,
                     owner_present,
                     is_child_host,
@@ -1646,7 +1698,7 @@ impl Engine {
                 )
             }
             super::reviewer::ReviewerOutcome::Unavailable { reason } => {
-                let recorded = self.auto_review_state.lock().record_block(
+                let recorded = self.record_auto_review_block(
                     in_auto_mode,
                     owner_present,
                     is_child_host,
@@ -2718,7 +2770,7 @@ impl Engine {
                                     crate::core::authority::auto_review::deterministic_rule_label(
                                         &audit_event,
                                     );
-                                let recorded = self.auto_review_state.lock().record_block(
+                                let recorded = self.record_auto_review_block(
                                     batch_approval_mode == ApprovalMode::Auto,
                                     self.current_turn_authority().owner_present(),
                                     self.child_host.is_some(),
@@ -5084,6 +5136,9 @@ impl Engine {
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(true);
                     if tool_was_executed {
+                        if let Some(child_host) = self.child_host.as_ref() {
+                            child_host.record_executed_action(&tool_name_for_ws, &tool_input);
+                        }
                         self.session.working_set.observe_tool_call(
                             &tool_name_for_ws,
                             &tool_input,

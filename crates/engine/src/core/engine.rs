@@ -6771,7 +6771,8 @@ impl Engine {
                     self.session.person_messages(),
                     self.session.approved_plan().map(str::to_string),
                     self.session.pinned_project_instructions.clone(),
-                );
+                )
+                .with_parent_auto_review_state(Arc::clone(&self.auto_review_state));
                 if matches!(input_policy.mode, AppMode::Plan) {
                     rt.worker_profile = WorkerRuntimeProfile::for_role(FleetRole::Planner);
                 }
@@ -8695,6 +8696,12 @@ impl Engine {
             self.session.person_messages(),
             self.session.approved_plan().map(str::to_string),
             self.session.pinned_project_instructions.clone(),
+        )
+        .with_parent_auto_review_state(
+            self.child_host
+                .as_ref()
+                .and_then(|child| child.authority.runtime.parent_auto_review_state.clone())
+                .unwrap_or_else(|| Arc::clone(&self.auto_review_state)),
         );
         if matches!(mode, AppMode::Plan) {
             rt.worker_profile = WorkerRuntimeProfile::for_role(FleetRole::Planner);

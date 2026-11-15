@@ -5150,24 +5150,26 @@ pub(crate) async fn run_event_loop(
                         tokio::task::spawn_blocking(move || {
                             log_sensitive_event("tool.gate.decision", audit);
                         });
+                        let is_block = matches!(
+                            decision,
+                            codewhale_engine::core::events::ToolGateVerdict::Denied
+                                | codewhale_engine::core::events::ToolGateVerdict::Unavailable
+                        );
+                        let is_auto_review_gate = matches!(
+                            gate,
+                            codewhale_engine::core::events::ToolGate::AutoReviewDeterministic
+                                | codewhale_engine::core::events::ToolGate::AutoReviewGuardian
+                        );
+                        let verdict_label = match decision {
+                            codewhale_engine::core::events::ToolGateVerdict::Unavailable => {
+                                "unavailable"
+                            }
+                            codewhale_engine::core::events::ToolGateVerdict::Denied => "denied",
+                            codewhale_engine::core::events::ToolGateVerdict::Allowed => "allowed",
+                        }
+                        .to_string();
                         let receipt_hint_id = if agent_id.is_none() {
-                            if matches!(
-                                decision,
-                                codewhale_engine::core::events::ToolGateVerdict::Denied
-                                    | codewhale_engine::core::events::ToolGateVerdict::Unavailable
-                            ) {
-                                let verdict_label = match decision {
-                                    codewhale_engine::core::events::ToolGateVerdict::Unavailable => {
-                                        "unavailable"
-                                    }
-                                    codewhale_engine::core::events::ToolGateVerdict::Denied => {
-                                        "denied"
-                                    }
-                                    codewhale_engine::core::events::ToolGateVerdict::Allowed => {
-                                        "allowed"
-                                    }
-                                }
-                                .to_string();
+                            if is_block {
                                 let summary =
                                     action_summary.clone().unwrap_or_else(|| tool_name.clone());
                                 app.record_auto_review_blocked_receipt(
@@ -5184,6 +5186,26 @@ pub(crate) async fn run_event_loop(
                             }
                             receipt_id.as_deref()
                         } else {
+                            if is_block
+                                && is_auto_review_gate
+                                && let Some(ref child_id) = agent_id
+                            {
+                                let base_summary =
+                                    action_summary.clone().unwrap_or_else(|| tool_name.clone());
+                                let summary = format!("[sub-agent {child_id}] {base_summary}");
+                                app.record_auto_review_blocked_receipt_for_agent(
+                                    Some(child_id.clone()),
+                                    None,
+                                    tool_id.clone(),
+                                    tool_name.clone(),
+                                    gate.as_str().to_string(),
+                                    verdict_label,
+                                    rule.clone(),
+                                    reason.clone(),
+                                    None,
+                                    summary,
+                                );
+                            }
                             None
                         };
                         let receipt = crate::tui::gate_receipts::tool_gate_receipt_with_retry_info(
