@@ -2183,6 +2183,7 @@
   "CmdAutoDescription": "Work with Auto-Review — skip a goal or workflow",
   "AutoReceiptOn": "Auto-Review on. /goal keeps one objective; /workflow runs a script.",
   "AutoReceiptPlanNote": "Plan stays Read Only until you switch to Work.",
+  "AutoReceiptBroadAllowsPaused": "Broad allow rules are paused while Auto-Review is on and resume when you leave Auto-Review.",
   "GoalContinuationWaiting": "Goal active · next turn in {delay} · Esc, Ctrl+C, or /goal pause stops the pending continuation",
   "GoalContinuationReady": "Goal continuation ready; queued controls run before the next turn.",
   "GoalContinuationStopped": "Pending goal continuation stopped; the goal remains active.",

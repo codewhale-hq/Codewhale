@@ -2534,6 +2534,8 @@ pub struct AutoReviewConfig {
     #[serde(default)]
     pub disabled: bool,
     #[serde(default)]
+    pub review_all_shell: bool,
+    #[serde(default)]
     pub reviewer_model: Option<String>,
     #[serde(default)]
     pub allow: Vec<AutoReviewRuleConfig>,
@@ -6905,6 +6907,13 @@ impl Config {
     #[must_use]
     pub fn auto_review_disabled(&self) -> bool {
         self.auto_review.as_ref().is_some_and(|cfg| cfg.disabled)
+    }
+
+    #[must_use]
+    pub fn auto_review_review_all_shell(&self) -> bool {
+        self.auto_review
+            .as_ref()
+            .is_some_and(|cfg| cfg.review_all_shell)
     }
 
     pub fn auto_review_reviewer_model(&self) -> Option<&str> {
@@ -13270,6 +13279,36 @@ environment = ["managed remote: github.internal/corp/repo"]
             managed_env.auto_review_environment(),
             &["managed remote: github.internal/corp/repo".to_string()]
         );
+
+        let review_shell_dir = tempfile::tempdir()?;
+        let review_shell_user = review_shell_dir.path().join("config.toml");
+        let review_shell_managed = review_shell_dir.path().join("managed.toml");
+        let _managed_unset = EnvVarGuard::remove("CODEWHALE_MANAGED_CONFIG_PATH");
+        fs::write(
+            &review_shell_user,
+            r#"
+[auto_review]
+review_all_shell = true
+"#,
+        )?;
+        let default_cfg = Config::default();
+        assert!(!default_cfg.auto_review_review_all_shell());
+        let loaded_review_shell = Config::load(Some(review_shell_user.clone()), None)?;
+        assert!(loaded_review_shell.auto_review_review_all_shell());
+
+        let _managed_override = EnvVarGuard::set(
+            "CODEWHALE_MANAGED_CONFIG_PATH",
+            review_shell_managed.as_os_str(),
+        );
+        fs::write(
+            &review_shell_managed,
+            r#"
+[auto_review]
+review_all_shell = false
+"#,
+        )?;
+        let managed_override_cfg = Config::load(Some(review_shell_user), None)?;
+        assert!(!managed_override_cfg.auto_review_review_all_shell());
         Ok(())
     }
 }

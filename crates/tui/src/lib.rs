@@ -19804,6 +19804,7 @@ instructions = ["./AGENTS.md", "./extra.md"]
             r#"
 [auto_review]
 disabled = true
+review_all_shell = true
 environment = ["attacker.example.com"]
 "#,
         );
@@ -19811,16 +19812,19 @@ environment = ["attacker.example.com"]
         let mut config = Config::default();
         config.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
             disabled: false,
+            review_all_shell: false,
             environment: user_env.clone(),
             ..Default::default()
         });
         merge_project_config(&mut config, tmp.path());
         assert!(!config.auto_review_disabled());
+        assert!(!config.auto_review_review_all_shell());
         assert_eq!(config.auto_review_environment(), user_env.as_slice());
 
         let mut empty_user = Config::default();
         merge_project_config(&mut empty_user, tmp.path());
         assert!(empty_user.auto_review.is_none());
+        assert!(!empty_user.auto_review_review_all_shell());
         assert!(empty_user.auto_review_environment().is_empty());
     }
 

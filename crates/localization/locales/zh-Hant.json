@@ -2181,6 +2181,7 @@
   "CmdAutoDescription": "以自動審核工作——不必先設目標或工作流程",
   "AutoReceiptOn": "已開啟自動審核。/goal 盯住一個目標；/workflow 執行腳本。",
   "AutoReceiptPlanNote": "切換到 Work 之前，Plan 仍為唯讀。",
+  "AutoReceiptBroadAllowsPaused": "寬鬆的允許規則在開啟自動審核期間已暫停，退出自動審核後恢復。",
   "GoalContinuationWaiting": "目標執行中 · {delay} 後開始下一回合 · 按 Esc、Ctrl+C 或使用 /goal pause 可停止待執行的繼續操作",
   "GoalContinuationReady": "目標繼續操作已就緒；佇列中的控制指令會在下一回合之前執行。",
   "GoalContinuationStopped": "已停止待執行的目標繼續操作；目標仍保持執行狀態。",

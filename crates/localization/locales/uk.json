@@ -2183,6 +2183,7 @@
   "CmdAutoDescription": "Працювати з Auto-Review — без цілі чи workflow",
   "AutoReceiptOn": "Auto-Review увімкнено. /goal тримає одну ціль; /workflow запускає скрипт.",
   "AutoReceiptPlanNote": "Plan лишається лише для читання, доки ви не перейдете в Work.",
+  "AutoReceiptBroadAllowsPaused": "Широкі правила дозволів призупинено, поки ввімкнено Auto-Review, і буде відновлено після виходу.",
   "GoalContinuationWaiting": "Ціль активна · наступний хід через {delay} · Esc, Ctrl+C або /goal pause зупиняє очікуване продовження",
   "GoalContinuationReady": "Продовження цілі готове; команди в черзі виконаються перед наступним ходом.",
   "GoalContinuationStopped": "Очікуване продовження цілі зупинено; ціль залишається активною.",

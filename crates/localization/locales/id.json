@@ -2183,6 +2183,7 @@
   "CmdAutoDescription": "Bekerja dengan Auto-Review — tanpa tujuan atau workflow",
   "AutoReceiptOn": "Auto-Review aktif. /goal menjaga satu tujuan; /workflow menjalankan skrip.",
   "AutoReceiptPlanNote": "Plan tetap hanya-baca sampai Anda pindah ke Work.",
+  "AutoReceiptBroadAllowsPaused": "Aturan izin luas dijeda saat Auto-Review aktif dan berlaku kembali saat Anda keluar.",
   "GoalContinuationWaiting": "Sasaran aktif · giliran berikutnya dalam {delay} · Esc, Ctrl+C, atau /goal pause menghentikan kelanjutan tertunda",
   "GoalContinuationReady": "Kelanjutan sasaran siap; kontrol dalam antrean dijalankan sebelum giliran berikutnya.",
   "GoalContinuationStopped": "Kelanjutan sasaran tertunda dihentikan; sasaran tetap aktif.",

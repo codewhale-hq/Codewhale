@@ -11138,6 +11138,12 @@ pub enum ToolAskRuleDecision {
     Block(String),
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct AskRuleEvaluation {
+    pub decision: Option<ToolAskRuleDecision>,
+    pub typed_narrow_allow: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutoReviewPlanDecision {
     NoChange,
@@ -11241,6 +11247,22 @@ pub(super) fn exec_shell_ask_rule_decision(
     )
 }
 
+pub(super) fn exec_shell_ask_rule_evaluation(
+    config: &EngineConfig,
+    tool_name: &str,
+    tool_input: &Value,
+    workspace: &Path,
+    approval_mode: ApprovalMode,
+) -> Option<AskRuleEvaluation> {
+    exec_shell_ask_rule_evaluation_for_policy(
+        &config.exec_policy_engine,
+        tool_name,
+        tool_input,
+        workspace,
+        approval_mode,
+    )
+}
+
 /// Evaluate the persisted shell ask/allow/deny rules without requiring a full
 /// [`EngineConfig`]. Headless protocol adapters use this seam so they enforce
 /// the same sibling `permissions.toml` policy as the interactive engine.
@@ -11251,17 +11273,31 @@ pub fn exec_shell_ask_rule_decision_for_policy(
     workspace: &Path,
     approval_mode: ApprovalMode,
 ) -> Option<ToolAskRuleDecision> {
+    exec_shell_ask_rule_evaluation_for_policy(
+        exec_policy_engine,
+        tool_name,
+        tool_input,
+        workspace,
+        approval_mode,
+    )
+    .and_then(|eval| eval.decision)
+}
+
+fn exec_shell_ask_rule_evaluation_for_policy(
+    exec_policy_engine: &codewhale_execpolicy::ExecPolicyEngine,
+    tool_name: &str,
+    tool_input: &Value,
+    workspace: &Path,
+    approval_mode: ApprovalMode,
+) -> Option<AskRuleEvaluation> {
     let policy_tool_name =
         codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, tool_input);
-    // Task tools that hand a command string to the shell answer to the same
-    // shell deny and ask rules. Their own approval requirement stays: a shell
-    // allow rule does not waive it.
     let runs_shell_command = matches!(policy_tool_name, "task_shell_start" | "task_gate_run");
     if policy_tool_name != "exec_shell" && !runs_shell_command {
         return None;
     }
     let command = tool_input.get("command").and_then(Value::as_str)?;
-    let decision = tool_ask_rule_decision_for_context(
+    let (decision, allow_kind) = tool_ask_rule_evaluation_for_context(
         exec_policy_engine,
         "exec_shell",
         command,
@@ -11272,9 +11308,16 @@ pub fn exec_shell_ask_rule_decision_for_policy(
     if runs_shell_command && matches!(decision, Some(ToolAskRuleDecision::Allow)) {
         return None;
     }
-    decision
+    decision.map(|decision| AskRuleEvaluation {
+        typed_narrow_allow: approval_mode == ApprovalMode::Auto
+            && !runs_shell_command
+            && matches!(decision, ToolAskRuleDecision::Allow)
+            && allow_kind == codewhale_execpolicy::TypedAllowKind::Narrow,
+        decision: Some(decision),
+    })
 }
 
+#[cfg(test)]
 pub(super) fn file_tool_ask_rule_decision(
     config: &EngineConfig,
     tool_name: &str,
@@ -11283,6 +11326,22 @@ pub(super) fn file_tool_ask_rule_decision(
     approval_mode: ApprovalMode,
 ) -> Option<ToolAskRuleDecision> {
     file_tool_ask_rule_decision_for_policy(
+        &config.exec_policy_engine,
+        tool_name,
+        tool_input,
+        workspace,
+        approval_mode,
+    )
+}
+
+pub(super) fn file_tool_ask_rule_evaluation(
+    config: &EngineConfig,
+    tool_name: &str,
+    tool_input: &Value,
+    workspace: &Path,
+    approval_mode: ApprovalMode,
+) -> Option<AskRuleEvaluation> {
+    file_tool_ask_rule_evaluation_for_policy(
         &config.exec_policy_engine,
         tool_name,
         tool_input,
@@ -11301,17 +11360,37 @@ pub fn file_tool_ask_rule_decision_for_policy(
     workspace: &Path,
     approval_mode: ApprovalMode,
 ) -> Option<ToolAskRuleDecision> {
+    file_tool_ask_rule_evaluation_for_policy(
+        exec_policy_engine,
+        tool_name,
+        tool_input,
+        workspace,
+        approval_mode,
+    )
+    .and_then(|eval| eval.decision)
+}
+
+fn file_tool_ask_rule_evaluation_for_policy(
+    exec_policy_engine: &codewhale_execpolicy::ExecPolicyEngine,
+    tool_name: &str,
+    tool_input: &Value,
+    workspace: &Path,
+    approval_mode: ApprovalMode,
+) -> Option<AskRuleEvaluation> {
     let policy_tool_name =
         codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, tool_input);
     let paths = file_tool_permission_paths(policy_tool_name, tool_input)?;
     if paths.is_empty() {
         if matches!(policy_tool_name, "write_file" | "edit_file" | "apply_patch") {
-            return Some(ToolAskRuleDecision::Block(
-                "File write has no resolvable target; provide an explicit path or valid patch."
-                    .to_string(),
-            ));
+            return Some(AskRuleEvaluation {
+                decision: Some(ToolAskRuleDecision::Block(
+                    "File write has no resolvable target; provide an explicit path or valid patch."
+                        .to_string(),
+                )),
+                typed_narrow_allow: false,
+            });
         }
-        return tool_ask_rule_decision_for_context(
+        let (decision, allow_kind) = tool_ask_rule_evaluation_for_context(
             exec_policy_engine,
             policy_tool_name,
             "",
@@ -11319,47 +11398,113 @@ pub fn file_tool_ask_rule_decision_for_policy(
             workspace,
             approval_mode,
         );
+        return decision.map(|decision| AskRuleEvaluation {
+            typed_narrow_allow: approval_mode == ApprovalMode::Auto
+                && matches!(decision, ToolAskRuleDecision::Allow)
+                && allow_kind == codewhale_execpolicy::TypedAllowKind::Narrow,
+            decision: Some(decision),
+        });
     }
 
     let mut prompt: Option<String> = None;
     let mut all_allowed = true;
+    let mut all_narrow = approval_mode == ApprovalMode::Auto;
     for path in paths {
-        match tool_ask_rule_decision_for_context(
+        let (decision, allow_kind) = tool_ask_rule_evaluation_for_context(
             exec_policy_engine,
             policy_tool_name,
             "",
             Some(&path),
             workspace,
             approval_mode,
-        ) {
+        );
+        match decision {
             Some(ToolAskRuleDecision::Block(reason)) => {
-                return Some(ToolAskRuleDecision::Block(reason));
+                return Some(AskRuleEvaluation {
+                    decision: Some(ToolAskRuleDecision::Block(reason)),
+                    typed_narrow_allow: false,
+                });
             }
             Some(ToolAskRuleDecision::Prompt(reason)) => {
                 prompt.get_or_insert(reason);
                 all_allowed = false;
+                all_narrow = false;
             }
-            Some(ToolAskRuleDecision::Allow) => {}
-            None => all_allowed = false,
+            Some(ToolAskRuleDecision::Allow) => {
+                all_narrow &= allow_kind == codewhale_execpolicy::TypedAllowKind::Narrow;
+            }
+            None => {
+                all_allowed = false;
+                all_narrow = false;
+            }
         }
     }
     if let Some(prompt) = prompt {
-        Some(ToolAskRuleDecision::Prompt(prompt))
+        Some(AskRuleEvaluation {
+            decision: Some(ToolAskRuleDecision::Prompt(prompt)),
+            typed_narrow_allow: false,
+        })
     } else if all_allowed {
-        Some(ToolAskRuleDecision::Allow)
+        Some(AskRuleEvaluation {
+            decision: Some(ToolAskRuleDecision::Allow),
+            typed_narrow_allow: all_narrow,
+        })
     } else {
         None
     }
 }
 
-fn tool_ask_rule_decision_for_context(
+pub(super) fn other_tool_ask_rule_evaluation(
+    config: &EngineConfig,
+    tool_name: &str,
+    tool_input: &Value,
+    workspace: &Path,
+    approval_mode: ApprovalMode,
+) -> Option<AskRuleEvaluation> {
+    let policy_tool_name =
+        codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, tool_input);
+    if matches!(
+        policy_tool_name,
+        "exec_shell" | "bash" | "task_shell_start" | "task_gate_run"
+    ) || file_tool_permission_paths(policy_tool_name, tool_input).is_some()
+    {
+        return None;
+    }
+    let is_agent_tool = matches!(
+        policy_tool_name.trim().to_ascii_lowercase().as_str(),
+        "agent" | "subagent" | "spawn_agent"
+    ) || matches!(
+        tool_name.trim().to_ascii_lowercase().as_str(),
+        "agent" | "subagent" | "spawn_agent"
+    );
+    let (decision, allow_kind) = tool_ask_rule_evaluation_for_context(
+        &config.exec_policy_engine,
+        policy_tool_name,
+        "",
+        None,
+        workspace,
+        approval_mode,
+    );
+    decision.map(|decision| AskRuleEvaluation {
+        typed_narrow_allow: approval_mode == ApprovalMode::Auto
+            && !is_agent_tool
+            && matches!(decision, ToolAskRuleDecision::Allow)
+            && allow_kind == codewhale_execpolicy::TypedAllowKind::Narrow,
+        decision: Some(decision),
+    })
+}
+
+fn tool_ask_rule_evaluation_for_context(
     exec_policy_engine: &codewhale_execpolicy::ExecPolicyEngine,
     tool_name: &str,
     command: &str,
     path: Option<&str>,
     workspace: &Path,
     approval_mode: ApprovalMode,
-) -> Option<ToolAskRuleDecision> {
+) -> (
+    Option<ToolAskRuleDecision>,
+    codewhale_execpolicy::TypedAllowKind,
+) {
     let cwd = workspace.to_string_lossy();
     let ask_for_approval = match approval_mode {
         ApprovalMode::Never => AskForApproval::Never,
@@ -11368,29 +11513,36 @@ fn tool_ask_rule_decision_for_context(
         | ApprovalMode::Suggest
         | ApprovalMode::AcceptEdits => AskForApproval::OnFailure,
     };
-    let decision = exec_policy_engine
-        .check(ExecPolicyContext {
+    let Ok(outcome) = exec_policy_engine.check_with_narrow_allow(
+        ExecPolicyContext {
             command,
             cwd: cwd.as_ref(),
             tool: Some(tool_name),
             path,
             ask_for_approval,
             sandbox_mode: None,
-        })
-        .ok()?;
+        },
+        approval_mode == ApprovalMode::Auto,
+    ) else {
+        return (None, codewhale_execpolicy::TypedAllowKind::None);
+    };
+    let decision = outcome.decision;
     if !decision.allow {
-        Some(ToolAskRuleDecision::Block(decision.reason().to_string()))
+        (
+            Some(ToolAskRuleDecision::Block(decision.reason().to_string())),
+            codewhale_execpolicy::TypedAllowKind::None,
+        )
     } else if decision.requires_approval {
-        Some(ToolAskRuleDecision::Prompt(decision.reason().to_string()))
+        (
+            Some(ToolAskRuleDecision::Prompt(decision.reason().to_string())),
+            codewhale_execpolicy::TypedAllowKind::None,
+        )
     } else if decision.matched_action == Some(codewhale_execpolicy::PermissionAction::Allow) {
-        // Count only. Never `matched_rule`, never `reason()`, never the
-        // command or its argv: `auto_allow` patterns are user-authored command
-        // strings.
         codewhale_telemetry::session_counters()
             .bump(codewhale_telemetry::Counter::ApprovalAutoAllowed);
-        Some(ToolAskRuleDecision::Allow)
+        (Some(ToolAskRuleDecision::Allow), outcome.allow_kind)
     } else {
-        None
+        (None, codewhale_execpolicy::TypedAllowKind::None)
     }
 }
 

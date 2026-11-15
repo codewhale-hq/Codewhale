@@ -294,6 +294,19 @@ impl ExecPolicyDecision {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypedAllowKind {
+    None,
+    Broad,
+    Narrow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecPolicyCheckOutcome {
+    pub decision: ExecPolicyDecision,
+    pub allow_kind: TypedAllowKind,
+}
+
 /// Input context provided to the execution policy engine for a single check.
 #[derive(Debug, Clone)]
 pub struct ExecPolicyContext<'a> {
@@ -404,10 +417,11 @@ impl ExecPolicyEngine {
         (trusted, denied)
     }
 
-    fn matching_ask_rule(
+    fn matching_ask_rule_internal(
         &self,
         rulesets: &[Ruleset],
         ctx: &ExecPolicyContext<'_>,
+        exclude_broad_allows: bool,
     ) -> Option<ToolAskRule> {
         let tool = ctx.tool.unwrap_or("exec_shell");
         let normalized_path = ctx
@@ -422,7 +436,18 @@ impl ExecPolicyEngine {
                     .iter()
                     .map(move |rule| (ruleset.layer, rule))
             })
-            .filter(|(_, rule)| rule.tool == tool)
+            .filter(|(_, rule)| {
+                !(exclude_broad_allows
+                    && rule.action == PermissionAction::Allow
+                    && is_broad_allow_rule(rule))
+            })
+            .filter(|(_, rule)| {
+                rule_tool_matches(
+                    &rule.tool,
+                    tool,
+                    !exclude_broad_allows && rule.action != PermissionAction::Deny,
+                )
+            })
             .filter(|(_, rule)| {
                 rule.workspace
                     .as_deref()
@@ -430,32 +455,24 @@ impl ExecPolicyEngine {
             })
             .filter(|(_, rule)| match rule.command.as_deref() {
                 Some(command) if rule.command_exact => command.trim() == ctx.command.trim(),
-                // A typed Deny is a deny rule: match it the way denied
-                // prefixes are matched, skipping global options before the
-                // subcommand (`git -C . push`, `git -c k=v push`). The
-                // allow-direction arity matcher requires the subcommand to be
-                // spelled literally at the front, which is right for granting
-                // and a gap for refusing.
                 Some(command) if rule.action == PermissionAction::Deny => {
                     denied_prefix_matches(command, ctx.command)
                         || self.arity_dict.allow_rule_matches(command, ctx.command)
                 }
-                Some(command) => self.arity_dict.allow_rule_matches(command, ctx.command),
+                Some(command) => self.allow_pattern_matches(
+                    command,
+                    ctx.command,
+                    !exclude_broad_allows && rule.action == PermissionAction::Allow,
+                ),
                 None => true,
             })
             .filter(|(_, rule)| match (rule.path.as_deref(), ctx.path) {
                 (Some(pattern), Some(call_path)) => {
-                    // Parent components cannot be resolved reliably here (a
-                    // component may be a symlink). Keep Allow exact, but do
-                    // not drop a scoped Deny/Ask merely because the target
-                    // is ambiguous. The caller can retry an unambiguous path.
                     if rule.action != PermissionAction::Allow
                         && call_path.replace('\\', "/").split('/').any(|part| part == "..")
                     {
                         return true;
                     }
-                    // A literal home spelling is not a directory named `~`
-                    // inside the workspace. Keep its rooted channel exclusive.
                     if pattern.trim().replace('\\', "/").starts_with("~/") {
                         absolute_path_rule_matches(pattern, call_path)
                     } else {
@@ -488,68 +505,63 @@ impl ExecPolicyEngine {
     /// the winning typed rule (layer, action, specificity), and finally the
     /// approval-mode fallback. A typed ask can override the trusted candidate.
     pub fn check(&self, ctx: ExecPolicyContext<'_>) -> Result<ExecPolicyDecision> {
-        // Hold one read guard for the complete decision: a concurrent update
-        // cannot mix old prefix rules with new typed rules or chained segments.
+        Ok(self.check_with_narrow_allow(ctx, false)?.decision)
+    }
+
+    pub fn check_with_narrow_allow(
+        &self,
+        ctx: ExecPolicyContext<'_>,
+        suspend_broad_allows: bool,
+    ) -> Result<ExecPolicyCheckOutcome> {
         let Ok(rulesets) = self.rulesets.read() else {
-            return Ok(ExecPolicyDecision {
-                allow: false,
-                requires_approval: false,
-                matched_rule: None,
-                matched_action: None,
-                requirement: ExecApprovalRequirement::Forbidden {
-                    reason: "Execution policy update failed; reload the session from its saved permission configuration.".to_string(),
+            return Ok(ExecPolicyCheckOutcome {
+                decision: ExecPolicyDecision {
+                    allow: false,
+                    requires_approval: false,
+                    matched_rule: None,
+                    matched_action: None,
+                    requirement: ExecApprovalRequirement::Forbidden {
+                        reason: "Execution policy update failed; reload the session from its saved permission configuration.".to_string(),
+                    },
                 },
+                allow_kind: TypedAllowKind::None,
             });
         };
         let (trusted_prefixes, denied_prefixes) = self.resolve_prefixes(&rulesets);
-        // Deny rules match positional tokens at a word boundary: the command
-        // must equal the rule or continue past it, so "rm" blocks "rm -rf /"
-        // but NOT "rmdir" or "rmview". See `denied_prefix_matches`.
         let expansion = shell_expand::expand_command(ctx.command);
         let prefix_eligible = command_safety::prefix_grant_is_eligible(ctx.command, &expansion);
-        let mut deny_targets = expansion.commands;
-        // Deny rules also hold against the raw text, so a construct the
-        // expander does not model still meets every rule once.
+        let mut deny_targets = expansion.commands.clone();
         let raw_command = ctx.command.trim();
         if !raw_command.is_empty() && !deny_targets.iter().any(|t| t == raw_command) {
             deny_targets.push(raw_command.to_string());
         }
         if let Some(rule) = denied_prefixes.iter().find(|rule| {
-            // Match the whole command OR any command the shell would actually
-            // run for it — chained segments, command-substitution bodies, and
-            // wrapper payloads alike. Matching is also flag-aware: a global
-            // flag inserted before the subcommand (`git -c foo=bar push`) must
-            // not defeat a `git push` rule.
             deny_targets
                 .iter()
                 .any(|hay| denied_prefix_matches(rule, hay))
         }) {
-            return Ok(ExecPolicyDecision {
-                allow: false,
-                requires_approval: false,
-                matched_rule: Some(rule.clone()),
-                matched_action: None,
-                requirement: ExecApprovalRequirement::Forbidden {
-                    reason: format!("Command blocked by denied prefix rule '{rule}'"),
+            return Ok(ExecPolicyCheckOutcome {
+                decision: ExecPolicyDecision {
+                    allow: false,
+                    requires_approval: false,
+                    matched_rule: Some(rule.clone()),
+                    matched_action: None,
+                    requirement: ExecApprovalRequirement::Forbidden {
+                        reason: format!("Command blocked by denied prefix rule '{rule}'"),
+                    },
                 },
+                allow_kind: TypedAllowKind::None,
             });
         }
 
-        // A command word only known at run time (`$v`, `$(…)`, a glob, a
-        // shell reading its script from a pipe) cannot be matched against a
-        // deny rule, so fail closed whenever one is configured. Values from
-        // the parent environment are never substituted in.
         let tool = ctx.tool.unwrap_or("exec_shell");
         let deny_rules_configured = !denied_prefixes.is_empty()
             || rulesets.iter().any(|ruleset| {
-                ruleset
-                    .ask_rules
-                    .iter()
-                    .any(|rule| rule.action == PermissionAction::Deny && rule.tool == tool)
+                ruleset.ask_rules.iter().any(|rule| {
+                    rule.action == PermissionAction::Deny
+                        && rule_tool_matches(&rule.tool, tool, false)
+                })
             });
-        // A mode that always shows a person the prompt may ask instead. The
-        // others refuse: `OnFailure` is also the posture of auto-approving
-        // sessions, where a prompt would run unseen.
         if expansion.dynamic && deny_rules_configured {
             let reason = "Deny rules are in force and this command's words are only known when it \
                           runs (a variable, substitution, glob or brace list, escaped quoting, \
@@ -573,35 +585,18 @@ impl ExecPolicyEngine {
                     },
                 ),
             };
-            return Ok(ExecPolicyDecision {
-                allow,
-                requires_approval,
-                matched_rule: None,
-                matched_action: (!allow).then_some(PermissionAction::Deny),
-                requirement,
+            return Ok(ExecPolicyCheckOutcome {
+                decision: ExecPolicyDecision {
+                    allow,
+                    requires_approval,
+                    matched_rule: None,
+                    matched_action: (!allow).then_some(PermissionAction::Deny),
+                    requirement,
+                },
+                allow_kind: TypedAllowKind::None,
             });
         }
-        // Prefix grants cover one invocation's known argument shape, not
-        // redirection, nested code or a nominal read's write/execute options.
-        // Matching still uses the original text, never joined deny targets.
-        let trusted_rule = if prefix_eligible {
-            trusted_prefixes
-                .iter()
-                .find(|rule| self.arity_dict.allow_rule_matches(rule, ctx.command))
-                .cloned()
-        } else {
-            None
-        };
-        let is_trusted = trusted_rule.is_some();
 
-        // Segment-aware typed Deny: a Deny ask-rule matching ANY command the
-        // shell would run must block, mirroring the denied-prefix scan above.
-        // The invocation as typed is skipped here — it is evaluated on its own
-        // just below, and gets a message that does not call it a segment.
-        // Typed rules match through the arity table, which keys on the literal
-        // program word; also try each target with a path-qualified command
-        // word folded to its basename (`/bin/rm x` is an `rm x`), as denied
-        // prefixes already do.
         let folded_targets: Vec<String> = deny_targets
             .iter()
             .filter_map(|target| fold_command_word_path(target))
@@ -613,33 +608,35 @@ impl ExecPolicyEngine {
         {
             let mut seg_ctx = ctx.clone();
             seg_ctx.command = target.as_str();
-            if let Some(rule) = self.matching_ask_rule(&rulesets, &seg_ctx)
+            if let Some(rule) =
+                self.matching_ask_rule_internal(&rulesets, &seg_ctx, suspend_broad_allows)
                 && rule.action == PermissionAction::Deny
             {
-                return Ok(ExecPolicyDecision {
-                    allow: false,
-                    requires_approval: false,
-                    matched_rule: Some(rule.label()),
-                    matched_action: Some(PermissionAction::Deny),
-                    requirement: ExecApprovalRequirement::Forbidden {
-                        reason: format!(
-                            "Permission rule '{}' explicitly denies a chained segment of this invocation.",
-                            rule.label()
-                        ),
+                return Ok(ExecPolicyCheckOutcome {
+                    decision: ExecPolicyDecision {
+                        allow: false,
+                        requires_approval: false,
+                        matched_rule: Some(rule.label()),
+                        matched_action: Some(PermissionAction::Deny),
+                        requirement: ExecApprovalRequirement::Forbidden {
+                            reason: format!(
+                                "Permission rule '{}' explicitly denies a chained segment of this invocation.",
+                                rule.label()
+                            ),
+                        },
                     },
+                    allow_kind: TypedAllowKind::None,
                 });
             }
         }
 
-        let ask_rule = self.matching_ask_rule(&rulesets, &ctx);
-
-        // Apply the one typed rule selected by layer, action, and specificity
-        // before mode-based resolution. Within a layer, deny outranks ask and
-        // allow; a higher-layer rule has already won before this match.
-        if let Some(rule) = &ask_rule {
-            match rule.action {
-                PermissionAction::Deny => {
-                    return Ok(ExecPolicyDecision {
+        let mut ask_rule = self.matching_ask_rule_internal(&rulesets, &ctx, suspend_broad_allows);
+        if suspend_broad_allows {
+            if let Some(rule) = &ask_rule
+                && rule.action == PermissionAction::Deny
+            {
+                return Ok(ExecPolicyCheckOutcome {
+                    decision: ExecPolicyDecision {
                         allow: false,
                         requires_approval: false,
                         matched_rule: Some(rule.label()),
@@ -650,21 +647,70 @@ impl ExecPolicyEngine {
                                 rule.label()
                             ),
                         },
-                    });
-                }
-                PermissionAction::Allow => {
-                    // An exact remembered grant names the entire reviewed
-                    // invocation and workspace, including redirection and
-                    // unresolved arguments. It never covers a command list.
-                    // Prefix grants must satisfy the same guard as auto_allow.
-                    // File/tool permissions carry no shell command; their
-                    // selected path/action must not depend on parsing empty argv.
-                    let command_grant =
-                        tool == "exec_shell" || rule.command.is_some() || !ctx.command.is_empty();
-                    if !command_grant
-                        || (!expansion.control && (rule.command_exact || prefix_eligible))
+                    },
+                    allow_kind: TypedAllowKind::None,
+                });
+            }
+
+            if is_shell_rule_tool(tool) {
+                let mut segment_ask_rule = ask_rule
+                    .as_ref()
+                    .filter(|rule| rule.action == PermissionAction::Ask)
+                    .cloned();
+                if segment_ask_rule.is_none() {
+                    for target in deny_targets
+                        .iter()
+                        .chain(&folded_targets)
+                        .filter(|t| t.as_str() != raw_command)
                     {
-                        return Ok(ExecPolicyDecision {
+                        let mut seg_ctx = ctx.clone();
+                        seg_ctx.command = target.as_str();
+                        if let Some(rule) =
+                            self.matching_ask_rule_internal(&rulesets, &seg_ctx, true)
+                            && rule.action == PermissionAction::Ask
+                        {
+                            segment_ask_rule = Some(rule);
+                            break;
+                        }
+                    }
+                }
+                if let Some(rule) = segment_ask_rule {
+                    ask_rule = Some(rule);
+                } else if let Some(label) = self.narrow_shell_allow_match(
+                    &rulesets,
+                    &trusted_prefixes,
+                    ctx.command,
+                    ctx.cwd,
+                    &expansion,
+                ) {
+                    return Ok(ExecPolicyCheckOutcome {
+                        decision: ExecPolicyDecision {
+                            allow: true,
+                            requires_approval: false,
+                            matched_rule: Some(label),
+                            matched_action: Some(PermissionAction::Allow),
+                            requirement: ExecApprovalRequirement::Skip {
+                                bypass_sandbox: false,
+                                proposed_execpolicy_amendment: None,
+                            },
+                        },
+                        allow_kind: TypedAllowKind::Narrow,
+                    });
+                } else {
+                    ask_rule = None;
+                }
+            } else if let Some(rule) = &ask_rule
+                && rule.action == PermissionAction::Allow
+            {
+                let narrow_non_shell = !is_agent_rule_tool(tool)
+                    && !is_task_shell_rule_tool(tool)
+                    && rule.tool.trim() == tool.trim()
+                    && rule.command.is_none()
+                    && !is_broad_allow_rule(rule)
+                    && (!is_file_rule_tool(tool) || rule.path.is_some());
+                if narrow_non_shell {
+                    return Ok(ExecPolicyCheckOutcome {
+                        decision: ExecPolicyDecision {
                             allow: true,
                             requires_approval: false,
                             matched_rule: Some(rule.label()),
@@ -673,22 +719,74 @@ impl ExecPolicyEngine {
                                 bypass_sandbox: false,
                                 proposed_execpolicy_amendment: None,
                             },
+                        },
+                        allow_kind: TypedAllowKind::Narrow,
+                    });
+                }
+                ask_rule = None;
+            }
+        }
+
+        let trusted_rule = if !suspend_broad_allows && prefix_eligible {
+            trusted_prefixes
+                .iter()
+                .find(|rule| self.allow_pattern_matches(rule, ctx.command, true))
+                .cloned()
+        } else {
+            None
+        };
+        let is_trusted = trusted_rule.is_some();
+
+        if !suspend_broad_allows && let Some(rule) = &ask_rule {
+            match rule.action {
+                PermissionAction::Deny => {
+                    return Ok(ExecPolicyCheckOutcome {
+                        decision: ExecPolicyDecision {
+                            allow: false,
+                            requires_approval: false,
+                            matched_rule: Some(rule.label()),
+                            matched_action: Some(PermissionAction::Deny),
+                            requirement: ExecApprovalRequirement::Forbidden {
+                                reason: format!(
+                                    "Permission rule '{}' explicitly denies this invocation.",
+                                    rule.label()
+                                ),
+                            },
+                        },
+                        allow_kind: TypedAllowKind::None,
+                    });
+                }
+                PermissionAction::Allow => {
+                    let command_grant =
+                        tool == "exec_shell" || rule.command.is_some() || !ctx.command.is_empty();
+                    if !command_grant
+                        || (!expansion.control && (rule.command_exact || prefix_eligible))
+                    {
+                        let allow_kind = if is_broad_allow_rule(rule) {
+                            TypedAllowKind::Broad
+                        } else {
+                            TypedAllowKind::Narrow
+                        };
+                        return Ok(ExecPolicyCheckOutcome {
+                            decision: ExecPolicyDecision {
+                                allow: true,
+                                requires_approval: false,
+                                matched_rule: Some(rule.label()),
+                                matched_action: Some(PermissionAction::Allow),
+                                requirement: ExecApprovalRequirement::Skip {
+                                    bypass_sandbox: false,
+                                    proposed_execpolicy_amendment: None,
+                                },
+                            },
+                            allow_kind,
                         });
                     }
                 }
-                PermissionAction::Ask => {
-                    // Fall through to existing mode-based logic below.
-                }
+                PermissionAction::Ask => {}
             }
         }
 
         let mut matched_ask_rule = None;
-        // Resolve a matching typed ask-rule first. Ask-rules take precedence over
-        // mode-based handling for everything except `Never` (which forbids,
-        // because no prompt can be shown) and `Reject { rules: true }` (which
-        // explicitly rejects rule-exceptions). This ordering is checked against
-        // the experimental `if let` match-guard the original PR used; it is
-        // reproduced here with plain control flow for edition-2024 stable.
         let ask_rule_requirement = match &ctx.ask_for_approval {
             AskForApproval::Never | AskForApproval::Reject { rules: true, .. } => None,
             _ => ask_rule.as_ref().map(|rule| {
@@ -696,11 +794,6 @@ impl ExecPolicyEngine {
                 ExecApprovalRequirement::NeedsApproval {
                     reason: format!("Typed ask rule '{}' requires approval.", rule.label()),
                     proposed_execpolicy_amendment: None,
-                    // A typed ask-rule approval (exec/fn/MCP) must not touch
-                    // network policy. The original PR allow-listed `ctx.cwd` as a
-                    // network host here, which is incorrect and security-relevant:
-                    // approving e.g. an exec rule should never create a network
-                    // allow-entry. Emit no network amendments for ask-rule prompts.
                     proposed_network_policy_amendments: Vec::new(),
                 }
             }),
@@ -752,13 +845,6 @@ impl ExecPolicyEngine {
                             prefixes: vec![first_token(ctx.command)],
                         })
                     },
-                    // Approving a command must never create a network
-                    // allow-entry. The original PR proposed `ctx.cwd` as a
-                    // host here — a filesystem path, not a hostname — which
-                    // both offers the user a nonsensical choice and pollutes
-                    // the network allowlist if accepted. The typed ask-rule
-                    // branch above was already fixed; this is the same fix for
-                    // the default (unmatched-command) branch.
                     proposed_network_policy_amendments: Vec::new(),
                 },
             }
@@ -770,13 +856,160 @@ impl ExecPolicyEngine {
             ExecApprovalRequirement::Forbidden { .. } => (false, false),
         };
 
-        Ok(ExecPolicyDecision {
-            allow,
-            requires_approval,
-            matched_rule: matched_ask_rule.or(trusted_rule),
-            matched_action: ask_rule.as_ref().map(|r| r.action),
-            requirement,
+        Ok(ExecPolicyCheckOutcome {
+            decision: ExecPolicyDecision {
+                allow,
+                requires_approval,
+                matched_rule: matched_ask_rule.or(trusted_rule),
+                matched_action: ask_rule.as_ref().map(|r| r.action),
+                requirement,
+            },
+            allow_kind: TypedAllowKind::None,
         })
+    }
+
+    pub fn suspended_broad_allow_descriptions(&self) -> Vec<String> {
+        let Ok(rulesets) = self.rulesets.read() else {
+            return Vec::new();
+        };
+        let mut descriptions = Vec::new();
+        let (trusted_prefixes, _) = self.resolve_prefixes(&rulesets);
+        for prefix in trusted_prefixes {
+            if is_broad_shell_command(&prefix) {
+                let desc = format!("exec_shell {prefix}");
+                if !descriptions.contains(&desc) {
+                    descriptions.push(desc);
+                }
+            }
+        }
+        for ruleset in rulesets.iter() {
+            for rule in &ruleset.ask_rules {
+                if is_broad_allow_rule(rule) {
+                    let desc = rule.label();
+                    if !descriptions.contains(&desc) {
+                        descriptions.push(desc);
+                    }
+                }
+            }
+        }
+        descriptions
+    }
+
+    fn allow_pattern_matches(&self, pattern: &str, command: &str, allow_globs: bool) -> bool {
+        self.arity_dict.allow_rule_matches(pattern, command)
+            || (allow_globs && has_glob_meta(pattern) && glob_allow_rule_matches(pattern, command))
+    }
+
+    fn narrow_shell_allow_match(
+        &self,
+        rulesets: &[Ruleset],
+        trusted_prefixes: &[String],
+        command: &str,
+        cwd: &str,
+        expansion: &shell_expand::Expansion,
+    ) -> Option<String> {
+        let raw = command.trim();
+        if raw.is_empty()
+            || command
+                .chars()
+                .any(|ch| ch == '\n' || ch == '\r' || ch.is_control())
+            || has_unhandled_or_unsafe_raw_shell_constructs(raw)
+            || shlex::split(raw).is_none()
+        {
+            return None;
+        }
+        if expansion.commands.is_empty()
+            || expansion.words.len() != expansion.commands.len()
+            || expansion.dynamic
+            || expansion.nested
+            || expansion.arguments_dynamic
+            || expansion.redirects
+        {
+            return None;
+        }
+
+        let mut candidates: Vec<(String, Vec<String>, bool, String)> = Vec::new();
+        for ruleset in rulesets {
+            for rule in &ruleset.ask_rules {
+                if rule.action != PermissionAction::Allow
+                    || !is_shell_rule_tool(&rule.tool)
+                    || rule.path.is_some()
+                    || is_broad_allow_rule(rule)
+                {
+                    continue;
+                }
+                if !rule
+                    .workspace
+                    .as_deref()
+                    .is_none_or(|workspace| workspace_scope_matches(workspace, cwd))
+                {
+                    continue;
+                }
+                let Some(rule_cmd) = rule.command.as_deref() else {
+                    continue;
+                };
+                if has_glob_meta(rule_cmd) || is_broad_shell_command(rule_cmd) {
+                    continue;
+                }
+                let Some(rule_words) = split_rule_command_words(rule_cmd) else {
+                    continue;
+                };
+                candidates.push((
+                    rule_cmd.trim().to_string(),
+                    rule_words,
+                    rule.command_exact,
+                    rule.label(),
+                ));
+            }
+        }
+        for prefix in trusted_prefixes {
+            if is_broad_shell_command(prefix) || has_glob_meta(prefix) {
+                continue;
+            }
+            let Some(rule_words) = split_rule_command_words(prefix) else {
+                continue;
+            };
+            candidates.push((
+                prefix.trim().to_string(),
+                rule_words,
+                false,
+                format!("trusted_prefix={prefix}"),
+            ));
+        }
+        if candidates.is_empty() {
+            return None;
+        }
+
+        let single_unchained = !expansion.control && expansion.words.len() == 1;
+        let mut matched_labels = Vec::new();
+        for seg_words in &expansion.words {
+            let program = seg_words.first()?;
+            let restricted_program =
+                is_shell_or_launcher_program(program) || is_path_qualified_program(program);
+            let (_, _, _, label) =
+                candidates
+                    .iter()
+                    .find(|(rule_cmd, rule_words, command_exact, _)| {
+                        if restricted_program {
+                            *command_exact
+                                && single_unchained
+                                && rule_cmd == raw
+                                && seg_words.as_slice() == rule_words.as_slice()
+                        } else if *command_exact {
+                            !expansion.control && seg_words.as_slice() == rule_words.as_slice()
+                        } else {
+                            seg_words.len() >= rule_words.len()
+                                && seg_words[..rule_words.len()] == rule_words[..]
+                                && seg_words[rule_words.len()..]
+                                    .iter()
+                                    .all(|word| is_plain_operand(word))
+                        }
+                    })?;
+            if !matched_labels.contains(label) {
+                matched_labels.push(label.clone());
+            }
+        }
+        Some(matched_labels.join(" && "))
     }
 }
 
@@ -1265,6 +1498,243 @@ fn ask_rule_specificity(rule: &ToolAskRule) -> usize {
             .as_ref()
             .map_or(0, |workspace| workspace.len() + 1000)
         + usize::from(rule.command_exact)
+}
+
+const SHELL_OR_LAUNCHER_BASENAMES: &[&str] = &[
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ksh",
+    "fish",
+    "csh",
+    "tcsh",
+    "pwsh",
+    "powershell",
+    "cmd",
+    "env",
+    "eval",
+    "exec",
+    "command",
+    "builtin",
+    "nohup",
+    "nice",
+    "ionice",
+    "chrt",
+    "taskset",
+    "timeout",
+    "stdbuf",
+    "setsid",
+    "xargs",
+    "sudo",
+    "doas",
+    "su",
+    "watch",
+    "entr",
+];
+
+const SUSPENDED_BROAD_SHELL_COMMANDS: &[&str] = &[
+    "python",
+    "python2",
+    "python3",
+    "uv run python",
+    "npm run",
+    "pnpm run",
+    "yarn run",
+    "bun run",
+    "node",
+    "deno",
+    "ruby",
+    "perl",
+    "php",
+    "cargo run",
+];
+
+fn has_glob_meta(value: &str) -> bool {
+    value.contains(['*', '?', '['])
+}
+
+fn is_shell_rule_tool(tool: &str) -> bool {
+    matches!(tool.trim(), "exec_shell" | "bash")
+}
+
+fn is_agent_rule_tool(tool: &str) -> bool {
+    matches!(tool.trim(), "agent" | "subagent" | "spawn_agent")
+}
+
+fn is_task_shell_rule_tool(tool: &str) -> bool {
+    matches!(tool.trim(), "task_shell_start" | "task_gate_run")
+}
+
+fn is_file_rule_tool(tool: &str) -> bool {
+    matches!(
+        tool.trim(),
+        "read_file"
+            | "write_file"
+            | "edit_file"
+            | "apply_patch"
+            | "file_search"
+            | "grep_files"
+            | "list_dir"
+    )
+}
+
+fn program_basename_lower(program: &str) -> String {
+    let base = program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    base.strip_suffix(".exe").unwrap_or(&base).to_string()
+}
+
+fn is_shell_or_launcher_program(program: &str) -> bool {
+    let base = program_basename_lower(program);
+    !base.is_empty() && SHELL_OR_LAUNCHER_BASENAMES.contains(&base.as_str())
+}
+
+fn is_path_qualified_program(program: &str) -> bool {
+    program.contains('/') || program.contains('\\')
+}
+
+fn is_plain_operand(word: &str) -> bool {
+    !word.is_empty() && !word.starts_with('-') && !word.chars().any(char::is_control)
+}
+
+fn split_rule_command_words(command: &str) -> Option<Vec<String>> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() || command.chars().any(char::is_control) {
+        return None;
+    }
+    let words = shlex::split(trimmed)?;
+    (!words.is_empty()).then_some(words)
+}
+
+fn has_unhandled_or_unsafe_raw_shell_constructs(command: &str) -> bool {
+    let chars: Vec<char> = command.chars().collect();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < chars.len() {
+        let ch = chars[i];
+        if in_single {
+            if ch == '\'' {
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if ch == '\\' {
+                if i + 1 >= chars.len() {
+                    return true;
+                }
+                i += 2;
+                continue;
+            }
+            if ch == '"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+        match ch {
+            '\\' => {
+                if i + 1 >= chars.len() {
+                    return true;
+                }
+                i += 2;
+                continue;
+            }
+            '\'' => in_single = true,
+            '"' => in_double = true,
+            '(' | ')' | '{' | '}' => return true,
+            '$' if chars.get(i + 1) == Some(&'"') || chars.get(i + 1) == Some(&'\'') => {
+                return true;
+            }
+            '&' => {
+                if chars.get(i + 1) == Some(&'&') {
+                    i += 2;
+                    continue;
+                }
+                return true;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    in_single || in_double
+}
+
+fn rule_tool_matches(rule_tool: &str, call_tool: &str, allow_wildcard: bool) -> bool {
+    let rule_tool = rule_tool.trim();
+    let call_tool = call_tool.trim();
+    if allow_wildcard && rule_tool == "*" {
+        return true;
+    }
+    if is_shell_rule_tool(rule_tool) && is_shell_rule_tool(call_tool) {
+        return true;
+    }
+    rule_tool == call_tool
+}
+
+fn glob_allow_rule_matches(pattern: &str, command: &str) -> bool {
+    let pattern = pattern.trim();
+    let command = command.trim();
+    if pattern == "*" {
+        return !command.is_empty();
+    }
+    let Some(regex) = matcher::compiled_glob(pattern) else {
+        return false;
+    };
+    regex.is_match(command) || regex.is_match(&matcher::normalize_command(command))
+}
+
+pub fn is_broad_shell_command(command: &str) -> bool {
+    let trimmed = command.trim();
+    if trimmed.is_empty() || has_glob_meta(trimmed) {
+        return true;
+    }
+    let words = split_rule_command_words(trimmed)
+        .unwrap_or_else(|| trimmed.split_whitespace().map(ToOwned::to_owned).collect());
+    if words.is_empty() {
+        return true;
+    }
+    let normalized = words
+        .iter()
+        .map(|w| w.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if SUSPENDED_BROAD_SHELL_COMMANDS.contains(&normalized.as_str()) {
+        return true;
+    }
+    words.len() == 1
+        && SUSPENDED_BROAD_SHELL_COMMANDS.contains(&program_basename_lower(&words[0]).as_str())
+}
+
+pub fn is_broad_allow_rule(rule: &ToolAskRule) -> bool {
+    if rule.action != PermissionAction::Allow {
+        return false;
+    }
+    let tool = rule.tool.trim();
+    if tool.is_empty()
+        || tool == "*"
+        || has_glob_meta(tool)
+        || is_agent_rule_tool(tool)
+        || is_task_shell_rule_tool(tool)
+    {
+        return true;
+    }
+    if is_shell_rule_tool(tool) {
+        return rule.command.as_deref().is_none_or(is_broad_shell_command);
+    }
+    if is_file_rule_tool(tool) {
+        return rule
+            .path
+            .as_deref()
+            .is_none_or(|path| path.trim().is_empty() || has_glob_meta(path));
+    }
+    false
 }
 
 #[cfg(test)]
@@ -3624,5 +4094,263 @@ mod tests {
             ask_for_approval,
             sandbox_mode: Some("workspace-write"),
         }
+    }
+
+    #[test]
+    fn narrow_shell_allows_match_and_broad_allows_suspend_in_auto_review() {
+        let engine = engine_with_ask_rules(vec![
+            ToolAskRule {
+                tool: "exec_shell".into(),
+                command: Some("git push".into()),
+                action: PermissionAction::Allow,
+                ..ToolAskRule::new("")
+            },
+            ToolAskRule {
+                tool: "exec_shell".into(),
+                command: Some("echo hi".into()),
+                command_exact: true,
+                action: PermissionAction::Allow,
+                ..ToolAskRule::new("")
+            },
+            ToolAskRule {
+                tool: "exec_shell".into(),
+                command: Some("cargo test".into()),
+                action: PermissionAction::Allow,
+                ..ToolAskRule::new("")
+            },
+            ToolAskRule {
+                tool: "exec_shell".into(),
+                command: Some("/bin/echo ok".into()),
+                command_exact: true,
+                action: PermissionAction::Allow,
+                ..ToolAskRule::new("")
+            },
+            ToolAskRule {
+                tool: "exec_shell".into(),
+                command: Some("*".into()),
+                action: PermissionAction::Allow,
+                ..ToolAskRule::new("")
+            },
+            ToolAskRule {
+                tool: "exec_shell".into(),
+                command: Some("python*".into()),
+                action: PermissionAction::Allow,
+                ..ToolAskRule::new("")
+            },
+            ToolAskRule {
+                tool: "exec_shell".into(),
+                command: Some("npm run *".into()),
+                action: PermissionAction::Allow,
+                ..ToolAskRule::new("")
+            },
+            ToolAskRule {
+                tool: "exec_shell".into(),
+                command: Some("cargo run".into()),
+                action: PermissionAction::Allow,
+                ..ToolAskRule::new("")
+            },
+            tool_rule("agent", PermissionAction::Allow),
+            tool_rule("write_file", PermissionAction::Allow),
+            path_rule("write_file", "src/allowed.txt", PermissionAction::Allow),
+            tool_rule("web_search", PermissionAction::Allow),
+        ]);
+
+        let broad_descs = engine.suspended_broad_allow_descriptions();
+        assert!(
+            broad_descs.iter().any(|d| d.contains("command=*")),
+            "{broad_descs:?}"
+        );
+        assert!(
+            broad_descs.iter().any(|d| d.contains("command=python*")),
+            "{broad_descs:?}"
+        );
+        assert!(
+            broad_descs.iter().any(|d| d.contains("command=npm run *")),
+            "{broad_descs:?}"
+        );
+        assert!(
+            broad_descs.iter().any(|d| d.contains("command=cargo run")),
+            "{broad_descs:?}"
+        );
+        assert!(
+            broad_descs.iter().any(|d| d.contains("tool=agent")),
+            "{broad_descs:?}"
+        );
+        assert!(
+            broad_descs.iter().any(|d| d.contains("tool=write_file")),
+            "{broad_descs:?}"
+        );
+
+        let ok_push = engine
+            .check_with_narrow_allow(ctx("git push origin feature", OnRequest), true)
+            .expect("push check");
+        assert!(ok_push.decision.allow);
+        assert_eq!(
+            ok_push.decision.matched_action,
+            Some(PermissionAction::Allow)
+        );
+        assert_eq!(ok_push.allow_kind, TypedAllowKind::Narrow);
+
+        let exact_ok = engine
+            .check_with_narrow_allow(ctx("echo hi", OnRequest), true)
+            .expect("exact echo");
+        assert_eq!(exact_ok.allow_kind, TypedAllowKind::Narrow);
+
+        let exact_extra = engine
+            .check_with_narrow_allow(ctx("echo hi there", OnRequest), true)
+            .expect("exact echo with extra word");
+        assert_ne!(exact_extra.allow_kind, TypedAllowKind::Narrow);
+        assert_eq!(exact_extra.decision.matched_action, None);
+
+        let exact_chained = engine
+            .check_with_narrow_allow(ctx("echo hi && echo hi", OnRequest), true)
+            .expect("exact echo chained");
+        assert_ne!(exact_chained.allow_kind, TypedAllowKind::Narrow);
+
+        let exact_in_compound = engine
+            .check_with_narrow_allow(ctx("cargo test && echo hi", OnRequest), true)
+            .expect("exact grant inside compound list");
+        assert_ne!(exact_in_compound.allow_kind, TypedAllowKind::Narrow);
+
+        let chained_both_narrow = engine
+            .check_with_narrow_allow(
+                ctx("cargo test && git push origin feature", OnRequest),
+                true,
+            )
+            .expect("chained narrow");
+        assert_eq!(chained_both_narrow.allow_kind, TypedAllowKind::Narrow);
+
+        let chained_one_unmatched = engine
+            .check_with_narrow_allow(ctx("cargo test && ls", OnRequest), true)
+            .expect("chained partial");
+        assert_ne!(chained_one_unmatched.allow_kind, TypedAllowKind::Narrow);
+        assert_eq!(chained_one_unmatched.decision.matched_action, None);
+
+        let with_flag = engine
+            .check_with_narrow_allow(ctx("git push --force origin feature", OnRequest), true)
+            .expect("push with flag");
+        assert_ne!(with_flag.allow_kind, TypedAllowKind::Narrow);
+        assert_eq!(with_flag.decision.matched_action, None);
+
+        let path_exact = engine
+            .check_with_narrow_allow(ctx("/bin/echo ok", OnRequest), true)
+            .expect("path exact");
+        assert_eq!(path_exact.allow_kind, TypedAllowKind::Narrow);
+
+        let path_unmatched = engine
+            .check_with_narrow_allow(ctx("/bin/echo hi", OnRequest), true)
+            .expect("path-qualified non-exact");
+        assert_ne!(path_unmatched.allow_kind, TypedAllowKind::Narrow);
+
+        for rejected in [
+            "env git push origin feature",
+            "sudo git push origin feature",
+            "bash -c 'echo hi'",
+            "git push origin $(whoami)",
+            "echo hi > out.txt",
+            "echo hi\nls",
+            "npm run build",
+            "python3 -c 'print(1)'",
+            "cargo run",
+        ] {
+            let outcome = engine
+                .check_with_narrow_allow(ctx(rejected, OnRequest), true)
+                .expect("rejected auto check");
+            assert_ne!(outcome.allow_kind, TypedAllowKind::Narrow, "{rejected}");
+            assert_eq!(outcome.decision.matched_action, None, "{rejected}");
+        }
+
+        let suspended_agent = engine
+            .check_with_narrow_allow(
+                ExecPolicyContext {
+                    command: "",
+                    cwd: "/workspace",
+                    tool: Some("agent"),
+                    path: None,
+                    ask_for_approval: OnRequest,
+                    sandbox_mode: None,
+                },
+                true,
+            )
+            .expect("agent check in auto");
+        assert_eq!(suspended_agent.decision.matched_action, None);
+        assert_eq!(suspended_agent.allow_kind, TypedAllowKind::None);
+
+        let suspended_broad_write = engine
+            .check_with_narrow_allow(
+                file_ctx(
+                    "write_file",
+                    "/workspace/other.txt",
+                    "/workspace",
+                    OnRequest,
+                ),
+                true,
+            )
+            .expect("broad write in auto");
+        assert_eq!(suspended_broad_write.decision.matched_action, None);
+
+        let narrow_write = engine
+            .check_with_narrow_allow(
+                file_ctx(
+                    "write_file",
+                    "/workspace/src/allowed.txt",
+                    "/workspace",
+                    OnRequest,
+                ),
+                true,
+            )
+            .expect("narrow write in auto");
+        assert_eq!(narrow_write.allow_kind, TypedAllowKind::Narrow);
+        assert_eq!(
+            narrow_write.decision.matched_action,
+            Some(PermissionAction::Allow)
+        );
+
+        let narrow_non_file = engine
+            .check_with_narrow_allow(
+                ExecPolicyContext {
+                    command: "",
+                    cwd: "/workspace",
+                    tool: Some("web_search"),
+                    path: None,
+                    ask_for_approval: OnRequest,
+                    sandbox_mode: None,
+                },
+                true,
+            )
+            .expect("web_search in auto");
+        assert_eq!(narrow_non_file.allow_kind, TypedAllowKind::Narrow);
+
+        for restored_cmd in ["npm run build", "python3 -c 'print(1)'", "cargo run"] {
+            let restored = engine
+                .check(ctx(restored_cmd, OnRequest))
+                .expect("restored in non-auto mode");
+            assert_eq!(
+                restored.matched_action,
+                Some(PermissionAction::Allow),
+                "{restored_cmd}"
+            );
+            assert!(!restored.requires_approval, "{restored_cmd}");
+        }
+        let restored_agent = engine
+            .check(ExecPolicyContext {
+                command: "",
+                cwd: "/workspace",
+                tool: Some("agent"),
+                path: None,
+                ask_for_approval: OnRequest,
+                sandbox_mode: None,
+            })
+            .expect("restored agent");
+        assert_eq!(restored_agent.matched_action, Some(PermissionAction::Allow));
+        let restored_write = engine
+            .check(file_ctx(
+                "write_file",
+                "/workspace/other.txt",
+                "/workspace",
+                OnRequest,
+            ))
+            .expect("restored broad write");
+        assert_eq!(restored_write.matched_action, Some(PermissionAction::Allow));
     }
 }

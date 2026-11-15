@@ -2183,6 +2183,7 @@
   "CmdAutoDescription": "Làm việc với Auto-Review — không cần goal hay workflow",
   "AutoReceiptOn": "Đã bật Auto-Review. /goal giữ một mục tiêu; /workflow chạy script.",
   "AutoReceiptPlanNote": "Plan vẫn chỉ đọc cho đến khi bạn chuyển sang Work.",
+  "AutoReceiptBroadAllowsPaused": "Các quy tắc cho phép rộng đang tạm dừng khi Auto-Review bật và sẽ hoạt động lại khi thoát.",
   "GoalContinuationWaiting": "Mục tiêu đang hoạt động · lượt tiếp theo sau {delay} · Esc, Ctrl+C hoặc /goal pause sẽ dừng lượt tiếp tục đang chờ",
   "GoalContinuationReady": "Lượt tiếp tục mục tiêu đã sẵn sàng; các lệnh điều khiển trong hàng đợi chạy trước lượt tiếp theo.",
   "GoalContinuationStopped": "Đã dừng lượt tiếp tục mục tiêu đang chờ; mục tiêu vẫn hoạt động.",

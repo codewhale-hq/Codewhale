@@ -2183,6 +2183,7 @@
   "CmdAutoDescription": "Mit Auto-Review arbeiten — ohne Ziel oder Workflow",
   "AutoReceiptOn": "Auto-Review an. /goal hält ein Ziel; /workflow führt ein Skript aus.",
   "AutoReceiptPlanNote": "Plan bleibt schreibgeschützt, bis du zu Work wechselst.",
+  "AutoReceiptBroadAllowsPaused": "Breite Freigaberegeln sind pausiert, solange Auto-Review aktiv ist, und greifen beim Verlassen wieder.",
   "GoalContinuationWaiting": "Ziel aktiv · nächster Durchlauf in {delay} · Esc, Ctrl+C oder /goal pause stoppt die ausstehende Fortsetzung",
   "GoalContinuationReady": "Zielfortsetzung bereit; wartende Steuerbefehle laufen vor dem nächsten Durchlauf.",
   "GoalContinuationStopped": "Ausstehende Zielfortsetzung gestoppt; das Ziel bleibt aktiv.",

@@ -2183,6 +2183,7 @@
   "CmdAutoDescription": "Treballa amb Auto-Review — sense objectiu ni workflow",
   "AutoReceiptOn": "Auto-Review activat. /goal manté un objectiu; /workflow executa un script.",
   "AutoReceiptPlanNote": "Plan resta només de lectura fins que passis a Work.",
+  "AutoReceiptBroadAllowsPaused": "Les regles de permís àmplies queden en pausa mentre Auto-Review és actiu i es reprenen en sortir-ne.",
   "GoalContinuationWaiting": "Objectiu actiu · torn següent d'aquí a {delay} · Esc, Ctrl+C o /goal pause atura la continuació pendent",
   "GoalContinuationReady": "La continuació de l'objectiu està preparada; els controls en cua s'executen abans del torn següent.",
   "GoalContinuationStopped": "S'ha aturat la continuació pendent; l'objectiu continua actiu.",

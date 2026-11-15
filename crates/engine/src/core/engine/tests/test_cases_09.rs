@@ -4120,3 +4120,496 @@ async fn auto_review_s7_routes_interactive_push_with_environment_and_rule_name_a
     );
     assert_eq!(headless_mock.call_count(), 2);
 }
+
+#[tokio::test]
+async fn auto_review_narrow_allows_skip_reviewer_while_soft_rules_broad_suspend_and_review_all_shell_hold() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use codewhale_execpolicy::{ExecPolicyEngine, PermissionAction, Ruleset, ToolAskRule};
+
+    let _lock = lock_test_env();
+    let workspace = tempdir().expect("tempdir");
+    std::fs::create_dir(workspace.path().join(".git")).expect("git marker");
+
+    let ruleset = Ruleset::user(vec![], vec![]).with_ask_rules(vec![
+        ToolAskRule {
+            tool: "exec_shell".into(),
+            command: Some("echo".into()),
+            action: PermissionAction::Allow,
+            ..ToolAskRule::new("")
+        },
+        ToolAskRule {
+            tool: "exec_shell".into(),
+            command: Some("git push".into()),
+            action: PermissionAction::Allow,
+            ..ToolAskRule::new("")
+        },
+        ToolAskRule {
+            tool: "write_file".into(),
+            path: Some("allowed.txt".into()),
+            action: PermissionAction::Allow,
+            ..ToolAskRule::new("")
+        },
+        ToolAskRule {
+            tool: "edit_file".into(),
+            action: PermissionAction::Allow,
+            ..ToolAskRule::new("")
+        },
+        ToolAskRule {
+            tool: "exec_shell".into(),
+            command: Some("*".into()),
+            action: PermissionAction::Allow,
+            ..ToolAskRule::new("")
+        },
+        ToolAskRule {
+            tool: "exec_shell".into(),
+            command: Some("python*".into()),
+            action: PermissionAction::Allow,
+            ..ToolAskRule::new("")
+        },
+        ToolAskRule {
+            tool: "exec_shell".into(),
+            command: Some("npm run *".into()),
+            action: PermissionAction::Allow,
+            ..ToolAskRule::new("")
+        },
+        ToolAskRule {
+            tool: "agent".into(),
+            action: PermissionAction::Allow,
+            ..ToolAskRule::new("")
+        },
+    ]);
+    let policy_engine = ExecPolicyEngine::with_rulesets(vec![ruleset]);
+
+    let mut broad_shell_allow = codewhale_runtime::config::AutoReviewRuleConfig::default();
+    broad_shell_allow.id = Some("broad-shell".to_string());
+    broad_shell_allow.action_kind = Some("shell".to_string());
+    broad_shell_allow.reason = Some("allow all shell".to_string());
+
+    let mut broad_agent_allow = codewhale_runtime::config::AutoReviewRuleConfig::default();
+    broad_agent_allow.id = Some("broad-agent".to_string());
+    broad_agent_allow.tool = Some("agent".to_string());
+    broad_agent_allow.reason = Some("allow agent".to_string());
+
+    let mut config = Config::default();
+    config.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+        reviewer_model: Some("narrow-guardian".to_string()),
+        allow: vec![broad_shell_allow, broad_agent_allow],
+        ..Default::default()
+    });
+
+    let narrow_mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn(
+            "call_narrow_echo",
+            "Bash",
+            r#"{"action":"run","command":"echo allowed_narrow","background":false}"#,
+        ),
+        canned::simple_text_turn("narrow done"),
+    ]));
+    let mut engine_config = deterministic_engine_config(workspace.path());
+    engine_config.exec_policy_engine = policy_engine.clone();
+    engine_config.auto_review_policy =
+        crate::core::authority::auto_review::AutoReviewPolicy::from_config(&config);
+    assert_eq!(engine_config.auto_review_policy.suspended_allow_warnings.len(), 2);
+
+    let (mut engine, mut handle) =
+        Engine::new_with_model_client(engine_config.clone(), &config, narrow_mock.clone());
+    engine.attach_owner_surface_for_tests(&mut handle);
+    let task = tokio::spawn(engine.run());
+    handle
+        .send(auto_review_message_op("run narrow echo", &config))
+        .await
+        .expect("send narrow turn");
+    let mut rx = handle.rx_event.write().await;
+    let mut narrow_tool_ok = None;
+    let mut guardian_called = false;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("narrow timeout")
+    {
+        match event {
+            Event::ToolGateDecision {
+                gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                ..
+            } => guardian_called = true,
+            Event::ToolCallComplete { result, .. } => {
+                narrow_tool_ok = Some(result.expect("narrow echo succeeds").success);
+            }
+            Event::TurnComplete { .. } => break,
+            _ => {}
+        }
+    }
+    drop(rx);
+    handle.send(Op::Shutdown).await.expect("shutdown narrow");
+    let _ = tokio::time::timeout(model_turn_event_timeout(), task).await;
+    assert_eq!(narrow_tool_ok, Some(true));
+    assert!(!guardian_called, "narrow typed allow must skip guardian");
+    assert_eq!(narrow_mock.call_count(), 2);
+
+    let flag_mock = Arc::new(MockLlmClient::new(Vec::new()));
+    flag_mock.push_factory(|_| {
+        canned::tool_call_turn(
+            "call_flagged_echo",
+            "Bash",
+            r#"{"action":"run","command":"env echo suspended","background":false}"#,
+        )
+    });
+    flag_mock.push_factory(|_| {
+        canned::simple_text_turn(
+            r#"{"risk_level":"high","decision":"deny","reason":"wrapped command requires explicit approval"}"#,
+        )
+    });
+    flag_mock.push_factory(|_| canned::simple_text_turn("blocked wrapped command"));
+
+    let (mut flag_engine, mut flag_handle) =
+        Engine::new_with_model_client(engine_config.clone(), &config, flag_mock.clone());
+    flag_engine.attach_owner_surface_for_tests(&mut flag_handle);
+    let flag_task = tokio::spawn(flag_engine.run());
+    flag_handle
+        .send(auto_review_message_op("run wrapped echo", &config))
+        .await
+        .expect("send wrapped turn");
+    let mut flag_rx = flag_handle.rx_event.write().await;
+    let mut flag_guardian_denied = false;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), flag_rx.recv())
+        .await
+        .expect("wrapped timeout")
+    {
+        match event {
+            Event::ToolGateDecision {
+                gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                decision: crate::core::events::ToolGateVerdict::Denied,
+                ..
+            } => flag_guardian_denied = true,
+            Event::TurnComplete { .. } => break,
+            _ => {}
+        }
+    }
+    drop(flag_rx);
+    flag_handle.send(Op::Shutdown).await.expect("shutdown wrapped");
+    let _ = tokio::time::timeout(model_turn_event_timeout(), flag_task).await;
+    assert!(
+        flag_guardian_denied,
+        "broad/wrapped commands must not bypass guardian in Auto-Review"
+    );
+    assert_eq!(flag_mock.call_count(), 3);
+
+    let ask_restored = exec_shell_ask_rule_decision(
+        &engine_config,
+        "exec_shell",
+        &json!({"command": "npm run build"}),
+        workspace.path(),
+        ApprovalMode::Suggest,
+    );
+    assert_eq!(ask_restored, Some(ToolAskRuleDecision::Allow));
+    assert_eq!(
+        file_tool_ask_rule_decision(
+            &engine_config,
+            "edit_file",
+            &json!({"path": "any.txt", "old_string": "a", "new_string": "b"}),
+            workspace.path(),
+            ApprovalMode::Auto,
+        ),
+        None
+    );
+    assert_eq!(
+        file_tool_ask_rule_decision(
+            &engine_config,
+            "edit_file",
+            &json!({"path": "any.txt", "old_string": "a", "new_string": "b"}),
+            workspace.path(),
+            ApprovalMode::Suggest,
+        ),
+        Some(ToolAskRuleDecision::Allow)
+    );
+    assert_eq!(
+        file_tool_ask_rule_decision(
+            &engine_config,
+            "write_file",
+            &json!({"path": "allowed.txt", "content": "hi"}),
+            workspace.path(),
+            ApprovalMode::Auto,
+        ),
+        Some(ToolAskRuleDecision::Allow)
+    );
+
+    let mut review_all_cfg = config.clone();
+    if let Some(ar) = review_all_cfg.auto_review.as_mut() {
+        ar.review_all_shell = true;
+    }
+    let mut review_all_engine_cfg = engine_config.clone();
+    review_all_engine_cfg.auto_review_policy =
+        crate::core::authority::auto_review::AutoReviewPolicy::from_config(&review_all_cfg);
+
+    let review_benign_mock = Arc::new(MockLlmClient::new(Vec::new()));
+    review_benign_mock.push_factory(|_| {
+        canned::tool_call_turn(
+            "call_review_all_ls",
+            "Bash",
+            r#"{"action":"run","command":"ls","background":false}"#,
+        )
+    });
+    review_benign_mock.push_factory(|_| {
+        canned::simple_text_turn(
+            r#"{"risk_level":"low","decision":"allow","reason":"benign ls reviewed"}"#,
+        )
+    });
+    review_benign_mock.push_factory(|_| canned::simple_text_turn("reviewed benign ls"));
+
+    let (mut benign_engine, mut benign_handle) = Engine::new_with_model_client(
+        review_all_engine_cfg.clone(),
+        &review_all_cfg,
+        review_benign_mock.clone(),
+    );
+    benign_engine.attach_owner_surface_for_tests(&mut benign_handle);
+    let benign_task = tokio::spawn(benign_engine.run());
+    benign_handle
+        .send(auto_review_message_op(
+            "run ls with review_all_shell",
+            &review_all_cfg,
+        ))
+        .await
+        .expect("send benign review_all turn");
+    let mut benign_rx = benign_handle.rx_event.write().await;
+    let mut benign_guardian_allowed = false;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), benign_rx.recv())
+        .await
+        .expect("benign review_all timeout")
+    {
+        match event {
+            Event::ToolGateDecision {
+                gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                decision: crate::core::events::ToolGateVerdict::Allowed,
+                ..
+            } => benign_guardian_allowed = true,
+            Event::TurnComplete { .. } => break,
+            _ => {}
+        }
+    }
+    drop(benign_rx);
+    benign_handle
+        .send(Op::Shutdown)
+        .await
+        .expect("shutdown benign review_all");
+    let _ = tokio::time::timeout(model_turn_event_timeout(), benign_task).await;
+    assert!(
+        benign_guardian_allowed,
+        "review_all_shell must send benign shell commands to guardian"
+    );
+    assert_eq!(review_benign_mock.call_count(), 3);
+
+    let review_all_mock = Arc::new(MockLlmClient::new(Vec::new()));
+    review_all_mock.push_factory(|_| {
+        canned::tool_call_turn(
+            "call_review_all_echo",
+            "Bash",
+            r#"{"action":"run","command":"echo allowed_narrow","background":false}"#,
+        )
+    });
+    review_all_mock.push_factory(|_| {
+        canned::simple_text_turn(
+            r#"{"risk_level":"low","decision":"allow","reason":"review_all_shell verified"}"#,
+        )
+    });
+    review_all_mock.push_factory(|_| canned::simple_text_turn("reviewed narrow echo"));
+
+    let (mut review_engine, mut review_handle) = Engine::new_with_model_client(
+        review_all_engine_cfg,
+        &review_all_cfg,
+        review_all_mock.clone(),
+    );
+    review_engine.attach_owner_surface_for_tests(&mut review_handle);
+    let review_task = tokio::spawn(review_engine.run());
+    review_handle
+        .send(auto_review_message_op("run echo with review_all_shell", &review_all_cfg))
+        .await
+        .expect("send review_all turn");
+    let mut review_rx = review_handle.rx_event.write().await;
+    let mut guardian_allowed = false;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), review_rx.recv())
+        .await
+        .expect("review_all timeout")
+    {
+        match event {
+            Event::ToolGateDecision {
+                gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                decision: crate::core::events::ToolGateVerdict::Allowed,
+                ..
+            } => guardian_allowed = true,
+            Event::TurnComplete { .. } => break,
+            _ => {}
+        }
+    }
+    drop(review_rx);
+    review_handle.send(Op::Shutdown).await.expect("shutdown review_all");
+    let _ = tokio::time::timeout(model_turn_event_timeout(), review_task).await;
+    assert!(guardian_allowed, "review_all_shell must send even narrow shell allows to guardian");
+    assert_eq!(review_all_mock.call_count(), 3);
+
+    let push_narrow_mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn(
+            "call_narrow_push_feature",
+            "Bash",
+            r#"{"action":"run","command":"git push origin feature","background":false}"#,
+        ),
+        canned::simple_text_turn("feature push attempted without guardian"),
+    ]));
+    let (mut push_engine, mut push_handle) =
+        Engine::new_with_model_client(engine_config.clone(), &config, push_narrow_mock.clone());
+    push_engine.attach_owner_surface_for_tests(&mut push_handle);
+    let push_task = tokio::spawn(push_engine.run());
+    push_handle
+        .send(auto_review_message_op("push feature branch", &config))
+        .await
+        .expect("send narrow push turn");
+    let mut push_rx = push_handle.rx_event.write().await;
+    let mut push_guardian_called = false;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), push_rx.recv())
+        .await
+        .expect("push narrow timeout")
+    {
+        match event {
+            Event::ToolGateDecision {
+                gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                ..
+            } => push_guardian_called = true,
+            Event::TurnComplete { .. } => break,
+            _ => {}
+        }
+    }
+    drop(push_rx);
+    push_handle.send(Op::Shutdown).await.expect("shutdown narrow push");
+    let _ = tokio::time::timeout(model_turn_event_timeout(), push_task).await;
+    assert!(!push_guardian_called, "narrow git push origin feature must skip guardian");
+    assert_eq!(push_narrow_mock.call_count(), 2);
+
+    let push_main_mock = Arc::new(MockLlmClient::new(Vec::new()));
+    push_main_mock.push_factory(|_| {
+        canned::tool_call_turn(
+            "call_soft_push_production",
+            "Bash",
+            r#"{"action":"run","command":"git push origin production","background":false}"#,
+        )
+    });
+    push_main_mock.push_factory(|_| {
+        canned::simple_text_turn(
+            r#"{"risk_level":"high","decision":"deny","reason":"deploy-branch held"}"#,
+        )
+    });
+    push_main_mock.push_factory(|_| canned::simple_text_turn("blocked deploy branch"));
+    let (mut main_engine, mut main_handle) =
+        Engine::new_with_model_client(engine_config.clone(), &config, push_main_mock.clone());
+    main_engine.attach_owner_surface_for_tests(&mut main_handle);
+    let main_task = tokio::spawn(main_engine.run());
+    main_handle
+        .send(auto_review_message_op("push production branch", &config))
+        .await
+        .expect("send deploy-branch push turn");
+    let mut main_rx = main_handle.rx_event.write().await;
+    let mut deploy_rule = None;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), main_rx.recv())
+        .await
+        .expect("push production timeout")
+    {
+        match event {
+            Event::ToolGateDecision {
+                gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                rule,
+                ..
+            } => deploy_rule = rule,
+            Event::TurnComplete { .. } => break,
+            _ => {}
+        }
+    }
+    drop(main_rx);
+    main_handle
+        .send(Op::Shutdown)
+        .await
+        .expect("shutdown push production");
+    let _ = tokio::time::timeout(model_turn_event_timeout(), main_task).await;
+    assert_eq!(deploy_rule.as_deref(), Some("deploy-branch"));
+    assert_eq!(push_main_mock.call_count(), 3);
+
+    let push_force_mock = Arc::new(MockLlmClient::new(Vec::new()));
+    push_force_mock.push_factory(|_| {
+        canned::tool_call_turn(
+            "call_soft_force_push_main",
+            "Bash",
+            r#"{"action":"run","command":"git push --force origin main","background":false}"#,
+        )
+    });
+    push_force_mock.push_factory(|_| {
+        canned::simple_text_turn(
+            r#"{"risk_level":"high","decision":"deny","reason":"force-push held"}"#,
+        )
+    });
+    push_force_mock.push_factory(|_| canned::simple_text_turn("blocked force push"));
+    let (mut force_engine, mut force_handle) =
+        Engine::new_with_model_client(engine_config.clone(), &config, push_force_mock.clone());
+    force_engine.attach_owner_surface_for_tests(&mut force_handle);
+    let force_task = tokio::spawn(force_engine.run());
+    force_handle
+        .send(auto_review_message_op("force push main branch", &config))
+        .await
+        .expect("send force-push turn");
+    let mut force_rx = force_handle.rx_event.write().await;
+    let mut force_rule = None;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), force_rx.recv())
+        .await
+        .expect("force push timeout")
+    {
+        match event {
+            Event::ToolGateDecision {
+                gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                rule,
+                ..
+            } => force_rule = rule,
+            Event::TurnComplete { .. } => break,
+            _ => {}
+        }
+    }
+    drop(force_rx);
+    force_handle
+        .send(Op::Shutdown)
+        .await
+        .expect("shutdown force push");
+    let _ = tokio::time::timeout(model_turn_event_timeout(), force_task).await;
+    assert_eq!(force_rule.as_deref(), Some("force-push"));
+    assert_eq!(push_force_mock.call_count(), 3);
+
+    let write_narrow_mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn(
+            "call_narrow_write_allowed",
+            "File",
+            r#"{"action":"write","path":"allowed.txt","content":"ok=1\n"}"#,
+        ),
+        canned::simple_text_turn("narrow write finished"),
+    ]));
+    let (mut write_engine, mut write_handle) =
+        Engine::new_with_model_client(engine_config, &config, write_narrow_mock.clone());
+    write_engine.attach_owner_surface_for_tests(&mut write_handle);
+    let write_task = tokio::spawn(write_engine.run());
+    write_handle
+        .send(auto_review_message_op("write narrow file", &config))
+        .await
+        .expect("send narrow write");
+    let mut write_rx = write_handle.rx_event.write().await;
+    let mut write_guardian_called = false;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), write_rx.recv())
+        .await
+        .expect("write timeout")
+    {
+        match event {
+            Event::ToolGateDecision {
+                gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                ..
+            } => write_guardian_called = true,
+            Event::TurnComplete { .. } => break,
+            _ => {}
+        }
+    }
+    drop(write_rx);
+    write_handle.send(Op::Shutdown).await.expect("shutdown write");
+    let _ = tokio::time::timeout(model_turn_event_timeout(), write_task).await;
+    assert!(!write_guardian_called, "narrow path write_file must skip guardian");
+    assert_eq!(write_narrow_mock.call_count(), 2);
+}

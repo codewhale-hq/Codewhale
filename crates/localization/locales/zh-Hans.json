@@ -2183,6 +2183,7 @@
   "CmdAutoDescription": "用自动审核工作——不必先设目标或工作流",
   "AutoReceiptOn": "已开启自动审核。/goal 盯住一个目标；/workflow 运行脚本。",
   "AutoReceiptPlanNote": "在切换到 Work 之前，Plan 仍为只读。",
+  "AutoReceiptBroadAllowsPaused": "宽松的允许规则在开启自动审核期间已暂停，退出自动审核后恢复。",
   "GoalContinuationWaiting": "目标运行中 · {delay} 后开始下一回合 · 按 Esc、Ctrl+C 或使用 /goal pause 可停止待执行的继续操作",
   "GoalContinuationReady": "目标继续操作已就绪；队列中的控制命令会在下一回合之前执行。",
   "GoalContinuationStopped": "已停止待执行的目标继续操作；目标仍保持运行状态。",

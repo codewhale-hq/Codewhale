@@ -2183,6 +2183,7 @@
   "CmdAutoDescription": "Auto-Review से काम करें — लक्ष्य या वर्कफ़्लो के बिना",
   "AutoReceiptOn": "Auto-Review चालू है। /goal एक लक्ष्य रखता है; /workflow स्क्रिप्ट चलाता है।",
   "AutoReceiptPlanNote": "Work पर जाने तक Plan केवल पढ़ने योग्य रहता है।",
+  "AutoReceiptBroadAllowsPaused": "Auto-Review चालू रहने तक व्यापक अनुमति नियम रोके गए हैं और बाहर निकलने पर फिर लागू होंगे।",
   "GoalContinuationWaiting": "लक्ष्य सक्रिय · अगला टर्न {delay} में · Esc, Ctrl+C या /goal pause लंबित जारीकरण रोकता है",
   "GoalContinuationReady": "लक्ष्य जारीकरण तैयार है; अगली टर्न से पहले कतारबद्ध नियंत्रण चलेंगे।",
   "GoalContinuationStopped": "लंबित लक्ष्य जारीकरण रोक दिया गया; लक्ष्य सक्रिय है।",

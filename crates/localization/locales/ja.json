@@ -2183,6 +2183,7 @@
   "CmdAutoDescription": "Auto-Review で作業する — ゴールやワークフローは不要",
   "AutoReceiptOn": "Auto-Review をオンにしました。/goal は一つの目標、/workflow は脚本です。",
   "AutoReceiptPlanNote": "Work に切り替えるまで Plan は読み取り専用です。",
+  "AutoReceiptBroadAllowsPaused": "Auto-Review がオンの間は広範な許可ルールを一時停止し、終了すると再開します。",
   "GoalContinuationWaiting": "目標は実行中 · 次のターンまで {delay} · Esc、Ctrl+C、または /goal pause で保留中の続行を停止",
   "GoalContinuationReady": "目標の続行準備ができました。キュー内の操作を次のターンより先に実行します。",
   "GoalContinuationStopped": "保留中の目標続行を停止しました。目標はアクティブなままです。",

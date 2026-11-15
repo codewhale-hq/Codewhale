@@ -2183,6 +2183,7 @@
   "CmdAutoDescription": "자동 검토로 작업합니다 — 목표나 워크플로 없이",
   "AutoReceiptOn": "자동 검토가 켜졌습니다. /goal 은 하나의 목표, /workflow 는 스크립트입니다.",
   "AutoReceiptPlanNote": "Work 로 바꿀 때까지 Plan 은 읽기 전용입니다.",
+  "AutoReceiptBroadAllowsPaused": "자동 검토가 켜져 있는 동안 포괄적인 허용 규칙은 일시 중지되며, 종료하면 다시 적용됩니다.",
   "GoalContinuationWaiting": "목표 활성 · 다음 턴까지 {delay} · Esc, Ctrl+C 또는 /goal pause로 대기 중인 계속 실행 중지",
   "GoalContinuationReady": "목표 계속 실행 준비 완료. 대기 중인 제어 작업을 다음 턴보다 먼저 실행합니다.",
   "GoalContinuationStopped": "대기 중인 목표 계속 실행을 중지했습니다. 목표는 활성 상태로 유지됩니다.",

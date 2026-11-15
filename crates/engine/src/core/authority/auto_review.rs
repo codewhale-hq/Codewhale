@@ -553,6 +553,7 @@ pub struct AutoReviewContext<'a> {
     hidden_unicode: Vec<(ExecutionInput, usize, char)>,
     credential_uploads: Vec<String>,
     pub extension_origin: Option<ExtensionReviewOrigin>,
+    pub typed_narrow_allow: bool,
     pub person_messages: Vec<String>,
     pub approved_plan: Option<String>,
     pub recent_actions: Vec<crate::core::turn::RecentReviewAction>,
@@ -837,6 +838,7 @@ impl<'a> AutoReviewContext<'a> {
                 .flat_map(|(_, uploads)| uploads)
                 .collect(),
             extension_origin: None,
+            typed_narrow_allow: false,
             person_messages: Vec::new(),
             approved_plan: None,
             recent_actions: Vec::new(),
@@ -849,6 +851,12 @@ impl<'a> AutoReviewContext<'a> {
     #[must_use]
     pub fn with_extension_origin(mut self, extension_origin: ExtensionReviewOrigin) -> Self {
         self.extension_origin = Some(extension_origin);
+        self
+    }
+
+    #[must_use]
+    pub fn with_typed_narrow_allow(mut self, typed_narrow_allow: bool) -> Self {
+        self.typed_narrow_allow = typed_narrow_allow;
         self
     }
 
@@ -965,12 +973,69 @@ fn rule_from_config(
     rule
 }
 
+fn is_broad_auto_review_allow_config(
+    rule: &codewhale_runtime::config::AutoReviewRuleConfig,
+) -> bool {
+    let tool = rule
+        .tool
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+    let tool_is_shell_agent_or_wildcard = tool.as_deref().is_some_and(|name| {
+        matches!(
+            name,
+            "exec_shell" | "bash" | "agent" | "subagent" | "spawn_agent" | "*"
+        ) || name.contains('*')
+    });
+    if tool_is_shell_agent_or_wildcard {
+        return true;
+    }
+    let normalized_kind = rule
+        .action_kind
+        .as_deref()
+        .and_then(codewhale_runtime::config::auto_review_action_kind_name);
+    matches!(
+        normalized_kind,
+        Some("shell" | "external" | "write" | "destructive" | "publish")
+    ) && tool.is_none()
+}
+
+fn broad_auto_review_allow_description(
+    rule: &codewhale_runtime::config::AutoReviewRuleConfig,
+    index: usize,
+) -> String {
+    let id = rule
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| format!("auto_review.allow[{index}]"), str::to_string);
+    match (
+        rule.tool
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty()),
+        rule.action_kind
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty()),
+    ) {
+        (Some(tool), Some(kind)) => format!("{id} (tool={tool}, action_kind={kind})"),
+        (Some(tool), None) => format!("{id} (tool={tool})"),
+        (None, Some(kind)) => format!("{id} (action_kind={kind})"),
+        (None, None) => id,
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AutoReviewPolicy {
     pub allow_rules: Vec<AutoReviewRule>,
     pub block_rules: Vec<AutoReviewRule>,
     pub reviewer_model: Option<String>,
     pub environment: Vec<String>,
+    pub review_all_shell: bool,
+    pub suspended_allow_warnings: Vec<String>,
 }
 
 impl AutoReviewPolicy {
@@ -991,13 +1056,22 @@ impl AutoReviewPolicy {
                 ..Self::default()
             };
         };
+        let mut allow_rules = Vec::new();
+        let mut suspended_allow_warnings = Vec::new();
+        for (index, rule) in rules.allow.iter().enumerate() {
+            if is_broad_auto_review_allow_config(rule) {
+                let description = broad_auto_review_allow_description(rule, index);
+                tracing::warn!(
+                    rule = %description,
+                    "ignoring broad auto_review.allow rule during Auto-Review"
+                );
+                suspended_allow_warnings.push(description);
+            } else {
+                allow_rules.push(rule_from_config(rule, index, AutoReviewAction::Allow));
+            }
+        }
         Self {
-            allow_rules: rules
-                .allow
-                .iter()
-                .enumerate()
-                .map(|(index, rule)| rule_from_config(rule, index, AutoReviewAction::Allow))
-                .collect(),
+            allow_rules,
             block_rules: rules
                 .block
                 .iter()
@@ -1006,6 +1080,8 @@ impl AutoReviewPolicy {
                 .collect(),
             reviewer_model,
             environment,
+            review_all_shell: rules.review_all_shell,
+            suspended_allow_warnings,
         }
     }
 
@@ -1031,7 +1107,11 @@ impl AutoReviewPolicy {
                 .with_rule(rule.id.clone());
         }
 
-        deterministic_fallback(ctx, self.allow_rules.iter().find(|rule| rule.matches(ctx)))
+        deterministic_fallback(
+            ctx,
+            self.allow_rules.iter().find(|rule| rule.matches(ctx)),
+            self,
+        )
     }
 
     #[must_use]
@@ -1064,6 +1144,7 @@ impl AutoReviewPolicy {
                 .as_ref()
                 .and_then(|origin| origin.plugin_id.as_deref()),
             "extension_held": ctx.extension_held(),
+            "typed_narrow_allow": ctx.typed_narrow_allow,
             "decision": match (decision.built_in_safety_gate, decision.action) {
                 (true, AutoReviewAction::AskUser) => "hold_for_review",
                 (_, action) => action.as_str(),
@@ -1078,6 +1159,7 @@ impl AutoReviewPolicy {
 fn deterministic_fallback(
     ctx: &AutoReviewContext<'_>,
     allow_rule: Option<&AutoReviewRule>,
+    policy: &AutoReviewPolicy,
 ) -> AutoReviewDecision {
     if ctx.approval_mode != ApprovalMode::Bypass
         && let Some(&(input, position, ch)) = ctx.hidden_unicode.first()
@@ -1244,6 +1326,20 @@ fn deterministic_fallback(
             return AutoReviewDecision::new(
                 AutoReviewAction::AskUser,
                 "extension tool calls require review in Auto-Review",
+            );
+        }
+        if policy.review_all_shell
+            && (ctx.action_kind == ToolActionKind::Shell || ctx.category == ToolCategory::Shell)
+        {
+            return AutoReviewDecision::new(
+                AutoReviewAction::AskUser,
+                "auto_review.review_all_shell sends every shell command to the reviewer",
+            );
+        }
+        if ctx.typed_narrow_allow {
+            return AutoReviewDecision::new(
+                AutoReviewAction::Allow,
+                "narrow typed allow rule matches action",
             );
         }
         if ctx.git_remote_push {
@@ -1693,6 +1789,7 @@ pub fn build_reviewer_context_for_retry(
         "hold_reason": hold_reason,
         "credentials_masked": credentials_masked,
         "protected_instruction_write": ctx.protected_instruction_write,
+        "typed_narrow_allow": ctx.typed_narrow_allow,
         "person_approved_retry": person_approved_retry,
     });
     if let (Some(origin), Some(map)) = (
@@ -10658,12 +10755,14 @@ mod tests {
             ],
             reviewer_model: None,
             environment: Vec::new(),
+            ..Default::default()
         };
         let allow_only_policy = AutoReviewPolicy {
             allow_rules: policy.allow_rules.clone(),
             block_rules: Vec::new(),
             reviewer_model: None,
             environment: Vec::new(),
+            ..Default::default()
         };
 
         let benign_shell = ctx_for(
@@ -11931,5 +12030,163 @@ mod tests {
         let first = &parent.blocked_actions()[0];
         assert!(parent.approve_retry(&first.receipt_id).is_err());
         assert!(parent.approve_retry(&first.call_digest).is_err());
+    }
+
+    #[test]
+    fn from_config_suspends_broad_allows_keeps_narrow_tool_allows_and_enforces_precedence() {
+        let make_rule = |id: &str, tool: Option<&str>, kind: Option<&str>, reason: &str| {
+            let mut r = codewhale_runtime::config::AutoReviewRuleConfig::default();
+            r.id = Some(id.to_string());
+            r.tool = tool.map(str::to_string);
+            r.action_kind = kind.map(str::to_string);
+            r.reason = Some(reason.to_string());
+            r
+        };
+        let mut config = codewhale_runtime::config::Config::default();
+        config.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+            review_all_shell: true,
+            allow: vec![
+                make_rule("broad-shell", None, Some("shell"), "allow shell"),
+                make_rule("broad-agent", Some("agent"), None, "allow agent"),
+                make_rule(
+                    "broad-exec-shell",
+                    Some("exec_shell"),
+                    None,
+                    "allow exec_shell",
+                ),
+                make_rule("broad-wildcard", Some("*"), None, "allow wildcard"),
+                make_rule(
+                    "narrow-search",
+                    Some("web_search"),
+                    None,
+                    "allow web_search",
+                ),
+            ],
+            ..Default::default()
+        });
+
+        let policy = AutoReviewPolicy::from_config(&config);
+        assert!(policy.review_all_shell);
+        assert_eq!(policy.suspended_allow_warnings.len(), 4);
+        assert_eq!(policy.allow_rules.len(), 1);
+        assert_eq!(policy.allow_rules[0].id, "narrow-search");
+
+        let benign_ls = ctx_for(
+            "exec_shell",
+            json!({"command": "ls -la"}),
+            RunOrigin::Interactive,
+            ApprovalMode::Auto,
+        )
+        .with_typed_narrow_allow(true);
+        let review_ls = policy.evaluate(&benign_ls);
+        assert_eq!(review_ls.action, AutoReviewAction::AskUser);
+        assert!(!review_ls.built_in_safety_gate);
+        assert!(
+            review_ls.reason.contains("auto_review.review_all_shell"),
+            "{}",
+            review_ls.reason
+        );
+
+        let read_ctx = ctx_for(
+            "read_file",
+            json!({"path": "README.md"}),
+            RunOrigin::Interactive,
+            ApprovalMode::Auto,
+        );
+        assert_eq!(policy.evaluate(&read_ctx).action, AutoReviewAction::Allow);
+
+        let narrow_policy = AutoReviewPolicy::default();
+        let narrow_push = ctx_for(
+            "exec_shell",
+            json!({"command": "git push origin feature"}),
+            RunOrigin::Interactive,
+            ApprovalMode::Auto,
+        )
+        .with_typed_narrow_allow(true);
+        let narrow_push_decision = narrow_policy.evaluate(&narrow_push);
+        assert_eq!(narrow_push_decision.action, AutoReviewAction::Allow);
+        assert!(
+            narrow_push_decision
+                .reason
+                .contains("narrow typed allow rule"),
+            "{}",
+            narrow_push_decision.reason
+        );
+
+        let soft_deploy = ctx_for(
+            "exec_shell",
+            json!({"command": "git push origin production"}),
+            RunOrigin::Interactive,
+            ApprovalMode::Auto,
+        )
+        .with_typed_narrow_allow(true);
+        let deploy_decision = narrow_policy.evaluate(&soft_deploy);
+        assert_eq!(deploy_decision.action, AutoReviewAction::AskUser);
+        assert_eq!(deploy_decision.rule_id.as_deref(), Some("deploy-branch"));
+
+        let soft_force = ctx_for(
+            "exec_shell",
+            json!({"command": "git push --force origin main"}),
+            RunOrigin::Interactive,
+            ApprovalMode::Auto,
+        )
+        .with_typed_narrow_allow(true);
+        let force_decision = narrow_policy.evaluate(&soft_force);
+        assert_eq!(force_decision.action, AutoReviewAction::AskUser);
+        assert_eq!(force_decision.rule_id.as_deref(), Some("force-push"));
+
+        let unattended_push = ctx_for(
+            "exec_shell",
+            json!({"command": "git push origin feature"}),
+            RunOrigin::Headless,
+            ApprovalMode::Auto,
+        )
+        .with_typed_narrow_allow(true);
+        let unattended_decision = narrow_policy.evaluate(&unattended_push);
+        assert_eq!(unattended_decision.action, AutoReviewAction::AskUser);
+        assert!(unattended_decision.built_in_safety_gate);
+        assert!(matches!(
+            crate::core::engine::auto_review_plan_decision_for_context(
+                &narrow_policy,
+                &unattended_push
+            )
+            .0,
+            crate::core::engine::AutoReviewPlanDecision::Block(_)
+        ));
+
+        let held_extension = ctx_for(
+            "exec_shell",
+            json!({"command": "git push origin feature"}),
+            RunOrigin::Interactive,
+            ApprovalMode::Auto,
+        )
+        .with_typed_narrow_allow(true)
+        .with_extension_origin(ExtensionReviewOrigin {
+            origin: "extension:demo".to_string(),
+            tool: "demo_tool".to_string(),
+            plugin_id: None,
+            nested_call: true,
+            held: true,
+        });
+        assert_eq!(
+            narrow_policy.evaluate(&held_extension).action,
+            AutoReviewAction::AskUser
+        );
+
+        let web_without_allow = ctx_for(
+            "fetch_url",
+            json!({"url": "https://example.com/docs"}),
+            RunOrigin::Interactive,
+            ApprovalMode::Auto,
+        );
+        assert_eq!(
+            narrow_policy.evaluate(&web_without_allow).action,
+            AutoReviewAction::AskUser
+        );
+        let web_with_narrow_allow = web_without_allow.with_typed_narrow_allow(true);
+        assert_eq!(
+            narrow_policy.evaluate(&web_with_narrow_allow).action,
+            AutoReviewAction::Allow
+        );
     }
 }

@@ -4195,6 +4195,132 @@ fn cycle_approval_scenario() {
 }
 
 #[test]
+fn auto_review_posture_transition_emits_broad_allow_pause_note_when_suspended() {
+    let _env_lock = lock_test_env();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config_path = tmp.path().join("config.toml");
+    let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+    let mut options = test_options(false);
+    options.start_in_agent_mode = true;
+    options.config_path = Some(config_path);
+
+    let mut broad_shell_allow = codewhale_runtime::config::AutoReviewRuleConfig::default();
+    broad_shell_allow.id = Some("broad-shell".to_string());
+    broad_shell_allow.action_kind = Some("shell".to_string());
+    broad_shell_allow.reason = Some("allow shell".to_string());
+
+    let mut cfg = Config::default();
+    cfg.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+        allow: vec![broad_shell_allow],
+        ..Default::default()
+    });
+    let mut app = App::new(options.clone(), &cfg);
+    app.ui_locale = codewhale_localization::Locale::En;
+    app.set_agent_approval_posture(ApprovalMode::Suggest);
+
+    let before = app.history.len();
+    assert!(app.select_approval_posture(ApprovalMode::Auto));
+    let notes: Vec<_> = app.history[before..]
+        .iter()
+        .filter_map(|cell| match cell {
+            HistoryCell::System { content }
+                if content.contains("Broad allow rules are paused while Auto-Review is on") =>
+            {
+                Some(content.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+
+    assert!(app.select_approval_posture(ApprovalMode::Suggest));
+    let step_before = app.history.len();
+    assert!(app.select_approval_posture(ApprovalMode::Auto));
+    let notes_second: Vec<_> = app.history[step_before..]
+        .iter()
+        .filter_map(|cell| match cell {
+            HistoryCell::System { content }
+                if content.contains("Broad allow rules are paused while Auto-Review is on") =>
+            {
+                Some(content.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notes_second.len(), 1, "{notes_second:?}");
+
+    let mut clean_app = App::new(options, &Config::default());
+    clean_app.ui_locale = codewhale_localization::Locale::En;
+    clean_app.set_agent_approval_posture(ApprovalMode::Suggest);
+    let clean_before = clean_app.history.len();
+    assert!(clean_app.select_approval_posture(ApprovalMode::Auto));
+    let clean_notes: Vec<_> = clean_app.history[clean_before..]
+        .iter()
+        .filter_map(|cell| match cell {
+            HistoryCell::System { content } if content.contains("Broad allow rules are paused") => {
+                Some(content.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(clean_notes.is_empty(), "{clean_notes:?}");
+}
+
+#[test]
+fn startup_in_auto_review_emits_broad_allow_pause_note_once() {
+    let _env_lock = lock_test_env();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config_path = tmp.path().join("config.toml");
+    let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+    let mut options = test_options(false);
+    options.start_in_agent_mode = true;
+    options.config_path = Some(config_path);
+
+    let mut broad_shell_allow = codewhale_runtime::config::AutoReviewRuleConfig::default();
+    broad_shell_allow.id = Some("broad-shell".to_string());
+    broad_shell_allow.action_kind = Some("shell".to_string());
+    broad_shell_allow.reason = Some("allow shell".to_string());
+
+    let mut cfg = Config::default();
+    cfg.approval_policy = Some("auto-review".to_string());
+    cfg.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+        allow: vec![broad_shell_allow],
+        ..Default::default()
+    });
+    let mut app = App::new(options.clone(), &cfg);
+    app.ui_locale = codewhale_localization::Locale::En;
+    let count_notes = |a: &App| {
+        let expected = a.tr(MessageId::AutoReceiptBroadAllowsPaused);
+        a.history
+            .iter()
+            .filter(|cell| matches!(cell, HistoryCell::System { content } if content == expected.as_ref()))
+            .count()
+    };
+    assert_eq!(count_notes(&app), 1);
+
+    app.apply_cli_permission_mode(Some(
+        codewhale_engine::runtime_options::PermissionMode::AutoReview,
+    ));
+    assert_eq!(count_notes(&app), 1);
+
+    let mut clean_cfg = Config::default();
+    clean_cfg.approval_policy = Some("auto-review".to_string());
+    let clean_app = App::new(options.clone(), &clean_cfg);
+    assert_eq!(count_notes(&clean_app), 0);
+
+    let mut cli_cfg = cfg;
+    cli_cfg.approval_policy = None;
+    let mut cli_app = App::new(options, &cli_cfg);
+    cli_app.ui_locale = codewhale_localization::Locale::En;
+    assert_eq!(count_notes(&cli_app), 0);
+    cli_app.apply_cli_permission_mode(Some(
+        codewhale_engine::runtime_options::PermissionMode::AutoReview,
+    ));
+    assert_eq!(cli_app.approval_mode, ApprovalMode::Auto);
+    assert_eq!(count_notes(&cli_app), 1);
+}
+
+#[test]
 fn plan_permission_cycle_moves_the_baseline_and_leaves_plan_read_only() {
     let _env_lock = lock_test_env();
     let tmp = tempfile::tempdir().expect("tempdir");

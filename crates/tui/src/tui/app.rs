@@ -2266,6 +2266,8 @@ pub struct App {
     approval_policy_requirements_managed: bool,
     pub auto_review_disabled: bool,
     pub auto_review_reviewer_model: Option<String>,
+    pub exec_policy_engine: codewhale_execpolicy::ExecPolicyEngine,
+    pub auto_review_broad_allow_warnings: Vec<String>,
     /// True when the interactive shell switch is user-owned (unset or root
     /// config.toml). Profile / env / managed / project owners stay in charge
     /// even when a YOLO entry point asks for Full Access.
@@ -4035,6 +4037,8 @@ impl App {
         } else {
             self.approval_mode
         };
+        let was_auto = self.mode_prefs.agent_approval_mode == ApprovalMode::Auto
+            || self.approval_mode == ApprovalMode::Auto;
         let permission_before = self.permission_receipt_label();
         self.permission_receipt_deferred = true;
         let mut step = DialStep::default();
@@ -4058,6 +4062,13 @@ impl App {
         }
         self.permission_receipt_deferred = false;
         self.record_permission_change(&permission_before);
+        if !was_auto
+            && (self.approval_mode == ApprovalMode::Auto
+                || self.mode_prefs.agent_approval_mode == ApprovalMode::Auto)
+            && self.has_suspended_broad_allows()
+        {
+            self.emit_auto_review_broad_allows_paused_note();
+        }
         step
     }
 
@@ -4228,6 +4239,7 @@ impl App {
     }
 
     fn finish_approval_posture_change(&mut self, next: ApprovalMode) {
+        let was_auto = self.mode_prefs.agent_approval_mode == ApprovalMode::Auto;
         self.set_agent_approval_posture(next);
         self.needs_redraw = true;
         // In Plan the new posture is real but dormant, and the footer chip
@@ -4242,6 +4254,13 @@ impl App {
                 StatusToastLevel::Info,
                 Some(5_000),
             );
+        }
+        if !self.permission_receipt_deferred
+            && !was_auto
+            && next == ApprovalMode::Auto
+            && self.has_suspended_broad_allows()
+        {
+            self.emit_auto_review_broad_allows_paused_note();
         }
         // Footer permission chip is canonical — no status toast for the new
         // value, only the one-shot rebinding notice.
@@ -4287,10 +4306,27 @@ impl App {
         );
     }
 
+    #[must_use]
+    pub fn has_suspended_broad_allows(&self) -> bool {
+        !self
+            .exec_policy_engine
+            .suspended_broad_allow_descriptions()
+            .is_empty()
+            || !self.auto_review_broad_allow_warnings.is_empty()
+    }
+
+    fn emit_auto_review_broad_allows_paused_note(&mut self) {
+        let content = self
+            .tr(MessageId::AutoReceiptBroadAllowsPaused)
+            .into_owned();
+        self.add_message(HistoryCell::System { content });
+        self.needs_redraw = true;
+    }
+
     /// Host path for `/auto`: persist Auto-Review as the TUI permission
     /// posture without inventing a second runtime.
     pub fn apply_auto_review_posture(&mut self) -> Result<(), String> {
-        self.apply_agent_posture(ApprovalMode::Auto)
+        self.apply_agent_posture_with_note(ApprovalMode::Auto, false)
     }
 
     pub fn apply_cli_permission_mode(
@@ -4312,8 +4348,15 @@ impl App {
                     if !self.approval_policy_requirements_managed
                         && (!self.approval_policy_locked() || self.approval_policy_root_editable)
                     {
+                        let was_auto = self.approval_mode == ApprovalMode::Auto;
                         self.mode = AppMode::Agent;
                         self.set_agent_approval_posture(approval);
+                        if !was_auto
+                            && self.approval_mode == ApprovalMode::Auto
+                            && self.has_suspended_broad_allows()
+                        {
+                            self.emit_auto_review_broad_allows_paused_note();
+                        }
                     }
                 }
             }
@@ -4324,6 +4367,14 @@ impl App {
     /// landing on it; Plan stays read-only and only the Act baseline moves.
     /// Shared by `/auto` and the Plan hand-off.
     pub fn apply_agent_posture(&mut self, next: ApprovalMode) -> Result<(), String> {
+        self.apply_agent_posture_with_note(next, true)
+    }
+
+    fn apply_agent_posture_with_note(
+        &mut self,
+        next: ApprovalMode,
+        emit_broad_allow_note: bool,
+    ) -> Result<(), String> {
         if next == ApprovalMode::Auto && self.auto_review_disabled {
             return Err(
                 "Auto-Review is disabled by managed configuration (`auto_review.disabled = true`)"
@@ -4333,9 +4384,17 @@ impl App {
         if self.approval_policy_locked() {
             return Err("Permissions are controlled by config or managed requirements".to_string());
         }
+        let was_auto = self.agent_approval_baseline() == ApprovalMode::Auto;
         Self::persist_permission_posture(next)
             .map_err(|err| format!("could not save TUI posture ({err})"))?;
         self.set_agent_approval_posture(next);
+        if emit_broad_allow_note
+            && !was_auto
+            && next == ApprovalMode::Auto
+            && self.has_suspended_broad_allows()
+        {
+            self.emit_auto_review_broad_allows_paused_note();
+        }
         self.needs_redraw = true;
         Ok(())
     }

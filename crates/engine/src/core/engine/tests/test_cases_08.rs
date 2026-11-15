@@ -2112,6 +2112,7 @@ async fn s4_dont_push_survives_64k_instructions_pinning_resists_disk_edit_and_ag
         allow: vec![allow_file_rule],
         block: Vec::new(),
         environment: Vec::new(),
+        ..Default::default()
     });
 
     let seen_repo_sha = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));

@@ -1053,6 +1053,12 @@ impl App {
             approval_policy_requirements_managed,
             auto_review_disabled,
             auto_review_reviewer_model: config.auto_review_reviewer_model().map(str::to_string),
+            exec_policy_engine: config.exec_policy_engine.clone(),
+            auto_review_broad_allow_warnings:
+                codewhale_engine::core::authority::auto_review::AutoReviewPolicy::from_config(
+                    config,
+                )
+                .suspended_allow_warnings,
             shell_access_editable,
             clipboard: ClipboardHandler::new(),
             approval_session_approved: HashSet::new(),
@@ -1268,6 +1274,9 @@ impl App {
         }
         if settings.legacy_operate_default_detected() {
             app.notify_operate_retired_once();
+        }
+        if app.approval_mode == ApprovalMode::Auto && app.has_suspended_broad_allows() {
+            app.emit_auto_review_broad_allows_paused_note();
         }
         app
     }

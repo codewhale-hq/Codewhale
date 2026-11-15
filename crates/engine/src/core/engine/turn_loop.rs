@@ -2555,32 +2555,54 @@ impl Engine {
                 }
             }
 
+            let is_extension_invocation = source == ToolCallSource::Extension
+                || direct_extension_caller.is_some()
+                || preserve_extension_approval_for_auto_review
+                || registered_spec
+                    .as_deref()
+                    .is_some_and(|spec| spec.approval_scope().is_some());
+            let mut typed_narrow_allow = false;
             if blocked_error.is_none() {
-                let ask_rule_decision = exec_shell_ask_rule_decision(
+                let ask_rule_eval = exec_shell_ask_rule_evaluation(
                     &self.config,
                     &tool_name,
                     &tool_input,
                     &self.session.workspace,
-                    self.session.approval_mode,
+                    batch_approval_mode,
                 )
                 .or_else(|| {
-                    file_tool_ask_rule_decision(
+                    file_tool_ask_rule_evaluation(
                         &self.config,
                         &tool_name,
                         &tool_input,
                         &self.session.workspace,
-                        self.session.approval_mode,
+                        batch_approval_mode,
+                    )
+                })
+                .or_else(|| {
+                    other_tool_ask_rule_evaluation(
+                        &self.config,
+                        &tool_name,
+                        &tool_input,
+                        &self.session.workspace,
+                        batch_approval_mode,
                     )
                 });
-                if let Some(decision) = ask_rule_decision {
+                if let Some(ask_rule_eval) = ask_rule_eval
+                    && let Some(decision) = ask_rule_eval.decision
+                {
                     match decision {
                         ToolAskRuleDecision::Allow => {
-                            // Remembered grants bypass ordinary registry
-                            // approval only. Hook asks and non-bypassable
-                            // tool requirements remain monotonic, while
-                            // auto-review and repo-law floors below can
-                            // still force review or block.
-                            if !hook_requires_approval
+                            if batch_approval_mode == ApprovalMode::Auto {
+                                if ask_rule_eval.typed_narrow_allow
+                                    && !hook_requires_approval
+                                    && !approval_force_prompt
+                                    && !preserve_extension_approval_for_auto_review
+                                    && !is_extension_invocation
+                                {
+                                    typed_narrow_allow = true;
+                                }
+                            } else if !hook_requires_approval
                                 && !approval_force_prompt
                                 && !preserve_extension_approval_for_auto_review
                             {
@@ -2588,10 +2610,6 @@ impl Engine {
                             }
                         }
                         ToolAskRuleDecision::Prompt(reason) => {
-                            // #3790: the mode is the sole authority — a typed
-                            // ask-rule prompts in Agent/Plan but never in YOLO
-                            // (auto_approve). A typed deny rule still blocks
-                            // hard, in every mode.
                             if !self.session.auto_approve {
                                 if batch_approval_mode == ApprovalMode::Auto && !owner_can_prompt {
                                     approval_required = false;
@@ -2666,6 +2684,7 @@ impl Engine {
                     direct_extension_caller.is_some() && approval_required
                 };
                 let review_context = review_context.map(|review_context| {
+                    let review_context = review_context.with_typed_narrow_allow(typed_narrow_allow);
                     if let Some(caller) = effective_extension_caller {
                         review_context.with_extension_origin(
                             crate::core::authority::auto_review::ExtensionReviewOrigin {
@@ -2738,7 +2757,10 @@ impl Engine {
                         match decision {
                             AutoReviewPlanDecision::NoChange => {}
                             AutoReviewPlanDecision::Allow => {
-                                if !hook_requires_approval && !approval_force_prompt {
+                                if !hook_requires_approval
+                                    && !approval_force_prompt
+                                    && !preserve_extension_approval_for_auto_review
+                                {
                                     approval_required = false;
                                 }
                             }

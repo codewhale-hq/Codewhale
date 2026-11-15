@@ -2183,6 +2183,7 @@
   "CmdAutoDescription": "Trabalhe com Auto-Review — sem meta ou workflow",
   "AutoReceiptOn": "Auto-Review ligado. /goal mantém um objetivo; /workflow executa um script.",
   "AutoReceiptPlanNote": "Plan permanece somente leitura até você mudar para Work.",
+  "AutoReceiptBroadAllowsPaused": "As regras de permissão amplas ficam pausadas enquanto o Auto-Review está ligado e retornam ao sair.",
   "GoalContinuationWaiting": "Objetivo ativo · próximo turno em {delay} · Esc, Ctrl+C ou /goal pause interrompe a continuação pendente",
   "GoalContinuationReady": "Continuação do objetivo pronta; os controles na fila executam antes do próximo turno.",
   "GoalContinuationStopped": "Continuação pendente interrompida; o objetivo permanece ativo.",

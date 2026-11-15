@@ -2565,7 +2565,18 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   arity-aware prefix match to a complete-command match. `deny` blocks matching
   invocations before mode-based
   approval handling, `allow` skips approval for matching invocations, and
-  `ask` forces approval only in modes that can prompt. Outside the TUI
+  `ask` forces approval only in modes that can prompt. In Auto-Review, broad
+  typed `allow` rules (`exec_shell`/`bash` without a command, globs such as
+  `*`, `python*`, or `npm run *`, bare script/package runner prefixes such as
+  `python`, `node`, `npm run`, or `cargo run`, `agent`/`subagent`/`spawn_agent`,
+  `*`, and write/edit/patch file rules without `path`) are paused without
+  changing `permissions.toml` and resume when leaving Auto-Review; entering
+  Auto-Review displays a one-line note when broad allow rules are paused.
+  Narrow typed `allow` rules (statically expanded, unwrapped `exec_shell`/`bash`
+  calls whose extra operands have no flags, or exact non-agent non-extension
+  tools with explicit `path` for file tools) skip the Auto-Review reviewer when
+  no safety floor, soft rule, hook hold, extension hold, or
+  `auto_review.review_all_shell` applies. Outside the TUI
   auto-approve path, a matching `ask` rule under `approval_policy = "never"`
   is rejected because no prompt can be shown. In Full Access / auto-approval sessions,
   `ask` rules do not downgrade the session into prompting or blocking; explicit
@@ -2696,7 +2707,16 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   required. `action_kind` accepts the six decision-relevant kinds `read`,
   `write`, `shell`, `external`, `publish`, and `destructive`. Invalid names
   fail config validation instead of silently broadening into another policy
-  class. In block rules, the old names remain conservative compatibility
+  class. In Auto-Review, broad `[[auto_review.allow]]` rules whose
+  `action_kind` normalizes to `shell`, `external`, `write`, `destructive`, or
+  `publish` (without a specific non-shell/non-agent tool) or whose `tool`
+  matches `exec_shell`, `bash`, `agent`, or `*` are omitted with a warning while
+  specific non-shell/non-agent tool allow rules remain active. Set
+  `auto_review.review_all_shell = true` (user and managed config only; ignored
+  in `.codewhale/config.toml`) to send every shell command — including benign
+  reads and narrow-allowed shell commands — to the Auto-Review reviewer after
+  deterministic safety-floor, block, soft-rule, and extension checks. In block
+  rules, the old names remain conservative compatibility
   aliases: `network`, `git`, `mcp_action`, `browser`, and `unknown` map to
   `external`; `secret` maps to `destructive`; and `mcp_read` maps to `read`.
   Retired narrow kinds in allow rules fail validation rather than widening to
