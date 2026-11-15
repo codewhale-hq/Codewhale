@@ -1743,8 +1743,8 @@
     /// A `custom` row pointed at DeepSeek's own host is DeepSeek: it keeps the
     /// native toggle, so `off` still disables thinking there rather than
     /// degrading to the compatibility spelling. The host decides, so a
-    /// non-canonical path is still DeepSeek and a trailing slash or surrounding
-    /// whitespace does not change the answer.
+    /// non-canonical path is still DeepSeek, and a trailing slash, surrounding
+    /// whitespace, userinfo or an explicit port does not change the answer.
     #[test]
     fn a_custom_row_on_the_official_deepseek_host_keeps_the_thinking_toggle() {
         for base_url in [
@@ -1754,6 +1754,8 @@
             "https://api.deepseek.com/v1/",
             "https://api.deepseek.com/openai",
             "  https://API.DeepSeek.com/v1  ",
+            "https://user:pw@api.deepseek.com/v1",
+            "https://api.deepseek.com:443/v1",
         ] {
             for (effort, thinking, wire_effort) in [
                 ("off", "disabled", None),
