@@ -664,7 +664,7 @@ async fn a_departed_owner_retires_its_agent_host_when_idle() {
 
     wait_host(&manager, || {
         let rt = manager.shared.cohort_runtime(&agent_cohort);
-        rt.as_ref().map_or(true, |rt| {
+        rt.as_ref().is_none_or(|rt| {
             rt.host
                 .lock()
                 .map(|slot| matches!(&*slot, HostSlot::Idle))

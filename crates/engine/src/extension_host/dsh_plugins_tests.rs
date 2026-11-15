@@ -1823,7 +1823,7 @@ async fn full_access_refuses_what_the_agent_did_not_write() {
         "1.0.0",
     );
 
-    let mut targets: Vec<(&str, String)> = vec![
+    let targets: Vec<(&str, String)> = [
         ("npm spec", "npm:pkg@1.0.0".to_string()),
         ("outside workspace", outside.to_string_lossy().into_owned()),
         ("inside .git", git_hidden.to_string_lossy().into_owned()),
@@ -1831,17 +1831,24 @@ async fn full_access_refuses_what_the_agent_did_not_write() {
             "inside user_plugins_dir",
             inside_user.to_string_lossy().into_owned(),
         ),
-    ];
-
-    #[cfg(unix)]
-    {
-        let link_dst = f.config.workspace.join("linked-outside");
-        std::os::unix::fs::symlink(outside_path_clone(f._temp.path()), &link_dst).unwrap();
-        targets.push((
-            "symlinked workspace dir",
-            link_dst.to_string_lossy().into_owned(),
-        ));
-    }
+    ]
+    .into_iter()
+    .chain({
+        #[cfg(unix)]
+        {
+            let link_dst = f.config.workspace.join("linked-outside");
+            std::os::unix::fs::symlink(outside_path_clone(f._temp.path()), &link_dst).unwrap();
+            Some((
+                "symlinked workspace dir",
+                link_dst.to_string_lossy().into_owned(),
+            ))
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    })
+    .collect();
 
     let state_before = fs::read(&f.config.state_path).unwrap();
     let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
@@ -4055,27 +4062,35 @@ async fn ask_defers_external_non_bundle_and_symlink_ancestor_until_after_write_g
         "this is not = [valid toml",
     );
 
-    let mut targets: Vec<(String, &'static str)> = vec![
+    let targets: Vec<(String, &'static str)> = [
         (
             nonexistent.to_string_lossy().into_owned(),
             "operation-error",
         ),
         (non_bundle.to_string_lossy().into_owned(), "not-bundle"),
         (bad_toml_dir.to_string_lossy().into_owned(), "not-bundle"),
-    ];
-    #[cfg(unix)]
-    {
-        let via_ancestor_link = f._temp.path().join("ancestor-wrap");
-        fs::create_dir_all(&via_ancestor_link).unwrap();
-        let _linked_bundle =
-            write_skill_bundle(&via_ancestor_link, "nested", "ancestor-linked", "1.0.0");
-        let parent_link = f._temp.path().join("parent-symlink");
-        std::os::unix::fs::symlink(&via_ancestor_link, &parent_link).unwrap();
-        targets.push((
-            parent_link.join("nested").to_string_lossy().into_owned(),
-            "operation-error",
-        ));
-    }
+    ]
+    .into_iter()
+    .chain({
+        #[cfg(unix)]
+        {
+            let via_ancestor_link = f._temp.path().join("ancestor-wrap");
+            fs::create_dir_all(&via_ancestor_link).unwrap();
+            let _linked_bundle =
+                write_skill_bundle(&via_ancestor_link, "nested", "ancestor-linked", "1.0.0");
+            let parent_link = f._temp.path().join("parent-symlink");
+            std::os::unix::fs::symlink(&via_ancestor_link, &parent_link).unwrap();
+            Some((
+                parent_link.join("nested").to_string_lossy().into_owned(),
+                "operation-error",
+            ))
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    })
+    .collect();
 
     for (raw_target, _) in &targets {
         let gate_calls = install_gate(&mut f, |_, _| deny_verdict("denied before inspection"));
