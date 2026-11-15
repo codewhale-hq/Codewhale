@@ -205,6 +205,7 @@ impl Engine {
             .unwrap_or_default()
             .into_iter()
             .collect();
+        let extension_tool_names = plugin_tool_names.clone();
         if let Some(overrides) = self
             .api_config
             .tools
@@ -267,7 +268,8 @@ impl Engine {
                 self.config.disallowed_tools.clone(),
                 self.config.max_tool_calls,
                 tool_catalog::ToolMode::Direct,
-            ),
+            )
+            .with_extension_tool_names(extension_tool_names),
             mcp_tool_names,
             mcp,
             subagent_runtime_model: None,

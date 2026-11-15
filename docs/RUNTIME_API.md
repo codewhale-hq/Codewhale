@@ -1713,6 +1713,13 @@ A change of effective permission adds a completed `status` item to the thread's
 latest turn and publishes a `thread.permissions_changed` event (`from`, `to`,
 `source`).
 
+When a running turn installs, enables, disables, or removes a plugin, the
+engine awaits extension-host activation/teardown (for code plugins), refreshes
+the turn's plugin tool catalog immediately for the next model request without
+restarting the thread, adds a completed `status` item to that turn, and publishes
+a `thread.plugin_changed` event (`plugin`, `action`, `content_hash`,
+`decided_by`, `services`, `tools_added`, `tools_removed`).
+
 **Turns** (within a thread)
 - `POST /v1/threads/{id}/turns`
 - `POST /v1/threads/{id}/turns/{turn_id}/steer` - inject guidance into the running turn. The response is a receipt for what actually happened, not for what was attempted; see [Steer delivery](#steer-delivery).

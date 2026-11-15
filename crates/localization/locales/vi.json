@@ -2725,5 +2725,11 @@
   "CmdPluginAuditServiceWithheldOne": "{service}: tạm tắt: {peers} đang bật và bản xem xét của nó không bao gồm mục này",
   "CmdPluginAuditServiceWithheldMany": "{service}: tạm tắt: {peers} đang bật và các bản xem xét của chúng không bao gồm mục này",
   "CmdPluginAuditApprovedDate": "đã phê duyệt {date}",
-  "CmdPluginAuditSessionNotice": "Các plugin được tác nhân phê duyệt đang hoạt động trong dự án này (bạn chưa xem xét): {names}"
+  "CmdPluginAuditSessionNotice": "Các plugin được tác nhân phê duyệt đang hoạt động trong dự án này (bạn chưa xem xét): {names}",
+  "PluginChangedReceipt": "Plugin {plugin} đã được {action}",
+  "PluginChangedWithDeciderReceipt": "Plugin {plugin} đã được {action} ({decider})",
+  "PluginChangedActionInstalled": "cài đặt",
+  "PluginChangedActionEnabled": "bật",
+  "PluginChangedActionDisabled": "tắt",
+  "PluginChangedActionRemoved": "gỡ bỏ"
 }

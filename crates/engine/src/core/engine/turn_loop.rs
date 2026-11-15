@@ -836,6 +836,32 @@ pub(super) fn replace_runtime_mcp_tools(
     changed
 }
 
+pub(super) fn extract_verified_plugin_change(
+    tool_name: &str,
+    result: &Result<crate::tools::spec::ToolResult, crate::tools::spec::ToolError>,
+) -> Option<crate::extension_host::core_call::PluginChangeMark> {
+    if tool_name != crate::extension_host::creator_policy::PLUGIN_MANAGER_TOOL_NAME {
+        return None;
+    }
+    let metadata = match result {
+        Ok(output) => output.metadata.as_ref()?,
+        Err(crate::tools::spec::ToolError::ExecutionFailed {
+            metadata: Some(metadata),
+            ..
+        }) => metadata,
+        Err(_) => return None,
+    };
+    if metadata
+        .pointer("/extension/plugin_id")
+        .and_then(serde_json::Value::as_str)
+        != Some(crate::extension_host::creator_policy::CREATOR_PLUGIN_ID)
+    {
+        return None;
+    }
+    let mark = metadata.get("plugin_change")?;
+    serde_json::from_value(mark.clone()).ok()
+}
+
 /// Whether model-written Python may run on this turn at all: `code_execution`
 /// is on the turn's surface and neither Plan mode nor the allow/deny lists
 /// withhold it. Inline fences and nested RLM rounds share this rule.
@@ -1935,7 +1961,7 @@ impl Engine {
                 }
             };
             match self
-                .run_tool_batch_phase(turn, &tool_policy, &mut progress, &client, response)
+                .run_tool_batch_phase(turn, &mut tool_policy, &mut progress, &client, response)
                 .await
             {
                 PhaseResult::Ready(()) => {}
@@ -5179,10 +5205,127 @@ impl Engine {
     /// updates the working set, runs post-edit LSP diagnostics, appends success or
     /// error tool-result messages, and refreshes goal state. Its output is these
     /// side effects; it never plans or executes another tool call.
+    async fn replace_runtime_plugin_tools(
+        &mut self,
+        tool_policy: &mut ToolSurfacePolicy,
+        tool_catalog: &mut Vec<codewhale_models::Tool>,
+        active_tool_names: &mut std::collections::HashSet<String>,
+    ) -> bool {
+        let Some(attachment) = self.extension_host.as_ref() else {
+            return false;
+        };
+        let catalog_before = tool_catalog.clone();
+        let active_before = active_tool_names.clone();
+        let fresh_plugins = attachment.plugin_view();
+        self.plugin_registry = Arc::clone(&fresh_plugins);
+        self.config.plugin_registry = Some(Arc::clone(&fresh_plugins));
+        tool_policy
+            .registry
+            .set_plugin_registry(Some(Arc::clone(&fresh_plugins)));
+        if let Some(pool) = self.mcp_pool.as_ref().cloned() {
+            let mut pool = pool.lock().await;
+            let _ = pool.bind_caller_plugins(Arc::clone(&fresh_plugins));
+        }
+
+        let previous_names = std::mem::take(&mut tool_policy.extension_tool_names);
+        let previously_active: std::collections::HashSet<String> = previous_names
+            .iter()
+            .filter(|name| active_tool_names.contains(*name))
+            .cloned()
+            .collect();
+        let prior_defer: std::collections::HashMap<String, Option<bool>> = tool_catalog
+            .iter()
+            .filter(|tool| previous_names.contains(&tool.name))
+            .map(|tool| (tool.name.clone(), tool.defer_loading))
+            .collect();
+        for name in &previous_names {
+            tool_policy.registry.remove_tool(name);
+            active_tool_names.remove(name);
+        }
+        tool_catalog.retain(|tool| !previous_names.contains(&tool.name));
+
+        let next_names: std::collections::HashSet<String> =
+            if self.config.features.enabled(Feature::ExtensionHost) {
+                attachment
+                    .install_tools(&mut tool_policy.registry)
+                    .into_iter()
+                    .collect()
+            } else {
+                std::collections::HashSet::new()
+            };
+
+        let removed_only: std::collections::HashSet<String> =
+            previous_names.difference(&next_names).cloned().collect();
+        self.session
+            .tool_activation_cache
+            .remove_names(&removed_only);
+        tool_policy.extension_tool_names = next_names;
+
+        let always_load = self.effective_tools_always_load();
+        let candidate_tools = self.child_host.as_ref().map_or_else(
+            || tool_policy.registry.to_api_tools(),
+            |child| {
+                child
+                    .authority
+                    .tools_for_model(&tool_policy.registry, &child.authority.agent_type)
+            },
+        );
+        let mut refreshed: Vec<codewhale_models::Tool> = candidate_tools
+            .into_iter()
+            .filter(|tool| {
+                (tool_policy.extension_tool_names.contains(&tool.name)
+                    || matches!(
+                        tool.name.as_str(),
+                        crate::extension_host::dsh_broker::ACT_TOOL
+                            | crate::extension_host::dsh_network::SEND_TOOL
+                    ))
+                    && tool_policy.allows_tool(&tool.name)
+                    && !tool_catalog
+                        .iter()
+                        .any(|existing| existing.name == tool.name)
+            })
+            .collect();
+        refreshed.sort_by(|a, b| a.name.cmp(&b.name));
+        for mut tool in refreshed {
+            if tool_policy.extension_tool_names.contains(&tool.name) {
+                if !previous_names.contains(&tool.name) {
+                    tool.defer_loading = Some(false);
+                    active_tool_names.insert(tool.name.clone());
+                } else {
+                    let defer = prior_defer
+                        .get(&tool.name)
+                        .copied()
+                        .flatten()
+                        .unwrap_or(false);
+                    tool.defer_loading = Some(defer);
+                    if previously_active.contains(&tool.name) || !defer {
+                        active_tool_names.insert(tool.name.clone());
+                    }
+                }
+            } else {
+                let defer =
+                    super::tool_catalog::should_default_defer_tool(&tool.name, &always_load);
+                tool.defer_loading = Some(defer);
+                if !defer {
+                    active_tool_names.insert(tool.name.clone());
+                }
+            }
+            tool_catalog.push(tool);
+        }
+
+        let changed = *tool_catalog != catalog_before || *active_tool_names != active_before;
+        if changed {
+            super::tool_catalog::configure_composition_entry(tool_catalog, None, &[]);
+        } else {
+            *tool_catalog = catalog_before;
+        }
+        changed
+    }
+
     async fn process_tool_results(
         &mut self,
         client: &dyn crate::core::model_client::ModelClient,
-        strict_tool_mode: bool,
+        tool_policy: &mut ToolSurfacePolicy,
         outcomes: Vec<Option<ToolExecOutcome>>,
         turn: &mut TurnContext,
         tool_catalog: &mut Vec<codewhale_models::Tool>,
@@ -5190,6 +5333,7 @@ impl Engine {
         hook_contexts: &std::collections::HashMap<String, String>,
         mut fleet_denial_guard: Option<&mut FleetDenialGuard>,
     ) -> FleetDenialAction {
+        let strict_tool_mode = tool_policy.strict_tool_mode;
         let mut denial_batch = FleetDenialBatch::default();
         let active_tool_names_before = active_tool_names.clone();
         let tool_catalog_len_before = tool_catalog.len();
@@ -5207,6 +5351,7 @@ impl Engine {
             let routed_duration_ms =
                 u64::try_from(outcome.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
             let result = outcome.terminal.into_legacy_result();
+            let plugin_change = extract_verified_plugin_change(&outcome.name, &result);
             if let Some(guard) = fleet_denial_guard.as_deref_mut() {
                 guard.observe(
                     &mut denial_batch,
@@ -5460,6 +5605,39 @@ impl Engine {
                         .await;
                     }
                 }
+            }
+            if let Some(mut mark) = plugin_change {
+                let before_tools = tool_policy.extension_tool_names.clone();
+                let surface_mutated = self
+                    .replace_runtime_plugin_tools(tool_policy, tool_catalog, active_tool_names)
+                    .await;
+                if surface_mutated {
+                    self.session.pending_prefix_change_reason = Some("tool_surface".to_string());
+                }
+                let mut added: Vec<String> = tool_policy
+                    .extension_tool_names
+                    .difference(&before_tools)
+                    .cloned()
+                    .collect();
+                added.sort();
+                let mut removed: Vec<String> = before_tools
+                    .difference(&tool_policy.extension_tool_names)
+                    .cloned()
+                    .collect();
+                removed.sort();
+                mark.tools_added = added;
+                mark.tools_removed = removed;
+                let _ = self
+                    .send_event(Event::PluginChanged {
+                        plugin: mark.plugin,
+                        action: mark.action,
+                        content_hash: mark.content_hash,
+                        decided_by: mark.decided_by,
+                        services: mark.services,
+                        tools_added: mark.tools_added,
+                        tools_removed: mark.tools_removed,
+                    })
+                    .await;
             }
         }
 
@@ -9771,7 +9949,7 @@ impl Engine {
             input_buffer: String::new(),
             input_parse_error: None,
         }];
-        let policy = &surface.policy;
+        let policy = &mut surface.policy;
         self.session.tool_activation_cache = surface.cache.clone();
         let mut catalog = policy.catalog.clone();
         let mut active = policy.active_names.clone();
@@ -9825,10 +10003,10 @@ impl Engine {
             // Finish through the same result owner as run_tool_batch_phase so
             // result dependencies are observed once.
             self.process_tool_results(
-                gate.client,
-                gate.tool_policy.strict_tool_mode,
+                client.as_ref(),
+                policy,
                 outcomes,
-                gate.turn,
+                &mut turn,
                 &mut catalog,
                 &mut active,
                 &planned.hook_contexts,

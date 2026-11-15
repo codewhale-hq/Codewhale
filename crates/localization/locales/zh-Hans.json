@@ -2725,5 +2725,11 @@
   "CmdPluginAuditServiceWithheldOne": "{service}: 暂时关闭：{peers} 已开启且其审核未包含此项",
   "CmdPluginAuditServiceWithheldMany": "{service}: 暂时关闭：{peers} 已开启且其审核未包含此项",
   "CmdPluginAuditApprovedDate": "于 {date} 批准",
-  "CmdPluginAuditSessionNotice": "当前项目中存在由智能体批准且处于活动状态的插件（未经你审查）：{names}"
+  "CmdPluginAuditSessionNotice": "当前项目中存在由智能体批准且处于活动状态的插件（未经你审查）：{names}",
+  "PluginChangedReceipt": "插件 {plugin} 已{action}",
+  "PluginChangedWithDeciderReceipt": "插件 {plugin} 已{action}（{decider}）",
+  "PluginChangedActionInstalled": "安装",
+  "PluginChangedActionEnabled": "启用",
+  "PluginChangedActionDisabled": "停用",
+  "PluginChangedActionRemoved": "移除"
 }

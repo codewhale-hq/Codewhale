@@ -2725,5 +2725,11 @@
   "CmdPluginAuditServiceWithheldOne": "{service}: 暫時關閉：{peers} 已開啟且其審查未包含此項",
   "CmdPluginAuditServiceWithheldMany": "{service}: 暫時關閉：{peers} 已開啟且其審查未包含此項",
   "CmdPluginAuditApprovedDate": "於 {date} 核准",
-  "CmdPluginAuditSessionNotice": "目前專案中有由代理核准且正在使用的外掛（尚未經你審查）：{names}"
+  "CmdPluginAuditSessionNotice": "目前專案中有由代理核准且正在使用的外掛（尚未經你審查）：{names}",
+  "PluginChangedReceipt": "外掛 {plugin} 已{action}",
+  "PluginChangedWithDeciderReceipt": "外掛 {plugin} 已{action}（{decider}）",
+  "PluginChangedActionInstalled": "安裝",
+  "PluginChangedActionEnabled": "啟用",
+  "PluginChangedActionDisabled": "停用",
+  "PluginChangedActionRemoved": "移除"
 }

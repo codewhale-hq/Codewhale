@@ -2725,5 +2725,11 @@
   "CmdPluginAuditServiceWithheldOne": "{service} : désactivé pour le moment : {peers} est activé et son examen ne l'inclut pas",
   "CmdPluginAuditServiceWithheldMany": "{service} : désactivé pour le moment : {peers} sont activés et leur examen ne l'inclut pas",
   "CmdPluginAuditApprovedDate": "approuvé le {date}",
-  "CmdPluginAuditSessionNotice": "Plugins approuvés par l'agent actifs dans ce projet (non examinés par vous) : {names}"
+  "CmdPluginAuditSessionNotice": "Plugins approuvés par l'agent actifs dans ce projet (non examinés par vous) : {names}",
+  "PluginChangedReceipt": "Plugin {plugin} {action}",
+  "PluginChangedWithDeciderReceipt": "Plugin {plugin} {action} ({decider})",
+  "PluginChangedActionInstalled": "installé",
+  "PluginChangedActionEnabled": "activé",
+  "PluginChangedActionDisabled": "désactivé",
+  "PluginChangedActionRemoved": "supprimé"
 }

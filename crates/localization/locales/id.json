@@ -2725,5 +2725,11 @@
   "CmdPluginAuditServiceWithheldOne": "{service}: nonaktif untuk saat ini: {peers} aktif dan tinjauannya tidak menyertakannya",
   "CmdPluginAuditServiceWithheldMany": "{service}: nonaktif untuk saat ini: {peers} aktif dan tinjauannya tidak menyertakannya",
   "CmdPluginAuditApprovedDate": "disetujui {date}",
-  "CmdPluginAuditSessionNotice": "Plugin yang disetujui agen aktif di proyek ini (belum Anda tinjau): {names}"
+  "CmdPluginAuditSessionNotice": "Plugin yang disetujui agen aktif di proyek ini (belum Anda tinjau): {names}",
+  "PluginChangedReceipt": "Plugin {plugin} {action}",
+  "PluginChangedWithDeciderReceipt": "Plugin {plugin} {action} ({decider})",
+  "PluginChangedActionInstalled": "diinstal",
+  "PluginChangedActionEnabled": "diaktifkan",
+  "PluginChangedActionDisabled": "dinonaktifkan",
+  "PluginChangedActionRemoved": "dihapus"
 }

@@ -232,11 +232,21 @@ fn map_call_error(tool: &str, error: HostCallError) -> ToolError {
     }
 }
 
+#[cfg(test)]
 pub(super) fn failed_with_acts(
     error: ToolError,
     receipts: Option<&Value>,
 ) -> Result<ToolResultWire, ToolError> {
-    let holds_acts = receipts.is_some_and(|receipts| receipts.get("broker_acts").is_some());
+    failed_with_acts_and_mark(error, receipts, None)
+}
+
+pub(super) fn failed_with_acts_and_mark(
+    error: ToolError,
+    receipts: Option<&Value>,
+    plugin_change: Option<&super::core_call::PluginChangeMark>,
+) -> Result<ToolResultWire, ToolError> {
+    let holds_acts = receipts.is_some_and(|receipts| receipts.get("broker_acts").is_some())
+        || plugin_change.is_some();
     if !holds_acts {
         return Err(error);
     }
@@ -638,18 +648,32 @@ impl ToolSpec for HostToolSpec {
             invocation.as_ref(),
         );
         let receipts = invocation.as_ref().and_then(InvocationGuard::seal_receipts);
+        let plugin_change = invocation
+            .as_ref()
+            .and_then(InvocationGuard::seal_plugin_change)
+            .filter(|_| self.is_creator_plugin_manager());
         let wire = match settled {
             Ok(wire) => wire,
             Err(error) => {
-                let wire = failed_with_acts(error, receipts.as_ref())?;
-                match self.check_caller(context) {
-                    Ok(()) => wire,
-                    Err(stale) => failed_with_acts(stale, receipts.as_ref())?,
+                let wire =
+                    failed_with_acts_and_mark(error, receipts.as_ref(), plugin_change.as_ref())?;
+                if plugin_change.is_some() {
+                    wire
+                } else {
+                    match self.check_caller(context) {
+                        Ok(()) => wire,
+                        Err(stale) => failed_with_acts_and_mark(
+                            stale,
+                            receipts.as_ref(),
+                            plugin_change.as_ref(),
+                        )?,
+                    }
                 }
             }
         };
         let mut result = wire_to_result(wire, &self.origin());
         if let Some(Value::Object(metadata)) = result.metadata.as_mut() {
+            metadata.remove("plugin_change");
             metadata.insert(
                 "extension".to_string(),
                 serde_json::json!({
@@ -669,6 +693,12 @@ impl ToolSpec for HostToolSpec {
             (receipts, result.metadata.as_mut())
         {
             metadata.insert("core_calls".to_string(), receipts);
+        }
+        if let (Some(mark), Some(Value::Object(metadata))) =
+            (plugin_change, result.metadata.as_mut())
+            && let Ok(value) = serde_json::to_value(mark)
+        {
+            metadata.insert("plugin_change".to_string(), value);
         }
         Ok(RichToolResult::with_content_blocks(result, content_blocks))
     }

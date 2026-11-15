@@ -2725,5 +2725,11 @@
   "CmdPluginAuditServiceWithheldOne": "{service}: अभी के लिए बंद: {peers} चालू है और इसकी समीक्षा में यह शामिल नहीं है",
   "CmdPluginAuditServiceWithheldMany": "{service}: अभी के लिए बंद: {peers} चालू हैं और उनकी समीक्षा में यह शामिल नहीं है",
   "CmdPluginAuditApprovedDate": "{date} को स्वीकृत",
-  "CmdPluginAuditSessionNotice": "इस प्रोजेक्ट में एजेंट द्वारा स्वीकृत प्लगइन सक्रिय हैं (आपके द्वारा समीक्षित नहीं): {names}"
+  "CmdPluginAuditSessionNotice": "इस प्रोजेक्ट में एजेंट द्वारा स्वीकृत प्लगइन सक्रिय हैं (आपके द्वारा समीक्षित नहीं): {names}",
+  "PluginChangedReceipt": "प्लगइन {plugin} {action}",
+  "PluginChangedWithDeciderReceipt": "प्लगइन {plugin} {action} ({decider})",
+  "PluginChangedActionInstalled": "इंस्टॉल किया गया",
+  "PluginChangedActionEnabled": "सक्रिय किया गया",
+  "PluginChangedActionDisabled": "निष्क्रिय किया गया",
+  "PluginChangedActionRemoved": "हटाया गया"
 }

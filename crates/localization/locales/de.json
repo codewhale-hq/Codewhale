@@ -2725,5 +2725,11 @@
   "CmdPluginAuditServiceWithheldOne": "{service}: vorerst aus: {peers} ist eingeschaltet und seine Prüfung enthält es nicht",
   "CmdPluginAuditServiceWithheldMany": "{service}: vorerst aus: {peers} sind eingeschaltet und ihre Prüfung enthält es nicht",
   "CmdPluginAuditApprovedDate": "genehmigt {date}",
-  "CmdPluginAuditSessionNotice": "Vom Agenten genehmigte Plugins in diesem Projekt aktiv (nicht von dir geprüft): {names}"
+  "CmdPluginAuditSessionNotice": "Vom Agenten genehmigte Plugins in diesem Projekt aktiv (nicht von dir geprüft): {names}",
+  "PluginChangedReceipt": "Plugin {plugin} {action}",
+  "PluginChangedWithDeciderReceipt": "Plugin {plugin} {action} ({decider})",
+  "PluginChangedActionInstalled": "installiert",
+  "PluginChangedActionEnabled": "aktiviert",
+  "PluginChangedActionDisabled": "deaktiviert",
+  "PluginChangedActionRemoved": "entfernt"
 }

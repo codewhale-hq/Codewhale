@@ -27532,3 +27532,129 @@ async fn a_runtime_thread_turn_finishes_when_an_inherited_usage_receipt_is_missi
     manager.shutdown_and_wait().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn plugin_changed_emits_status_item_and_thread_plugin_changed_event() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace));
+    let owner_mgr = RuntimeThreadManager::open_owner_host(
+        Config::default(),
+        workspace.clone(),
+        test_manager_config(tmp.path().join("owner")),
+        plugins,
+        None,
+        None,
+    )?;
+
+    let thread = owner_mgr
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace),
+            ..Default::default()
+        })
+        .await?;
+
+    let mut harness = mock_engine_handle();
+    owner_mgr
+        .install_test_engine(&thread.id, harness.handle.clone())
+        .await?;
+
+    let turn = owner_mgr
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "install plugin".into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), harness.rx_op.recv())
+        .await?
+        .context("expected SendMessage op")?;
+
+    harness
+        .tx_event
+        .send(EngineEvent::PluginChanged {
+            plugin: "alpha-tool".to_string(),
+            action: "installed".to_string(),
+            content_hash: Some("sha256:abc123".to_string()),
+            decided_by: Some("approved by you".to_string()),
+            services: vec!["network".to_string()],
+            tools_added: vec!["alpha_echo".to_string()],
+            tools_removed: Vec::new(),
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "done".to_string(),
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage::default(),
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+
+    let terminal = wait_for_terminal_turn(&owner_mgr, &turn.id).await?;
+    assert_eq!(terminal.status, RuntimeTurnStatus::Completed);
+
+    let events = owner_mgr.events_since(&thread.id, None)?;
+    let plugin_ev = events
+        .iter()
+        .find(|event| event.event == "thread.plugin_changed")
+        .context("expected thread.plugin_changed runtime event")?;
+    assert_eq!(plugin_ev.payload["plugin"], "alpha-tool");
+    assert_eq!(plugin_ev.payload["action"], "installed");
+    assert_eq!(plugin_ev.payload["content_hash"], "sha256:abc123");
+    assert_eq!(plugin_ev.payload["decided_by"], "approved by you");
+    assert_eq!(plugin_ev.payload["services"], json!(["network"]));
+    assert_eq!(plugin_ev.payload["tools_added"], json!(["alpha_echo"]));
+    assert_eq!(plugin_ev.payload["tools_removed"], json!([]));
+
+    let status_ev = events
+        .iter()
+        .filter(|event| event.event == "item.completed")
+        .find_map(|event| {
+            let item: TurnItemRecord =
+                serde_json::from_value(event.payload.get("item")?.clone()).ok()?;
+            (item.kind == TurnItemKind::Status
+                && item
+                    .metadata
+                    .as_ref()
+                    .and_then(|meta| meta.get("plugin_changed"))
+                    .is_some())
+            .then_some(item)
+        })
+        .context("expected completed status item for plugin_changed")?;
+    assert_eq!(status_ev.status, TurnItemLifecycleStatus::Completed);
+    assert_eq!(
+        status_ev.metadata.as_ref().unwrap()["plugin_changed"]["plugin"],
+        "alpha-tool"
+    );
+
+    drop(harness);
+    owner_mgr.shutdown_and_wait().await?;
+    Ok(())
+}

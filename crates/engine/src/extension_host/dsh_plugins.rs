@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use codewhale_config::{AppMode, PluginAuthority};
+use codewhale_config::AppMode;
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_mcp::config::McpServerConfig;
 use codewhale_net::network_policy::NetworkPolicy;
@@ -1348,74 +1348,179 @@ fn collect_enable_warnings(
     warnings
 }
 
-async fn observe_native_activation(
-    call: &BrokerCall,
-    plugin: &LoadedPlugin,
-    expected_authority: Option<&PluginAuthority>,
-    scrub: &ScrubContext<'_>,
-) -> Result<(), String> {
-    if plugin.inventory.native == 0 || !plugin.enabled {
-        return Ok(());
+fn plugin_services(loaded: Option<&LoadedPlugin>) -> Vec<String> {
+    let mut services: Vec<String> = loaded
+        .map(|plugin| {
+            plugin
+                .host_services
+                .iter()
+                .map(|service| service.name().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    services.sort();
+    services.dedup();
+    services
+}
+
+fn make_change_mark(
+    plugin: &str,
+    action: &str,
+    content_hash: Option<&str>,
+    approver: Option<&PluginApprover>,
+    services: Vec<String>,
+    tools_added: Vec<String>,
+    tools_removed: Vec<String>,
+) -> super::core_call::PluginChangeMark {
+    super::core_call::PluginChangeMark {
+        plugin: plugin.to_string(),
+        action: action.to_string(),
+        content_hash: content_hash.filter(|h| !h.is_empty()).map(str::to_string),
+        decided_by: approver.map(|who| approver_label(Some(who)).to_string()),
+        services,
+        tools_added,
+        tools_removed,
     }
-    if !extension_host_policy_enabled() {
-        return Err(HOST_OFF_DIAGNOSTIC.to_string());
-    }
-    let plugin_id = plugin.id.as_str();
-    let check_report = |report: super::OwnerReport| -> Option<Result<(), String>> {
-        match report.state.as_ref() {
-            Some(OwnerState::Active) => Some(Ok(())),
-            Some(OwnerState::Failed(reason)) | Some(OwnerState::Faulted(reason)) => {
-                let mut combined = vec![scrub_message(reason, scrub)];
-                for line in report.diagnostics {
-                    let cleaned = scrub_message(&line, scrub);
-                    if !cleaned.is_empty() && !combined.contains(&cleaned) {
-                        combined.push(cleaned);
-                    }
-                }
-                let mut truncated = false;
-                Some(Err(cap_text(
-                    combined.join("; "),
-                    MAX_DIAGNOSTIC_BYTES,
-                    &mut truncated,
-                )))
-            }
-            Some(OwnerState::Revoked) => Some(Err(
-                "the extension host revoked the plugin owner".to_string()
-            )),
-            Some(OwnerState::Activating) | None => None,
-        }
-    };
-    if let Some(report) = super::owner_report_for_authority(plugin_id, expected_authority)
-        && let Some(outcome) = check_report(report)
-    {
-        return outcome;
-    }
-    if super::manager().attached_engines() == 0 {
-        return Err("the extension host is not running for this session".to_string());
-    }
-    let rows = (plugin.inventory.native as u32).max(1);
-    let timeout = HOST_LOAD_TIMEOUT_PER_ROW
+}
+
+fn wait_timeout_for(loaded: &LoadedPlugin) -> Duration {
+    let rows = (loaded.inventory.native as u32).max(1);
+    HOST_LOAD_TIMEOUT_PER_ROW
         .saturating_mul(rows)
-        .min(MAX_HOST_WAIT);
-    let deadline = Instant::now() + timeout;
-    loop {
-        if let Some(report) = super::owner_report_for_authority(plugin_id, expected_authority)
-            && let Some(outcome) = check_report(report)
-        {
-            return outcome;
-        }
-        if Instant::now() >= deadline {
-            return Err(
-                "the extension host did not finish starting native plugin code in time".to_string(),
-            );
-        }
-        tokio::select! {
-            () = tokio::time::sleep(HOST_POLL_INTERVAL) => {}
-            () = call.context.cancel().cancelled() => {
-                return Err("cancelled while waiting for the extension host to start plugin code".to_string());
-            }
+        .min(MAX_HOST_WAIT)
+}
+
+fn sanitize_host_failure(reason: &str, diagnostics: &[String], scrub: &ScrubContext<'_>) -> String {
+    let mut combined = Vec::new();
+    let head = scrub_message(reason, scrub);
+    if !head.is_empty() {
+        combined.push(head);
+    }
+    for line in diagnostics {
+        let cleaned = scrub_message(line, scrub);
+        if !cleaned.is_empty() && !combined.contains(&cleaned) {
+            combined.push(cleaned);
         }
     }
+    let mut truncated = false;
+    cap_text(combined.join("; "), MAX_DIAGNOSTIC_BYTES, &mut truncated)
+}
+
+fn format_activated_tools_warning(tool_names: &[String], scrub: &ScrubContext<'_>) -> String {
+    let mut listed = Vec::new();
+    let mut listed_bytes = 0usize;
+    for raw_name in tool_names {
+        if listed.len() >= MAX_TOOL_WARNINGS_PER_CONNECTOR {
+            break;
+        }
+        let mut name_truncated = false;
+        let clean_name = sanitize_inline(raw_name, MAX_ENTRY_ID_BYTES, &mut name_truncated);
+        if clean_name.is_empty() {
+            continue;
+        }
+        let next_bytes = listed_bytes + clean_name.len() + usize::from(!listed.is_empty()) * 2;
+        if next_bytes > MAX_TEXT_BYTES.saturating_sub(64) && !listed.is_empty() {
+            break;
+        }
+        listed_bytes = next_bytes;
+        listed.push(clean_name);
+    }
+    let remaining = tool_names.len().saturating_sub(listed.len());
+    let summary = if listed.is_empty() {
+        format!("extension tools active ({})", tool_names.len())
+    } else if remaining > 0 {
+        format!(
+            "extension tools active: {} (+{remaining} more)",
+            listed.join(", ")
+        )
+    } else {
+        format!("extension tools active: {}", listed.join(", "))
+    };
+    scrub_warning(&summary, scrub)
+}
+
+fn append_unique_warning(warnings: &mut Vec<String>, line: String) {
+    if !line.is_empty() && !warnings.contains(&line) {
+        warnings.push(line);
+    }
+}
+
+fn is_active_summary_diagnostic(plugin_name: &str, line: &str) -> bool {
+    let prefix = format!("extension `{plugin_name}` active (");
+    line.starts_with(&prefix)
+}
+
+fn append_native_activation_warnings(
+    report: &super::OwnerReport,
+    plugin_name: &str,
+    prior_tools: &[String],
+    caller_tools: &[String],
+    scrub: &ScrubContext<'_>,
+    warnings: &mut Vec<String>,
+) -> Vec<String> {
+    let mut clean_plugin_trunc = false;
+    let clean_plugin = sanitize_inline(plugin_name, MAX_NAME_BYTES, &mut clean_plugin_trunc);
+    let mut added = Vec::new();
+    for name in &report.tools {
+        let already_had = prior_tools
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(name));
+        let collides = !already_had
+            && caller_tools
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(name));
+        if collides {
+            let mut trunc = false;
+            let clean_tool = sanitize_inline(name, MAX_ENTRY_ID_BYTES, &mut trunc);
+            if !clean_tool.is_empty() {
+                append_unique_warning(
+                    warnings,
+                    scrub_warning(
+                        &format!(
+                            "extension tool `{clean_tool}` from `{clean_plugin}` skipped: the name is already registered"
+                        ),
+                        scrub,
+                    ),
+                );
+            }
+            continue;
+        }
+        if !added.contains(name) {
+            added.push(name.clone());
+        }
+    }
+    added.sort();
+    added.dedup();
+    if !added.is_empty() {
+        append_unique_warning(warnings, format_activated_tools_warning(&added, scrub));
+    }
+    for line in &report.diagnostics {
+        if is_active_summary_diagnostic(plugin_name, line) {
+            continue;
+        }
+        append_unique_warning(warnings, scrub_warning(line, scrub));
+    }
+    added
+}
+
+async fn settle_non_active_change(
+    call: &BrokerCall,
+    registry: &Arc<PluginRegistry>,
+    mark: Option<super::core_call::PluginChangeMark>,
+) {
+    if let Some(mark) = mark {
+        call.context.record_plugin_change(mark);
+    }
+    let _ = super::plugins_changed_and_wait(
+        registry,
+        None,
+        None,
+        Some(call.context.invocation_id()),
+        false,
+        call.context.cancel(),
+        HOST_LOAD_TIMEOUT_PER_ROW,
+    )
+    .await;
 }
 
 enum McpActivationError {
@@ -1433,6 +1538,7 @@ struct EnableActivation<'a> {
     approver: &'a PluginApprover,
     version: Option<String>,
     warnings: Vec<String>,
+    prior_tools: Vec<String>,
 }
 
 fn record_mcp_attempt(
@@ -1951,12 +2057,88 @@ async fn finish_enabled_activation(
     mut activation: EnableActivation<'_>,
     scrub: &ScrubContext<'_>,
 ) -> std::ops::ControlFlow<Result<Value, BrokerRefusal>, Vec<String>> {
+    let services = plugin_services(Some(activation.loaded));
+    let mark_action = if activation.method == "install" {
+        "installed"
+    } else {
+        activation.method
+    };
+    if activation.changed {
+        call.context.record_plugin_change(make_change_mark(
+            activation.loaded.name(),
+            mark_action,
+            Some(&activation.loaded.content_hash),
+            Some(activation.approver),
+            services.clone(),
+            Vec::new(),
+            Vec::new(),
+        ));
+    }
+    let wait_for_owner = activation.loaded.inventory.native > 0 && activation.loaded.enabled;
     let expected_authority = activation
         .registry
         .authority_for(activation.loaded.id.as_str());
-    if let Err(host_err) =
-        observe_native_activation(call, activation.loaded, expected_authority.as_ref(), scrub).await
+    let host_err = match super::plugins_changed_and_wait(
+        activation.registry,
+        Some(activation.loaded.id.as_str()),
+        expected_authority.as_ref(),
+        Some(call.context.invocation_id()),
+        wait_for_owner,
+        call.context.cancel(),
+        wait_timeout_for(activation.loaded),
+    )
+    .await
     {
+        Ok(Some(report)) => match report.state.as_ref() {
+            Some(OwnerState::Active) => {
+                let added_tools = append_native_activation_warnings(
+                    &report,
+                    activation.loaded.name(),
+                    &activation.prior_tools,
+                    call.context.caller_tools(),
+                    scrub,
+                    &mut activation.warnings,
+                );
+                if activation.changed && !added_tools.is_empty() {
+                    call.context.record_plugin_change(make_change_mark(
+                        activation.loaded.name(),
+                        mark_action,
+                        Some(&activation.loaded.content_hash),
+                        Some(activation.approver),
+                        services,
+                        added_tools,
+                        Vec::new(),
+                    ));
+                }
+                None
+            }
+            Some(OwnerState::Failed(reason)) | Some(OwnerState::Faulted(reason)) => {
+                for line in &report.diagnostics {
+                    if !is_active_summary_diagnostic(activation.loaded.name(), line) {
+                        append_unique_warning(&mut activation.warnings, scrub_warning(line, scrub));
+                    }
+                }
+                Some(sanitize_host_failure(reason, &report.diagnostics, scrub))
+            }
+            Some(OwnerState::Revoked) => {
+                Some("the extension host revoked the plugin owner".to_string())
+            }
+            Some(OwnerState::Activating) | None => Some(
+                "the extension host did not finish starting native plugin code in time".to_string(),
+            ),
+        },
+        Ok(None) => {
+            if wait_for_owner {
+                Some(
+                    "plugin activation did not register an owner in the extension host".to_string(),
+                )
+            } else {
+                None
+            }
+        }
+        Err(reason) => Some(sanitize_host_failure(&reason, &[], scrub)),
+    };
+    if let Some(host_err) = host_err {
         record_outcome(
             call,
             activation.method,
@@ -3913,7 +4095,21 @@ async fn finish_post_install(
         })
         .await
         .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
-        super::plugins_changed(fresh);
+        let services = plugin_services(fresh.get(&installed_name));
+        settle_non_active_change(
+            call,
+            &fresh,
+            Some(make_change_mark(
+                &installed_name,
+                "installed",
+                Some(&expected_installed_hash),
+                None,
+                services,
+                Vec::new(),
+                Vec::new(),
+            )),
+        )
+        .await;
         record_outcome(
             call,
             "install",
@@ -3952,7 +4148,21 @@ async fn finish_post_install(
             })
             .await
             .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
-            super::plugins_changed(fresh);
+            let services = plugin_services(fresh.get(&installed_name));
+            settle_non_active_change(
+                call,
+                &fresh,
+                Some(make_change_mark(
+                    &installed_name,
+                    "installed",
+                    Some(&expected_installed_hash),
+                    None,
+                    services,
+                    Vec::new(),
+                    Vec::new(),
+                )),
+            )
+            .await;
             record_outcome(
                 call,
                 "install",
@@ -4000,7 +4210,21 @@ async fn finish_post_install(
         let (final_reg, final_loaded) = match outcome {
             Ok(pair) => pair,
             Err(fresh) => {
-                super::plugins_changed(fresh);
+                let services = plugin_services(fresh.get(&installed_name));
+                settle_non_active_change(
+                    call,
+                    &fresh,
+                    Some(make_change_mark(
+                        &installed_name,
+                        "installed",
+                        Some(&expected_installed_hash),
+                        None,
+                        services,
+                        Vec::new(),
+                        Vec::new(),
+                    )),
+                )
+                .await;
                 record_outcome(
                     call,
                     "install",
@@ -4023,7 +4247,20 @@ async fn finish_post_install(
                 });
             }
         };
-        super::plugins_changed(Arc::clone(&final_reg));
+        settle_non_active_change(
+            call,
+            &final_reg,
+            Some(make_change_mark(
+                final_loaded.name(),
+                "installed",
+                Some(&final_loaded.content_hash),
+                None,
+                plugin_services(Some(&final_loaded)),
+                Vec::new(),
+                Vec::new(),
+            )),
+        )
+        .await;
         warnings.push(format!(
             "installed disabled and untrusted because it fetched unseen bytes from the network; review it and turn it on from the Plugins page or `/plugin trust {}`",
             final_loaded.name()
@@ -4061,7 +4298,21 @@ async fn finish_post_install(
             })
             .await
             .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
-            super::plugins_changed(fresh);
+            let services = plugin_services(fresh.get(&installed_name));
+            settle_non_active_change(
+                call,
+                &fresh,
+                Some(make_change_mark(
+                    &installed_name,
+                    "installed",
+                    Some(&expected_installed_hash),
+                    None,
+                    services,
+                    Vec::new(),
+                    Vec::new(),
+                )),
+            )
+            .await;
             record_outcome(
                 call,
                 "install",
@@ -4190,7 +4441,21 @@ async fn finish_post_install(
 
     match outcome {
         PostCommit::Mismatch(fresh) => {
-            super::plugins_changed(fresh);
+            let services = plugin_services(fresh.get(&installed_name));
+            settle_non_active_change(
+                call,
+                &fresh,
+                Some(make_change_mark(
+                    &installed_name,
+                    "installed",
+                    Some(&expected_installed_hash),
+                    Some(&approver),
+                    services,
+                    Vec::new(),
+                    Vec::new(),
+                )),
+            )
+            .await;
             record_outcome(
                 call,
                 "install",
@@ -4213,7 +4478,21 @@ async fn finish_post_install(
             })
         }
         PostCommit::ServiceReviewChanged { registry, enabled } => {
-            super::plugins_changed(registry);
+            let services = plugin_services(registry.get(&installed_name));
+            settle_non_active_change(
+                call,
+                &registry,
+                Some(make_change_mark(
+                    &installed_name,
+                    "installed",
+                    Some(&expected_installed_hash),
+                    Some(&approver),
+                    services,
+                    Vec::new(),
+                    Vec::new(),
+                )),
+            )
+            .await;
             record_outcome(
                 call,
                 "install",
@@ -4248,7 +4527,21 @@ async fn finish_post_install(
                 state_path: fresh.state_path(),
             };
             let diag = scrub_message(&err, &scrub);
-            super::plugins_changed(fresh);
+            let services = plugin_services(fresh.get(&installed_name));
+            settle_non_active_change(
+                call,
+                &fresh,
+                Some(make_change_mark(
+                    &installed_name,
+                    "installed",
+                    Some(&expected_installed_hash),
+                    Some(&approver),
+                    services,
+                    Vec::new(),
+                    Vec::new(),
+                )),
+            )
+            .await;
             record_outcome(
                 call,
                 "install",
@@ -4283,7 +4576,21 @@ async fn finish_post_install(
                 state_path: fresh.state_path(),
             };
             let diag = scrub_message(&err, &scrub);
-            super::plugins_changed(fresh);
+            let services = plugin_services(fresh.get(&installed_name));
+            settle_non_active_change(
+                call,
+                &fresh,
+                Some(make_change_mark(
+                    &installed_name,
+                    "installed",
+                    Some(&expected_installed_hash),
+                    Some(&approver),
+                    services,
+                    Vec::new(),
+                    Vec::new(),
+                )),
+            )
+            .await;
             record_outcome(
                 call,
                 "install",
@@ -4311,7 +4618,6 @@ async fn finish_post_install(
             warnings: built_warnings,
         } => {
             warnings = built_warnings;
-            super::plugins_changed(Arc::clone(&final_reg));
             let scrub = ScrubContext {
                 workspace: final_reg.workspace(),
                 canon_workspace: None,
@@ -4332,6 +4638,7 @@ async fn finish_post_install(
                         approver: &approver,
                         version: version.clone(),
                         warnings,
+                        prior_tools: Vec::new(),
                     },
                     &scrub,
                 )
@@ -4340,6 +4647,21 @@ async fn finish_post_install(
                     std::ops::ControlFlow::Continue(updated) => warnings = updated,
                     std::ops::ControlFlow::Break(early) => return early,
                 }
+            } else {
+                settle_non_active_change(
+                    call,
+                    &final_reg,
+                    Some(make_change_mark(
+                        final_loaded.name(),
+                        "installed",
+                        Some(&final_loaded.content_hash),
+                        Some(&approver),
+                        plugin_services(Some(&final_loaded)),
+                        Vec::new(),
+                        Vec::new(),
+                    )),
+                )
+                .await;
             }
             record_outcome(
                 call,
@@ -4959,6 +5281,13 @@ async fn remove(
         });
     }
 
+    let prior_tools = super::owner_report(plugin_now.id.as_str())
+        .map(|report| report.tools)
+        .unwrap_or_default();
+    let ws_for_approver_now = canon_ws_now
+        .as_deref()
+        .unwrap_or_else(|| initial_registry.workspace());
+    let approver_used_now = approver_from_carrier(call, &tool, &carrier, ws_for_approver_now).ok();
     let policy = extension_host_policy_enabled();
     #[cfg(any(test, feature = "test-support"))]
     let env_scope = crate::test_support::env_scope_ticket();
@@ -4977,12 +5306,17 @@ async fn remove(
         } else {
             Ok(false)
         };
-        (reg, disable_res)
+        let fresh_after_disable = if matches!(disable_res, Ok(true)) {
+            Some(reg.rediscover_for_workspace(reg.workspace()))
+        } else {
+            None
+        };
+        (reg, fresh_after_disable, disable_res)
     })
     .await
     .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
 
-    let (mut reg_for_uninstall, disable_res) = step_disable;
+    let (mut reg_for_uninstall, fresh_after_disable, disable_res) = step_disable;
     let turned_off = match disable_res {
         Ok(changed_flag) => changed_flag,
         Err(err) => {
@@ -5016,6 +5350,23 @@ async fn remove(
         }
     };
 
+    if turned_off && let Some(fresh_after_disable) = fresh_after_disable {
+        settle_non_active_change(
+            call,
+            &fresh_after_disable,
+            Some(make_change_mark(
+                &bundle_name,
+                "disabled",
+                Some(&plugin_now.content_hash),
+                approver_used_now.as_ref(),
+                plugin_services(Some(&plugin_now)),
+                Vec::new(),
+                prior_tools.clone(),
+            )),
+        )
+        .await;
+    }
+
     #[cfg(test)]
     fire_post_disable_hook_for_test(&plugin_ref_copy);
     let _ = &plugin_ref_copy;
@@ -5041,7 +5392,6 @@ async fn remove(
     })
     .await
     .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
-    super::plugins_changed(Arc::clone(&final_reg));
 
     match uninstall_res {
         Ok(_) => {
@@ -5062,7 +5412,23 @@ async fn remove(
             let ws_for_approver = canon_ws_now
                 .as_deref()
                 .unwrap_or_else(|| final_reg.workspace());
-            let approver_used = approver_from_carrier(call, &tool, &carrier, ws_for_approver).ok();
+            let approver_used = approver_from_carrier(call, &tool, &carrier, ws_for_approver)
+                .ok()
+                .or(approver_used_now);
+            settle_non_active_change(
+                call,
+                &final_reg,
+                Some(make_change_mark(
+                    &bundle_name,
+                    "removed",
+                    Some(&plugin_now.content_hash),
+                    approver_used.as_ref(),
+                    Vec::new(),
+                    Vec::new(),
+                    prior_tools,
+                )),
+            )
+            .await;
             record_outcome(
                 call,
                 "remove",
@@ -5082,6 +5448,7 @@ async fn remove(
             )
         }
         Err(err) => {
+            settle_non_active_change(call, &final_reg, None).await;
             let scrub = ScrubContext {
                 workspace: final_reg.workspace(),
                 canon_workspace: canon_ws_now.as_deref(),
@@ -5637,6 +6004,10 @@ async fn toggle(
         },
     }
 
+    let prior_tools = super::owner_report(plugin_now.id.as_str())
+        .map(|report| report.tools)
+        .unwrap_or_default();
+
     let outcome = tokio::task::spawn_blocking(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _env_scope = crate::test_support::join_env_scope(env_scope);
@@ -5757,7 +6128,22 @@ async fn toggle(
             changed,
             enabled,
         } => {
-            super::plugins_changed(fresh);
+            let mark = changed.then(|| {
+                make_change_mark(
+                    &bundle_name,
+                    if want_enabled { "enabled" } else { "disabled" },
+                    Some(&plugin_now.content_hash),
+                    Some(&approver),
+                    plugin_services(fresh.get(plugin_now.id.as_str())),
+                    Vec::new(),
+                    if want_enabled {
+                        Vec::new()
+                    } else {
+                        prior_tools.clone()
+                    },
+                )
+            });
+            settle_non_active_change(call, &fresh, mark).await;
             record_outcome(
                 call,
                 method_name,
@@ -5793,7 +6179,22 @@ async fn toggle(
                 state_path: fresh.state_path(),
             };
             let diag = scrub_message(&err, &scrub);
-            super::plugins_changed(fresh);
+            let mark = changed.then(|| {
+                make_change_mark(
+                    &bundle_name,
+                    if want_enabled { "enabled" } else { "disabled" },
+                    Some(&plugin_now.content_hash),
+                    Some(&approver),
+                    plugin_services(fresh.get(plugin_now.id.as_str())),
+                    Vec::new(),
+                    if want_enabled {
+                        Vec::new()
+                    } else {
+                        prior_tools.clone()
+                    },
+                )
+            });
+            settle_non_active_change(call, &fresh, mark).await;
             record_outcome(
                 call,
                 method_name,
@@ -5829,7 +6230,22 @@ async fn toggle(
                 state_path: fresh.state_path(),
             };
             let diag = scrub_message(&err, &scrub);
-            super::plugins_changed(fresh);
+            let mark = changed.then(|| {
+                make_change_mark(
+                    &bundle_name,
+                    if want_enabled { "enabled" } else { "disabled" },
+                    Some(&plugin_now.content_hash),
+                    Some(&approver),
+                    plugin_services(fresh.get(plugin_now.id.as_str())),
+                    Vec::new(),
+                    if want_enabled {
+                        Vec::new()
+                    } else {
+                        prior_tools.clone()
+                    },
+                )
+            });
+            settle_non_active_change(call, &fresh, mark).await;
             record_outcome(
                 call,
                 method_name,
@@ -5857,7 +6273,6 @@ async fn toggle(
             changed,
             warnings,
         } => {
-            super::plugins_changed(Arc::clone(&final_reg));
             let scrub = ScrubContext {
                 workspace: final_reg.workspace(),
                 canon_workspace: canon_ws_now.as_deref(),
@@ -5878,6 +6293,7 @@ async fn toggle(
                         approver: &approver,
                         version: version.clone(),
                         warnings,
+                        prior_tools,
                     },
                     &scrub,
                 )
@@ -5887,6 +6303,26 @@ async fn toggle(
                     std::ops::ControlFlow::Break(early) => return early,
                 }
             } else {
+                let mark = changed.then(|| {
+                    make_change_mark(
+                        final_loaded.name(),
+                        if final_loaded.enabled {
+                            "enabled"
+                        } else {
+                            "disabled"
+                        },
+                        Some(&final_loaded.content_hash),
+                        Some(&approver),
+                        plugin_services(Some(&final_loaded)),
+                        Vec::new(),
+                        if final_loaded.enabled {
+                            Vec::new()
+                        } else {
+                            prior_tools
+                        },
+                    )
+                });
+                settle_non_active_change(call, &final_reg, mark).await;
                 warnings
             };
             record_outcome(

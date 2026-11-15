@@ -2725,5 +2725,11 @@
   "CmdPluginAuditServiceWithheldOne": "{service}: desactivat ara com ara: {peers} està activat i la seva revisió no ho inclou",
   "CmdPluginAuditServiceWithheldMany": "{service}: desactivat ara com ara: {peers} estan activats i la seva revisió no ho inclou",
   "CmdPluginAuditApprovedDate": "aprovat {date}",
-  "CmdPluginAuditSessionNotice": "Connectors aprovats per l'agent actius en aquest projecte (no revisats per tu): {names}"
+  "CmdPluginAuditSessionNotice": "Connectors aprovats per l'agent actius en aquest projecte (no revisats per tu): {names}",
+  "PluginChangedReceipt": "Connector {plugin} {action}",
+  "PluginChangedWithDeciderReceipt": "Connector {plugin} {action} ({decider})",
+  "PluginChangedActionInstalled": "instal·lat",
+  "PluginChangedActionEnabled": "activat",
+  "PluginChangedActionDisabled": "desactivat",
+  "PluginChangedActionRemoved": "suprimit"
 }

@@ -2725,5 +2725,11 @@
   "CmdPluginAuditServiceWithheldOne": "{service}: наразі вимкнено: {peers} увімкнено, і його перевірка не містить цього",
   "CmdPluginAuditServiceWithheldMany": "{service}: наразі вимкнено: {peers} увімкнено, і їхня перевірка не містить цього",
   "CmdPluginAuditApprovedDate": "схвалено {date}",
-  "CmdPluginAuditSessionNotice": "У цьому проєкті активні плагіни, схвалені агентом (не перевірені вами): {names}"
+  "CmdPluginAuditSessionNotice": "У цьому проєкті активні плагіни, схвалені агентом (не перевірені вами): {names}",
+  "PluginChangedReceipt": "Плагін {plugin} {action}",
+  "PluginChangedWithDeciderReceipt": "Плагін {plugin} {action} ({decider})",
+  "PluginChangedActionInstalled": "встановлено",
+  "PluginChangedActionEnabled": "увімкнено",
+  "PluginChangedActionDisabled": "вимкнено",
+  "PluginChangedActionRemoved": "видалено"
 }

@@ -1218,6 +1218,8 @@ fork 还可能包含 `backtrack_depth_from_tail` 与 `dropped_turn_id`，而
 有效权限发生变化时，会在线程最新回合追加一个已完成的 `status` 条目，并发布
 `thread.permissions_changed` 事件（`from`、`to`、`source`）。
 
+当运行中的回合安装、启用、停用或移除插件时，引擎会等待扩展宿主完成激活或停用（针对包含原生代码的插件），并在当前回合立即刷新插件工具目录以供下一次模型请求使用（无需重启线程），同时向该回合追加一个已完成的 `status` 条目并发布 `thread.plugin_changed` 事件（`plugin`、`action`、`content_hash`、`decided_by`、`services`、`tools_added`、`tools_removed`）。
+
 **回合**（线程内的）
 - `POST /v1/threads/{id}/turns`
 - `POST /v1/threads/{id}/turns/{turn_id}/steer` - 向进行中的回合注入引导。响应是一份描述实际发生了什么的回执，而不是描述尝试过什么的回执；参见 [引导送达](#引导送达)。

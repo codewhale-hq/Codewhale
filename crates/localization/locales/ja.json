@@ -2725,5 +2725,11 @@
   "CmdPluginAuditServiceWithheldOne": "{service}: 一時的にオフ: {peers} が有効で、そのレビューに含まれていません",
   "CmdPluginAuditServiceWithheldMany": "{service}: 一時的にオフ: {peers} が有効で、それらのレビューに含まれていません",
   "CmdPluginAuditApprovedDate": "{date} 承認",
-  "CmdPluginAuditSessionNotice": "このプロジェクトでエージェント承認済みのプラグインが有効です（未レビュー）: {names}"
+  "CmdPluginAuditSessionNotice": "このプロジェクトでエージェント承認済みのプラグインが有効です（未レビュー）: {names}",
+  "PluginChangedReceipt": "プラグイン {plugin} を{action}しました",
+  "PluginChangedWithDeciderReceipt": "プラグイン {plugin} を{action}しました（{decider}）",
+  "PluginChangedActionInstalled": "インストール",
+  "PluginChangedActionEnabled": "有効化",
+  "PluginChangedActionDisabled": "無効化",
+  "PluginChangedActionRemoved": "削除"
 }

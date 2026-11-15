@@ -855,6 +855,22 @@ pub enum EventMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         refusal: Option<String>,
     },
+    PluginChanged {
+        thread_id: ThreadId,
+        session_id: SessionId,
+        plugin: String,
+        action: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decided_by: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        services: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tools_added: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tools_removed: Vec<String>,
+    },
 }
 
 /// Envelope that carries an `EventMsg` over the wire / channel with a
@@ -928,6 +944,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "prefix_cache_change",
     "conversation_title",
     "content_filter_refusal",
+    "plugin_changed",
 ];
 
 impl EventMsg {
@@ -993,6 +1010,7 @@ impl EventMsg {
             Self::PrefixCacheChange { .. } => "prefix_cache_change",
             Self::ConversationTitle { .. } => "conversation_title",
             Self::ContentFilterRefusal { .. } => "content_filter_refusal",
+            Self::PluginChanged { .. } => "plugin_changed",
         }
     }
 
@@ -1057,7 +1075,8 @@ impl EventMsg {
             | Self::AdvisoryNote { thread_id, .. }
             | Self::PrefixCacheChange { thread_id, .. }
             | Self::ConversationTitle { thread_id, .. }
-            | Self::ContentFilterRefusal { thread_id, .. } => thread_id,
+            | Self::ContentFilterRefusal { thread_id, .. }
+            | Self::PluginChanged { thread_id, .. } => thread_id,
         }
     }
 
@@ -1122,7 +1141,8 @@ impl EventMsg {
             | Self::AdvisoryNote { session_id, .. }
             | Self::PrefixCacheChange { session_id, .. }
             | Self::ConversationTitle { session_id, .. }
-            | Self::ContentFilterRefusal { session_id, .. } => session_id,
+            | Self::ContentFilterRefusal { session_id, .. }
+            | Self::PluginChanged { session_id, .. } => session_id,
         }
     }
 }
@@ -1640,10 +1660,21 @@ mod tests {
                 title: "Conversation".into(),
             },
             EventMsg::ContentFilterRefusal {
-                thread_id: t,
-                session_id: s,
+                thread_id: t.clone(),
+                session_id: s.clone(),
                 reason: "content_filter".into(),
                 refusal: Some("Blocked by safety policy".into()),
+            },
+            EventMsg::PluginChanged {
+                thread_id: t,
+                session_id: s,
+                plugin: "alpha".into(),
+                action: "installed".into(),
+                content_hash: Some("sha256:abc".into()),
+                decided_by: Some("approved by you".into()),
+                services: vec!["workspace".into()],
+                tools_added: vec!["alpha_tool".into()],
+                tools_removed: Vec::new(),
             },
         ]
     }

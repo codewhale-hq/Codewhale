@@ -19474,6 +19474,80 @@ source_usage_records: Default::default(),
                     self.publish_status_item(&thread_id, &turn_id, reason, &settled_approval_calls)
                         .await?;
                 }
+                EngineEvent::PluginChanged {
+                    plugin,
+                    action,
+                    content_hash,
+                    decided_by,
+                    services,
+                    tools_added,
+                    tools_removed,
+                } => {
+                    let mut message = codewhale_localization::tr(
+                        codewhale_localization::Locale::En,
+                        match decided_by.as_deref().filter(|value| !value.is_empty()) {
+                            Some(_) => {
+                                codewhale_localization::MessageId::PluginChangedWithDeciderReceipt
+                            }
+                            None => codewhale_localization::MessageId::PluginChangedReceipt,
+                        },
+                    )
+                    .replace("{plugin}", &plugin)
+                    .replace("{action}", &action);
+                    if let Some(decider) = decided_by.as_deref().filter(|value| !value.is_empty()) {
+                        message = message.replace("{decider}", decider);
+                    }
+                    let item = TurnItemRecord {
+                        schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+                        id: runtime_record_id("item"),
+                        turn_id: turn_id.clone(),
+                        kind: TurnItemKind::Status,
+                        status: TurnItemLifecycleStatus::Completed,
+                        summary: summarize_text(&message, SUMMARY_LIMIT),
+                        detail: Some(message),
+                        metadata: Some(json!({
+                            "plugin_changed": {
+                                "plugin": &plugin,
+                                "action": &action,
+                                "content_hash": &content_hash,
+                                "decided_by": &decided_by,
+                                "services": &services,
+                                "tools_added": &tools_added,
+                                "tools_removed": &tools_removed,
+                            }
+                        })),
+                        artifact_refs: Vec::new(),
+                        artifacts: Vec::new(),
+                        started_at: Some(Utc::now()),
+                        ended_at: Some(Utc::now()),
+                    };
+                    self.store.save_item(&item)?;
+                    self.attach_item_to_turn(&turn_id, &item.id)?;
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        Some(&item.id),
+                        "item.completed",
+                        json!({ "item": item }),
+                    )
+                    .await?;
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        None,
+                        "thread.plugin_changed",
+                        json!({
+                            "plugin": plugin,
+                            "action": action,
+                            "content_hash": content_hash,
+                            "decided_by": decided_by,
+                            "services": services,
+                            "tools_added": tools_added,
+                            "tools_removed": tools_removed,
+                        }),
+                    )
+                    .await?;
+                }
                 _ => {}
             }
         }

@@ -6880,8 +6880,11 @@ impl Engine {
         // Extension tools go in last and never replace a name already present
         // (`ToolRegistry::register` would overwrite it silently). Only this
         // engine's own plugins' tools are installed.
+        let mut extension_tool_names = HashSet::new();
         if let Some(attachment) = extension_host {
-            plugin_tool_names.extend(attachment.install_tools(&mut tool_registry));
+            let installed = attachment.install_tools(&mut tool_registry);
+            extension_tool_names.extend(installed.iter().cloned());
+            plugin_tool_names.extend(installed);
         }
 
         let mcp_state = if self.config.features.enabled(Feature::Mcp) {
@@ -7045,7 +7048,8 @@ impl Engine {
             // Model metadata wins once wired; today the hint is always None
             // and the [features] flags decide.
             tool_catalog::requested_tool_mode(None, &self.config.features),
-        );
+        )
+        .with_extension_tool_names(extension_tool_names);
         if let Some(child) = self.child_host.as_ref() {
             Self::narrow_child_surface(&child.authority, &mut surface);
         }

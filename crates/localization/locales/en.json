@@ -2725,5 +2725,11 @@
   "CmdPluginAuditServiceWithheldOne": "{service}: off for now: {peers} is turned on and its review does not include it",
   "CmdPluginAuditServiceWithheldMany": "{service}: off for now: {peers} are turned on and their review does not include it",
   "CmdPluginAuditApprovedDate": "approved {date}",
-  "CmdPluginAuditSessionNotice": "Agent-approved plugins active in this project (not reviewed by you): {names}"
+  "CmdPluginAuditSessionNotice": "Agent-approved plugins active in this project (not reviewed by you): {names}",
+  "PluginChangedReceipt": "Plugin {plugin} {action}",
+  "PluginChangedWithDeciderReceipt": "Plugin {plugin} {action} ({decider})",
+  "PluginChangedActionInstalled": "installed",
+  "PluginChangedActionEnabled": "enabled",
+  "PluginChangedActionDisabled": "disabled",
+  "PluginChangedActionRemoved": "removed"
 }

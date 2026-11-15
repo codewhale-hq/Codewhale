@@ -171,6 +171,14 @@ impl ToolActivationCache {
         Ok(evicted)
     }
 
+    pub fn remove_names(&mut self, removed: &std::collections::HashSet<String>) {
+        if removed.is_empty() {
+            return;
+        }
+        self.names.retain(|name| !removed.contains(name));
+        self.last_use.retain(|name, _| !removed.contains(name));
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn test_measure(
         catalog: &[codewhale_models::Tool],

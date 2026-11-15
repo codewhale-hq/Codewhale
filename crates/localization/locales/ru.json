@@ -2725,5 +2725,11 @@
   "CmdPluginAuditServiceWithheldOne": "{service}: пока отключено: {peers} включён, и его проверка не включает это",
   "CmdPluginAuditServiceWithheldMany": "{service}: пока отключено: {peers} включены, и их проверка не включает это",
   "CmdPluginAuditApprovedDate": "одобрено {date}",
-  "CmdPluginAuditSessionNotice": "В этом проекте активны плагины, одобренные агентом (вами не проверены): {names}"
+  "CmdPluginAuditSessionNotice": "В этом проекте активны плагины, одобренные агентом (вами не проверены): {names}",
+  "PluginChangedReceipt": "Плагин {plugin} {action}",
+  "PluginChangedWithDeciderReceipt": "Плагин {plugin} {action} ({decider})",
+  "PluginChangedActionInstalled": "установлен",
+  "PluginChangedActionEnabled": "включён",
+  "PluginChangedActionDisabled": "отключён",
+  "PluginChangedActionRemoved": "удалён"
 }

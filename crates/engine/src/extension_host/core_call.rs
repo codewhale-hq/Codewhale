@@ -284,6 +284,19 @@ pub fn auto_review_held(
 /// One extension tool call's standing to ask the core for things: its ticket
 /// and the machinery the asks run on. Lives from the `tool/call`'s start to
 /// its end.
+static NEXT_INVOCATION_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PluginChangeMark {
+    pub plugin: String,
+    pub action: String,
+    pub content_hash: Option<String>,
+    pub decided_by: Option<String>,
+    pub services: Vec<String>,
+    pub tools_added: Vec<String>,
+    pub tools_removed: Vec<String>,
+}
+
 pub struct Invocation {
     pub cohort: HostCohort,
     host_generation: u64,
@@ -297,7 +310,9 @@ pub struct Invocation {
     broker: Option<BrokerScope>,
     nested_calls: AtomicU32,
     next_broker_token: AtomicU64,
+    id: u64,
     broker_acts: Mutex<(usize, Vec<Value>, bool)>,
+    plugin_change: Mutex<(Option<PluginChangeMark>, bool)>,
     held_image: Mutex<(Option<(u64, HeldImage)>, bool)>,
     tickets: Vec<Ticket>,
     caller_tools: Vec<String>,
@@ -447,6 +462,22 @@ impl BrokerContext {
     #[must_use]
     pub fn mcp_pool(&self) -> Option<Arc<tokio::sync::Mutex<crate::mcp::McpPool>>> {
         self.invocation.gate.mcp_pool()
+    }
+
+    #[must_use]
+    pub fn invocation_id(&self) -> u64 {
+        self.invocation.id
+    }
+
+    pub fn record_plugin_change(&self, mark: PluginChangeMark) {
+        let mut guard = self
+            .invocation
+            .plugin_change
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !guard.1 {
+            guard.0 = Some(mark);
+        }
     }
 
     pub fn record(&self, entry: Value) -> bool {
@@ -694,7 +725,9 @@ impl BrokerContext {
             broker: None,
             nested_calls: AtomicU32::new(0),
             next_broker_token: AtomicU64::new(1),
+            id: NEXT_INVOCATION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             broker_acts: Mutex::new((0, Vec::new(), false)),
+            plugin_change: Mutex::new((None, false)),
             held_image: Mutex::new((None, false)),
             tickets: Vec::new(),
             caller_tools: Vec::new(),
@@ -920,7 +953,9 @@ impl CoreCalls {
             broker,
             nested_calls: AtomicU32::new(0),
             next_broker_token: AtomicU64::new(1),
+            id: NEXT_INVOCATION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             broker_acts: Mutex::new((0, Vec::new(), false)),
+            plugin_change: Mutex::new((None, false)),
             held_image: Mutex::new((None, false)),
             tickets: std::iter::once(ticket.clone())
                 .chain(checkpoint_ticket.iter().cloned())
@@ -1018,12 +1053,17 @@ impl CoreCalls {
     }
 
     pub fn revoke_attachment(&self, id: u64) {
+        self.revoke_attachment_except(id, None);
+    }
+
+    pub fn revoke_attachment_except(&self, id: u64, exempt_invocation_id: Option<u64>) {
         self.revoke_where(|invocation| {
-            invocation
-                .plugins
-                .as_ref()
-                .and_then(|plugins| plugins.caller_selection())
-                .is_some_and(|selection| selection.attachment_id == id)
+            exempt_invocation_id != Some(invocation.id)
+                && invocation
+                    .plugins
+                    .as_ref()
+                    .and_then(|plugins| plugins.caller_selection())
+                    .is_some_and(|selection| selection.attachment_id == id)
         });
     }
 
@@ -2016,6 +2056,16 @@ impl InvocationGuard {
     pub fn seal_receipts(&self) -> Option<Value> {
         let _ = self.seal_held_image();
         self.snapshot(true)
+    }
+
+    pub fn seal_plugin_change(&self) -> Option<PluginChangeMark> {
+        let mut guard = self
+            .invocation
+            .plugin_change
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.1 = true;
+        guard.0.clone()
     }
 
     fn snapshot(&self, seal: bool) -> Option<Value> {

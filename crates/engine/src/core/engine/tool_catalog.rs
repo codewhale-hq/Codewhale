@@ -626,6 +626,7 @@ pub(super) struct ToolSurfacePolicy {
     allowed_tools: Option<Vec<String>>,
     disallowed_tools: Option<Vec<String>>,
     holds_bounded_verification: bool,
+    pub(super) extension_tool_names: HashSet<String>,
     /// Hard per-turn cap on admitted tool calls (#4415). The turn loop copies
     /// this limit into its own admission counter at turn start; `None` means
     /// unlimited (the default), which keeps the admission gate inert.
@@ -701,11 +702,16 @@ impl ToolSurfacePolicy {
             allowed_tools,
             disallowed_tools,
             holds_bounded_verification,
+            extension_tool_names: HashSet::new(),
             max_tool_calls,
         }
     }
 
-    #[cfg(test)]
+    pub(super) fn with_extension_tool_names(mut self, names: HashSet<String>) -> Self {
+        self.extension_tool_names = names;
+        self
+    }
+
     pub(super) fn allows_tool(&self, name: &str) -> bool {
         !self.denies_tool(name) && self.passes_allow_list(name)
     }

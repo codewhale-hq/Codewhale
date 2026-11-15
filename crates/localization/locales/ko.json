@@ -2725,5 +2725,11 @@
   "CmdPluginAuditServiceWithheldOne": "{service}: 지금은 꺼짐: {peers}이(가) 켜져 있고 그 검토에 포함되지 않았습니다",
   "CmdPluginAuditServiceWithheldMany": "{service}: 지금은 꺼짐: {peers}이(가) 켜져 있고 해당 검토에 포함되지 않았습니다",
   "CmdPluginAuditApprovedDate": "{date} 승인됨",
-  "CmdPluginAuditSessionNotice": "이 프로젝트에서 에이전트가 승인한 플러그인이 활성화되어 있습니다(검토 안 됨): {names}"
+  "CmdPluginAuditSessionNotice": "이 프로젝트에서 에이전트가 승인한 플러그인이 활성화되어 있습니다(검토 안 됨): {names}",
+  "PluginChangedReceipt": "플러그인 {plugin}이(가) {action}",
+  "PluginChangedWithDeciderReceipt": "플러그인 {plugin}이(가) {action} ({decider})",
+  "PluginChangedActionInstalled": "설치됨",
+  "PluginChangedActionEnabled": "활성화됨",
+  "PluginChangedActionDisabled": "비활성화됨",
+  "PluginChangedActionRemoved": "제거됨"
 }

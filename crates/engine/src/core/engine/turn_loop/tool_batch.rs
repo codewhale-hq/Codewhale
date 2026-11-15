@@ -6,7 +6,7 @@ impl Engine {
     pub(super) async fn run_tool_batch_phase(
         &mut self,
         turn: &mut TurnContext,
-        tool_policy: &ToolSurfacePolicy,
+        tool_policy: &mut ToolSurfacePolicy,
         progress: &mut TurnLoopProgress,
         client: &SharedModelClient,
         response: AcceptedModelStep,
@@ -147,7 +147,7 @@ impl Engine {
         let denial_action = self
             .process_tool_results(
                 client.as_ref(),
-                tool_policy.strict_tool_mode,
+                tool_policy,
                 outcomes,
                 turn,
                 &mut progress.tool_catalog,

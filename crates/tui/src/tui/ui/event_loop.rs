@@ -4291,6 +4291,16 @@ pub(crate) async fn run_event_loop(
                     EngineEvent::ContentFilterRefusal { reason, refusal } => {
                         apply_content_filter_refusal(app, &reason, refusal.as_deref());
                     }
+                    EngineEvent::PluginChanged {
+                        plugin,
+                        action,
+                        decided_by,
+                        ..
+                    } => {
+                        apply_plugin_changed_notice(app, &plugin, &action, decided_by.as_deref());
+                        reload_terminal_plugin_registry(app, config).await;
+                        transcript_batch_updated = true;
+                    }
                     EngineEvent::LspRepairUpdate {
                         diagnostics_found,
                         files,
@@ -9083,6 +9093,235 @@ mod launch_session_sync_tests {
 }
 
 #[cfg(test)]
+mod plugin_change_tests {
+    use super::{apply_plugin_changed_notice, reload_terminal_plugin_registry};
+    use crate::commands::user_registry;
+    use crate::tui::history::HistoryCell;
+    use codewhale_config::extension_host::ExtensionHostRuntime;
+    use codewhale_config::hooks::{HookEvent, HooksConfig};
+    use codewhale_engine::extension_host::{
+        ExtensionHostManager, ExtensionHostOptions, TestManagerGuard, registry::OwnerState,
+    };
+    use codewhale_engine::hooks::HookExecutor;
+    use codewhale_engine::tools::spec::ToolContext;
+    use codewhale_localization::MessageId;
+    use codewhale_plugins::activation::TestPolicyGuard;
+    use codewhale_plugins::discovery::{DiscoveryConfig, discover_with_config};
+    use std::fs;
+    use std::sync::Arc;
+
+    #[test]
+    fn plugin_change_adds_one_line_with_the_name_defanged() {
+        let mut app = crate::tui::test_support::test_app_with_options(
+            crate::tui::test_support::test_tui_options(std::env::temp_dir()),
+        );
+        let before = app.history.len();
+        apply_plugin_changed_notice(
+            &mut app,
+            "bad\nname\r\t\u{202E}evil\x1b[31m!long_suffix_to_test_bounding_over_eighty_characters_total_after_ansi_strip",
+            "installed",
+            Some("approved by you"),
+        );
+
+        assert_eq!(app.history.len(), before + 1);
+        assert!(app.needs_redraw);
+        let HistoryCell::System { content } = app.history.last().expect("system line added") else {
+            panic!("expected HistoryCell::System");
+        };
+        assert!(
+            !content.chars().any(|ch| ch.is_control()
+                || matches!(ch, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')),
+            "control/bidi characters must be stripped: {content:?}"
+        );
+        assert!(!content.contains('\x1b'));
+        assert!(content.contains("bad name evil!"));
+        assert!(content.contains("..."));
+        let expected_decider = app.tr(MessageId::CmdPluginAuditApprovedByYou);
+        assert!(content.contains(expected_decider.as_ref()), "{content}");
+    }
+
+    #[tokio::test]
+    async fn plugin_change_rereads_the_terminal_registry() {
+        let _home = crate::test_support::SealedHome::new();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("ws");
+        let user_plugins_dir = temp.path().join("user-plugins");
+        let state_path = temp.path().join("state/plugin-state.json");
+        fs::create_dir_all(workspace.join(".codewhale/plugins")).expect("ws plugins");
+        fs::create_dir_all(&user_plugins_dir).expect("user plugins");
+
+        let cfg = DiscoveryConfig {
+            workspace: workspace.clone(),
+            user_plugins_dir: user_plugins_dir.clone(),
+            workspace_plugins_dir: workspace.join(".codewhale/plugins"),
+            builtin_plugin_dirs: Vec::new(),
+            state_path,
+        };
+        let hooks_cfg = HooksConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let mut config = codewhale_runtime::config::Config::default();
+        config.hooks = Some(hooks_cfg.clone());
+
+        let mut app = crate::tui::test_support::test_app_with_options(
+            crate::tui::test_support::test_tui_options(workspace.clone()),
+        );
+        app.plugin_registry = Arc::new(discover_with_config(&cfg));
+        app.hooks = HookExecutor::new(hooks_cfg, workspace.clone());
+
+        assert!(user_registry::with_registry_for_app(&app, |reg| {
+            reg.get("tui-cmd").is_none()
+        }));
+        assert!(!app.hooks.has_hooks_for_event(HookEvent::TurnEnd));
+
+        let plugin_dir = user_plugins_dir.join("alpha-tui");
+        fs::create_dir_all(plugin_dir.join("commands")).expect("commands dir");
+        fs::create_dir_all(plugin_dir.join("hooks")).expect("hooks dir");
+        fs::write(
+            plugin_dir.join("plugin.toml"),
+            "schema_version = 1\n[plugin]\nname = \"alpha-tui\"\nversion = \"1.0.0\"\n[commands]\npath = \"commands\"\n[hooks]\npath = \"hooks\"\n",
+        )
+        .expect("manifest");
+        fs::write(
+            plugin_dir.join("commands/tui-cmd.md"),
+            "---\ndescription: Alpha command\n---\nhello from tui command\n",
+        )
+        .expect("command md");
+        fs::write(
+            plugin_dir.join("hooks/hooks.toml"),
+            "enabled = true\n\n[[hooks]]\nname = \"alpha-end\"\nevent = \"turn_end\"\ncommand = \"echo done\"\n",
+        )
+        .expect("hooks toml");
+
+        let mut on_disk = discover_with_config(&cfg);
+        on_disk.trust("alpha-tui").expect("trust");
+        on_disk.enable("alpha-tui").expect("enable");
+
+        let before = app.history.len();
+        apply_plugin_changed_notice(
+            &mut app,
+            "alpha-tui",
+            "installed",
+            Some("approved by the agent in Auto-Review"),
+        );
+        reload_terminal_plugin_registry(&mut app, &config).await;
+
+        assert_eq!(app.history.len(), before + 1);
+        assert!(app.plugin_registry.is_active("alpha-tui"));
+        assert!(user_registry::with_registry_for_app(&app, |reg| {
+            reg.get("tui-cmd").is_some()
+        }));
+        assert!(app.hooks.has_hooks_for_event(HookEvent::TurnEnd));
+    }
+
+    #[tokio::test]
+    async fn plugin_change_older_registry_does_not_undo_the_agents_change() {
+        let _home = crate::test_support::SealedHome::new();
+        let Some(node) = codewhale_engine::extension_host::test_support::node_for_tests(
+            "plugin_change_older_registry_does_not_undo_the_agents_change",
+        ) else {
+            return;
+        };
+        let _policy = TestPolicyGuard::extension_host(true);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("ws");
+        let agent_user_dir = temp.path().join("agent-user");
+        let agent_state = temp.path().join("agent-state/plugin-state.json");
+        let stale_user_dir = temp.path().join("stale-user");
+        let stale_state = temp.path().join("stale-state/plugin-state.json");
+        fs::create_dir_all(workspace.join(".codewhale/plugins")).expect("ws plugins");
+        fs::create_dir_all(&agent_user_dir).expect("agent user");
+        fs::create_dir_all(&stale_user_dir).expect("stale user");
+
+        let plugin_dir = agent_user_dir.join("agent-tool");
+        fs::create_dir_all(plugin_dir.join("native")).expect("native dir");
+        fs::write(
+            plugin_dir.join("plugin.toml"),
+            "schema_version = 1\n[plugin]\nname = \"agent-tool\"\nversion = \"1.0.0\"\n[native]\npath = \"native/index.mjs\"\n",
+        )
+        .expect("manifest");
+        fs::write(
+            plugin_dir.join("native/index.mjs"),
+            "export const name = 'agent-tool';\nexport const inject = ['tools'];\nexport function apply(ctx) {\n  ctx.tools.register({\n    name: 'agent_ping',\n    description: 'Ping',\n    parameters: { type: 'object', properties: {}, additionalProperties: false },\n    async execute() { return 'agent-ok'; },\n  });\n}\n",
+        )
+        .expect("index.mjs");
+
+        let agent_cfg = DiscoveryConfig {
+            workspace: workspace.clone(),
+            user_plugins_dir: agent_user_dir,
+            workspace_plugins_dir: workspace.join(".codewhale/plugins"),
+            builtin_plugin_dirs: Vec::new(),
+            state_path: agent_state,
+        };
+        let mut agent_reg = discover_with_config(&agent_cfg);
+        let agent_plugin_id = agent_reg
+            .get("agent-tool")
+            .expect("agent-tool discovered")
+            .id
+            .clone();
+        agent_reg.trust("agent-tool").expect("trust");
+        agent_reg.enable("agent-tool").expect("enable");
+
+        let manager = Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
+            runtime: ExtensionHostRuntime::Node,
+            node_override: Some(node),
+            root: Some(temp.path().join("ext-root")),
+            ..Default::default()
+        }));
+        let _manager_guard = TestManagerGuard::install(Arc::clone(&manager));
+        let attachment = manager.attach(Arc::new(agent_reg));
+        attachment.sync().await.expect("agent host activation");
+        assert!(
+            manager
+                .owner_report(agent_plugin_id.as_str())
+                .is_some_and(|report| report.state == Some(OwnerState::Active))
+        );
+
+        let stale_cfg = DiscoveryConfig {
+            workspace: workspace.clone(),
+            user_plugins_dir: stale_user_dir,
+            workspace_plugins_dir: workspace.join(".codewhale/plugins"),
+            builtin_plugin_dirs: Vec::new(),
+            state_path: stale_state,
+        };
+        let mut app = crate::tui::test_support::test_app_with_options(
+            crate::tui::test_support::test_tui_options(workspace.clone()),
+        );
+        app.plugin_registry = Arc::new(discover_with_config(&stale_cfg));
+        let config = codewhale_runtime::config::Config::default();
+
+        apply_plugin_changed_notice(&mut app, "agent-tool", "installed", Some("approved by you"));
+        reload_terminal_plugin_registry(&mut app, &config).await;
+
+        assert!(app.plugin_registry.get("agent-tool").is_none());
+        assert!(
+            manager
+                .owner_report(agent_plugin_id.as_str())
+                .is_some_and(|report| report.state == Some(OwnerState::Active)),
+            "older terminal registry must never deactivate agent-approved host plugin"
+        );
+        assert!(attachment.plugin_view().is_active("agent-tool"));
+
+        let tool = codewhale_engine::extension_host::test_support::host_tool(
+            &attachment,
+            &workspace,
+            "agent_ping",
+        );
+        let result = tool
+            .execute(
+                serde_json::json!({}),
+                &ToolContext::new(&workspace).with_plugin_registry(attachment.plugin_view()),
+            )
+            .await
+            .expect("agent_ping remains callable");
+        assert!(result.content.contains("agent-ok"), "{}", result.content);
+
+        manager.shutdown().await;
+    }
+}
+
+#[cfg(test)]
 mod telemetry_notice_tests {
     use super::telemetry_notice_may_enter_transcript;
 
@@ -9523,4 +9762,131 @@ pub(super) fn apply_content_filter_refusal(app: &mut App, reason: &str, refusal:
     app.add_message(HistoryCell::System {
         content: format!("Content filtered: {detail}"),
     });
+}
+
+fn sanitize_plugin_change_field(raw: &str, max_chars: usize) -> String {
+    let mut stripped = String::new();
+    codewhale_sanitize::sanitize::strip_ansi_into(raw, &mut stripped);
+    let mut cleaned = String::with_capacity(stripped.len());
+    for ch in stripped.chars() {
+        if codewhale_sanitize::sanitize::is_bidi_control(ch) {
+            continue;
+        }
+        if matches!(ch, '\n' | '\r' | '\t') {
+            cleaned.push(' ');
+        } else if !ch.is_control() {
+            cleaned.push(ch);
+        }
+    }
+    let normalized = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let count = normalized.chars().count();
+    if count <= max_chars {
+        normalized
+    } else {
+        let mut bounded: String = normalized
+            .chars()
+            .take(max_chars.saturating_sub(3))
+            .collect();
+        bounded.push_str("...");
+        bounded
+    }
+}
+
+fn localize_plugin_change_action(app: &App, action: &str) -> String {
+    match action.trim() {
+        "installed" => app.tr(MessageId::PluginChangedActionInstalled).into_owned(),
+        "enabled" => app.tr(MessageId::PluginChangedActionEnabled).into_owned(),
+        "disabled" => app.tr(MessageId::PluginChangedActionDisabled).into_owned(),
+        "removed" | "uninstalled" => app.tr(MessageId::PluginChangedActionRemoved).into_owned(),
+        other => {
+            let cleaned = sanitize_plugin_change_field(other, 40);
+            if cleaned.is_empty() {
+                "updated".to_string()
+            } else {
+                cleaned
+            }
+        }
+    }
+}
+
+fn localize_plugin_change_decider(app: &App, raw: &str) -> String {
+    match raw.trim() {
+        "approved by you" => app.tr(MessageId::CmdPluginAuditApprovedByYou).into_owned(),
+        "approved by the agent in Full Access" => app
+            .tr(MessageId::CmdPluginAuditApprovedByAgentFullAccess)
+            .into_owned(),
+        "approved by the agent in Auto-Review" => app
+            .tr(MessageId::CmdPluginAuditApprovedByAgentAutoReview)
+            .into_owned(),
+        "approved by the agent from a shell command" => app
+            .tr(MessageId::CmdPluginAuditApprovedByAgentShell)
+            .into_owned(),
+        "trusted from the command line with --yes; no review was shown there" => app
+            .tr(MessageId::CmdPluginAuditApprovedByCommandLine)
+            .into_owned(),
+        "approver not recorded (reviewed before 0.10.3)" => app
+            .tr(MessageId::CmdPluginAuditApprovedByUnknown)
+            .into_owned(),
+        other => sanitize_plugin_change_field(other, 96),
+    }
+}
+
+pub(super) fn apply_plugin_changed_notice(
+    app: &mut App,
+    plugin: &str,
+    action: &str,
+    decided_by: Option<&str>,
+) {
+    let clean_plugin = sanitize_plugin_change_field(plugin, 80);
+    let plugin_label = if clean_plugin.is_empty() {
+        "plugin"
+    } else {
+        clean_plugin.as_str()
+    };
+    let action_label = localize_plugin_change_action(app, action);
+    let decider_label = decided_by
+        .map(|raw| localize_plugin_change_decider(app, raw))
+        .filter(|value| !value.is_empty());
+    let content = match decider_label {
+        Some(decider) => app
+            .tr(MessageId::PluginChangedWithDeciderReceipt)
+            .replace("{plugin}", plugin_label)
+            .replace("{action}", &action_label)
+            .replace("{decider}", &decider),
+        None => app
+            .tr(MessageId::PluginChangedReceipt)
+            .replace("{plugin}", plugin_label)
+            .replace("{action}", &action_label),
+    };
+    app.add_message(HistoryCell::System { content });
+    app.needs_redraw = true;
+}
+
+pub(super) async fn reload_terminal_plugin_registry(app: &mut App, config: &Config) {
+    let prior = std::sync::Arc::clone(&app.plugin_registry);
+    let workspace = app.workspace.clone();
+    let hooks_config = config.hooks_config();
+    let Ok((refreshed, loaded_hooks)) = tokio::task::spawn_blocking(move || {
+        let refreshed = prior.rediscover_for_workspace(&workspace);
+        let loaded_hooks = codewhale_engine::hooks::config::load_with_project_and_plugins(
+            hooks_config,
+            &workspace,
+            Some(refreshed.as_ref()),
+        );
+        (refreshed, loaded_hooks)
+    })
+    .await
+    else {
+        return;
+    };
+    app.plugin_registry = std::sync::Arc::clone(&refreshed);
+    app.refresh_agent_approved_plugins_notice();
+    for error in crate::commands::user_registry::install_plugin_registry(
+        &app.workspace,
+        app.plugin_registry.as_ref(),
+    ) {
+        tracing::warn!(target: "plugins", "{error}");
+    }
+    app.hooks = app.hooks.rebind(loaded_hooks, app.workspace.clone());
+    app.runtime_services.hook_executor = Some(std::sync::Arc::new(app.hooks.clone()));
 }
