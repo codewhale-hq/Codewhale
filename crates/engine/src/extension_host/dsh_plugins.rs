@@ -10,10 +10,9 @@ use codewhale_net::network_policy::NetworkPolicy;
 use codewhale_plugins::activation::{PolicyScope, extension_host_policy_enabled};
 use codewhale_plugins::agent_plugin::resolve_manifest_path;
 use codewhale_plugins::host_services::{
-    AgentApproval, AgentPosture, PersonVia, PluginApprover, PluginCohort, ReviewApproval,
-    approver_label, offered,
+    AgentApproval, AgentPosture, PersonVia, PluginApprover, ReviewApproval, approver_label, offered,
 };
-use codewhale_plugins::install::dsh::{has_unresolved_npm_dependencies, is_dsh_package};
+use codewhale_plugins::install::dsh::{has_unresolved_npm_dependencies, try_is_dsh_package};
 use codewhale_plugins::install::{
     DEFAULT_MAX_SIZE_BYTES, NpmDepsNetworkError, PluginArchiveMismatch, PluginContentMismatch,
     PluginInstallError, PluginInstallSource, PluginNameConflict, RemoteDownloadOutcome,
@@ -1444,7 +1443,7 @@ async fn dir_has_clean_root_manifest(dir: &Path) -> bool {
             return true;
         }
         let pkg = dir_owned.join("package.json");
-        open_bundle_file(&pkg).is_ok() && is_dsh_package(&dir_owned)
+        open_bundle_file(&pkg).is_ok() && try_is_dsh_package(&dir_owned).unwrap_or(false)
     })
     .await
     .unwrap_or(false)
@@ -1829,6 +1828,35 @@ async fn observe_native_activation(
     }
 }
 
+type LocalDshRefineResult = (PluginInstallSource, bool, Option<(&'static str, String)>);
+
+async fn refine_local_dsh_source(
+    source: PluginInstallSource,
+    dir: PathBuf,
+) -> Result<LocalDshRefineResult, BrokerRefusal> {
+    tokio::task::spawn_blocking(move || match source {
+        PluginInstallSource::LocalPath(path) => match try_is_dsh_package(&path) {
+            Ok(true) => {
+                let npm_deps = has_unresolved_npm_dependencies(&dir).unwrap_or(false);
+                (PluginInstallSource::Dsh(path), npm_deps, None)
+            }
+            Ok(false) => (PluginInstallSource::LocalPath(path), false, None),
+            Err(error) => (
+                PluginInstallSource::LocalPath(path),
+                false,
+                Some(("not-bundle", format!("not-bundle: {error:#}"))),
+            ),
+        },
+        other => {
+            let npm_deps = matches!(other, PluginInstallSource::Dsh(_))
+                && has_unresolved_npm_dependencies(&dir).unwrap_or(false);
+            (other, npm_deps, None)
+        }
+    })
+    .await
+    .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))
+}
+
 async fn prepare_local_source_and_hash_with_network(
     source: &PluginInstallSource,
     dir: &Path,
@@ -1881,11 +1909,17 @@ async fn prepare_local_source_and_hash_with_network(
                 ))
             }
             PluginInstallSource::Dsh(_) => {
-                if !is_dsh_package(&dir) {
-                    return Err((
-                        "not-bundle",
-                        "not-bundle: source directory does not declare dsh.bundle".to_string(),
-                    ));
+                match try_is_dsh_package(&dir) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return Err((
+                            "not-bundle",
+                            "not-bundle: source directory does not declare dsh.bundle".to_string(),
+                        ));
+                    }
+                    Err(error) => {
+                        return Err(("not-bundle", format!("not-bundle: {error:#}")));
+                    }
                 }
                 let result = match network.as_ref() {
                     Some(policy) => preview_dsh_with_network(&dir, policy),
@@ -2075,36 +2109,17 @@ async fn install(
                 } else {
                     false
                 };
-                let (parsed_refined, has_npm_deps, tree_clean) =
+                let (parsed_refined, has_npm_deps, refine_error, tree_clean) =
                     if is_own || (ancestor_clean && has_clean_manifest) {
                         if ensure_no_links_in_tree(&dir_path).await.is_ok() {
-                            let parsed_clone = parsed.clone();
-                            let dir_probe = dir_path.clone();
-                            let (parsed_refined, has_npm_deps) =
-                                tokio::task::spawn_blocking(move || {
-                                    let parsed_refined = match parsed_clone {
-                                        PluginInstallSource::LocalPath(path)
-                                            if resolve_manifest_path(&path).is_none()
-                                                && is_dsh_package(&path) =>
-                                        {
-                                            PluginInstallSource::Dsh(path)
-                                        }
-                                        other => other,
-                                    };
-                                    let has_npm_deps =
-                                        matches!(parsed_refined, PluginInstallSource::Dsh(_))
-                                            && has_unresolved_npm_dependencies(&dir_probe)
-                                                .unwrap_or(false);
-                                    (parsed_refined, has_npm_deps)
-                                })
-                                .await
-                                .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?;
-                            (parsed_refined, has_npm_deps, true)
+                            let (refined, npm_deps, refine_err) =
+                                refine_local_dsh_source(parsed.clone(), dir_path.clone()).await?;
+                            (refined, npm_deps, refine_err, true)
                         } else {
-                            (parsed.clone(), false, false)
+                            (parsed.clone(), false, None, false)
                         }
                     } else {
-                        (parsed.clone(), false, false)
+                        (parsed.clone(), false, None, false)
                     };
                 if is_own && matches!(pending, PendingApprover::Agent(_)) && has_npm_deps {
                     record_outcome(call, "install", None, None, None, "failed");
@@ -2200,12 +2215,16 @@ async fn install(
                         user_plugins_dir: fresh.user_plugins_dir(),
                         state_path: fresh.state_path(),
                     };
-                    let preview = prepare_local_source_and_hash_with_network(
-                        &parsed_refined,
-                        &dir_path,
-                        preview_network.as_ref(),
-                    )
-                    .await;
+                    let preview = if let Some(err) = refine_error {
+                        Err(err)
+                    } else {
+                        prepare_local_source_and_hash_with_network(
+                            &parsed_refined,
+                            &dir_path,
+                            preview_network.as_ref(),
+                        )
+                        .await
+                    };
                     match preview {
                         Ok((plugin_name, source_package, version, pre_hash)) => {
                             if is_own {
@@ -2991,27 +3010,10 @@ async fn install(
                         .await
                         .is_ok_and(|b| !b)
                         && ensure_no_links_in_tree(&source_dir).await.is_ok();
-                    let (refined_source, deferred_npm_deps) = if clean_root {
-                        let source_clone = source.clone();
-                        let dir_probe = source_dir.clone();
-                        tokio::task::spawn_blocking(move || {
-                            let refined = match source_clone {
-                                PluginInstallSource::LocalPath(path)
-                                    if resolve_manifest_path(&path).is_none()
-                                        && is_dsh_package(&path) =>
-                                {
-                                    PluginInstallSource::Dsh(path)
-                                }
-                                other => other,
-                            };
-                            let npm_deps = matches!(refined, PluginInstallSource::Dsh(_))
-                                && has_unresolved_npm_dependencies(&dir_probe).unwrap_or(false);
-                            (refined, npm_deps)
-                        })
-                        .await
-                        .map_err(|_| BrokerRefusal::NotAvailable(DshService::Plugins))?
+                    let (refined_source, deferred_npm_deps, post_refine_error) = if clean_root {
+                        refine_local_dsh_source(source.clone(), source_dir.clone()).await?
                     } else {
-                        (source, false)
+                        (source, false, None)
                     };
                     source = refined_source;
                     if deferred_npm_deps {
@@ -3097,13 +3099,17 @@ async fn install(
                     } else {
                         None
                     };
-                    match prepare_local_source_and_hash_with_network(
-                        &source,
-                        &source_dir,
-                        preview_net,
-                    )
-                    .await
-                    {
+                    let post_preview = if let Some(err) = post_refine_error {
+                        Err(err)
+                    } else {
+                        prepare_local_source_and_hash_with_network(
+                            &source,
+                            &source_dir,
+                            preview_net,
+                        )
+                        .await
+                    };
+                    match post_preview {
                         Ok(values) => values,
                         Err((code, msg)) => {
                             record_outcome(call, "install", None, None, None, "failed");

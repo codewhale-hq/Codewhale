@@ -2115,7 +2115,7 @@ impl ExtensionHostManager {
             plugin_lookup.insert(plugin.id.as_str(), plugin);
         }
         let plugins_state_path = plugins.state_path();
-        let to_revoke: Vec<(String, OwnerRef, HostCohort)> = {
+        let to_revoke: Vec<(String, OwnerRef, HostCohort, bool)> = {
             let registry = self.shared.registry.lock().expect("registry lock");
             registry
                 .owners()
@@ -2145,11 +2145,25 @@ impl ExtensionHostManager {
                             && plugin.state_generation == auth.state_generation
                             && plugins_state_path.is_some_and(|sp| sp == auth.state_path)
                     });
+                    let promote_to_reviewed =
+                        matches!(entry.cohort, HostCohort::Plugin(PluginCohort::Agent { .. }))
+                            && current.is_some_and(|plugin| {
+                                let expected_cohort = HostCohort::from_plugin_cohort(
+                                    codewhale_plugins::host_services::cohort_of(
+                                        plugin.approved_by.as_ref(),
+                                    ),
+                                );
+                                plugin.active()
+                                    && plugin.inventory.native > 0
+                                    && !plugin.outside_reach
+                                    && expected_cohort == HostCohort::reviewed()
+                            });
                     (!matches_current).then(|| {
                         (
                             entry.owner.plugin_id.clone(),
                             entry.owner.clone(),
                             entry.cohort.clone(),
+                            promote_to_reviewed,
                         )
                     })
                 })
@@ -2158,17 +2172,29 @@ impl ExtensionHostManager {
         if to_revoke.is_empty() {
             return;
         }
+        if to_revoke.iter().any(|(_, _, _, promote)| *promote) {
+            let mut migrations = self
+                .shared
+                .pending_migrations
+                .lock()
+                .expect("pending migrations lock");
+            for (plugin_id, _, cohort, promote) in &to_revoke {
+                if *promote {
+                    migrations.insert(plugin_id.clone(), cohort.clone());
+                }
+            }
+        }
         let mut live_owners = Vec::new();
         {
             let mut registry = self.shared.registry.lock().expect("registry lock");
-            for (plugin_id, owner, cohort) in &to_revoke {
+            for (plugin_id, owner, cohort, _) in &to_revoke {
                 if registry.revoke_owner(plugin_id).is_some() {
                     live_owners.push((owner.clone(), cohort.clone()));
                 }
                 registry.forget_owner(plugin_id);
             }
         }
-        for (plugin_id, owner, cohort) in &to_revoke {
+        for (plugin_id, owner, cohort, _) in &to_revoke {
             self.shared.revoke_owner_state(plugin_id);
             self.shared.clear_plugin_diagnostics(plugin_id);
             dsh_remote::withdraw_owner(owner);
@@ -2549,6 +2575,11 @@ impl ExtensionHostManager {
                             &want.plugin_name,
                         );
                         if tokio::fs::symlink_metadata(&candidate_dir).await.is_ok() {
+                            shared
+                                .pending_migrations
+                                .lock()
+                                .expect("pending migrations lock")
+                                .insert(plugin_id.clone(), candidate_cohort.clone());
                             Some(candidate_cohort)
                         } else {
                             None

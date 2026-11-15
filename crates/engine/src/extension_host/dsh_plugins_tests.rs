@@ -1636,6 +1636,9 @@ fn dsh_template_dir(name: &str) -> PathBuf {
 async fn full_access_installs_a_folder_in_the_project_and_records_the_agent() {
     let _policy = TestPolicyGuard::extension_host(true);
     let mut f = PluginsFixture::new();
+    let _manager = TestManagerGuard::install(Arc::new(ExtensionHostManager::new(
+        ExtensionHostOptions::default(),
+    )));
     f.reload_registry();
     f.posture.switch_for_tests(ApprovalMode::Bypass);
     let gate_calls = install_gate(&mut f, |input, _| {
@@ -1741,11 +1744,9 @@ async fn full_access_installs_a_folder_in_the_project_and_records_the_agent() {
     assert_eq!(deco["changed"], true);
     assert_eq!(deco["enabled"], true);
     assert_eq!(deco["error"]["code"], "operation-error");
-    assert!(
-        deco["error"]["diagnostic"]
-            .as_str()
-            .unwrap()
-            .starts_with("failed: it runs after you review it"),
+    assert_eq!(
+        deco["error"]["diagnostic"].as_str(),
+        Some("the extension host is not running for this session"),
         "{deco}"
     );
 
@@ -3261,6 +3262,7 @@ async fn an_agent_approved_plugin_with_code_runs_in_agent_cohort_and_promotes_on
     let _manager = TestManagerGuard::install(Arc::clone(&f.manager));
     let initial_reg = f.reload_registry();
     let _engine = f.manager.attach(initial_reg);
+    let _ = _engine.set_creator_demand(true);
 
     f.posture.switch_for_tests(ApprovalMode::Bypass);
     install_gate(&mut f, |input, _| {
@@ -4505,6 +4507,7 @@ async fn disable_and_remove_synchronously_revoke_tickets_and_cross_workspace_use
     let _manager = TestManagerGuard::install(Arc::clone(&f.manager));
     let reg_a = f.reload_registry();
     let _engine_a = f.manager.attach(reg_a);
+    let _ = _engine_a.set_creator_demand(true);
     let _engine_b = f.manager.attach(Arc::new(discover_with_config(&config_b)));
 
     let src = write_skill_bundle(&f.config.workspace, "sync-rev-src", "sync-rev", "1.0.0");
@@ -4792,4 +4795,121 @@ async fn remote_dsh_with_external_npm_deps_discloses_npm_reach_before_npm_access
     );
     assert_eq!(fs::read_dir(&f.config.user_plugins_dir).unwrap().count(), 0);
     let _ = server.join();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_install_prefers_dsh_package_when_plugin_json_also_present() {
+    let mut f = PluginsFixture::new();
+
+    let dsh_dual = f.config.workspace.join("dsh-dual-clean");
+    copy_dir_tree(&dsh_template_dir("decoration"), &dsh_dual);
+    let (conversion, _) = codewhale_plugins::install::preview_dsh(&dsh_dual).unwrap();
+    let mut sibling = serde_json::Map::new();
+    sibling.insert(
+        "$schema".to_string(),
+        Value::String(codewhale_plugins::agent_plugin::PLUGIN_SCHEMA_URL.to_string()),
+    );
+    sibling.insert(
+        "name".to_string(),
+        Value::String(conversion.plugin_name.clone()),
+    );
+    if let Some(version) = &conversion.source_version {
+        sibling.insert("version".to_string(), Value::String(version.clone()));
+    }
+    fs::write(
+        dsh_dual.join("plugin.json"),
+        serde_json::to_string_pretty(&Value::Object(sibling)).unwrap(),
+    )
+    .unwrap();
+
+    f.reload_registry();
+    f.posture.switch_for_tests(ApprovalMode::Bypass);
+    install_gate(&mut f, |input, _| {
+        allow_verdict(input, NestedDecision::Auto)
+    });
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let ticket = plugin_ticket(&guard).unwrap();
+    let installed = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "install",
+            json!({"target": dsh_dual.to_string_lossy(), "enabled": false}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(installed["application"], "applied", "{installed}");
+    assert_eq!(installed["changed"], true);
+    let receipt = read_install_receipt(&f.config.user_plugins_dir.join(&conversion.plugin_name));
+    assert!(
+        receipt["spec"]
+            .as_str()
+            .is_some_and(|spec| spec.starts_with("dsh:")),
+        "{receipt}"
+    );
+    drop(guard);
+
+    let dsh_dual_npm = f.config.workspace.join("dsh-dual-npm");
+    copy_dir_tree(&dsh_template_dir("decoration"), &dsh_dual_npm);
+    let (npm_conv, _) = codewhale_plugins::install::preview_dsh(&dsh_dual_npm).unwrap();
+    let mut npm_sibling = serde_json::Map::new();
+    npm_sibling.insert(
+        "$schema".to_string(),
+        Value::String(codewhale_plugins::agent_plugin::PLUGIN_SCHEMA_URL.to_string()),
+    );
+    npm_sibling.insert(
+        "name".to_string(),
+        Value::String(npm_conv.plugin_name.clone()),
+    );
+    if let Some(version) = &npm_conv.source_version {
+        npm_sibling.insert("version".to_string(), Value::String(version.clone()));
+    }
+    fs::write(
+        dsh_dual_npm.join("plugin.json"),
+        serde_json::to_string_pretty(&Value::Object(npm_sibling)).unwrap(),
+    )
+    .unwrap();
+    let mut pkg_json: Value =
+        serde_json::from_str(&fs::read_to_string(dsh_dual_npm.join("package.json")).unwrap())
+            .unwrap();
+    pkg_json["dependencies"] = json!({"zod": "^4.0.0"});
+    fs::write(
+        dsh_dual_npm.join("package.json"),
+        serde_json::to_string_pretty(&pkg_json).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        dsh_dual_npm.join("index.js"),
+        "import { z } from 'zod';\nexport function apply() { return z; }\n",
+    )
+    .unwrap();
+
+    f.reload_registry();
+    let npm_calls = install_gate(&mut f, |input, _| {
+        allow_verdict(input, NestedDecision::Auto)
+    });
+    let npm_guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
+    let npm_ticket = plugin_ticket(&npm_guard).unwrap();
+    let npm_res = f
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &npm_ticket,
+            "install",
+            json!({"target": dsh_dual_npm.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(npm_res["application"], "failed", "{npm_res}");
+    assert_eq!(npm_res["changed"], false);
+    assert_eq!(npm_res["error"]["code"], "operation-error");
+    assert!(
+        npm_res["error"]["diagnostic"]
+            .as_str()
+            .unwrap()
+            .contains("registry.npmjs.org"),
+        "{npm_res}"
+    );
+    assert_eq!(npm_calls.lock().unwrap().len(), 0);
 }

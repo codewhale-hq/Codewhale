@@ -2015,9 +2015,8 @@ fn fixture_snapshot(
     }
 }
 
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
-async fn plugin_create_starts_a_creator_conversation_with_the_idea_as_a_draft() {
+#[test]
+fn plugin_create_starts_a_creator_conversation_with_the_idea_as_a_draft() {
     use crate::tui::widgets::Renderable;
     use codewhale_engine::conversation_modes::CreatorAvailabilityGuard;
     use codewhale_engine::core::ops::{Op, SessionSnapshotSource};
@@ -2053,8 +2052,15 @@ async fn plugin_create_starts_a_creator_conversation_with_the_idea_as_a_draft() 
     assert_eq!(app.current_session_id.as_deref(), Some("old-session"));
     assert!(app.input.is_empty());
 
-    crate::commands::session_lifecycle_regression_tests::acknowledge_new_session(&mut app, &result)
-        .await;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(
+        crate::commands::session_lifecycle_regression_tests::acknowledge_new_session(
+            &mut app, &result,
+        ),
+    );
     assert_eq!(app.conversation_mode.as_deref(), Some("creator"));
     assert_eq!(app.agent_preset().as_deref(), Some("creator"));
     assert_eq!(app.input, idea);
@@ -2176,11 +2182,14 @@ async fn plugin_create_starts_a_creator_conversation_with_the_idea_as_a_draft() 
         .render(area, &mut special_buf);
 }
 
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
-async fn plugin_create_without_an_idea_starts_creator_with_an_empty_composer() {
+#[test]
+fn plugin_create_without_an_idea_starts_creator_with_an_empty_composer() {
     use codewhale_engine::conversation_modes::CreatorAvailabilityGuard;
 
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let _available = CreatorAvailabilityGuard::set(None);
     let _home = crate::test_support::SealedHome::new();
     let root = TempDir::new().unwrap();
@@ -2201,10 +2210,11 @@ async fn plugin_create_without_an_idea_starts_creator_with_an_empty_composer() {
             other => panic!("expected empty-draft NewSession for {cmd:?}, got {other:?}"),
         }
 
-        crate::commands::session_lifecycle_regression_tests::acknowledge_new_session(
-            &mut app, &result,
-        )
-        .await;
+        rt.block_on(
+            crate::commands::session_lifecycle_regression_tests::acknowledge_new_session(
+                &mut app, &result,
+            ),
+        );
         assert_eq!(app.conversation_mode.as_deref(), Some("creator"));
         assert!(app.input.is_empty());
         assert_eq!(app.cursor_position, 0);

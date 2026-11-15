@@ -4072,7 +4072,7 @@ pub fn is_dsh_package(path: &Path) -> bool {
     matches!(try_is_dsh_package(path), Ok(true))
 }
 
-pub(super) fn try_is_dsh_package(path: &Path) -> Result<bool> {
+pub fn try_is_dsh_package(path: &Path) -> Result<bool> {
     match fs::metadata(path) {
         Ok(meta) if !meta.is_dir() => return Ok(false),
         Ok(_) => {}
