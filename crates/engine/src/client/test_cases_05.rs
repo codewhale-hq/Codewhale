@@ -1719,6 +1719,8 @@
             ("low", Some("low")),
             ("high", Some("high")),
             ("max", Some("max")),
+            ("auto", None),
+            ("no-such-tier", None),
         ] {
             let mut body = json!({});
             chat::apply_route_reasoning_controls(
