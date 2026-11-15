@@ -8,6 +8,7 @@
 > 2026-11-02 补齐控制帧大小、写入背压、ACP 拒绝恢复与当前 HTTP 监听器边界。
 > 2026-11-07 补齐线程作用域的终端会话标识、重新连接与重启语义。
 > 2026-11-07 补齐桌面侧边浏览器调用的过渡性账号约束及其已知限制。
+> 2026-11-14 补齐 `/v1/apps/plugins` 审计归属、队列隔离、作用域与宿主服务字段，以及回执中的插件变更契约。
 
 `codewhale app-server --http` 是本地运行时的规范 API 与控制面。本地 SDK、移动端/远程控制客户端
 以及编辑器集成都与它对话，而不是去抓取终端输出。它提供完整的 HTTP/SSE 运行时
@@ -2027,6 +2028,24 @@ POST 前保留预期指纹，并在响应及按键 GET 恢复时核对，之后�
   `false`：文本仍是命令的回答，但没有任何客户端能代宿主执行该操作。这些执行不
   保留命令回执——每个提供的处理器对快照都是纯函数——因此客户端不应寻找回执。
   任何会修改会话的操作仍是终端侧命令。
+
+**插件**
+- `GET /v1/apps/plugins` — `{workspace, plugins: [...], registry_diagnostics: [...],
+  validation_clean}`：当前工作区发现的已安装与工作区插件。除 `state`、`enabled`、
+  `trust_status` 与 `active` 外，每条记录还携带审计归属、队列隔离与宿主服务可达性字段：
+  - `approved_by`（`PluginApprover | null`）：当前信任审查的记录者——未审查时为
+    `null`，否则为 `{"kind": "person", "via": "terminal" | "app" |
+    "approval_card"}`、`{"kind": "agent", "posture", "workspace", "thread_id"?,
+    "turn_id"?, "tool_call_id"?}` 或 `{"kind": "command_line"}`（命令行/非交互式
+    审查，绝不会显示为由人审查）。
+  - `enabled_by`（`PluginApprover | null`）：最近一次开启该插件的主体（禁用或未记录时为 `null`）。
+  - `cohort`：`{"kind": "reviewed"}` 或 `{"kind": "agent", "workspace": "<normalized-path>"}`。
+    由智能体批准的插件留在限定于单个项目工作区的隔离队列中，不会与人审查的插件混入同一队列。
+  - `outside_reach`（`bool`）：当智能体批准的插件属于其他项目工作区时为 `true`，此时在当前工作区保持 `active: false`。
+  - `host_services`：`{"service", "state": "can_use" | "not_offered", "withheld_by"?:
+    [{ "id", "name" }]}` 的数组。`withheld_by` 为空时省略；非空时表示该服务当前因这些已开启的对等插件未在其自身审查中包含该宿主服务，或处于不同队列而被暂时禁用（off for now）。
+- `GET /v1/apps/plugins/{selector}` — 展平上述摘要条目，并附带插件包元数据
+  （`repository`、`license`、`keywords`、`staged`）、`review`（确认 `token`、能力清单，以及交互式人工审查可选的 `host_services` 预览）、`reviewed_at`（`string | null`，最近一次记录审查的 RFC 3339 时间戳，区别于开启时间）以及 `review_history`（按时间倒序的 `{"reviewed_at": "<rfc3339>", "approved_by"?: PluginApprover}` 历史列表）。通过 `POST /v1/apps/plugins/{selector}/trust` 由人重新审查后，`approved_by` 更新为人、`cohort` 切回 `{"kind": "reviewed"}`，原有智能体审查记录仍保留在 `review_history` 中。
 
 **插件索引**
 - `GET /v1/apps/plugin-index` — `{workspace, items: [...], unavailable: [...],

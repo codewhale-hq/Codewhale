@@ -1278,6 +1278,7 @@ impl App {
         if app.approval_mode == ApprovalMode::Auto && app.has_suspended_broad_allows() {
             app.emit_auto_review_broad_allows_paused_note();
         }
+        app.refresh_agent_approved_plugins_notice();
         app
     }
 }

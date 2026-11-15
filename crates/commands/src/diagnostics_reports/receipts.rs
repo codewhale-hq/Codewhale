@@ -60,6 +60,12 @@ pub fn totals_line(receipt: &Receipt) -> String {
             plural(totals.mcp_calls, "MCP call", "MCP calls")
         ));
     }
+    if totals.plugin_changes > 0 {
+        parts.push(format!(
+            "changed {}",
+            plural(totals.plugin_changes, "plugin", "plugins")
+        ));
+    }
     if totals.subagents > 0 {
         parts.push(format!(
             "started {}",
@@ -309,6 +315,27 @@ fn action_phrase(action: &ReceiptAction) -> String {
                 (Some(server), Some(tool)) => format!("called {server} · {tool}"),
                 _ => format!("called {}", action.tool),
             }
+        }
+        ActionKind::PluginChange {
+            method,
+            plugin,
+            hash,
+            approver,
+            services,
+        } => {
+            let target = if plugin == "not recorded" {
+                "not recorded".to_string()
+            } else {
+                code_span(plugin)
+            };
+            let mut text = format!("changed plugin {target} ({method}) — {approver}");
+            if let Some(hash) = hash.as_deref() {
+                text.push_str(&format!(" · hash {}", code_span(hash)));
+            }
+            if !services.is_empty() {
+                text.push_str(&format!(" · services: {}", services.join(", ")));
+            }
+            text
         }
         ActionKind::Subagent {
             name,

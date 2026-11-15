@@ -2767,6 +2767,40 @@ thread deletion.
   pure over the snapshot — so a client must not look for one. Anything that
   mutates the session stays a terminal-side command.
 
+**Plugins**
+- `GET /v1/apps/plugins` — `{workspace, plugins: [...], registry_diagnostics: [...],
+  validation_clean}`: installed and workspace plugins discovered for this
+  workspace. Alongside `state`, `enabled`, `trust_status`, and `active`, each
+  entry carries attribution, isolation, and host-service reachability:
+  - `approved_by` (`PluginApprover | null`): who recorded the active trust
+    review — `null` when untrusted/unreviewed, `{"kind": "person", "via":
+    "terminal" | "app" | "approval_card"}`, `{"kind": "agent", "posture",
+    "workspace", "thread_id"?, "turn_id"?, "tool_call_id"?}`, or
+    `{"kind": "command_line"}` (CLI/non-interactive review, never shown as
+    person-reviewed).
+  - `enabled_by` (`PluginApprover | null`): who last turned the plugin on
+    (`null` when disabled or unrecorded).
+  - `cohort`: `{"kind": "reviewed"}` or `{"kind": "agent", "workspace":
+    "<normalized-path>"}`. Agent-approved plugins stay in an isolated cohort
+    scoped to one workspace rather than joining person-reviewed plugins.
+  - `outside_reach` (`bool`): `true` when an agent-approved plugin belongs to
+    another project workspace, keeping `active: false` in this workspace.
+  - `host_services`: array of `{"service", "state": "can_use" |
+    "not_offered", "withheld_by"?: [{ "id", "name" }]}`. `withheld_by` is
+    omitted when empty; when present, `withheld_by` means the service is off for
+    now because those active peers do not include that host service in their own
+    review or sit in a separate cohort.
+- `GET /v1/apps/plugins/{selector}` — flattens the summary entry with bundle
+  metadata (`repository`, `license`, `keywords`, `staged`), `review` (confirmation
+  `token`, capabilities, and optional `host_services` preview for interactive
+  person review), `reviewed_at` (`string | null`, RFC 3339 timestamp of the
+  latest recorded review, distinct from when the plugin was enabled), and
+  `review_history` (newest-first list of `{"reviewed_at": "<rfc3339>",
+  "approved_by"?: PluginApprover}`). Re-reviewing an agent-approved plugin as a
+  person via `POST /v1/apps/plugins/{selector}/trust` replaces `approved_by`
+  with the person decision and moves `cohort` to `{"kind": "reviewed"}` while
+  keeping the earlier entry in `review_history`.
+
 **Plugin index**
 - `GET /v1/apps/plugin-index` — `{workspace, items: [...], unavailable: [...],
   problems: [...]}`: one list across every plugin, skill, connector, hook and

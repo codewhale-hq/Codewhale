@@ -88,6 +88,7 @@ pub(crate) use types::{
 };
 
 const ACCOUNT_PREFERENCES_NOTICE: &str = "account-preferences-notice";
+const AGENT_APPROVED_PLUGINS_NOTICE: &str = "agent-approved-plugins-notice";
 
 fn account_sign_in_marker(profile: Option<&str>) -> String {
     use sha2::{Digest, Sha256};
@@ -3832,6 +3833,22 @@ impl App {
         let before = self.status_toasts.len();
         self.retire_event_notices(ACCOUNT_PREFERENCES_NOTICE);
         self.status_toasts.len() != before
+    }
+
+    pub(crate) fn refresh_agent_approved_plugins_notice(&mut self) {
+        self.retire_event_notices(AGENT_APPROVED_PLUGINS_NOTICE);
+        let names = active_agent_approved_plugin_names(&self.plugin_registry);
+        if names.is_empty() {
+            return;
+        }
+        let text = self
+            .tr(MessageId::CmdPluginAuditSessionNotice)
+            .replace("{names}", &names.join(", "));
+        self.push_status_toast_record(StatusToast::standing(
+            text,
+            StatusToastLevel::Warning,
+            AGENT_APPROVED_PLUGINS_NOTICE,
+        ));
     }
 
     /// One-release migration notice for the Shift+Tab/Ctrl+T rebinding: users
@@ -8616,6 +8633,26 @@ impl App {
             .as_ref()
             .is_some_and(ProviderChain::is_fallback_active)
     }
+}
+
+fn active_agent_approved_plugin_names(registry: &codewhale_plugins::PluginRegistry) -> Vec<String> {
+    registry
+        .list()
+        .iter()
+        .filter(|plugin| {
+            plugin.active()
+                && matches!(
+                    plugin.approved_by,
+                    Some(codewhale_plugins::host_services::PluginApprover::Agent(_))
+                )
+        })
+        .map(|plugin| {
+            crate::commands::groups::plugins::render::escape_review_text(
+                plugin.name(),
+                crate::commands::groups::plugins::render::ReviewTextContext::Plain,
+            )
+        })
+        .collect()
 }
 
 pub fn media_attachment_reference(kind: &str, path: &Path, description: Option<&str>) -> String {

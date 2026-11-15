@@ -721,6 +721,21 @@ pub struct PluginMcpServerDetail {
     pub enabled: bool,
 }
 
+/// Portable host-service grant and cohort sharing state for plugin detail rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginHostServiceDetail {
+    pub service: String,
+    pub can_use: bool,
+    pub withheld_by: Vec<String>,
+}
+
+/// Portable earlier review entry for plugin detail rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginEarlierReview {
+    pub reviewed_at: String,
+    pub approver: String,
+}
+
 /// Portable summary of one loaded plugin bundle (list output, FEAT-020 D2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginSummary {
@@ -729,6 +744,13 @@ pub struct PluginSummary {
     pub state_label: String,
     pub scope: String,
     pub trust_status: String,
+    pub review_display: Option<String>,
+    pub approver: Option<String>,
+    pub reviewed_date: Option<String>,
+    pub enabled_by: Option<String>,
+    pub reach_folder: Option<String>,
+    pub outside_reach: bool,
+    pub process_note: Option<String>,
     pub compatibility: String,
     pub inventory: String,
     pub active: bool,
@@ -752,6 +774,17 @@ pub struct PluginDetail {
     pub scope: String,
     pub state_label: String,
     pub trust_status: String,
+    pub trust_display: Option<String>,
+    pub approver: Option<String>,
+    pub reviewed_date: Option<String>,
+    pub enabled_by: Option<String>,
+    pub agent_thread_id: Option<String>,
+    pub agent_workspace_path: Option<String>,
+    pub reach_folder: Option<String>,
+    pub outside_reach: bool,
+    pub process_note: Option<String>,
+    pub host_services: Vec<PluginHostServiceDetail>,
+    pub earlier_reviews: Vec<PluginEarlierReview>,
     pub compatibility: String,
     pub content_hash: String,
     pub capability_hash: String,

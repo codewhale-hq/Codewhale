@@ -181,7 +181,7 @@ fn review_text(
 ) -> String {
     let mut output = render_bundle_detail(
         &mut Presentation(locale),
-        &portable_detail(plugin),
+        &portable_detail(plugin, Some(registry), locale),
         true,
         ReviewTextContext::Plain,
     );

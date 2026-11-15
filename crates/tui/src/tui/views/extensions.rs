@@ -27,6 +27,8 @@ use super::{
     CommandPaletteAction, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
     render_underwater_surface, truncate_view_text,
 };
+use crate::commands::contract::{localized_approver_label, localized_turned_on_by_label};
+use crate::commands::groups::plugins::render::{ReviewTextContext, escape_review_text};
 use crate::tui::app::App;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
@@ -711,14 +713,111 @@ fn localized_plugin_state(locale: Locale, state: &str) -> String {
 /// `disabled` with no explanation — the exact row (`computer-use`) the
 /// founder could not enable.
 fn plugin_row_state(locale: Locale, plugin: &codewhale_plugins::types::LoadedPlugin) -> String {
+    use codewhale_plugins::host_services::{PluginApprover, workspace_folder_name};
     let state = localized_plugin_state(locale, plugin.state_label());
-    if plugin.trusted() || plugin.enabled {
-        return state;
+    if !plugin.trusted() && plugin.approved_by.is_none() {
+        if plugin.enabled {
+            return state;
+        }
+        return format!(
+            "{state} · {}",
+            tr(locale, MessageId::ExtensionsStateNeedsReview)
+        );
     }
-    format!(
-        "{state} · {}",
-        tr(locale, MessageId::ExtensionsStateNeedsReview)
-    )
+    match plugin.approved_by.as_ref() {
+        Some(PluginApprover::Agent(agent)) => {
+            if plugin.outside_reach {
+                let folder = escape_review_text(
+                    workspace_folder_name(&agent.workspace),
+                    ReviewTextContext::Plain,
+                );
+                let id = if plugin.enabled {
+                    MessageId::CmdPluginAuditRowOnOnlyIn
+                } else {
+                    MessageId::CmdPluginAuditRowOffOnlyIn
+                };
+                return localize(locale, id, &[("folder", &folder)]);
+            }
+            if !plugin.enabled {
+                return tr(locale, MessageId::CmdPluginAuditRowAgentOff).into_owned();
+            }
+            let id = if matches!(plugin.enabled_by, Some(PluginApprover::Person { .. })) {
+                MessageId::CmdPluginAuditRowPersonEnabledAgentApproved
+            } else {
+                MessageId::CmdPluginAuditRowTurnedOnByAgent
+            };
+            tr(locale, id).into_owned()
+        }
+        Some(PluginApprover::CommandLine) => {
+            let id = if plugin.enabled {
+                MessageId::CmdPluginAuditRowCommandLineOn
+            } else {
+                MessageId::CmdPluginAuditRowCommandLineOff
+            };
+            tr(locale, id).into_owned()
+        }
+        None => {
+            let id = if plugin.enabled {
+                MessageId::CmdPluginAuditRowUnknownOn
+            } else {
+                MessageId::CmdPluginAuditRowUnknownOff
+            };
+            tr(locale, id).into_owned()
+        }
+        Some(PluginApprover::Person { .. }) => state,
+    }
+}
+
+fn plugin_attribution_parts(
+    locale: Locale,
+    plugin: &codewhale_plugins::types::LoadedPlugin,
+) -> Vec<String> {
+    use codewhale_plugins::host_services::{
+        PluginApprover, PluginCohort, cohort_of, short_review_date, workspace_folder_name,
+    };
+    let mut parts = Vec::new();
+    if plugin.trusted() || plugin.approved_by.is_some() {
+        let approver = localized_approver_label(locale, plugin.approved_by.as_ref());
+        if let Some(ts) = plugin.reviewed_at.as_deref() {
+            let date = escape_review_text(short_review_date(ts), ReviewTextContext::Plain);
+            let approved_date = localize(
+                locale,
+                MessageId::CmdPluginAuditApprovedDate,
+                &[("date", &date)],
+            );
+            parts.push(format!("{approver} ({approved_date})"));
+        } else {
+            parts.push(approver);
+        }
+    }
+    if plugin.enabled {
+        parts.push(localized_turned_on_by_label(
+            locale,
+            plugin.enabled_by.as_ref(),
+        ));
+    }
+    if let Some(workspace) = plugin
+        .approved_by
+        .as_ref()
+        .and_then(PluginApprover::agent_workspace)
+    {
+        let folder = escape_review_text(workspace_folder_name(workspace), ReviewTextContext::Plain);
+        let id = if plugin.outside_reach {
+            MessageId::CmdPluginAuditReachOnlyIn
+        } else {
+            MessageId::CmdPluginAuditReachHere
+        };
+        parts.push(localize(locale, id, &[("folder", &folder)]));
+    }
+    if plugin.trusted()
+        && matches!(
+            cohort_of(plugin.approved_by.as_ref()),
+            PluginCohort::Agent { .. }
+        )
+    {
+        parts.push(tr(locale, MessageId::CmdPluginAuditAgentProcessNote).into_owned());
+    }
+    parts
 }
 
 fn localized_trust(locale: Locale, trust: &str) -> String {
@@ -862,18 +961,25 @@ fn plugin_row_toggle(
 
 /// How a plugin row reads, using the same ladder as [`plugin_row_action`].
 fn plugin_row_tone(plugin: &codewhale_plugins::types::LoadedPlugin) -> ExtensionTone {
+    use codewhale_plugins::host_services::PluginApprover;
+
     let has_error_diagnostics = plugin.diagnostics.iter().any(|diagnostic| {
         diagnostic.level == codewhale_plugins::types::PluginDiagnosticLevel::Error
     });
     if has_error_diagnostics {
         ExtensionTone::Failure
     } else if plugin.active() {
-        ExtensionTone::Ready
+        if matches!(
+            plugin.approved_by,
+            Some(PluginApprover::Agent(_) | PluginApprover::CommandLine)
+        ) {
+            ExtensionTone::Attention
+        } else {
+            ExtensionTone::Ready
+        }
     } else if plugin.trusted() {
-        // Trusted and deliberately disabled: off, not wrong.
         ExtensionTone::Idle
     } else {
-        // Untrusted is not broken either; it is waiting on a person.
         ExtensionTone::Attention
     }
 }
@@ -892,12 +998,13 @@ fn plugins_model(app: &App, locale: Locale) -> ExtensionsTabModel {
         by_scope[scope].push(ExtensionItem {
             id: plugin.id.as_str().to_string(),
             tone: plugin_row_tone(plugin),
-            label: plugin.name().to_string(),
+            label: escape_review_text(plugin.name(), ReviewTextContext::Plain),
             description: plugin
                 .manifest
                 .plugin
                 .description
-                .clone()
+                .as_deref()
+                .map(|description| escape_review_text(description, ReviewTextContext::Plain))
                 .unwrap_or_else(|| inventory_summary(&plugin.inventory, locale)),
             state: plugin_row_state(locale, plugin),
             // An unreviewed bundle's detail line is the one place with room
@@ -905,22 +1012,36 @@ fn plugins_model(app: &App, locale: Locale) -> ExtensionsTabModel {
             // the state word and taught nobody anything; the sentence says
             // what Codewhale withholds and which key ends the wait.
             detail: if plugin.trusted() {
-                localize(
+                let trust_key = if matches!(
+                    plugin.approved_by,
+                    Some(
+                        codewhale_plugins::host_services::PluginApprover::Agent(_)
+                            | codewhale_plugins::host_services::PluginApprover::CommandLine
+                    )
+                ) {
+                    "not-reviewed"
+                } else {
+                    plugin.trust_status.as_str()
+                };
+                let base_detail = localize(
                     locale,
                     MessageId::ExtensionsPluginDetail,
                     &[
                         ("inventory", &inventory_summary(&plugin.inventory, locale)),
-                        (
-                            "trust",
-                            &localized_trust(locale, plugin.trust_status.as_str()),
-                        ),
+                        ("trust", &localized_trust(locale, trust_key)),
                         (
                             "compatibility",
                             &localized_compatibility(locale, plugin.compatibility().as_str()),
                         ),
                         ("diagnostics", &diagnostic_count.to_string()),
                     ],
-                )
+                );
+                let extra = plugin_attribution_parts(locale, plugin);
+                if extra.is_empty() {
+                    base_detail
+                } else {
+                    format!("{base_detail} · {}", extra.join(" · "))
+                }
             } else {
                 format!(
                     "{} · {}",
@@ -1045,12 +1166,15 @@ fn marketplace_model(app: &App, locale: Locale) -> ExtensionsTabModel {
                             return ExtensionItem {
                                 id: candidate.id.as_str().to_string(),
                                 tone: plugin_row_tone(plugin),
-                                label: plugin.name().to_string(),
+                                label: escape_review_text(plugin.name(), ReviewTextContext::Plain),
                                 description: plugin
                                     .manifest
                                     .plugin
                                     .description
-                                    .clone()
+                                    .as_deref()
+                                    .map(|description| {
+                                        escape_review_text(description, ReviewTextContext::Plain)
+                                    })
                                     .unwrap_or_default(),
                                 state: if plugin.scope
                                     == codewhale_plugins::types::PluginScope::Builtin
@@ -1059,7 +1183,18 @@ fn marketplace_model(app: &App, locale: Locale) -> ExtensionsTabModel {
                                 } else {
                                     plugin_row_state(locale, plugin)
                                 },
-                                detail: plugin.canonical_root.display().to_string(),
+                                detail: {
+                                    let path = escape_review_text(
+                                        &plugin.canonical_root.display().to_string(),
+                                        ReviewTextContext::Plain,
+                                    );
+                                    let extra = plugin_attribution_parts(locale, plugin);
+                                    if extra.is_empty() {
+                                        path
+                                    } else {
+                                        format!("{path} · {}", extra.join(" · "))
+                                    }
+                                },
                                 action: Some(plugin_row_action(locale, plugin)),
                                 toggle: None,
                                 remove: None,
@@ -1850,6 +1985,21 @@ impl ExtensionsView {
             Some(VisibleEntry::Item(_, item)) => Some(item),
             _ => None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn render_text_for_test(&self, width: u16, height: u16) -> String {
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        self.render(area, &mut buf);
+        let mut text = String::new();
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        text
     }
 
     /// `e`: run the row's reversible on/off command in place.
@@ -3820,5 +3970,203 @@ mod tests {
         };
         assert_eq!(title, "/personal");
         assert!(content.contains("Personal checklist"));
+    }
+
+    #[test]
+    fn plugins_screen_row_says_turned_on_by_the_agent() {
+        use codewhale_plugins::host_services::{
+            AgentApproval, AgentPosture, PersonVia, PluginApprover, ReviewApproval,
+        };
+
+        let _env = crate::test_support::lock_test_env();
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let workspace = root.path().join("project");
+        let other_workspace = root.path().join("otherproject");
+        for dir in [&home, &workspace, &other_workspace] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home);
+        let ctx = codewhale_plugins::PluginDiscoveryContext::capture_pre_dotenv();
+        for (dir_root, name) in [
+            (workspace.join(".codewhale/plugins"), "ag"),
+            (workspace.join(".codewhale/plugins"), "cmd"),
+            (workspace.join(".codewhale/plugins"), "pers"),
+            (ctx.user_plugins_dir().to_path_buf(), "other"),
+        ] {
+            let skill = dir_root.join(name).join("skills/hello");
+            std::fs::create_dir_all(&skill).unwrap();
+            std::fs::write(
+                dir_root.join(name).join("plugin.toml"),
+                format!(
+                    "schema_version = 1\n[plugin]\nname = {name:?}\nversion = \"1.0.0\"\n[skills]\npath = \"skills\"\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                skill.join("SKILL.md"),
+                "---\nname: hello\ndescription: hi\n---\nbody\n",
+            )
+            .unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(
+                ctx.user_plugins_dir(),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
+        }
+        {
+            let mut other_reg = ctx.registry_for_workspace(&other_workspace);
+            let other_ws_str = other_reg.workspace().to_string_lossy().into_owned();
+            let agent_elsewhere = PluginApprover::Agent(AgentApproval {
+                posture: AgentPosture::AutoReview,
+                workspace: other_ws_str,
+                thread_id: Some("th-other-screen-1".to_string()),
+                turn_id: Some("turn-other-screen-1".to_string()),
+                tool_call_id: Some("call-other-screen-1".to_string()),
+            });
+            let other_hs = other_reg
+                .host_service_review_for("other", &agent_elsewhere)
+                .map(|review| review.token);
+            std::sync::Arc::make_mut(&mut other_reg)
+                .trust_and_enable_by(
+                    "other",
+                    ReviewApproval {
+                        approved_by: agent_elsewhere.clone(),
+                        host_services: other_hs,
+                    },
+                    agent_elsewhere,
+                )
+                .unwrap();
+        }
+        let mut registry = ctx.registry_for_workspace(&workspace);
+        let ws_str = registry.workspace().to_string_lossy().into_owned();
+        {
+            let agent_here = PluginApprover::Agent(AgentApproval {
+                posture: AgentPosture::FullAccess,
+                workspace: ws_str,
+                thread_id: Some("th-screen-1".to_string()),
+                turn_id: Some("turn-screen-1".to_string()),
+                tool_call_id: Some("call-screen-1".to_string()),
+            });
+            let ag_hs = registry
+                .host_service_review_for("ag", &agent_here)
+                .map(|review| review.token);
+            let agent_then_person = PluginApprover::Agent(AgentApproval {
+                posture: AgentPosture::CommandLine,
+                workspace: registry.workspace().to_string_lossy().into_owned(),
+                thread_id: None,
+                turn_id: None,
+                tool_call_id: None,
+            });
+            let pers_hs = registry
+                .host_service_review_for("pers", &agent_then_person)
+                .map(|review| review.token);
+            let reg = std::sync::Arc::make_mut(&mut registry);
+            reg.trust_and_enable_by(
+                "ag",
+                ReviewApproval {
+                    approved_by: agent_here.clone(),
+                    host_services: ag_hs,
+                },
+                agent_here,
+            )
+            .unwrap();
+            reg.trust_and_enable_by(
+                "cmd",
+                ReviewApproval {
+                    approved_by: PluginApprover::CommandLine,
+                    host_services: None,
+                },
+                PluginApprover::CommandLine,
+            )
+            .unwrap();
+            reg.trust_reviewed(
+                "pers",
+                ReviewApproval {
+                    approved_by: agent_then_person,
+                    host_services: pers_hs,
+                },
+            )
+            .unwrap();
+            reg.enable_by("pers", PluginApprover::person(PersonVia::App))
+                .unwrap();
+        }
+        let app = App::new_with_plugin_registry(
+            crate::tui::test_support::test_tui_options(&workspace),
+            &codewhale_runtime::config::Config::default(),
+            registry,
+        );
+        let model = plugins_model(&app, Locale::En);
+        let find_item = |name: &str| {
+            model
+                .groups
+                .iter()
+                .flat_map(|group| &group.items)
+                .find(|item| item.label == name)
+                .unwrap_or_else(|| panic!("missing item {name}"))
+        };
+        let ag = find_item("ag");
+        assert_eq!(
+            ag.state,
+            "on · turned on by the agent · not reviewed by you"
+        );
+        assert_eq!(ag.tone, ExtensionTone::Attention);
+        assert!(ag.detail.contains("not reviewed"), "{}", ag.detail);
+        assert!(
+            ag.detail.contains("approved by the agent in Full Access"),
+            "{}",
+            ag.detail
+        );
+        assert!(
+            ag.detail.contains("turned on by the agent in Full Access"),
+            "{}",
+            ag.detail
+        );
+        assert!(
+            ag.detail
+                .contains(codewhale_plugins::host_services::AGENT_PROCESS_NOTE),
+            "{}",
+            ag.detail
+        );
+        let other = find_item("other");
+        assert_eq!(other.state, "on only in otherproject");
+        assert_eq!(other.tone, ExtensionTone::Idle);
+        let cmd = find_item("cmd");
+        assert_eq!(cmd.state, "on · command line (no review)");
+        assert_eq!(cmd.tone, ExtensionTone::Attention);
+        let pers = find_item("pers");
+        assert_eq!(pers.state, "on · not reviewed by you · turned on by you");
+        assert_eq!(pers.tone, ExtensionTone::Attention);
+
+        let view = ExtensionsView::new(&app, ExtensionsTab::Plugins);
+        for width in [80, 120] {
+            let screen = view.render_text_for_test(width, 24);
+            assert!(
+                screen.contains("on · turned on by the agent"),
+                "{width} cols:\n{screen}"
+            );
+            assert!(
+                screen.contains("on only in otherproject"),
+                "{width} cols:\n{screen}"
+            );
+            assert!(
+                screen.contains("on · command line (no review)"),
+                "{width} cols:\n{screen}"
+            );
+            assert!(
+                screen.contains("on · not reviewed by you"),
+                "{width} cols:\n{screen}"
+            );
+            if width >= 120 {
+                assert!(
+                    screen.contains("on · not reviewed by you · turned on by you"),
+                    "{width} cols:\n{screen}"
+                );
+            }
+        }
     }
 }

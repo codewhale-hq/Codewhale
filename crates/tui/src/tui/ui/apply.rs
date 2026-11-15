@@ -3473,6 +3473,7 @@ pub(crate) fn apply_workspace_runtime_state(app: &mut App, config: &Config, work
     app.retire_event_notices(COORDINATION_LOCK_NOTICE);
     app.coordination_detail = None;
     app.plugin_registry = app.plugin_registry.rediscover_for_workspace(&workspace);
+    app.refresh_agent_approved_plugins_notice();
     for error in crate::commands::user_registry::install_plugin_registry(
         &workspace,
         app.plugin_registry.as_ref(),
@@ -4994,6 +4995,7 @@ pub(crate) fn apply_loaded_session_with_goal(
             ),
         });
     }
+    app.refresh_agent_approved_plugins_notice();
     app.scroll_to_bottom();
     Ok(())
 }

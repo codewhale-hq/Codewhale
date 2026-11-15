@@ -13,7 +13,7 @@ mod config_main_host;
 mod config_main_import_host;
 #[cfg(test)]
 mod config_policy_host;
-mod contract;
+pub(crate) mod contract;
 pub(crate) use contract::from_command_mode;
 mod core_navigation_host;
 #[cfg(test)]

@@ -16,7 +16,8 @@ use super::managed_policy::{
 };
 use super::manifest::PluginInventory;
 use super::types::{
-    LoadedPlugin, PluginDiagnostic, PluginDiagnosticLevel, PluginScope, PluginTrustStatus,
+    LoadedPlugin, PluginDiagnostic, PluginDiagnosticLevel, PluginReviewEntry, PluginScope,
+    PluginTrustStatus,
 };
 use codewhale_config::{PluginAuthority, PluginId};
 use codewhale_util::path_identity::metadata_is_link_or_reparse;
@@ -574,12 +575,30 @@ impl PluginRegistry {
                 .and_then(|state| state.enabled_by.clone());
             plugin.host_services = receipt.map(TrustReceipt::granted).unwrap_or_default();
             plugin.outside_reach = outside_reach(plugin.approved_by.as_ref(), &self.workspace);
+            plugin.reviewed_at = receipt.map(|receipt| receipt.reviewed_at.clone());
+            plugin.review_history = persisted
+                .map(|state| {
+                    state
+                        .review_history
+                        .iter()
+                        .rev()
+                        .take(MAX_REVIEW_HISTORY)
+                        .map(|entry| PluginReviewEntry {
+                            reviewed_at: entry.reviewed_at.clone(),
+                            approved_by: entry.approved_by.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             if self.state_error.is_some() {
                 plugin.enabled = false;
                 plugin.trust_status = PluginTrustStatus::NeverReviewed;
                 plugin.approved_by = None;
                 plugin.enabled_by = None;
                 plugin.host_services = Vec::new();
+                plugin.outside_reach = false;
+                plugin.reviewed_at = None;
+                plugin.review_history = Vec::new();
             }
             // The managed policy is enforced here — inside the single choke
             // point that turns persisted state into live enablement — so a

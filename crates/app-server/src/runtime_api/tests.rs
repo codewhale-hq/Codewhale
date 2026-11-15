@@ -30,6 +30,7 @@ mod member_operations;
 mod native_runtime;
 #[cfg(unix)]
 mod owner_bootstrap;
+mod plugin_audit;
 mod plugin_index;
 mod plugin_ui;
 mod profile_constitution;
