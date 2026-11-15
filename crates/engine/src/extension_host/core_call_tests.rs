@@ -1792,6 +1792,65 @@ fn extension_calls_resolve_against_every_posture_as_documented() {
 }
 
 #[test]
+fn auto_review_held_marks_non_eligible_calls_and_held_broker_gates() {
+    assert!(!crate::extension_host::core_call::auto_review_held(
+        "read_file",
+        &json!({"path": "a.txt"}),
+        false,
+        None,
+    ));
+    assert!(crate::extension_host::core_call::auto_review_held(
+        "read_file",
+        &json!({"path": "/etc/passwd"}),
+        true,
+        None,
+    ));
+    assert!(crate::extension_host::core_call::auto_review_held(
+        "write_file",
+        &json!({"path": "b.txt", "content": "hi"}),
+        false,
+        None,
+    ));
+    assert!(crate::extension_host::core_call::auto_review_held(
+        "bash",
+        &json!({"command": "ls"}),
+        true,
+        None,
+    ));
+    let gate = crate::extension_host::dsh_broker::BrokerActTool::ACT;
+    assert!(!crate::extension_host::core_call::auto_review_held(
+        crate::extension_host::dsh_broker::ACT_TOOL,
+        &json!({"plugin": "fake", "effect": "read"}),
+        false,
+        Some(&gate),
+    ));
+    assert!(crate::extension_host::core_call::auto_review_held(
+        crate::extension_host::dsh_broker::ACT_TOOL,
+        &json!({"plugin": "fake", "effect": "write"}),
+        true,
+        Some(&gate),
+    ));
+    let real = ExtensionCaller {
+        origin: "extension:demo".to_string(),
+        tool: "demo_tool".to_string(),
+        scope: "ext:user/abcd/demo@hash123:entry@sha:0:1".to_string(),
+    };
+    assert_eq!(real.plugin_id(), Some("user/abcd/demo"));
+    let fake = ExtensionCaller {
+        origin: "extension:fake".to_string(),
+        tool: "fake_tool".to_string(),
+        scope: "ext:fake@h1".to_string(),
+    };
+    assert_eq!(fake.plugin_id(), Some("fake"));
+    let bad = ExtensionCaller {
+        origin: "extension:fake".to_string(),
+        tool: "fake_tool".to_string(),
+        scope: "malformed".to_string(),
+    };
+    assert_eq!(bad.plugin_id(), None);
+}
+
+#[test]
 fn approval_keys_are_scoped_to_the_extension_so_grants_never_cross_origins() {
     use crate::tools::approval_cache::{approval_keys_for_call, extension_origin_approval_keys};
     let input = json!({"command": "ls -la"});

@@ -31,7 +31,10 @@ shell 命令一样经过会话审批：Ask 询问本人，Auto-Review 由审查�
 直接运行，因此 Full Access 下的 agent 可以信任并启用它自己编写的插件。每次信任都记录
 批准者。agent 运行的每条命令（shell 命令、持久终端、验证与测试运行、Python 内核里运行的代码、它用
 `start_mcp_server` 启动的 MCP 服务器）都带有 agent 标记 `CODEWHALE_AGENT_PROJECT`，值为会话
-所在项目，与沙箱和权限模式无关；钩子、配置文件中的 MCP 服务器和终端应用里的 `/plugin trust`
+所在项目，与沙箱和权限模式无关；在 Auto-Review 下，shell 与验证器运行还会附带
+`CODEWHALE_AGENT_POSTURE=auto_review` 以及 `CODEWHALE_AGENT_THREAD_ID`、
+`CODEWHALE_AGENT_TURN_ID` 和 `CODEWHALE_AGENT_TOOL_CALL_ID`，使 `plugins trust` 与
+`plugins enable` 记录为 Auto-Review 下的 agent（而不是命令行）；钩子、配置文件中的 MCP 服务器和终端应用里的 `/plugin trust`
 不带标记。带有标记时，信任和启用都记为该 agent，仅限该项目，即使
 提示是通过终端回答的也一样，绝不记为本人；而且只能信任从该项目内的文件夹用
 `codewhale install` 安装的插件（依据插件包的 `.installed-from` 记录），否则拒绝并交给本人。
@@ -348,9 +351,12 @@ async execute({ path }, exec) {
 用户命令或 `execute_tools` 中的嵌套扩展工具执行里；调用结束、取消、
 插件停用或宿主退出后失效，等待中的审批以取消结果撤回。
 
-嵌套 shell 和网络调用强制要求用户审批，已记住的授权不满足它们；Ask 和
-Full Access 都会逐次询问用户，明确的会话拒绝仍然生效。Auto-Review 和 Never
-不会打开卡片，会直接拒绝。少数只读、工作区本地工具可免去新的卡片。外层插件工具的批准并不
+嵌套 shell 和网络调用在 Ask 和 Full Access 下都会逐次询问用户（已记住的授权不满足它们，
+明确的会话拒绝仍然生效）；在 Never 下不会打开卡片，直接拒绝。在 Auto-Review 下，
+需要审批的扩展调用（包括嵌套 `core/call`、宿主服务写/外联操作与插件宿主工具调用）会带着宿主铸造的
+插件身份交由 Auto-Review 审查模型结合上下文审查，且无法通过例行放行分级、
+`auto_review.allow` 规则或带类型的 `allow` 规则绕过；独立的带类型 `deny`/`ask` 规则、
+钩子拦截及安全底线阻断依然生效。少数只读、工作区本地工具可免去新的卡片。外层插件工具的批准并不
 批准它进一步发起的核心调用，授权按插件构建来源隔离。
 
 不允许递归调用扩展工具、MCP/Computer Use、解释器、agent/workflow/rlm、

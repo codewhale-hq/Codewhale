@@ -265,6 +265,17 @@ pub struct ExtensionCaller {
     pub scope: String,
 }
 
+impl ExtensionCaller {
+    #[must_use]
+    pub fn plugin_id(&self) -> Option<&str> {
+        self.scope
+            .strip_prefix("ext:")
+            .and_then(|rest| rest.split_once('@'))
+            .map(|(plugin_id, _)| plugin_id)
+            .filter(|plugin_id| !plugin_id.is_empty())
+    }
+}
+
 /// What an extension tool's gate carries beyond the channel: who it is for,
 /// and the tool snapshot its calls run against.
 struct ExtensionGate {

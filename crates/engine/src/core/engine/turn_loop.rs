@@ -128,8 +128,9 @@ enum ToolCallSource {
     /// Issued by an `execute_tools` program through its nested-call gate.
     CodeMode,
     /// Issued by an extension tool through its `core/call` gate. Planned
-    /// exactly like the others, then its approval is raised to an extension's
-    /// (`extension_host::core_call::origin_approval`).
+    /// through the same gates as a model call; under Auto-Review its held
+    /// calls go to the reviewer, and in other postures its approval is raised
+    /// through `extension_host::core_call::origin_approval`.
     Extension,
 }
 
@@ -905,6 +906,7 @@ impl Engine {
                 mode,
                 fleet_denial_guard,
                 ToolCallSource::CodeMode,
+                None,
             )
             .await;
         let Some(plan) = plans.into_iter().next() else {
@@ -2029,6 +2031,7 @@ impl Engine {
         mode: AppMode,
         fleet_denial_guard: Option<&FleetDenialGuard>,
         source: ToolCallSource,
+        extension_caller: Option<&crate::tools::codemode::ExtensionCaller>,
     ) -> PlannedToolCalls {
         let _timing = codewhale_runtime::logging::PhaseTimer::start("tool_planning");
         // Definitions and services remain captured, while preparation reads
@@ -2309,6 +2312,18 @@ impl Engine {
                 )));
             }
 
+            let registered_spec = tool_registry.and_then(|registry| registry.get(&tool_name));
+            let direct_extension_caller = (source == ToolCallSource::Model)
+                .then(|| {
+                    registered_spec
+                        .as_ref()
+                        .and_then(|spec| spec.extension_caller())
+                })
+                .flatten();
+            let preserve_extension_approval_for_auto_review = batch_approval_mode
+                == ApprovalMode::Auto
+                && (source == ToolCallSource::Extension || direct_extension_caller.is_some());
+
             let mut mcp_always_binding = None;
             if let Some(mut prepared) = prepared_policy {
                 if source == ToolCallSource::Model
@@ -2346,6 +2361,7 @@ impl Engine {
                 // law) can still force a prompt; none of them is weakened.
                 if approval_required
                     && !approval_force_prompt
+                    && !preserve_extension_approval_for_auto_review
                     && !self.is_acp_turn()
                     && workspace_write_carve_out_applies(
                         mode,
@@ -2413,6 +2429,7 @@ impl Engine {
                                 crate::tools::subagent::engine::ChildAuthority::typed_error(error),
                             );
                         } else if !approval_force_prompt
+                            && !preserve_extension_approval_for_auto_review
                             && child
                                 .authority
                                 .delegated_call(registry, &tool_name, &tool_input)
@@ -2505,7 +2522,10 @@ impl Engine {
                             // tool requirements remain monotonic, while
                             // auto-review and repo-law floors below can
                             // still force review or block.
-                            if !hook_requires_approval && !approval_force_prompt {
+                            if !hook_requires_approval
+                                && !approval_force_prompt
+                                && !preserve_extension_approval_for_auto_review
+                            {
                                 approval_required = false;
                             }
                         }
@@ -2575,6 +2595,33 @@ impl Engine {
                         None,
                     )
                     .await;
+                let effective_extension_caller =
+                    extension_caller.or(direct_extension_caller.as_ref());
+                let extension_held = if source == ToolCallSource::Extension {
+                    crate::extension_host::core_call::auto_review_held(
+                        &tool_name,
+                        &tool_input,
+                        approval_required,
+                        registered_spec.as_deref(),
+                    )
+                } else {
+                    direct_extension_caller.is_some() && approval_required
+                };
+                let review_context = review_context.map(|review_context| {
+                    if let Some(caller) = effective_extension_caller {
+                        review_context.with_extension_origin(
+                            crate::core::authority::auto_review::ExtensionReviewOrigin {
+                                origin: caller.origin.clone(),
+                                tool: caller.tool.clone(),
+                                plugin_id: caller.plugin_id().map(str::to_string),
+                                nested_call: source == ToolCallSource::Extension,
+                                held: extension_held,
+                            },
+                        )
+                    } else {
+                        review_context
+                    }
+                });
                 match review_context {
                     Err(error) => blocked_error = Some(error),
                     Ok(review_context) => {
@@ -2589,15 +2636,14 @@ impl Engine {
                             "auto_review": audit_event,
                         }))
                         .await;
-                        let extension_forces_prompt = source == ToolCallSource::Extension
+                        let extension_forces_prompt = batch_approval_mode != ApprovalMode::Auto
+                            && source == ToolCallSource::Extension
                             && matches!(
                                 crate::extension_host::core_call::origin_approval(
                                     &tool_name,
                                     &tool_input,
                                     approval_required,
-                                    tool_registry
-                                        .and_then(|registry| registry.get(&tool_name))
-                                        .as_deref(),
+                                    registered_spec.as_deref(),
                                 ),
                                 crate::extension_host::core_call::OriginApproval::ForcePrompt
                             );
@@ -2615,6 +2661,7 @@ impl Engine {
                         let registered_tool =
                             tool_registry.and_then(|registry| registry.get(&tool_name));
                         let is_extension_call = source == ToolCallSource::Extension
+                            || effective_extension_caller.is_some()
                             || registered_tool
                                 .as_deref()
                                 .is_some_and(|spec| spec.approval_scope().is_some());
@@ -2961,11 +3008,15 @@ impl Engine {
                 );
             }
 
-            // An extension's call needs more than the model's would: approval
-            // unless the tool is a read-only workspace one, and a prompt no
-            // grant or posture may satisfy for shell and network. Only ever
-            // raised, after every gate above has had its say.
-            if source == ToolCallSource::Extension && blocked_error.is_none() {
+            // An extension's call needs more than the model's would outside
+            // Auto-Review: approval unless the tool is a read-only workspace
+            // one, and a prompt no grant or non-Auto-Review posture may
+            // satisfy for shell and network (Auto-Review routes held calls
+            // through its reviewer above).
+            if source == ToolCallSource::Extension
+                && blocked_error.is_none()
+                && batch_approval_mode != ApprovalMode::Auto
+            {
                 match crate::extension_host::core_call::origin_approval(
                     &tool_name,
                     &tool_input,
@@ -4589,6 +4640,7 @@ impl Engine {
                 mode,
                 nested_gate_env.fleet_denial_guard,
                 source,
+                extension,
             )
             .await;
         let Some(plan) = plans.into_iter().next() else {
@@ -9502,6 +9554,7 @@ impl Engine {
                 AppMode::Agent,
                 None,
                 ToolCallSource::Model,
+                None,
             )
             .await;
         let mut mode = AppMode::Agent;

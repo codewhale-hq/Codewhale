@@ -1074,6 +1074,7 @@ fn doctor_reports_read_only_then_fix_retires_stale_records_with_a_backup() {
 struct ScriptedConsole {
     interactive: bool,
     agent_marked: bool,
+    provenance: Option<Result<headless::AgentRunProvenance, String>>,
     answer: bool,
     printed: Vec<String>,
     prompts: Vec<(String, usize)>,
@@ -1086,6 +1087,14 @@ impl headless::Console for ScriptedConsole {
 
     fn agent_marked(&self) -> bool {
         self.agent_marked
+    }
+
+    fn agent_provenance(&self) -> anyhow::Result<headless::AgentRunProvenance> {
+        match &self.provenance {
+            Some(Ok(provenance)) => Ok(provenance.clone()),
+            Some(Err(message)) => Err(anyhow::anyhow!("{message}")),
+            None => Ok(headless::AgentRunProvenance::default()),
+        }
     }
 
     fn print(&mut self, text: &str) {
@@ -1761,4 +1770,119 @@ fn headless_uninstall_disables_enabled_plugin_first_and_removes_it() {
     assert!(!installed_dir.exists());
     let rediscovered = registry.rediscover_for_workspace(registry.workspace());
     assert!(rediscovered.get("demo").is_none());
+}
+
+#[test]
+fn headless_trust_and_enable_record_auto_review_posture_with_provenance() {
+    use codewhale_plugins::host_services::{AgentPosture, PluginApprover};
+    let _lock = crate::test_support::lock_test_env();
+    let root = TempDir::new().unwrap();
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path().join("home"));
+    write_mcp_review_bundle(root.path());
+    mark_installed_from(
+        &root.path().join(".codewhale/plugins/review-mcp"),
+        &root.path().join("src/review-mcp"),
+    );
+    let (app, _temp) = create_test_app(root.path());
+    let mut registry = app.plugin_registry.clone();
+    let token = registry.get("review-mcp").unwrap().review_token();
+
+    let provenance = headless::AgentRunProvenance {
+        posture: Some(AgentPosture::AutoReview),
+        thread_id: Some("thread-auto-1".to_string()),
+        turn_id: Some("turn-auto-2".to_string()),
+        tool_call_id: Some("call-auto-3".to_string()),
+    };
+    let expected = PluginApprover::auto_review(
+        registry.workspace(),
+        Some("thread-auto-1".to_string()),
+        Some("turn-auto-2".to_string()),
+        Some("call-auto-3".to_string()),
+    );
+
+    let mut review = ScriptedConsole {
+        agent_marked: true,
+        provenance: Some(Ok(provenance.clone())),
+        ..ScriptedConsole::default()
+    };
+    headless_trust(&mut registry, None, false, false, &mut review).unwrap();
+    assert!(
+        review.printed[1].contains("approved by the agent in Auto-Review"),
+        "{:?}",
+        review.printed
+    );
+
+    let mut trust_console = ScriptedConsole {
+        agent_marked: true,
+        provenance: Some(Ok(provenance)),
+        ..ScriptedConsole::default()
+    };
+    headless_trust(&mut registry, Some(&token), true, true, &mut trust_console).unwrap();
+    assert_eq!(
+        registry.get("review-mcp").unwrap().approved_by,
+        Some(expected.clone())
+    );
+    let reported: serde_json::Value = serde_json::from_str(&trust_console.printed[0]).unwrap();
+    assert_eq!(reported["approved_by"]["kind"], "agent");
+    assert_eq!(reported["approved_by"]["posture"], "auto_review");
+    assert_eq!(reported["approved_by"]["thread_id"], "thread-auto-1");
+    assert_eq!(reported["approved_by"]["turn_id"], "turn-auto-2");
+    assert_eq!(reported["approved_by"]["tool_call_id"], "call-auto-3");
+
+    headless::enable(
+        &mut registry,
+        Locale::En,
+        "review-mcp",
+        false,
+        &mut trust_console,
+    )
+    .unwrap();
+    assert_eq!(
+        registry.get("review-mcp").unwrap().enabled_by,
+        Some(expected)
+    );
+
+    let mut missing_ids = ScriptedConsole {
+        agent_marked: true,
+        provenance: Some(Ok(headless::AgentRunProvenance {
+            posture: Some(AgentPosture::AutoReview),
+            thread_id: Some("thread-auto-1".to_string()),
+            turn_id: None,
+            tool_call_id: Some("call-auto-3".to_string()),
+        })),
+        ..ScriptedConsole::default()
+    };
+    let err = headless::enable(
+        &mut registry,
+        Locale::En,
+        "review-mcp",
+        false,
+        &mut missing_ids,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("thread, turn and tool call"),
+        "{err:#}"
+    );
+
+    let mut invalid_posture = ScriptedConsole {
+        agent_marked: true,
+        provenance: Some(Ok(headless::AgentRunProvenance {
+            posture: Some(AgentPosture::FullAccess),
+            ..headless::AgentRunProvenance::default()
+        })),
+        ..ScriptedConsole::default()
+    };
+    let posture_err = headless_trust(
+        &mut registry,
+        Some(&token),
+        true,
+        false,
+        &mut invalid_posture,
+    )
+    .unwrap_err();
+    assert!(
+        posture_err.to_string().contains("full_access"),
+        "{posture_err:#}"
+    );
 }

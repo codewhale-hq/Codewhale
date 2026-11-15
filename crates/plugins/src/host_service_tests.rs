@@ -564,6 +564,36 @@ fn the_agent_is_an_approver_only_with_the_token_of_its_own_review_and_in_its_own
         alphas.lines[0].shared_with.is_empty(),
         "a reviewed plugin shares nothing with an agent-approved one"
     );
+
+    let auto_review_agent = PluginApprover::auto_review(
+        &config.workspace,
+        Some("th".into()),
+        Some("tr".into()),
+        Some("tc".into()),
+    );
+    assert_eq!(
+        crate::host_services::approver_label(Some(&auto_review_agent)),
+        "approved by the agent in Auto-Review"
+    );
+    let missing_call_id = PluginApprover::auto_review(
+        &config.workspace,
+        Some("th".into()),
+        Some("tr".into()),
+        None,
+    );
+    let missing_err = registry
+        .trust_reviewed(
+            "beta",
+            ReviewApproval {
+                approved_by: missing_call_id,
+                host_services: Some(agents_review.token.clone()),
+            },
+        )
+        .unwrap_err();
+    assert!(
+        missing_err.contains("must name the thread, turn and tool call"),
+        "{missing_err}"
+    );
 }
 
 #[test]

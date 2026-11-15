@@ -230,6 +230,22 @@ impl PluginApprover {
     }
 
     #[must_use]
+    pub fn auto_review(
+        agent_workspace: &std::path::Path,
+        thread_id: Option<String>,
+        turn_id: Option<String>,
+        tool_call_id: Option<String>,
+    ) -> Self {
+        Self::Agent(AgentApproval {
+            posture: AgentPosture::AutoReview,
+            workspace: agent_workspace.to_string_lossy().into_owned(),
+            thread_id,
+            turn_id,
+            tool_call_id,
+        })
+    }
+
+    #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Person { .. } => "person",

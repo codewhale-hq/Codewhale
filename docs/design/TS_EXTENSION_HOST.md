@@ -139,8 +139,10 @@ remains outstanding; programmable pre-execute proposals do not implement it.
   time, no session grant consulted. The Engine-minted `extcall:ext:` approval
   namespace identifies extension-origin calls; host labels cannot select this
   policy. Explicit session denials still win. Other forced policy holds retain
-  their Full Access refusal. Auto-Review and Never refuse these extension calls
-  as for any hold. Every other call an
+  their Full Access refusal. Never refuses these extension calls without opening
+  a card, while Auto-Review routes held extension calls (including these forced
+  nested calls and held plugin host tools) to the Auto-Review guardian with
+  host-minted plugin identity and no routine or allow-rule bypass. Every other call an
   extension makes (Required, not forced) is, in Full Access, auto-approved as the
   model's would be, and in Ask promptable and groupable under the extension's
   own keys.

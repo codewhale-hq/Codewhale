@@ -308,13 +308,16 @@ Legacy note: `/set approval_mode ...` was retired in favor of `/config`.
   unattended rules to destructive work; ACP turns use deterministic rules only
   and refuse guardian consultation.
   When `owner_present` is true (an interactive TUI or owner runtime surface
-  turn), forced prompts — typed `permissions.toml` `ask` rules, `tool_call_before`
-  hook `ask`, prompt-only tools such as Computer Use consent and script cards,
-  repo-law holds that require a person, and forced extension calls — open the
+  turn), non-extension forced prompts — typed `permissions.toml` `ask` rules, `tool_call_before`
+  hook `ask`, prompt-only tools such as Computer Use consent and script cards, and
+  repo-law holds that require a person — open the
   normal approval card instead of being waived or failing closed, unless a hard
   block (`hidden_unicode` or a configured `auto_review.block` rule) applies; on
   runtime threads, only the owner's surface (`desktop`, `tui`, or `web`) may
-  answer such a card. When `owner_present` is false (`Background`, `Headless`,
+  answer such a card. Held extension calls in Auto-Review route through the
+  Auto-Review reviewer with their host-minted plugin identity and never clear via
+  routine tiers or allow rules (while independent typed rules, hook holds, and
+  safety-floor blocks still apply). When `owner_present` is false (`Background`, `Headless`,
   or unattached turns), unattended and headless runs never open an approval card,
   refuse forced prompts naming the rule without registering a pending approval,
   and block repo-law holds that require a person.

@@ -602,7 +602,12 @@ build: a grant the user gave the model for a tool never covers your call of it,
 and a grant for your call never covers the model's. **Shell and network calls
 force a prompt**: a session grant is not consulted. Ask and Full Access
 both ask the user every time; explicit session denials still refuse the call.
-Auto-Review and Never refuse it without opening a card. In Full Access every
+Under Auto-Review, held extension calls (whether from `core/call`, broker acts,
+or plugin host tools) route to the Auto-Review reviewer with the extension's
+host-minted plugin identity and cannot bypass review via routine tiers,
+`auto_review.allow` rules, or typed `allow` rules, while independent typed
+`deny`/`ask` rules, hook holds, and safety-floor blocks still apply. Never
+refuses them without opening a card. In Full Access every
 other call an extension makes is auto-approved, as it is for the model.
 `error.code === 'denied'` is the user's "no": do not retry it.
 
@@ -658,7 +663,11 @@ a plugin's trust shows it:
 The agent's mark is `CODEWHALE_AGENT_PROJECT`, which Codewhale sets to the
 session's project on every command the agent runs (shell, persistent terminal,
 verifier and test runs, the Python kernel, MCP servers it starts), whatever the sandbox or
-permission mode. Hooks, MCP servers from your configuration and the terminal
+permission mode; under Auto-Review, shell and verifier runs also set
+`CODEWHALE_AGENT_POSTURE=auto_review` together with `CODEWHALE_AGENT_THREAD_ID`,
+`CODEWHALE_AGENT_TURN_ID`, and `CODEWHALE_AGENT_TOOL_CALL_ID` so `plugins trust`
+and `plugins enable` record the agent in Auto-Review rather than `CommandLine`.
+Hooks, MCP servers from your configuration and the terminal
 app's `/plugin trust` carry no mark. With it, the command records the agent, even for a prompt
 answered through a terminal, and trusts only a plugin installed from a folder
 inside that project (the bundle's `.installed-from` record). It is a label, not

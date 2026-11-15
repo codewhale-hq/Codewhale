@@ -44,7 +44,10 @@ Computer Use 通过官方插件目录安装为普通用户级插件，独立于 
 
 每次信任都会记录批准者，`plugins status` 会显示。agent 运行的每条命令（shell 命令、持久终端、
 验证与测试运行、Python 内核里运行的代码、它用 `start_mcp_server` 启动的 MCP 服务器）都带有 agent 标记
-`CODEWHALE_AGENT_PROJECT`，值为会话所在项目，与沙箱和权限模式无关；钩子、配置文件中的 MCP
+`CODEWHALE_AGENT_PROJECT`，值为会话所在项目，与沙箱和权限模式无关；在 Auto-Review 下的
+shell 与验证器命令还会设置 `CODEWHALE_AGENT_POSTURE=auto_review` 及
+`CODEWHALE_AGENT_THREAD_ID`、`CODEWHALE_AGENT_TURN_ID` 与 `CODEWHALE_AGENT_TOOL_CALL_ID`，
+使记录显示为 Auto-Review 下的 agent 并保留来源信息，而不是普通命令行；钩子、配置文件中的 MCP
 服务器和终端应用里的 `/plugin trust` 不带标记。带有标记时，信任和
 `enable` 都记为该 agent，仅限该项目，即使提示是通过终端回答的也一样，绝不记为本人；agent
 只能信任它从该项目内的文件夹用 `codewhale install` 安装的插件（依据 `.installed-from` 记录，

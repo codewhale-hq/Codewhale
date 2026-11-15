@@ -103,6 +103,7 @@ impl Engine {
                 progress.mode,
                 progress.fleet_denial_guard.as_ref(),
                 ToolCallSource::Model,
+                None,
             )
             .await;
 

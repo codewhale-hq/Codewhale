@@ -321,7 +321,11 @@ command the agent runs carries the agent's mark, the variable
 `CODEWHALE_AGENT_PROJECT` set to the session's project, whatever the sandbox
 or permission mode: shell commands, persistent terminal sessions, verifier and
 test runs, code run in the Python kernel (`repl` blocks and RLM), and MCP
-servers the agent starts with `start_mcp_server`. Processes
+servers the agent starts with `start_mcp_server`. Under Auto-Review, shell and
+verifier commands also set `CODEWHALE_AGENT_POSTURE=auto_review` alongside
+`CODEWHALE_AGENT_THREAD_ID`, `CODEWHALE_AGENT_TURN_ID`, and
+`CODEWHALE_AGENT_TOOL_CALL_ID`, recording the approver as the agent in
+Auto-Review with that provenance instead of the plain command line. Processes
 Codewhale starts that are not the agent's commands carry no mark: hooks, MCP
 servers from your configuration, and `/plugin trust` typed in the terminal
 app. With the mark, a trust or an `enable` is recorded as the

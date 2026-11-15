@@ -40,8 +40,9 @@
 //! (`approval_cache::extension_origin_approval_keys`), so a grant the user gave
 //! the model never covers an extension's call and the reverse. Shell and
 //! network calls force a prompt: a session grant is not consulted, and
-//! Full Access still opens their card. Auto-Review and Never refuse them
-//! (`resolve_approval_request_disposition`); explicit denials always win.
+//! Full Access still opens their card. Never refuses them
+//! (`resolve_approval_request_disposition`), while Auto-Review sends held calls
+//! to its reviewer; explicit denials always win.
 //! The broker's own gate tools ([`dsh_broker::GATE_TOOLS`]) are the exception:
 //! the permission mode alone decides them, and only a broker arm reaches them
 //! (a plugin's own `core/call` of one is refused by name).
@@ -260,6 +261,23 @@ pub fn origin_approval(
     } else {
         OriginApproval::Prompt
     }
+}
+
+#[must_use]
+pub fn auto_review_held(
+    name: &str,
+    input: &Value,
+    planned_requires_approval: bool,
+    spec: Option<&dyn ToolSpec>,
+) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if dsh_broker::is_gate_tool(&lower) && spec.is_some_and(dsh_broker::is_gate_spec) {
+        return planned_requires_approval;
+    }
+    !matches!(
+        origin_approval(name, input, planned_requires_approval, spec),
+        OriginApproval::Unchanged
+    )
 }
 
 /// One extension tool call's standing to ask the core for things: its ticket

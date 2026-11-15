@@ -72,6 +72,43 @@ use output::{
 
 const READONLY_ENV_MARKER: &str = "CODEWHALE_INTERNAL_READONLY_ARGV";
 pub const AGENT_PROJECT_ENV: &str = "CODEWHALE_AGENT_PROJECT";
+pub const AGENT_POSTURE_ENV: &str = "CODEWHALE_AGENT_POSTURE";
+pub const AGENT_THREAD_ID_ENV: &str = "CODEWHALE_AGENT_THREAD_ID";
+pub const AGENT_TURN_ID_ENV: &str = "CODEWHALE_AGENT_TURN_ID";
+pub const AGENT_TOOL_CALL_ID_ENV: &str = "CODEWHALE_AGENT_TOOL_CALL_ID";
+
+pub fn insert_agent_mark_env(
+    env: &mut std::collections::HashMap<String, String>,
+    context: &ToolContext,
+) {
+    env.insert(
+        AGENT_PROJECT_ENV.to_string(),
+        context.workspace.to_string_lossy().into_owned(),
+    );
+    if context.approval_mode == codewhale_execpolicy::ApprovalMode::Auto {
+        env.insert(AGENT_POSTURE_ENV.to_string(), "auto_review".to_string());
+        let thread_id = context.state_namespace.trim();
+        if !thread_id.is_empty() {
+            env.insert(AGENT_THREAD_ID_ENV.to_string(), thread_id.to_string());
+        }
+        if let Some(turn_id) = context
+            .origin_turn_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            env.insert(AGENT_TURN_ID_ENV.to_string(), turn_id.to_string());
+        }
+        if let Some(tool_call_id) = context
+            .origin_tool_call_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            env.insert(AGENT_TOOL_CALL_ID_ENV.to_string(), tool_call_id.to_string());
+        }
+    }
+}
 
 #[cfg(unix)]
 static PENDING_PERSISTENT_PROCESS_GROUPS: std::sync::OnceLock<
@@ -6593,10 +6630,7 @@ impl ToolSpec for BashTool {
             extra_env.insert("GIT_CONFIG_COUNT".to_string(), count.to_string());
             extra_env.insert(READONLY_ENV_MARKER.to_string(), "1".to_string());
         }
-        extra_env.insert(
-            AGENT_PROJECT_ENV.to_string(),
-            context.workspace.to_string_lossy().into_owned(),
-        );
+        insert_agent_mark_env(&mut extra_env, context);
 
         let command_expense = infer_command_expense(command);
         let heavy_permit = acquire_heavy_command_permit(command, context.cancel_token.as_ref())
