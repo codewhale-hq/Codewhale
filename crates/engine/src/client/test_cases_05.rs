@@ -147,8 +147,9 @@
     }
 
     /// Request-body capture per effort level on direct and custom DeepSeek chat
-    /// route: the wire must carry the documented low/high/max ladder and the
-    /// thinking toggle, never an invented value (#52).
+    /// route: the wire must carry the documented low/high/max ladder, never an
+    /// invented value (#52). Only the first-party route carries the `thinking`
+    /// toggle; a gateway borrows the effort spelling and nothing else.
     #[tokio::test]
     async fn deepseek_chat_wire_body_tracks_the_documented_effort_ladder() {
         for (effort, expected_effort, expected_thinking) in [
@@ -167,10 +168,11 @@
                     expected_effort,
                     "reasoning_effort on the wire for {effort:?}: {body}"
                 );
+                let expected_toggle = if custom { None } else { expected_thinking };
                 assert_eq!(
                     body.pointer("/thinking/type").and_then(Value::as_str),
-                    expected_thinking,
-                    "thinking on the wire for {effort:?}: {body}"
+                    expected_toggle,
+                    "thinking on the wire for {effort:?} (custom={custom}): {body}"
                 );
             }
         }
@@ -1705,6 +1707,63 @@
             assert_eq!(
                 client.fetch_catalog_delta().await.expect_err("empty list"),
                 CatalogRefreshError::EmptyList
+            );
+        }
+    }
+
+    #[test]
+    fn openai_compatible_gateway_gets_no_deepseek_thinking_dialect_from_a_model_name() {
+        for (effort, expected_effort) in [
+            ("off", None),
+            ("low", Some("low")),
+            ("high", Some("high")),
+            ("max", Some("max")),
+        ] {
+            let mut body = json!({});
+            chat::apply_route_reasoning_controls(
+                &mut body,
+                ProviderKind::Custom,
+                "https://api.freeshare.tech:8443/v1",
+                "DeepSeek-V4.1-Flash",
+                Some(effort),
+            );
+            assert!(
+                body.get("thinking").is_none(),
+                "a gateway rejects DeepSeek's toggle object ({effort}): {body}"
+            );
+            assert_eq!(
+                body.get("reasoning_effort").and_then(Value::as_str),
+                expected_effort,
+                "the compatibility wire documents reasoning_effort ({effort}): {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_first_party_deepseek_route_keeps_its_thinking_toggle() {
+        for (effort, thinking, wire_effort) in [
+            ("off", "disabled", None),
+            ("low", "enabled", Some("low")),
+            ("high", "enabled", Some("high")),
+            ("max", "enabled", Some("max")),
+        ] {
+            let mut body = json!({});
+            chat::apply_route_reasoning_controls(
+                &mut body,
+                ProviderKind::Deepseek,
+                "https://api.deepseek.com/beta",
+                "deepseek-flash",
+                Some(effort),
+            );
+            assert_eq!(
+                body.pointer("/thinking/type").and_then(Value::as_str),
+                Some(thinking),
+                "{effort}"
+            );
+            assert_eq!(
+                body.get("reasoning_effort").and_then(Value::as_str),
+                wire_effort,
+                "{effort}"
             );
         }
     }

@@ -588,6 +588,14 @@ fn modelstudio_reasoning_effort_for_model(effort: &str) -> Option<&'static str> 
 /// Final reasoning-control pass shared by streaming and non-streaming Chat
 /// Completions requests. Route-specific shapers run after the generic provider
 /// layer so they can remove fields that are invalid for their exact endpoint.
+///
+/// A `custom` route carrying a DeepSeek model id borrows only the effort
+/// spelling, not the `thinking` toggle: gateways reject the toggle object on
+/// `/v1/chat/completions`, and an OpenAI-compatible endpoint's request dialect
+/// is not knowable from the model id. The cost of that choice is that `off`
+/// sends nothing on such a route, because the compatibility wire has no
+/// standard disable spelling; the first-party `deepseek` identity still
+/// disables thinking explicitly.
 pub(super) fn apply_route_reasoning_controls(
     body: &mut Value,
     provider: ProviderKind,
@@ -595,13 +603,17 @@ pub(super) fn apply_route_reasoning_controls(
     model: &str,
     effort: Option<&str>,
 ) {
-    let reasoning_provider =
-        if provider == ProviderKind::Custom && requires_reasoning_content(model) {
-            ProviderKind::Deepseek
-        } else {
-            provider
-        };
+    let gateway_carries_deepseek_model =
+        provider == ProviderKind::Custom && requires_reasoning_content(model);
+    let reasoning_provider = if gateway_carries_deepseek_model {
+        ProviderKind::Deepseek
+    } else {
+        provider
+    };
     apply_reasoning_effort(body, effort, reasoning_provider);
+    if gateway_carries_deepseek_model && let Some(object) = body.as_object_mut() {
+        object.remove("thinking");
+    }
     codewhale_config::local_reasoning::apply_local_reasoning_controls(
         body, provider, model, effort,
     );
