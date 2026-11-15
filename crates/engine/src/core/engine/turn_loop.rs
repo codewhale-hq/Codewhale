@@ -9621,7 +9621,12 @@ impl Engine {
         surface: &mut child_host::ChildSurfaceProbe,
         call: child_host::ChildProbeCall,
     ) -> Result<RichToolResult> {
+        let client = self
+            .model_client
+            .clone()
+            .ok_or_else(|| anyhow!("captured child client unavailable"))?;
         let control = self.begin_turn_control_for_provenance(UserInputProvenance::Runtime);
+        let previous = std::mem::replace(&mut self.turn_narrowing, control.narrowing);
         let (turn_run_origin, turn_owner_present) =
             self.mint_turn_origin(control.origin, UserInputProvenance::Runtime);
         let previous_origin = std::mem::replace(&mut self.turn_run_origin, turn_run_origin);
@@ -9638,10 +9643,6 @@ impl Engine {
             input_buffer: String::new(),
             input_parse_error: None,
         }];
-        let client = self
-            .model_client
-            .clone()
-            .ok_or_else(|| anyhow!("captured child client unavailable"))?;
         let policy = &surface.policy;
         self.session.tool_activation_cache = surface.cache.clone();
         let mut catalog = policy.catalog.clone();
@@ -9688,37 +9689,35 @@ impl Engine {
                 &mut gate,
             )
             .await;
-        let answer = outcomes
-            .iter()
-            .flatten()
-            .next()
-            .ok_or_else(|| anyhow!("Core did not produce a terminal tool result"))?;
-        let answer = answer
-            .terminal
-            .legacy_result()
-            .map(|result| RichToolResult {
+        let answer = if let Some(entry) = outcomes.iter().flatten().next() {
+            let answer = entry.terminal.legacy_result().map(|result| RichToolResult {
                 result,
-                content_blocks: answer.content_blocks.clone(),
+                content_blocks: entry.content_blocks.clone(),
             });
-        // Finish through the same result owner as run_tool_batch_phase so
-        // result dependencies are observed once.
-        self.process_tool_results(
-            gate.client,
-            gate.tool_policy.strict_tool_mode,
-            outcomes,
-            gate.turn,
-            &mut catalog,
-            &mut active,
-            &planned.hook_contexts,
-            None,
-        )
-        .await;
-        surface.cache = self.session.tool_activation_cache.clone();
-        surface.policy.catalog = catalog;
-        surface.policy.active_names = active;
+            // Finish through the same result owner as run_tool_batch_phase so
+            // result dependencies are observed once.
+            self.process_tool_results(
+                gate.client,
+                gate.tool_policy.strict_tool_mode,
+                outcomes,
+                gate.turn,
+                &mut catalog,
+                &mut active,
+                &planned.hook_contexts,
+                None,
+            )
+            .await;
+            surface.cache = self.session.tool_activation_cache.clone();
+            surface.policy.catalog = catalog;
+            surface.policy.active_names = active;
+            answer.map_err(anyhow::Error::new)
+        } else {
+            Err(anyhow!("Core did not produce a terminal tool result"))
+        };
         self.turn_owner_present = previous_owner_present;
         self.turn_run_origin = previous_origin;
+        self.turn_narrowing = previous;
         drop(control);
-        answer.map_err(anyhow::Error::new)
+        answer
     }
 }
