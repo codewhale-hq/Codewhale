@@ -14,8 +14,7 @@ use super::super::dsh_broker::{Arm, BrokerActTool, BrokerContext, REACH_TOOL, Te
 use super::super::protocol::{DshBrokerParams, RpcErrorWire};
 use super::super::supervisor::HostRequestContext;
 use super::super::test_support::fake_authority;
-use super::super::tier::HostTier;
-use super::super::{ExtensionHostManager, ExtensionHostOptions};
+use super::super::{ExtensionHostManager, ExtensionHostOptions, HostCohort};
 use super::*;
 use crate::tools::codemode::{
     ExtensionCaller, NestedCallGate, NestedCallRequest, NestedCallVerdict, NestedDecision,
@@ -149,7 +148,7 @@ impl Rig {
             let mut registry = manager.shared.registry.lock().unwrap();
             let owner = registry
                 .begin_owner(
-                    HostTier::Plugin,
+                    HostCohort::reviewed(),
                     "a",
                     "a",
                     Some(fake_authority("a")),
@@ -198,7 +197,7 @@ impl Rig {
             .shared
             .core_calls
             .begin(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 7,
                 &self.owner,
                 "call-1",
@@ -231,7 +230,7 @@ impl Rig {
             .serve_broker_in(
                 TABLE,
                 &self.manager.shared,
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 7,
                 DshBrokerParams {
                     owner: self.owner.clone(),

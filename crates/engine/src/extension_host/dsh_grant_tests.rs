@@ -10,7 +10,7 @@ use super::core_call::InvocationGuard;
 use super::dsh_broker::{Arm, BrokerCall, BrokerFuture, BrokerMethods, BrokerRefusal, decode};
 use super::protocol::{DshBrokerParams, DshService, HostRequest, RpcErrorWire, error_code};
 use super::supervisor::HostRequestContext;
-use super::tier::HostTier;
+use super::tier::HostCohort;
 use super::{ExtensionHostManager, ExtensionHostOptions};
 use crate::tools::codemode::{ExtensionCaller, NestedCallGate};
 use crate::tools::spec::ToolContext;
@@ -19,7 +19,7 @@ use codewhale_plugins::PluginRegistry;
 use codewhale_plugins::activation::TestPolicyGuard;
 use codewhale_plugins::discovery::{DiscoveryConfig, discover_with_config};
 use codewhale_plugins::host_services::{
-    AgentApproval, AgentPosture, HostService, PersonVia, PluginApprover, ReviewApproval, TestOffer,
+    HostService, PersonVia, PluginApprover, ReviewApproval, TestOffer,
 };
 
 const HOST: u64 = 7;
@@ -99,31 +99,6 @@ impl Plugins {
             .unwrap();
         registry.enable(name).unwrap();
     }
-
-    fn review_by_agent(&self, name: &str) {
-        self.registry().revoke_trust(name).unwrap();
-        let mut registry = self.registry();
-        let approver = PluginApprover::Agent(AgentApproval {
-            posture: AgentPosture::FullAccess,
-            workspace: self.config.workspace.to_string_lossy().into_owned(),
-            thread_id: Some("thread".into()),
-            turn_id: Some("turn".into()),
-            tool_call_id: Some("call".into()),
-        });
-        let shown = registry
-            .host_service_review_for(name, &approver)
-            .map(|review| review.token);
-        registry
-            .trust_reviewed(
-                name,
-                ReviewApproval {
-                    approved_by: approver.clone(),
-                    host_services: shown,
-                },
-            )
-            .unwrap();
-        registry.enable_by(name, approver).unwrap();
-    }
 }
 
 struct Host {
@@ -171,7 +146,7 @@ impl Host {
         let mut registry = self.manager.shared.registry.lock().unwrap();
         let owner = registry
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 authority.plugin_id.as_str(),
                 name,
                 Some(authority.clone()),
@@ -183,12 +158,12 @@ impl Host {
         owner
     }
 
-    fn mint(&self, tier: HostTier, owner: &OwnerRef) -> InvocationGuard {
+    fn mint(&self, cohort: HostCohort, owner: &OwnerRef) -> InvocationGuard {
         self.manager
             .shared
             .core_calls
             .begin_scoped(
-                tier,
+                cohort,
                 HOST,
                 owner,
                 "call-1",
@@ -203,7 +178,7 @@ impl Host {
     }
 
     fn services(&self, owner: &OwnerRef) -> Vec<&'static str> {
-        self.mint(HostTier::Plugin, owner)
+        self.mint(HostCohort::reviewed(), owner)
             .broker_tickets()
             .unwrap_or_default()
             .into_iter()
@@ -226,7 +201,7 @@ impl Host {
             .serve_broker_in(
                 table,
                 &self.manager.shared,
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 HOST,
                 DshBrokerParams {
                     owner: owner.clone(),
@@ -345,37 +320,6 @@ fn the_engine_and_the_review_record_name_the_same_services() {
 }
 
 #[test]
-fn an_agent_approved_owner_never_loads_into_the_reviewed_host() {
-    let _policy = TestPolicyGuard::extension_host(true);
-    let _offer = TestOffer::only(&[HostService::Network]);
-    let plugins = Plugins::new(&[("reviewed", &["network"]), ("made", &["network"])]);
-    let (desired, errors) = super::desired_owners(&plugins.registry());
-    assert_eq!(desired.len(), 2, "{errors:?}");
-
-    plugins.review_by_agent("made");
-    let registry = plugins.registry();
-    assert!(registry.get("made").unwrap().active());
-    let (desired, errors) = super::desired_owners(&registry);
-    let names: Vec<&str> = desired
-        .values()
-        .map(|owner| owner.plugin_name.as_str())
-        .collect();
-    assert_eq!(names, vec!["reviewed"]);
-    assert_eq!(
-        desired.values().next().unwrap().host_services,
-        vec![DshService::Network]
-    );
-    assert_eq!(
-        errors
-            .iter()
-            .filter(|error| error.contains("`made` was approved by the agent"))
-            .count(),
-        1,
-        "{errors:?}"
-    );
-}
-
-#[test]
 fn a_record_that_cannot_be_read_at_the_scan_loads_no_owner() {
     let _policy = TestPolicyGuard::extension_host(true);
     let plugins = Plugins::new(&[("alpha", &[])]);
@@ -407,7 +351,7 @@ async fn no_broker_ticket_is_minted_for_a_plugin_whose_reviewed_record_does_not_
     let host_a = host(&granted.config.workspace);
     let alpha = host_a.load(&granted, "alpha");
     assert_eq!(host_a.services(&alpha), vec!["network"]);
-    let guard = host_a.mint(HostTier::Plugin, &alpha);
+    let guard = host_a.mint(HostCohort::reviewed(), &alpha);
     let network = ticket(&guard, "network");
     let (served, _) = host_a.call(&echo(), &alpha, &network, "network").await;
     assert_eq!(served.unwrap()["service"], "network");
@@ -463,7 +407,7 @@ async fn no_broker_ticket_while_a_plugin_without_the_grant_shares_the_host() {
     let host = host(&plugins.config.workspace);
     let alpha = host.load(&plugins, "alpha");
     assert_eq!(host.services(&alpha), vec!["llm", "network"]);
-    let alone = host.mint(HostTier::Plugin, &alpha);
+    let alone = host.mint(HostCohort::reviewed(), &alpha);
     let network = ticket(&alone, "network");
     let llm = ticket(&alone, "llm");
 
@@ -505,7 +449,7 @@ async fn no_broker_ticket_while_a_plugin_without_the_grant_shares_the_host() {
             .lock()
             .unwrap()
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 authority.plugin_id.as_str(),
                 "beta",
                 Some(authority.clone()),
@@ -523,7 +467,7 @@ async fn no_broker_ticket_while_a_plugin_without_the_grant_shares_the_host() {
     let own = Plugins::new(&[("delta", &[])]);
     let other_host = self::host(&own.config.workspace);
     let delta = other_host.load(&own, "delta");
-    let lacking = other_host.mint(HostTier::Plugin, &delta);
+    let lacking = other_host.mint(HostCohort::reviewed(), &delta);
     assert!(lacking.broker_tickets().is_none());
     assert_eq!(
         refusal(&withheld),
@@ -555,7 +499,7 @@ async fn a_plugin_that_left_the_host_withholds_every_service_until_the_host_exit
     let alpha = host.load(&plugins, "alpha");
     let gamma = host.load(&plugins, "gamma");
     assert_eq!(host.services(&alpha), vec!["network"]);
-    let guard = host.mint(HostTier::Plugin, &alpha);
+    let guard = host.mint(HostCohort::reviewed(), &alpha);
     let network = ticket(&guard, "network");
     assert!(
         !host
@@ -564,14 +508,14 @@ async fn a_plugin_that_left_the_host_withholds_every_service_until_the_host_exit
             .registry
             .lock()
             .unwrap()
-            .host_services_await_restart()
+            .host_services_await_restart(HostCohort::reviewed())
     );
 
     {
         let mut registry = host.manager.shared.registry.lock().unwrap();
         assert_eq!(registry.revoke_owner(&gamma.plugin_id), Some(gamma.clone()));
         registry.forget_owner(&gamma.plugin_id);
-        assert!(registry.host_services_await_restart());
+        assert!(registry.host_services_await_restart(HostCohort::reviewed()));
         assert_eq!(
             registry.take_withheld_report().unwrap(),
             "host services are off until the plugin host restarts: a plugin that was turned off, changed or failed is still loaded in it"
@@ -590,8 +534,8 @@ async fn a_plugin_that_left_the_host_withholds_every_service_until_the_host_exit
 
     {
         let mut registry = host.manager.shared.registry.lock().unwrap();
-        registry.host_exited(HostTier::Plugin, "planned restart");
-        assert!(!registry.host_services_await_restart());
+        registry.host_exited(HostCohort::reviewed(), "planned restart");
+        assert!(!registry.host_services_await_restart(HostCohort::reviewed()));
     }
     let alpha = host.load(&plugins, "alpha");
     assert_eq!(host.services(&alpha), vec!["network"]);
@@ -609,7 +553,7 @@ async fn a_plugin_that_left_the_host_withholds_every_service_until_the_host_exit
         .registry
         .lock()
         .unwrap()
-        .host_process_started(HostTier::Plugin);
+        .host_process_started(HostCohort::reviewed());
     assert_eq!(host.services(&alpha), vec!["network"]);
 }
 
@@ -620,7 +564,7 @@ async fn a_grant_is_read_from_the_owner_record_at_mint_and_at_redeem_never_from_
     let plugins = Plugins::new(&[("alpha", &["network"])]);
     let host = host(&plugins.config.workspace);
     let alpha = host.load(&plugins, "alpha");
-    let guard = host.mint(HostTier::Plugin, &alpha);
+    let guard = host.mint(HostCohort::reviewed(), &alpha);
     let network = ticket(&guard, "network");
     let (served, _) = host.call(&echo(), &alpha, &network, "network").await;
     assert!(served.is_ok(), "{served:?}");
@@ -656,9 +600,9 @@ async fn a_grant_is_read_from_the_owner_record_at_mint_and_at_redeem_never_from_
         .registry
         .lock()
         .unwrap()
-        .host_exited(HostTier::Plugin, "restart");
+        .host_exited(HostCohort::reviewed(), "restart");
     let current = host.load(&plugins, "alpha");
-    let guard = host.mint(HostTier::Plugin, &current);
+    let guard = host.mint(HostCohort::reviewed(), &current);
     let (fresh, _) = host
         .call(&echo(), &current, &ticket(&guard, "network"), "network")
         .await;
@@ -680,7 +624,7 @@ async fn a_disable_from_another_process_stops_broker_calls_of_a_running_tool() {
     let host = host(&plugins.config.workspace);
     let alpha = host.load(&plugins, "alpha");
     let _gamma = host.load(&plugins, "gamma");
-    let guard = host.mint(HostTier::Plugin, &alpha);
+    let guard = host.mint(HostCohort::reviewed(), &alpha);
     let network = ticket(&guard, "network");
     let waiting: Vec<(DshService, Arm)> = vec![(DshService::Network, waiting_arm as Arm)];
 
@@ -730,7 +674,7 @@ async fn a_builtin_tier_owner_never_gets_a_broker_ticket() {
     let builtin = {
         let mut registry = host.manager.shared.registry.lock().unwrap();
         let owner = registry
-            .begin_owner(HostTier::Builtin, "host:mcp", "mcp", None, "digest")
+            .begin_owner(HostCohort::Builtin, "host:mcp", "mcp", None, "digest")
             .unwrap();
         registry.set_host_services(&owner, DshService::ALL.to_vec());
         registry.mark_active(&owner);
@@ -743,7 +687,7 @@ async fn a_builtin_tier_owner_never_gets_a_broker_ticket() {
     };
     assert!(host.manager.shared.broker_services(&builtin).is_empty());
     assert!(
-        host.mint(HostTier::Builtin, &builtin)
+        host.mint(HostCohort::Builtin, &builtin)
             .broker_tickets()
             .is_none()
     );
@@ -753,7 +697,7 @@ async fn a_builtin_tier_owner_never_gets_a_broker_ticket() {
         .shared
         .core_calls
         .begin(
-            HostTier::Builtin,
+            HostCohort::Builtin,
             HOST,
             &builtin,
             "call-2",
@@ -775,7 +719,7 @@ async fn a_broker_ticket_is_refused_by_core_call_checkpoint_question_and_subagen
     let plugins = Plugins::new(&[("alpha", &["network"])]);
     let host = host(&plugins.config.workspace);
     let alpha = host.load(&plugins, "alpha");
-    let guard = host.mint(HostTier::Plugin, &alpha);
+    let guard = host.mint(HostCohort::reviewed(), &alpha);
     let network = ticket(&guard, "network");
     let shared = &host.manager.shared;
     let cx = |id| HostRequestContext::for_test(id).0;
@@ -793,7 +737,7 @@ async fn a_broker_ticket_is_refused_by_core_call_checkpoint_question_and_subagen
             .core_calls
             .serve(
                 shared,
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 HOST,
                 super::protocol::CoreCallParams {
                     owner: alpha.clone(),
@@ -811,7 +755,7 @@ async fn a_broker_ticket_is_refused_by_core_call_checkpoint_question_and_subagen
             .core_calls
             .serve_checkpoint(
                 shared,
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 HOST,
                 super::protocol::SessionCheckpointParams {
                     owner: alpha.clone(),
@@ -827,7 +771,7 @@ async fn a_broker_ticket_is_refused_by_core_call_checkpoint_question_and_subagen
             .core_calls
             .serve_question(
                 shared,
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 HOST,
                 super::protocol::UserQuestionParams {
                     owner: alpha.clone(),
@@ -844,7 +788,7 @@ async fn a_broker_ticket_is_refused_by_core_call_checkpoint_question_and_subagen
             .core_calls
             .serve_subagent(
                 shared,
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 HOST,
                 HostRequest::SubagentStart(super::protocol::SubagentStartParams {
                     owner: alpha.clone(),
@@ -872,7 +816,7 @@ async fn a_spent_or_just_ended_broker_ticket_is_a_limit_not_a_forgery() {
     let plugins = Plugins::new(&[("alpha", &["network"])]);
     let host = host(&plugins.config.workspace);
     let alpha = host.load(&plugins, "alpha");
-    let guard = host.mint(HostTier::Plugin, &alpha);
+    let guard = host.mint(HostCohort::reviewed(), &alpha);
     let network = ticket(&guard, "network");
     for _ in 0..super::core_call::MAX_CALLS_PER_INVOCATION {
         let (served, _) = host.call(&echo(), &alpha, &network, "network").await;

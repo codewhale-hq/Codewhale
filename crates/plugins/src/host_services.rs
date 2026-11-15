@@ -209,11 +209,76 @@ pub enum PluginApprover {
     CommandLine,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PluginCohort {
     Reviewed,
     Agent { workspace: String },
+}
+
+impl PluginCohort {
+    #[must_use]
+    pub fn agent(workspace: impl AsRef<std::path::Path>) -> Self {
+        let normalized = codewhale_config::normalize_project_workspace(workspace.as_ref())
+            .unwrap_or_else(|_| workspace.as_ref().components().collect());
+        Self::Agent {
+            workspace: normalized.to_string_lossy().into_owned(),
+        }
+    }
+}
+
+impl PartialEq for PluginCohort {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Reviewed, Self::Reviewed) => true,
+            (Self::Agent { workspace: a }, Self::Agent { workspace: b }) => {
+                let norm_a = codewhale_config::normalize_project_workspace(std::path::Path::new(a))
+                    .unwrap_or_else(|_| std::path::Path::new(a).components().collect());
+                let norm_b = codewhale_config::normalize_project_workspace(std::path::Path::new(b))
+                    .unwrap_or_else(|_| std::path::Path::new(b).components().collect());
+                norm_a == norm_b
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for PluginCohort {}
+
+impl PartialOrd for PluginCohort {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PluginCohort {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let key = |cohort: &Self| match cohort {
+            Self::Reviewed => (0u8, None),
+            Self::Agent { workspace } => {
+                let norm =
+                    codewhale_config::normalize_project_workspace(std::path::Path::new(workspace))
+                        .unwrap_or_else(|_| std::path::Path::new(workspace).components().collect());
+                (1u8, Some(norm))
+            }
+        };
+        key(self).cmp(&key(other))
+    }
+}
+
+impl std::hash::Hash for PluginCohort {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Reviewed => 0u8.hash(state),
+            Self::Agent { workspace } => {
+                1u8.hash(state);
+                let norm =
+                    codewhale_config::normalize_project_workspace(std::path::Path::new(workspace))
+                        .unwrap_or_else(|_| std::path::Path::new(workspace).components().collect());
+                norm.hash(state);
+            }
+        }
+    }
 }
 
 impl PluginApprover {
@@ -264,9 +329,7 @@ impl PluginApprover {
     #[must_use]
     pub fn cohort(&self) -> PluginCohort {
         match self {
-            Self::Agent(agent) => PluginCohort::Agent {
-                workspace: agent.workspace.clone(),
-            },
+            Self::Agent(agent) => PluginCohort::agent(&agent.workspace),
             Self::Person { .. } | Self::CommandLine => PluginCohort::Reviewed,
         }
     }

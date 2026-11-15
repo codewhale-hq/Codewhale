@@ -41,6 +41,7 @@ shell 命令一样经过会话审批：Ask 询问本人，Auto-Review 由审查�
 没有标记时，`--yes` 记为命令行，不授予任何宿主服务；在本人终端里回答提示记为本人。这个
 标记只是标签而不是锁：在 Full Access 下 agent 可以把它去掉，此时记录显示为命令行。`--review-token` 是插件包审查令牌
 （`<content-hash>.<capability-hash>`），不是宿主服务审查令牌。
+agent 批准的插件仅在其记录命名的项目内活跃，并在该项目独立的 agent 宿主进程中运行，与本人审查的插件隔离。当本人完成审查后，该插件将迁移至本人审查的宿主进程，其存储数据也会一并迁移；若目标位置已存在同名数据目录，则迁移将被拒绝且插件保持关闭。本人审查会取代 agent 的记录。
 
 ## 入口、审查与生命周期
 
@@ -101,7 +102,7 @@ CommonJS 解析也需要 Node；这些情况会明确提示使用
 需要未提供服务的插件会激活失败，并显示原因。目前没有已发布的插件编写 SDK；
 普通 ESM 示例使用这些文档规定的适配服务。
 
-共享进程内的插件并不相互隔离；所有者标签及 `dataDir` 不能构成彼此之间的安全边界。
+本人审查的 Native 插件共享同一个进程和数据目录，而 agent 批准的插件按项目在各自独立的宿主进程和隔离目录（`data-agent/<digest>`）中运行。同一个宿主进程内的插件并不相互隔离；所有者标签及 `dataDir` 不能构成同进程插件彼此之间的安全边界。
 宿主禁止进程内原生代码入口，包括 native addon、Worker 和相关 FFI/SQLite 入口。
 macOS Seatbelt 与 Linux bubblewrap 限制宿主进程，但不等于对每次插件文件访问执行
 工具审批。不要在描述、日志、配置或结果中保存凭据。
@@ -283,6 +284,7 @@ Rust 只选择当前 Engine 所需、仍有效并具有已审查 Native 权限�
 ## 插件本地状态
 
 `ctx.storage.get(key)`、`set(key, json)`、`delete(key)` 操作 Rust 已指定的 `dataDir`
+（本人审查的插件位于 `~/.codewhale/extension-host/data/plugins/<name>-<id>`，agent 批准的插件位于 `~/.codewhale/extension-host/data-agent/<digest>/plugins/<name>-<id>`，其中 `<digest>` 为归一化项目路径的 128 位十六进制摘要）
 内的普通 JSON。状态跨重启和代际保留；停用和卸载不会删除该目录。该服务不暴露
 会话历史或凭据。所有者开始清理后拒绝访问，也拒绝链接文件、损坏记录和超限写入。
 

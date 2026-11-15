@@ -99,7 +99,7 @@ impl HostToolSpec {
     /// origin shown in approval cards and diagnostics.
     #[must_use]
     pub fn origin(&self) -> String {
-        match self.registration.tier {
+        match self.registration.tier() {
             HostTier::Plugin => format!("extension:{}", self.registration.plugin_name),
             HostTier::Builtin => self.registration.owner.plugin_id.clone(),
         }
@@ -109,7 +109,7 @@ impl HostToolSpec {
     /// for a built-in module's, what the Rust table says and `Required` when
     /// it says nothing.
     fn approval(&self) -> ApprovalRequirement {
-        match self.registration.tier {
+        match self.registration.tier() {
             HostTier::Plugin => ApprovalRequirement::Required,
             HostTier::Builtin => tier::tool_approval(
                 self.manager.builtin_modules,
@@ -162,7 +162,7 @@ impl HostToolSpec {
     /// so the card says when this one is not alone (design §4.4, threat 3).
     #[must_use]
     pub fn approval_text(&self) -> String {
-        if self.registration.tier == HostTier::Builtin {
+        if self.registration.tier() == HostTier::Builtin {
             return format!(
                 "Tool `{}` of built-in host module `{}` ({}) runs on Codewhale's built-in extension host",
                 self.registration.name,
@@ -522,7 +522,7 @@ impl ToolSpec for HostToolSpec {
             .as_ref()
             .and_then(|gate| {
                 self.manager.core_calls.begin_scoped(
-                    registration.tier,
+                    &registration.cohort,
                     host.generation,
                     &registration.owner,
                     &call_id,

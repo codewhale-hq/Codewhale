@@ -29,6 +29,10 @@
 //! executing as the current OS user. Sources are embedded and materialized at
 //! `<bundle dir>/builtin/<module>.mjs` with the host's notices.
 
+use std::path::{Path, PathBuf};
+
+pub use codewhale_plugins::host_services::PluginCohort;
+
 use super::protocol::DshService;
 use crate::tools::spec::ApprovalRequirement;
 
@@ -100,6 +104,152 @@ impl HostTier {
                     "`{owner_id}` is not a built-in host module id: the built-in tier takes only `{HOST_OWNER_PREFIX}<module>` (a lower-case module name of letters, digits and `-`)"
                 )),
             },
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HostCohort {
+    Builtin,
+    Plugin(PluginCohort),
+}
+
+impl PartialEq for HostCohort {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Builtin, Self::Builtin) => true,
+            (Self::Plugin(a), Self::Plugin(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for HostCohort {}
+
+impl Ord for HostCohort {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.sort_key().cmp(&other.sort_key())
+    }
+}
+
+impl PartialOrd for HostCohort {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::hash::Hash for HostCohort {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Builtin => 0u8.hash(state),
+            Self::Plugin(p) => {
+                1u8.hash(state);
+                p.hash(state);
+            }
+        }
+    }
+}
+
+impl HostCohort {
+    pub const BUILTIN: Self = Self::Builtin;
+
+    fn sort_key(&self) -> (u8, Option<&PluginCohort>) {
+        match self {
+            Self::Builtin => (0u8, None),
+            Self::Plugin(p) => (1u8, Some(p)),
+        }
+    }
+
+    #[must_use]
+    pub fn reviewed() -> Self {
+        Self::Plugin(PluginCohort::Reviewed)
+    }
+
+    #[must_use]
+    pub fn agent(workspace: impl AsRef<Path>) -> Self {
+        Self::Plugin(PluginCohort::agent(workspace))
+    }
+
+    #[must_use]
+    pub fn from_plugin_cohort(cohort: PluginCohort) -> Self {
+        match cohort {
+            PluginCohort::Reviewed => Self::Plugin(PluginCohort::Reviewed),
+            PluginCohort::Agent { workspace } => Self::agent(workspace),
+        }
+    }
+
+    #[must_use]
+    pub fn tier(&self) -> HostTier {
+        match self {
+            Self::Builtin => HostTier::Builtin,
+            Self::Plugin(_) => HostTier::Plugin,
+        }
+    }
+
+    #[must_use]
+    pub fn is_builtin(&self) -> bool {
+        matches!(self, Self::Builtin)
+    }
+
+    #[must_use]
+    pub fn is_reviewed(&self) -> bool {
+        matches!(self, Self::Plugin(PluginCohort::Reviewed))
+    }
+
+    #[must_use]
+    pub fn host_label(&self) -> &'static str {
+        self.tier().host_label()
+    }
+
+    #[must_use]
+    pub fn plugin_cohort(&self) -> Option<&PluginCohort> {
+        match self {
+            Self::Plugin(cohort) => Some(cohort),
+            Self::Builtin => None,
+        }
+    }
+
+    #[must_use]
+    pub fn agent_workspace(&self) -> Option<&str> {
+        match self {
+            Self::Plugin(PluginCohort::Agent { workspace }) => Some(workspace.as_str()),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn agent_project_path(&self) -> Option<PathBuf> {
+        match self {
+            Self::Plugin(PluginCohort::Agent { workspace }) => Some(
+                codewhale_config::normalize_project_workspace(Path::new(workspace))
+                    .unwrap_or_else(|_| Path::new(workspace).components().collect()),
+            ),
+            _ => None,
+        }
+    }
+}
+
+impl From<PluginCohort> for HostCohort {
+    fn from(cohort: PluginCohort) -> Self {
+        Self::from_plugin_cohort(cohort)
+    }
+}
+
+impl From<&HostCohort> for HostCohort {
+    fn from(cohort: &HostCohort) -> Self {
+        cohort.clone()
+    }
+}
+
+impl std::fmt::Display for HostCohort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Builtin => write!(f, "builtin"),
+            Self::Plugin(PluginCohort::Reviewed) => write!(f, "reviewed"),
+            Self::Plugin(PluginCohort::Agent { workspace }) => {
+                write!(f, "agent:{workspace}")
+            }
         }
     }
 }

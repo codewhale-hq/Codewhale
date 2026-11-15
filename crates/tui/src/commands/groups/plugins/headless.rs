@@ -132,6 +132,17 @@ fn agent_approver(registry: &PluginRegistry, console: &dyn Console) -> Result<Pl
     if !console.agent_marked() {
         return Ok(PluginApprover::CommandLine);
     }
+    if let Some(env_path) = agent_project() {
+        let norm_env = codewhale_config::normalize_project_workspace(&env_path)?;
+        let norm_reg = codewhale_config::normalize_project_workspace(registry.workspace())?;
+        if norm_env != norm_reg {
+            bail!(
+                "Agent environment workspace `{}` does not match current workspace `{}`",
+                env_path.display(),
+                registry.workspace().display()
+            );
+        }
+    }
     let provenance = console.agent_provenance()?;
     Ok(match provenance.posture {
         None | Some(AgentPosture::CommandLine) => {
@@ -223,14 +234,25 @@ fn trust_as(
     name: &str,
     approver: PluginApprover,
 ) -> Result<()> {
-    let host_services = match approver {
-        PluginApprover::Agent(_) => {
-            installed_by_the_agent(find(registry, locale, name)?, registry.workspace())?;
-            registry
-                .host_service_review_for(name, &approver)
-                .map(|review| review.token)
+    let host_services = if let PluginApprover::Agent(ref agent) = approver {
+        if let Some(env_project) = agent_project() {
+            let norm_env = codewhale_config::normalize_project_workspace(&env_project)?;
+            let norm_agent =
+                codewhale_config::normalize_project_workspace(Path::new(&agent.workspace))?;
+            if norm_env != norm_agent {
+                bail!(
+                    "Agent approval workspace `{}` does not match environment `{}`",
+                    agent.workspace,
+                    env_project.display()
+                );
+            }
         }
-        PluginApprover::Person { .. } | PluginApprover::CommandLine => None,
+        installed_by_the_agent(find(registry, locale, name)?, registry.workspace())?;
+        registry
+            .host_service_review_for(name, &approver)
+            .map(|review| review.token)
+    } else {
+        None
     };
     Arc::make_mut(registry)
         .trust_reviewed(
@@ -608,6 +630,7 @@ pub(crate) fn enable(
     json: bool,
     console: &mut dyn Console,
 ) -> Result<()> {
+    let approver = agent_approver(registry, console)?;
     let plugin = find(registry, locale, name)?;
     if !plugin.trusted() {
         if let Some(error) = registry.state_error() {
@@ -624,7 +647,6 @@ pub(crate) fn enable(
             shell_word(&text(name))
         );
     }
-    let approver = agent_approver(registry, console)?;
     Arc::make_mut(registry)
         .enable_by(name, approver)
         .map_err(|error| failed(locale, &error))?;

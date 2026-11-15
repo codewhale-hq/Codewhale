@@ -24,7 +24,7 @@ use super::core_call::{
 use super::protocol::{ContentBlockWire, CoreCallParams, RpcErrorWire, error_code};
 use super::supervisor::HostRequestContext;
 use super::test_support::{FixturePlugins, fake_authority, node_for_tests};
-use super::tier::HostTier;
+use super::tier::HostCohort;
 use super::{ExtensionHostManager, ExtensionHostOptions, HostAttachment, SupervisionOptions};
 use crate::tools::codemode::{
     ExtensionCaller, NestedCallGate, NestedCallRequest, NestedCallVerdict, NestedDecision,
@@ -664,7 +664,13 @@ fn fixture(uses_server: bool) -> Fixture {
     let mut registry = manager.shared.registry.lock().unwrap();
     let begin = |registry: &mut super::registry::OwnerRegistry, id: &str| {
         let owner = registry
-            .begin_owner(HostTier::Plugin, id, id, Some(fake_authority(id)), "hash")
+            .begin_owner(
+                HostCohort::reviewed(),
+                id,
+                id,
+                Some(fake_authority(id)),
+                "hash",
+            )
             .unwrap();
         registry.mark_active(&owner);
         owner
@@ -717,7 +723,7 @@ impl Fixture {
             .shared
             .core_calls
             .begin(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 generation,
                 owner,
                 "call-1",
@@ -730,13 +736,13 @@ impl Fixture {
 
     async fn serve(
         &self,
-        tier: HostTier,
+        cohort: impl Into<HostCohort>,
         generation: u64,
         owner: &OwnerRef,
         ticket: &str,
     ) -> (Result<Value, RpcErrorWire>, Vec<String>) {
         self.serve_call(
-            tier,
+            cohort,
             generation,
             owner,
             ticket,
@@ -748,7 +754,7 @@ impl Fixture {
 
     async fn serve_call(
         &self,
-        tier: HostTier,
+        cohort: impl Into<HostCohort>,
         generation: u64,
         owner: &OwnerRef,
         ticket: &str,
@@ -762,7 +768,7 @@ impl Fixture {
             .core_calls
             .serve(
                 &self.manager.shared,
-                tier,
+                cohort,
                 generation,
                 CoreCallParams {
                     owner: owner.clone(),
@@ -818,7 +824,7 @@ async fn a_plugin_core_call_never_reads_a_read_only_root() {
 
     let guard = f.begin(7, &f.owner);
     let ticket = guard.ticket().to_string();
-    let (control, _) = f.serve(HostTier::Plugin, 7, &f.owner, &ticket).await;
+    let (control, _) = f.serve(HostCohort::reviewed(), 7, &f.owner, &ticket).await;
     assert!(control.is_ok(), "{control:?}");
     for (tool, call_input) in [
         ("read_file", input.clone()),
@@ -829,7 +835,14 @@ async fn a_plugin_core_call_never_reads_a_read_only_root() {
         ),
     ] {
         let (result, _) = f
-            .serve_call(HostTier::Plugin, 7, &f.owner, &ticket, tool, call_input)
+            .serve_call(
+                HostCohort::reviewed(),
+                7,
+                &f.owner,
+                &ticket,
+                tool,
+                call_input,
+            )
             .await;
         assert!(result.is_err(), "{tool}: {result:?}");
         assert!(
@@ -846,43 +859,49 @@ async fn a_spoofed_ticket_is_refused_whoever_presents_it_and_a_burst_ends_the_ho
     let ticket = guard.ticket().to_string();
 
     // The honest presentation works.
-    let (ok, violations) = f.serve(HostTier::Plugin, 7, &f.owner, &ticket).await;
+    let (ok, violations) = f.serve(HostCohort::reviewed(), 7, &f.owner, &ticket).await;
     assert!(ok.is_ok(), "{ok:?}");
     assert!(violations.is_empty());
 
     // Another plugin in the same host presents it: wrong owner.
-    let (result, _) = f.serve(HostTier::Plugin, 7, &f.other, &ticket).await;
+    let (result, _) = f.serve(HostCohort::reviewed(), 7, &f.other, &ticket).await;
     assert!(refused(&result), "{result:?}");
     // The right plugin with another activation's token.
     let stale_owner = OwnerRef {
         owner_token: "0".repeat(32),
         ..f.owner.clone()
     };
-    let (result, _) = f.serve(HostTier::Plugin, 7, &stale_owner, &ticket).await;
+    let (result, _) = f
+        .serve(HostCohort::reviewed(), 7, &stale_owner, &ticket)
+        .await;
     assert!(refused(&result), "{result:?}");
     // From the other tier's host.
-    let (result, _) = f.serve(HostTier::Builtin, 7, &f.owner, &ticket).await;
+    let (result, _) = f.serve(HostCohort::Builtin, 7, &f.owner, &ticket).await;
     assert!(refused(&result), "{result:?}");
     // After a host generation bump (a restarted host).
-    let (result, _) = f.serve(HostTier::Plugin, 8, &f.owner, &ticket).await;
+    let (result, _) = f.serve(HostCohort::reviewed(), 8, &f.owner, &ticket).await;
     assert!(refused(&result), "{result:?}");
     // A made-up ticket.
-    let (result, _) = f.serve(HostTier::Plugin, 7, &f.owner, "cwt.guess").await;
+    let (result, _) = f
+        .serve(HostCohort::reviewed(), 7, &f.owner, "cwt.guess")
+        .await;
     assert!(refused(&result), "{result:?}");
     // The refusal says nothing about which field mismatched, and never the ticket.
     let message = &result.as_ref().unwrap_err().message;
     assert!(!message.contains("cwt."), "{message}");
 
     // The ticket is still good for its owner afterwards.
-    let (ok, _) = f.serve(HostTier::Plugin, 7, &f.owner, &ticket).await;
+    let (ok, _) = f.serve(HostCohort::reviewed(), 7, &f.owner, &ticket).await;
     assert!(ok.is_ok(), "{ok:?}");
 
     // Eight invalid presentations are a burst: the host is ended, once it is.
-    let (_, violations) = f.serve(HostTier::Plugin, 7, &f.other, &ticket).await;
+    let (_, violations) = f.serve(HostCohort::reviewed(), 7, &f.other, &ticket).await;
     assert!(violations.is_empty(), "{violations:?}");
     let mut ended = Vec::new();
     for _ in 0..8 {
-        let (_, violations) = f.serve(HostTier::Plugin, 7, &f.other, "cwt.guess").await;
+        let (_, violations) = f
+            .serve(HostCohort::reviewed(), 7, &f.other, "cwt.guess")
+            .await;
         ended.extend(violations);
     }
     assert!(
@@ -894,18 +913,21 @@ async fn a_spoofed_ticket_is_refused_whoever_presents_it_and_a_burst_ends_the_ho
     );
 
     // The ticket dies with its host, its owner and its invocation.
-    f.manager.shared.core_calls.revoke_host(HostTier::Plugin, 7);
-    let (result, _) = f.serve(HostTier::Plugin, 7, &f.owner, &ticket).await;
+    f.manager
+        .shared
+        .core_calls
+        .revoke_host(HostCohort::reviewed(), 7);
+    let (result, _) = f.serve(HostCohort::reviewed(), 7, &f.owner, &ticket).await;
     assert!(refused(&result), "after the host exited: {result:?}");
     let guard = f.begin(7, &f.owner);
     let second = guard.ticket().to_string();
     f.manager.shared.core_calls.revoke_owner("a");
-    let (result, _) = f.serve(HostTier::Plugin, 7, &f.owner, &second).await;
+    let (result, _) = f.serve(HostCohort::reviewed(), 7, &f.owner, &second).await;
     assert!(refused(&result), "after the owner was revoked: {result:?}");
     let guard = f.begin(7, &f.owner);
     let third = guard.ticket().to_string();
     drop(guard);
-    let (result, _) = f.serve(HostTier::Plugin, 7, &f.owner, &third).await;
+    let (result, _) = f.serve(HostCohort::reviewed(), 7, &f.owner, &third).await;
     assert!(refused(&result), "after the invocation ended: {result:?}");
     assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
 }
@@ -948,7 +970,7 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
         .core_calls
         .serve_question(
             &f.manager.shared,
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             7,
             super::protocol::UserQuestionParams {
                 owner: f.owner.clone(),
@@ -966,36 +988,36 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
             .contains("fixture has no user question backend")
     );
     let (wrong_method, _) = f
-        .serve(HostTier::Plugin, 7, &f.owner, &question_ticket)
+        .serve(HostCohort::reviewed(), 7, &f.owner, &question_ticket)
         .await;
     assert!(refused(&wrong_method));
     for (tier, generation, owner, ticket) in [
         (
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             7,
             f.owner.clone(),
             guard.ticket().to_string(),
         ),
         (
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             7,
             f.owner.clone(),
             checkpoint_ticket.clone(),
         ),
         (
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             7,
             f.other.clone(),
             question_ticket.clone(),
         ),
         (
-            HostTier::Builtin,
+            HostCohort::Builtin,
             7,
             f.owner.clone(),
             question_ticket.clone(),
         ),
         (
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             8,
             f.owner.clone(),
             question_ticket.clone(),
@@ -1027,7 +1049,7 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
         .core_calls
         .serve_question(
             &f.manager.shared,
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             7,
             super::protocol::UserQuestionParams {
                 owner: f.owner.clone(),
@@ -1046,7 +1068,7 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
         .core_calls
         .serve_checkpoint(
             &f.manager.shared,
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             7,
             super::protocol::SessionCheckpointParams {
                 owner: f.owner.clone(),
@@ -1063,36 +1085,36 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
             .contains("fixture has no session checkpoint backend")
     );
     let (wrong_method, _) = f
-        .serve(HostTier::Plugin, 7, &f.owner, &checkpoint_ticket)
+        .serve(HostCohort::reviewed(), 7, &f.owner, &checkpoint_ticket)
         .await;
     assert!(refused(&wrong_method));
     for (tier, generation, owner, ticket) in [
         (
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             7,
             f.owner.clone(),
             guard.ticket().to_string(),
         ),
         (
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             7,
             f.owner.clone(),
             question_ticket.clone(),
         ),
         (
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             7,
             f.other.clone(),
             checkpoint_ticket.clone(),
         ),
         (
-            HostTier::Builtin,
+            HostCohort::Builtin,
             7,
             f.owner.clone(),
             checkpoint_ticket.clone(),
         ),
         (
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             8,
             f.owner.clone(),
             checkpoint_ticket.clone(),
@@ -1123,7 +1145,7 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
     let (cx, _violations, cancel) = HostRequestContext::for_test(4);
     let checkpoint = f.manager.shared.core_calls.serve_checkpoint(
         &f.manager.shared,
-        HostTier::Plugin,
+        HostCohort::reviewed(),
         7,
         super::protocol::SessionCheckpointParams {
             owner: f.owner.clone(),
@@ -1156,7 +1178,7 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
         let (cx, _violations, _cancel) = HostRequestContext::for_test(23);
         let question = f.manager.shared.core_calls.serve_question(
             &f.manager.shared,
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             7,
             super::protocol::UserQuestionParams {
                 owner: f.owner.clone(),
@@ -1190,7 +1212,7 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
         let (cx, _violations, _cancel) = HostRequestContext::for_test(24);
         let checkpoint = f.manager.shared.core_calls.serve_checkpoint(
             &f.manager.shared,
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             7,
             super::protocol::SessionCheckpointParams {
                 owner: f.owner.clone(),
@@ -1267,7 +1289,7 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
         let (cx, _violations, _cancel) = HostRequestContext::for_test(26);
         let question = f.manager.shared.core_calls.serve_question(
             &f.manager.shared,
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             7,
             super::protocol::UserQuestionParams {
                 owner: f.owner.clone(),
@@ -1300,7 +1322,7 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
         let (cx, _violations, cancel) = HostRequestContext::for_test(25);
         let question = f.manager.shared.core_calls.serve_question(
             &f.manager.shared,
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             7,
             super::protocol::UserQuestionParams {
                 owner: f.owner.clone(),
@@ -1317,7 +1339,11 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
         match cancellation {
             "host" => cancel.cancel(),
             "invocation" => drop(pending.take()),
-            "revocation" => f.manager.shared.core_calls.revoke_host(HostTier::Plugin, 7),
+            "revocation" => f
+                .manager
+                .shared
+                .core_calls
+                .revoke_host(HostCohort::reviewed(), 7),
             _ => unreachable!(),
         }
         assert_eq!(question.await.unwrap_err().code, error_code::CANCELLED);
@@ -1339,7 +1365,7 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
         .shared
         .core_calls
         .begin(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             7,
             &f.owner,
             "child-call",
@@ -1358,7 +1384,7 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
     // old one the host still holds no longer names the current owner.
     let ticket = guard.ticket().to_string();
     f.manager.shared.registry.lock().unwrap().revoke_owner("a");
-    let (result, _) = f.serve(HostTier::Plugin, 7, &f.owner, &ticket).await;
+    let (result, _) = f.serve(HostCohort::reviewed(), 7, &f.owner, &ticket).await;
     assert!(refused(&result), "{result:?}");
     let (cx, _violations, _cancel) = HostRequestContext::for_test(5);
     assert!(refused(
@@ -1367,7 +1393,7 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
             .core_calls
             .serve_checkpoint(
                 &f.manager.shared,
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 7,
                 super::protocol::SessionCheckpointParams {
                     owner: f.owner.clone(),
@@ -1987,7 +2013,7 @@ impl Fixture {
             .serve_broker_in(
                 table,
                 &self.manager.shared,
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 host_generation,
                 super::protocol::DshBrokerParams {
                     owner: owner.clone(),
@@ -2732,7 +2758,9 @@ async fn an_invocations_brokers_share_one_cap_on_nested_core_calls() {
         f.server.asked.load(Ordering::SeqCst),
         MAX_CALLS_PER_INVOCATION as usize
     );
-    let (direct, _) = f.serve(HostTier::Plugin, 7, &f.owner, guard.ticket()).await;
+    let (direct, _) = f
+        .serve(HostCohort::reviewed(), 7, &f.owner, guard.ticket())
+        .await;
     assert!(
         refused(&direct),
         "core/call and the brokers share the one cap: {direct:?}"
@@ -3438,7 +3466,13 @@ async fn dsh_terminal_ends_plugin_shells_when_disabled_or_revoked_while_keeping_
         let mut registry = f.manager.shared.registry.lock().unwrap();
         for id in ["a", "b"] {
             let owner = registry
-                .begin_owner(HostTier::Plugin, id, id, Some(fake_authority(id)), "hash")
+                .begin_owner(
+                    HostCohort::reviewed(),
+                    id,
+                    id,
+                    Some(fake_authority(id)),
+                    "hash",
+                )
                 .unwrap();
             registry.mark_active(&owner);
             if id == "a" {
@@ -3493,7 +3527,10 @@ async fn dsh_terminal_ends_plugin_shells_when_disabled_or_revoked_while_keeping_
     let idle_id = idle["terminal_id"].as_str().unwrap().to_string();
     let idle_shell = terminal_session::lookup(&workspace, Some("thread-revoke"), &idle_id).unwrap();
 
-    f.manager.shared.core_calls.revoke_host(HostTier::Plugin, 7);
+    f.manager
+        .shared
+        .core_calls
+        .revoke_host(HostCohort::reviewed(), 7);
     assert!(
         terminal_session::lookup(&workspace, Some("thread-revoke"), &idle_id).is_some(),
         "host process exit must not end a still-enabled plugin's shells"
@@ -4452,7 +4489,7 @@ async fn the_fifty_first_broker_act_in_one_tool_call_is_refused() {
 async fn plugins_call(
     f: &Fixture,
     owner: &OwnerRef,
-    tier: HostTier,
+    cohort: impl Into<HostCohort>,
     ticket: &str,
     method: &str,
 ) -> Result<Value, RpcErrorWire> {
@@ -4463,7 +4500,7 @@ async fn plugins_call(
         .serve_broker_in(
             super::dsh_broker::TABLE,
             &f.manager.shared,
-            tier,
+            cohort,
             7,
             super::protocol::DshBrokerParams {
                 owner: owner.clone(),
@@ -4488,7 +4525,7 @@ async fn a_plugins_ticket_exists_only_for_the_creator_module_and_its_root_agent(
         let mut registry = f.manager.shared.registry.lock().unwrap();
         let mut builtin = |id: &str| {
             let owner = registry
-                .begin_owner(HostTier::Builtin, id, id, None, "digest")
+                .begin_owner(HostCohort::Builtin, id, id, None, "digest")
                 .unwrap();
             registry.mark_active(&owner);
             owner
@@ -4519,12 +4556,12 @@ async fn a_plugins_ticket_exists_only_for_the_creator_module_and_its_root_agent(
         ));
     }
     f.in_session("creator-session");
-    let begin = |f: &Fixture, tier: HostTier, owner: &OwnerRef, context: &ToolContext| {
+    let begin = |f: &Fixture, cohort: HostCohort, owner: &OwnerRef, context: &ToolContext| {
         f.manager
             .shared
             .core_calls
             .begin_scoped(
-                tier,
+                cohort,
                 7,
                 owner,
                 "call-1",
@@ -4545,29 +4582,29 @@ async fn a_plugins_ticket_exists_only_for_the_creator_module_and_its_root_agent(
             .map(|wire| wire.service)
             .collect()
     };
-    let plugin_guard = begin(&f, HostTier::Plugin, &f.owner, &f.context);
+    let plugin_guard = begin(&f, HostCohort::reviewed(), &f.owner, &f.context);
     assert_eq!(
         services(&plugin_guard),
         vec!["remote"],
         "a plugin never gets plugins"
     );
-    let mcp_guard = begin(&f, HostTier::Builtin, &mcp, &f.context);
+    let mcp_guard = begin(&f, HostCohort::Builtin, &mcp, &f.context);
     assert!(
         services(&mcp_guard).is_empty(),
         "a module whose row names nothing"
     );
     let child = f.context.clone().with_owner_agent("child-1", "child");
-    let child_guard = begin(&f, HostTier::Builtin, &creator, &child);
+    let child_guard = begin(&f, HostCohort::Builtin, &creator, &child);
     assert!(
         services(&child_guard).is_empty(),
         "no plugins ticket for a sub-agent"
     );
-    let creator_guard = begin(&f, HostTier::Builtin, &creator, &f.context);
+    let creator_guard = begin(&f, HostCohort::Builtin, &creator, &f.context);
     assert_eq!(services(&creator_guard), vec!["plugins"]);
     let ticket = broker_ticket(&creator_guard, "plugins").unwrap();
 
     assert_eq!(
-        dsh_refusal(&plugins_call(&f, &creator, HostTier::Builtin, &ticket, "list").await),
+        dsh_refusal(&plugins_call(&f, &creator, HostCohort::Builtin, &ticket, "list").await),
         (error_code::NOT_AVAILABLE, "not_available".into())
     );
     assert_eq!(
@@ -4575,7 +4612,7 @@ async fn a_plugins_ticket_exists_only_for_the_creator_module_and_its_root_agent(
             &plugins_call(
                 &f,
                 &creator,
-                HostTier::Builtin,
+                HostCohort::Builtin,
                 &ticket,
                 "uninstall_everything"
             )
@@ -4584,7 +4621,7 @@ async fn a_plugins_ticket_exists_only_for_the_creator_module_and_its_root_agent(
         (error_code::INVALID_PARAMS, "unknown_method".into())
     );
     assert_eq!(
-        dsh_refusal(&plugins_call(&f, &f.owner, HostTier::Plugin, &ticket, "list").await),
+        dsh_refusal(&plugins_call(&f, &f.owner, HostCohort::reviewed(), &ticket, "list").await),
         (error_code::REFUSED, "ticket_refused".into()),
         "a plugin presenting the creator's ticket"
     );
@@ -4695,7 +4732,14 @@ async fn a_plugins_own_core_call_cannot_reach_the_broker_gate() {
         let act = json!({"plugin": "a", "service": "remote", "method": "pair", "effect": effect});
         let _open = OpenAct::open(&act, 4).unwrap();
         let (result, _) = f
-            .serve_call(HostTier::Plugin, 7, &f.owner, &ticket, name, act.clone())
+            .serve_call(
+                HostCohort::reviewed(),
+                7,
+                &f.owner,
+                &ticket,
+                name,
+                act.clone(),
+            )
             .await;
         assert!(refused(&result), "{name}: {result:?}");
     }
@@ -5273,7 +5317,7 @@ async fn dsh_catalog_arm_plans_reviewed_installs_approved_routes_and_a_keyless_b
         let mut owners = f.manager.shared.registry.lock().unwrap();
         let owner = owners
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 "route-demo",
                 "route-demo",
                 Some(fake_authority("route-demo")),

@@ -20,7 +20,7 @@ use super::super::protocol::{DshBrokerParams, DshService, RpcErrorWire, error_co
 use super::super::registry::OwnerState;
 use super::super::supervisor::HostRequestContext;
 use super::super::test_support::fake_authority;
-use super::super::tier::HostTier;
+use super::super::tier::HostCohort;
 use super::super::{ExtensionHostManager, ExtensionHostOptions, TestManagerGuard};
 use super::{MAX_TEXT_BYTES, clean_diagnostic_fragment, diagnostic_path, sanitize_inline, serve};
 use crate::core::engine::{HumanDecision, LivePosture};
@@ -64,16 +64,22 @@ impl PluginsFixture {
         let (creator, mcp, plugin_owner) = {
             let mut registry = manager.shared.registry.lock().unwrap();
             let creator = registry
-                .begin_owner(HostTier::Builtin, "host:creator", "creator", None, "digest")
+                .begin_owner(
+                    HostCohort::Builtin,
+                    "host:creator",
+                    "creator",
+                    None,
+                    "digest",
+                )
                 .unwrap();
             registry.mark_active(&creator);
             let mcp = registry
-                .begin_owner(HostTier::Builtin, "host:mcp", "mcp", None, "digest")
+                .begin_owner(HostCohort::Builtin, "host:mcp", "mcp", None, "digest")
                 .unwrap();
             registry.mark_active(&mcp);
             let plugin_owner = registry
                 .begin_owner(
-                    HostTier::Plugin,
+                    HostCohort::reviewed(),
                     "user/hash/alpha",
                     "alpha",
                     Some(fake_authority("alpha")),
@@ -140,14 +146,19 @@ impl PluginsFixture {
         registry
     }
 
-    fn begin(&self, owner: &OwnerRef, tier: HostTier, context: &ToolContext) -> InvocationGuard {
+    fn begin(
+        &self,
+        owner: &OwnerRef,
+        cohort: HostCohort,
+        context: &ToolContext,
+    ) -> InvocationGuard {
         let caller = self.gate.extension().unwrap().0.clone();
         let services = self.manager.shared.broker_services(owner);
         self.manager
             .shared
             .core_calls
             .begin_scoped(
-                tier,
+                cohort,
                 7,
                 owner,
                 "call-1",
@@ -164,7 +175,7 @@ impl PluginsFixture {
     async fn call_broker(
         &self,
         owner: &OwnerRef,
-        tier: HostTier,
+        cohort: HostCohort,
         ticket: &str,
         method: &str,
         input: Value,
@@ -176,7 +187,7 @@ impl PluginsFixture {
             .serve_broker_in(
                 TABLE,
                 &self.manager.shared,
-                tier,
+                cohort,
                 7,
                 DshBrokerParams {
                     owner: owner.clone(),
@@ -314,11 +325,11 @@ async fn list_has_one_entry_per_plugin_and_says_who_approved() {
 
     f.reload_registry();
 
-    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
 
     let listed = f
-        .call_broker(&f.creator, HostTier::Builtin, &ticket, "list", json!({}))
+        .call_broker(&f.creator, HostCohort::Builtin, &ticket, "list", json!({}))
         .await
         .unwrap();
     assert_eq!(listed["truncated"], false);
@@ -393,7 +404,13 @@ async fn list_has_one_entry_per_plugin_and_says_who_approved() {
     assert_eq!(builtin["codewhale"]["scope"], "builtin");
 
     let status = f
-        .call_broker(&f.creator, HostTier::Builtin, &ticket, "status", json!({}))
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "status",
+            json!({}),
+        )
         .await
         .unwrap();
     let status_rows = status["entries"].as_array().unwrap();
@@ -452,11 +469,11 @@ async fn an_agent_record_of_another_project_shows_no_path_and_no_conversation() 
 
     f.reload_registry();
 
-    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
 
     let listed = f
-        .call_broker(&f.creator, HostTier::Builtin, &ticket, "list", json!({}))
+        .call_broker(&f.creator, HostCohort::Builtin, &ticket, "list", json!({}))
         .await
         .unwrap();
     let wire = listed.to_string();
@@ -515,7 +532,7 @@ async fn status_carries_the_hosts_activation_error() {
         let mut owners = f.manager.shared.registry.lock().unwrap();
         let owner = owners
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 &plugin_id,
                 "native-broken",
                 Some(fake_authority(&plugin_id)),
@@ -525,11 +542,17 @@ async fn status_carries_the_hosts_activation_error() {
         owners.mark_failed(&owner, OwnerState::Failed("boom initializing host".into()));
     }
 
-    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
 
     let status_on = f
-        .call_broker(&f.creator, HostTier::Builtin, &ticket, "status", json!({}))
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "status",
+            json!({}),
+        )
         .await
         .unwrap();
     let rows_on = status_on["entries"].as_array().unwrap();
@@ -559,7 +582,13 @@ async fn status_carries_the_hosts_activation_error() {
     drop(_policy);
     let _policy_off = TestPolicyGuard::extension_host(false);
     let status_off = f
-        .call_broker(&f.creator, HostTier::Builtin, &ticket, "status", json!({}))
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "status",
+            json!({}),
+        )
         .await
         .unwrap();
     let native_off = status_off["entries"]
@@ -582,7 +611,7 @@ async fn status_carries_the_hosts_activation_error() {
 async fn posture_names_the_live_mode_in_dsh_words() {
     let mut f = PluginsFixture::new();
     f.reload_registry();
-    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
 
     let cases = [
@@ -623,7 +652,13 @@ async fn posture_names_the_live_mode_in_dsh_words() {
     for (app_mode, approval_mode, expected_mode, expected_permission) in cases {
         f.posture.switch_mode_for_tests(app_mode, approval_mode);
         let answer = f
-            .call_broker(&f.creator, HostTier::Builtin, &ticket, "posture", json!({}))
+            .call_broker(
+                &f.creator,
+                HostCohort::Builtin,
+                &ticket,
+                "posture",
+                json!({}),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -643,12 +678,12 @@ async fn posture_names_the_live_mode_in_dsh_words() {
         .with_human_decision(HumanDecision::for_test("creator_tool", &json!({})));
     f.posture
         .switch_mode_for_tests(AppMode::Agent, ApprovalMode::Suggest);
-    let admitted_guard = f.begin(&f.creator, HostTier::Builtin, &admitted);
+    let admitted_guard = f.begin(&f.creator, HostCohort::Builtin, &admitted);
     let admitted_ticket = plugin_ticket(&admitted_guard).unwrap();
     let answer = f
         .call_broker(
             &f.creator,
-            HostTier::Builtin,
+            HostCohort::Builtin,
             &admitted_ticket,
             "posture",
             json!({}),
@@ -689,12 +724,12 @@ async fn a_read_raises_no_card_in_ask_and_lands_on_the_tool_result() {
         BrokerActTool::all().to_vec(),
     );
 
-    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
 
     for method in ["list", "status", "posture"] {
         let answer = f
-            .call_broker(&f.creator, HostTier::Builtin, &ticket, method, json!({}))
+            .call_broker(&f.creator, HostCohort::Builtin, &ticket, method, json!({}))
             .await;
         assert!(answer.is_ok(), "{method}: {answer:?}");
     }
@@ -716,7 +751,7 @@ async fn a_read_raises_no_card_in_ask_and_lands_on_the_tool_result() {
 async fn a_wrong_shaped_input_gets_invalid_input() {
     let mut f = PluginsFixture::new();
     f.reload_registry();
-    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
 
     for method in ["list", "status", "posture"] {
@@ -728,7 +763,7 @@ async fn a_wrong_shaped_input_gets_invalid_input() {
             json!("bad"),
         ] {
             let err = f
-                .call_broker(&f.creator, HostTier::Builtin, &ticket, method, bad_input)
+                .call_broker(&f.creator, HostCohort::Builtin, &ticket, method, bad_input)
                 .await;
             assert_eq!(
                 refusal(&err),
@@ -747,10 +782,10 @@ async fn a_sub_agent_caller_is_refused() {
 
     let mut sub_context = f.context.clone();
     sub_context.execution.owner_agent_id = Some("sub-agent-1".into());
-    let sub_guard = f.begin(&f.creator, HostTier::Builtin, &sub_context);
+    let sub_guard = f.begin(&f.creator, HostCohort::Builtin, &sub_context);
     assert!(plugin_ticket(&sub_guard).is_none());
 
-    let root_guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let root_guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let root_ticket = plugin_ticket(&root_guard).unwrap();
     drop(root_guard);
 
@@ -758,7 +793,7 @@ async fn a_sub_agent_caller_is_refused() {
         let err = f
             .call_broker(
                 &f.creator,
-                HostTier::Builtin,
+                HostCohort::Builtin,
                 &root_ticket,
                 method,
                 json!({}),
@@ -782,7 +817,7 @@ async fn an_owner_that_is_not_the_creator_module_is_refused() {
         let mut owners = f.manager.shared.registry.lock().unwrap();
         let forged_err = owners
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 "host:creator",
                 "forged-creator",
                 Some(fake_authority("forged-creator")),
@@ -792,9 +827,9 @@ async fn an_owner_that_is_not_the_creator_module_is_refused() {
         assert!(forged_err.contains("host:creator"), "{forged_err}");
     }
 
-    let plugin_guard = f.begin(&f.plugin_owner, HostTier::Plugin, &f.context);
+    let plugin_guard = f.begin(&f.plugin_owner, HostCohort::reviewed(), &f.context);
     assert!(plugin_ticket(&plugin_guard).is_none());
-    let mcp_guard = f.begin(&f.mcp, HostTier::Builtin, &f.context);
+    let mcp_guard = f.begin(&f.mcp, HostCohort::Builtin, &f.context);
     assert!(plugin_ticket(&mcp_guard).is_none());
 
     let forged_owner = OwnerRef {
@@ -803,14 +838,14 @@ async fn an_owner_that_is_not_the_creator_module_is_refused() {
         owner_token: "forged-token".into(),
     };
 
-    let creator_guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let creator_guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let creator_ticket = plugin_ticket(&creator_guard).unwrap();
 
     for method in ["list", "status", "posture"] {
         for (owner, tier) in [
-            (&f.plugin_owner, HostTier::Plugin),
-            (&f.mcp, HostTier::Builtin),
-            (&forged_owner, HostTier::Plugin),
+            (&f.plugin_owner, HostCohort::reviewed()),
+            (&f.mcp, HostCohort::Builtin),
+            (&forged_owner, HostCohort::reviewed()),
         ] {
             let err = f
                 .call_broker(owner, tier, &creator_ticket, method, json!({}))
@@ -843,12 +878,12 @@ async fn an_owner_that_is_not_the_creator_module_is_refused() {
 async fn a_session_without_a_registry_answers_not_available() {
     let f = PluginsFixture::new();
     assert!(f.context.plugin_registry.is_none());
-    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
 
     for method in ["list", "status"] {
         let err = f
-            .call_broker(&f.creator, HostTier::Builtin, &ticket, method, json!({}))
+            .call_broker(&f.creator, HostCohort::Builtin, &ticket, method, json!({}))
             .await;
         assert_eq!(
             refusal(&err),
@@ -860,12 +895,12 @@ async fn a_session_without_a_registry_answers_not_available() {
     let mut no_posture = f.context.clone();
     no_posture.live_posture = None;
     no_posture.plugin_registry = Some(Arc::new(discover_with_config(&f.config)));
-    let no_posture_guard = f.begin(&f.creator, HostTier::Builtin, &no_posture);
+    let no_posture_guard = f.begin(&f.creator, HostCohort::Builtin, &no_posture);
     let no_posture_ticket = plugin_ticket(&no_posture_guard).unwrap();
     let err = f
         .call_broker(
             &f.creator,
-            HostTier::Builtin,
+            HostCohort::Builtin,
             &no_posture_ticket,
             "posture",
             json!({}),
@@ -891,11 +926,11 @@ async fn a_long_list_is_cut_and_says_so() {
     }
 
     f.reload_registry();
-    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
 
     let single_listed = f
-        .call_broker(&f.creator, HostTier::Builtin, &ticket, "list", json!({}))
+        .call_broker(&f.creator, HostCohort::Builtin, &ticket, "list", json!({}))
         .await
         .unwrap();
     assert_eq!(single_listed["truncated"], true);
@@ -908,7 +943,13 @@ async fn a_long_list_is_cut_and_says_so() {
     );
 
     let single_status = f
-        .call_broker(&f.creator, HostTier::Builtin, &ticket, "status", json!({}))
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "status",
+            json!({}),
+        )
         .await
         .unwrap();
     assert_eq!(single_status["truncated"], false);
@@ -928,18 +969,24 @@ async fn a_long_list_is_cut_and_says_so() {
 
     drop(guard);
     f.reload_registry();
-    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
 
     let listed = f
-        .call_broker(&f.creator, HostTier::Builtin, &ticket, "list", json!({}))
+        .call_broker(&f.creator, HostCohort::Builtin, &ticket, "list", json!({}))
         .await
         .unwrap();
     assert_eq!(listed["truncated"], true);
     assert_eq!(listed["entries"].as_array().unwrap().len(), 100);
 
     let status = f
-        .call_broker(&f.creator, HostTier::Builtin, &ticket, "status", json!({}))
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "status",
+            json!({}),
+        )
         .await
         .unwrap();
     assert_eq!(status["truncated"], true);
@@ -950,14 +997,14 @@ async fn a_long_list_is_cut_and_says_so() {
 async fn the_four_changing_methods_still_answer_not_available() {
     let mut f = PluginsFixture::new();
     f.reload_registry();
-    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
 
     for method in ["install", "remove", "enable", "disable"] {
         let err = f
             .call_broker(
                 &f.creator,
-                HostTier::Builtin,
+                HostCohort::Builtin,
                 &ticket,
                 method,
                 json!({"plugin": "alpha"}),
@@ -994,11 +1041,11 @@ async fn a_state_error_lists_plugins_as_disabled_with_scrubbed_top_diagnostic() 
     let broken = f.reload_registry();
     assert!(broken.state_error().is_some());
 
-    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
 
     let listed = f
-        .call_broker(&f.creator, HostTier::Builtin, &ticket, "list", json!({}))
+        .call_broker(&f.creator, HostCohort::Builtin, &ticket, "list", json!({}))
         .await
         .unwrap();
     assert_eq!(listed["entries"][0]["enabled"], false);
@@ -1016,7 +1063,13 @@ async fn a_state_error_lists_plugins_as_disabled_with_scrubbed_top_diagnostic() 
     );
 
     let status = f
-        .call_broker(&f.creator, HostTier::Builtin, &ticket, "status", json!({}))
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "status",
+            json!({}),
+        )
         .await
         .unwrap();
     assert_eq!(status["entries"][0]["enabled"], false);
@@ -1028,7 +1081,7 @@ async fn a_state_error_lists_plugins_as_disabled_with_scrubbed_top_diagnostic() 
 async fn fifty_reads_hit_the_per_call_ceiling() {
     let mut f = PluginsFixture::new();
     f.reload_registry();
-    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
 
     for idx in 0..super::super::core_call::MAX_CALLS_PER_INVOCATION {
@@ -1038,13 +1091,13 @@ async fn fifty_reads_hit_the_per_call_ceiling() {
             _ => "posture",
         };
         let ok = f
-            .call_broker(&f.creator, HostTier::Builtin, &ticket, method, json!({}))
+            .call_broker(&f.creator, HostCohort::Builtin, &ticket, method, json!({}))
             .await;
         assert!(ok.is_ok(), "call {idx}: {ok:?}");
     }
 
     let capped = f
-        .call_broker(&f.creator, HostTier::Builtin, &ticket, "list", json!({}))
+        .call_broker(&f.creator, HostCohort::Builtin, &ticket, "list", json!({}))
         .await;
     assert_eq!(refusal(&capped), (error_code::REFUSED, "limit".into()));
 }
@@ -1094,7 +1147,7 @@ async fn diagnostics_and_manifest_text_are_scrubbed_and_bounded() {
         let mut owners = f.manager.shared.registry.lock().unwrap();
         let owner = owners
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 &plugin_id,
                 "hostile",
                 Some(fake_authority(&plugin_id)),
@@ -1109,11 +1162,11 @@ async fn diagnostics_and_manifest_text_are_scrubbed_and_bounded() {
         owners.mark_failed(&owner, OwnerState::Failed(msg));
     }
 
-    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
 
     let listed = f
-        .call_broker(&f.creator, HostTier::Builtin, &ticket, "list", json!({}))
+        .call_broker(&f.creator, HostCohort::Builtin, &ticket, "list", json!({}))
         .await
         .unwrap();
     assert_eq!(listed["truncated"], true);
@@ -1125,7 +1178,13 @@ async fn diagnostics_and_manifest_text_are_scrubbed_and_bounded() {
     assert!(!desc.contains("sk-proj-secret123456"), "{desc}");
 
     let status = f
-        .call_broker(&f.creator, HostTier::Builtin, &ticket, "status", json!({}))
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "status",
+            json!({}),
+        )
         .await
         .unwrap();
     assert_eq!(status["truncated"], true);
@@ -1181,11 +1240,11 @@ async fn symlinked_install_record_does_not_mark_user_plugin_removable() {
     let target = f._temp.path().join("outside-marker");
     fs::write(&target, "local\n").unwrap();
     std::os::unix::fs::symlink(&target, plugin_dir.join(INSTALLED_FROM_MARKER)).unwrap();
-    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
 
     let listed = f
-        .call_broker(&f.creator, HostTier::Builtin, &ticket, "list", json!({}))
+        .call_broker(&f.creator, HostCohort::Builtin, &ticket, "list", json!({}))
         .await
         .unwrap();
     assert_eq!(listed["entries"].as_array().unwrap().len(), 1);
@@ -1230,7 +1289,7 @@ async fn status_keeps_later_plugins_when_an_earlier_plugin_truncates_a_field() {
         let mut owners = f.manager.shared.registry.lock().unwrap();
         let first_owner = owners
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 &first_id,
                 "00-hostile",
                 Some(fake_authority(&first_id)),
@@ -1241,7 +1300,7 @@ async fn status_keeps_later_plugins_when_an_earlier_plugin_truncates_a_field() {
 
         let second_owner = owners
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 &second_id,
                 "zz-healthy",
                 Some(fake_authority(&second_id)),
@@ -1255,10 +1314,16 @@ async fn status_keeps_later_plugins_when_an_earlier_plugin_truncates_a_field() {
         "extension `zz-healthy` active (tools: ping; commands: )".into(),
     );
 
-    let guard = f.begin(&f.creator, HostTier::Builtin, &f.context);
+    let guard = f.begin(&f.creator, HostCohort::Builtin, &f.context);
     let ticket = plugin_ticket(&guard).unwrap();
     let status = f
-        .call_broker(&f.creator, HostTier::Builtin, &ticket, "status", json!({}))
+        .call_broker(
+            &f.creator,
+            HostCohort::Builtin,
+            &ticket,
+            "status",
+            json!({}),
+        )
         .await
         .unwrap();
     assert_eq!(status["truncated"], true);

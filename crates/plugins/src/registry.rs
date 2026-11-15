@@ -195,7 +195,14 @@ fn check_approver(
                 .to_string(),
         );
     }
-    if agent.workspace.is_empty() || Path::new(&agent.workspace) != workspace {
+    let normalized_agent =
+        codewhale_config::normalize_project_workspace(Path::new(&agent.workspace));
+    let normalized_target = codewhale_config::normalize_project_workspace(workspace);
+    let workspaces_match = match (&normalized_agent, &normalized_target) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => Path::new(&agent.workspace) == workspace,
+    };
+    if agent.workspace.is_empty() || !workspaces_match {
         return Err(
             "An approval by the agent is limited to its own project, and this is not that project"
                 .to_string(),
@@ -241,7 +248,17 @@ fn check_approver(
 fn outside_reach(approver: Option<&PluginApprover>, workspace: &Path) -> bool {
     approver
         .and_then(PluginApprover::agent_workspace)
-        .is_some_and(|recorded| recorded.is_empty() || Path::new(recorded) != workspace)
+        .is_some_and(|recorded| {
+            if recorded.is_empty() {
+                return true;
+            }
+            let norm_recorded = codewhale_config::normalize_project_workspace(Path::new(recorded));
+            let norm_target = codewhale_config::normalize_project_workspace(workspace);
+            match (norm_recorded, norm_target) {
+                (Ok(a), Ok(b)) => a != b,
+                _ => Path::new(recorded) != workspace,
+            }
+        })
 }
 
 #[derive(Debug, Clone, Default)]

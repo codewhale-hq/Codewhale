@@ -2,7 +2,7 @@
 use super::ManagerShared;
 use super::protocol::{RegisterKind, RegisterParams, RegisterResult};
 use super::supervisor::HostRequestContext;
-use super::tier::HostTier;
+use super::tier::{HostCohort, HostTier};
 use codewhale_config::PluginAuthority;
 use codewhale_config::{EntryRef, OwnerRef};
 use codewhale_mcp::config::McpServerConfig;
@@ -59,14 +59,18 @@ impl NativeMcpAuthority for ManagerShared {
         if !codewhale_plugins::activation::extension_host_policy_enabled() {
             return Err("Native MCP is disabled by current policy".into());
         }
-        self.ready_host(HostTier::Plugin)
+        let cohort = self
+            .registry
+            .lock()
+            .expect("registry lock")
+            .cohort_of(&registration.owner)
+            .ok_or_else(|| "Native MCP owner has no cohort".to_string())?;
+        self.ready_host(&cohort)
             .map_err(|status| status.to_string())?;
-        if self
-            .tier_runtime(HostTier::Plugin)
-            .host_generation
-            .load(Ordering::SeqCst)
-            != registration.host_generation
-        {
+        let runtime = self
+            .cohort_runtime(&cohort)
+            .ok_or_else(|| "cohort runtime gone".to_string())?;
+        if runtime.host_generation.load(Ordering::SeqCst) != registration.host_generation {
             return Err("Native MCP host generation changed".into());
         }
         if !self.selection_current(
@@ -116,7 +120,7 @@ impl NativeMcpRef {
 
 pub(super) async fn admit(
     shared: &Arc<ManagerShared>,
-    tier: HostTier,
+    cohort: &HostCohort,
     generation: u64,
     params: RegisterParams,
     cx: &HostRequestContext,
@@ -124,7 +128,7 @@ pub(super) async fn admit(
     let outcome = async {
         params.check_spec()?;
         if params.kind != RegisterKind::McpServer
-            || tier != HostTier::Plugin
+            || cohort.tier() != HostTier::Plugin
             || params.scope.is_none()
         {
             return Err("MCP definitions require a reviewed Native entry scope".into());
@@ -133,7 +137,7 @@ pub(super) async fn admit(
             return Err("MCP definition exceeds 64 KiB".into());
         }
         let authority = shared
-            .live_owner_authority(tier, |registry| {
+            .live_owner_authority(cohort, |registry| {
                 registry
                     .authority_for(&params.owner)
                     .ok_or_else(|| "stale MCP owner".to_string())?;
@@ -148,9 +152,11 @@ pub(super) async fn admit(
         )
         .await?;
         shared
-            .ready_host(tier)
+            .ready_host(cohort)
             .map_err(|status| status.to_string())?;
-        let runtime = shared.tier_runtime(tier);
+        let runtime = shared
+            .cohort_runtime(cohort)
+            .ok_or_else(|| "cohort runtime gone".to_string())?;
         let _host = runtime.host.lock().expect("host lock");
         if cx.cancel.is_cancelled() || runtime.host_generation.load(Ordering::SeqCst) != generation
         {
@@ -228,9 +234,6 @@ pub fn for_plugins(
     };
     let manager = super::manager();
     let shared = &manager.shared;
-    if shared.ready_host(HostTier::Plugin).is_err() {
-        return Ok(Vec::new());
-    }
     let Some(caller_cancel) = shared.selection_cancellation(selection) else {
         return Ok(Vec::new());
     };
@@ -239,6 +242,17 @@ pub fn for_plugins(
     let mut result = Vec::new();
     let mut names = std::collections::HashSet::new();
     for definition in definitions {
+        let cohort = shared
+            .registry
+            .lock()
+            .expect("registry lock")
+            .cohort_of(&definition.owner);
+        let Some(cohort) = cohort else {
+            continue;
+        };
+        if shared.ready_host(&cohort).is_err() {
+            continue;
+        }
         let Some(plugin) = plugins.get(&definition.owner.plugin_id) else {
             continue;
         };

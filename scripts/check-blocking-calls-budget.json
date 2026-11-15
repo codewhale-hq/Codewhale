@@ -136,7 +136,7 @@
   },
   "crates/engine/src/extension_host/supervisor.rs": {
     "path_canonicalize": 7,
-    "std_fs": 5
+    "std_fs": 6
   },
   "crates/engine/src/extension_host/windows.rs": {
     "path_canonicalize": 1

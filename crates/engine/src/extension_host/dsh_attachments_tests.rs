@@ -25,9 +25,10 @@ use super::super::protocol::{
 };
 use super::super::supervisor::HostRequestContext;
 use super::super::test_support::{FixturePlugins, fake_authority, host_tool, plugin_id};
-use super::super::tier::HostTier;
 use super::super::tool::{resolve_held_image, wire_to_result};
-use super::super::{ExtensionHostManager, ExtensionHostOptions, OwnerState, TestManagerGuard};
+use super::super::{
+    ExtensionHostManager, ExtensionHostOptions, HostCohort, OwnerState, TestManagerGuard,
+};
 use crate::image_attach::test_support::PNG_1X1;
 use crate::image_attach::{
     MAX_IMAGE_BYTES, MAX_IMAGE_DIMENSION, bound_rich_tool_result, encode_image_bytes,
@@ -69,7 +70,7 @@ fn seam(plugin: &str) -> Seam {
         let mut registry = manager.shared.registry.lock().unwrap();
         let owner = registry
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 plugin,
                 "Attachments Fixture",
                 Some(fake_authority(plugin)),
@@ -120,7 +121,7 @@ impl Seam {
             .shared
             .core_calls
             .begin(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 HOST_GENERATION,
                 &self.owner,
                 call_id,
@@ -151,7 +152,7 @@ impl Seam {
             .serve_broker_in(
                 TABLE,
                 &self.manager.shared,
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 HOST_GENERATION,
                 DshBrokerParams {
                     owner: self.owner.clone(),
@@ -820,7 +821,7 @@ async fn a_read_with_no_conversation_snapshot_is_refused() {
     let ctx = ToolContext::new(std::env::temp_dir()).with_origin_turn_id("no-snap");
     let id = format!("sha256:{}", sha256_hex(PNG_1X1));
     let guard = s.manager.shared.core_calls.begin_scoped(
-        HostTier::Plugin,
+        HostCohort::reviewed(),
         HOST_GENERATION,
         &s.owner,
         "call-no-snap",
@@ -1084,7 +1085,7 @@ async fn late_refusal_after_save_rolls_back_held_image_without_touching_prior_va
         .serve_broker_in(
             &[(DshService::Attachments, revoke_owner_after_arm)],
             &s.manager.shared,
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             HOST_GENERATION,
             DshBrokerParams {
                 owner: s.owner.clone(),
@@ -1144,7 +1145,7 @@ async fn late_refusal_after_save_rolls_back_held_image_without_touching_prior_va
         .serve_broker_in(
             &[(DshService::Attachments, revoke_owner_after_arm)],
             &s2.manager.shared,
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             HOST_GENERATION,
             DshBrokerParams {
                 owner: s2.owner.clone(),

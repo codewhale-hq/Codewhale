@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use super::tier::HostTier;
+use super::tier::{HostCohort, HostTier};
 use codewhale_config::OwnerRef;
 
 /// What a ticket is for. A kind says how it is used up, and nothing else; the
@@ -81,7 +81,7 @@ impl std::fmt::Debug for Ticket {
 /// What a new ticket is good for.
 pub struct Grant {
     pub kind: TicketKind,
-    pub tier: HostTier,
+    pub cohort: HostCohort,
     /// The host process generation that may present it.
     pub host_generation: u64,
     pub owner: OwnerRef,
@@ -94,9 +94,16 @@ pub struct Grant {
     pub uses: u32,
 }
 
+impl Grant {
+    #[must_use]
+    pub fn tier(&self) -> HostTier {
+        self.cohort.tier()
+    }
+}
+
 struct Row {
     kind: TicketKind,
-    tier: HostTier,
+    cohort: HostCohort,
     host_generation: u64,
     owner: OwnerRef,
     method: &'static str,
@@ -109,12 +116,19 @@ struct Row {
 pub struct Presented<'a> {
     pub ticket: &'a str,
     pub kind: TicketKind,
-    pub tier: HostTier,
+    pub cohort: HostCohort,
     pub host_generation: u64,
     pub owner: &'a OwnerRef,
     pub method: &'a str,
     /// The target the request names, if it names one.
     pub target: Option<&'a Value>,
+}
+
+impl Presented<'_> {
+    #[must_use]
+    pub fn tier(&self) -> HostTier {
+        self.cohort.tier()
+    }
 }
 
 /// Why a presentation was refused. Never carries a ticket.
@@ -126,6 +140,7 @@ pub enum Refusal {
     Exhausted,
     WrongKind,
     WrongTier,
+    WrongCohort,
     WrongGeneration,
     WrongOwner,
     WrongMethod,
@@ -165,8 +180,7 @@ const MAX_REVOKED: usize = 4096;
 #[derive(Default)]
 struct State {
     rows: HashMap<String, Row>,
-    /// Recent invalid presentations, by host process `(tier, generation)`.
-    invalid: HashMap<(HostTier, u64), VecDeque<Instant>>,
+    invalid: HashMap<(HostCohort, u64), VecDeque<Instant>>,
     revoked: VecDeque<(String, Instant)>,
 }
 
@@ -226,7 +240,7 @@ impl TicketTable {
             id.clone(),
             Row {
                 kind: grant.kind,
-                tier: grant.tier,
+                cohort: grant.cohort,
                 host_generation: grant.host_generation,
                 owner: grant.owner,
                 method: grant.method,
@@ -275,8 +289,8 @@ impl TicketTable {
         if row.kind != presented.kind {
             return Err(Refusal::WrongKind);
         }
-        if row.tier != presented.tier {
-            return Err(Refusal::WrongTier);
+        if row.cohort != presented.cohort {
+            return Err(Refusal::WrongCohort);
         }
         if row.host_generation != presented.host_generation {
             return Err(Refusal::WrongGeneration);
@@ -304,7 +318,7 @@ impl TicketTable {
     fn note_invalid(state: &mut State, presented: &Presented<'_>, now: Instant) -> bool {
         let recent = state
             .invalid
-            .entry((presented.tier, presented.host_generation))
+            .entry((presented.cohort.clone(), presented.host_generation))
             .or_default();
         while recent
             .front()
@@ -334,12 +348,12 @@ impl TicketTable {
 
     /// Revoke every ticket of one host process and forget its invalid-burst
     /// record (the host exited).
-    pub fn revoke_host(&self, tier: HostTier, host_generation: u64) {
+    pub fn revoke_host(&self, cohort: &HostCohort, host_generation: u64) {
         let mut state = self.state.lock().expect("ticket lock");
         state
             .rows
-            .retain(|_, row| !(row.tier == tier && row.host_generation == host_generation));
-        state.invalid.remove(&(tier, host_generation));
+            .retain(|_, row| !(row.cohort == *cohort && row.host_generation == host_generation));
+        state.invalid.remove(&(cohort.clone(), host_generation));
     }
 
     /// How many tickets are live.
@@ -366,7 +380,7 @@ mod tests {
     fn grant(uses: u32) -> Grant {
         Grant {
             kind: TicketKind::Invocation,
-            tier: HostTier::Plugin,
+            cohort: HostCohort::reviewed(),
             host_generation: 3,
             owner: owner("a", "token-a"),
             method: "core/call",
@@ -380,7 +394,7 @@ mod tests {
         Presented {
             ticket: ticket.expose(),
             kind: TicketKind::Invocation,
-            tier: HostTier::Plugin,
+            cohort: HostCohort::reviewed(),
             host_generation: 3,
             owner,
             method: "core/call",
@@ -417,8 +431,8 @@ mod tests {
             assert_eq!(refusal_of(&table, &presented(&ticket, owner)), expected);
         }
         let mut wrong_tier = presented(&ticket, &a);
-        wrong_tier.tier = HostTier::Builtin;
-        assert_eq!(refusal_of(&table, &wrong_tier), Refusal::WrongTier);
+        wrong_tier.cohort = HostCohort::BUILTIN;
+        assert_eq!(refusal_of(&table, &wrong_tier), Refusal::WrongCohort);
         let mut wrong_generation = presented(&ticket, &a);
         wrong_generation.host_generation = 4;
         assert_eq!(
@@ -587,7 +601,7 @@ mod tests {
             Refusal::Revoked
         );
         assert_eq!(table.live(), 2, "only a's tickets went");
-        table.revoke_host(HostTier::Plugin, 9);
+        table.revoke_host(&HostCohort::reviewed(), 9);
         assert_eq!(table.live(), 1);
         let _ = (other_owner, other_host);
 

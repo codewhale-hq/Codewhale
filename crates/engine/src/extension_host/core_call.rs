@@ -88,7 +88,7 @@ use super::protocol::{
 };
 use super::supervisor::HostRequestContext;
 use super::ticket::{Grant, Presented, Ticket, TicketKind};
-use super::tier::HostTier;
+use super::tier::{HostCohort, HostTier};
 use crate::core::authority::{ToolCategory, get_tool_category_for_call};
 use crate::core::events::SessionCheckpointCaller;
 use crate::tools::codemode::{
@@ -284,7 +284,7 @@ pub fn auto_review_held(
 /// and the machinery the asks run on. Lives from the `tool/call`'s start to
 /// its end.
 pub struct Invocation {
-    tier: HostTier,
+    pub cohort: HostCohort,
     host_generation: u64,
     owner: OwnerRef,
     scope: Option<codewhale_config::EntryRef>,
@@ -315,6 +315,12 @@ pub struct Invocation {
     /// Fires when the invocation ends or is revoked: withdraws every
     /// `core/call` still waiting or running for it.
     cancel: CancellationToken,
+}
+
+impl Invocation {
+    pub fn tier(&self) -> HostTier {
+        self.cohort.tier()
+    }
 }
 
 struct BrokerScope {
@@ -630,7 +636,7 @@ impl BrokerContext {
             |_, _, _| None,
         );
         let invocation = Arc::new(Invocation {
-            tier: HostTier::Plugin,
+            cohort: HostCohort::reviewed(),
             host_generation: 0,
             owner: owner.clone(),
             scope: None,
@@ -677,7 +683,7 @@ impl CoreCalls {
     #[cfg(any(test, feature = "test-support"))]
     pub fn begin(
         self: &Arc<Self>,
-        tier: HostTier,
+        cohort: impl Into<HostCohort>,
         host_generation: u64,
         owner: &OwnerRef,
         call_id: &str,
@@ -686,7 +692,7 @@ impl CoreCalls {
         gate: &NestedCallGate,
     ) -> Option<InvocationGuard> {
         self.begin_scoped(
-            tier,
+            cohort,
             host_generation,
             owner,
             call_id,
@@ -701,7 +707,7 @@ impl CoreCalls {
     #[allow(clippy::too_many_arguments)]
     pub fn begin_scoped(
         self: &Arc<Self>,
-        tier: HostTier,
+        cohort: impl Into<HostCohort>,
         host_generation: u64,
         owner: &OwnerRef,
         call_id: &str,
@@ -712,6 +718,8 @@ impl CoreCalls {
         content_hash: String,
         broker_services: &[DshService],
     ) -> Option<InvocationGuard> {
+        let cohort = cohort.into();
+        let tier = cohort.tier();
         let (caller, specs) = gate.extension()?;
         if caller != expected {
             return None;
@@ -725,7 +733,7 @@ impl CoreCalls {
         );
         let ticket = self.tickets.mint(Grant {
             kind: TicketKind::Invocation,
-            tier,
+            cohort: cohort.clone(),
             host_generation,
             owner: owner.clone(),
             method: METHOD,
@@ -756,7 +764,7 @@ impl CoreCalls {
         let checkpoint_ticket = root_caller.as_ref().map(|_| {
             self.tickets.mint(Grant {
                 kind: TicketKind::Invocation,
-                tier,
+                cohort: cohort.clone(),
                 host_generation,
                 owner: owner.clone(),
                 method: CHECKPOINT_METHOD,
@@ -768,7 +776,7 @@ impl CoreCalls {
         let question_ticket = root_caller.as_ref().map(|_| {
             self.tickets.mint(Grant {
                 kind: TicketKind::Invocation,
-                tier,
+                cohort: cohort.clone(),
                 host_generation,
                 owner: owner.clone(),
                 method: QUESTION_METHOD,
@@ -780,7 +788,7 @@ impl CoreCalls {
         let subagent_ticket = root_caller.as_ref().map(|_| {
             self.tickets.mint(Grant {
                 kind: TicketKind::Invocation,
-                tier,
+                cohort: cohort.clone(),
                 host_generation,
                 owner: owner.clone(),
                 method: SUBAGENT_METHOD,
@@ -799,6 +807,7 @@ impl CoreCalls {
         let broker_tickets: Vec<(DshService, Ticket)> = broker_session
             .iter()
             .flat_map(|session| {
+                let ticket_cohort = cohort.clone();
                 DshService::EVERY
                     .into_iter()
                     .filter(|service| {
@@ -810,7 +819,7 @@ impl CoreCalls {
                             service,
                             self.tickets.mint(Grant {
                                 kind: TicketKind::Invocation,
-                                tier,
+                                cohort: ticket_cohort.clone(),
                                 host_generation,
                                 owner: owner.clone(),
                                 method: dsh_broker::ticket_method(service),
@@ -853,7 +862,7 @@ impl CoreCalls {
             })
             .collect();
         let invocation = Arc::new(Invocation {
-            tier,
+            cohort,
             host_generation,
             owner: owner.clone(),
             scope,
@@ -973,10 +982,11 @@ impl CoreCalls {
     }
 
     /// One host process exited.
-    pub fn revoke_host(&self, tier: HostTier, host_generation: u64) {
-        self.tickets.revoke_host(tier, host_generation);
+    pub fn revoke_host(&self, cohort: impl Into<HostCohort>, host_generation: u64) {
+        let cohort = cohort.into();
+        self.tickets.revoke_host(&cohort, host_generation);
         self.revoke_where(|invocation| {
-            invocation.tier == tier && invocation.host_generation == host_generation
+            invocation.cohort == cohort && invocation.host_generation == host_generation
         });
     }
 
@@ -998,14 +1008,14 @@ impl CoreCalls {
     fn redeem_invocation(
         &self,
         shared: &ManagerShared,
-        tier: HostTier,
+        cohort: &HostCohort,
         host_generation: u64,
         owner: &OwnerRef,
         ticket: &str,
         method: &str,
         cx: &HostRequestContext,
     ) -> Result<Arc<Invocation>, RpcErrorWire> {
-        self.redeem_invocation_or_limit(shared, tier, host_generation, owner, ticket, method, cx)
+        self.redeem_invocation_or_limit(shared, cohort, host_generation, owner, ticket, method, cx)
             .map_err(|(_, error)| error)
     }
 
@@ -1013,7 +1023,7 @@ impl CoreCalls {
     fn redeem_invocation_or_limit(
         &self,
         shared: &ManagerShared,
-        tier: HostTier,
+        cohort: &HostCohort,
         host_generation: u64,
         owner: &OwnerRef,
         ticket: &str,
@@ -1033,7 +1043,7 @@ impl CoreCalls {
         let redeemed = self.tickets.redeem(&Presented {
             ticket,
             kind: TicketKind::Invocation,
-            tier,
+            cohort: cohort.clone(),
             host_generation,
             owner,
             method,
@@ -1048,14 +1058,13 @@ impl CoreCalls {
             let (_, error) = refuse(error_code::REFUSED, refused.reason.describe().to_string());
             return Err((refused.reason == super::ticket::Refusal::Exhausted, error));
         }
-        // The redemption proved the ticket is live and ours; the owner must
-        // still be the current one of this tier.
         let live = shared
             .registry
             .lock()
             .expect("registry lock")
-            .tier_of(owner)
-            == Some(tier);
+            .cohort_of(owner)
+            .as_ref()
+            == Some(cohort);
         let Some(invocation) = self.invocation(ticket).filter(|_| live) else {
             return Err(refuse(
                 error_code::REFUSED,
@@ -1086,11 +1095,12 @@ impl CoreCalls {
     pub async fn serve_checkpoint(
         &self,
         shared: &ManagerShared,
-        tier: HostTier,
+        cohort: impl Into<HostCohort>,
         host_generation: u64,
         params: SessionCheckpointParams,
         cx: HostRequestContext,
     ) -> Result<Value, RpcErrorWire> {
+        let cohort = cohort.into();
         let refuse = |code, message| RpcErrorWire {
             code,
             message,
@@ -1098,7 +1108,7 @@ impl CoreCalls {
         };
         let invocation = self.redeem_invocation(
             shared,
-            tier,
+            &cohort,
             host_generation,
             &params.owner,
             &params.ticket,
@@ -1132,8 +1142,9 @@ impl CoreCalls {
             .registry
             .lock()
             .expect("registry lock")
-            .tier_of(&params.owner)
-            != Some(tier)
+            .cohort_of(&params.owner)
+            .as_ref()
+            != Some(&cohort)
         {
             return Err(refuse(
                 error_code::REFUSED,
@@ -1165,11 +1176,12 @@ impl CoreCalls {
     pub async fn serve_question(
         &self,
         shared: &ManagerShared,
-        tier: HostTier,
+        cohort: impl Into<HostCohort>,
         host_generation: u64,
         params: UserQuestionParams,
         cx: HostRequestContext,
     ) -> Result<Value, RpcErrorWire> {
+        let cohort = cohort.into();
         let refuse = |code, message| RpcErrorWire {
             code,
             message,
@@ -1177,7 +1189,7 @@ impl CoreCalls {
         };
         let invocation = self.redeem_invocation(
             shared,
-            tier,
+            &cohort,
             host_generation,
             &params.owner,
             &params.ticket,
@@ -1225,8 +1237,9 @@ impl CoreCalls {
             .registry
             .lock()
             .expect("registry lock")
-            .tier_of(&params.owner)
-            != Some(tier)
+            .cohort_of(&params.owner)
+            .as_ref()
+            != Some(&cohort)
         {
             return Err(refuse(
                 error_code::REFUSED,
@@ -1272,11 +1285,12 @@ impl CoreCalls {
     pub async fn serve_subagent(
         &self,
         shared: &ManagerShared,
-        tier: HostTier,
+        cohort: impl Into<HostCohort>,
         host_generation: u64,
         request: super::protocol::HostRequest,
         cx: HostRequestContext,
     ) -> Result<Value, RpcErrorWire> {
+        let cohort = cohort.into();
         use super::protocol::HostRequest;
         use crate::tools::subagent::{
             ChildActivationRequest, dispose_child_activation, resolve_child_activation_output,
@@ -1304,7 +1318,7 @@ impl CoreCalls {
         let (owner, child_id) = (owner.clone(), child_id.clone());
         let invocation = self.redeem_invocation(
             shared,
-            tier,
+            &cohort,
             host_generation,
             &owner,
             ticket,
@@ -1536,24 +1550,32 @@ impl CoreCalls {
     pub async fn serve_broker(
         &self,
         shared: &ManagerShared,
-        tier: HostTier,
+        cohort: impl Into<HostCohort>,
         host_generation: u64,
         params: DshBrokerParams,
         cx: HostRequestContext,
     ) -> Result<Value, RpcErrorWire> {
-        self.serve_broker_in(dsh_broker::TABLE, shared, tier, host_generation, params, cx)
-            .await
+        self.serve_broker_in(
+            dsh_broker::TABLE,
+            shared,
+            cohort,
+            host_generation,
+            params,
+            cx,
+        )
+        .await
     }
 
     pub(super) async fn serve_broker_in(
         &self,
         table: &[(DshService, Arm)],
         shared: &ManagerShared,
-        tier: HostTier,
+        cohort: impl Into<HostCohort>,
         host_generation: u64,
         params: DshBrokerParams,
         cx: HostRequestContext,
     ) -> Result<Value, RpcErrorWire> {
+        let cohort = cohort.into();
         let refused = |message: String| {
             dsh_broker::coded(
                 RpcErrorWire {
@@ -1579,7 +1601,7 @@ impl CoreCalls {
         let invocation = self
             .redeem_invocation_or_limit(
                 shared,
-                tier,
+                &cohort,
                 host_generation,
                 &params.owner,
                 &params.ticket,
@@ -1685,8 +1707,9 @@ impl CoreCalls {
             .registry
             .lock()
             .expect("registry lock")
-            .tier_of(&params.owner)
-            != Some(tier)
+            .cohort_of(&params.owner)
+            .as_ref()
+            != Some(&cohort)
         {
             rollback.rollback("owner_stale");
             return Err(refused("dsh/broker owner is no longer current".into()));
@@ -1726,11 +1749,12 @@ impl CoreCalls {
     pub async fn serve(
         &self,
         shared: &ManagerShared,
-        tier: HostTier,
+        cohort: impl Into<HostCohort>,
         host_generation: u64,
         params: CoreCallParams,
         cx: HostRequestContext,
     ) -> Result<Value, RpcErrorWire> {
+        let cohort = cohort.into();
         let refuse = |code: i64, message: String| RpcErrorWire {
             code,
             message,
@@ -1738,7 +1762,7 @@ impl CoreCalls {
         };
         let invocation = self.redeem_invocation(
             shared,
-            tier,
+            &cohort,
             host_generation,
             &params.owner,
             &params.ticket,
@@ -1990,7 +2014,7 @@ mod seal_tests {
         let calls = Arc::new(CoreCalls::default());
         let guard = calls
             .begin(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 1,
                 &owner,
                 "call",

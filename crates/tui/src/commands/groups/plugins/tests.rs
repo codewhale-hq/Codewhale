@@ -26,6 +26,7 @@ fn extension_owner_report_escapes_every_plugin_controlled_field() {
         &Presentation(Locale::En),
         &mut output,
         &codewhale_engine::extension_host::OwnerReport {
+            cohort: None,
             state: Some(
                 codewhale_engine::extension_host::registry::OwnerState::Failed(
                     "\u{1b}[31m<script>".into(),
@@ -49,6 +50,7 @@ fn extension_owner_report_escapes_every_plugin_controlled_field() {
         &Presentation(Locale::ZhHans),
         &mut localized,
         &codewhale_engine::extension_host::OwnerReport {
+            cohort: None,
             state: None,
             tools: vec![],
             diagnostics: vec![],

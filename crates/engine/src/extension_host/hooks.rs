@@ -124,7 +124,7 @@ impl ManagerShared {
         &self,
         hook: &super::registry::HookRegistration,
     ) -> Result<std::sync::Arc<super::supervisor::HostProcess>, String> {
-        self.live_host(hook.tier, |registry| {
+        self.live_host(&hook.cohort, |registry| {
             registry
                 .is_live_hook(hook.handle, &hook.owner)
                 .then(|| hook.owner.clone())

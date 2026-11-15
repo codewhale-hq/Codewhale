@@ -18,7 +18,7 @@ use super::super::protocol::{DshBrokerParams, RpcErrorWire, error_code};
 use super::super::supervisor::{HostRequestContext, bundle_dir};
 use super::super::test_support::{FixturePlugins, node_for_tests, stub_builtin_commands};
 use super::super::{
-    ExtensionHostManager, ExtensionHostOptions, HostTier, OwnerState, bundle_sha256,
+    ExtensionHostManager, ExtensionHostOptions, HostCohort, HostTier, OwnerState, bundle_sha256,
     materialize_bundle,
 };
 use super::{BUILTIN_MODULES, BuiltinModule, DshService};
@@ -201,7 +201,7 @@ async fn starting_the_creator_module_admits_no_plugin_tier_owner() {
             .lock()
             .unwrap()
             .owners()
-            .all(|entry| entry.tier != HostTier::Plugin)
+            .all(|entry| entry.tier() != HostTier::Plugin)
     );
     let plugin_id = fixture
         .registry()
@@ -554,7 +554,7 @@ async fn turning_plugin_creator_off_retires_the_module_and_its_tickets() {
         .clone();
     let host_generation = manager
         .shared
-        .ready_host(HostTier::Builtin)
+        .ready_host(&HostCohort::Builtin)
         .expect("builtin host")
         .generation;
 
@@ -583,7 +583,7 @@ async fn turning_plugin_creator_off_retires_the_module_and_its_tickets() {
         .shared
         .core_calls
         .begin_scoped(
-            HostTier::Builtin,
+            HostCohort::Builtin,
             host_generation,
             &creator_owner,
             "call-1",
@@ -609,7 +609,7 @@ async fn turning_plugin_creator_off_retires_the_module_and_its_tickets() {
         .serve_broker_in(
             super::super::dsh_broker::TABLE,
             &manager.shared,
-            HostTier::Builtin,
+            HostCohort::Builtin,
             host_generation,
             DshBrokerParams {
                 owner: creator_owner.clone(),
@@ -645,7 +645,7 @@ async fn turning_plugin_creator_off_retires_the_module_and_its_tickets() {
         .serve_broker_in(
             super::super::dsh_broker::TABLE,
             &manager.shared,
-            HostTier::Builtin,
+            HostCohort::Builtin,
             host_generation,
             DshBrokerParams {
                 owner: creator_owner,

@@ -51,7 +51,7 @@ pub fn review(input: &Value) -> Result<Value, String> {
         }
     };
     let launch = super::supervisor::plan_launch(
-        super::tier::HostTier::Plugin,
+        &super::tier::HostCohort::reviewed(),
         &runtime,
         &bundle,
         &root,
