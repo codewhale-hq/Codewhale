@@ -3,7 +3,9 @@
 use ratatui::{buffer::Buffer, layout::Rect};
 
 use super::Entry;
-use crate::{DataBarItem, DataBars, DataDisplay, DataSparkline, DataTrend, Paint, Theme};
+use crate::{
+    DataBarItem, DataBars, DataDisplay, DataDisplayView, DataSparkline, DataTrend, Paint, Theme,
+};
 
 fn series() -> Vec<f64> {
     (0..64)
@@ -73,7 +75,8 @@ fn from_agent(area: Rect, buf: &mut Buffer, theme: &Theme) {
                      {"label":"cached","value":61000}]}"#,
     )
     .expect("gallery fixture is a valid data display");
-    shown.view().paint(area, buf, theme);
+    let view: DataDisplayView<'_> = shown.view();
+    view.paint(area, buf, theme);
 }
 
 pub(crate) fn entries() -> Vec<Entry> {

@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **`show_data` charts tell the truth at the edges:** a small value such as `0.004` is no longer shown, or reported back to the model, as `0`; a trend with more points than the chart is wide keeps its spikes and dips instead of skipping them; a bar for any value above zero is always visible; and on a narrow terminal the label is shortened before the number is.
 - **Worktree-side renames in the Runtime API:** `GET /v1/git` and `GET /v1/changes` now show the source of a rename in the worktree column that leaves the workspace as a `deleted` row, as they already did for a staged rename; a copy is still never shown that way. Thanks [@SparkofSpike](https://github.com/SparkofSpike) (#7325).
 - **Multiline XML tool arguments:** a text-fallback tool call whose parameter value, in either the `<parameter name=...>` or the `<key>` form, contains a newline, such as multiline `write_file` content, no longer arrives with empty arguments. Thanks [@Ricardo-M-L](https://github.com/Ricardo-M-L) (#7341).
 - **Assignments inside CLI argument values:** the fallback tool-call parser no longer invents an extra parameter from text inside a `--argument` value, so `--command "MODE=dev node app.js"` stays one command. Thanks [@Ricardo-M-L](https://github.com/Ricardo-M-L) (#7342).

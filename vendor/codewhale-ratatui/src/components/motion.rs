@@ -1,5 +1,8 @@
 //! Motion: the few things that move, and the promise that nothing else does.
 //!
+//! Motion is allowed for a change of state, work in progress or spatial
+//! continuity. This module is that layer without an animation dependency.
+//!
 //! - A [`MotionStep`] eases a value from where it is to a target in `0..=1`,
 //!   sampled at an instant the caller passes in. Nothing here reads a clock,
 //!   spawns a thread or waits.
@@ -28,7 +31,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     MotionMode, Paint, Role, Theme,
-    color::{ColorDepth, blend, contrast_ratio},
+    color::{ColorDepth, blend, contrast_ratio, is_truecolor},
     glyphs, text, tokens,
 };
 
@@ -185,8 +188,8 @@ pub fn paint_working_glow(
 ) {
     if !policy.allows(MotionChannel::Tint)
         || elapsed < crate::spin::EARN_DELAY
-        || !matches!(highlight, Color::Rgb(..))
-        || !matches!(background, Color::Rgb(..))
+        || !is_truecolor(highlight)
+        || !is_truecolor(background)
     {
         return;
     }
@@ -217,11 +220,12 @@ pub fn paint_working_glow(
         if strength > 0.0
             && cell.symbol() == grapheme
             && !grapheme.chars().all(char::is_whitespace)
-            && matches!(cell.fg, Color::Rgb(..))
+            && is_truecolor(cell.fg)
         {
-            let ground = match cell.bg {
-                Color::Rgb(..) => cell.bg,
-                _ => background,
+            let ground = if is_truecolor(cell.bg) {
+                cell.bg
+            } else {
+                background
             };
             let ink = blend(highlight, cell.fg, strength);
             if let (Some(before), Some(after)) =
