@@ -38,6 +38,7 @@ jobs:
           - { name: root, directory: . }
           - { name: web, directory: web }
           - { name: telemetry-ingest, directory: telemetry-ingest }
+          - { name: telemetry-stats, directory: telemetry-stats }
           - { name: extension-host, directory: crates/engine/extension-host }
           - { name: vscode, directory: extensions/vscode }
           - { name: feishu-bridge, directory: integrations/feishu-bridge }

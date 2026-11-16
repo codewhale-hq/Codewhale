@@ -1,0 +1,47 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "codewhale-telemetry-stats",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-04-01",
+  "workers_dev": false,
+  "preview_urls": false,
+
+  "routes": [
+    { "pattern": "telemetry-stats.codewhale.net", "custom_domain": true }
+  ],
+
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+
+  "analytics": {
+    "binding": "ANALYTICS_SQL"
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "codewhale-telemetry-stats",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "triggers": {
+    "crons": ["17 2 * * *"]
+  },
+
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": ""
+  },
+
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": false
+    }
+  }
+}
