@@ -2530,6 +2530,13 @@ impl Engine {
                         "Changing plugins is not permitted in Never approval mode.".to_string(),
                     ));
                 }
+                if blocked_error.is_none()
+                    && self.current_turn_authority().run_origin() == RunOrigin::Background
+                {
+                    blocked_error = Some(ToolError::permission_denied(
+                        "Changing plugins is not permitted in background runs.".to_string(),
+                    ));
+                }
                 if blocked_error.is_none() {
                     if let Some(gate_context) = self.live_tool_context(tool_registry) {
                         let can_prompt_outside_scope = self.current_turn_authority().run_origin()
@@ -2545,7 +2552,7 @@ impl Engine {
                             &gate_context,
                             &tool_input,
                             can_prompt_outside_scope,
-                            self.config.allow_shell,
+                            self.applied_runtime_authority().allow_shell(),
                             &self.cancel_token,
                         )
                         .await

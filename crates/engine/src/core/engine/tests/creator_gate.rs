@@ -597,6 +597,47 @@ async fn ask_and_accept_edits_prompt_human_card_approve_and_deny() {
 }
 
 #[tokio::test]
+async fn background_run_origin_refuses_plugin_install_even_in_scope() {
+    let Some(f) = GateFixture::new("background_run_origin_refuses_plugin_install_even_in_scope")
+    else {
+        return;
+    };
+    let src_dir = f.workspace.join("plugins/bg-skill");
+    write_skill_plugin(&src_dir, "bg-skill");
+    let args = serde_json::json!({
+        "action": "install_bundle",
+        "target": src_dir.to_string_lossy(),
+    })
+    .to_string();
+    let config = Config::default();
+    let mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn("call-bg", "plugin_manager", &args),
+        canned::simple_text_turn("refused"),
+    ]));
+    let (handle, task) = spawn_interactive(f.engine_config(f.discover()), mock);
+    let outcome = drive_turn(
+        &handle,
+        build_turn_op(
+            "install bg-skill",
+            AppMode::Agent,
+            ApprovalMode::Bypass,
+            &config,
+            UserInputProvenance::Runtime,
+            None,
+        ),
+        ApprovalBehavior::PanicOnCard,
+    )
+    .await;
+    shutdown_engine(handle, task).await;
+    assert!(outcome.cards.is_empty());
+    assert_permission_denied(&outcome);
+    assert!(f.discover().get("bg-skill").is_none());
+    assert!(!f.state_path.exists());
+
+    f.manager.shutdown().await;
+}
+
+#[tokio::test]
 async fn auto_review_inside_scope_consults_guardian_and_allows_or_denies() {
     let Some(f) =
         GateFixture::new("auto_review_inside_scope_consults_guardian_and_allows_or_denies")

@@ -804,6 +804,7 @@ fn parse_change_input(input: &Value) -> Result<ParsedChangeInput, ToolError> {
 }
 
 /// Preview and scope check a mutating `plugin_manager` call before Auto-Review or a person card.
+#[cfg(test)]
 pub async fn plan_change_async(
     tool: &ToolContext,
     input: &Value,
