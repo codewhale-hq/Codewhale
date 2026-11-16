@@ -37,11 +37,7 @@ mod layout;
 mod rows;
 
 #[cfg(test)]
-mod body_legacy;
-#[cfg(test)]
 mod body_tests;
-#[cfg(test)]
-mod dock_tabs_legacy;
 #[cfg(test)]
 mod dock_tabs_tests;
 

@@ -11227,32 +11227,32 @@ fn first_run_route_starts_with_configured_provider_and_model() {
         let route = if from_env {
             ""
         } else {
-            "provider = 'openai'\ndefault_text_model = 'gpui-fixture'\n"
+            "provider = 'openai'\ndefault_text_model = 'fixture-model'\n"
         };
         std::fs::write(&path, format!("{route}[providers.openai]\napi_key = 'fixture-key'\nbase_url = 'http://127.0.0.1:9/v1'\n")).unwrap();
         let _provider = from_env.then(|| EnvVarGuard::set("CODEWHALE_PROVIDER", "openai"));
-        let _model = from_env.then(|| EnvVarGuard::set("CODEWHALE_MODEL", "gpui-fixture"));
+        let _model = from_env.then(|| EnvVarGuard::set("CODEWHALE_MODEL", "fixture-model"));
         let config =
             codewhale_plugins::providers::load_config(None, None).expect("load fresh home config");
         assert_eq!(
             config.active_provider_identity().unwrap().provider,
             ProviderKind::Openai
         );
-        assert_eq!(config.default_model(), "gpui-fixture");
+        assert_eq!(config.default_model(), "fixture-model");
 
         // An options default must not replace the resolved config's model.
         let mut options = create_test_options();
         options.model = DEFAULT_TEXT_MODEL.to_string();
         let mut app = App::new(options, &config);
         assert_eq!(app.api_provider, ProviderKind::Openai);
-        assert_eq!(app.model, "gpui-fixture");
+        assert_eq!(app.model, "fixture-model");
         assert!(!app.should_adopt_live_local_ollama());
         assert!(codewhale_config::SetupState::load().unwrap().is_none());
         assert_eq!(
             codewhale_plugins::providers::load_config(None, None)
                 .unwrap()
                 .default_model(),
-            "gpui-fixture"
+            "fixture-model"
         );
     }
 }
@@ -11261,7 +11261,7 @@ fn first_run_route_starts_with_configured_provider_and_model() {
 async fn first_run_route_keeps_explicit_choice_when_credentials_are_missing() {
     let _home = SettingsHomeGuard::new();
     for document in [
-        "provider = 'openai'\ndefault_text_model = 'gpui-fixture'\n",
+        "provider = 'openai'\ndefault_text_model = 'fixture-model'\n",
         "provider = 'openai'\n",
         "default_text_model = 'deepseek-v4-flash'\n",
         "[providers.deepseek]\nmodel = 'deepseek-v4-flash'\n",
@@ -11495,7 +11495,7 @@ async fn first_run_switch_to_keyed_route_clears_launch_missing_key_state() {
     std::fs::write(
         &path,
         "provider = \"openai\"\n\
-         default_text_model = \"gpui-fixture\"\n\
+         default_text_model = \"fixture-model\"\n\
          [providers.openai]\n\
          api_key = \"sk-fixture-0000000000000000000000000000\"\n\
          base_url = \"http://127.0.0.1:4880/v1\"\n",
@@ -35553,11 +35553,11 @@ async fn provider_switch_back_lands_on_root_default_owned_by_that_provider() {
     let _home = SettingsHomeGuard::new();
     let mut app = create_test_app();
     app.api_provider = ProviderKind::Openai;
-    app.model = "gpui-fixture".to_string();
+    app.model = "fixture-model".to_string();
     let mut engine = mock_engine_handle();
     let mut config = {
         let __cw_config_init_72_0 = Some("openai".to_string());
-        let __cw_config_init_72_1 = Some("gpui-fixture".to_string());
+        let __cw_config_init_72_1 = Some("fixture-model".to_string());
         let __cw_config_init_72_2 = Some(ProvidersConfig {
             openai: ProviderConfig {
                 api_key: Some("sk-test".to_string()),
@@ -35588,7 +35588,7 @@ async fn provider_switch_back_lands_on_root_default_owned_by_that_provider() {
         .await
     );
     assert_eq!(app.api_provider, ProviderKind::Deepseek);
-    assert_ne!(app.model, "gpui-fixture");
+    assert_ne!(app.model, "fixture-model");
 
     assert!(
         {
@@ -35604,7 +35604,7 @@ async fn provider_switch_back_lands_on_root_default_owned_by_that_provider() {
         .await
     );
     assert_eq!(app.api_provider, ProviderKind::Openai);
-    assert_eq!(app.model, "gpui-fixture");
+    assert_eq!(app.model, "fixture-model");
 }
 
 #[test]

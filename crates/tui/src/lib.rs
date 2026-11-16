@@ -1690,7 +1690,7 @@ struct ServeArgs {
     #[arg(long, default_value_t = 2)]
     workers: usize,
     /// Additional CORS origin to allow (repeatable). Stacks on top of the
-    /// built-in defaults (localhost:3000, localhost:1420, tauri://localhost).
+    /// built-in defaults (localhost:3000, localhost:1420).
     /// Also reads `CODEWHALE_CORS_ORIGINS` (comma-separated), then
     /// `DEEPSEEK_CORS_ORIGINS` as an alias, and `[runtime_api] cors_origins`
     /// from `config.toml`. Whalescale#255.
@@ -4587,7 +4587,7 @@ fn init_plugins_dir(
 /// 3. `[runtime_api] cors_origins = [...]` in `config.toml`
 ///
 /// The runtime API always allows the built-in dev defaults
-/// (localhost:3000, localhost:1420, tauri://localhost). User entries are
+/// (localhost:3000, localhost:1420). User entries are
 /// appended on top — empty strings are skipped, and duplicates are deduped
 /// while preserving first-seen order. Whalescale#255 / #561.
 fn resolve_cors_origins(config: &Config, flag_origins: &[String]) -> Vec<String> {

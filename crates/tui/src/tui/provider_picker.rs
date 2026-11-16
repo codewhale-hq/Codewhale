@@ -9033,12 +9033,12 @@ mod tests {
     fn first_run_configured_route_skips_picker_and_records_configuration() {
         for key in ["api_key = \"fixture-not-a-key\"", ""] {
             let document = format!(
-                "provider = \"openai\"\ndefault_text_model = \"gpui-fixture\"\n\
+                "provider = \"openai\"\ndefault_text_model = \"fixture-model\"\n\
                  [providers.openai]\n{key}\nbase_url = \"http://127.0.0.1:4880/v1\"\n"
             );
             with_first_run_config(&document, |mut app, _config| {
                 assert_eq!(app.api_provider, ProviderKind::Openai);
-                assert_eq!(app.model, "gpui-fixture");
+                assert_eq!(app.model, "fixture-model");
                 assert_eq!(app.active_route_base_url, "http://127.0.0.1:4880/v1");
                 assert_eq!(app.onboarding, crate::tui::app::OnboardingState::None);
                 assert!(!app.should_adopt_live_local_ollama());
@@ -9052,7 +9052,7 @@ mod tests {
                 assert_eq!(entry.status, codewhale_config::StepStatus::Configured);
                 assert!(entry.status.is_settled());
                 let result = entry.result.as_deref().unwrap();
-                assert!(result.contains("provider=openai, model=gpui-fixture"));
+                assert!(result.contains("provider=openai, model=fixture-model"));
                 assert!(result.contains("not checked"));
                 assert!(!result.contains("fixture-not-a-key"));
             });
@@ -9062,7 +9062,7 @@ mod tests {
     #[test]
     fn first_run_configured_provider_is_preselected_when_picker_is_needed() {
         with_first_run_config(
-            "provider = \"openai\"\ndefault_text_model = \"gpui-fixture\"\n\
+            "provider = \"openai\"\ndefault_text_model = \"fixture-model\"\n\
              [providers.openai]\nbase_url = \"https://fixture.invalid/v1\"\nauth_mode = \"api_key\"\n",
             |app, config| {
                 assert_eq!(app.onboarding, crate::tui::app::OnboardingState::None);
@@ -9131,7 +9131,7 @@ mod tests {
     fn first_run_configured_receipt_preserves_decisions_and_rejects_corrupt_state() {
         use codewhale_config::{SetupState, SetupStep, StepEntry, StepStatus};
         with_first_run_config(
-            "provider = \"openai\"\ndefault_text_model = \"gpui-fixture\"\n\
+            "provider = \"openai\"\ndefault_text_model = \"fixture-model\"\n\
              [providers.openai]\nbase_url = \"http://127.0.0.1:4880/v1\"\n",
             |app, _config| {
                 let runtime = tokio::runtime::Runtime::new().unwrap();

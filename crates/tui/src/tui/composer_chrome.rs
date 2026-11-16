@@ -34,11 +34,6 @@ pub fn desired_height(
 }
 #[cfg(test)]
 pub use codewhale_ratatui::native_composer_top_padding as top_padding;
-#[cfg(test)]
-#[path = "composer_chrome_legacy.rs"]
-mod legacy;
-#[cfg(test)]
-pub use legacy::{render_tideline_composer_submit, tideline_composer_geometry};
 
 #[cfg(test)]
 mod tests {

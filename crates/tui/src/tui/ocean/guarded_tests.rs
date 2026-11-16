@@ -87,68 +87,6 @@ fn guarded_ocean_backend_depth_is_forwarded_and_explicit_pane_supplies_ground_ev
     }
 }
 #[test]
-fn guarded_ocean_whole_buffer_matches_frozen_safe_painter_across_phase_size_and_cache_rows() {
-    let theme = codewhale_palette::UNDERWATER_UI_THEME;
-    for phase in [
-        ShellPhase::Idle,
-        ShellPhase::Typing,
-        ShellPhase::Working,
-        ShellPhase::Verifying,
-        ShellPhase::Waiting,
-        ShellPhase::Approval,
-        ShellPhase::Done,
-        ShellPhase::Failed,
-    ] {
-        for (width, height) in [(4, 3), (40, 10), (80, 24)] {
-            for elapsed in [0, 320, 22500, 89999] {
-                let area = Rect::new(7, 5, width, height);
-                let col = column(area, phase, elapsed);
-                let mut actual = ordinary(area);
-                for x in area.x..area.right() {
-                    actual[(x, area.y)].set_symbol("x");
-                }
-                let mut expected = actual.clone();
-                guarded_legacy::LegacyColumn(col).paint_matching(
-                    area,
-                    &mut expected,
-                    theme.surface_bg,
-                );
-                col.paint_matching_native(area, &mut actual, theme.surface_bg, &theme, &[]);
-                assert_eq!(
-                    actual, expected,
-                    "phase={phase:?} area={area:?} elapsed={elapsed}"
-                );
-                // Actual transcript path preserves the same frame ramp cache receipts.
-                let ramp = crate::tui::ambient_life::frame_ocean_ramp(
-                    &col,
-                    area.height,
-                    area.y,
-                    elapsed,
-                    col.phase_tag(),
-                    col.ramp_fingerprint(),
-                );
-                let facts = OceanPaintFacts {
-                    ground: theme.surface_bg,
-                    sample_top: area.y,
-                    samples: &ramp,
-                    protected: &[],
-                };
-                let mut cached = ordinary(area);
-                let mut old = cached.clone();
-                guarded_legacy::LegacyWater {
-                    ocean_column: Some(col),
-                    lines: vec![],
-                    background: theme.surface_bg,
-                    ocean_elapsed_ms: elapsed,
-                }
-                .paint(area, &mut old);
-                col.paint_native(area, &mut cached, &theme, &facts);
-                assert_eq!(cached, old);
-            }
-        }
-    }
-}
-#[test]
 fn guarded_ocean_semantic_alias_reverse_unknown_ink_and_style_facts_survive_final_shell_pass() {
     let theme = codewhale_palette::UNDERWATER_UI_THEME;
     let area = Rect::new(7, 5, 20, 4);
@@ -234,21 +172,9 @@ fn guarded_ocean_uses_backend_projected_custom_ink_and_live_supporting_floor() {
     assert_eq!(buf[(8, 5)].bg, col.color_at_y(5));
 }
 #[test]
-fn guarded_ocean_caustic_safe_pixels_match_frozen_math_and_spare_semantic_blank_cells() {
+fn guarded_ocean_caustic_spares_semantic_blank_cells() {
     let area = Rect::new(7, 5, 80, 24);
     let col = column(area, ShellPhase::Working, 480);
-    let mut actual = ordinary(area);
-    col.paint_matching_native(
-        area,
-        &mut actual,
-        codewhale_palette::UNDERWATER_UI_THEME.surface_bg,
-        &codewhale_palette::UNDERWATER_UI_THEME,
-        &[],
-    );
-    let mut expected = actual.clone();
-    guarded_legacy::apply_caustic_shimmer(area, &mut expected, &col, 480, true, &[]);
-    crate::tui::ambient_life::apply_caustic_shimmer(area, &mut actual, &col, 480, true, &[]);
-    assert_eq!(actual, expected);
     let rows = [Line::styled(
         "",
         Style::default().bg(col.color_at_y(area.y)),

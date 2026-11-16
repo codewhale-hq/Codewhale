@@ -3215,118 +3215,6 @@ fn native_band_expected_decisions(request: &ApprovalRequest) -> Vec<ReviewDecisi
 }
 
 #[test]
-fn kit_decision_band_matches_exact_legacy_paint_region_and_option_geometry() {
-    use crate::tui::widgets::{Renderable, legacy_approval_band};
-    use ratatui::{
-        buffer::Buffer,
-        layout::Rect,
-        style::{Color, Style},
-    };
-    let mut child = shell_request();
-    child.owner = Some(ApprovalOwner {
-        agent_id: "child-1".into(),
-        label: "Builder 你好".into(),
-        role: Some("implementer".into()),
-    });
-    let workflow = ApprovalRequest::new(
-        "workflow",
-        "workflow",
-        "Launch workflow",
-        &json!({"action":"start","plan":{"goal":"ship the fix","children":[{"prompt":"go"}]}}),
-        "tool:workflow",
-    );
-    let law = ApprovalRequest::new(
-        "law",
-        "edit_file",
-        "Repo law holds this write: protected path",
-        &json!({"path":"Cargo.toml","old":"a","new":"b"}),
-        "tool:edit_file",
-    );
-    let cases = [
-        benign_request(),
-        shell_request(),
-        critical_request(),
-        destructive_request(),
-        child,
-        workflow,
-        law,
-    ];
-    for &locale in Locale::shipped() {
-        for request in &cases {
-            for collapsed in [false, true] {
-                for width in [40, 60, 80, 120] {
-                    for height in [9, 12, 20, 40] {
-                        let mut actual_view = ApprovalView::new_for_locale(request.clone(), locale);
-                        actual_view.collapsed = collapsed;
-                        let mut legacy_view = actual_view.clone();
-                        let area = Rect::new(7, 5, width, height);
-                        let canvas = Rect::new(2, 3, width + 12, height + 8);
-                        let mut actual = Buffer::empty(canvas);
-                        actual.set_style(
-                            canvas,
-                            Style::default()
-                                .bg(Color::Rgb(11, 23, 37))
-                                .add_modifier(ratatui::style::Modifier::UNDERLINED),
-                        );
-                        for cell in &mut actual.content {
-                            cell.set_symbol("~");
-                        }
-                        let mut expected = actual.clone();
-                        let guard = actual[(canvas.x, canvas.y)].clone();
-                        let legacy =
-                            legacy_approval_band::ApprovalWidget::new(request, &legacy_view);
-                        assert_eq!(
-                            actual_view.occupied_region(area),
-                            legacy.inline_region(area)
-                        );
-                        actual_view.render(area, &mut actual);
-                        legacy.render(area, &mut expected);
-                        // The frozen painter's unbounded truncation hint can
-                        // spill beyond the requested region. Preserve exact
-                        // in-region paint while requiring the kit's bounds guard.
-                        for y in canvas.y..canvas.bottom() {
-                            for x in canvas.x..canvas.right() {
-                                if x < area.x
-                                    || x >= area.right()
-                                    || y < area.y
-                                    || y >= area.bottom()
-                                {
-                                    expected[(x, y)] = guard.clone();
-                                }
-                            }
-                        }
-                        assert_eq!(
-                            actual, expected,
-                            "locale={locale:?} tool={} collapsed={collapsed} area={area:?}",
-                            request.tool_name
-                        );
-                        let mut expected_boxes = legacy_view.row_hitboxes.borrow().clone();
-                        // Hidden/collapsed actions keep canonical empty slots.
-                        expected_boxes.resize(
-                            native_band_expected_decisions(request).len(),
-                            Rect::default(),
-                        );
-                        assert_eq!(*actual_view.row_hitboxes.borrow(), expected_boxes);
-                        for code in [KeyCode::Char('p'), KeyCode::Char('s')] {
-                            assert_eq!(
-                                matches!(
-                                    actual_view.handle_key(create_key_event(code)),
-                                    ViewAction::EmitAndClose(_)
-                                ),
-                                matches!(
-                                    legacy_view.handle_key(create_key_event(code)),
-                                    ViewAction::EmitAndClose(_)
-                                )
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[test]
 fn kit_decision_band_resize_to_zero_withdraws_persistent_keys_and_stale_hitboxes() {
     use ratatui::{buffer::Buffer, layout::Rect};
     let view = ApprovalView::new(shell_request());
@@ -3442,16 +3330,15 @@ fn kit_decision_band_keeps_parent_child_and_default_deny_authority() {
 }
 
 #[test]
-fn kit_decision_band_clips_the_legacy_truncation_hint_spill() {
-    use crate::tui::widgets::{Renderable, legacy_approval_band};
+fn kit_decision_band_never_paints_outside_its_region() {
+    use crate::tui::widgets::Renderable;
     use ratatui::{
         buffer::Buffer,
         layout::Rect,
         style::{Color, Style},
     };
     let request = critical_request();
-    let actual_view = ApprovalView::new_for_locale(request.clone(), Locale::En);
-    let legacy_view = actual_view.clone();
+    let actual_view = ApprovalView::new_for_locale(request, Locale::En);
     let area = Rect::new(7, 5, 40, 20);
     let canvas = Rect::new(2, 3, 52, 28);
     let mut actual = Buffer::empty(canvas);
@@ -3460,13 +3347,7 @@ fn kit_decision_band_clips_the_legacy_truncation_hint_spill() {
         cell.set_symbol("~");
     }
     let guard = actual[(canvas.x, canvas.y)].clone();
-    let mut legacy = actual.clone();
     actual_view.render(area, &mut actual);
-    legacy_approval_band::ApprovalWidget::new(&request, &legacy_view).render(area, &mut legacy);
-    assert!(
-        (area.y..area.bottom()).any(|y| legacy[(area.right(), y)] != guard),
-        "the frozen counterpart demonstrates the old right-edge spill"
-    );
     for y in canvas.y..canvas.bottom() {
         for x in canvas.x..canvas.right() {
             if x < area.x || x >= area.right() || y < area.y || y >= area.bottom() {
