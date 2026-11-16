@@ -8,8 +8,8 @@ use super::observer_hooks::{
     turn_end_observer_metadata,
 };
 use super::task_projection::{
-    ShellExecLiveUpdate, active_rlm_task_entries, newly_terminal, refresh_shell_exec_live_output,
-    shell_exec_live_update,
+    ShellExecLiveUpdate, ShellLiveRefresh, active_rlm_task_entries, newly_terminal,
+    refresh_shell_exec_live_output, shell_exec_live_update,
 };
 use super::*;
 use crate::tui::active_cell::ActiveCell;
@@ -10173,14 +10173,18 @@ fn shell_live_output_refresh_does_not_block_on_contended_lock() {
 
     let guard = shell_mgr.lock().expect("hold shell lock");
     let changed = refresh_shell_exec_live_output(&mut app);
-    assert!(
-        !changed,
+    assert_eq!(
+        changed,
+        ShellLiveRefresh::Unchanged,
         "contended live-output refresh should skip this frame, not block or update"
     );
     drop(guard);
 
     // With the lock free again the path runs normally (no jobs → no change).
-    assert!(!refresh_shell_exec_live_output(&mut app));
+    assert_eq!(
+        refresh_shell_exec_live_output(&mut app),
+        ShellLiveRefresh::Unchanged
+    );
 }
 
 #[test]
@@ -10276,7 +10280,11 @@ fn refresh_shell_exec_live_output_finalizes_restored_missing_shell_job() {
 
     let changed = refresh_shell_exec_live_output(&mut app);
 
-    assert!(changed, "detached shell exec should be finalized");
+    assert_eq!(
+        changed,
+        ShellLiveRefresh::Changed,
+        "detached shell exec should be finalized"
+    );
     let HistoryCell::Tool(ToolCell::Exec(exec)) = &app.history[0] else {
         panic!("expected exec cell");
     };
@@ -36683,4 +36691,71 @@ fn the_terminal_sends_with_auto_routing_and_no_usage_origin() {
     );
     assert!(prepared.should_auto_resolve);
     assert!(prepared.accounting_origin.is_none());
+}
+
+#[test]
+fn a_running_background_shell_job_ticking_its_elapsed_time_lets_the_loop_go_quiet() {
+    let mut app = create_test_app();
+    app.current_session_id = Some("quiet-session".to_string());
+    let manager = app
+        .runtime_services
+        .shell_manager
+        .clone()
+        .expect("shell manager");
+    let task_id = manager
+        .lock()
+        .unwrap()
+        .execute_with_options_env_for_session(
+            "sleep 60",
+            None,
+            1_000,
+            true,
+            None,
+            false,
+            None,
+            std::collections::HashMap::new(),
+            "quiet-session",
+        )
+        .expect("spawn background sleep")
+        .task_id
+        .expect("background task id");
+    app.push_history_cell(HistoryCell::Tool(ToolCell::Exec(ExecCell {
+        command: "sleep 60".to_string(),
+        status: ToolStatus::Running,
+        output: None,
+        live_output: None,
+        shell_task_id: Some(task_id.clone()),
+        owner_agent_id: None,
+        owner_agent_name: None,
+        started_at: None,
+        duration_ms: None,
+        stale_elapsed_since_output_ms: None,
+        waiting: None,
+        source: ExecSource::Assistant,
+        description: None,
+        interaction: None,
+        output_summary: None,
+    })));
+
+    assert_eq!(
+        refresh_shell_exec_live_output(&mut app),
+        ShellLiveRefresh::ElapsedOnly
+    );
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(
+        refresh_shell_exec_live_output(&mut app),
+        ShellLiveRefresh::ElapsedOnly,
+        "elapsed time alone must not count as UI activity"
+    );
+    let HistoryCell::Tool(ToolCell::Exec(exec)) = &app.history[0] else {
+        panic!("expected exec cell");
+    };
+    assert!(exec.duration_ms.is_some_and(|ms| ms >= 30));
+
+    manager.lock().unwrap().kill(&task_id).expect("kill sleep");
+    assert_eq!(
+        refresh_shell_exec_live_output(&mut app),
+        ShellLiveRefresh::Changed,
+        "the job finishing is a real change"
+    );
 }

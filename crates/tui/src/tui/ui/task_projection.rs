@@ -559,23 +559,30 @@ fn fold_automation_scan(app: &mut App, scan: &AutomationScan) -> bool {
     delta.changed || !delta.settled.is_empty()
 }
 
-pub(super) fn refresh_shell_exec_live_output(app: &mut App) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum ShellLiveRefresh {
+    Unchanged,
+    ElapsedOnly,
+    Changed,
+}
+
+pub(super) fn refresh_shell_exec_live_output(app: &mut App) -> ShellLiveRefresh {
     let Some(shell_mgr) = app.runtime_services.shell_manager.as_ref().cloned() else {
-        return false;
+        return ShellLiveRefresh::Unchanged;
     };
     // #3804: render-only read — try_lock so a contended shell Mutex can never
     // block the async UI loop; skip this frame's live-output update on
     // contention (the next refresh picks it up).
     let jobs = {
         let Ok(mut mgr) = shell_mgr.try_lock() else {
-            return false;
+            return ShellLiveRefresh::Unchanged;
         };
         mgr.list_jobs_for_session(app.current_session_id.as_deref().unwrap_or_default())
             .into_iter()
             .map(|job| (job.id.clone(), job))
             .collect::<std::collections::HashMap<_, _>>()
     };
-    let mut changed = false;
+    let mut refresh = ShellLiveRefresh::Unchanged;
     for index in 0..app.virtual_cell_count() {
         let Some(ShellExecLiveUpdate {
             task_id,
@@ -595,6 +602,10 @@ pub(super) fn refresh_shell_exec_live_output(app: &mut App) -> bool {
         if exec.output.is_some() || exec.shell_task_id.as_deref() != Some(task_id.as_str()) {
             continue;
         }
+        let elapsed_only = !finalized
+            && exec.status == next_status
+            && exec.live_output == next_live
+            && exec.stale_elapsed_since_output_ms == stale_elapsed_since_output_ms;
         exec.status = next_status;
         exec.duration_ms = Some(next_duration);
         exec.stale_elapsed_since_output_ms = stale_elapsed_since_output_ms;
@@ -609,9 +620,13 @@ pub(super) fn refresh_shell_exec_live_output(app: &mut App) -> bool {
         } else {
             exec.live_output = next_live;
         }
-        changed = true;
+        refresh = if elapsed_only {
+            refresh.max(ShellLiveRefresh::ElapsedOnly)
+        } else {
+            ShellLiveRefresh::Changed
+        };
     }
-    changed
+    refresh
 }
 
 pub(super) struct ShellExecLiveUpdate {

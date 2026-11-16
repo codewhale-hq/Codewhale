@@ -10,8 +10,9 @@ use super::observer_hooks::{
     execute_turn_end_observer_hook, surface_observer_hook_submission_failure,
 };
 use super::task_projection::{
-    AUTOMATION_SCAN_BUSY_INTERVAL, automation_scan_is_due, refresh_active_task_panel,
-    refresh_automation_panel, refresh_automation_panel_blocking, refresh_shell_exec_live_output,
+    AUTOMATION_SCAN_BUSY_INTERVAL, ShellLiveRefresh, automation_scan_is_due,
+    refresh_active_task_panel, refresh_automation_panel, refresh_automation_panel_blocking,
+    refresh_shell_exec_live_output,
 };
 use super::*;
 use crate::tui::shell_key_routing::ShellBindingId;
@@ -2118,6 +2119,7 @@ pub(crate) async fn run_event_loop(
     // `ui_state_is_quiescent`). The 2.5 s task block runs before this
     // iteration's facts exist, so it reads the previous one.
     let mut ui_quiet = false;
+    let mut elapsed_redraw_pending = false;
     let mut last_automation_scan = Instant::now()
         .checked_sub(AUTOMATION_SCAN_BUSY_INTERVAL)
         .unwrap_or_else(Instant::now);
@@ -2590,8 +2592,10 @@ pub(crate) async fn run_event_loop(
             if automation_scan_due {
                 last_automation_scan = Instant::now();
             }
-            if refresh_shell_exec_live_output(app) {
-                app.needs_redraw = true;
+            match refresh_shell_exec_live_output(app) {
+                ShellLiveRefresh::Changed => app.needs_redraw = true,
+                ShellLiveRefresh::ElapsedOnly => elapsed_redraw_pending = true,
+                ShellLiveRefresh::Unchanged => {}
             }
             if crate::tui::shell_job_routing::refresh_live_shell_job_pager(app) {
                 app.needs_redraw = true;
@@ -5545,6 +5549,9 @@ pub(crate) async fn run_event_loop(
                     tick_now.saturating_duration_since(last_input_or_engine_event),
                 )),
             );
+        }
+        if std::mem::take(&mut elapsed_redraw_pending) {
+            app.needs_redraw = true;
         }
         let motion_policy = app.motion_policy();
         if animation_active && last_status_frame.elapsed() >= animation_interval {
