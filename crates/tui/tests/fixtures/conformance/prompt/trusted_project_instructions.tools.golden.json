@@ -1,12 +1,20 @@
 [
   {
     "name": "bash",
-    "description": "Execute a shell command in the workspace and return stdout and stderr (last 2000 lines or 50KB). Optional timeout is foreground seconds (default 30 seconds); a command still running then moves to the background by itself — never killed for time — returning output so far, last-output age, build phase, and a task_id. Call task_shell_wait with that task_id to read more or wait; do not sleep-poll with bash. Before a final answer, collect every still-relevant background task (wait only when genuinely blocked) and cancel any that no longer matter. In Ask, after a sandbox denial, retry the exact command once with sandbox_permissions (the narrowest wider mode that suffices) and a one-sentence justification; the approval prompt asks the user.",
+    "description": "Execute a shell command in the workspace (optional cwd) and return stdout and stderr (last 2000 lines or 50KB). Optional timeout is foreground seconds (default 30 seconds); a command still running then moves to the background by itself — never killed for time — returning output so far, last-output age, build phase, and a task_id. Set background=true for >5s or parallel jobs, and description for a short UI label. Call task_shell_wait with that task_id to read more or wait; do not sleep-poll with bash. Before a final answer, collect every still-relevant background task (wait only when genuinely blocked) and cancel any that no longer matter. In Ask, after a sandbox denial, retry the exact command once with sandbox_permissions (the narrowest wider mode that suffices) and a one-sentence justification; the approval prompt asks the user.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
+        "background": {
+          "description": "Run immediately in the background and return a task_id (good for >5s or parallel jobs; incompatible with read_only=true). Call task_shell_wait to wait or cancel.",
+          "type": "boolean"
+        },
         "command": {
           "description": "The command to execute. Actual execution shell: `/bin/bash`. Use Bash syntax: pipelines, redirections, $(command), and && / || are supported. Quote paths and variable expansions, such as \"$path\"; use single quotes for literal text. For literal multiline input, use a quoted heredoc delimiter (<<'EOF') with its closing delimiter on a separate line. Use only installed programs; do not assume GNU-specific flags on macOS/BSD. Example: printf '%s\\n' 'sample'.",
+          "type": "string"
+        },
+        "cwd": {
+          "description": "Optional workspace-relative working directory.",
           "type": "string"
         },
         "description": {
@@ -302,7 +310,7 @@
   },
   {
     "name": "task_shell_wait",
-    "description": "Poll a background shell task without blocking the agent indefinitely, or stop it with cancel=true. Completion is delivered automatically; use this only for early output, explicit barriers, or gate evidence. If `gate` is supplied and the shell task has completed, records structured gate evidence on the active durable task.",
+    "description": "Poll or wait on a single background shell task (`task_id`) or multiple tasks (`task_ids` with `until=\"any\"|\"all\"`) without blocking the agent indefinitely, or stop one task with cancel=true. Completion is delivered automatically; use this only for early output, explicit barriers, or gate evidence. If `gate` is supplied and the single shell task has completed, records structured gate evidence on the active durable task.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -328,19 +336,32 @@
           "description": "Background shell task id.",
           "type": "string"
         },
+        "task_ids": {
+          "description": "Background shell task ids to poll or wait on together (mutually exclusive with task_id, cancel, and gate).",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
         "timeout_ms": {
           "maximum": 600000,
           "minimum": 1000,
           "type": "integer"
+        },
+        "until": {
+          "description": "With task_ids and wait=true, return when any task finishes (default) or when all finish.",
+          "enum": [
+            "any",
+            "all"
+          ],
+          "type": "string"
         },
         "wait": {
           "default": false,
           "type": "boolean"
         }
       },
-      "required": [
-        "task_id"
-      ],
       "type": "object"
     },
     "allowed_callers": [

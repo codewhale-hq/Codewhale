@@ -695,7 +695,10 @@ async fn acquire_file_mutation(
 /// rename (and a retry loop on Windows) must not park a Tokio worker
 /// (blocking-call convention, #6149). Error shape matches the historical
 /// inline call.
-async fn run_blocking_write_atomic(path: &Path, contents: Vec<u8>) -> Result<(), ToolError> {
+pub(super) async fn run_blocking_write_atomic(
+    path: &Path,
+    contents: Vec<u8>,
+) -> Result<(), ToolError> {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
         codewhale_util::utils::write_atomic_workspace(&path, &contents).map_err(|e| {
@@ -747,19 +750,22 @@ fn is_confined_policy_error(error: &std::io::Error) -> bool {
     if error.raw_os_error() == Some(libc::ELOOP) {
         return true;
     }
+    #[cfg(windows)]
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        return true;
+    }
     matches!(
         error.kind(),
         std::io::ErrorKind::InvalidInput
             | std::io::ErrorKind::InvalidData
             | std::io::ErrorKind::AlreadyExists
-            | std::io::ErrorKind::PermissionDenied
     )
 }
 
 fn map_confined_io_error(error: std::io::Error, path: &Path, action: &str) -> ToolError {
     if is_confined_policy_error(&error) {
         return ToolError::permission_denied(format!(
-            "{action} refused symlink or confined path constraint for {}",
+            "{action} refused symlink or confined path constraint for {}: {error}",
             path.display()
         ));
     }
@@ -939,7 +945,11 @@ async fn contract_mutation_result(
     }))
 }
 
-fn reject_primitive_unknown(input: &Value, tool: &str, allowed: &[&str]) -> Result<(), ToolError> {
+pub(super) fn reject_primitive_unknown(
+    input: &Value,
+    tool: &str,
+    allowed: &[&str],
+) -> Result<(), ToolError> {
     let object = input
         .as_object()
         .ok_or_else(|| ToolError::invalid_input(format!("{tool} input must be an object")))?;

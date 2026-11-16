@@ -143,6 +143,7 @@ async fn approving_the_first_of_three_queued_calls_cancels_none_of_them() {
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await

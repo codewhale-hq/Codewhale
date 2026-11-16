@@ -46,6 +46,7 @@
             composer_color: None,
             last_auto_route: None,
             turn_outcomes: Vec::new(),
+            delegated_writes: std::collections::BTreeMap::new(),
             agent_preset: None,
         };
         manager.save_session(&session).expect("save");
@@ -97,6 +98,7 @@
             composer_color: None,
             last_auto_route: None,
             turn_outcomes: Vec::new(),
+            delegated_writes: std::collections::BTreeMap::new(),
             agent_preset: None,
         };
         manager.save_session(&session).expect("save empty");

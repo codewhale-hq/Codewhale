@@ -1666,3 +1666,292 @@ async fn eight_identical_sequential_reads_all_execute_before_final_answer() {
     handle.send(Op::Shutdown).await.expect("shutdown engine");
     task.await.expect("engine task");
 }
+
+#[tokio::test]
+async fn auto_review_critical_path_deletion_never_calls_reviewer_even_with_user_consent_and_stub_allow() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use codewhale_models::{ContentBlock, Message};
+
+    let cases = [
+        (
+            "call-del-home-tilde",
+            "Bash",
+            r#"{"action":"run","command":"rm -rf ~","background":false}"#,
+        ),
+        (
+            "call-del-home-var",
+            "Bash",
+            r#"{"action":"run","command":"rm -rf \"$HOME\"","background":false}"#,
+        ),
+        (
+            "call-del-root",
+            "Bash",
+            r#"{"action":"run","command":"rm -rf /","background":false}"#,
+        ),
+        (
+            "call-del-ws",
+            "Bash",
+            r#"{"action":"run","command":"rm -rf .","background":false}"#,
+        ),
+        (
+            "call-del-parent",
+            "Bash",
+            r#"{"action":"run","command":"rm -rf ..","background":false}"#,
+        ),
+        (
+            "call-del-git",
+            "Bash",
+            r#"{"action":"run","command":"rm -rf .git","background":false}"#,
+        ),
+        (
+            "call-del-git-patch",
+            "apply_patch",
+            r#"{"patch":"--- a/.git/HEAD\n+++ /dev/null\n@@ -1 +0,0 @@\n-ref: refs/heads/main\n"}"#,
+        ),
+        (
+            "call-empty-git-head",
+            "File",
+            r#"{"action":"write","path":".git/HEAD","content":""}"#,
+        ),
+    ];
+
+    for (call_id, tool_name, tool_args) in cases {
+        let workspace = tempdir().expect("tempdir");
+        std::fs::create_dir_all(workspace.path().join(".git")).expect("create .git");
+        let git_head = workspace.path().join(".git").join("HEAD");
+        fs::write(&git_head, "ref: refs/heads/main\n").expect("write HEAD");
+        let survivor = workspace.path().join("keep.txt");
+        fs::write(&survivor, "keep\n").expect("write survivor");
+
+        let mock = std::sync::Arc::new(MockLlmClient::new(vec![
+            canned::tool_call_turn(call_id, tool_name, tool_args),
+            canned::simple_text_turn("Stopped before deleting a critical path."),
+        ]));
+        mock.push_message_response(guardian_fixture_response(
+            r#"{"risk_level":"low","decision":"allow","reason":"user said delete everything"}"#,
+        ));
+        let client: crate::core::model_client::SharedModelClient = mock.clone();
+        let mut config = deterministic_engine_config(workspace.path());
+        config.auto_review_policy =
+            crate::core::authority::auto_review::AutoReviewPolicy::from_config(&{
+                let mut cfg = Config::default();
+                cfg.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+                    allow: ["exec_shell", "Bash", "bash", "File", "write_file", "apply_patch"]
+                        .into_iter()
+                        .map(|allowed| {
+                            let mut rule = codewhale_runtime::config::AutoReviewRuleConfig::default();
+                            rule.id = Some(format!("allow-{allowed}"));
+                            rule.tool = Some(allowed.to_string());
+                            rule.reason = Some("delete everything".to_string());
+                            rule
+                        })
+                        .collect(),
+                    ..Default::default()
+                });
+                cfg
+            });
+        let (mut engine, handle) = Engine::new_with_model_client(config, &Config::default(), client);
+        engine.session.auto_approve = false;
+        engine.session.approval_mode = ApprovalMode::Auto;
+        engine.session.add_message(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "delete everything".to_string(),
+                cache_control: None,
+            }],
+        });
+        let registry = crate::tools::ToolRegistryBuilder::new()
+            .with_shell_tools()
+            .with_file_tools()
+            .with_patch_tools()
+            .build(engine.build_tool_context(engine.current_mode, engine.session.auto_approve));
+        let policy = test_tool_surface(
+            &engine,
+            registry,
+            Some(vec![
+                catalog_tool("Bash"),
+                catalog_tool("File"),
+                catalog_tool("apply_patch"),
+            ]),
+            AppMode::Agent,
+        );
+        let mut turn = crate::core::turn::TurnContext::new(4);
+        let (status, error) = tokio::time::timeout(
+            Duration::from_secs(30),
+            engine.run_turn(&mut turn, policy, None, None),
+        )
+        .await
+        .expect("turn completes without stalling");
+
+        assert_eq!(status, TurnOutcomeStatus::Completed, "{call_id}: {error:?}");
+        assert_eq!(mock.call_count(), 2, "{call_id}: reviewer must never be called");
+        assert!(survivor.exists(), "{call_id}: critical path delete must not execute");
+        assert!(
+            workspace.path().join(".git").exists(),
+            "{call_id}: .git must not be deleted"
+        );
+        assert_eq!(
+            fs::read_to_string(&git_head).expect("read HEAD"),
+            "ref: refs/heads/main\n",
+            "{call_id}: .git/HEAD must stay intact"
+        );
+        let mut saw_refusal = false;
+        let mut saw_deterministic_deny = false;
+        {
+            let mut rx = handle.rx_event.write().await;
+            for event in std::iter::from_fn(|| rx.try_recv().ok()) {
+                match event {
+                    Event::ApprovalRequired { .. } => {
+                        panic!("{call_id}: unattended critical path delete must not prompt");
+                    }
+                    Event::ToolGateDecision {
+                        gate: crate::core::events::ToolGate::AutoReviewDeterministic,
+                        decision: crate::core::events::ToolGateVerdict::Denied,
+                        ..
+                    } => {
+                        saw_deterministic_deny = true;
+                    }
+                    Event::ToolCallComplete {
+                        model_call: Some(call),
+                        result,
+                        ..
+                    } if call.provider_id == call_id => {
+                        let refused = match &result {
+                            Ok(output) => !output.success,
+                            Err(err) => err.to_string().contains("Built-in safety gate"),
+                        };
+                        assert!(refused, "{call_id}: expected safety refusal, got {result:?}");
+                        saw_refusal = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(
+            saw_deterministic_deny,
+            "expected deterministic Auto-Review denial receipt for {call_id}"
+        );
+        assert!(saw_refusal, "expected refused tool result for {call_id}");
+    }
+}
+
+#[tokio::test]
+async fn auto_review_interactive_owner_present_forces_prompt_on_critical_path_deletion_without_calling_reviewer()
+{
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let cases = [
+        (
+            "call-interactive-del-git",
+            "Bash",
+            r#"{"action":"run","command":"rm -rf .git","background":false}"#,
+        ),
+        (
+            "call-interactive-empty-git-head",
+            "File",
+            r#"{"action":"write","path":".git/HEAD","content":""}"#,
+        ),
+    ];
+
+    for (call_id, tool_name, tool_args) in cases {
+        let workspace = tempdir().expect("tempdir");
+        std::fs::create_dir_all(workspace.path().join(".git")).expect("create .git");
+        let git_head = workspace.path().join(".git").join("HEAD");
+        fs::write(&git_head, "ref: refs/heads/main\n").expect("write HEAD");
+        let survivor = workspace.path().join("keep.txt");
+        fs::write(&survivor, "keep\n").expect("write survivor");
+
+        let mock = std::sync::Arc::new(MockLlmClient::new(vec![
+            canned::tool_call_turn(call_id, tool_name, tool_args),
+            canned::simple_text_turn("Stopped before deleting a critical path."),
+        ]));
+        mock.push_message_response(guardian_fixture_response(
+            r#"{"risk_level":"low","decision":"allow","reason":"user said delete everything"}"#,
+        ));
+        let client: crate::core::model_client::SharedModelClient = mock.clone();
+        let raw_config = {
+            let mut cfg = Config::default();
+            cfg.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+                allow: ["exec_shell", "Bash", "write_file", "File"]
+                    .into_iter()
+                    .map(|tool| {
+                        let mut rule = codewhale_runtime::config::AutoReviewRuleConfig::default();
+                        rule.id = Some(format!("allow-{tool}"));
+                        rule.tool = Some(tool.to_string());
+                        rule.reason = Some("delete everything".to_string());
+                        rule
+                    })
+                    .collect(),
+                ..Default::default()
+            });
+            cfg
+        };
+        let mut config = deterministic_engine_config(workspace.path());
+        config.auto_review_policy =
+            crate::core::authority::auto_review::AutoReviewPolicy::from_config(&raw_config);
+
+        let (mut engine, mut handle) = Engine::new_with_model_client(config, &raw_config, client);
+        engine.attach_owner_surface_for_tests(&mut handle);
+        let task = tokio::spawn(engine.run());
+
+        let mut op = external_user_message_op("delete everything", AppMode::Agent, &raw_config);
+        let Op::SendMessage(TurnSpec {
+            approval_mode: op_approval_mode,
+            auto_approve: op_auto_approve,
+            ..
+        }) = &mut op
+        else {
+            panic!("expected user message op");
+        };
+        *op_approval_mode = ApprovalMode::Auto;
+        *op_auto_approve = false;
+        handle.send(op).await.expect("send interactive turn");
+
+        let mut saw_forced_prompt = false;
+        let mut rx = handle.rx_event.write().await;
+        loop {
+            let event = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+                .await
+                .expect("timed out waiting for interactive critical path turn")
+                .expect("engine event stream closed");
+            match event {
+                Event::ApprovalRequired {
+                    id,
+                    approval_force_prompt,
+                    ..
+                } => {
+                    assert!(
+                        approval_force_prompt,
+                        "{call_id}: critical path deletion must force a user prompt"
+                    );
+                    saw_forced_prompt = true;
+                    handle
+                        .deny_tool_call(&id)
+                        .await
+                        .expect("deny forced approval prompt");
+                }
+                Event::TurnComplete { status, error, .. } => {
+                    assert_eq!(status, TurnOutcomeStatus::Completed, "{call_id}: {error:?}");
+                    break;
+                }
+                _ => {}
+            }
+        }
+        drop(rx);
+
+        assert!(saw_forced_prompt, "{call_id}: expected forced prompt event");
+        assert_eq!(
+            mock.call_count(),
+            2,
+            "{call_id}: reviewer must never be called"
+        );
+        assert!(survivor.exists(), "{call_id}: survivor file must stay intact");
+        assert_eq!(
+            fs::read_to_string(&git_head).expect("read HEAD"),
+            "ref: refs/heads/main\n",
+            "{call_id}: .git/HEAD must stay intact"
+        );
+        handle.send(Op::Shutdown).await.expect("shutdown engine");
+        task.await.expect("engine task");
+    }
+}

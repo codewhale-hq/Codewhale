@@ -5,6 +5,13 @@ use std::borrow::Cow;
 #[derive(Debug, Clone, Copy)]
 pub enum PermissionsText {
     AppliesHere,
+    BlockedEmpty,
+    BlockedEntry,
+    BlockedHeader,
+    BlockedHint,
+    BlockedStatusApprovable,
+    BlockedStatusApproved,
+    BlockedStatusNotApprovable,
     FileEmpty,
     FileMissing,
     FilePresent,
@@ -34,6 +41,13 @@ pub enum PermissionsText {
 
 pub struct PermissionsMessages {
     permissions_applies_here: String,
+    permissions_blocked_empty: String,
+    permissions_blocked_entry: String,
+    permissions_blocked_header: String,
+    permissions_blocked_hint: String,
+    permissions_blocked_status_approvable: String,
+    permissions_blocked_status_approved: String,
+    permissions_blocked_status_not_approvable: String,
     permissions_file_empty: String,
     permissions_file_missing: String,
     permissions_file_present: String,
@@ -65,6 +79,28 @@ impl PermissionsMessages {
     pub fn load(presentation: &dyn CommandPresentationContext) -> Result<Self, String> {
         Ok(Self {
             permissions_applies_here: presentation.translate("permissions_applies_here", &[])?,
+            permissions_blocked_empty: presentation.translate("permissions_blocked_empty", &[])?,
+            permissions_blocked_entry: presentation.translate(
+                "permissions_blocked_entry",
+                &[
+                    ("id", "{id}"),
+                    ("index", "{index}"),
+                    ("reason", "{reason}"),
+                    ("rule", "{rule}"),
+                    ("status", "{status}"),
+                    ("summary", "{summary}"),
+                    ("tool", "{tool}"),
+                ],
+            )?,
+            permissions_blocked_header: presentation
+                .translate("permissions_blocked_header", &[("count", "{count}")])?,
+            permissions_blocked_hint: presentation.translate("permissions_blocked_hint", &[])?,
+            permissions_blocked_status_approvable: presentation
+                .translate("permissions_blocked_status_approvable", &[])?,
+            permissions_blocked_status_approved: presentation
+                .translate("permissions_blocked_status_approved", &[])?,
+            permissions_blocked_status_not_approvable: presentation
+                .translate("permissions_blocked_status_not_approvable", &[])?,
             permissions_file_empty: presentation.translate("permissions_file_empty", &[])?,
             permissions_file_missing: presentation.translate("permissions_file_missing", &[])?,
             permissions_file_present: presentation.translate("permissions_file_present", &[])?,
@@ -144,6 +180,17 @@ impl PermissionsMessages {
         Cow::Owned(
             match id {
                 PermissionsText::AppliesHere => &self.permissions_applies_here,
+                PermissionsText::BlockedEmpty => &self.permissions_blocked_empty,
+                PermissionsText::BlockedEntry => &self.permissions_blocked_entry,
+                PermissionsText::BlockedHeader => &self.permissions_blocked_header,
+                PermissionsText::BlockedHint => &self.permissions_blocked_hint,
+                PermissionsText::BlockedStatusApprovable => {
+                    &self.permissions_blocked_status_approvable
+                }
+                PermissionsText::BlockedStatusApproved => &self.permissions_blocked_status_approved,
+                PermissionsText::BlockedStatusNotApprovable => {
+                    &self.permissions_blocked_status_not_approvable
+                }
                 PermissionsText::FileEmpty => &self.permissions_file_empty,
                 PermissionsText::FileMissing => &self.permissions_file_missing,
                 PermissionsText::FilePresent => &self.permissions_file_present,

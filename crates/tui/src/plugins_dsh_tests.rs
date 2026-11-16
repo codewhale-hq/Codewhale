@@ -1053,3 +1053,99 @@ mod shell_hook_import_tests {
         );
     }
 }
+
+#[test]
+fn a_plugin_json_beside_a_dsh_package_merges_through_the_real_reviewer() {
+    let pkg = fixture(
+        Some("- insert:\n  - id: native-row\n    name: '@demo/tools-dsh'\n"),
+        Some(json!({"main": "index.js"})),
+    );
+    fs::write(pkg.bundle.join("index.js"), "export function apply() {}\n").unwrap();
+    fs::create_dir_all(pkg.bundle.join("commands")).unwrap();
+    fs::write(pkg.bundle.join("commands/hello.md"), "# Hello\n").unwrap();
+    fs::create_dir_all(pkg.bundle.join("agents")).unwrap();
+    fs::write(
+        pkg.bundle.join("agents/reviewer.toml"),
+        "id = \"reviewer\"\n[role]\nname = \"reviewer\"\ndescription = \"Reviews\"\nprompt = \"Review.\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(pkg.bundle.join("hooks")).unwrap();
+    fs::write(
+        pkg.bundle.join("hooks/hooks.toml"),
+        "enabled = true\n[[hooks]]\nname = \"check\"\nevent = \"turn_end\"\ncommand = \"true\"\n",
+    )
+    .unwrap();
+    fs::write(
+        pkg.bundle.join("plugin.json"),
+        json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "tools-dsh",
+            "version": "1.2.3",
+            "description": "ignored plugin.json description",
+            "extensions": {
+                "net.codewhale": {
+                    "commands": {"path": "commands"},
+                    "agents": {"path": "agents"},
+                    "hooks": {"path": "hooks"}
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let (previewed, preview_hash) = codewhale_plugins::install::preview_dsh(&pkg.bundle).unwrap();
+    assert_eq!(previewed.plugin_name, "tools-dsh");
+    assert_eq!(previewed.commands, ["commands/hello.md"]);
+    assert_eq!(previewed.agents, ["agents/reviewer.toml"]);
+    assert_eq!(previewed.hooks, ["hooks/hooks.toml"]);
+
+    let converted = convert_package(&pkg.bundle, &pkg.output).unwrap();
+    assert_eq!(converted.commands, ["commands/hello.md"]);
+    assert_eq!(converted.agents, ["agents/reviewer.toml"]);
+    assert_eq!(converted.hooks, ["hooks/hooks.toml"]);
+    let validated = codewhale_plugins::manifest::PluginManifest::validate_from_path(
+        &pkg.output.join("plugin.json"),
+    )
+    .unwrap();
+    assert_eq!(validated.content_hash, preview_hash);
+    assert_eq!(validated.inventory.native, 1);
+    assert_eq!(validated.inventory.commands, 1);
+    assert_eq!(validated.inventory.agents, 1);
+    assert_eq!(validated.inventory.hooks, 1);
+    assert_eq!(
+        fs::read(pkg.output.join("source/commands/hello.md")).unwrap(),
+        fs::read(pkg.output.join("commands/hello.md")).unwrap()
+    );
+
+    let clash = fixture(
+        Some(
+            "- insert:\n  - id: claude-hooks\n    name: '@deepseek-ai/dsh-hooks-claude-code'\n    config:\n      configPath: bridge.json\n",
+        ),
+        None,
+    );
+    fs::write(clash.bundle.join("bridge.json"), "{}").unwrap();
+    fs::create_dir_all(clash.bundle.join("hooks")).unwrap();
+    fs::write(
+        clash.bundle.join("hooks/hooks.toml"),
+        "enabled = true\n[[hooks]]\nname = \"check\"\nevent = \"turn_end\"\ncommand = \"true\"\n",
+    )
+    .unwrap();
+    fs::write(
+        clash.bundle.join("plugin.json"),
+        json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "tools-dsh",
+            "version": "1.2.3",
+            "extensions": {"net.codewhale": {"hooks": {"path": "hooks"}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let err = convert_package(&clash.bundle, &clash.output)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("package.json"), "{err}");
+    assert!(err.contains("plugin.json"), "{err}");
+    assert!(err.contains("hooks"), "{err}");
+}

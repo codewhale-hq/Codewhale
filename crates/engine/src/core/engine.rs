@@ -84,8 +84,8 @@ use super::authority::{
 };
 use super::events::{Event, TurnOutcomeStatus, TurnRoute};
 use super::ops::{
-    McpManagerUpdate, Op, ProviderRuntimeStatus, SessionContextBudget, SessionSnapshot, TurnSpec,
-    USER_SHELL_TOOL_ID_PREFIX, UserInputProvenance,
+    McpManagerUpdate, Op, ProviderRuntimeStatus, SessionContextBudget, SessionSnapshot,
+    TurnInputAuthorship, TurnSpec, USER_SHELL_TOOL_ID_PREFIX, UserInputProvenance,
 };
 use super::session::Session;
 use super::turn::{TurnContext, format_snapshot_label, post_turn_snapshot};
@@ -802,6 +802,8 @@ pub struct EngineHandle {
     /// change publishes here before its mailbox op is queued, so gates never
     /// consult a stale per-turn copy.
     live_runtime_authority: Arc<StdMutex<LiveRuntimeAuthorityState>>,
+    auto_review_state:
+        Arc<parking_lot::Mutex<crate::core::authority::auto_review::AutoReviewConversationState>>,
     /// Out-of-band authority for one exact compaction request. The engine can
     /// be awaiting a provider while its bounded op mailbox is unable to drain,
     /// so cancellation cannot depend on processing a later mailbox entry.
@@ -1094,6 +1096,8 @@ pub struct Engine {
     /// The deterministic Auto-Review policy shared with every child runtime
     /// so children are gated by the same rules as the parent turn.
     shared_auto_review_policy: Arc<crate::core::authority::auto_review::AutoReviewPolicy>,
+    auto_review_state:
+        Arc<parking_lot::Mutex<crate::core::authority::auto_review::AutoReviewConversationState>>,
     shell_manager: SharedShellManager,
     /// Read-before-edit snapshots live for the session, not for one turn's
     /// transient `ToolContext` (#4475).
@@ -1371,6 +1375,14 @@ impl LiveRuntimeAuthority {
             approval_mode: self.approval_mode,
         }
     }
+
+    pub(crate) fn mode(&self) -> AppMode {
+        self.mode
+    }
+
+    pub(crate) fn approval_mode(&self) -> ApprovalMode {
+        self.approval_mode
+    }
 }
 
 #[derive(Debug)]
@@ -1450,6 +1462,7 @@ fn project_turn_authority(
     context.trust_mode = authority.trust_mode;
     context.auto_approve = authority.auto_approve;
     context.approval_mode = authority.approval_mode;
+    context.owner_present = authority.owner_present();
     context.set_shell_policy(authority.shell_policy());
     context.elevated_sandbox_policy =
         Some(authority.sandbox_policy(workspace, configured_sandbox_mode, network_access));
@@ -1480,17 +1493,15 @@ impl LivePosture {
     }
 
     pub fn switch_for_tests(&self, approval_mode: ApprovalMode) {
+        self.switch_mode_for_tests(AppMode::Agent, approval_mode);
+    }
+
+    pub fn switch_mode_for_tests(&self, mode: AppMode, approval_mode: ApprovalMode) {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .authority = LiveRuntimeAuthority::from_fields(
-            AppMode::Agent,
-            true,
-            false,
-            false,
-            approval_mode,
-            None,
-        );
+            .authority =
+            LiveRuntimeAuthority::from_fields(mode, true, false, false, approval_mode, None);
     }
 }
 
@@ -1631,9 +1642,16 @@ async fn forward_subagent_mailbox_message(
     owner_session_id: &str,
     turn_id: &str,
     seq: u64,
-    message: MailboxMessage,
+    turn_seq: u64,
+    mut message: MailboxMessage,
     best_effort_sent_at: &mut HashMap<String, Instant>,
 ) -> bool {
+    if let MailboxMessage::FileWrites {
+        turn_seq: stamp, ..
+    } = &mut message
+    {
+        *stamp = turn_seq;
+    }
     let event = Event::SubAgentMailbox {
         owner_session_id: owner_session_id.to_string(),
         turn_id: turn_id.to_string(),
@@ -1803,17 +1821,48 @@ impl Engine {
         .with_rust_origin(self.turn_run_origin, self.turn_owner_present)
     }
 
-    pub(super) fn commit_pending_steer(&mut self, pending: handle::PendingSteer) -> String {
-        let (text, owner_steer) = pending.commit_with_owner_steer();
+    pub(super) fn commit_pending_steer_with_intent(
+        &mut self,
+        pending: handle::PendingSteer,
+    ) -> (String, Option<String>) {
+        let (text, owner_steer, person_text) = pending.commit_with_owner_intent();
         if owner_steer
             && self.owner_surface_attached
             && matches!(self.host_profile, EngineHostProfile::Normal)
             && !self.is_acp_turn()
+            && self.child_host.is_none()
+            && self.rlm_host.is_none()
+            && !self.api_config.runtime_chat_isolated
         {
             self.turn_run_origin = RunOrigin::Interactive;
             self.turn_owner_present = true;
+            (text, person_text)
+        } else {
+            (text, None)
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn commit_pending_steer(&mut self, pending: handle::PendingSteer) -> String {
+        let (text, _person_text) = self.commit_pending_steer_with_intent(pending);
         text
+    }
+
+    pub(super) fn accepts_owner_turn_input(
+        &self,
+        provenance: UserInputProvenance,
+        is_review: bool,
+    ) -> bool {
+        provenance == UserInputProvenance::ExternalUser
+            && !is_review
+            && self.turn_run_origin == RunOrigin::Interactive
+            && self.turn_owner_present
+            && self.owner_surface_attached
+            && matches!(self.host_profile, EngineHostProfile::Normal)
+            && !self.is_acp_turn()
+            && self.child_host.is_none()
+            && self.rlm_host.is_none()
+            && !self.api_config.runtime_chat_isolated
     }
 
     #[cfg(test)]
@@ -1946,6 +1995,7 @@ impl Engine {
             return false;
         }
         self.session.messages.truncate_to(mark.index);
+        self.session.truncate_intents_to(mark.index);
         self.session.bump_messages_revision();
         true
     }
@@ -2341,6 +2391,9 @@ impl Engine {
         let live_runtime_authority = Arc::new(StdMutex::new(LiveRuntimeAuthorityState::new(
             initial_authority,
         )));
+        let auto_review_state = Arc::new(parking_lot::Mutex::new(
+            crate::core::authority::auto_review::AutoReviewConversationState::default(),
+        ));
         let compaction_cancellation =
             Arc::new(StdMutex::new(CompactionCancellationState::default()));
         let tool_exec_lock = Arc::new(RwLock::new(()));
@@ -2359,16 +2412,23 @@ impl Engine {
             Some(EngineHostSetup::Rlm(_)) => None,
             None => own_plugin_registry
                 .as_ref()
-                .filter(|_| config.features.enabled(Feature::ExtensionHost))
+                .filter(|_| {
+                    config.features.enabled(Feature::ExtensionHost)
+                        || (config.features.enabled(Feature::PluginCreator)
+                            && !api_config.runtime_chat_isolated)
+                })
                 .map(|registry| {
                     let manager = crate::extension_host::manager();
                     let attachment = manager.attach(Arc::clone(registry));
-                    attachment.sync_in_background();
+                    if config.features.enabled(Feature::ExtensionHost) {
+                        attachment.sync_in_background();
+                    }
                     attachment
                 }),
         };
         let plugin_registry = extension_host
             .as_ref()
+            .filter(|_| config.features.enabled(Feature::ExtensionHost))
             .map(|attachment| attachment.plugin_view())
             .or(own_plugin_registry)
             .unwrap_or_else(|| {
@@ -2545,6 +2605,8 @@ impl Engine {
                 prompt_host,
                 Some((&raw, &instruction_settings, initial_instruction_budgets)),
             );
+            session.pinned_project_instructions =
+                crate::project_context::PinnedProjectInstructions::from_project_context(&raw);
             session.project_context = Some(raw);
             (prompt, Some(Arc::new(assembly)))
         };
@@ -2717,6 +2779,9 @@ impl Engine {
             }
             EngineHostSetup::Rlm(_) => None,
         });
+        if let Some(EngineHostSetup::Child(child)) = host.as_ref() {
+            Self::apply_child_parent_intent(&mut session, &child.authority.runtime);
+        }
         let (child_host, rlm_host) = match host {
             Some(EngineHostSetup::Child(child)) => {
                 (Some(child_host::ChildHostState::from(child)), None)
@@ -2750,6 +2815,7 @@ impl Engine {
             subagent_manager,
             subagent_execution_limits,
             shared_auto_review_policy,
+            auto_review_state: Arc::clone(&auto_review_state),
             shell_manager,
             file_read_tracker,
             mcp_pool,
@@ -2841,6 +2907,7 @@ impl Engine {
             shared_paused,
             client_preflight_required: true,
             live_runtime_authority,
+            auto_review_state,
             compaction_cancellation,
             turn_heartbeat: Arc::clone(&engine.turn_heartbeat),
             subagent_manager: Arc::clone(&engine.subagent_manager),
@@ -3268,6 +3335,15 @@ impl Engine {
         self.api_config.sandbox_mode = configured_sandbox_mode;
         self.apply_runtime_mode_policy(&authority);
         self.discard_kernels_if_policy_changed(&prior).await;
+        if prior.approval_mode != effective_approval {
+            if effective_approval == ApprovalMode::Auto {
+                self.auto_review_state.lock().reset_for_auto_resume();
+            } else {
+                self.auto_review_state.lock().revoke_retry_grants();
+            }
+        } else if prior.mode != authority.mode {
+            self.auto_review_state.lock().revoke_retry_grants();
+        }
         if !changed {
             return false;
         }
@@ -3281,11 +3357,11 @@ impl Engine {
                 // policy itself gone, which is the one word the notice exists
                 // to carry. Product words only (§19): Permissions, then
                 // Plan / Work — not "Policy" or the ACT tag.
-                "Permissions: {} · {}",
-                effective_approval.permission_chip_label(),
+                "Permissions: {}",
                 match mode {
-                    AppMode::Plan => "Plan",
-                    AppMode::Agent => "Work",
+                    AppMode::Plan => "Plan (read only)".to_string(),
+                    AppMode::Agent =>
+                        format!("{} · Work", effective_approval.permission_chip_label()),
                 },
             )))
             .await;
@@ -3325,6 +3401,52 @@ impl Engine {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .authority
             .clone()
+    }
+
+    pub(super) fn auto_review_stop_reason(&self) -> Option<String> {
+        (self.session.approval_mode == ApprovalMode::Auto)
+            .then(|| {
+                self.auto_review_state
+                    .lock()
+                    .stop_reason()
+                    .map(str::to_string)
+            })
+            .flatten()
+    }
+
+    pub(super) fn take_auto_review_retry_notices(&self) -> Vec<String> {
+        if self.child_host.is_some() {
+            return Vec::new();
+        }
+        self.auto_review_state.lock().take_retry_notices()
+    }
+
+    pub(super) async fn pause_auto_review_to_ask(&mut self, reason: &str) {
+        self.apply_change_mode(
+            self.current_mode,
+            self.session.allow_shell,
+            self.session.trust_mode,
+            false,
+            ApprovalMode::Suggest,
+            self.api_config.sandbox_mode.clone(),
+        )
+        .await;
+        let authority = self.applied_runtime_authority();
+        {
+            let mut state = self
+                .live_runtime_authority
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.revision = state.revision.wrapping_add(1).max(1);
+            state.applied_revision = state.revision;
+            state.authority = authority;
+        }
+        let _ = self
+            .send_event(Event::AutoReviewPaused {
+                reason: reason.to_string(),
+                approval_mode: ApprovalMode::Suggest,
+            })
+            .await;
     }
 
     async fn apply_runtime_authority(&mut self, authority: LiveRuntimeAuthority) -> bool {
@@ -3538,6 +3660,26 @@ impl Engine {
         &self.session.id
     }
 
+    pub(super) fn apply_child_parent_intent(
+        session: &mut crate::core::session::Session,
+        runtime: &crate::tools::subagent::SubAgentRuntime,
+    ) {
+        session.pinned_project_instructions =
+            runtime.parent_pinned_project_instructions.as_ref().clone();
+        if runtime.has_foreground_ownership()
+            && runtime.parent_run_origin
+                == crate::core::authority::auto_review::RunOrigin::Interactive
+            && runtime.parent_owner_present
+        {
+            for msg in runtime.parent_person_messages.iter() {
+                session.record_person_message(msg.clone(), None);
+            }
+            if let Some(plan) = runtime.parent_approved_plan.as_deref() {
+                session.record_approved_plan(plan.to_string(), None);
+            }
+        }
+    }
+
     /// Install one restored history and invalidate every dependent prompt/token
     /// cache. Resume and conditional undo share this exact implementation.
     fn restore_session_history(
@@ -3548,6 +3690,7 @@ impl Engine {
     ) {
         self.session.snapshot_source = None;
         self.session.tool_activation_cache.clear();
+        self.session.clear_recorded_intents();
         let compaction_checkpoint =
             compaction_checkpoint_for_restore(&messages, system_prompt.clone());
         let restored_messages =
@@ -3615,6 +3758,7 @@ impl Engine {
                 .as_deref()
                 .map(crate::project_context::InstructionAssembly::receipt_json),
             mode: self.current_mode.as_setting().to_string(),
+            agent_preset: self.session.agent_preset.clone(),
         }
     }
 
@@ -3981,6 +4125,7 @@ impl Engine {
                 hook_executor: self.config.hook_executor.clone(),
                 verbosity: self.config.verbosity.clone(),
                 provenance: UserInputProvenance::Runtime,
+                input_authorship: TurnInputAuthorship::NotPerson,
                 images: Vec::new(),
                 max_output_tokens: None,
                 // Background shell completion wake: no host submission to
@@ -4197,6 +4342,7 @@ impl Engine {
                                     hook_executor: self.config.hook_executor.clone(),
                                     verbosity: self.config.verbosity.clone(),
                                     provenance: UserInputProvenance::GoalContinuation,
+                                    input_authorship: TurnInputAuthorship::NotPerson,
                                     images: Vec::new(),
                                     max_output_tokens: None,
                                     // Engine-scheduled goal continuation: no host
@@ -4551,6 +4697,9 @@ impl Engine {
                         Op::SetStreamChunkTimeout { timeout_secs } => {
                             self.config.stream_chunk_timeout = Duration::from_secs(timeout_secs);
                         }
+                        Op::SetAutoReviewReviewerModel { reviewer_model } => {
+                            self.config.auto_review_policy.reviewer_model = reviewer_model;
+                        }
                         Op::SetSubagentRuntimeConfig {
                             enabled,
                             max_subagents,
@@ -4614,6 +4763,7 @@ impl Engine {
                             model,
                             workspace,
                             mode,
+                            agent_preset,
                         } => {
                             if expected
                                 .as_deref()
@@ -4634,6 +4784,9 @@ impl Engine {
                             } else {
                                 previous_session_id.clone()
                             };
+                            let keep_conversation_mode = next_session_id == previous_session_id
+                                && !self.session.messages.is_empty()
+                                && self.session.agent_preset != agent_preset;
                             let closed_session_id = (next_session_id != previous_session_id)
                                 .then_some(previous_session_id);
                             // SyncSession installs a conversation's identity; an id
@@ -4645,7 +4798,7 @@ impl Engine {
                             // must be finalized here or they keep gating writers in
                             // the new conversation (#5372). Same-session reloads
                             // keep their id and are deliberately left untouched.
-                            if let Some(closed_session_id) = closed_session_id {
+                            if let Some(ref closed_session_id) = closed_session_id {
                                 let manager = self.subagent_manager.clone();
                                 let session_id = closed_session_id.clone();
                                 let finalized =
@@ -4670,7 +4823,7 @@ impl Engine {
                                 };
                                 crate::tools::subagent::settle_requested_children_for_session(
                                     &self.subagent_manager,
-                                    &closed_session_id,
+                                    closed_session_id,
                                     None,
                                 )
                                 .await;
@@ -4700,6 +4853,14 @@ impl Engine {
                             self.session.model = model;
                             self.session.workspace = workspace.clone();
                             self.current_mode = mode;
+                            if keep_conversation_mode {
+                                tracing::warn!(
+                                    target: "conversation_mode",
+                                    "ignored a conversation mode change on a conversation that already has messages"
+                                );
+                            } else {
+                                self.session.agent_preset = agent_preset;
+                            }
                             self.config.model.clone_from(&self.session.model);
                             self.config.workspace = workspace.clone();
                             if plugin_workspace_changed {
@@ -4712,8 +4873,12 @@ impl Engine {
                                 self.drop_mcp_pool();
                                 if let Some(attachment) = &self.extension_host {
                                     attachment.set_plugins(Arc::clone(&self.plugin_registry));
-                                    self.plugin_registry = attachment.plugin_view();
-                                    attachment.sync_in_background();
+                                    if self.config.features.enabled(Feature::ExtensionHost) {
+                                        self.plugin_registry = attachment.plugin_view();
+                                        attachment.sync_in_background();
+                                    } else if self.creator_available {
+                                        attachment.sync_creator_in_background();
+                                    }
                                 }
                             }
                             self.session.project_context =
@@ -4724,8 +4889,21 @@ impl Engine {
                                         &self.instruction_settings,
                                     )
                                 });
+                            self.session.pinned_project_instructions = self
+                                .session
+                                .project_context
+                                .as_ref()
+                                .map(crate::project_context::PinnedProjectInstructions::from_project_context)
+                                .unwrap_or_default();
                             self.session.rebuild_working_set();
                             self.reconcile_restored_work_bindings().await;
+                            if closed_session_id.is_some() {
+                                self.auto_review_state
+                                    .lock()
+                                    .reset_for_conversation_boundary();
+                            } else if plugin_workspace_changed {
+                                self.auto_review_state.lock().revoke_retry_grants();
+                            }
                             if self.mcp_pool.is_none()
                                 && let Err(error) = self
                                     .start_mcp_session_boot(McpConnectRefresh::IfChanged)
@@ -4769,6 +4947,7 @@ impl Engine {
                                 Some(crate::core::ops::SessionSnapshotSource::control(control));
                             self.session.rebuild_working_set();
                             self.reconcile_restored_work_bindings().await;
+                            self.auto_review_state.lock().revoke_retry_grants();
                             let _ = tx.send(Some(self.session_snapshot()));
                             self.emit_session_updated().await;
                         }
@@ -4954,11 +5133,24 @@ impl Engine {
                                 .get(idx..)
                                 .map(<[_]>::to_vec)
                                 .unwrap_or_default();
+                            let saved_intents = self.session.recorded_intents.clone();
                             self.session.messages.truncate_to(idx);
+                            self.session.truncate_intents_to(idx);
                             self.session.bump_messages_revision();
                             // Now dispatch the new message as a normal send,
                             // reusing the engine's stored mode/model config.
                             let mode = self.current_mode;
+                            let edit_authorship = if self.owner_surface_attached
+                                && matches!(self.host_profile, EngineHostProfile::Normal)
+                                && !self.is_acp_turn()
+                                && self.child_host.is_none()
+                                && self.rlm_host.is_none()
+                                && !self.api_config.runtime_chat_isolated
+                            {
+                                TurnInputAuthorship::Person(new_message.clone())
+                            } else {
+                                TurnInputAuthorship::NotPerson
+                            };
                             let outcome = self
                                 .handle_send_message(TurnSpec {
                                     profile_constitution: None,
@@ -4985,6 +5177,7 @@ impl Engine {
                                     hook_executor: self.config.hook_executor.clone(),
                                     verbosity: self.config.verbosity.clone(),
                                     provenance: UserInputProvenance::ExternalUser,
+                                    input_authorship: edit_authorship,
                                     images: Vec::new(),
                                     max_output_tokens: None,
                                     submission_id,
@@ -5001,6 +5194,7 @@ impl Engine {
                                     .map(<[_]>::to_vec)
                                     .unwrap_or_default();
                                 self.session.messages.truncate_to(idx);
+                                self.session.recorded_intents = saved_intents;
                                 self.session.messages.push_batch(removed_exchange);
                                 self.session.messages.push_batch(appended);
                                 self.session.bump_messages_revision();
@@ -5762,6 +5956,7 @@ impl Engine {
                 hook_executor: self.config.hook_executor.clone(),
                 verbosity: self.config.verbosity.clone(),
                 provenance: UserInputProvenance::SubAgentHandoff,
+                input_authorship: TurnInputAuthorship::NotPerson,
                 images: Vec::new(),
                 max_output_tokens: None,
                 // Idle sub-agent completion resume: no host submission to
@@ -6491,6 +6686,7 @@ impl Engine {
                 let tx_event_clone = self.tx_event.clone();
                 let mailbox_owner_session_id = self.session.id.clone();
                 let mailbox_turn_id = turn_id.to_string();
+                let mailbox_turn_seq = self.turn_counter;
                 let (flush_tx, mut flush_rx) = tokio::sync::oneshot::channel();
                 let drain_handle = spawn_supervised(
                     "subagent-mailbox-drainer",
@@ -6507,6 +6703,7 @@ impl Engine {
                                             &mailbox_owner_session_id,
                                             &mailbox_turn_id,
                                             envelope.seq,
+                                            mailbox_turn_seq,
                                             envelope.message,
                                             &mut best_effort_sent_at,
                                         ).await {
@@ -6522,6 +6719,7 @@ impl Engine {
                                         &mailbox_owner_session_id,
                                         &mailbox_turn_id,
                                         envelope.seq,
+                                        mailbox_turn_seq,
                                         envelope.message,
                                         &mut best_effort_sent_at,
                                     ).await {
@@ -6585,7 +6783,13 @@ impl Engine {
                     Arc::clone(&self.shared_auto_review_policy),
                     self.config.terminal_chrome_enabled,
                 )
-                .with_parent_origin(self.turn_run_origin, self.turn_owner_present);
+                .with_parent_origin(self.turn_run_origin, self.turn_owner_present)
+                .with_parent_review_context(
+                    self.session.person_messages(),
+                    self.session.approved_plan().map(str::to_string),
+                    self.session.pinned_project_instructions.clone(),
+                )
+                .with_parent_auto_review_state(Arc::clone(&self.auto_review_state));
                 if matches!(input_policy.mode, AppMode::Plan) {
                     rt.worker_profile = WorkerRuntimeProfile::for_role(FleetRole::Planner);
                 }
@@ -6630,19 +6834,38 @@ impl Engine {
         // Load plugin tools from the user's tools directory and apply any
         // config.toml overrides. Explicit overrides win over auto-discovered
         // scripts with the same tool name; neither may replace a built-in.
-        let extension_host = self
+        let ext_enabled = self.config.features.enabled(Feature::ExtensionHost);
+        let creator_eligible = self.creator_eligible();
+        let is_creator =
+            crate::conversation_modes::is_creator(self.session.agent_preset.as_deref());
+        let extension_host = self.extension_host.as_ref().filter(|_| ext_enabled);
+        if let Some(attachment) = self
             .extension_host
             .as_ref()
-            .filter(|_| self.config.features.enabled(Feature::ExtensionHost));
-        if let Some(attachment) = extension_host {
-            // Natives only: scripts are added next and must not count as built-ins.
+            .filter(|_| ext_enabled || creator_eligible)
+        {
             attachment
                 .manager()
                 .note_native_names(tool_registry.names());
-            if attachment.selection_settled() {
-                attachment.sync_in_background();
-            } else {
-                attachment.sync_within(EXTENSION_FIRST_SYNC_WAIT).await;
+            if ext_enabled {
+                if attachment.selection_settled()
+                    && (!creator_eligible || !is_creator || attachment.creator_ready())
+                {
+                    attachment.sync_in_background();
+                } else {
+                    attachment.sync_within(EXTENSION_FIRST_SYNC_WAIT).await;
+                }
+            } else if creator_eligible {
+                if is_creator && !attachment.creator_ready() {
+                    attachment
+                        .sync_creator_within(EXTENSION_FIRST_SYNC_WAIT)
+                        .await;
+                } else {
+                    attachment.sync_creator_in_background();
+                }
+            }
+            if creator_eligible {
+                attachment.install_creator_tools(&mut tool_registry);
             }
         }
         let (mut plugin_tool_names, refused_overrides) =
@@ -6970,6 +7193,7 @@ impl Engine {
             hook_executor,
             verbosity,
             provenance,
+            input_authorship,
             submission_id,
         } = spec;
         let route = *route;
@@ -7714,7 +7938,9 @@ impl Engine {
             // Capture only this engine's reviewed, live plugin contributions. A
             // failed/withdrawn capture records retirement. Full bounded snapshots
             // use ordinary session history, not the smaller workspace line delta.
-            if let Some(attachment) = self.extension_host.as_ref() {
+            if self.config.features.enabled(Feature::ExtensionHost)
+                && let Some(attachment) = self.extension_host.as_ref()
+            {
                 self.plugin_registry = attachment.plugin_view();
             }
             self.config.hook_executor = self.config.hook_executor.as_ref().map(|hooks| {
@@ -7821,6 +8047,20 @@ impl Engine {
             };
             user_msg.content.splice(image_index..image_index, images);
             self.session.add_message(user_msg);
+            let user_msg_index = self.session.messages.len().saturating_sub(1);
+            if self.accepts_owner_turn_input(provenance, false) {
+                match input_authorship {
+                    TurnInputAuthorship::Person(raw_text) => {
+                        self.session
+                            .record_person_message(raw_text, Some(user_msg_index));
+                    }
+                    TurnInputAuthorship::ApprovedPlan(plan_text) => {
+                        self.session
+                            .record_approved_plan(plan_text, Some(user_msg_index));
+                    }
+                    TurnInputAuthorship::NotPerson => {}
+                }
+            }
             turn.unanswered_user_message = Some(self.mark_unanswered_user_message());
 
             if let Some(job) = self.child_job()
@@ -8489,6 +8729,17 @@ impl Engine {
         .with_permission_posture(
             Arc::clone(&self.shared_auto_review_policy),
             self.config.terminal_chrome_enabled,
+        )
+        .with_parent_review_context(
+            self.session.person_messages(),
+            self.session.approved_plan().map(str::to_string),
+            self.session.pinned_project_instructions.clone(),
+        )
+        .with_parent_auto_review_state(
+            self.child_host
+                .as_ref()
+                .and_then(|child| child.authority.runtime.parent_auto_review_state.clone())
+                .unwrap_or_else(|| Arc::clone(&self.auto_review_state)),
         );
         if matches!(mode, AppMode::Plan) {
             rt.worker_profile = WorkerRuntimeProfile::for_role(FleetRole::Planner);
@@ -10001,30 +10252,53 @@ impl Engine {
         }
     }
 
+    fn creator_eligible(&self) -> bool {
+        self.creator_available
+            && self.child_host.is_none()
+            && self.rlm_host.is_none()
+            && !self.api_config.runtime_chat_isolated
+    }
+
     async fn refresh_creator_availability(&mut self) {
         self.creator_available = false;
-        if self.child_host.is_some()
-            || self.rlm_host.is_some()
-            || self.api_config.runtime_chat_isolated
-            || !crate::conversation_modes::is_creator(self.session.agent_preset.as_deref())
-        {
-            return;
+        let is_creator =
+            crate::conversation_modes::is_creator(self.session.agent_preset.as_deref());
+        let eligible = self.child_host.is_none()
+            && self.rlm_host.is_none()
+            && !self.api_config.runtime_chat_isolated;
+        let reason = if eligible {
+            let options = crate::extension_host::ExtensionHostOptions::from_config(
+                self.api_config.extension_host.as_ref(),
+            );
+            let plugin_creator_enabled = self.config.features.enabled(Feature::PluginCreator);
+            crate::conversation_modes::creator_unavailable_reason(options, plugin_creator_enabled)
+                .await
+        } else {
+            None
+        };
+        if eligible {
+            self.creator_available = reason.is_none();
         }
-        let options = crate::extension_host::ExtensionHostOptions::from_config(
-            self.api_config.extension_host.as_ref(),
-        );
-        match crate::conversation_modes::creator_unavailable_reason(options).await {
-            None => self.creator_available = true,
-            Some(reason) => {
-                if self.creator_unavailable_noted.as_deref() != Some(self.session.id.as_str()) {
-                    self.creator_unavailable_noted = Some(self.session.id.clone());
-                    let _ = self
-                        .send_event(Event::status(format!(
-                            "Creator mode is unavailable, so this conversation runs without its plugin tools and guides: {reason}"
-                        )))
-                        .await;
+        if let Some(attachment) = self.extension_host.as_ref() {
+            let ext_enabled = self.config.features.enabled(Feature::ExtensionHost);
+            if attachment.set_creator_demand(self.creator_available) {
+                if ext_enabled {
+                    attachment.sync_in_background();
+                } else {
+                    attachment.sync_creator_in_background();
                 }
             }
+        }
+        if is_creator
+            && let Some(reason) = reason
+            && self.creator_unavailable_noted.as_deref() != Some(self.session.id.as_str())
+        {
+            self.creator_unavailable_noted = Some(self.session.id.clone());
+            let _ = self
+                .send_event(Event::status(format!(
+                    "Creator mode is unavailable, so this conversation runs without its plugin tools and guides: {reason}"
+                )))
+                .await;
         }
     }
 
@@ -10821,11 +11095,16 @@ fn configure_plugin_tools(
 ) -> (std::collections::HashSet<String>, Vec<String>) {
     // Everything registered before the plugin directory loads is built in
     // (native and host-dynamic tools); no script tool may replace it (D4).
-    let builtin_names: std::collections::HashSet<String> = tool_registry
+    let mut builtin_names: std::collections::HashSet<String> = tool_registry
         .names()
         .into_iter()
         .map(|s| s.to_string())
         .collect();
+    builtin_names.extend(
+        crate::conversation_modes::CREATOR_TOOL_NAMES
+            .into_iter()
+            .map(str::to_string),
+    );
 
     let plugin_dir = plugin_tools_dir(tools_config);
     let executor = crate::tools::plugin::PluginExecutor::for_engine();
@@ -10925,6 +11204,12 @@ pub enum ToolAskRuleDecision {
     Block(String),
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct AskRuleEvaluation {
+    pub decision: Option<ToolAskRuleDecision>,
+    pub typed_narrow_allow: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutoReviewPlanDecision {
     NoChange,
@@ -10978,13 +11263,10 @@ pub fn auto_review_plan_decision_for_context(
                     "Built-in safety gate requires approval: {}",
                     decision.reason
                 );
-                if matches!(
-                    context.approval_mode,
-                    ApprovalMode::Auto | ApprovalMode::Never
-                ) {
-                    // Auto-Review and Never are non-interactive for approval
-                    // holds, so the floor fails closed instead of stranding
-                    // the call on a modal neither posture opens.
+                if context.approval_mode == ApprovalMode::Never
+                    || (context.approval_mode == ApprovalMode::Auto
+                        && !decision.force_prompt_in_auto)
+                {
                     AutoReviewPlanDecision::Block(reason)
                 } else {
                     AutoReviewPlanDecision::ForcePrompt(reason)
@@ -11031,6 +11313,22 @@ pub(super) fn exec_shell_ask_rule_decision(
     )
 }
 
+pub(super) fn exec_shell_ask_rule_evaluation(
+    config: &EngineConfig,
+    tool_name: &str,
+    tool_input: &Value,
+    workspace: &Path,
+    approval_mode: ApprovalMode,
+) -> Option<AskRuleEvaluation> {
+    exec_shell_ask_rule_evaluation_for_policy(
+        &config.exec_policy_engine,
+        tool_name,
+        tool_input,
+        workspace,
+        approval_mode,
+    )
+}
+
 /// Evaluate the persisted shell ask/allow/deny rules without requiring a full
 /// [`EngineConfig`]. Headless protocol adapters use this seam so they enforce
 /// the same sibling `permissions.toml` policy as the interactive engine.
@@ -11041,17 +11339,31 @@ pub fn exec_shell_ask_rule_decision_for_policy(
     workspace: &Path,
     approval_mode: ApprovalMode,
 ) -> Option<ToolAskRuleDecision> {
+    exec_shell_ask_rule_evaluation_for_policy(
+        exec_policy_engine,
+        tool_name,
+        tool_input,
+        workspace,
+        approval_mode,
+    )
+    .and_then(|eval| eval.decision)
+}
+
+fn exec_shell_ask_rule_evaluation_for_policy(
+    exec_policy_engine: &codewhale_execpolicy::ExecPolicyEngine,
+    tool_name: &str,
+    tool_input: &Value,
+    workspace: &Path,
+    approval_mode: ApprovalMode,
+) -> Option<AskRuleEvaluation> {
     let policy_tool_name =
         codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, tool_input);
-    // Task tools that hand a command string to the shell answer to the same
-    // shell deny and ask rules. Their own approval requirement stays: a shell
-    // allow rule does not waive it.
     let runs_shell_command = matches!(policy_tool_name, "task_shell_start" | "task_gate_run");
     if policy_tool_name != "exec_shell" && !runs_shell_command {
         return None;
     }
     let command = tool_input.get("command").and_then(Value::as_str)?;
-    let decision = tool_ask_rule_decision_for_context(
+    let (decision, allow_kind) = tool_ask_rule_evaluation_for_context(
         exec_policy_engine,
         "exec_shell",
         command,
@@ -11062,9 +11374,16 @@ pub fn exec_shell_ask_rule_decision_for_policy(
     if runs_shell_command && matches!(decision, Some(ToolAskRuleDecision::Allow)) {
         return None;
     }
-    decision
+    decision.map(|decision| AskRuleEvaluation {
+        typed_narrow_allow: approval_mode == ApprovalMode::Auto
+            && !runs_shell_command
+            && matches!(decision, ToolAskRuleDecision::Allow)
+            && allow_kind == codewhale_execpolicy::TypedAllowKind::Narrow,
+        decision: Some(decision),
+    })
 }
 
+#[cfg(test)]
 pub(super) fn file_tool_ask_rule_decision(
     config: &EngineConfig,
     tool_name: &str,
@@ -11073,6 +11392,22 @@ pub(super) fn file_tool_ask_rule_decision(
     approval_mode: ApprovalMode,
 ) -> Option<ToolAskRuleDecision> {
     file_tool_ask_rule_decision_for_policy(
+        &config.exec_policy_engine,
+        tool_name,
+        tool_input,
+        workspace,
+        approval_mode,
+    )
+}
+
+pub(super) fn file_tool_ask_rule_evaluation(
+    config: &EngineConfig,
+    tool_name: &str,
+    tool_input: &Value,
+    workspace: &Path,
+    approval_mode: ApprovalMode,
+) -> Option<AskRuleEvaluation> {
+    file_tool_ask_rule_evaluation_for_policy(
         &config.exec_policy_engine,
         tool_name,
         tool_input,
@@ -11091,17 +11426,37 @@ pub fn file_tool_ask_rule_decision_for_policy(
     workspace: &Path,
     approval_mode: ApprovalMode,
 ) -> Option<ToolAskRuleDecision> {
+    file_tool_ask_rule_evaluation_for_policy(
+        exec_policy_engine,
+        tool_name,
+        tool_input,
+        workspace,
+        approval_mode,
+    )
+    .and_then(|eval| eval.decision)
+}
+
+fn file_tool_ask_rule_evaluation_for_policy(
+    exec_policy_engine: &codewhale_execpolicy::ExecPolicyEngine,
+    tool_name: &str,
+    tool_input: &Value,
+    workspace: &Path,
+    approval_mode: ApprovalMode,
+) -> Option<AskRuleEvaluation> {
     let policy_tool_name =
         codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, tool_input);
     let paths = file_tool_permission_paths(policy_tool_name, tool_input)?;
     if paths.is_empty() {
         if matches!(policy_tool_name, "write_file" | "edit_file" | "apply_patch") {
-            return Some(ToolAskRuleDecision::Block(
-                "File write has no resolvable target; provide an explicit path or valid patch."
-                    .to_string(),
-            ));
+            return Some(AskRuleEvaluation {
+                decision: Some(ToolAskRuleDecision::Block(
+                    "File write has no resolvable target; provide an explicit path or valid patch."
+                        .to_string(),
+                )),
+                typed_narrow_allow: false,
+            });
         }
-        return tool_ask_rule_decision_for_context(
+        let (decision, allow_kind) = tool_ask_rule_evaluation_for_context(
             exec_policy_engine,
             policy_tool_name,
             "",
@@ -11109,47 +11464,113 @@ pub fn file_tool_ask_rule_decision_for_policy(
             workspace,
             approval_mode,
         );
+        return decision.map(|decision| AskRuleEvaluation {
+            typed_narrow_allow: approval_mode == ApprovalMode::Auto
+                && matches!(decision, ToolAskRuleDecision::Allow)
+                && allow_kind == codewhale_execpolicy::TypedAllowKind::Narrow,
+            decision: Some(decision),
+        });
     }
 
     let mut prompt: Option<String> = None;
     let mut all_allowed = true;
+    let mut all_narrow = approval_mode == ApprovalMode::Auto;
     for path in paths {
-        match tool_ask_rule_decision_for_context(
+        let (decision, allow_kind) = tool_ask_rule_evaluation_for_context(
             exec_policy_engine,
             policy_tool_name,
             "",
             Some(&path),
             workspace,
             approval_mode,
-        ) {
+        );
+        match decision {
             Some(ToolAskRuleDecision::Block(reason)) => {
-                return Some(ToolAskRuleDecision::Block(reason));
+                return Some(AskRuleEvaluation {
+                    decision: Some(ToolAskRuleDecision::Block(reason)),
+                    typed_narrow_allow: false,
+                });
             }
             Some(ToolAskRuleDecision::Prompt(reason)) => {
                 prompt.get_or_insert(reason);
                 all_allowed = false;
+                all_narrow = false;
             }
-            Some(ToolAskRuleDecision::Allow) => {}
-            None => all_allowed = false,
+            Some(ToolAskRuleDecision::Allow) => {
+                all_narrow &= allow_kind == codewhale_execpolicy::TypedAllowKind::Narrow;
+            }
+            None => {
+                all_allowed = false;
+                all_narrow = false;
+            }
         }
     }
     if let Some(prompt) = prompt {
-        Some(ToolAskRuleDecision::Prompt(prompt))
+        Some(AskRuleEvaluation {
+            decision: Some(ToolAskRuleDecision::Prompt(prompt)),
+            typed_narrow_allow: false,
+        })
     } else if all_allowed {
-        Some(ToolAskRuleDecision::Allow)
+        Some(AskRuleEvaluation {
+            decision: Some(ToolAskRuleDecision::Allow),
+            typed_narrow_allow: all_narrow,
+        })
     } else {
         None
     }
 }
 
-fn tool_ask_rule_decision_for_context(
+pub(super) fn other_tool_ask_rule_evaluation(
+    config: &EngineConfig,
+    tool_name: &str,
+    tool_input: &Value,
+    workspace: &Path,
+    approval_mode: ApprovalMode,
+) -> Option<AskRuleEvaluation> {
+    let policy_tool_name =
+        codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, tool_input);
+    if matches!(
+        policy_tool_name,
+        "exec_shell" | "bash" | "task_shell_start" | "task_gate_run"
+    ) || file_tool_permission_paths(policy_tool_name, tool_input).is_some()
+    {
+        return None;
+    }
+    let is_agent_tool = matches!(
+        policy_tool_name.trim().to_ascii_lowercase().as_str(),
+        "agent" | "subagent" | "spawn_agent"
+    ) || matches!(
+        tool_name.trim().to_ascii_lowercase().as_str(),
+        "agent" | "subagent" | "spawn_agent"
+    );
+    let (decision, allow_kind) = tool_ask_rule_evaluation_for_context(
+        &config.exec_policy_engine,
+        policy_tool_name,
+        "",
+        None,
+        workspace,
+        approval_mode,
+    );
+    decision.map(|decision| AskRuleEvaluation {
+        typed_narrow_allow: approval_mode == ApprovalMode::Auto
+            && !is_agent_tool
+            && matches!(decision, ToolAskRuleDecision::Allow)
+            && allow_kind == codewhale_execpolicy::TypedAllowKind::Narrow,
+        decision: Some(decision),
+    })
+}
+
+fn tool_ask_rule_evaluation_for_context(
     exec_policy_engine: &codewhale_execpolicy::ExecPolicyEngine,
     tool_name: &str,
     command: &str,
     path: Option<&str>,
     workspace: &Path,
     approval_mode: ApprovalMode,
-) -> Option<ToolAskRuleDecision> {
+) -> (
+    Option<ToolAskRuleDecision>,
+    codewhale_execpolicy::TypedAllowKind,
+) {
     let cwd = workspace.to_string_lossy();
     let ask_for_approval = match approval_mode {
         ApprovalMode::Never => AskForApproval::Never,
@@ -11158,29 +11579,36 @@ fn tool_ask_rule_decision_for_context(
         | ApprovalMode::Suggest
         | ApprovalMode::AcceptEdits => AskForApproval::OnFailure,
     };
-    let decision = exec_policy_engine
-        .check(ExecPolicyContext {
+    let Ok(outcome) = exec_policy_engine.check_with_narrow_allow(
+        ExecPolicyContext {
             command,
             cwd: cwd.as_ref(),
             tool: Some(tool_name),
             path,
             ask_for_approval,
             sandbox_mode: None,
-        })
-        .ok()?;
+        },
+        approval_mode == ApprovalMode::Auto,
+    ) else {
+        return (None, codewhale_execpolicy::TypedAllowKind::None);
+    };
+    let decision = outcome.decision;
     if !decision.allow {
-        Some(ToolAskRuleDecision::Block(decision.reason().to_string()))
+        (
+            Some(ToolAskRuleDecision::Block(decision.reason().to_string())),
+            codewhale_execpolicy::TypedAllowKind::None,
+        )
     } else if decision.requires_approval {
-        Some(ToolAskRuleDecision::Prompt(decision.reason().to_string()))
+        (
+            Some(ToolAskRuleDecision::Prompt(decision.reason().to_string())),
+            codewhale_execpolicy::TypedAllowKind::None,
+        )
     } else if decision.matched_action == Some(codewhale_execpolicy::PermissionAction::Allow) {
-        // Count only. Never `matched_rule`, never `reason()`, never the
-        // command or its argv: `auto_allow` patterns are user-authored command
-        // strings.
         codewhale_telemetry::session_counters()
             .bump(codewhale_telemetry::Counter::ApprovalAutoAllowed);
-        Some(ToolAskRuleDecision::Allow)
+        (Some(ToolAskRuleDecision::Allow), outcome.allow_kind)
     } else {
-        None
+        (None, codewhale_execpolicy::TypedAllowKind::None)
     }
 }
 
@@ -11574,6 +12002,9 @@ pub fn mock_engine_handle() -> MockEngineHandle {
         shared_paused,
         client_preflight_required: false,
         live_runtime_authority,
+        auto_review_state: Arc::new(parking_lot::Mutex::new(
+            crate::core::authority::auto_review::AutoReviewConversationState::default(),
+        )),
         compaction_cancellation,
         turn_heartbeat: turn_heartbeat::TurnHeartbeat::new(),
         subagent_manager: crate::tools::subagent::new_shared_subagent_manager(
@@ -12019,6 +12450,7 @@ mod approval_publication;
 mod compaction;
 mod context;
 pub mod handle;
+pub use handle::AutoReviewRetryApprovalError;
 mod run_completion;
 pub use run_completion::EngineRunCompletion;
 pub mod preview;

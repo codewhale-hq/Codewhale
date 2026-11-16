@@ -747,3 +747,101 @@ async fn revise_keeps_plan_without_execution_seed() {
     assert!(app.pending_plan_handoff.is_none());
     assert_eq!(app.queued_messages.front().unwrap().display, "先补充测试");
 }
+
+#[tokio::test]
+async fn work_auto_records_approved_plan_while_revise_records_person() {
+    use codewhale_engine::core::ops::{Op, TurnInputAuthorship, TurnSpec};
+
+    let mut work_app = app_in_plan();
+    work_app.offline_mode = true;
+    let work_req = completed_plan(&mut work_app, "1. Edit src/lib.rs\n2. Run tests", false);
+    let mut work_engine = mock_engine_handle();
+    apply_plan_handoff_with_checkpoint(
+        &mut work_app,
+        &Config::default(),
+        &work_engine.handle,
+        &work_req,
+        PlanHandoffChoice::Work(ApprovalMode::Auto),
+        accept_checkpoint,
+    )
+    .await
+    .unwrap();
+    let queued_work = work_app.queued_messages.pop_front().expect("queued work");
+    assert_eq!(
+        queued_work.approved_plan.as_deref(),
+        Some("1. Edit src/lib.rs\n2. Run tests")
+    );
+    assert!(!queued_work.owner_input);
+    let prepared_work = prepare_user_dispatch(&mut work_app, &Config::default(), queued_work)
+        .expect("prepare work");
+    assert!(matches!(
+        prepared_work.input_authorship,
+        TurnInputAuthorship::ApprovedPlan(ref p) if p == "1. Edit src/lib.rs\n2. Run tests"
+    ));
+
+    let mut work_dispatched = app_in_plan();
+    work_dispatched.offline_mode = true;
+    let work_req_2 = completed_plan(&mut work_dispatched, "Plan text only", false);
+    apply_plan_handoff_with_checkpoint(
+        &mut work_dispatched,
+        &Config::default(),
+        &work_engine.handle,
+        &work_req_2,
+        PlanHandoffChoice::Work(ApprovalMode::Auto),
+        accept_checkpoint,
+    )
+    .await
+    .unwrap();
+    let msg_work = work_dispatched.queued_messages.pop_front().expect("queued");
+    dispatch_user_message(
+        &mut work_dispatched,
+        &Config::default(),
+        &work_engine.handle,
+        msg_work,
+    )
+    .await
+    .expect("dispatch work");
+    let mut saw_plan = false;
+    for _ in 0..3 {
+        if let Some(op) = work_engine.rx_op.recv().await
+            && let Op::SendMessage(TurnSpec {
+                input_authorship, ..
+            }) = op
+        {
+            assert!(matches!(
+                input_authorship,
+                TurnInputAuthorship::ApprovedPlan(ref p) if p == "Plan text only"
+            ));
+            saw_plan = true;
+            break;
+        }
+    }
+    assert!(saw_plan);
+
+    let mut revise_app = app_in_plan();
+    revise_app.offline_mode = true;
+    let revise_req = completed_plan(&mut revise_app, "Original plan", false);
+    let revise_engine = mock_engine_handle();
+    apply_plan_handoff_with_checkpoint(
+        &mut revise_app,
+        &Config::default(),
+        &revise_engine.handle,
+        &revise_req,
+        PlanHandoffChoice::Revise("cover edge cases".into()),
+        accept_checkpoint,
+    )
+    .await
+    .unwrap();
+    let queued_revise = revise_app
+        .queued_messages
+        .pop_front()
+        .expect("queued revise");
+    assert_eq!(queued_revise.approved_plan, None);
+    assert!(queued_revise.owner_input);
+    let prepared_revise = prepare_user_dispatch(&mut revise_app, &Config::default(), queued_revise)
+        .expect("prepare revise");
+    assert_eq!(
+        prepared_revise.input_authorship,
+        TurnInputAuthorship::Person("cover edge cases".to_string())
+    );
+}

@@ -70,6 +70,23 @@ impl CommandPermissionsContext for PermissionsAdapter<'_> {
             })
             .map_err(|error| format!("{error:#}"))
     }
+    fn blocked_actions(&self) -> Vec<BlockedPermissionAction> {
+        self.host
+            .app
+            .borrow()
+            .auto_review_blocked_receipts
+            .iter()
+            .map(|entry| BlockedPermissionAction {
+                receipt_id: (!entry.receipt_id.is_empty()).then(|| entry.receipt_id.clone()),
+                tool_name: entry.tool_name.clone(),
+                rule: entry.rule.clone().unwrap_or_else(|| entry.gate.clone()),
+                reason: entry.reason.clone(),
+                action_summary: entry.action_summary.clone(),
+                approvable: entry.approvable,
+                approved: entry.approved,
+            })
+            .collect()
+    }
 }
 impl CommandConfigStatusContext for ConfigStatusAdapter<'_> {
     fn snapshot(&self) -> ConfigStatusView {

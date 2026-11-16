@@ -144,10 +144,16 @@ fn collect_pending_work(app: &App) -> PendingWork {
         if is_shell {
             continue;
         }
+        let trimmed = entry.prompt_summary.trim();
+        let label = if !trimmed.is_empty() {
+            trimmed
+        } else {
+            entry.id.as_str()
+        };
         items.push(PendingItem {
             kind: PendingItemKind::Task,
             state,
-            label: truncate_label(entry.id.as_str()),
+            label: truncate_label(label),
         });
     }
 
@@ -383,7 +389,9 @@ mod tests {
             "shell command must not occupy the counts: {labels:?}"
         );
         assert!(
-            labels.iter().any(|label| label.contains("run")),
+            labels
+                .iter()
+                .any(|label| label.starts_with("background confirma")),
             "{labels:?}"
         );
         assert!(
@@ -444,16 +452,58 @@ mod tests {
         assert!(
             work.items
                 .iter()
-                .any(|item| item.label == "durable-running"
-                    && item.state == PendingItemState::Running),
+                .any(|item| item.label == "durable work" && item.state == PendingItemState::Running),
             "durable running task must retain its typed state: {work:?}"
         );
         assert!(
-            work.items.iter().any(
-                |item| item.label == "durable-queued" && item.state == PendingItemState::Queued
-            ),
+            work.items
+                .iter()
+                .any(|item| item.label == "durable work" && item.state == PendingItemState::Queued),
             "durable queued task must retain its typed state: {work:?}"
         );
+    }
+
+    #[test]
+    fn durable_task_prefers_trimmed_summary_and_falls_back_to_id() {
+        use crate::tui::app::TaskPanelEntry;
+        let options = crate::tui::test_support::test_tui_options(std::path::PathBuf::from("."));
+        let mut app = crate::tui::test_support::test_app_with_options(options);
+        app.task_panel.extend([
+            TaskPanelEntry {
+                exit_code: None,
+                id: "task_with_summary".to_string(),
+                status: "running".to_string(),
+                prompt_summary: "  audit workspace diff  ".to_string(),
+                duration_ms: Some(1_000),
+                kind: TaskPanelEntryKind::Background,
+                stale: false,
+                elapsed_since_output_ms: None,
+                owner_agent_id: None,
+                owner_agent_name: None,
+                current_tool: None,
+                role: None,
+                files_touched: 0,
+            },
+            TaskPanelEntry {
+                exit_code: None,
+                id: "task_blank_summary".to_string(),
+                status: "queued".to_string(),
+                prompt_summary: "  \t\n ".to_string(),
+                duration_ms: None,
+                kind: TaskPanelEntryKind::Background,
+                stale: false,
+                elapsed_since_output_ms: None,
+                owner_agent_id: None,
+                owner_agent_name: None,
+                current_tool: None,
+                role: None,
+                files_touched: 0,
+            },
+        ]);
+
+        let work = pending_work_from_app(&app);
+        let labels: Vec<&str> = work.items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels, ["audit workspace diff", "task_blank_summary"]);
     }
 
     #[test]

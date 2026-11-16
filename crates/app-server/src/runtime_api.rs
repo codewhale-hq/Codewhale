@@ -20,7 +20,7 @@ use axum::response::Html;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, delete, get, post, put};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
@@ -131,6 +131,7 @@ mod mobile;
 mod plans;
 mod plugin_index;
 mod plugins;
+mod remote_pairings;
 pub(crate) mod review;
 mod secrets;
 pub use self::secrets::{SetAccountModelAccessRequest, install_account_model_access};
@@ -1566,6 +1567,27 @@ struct DecideApprovalResponse {
     approval_id: String,
     decision: String,
     delivered: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApproveAutoReviewRetryBody {
+    #[serde(alias = "receipt_id", alias = "call_digest")]
+    target: String,
+    #[serde(default)]
+    client: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+}
+
+#[derive(Debug, Serialize)]
+struct ApproveAutoReviewRetryResponse {
+    ok: bool,
+    thread_id: String,
+    grant: codewhale_engine::core::authority::auto_review::AutoReviewRetryGrant,
+}
+
+#[derive(Debug, Serialize)]
+struct AutoReviewBlocksResponse {
+    thread_id: String,
+    blocks: Vec<codewhale_engine::core::authority::auto_review::AutoReviewBlockedAction>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3233,6 +3255,14 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/voice/dictate", post(voice::voice_dictate))
         .route("/v1/voice/send", post(voice::voice_send))
         .route("/v1/voice/control", post(voice::voice_control))
+        .route(
+            "/v1/voice/transcribe",
+            post(voice::voice_transcribe).layer(DefaultBodyLimit::max(12 * 1024 * 1024)),
+        )
+        .route(
+            "/v1/voice/tts",
+            post(voice::voice_tts).layer(DefaultBodyLimit::max(64 * 1024)),
+        )
         .route("/v1/threads/{id}/resume", post(resume_thread))
         .route("/v1/threads/{id}/fork", post(fork_thread))
         .route("/v1/threads/{id}/undo", post(undo_thread_turn))
@@ -3332,6 +3362,14 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/v1/threads/{id}/approval-grants/{grant_id}",
             delete(revoke_approval_grant),
+        )
+        .route(
+            "/v1/threads/{id}/auto-review/blocks",
+            get(list_auto_review_blocks),
+        )
+        .route(
+            "/v1/threads/{id}/auto-review/approve",
+            post(approve_auto_review_retry),
         )
         .route(
             "/v1/user-input/{thread_id}/{input_id}",
@@ -3603,6 +3641,27 @@ pub fn build_router(state: RuntimeApiState) -> Router {
                 .delete(clear_memory),
         )
         .route("/v1/memory/{id}", get(get_memory_entry))
+        .route(
+            "/v1/dsh/remote/pairings",
+            get(remote_pairings::list_pairings).layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::require_runtime_master_bearer,
+            )),
+        )
+        .route(
+            "/v1/dsh/remote/pairings/{grant}/present",
+            post(remote_pairings::present_pairing).layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::require_runtime_master_bearer,
+            )),
+        )
+        .route(
+            "/v1/dsh/remote/pairings/{grant}",
+            delete(remote_pairings::withdraw_pairing).layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::require_runtime_master_bearer,
+            )),
+        )
         .merge(memory_lens::routes())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -3629,6 +3688,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/__codewhale/mobile/bootstrap/{nonce}",
             get(exchange_mobile_bootstrap),
+        )
+        .route(
+            "/__codewhale/mobile/pair/{secret}",
+            get(remote_pairings::redeem_pairing),
         )
         .route("/__codewhale/mobile/session", post(exchange_mobile_session))
         .route(
@@ -3699,11 +3762,18 @@ async fn exchange_mobile_bootstrap(
         }
     };
 
+    mobile_redirect_response(session)
+}
+
+fn mobile_redirect_response(session: mobile::MobileSessionBootstrap) -> Response {
     let location = format!(
         "/mobile#request_proof={}&stream_ticket={}",
         session.request_proof, session.stream_ticket
     );
-    let cookie = mobile::mobile_session_cookie(&session.session_cookie);
+    let cookie = mobile::mobile_session_cookie_with_max_age(
+        &session.session_cookie,
+        session.session_ttl_seconds,
+    );
     let mut response = (StatusCode::SEE_OTHER, "").into_response();
     response.headers_mut().insert(
         header::LOCATION,
@@ -3737,8 +3807,17 @@ async fn refresh_mobile_stream_ticket(
     let Some(mobile_state) = state.mobile.as_ref() else {
         return mobile_not_found();
     };
-    if !auth::mobile_session_request_is_authorized(&req, &state, mobile_state) {
-        return mobile_unauthorized();
+    match auth::mobile_session_request_is_authorized(&req, &state, mobile_state) {
+        auth::RuntimeAuthDecision::Allow(_) => {}
+        auth::RuntimeAuthDecision::Forbidden(message) => {
+            let mut response =
+                (StatusCode::FORBIDDEN, Json(json!({ "error": message }))).into_response();
+            secure_mobile_response(&mut response);
+            return response;
+        }
+        auth::RuntimeAuthDecision::Unauthorized => {
+            return mobile_unauthorized();
+        }
     }
     let ticket = mobile_state.refresh_stream_ticket(
         req.headers()
@@ -3761,7 +3840,10 @@ async fn refresh_mobile_stream_ticket(
 }
 
 fn mobile_session_response(session: mobile::MobileSessionBootstrap) -> Response {
-    let cookie = mobile::mobile_session_cookie(&session.session_cookie);
+    let cookie = mobile::mobile_session_cookie_with_max_age(
+        &session.session_cookie,
+        session.session_ttl_seconds,
+    );
     let mut response = Json(MobileSessionResponse {
         request_proof: session.request_proof,
         stream_ticket: session.stream_ticket,
@@ -3777,7 +3859,7 @@ fn mobile_session_response(session: mobile::MobileSessionBootstrap) -> Response 
     response
 }
 
-fn mobile_not_found() -> Response {
+pub(super) fn mobile_not_found() -> Response {
     secured_mobile_text(StatusCode::NOT_FOUND, "not found")
 }
 
@@ -3787,13 +3869,13 @@ fn mobile_unauthorized() -> Response {
     response
 }
 
-fn secured_mobile_text(status: StatusCode, body: &'static str) -> Response {
+pub(super) fn secured_mobile_text(status: StatusCode, body: &'static str) -> Response {
     let mut response = (status, body).into_response();
     secure_mobile_response(&mut response);
     response
 }
 
-fn secure_mobile_response(response: &mut Response) {
+pub(super) fn secure_mobile_response(response: &mut Response) {
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(
@@ -3979,14 +4061,22 @@ async fn create_thread(
 
 async fn list_threads(
     State(state): State<RuntimeApiState>,
+    scope: Option<Extension<remote_pairings::RemoteSessionScope>>,
     Query(query): Query<ThreadsQuery>,
 ) -> Result<Json<Vec<ThreadRecord>>, ApiError> {
     let filter = resolve_thread_filter(query.include_archived, query.archived_only);
-    let threads = state
+    let scan_limit = if scope.is_some() { None } else { query.limit };
+    let mut threads = state
         .runtime_threads
-        .list_threads(filter, query.limit)
+        .list_threads(filter, scan_limit)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
+    if let Some(Extension(scope)) = scope {
+        threads.retain(|thread| thread.id == scope.session_id);
+        if let Some(limit) = query.limit {
+            threads.truncate(limit);
+        }
+    }
     Ok(Json(threads))
 }
 
@@ -4055,6 +4145,7 @@ fn distinct_paths(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
 
 async fn list_threads_summary(
     State(state): State<RuntimeApiState>,
+    scope: Option<Extension<remote_pairings::RemoteSessionScope>>,
     Query(query): Query<ThreadSummaryQuery>,
 ) -> Result<Json<Vec<ThreadSummary>>, ApiError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 500);
@@ -4089,7 +4180,7 @@ async fn list_threads_summary(
     //
     // Match on the thread record *before* harvesting row facts. Preview is
     // filled only for rows that are returned; it is not a search key.
-    let scan_limit = if search.is_some() || thread_ids.is_some() {
+    let scan_limit = if scope.is_some() || search.is_some() || thread_ids.is_some() {
         None
     } else {
         Some(limit)
@@ -4102,6 +4193,11 @@ async fn list_threads_summary(
 
     let mut rows = Vec::new();
     for thread in threads {
+        if let Some(Extension(scope)) = &scope
+            && thread.id != scope.session_id
+        {
+            continue;
+        }
         if rows.len() >= limit {
             break;
         }
@@ -6294,9 +6390,15 @@ async fn list_hooks(
 async fn list_modes(
     State(state): State<RuntimeApiState>,
 ) -> Json<codewhale_engine::conversation_modes::ConversationModeTable> {
+    let plugin_creator_enabled = state
+        .config
+        .read()
+        .features()
+        .enabled(codewhale_runtime::features::Feature::PluginCreator);
     Json(
         codewhale_engine::conversation_modes::current_table(
             state.runtime_threads.extension_host_options(),
+            plugin_creator_enabled,
         )
         .await,
     )
@@ -7016,8 +7118,45 @@ async fn list_approvals(
     Ok(Json(rows))
 }
 
+fn resolve_approval_responder(
+    auth_caller: auth::RuntimeAuthCaller,
+    client: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+) -> Result<Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>, ApiError> {
+    use codewhale_engine::runtime_threads::manager::ApprovalResponder;
+
+    match auth_caller {
+        auth::RuntimeAuthCaller::MasterOrLocal => Ok(client),
+        auth::RuntimeAuthCaller::WebSession => match client {
+            None | Some(ApprovalResponder::Web) => Ok(Some(ApprovalResponder::Web)),
+            Some(_) => Err(
+                ApiError::forbidden("web session cannot claim another client surface")
+                    .with_code("owner_required"),
+            ),
+        },
+        auth::RuntimeAuthCaller::MobileSession => {
+            if client.is_some_and(ApprovalResponder::is_owner_surface) {
+                return Err(
+                    ApiError::forbidden("only the owner surface may answer this approval")
+                        .with_code("owner_required"),
+                );
+            }
+            Ok(Some(ApprovalResponder::Phone))
+        }
+        auth::RuntimeAuthCaller::DeviceClient => {
+            if client.is_some_and(ApprovalResponder::is_owner_surface) {
+                return Err(
+                    ApiError::forbidden("only the owner surface may answer this approval")
+                        .with_code("owner_required"),
+                );
+            }
+            Ok(client)
+        }
+    }
+}
+
 async fn decide_approval(
     State(state): State<RuntimeApiState>,
+    axum::Extension(auth_caller): axum::Extension<auth::RuntimeAuthCaller>,
     Path(approval_id): Path<String>,
     Json(req): Json<DecideApprovalBody>,
 ) -> Result<Json<DecideApprovalResponse>, ApiError> {
@@ -7034,8 +7173,9 @@ async fn decide_approval(
             )));
         }
     };
+    let responder = resolve_approval_responder(auth_caller, req.client)?;
     Ok(Json(
-        settle_approval_request(&state, approval_id, None, decision, req.client).await?,
+        settle_approval_request(&state, approval_id, None, decision, responder).await?,
     ))
 }
 
@@ -7075,6 +7215,10 @@ async fn settle_approval_request_in_workspace(
                 .is::<codewhale_engine::runtime_threads::manager::ApprovalBindingMismatch>()
             {
                 ApiError::forbidden(error.to_string())
+            } else if error
+                .is::<codewhale_engine::runtime_threads::manager::ApprovalOwnerRequired>()
+            {
+                ApiError::forbidden(error.to_string()).with_code("owner_required")
             } else if error
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists)
@@ -7120,6 +7264,37 @@ async fn revoke_approval_grant(
     Ok(Json(
         json!({ "ok": true, "grant_id": grant_id, "revoked": true }),
     ))
+}
+
+async fn list_auto_review_blocks(
+    State(state): State<RuntimeApiState>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<AutoReviewBlocksResponse>, ApiError> {
+    let blocks = state
+        .runtime_threads
+        .list_auto_review_blocks(&thread_id, None)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(AutoReviewBlocksResponse { thread_id, blocks }))
+}
+
+async fn approve_auto_review_retry(
+    State(state): State<RuntimeApiState>,
+    axum::Extension(auth_caller): axum::Extension<auth::RuntimeAuthCaller>,
+    Path(thread_id): Path<String>,
+    Json(req): Json<ApproveAutoReviewRetryBody>,
+) -> Result<Json<ApproveAutoReviewRetryResponse>, ApiError> {
+    let responder = resolve_approval_responder(auth_caller, req.client)?;
+    let grant = state
+        .runtime_threads
+        .approve_auto_review_retry(&thread_id, &req.target, responder, None)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(ApproveAutoReviewRetryResponse {
+        ok: true,
+        thread_id,
+        grant,
+    }))
 }
 
 async fn submit_user_input(
@@ -9210,6 +9385,11 @@ async fn update_thread(
         )
         .await
         .map_err(map_thread_err)?;
+    if thread.archived
+        && let Some(mobile) = state.mobile.as_ref()
+    {
+        mobile.revoke_remote_session(&id);
+    }
     Ok(Json(thread))
 }
 
@@ -9620,6 +9800,7 @@ fn attribute_window(
     workspace: &FsPath,
     turn_id: &str,
     receipts: &[codewhale_snapshot::WorkspaceSnapshotRef],
+    delegated: &std::collections::BTreeSet<PathBuf>,
 ) -> Result<
     (
         std::collections::BTreeSet<PathBuf>,
@@ -9696,6 +9877,11 @@ fn attribute_window(
                 _ => SpanWriter::Nobody,
             }
         };
+    }
+    for path in delegated {
+        if foreign.remove(path) {
+            owned.insert(path.clone());
+        }
     }
     Ok((owned, foreign))
 }
@@ -9871,7 +10057,12 @@ fn patch_undo_workspace_files_impl(
             })
             .filter_map(|receipt| receipt.write_paths.as_ref())
             .flatten();
-        for raw in turn.declared_writes.iter().chain(receipt_writes) {
+        for raw in turn
+            .declared_writes
+            .iter()
+            .chain(&turn.delegated_writes)
+            .chain(receipt_writes)
+        {
             let covered = match declared_write_path(workspace, raw) {
                 Some(rel) => !repo.path_is_excluded(&rel).map_err(|e| {
                     ApiError::internal(format!(
@@ -9897,7 +10088,12 @@ fn patch_undo_workspace_files_impl(
     for (turn, receipts) in windows {
         let (pre, pre_label) = resolve(&turn.turn_id, &receipts[0])?;
         let (post, _) = resolve(&turn.turn_id, &receipts[receipts.len() - 1])?;
-        let (owned, foreign) = attribute_window(workspace, &turn.turn_id, receipts)?;
+        let delegated = turn
+            .delegated_writes
+            .iter()
+            .filter_map(|raw| declared_write_path(workspace, raw))
+            .collect();
+        let (owned, foreign) = attribute_window(workspace, &turn.turn_id, receipts, &delegated)?;
         segments.push(UndoSegment {
             turn_id: turn.turn_id.clone(),
             pre,
@@ -10431,8 +10627,32 @@ async fn start_thread_watch_turn(
 
 async fn start_thread_turn(
     State(state): State<RuntimeApiState>,
+    caller: Option<axum::Extension<auth::RuntimeAuthCaller>>,
+    scope: Option<Extension<remote_pairings::RemoteSessionScope>>,
     Path(id): Path<String>,
     Json(value): Json<Value>,
+) -> Result<(StatusCode, Json<StartTurnResponse>), ApiError> {
+    let scope = scope.map(|Extension(remote_scope)| remote_scope);
+    if let Some(ref remote_scope) = scope
+        && remote_scope.session_id != id
+    {
+        return Err(ApiError::forbidden(
+            "paired remote devices are restricted to their paired conversation",
+        ));
+    }
+    let owner_composer = matches!(
+        caller,
+        Some(axum::Extension(auth::RuntimeAuthCaller::WebSession))
+    );
+    start_thread_turn_for_caller(State(state), Path(id), Json(value), owner_composer, scope).await
+}
+
+async fn start_thread_turn_for_caller(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Json(value): Json<Value>,
+    owner_composer: bool,
+    scope: Option<remote_pairings::RemoteSessionScope>,
 ) -> Result<(StatusCode, Json<StartTurnResponse>), ApiError> {
     if value.as_object().is_some_and(|object| {
         [
@@ -10440,6 +10660,8 @@ async fn start_thread_turn(
             "watchEvent",
             "input_provenance",
             "inputProvenance",
+            "input_authorship",
+            "inputAuthorship",
         ]
         .iter()
         .any(|key| object.contains_key(*key))
@@ -10452,6 +10674,8 @@ async fn start_thread_turn(
                 "watchEvent",
                 "input_provenance",
                 "inputProvenance",
+                "input_authorship",
+                "inputAuthorship",
             ]
             .iter()
             .any(|key| metadata.contains_key(*key))
@@ -10461,14 +10685,25 @@ async fn start_thread_turn(
             "Watch input requires the dedicated attested watch-turn endpoint",
         ));
     }
-    let req: StartTurnRequest = serde_json::from_value(value)
+    let mut req: StartTurnRequest = serde_json::from_value(value)
         .map_err(|error| ApiError::unprocessable(error.to_string()))?;
+    if scope.is_some() {
+        sanitize_remote_turn_request(&mut req)?;
+    }
     let expected_workspace = req.expected_workspace.clone();
-    let (turn, replayed) = state
-        .runtime_threads
-        .start_turn_reporting_replay(&id, req)
-        .await
-        .map_err(map_thread_err)?;
+    let (turn, replayed) = if owner_composer {
+        state
+            .runtime_threads
+            .start_turn_owner_reporting_replay(&id, req)
+            .await
+            .map_err(map_thread_err)?
+    } else {
+        state
+            .runtime_threads
+            .start_turn_reporting_replay(&id, req)
+            .await
+            .map_err(map_thread_err)?
+    };
     let thread = state
         .runtime_threads
         .get_thread(&id)
@@ -10500,6 +10735,33 @@ async fn start_thread_turn(
             idempotent_replay: replayed,
         }),
     ))
+}
+
+fn sanitize_remote_turn_request(req: &mut StartTurnRequest) -> Result<(), ApiError> {
+    if req.mode.is_some()
+        || req.permission_posture.is_some()
+        || req.allowed_tools.is_some()
+        || !req.dynamic_tools.is_empty()
+        || req.model.is_some()
+        || req.model_provider.is_some()
+        || req.model_provider_id.is_some()
+        || req.account_model_owner.is_some()
+        || req.profile_constitution.is_some()
+        || req.reasoning_effort.is_some()
+        || req.max_output_tokens.is_some()
+        || req.environment_id.is_some()
+        || req.allow_shell == Some(true)
+        || req.trust_mode == Some(true)
+        || req.auto_approve == Some(true)
+    {
+        return Err(ApiError::forbidden(
+            "paired remote devices cannot override turn posture, tools, model, or environment",
+        ));
+    }
+    req.allow_shell = None;
+    req.trust_mode = None;
+    req.auto_approve = None;
+    Ok(())
 }
 
 async fn get_thread_turn_operation(
@@ -10632,12 +10894,17 @@ async fn cancel_agent_mail(
 
 async fn steer_thread_turn(
     State(state): State<RuntimeApiState>,
+    caller: Option<axum::Extension<auth::RuntimeAuthCaller>>,
     Path((id, turn_id)): Path<(String, String)>,
     Json(req): Json<SteerTurnRequest>,
 ) -> Result<Json<TurnRecord>, ApiError> {
+    let owner_composer = matches!(
+        caller,
+        Some(axum::Extension(auth::RuntimeAuthCaller::WebSession))
+    );
     let turn = state
         .runtime_threads
-        .steer_turn(&id, &turn_id, req)
+        .steer_turn_for_caller(&id, &turn_id, req, owner_composer)
         .await
         .map_err(map_thread_err)?;
     Ok(Json(turn))
@@ -11061,10 +11328,22 @@ async fn cancel_task(
 
 async fn stream_thread_events(
     State(state): State<RuntimeApiState>,
+    scope: Option<Extension<remote_pairings::RemoteSessionScope>>,
     Path(id): Path<String>,
     Query(mut query): Query<ThreadEventsQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    if let Some(Extension(ref remote_scope)) = scope {
+        if remote_scope.session_id != id {
+            return Err(ApiError::forbidden(
+                "paired remote devices are restricted to their paired conversation",
+            ));
+        }
+        if !remote_pairings::scope_is_live(&state, remote_scope).await {
+            remote_pairings::evict_scope(&state, remote_scope);
+            return Err(ApiError::unauthorized("Remote device pairing has ended"));
+        }
+    }
     // Two clients, two cursors. A browser `EventSource` can only replay through
     // the `Last-Event-ID` header it sets on reconnect (the ids now ride the
     // journal frames below); every other client passes `since_seq`. An explicit
@@ -11074,9 +11353,18 @@ async fn stream_thread_events(
     query.since_seq = query.since_seq.or_else(|| last_event_id(&headers));
 
     let progress = query.progress;
-    let stream = open_thread_event_frames(state, id, query)
-        .await?
-        .map(|frame| Ok::<_, Infallible>(thread_event_as_sse(frame)));
+    let initial_last_seq = query.since_seq.unwrap_or(0);
+    let frames = open_thread_event_frames(state.clone(), id.clone(), query).await?;
+    let stream = match scope {
+        Some(Extension(remote_scope)) => {
+            remote_scoped_thread_event_stream(state, id, remote_scope, frames, initial_last_seq)
+                .map(|frame| Ok::<_, Infallible>(thread_event_as_sse(frame)))
+                .boxed()
+        }
+        None => frames
+            .map(|frame| Ok::<_, Infallible>(thread_event_as_sse(frame)))
+            .boxed(),
+    };
 
     let mut response = Sse::new(stream)
         .keep_alive(
@@ -11097,6 +11385,97 @@ async fn stream_thread_events(
             .insert("x-codewhale-event-progress", HeaderValue::from_static("1"));
     }
     Ok(response)
+}
+
+struct RemoteStreamWatcherGuard(tokio::task::JoinHandle<()>);
+
+impl Drop for RemoteStreamWatcherGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+fn remote_scoped_thread_event_stream(
+    state: RuntimeApiState,
+    thread_id: String,
+    remote_scope: remote_pairings::RemoteSessionScope,
+    mut inner: crate::RuntimeOwnerEventStream,
+    mut last_seq: u64,
+) -> impl futures_util::Stream<Item = crate::RuntimeOwnerEventFrame> {
+    let per_stream_cancel = CancellationToken::new();
+    let watcher_cancel = per_stream_cancel.clone();
+    let watcher_state = state.clone();
+    let watcher_scope = remote_scope.clone();
+    let _guard = RemoteStreamWatcherGuard(tokio::spawn(async move {
+        let deadline = tokio::time::Instant::from_std(watcher_scope.expires_at);
+        let sleep_ttl = tokio::time::sleep_until(deadline);
+        tokio::pin!(sleep_ttl);
+        let mut poll = tokio::time::interval(Duration::from_millis(250));
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        poll.tick().await;
+        loop {
+            tokio::select! {
+                () = watcher_scope.cancel.cancelled() => {
+                    watcher_cancel.cancel();
+                    break;
+                }
+                () = &mut sleep_ttl => {
+                    remote_pairings::evict_scope(&watcher_state, &watcher_scope);
+                    watcher_cancel.cancel();
+                    break;
+                }
+                _ = poll.tick() => {
+                    if !remote_pairings::scope_is_live(&watcher_state, &watcher_scope).await {
+                        remote_pairings::evict_scope(&watcher_state, &watcher_scope);
+                        watcher_cancel.cancel();
+                        break;
+                    }
+                }
+            }
+        }
+    }));
+    stream! {
+        let _keep_guard_alive = _guard;
+        loop {
+            if !remote_pairings::scope_is_live_sync(&remote_scope) {
+                remote_pairings::evict_scope(&state, &remote_scope);
+                yield thread_stream_end(&thread_id, ThreadStreamEnd::RemoteAccessRevoked, last_seq);
+                return;
+            }
+            let next = tokio::select! {
+                biased;
+                () = per_stream_cancel.cancelled() => None,
+                frame = inner.next() => Some(frame),
+            };
+            match next {
+                None => {
+                    remote_pairings::evict_scope(&state, &remote_scope);
+                    yield thread_stream_end(&thread_id, ThreadStreamEnd::RemoteAccessRevoked, last_seq);
+                    return;
+                }
+                Some(None) => return,
+                Some(Some(frame)) => {
+                    if !remote_pairings::scope_is_live_for_frame(&state, &remote_scope, &frame).await {
+                        remote_pairings::evict_scope(&state, &remote_scope);
+                        yield thread_stream_end(&thread_id, ThreadStreamEnd::RemoteAccessRevoked, last_seq);
+                        return;
+                    }
+                    if let Some(seq) = frame.sequence {
+                        last_seq = last_seq.max(seq);
+                    } else if frame.event == "stream.progress"
+                        && let Some(seq) = frame.data.get("seq").and_then(Value::as_u64)
+                    {
+                        last_seq = last_seq.max(seq);
+                    }
+                    let is_end = frame.event == "stream.end";
+                    yield frame;
+                    if is_end {
+                        return;
+                    }
+                }
+            }
+        }
+    }
 }
 
 async fn open_thread_event_frames(
@@ -11197,6 +11576,7 @@ enum ThreadStreamEnd {
     CatchUpFailed,
     /// The Runtime API server is stopping (a terminating signal).
     RuntimeShutdown,
+    RemoteAccessRevoked,
 }
 
 impl ThreadStreamEnd {
@@ -11205,15 +11585,14 @@ impl ThreadStreamEnd {
             Self::ReplayFailed => "replay_failed",
             Self::CatchUpFailed => "catch_up_failed",
             Self::RuntimeShutdown => "runtime_shutdown",
+            Self::RemoteAccessRevoked => "remote_access_revoked",
         }
     }
 
-    /// Every current end is resumable from `last_seq`. The flag exists so the
-    /// client rule keys on it rather than on the reason list: a future
-    /// non-resumable end stops clients without a client change.
     const fn retryable(self) -> bool {
         match self {
             Self::ReplayFailed | Self::CatchUpFailed | Self::RuntimeShutdown => true,
+            Self::RemoteAccessRevoked => false,
         }
     }
 }
@@ -15048,6 +15427,29 @@ fn map_thread_err(err: anyhow::Error) -> ApiError {
     if err.is::<codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch>() {
         return ApiError::forbidden(err.to_string()).with_code("workspace_mismatch");
     }
+    if err.is::<codewhale_engine::runtime_threads::manager::ApprovalOwnerRequired>() {
+        return ApiError::forbidden(err.to_string()).with_code("owner_required");
+    }
+    if let Some(error) =
+        err.downcast_ref::<codewhale_engine::core::engine::AutoReviewRetryApprovalError>()
+    {
+        use codewhale_engine::core::engine::AutoReviewRetryApprovalError;
+        return match error {
+            AutoReviewRetryApprovalError::OwnerRequired => {
+                ApiError::forbidden(error.to_string()).with_code("owner_required")
+            }
+            AutoReviewRetryApprovalError::NotInAutoReview => {
+                ApiError::conflict(error.to_string()).with_code("not_in_auto_review")
+            }
+            AutoReviewRetryApprovalError::InvalidTarget(detail) => {
+                if detail.contains("no blocked action") {
+                    ApiError::not_found(error.to_string())
+                } else {
+                    ApiError::conflict(error.to_string())
+                }
+            }
+        };
+    }
     if let Some(refusal) = external_agent_refusal(&err).or_else(|| mode_refusal(&err)) {
         return refusal;
     }
@@ -15163,6 +15565,14 @@ impl ApiError {
     fn forbidden(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::FORBIDDEN,
+            message: message.into(),
+            code: None,
+        }
+    }
+
+    fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
             message: message.into(),
             code: None,
         }

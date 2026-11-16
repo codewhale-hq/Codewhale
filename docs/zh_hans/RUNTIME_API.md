@@ -910,6 +910,20 @@ bootstrap URL。该能力会创建一个 30 分钟的进程内
 在 Runtime 拥有 TLS 或经过验证的传输边界之前，
 不要直接将它暴露给其他设备或公网。
 
+#### 远程配对授权（DSH remote 服务）
+
+获得 `remote` 宿主机服务授权的插件可通过 Engine `dsh_remote` 请求绑定单一对话的配对。
+Runtime 复用现有的 HTTP/SSE 表面提供宿主机管理与回环兑换（不新增监听器或 WebSocket）：
+
+- `GET /v1/dsh/remote/pairings` — 仅接受主 `Authorization: Bearer` 令牌（不接受移动端/Web cookie 或设备 Watch/Drive 令牌；未开启认证时返回 `409`）。返回 JSON 数组，每项包含 `grant`、`plugin_id`、`plugin_name`（来自已审核插件记录）、`session_id`、`state`（`"awaiting_host"` 或 `"paired"`）、`plugin_label`、`client_label` 与 `expires_in_seconds`，永不包含配对密钥或设备令牌。
+- `POST /v1/dsh/remote/pairings/{grant}/present` — 仅限主 bearer。生成并返回 `{ "grant", "url", "expires_in_seconds" }`（响应头带 `Cache-Control: no-store`），其中 `url` 为 `http://<bind>/__codewhale/mobile/pair/<secret>`。每次调用都会使此前生成的链接失效，因此必须仅在人工明确操作时调用，严禁轮询。未知或已配对授权返回不带细节的 `404`；若未启用移动端控制，或 `session_id` 不是活动的 Runtime HTTP 对话（例如终端会话或已归档线程），则拒绝并返回 `409 Conflict` 且不生成密钥。
+- `DELETE /v1/dsh/remote/pairings/{grant}` — 仅限主 bearer。撤销等待中的配对或终止已配对设备；无论授权是否存在或已结束，均统一返回 `204 No Content`。
+- `GET /__codewhale/mobile/pair/{secret}` — 无需 bearer 的一次性回环兑换端点（非回环对端忽略 `X-Forwarded-For` 并返回 `403`；未知、过期、重放、已撤销或格式错误均统一返回 `401` 固定文本）。成功后签发绑定到该授权的移动端会话（`HttpOnly; SameSite=Strict` cookie，TTL 不超过授权剩余有效期，并附带同源 fragment 证明与流票据），设备令牌与配对密钥绝不写入 cookie、fragment、URL、响应体或日志。
+
+来自配对授权的移动端会话会在每次 HTTP 请求与每次 SSE 流票据校验时向 Engine 实时校验；一旦授权被撤销、过期、插件被禁用/吊销信任或对话被归档/删除，会话将立即失效并删除（后续请求直接返回 `401`，已打开的 `GET /v1/threads/{id}/events` SSE 流也会立即发送 `stream.end { "reason": "remote_access_revoked", "retryable": false }` 并关闭，绝不泄漏撤销后的事件）。该会话仅允许读取并向其唯一绑定的对话发送/引导/中断消息（`GET /v1/threads` 与 `GET /v1/threads/summary` 仅返回该对话；仅放行该对话的 `GET /v1/threads/{id}`、`GET /v1/threads/{id}/events`、`POST /v1/threads/{id}/turns`、`/steer`、`/interrupt` 以及 `POST /__codewhale/mobile/stream-ticket` 和 `/mobile`）。在 `POST /v1/threads/{id}/turns` 上，已配对设备不得覆盖 `mode`、`permission_posture`、`allowed_tools`、`dynamic_tools`、`model`、`model_provider`、`model_provider_id`、`account_model_owner`、`profile_constitution`、`reasoning_effort`、`max_output_tokens` 或 `environment_id`（返回 `403 Forbidden`），也不得将 `allow_shell`、`trust_mode` 或 `auto_approve` 设为 `true`（`403`）；显式传入 `false` 会归一化为 `None`，以保留对话原有权限姿态。其他线程、新建线程、设置/凭据/终端/文件、配对管理以及审批路由（`POST /v1/approvals/{approval_id}`）均返回 `403 Forbidden`，审批卡仅能在宿主机上操作。
+
+客户端在界面上展示 `plugin_label` 或 `client_label` 时，必须将其放在方向隔离容器（如 HTML `<bdi>`）中，作为带引号的第三方文本显示在已审核的 `plugin_name` 旁，绝不能将其渲染为标题或宿主自身文案内文。
+
 ### 端点
 
 **健康检查**
@@ -1385,6 +1399,24 @@ Engine 的工具执行 ID 另行以 `tool_call_id` 出现在
 Runtime 重启后，线程的授权保持暂停，匹配的调用会再次提示，直到经过认证的客户端
 恢复该线程。无法读取的授权存储不含任何授权，因此每次调用都会提示。一个强制的
 （不可绕过的）提示永不会被授权回答。
+
+**Auto-Review 阻断与一次性重试授权**
+- `GET /v1/threads/{id}/auto-review/blocks` 返回 `{ thread_id, blocks[] }`，
+  列出线程上记录的 Auto-Review 阻断回执（`receipt_id`、`call_digest`、
+  `tool_id`、`tool_name`、`action_summary`、`rule`、`reason`、`gate`、
+  `verdict`、`approved`、`approvable`）。
+- `POST /v1/threads/{id}/auto-review/approve` 请求体为
+  `{ "target": "<receipt_id_or_call_digest>", "client"?: "desktop"|"tui"|"web"|"phone"|"acp" }`，
+  要求已附着所有者运行时且调用方为所有者界面（否则返回 `403 owner_required`，
+  浏览器 cookie 的 `"desktop"`/`"phone"` 亦被拒绝），要求线程仍处于 Auto-Review
+  （否则返回 `409 not_in_auto_review`）；找不到目标时返回 `404`，已批准或
+  不可批准时返回 `409`；成功后铸造一条绑定到精确 `(tool_name, call_digest)` 的
+  一次性重试授权并返回 `{ ok, thread_id, grant }`，同时发出
+  `auto_review.retry_approved`。重试用完即失效，并仍走全部非 Auto-Review 关卡
+  （在守护者审查时附带 `person_approved_retry`，守护者明确拒绝或不可用时仍阻断）。
+  子智能体与扩展调用不可创建、读取或消费重试授权。若所有者在场的交互式运行时
+  触发阈值（连续 3 次阻断、累计 20 次阻断或连续 3 次审查不可用），会自动将线程的
+  `permission_posture` 切至 `ask` 并发出 `auto_review.paused` 与 `thread.updated`。
 
 **用户输入**
 - `POST /v1/user-input/{thread_id}/{input_id}`，请求体
@@ -2699,6 +2731,7 @@ data: {"schema_version":1,"event":"stream.end","kind":"stream.end","thread_id":"
 | `replay_failed` | 为开头回放提供数据的持久历史读取失败，包括第一个游标之后回放 worker 崩溃 | `true` |
 | `catch_up_failed` | 广播落后之后，从流的游标开始的持久重读无法打开或失败 | `true` |
 | `runtime_shutdown` | Runtime API 服务器正在停止（SIGINT、SIGTERM 或 SIGHUP；Windows 上为 Ctrl+C 或 Ctrl+Break）。打开的流会在进程退出前的一个有界排空窗口内收到此帧 | `true` |
+| `remote_access_revoked` | 已配对远程设备的授权会话结束（配对被撤销、插件被吊销、会话 TTL 到期或绑定对话已归档/删除） | `false` |
 
 每个 `200` 响应都带有 `x-codewhale-stream-end: 1`。有这个头时，**没有** `stream.end`
 的 EOF 意味着连接或 Runtime 进程在服务器没有选择结束流的情况下死掉了：网络或代理

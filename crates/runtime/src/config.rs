@@ -2532,9 +2532,17 @@ impl BaseUrlEnvReceipt {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct AutoReviewConfig {
     #[serde(default)]
+    pub disabled: bool,
+    #[serde(default)]
+    pub review_all_shell: bool,
+    #[serde(default)]
+    pub reviewer_model: Option<String>,
+    #[serde(default)]
     pub allow: Vec<AutoReviewRuleConfig>,
     #[serde(default)]
     pub block: Vec<AutoReviewRuleConfig>,
+    #[serde(default)]
+    pub environment: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -2551,10 +2559,41 @@ pub struct AutoReviewRuleConfig {
 
 impl AutoReviewConfig {
     fn validate(&self) -> Result<()> {
+        if let Some(reviewer_model) = self.reviewer_model.as_deref() {
+            validate_auto_review_reviewer_model(reviewer_model)?;
+        }
         validate_auto_review_rules("allow", &self.allow)?;
         validate_auto_review_rules("block", &self.block)?;
+        validate_auto_review_environment(&self.environment)?;
         Ok(())
     }
+}
+
+pub fn validate_auto_review_environment(entries: &[String]) -> Result<()> {
+    for (index, entry) in entries.iter().enumerate() {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() || entry.chars().any(char::is_control) {
+            anyhow::bail!(
+                "Invalid auto_review.environment[{index}]: expected a non-empty entry without control characters."
+            );
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_auto_review_reviewer_model(raw: &str) -> Result<()> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || raw != trimmed
+        || trimmed
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        anyhow::bail!(
+            "Invalid auto_review.reviewer_model: expected a non-empty model identifier without whitespace or control characters."
+        );
+    }
+    Ok(())
 }
 
 impl AutoReviewRuleConfig {
@@ -4294,6 +4333,17 @@ impl Config {
         }
         if let Some(auto_review) = &self.auto_review {
             auto_review.validate()?;
+            if auto_review.disabled
+                && self
+                    .approval_policy
+                    .as_deref()
+                    .and_then(codewhale_execpolicy::ApprovalMode::from_config_value)
+                    == Some(codewhale_execpolicy::ApprovalMode::Auto)
+            {
+                anyhow::bail!(
+                    "approval_policy = \"auto\" is disabled by managed configuration (`auto_review.disabled = true`)"
+                );
+            }
         }
         if let Some(providers) = &self.providers {
             providers.validate()?;
@@ -6852,6 +6902,33 @@ impl Config {
             .filter(|s| !s.is_empty())
             .map(expand_path)
             .collect()
+    }
+
+    #[must_use]
+    pub fn auto_review_disabled(&self) -> bool {
+        self.auto_review.as_ref().is_some_and(|cfg| cfg.disabled)
+    }
+
+    #[must_use]
+    pub fn auto_review_review_all_shell(&self) -> bool {
+        self.auto_review
+            .as_ref()
+            .is_some_and(|cfg| cfg.review_all_shell)
+    }
+
+    pub fn auto_review_reviewer_model(&self) -> Option<&str> {
+        self.auto_review
+            .as_ref()
+            .and_then(|cfg| cfg.reviewer_model.as_deref())
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+    }
+
+    #[must_use]
+    pub fn auto_review_environment(&self) -> &[String] {
+        self.auto_review
+            .as_ref()
+            .map_or(&[], |cfg| cfg.environment.as_slice())
     }
 
     /// Whether the user-memory feature is enabled. The default is **off**
@@ -12342,14 +12419,24 @@ pub fn provider_env_api_key_var(provider: ProviderKind) -> Option<&'static str> 
 /// The provider's ambient env key and the variable that supplied it,
 /// normalized with [`codewhale_secrets::normalize_api_key`] (#6528).
 fn provider_env_api_key_named(provider: ProviderKind) -> Option<(&'static str, String)> {
-    let names = provider.provider().env_vars();
-    names.iter().find_map(|name| {
-        std::env::var(name)
-            .ok()
-            .map(|value| codewhale_secrets::normalize_api_key(&value))
-            .filter(|value| !value.is_empty())
-            .map(|value| (*name, value))
-    })
+    let read = || {
+        let names = provider.provider().env_vars();
+        names.iter().find_map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|value| codewhale_secrets::normalize_api_key(&value))
+                .filter(|value| !value.is_empty())
+                .map(|value| (*name, value))
+        })
+    };
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        codewhale_util::test_env_lock::with_test_env_lock(read)
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        read()
+    }
 }
 
 /// Canonical durable-credential slot shared with the CLI dispatcher.
@@ -12555,13 +12642,23 @@ pub fn explicit_launch_provider_override() -> Option<String> {
 }
 
 pub fn explicit_cli_api_key_override() -> Option<String> {
-    (cli_api_key_source().as_deref() == Some("cli"))
-        .then(|| {
-            std::env::var(codewhale_config::CLI_API_KEY_ENV)
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
-        .flatten()
+    let read = || {
+        (cli_api_key_source().as_deref() == Some("cli"))
+            .then(|| {
+                std::env::var(codewhale_config::CLI_API_KEY_ENV)
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+            })
+            .flatten()
+    };
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        codewhale_util::test_env_lock::with_test_env_lock(read)
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        read()
+    }
 }
 
 pub fn cli_api_key_source() -> Option<String> {
@@ -12954,6 +13051,264 @@ mod credential_scope_tests {
             !project.contains("workspace-rescope-openrouter-key"),
             "credential leaked into workspace config: {project}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn managed_auto_review_disabled_replaces_user_table_and_refuses_auto_policy() -> Result<()> {
+        let _lock = lock_test_env();
+        let temp = tempfile::tempdir()?;
+        let home = temp.path().join("home");
+        fs::create_dir_all(&home)?;
+        let _home = EnvVarGuard::set("CODEWHALE_HOME", home.as_os_str());
+        let user_config = home.join("config.toml");
+        let managed_config = temp.path().join("managed.toml");
+        let _managed =
+            EnvVarGuard::set("CODEWHALE_MANAGED_CONFIG_PATH", managed_config.as_os_str());
+        let _policy = EnvVarGuard::remove("CODEWHALE_APPROVAL_POLICY");
+        let _legacy_policy = EnvVarGuard::remove("DEEPSEEK_APPROVAL_POLICY");
+
+        fs::write(
+            &user_config,
+            r#"
+[[auto_review.allow]]
+tool = "read"
+reason = "user allow"
+"#,
+        )?;
+        fs::write(
+            &managed_config,
+            r#"
+[auto_review]
+disabled = true
+"#,
+        )?;
+
+        let loaded = Config::load(Some(user_config.clone()), None)?;
+        assert!(loaded.auto_review_disabled());
+        assert!(
+            loaded
+                .auto_review
+                .as_ref()
+                .is_some_and(|cfg| cfg.allow.is_empty() && cfg.block.is_empty()),
+            "managed [auto_review] table must replace the user table"
+        );
+
+        fs::write(&user_config, "approval_policy = \"auto\"\n")?;
+        let file_err = Config::load(Some(user_config.clone()), None)
+            .expect_err("approval_policy = auto must fail when auto_review.disabled = true");
+        assert!(
+            file_err.to_string().contains("auto_review.disabled = true"),
+            "unexpected error for config approval_policy: {file_err:#}"
+        );
+
+        fs::write(&user_config, "")?;
+        let _env_policy = EnvVarGuard::set("CODEWHALE_APPROVAL_POLICY", "auto");
+        let env_err = Config::load(Some(user_config), None).expect_err(
+            "CODEWHALE_APPROVAL_POLICY=auto must fail when auto_review.disabled = true",
+        );
+        assert!(
+            env_err.to_string().contains("auto_review.disabled = true"),
+            "unexpected error for CODEWHALE_APPROVAL_POLICY: {env_err:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn auto_review_reviewer_model_parses_validates_merges_and_ignores_subagents() -> Result<()> {
+        let _lock = lock_test_env();
+        let temp = tempfile::tempdir()?;
+        let home = temp.path().join("home");
+        fs::create_dir_all(&home)?;
+        let _home = EnvVarGuard::set("CODEWHALE_HOME", home.as_os_str());
+        let _managed = EnvVarGuard::remove("CODEWHALE_MANAGED_CONFIG_PATH");
+        let user_config = home.join("config.toml");
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+reviewer_model = "claude-sonnet-5-5"
+
+[subagents]
+reviewer_model = "subagent-only-model"
+"#,
+        )?;
+        let loaded = Config::load(Some(user_config.clone()), None)?;
+        assert_eq!(
+            loaded.auto_review_reviewer_model(),
+            Some("claude-sonnet-5-5")
+        );
+
+        fs::write(
+            &user_config,
+            r#"
+[subagents]
+reviewer_model = "subagent-only-model"
+"#,
+        )?;
+        let without_ar_model = Config::load(Some(user_config.clone()), None)?;
+        assert_eq!(without_ar_model.auto_review_reviewer_model(), None);
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+reviewer_model = "  "
+"#,
+        )?;
+        let empty_err = Config::load(Some(user_config.clone()), None)
+            .expect_err("blank auto_review.reviewer_model must fail validation");
+        assert!(
+            empty_err.to_string().contains("reviewer_model"),
+            "{empty_err:#}"
+        );
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+reviewer_model = "bad model\nid"
+"#,
+        )?;
+        let ws_err = Config::load(Some(user_config.clone()), None)
+            .expect_err("whitespace in auto_review.reviewer_model must fail validation");
+        assert!(ws_err.to_string().contains("reviewer_model"), "{ws_err:#}");
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+reviewer_model = "gpt-5.5"
+
+[profiles.fast]
+[profiles.fast.auto_review]
+reviewer_model = "gpt-5.6"
+"#,
+        )?;
+        let profiled = Config::load(Some(user_config.clone()), Some("fast"))?;
+        assert_eq!(profiled.auto_review_reviewer_model(), Some("gpt-5.6"));
+
+        let managed_config = temp.path().join("managed.toml");
+        let _managed_set =
+            EnvVarGuard::set("CODEWHALE_MANAGED_CONFIG_PATH", managed_config.as_os_str());
+        fs::write(
+            &managed_config,
+            r#"
+[auto_review]
+reviewer_model = "managed-reviewer"
+"#,
+        )?;
+        let managed_loaded = Config::load(Some(user_config.clone()), Some("fast"))?;
+        assert_eq!(
+            managed_loaded.auto_review_reviewer_model(),
+            Some("managed-reviewer")
+        );
+        drop(_managed_set);
+        let _ = fs::remove_file(&managed_config);
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+environment = [
+    "trusted git remote: origin = https://github.com/org/repo",
+    "trusted staging host: https://staging.example.internal",
+]
+"#,
+        )?;
+        let env_loaded = Config::load(Some(user_config.clone()), None)?;
+        assert_eq!(
+            env_loaded.auto_review_environment(),
+            &[
+                "trusted git remote: origin = https://github.com/org/repo".to_string(),
+                "trusted staging host: https://staging.example.internal".to_string(),
+            ]
+        );
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+environment = ["   "]
+"#,
+        )?;
+        let blank_env_err = Config::load(Some(user_config.clone()), None)
+            .expect_err("blank auto_review.environment entry must fail validation");
+        assert!(
+            blank_env_err
+                .to_string()
+                .contains("auto_review.environment"),
+            "{blank_env_err:#}"
+        );
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+environment = ["bad\nline"]
+"#,
+        )?;
+        let control_env_err = Config::load(Some(user_config.clone()), None)
+            .expect_err("control chars in auto_review.environment must fail validation");
+        assert!(
+            control_env_err
+                .to_string()
+                .contains("auto_review.environment"),
+            "{control_env_err:#}"
+        );
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+environment = ["user remote: github.com/acme/repo"]
+"#,
+        )?;
+        let _managed_env_set =
+            EnvVarGuard::set("CODEWHALE_MANAGED_CONFIG_PATH", managed_config.as_os_str());
+        fs::write(
+            &managed_config,
+            r#"
+[auto_review]
+environment = ["managed remote: github.internal/corp/repo"]
+"#,
+        )?;
+        let managed_env = Config::load(Some(user_config), None)?;
+        assert_eq!(
+            managed_env.auto_review_environment(),
+            &["managed remote: github.internal/corp/repo".to_string()]
+        );
+
+        let review_shell_dir = tempfile::tempdir()?;
+        let review_shell_user = review_shell_dir.path().join("config.toml");
+        let review_shell_managed = review_shell_dir.path().join("managed.toml");
+        let _managed_unset = EnvVarGuard::remove("CODEWHALE_MANAGED_CONFIG_PATH");
+        fs::write(
+            &review_shell_user,
+            r#"
+[auto_review]
+review_all_shell = true
+"#,
+        )?;
+        let default_cfg = Config::default();
+        assert!(!default_cfg.auto_review_review_all_shell());
+        let loaded_review_shell = Config::load(Some(review_shell_user.clone()), None)?;
+        assert!(loaded_review_shell.auto_review_review_all_shell());
+
+        let _managed_override = EnvVarGuard::set(
+            "CODEWHALE_MANAGED_CONFIG_PATH",
+            review_shell_managed.as_os_str(),
+        );
+        fs::write(
+            &review_shell_managed,
+            r#"
+[auto_review]
+review_all_shell = false
+"#,
+        )?;
+        let managed_override_cfg = Config::load(Some(review_shell_user), None)?;
+        assert!(!managed_override_cfg.auto_review_review_all_shell());
         Ok(())
     }
 }

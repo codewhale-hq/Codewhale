@@ -590,6 +590,7 @@ impl App {
             needs_api_key,
             needs_workspace_trust,
         );
+        let auto_review_disabled = config.auto_review_disabled();
         let saved_permission_posture = if approval_policy_locked {
             None
         } else {
@@ -597,6 +598,7 @@ impl App {
                 .permission_posture
                 .as_deref()
                 .and_then(ApprovalMode::from_config_value)
+                .filter(|mode| !(auto_review_disabled && *mode == ApprovalMode::Auto))
         };
         let configured_approval_mode = explicit_approval_mode
             .or(saved_permission_posture)
@@ -996,6 +998,7 @@ impl App {
             subagent_terminal_seen_at: HashMap::new(),
             agent_progress: HashMap::new(),
             agent_progress_meta: HashMap::new(),
+            delegated_writes: Default::default(),
             subagent_card_index: HashMap::new(),
             last_fanout_card_index: None,
             pending_subagent_dispatch: None,
@@ -1040,6 +1043,7 @@ impl App {
             lifecycle_outbox,
             yolo: yolo_compat,
             yolo_compat_notified: false,
+            permission_receipt_deferred: false,
             operate_retired_notified: false,
             startup_defaults: Default::default(),
             keybinding_migration_notified: false,
@@ -1047,6 +1051,14 @@ impl App {
             approval_policy_locked,
             approval_policy_root_editable,
             approval_policy_requirements_managed,
+            auto_review_disabled,
+            auto_review_reviewer_model: config.auto_review_reviewer_model().map(str::to_string),
+            exec_policy_engine: config.exec_policy_engine.clone(),
+            auto_review_broad_allow_warnings:
+                codewhale_engine::core::authority::auto_review::AutoReviewPolicy::from_config(
+                    config,
+                )
+                .suspended_allow_warnings,
             shell_access_editable,
             clipboard: ClipboardHandler::new(),
             approval_session_approved: HashSet::new(),
@@ -1063,6 +1075,8 @@ impl App {
             backtrack: crate::tui::backtrack::BacktrackState::new(),
             undo_selection: false,
             current_session_id: None,
+            conversation_mode: None,
+            conversation_mode_unavailable: None,
             session_write_receipt: None,
             session_write_owner: None,
             offline_queue_lease: None,
@@ -1152,6 +1166,8 @@ impl App {
             pending_tool_uses: Vec::new(),
             pending_gate_receipts: Vec::new(),
             child_gate_receipts: std::collections::HashMap::new(),
+            auto_review_blocked_receipts: Vec::new(),
+            pending_auto_review_retry: None,
             queued_messages: VecDeque::new(),
             held_restored_queue: 0,
             queued_draft: None,
@@ -1258,6 +1274,9 @@ impl App {
         }
         if settings.legacy_operate_default_detected() {
             app.notify_operate_retired_once();
+        }
+        if app.approval_mode == ApprovalMode::Auto && app.has_suspended_broad_allows() {
+            app.emit_auto_review_broad_allows_paused_note();
         }
         app
     }

@@ -803,7 +803,23 @@ pub enum EventMsg {
         decision: ToolGateVerdict,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         risk: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reviewer_model: Option<String>,
         reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rule: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receipt_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call_digest: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action_summary: Option<String>,
+    },
+    AutoReviewPaused {
+        thread_id: ThreadId,
+        session_id: SessionId,
+        reason: String,
+        approval_mode: String,
     },
     AdvisoryNote {
         thread_id: ThreadId,
@@ -907,6 +923,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "elevation_required",
     "lsp_repair_update",
     "tool_gate_decision",
+    "auto_review_paused",
     "advisory_note",
     "prefix_cache_change",
     "conversation_title",
@@ -971,6 +988,7 @@ impl EventMsg {
             Self::ElevationRequired { .. } => "elevation_required",
             Self::LspRepairUpdate { .. } => "lsp_repair_update",
             Self::ToolGateDecision { .. } => "tool_gate_decision",
+            Self::AutoReviewPaused { .. } => "auto_review_paused",
             Self::AdvisoryNote { .. } => "advisory_note",
             Self::PrefixCacheChange { .. } => "prefix_cache_change",
             Self::ConversationTitle { .. } => "conversation_title",
@@ -1035,6 +1053,7 @@ impl EventMsg {
             | Self::ElevationRequired { thread_id, .. }
             | Self::LspRepairUpdate { thread_id, .. }
             | Self::ToolGateDecision { thread_id, .. }
+            | Self::AutoReviewPaused { thread_id, .. }
             | Self::AdvisoryNote { thread_id, .. }
             | Self::PrefixCacheChange { thread_id, .. }
             | Self::ConversationTitle { thread_id, .. }
@@ -1099,6 +1118,7 @@ impl EventMsg {
             | Self::ElevationRequired { session_id, .. }
             | Self::LspRepairUpdate { session_id, .. }
             | Self::ToolGateDecision { session_id, .. }
+            | Self::AutoReviewPaused { session_id, .. }
             | Self::AdvisoryNote { session_id, .. }
             | Self::PrefixCacheChange { session_id, .. }
             | Self::ConversationTitle { session_id, .. }
@@ -1581,7 +1601,18 @@ mod tests {
                 gate: ToolGate::AutoReviewGuardian,
                 decision: ToolGateVerdict::Denied,
                 risk: Some("high".into()),
+                reviewer_model: Some("claude-sonnet-5-5".into()),
                 reason: "no".into(),
+                rule: Some("guardian".into()),
+                receipt_id: Some("ar-1".into()),
+                call_digest: Some("d1".into()),
+                action_summary: Some("bash: rm -rf /tmp".into()),
+            },
+            EventMsg::AutoReviewPaused {
+                thread_id: t.clone(),
+                session_id: s.clone(),
+                reason: "Auto-Review paused after 3 blocked calls in a row; Shift+Tab or /auto to resume".into(),
+                approval_mode: "suggest".into(),
             },
             EventMsg::AdvisoryNote {
                 thread_id: t.clone(),

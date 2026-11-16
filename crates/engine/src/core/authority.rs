@@ -569,8 +569,371 @@ pub fn paths_within_workspace_write_carve_out(workspace: &Path, paths: &[String]
 
 /// The git work-tree marker the carve-out keys on. `.git` may be a directory
 /// (normal checkout) or a file (worktree or submodule); either counts.
-fn workspace_is_git_work_tree(workspace: &Path) -> bool {
+pub(crate) fn workspace_is_git_work_tree(workspace: &Path) -> bool {
     workspace.join(".git").symlink_metadata().is_ok()
+}
+
+pub(crate) fn normalize_auto_review_segment(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let without_drive = if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        &raw[2..]
+    } else {
+        raw
+    };
+    let trimmed = without_drive.trim_end_matches(['.', ' ']);
+    let without_stream = match trimmed.split_once(':') {
+        Some((head, _)) => head,
+        None => trimmed,
+    };
+    without_stream
+        .trim_end_matches(['.', ' '])
+        .to_ascii_lowercase()
+}
+
+fn clean_8_3_stem(base: &str) -> (String, String) {
+    let with_dash: String = base
+        .trim_start_matches(['.', ' '])
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '-')
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect();
+    let without_dash: String = with_dash.chars().filter(|ch| *ch != '-').collect();
+    (with_dash, without_dash)
+}
+
+pub(crate) fn parse_8_3_alias(norm: &str) -> Option<(&str, &str, &str)> {
+    let first_len = norm.chars().next()?.len_utf8();
+    let ext_dot = norm[first_len..].rfind('.').map(|idx| first_len + idx);
+    let (base, ext) = match ext_dot {
+        Some(dot) => (&norm[..dot], &norm[dot + 1..]),
+        None => (norm, ""),
+    };
+    let base = base.trim_start_matches('.');
+    let (prefix, num) = base.rsplit_once('~')?;
+    if prefix.is_empty()
+        || num.is_empty()
+        || num.len() > 2
+        || !num.bytes().all(|b| b.is_ascii_digit())
+        || !num.bytes().any(|b| b != b'0')
+    {
+        return None;
+    }
+    Some((prefix, num, ext))
+}
+
+pub(crate) fn is_credential_8_3_prefix(prefix: &str) -> bool {
+    matches!(
+        prefix,
+        "env"
+            | "creden"
+            | "crede"
+            | "id_rsa"
+            | "idrsa"
+            | "id_dsa"
+            | "iddsa"
+            | "id_ecd"
+            | "idecd"
+            | "id_ed2"
+            | "ided2"
+    )
+}
+
+pub(crate) fn auto_review_segment_matches(raw: &str, target: &str) -> bool {
+    let c = normalize_auto_review_segment(raw);
+    let t = target.to_ascii_lowercase();
+    if c.is_empty() {
+        return false;
+    }
+    if c == t {
+        return true;
+    }
+    if !t.starts_with('.')
+        && let Some((tb, te)) = t.rsplit_once('.')
+        && !tb.is_empty()
+        && te.len() > 3
+        && let Some((cb, ce)) = c.rsplit_once('.')
+        && cb == tb
+        && te.get(..3).is_some_and(|sub| ce == sub)
+    {
+        return true;
+    }
+    let Some((c_prefix, c_num, c_ext)) = parse_8_3_alias(&c) else {
+        return false;
+    };
+    let (tb, te) = if t.starts_with('.') && !t[1..].contains('.') {
+        (&t[1..], "")
+    } else if let Some((tb, te)) = t.rsplit_once('.') {
+        (tb, te)
+    } else {
+        (t.as_str(), "")
+    };
+    let max_len = if c_num.len() == 1 { 6 } else { 5 };
+    let prefix_matches = |s: &str| -> bool {
+        if s.is_empty() || c_prefix.len() > max_len {
+            return false;
+        }
+        let min_len = s.len().min(max_len).saturating_sub(2).max(s.len().min(3));
+        c_prefix.len() >= min_len && s.starts_with(c_prefix)
+    };
+    let ext_matches = if te.is_empty() {
+        c_ext.is_empty()
+    } else {
+        c_ext == te || te.get(..3).is_some_and(|sub| c_ext == sub)
+    };
+    if ext_matches {
+        let (s1, s2) = clean_8_3_stem(tb);
+        if prefix_matches(&s1) || prefix_matches(&s2) {
+            return true;
+        }
+    }
+    if c_ext.is_empty() && !te.is_empty() {
+        let combined = format!("{tb}{te}");
+        let (c1, c2) = clean_8_3_stem(&combined);
+        if prefix_matches(&c1) || prefix_matches(&c2) {
+            return true;
+        }
+    }
+    false
+}
+
+pub(crate) fn is_auto_review_excluded_or_credential_segment(raw: &str) -> bool {
+    let c = normalize_auto_review_segment(raw);
+    if c.is_empty() {
+        return false;
+    }
+    if is_carve_out_excluded_name(&c) {
+        return true;
+    }
+    if [
+        ".git",
+        ".codewhale",
+        ".ssh",
+        ".aws",
+        ".gnupg",
+        ".kube",
+        ".docker",
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
+        ".git-credentials",
+    ]
+    .iter()
+    .any(|target| auto_review_segment_matches(raw, target))
+    {
+        return true;
+    }
+    parse_8_3_alias(&c).is_some_and(|(c_prefix, _, _)| is_credential_8_3_prefix(c_prefix))
+}
+
+pub(crate) fn is_auto_review_protected_segments(segments: &[String]) -> bool {
+    const SINGLE_PROTECTED: &[&str] = &[
+        ".vscode",
+        ".claude",
+        ".mcp.json",
+        ".claude.json",
+        ".gitconfig",
+        ".bashrc",
+        ".zshrc",
+        ".profile",
+        ".bash_profile",
+        ".zprofile",
+        ".zshenv",
+        ".bash_login",
+    ];
+    const MULTI_PROTECTED: &[&[&str]] = &[
+        &[".config", "gh", "hosts.yml"],
+        &[".github", "workflows"],
+        &["library", "launchagents"],
+        &[".config", "autostart"],
+        &[".cargo", "config.toml"],
+        &[".cargo", "config"],
+        &[".config", "fish", "config.fish"],
+        &[".config", "fish", "conf.d"],
+        &[".config", "systemd", "user"],
+        &["start menu", "programs", "startup"],
+    ];
+
+    if segments.iter().any(|seg| {
+        is_auto_review_excluded_or_credential_segment(seg)
+            || SINGLE_PROTECTED
+                .iter()
+                .any(|target| auto_review_segment_matches(seg, target))
+    }) {
+        return true;
+    }
+    MULTI_PROTECTED.iter().any(|pattern| {
+        segments.len() >= pattern.len()
+            && segments.windows(pattern.len()).any(|window| {
+                window
+                    .iter()
+                    .zip(pattern.iter())
+                    .all(|(seg, target)| auto_review_segment_matches(seg, target))
+            })
+    })
+}
+
+fn path_normal_segments(path: &Path) -> Vec<String> {
+    path.components()
+        .filter_map(|comp| match comp {
+            Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+pub(crate) fn expand_home_prefix(raw: &str, home: Option<&Path>) -> PathBuf {
+    let trimmed = raw.trim();
+    if let Some(home_dir) = home {
+        if trimmed == "~" {
+            return home_dir.to_path_buf();
+        }
+        if let Some(rest) = trimmed
+            .strip_prefix("~/")
+            .or_else(|| trimmed.strip_prefix("~\\"))
+        {
+            return home_dir.join(rest);
+        }
+        if trimmed == "$HOME" || trimmed == "${HOME}" {
+            return home_dir.to_path_buf();
+        }
+        if let Some(rest) = trimmed
+            .strip_prefix("$HOME/")
+            .or_else(|| trimmed.strip_prefix("$HOME\\"))
+            .or_else(|| trimmed.strip_prefix("${HOME}/"))
+            .or_else(|| trimmed.strip_prefix("${HOME}\\"))
+        {
+            return home_dir.join(rest);
+        }
+    }
+    PathBuf::from(trimmed)
+}
+
+pub(crate) fn auto_review_path_is_protected(
+    candidate: &Path,
+    workspace: Option<&Path>,
+    home: Option<&Path>,
+) -> bool {
+    let joined = match workspace {
+        Some(ws) if !candidate.is_absolute() => ws.join(candidate),
+        _ => candidate.to_path_buf(),
+    };
+    let lexical = normalize_path(&joined);
+    let check_relative_from_base = |path: &Path, base: &Path| -> Option<bool> {
+        let lex_base = normalize_path(base);
+        let rel = path.strip_prefix(&lex_base).ok()?;
+        let segs = path_normal_segments(rel);
+        Some(is_auto_review_protected_segments(&segs))
+    };
+
+    let lexical_protected = if let Some(ws) = workspace {
+        if let Some(matched) = check_relative_from_base(&lexical, ws) {
+            matched
+        } else if let Some(home_dir) = home {
+            check_relative_from_base(&lexical, home_dir).unwrap_or_else(|| {
+                is_auto_review_protected_segments(&path_normal_segments(&lexical))
+            })
+        } else {
+            is_auto_review_protected_segments(&path_normal_segments(&lexical))
+        }
+    } else if let Some(home_dir) = home {
+        check_relative_from_base(&lexical, home_dir)
+            .unwrap_or_else(|| is_auto_review_protected_segments(&path_normal_segments(&lexical)))
+    } else {
+        is_auto_review_protected_segments(&path_normal_segments(&lexical))
+    };
+    if lexical_protected {
+        return true;
+    }
+
+    let Some(resolved) = resolve_deepest_existing(&joined) else {
+        return false;
+    };
+    if let Some(ws) = workspace
+        && let Some(ws_resolved) = resolve_deepest_existing(ws)
+        && let Ok(rel) = resolved.strip_prefix(&ws_resolved)
+    {
+        return is_auto_review_protected_segments(&path_normal_segments(rel));
+    }
+    if let Some(home_dir) = home
+        && let Some(home_resolved) = resolve_deepest_existing(home_dir)
+        && let Ok(rel) = resolved.strip_prefix(&home_resolved)
+        && is_auto_review_protected_segments(&path_normal_segments(rel))
+    {
+        return true;
+    }
+    is_auto_review_protected_segments(&path_normal_segments(&resolved))
+}
+
+pub(crate) fn auto_review_workspace_is_safe_with_home(
+    workspace: &Path,
+    home: Option<&Path>,
+) -> bool {
+    if workspace.as_os_str().is_empty() {
+        return false;
+    }
+    let ws_canon = resolve_deepest_existing(workspace).unwrap_or_else(|| normalize_path(workspace));
+    if ws_canon.parent().is_none() || normalize_path(workspace).parent().is_none() {
+        return false;
+    }
+    let home_canon = home.map(|h| resolve_deepest_existing(h).unwrap_or_else(|| normalize_path(h)));
+    if let Some(ref hc) = home_canon
+        && (hc == &ws_canon || hc.starts_with(&ws_canon))
+    {
+        return false;
+    }
+    if let Some(h) = home {
+        let hl = normalize_path(h);
+        let wl = normalize_path(workspace);
+        if hl == wl || hl.starts_with(&wl) {
+            return false;
+        }
+    }
+    if codewhale_snapshot::repo::unsafe_workspace_snapshot_reason(workspace, home).is_some() {
+        return false;
+    }
+    if codewhale_snapshot::repo::unsafe_workspace_snapshot_reason(&ws_canon, home_canon.as_deref())
+        .is_some()
+    {
+        return false;
+    }
+    true
+}
+
+pub(crate) fn auto_review_write_targets_bounded_with_home(
+    workspace: &Path,
+    home: Option<&Path>,
+    snapshots_enabled: bool,
+    paths: &[String],
+) -> bool {
+    if paths.is_empty() || !auto_review_workspace_is_safe_with_home(workspace, home) {
+        return false;
+    }
+    if !workspace_is_git_work_tree(workspace) && !snapshots_enabled {
+        return false;
+    }
+    let Some(workspace_root) = resolve_deepest_existing(workspace) else {
+        return false;
+    };
+    let lexical_root = normalize_path(workspace);
+    paths.iter().all(|raw| {
+        let candidate = expand_home_prefix(raw, home);
+        let joined = if candidate.is_absolute() {
+            candidate
+        } else {
+            workspace.join(&candidate)
+        };
+        let lexical = normalize_path(&joined);
+        if !lexical.starts_with(&lexical_root) {
+            return false;
+        }
+        let Some(resolved) = resolve_deepest_existing(&joined) else {
+            return false;
+        };
+        if !resolved.starts_with(&workspace_root) {
+            return false;
+        }
+        !auto_review_path_is_protected(&joined, Some(workspace), home)
+    })
 }
 
 /// Whether a file-write approval card should say that the folder has no git
@@ -721,8 +1084,9 @@ pub enum ApprovalRequestDisposition {
     /// A forced (non-bypassable) policy hold arrived under a full-access
     /// posture that opens no modal: fail closed.
     AutoDenyFullAccessPolicyHold,
-    /// Auto-Review is autonomous: unresolved holds fail closed instead of
-    /// opening a user-approval modal.
+    /// Auto-Review runs autonomously when no owner surface is present or no
+    /// forced prompt requires the person: unresolved non-forced holds fail
+    /// closed instead of opening a user-approval modal.
     AutoDenyAutoReview,
     /// approval_mode=Never: deny without a modal.
     AutoDenyNeverPosture,
@@ -734,12 +1098,14 @@ pub enum ApprovalRequestDisposition {
 ///
 /// `session_approved` / `session_denied` are the caller's lookups into the
 /// session approval caches (grouping key or tool name / exact approval key).
-/// The branch order: session denial, then the Auto-Review hold, then the
-/// full-access policy-hold denial, then the `Never` denial — the live posture
-/// wins over any remembered grant (approvals J) — then auto-approval (full
-/// access or a session grant), and only finally a modal. Extension-origin
-/// forced calls reach that modal even under Full Access; no remembered grant
-/// can satisfy them. `extension_origin` comes from Rust-minted approval keys,
+/// The branch order: session denial, then Auto-Review (which prompts only when
+/// `approval_force_prompt && authority.owner_present()`, and otherwise fails
+/// closed), then the full-access policy-hold denial, then the `Never` denial —
+/// the live posture wins over any remembered grant (approvals J) — then
+/// auto-approval (full access or a session grant), and only finally a modal.
+/// Extension-origin forced calls reach that modal under Full Access and
+/// interactive Auto-Review with the owner present; no remembered grant can
+/// satisfy them. `extension_origin` comes from Rust-minted approval keys,
 /// never an extension label or a claim supplied by the host.
 #[must_use]
 pub fn resolve_approval_request_disposition(
@@ -753,7 +1119,11 @@ pub fn resolve_approval_request_disposition(
         return ApprovalRequestDisposition::AutoDenySessionDenied;
     }
     if authority.approval_mode_for_session() == ApprovalMode::Auto {
-        return ApprovalRequestDisposition::AutoDenyAutoReview;
+        return if approval_force_prompt && authority.owner_present() {
+            ApprovalRequestDisposition::Prompt
+        } else {
+            ApprovalRequestDisposition::AutoDenyAutoReview
+        };
     }
     // The request exists, so the engine already resolved Prompt for the tool
     // itself. What remains is the posture question: how does this authority
@@ -1464,6 +1834,133 @@ mod tests {
         assert_eq!(
             resolve_approval_request_disposition(&ask, false, false, false, false),
             ApprovalRequestDisposition::Prompt
+        );
+    }
+
+    #[test]
+    fn auto_review_forced_prompts_require_owner_presence_and_preserve_other_modes() {
+        let ask = TurnAuthority::for_tui_surface(
+            AppMode::Agent,
+            false,
+            false,
+            false,
+            ApprovalMode::Suggest,
+        );
+        let accept_edits = TurnAuthority::for_tui_surface(
+            AppMode::Agent,
+            false,
+            false,
+            false,
+            ApprovalMode::AcceptEdits,
+        );
+        let plan =
+            TurnAuthority::for_tui_surface(AppMode::Plan, false, false, false, ApprovalMode::Auto);
+        let full_access = TurnAuthority::for_tui_surface(
+            AppMode::Agent,
+            false,
+            false,
+            true,
+            ApprovalMode::Bypass,
+        );
+        let never = TurnAuthority::for_tui_surface(
+            AppMode::Agent,
+            false,
+            false,
+            false,
+            ApprovalMode::Never,
+        );
+
+        let auto_interactive =
+            TurnAuthority::for_tui_surface(AppMode::Agent, false, false, false, ApprovalMode::Auto);
+        let auto_attached = authority(AppMode::Agent, false, ApprovalMode::Auto)
+            .with_rust_origin(RunOrigin::Interactive, true);
+        let auto_background = authority(AppMode::Agent, false, ApprovalMode::Auto)
+            .with_rust_origin(RunOrigin::Background, false);
+        let auto_headless = authority(AppMode::Agent, false, ApprovalMode::Auto);
+        let auto_interactive_unattached = authority(AppMode::Agent, false, ApprovalMode::Auto)
+            .with_rust_origin(RunOrigin::Interactive, false);
+
+        for owner_present in [&auto_interactive, &auto_attached] {
+            for is_extension in [false, true] {
+                for session_approved in [false, true] {
+                    assert_eq!(
+                        resolve_approval_request_disposition(
+                            owner_present,
+                            session_approved,
+                            false,
+                            true,
+                            is_extension,
+                        ),
+                        ApprovalRequestDisposition::Prompt
+                    );
+                    assert_eq!(
+                        resolve_approval_request_disposition(
+                            owner_present,
+                            session_approved,
+                            true,
+                            true,
+                            is_extension,
+                        ),
+                        ApprovalRequestDisposition::AutoDenySessionDenied
+                    );
+                }
+                assert_eq!(
+                    resolve_approval_request_disposition(
+                        owner_present,
+                        false,
+                        false,
+                        false,
+                        is_extension,
+                    ),
+                    ApprovalRequestDisposition::AutoDenyAutoReview
+                );
+            }
+        }
+
+        for owner_absent in [
+            &auto_background,
+            &auto_headless,
+            &auto_interactive_unattached,
+        ] {
+            for is_extension in [false, true] {
+                for force_prompt in [false, true] {
+                    assert_eq!(
+                        resolve_approval_request_disposition(
+                            owner_absent,
+                            false,
+                            false,
+                            force_prompt,
+                            is_extension,
+                        ),
+                        ApprovalRequestDisposition::AutoDenyAutoReview
+                    );
+                }
+            }
+        }
+
+        assert_eq!(
+            resolve_approval_request_disposition(&ask, false, false, true, false),
+            ApprovalRequestDisposition::Prompt
+        );
+        assert_eq!(
+            resolve_approval_request_disposition(&accept_edits, false, false, true, false),
+            ApprovalRequestDisposition::Prompt
+        );
+        assert_eq!(
+            resolve_approval_request_disposition(&plan, false, false, true, false),
+            ApprovalRequestDisposition::Prompt
+        );
+        assert_eq!(
+            resolve_approval_request_disposition(&full_access, false, false, true, false),
+            ApprovalRequestDisposition::AutoDenyFullAccessPolicyHold
+        );
+        assert_eq!(
+            resolve_approval_request_disposition(&full_access, false, false, true, true),
+            ApprovalRequestDisposition::Prompt
+        );
+        assert_eq!(
+            resolve_approval_request_disposition(&never, false, false, true, false),
+            ApprovalRequestDisposition::AutoDenyNeverPosture
         );
     }
 

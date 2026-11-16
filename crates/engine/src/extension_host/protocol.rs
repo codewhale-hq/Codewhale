@@ -540,11 +540,12 @@ pub enum DshService {
     Catalog,
     Terminal,
     Remote,
+    Attachments,
     Plugins,
 }
 
 impl DshService {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Workspace,
         Self::Llm,
         Self::Network,
@@ -552,11 +553,12 @@ impl DshService {
         Self::Catalog,
         Self::Terminal,
         Self::Remote,
+        Self::Attachments,
     ];
 
     pub const BUILTIN_ONLY: [Self; 1] = [Self::Plugins];
 
-    pub const EVERY: [Self; 8] = [
+    pub const EVERY: [Self; 9] = [
         Self::Workspace,
         Self::Llm,
         Self::Network,
@@ -564,6 +566,7 @@ impl DshService {
         Self::Catalog,
         Self::Terminal,
         Self::Remote,
+        Self::Attachments,
         Self::Plugins,
     ];
 
@@ -577,6 +580,7 @@ impl DshService {
             Self::Catalog => "catalog",
             Self::Terminal => "terminal",
             Self::Remote => "remote",
+            Self::Attachments => "attachments",
             Self::Plugins => "plugins",
         }
     }
@@ -1440,6 +1444,7 @@ pub struct DeactivateResult {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlockWire {
     Text { text: String },
+    ImageRef { attachment_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

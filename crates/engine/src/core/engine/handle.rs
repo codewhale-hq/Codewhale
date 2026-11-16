@@ -23,6 +23,30 @@ use super::{
     RuntimePermissionAuthority, UserInputResponse,
 };
 use crate::approval_log::ApprovalDecider;
+use crate::core::authority::auto_review::{AutoReviewBlockedAction, AutoReviewRetryGrant};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutoReviewRetryApprovalError {
+    OwnerRequired,
+    NotInAutoReview,
+    InvalidTarget(String),
+}
+
+impl std::fmt::Display for AutoReviewRetryApprovalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OwnerRequired => {
+                f.write_str("owner surface is required to approve Auto-Review retry")
+            }
+            Self::NotInAutoReview => {
+                f.write_str("Auto-Review retry can only be approved while Auto-Review is active")
+            }
+            Self::InvalidTarget(msg) => f.write_str(msg),
+        }
+    }
+}
+
+impl std::error::Error for AutoReviewRetryApprovalError {}
 
 // This bounds host delivery/acknowledgement, never the person's time to
 // answer. No active waiter may consume a reply after its caller abandoned it.
@@ -152,6 +176,7 @@ pub struct SteerInput {
     pub(super) turn_id: Option<u64>,
     pub(super) replace_pending: bool,
     pub content: String,
+    pub(super) person_text: Option<String>,
     pub(super) outcome: Option<oneshot::Sender<SteerOutcome>>,
     pub(super) owner_steer: bool,
 }
@@ -177,6 +202,7 @@ pub enum SteerOutcome {
 pub struct PendingSteer {
     pub replace_pending: bool,
     pub content: String,
+    person_text: Option<String>,
     outcome: Option<oneshot::Sender<SteerOutcome>>,
     owner_steer: bool,
 }
@@ -185,6 +211,7 @@ impl PendingSteer {
     pub fn new(content: String, outcome: Option<oneshot::Sender<SteerOutcome>>) -> Self {
         Self {
             content,
+            person_text: None,
             outcome,
             replace_pending: false,
             owner_steer: false,
@@ -208,9 +235,10 @@ impl PendingSteer {
         std::mem::take(&mut self.content)
     }
 
-    pub(super) fn commit_with_owner_steer(self) -> (String, bool) {
+    pub(super) fn commit_with_owner_intent(mut self) -> (String, bool, Option<String>) {
         let owner_steer = self.owner_steer;
-        (self.commit(), owner_steer)
+        let person_text = self.person_text.take();
+        (self.commit(), owner_steer, person_text)
     }
 }
 
@@ -233,6 +261,7 @@ impl SteerInput {
         // settle and the verdict travels with the `PendingSteer`.
         let mut pending = PendingSteer::new(std::mem::take(&mut self.content), self.outcome.take());
         pending.replace_pending = self.replace_pending;
+        pending.person_text = self.person_text.take();
         pending.owner_steer = self.owner_steer;
         pending
     }
@@ -271,6 +300,18 @@ impl SteerPermit {
             turn_id: self.turn_id,
             replace_pending: false,
             content,
+            person_text: None,
+            outcome: None,
+            owner_steer: self.owner_steer,
+        });
+    }
+
+    pub fn send_with_person_text(self, content: String, person_text: Option<String>) {
+        self.permit.send(SteerInput {
+            turn_id: self.turn_id,
+            replace_pending: false,
+            content,
+            person_text,
             outcome: None,
             owner_steer: self.owner_steer,
         });
@@ -282,25 +323,40 @@ impl SteerPermit {
     /// first, and closes without a verdict only if the engine itself is gone
     /// (#6276).
     pub fn send_with_outcome(self, content: String) -> oneshot::Receiver<SteerOutcome> {
-        self.send_with_replacement_outcome(content, false)
+        let owner_steer = self.owner_steer;
+        self.send_with_replacement_outcome(content, None, false, owner_steer)
+    }
+
+    pub fn send_with_outcome_and_authorship(
+        self,
+        content: String,
+        owner_steer: bool,
+        person_text: Option<String>,
+    ) -> oneshot::Receiver<SteerOutcome> {
+        let allowed_owner_steer = self.owner_steer && owner_steer;
+        self.send_with_replacement_outcome(content, person_text, false, allowed_owner_steer)
     }
 
     pub fn send_replacing_with_outcome(self, content: String) -> oneshot::Receiver<SteerOutcome> {
-        self.send_with_replacement_outcome(content, true)
+        let owner_steer = self.owner_steer;
+        self.send_with_replacement_outcome(content, None, true, owner_steer)
     }
 
     fn send_with_replacement_outcome(
         self,
         content: String,
+        person_text: Option<String>,
         replace_pending: bool,
+        owner_steer: bool,
     ) -> oneshot::Receiver<SteerOutcome> {
         let (outcome_tx, outcome_rx) = oneshot::channel();
         self.permit.send(SteerInput {
             turn_id: self.turn_id,
             replace_pending,
             content,
+            person_text,
             outcome: Some(outcome_tx),
-            owner_steer: self.owner_steer,
+            owner_steer,
         });
         outcome_rx
     }
@@ -572,8 +628,14 @@ impl EngineHandle {
             .live_runtime_authority
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let approval_changed = state.authority.approval_mode != authority.approval_mode;
+        let mode_changed = state.authority.mode != authority.mode;
         state.revision = state.revision.wrapping_add(1).max(1);
         state.authority = authority;
+        if (approval_changed && state.authority.approval_mode != ApprovalMode::Auto) || mode_changed
+        {
+            self.auto_review_state.lock().revoke_retry_grants();
+        }
     }
 
     pub fn publish_turn_authority(
@@ -1131,6 +1193,17 @@ impl EngineHandle {
         Ok(())
     }
 
+    pub async fn steer_with_person_text(
+        &self,
+        content: impl Into<String>,
+        person_text: Option<String>,
+    ) -> Result<()> {
+        self.reserve_steer()
+            .await?
+            .send_with_person_text(content.into(), person_text);
+        Ok(())
+    }
+
     /// Request the live context-window budget for this session's route.
     /// `None` means the route cannot express a bounded window (e.g. an
     /// unknown model with no catalog or configured limits) — callers should
@@ -1223,6 +1296,79 @@ impl EngineHandle {
         rx.await
             .map_err(|_| anyhow::anyhow!("Engine dropped MCP reload oneshot"))?
             .map_err(anyhow::Error::msg)
+    }
+
+    #[must_use]
+    pub fn list_auto_review_blocks(&self) -> Vec<AutoReviewBlockedAction> {
+        self.auto_review_state.lock().blocked_actions()
+    }
+
+    pub fn approve_auto_review_retry(
+        &self,
+        target: &str,
+    ) -> std::result::Result<AutoReviewRetryGrant, AutoReviewRetryApprovalError> {
+        if !self.owner_surface_attached
+            || !matches!(
+                self.host_profile,
+                super::host_profile::EngineHostProfile::Normal
+            )
+        {
+            return Err(AutoReviewRetryApprovalError::OwnerRequired);
+        }
+        if self.runtime_permission_authority().approval_mode != ApprovalMode::Auto {
+            return Err(AutoReviewRetryApprovalError::NotInAutoReview);
+        }
+        self.auto_review_state
+            .lock()
+            .approve_retry(target)
+            .map_err(AutoReviewRetryApprovalError::InvalidTarget)
+    }
+
+    pub fn reset_auto_review_state_for_boundary(&self) {
+        self.auto_review_state
+            .lock()
+            .reset_for_conversation_boundary();
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_auto_review_authority_for_test(&self, approval_mode: ApprovalMode) {
+        self.publish_turn_authority(
+            AppMode::Agent,
+            true,
+            false,
+            approval_mode == ApprovalMode::Bypass,
+            approval_mode,
+            None,
+        );
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_auto_review_block_for_test(
+        &self,
+        tool_id: &str,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+        rule: Option<&str>,
+        reason: &str,
+        gate: &str,
+        verdict: &str,
+        approvable: bool,
+    ) -> Option<String> {
+        let recorded = self.auto_review_state.lock().record_block(
+            true,
+            self.owner_surface_attached,
+            false,
+            approvable,
+            tool_id,
+            tool_name,
+            tool_input,
+            rule,
+            reason,
+            gate,
+            verdict,
+        );
+        recorded.receipt_id
     }
 }
 

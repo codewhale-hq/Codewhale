@@ -441,7 +441,7 @@ fn execute_in_context(
     }
 
     if let Some(command_object) = registry().get(command.as_str()) {
-        let command_arg = if command_object.info().name == "preview-request" {
+        let command_arg = if matches!(command_object.info().name, "preview-request" | "plugin") {
             Some(raw_remainder)
         } else {
             arg
@@ -3155,7 +3155,8 @@ mod tests {
         };
         let expected = codewhale_command_contract::handler::CommandCapabilities::WORKSPACE
             .union(codewhale_command_contract::handler::CommandCapabilities::PRESENTATION)
-            .union(codewhale_command_contract::handler::CommandCapabilities::PLUGIN);
+            .union(codewhale_command_contract::handler::CommandCapabilities::PLUGIN)
+            .union(codewhale_command_contract::handler::CommandCapabilities::SESSION_LIFECYCLE);
         assert_eq!(capabilities, expected, "/{name} exact capability set");
         // Undeclared facets stay absent.
         assert!(

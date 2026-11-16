@@ -212,6 +212,7 @@ mod tests {
     fn per_unit_build_layout_resolves_the_final_target_and_cross_profile() {
         let root = tempfile::TempDir::new().unwrap();
         let target = root.path().join("final target");
+        let cache = root.path().join("build cache");
         for triple in [None, Some("aarch64-unknown-linux-gnu")] {
             let final_profile = match triple {
                 Some(triple) => target.join(triple).join("debug"),
@@ -221,13 +222,20 @@ mod tests {
             let canonical =
                 final_profile.join(format!("codewhale{}", std::env::consts::EXE_SUFFIX));
             std::fs::write(&canonical, b"canonical").unwrap();
-            let test = final_profile
-                .join("build")
-                .join("codewhale-tui")
-                .join("0123456789abcdef")
-                .join("out")
-                .join("integration-hash");
-            assert_eq!(resolve(None, None, &test, &target).unwrap(), canonical);
+            let build_profile = match triple {
+                Some(triple) => cache.join(triple).join("debug"),
+                None => cache.join("debug"),
+            };
+            for profile_dir in [&final_profile, &build_profile] {
+                let unit = profile_dir
+                    .join("build")
+                    .join("codewhale-tui")
+                    .join("0123456789abcdef")
+                    .join("out");
+                std::fs::create_dir_all(&unit).unwrap();
+                let test = unit.join("integration-hash");
+                assert_eq!(resolve(None, None, &test, &target).unwrap(), canonical);
+            }
         }
     }
 }

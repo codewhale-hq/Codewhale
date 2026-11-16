@@ -215,3 +215,10 @@ test('Theme reports that the frame defines no named tokens', async () => {
   assert.deepEqual(out.colorSchemes, ['light', 'dark'])
   assert.ok(out.api.some((a) => a.name === 'ctx.theme.overrideTokens'))
 })
+
+test('Tool.listTools description says name, not schema', () => {
+  const withTools = createCordisInspect({ tools: () => [{ name: 'read_file' }] })
+  const toolProvider = withTools.list().find((p) => p.id === 'Tool')
+  const listTools = toolProvider.methods.find((m) => m.name === 'listTools')
+  assert.equal(listTools.description, 'Return the name of every tool currently callable by this agent.')
+})

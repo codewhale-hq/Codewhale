@@ -96,13 +96,15 @@ pub(super) fn finalize_install(
 
     // Write the marker last so a partial install never leaves a stale
     // `.installed-from` on disk.
-    if let Err(error) = skill_install::write_installed_from_v2(
+    let install_nonce = uuid::Uuid::new_v4().simple().to_string();
+    if let Err(error) = skill_install::write_installed_from_v2_with_nonce(
         &final_path,
         spec,
         url,
         source_checksum,
         &staged.content_hash,
         &staged.name,
+        &install_nonce,
     ) {
         return Err(retained_publication_error(
             error,

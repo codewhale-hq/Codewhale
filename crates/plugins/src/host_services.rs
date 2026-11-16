@@ -13,10 +13,11 @@ pub enum HostService {
     Catalog,
     Terminal,
     Remote,
+    Attachments,
 }
 
 impl HostService {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Workspace,
         Self::Llm,
         Self::Network,
@@ -24,6 +25,7 @@ impl HostService {
         Self::Catalog,
         Self::Terminal,
         Self::Remote,
+        Self::Attachments,
     ];
 
     #[must_use]
@@ -36,6 +38,7 @@ impl HostService {
             Self::Catalog => "catalog",
             Self::Terminal => "terminal",
             Self::Remote => "remote",
+            Self::Attachments => "attachments",
         }
     }
 
@@ -54,6 +57,7 @@ impl HostService {
             Self::Catalog => "Plugins and provider routes",
             Self::Terminal => "Terminal sessions",
             Self::Remote => "Remote pairing",
+            Self::Attachments => "Images in the conversation",
         }
     }
 
@@ -73,6 +77,9 @@ impl HostService {
             }
             Self::Terminal => "start and drive terminal sessions in the session's workspace",
             Self::Remote => "pair another device with the session",
+            Self::Attachments => {
+                "read and add images in this conversation, within Codewhale's image limits"
+            }
         }
     }
 }
@@ -202,11 +209,76 @@ pub enum PluginApprover {
     CommandLine,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PluginCohort {
     Reviewed,
     Agent { workspace: String },
+}
+
+impl PluginCohort {
+    #[must_use]
+    pub fn agent(workspace: impl AsRef<std::path::Path>) -> Self {
+        let normalized = codewhale_config::normalize_project_workspace(workspace.as_ref())
+            .unwrap_or_else(|_| workspace.as_ref().components().collect());
+        Self::Agent {
+            workspace: normalized.to_string_lossy().into_owned(),
+        }
+    }
+}
+
+impl PartialEq for PluginCohort {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Reviewed, Self::Reviewed) => true,
+            (Self::Agent { workspace: a }, Self::Agent { workspace: b }) => {
+                let norm_a = codewhale_config::normalize_project_workspace(std::path::Path::new(a))
+                    .unwrap_or_else(|_| std::path::Path::new(a).components().collect());
+                let norm_b = codewhale_config::normalize_project_workspace(std::path::Path::new(b))
+                    .unwrap_or_else(|_| std::path::Path::new(b).components().collect());
+                norm_a == norm_b
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for PluginCohort {}
+
+impl PartialOrd for PluginCohort {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PluginCohort {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let key = |cohort: &Self| match cohort {
+            Self::Reviewed => (0u8, None),
+            Self::Agent { workspace } => {
+                let norm =
+                    codewhale_config::normalize_project_workspace(std::path::Path::new(workspace))
+                        .unwrap_or_else(|_| std::path::Path::new(workspace).components().collect());
+                (1u8, Some(norm))
+            }
+        };
+        key(self).cmp(&key(other))
+    }
+}
+
+impl std::hash::Hash for PluginCohort {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Reviewed => 0u8.hash(state),
+            Self::Agent { workspace } => {
+                1u8.hash(state);
+                let norm =
+                    codewhale_config::normalize_project_workspace(std::path::Path::new(workspace))
+                        .unwrap_or_else(|_| std::path::Path::new(workspace).components().collect());
+                norm.hash(state);
+            }
+        }
+    }
 }
 
 impl PluginApprover {
@@ -230,6 +302,22 @@ impl PluginApprover {
     }
 
     #[must_use]
+    pub fn auto_review(
+        agent_workspace: &std::path::Path,
+        thread_id: Option<String>,
+        turn_id: Option<String>,
+        tool_call_id: Option<String>,
+    ) -> Self {
+        Self::Agent(AgentApproval {
+            posture: AgentPosture::AutoReview,
+            workspace: agent_workspace.to_string_lossy().into_owned(),
+            thread_id,
+            turn_id,
+            tool_call_id,
+        })
+    }
+
+    #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Person { .. } => "person",
@@ -241,9 +329,7 @@ impl PluginApprover {
     #[must_use]
     pub fn cohort(&self) -> PluginCohort {
         match self {
-            Self::Agent(agent) => PluginCohort::Agent {
-                workspace: agent.workspace.clone(),
-            },
+            Self::Agent(agent) => PluginCohort::agent(&agent.workspace),
             Self::Person { .. } | Self::CommandLine => PluginCohort::Reviewed,
         }
     }
@@ -432,7 +518,11 @@ mod tests {
     #[test]
     fn every_host_service_is_offered_and_the_table_names_only_advertised_injects() {
         assert!(!HOST_SERVICE_INJECTS.is_empty());
-        assert!(HostService::ALL.into_iter().all(offered));
+        assert!(
+            HostService::ALL
+                .into_iter()
+                .all(|service| (service == HostService::Attachments) ^ offered(service))
+        );
         let table: serde_json::Value =
             serde_json::from_slice(crate::activation::DSH_COMPATIBILITY).unwrap();
         let advertised: BTreeSet<&str> = table["provided_services"]

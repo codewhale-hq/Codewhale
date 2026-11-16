@@ -123,6 +123,7 @@ async fn execute_ordinary(state: RuntimeApiState, request: RuntimeOwnerRequest) 
         } => {
             let Json(value) = api(list_threads(
                 State(state),
+                None,
                 Query(ThreadsQuery {
                     limit: Some(limit),
                     include_archived: Some(include_archived),
@@ -187,8 +188,14 @@ async fn execute_ordinary(state: RuntimeApiState, request: RuntimeOwnerRequest) 
             serde_json::to_value(value)?
         }
         RuntimeOwnerRequest::StartTurn { thread_id, body } => {
-            let (_, Json(value)) =
-                api(start_thread_turn(State(state), Path(thread_id), Json(decode(body)?)).await)?;
+            let (_, Json(value)) = api(start_thread_turn_for_caller(
+                State(state),
+                Path(thread_id),
+                Json(decode(body)?),
+                false,
+                None,
+            )
+            .await)?;
             serde_json::to_value(value)?
         }
         RuntimeOwnerRequest::DecideApproval {
@@ -201,7 +208,7 @@ async fn execute_ordinary(state: RuntimeApiState, request: RuntimeOwnerRequest) 
                 approval_id,
                 binding.as_ref(),
                 decision,
-                None,
+                Some(codewhale_engine::runtime_threads::manager::ApprovalResponder::Desktop),
             )
             .await)?;
             serde_json::to_value(value)?
@@ -393,6 +400,7 @@ async fn execute_native(
             }
             let Json(records) = api(list_threads(
                 State(state.clone()),
+                None,
                 Query(ThreadsQuery {
                     limit: None,
                     include_archived: params.include_archived,
@@ -457,10 +465,15 @@ async fn execute_native(
             let mut body = serde_json::to_value(params.body)?;
             body["images"] = json!(images);
             body["expected_workspace"] = json!(selected);
-            RuntimeOwnerRequest::StartTurn {
-                thread_id: params.thread_id,
-                body,
-            }
+            let (_, Json(value)) = api(start_thread_turn_for_caller(
+                State(state),
+                Path(params.thread_id),
+                Json(decode(body)?),
+                true,
+                None,
+            )
+            .await)?;
+            return Ok(serde_json::to_value(value)?);
         }
         N::InterruptTurn(params) => {
             native_thread(&state, &params.thread_id).await?;
@@ -493,7 +506,7 @@ async fn execute_native(
                     params.approval_id,
                     Some(&binding),
                     decision,
-                    None,
+                    Some(codewhale_engine::runtime_threads::manager::ApprovalResponder::Desktop),
                     Some(&selected),
                 )
                 .await,

@@ -33,6 +33,7 @@ mod owner_bootstrap;
 mod plugin_index;
 mod plugin_ui;
 mod profile_constitution;
+mod remote_pairing;
 #[cfg(any(unix, windows))]
 mod runtime_store_convergence;
 mod workspace_instructions;
@@ -427,6 +428,7 @@ fn saved_session_with_blocks(blocks: Vec<codewhale_models::ContentBlock>) -> Sav
         composer_color: None,
         last_auto_route: None,
         turn_outcomes: Vec::new(),
+        delegated_writes: std::collections::BTreeMap::new(),
         agent_preset: None,
     }
 }
@@ -623,6 +625,7 @@ fn messages_from_thread_detail_batches_tool_results() {
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     };
     let item = |id: &str,
                 kind: TurnItemKind,
@@ -1134,6 +1137,7 @@ async fn spawn_test_server_with_root_token_mobile_workspace(
 
 #[derive(Default)]
 struct TestServerOverrides {
+    owner_host: bool,
     state_handle: Option<oneshot::Sender<RuntimeApiState>>,
     automation_handles: Option<
         oneshot::Sender<(
@@ -1287,6 +1291,11 @@ fn spawn_product_stack_server(
     let catalog = codewhale_engine::command_catalog::installed();
     let extension_manager = codewhale_engine::extension_host::manager();
     let extension_policy = codewhale_plugins::activation::extension_host_policy_enabled();
+    let offered_services: Vec<codewhale_plugins::host_services::HostService> =
+        codewhale_plugins::host_services::HostService::ALL
+            .into_iter()
+            .filter(|service| codewhale_plugins::host_services::offered(*service))
+            .collect();
     std::thread::Builder::new()
         .name("runtime-api-test-server".to_string())
         .stack_size(codewhale_runtime::CODEWHALE_MAIN_STACK_BYTES)
@@ -1299,6 +1308,8 @@ fn spawn_product_stack_server(
                 codewhale_engine::extension_host::TestManagerGuard::install(extension_manager);
             let _extension_policy =
                 codewhale_plugins::activation::TestPolicyGuard::extension_host(extension_policy);
+            let _host_service_offer = (!offered_services.is_empty())
+                .then(|| codewhale_plugins::host_services::TestOffer::only(&offered_services));
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -1424,16 +1435,33 @@ async fn build_test_server(
         sessions_dir: Some(sessions_dir.clone()),
         max_active_threads: overrides.max_active_threads.unwrap_or(8),
     };
-    let runtime_threads: SharedRuntimeThreadManager =
-        Arc::new(match overrides.plugin_discovery.as_ref() {
-            Some(discovery) => RuntimeThreadManager::open_with_plugin_registry(
+    let runtime_threads: SharedRuntimeThreadManager = Arc::new(
+        match (overrides.owner_host, overrides.plugin_discovery.as_ref()) {
+            (true, discovery) => {
+                let plugins = match discovery {
+                    Some(discovery) => discovery.registry_for_workspace(&workspace),
+                    None => Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace)),
+                };
+                RuntimeThreadManager::open_owner_host(
+                    config.clone(),
+                    workspace.clone(),
+                    manager_config,
+                    plugins,
+                    None,
+                    None,
+                )?
+            }
+            (false, Some(discovery)) => RuntimeThreadManager::open_with_plugin_registry(
                 config.clone(),
                 workspace.clone(),
                 manager_config,
                 discovery.registry_for_workspace(&workspace),
             )?,
-            None => RuntimeThreadManager::open(config.clone(), workspace.clone(), manager_config)?,
-        });
+            (false, None) => {
+                RuntimeThreadManager::open(config.clone(), workspace.clone(), manager_config)?
+            }
+        },
+    );
     let sessions_dir = runtime_threads.sessions_dir().to_path_buf();
     runtime_threads.attach_task_manager(manager.clone());
     let automations = Arc::new(Mutex::new(AutomationManager::open_for_test(
@@ -7659,6 +7687,7 @@ async fn session_save_without_an_id_keeps_the_conversation_that_owns_the_snapsho
                     system_prompt: None,
                     instruction_assembly: None,
                     mode: "agent".to_string(),
+                    agent_preset: None,
                 };
                 if let Some(tx) = tx.lock().ok().and_then(|mut guard| guard.take()) {
                     let _ = tx.send(snapshot);
@@ -8165,6 +8194,7 @@ fn dropped_turn(
         may_change_files,
         snapshots,
         declared_writes: Vec::new(),
+        delegated_writes: Vec::new(),
         unrun_tool_calls: std::collections::BTreeSet::new(),
     }
 }
@@ -8288,6 +8318,72 @@ fn patch_undo_helper_refuses_to_overwrite_later_edits() -> Result<()> {
     assert_eq!(err.code, Some(PATCH_UNDO_WORKSPACE_CHANGED));
     assert!(err.message.contains("a.txt"), "{}", err.message);
     assert_eq!(fs::read_to_string(&a)?, "user edit after the turn");
+    Ok(())
+}
+
+#[test]
+fn patch_undo_helper_counts_sub_agent_writes_as_the_turns_own() -> Result<()> {
+    use codewhale_snapshot::WorkspaceSnapshotKind::{PostTurn, PreTurn};
+    if git_missing() {
+        return Ok(());
+    }
+    let _lock = lock_test_env();
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    fs::create_dir_all(&home)?;
+    let _home = EnvVarGuard::set("HOME", &home);
+
+    let workspace = root.path().join("workspace");
+    fs::create_dir_all(&workspace)?;
+    let repo = codewhale_snapshot::SnapshotRepo::open_or_init(&workspace)?;
+    let a = workspace.join("a.txt");
+    let b = workspace.join("b.txt");
+    let editor = workspace.join("editor.txt");
+    fs::write(&a, "a before")?;
+    fs::write(&b, "b before")?;
+    fs::write(&editor, "editor before")?;
+    let pre = repo.take_snapshot("pre-turn:1", Some("thr_a"))?;
+    fs::write(&a, "a child")?;
+    fs::write(&b, "b child")?;
+    fs::write(&editor, "editor typed")?;
+    let post = repo.take_snapshot("post-turn:1", Some("thr_a"))?;
+
+    let receipts = || {
+        let pre_receipt = snapshot_receipt(PreTurn, &pre, "thr_a");
+        let mut post_receipt = snapshot_receipt(PostTurn, &post, "thr_a");
+        post_receipt.changed_paths = Some(changed_between(&repo, &pre, &post));
+        vec![pre_receipt, post_receipt]
+    };
+    let mut turn = dropped_turn("turn_1", true, receipts());
+    let err = patch_undo_workspace_files(&workspace, std::slice::from_ref(&turn))
+        .expect_err("child writes without a receipt are foreign");
+    assert_eq!(err.code, Some(PATCH_UNDO_WORKSPACE_CHANGED));
+
+    turn.delegated_writes = vec!["a.txt".to_string(), "b.txt".to_string()];
+    let err = patch_undo_workspace_files(&workspace, std::slice::from_ref(&turn))
+        .expect_err("the editor's file must still refuse the undo");
+    assert_eq!(err.code, Some(PATCH_UNDO_WORKSPACE_CHANGED));
+    assert!(err.message.contains("editor.txt"), "{}", err.message);
+    assert!(!err.message.contains("a.txt"), "{}", err.message);
+    assert!(!err.message.contains("b.txt"), "{}", err.message);
+    assert_eq!(fs::read_to_string(&a)?, "a child");
+    assert_eq!(fs::read_to_string(&editor)?, "editor typed");
+
+    fs::write(&editor, "editor before")?;
+    let post = repo.take_snapshot("post-turn:1", Some("thr_a"))?;
+    let mut post_receipt = snapshot_receipt(PostTurn, &post, "thr_a");
+    post_receipt.changed_paths = Some(changed_between(&repo, &pre, &post));
+    let turn = codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots {
+        snapshots: vec![snapshot_receipt(PreTurn, &pre, "thr_a"), post_receipt],
+        delegated_writes: vec!["a.txt".to_string(), "b.txt".to_string()],
+        ..turn
+    };
+    let restored = patch_undo_workspace_files(&workspace, std::slice::from_ref(&turn))
+        .expect("the turn's sub-agent writes are undone");
+    assert!(restored.files_restored, "{:?}", restored.summary);
+    assert_eq!(fs::read_to_string(&a)?, "a before");
+    assert_eq!(fs::read_to_string(&b)?, "b before");
+    assert_eq!(fs::read_to_string(&editor)?, "editor before");
     Ok(())
 }
 
@@ -10656,6 +10752,7 @@ async fn session_save_merges_thread_cost_split_and_records_coverage() -> Result<
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     };
     // Mirror `TurnRecord::persist_effective_route` (private to the runtime
     // threads module): persist the route envelope onto the turn so the
@@ -10868,6 +10965,7 @@ async fn session_save_persists_parent_cny_unpriced_reasons_without_double_count(
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     };
     turn.effective_provider = Some(ProviderKind::Openai.as_str().to_string());
     turn.effective_provider_id = Some(ProviderKind::Openai.as_str().to_string());
@@ -11511,6 +11609,208 @@ async fn mobile_page_serves_shell_when_auth_enabled() -> Result<()> {
         .await?
         .error_for_status()?;
     assert!(bearer.text().await?.contains("Codewhale Mobile"));
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn auto_review_forced_approval_rejects_non_owner_clients_on_http_api() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().to_path_buf();
+    let sessions_dir = root.join("sessions");
+    let workspace = root.join("workspace");
+    let token = "owner-only-runtime-test-token".to_string();
+    let (web_state, web_nonce) = web::RuntimeWebState::new();
+    let (mobile_state, mobile_nonce) = mobile::RuntimeMobileState::new();
+    let Some((addr, runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root,
+            sessions_dir,
+            Some(token.clone()),
+            true,
+            workspace,
+            TestServerOverrides {
+                owner_host: true,
+                web: Some(web_state),
+                mobile: Some(mobile_state),
+                ..TestServerOverrides::default()
+            },
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    assert!(runtime_threads.is_owner_surface_attached_for_test());
+    let origin = format!("http://{addr}");
+    let client = codewhale_release::tls::reqwest_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+
+    let drive_token_resp: Value = client
+        .post(format!("{origin}/v1/auth/client-tokens"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "device_id": "paired-drive-device",
+            "intent": "drive"
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let drive_token = drive_token_resp["token"]
+        .as_str()
+        .context("drive token")?
+        .to_string();
+
+    let web_exchange = client
+        .get(format!("{origin}/__codewhale/bootstrap/{web_nonce}"))
+        .send()
+        .await?;
+    assert_eq!(web_exchange.status(), StatusCode::SEE_OTHER);
+    let web_proof = web_exchange
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|loc| loc.strip_prefix("/#p="))
+        .context("web proof")?
+        .to_string();
+    let web_cookie = web_exchange
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(';').next())
+        .context("web cookie")?
+        .to_string();
+
+    let mobile_exchange = client
+        .get(format!(
+            "{origin}/__codewhale/mobile/bootstrap/{mobile_nonce}"
+        ))
+        .send()
+        .await?;
+    assert_eq!(mobile_exchange.status(), StatusCode::SEE_OTHER);
+    let mobile_fragment = mobile_exchange
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|loc| loc.strip_prefix("/mobile#"))
+        .context("mobile fragment")?;
+    let mobile_proof = mobile_fragment
+        .split('&')
+        .find_map(|p| p.strip_prefix("request_proof="))
+        .context("mobile proof")?
+        .to_string();
+    let mobile_cookie = mobile_exchange
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(';').next())
+        .context("mobile cookie")?
+        .to_string();
+
+    let created: Value = client
+        .post(format!("{origin}/v1/threads"))
+        .bearer_auth(&token)
+        .json(&json!({}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let thread_id = created["id"].as_str().context("thread id")?.to_string();
+
+    let (approval_id_1, rx_1) = runtime_threads
+        .register_owner_only_pending_approval_for_thread_for_test(&thread_id, "owner-card-1");
+
+    let assert_owner_required = |resp: reqwest::Response| async {
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body: Value = resp.json().await?;
+        assert_eq!(body["error"]["code"], "owner_required", "{body:#}");
+        Result::<()>::Ok(())
+    };
+
+    assert_owner_required(
+        client
+            .post(format!("{origin}/v1/approvals/{approval_id_1}"))
+            .bearer_auth(&drive_token)
+            .json(&json!({ "decision": "allow", "client": "desktop" }))
+            .send()
+            .await?,
+    )
+    .await?;
+
+    for mobile_client in ["desktop", "phone"] {
+        assert_owner_required(
+            client
+                .post(format!("{origin}/v1/approvals/{approval_id_1}"))
+                .header(header::COOKIE, &mobile_cookie)
+                .header(mobile::MOBILE_REQUEST_HEADER, &mobile_proof)
+                .header(header::ORIGIN, &origin)
+                .header("sec-fetch-site", "same-origin")
+                .json(&json!({ "decision": "allow", "client": mobile_client }))
+                .send()
+                .await?,
+        )
+        .await?;
+    }
+
+    assert_owner_required(
+        client
+            .post(format!("{origin}/v1/approvals/{approval_id_1}"))
+            .bearer_auth(&token)
+            .json(&json!({ "decision": "allow" }))
+            .send()
+            .await?,
+    )
+    .await?;
+
+    for non_owner_client in ["phone", "acp"] {
+        assert_owner_required(
+            client
+                .post(format!("{origin}/v1/approvals/{approval_id_1}"))
+                .bearer_auth(&token)
+                .json(&json!({ "decision": "allow", "client": non_owner_client }))
+                .send()
+                .await?,
+        )
+        .await?;
+    }
+    assert_eq!(runtime_threads.pending_approvals_count(), 1);
+
+    let web_ok = client
+        .post(format!("{origin}/v1/approvals/{approval_id_1}"))
+        .header(header::COOKIE, &web_cookie)
+        .header(web::WEB_REQUEST_HEADER, &web_proof)
+        .header(header::ORIGIN, &origin)
+        .header("sec-fetch-site", "same-origin")
+        .json(&json!({ "decision": "allow" }))
+        .send()
+        .await?;
+    assert_eq!(web_ok.status(), StatusCode::OK);
+    assert_eq!(
+        rx_1.await?,
+        codewhale_engine::runtime_threads::manager::ExternalApprovalDecision::Allow {
+            remember: false
+        }
+    );
+
+    let (approval_id_2, rx_2) = runtime_threads
+        .register_owner_only_pending_approval_for_thread_for_test(&thread_id, "owner-card-2");
+    let desktop_ok = client
+        .post(format!("{origin}/v1/approvals/{approval_id_2}"))
+        .bearer_auth(&token)
+        .json(&json!({ "decision": "deny", "client": "desktop" }))
+        .send()
+        .await?;
+    assert_eq!(desktop_ok.status(), StatusCode::OK);
+    assert_eq!(
+        rx_2.await?,
+        codewhale_engine::runtime_threads::manager::ExternalApprovalDecision::Deny {
+            remember: false
+        }
+    );
 
     handle.abort();
     Ok(())
@@ -12234,6 +12534,7 @@ fn seed_summary_search_transcript(
             artifacts: Vec::new(),
             workspace: None,
             workspace_snapshots: Vec::new(),
+            delegated_writes: Vec::new(),
         })?;
         latest_turn_id = Some(turn_id);
     }
@@ -19493,7 +19794,13 @@ async fn plugin_catalog_over_http_lists_and_toggles_feature_rows() -> Result<()>
         .collect();
     assert_eq!(
         builtin_ids,
-        ["subagents", "web_search", "shell_tool", "agent_loop"]
+        [
+            "subagents",
+            "web_search",
+            "shell_tool",
+            "plugin_creator",
+            "agent_loop",
+        ]
     );
     assert!(
         catalog["experimental"]
@@ -23571,13 +23878,12 @@ async fn lsp_routes_serve_workspace_files_through_a_transport() -> Result<()> {
 
 #[tokio::test]
 async fn voice_routes_report_capability_and_fail_closed_without_a_recorder() -> Result<()> {
-    let _lock = lock_test_env();
-    // Deterministic: the operator kill-switch keeps the test off the host mic.
-    let _voice_off = EnvVarGuard::set("CODEWHALE_DISABLE_VOICE", "1");
-
     let tmp = tempfile::tempdir()?;
     let workspace = tmp.path().join("workspace");
     fs::create_dir_all(&workspace)?;
+
+    let _lock = lock_test_env();
+    let _voice_off = EnvVarGuard::set("CODEWHALE_DISABLE_VOICE", "1");
 
     let (addr, _runtime_threads, handle) =
         spawn_test_server_with_root_token_mobile_workspace_and_overrides(
@@ -23645,6 +23951,177 @@ async fn voice_routes_report_capability_and_fail_closed_without_a_recorder() -> 
         .await?;
     assert_eq!(outcome["ok"], false);
     assert_eq!(outcome["reason"], "no_recorder");
+
+    for path in ["/v1/voice/transcribe", "/v1/voice/tts"] {
+        let unauthorized = client.post(format!("{base}{path}")).send().await?.status();
+        assert_eq!(unauthorized, StatusCode::UNAUTHORIZED, "POST {path}");
+    }
+    assert!(status["upload_available"].is_boolean());
+    assert!(status["tts_available"].is_boolean());
+    assert_eq!(
+        status["max_upload_bytes"],
+        codewhale_engine::voice::UPLOAD_AUDIO_MAX_BYTES
+    );
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn voice_upload_transcribe_and_tts_use_deepseek_even_when_host_mic_disabled() -> Result<()> {
+    use base64::Engine as _;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/tools/asr"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "request_id": "req-rt-asr",
+            "text": "ship the branch send it",
+            "duration_ms": 880
+        })))
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/tools/tts"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"RIFF_RT_WAV".to_vec()))
+        .mount(&upstream)
+        .await;
+
+    let tmp = tempfile::tempdir()?;
+    let workspace = tmp.path().join("workspace");
+    fs::create_dir_all(&workspace)?;
+
+    let _lock = lock_test_env();
+    let _voice_off = EnvVarGuard::set("CODEWHALE_DISABLE_VOICE", "1");
+    let _asr_env = EnvVarGuard::remove("CODEWHALE_ASR_MODEL");
+    let _groq_env = EnvVarGuard::remove("GROQ_API_KEY");
+    let _cli_source = EnvVarGuard::remove(codewhale_config::CLI_API_KEY_SOURCE_ENV);
+    let _legacy_cli_source = EnvVarGuard::remove(codewhale_config::LEGACY_CLI_API_KEY_SOURCE_ENV);
+    let _cli_key = EnvVarGuard::remove(codewhale_config::CLI_API_KEY_ENV);
+    let _path = EnvVarGuard::set("PATH", "/nonexistent-voice-path");
+    let _base_env = EnvVarGuard::set("DEEPSEEK_BASE_URL", format!("{}/v1", upstream.uri()));
+    let _key_env = EnvVarGuard::set("DEEPSEEK_API_KEY", "ds-runtime-voice-key");
+
+    let mut config = Config::default().with_legacy_root(
+        Some("ds-runtime-voice-key".to_string()),
+        Some(format!("{}/v1", upstream.uri())),
+    );
+    config.provider = Some("deepseek".to_string());
+
+    let (addr, _runtime_threads, handle) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            tmp.path().join("runtime"),
+            tmp.path().join("sessions"),
+            Some("voice-ds-token".to_string()),
+            false,
+            workspace,
+            TestServerOverrides {
+                config: Some(config),
+                ..Default::default()
+            },
+        )
+        .await?
+        .context("deepseek voice test requires a loopback listener")?;
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}");
+
+    let status: Value = client
+        .get(format!("{base}/v1/voice"))
+        .bearer_auth("voice-ds-token")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(status["available"], false);
+    assert_eq!(status["upload_available"], true);
+    assert_eq!(status["tts_available"], true);
+    assert_eq!(status["asr"]["kind"], "deepseek");
+    assert_eq!(status["tts_voices"], json!(["stella", "tide"]));
+
+    let mut wav = Vec::with_capacity(44 + 640);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36u32 + 640u32).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&16000u32.to_le_bytes());
+    wav.extend_from_slice(&32000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&640u32.to_le_bytes());
+    wav.resize(44 + 640, 0);
+    let transcribed: Value = client
+        .post(format!("{base}/v1/voice/transcribe"))
+        .bearer_auth("voice-ds-token")
+        .json(&json!({
+            "audio_base64": base64::engine::general_purpose::STANDARD.encode(wav),
+            "mime_type": "audio/wav",
+            "mode": "send"
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(transcribed["ok"], true);
+    assert_eq!(transcribed["text"], "ship the branch");
+    assert_eq!(transcribed["send"], true);
+    assert_eq!(transcribed["asr"]["kind"], "deepseek");
+
+    let tts_json: Value = client
+        .post(format!("{base}/v1/voice/tts"))
+        .bearer_auth("voice-ds-token")
+        .json(&json!({
+            "text": "Ready for review",
+            "voice": "tide",
+            "format": "wav",
+            "filter_markdown": true
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(tts_json["ok"], true);
+    assert_eq!(tts_json["mime_type"], "audio/wav");
+    assert_eq!(tts_json["provider"], "deepseek");
+    assert_eq!(tts_json["model"], "deepseek-tts");
+    assert_eq!(tts_json["voice_id"], "tide");
+    assert_eq!(tts_json["format"], "wav");
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(tts_json["audio_base64"].as_str().context("audio_base64")?)?,
+        b"RIFF_RT_WAV"
+    );
+
+    let tts_empty: Value = client
+        .post(format!("{base}/v1/voice/tts"))
+        .bearer_auth("voice-ds-token")
+        .json(&json!({ "text": "   " }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(tts_empty["ok"], false);
+    assert_eq!(tts_empty["reason"], "invalid_input");
+
+    let tts_bad_voice: Value = client
+        .post(format!("{base}/v1/voice/tts"))
+        .bearer_auth("voice-ds-token")
+        .json(&json!({ "text": "hi", "voice": "nonexistent" }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(tts_bad_voice["ok"], false);
+    assert_eq!(tts_bad_voice["reason"], "invalid_input");
 
     handle.abort();
     Ok(())
@@ -24869,6 +25346,201 @@ api_key = "refresh-fixture-key"
     assert_eq!(get_config(&client, &addr).await["provider"], "first");
     handle.abort();
     codewhale_engine::provider_lake::clear_live_snapshot();
+    Ok(())
+}
+
+#[tokio::test]
+async fn provider_models_refresh_with_vllm_base_url_env_persists_across_restart() -> Result<()> {
+    let _env = codewhale_engine::test_support::lock_test_env();
+    let _guards: Vec<_> = [
+        "CODEWHALE_CONFIG_PATH",
+        "DEEPSEEK_CONFIG_PATH",
+        "CODEWHALE_BASE_URL",
+        "DEEPSEEK_BASE_URL",
+        "CODEWHALE_PROVIDER",
+        "DEEPSEEK_PROVIDER",
+        "CODEWHALE_MODEL",
+        "DEEPSEEK_MODEL",
+        "CODEWHALE_PROFILE",
+        "DEEPSEEK_PROFILE",
+        codewhale_config::CLI_API_KEY_ENV,
+    ]
+    .into_iter()
+    .map(codewhale_engine::test_support::EnvVarGuard::remove)
+    .collect();
+    let _cloud_facts =
+        codewhale_engine::test_support::EnvVarGuard::set("CODEWHALE_DISABLE_CLOUD_FACTS", "1");
+    struct CatalogReset;
+    impl Drop for CatalogReset {
+        fn drop(&mut self) {
+            codewhale_engine::provider_catalog_live::reset_cache_for_test();
+            codewhale_engine::provider_lake::clear_live_snapshot();
+        }
+    }
+    let _live = codewhale_engine::provider_lake::lock_live_snapshot();
+    let _reset = CatalogReset;
+    codewhale_engine::provider_lake::clear_live_snapshot();
+
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    let workspace = root.path().join("workspace");
+    let sessions_dir = home.join("sessions");
+    fs::create_dir_all(&home)?;
+    fs::create_dir_all(&workspace)?;
+
+    let catalog_path = root.path().join("models-dev.json");
+    fs::write(
+        &catalog_path,
+        json!({"models": {}, "providers": {}}).to_string(),
+    )?;
+    let _catalog = codewhale_engine::test_support::EnvVarGuard::set(
+        "CODEWHALE_MODELS_DEV_PATH",
+        &catalog_path,
+    );
+    let _home = codewhale_engine::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home);
+
+    let upstream = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/v1/models"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
+            json!({"object": "list", "data": [{"id": "gpui-fixture", "object": "model"}]}),
+        ))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let vllm_base_url = format!("{}/v1", upstream.uri());
+    let _vllm = codewhale_engine::test_support::EnvVarGuard::set("VLLM_BASE_URL", &vllm_base_url);
+    codewhale_engine::provider_catalog_live::reset_cache_for_test();
+
+    let config_path = home.join("config.toml");
+    let (addr, _, handle) = spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+        root.path().join("server1"),
+        sessions_dir.clone(),
+        None,
+        false,
+        workspace.clone(),
+        TestServerOverrides {
+            config_path: Some(config_path.clone()),
+            ..TestServerOverrides::default()
+        },
+    )
+    .await?
+    .expect("loopback server required");
+
+    let client = codewhale_release::tls::reqwest_client_builder()
+        .timeout(Duration::from_secs(5))
+        .build()?;
+    let refresh_resp = client
+        .post(format!("http://{addr}/v1/providers/vllm/models/refresh"))
+        .json(&json!({}))
+        .send()
+        .await?;
+    assert_eq!(refresh_resp.status(), StatusCode::OK);
+    let receipt: Value = refresh_resp.json().await?;
+    assert_eq!(receipt["provider"], "vllm");
+    assert_eq!(receipt["outcome"], "updated");
+    assert_eq!(receipt["model_count"], 1);
+    assert_eq!(
+        upstream.received_requests().await.as_ref().map(Vec::len),
+        Some(1)
+    );
+
+    let immediate: Value = client
+        .get(format!("http://{addr}/v1/providers/vllm/models?limit=250"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(immediate["provider"], "vllm");
+    assert_eq!(immediate["total"], 1);
+    assert!(
+        immediate["models"]
+            .as_array()
+            .context("models array")?
+            .iter()
+            .any(|model| model["id"] == "gpui-fixture"),
+        "expected gpui-fixture immediately after refresh, got {immediate}"
+    );
+
+    let providers_before_restart: Value = client
+        .get(format!("http://{addr}/v1/providers"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let vllm_entry_before = providers_before_restart["providers"]
+        .as_array()
+        .context("providers array")?
+        .iter()
+        .find(|entry| entry["id"] == "vllm")
+        .context("vllm provider entry")?;
+    assert_eq!(vllm_entry_before["has_model_catalog"], true);
+
+    handle.abort();
+    let _ = handle.await;
+
+    codewhale_engine::provider_catalog_live::reset_cache_for_test();
+    codewhale_engine::provider_lake::clear_live_snapshot();
+    let restarted_config =
+        codewhale_plugins::providers::load_config(Some(config_path.clone()), None)?;
+    codewhale_engine::provider_catalog_live::maybe_load_persisted_cache_for_config(
+        &restarted_config,
+    );
+
+    let (addr_restarted, _, handle_restarted) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root.path().join("server2"),
+            sessions_dir,
+            None,
+            false,
+            workspace,
+            TestServerOverrides {
+                config_path: Some(config_path),
+                ..TestServerOverrides::default()
+            },
+        )
+        .await?
+        .expect("loopback server required");
+
+    let after_restart: Value = client
+        .get(format!(
+            "http://{addr_restarted}/v1/providers/vllm/models?limit=250"
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(after_restart["provider"], "vllm");
+    assert_eq!(after_restart["total"], 1);
+    assert!(
+        after_restart["models"]
+            .as_array()
+            .context("models array after restart")?
+            .iter()
+            .any(|model| model["id"] == "gpui-fixture"),
+        "expected gpui-fixture after restart, got {after_restart}"
+    );
+
+    let providers_after_restart: Value = client
+        .get(format!("http://{addr_restarted}/v1/providers"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let vllm_entry_after = providers_after_restart["providers"]
+        .as_array()
+        .context("providers array after restart")?
+        .iter()
+        .find(|entry| entry["id"] == "vllm")
+        .context("vllm provider entry after restart")?;
+    assert_eq!(vllm_entry_after["has_model_catalog"], true);
+
+    handle_restarted.abort();
+    let _ = handle_restarted.await;
     Ok(())
 }
 
@@ -27395,5 +28067,592 @@ async fn request_fields_cannot_grant_interactive_origin_or_owner_presence() -> R
     unattached.shutdown_and_wait().await?;
     acp_mgr.shutdown_and_wait().await?;
     owner_mgr.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn runtime_api_web_composer_records_person_messages_while_mobile_device_master_and_smuggling_do_not()
+-> Result<()> {
+    use codewhale_engine::core::ops::TurnInputAuthorship;
+
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().to_path_buf();
+    let sessions_dir = root.join("sessions");
+    let workspace = root.join("workspace");
+    let token = "owner-only-turn-authorship-token".to_string();
+    let (web_state, web_nonce) = web::RuntimeWebState::new();
+    let (mobile_state, mobile_nonce) = mobile::RuntimeMobileState::new();
+    let Some((addr, runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root,
+            sessions_dir,
+            Some(token.clone()),
+            true,
+            workspace,
+            TestServerOverrides {
+                owner_host: true,
+                web: Some(web_state),
+                mobile: Some(mobile_state),
+                ..TestServerOverrides::default()
+            },
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let origin = format!("http://{addr}");
+    let client = codewhale_release::tls::reqwest_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+
+    let drive_token_resp: Value = client
+        .post(format!("{origin}/v1/auth/client-tokens"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "device_id": "paired-drive-device",
+            "intent": "drive"
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let drive_token = drive_token_resp["token"]
+        .as_str()
+        .context("drive token")?
+        .to_string();
+
+    let web_exchange = client
+        .get(format!("{origin}/__codewhale/bootstrap/{web_nonce}"))
+        .send()
+        .await?;
+    assert_eq!(web_exchange.status(), StatusCode::SEE_OTHER);
+    let web_proof = web_exchange
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|loc| loc.strip_prefix("/#p="))
+        .context("web proof")?
+        .to_string();
+    let web_cookie = web_exchange
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(';').next())
+        .context("web cookie")?
+        .to_string();
+
+    let mobile_exchange = client
+        .get(format!(
+            "{origin}/__codewhale/mobile/bootstrap/{mobile_nonce}"
+        ))
+        .send()
+        .await?;
+    assert_eq!(mobile_exchange.status(), StatusCode::SEE_OTHER);
+    let mobile_proof = mobile_exchange
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|loc| loc.strip_prefix("/mobile#"))
+        .and_then(|frag| {
+            frag.split('&')
+                .find_map(|p| p.strip_prefix("request_proof="))
+        })
+        .context("mobile proof")?
+        .to_string();
+    let mobile_cookie = mobile_exchange
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(';').next())
+        .context("mobile cookie")?
+        .to_string();
+
+    let created: Value = client
+        .post(format!("{origin}/v1/threads"))
+        .bearer_auth(&token)
+        .json(&json!({}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let thread_id = created["id"].as_str().context("thread id")?.to_string();
+
+    let mut harness = install_mock_engine(&runtime_threads, &thread_id).await;
+    let recorded_authorship = Arc::new(std::sync::Mutex::new(Vec::<TurnInputAuthorship>::new()));
+    let recorded_clone = recorded_authorship.clone();
+    let tx_event = harness.tx_event.clone();
+    tokio::spawn(async move {
+        while let Some(op) = harness.rx_op.recv().await {
+            if let Op::SendMessage(TurnSpec {
+                input_authorship, ..
+            }) = op
+            {
+                recorded_clone
+                    .lock()
+                    .expect("recorded_authorship lock")
+                    .push(input_authorship);
+                let _ = tx_event
+                    .send(EngineEvent::TurnStarted {
+                        previous_source: None,
+                        turn_id: "engine_turn_authorship".to_string(),
+                        created_at: chrono::Utc::now(),
+                        route: None,
+                        submission_id: None,
+                    })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageStarted { index: 0 })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageDelta {
+                        index: 0,
+                        content: "ok".to_string(),
+                    })
+                    .await;
+                sleep(Duration::from_millis(10)).await;
+                let _ = tx_event
+                    .send(EngineEvent::TurnComplete {
+                        source_accounting: false,
+                        turn_id: None,
+                        submission_id: None,
+                        compaction_id: None,
+                        usage: Usage::default(),
+                        parent_route_usage: Usage::default(),
+                        routed_usage_dropped_records: 0,
+                        status: TurnOutcomeStatus::Completed,
+                        error: None,
+                        tool_catalog: None,
+                        base_url: None,
+                    })
+                    .await;
+            }
+        }
+    });
+
+    let smuggled = client
+        .post(format!("{origin}/v1/threads/{thread_id}/turns"))
+        .bearer_auth(&drive_token)
+        .json(&json!({
+            "prompt": "smuggle attempt",
+            "metadata": { "input_authorship": "person" }
+        }))
+        .send()
+        .await?;
+    assert_eq!(smuggled.status(), StatusCode::BAD_REQUEST);
+
+    let wait_turn_done = |turn_id: String| {
+        let client = client.clone();
+        let token = token.clone();
+        let origin = origin.clone();
+        let thread_id = thread_id.clone();
+        async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let detail: Value = client
+                    .get(format!("{origin}/v1/threads/{thread_id}"))
+                    .bearer_auth(&token)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await?;
+                let status = detail["turns"]
+                    .as_array()
+                    .and_then(|turns| turns.iter().find(|turn| turn["id"] == turn_id))
+                    .and_then(|turn| turn.get("status"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if matches!(
+                    status.as_str(),
+                    "completed" | "failed" | "interrupted" | "canceled"
+                ) {
+                    return Ok::<String, anyhow::Error>(status);
+                }
+                anyhow::ensure!(
+                    tokio::time::Instant::now() < deadline,
+                    "timed out waiting for turn {turn_id}"
+                );
+                sleep(Duration::from_millis(20)).await;
+            }
+        }
+    };
+
+    let non_owner_requests = vec![
+        client
+            .post(format!("{origin}/v1/threads/{thread_id}/turns"))
+            .bearer_auth(&token)
+            .json(&json!({ "prompt": "from-master" })),
+        client
+            .post(format!("{origin}/v1/threads/{thread_id}/turns"))
+            .bearer_auth(&drive_token)
+            .json(&json!({ "prompt": "from-device" })),
+        client
+            .post(format!("{origin}/v1/threads/{thread_id}/turns"))
+            .header(header::COOKIE, &mobile_cookie)
+            .header(mobile::MOBILE_REQUEST_HEADER, &mobile_proof)
+            .header(header::ORIGIN, &origin)
+            .header("sec-fetch-site", "same-origin")
+            .json(&json!({ "prompt": "from-mobile" })),
+    ];
+    for req in non_owner_requests {
+        let resp = req.send().await?.error_for_status()?;
+        let turn: Value = resp.json().await?;
+        let turn_id = turn["turn"]["id"].as_str().context("turn id")?.to_string();
+        assert_eq!(wait_turn_done(turn_id).await?, "completed");
+    }
+
+    let web_turn_resp = client
+        .post(format!("{origin}/v1/threads/{thread_id}/turns"))
+        .header(header::COOKIE, &web_cookie)
+        .header(web::WEB_REQUEST_HEADER, &web_proof)
+        .header(header::ORIGIN, &origin)
+        .header("sec-fetch-site", "same-origin")
+        .json(&json!({ "prompt": "from-web-owner" }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let web_turn: Value = web_turn_resp.json().await?;
+    let web_turn_id = web_turn["turn"]["id"]
+        .as_str()
+        .context("web turn id")?
+        .to_string();
+    assert_eq!(wait_turn_done(web_turn_id).await?, "completed");
+
+    let captured = recorded_authorship
+        .lock()
+        .expect("recorded_authorship lock")
+        .clone();
+    assert_eq!(
+        captured,
+        vec![
+            TurnInputAuthorship::NotPerson,
+            TurnInputAuthorship::NotPerson,
+            TurnInputAuthorship::NotPerson,
+            TurnInputAuthorship::Person("from-web-owner".to_string()),
+        ]
+    );
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn runtime_api_auto_review_blocks_and_approve_enforce_owner_surface_and_state() -> Result<()>
+{
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().to_path_buf();
+    let sessions_dir = root.join("sessions");
+    let workspace = root.join("workspace");
+    let token = "auto-review-owner-api-token".to_string();
+    let (web_state, web_nonce) = web::RuntimeWebState::new();
+    let (mobile_state, mobile_nonce) = mobile::RuntimeMobileState::new();
+    let Some((addr, runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root,
+            sessions_dir,
+            Some(token.clone()),
+            true,
+            workspace,
+            TestServerOverrides {
+                owner_host: true,
+                web: Some(web_state),
+                mobile: Some(mobile_state),
+                ..TestServerOverrides::default()
+            },
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    assert!(runtime_threads.is_owner_surface_attached_for_test());
+    let origin = format!("http://{addr}");
+    let client = codewhale_release::tls::reqwest_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+
+    let drive_token_resp: Value = client
+        .post(format!("{origin}/v1/auth/client-tokens"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "device_id": "paired-drive-device",
+            "intent": "drive"
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let drive_token = drive_token_resp["token"]
+        .as_str()
+        .context("drive token")?
+        .to_string();
+
+    let web_exchange = client
+        .get(format!("{origin}/__codewhale/bootstrap/{web_nonce}"))
+        .send()
+        .await?;
+    assert_eq!(web_exchange.status(), StatusCode::SEE_OTHER);
+    let web_proof = web_exchange
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|loc| loc.strip_prefix("/#p="))
+        .context("web proof")?
+        .to_string();
+    let web_cookie = web_exchange
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(';').next())
+        .context("web cookie")?
+        .to_string();
+
+    let mobile_exchange = client
+        .get(format!(
+            "{origin}/__codewhale/mobile/bootstrap/{mobile_nonce}"
+        ))
+        .send()
+        .await?;
+    assert_eq!(mobile_exchange.status(), StatusCode::SEE_OTHER);
+    let mobile_fragment = mobile_exchange
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|loc| loc.strip_prefix("/mobile#"))
+        .context("mobile fragment")?;
+    let mobile_proof = mobile_fragment
+        .split('&')
+        .find_map(|p| p.strip_prefix("request_proof="))
+        .context("mobile proof")?
+        .to_string();
+    let mobile_cookie = mobile_exchange
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(';').next())
+        .context("mobile cookie")?
+        .to_string();
+
+    let created: Value = client
+        .post(format!("{origin}/v1/threads"))
+        .bearer_auth(&token)
+        .json(&json!({ "permission_posture": "auto-review" }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let thread_id = created["id"].as_str().context("thread id")?.to_string();
+
+    let missing_engine_resp = client
+        .post(format!(
+            "{origin}/v1/threads/{thread_id}/auto-review/approve"
+        ))
+        .bearer_auth(&token)
+        .json(&json!({ "target": "ar-missing", "client": "desktop" }))
+        .send()
+        .await?;
+    assert_eq!(missing_engine_resp.status(), StatusCode::NOT_FOUND);
+
+    let harness = install_mock_engine(&runtime_threads, &thread_id).await;
+
+    let receipt_1 = runtime_threads
+        .register_auto_review_block_for_test(
+            &thread_id,
+            "Bash",
+            &json!({ "action": "run", "command": "rm -rf /tmp/y" }),
+            Some("guardian"),
+            "dangerous shell command",
+            "denied",
+            true,
+        )
+        .await?
+        .context("expected receipt_1")?;
+    let _receipt_2 = runtime_threads
+        .register_auto_review_block_for_test(
+            &thread_id,
+            "MCPTool",
+            &json!({ "server": "ext", "tool": "drop_table" }),
+            Some("guardian"),
+            "external tool denied",
+            "denied",
+            false,
+        )
+        .await?;
+
+    let blocks_resp: Value = client
+        .get(format!(
+            "{origin}/v1/threads/{thread_id}/auto-review/blocks"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(blocks_resp["thread_id"], thread_id);
+    let blocks = blocks_resp["blocks"].as_array().context("blocks array")?;
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0]["receipt_id"], receipt_1);
+    assert_eq!(blocks[0]["approvable"], true);
+    assert_eq!(blocks[1]["approvable"], false);
+    let non_approvable_id = blocks[1]["receipt_id"].as_str().context("r2")?.to_string();
+
+    let assert_owner_required = |resp: reqwest::Response| async {
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body: Value = resp.json().await?;
+        assert_eq!(body["error"]["code"], "owner_required", "{body:#}");
+        Result::<()>::Ok(())
+    };
+
+    assert_owner_required(
+        client
+            .post(format!(
+                "{origin}/v1/threads/{thread_id}/auto-review/approve"
+            ))
+            .bearer_auth(&drive_token)
+            .json(&json!({ "target": receipt_1, "client": "desktop" }))
+            .send()
+            .await?,
+    )
+    .await?;
+
+    for mobile_client in ["desktop", "phone"] {
+        assert_owner_required(
+            client
+                .post(format!(
+                    "{origin}/v1/threads/{thread_id}/auto-review/approve"
+                ))
+                .header(header::COOKIE, &mobile_cookie)
+                .header(mobile::MOBILE_REQUEST_HEADER, &mobile_proof)
+                .header(header::ORIGIN, &origin)
+                .header("sec-fetch-site", "same-origin")
+                .json(&json!({ "target": receipt_1, "client": mobile_client }))
+                .send()
+                .await?,
+        )
+        .await?;
+    }
+
+    assert_owner_required(
+        client
+            .post(format!(
+                "{origin}/v1/threads/{thread_id}/auto-review/approve"
+            ))
+            .bearer_auth(&token)
+            .json(&json!({ "target": receipt_1 }))
+            .send()
+            .await?,
+    )
+    .await?;
+
+    for non_owner_client in ["phone", "acp"] {
+        assert_owner_required(
+            client
+                .post(format!(
+                    "{origin}/v1/threads/{thread_id}/auto-review/approve"
+                ))
+                .bearer_auth(&token)
+                .json(&json!({ "target": receipt_1, "client": non_owner_client }))
+                .send()
+                .await?,
+        )
+        .await?;
+    }
+
+    let unknown_target = client
+        .post(format!(
+            "{origin}/v1/threads/{thread_id}/auto-review/approve"
+        ))
+        .bearer_auth(&token)
+        .json(&json!({ "target": "ar-does-not-exist", "client": "desktop" }))
+        .send()
+        .await?;
+    assert_eq!(unknown_target.status(), StatusCode::CONFLICT);
+
+    let non_approvable_resp = client
+        .post(format!(
+            "{origin}/v1/threads/{thread_id}/auto-review/approve"
+        ))
+        .bearer_auth(&token)
+        .json(&json!({ "target": non_approvable_id, "client": "desktop" }))
+        .send()
+        .await?;
+    assert_eq!(non_approvable_resp.status(), StatusCode::CONFLICT);
+
+    let web_ok = client
+        .post(format!(
+            "{origin}/v1/threads/{thread_id}/auto-review/approve"
+        ))
+        .header(header::COOKIE, &web_cookie)
+        .header(web::WEB_REQUEST_HEADER, &web_proof)
+        .header(header::ORIGIN, &origin)
+        .header("sec-fetch-site", "same-origin")
+        .json(&json!({ "target": receipt_1 }))
+        .send()
+        .await?;
+    assert_eq!(web_ok.status(), StatusCode::OK);
+    let ok_body: Value = web_ok.json().await?;
+    assert_eq!(ok_body["ok"], true);
+    assert_eq!(ok_body["thread_id"], thread_id);
+    assert_eq!(ok_body["grant"]["receipt_id"], receipt_1);
+    assert_eq!(ok_body["grant"]["tool_name"], "Bash");
+    assert!(
+        ok_body["grant"]["call_digest"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    );
+
+    let duplicate_resp = client
+        .post(format!(
+            "{origin}/v1/threads/{thread_id}/auto-review/approve"
+        ))
+        .bearer_auth(&token)
+        .json(&json!({ "target": receipt_1, "client": "tui" }))
+        .send()
+        .await?;
+    assert_eq!(duplicate_resp.status(), StatusCode::CONFLICT);
+
+    let receipt_3 = runtime_threads
+        .register_auto_review_block_for_test(
+            &thread_id,
+            "Bash",
+            &json!({ "action": "run", "command": "chmod 777 /tmp/z" }),
+            Some("guardian"),
+            "broad chmod",
+            "denied",
+            true,
+        )
+        .await?
+        .context("expected receipt_3")?;
+
+    let patched = client
+        .patch(format!("{origin}/v1/threads/{thread_id}"))
+        .bearer_auth(&token)
+        .json(&json!({ "permission_posture": "ask" }))
+        .send()
+        .await?;
+    assert_eq!(patched.status(), StatusCode::OK);
+
+    let after_posture_change = client
+        .post(format!(
+            "{origin}/v1/threads/{thread_id}/auto-review/approve"
+        ))
+        .bearer_auth(&token)
+        .json(&json!({ "target": receipt_3, "client": "desktop" }))
+        .send()
+        .await?;
+    assert_eq!(after_posture_change.status(), StatusCode::CONFLICT);
+    let err_body: Value = after_posture_change.json().await?;
+    assert_eq!(
+        err_body["error"]["code"], "not_in_auto_review",
+        "{err_body:#}"
+    );
+
+    drop(harness);
+    handle.abort();
     Ok(())
 }

@@ -1329,6 +1329,7 @@ async fn deferred_tool_first_use_does_not_emit_a_retry_status() {
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await

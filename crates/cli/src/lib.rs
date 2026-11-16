@@ -156,6 +156,10 @@ struct Cli {
     session_id: Option<String>,
     #[arg(short = 'p', long = "prompt", value_name = "PROMPT")]
     prompt_flag: Option<String>,
+    /// Conversation mode for a new interactive session (for example
+    /// `creator`). With `--resume` or `--continue` it must match the saved mode.
+    #[arg(long = "conversation-mode", value_name = "MODE")]
+    conversation_mode: Option<String>,
     /// Per-run config override (`KEY=VALUE`), repeatable, never saved.
     /// Runtime keys: provider, model/default_text_model, verbosity,
     /// approval_policy, sandbox_mode, telemetry. Dedicated flags win;
@@ -257,6 +261,7 @@ Run options such as --model, --provider, --config and --profile work before or a
 
 Common forwarded flags:
   --auto                           Enable tools with automatic approvals and Full Access by default
+  --permission-mode <MODE>         Start in ask, accept-edits, plan, auto-review, or full-access
   --sandbox <POLICY>               Override the sandbox policy for this run
   --json                           Emit summary JSON
   --resume <SESSION_ID>            Resume a previous session by ID or prefix
@@ -1384,12 +1389,8 @@ fn run_workflow_command(
                 workspace.clone()
             };
 
-            // A fleet is an optional pin layer, not a requirement: role-only
-            // tasks resolve against the built-in roster and the session route
-            // (matching the TUI tool path). When a fleet IS given, it is
-            // loaded and validated before the run starts.
             if let Some(name) = fleet.as_deref() {
-                let roots = named_fleet_search_roots(&workspace);
+                let roots = codewhale_engine::fleet::exact::fleet_search_roots(&workspace);
                 let loaded =
                     codewhale_workflow::load_named_fleet(name, &roots).with_context(|| {
                         format!("load Fleet `{name}` from {}", display_roots(&roots))
@@ -1535,23 +1536,10 @@ fn validate_workflow_source_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The same roots, in the same order, as the TUI's `fleet_search_roots`:
-/// `$CODEWHALE_HOME`, then `<workspace>/.codewhale` (where the Fleet store
-/// saves folder Fleets), then the workspace root for checked-in rosters.
-fn named_fleet_search_roots(workspace: &Path) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Ok(home) = codewhale_config::codewhale_home() {
-        roots.push(home);
-    }
-    roots.push(workspace.join(".codewhale"));
-    roots.push(workspace.to_path_buf());
-    roots
-}
-
-fn display_roots(roots: &[PathBuf]) -> String {
+fn display_roots(roots: &[codewhale_workflow::FleetSearchRoot]) -> String {
     roots
         .iter()
-        .map(|root| root.display().to_string())
+        .map(|root| root.root.display().to_string())
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -2986,6 +2974,10 @@ fn root_tui_passthrough(cli: &Cli) -> Result<Vec<String>> {
         forwarded.push("--resume".to_string());
         forwarded.push(session_id.to_string());
     }
+    if let Some(mode) = cli.conversation_mode.as_deref() {
+        forwarded.push("--conversation-mode".to_string());
+        forwarded.push(mode.to_string());
+    }
 
     let prompt =
         cli.prompt_flag
@@ -3214,6 +3206,7 @@ fn capture_exec_startup_options(cli: &mut Cli) -> Result<()> {
             "--base-url" => cli.base_url.is_some(),
             "--config" => cli.config.is_some(),
             "--profile" => cli.profile.is_some(),
+            "--permission-mode" => cli.permission_mode.is_some(),
             _ => {
                 forwarded.push(arg.clone());
                 continue;
@@ -3239,6 +3232,10 @@ fn capture_exec_startup_options(cli: &mut Cli) -> Result<()> {
     cli.base_url = cli.base_url.take().or(captured.base_url);
     cli.config = cli.config.take().or(captured.runtime_options.config);
     cli.profile = cli.profile.take().or(captured.runtime_options.profile);
+    cli.permission_mode = cli
+        .permission_mode
+        .take()
+        .or(captured.runtime_options.permission_mode);
     let Some(Commands::Exec(args)) = cli.command.as_mut() else {
         unreachable!("only exec startup options were captured");
     };
@@ -6326,7 +6323,10 @@ fn thread_control_mutation_options(
         "thread history controls cannot import --api-key or --base-url; configure/authenticate the owning Runtime, then select its config/profile (values omitted)"
     );
     anyhow::ensure!(
-        !cli.yolo && cli.verbosity.is_none() && cli.telemetry.is_none(),
+        !cli.yolo
+            && cli.permission_mode.is_none()
+            && cli.verbosity.is_none()
+            && cli.telemetry.is_none(),
         "unsupported per-run thread setting; configure the owning Runtime instead (values omitted)"
     );
     for spec in &cli.overrides {
@@ -7250,6 +7250,27 @@ mod tests {
             std::env::var("DEEPSEEK_YOLO").is_err(),
             "--yolo must not write the retired DEEPSEEK_YOLO alias (#5443)"
         );
+    }
+
+    #[test]
+    fn permission_mode_parses_on_root_and_exec() {
+        use codewhale_engine::runtime_options::PermissionMode;
+
+        for (raw, expected) in [
+            ("ask", PermissionMode::Ask),
+            ("accept-edits", PermissionMode::AcceptEdits),
+            ("plan", PermissionMode::Plan),
+            ("auto-review", PermissionMode::AutoReview),
+            ("full-access", PermissionMode::FullAccess),
+        ] {
+            let root = parse_ok(&["codewhale", "--permission-mode", raw]);
+            assert_eq!(root.permission_mode, Some(expected));
+
+            let exec = parse_ok(&["codewhale", "exec", "--permission-mode", raw, "hello"]);
+            assert_eq!(exec.permission_mode, Some(expected));
+        }
+
+        assert!(Cli::try_parse_from(["codewhale", "--permission-mode", "invalid"]).is_err());
     }
 
     #[test]
@@ -9701,13 +9722,13 @@ verbosity = "concise"
     #[test]
     fn named_fleet_search_roots_include_the_saved_workspace_dir() {
         let workspace = Path::new("/ws");
-        let roots = named_fleet_search_roots(workspace);
+        let roots = codewhale_engine::fleet::exact::fleet_search_roots(workspace);
         let tail: Vec<&Path> = roots
             .iter()
             .rev()
             .take(2)
             .rev()
-            .map(PathBuf::as_path)
+            .map(|root| root.root.as_path())
             .collect();
         assert_eq!(tail, [Path::new("/ws/.codewhale"), Path::new("/ws")]);
     }
@@ -13395,6 +13416,24 @@ verbosity = "concise"
     }
 
     #[test]
+    fn top_level_conversation_mode_is_forwarded_and_is_not_prompt_text() {
+        let cli = parse_ok(&["codewhale", "--conversation-mode", "creator"]);
+
+        assert_eq!(cli.conversation_mode.as_deref(), Some("creator"));
+        assert!(cli.prompt.is_empty());
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--conversation-mode", "creator"]
+        );
+
+        let cli = parse_ok(&["codewhale", "--conversation-mode", "creator", "hello"]);
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--conversation-mode", "creator", "--prompt", "hello"]
+        );
+    }
+
+    #[test]
     fn parses_top_level_continue_for_interactive_resume() {
         let cli = parse_ok(&["codewhale", "--continue"]);
 
@@ -13608,6 +13647,7 @@ verbosity = "concise"
         assert!(exec.contains("codewhale --model MODEL exec"), "{exec}");
         assert!(exec.contains("codewhale exec --model MODEL"), "{exec}");
         assert!(exec.contains("--sandbox <POLICY>"), "{exec}");
+        assert!(exec.contains("--permission-mode <MODE>"), "{exec}");
         assert!(exec.contains("Full Access"), "{exec}");
         assert!(
             exec.contains("no shell sandbox and trust mode on"),

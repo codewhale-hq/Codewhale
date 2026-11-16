@@ -216,6 +216,17 @@ docs = "docs/EXTENSIONS.md"
 owner = "crates/engine/src/extension_host"
 
 [[feature]]
+id = "plugin-creator"
+name = "Plugin creator"
+summary = "Enables the built-in plugin_manager tool and Creator mode host module while Rust retains permission gates."
+status = "experimental"
+surfaces = { tui = "preview", web = "none", api = "preview" }
+since = "unreleased"
+flag = "plugin_creator"
+docs = "docs/MODES.md"
+owner = "crates/engine/src/extension_host"
+
+[[feature]]
 id = "finance-host"
 name = "Finance host"
 summary = "Routes opted-in finance tools through the bundled Native host under the existing permission and sandbox gates."
@@ -319,7 +330,7 @@ owner = "crates/engine/src/tools/review_host.rs"
 [[feature]]
 id = "modes"
 name = "Modes"
-summary = "Plan and Work modes; Plan is a stop on the Shift+Tab dial, Operate parses as Work; a finished plan offers work."
+summary = "Plan and Work modes on the Shift+Tab dial; a conversation is Standard or Creator mode, fixed after its first message."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/MODES.md"

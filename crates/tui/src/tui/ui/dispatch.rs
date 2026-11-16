@@ -63,6 +63,8 @@ pub(crate) fn queued_session_to_ui(msg: QueuedSessionMessage) -> QueuedMessage {
         skill_instruction: msg.skill_instruction,
         skill_provenance: msg.skill_provenance,
         extension_command: None,
+        approved_plan: None,
+        owner_input: false,
         // Persistence does not carry this flag; restore may re-echo or rely on
         // pending preview. Live Queue path sets true after painting.
         history_echoed: false,
@@ -740,6 +742,15 @@ pub(crate) fn prepare_user_dispatch(
         !should_auto_resolve || accounting_origin.is_some(),
         "Auto routing has no admitted session accounting origin"
     );
+    let input_authorship = if extension_command {
+        codewhale_engine::core::ops::TurnInputAuthorship::NotPerson
+    } else if let Some(plan) = message.approved_plan.as_ref() {
+        codewhale_engine::core::ops::TurnInputAuthorship::ApprovedPlan(plan.clone())
+    } else if message.owner_input {
+        codewhale_engine::core::ops::TurnInputAuthorship::Person(message.display.clone())
+    } else {
+        codewhale_engine::core::ops::TurnInputAuthorship::NotPerson
+    };
     Ok(UserDispatchPrepare {
         submission_id: uuid::Uuid::new_v4().to_string(),
         message,
@@ -769,6 +780,7 @@ pub(crate) fn prepare_user_dispatch(
         } else {
             UserInputProvenance::ExternalUser
         },
+        input_authorship,
         auto_router_context,
         should_auto_resolve,
         auto_compact_user_configured: app.auto_compact_user_configured,
@@ -1045,6 +1057,7 @@ pub(crate) async fn spawned_dispatch_inner(
         hook_executor: prepare.hook_executor.clone(),
         verbosity: prepare.verbosity.clone(),
         provenance: prepare.provenance,
+        input_authorship: prepare.input_authorship.clone(),
         submission_id: Some(prepare.submission_id.clone()),
     });
     // Reserve capacity off the render thread, but do not let Engine start
@@ -1469,7 +1482,19 @@ pub(crate) async fn steer_user_message(
         return Err(err.context("could not release shell wait before steering"));
     }
 
-    if let Err(err) = engine_handle.steer(content.clone()).await {
+    let person_text = if message.extension_command.is_none()
+        && message.approved_plan.is_none()
+        && message.owner_input
+    {
+        Some(message.display.clone())
+    } else {
+        None
+    };
+
+    if let Err(err) = engine_handle
+        .steer_with_person_text(content.clone(), person_text)
+        .await
+    {
         restore_steer_paused_state(app, &paused_snapshot);
         engine_handle.set_paused(paused_snapshot.paused);
         return Err(err);
@@ -1790,16 +1815,21 @@ pub(crate) fn merge_pending_steers(app: &mut App) -> Option<QueuedMessage> {
     }
     let mut skill_instruction: Option<String> = None;
     let mut skill_provenance = None;
+    let mut owner_input = true;
     let mut bodies: Vec<String> = Vec::with_capacity(drained.len());
     for msg in drained {
         if skill_instruction.is_none() {
             skill_instruction = msg.skill_instruction;
             skill_provenance = msg.skill_provenance;
         }
+        owner_input &=
+            msg.owner_input && msg.approved_plan.is_none() && msg.extension_command.is_none();
         bodies.push(msg.display);
     }
-    Some(
-        QueuedMessage::new(bodies.join("\n\n"), skill_instruction)
-            .with_skill_provenance(skill_provenance),
-    )
+    let mut merged = QueuedMessage::new(bodies.join("\n\n"), skill_instruction)
+        .with_skill_provenance(skill_provenance);
+    if !owner_input {
+        merged = merged.without_owner_input();
+    }
+    Some(merged)
 }

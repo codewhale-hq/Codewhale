@@ -182,6 +182,190 @@ async fn shutdown_waits_actual_engine_exit_and_terminal_monitor_before_releasing
 }
 
 #[tokio::test]
+async fn background_task_with_ask_rule_refuses_without_pending_approval_and_interactive_card_requires_owner()
+-> Result<()> {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let root = tempfile::tempdir()?;
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let mut cfg = Config::default().with_legacy_root(
+        Some("task-ownership-ask-rule-key".to_string()),
+        Some("http://127.0.0.1:1/v1".to_string()),
+    );
+    cfg.allow_shell = Some(true);
+    cfg.exec_policy_engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
+        codewhale_execpolicy::Ruleset::user(vec![], vec![]).with_ask_rules(vec![
+            codewhale_execpolicy::ToolAskRule::exec_shell("git push"),
+        ]),
+    ]);
+    let plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace));
+    let owner_arc = Arc::new(RuntimeThreadManager::open_owner_host(
+        cfg,
+        workspace.clone(),
+        test_manager_config(root.path().join("rt-owner")),
+        plugins,
+        None,
+        None,
+    )?);
+
+    let mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn(
+            "call_task_ask",
+            "Bash",
+            r#"{"action":"run","command":"git push"}"#,
+        ),
+        canned::simple_text_turn("task done"),
+        canned::tool_call_turn(
+            "call_interactive_ask",
+            "Bash",
+            r#"{"action":"run","command":"git push"}"#,
+        ),
+        canned::simple_text_turn("interactive done"),
+    ]));
+    owner_arc.set_test_model_client(mock.clone());
+
+    let task_thread = owner_arc
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace.clone()),
+            permission_posture: Some("auto-review".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let task_turn = owner_arc
+        .start_task_turn(
+            &task_thread.id,
+            StartTurnRequest {
+                prompt: "scheduled task push".to_string(),
+                allow_shell: Some(true),
+                ..Default::default()
+            },
+            "task-ask-rule-1",
+        )
+        .await?;
+    let settled_task = wait_for_terminal_turn(owner_arc.as_ref(), &task_turn.id).await?;
+    assert_eq!(
+        settled_task.status,
+        RuntimeTurnStatus::Completed,
+        "task failed: {:?}",
+        settled_task.error
+    );
+    assert_eq!(
+        owner_arc.pending_approvals_count(),
+        0,
+        "Background task turn must register no pending approval"
+    );
+    let task_events = owner_arc.events_since(&task_thread.id, None)?;
+    assert!(
+        !task_events.iter().any(|ev| ev.event == "approval.required"),
+        "Background task turn must not emit approval.required: {task_events:?}"
+    );
+    assert!(
+        task_events
+            .iter()
+            .any(|ev| { ev.event == "item.failed" && ev.payload.to_string().contains("git push") }),
+        "Background task refusal must name the ask rule: {task_events:?}"
+    );
+
+    let interactive_thread = owner_arc
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace),
+            permission_posture: Some("auto-review".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let interactive_turn = owner_arc
+        .start_turn(
+            &interactive_thread.id,
+            StartTurnRequest {
+                prompt: "interactive owner push".to_string(),
+                allow_shell: Some(true),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let interactive_deadline = Instant::now() + APPROVAL_READINESS_TIMEOUT;
+    let execution_id = loop {
+        if let Some(id) = owner_arc
+            .events_since(&interactive_thread.id, None)?
+            .into_iter()
+            .find_map(|event| {
+                (event.event == "item.started"
+                    && event
+                        .payload
+                        .pointer("/item/metadata/provider_tool_use_id")
+                        .and_then(Value::as_str)
+                        == Some("call_interactive_ask"))
+                .then(|| {
+                    event
+                        .payload
+                        .pointer("/item/metadata/execution_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .flatten()
+            })
+        {
+            break id;
+        }
+        anyhow::ensure!(
+            Instant::now() < interactive_deadline,
+            "interactive item.started not emitted for call_interactive_ask"
+        );
+        sleep(Duration::from_millis(20)).await;
+    };
+    let approval_id =
+        await_approval_identity(owner_arc.as_ref(), &interactive_thread.id, &execution_id).await?;
+    assert_eq!(owner_arc.pending_approvals_count(), 1);
+
+    for non_owner in [
+        None,
+        Some(ApprovalResponder::Phone),
+        Some(ApprovalResponder::Acp),
+    ] {
+        let err = owner_arc
+            .deliver_approval_from(
+                &approval_id,
+                None,
+                ExternalApprovalDecision::Allow { remember: false },
+                non_owner,
+            )
+            .await
+            .expect_err("non-owner responder must be refused on owner-only Auto-Review card");
+        assert!(
+            err.is::<ApprovalOwnerRequired>(),
+            "expected ApprovalOwnerRequired for {non_owner:?}, got {err:#}"
+        );
+        assert_eq!(
+            owner_arc.pending_approvals_count(),
+            1,
+            "rejected non-owner response must keep the card pending"
+        );
+    }
+
+    let delivered = owner_arc
+        .deliver_approval_from(
+            &approval_id,
+            None,
+            ExternalApprovalDecision::Allow { remember: false },
+            Some(ApprovalResponder::Desktop),
+        )
+        .await?;
+    assert!(delivered);
+    let settled_interactive =
+        wait_for_terminal_turn(owner_arc.as_ref(), &interactive_turn.id).await?;
+    assert_eq!(
+        settled_interactive.status,
+        RuntimeTurnStatus::Completed,
+        "interactive turn failed: {:?}",
+        settled_interactive.error
+    );
+    assert_eq!(owner_arc.pending_approvals_count(), 0);
+    owner_arc.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn shutdown_drains_accepted_user_input_receipt_after_caller_disconnects() -> Result<()> {
     let root = tempfile::tempdir()?;
     let runtime = Arc::new(test_manager(root.path().join("runtime"))?);
@@ -672,5 +856,162 @@ async fn runtime_turn_origin_table_and_unattended_auto_review_tasks() -> Result<
     assert!(outside_victim.exists());
     assert_eq!(mock.call_count(), 6);
     tasks.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn runtime_threads_only_owner_attached_interactive_composer_records_person_messages()
+-> Result<()> {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let _env = crate::test_support::lock_test_env();
+    let root = tempfile::tempdir()?;
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(workspace.join(".git"))?;
+
+    let mut cfg = fixture_config();
+    cfg.set_feature("subagents", true)?;
+    let plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace));
+
+    let owner_mgr = Arc::new(RuntimeThreadManager::open_owner_host(
+        cfg.clone(),
+        workspace.clone(),
+        test_manager_config(root.path().join("rt-owner")),
+        plugins,
+        None,
+        None,
+    )?);
+    let bg_mgr = Arc::new(RuntimeThreadManager::open(
+        cfg.clone(),
+        workspace.clone(),
+        test_manager_config(root.path().join("rt-bg")),
+    )?);
+
+    let mock = Arc::new(MockLlmClient::new(Vec::new()));
+    mock.push_factory(|_| canned::simple_text_turn("task turn done"));
+    mock.push_factory(|_| canned::simple_text_turn("non-owner turn done"));
+    mock.push_factory(|_| {
+        canned::tool_call_turn(
+            "call-rt-env",
+            "File",
+            r#"{"action":"write","path":".env","content":"ok=1\n"}"#,
+        )
+    });
+    mock.push_factory(|request| {
+        assert_eq!(request.stream, Some(false));
+        let doc: serde_json::Value = serde_json::from_str(match &request.messages[0].content[0] {
+            codewhale_models::ContentBlock::Text { text, .. } => text.as_str(),
+            _ => panic!("guardian text"),
+        })
+        .expect("guardian json");
+        let pmsgs = doc["person_messages"].as_array().expect("person_messages");
+        assert_eq!(
+            pmsgs,
+            &[serde_json::json!("owner composer write env")],
+            "{doc:#}"
+        );
+        canned::simple_text_turn(
+            r#"{"risk_level":"low","decision":"allow","reason":"owner composer authorized"}"#,
+        )
+    });
+    mock.push_factory(|_| canned::simple_text_turn("owner turn done"));
+    owner_mgr.set_test_model_client(mock.clone());
+
+    let bg_mock = Arc::new(MockLlmClient::new(Vec::new()));
+    bg_mock.push_factory(|_| {
+        canned::tool_call_turn(
+            "call-bg-env",
+            "File",
+            r#"{"action":"write","path":".env","content":"bg=1\n"}"#,
+        )
+    });
+    bg_mock.push_factory(|request| {
+        assert_eq!(request.stream, Some(false));
+        let doc: serde_json::Value = serde_json::from_str(match &request.messages[0].content[0] {
+            codewhale_models::ContentBlock::Text { text, .. } => text.as_str(),
+            _ => panic!("guardian text"),
+        })
+        .expect("guardian json");
+        let pmsgs = doc["person_messages"].as_array().expect("person_messages");
+        assert!(
+            pmsgs.is_empty(),
+            "background thread must have no person_messages: {doc:#}"
+        );
+        canned::simple_text_turn(
+            r#"{"risk_level":"high","decision":"deny","reason":"no person authorization"}"#,
+        )
+    });
+    bg_mock.push_factory(|_| canned::simple_text_turn("bg thread turn done"));
+    bg_mgr.set_test_model_client(bg_mock.clone());
+
+    let thread = owner_mgr
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace.clone()),
+            permission_posture: Some("auto-review".to_string()),
+            ..Default::default()
+        })
+        .await?;
+
+    let task_turn = owner_mgr
+        .start_task_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "SPOOF TASK PROMPT".to_string(),
+                ..Default::default()
+            },
+            "task-intent-1",
+        )
+        .await?;
+    let settled_task = wait_for_terminal_turn(owner_mgr.as_ref(), &task_turn.id).await?;
+    assert_eq!(settled_task.status, RuntimeTurnStatus::Completed);
+
+    let non_owner_turn = owner_mgr
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "SPOOF NON OWNER COMPOSER".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let settled_non_owner = wait_for_terminal_turn(owner_mgr.as_ref(), &non_owner_turn.id).await?;
+    assert_eq!(settled_non_owner.status, RuntimeTurnStatus::Completed);
+
+    let bg_thread = bg_mgr
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace),
+            permission_posture: Some("auto-review".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let bg_turn = bg_mgr
+        .start_turn_owner(
+            &bg_thread.id,
+            StartTurnRequest {
+                prompt: "SPOOF BACKGROUND THREAD".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let settled_bg = wait_for_terminal_turn(bg_mgr.as_ref(), &bg_turn.id).await?;
+    assert_eq!(settled_bg.status, RuntimeTurnStatus::Completed);
+    assert_eq!(bg_mock.call_count(), 3);
+
+    let (owner_turn, _) = owner_mgr
+        .start_turn_owner_reporting_replay(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "owner composer write env".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let settled_owner = wait_for_terminal_turn(owner_mgr.as_ref(), &owner_turn.id).await?;
+    assert_eq!(settled_owner.status, RuntimeTurnStatus::Completed);
+    assert_eq!(mock.call_count(), 5);
+
+    bg_mgr.shutdown_and_wait().await?;
+    owner_mgr.shutdown_and_wait().await?;
     Ok(())
 }

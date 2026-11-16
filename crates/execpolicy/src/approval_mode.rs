@@ -30,6 +30,18 @@ impl ApprovalMode {
     pub const PERMISSION_CYCLE: [Self; 4] =
         [Self::Suggest, Self::AcceptEdits, Self::Auto, Self::Bypass];
 
+    pub const PERMISSION_CYCLE_WITHOUT_AUTO: [Self; 3] =
+        [Self::Suggest, Self::AcceptEdits, Self::Bypass];
+
+    #[must_use]
+    pub fn permission_cycle(auto_review_disabled: bool) -> &'static [Self] {
+        if auto_review_disabled {
+            &Self::PERMISSION_CYCLE_WITHOUT_AUTO
+        } else {
+            &Self::PERMISSION_CYCLE
+        }
+    }
+
     #[must_use]
     pub fn is_ask_family(self) -> bool {
         matches!(self, Self::Suggest | Self::AcceptEdits)
@@ -73,10 +85,16 @@ impl ApprovalMode {
 
     #[must_use]
     pub fn cycle_permission_next(self) -> Self {
-        let Some(index) = Self::PERMISSION_CYCLE.iter().position(|mode| *mode == self) else {
+        self.cycle_permission_next_with_auto_review(false)
+    }
+
+    #[must_use]
+    pub fn cycle_permission_next_with_auto_review(self, auto_review_disabled: bool) -> Self {
+        let cycle = Self::permission_cycle(auto_review_disabled);
+        let Some(index) = cycle.iter().position(|mode| *mode == self) else {
             return Self::Suggest;
         };
-        Self::PERMISSION_CYCLE[(index + 1) % Self::PERMISSION_CYCLE.len()]
+        cycle[(index + 1) % cycle.len()]
     }
 
     #[must_use]
@@ -161,5 +179,29 @@ mod tests {
     #[test]
     fn default_posture_is_suggest() {
         assert_eq!(ApprovalMode::default(), ApprovalMode::Suggest);
+    }
+
+    #[test]
+    fn permission_cycle_skips_auto_review_when_disabled() {
+        assert_eq!(
+            ApprovalMode::permission_cycle(true),
+            &[
+                ApprovalMode::Suggest,
+                ApprovalMode::AcceptEdits,
+                ApprovalMode::Bypass,
+            ]
+        );
+        assert_eq!(
+            ApprovalMode::AcceptEdits.cycle_permission_next_with_auto_review(true),
+            ApprovalMode::Bypass
+        );
+        assert_eq!(
+            ApprovalMode::Bypass.cycle_permission_next_with_auto_review(true),
+            ApprovalMode::Suggest
+        );
+        assert_eq!(
+            ApprovalMode::Auto.cycle_permission_next_with_auto_review(true),
+            ApprovalMode::Suggest
+        );
     }
 }

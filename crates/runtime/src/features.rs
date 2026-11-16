@@ -66,6 +66,7 @@ pub enum Feature {
     GithubHost,
     /// Captured review presentation; Core retains provider, evidence and publication.
     ReviewHost,
+    PluginCreator,
 }
 
 impl fmt::Display for Stage {
@@ -319,6 +320,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "extension_host",
         stage: Stage::Experimental,
         default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::PluginCreator,
+        key: "plugin_creator",
+        stage: Stage::Beta,
+        default_enabled: true,
     },
 ];
 

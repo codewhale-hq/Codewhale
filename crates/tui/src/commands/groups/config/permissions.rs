@@ -59,6 +59,12 @@ fn run(
         };
     }
     let parts: Vec<_> = raw.split_whitespace().collect();
+    if parts
+        .first()
+        .is_some_and(|part| part.eq_ignore_ascii_case("blocked"))
+    {
+        return run_blocked(permissions, m, &parts[1..]);
+    }
     if !parts
         .first()
         .is_some_and(|part| part.eq_ignore_ascii_case("remove"))
@@ -113,6 +119,77 @@ fn run(
         ),
         Err(error) => operation_error(m, &error),
     }
+}
+fn run_blocked(
+    permissions: &dyn CommandPermissionsContext,
+    m: &Messages,
+    args: &[&str],
+) -> CommandResult {
+    if args.is_empty() {
+        let blocks = permissions.blocked_actions();
+        if blocks.is_empty() {
+            return CommandResult::message(m.text(Text::BlockedEmpty).into_owned());
+        }
+        let mut output = render(
+            m,
+            Text::BlockedHeader,
+            &[("{count}", &blocks.len().to_string())],
+        );
+        for (index, entry) in blocks.iter().enumerate() {
+            let status = if entry.approved {
+                m.text(Text::BlockedStatusApproved)
+            } else if entry.approvable {
+                m.text(Text::BlockedStatusApprovable)
+            } else {
+                m.text(Text::BlockedStatusNotApprovable)
+            };
+            let id = entry.receipt_id.as_deref().unwrap_or("-");
+            output.push('\n');
+            output.push_str(&render(
+                m,
+                Text::BlockedEntry,
+                &[
+                    ("{index}", &(index + 1).to_string()),
+                    ("{id}", &escape_field(id)),
+                    ("{tool}", &escape_field(&entry.tool_name)),
+                    ("{rule}", &escape_field(&entry.rule)),
+                    ("{summary}", &escape_field(&entry.action_summary)),
+                    ("{reason}", &escape_field(&entry.reason)),
+                    ("{status}", &status),
+                ],
+            ));
+        }
+        if blocks
+            .iter()
+            .any(|entry| entry.approvable && !entry.approved && entry.receipt_id.is_some())
+        {
+            output.push('\n');
+            output.push_str(&m.text(Text::BlockedHint));
+        }
+        return CommandResult::message(output);
+    }
+    if args[0].eq_ignore_ascii_case("approve") {
+        if args.len() == 1 {
+            let Some(latest) = permissions
+                .blocked_actions()
+                .into_iter()
+                .rev()
+                .find(|entry| entry.approvable && !entry.approved && entry.receipt_id.is_some())
+                .and_then(|entry| entry.receipt_id)
+            else {
+                return CommandResult::error(m.text(Text::BlockedEmpty).into_owned());
+            };
+            return CommandResult::action(ConfigPolicyAction::ApproveAutoReviewRetry {
+                target: latest,
+            });
+        }
+        if args.len() == 2 && !args[1].is_empty() {
+            return CommandResult::action(ConfigPolicyAction::ApproveAutoReviewRetry {
+                target: args[1].to_string(),
+            });
+        }
+    }
+    CommandResult::error(m.text(Text::Usage))
 }
 fn format_snapshot(m: &Messages, view: &PermissionsView) -> String {
     let state = match view.file_state {

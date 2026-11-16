@@ -4,7 +4,7 @@ Date: 2026-08-16. Author: the Claude Fable 5 session driving the v0.9.9
 milestone, writing from direct operating knowledge of the Claude Code harness
 (CLI/desktop/web, 2026-08). Companion to
 [`WORKFLOWS_GOAL_PARITY.md`](WORKFLOWS_GOAL_PARITY.md) (Grok Build + dsh) and
-[`AUTO_MODE_PARITY.md`](AUTO_MODE_PARITY.md). This is a *mechanics* reference
+[`MODES.md`](../MODES.md). This is a *mechanics* reference
 for builders on #5439 (orchestration trio visibility), #5311 (plugin system /
 federated marketplaces), #5324/#5123 (agent tool surface), and the one-bash
 consolidation. Where Codewhale already does the same thing, it says so; where

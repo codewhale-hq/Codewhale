@@ -596,6 +596,130 @@ fn script_and_command_overrides_cannot_replace_builtins() {
     assert!(!registry.contains("File"));
 }
 
+#[test]
+fn creator_tool_names_are_reserved_against_scripts_and_overrides_even_before_registration() {
+    let tmp = tempdir().unwrap();
+    let tools_dir = tmp.path().join("tools");
+    std::fs::create_dir(&tools_dir).unwrap();
+    for (file, name) in [
+        ("plugin_manager.sh", "plugin_manager"),
+        ("plugin_manager_upper.sh", "PLUGIN_MANAGER"),
+        ("cordis_inspect_list.sh", "cordis_inspect_list"),
+        ("cordis_inspect_query.sh", "cordis_inspect_query"),
+        ("safe_extra.sh", "safe_extra"),
+    ] {
+        std::fs::write(
+            tools_dir.join(file),
+            format!("# name: {name}\n# description: {name}\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        tools_dir.join("wrapper.sh"),
+        "# name: wrapper\n# description: override wrapper\n",
+    )
+    .unwrap();
+
+    let mut registry = ToolRegistryBuilder::new()
+        .with_file_tools()
+        .build(ToolContext::new(tmp.path()));
+    let builtins = builtin_names(&registry);
+
+    let load_errors = capture_registration_warnings(|| registry.load_plugins(&tools_dir));
+    assert!(registry.contains("safe_extra"));
+    for reserved in [
+        "plugin_manager",
+        "PLUGIN_MANAGER",
+        "cordis_inspect_list",
+        "cordis_inspect_query",
+    ] {
+        assert!(!registry.contains(reserved), "{reserved}");
+        assert!(
+            load_errors.contains(&format!(
+                "Cannot load plugin tool '{reserved}': name is already registered"
+            )),
+            "{reserved}: {load_errors}"
+        );
+    }
+
+    let overrides = HashMap::from([
+        (
+            "plugin_manager".to_string(),
+            ToolOverride::Script {
+                path: "wrapper.sh".to_string(),
+                args: None,
+            },
+        ),
+        (
+            "PLUGIN_MANAGER".to_string(),
+            ToolOverride::Command {
+                command: "hijack-pm".to_string(),
+                args: None,
+            },
+        ),
+        (
+            "cordis_inspect_list".to_string(),
+            ToolOverride::Script {
+                path: "wrapper.sh".to_string(),
+                args: None,
+            },
+        ),
+        (
+            "cordis_inspect_query".to_string(),
+            ToolOverride::Command {
+                command: "hijack-inspect".to_string(),
+                args: None,
+            },
+        ),
+    ]);
+    let mut refused = Vec::new();
+    let override_errors = capture_registration_warnings(|| {
+        refused = registry.apply_overrides(&overrides, &tools_dir, &builtins);
+    });
+    refused.sort();
+    assert_eq!(
+        refused,
+        [
+            "PLUGIN_MANAGER",
+            "cordis_inspect_list",
+            "cordis_inspect_query",
+            "plugin_manager",
+        ]
+    );
+    for reserved in [
+        "plugin_manager",
+        "PLUGIN_MANAGER",
+        "cordis_inspect_list",
+        "cordis_inspect_query",
+    ] {
+        assert!(!registry.contains(reserved), "{reserved}");
+        assert!(
+            override_errors.contains(&super::override_refusal_notice(reserved)),
+            "{reserved}: {override_errors}"
+        );
+    }
+
+    for disable_key in ["plugin_manager", "PLUGIN_MANAGER"] {
+        let mut reg = ToolRegistryBuilder::new()
+            .with_file_tools()
+            .build(ToolContext::new(tmp.path()));
+        reg.register(Arc::new(TestTool {
+            name: "plugin_manager".to_string(),
+            description: "built-in creator".to_string(),
+        }));
+        let reg_builtins = builtin_names(&reg);
+        let disable = HashMap::from([(disable_key.to_string(), ToolOverride::Disabled)]);
+        let disable_refused = reg.apply_overrides(&disable, &tools_dir, &reg_builtins);
+        assert!(
+            disable_refused.is_empty(),
+            "{disable_key}: {disable_refused:?}"
+        );
+        assert!(!reg.contains("plugin_manager"), "{disable_key}");
+        reg.load_plugins(&tools_dir);
+        assert!(!reg.contains("plugin_manager"), "{disable_key}");
+    }
+}
+
 /// D4 (CURRENT_DECISIONS §26): a script cannot approve itself. `approval: auto`
 /// gets the default a script without the line gets, and the loader says so.
 #[test]
@@ -1859,6 +1983,7 @@ fn agent_tools_with_shell_policy_readonly_exposes_only_run_only_bash() {
             .collect::<std::collections::BTreeSet<_>>(),
         [
             "command",
+            "cwd",
             "description",
             "justification",
             "read_only",
@@ -2536,4 +2661,64 @@ fn dynamic_tools_never_replace_registered_tools() {
             .description(),
         "first lookup"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn scoped_worker_convert_output_is_judged_on_the_field_it_writes() {
+    use std::os::unix::fs::PermissionsExt;
+    let _env = crate::test_support::lock_test_env();
+    let bin = tempdir().expect("bin");
+    let stub = bin.path().join("pandoc");
+    std::fs::write(
+        &stub,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'pandoc 3.1.9'; exit 0; fi\nsrc=\"$2\"\nout=\"\"\nwhile [ $# -gt 0 ]; do if [ \"$1\" = \"--output\" ]; then out=\"$2\"; fi; shift; done\nif [ -n \"$out\" ]; then cat \"$src\" > \"$out\"; else cat \"$src\"; fi\n",
+    )
+    .expect("stub");
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let search = std::env::join_paths(std::iter::once(bin.path().to_path_buf()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .expect("path");
+    let _path = crate::test_support::EnvVarGuard::set("PATH", search);
+
+    let tmp = tempdir().expect("tempdir");
+    std::fs::create_dir(tmp.path().join("src")).expect("src");
+    std::fs::create_dir(tmp.path().join("ops")).expect("ops");
+    std::fs::write(tmp.path().join("src/in.md"), "PAYLOAD\n").expect("source");
+    std::fs::write(tmp.path().join("ops/outside.txt"), "original\n").expect("fixture");
+    let registry = ToolRegistryBuilder::new()
+        .with_tool(Arc::new(crate::tools::pandoc::PandocConvertTool))
+        .build(scoped_context(tmp.path()));
+
+    registry
+        .execute_full(
+            "pandoc_convert",
+            json!({"source_path": "src/in.md", "target_format": "plain", "output_path": "src/out.txt"}),
+        )
+        .await
+        .expect("an output inside the write scope");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("src/out.txt")).unwrap(),
+        "PAYLOAD\n"
+    );
+
+    for input in [
+        json!({"source_path": "src/in.md", "target_format": "plain", "output_path": "ops/outside.txt"}),
+        json!({
+            "source_path": "src/in.md",
+            "target_format": "plain",
+            "output_path": "ops/outside.txt",
+            "path": "src/unused.txt"
+        }),
+    ] {
+        registry
+            .execute_full("pandoc_convert", input)
+            .await
+            .expect_err("an output outside the write scope must be refused");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("ops/outside.txt")).unwrap(),
+            "original\n"
+        );
+    }
 }

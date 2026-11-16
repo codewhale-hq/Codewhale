@@ -10,6 +10,32 @@ use super::observer_hooks::{
 use super::task_projection::refresh_active_task_panel;
 use super::*;
 
+pub(super) fn apply_approve_auto_review_retry(
+    app: &mut App,
+    engine_handle: &EngineHandle,
+    target: &str,
+) {
+    match engine_handle.approve_auto_review_retry(target) {
+        Ok(grant) => {
+            app.mark_auto_review_receipt_approved(&grant.receipt_id);
+            let msg = tr(app.ui_locale, MessageId::AutoReviewRetryApprovedStatus)
+                .replace("{tool}", &grant.tool_name)
+                .replace("{id}", &grant.receipt_id);
+            app.add_message(HistoryCell::System {
+                content: msg.clone(),
+            });
+            app.status_message = Some(msg);
+            app.needs_redraw = true;
+        }
+        Err(error) => {
+            let msg = tr(app.ui_locale, MessageId::AutoReviewRetryFailedStatus)
+                .replace("{id}", target)
+                .replace("{error}", &error.to_string());
+            app.push_status_toast(msg, StatusToastLevel::Warning, Some(8_000));
+        }
+    }
+}
+
 /// Record the model frozen into a child's runtime at spawn time.
 ///
 /// This is child-route evidence, not an inference from the parent session. A
@@ -344,6 +370,7 @@ pub(crate) fn apply_message_submit_outcome(
                 app.bump_history_cell(idx);
             }
             message.display = text;
+            message.owner_input = false;
             true
         }
         codewhale_engine::hooks::MessageSubmitOutcome::Blocked { reason } => {
@@ -1190,6 +1217,7 @@ pub(crate) async fn apply_provider_fallback_switch(
                 model: app.model.clone(),
                 workspace: app.workspace.clone(),
                 mode: app.mode,
+                agent_preset: app.agent_preset(),
             })
             .await;
     }
@@ -1397,7 +1425,14 @@ pub(super) async fn apply_conversation_undo(
     app.ignored_tool_calls.clear();
     app.mark_history_updated();
     let persistence = async {
-        let manager = tokio::task::spawn_blocking(SessionManager::default_location).await??;
+        #[cfg(test)]
+        let env_scope = crate::test_support::env_scope_ticket();
+        let manager = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            let _env_scope = crate::test_support::join_env_scope(env_scope);
+            SessionManager::default_location()
+        })
+        .await??;
         let session = build_session_snapshot(app, &manager).map_err(anyhow::Error::msg)?;
         let projection = saved_work_projection(app, &session);
         anyhow::ensure!(
@@ -1503,7 +1538,15 @@ pub(super) async fn apply_range_undo(
     );
     draw_app_frame_inner(terminal, app, config, false)?;
     let input = commands::undo_range_input(app, cut)?;
-    let plan = tokio::task::spawn_blocking(move || commands::plan_undo_range(input)).await??;
+    #[cfg(test)]
+    let env_scope = crate::test_support::env_scope_ticket();
+    let plan = tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        let _env_scope = crate::test_support::join_env_scope(env_scope);
+        commands::plan_undo_range(input)
+    })
+    .await??;
+    let undone_turn_seqs = plan.undone_turn_seqs.clone();
     anyhow::ensure!(
         engine.get_session_snapshot().await? == before,
         "The conversation changed during undo preparation; nothing was undone."
@@ -1514,10 +1557,27 @@ pub(super) async fn apply_range_undo(
         StatusToast::new(progress, StatusToastLevel::Info, Some(4_000)).for_command_receipt(),
     );
     draw_app_frame_inner(terminal, app, config, false)?;
-    let (restored, _restore_guard) =
-        tokio::task::spawn_blocking(move || (commands::restore_undo_range(plan), restore_guard))
-            .await?;
+    #[cfg(test)]
+    let env_scope = crate::test_support::env_scope_ticket();
+    let (restored, _restore_guard) = tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        let _env_scope = crate::test_support::join_env_scope(env_scope);
+        (commands::restore_undo_range(plan), restore_guard)
+    })
+    .await?;
     let summary = restored?;
+    let removed_delegated_writes: Vec<((String, u64), std::collections::BTreeSet<String>)> =
+        if let Some(session_id) = app.current_session_id.as_deref() {
+            undone_turn_seqs
+                .iter()
+                .filter_map(|seq| {
+                    let key = (session_id.to_string(), *seq);
+                    app.delegated_writes.remove(&key).map(|paths| (key, paths))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
     let progress = format!("Saving conversation rewind for {} requests…", depth + 1);
     app.status_message = Some(progress.clone());
     app.push_status_toast_record(
@@ -1541,9 +1601,12 @@ pub(super) async fn apply_range_undo(
         Ok(Some(error)) => anyhow::bail!(
             "{summary} Conversation rewound, but could not be saved: {error:#}. The pre-restore safety snapshot retains the former workspace files."
         ),
-        Err(error) => anyhow::bail!(
-            "{summary} Conversation rewind failed: {error:#}. The original conversation and pre-restore safety snapshot retain recovery evidence."
-        ),
+        Err(error) => {
+            app.delegated_writes.extend(removed_delegated_writes);
+            anyhow::bail!(
+                "{summary} Conversation rewind failed: {error:#}. The original conversation and pre-restore safety snapshot retain recovery evidence."
+            )
+        }
     }
 }
 
@@ -1725,6 +1788,7 @@ async fn apply_command_result_inner(
                         model: app.model.clone(),
                         workspace: app.workspace.clone(),
                         mode: app.mode,
+                        agent_preset: app.agent_preset(),
                     })
                     .await;
                 let _ = engine_handle
@@ -1752,8 +1816,8 @@ async fn apply_command_result_inner(
                 app.launch.dismiss();
                 app.launch.status = None;
             }
-            AppAction::NewSession { sync, force } => {
-                if let Err(error) = begin_fresh_session(app, engine_handle, sync, force) {
+            AppAction::NewSession { sync, force, draft } => {
+                if let Err(error) = begin_fresh_session(app, engine_handle, sync, force, draft) {
                     surface_session_load_failure(app, error);
                 }
             }
@@ -1764,6 +1828,7 @@ async fn apply_command_result_inner(
                 model,
                 workspace,
                 mode,
+                agent_preset,
             } => {
                 let mut session_id = session_id;
                 let is_full_reset = messages.is_empty() && system_prompt.is_none();
@@ -1844,6 +1909,7 @@ async fn apply_command_result_inner(
                         model,
                         workspace,
                         mode,
+                        agent_preset,
                     })
                     .await;
                 let _ = engine_handle
@@ -1921,6 +1987,9 @@ async fn apply_command_result_inner(
                     }
                 }
             }
+            AppAction::ApproveAutoReviewRetry { target } => {
+                apply_approve_auto_review_retry(app, engine_handle, &target);
+            }
             AppAction::PluginRegistryChanged => {
                 // Revoke a disabled or untrusted plugin's host code now, not at
                 // the next turn's rebuild.
@@ -1963,6 +2032,7 @@ async fn apply_command_result_inner(
                             model: app.model.clone(),
                             workspace: app.workspace.clone(),
                             mode: app.mode,
+                            agent_preset: app.agent_preset(),
                         })
                         .await;
                 }
@@ -2580,6 +2650,20 @@ async fn apply_command_result_inner(
             AppAction::UpdatePromptSuggestion { enabled } => {
                 config.prompt_suggestion = Some(enabled);
             }
+            AppAction::SetAutoReviewReviewerModel { reviewer_model } => {
+                app.auto_review_reviewer_model = reviewer_model.clone();
+                config
+                    .auto_review
+                    .get_or_insert_with(Default::default)
+                    .reviewer_model = reviewer_model.clone();
+                if engine_handle
+                    .try_send(Op::SetAutoReviewReviewerModel { reviewer_model })
+                    .is_err()
+                {
+                    app.status_message =
+                        Some("Engine busy — setting not applied; try again".to_string());
+                }
+            }
             AppAction::UpdateNotification { update } => {
                 if let Err(error) = apply_notification_update(app, config, update) {
                     app.push_status_toast(error.to_string(), StatusToastLevel::Error, Some(6_000));
@@ -2810,12 +2894,23 @@ async fn apply_command_result_inner(
             }
             AppAction::OpenModePicker => {
                 if app.view_stack.top_kind() != Some(ModalKind::ModePicker) {
-                    app.view_stack
-                        .push(crate::tui::views::mode_picker::ModePickerView::new(
-                            app.mode,
-                            app.ui_locale,
-                        ));
+                    let view =
+                        crate::tui::views::mode_picker::ModePickerView::for_app(app, config).await;
+                    app.view_stack.push(view);
                 }
+            }
+            AppAction::SetConversationMode { id } => {
+                let content = match crate::tui::conversation_mode::set_in_place(
+                    app,
+                    config,
+                    engine_handle,
+                    &id,
+                )
+                .await
+                {
+                    Ok(message) | Err(message) => message,
+                };
+                app.add_message(HistoryCell::System { content });
             }
             AppAction::OpenStatusPicker => {
                 if app.view_stack.top_kind() != Some(ModalKind::StatusPicker) {
@@ -3190,6 +3285,7 @@ async fn apply_command_result_inner(
                                     model: app.model.clone(),
                                     workspace: app.workspace.clone(),
                                     mode: app.mode,
+                                    agent_preset: app.agent_preset(),
                                 })
                                 .await;
                         }
@@ -4805,6 +4901,22 @@ pub(crate) fn apply_loaded_session_with_goal(
     if let Some(mode) = session.metadata.mode.as_deref().and_then(AppMode::parse) {
         app.set_mode(mode);
     }
+    let saved_mode_unavailable = match session.agent_preset.clone() {
+        Some(stored) => {
+            let table = crate::tui::conversation_mode::current_table_blocking(Some(config));
+            let reason = crate::tui::conversation_mode::unavailable_reason(
+                Some(&stored),
+                &table,
+                app.ui_locale,
+            );
+            app.install_conversation_mode(Some(stored), reason.clone());
+            reason
+        }
+        None => {
+            app.install_conversation_mode(None, None);
+            None
+        }
+    };
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
     app.session.displayed_cost_high_water = 0.0;
@@ -4860,6 +4972,17 @@ pub(crate) fn apply_loaded_session_with_goal(
     }
     app.session_artifacts = session.artifacts;
     app.session_turn_outcomes = session.turn_outcomes;
+    app.delegated_writes = app
+        .current_session_id
+        .as_ref()
+        .map(|owner| {
+            session
+                .delegated_writes
+                .into_iter()
+                .map(|(seq, paths)| ((owner.clone(), seq), paths.into_iter().collect()))
+                .collect()
+        })
+        .unwrap_or_default();
     app.window_title = session.window_title;
     app.composer_color = session.composer_color;
     app.workspace_context = None;
@@ -4867,6 +4990,20 @@ pub(crate) fn apply_loaded_session_with_goal(
     app.workspace_context_refreshed_at = None;
     app.system_prompt = session.system_prompt.map(SystemPrompt::Text);
     app.retire_event_notices(super::event_loop::STARTUP_NOTICE_TOAST);
+    if let Some(reason) = saved_mode_unavailable {
+        let name = crate::tui::conversation_mode::name_for_stored(
+            app.ui_locale,
+            app.conversation_mode.as_deref(),
+            None,
+        );
+        app.add_message(HistoryCell::System {
+            content: crate::tui::conversation_mode::saved_unavailable_notice(
+                app.ui_locale,
+                &name,
+                &reason,
+            ),
+        });
+    }
     app.scroll_to_bottom();
     Ok(())
 }

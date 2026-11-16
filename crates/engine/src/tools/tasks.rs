@@ -49,11 +49,20 @@ fn build_gate_command(
 }
 
 fn task_shell_wait_input(mut input: Value) -> Value {
-    if input.get("wait").is_none_or(Value::is_null)
-        && input.get("block").is_none_or(Value::is_null)
-        && let Some(object) = input.as_object_mut()
-    {
-        object.insert("wait".to_string(), Value::Bool(false));
+    if let Some(object) = input.as_object_mut() {
+        if object.get("wait").is_none_or(Value::is_null)
+            && object.get("block").is_none_or(Value::is_null)
+        {
+            object.insert("wait".to_string(), Value::Bool(false));
+        }
+        if object.get("task_ids").is_some_and(Value::is_null) {
+            object.remove("task_ids");
+        }
+        if object.get("task_ids").is_some_and(|v| !v.is_null())
+            && object.get("until").is_none_or(Value::is_null)
+        {
+            object.insert("until".to_string(), Value::String("any".to_string()));
+        }
     }
     input
 }
@@ -974,7 +983,7 @@ impl ToolSpec for TaskShellWaitTool {
     }
 
     fn description(&self) -> &'static str {
-        "Poll a background shell task without blocking the agent indefinitely, or stop it with cancel=true. Completion is delivered automatically; use this only for early output, explicit barriers, or gate evidence. If `gate` is supplied and the shell task has completed, records structured gate evidence on the active durable task."
+        "Poll or wait on a single background shell task (`task_id`) or multiple tasks (`task_ids` with `until=\"any\"|\"all\"`) without blocking the agent indefinitely, or stop one task with cancel=true. Completion is delivered automatically; use this only for early output, explicit barriers, or gate evidence. If `gate` is supplied and the single shell task has completed, records structured gate evidence on the active durable task."
     }
 
     fn input_schema(&self) -> Value {
@@ -982,13 +991,23 @@ impl ToolSpec for TaskShellWaitTool {
             "type": "object",
             "properties": {
                 "task_id": { "type": "string", "description": "Background shell task id." },
+                "task_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "minItems": 1,
+                    "description": "Background shell task ids to poll or wait on together (mutually exclusive with task_id, cancel, and gate)."
+                },
+                "until": {
+                    "type": "string",
+                    "enum": ["any", "all"],
+                    "description": "With task_ids and wait=true, return when any task finishes (default) or when all finish."
+                },
                 "wait": { "type": "boolean", "default": false },
                 "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 600000 },
                 "cancel": { "type": "boolean", "description": "Stop (kill) the task instead of polling; not valid with gate." },
                 "gate": { "type": "string", "enum": ["fmt", "check", "clippy", "test", "custom"] },
                 "command": { "type": "string", "description": "Original command, used when recording gate evidence." }
             },
-            "required": ["task_id"],
             "additionalProperties": false
         })
     }
@@ -1020,6 +1039,29 @@ impl ToolSpec for TaskShellWaitTool {
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         crate::tools::execution_envelope::enforce_tool_denial(context, self.name(), &input)?;
+        if let Some(task_ids) = input.get("task_ids").filter(|v| !v.is_null()) {
+            if input.get("task_id").is_some_and(|v| !v.is_null()) {
+                return Err(ToolError::invalid_input(
+                    "Provide either `task_id` or `task_ids`, not both.",
+                ));
+            }
+            if optional_bool(&input, "cancel", false)? {
+                return Err(ToolError::invalid_input(
+                    "cancel=true requires a single `task_id` and cannot be used with `task_ids`.",
+                ));
+            }
+            if optional_str(&input, "gate")?.is_some() {
+                return Err(ToolError::invalid_input(
+                    "`gate` records evidence for a single `task_id` and cannot be used with `task_ids`.",
+                ));
+            }
+            let _ = optional_str(&input, "until")?;
+            if task_ids.as_array().is_some_and(Vec::is_empty) {
+                return Err(ToolError::invalid_input(
+                    "`task_ids` must contain at least one background shell task id.",
+                ));
+            }
+        }
         // The shell cancel action lives on the hidden compatibility tool, which
         // no model catalog offers. Without this route a model that owns a stuck
         // background command can watch it but never stop it. The delegate
@@ -1603,8 +1645,18 @@ mod tests {
     #[test]
     fn background_shell_schema_is_explicit() {
         let wait_schema = TaskShellWaitTool.input_schema();
-        assert_eq!(wait_schema["required"][0], "task_id");
+        assert!(wait_schema.get("required").is_none());
+        assert_eq!(wait_schema["additionalProperties"], false);
+        assert!(wait_schema["properties"]["task_id"].is_object());
+        assert_eq!(wait_schema["properties"]["task_ids"]["minItems"], 1);
+        assert_eq!(
+            wait_schema["properties"]["until"]["enum"],
+            json!(["any", "all"])
+        );
         assert!(wait_schema["properties"]["gate"].is_object());
+        let description = TaskShellWaitTool.description();
+        assert!(description.contains("task_ids"), "{description}");
+        assert!(description.contains("until"), "{description}");
     }
 
     // The gate blocks dangerous commands unless auto-approve is on, and the
@@ -1670,6 +1722,18 @@ mod tests {
             task_shell_wait_input(json!({"task_id": "shell_1", "block": null}))["wait"],
             false
         );
+        let many_default = task_shell_wait_input(json!({"task_ids": ["shell_1", "shell_2"]}));
+        assert_eq!(many_default["wait"], false);
+        assert_eq!(many_default["until"], "any");
+        let many_all = task_shell_wait_input(
+            json!({"task_ids": ["shell_1", "shell_2"], "wait": true, "until": "all"}),
+        );
+        assert_eq!(many_all["wait"], true);
+        assert_eq!(many_all["until"], "all");
+        let single_with_null_many =
+            task_shell_wait_input(json!({"task_id": "shell_1", "task_ids": null}));
+        assert_eq!(single_with_null_many["wait"], false);
+        assert!(single_with_null_many.get("task_ids").is_none());
     }
 
     #[tokio::test]
@@ -1778,6 +1842,174 @@ mod tests {
                 .and_then(Value::as_str),
             Some("Killed")
         );
+    }
+
+    #[tokio::test]
+    async fn task_shell_wait_many_rejects_conflicting_fields() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let context = ToolContext::new(workspace.path());
+        let tool = TaskShellWaitTool;
+
+        assert!(tool.is_read_only_for(&json!({
+            "task_ids": ["shell_1", "shell_2"],
+            "wait": true,
+            "until": "all"
+        })));
+        assert_eq!(
+            tool.approval_requirement_for(&json!({
+                "task_ids": ["shell_1", "shell_2"],
+                "wait": true,
+                "until": "all"
+            })),
+            ApprovalRequirement::Auto
+        );
+
+        let both = tool
+            .execute(
+                json!({"task_id": "shell_1", "task_ids": ["shell_1", "shell_2"]}),
+                &context,
+            )
+            .await
+            .expect_err("task_id and task_ids must be mutually exclusive");
+        assert!(both.to_string().contains("not both"), "{both}");
+
+        let with_cancel = tool
+            .execute(json!({"task_ids": ["shell_1"], "cancel": true}), &context)
+            .await
+            .expect_err("cancel=true cannot be combined with task_ids");
+        assert!(
+            with_cancel.to_string().contains("cancel=true"),
+            "{with_cancel}"
+        );
+
+        let with_gate = tool
+            .execute(json!({"task_ids": ["shell_1"], "gate": "test"}), &context)
+            .await
+            .expect_err("gate cannot be combined with task_ids");
+        assert!(with_gate.to_string().contains("gate"), "{with_gate}");
+
+        let empty = tool
+            .execute(json!({"task_ids": []}), &context)
+            .await
+            .expect_err("empty task_ids must fail");
+        assert!(empty.to_string().contains("task_ids"), "{empty}");
+    }
+
+    #[tokio::test]
+    async fn task_shell_wait_many_supports_snapshot_any_and_all() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let context = ToolContext::new(workspace.path());
+        let tool = TaskShellWaitTool;
+
+        let fast = BashTool::new("Bash")
+            .execute(
+                json!({"command": "printf 'fast\\n'", "background": true}),
+                &context,
+            )
+            .await
+            .expect("start fast background shell");
+        let slow = BashTool::new("Bash")
+            .execute(json!({"command": "sleep 30", "background": true}), &context)
+            .await
+            .expect("start slow background shell");
+        let fast_id = fast
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("task_id"))
+            .and_then(Value::as_str)
+            .expect("fast id")
+            .to_string();
+        let slow_id = slow
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("task_id"))
+            .and_then(Value::as_str)
+            .expect("slow id")
+            .to_string();
+
+        let before_snapshot = std::time::Instant::now();
+        let snapshot = tool
+            .execute(
+                json!({"task_ids": [fast_id, slow_id], "timeout_ms": 5_000}),
+                &context,
+            )
+            .await
+            .expect("snapshot multi wait");
+        assert!(
+            before_snapshot.elapsed() < std::time::Duration::from_secs(1),
+            "omitted wait must stay nonblocking for task_ids"
+        );
+        assert_eq!(
+            snapshot.metadata.as_ref().and_then(|m| m.get("until")),
+            Some(&json!("any"))
+        );
+
+        let before_any = std::time::Instant::now();
+        let any_result = tool
+            .execute(
+                json!({"task_ids": [fast_id, slow_id], "wait": true, "timeout_ms": 5_000}),
+                &context,
+            )
+            .await
+            .expect("until=any default wait");
+        assert!(
+            before_any.elapsed() < std::time::Duration::from_secs(3),
+            "default until=any must return as soon as one task completes"
+        );
+        let any_meta = any_result.metadata.as_ref().expect("metadata");
+        assert_eq!(any_meta["until"], json!("any"));
+        assert_eq!(any_meta["timed_out"], json!(false));
+        assert_eq!(any_meta["statuses"][fast_id.as_str()], json!("Completed"));
+        assert_eq!(any_meta["statuses"][slow_id.as_str()], json!("Running"));
+
+        BashTool::alias("exec_shell_cancel", "cancel")
+            .execute(json!({"task_id": slow_id}), &context)
+            .await
+            .expect("cancel slow background shell");
+
+        let first = BashTool::new("Bash")
+            .execute(
+                json!({"command": "printf 'one\\n'", "background": true}),
+                &context,
+            )
+            .await
+            .expect("start first background shell");
+        let second = BashTool::new("Bash")
+            .execute(json!({"command": "sleep 1", "background": true}), &context)
+            .await
+            .expect("start second background shell");
+        let first_id = first
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("task_id"))
+            .and_then(Value::as_str)
+            .expect("first id")
+            .to_string();
+        let second_id = second
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("task_id"))
+            .and_then(Value::as_str)
+            .expect("second id")
+            .to_string();
+
+        let all_result = tool
+            .execute(
+                json!({
+                    "task_ids": [first_id, second_id],
+                    "wait": true,
+                    "until": "all",
+                    "timeout_ms": 8_000
+                }),
+                &context,
+            )
+            .await
+            .expect("until=all wait");
+        let all_meta = all_result.metadata.as_ref().expect("metadata");
+        assert_eq!(all_meta["until"], json!("all"));
+        assert_eq!(all_meta["timed_out"], json!(false));
+        assert_eq!(all_meta["statuses"][first_id.as_str()], json!("Completed"));
+        assert_eq!(all_meta["statuses"][second_id.as_str()], json!("Completed"));
     }
 
     async fn noop_task_manager(

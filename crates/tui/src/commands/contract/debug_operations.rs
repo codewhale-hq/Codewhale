@@ -215,6 +215,7 @@ fn session_sync_payload(app: &App) -> SessionSyncPayload {
         model: app.model.clone(),
         workspace: app.workspace.clone(),
         mode: super::to_command_mode(app.mode),
+        agent_preset: app.agent_preset(),
     }
 }
 
@@ -300,11 +301,13 @@ pub(crate) struct UndoRangeInput {
     messages: std::sync::Arc<Vec<codewhale_models::Message>>,
     boundaries: Vec<usize>,
     first_request: usize,
+    delegated_writes: std::collections::BTreeMap<u64, Vec<String>>,
 }
 
 pub(crate) struct UndoRangePlan {
     workspace: PathBuf,
     turns: Vec<codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots>,
+    pub(crate) undone_turn_seqs: Vec<u64>,
 }
 
 pub(crate) fn undo_range_input(app: &App, cut: usize) -> anyhow::Result<UndoRangeInput> {
@@ -352,6 +355,17 @@ pub(crate) fn undo_range_input(app: &App, cut: usize) -> anyhow::Result<UndoRang
         messages: app.api_messages.clone(),
         boundaries,
         first_request,
+        delegated_writes: app
+            .current_session_id
+            .as_ref()
+            .map(|session| {
+                app.delegated_writes
+                    .iter()
+                    .filter(|((owner, _), _)| owner == session)
+                    .map(|((_, seq), paths)| (*seq, paths.iter().cloned().collect()))
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -364,6 +378,7 @@ pub(crate) fn plan_undo_range(input: UndoRangeInput) -> anyhow::Result<UndoRange
     let mut repo = None;
     let mut snapshots = Vec::new();
     let mut turns = Vec::new();
+    let mut undone_turn_seqs = Vec::new();
     let mut previous_before = None;
     let mut execution_ids = std::collections::BTreeSet::new();
     let boundaries: Vec<_> = input
@@ -398,6 +413,7 @@ pub(crate) fn plan_undo_range(input: UndoRangeInput) -> anyhow::Result<UndoRange
                     may_change_files: false,
                     snapshots: Vec::new(),
                     declared_writes: Vec::new(),
+                    delegated_writes: Vec::new(),
                     unrun_tool_calls: Default::default(),
                 },
             );
@@ -468,6 +484,7 @@ pub(crate) fn plan_undo_range(input: UndoRangeInput) -> anyhow::Result<UndoRange
                     may_change_files: false,
                     snapshots: Vec::new(),
                     declared_writes: Vec::new(),
+                    delegated_writes: Vec::new(),
                     unrun_tool_calls: Default::default(),
                 },
             );
@@ -610,12 +627,20 @@ pub(crate) fn plan_undo_range(input: UndoRangeInput) -> anyhow::Result<UndoRange
                 "The request has no closed per-tool restore point; nothing was undone. Use /restore or conversation backtracking."
             );
         }
+        if let Some(seq) = pre.seq {
+            undone_turn_seqs.push(seq);
+        }
         turns.push(
             codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots {
                 turn_id: before.id.as_str().to_string(),
                 may_change_files: true,
                 snapshots: receipts,
                 declared_writes,
+                delegated_writes: input
+                    .delegated_writes
+                    .get(&pre.seq.unwrap_or_default())
+                    .cloned()
+                    .unwrap_or_default(),
                 unrun_tool_calls: Default::default(),
             },
         );
@@ -623,6 +648,7 @@ pub(crate) fn plan_undo_range(input: UndoRangeInput) -> anyhow::Result<UndoRange
     Ok(UndoRangePlan {
         workspace: input.workspace,
         turns,
+        undone_turn_seqs,
     })
 }
 

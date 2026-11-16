@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::fmt;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -8,7 +9,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use codewhale_net::guard::{GuardedGet, PrivateTargets};
-use codewhale_net::network_policy::NetworkPolicy;
+use codewhale_net::network_policy::{Decision, NetworkPolicy};
 use codewhale_skill_install::bounded_tar::{
     entry_names_within_bound, map_stream_limit, open_bounded_tarball,
 };
@@ -22,12 +23,43 @@ use sha2::{Digest, Sha512};
 use super::dsh::{Value, presets};
 
 const NPM_REGISTRY: &str = "https://registry.npmjs.org";
+const NPM_REGISTRY_HOST: &str = "registry.npmjs.org";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NpmDepsNetworkError {
+    NeedsApproval(&'static str),
+    Denied(&'static str),
+}
+
+impl fmt::Display for NpmDepsNetworkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NeedsApproval(host) => write!(
+                f,
+                "Network approval required for {host}; use /network allow {host}, then retry"
+            ),
+            Self::Denied(host) => write!(f, "Network access denied for {host}"),
+        }
+    }
+}
+
+impl std::error::Error for NpmDepsNetworkError {}
+
+fn ensure_registry_allowed(network: &NetworkPolicy) -> Result<()> {
+    match network.decide(NPM_REGISTRY_HOST) {
+        Decision::Allow => Ok(()),
+        Decision::Prompt => Err(NpmDepsNetworkError::NeedsApproval(NPM_REGISTRY_HOST).into()),
+        Decision::Deny => Err(NpmDepsNetworkError::Denied(NPM_REGISTRY_HOST).into()),
+    }
+}
 const NPM_ACCEPT_HEADER: &str = "application/vnd.npm.install-v1+json, application/json";
 const MAX_PACKUMENT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_TARBALL_BYTES: usize = 64 * 1024 * 1024;
 const MAX_UNPACKED_PACKAGES: usize = 256;
 const MAX_UNPACKED_FILES: usize = 14_000;
 const MAX_UNPACKED_BYTES: u64 = 220 * 1024 * 1024;
+const MAX_SCAN_DEPTH: usize = 32;
+const MAX_SCAN_FILE_BYTES: usize = 2 * 1024 * 1024;
 
 type CachedTarballs = HashMap<(String, String), Arc<Vec<u8>>>;
 
@@ -368,6 +400,7 @@ fn strip_tar_package_prefix(raw_path: &Path) -> Option<PathBuf> {
 }
 
 async fn fetch_packument(package_name: &str, network: &NetworkPolicy) -> Result<Arc<Packument>> {
+    ensure_registry_allowed(network)?;
     if !is_valid_npm_name(package_name) {
         bail!("invalid npm package name `{package_name}`");
     }
@@ -412,6 +445,7 @@ async fn fetch_verified_tarball(
     dist: &PackumentDist,
     network: &NetworkPolicy,
 ) -> Result<Arc<Vec<u8>>> {
+    ensure_registry_allowed(network)?;
     let key = (package_name.to_string(), version.to_string());
     if let Ok(guard) = tarball_cache().lock()
         && let Some(cached) = guard.get(&key)
@@ -450,248 +484,373 @@ async fn fetch_verified_tarball(
     Ok(arc)
 }
 
+fn read_capped_scan_text(path: &Path, max_bytes: usize) -> Result<Option<String>> {
+    let file = codewhale_util::bundle_file::open_bundle_file(path)
+        .with_context(|| format!("failed to open DSH file `{}`", path.display()))?;
+    let mut buf = Vec::new();
+    let mut limited = std::io::Read::take(file, (max_bytes + 1) as u64);
+    std::io::Read::read_to_end(&mut limited, &mut buf)?;
+    if buf.len() > max_bytes {
+        bail!(
+            "DSH source file `{}` exceeds {max_bytes} byte scan limit",
+            path.display()
+        );
+    }
+    Ok(String::from_utf8(buf).ok())
+}
+
+fn has_clean_bundled_package_json(root: &Path, dep_name: &str) -> Result<bool> {
+    let mut parts = dep_name.split('/');
+    let Some(first) = parts.next() else {
+        return Ok(false);
+    };
+    let segments = if first.starts_with('@') {
+        let Some(second) = parts.next() else {
+            return Ok(false);
+        };
+        if parts.next().is_some() {
+            return Ok(false);
+        }
+        [Some(first), Some(second)]
+    } else {
+        if parts.next().is_some() {
+            return Ok(false);
+        }
+        [Some(first), None]
+    };
+    let mut cur = root.to_path_buf();
+    for component in std::iter::once("node_modules").chain(segments.into_iter().flatten()) {
+        if component.is_empty() || component == "." || component == ".." || component.contains('\\')
+        {
+            return Ok(false);
+        }
+        cur.push(component);
+        let meta = match fs::symlink_metadata(&cur) {
+            Ok(meta) => meta,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(err) => return Err(err.into()),
+        };
+        if codewhale_util::path_identity::metadata_is_link_or_reparse(&meta) || !meta.is_dir() {
+            return Ok(false);
+        }
+    }
+    Ok(codewhale_util::bundle_file::open_bundle_file(&cur.join("package.json")).is_ok())
+}
+
+struct ScanState<'a> {
+    base: &'a Path,
+    declared: &'a BTreeMap<String, String>,
+    has_roster: bool,
+    import_re: &'a Regex,
+    referenced: &'a mut BTreeSet<String>,
+    file_count: usize,
+    total_bytes: u64,
+}
+
+fn scan_dir(cur: &Path, depth: usize, state: &mut ScanState<'_>) -> Result<()> {
+    if depth > MAX_SCAN_DEPTH {
+        bail!("DSH package directory nesting exceeds {MAX_SCAN_DEPTH} levels");
+    }
+    if depth == 0 {
+        let root_meta = fs::symlink_metadata(cur)?;
+        if codewhale_util::path_identity::metadata_is_link_or_reparse(&root_meta)
+            || !root_meta.is_dir()
+        {
+            bail!("symlinks and reparse points are not permitted in DSH packages");
+        }
+    }
+    for entry in fs::read_dir(cur)? {
+        let entry = entry?;
+        let path = entry.path();
+        let meta = fs::symlink_metadata(&path)?;
+        if codewhale_util::path_identity::metadata_is_link_or_reparse(&meta) {
+            bail!("symlinks and reparse points are not permitted in DSH packages");
+        }
+        let Ok(rel) = path.strip_prefix(state.base) else {
+            continue;
+        };
+        if meta.is_dir() {
+            if let Some(name) = path.file_name().and_then(|s| s.to_str())
+                && matches!(
+                    name,
+                    "node_modules" | "artifacts" | "vendor" | "client" | "web" | "ui" | "frontend"
+                )
+            {
+                continue;
+            }
+            scan_dir(&path, depth + 1, state)?;
+            continue;
+        }
+        if !meta.is_file() {
+            bail!(
+                "non-regular file `{}` is not permitted in DSH packages",
+                path.display()
+            );
+        }
+        state.file_count += 1;
+        if state.file_count > MAX_UNPACKED_FILES {
+            bail!("DSH package exceeds the {MAX_UNPACKED_FILES}-file budget");
+        }
+        state.total_bytes = state.total_bytes.saturating_add(meta.len());
+        if state.total_bytes > MAX_UNPACKED_BYTES {
+            bail!(
+                "DSH package exceeds the {} MiB byte budget",
+                MAX_UNPACKED_BYTES / (1024 * 1024)
+            );
+        }
+        let lower_name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase());
+        if state.has_roster && matches!(ext.as_deref(), Some("yml" | "yaml")) {
+            if let Some(text) = read_capped_scan_text(&path, MAX_SCAN_FILE_BYTES)? {
+                for dep in state.declared.keys() {
+                    if text.contains(dep.as_str()) {
+                        state.referenced.insert(dep.clone());
+                    }
+                }
+            }
+            continue;
+        }
+        if matches!(ext.as_deref(), Some("js" | "mjs" | "cjs"))
+            && !matches!(
+                lower_name.as_str(),
+                "client.js" | "client.mjs" | "client.cjs"
+            )
+            && !lower_name.starts_with("client-")
+            && !rel.components().any(|c| {
+                c.as_os_str().to_str().is_some_and(|s| {
+                    matches!(
+                        s,
+                        "node_modules"
+                            | "artifacts"
+                            | "vendor"
+                            | "client"
+                            | "web"
+                            | "ui"
+                            | "frontend"
+                    )
+                })
+            })
+            && let Some(text) = read_capped_scan_text(&path, MAX_SCAN_FILE_BYTES)?
+        {
+            for cap in state.import_re.captures_iter(&text) {
+                if let Some(spec) = cap.get(1).map(|m| m.as_str())
+                    && let Some(pkg) = bare_package_name(spec)
+                    && state.declared.contains_key(&pkg)
+                {
+                    state.referenced.insert(pkg);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn copy_dir_no_symlinks(
+    src: &Path,
+    dst: &Path,
+    depth: usize,
+    file_count: &mut usize,
+    total_bytes: &mut u64,
+) -> Result<()> {
+    if depth > MAX_SCAN_DEPTH {
+        bail!("DSH package directory nesting exceeds {MAX_SCAN_DEPTH} levels");
+    }
+    if depth == 0 {
+        let root_meta = fs::symlink_metadata(src)?;
+        if codewhale_util::path_identity::metadata_is_link_or_reparse(&root_meta)
+            || !root_meta.is_dir()
+        {
+            bail!("symlinks and reparse points are not permitted in DSH packages");
+        }
+    }
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        let meta = fs::symlink_metadata(&src_path)?;
+        if codewhale_util::path_identity::metadata_is_link_or_reparse(&meta) {
+            bail!("symlinks and reparse points are not permitted in DSH packages");
+        }
+        if meta.is_dir() {
+            copy_dir_no_symlinks(&src_path, &dst_path, depth + 1, file_count, total_bytes)?;
+        } else if meta.is_file() {
+            *file_count += 1;
+            if *file_count > MAX_UNPACKED_FILES {
+                bail!("DSH package exceeds the {MAX_UNPACKED_FILES}-file budget");
+            }
+            let mut src_file = codewhale_util::bundle_file::open_bundle_file(&src_path)?;
+            let mut dst_file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&dst_path)?;
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = std::io::Read::read(&mut src_file, &mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                *total_bytes = total_bytes.saturating_add(n as u64);
+                if *total_bytes > MAX_UNPACKED_BYTES {
+                    bail!(
+                        "DSH package exceeds the {} MiB byte budget",
+                        MAX_UNPACKED_BYTES / (1024 * 1024)
+                    );
+                }
+                dst_file.write_all(&buf[..n])?;
+            }
+        } else {
+            bail!(
+                "non-regular file `{}` is not permitted in DSH packages",
+                src_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn unpack_tarball(
+    bytes: &[u8],
+    dest_dir: &Path,
+    file_count: &mut usize,
+    total_bytes: &mut u64,
+) -> Result<()> {
+    fs::create_dir_all(dest_dir)?;
+    let mut archive = open_bounded_tarball(bytes, MAX_TARBALL_BYTES as u64);
+    let iter = archive.entries().map_err(|err| {
+        map_stream_limit(err.into(), || {
+            anyhow::anyhow!("npm tarball exceeded {MAX_TARBALL_BYTES} byte limit")
+        })
+    })?;
+    for entry_res in iter {
+        let mut entry = entry_res.map_err(|err| {
+            map_stream_limit(err.into(), || {
+                anyhow::anyhow!("npm tarball exceeded {MAX_TARBALL_BYTES} byte limit")
+            })
+        })?;
+        if !entry_names_within_bound(&entry) {
+            bail!("npm tarball entry path exceeds length bound");
+        }
+        if entry.header().entry_type().is_symlink() || entry.header().entry_type().is_hard_link() {
+            bail!("npm tarball contains disallowed link entry");
+        }
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let raw_path = entry
+            .path()
+            .context("invalid path inside npm tarball")?
+            .into_owned();
+        let Some(rel) = strip_tar_package_prefix(&raw_path) else {
+            continue;
+        };
+        if should_skip_npm_entry(&rel) {
+            continue;
+        }
+        let target = dest_dir.join(&rel);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        *file_count += 1;
+        if *file_count > MAX_UNPACKED_FILES {
+            bail!("resolved npm dependencies exceed the {MAX_UNPACKED_FILES}-file budget");
+        }
+        let mut out = File::create(&target)?;
+        let mut buf = [0u8; 8192];
+        loop {
+            let n = std::io::Read::read(&mut entry, &mut buf).map_err(|err| {
+                map_stream_limit(err.into(), || {
+                    anyhow::anyhow!("npm tarball exceeded {MAX_TARBALL_BYTES} byte limit")
+                })
+            })?;
+            if n == 0 {
+                break;
+            }
+            *total_bytes = total_bytes.saturating_add(n as u64);
+            if *total_bytes > MAX_UNPACKED_BYTES {
+                bail!(
+                    "resolved npm dependencies exceed the {} MiB byte budget",
+                    MAX_UNPACKED_BYTES / (1024 * 1024)
+                );
+            }
+            out.write_all(&buf[..n])?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) type UnresolvedSeed = (PathBuf, String, String);
+pub(crate) type UnresolvedSeeds = (BTreeMap<String, String>, Vec<UnresolvedSeed>);
+
+pub(crate) fn collect_unresolved_seeds(
+    package_root: &Path,
+    manifest: &Value,
+    entries: &[Value],
+) -> Result<UnresolvedSeeds> {
+    let declared = declared_dependencies(manifest);
+    if declared.is_empty() {
+        return Ok((declared, Vec::new()));
+    }
+    let mut referenced = BTreeSet::new();
+    visit_composition_entries(entries, &mut referenced);
+    let import_re = Regex::new(
+        r#"(?:from\s+|import\s*\(\s*|require(?:\.resolve)?\s*\(\s*|import\s+)["']([^"']+)["']"#,
+    )?;
+    let has_roster = presets::has_roster(entries);
+    let mut state = ScanState {
+        base: package_root,
+        declared: &declared,
+        has_roster,
+        import_re: &import_re,
+        referenced: &mut referenced,
+        file_count: 0,
+        total_bytes: 0,
+    };
+    scan_dir(package_root, 0, &mut state)?;
+    let mut seeds = Vec::new();
+    for (name, range) in &declared {
+        if !is_host_package(name)
+            && referenced.contains(name)
+            && !has_clean_bundled_package_json(package_root, name)?
+        {
+            seeds.push((package_root.to_path_buf(), name.clone(), range.clone()));
+        }
+    }
+    Ok((declared, seeds))
+}
+
 pub(crate) fn maybe_stage_with_dependencies(
     package_root: &Path,
     manifest: &Value,
     entries: &[Value],
     network: &NetworkPolicy,
 ) -> Result<Option<tempfile::TempDir>> {
-    let declared = declared_dependencies(manifest);
-    if declared.is_empty() {
+    let (declared, seeds) = collect_unresolved_seeds(package_root, manifest, entries)?;
+    if seeds.is_empty() {
         return Ok(None);
     }
+    ensure_registry_allowed(network)?;
     let root = package_root.to_path_buf();
-    let entries = entries.to_vec();
     let network = network.clone();
     std::thread::spawn(move || -> Result<Option<tempfile::TempDir>> {
-        fn scan_dir(
-            base: &Path,
-            cur: &Path,
-            declared: &BTreeMap<String, String>,
-            has_roster: bool,
-            import_re: &Regex,
-            referenced: &mut BTreeSet<String>,
-        ) -> Result<()> {
-            for entry in fs::read_dir(cur)? {
-                let entry = entry?;
-                let path = entry.path();
-                let meta = fs::symlink_metadata(&path)?;
-                if meta.file_type().is_symlink() {
-                    continue;
-                }
-                let Ok(rel) = path.strip_prefix(base) else {
-                    continue;
-                };
-                if meta.is_dir() {
-                    if let Some(name) = path.file_name().and_then(|s| s.to_str())
-                        && matches!(
-                            name,
-                            "node_modules"
-                                | "artifacts"
-                                | "vendor"
-                                | "client"
-                                | "web"
-                                | "ui"
-                                | "frontend"
-                        )
-                    {
-                        continue;
-                    }
-                    scan_dir(base, &path, declared, has_roster, import_re, referenced)?;
-                    continue;
-                }
-                if !meta.is_file() {
-                    continue;
-                }
-                let lower_name = path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_ascii_lowercase();
-                let ext = path
-                    .extension()
-                    .map(|e| e.to_string_lossy().to_ascii_lowercase());
-                if has_roster && matches!(ext.as_deref(), Some("yml" | "yaml")) {
-                    if let Ok(text) = fs::read_to_string(&path) {
-                        for dep in declared.keys() {
-                            if text.contains(dep.as_str()) {
-                                referenced.insert(dep.clone());
-                            }
-                        }
-                    }
-                    continue;
-                }
-                if matches!(ext.as_deref(), Some("js" | "mjs" | "cjs"))
-                    && !matches!(
-                        lower_name.as_str(),
-                        "client.js" | "client.mjs" | "client.cjs"
-                    )
-                    && !lower_name.starts_with("client-")
-                    && !rel.components().any(|c| {
-                        c.as_os_str().to_str().is_some_and(|s| {
-                            matches!(
-                                s,
-                                "node_modules"
-                                    | "artifacts"
-                                    | "vendor"
-                                    | "client"
-                                    | "web"
-                                    | "ui"
-                                    | "frontend"
-                            )
-                        })
-                    })
-                    && let Ok(text) = fs::read_to_string(&path)
-                {
-                    for cap in import_re.captures_iter(&text) {
-                        if let Some(spec) = cap.get(1).map(|m| m.as_str())
-                            && let Some(pkg) = bare_package_name(spec)
-                            && declared.contains_key(&pkg)
-                        {
-                            referenced.insert(pkg);
-                        }
-                    }
-                }
-            }
-            Ok(())
-        }
-
-        fn copy_dir_no_symlinks(src: &Path, dst: &Path) -> Result<()> {
-            fs::create_dir_all(dst)?;
-            for entry in fs::read_dir(src)? {
-                let entry = entry?;
-                let src_path = entry.path();
-                let dst_path = dst.join(entry.file_name());
-                let meta = fs::symlink_metadata(&src_path)?;
-                if meta.file_type().is_symlink() {
-                    bail!("symlinks are not permitted in DSH packages");
-                }
-                if meta.is_dir() {
-                    copy_dir_no_symlinks(&src_path, &dst_path)?;
-                } else if meta.is_file() {
-                    fs::copy(&src_path, &dst_path)?;
-                }
-            }
-            Ok(())
-        }
-
-        fn unpack_tarball(
-            bytes: &[u8],
-            dest_dir: &Path,
-            file_count: &mut usize,
-            total_bytes: &mut u64,
-        ) -> Result<()> {
-            fs::create_dir_all(dest_dir)?;
-            let mut archive = open_bounded_tarball(bytes, MAX_TARBALL_BYTES as u64);
-            let iter = archive.entries().map_err(|err| {
-                map_stream_limit(err.into(), || {
-                    anyhow::anyhow!("npm tarball exceeded {MAX_TARBALL_BYTES} byte limit")
-                })
-            })?;
-            for entry_res in iter {
-                let mut entry = entry_res.map_err(|err| {
-                    map_stream_limit(err.into(), || {
-                        anyhow::anyhow!("npm tarball exceeded {MAX_TARBALL_BYTES} byte limit")
-                    })
-                })?;
-                if !entry_names_within_bound(&entry) {
-                    bail!("npm tarball entry path exceeds length bound");
-                }
-                if entry.header().entry_type().is_symlink()
-                    || entry.header().entry_type().is_hard_link()
-                {
-                    bail!("npm tarball contains disallowed link entry");
-                }
-                if !entry.header().entry_type().is_file() {
-                    continue;
-                }
-                let raw_path = entry
-                    .path()
-                    .context("invalid path inside npm tarball")?
-                    .into_owned();
-                let Some(rel) = strip_tar_package_prefix(&raw_path) else {
-                    continue;
-                };
-                if should_skip_npm_entry(&rel) {
-                    continue;
-                }
-                let target = dest_dir.join(&rel);
-                if let Some(parent) = target.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                *file_count += 1;
-                if *file_count > MAX_UNPACKED_FILES {
-                    bail!("resolved npm dependencies exceed the {MAX_UNPACKED_FILES}-file budget");
-                }
-                let mut out = File::create(&target)?;
-                let mut buf = [0u8; 8192];
-                loop {
-                    let n = std::io::Read::read(&mut entry, &mut buf).map_err(|err| {
-                        map_stream_limit(err.into(), || {
-                            anyhow::anyhow!("npm tarball exceeded {MAX_TARBALL_BYTES} byte limit")
-                        })
-                    })?;
-                    if n == 0 {
-                        break;
-                    }
-                    *total_bytes = total_bytes.saturating_add(n as u64);
-                    if *total_bytes > MAX_UNPACKED_BYTES {
-                        bail!(
-                            "resolved npm dependencies exceed the {} MiB byte budget",
-                            MAX_UNPACKED_BYTES / (1024 * 1024)
-                        );
-                    }
-                    out.write_all(&buf[..n])?;
-                }
-            }
-            Ok(())
-        }
-
-        let mut referenced = BTreeSet::new();
-        visit_composition_entries(&entries, &mut referenced);
-        let import_re = Regex::new(
-            r#"(?:from\s+|import\s*\(\s*|require(?:\.resolve)?\s*\(\s*|import\s+)["']([^"']+)["']"#,
-        )?;
-        let has_roster = presets::has_roster(&entries);
-        scan_dir(
-            &root,
-            &root,
-            &declared,
-            has_roster,
-            &import_re,
-            &mut referenced,
-        )?;
-
-        let mut seeds = Vec::new();
-        for (name, range) in &declared {
-            if referenced.contains(name)
-                && !root
-                    .join("node_modules")
-                    .join(name)
-                    .join("package.json")
-                    .is_file()
-            {
-                seeds.push((root.clone(), name.clone(), range.clone()));
-            }
-        }
-        if seeds.is_empty() {
-            return Ok(None);
-        }
-
         let stage = tempfile::Builder::new()
             .prefix("codewhale-dsh-npm-")
             .tempdir()?;
         let staged_root = stage.path().to_path_buf();
-        copy_dir_no_symlinks(&root, &staged_root)?;
+        let mut package_count = 0usize;
+        let mut file_count = 0usize;
+        let mut total_bytes = 0u64;
+        copy_dir_no_symlinks(&root, &staged_root, 0, &mut file_count, &mut total_bytes)?;
 
         let mut preexisting = HashSet::new();
         for name in declared.keys() {
-            if staged_root
-                .join("node_modules")
-                .join(name)
-                .join("package.json")
-                .is_file()
-            {
+            if has_clean_bundled_package_json(&staged_root, name)? {
                 preexisting.insert(name.clone());
             }
         }
@@ -702,9 +861,6 @@ pub(crate) fn maybe_stage_with_dependencies(
 
         let mut hoisted: HashMap<String, Version> = HashMap::new();
         let mut unpacked_at: HashSet<(PathBuf, String)> = HashSet::new();
-        let mut package_count = 0usize;
-        let mut file_count = 0usize;
-        let mut total_bytes = 0u64;
         let mut queue: VecDeque<(PathBuf, String, String)> = seeds
             .into_iter()
             .map(|(_, name, range)| (staged_root.clone(), name, range))
@@ -714,11 +870,7 @@ pub(crate) fn maybe_stage_with_dependencies(
             if is_host_package(&name) {
                 continue;
             }
-            let bundled_at_root = staged_root
-                .join("node_modules")
-                .join(&name)
-                .join("package.json")
-                .is_file();
+            let bundled_at_root = has_clean_bundled_package_json(&staged_root, &name)?;
             if parent_dir == staged_root && (preexisting.contains(&name) || bundled_at_root) {
                 continue;
             }
@@ -737,11 +889,10 @@ pub(crate) fn maybe_stage_with_dependencies(
                     hoisted.insert(name.clone(), resolved_ver);
                     staged_root.join("node_modules").join(&name)
                 } else {
-                    let nested = parent_dir.join("node_modules").join(&name);
-                    if nested.join("package.json").is_file() {
+                    if has_clean_bundled_package_json(&parent_dir, &name)? {
                         continue;
                     }
-                    nested
+                    parent_dir.join("node_modules").join(&name)
                 };
 
             if !unpacked_at.insert((target_dir.clone(), resolved_ver_str.clone())) {
@@ -894,5 +1045,41 @@ mod tests {
             }
         }
         assert_eq!(referenced, BTreeSet::from(["zod".to_string()]));
+    }
+
+    #[test]
+    fn prompt_and_deny_network_policies_fail_before_npm_fetch() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("lib")).unwrap();
+        fs::write(
+            dir.path().join("lib/index.js"),
+            "import { z } from 'zod';\nexport function apply() { return z; }\n",
+        )
+        .unwrap();
+        let manifest = Value::Map(vec![(
+            "dependencies".to_string(),
+            Value::Map(vec![("zod".to_string(), Value::Str("^4.0.0".to_string()))]),
+        )]);
+        let (_, seeds) = collect_unresolved_seeds(dir.path(), &manifest, &[]).unwrap();
+        assert_eq!(seeds.len(), 1);
+
+        let prompt_err =
+            maybe_stage_with_dependencies(dir.path(), &manifest, &[], &NetworkPolicy::default())
+                .unwrap_err();
+        assert_eq!(
+            prompt_err.downcast_ref::<NpmDepsNetworkError>(),
+            Some(&NpmDepsNetworkError::NeedsApproval("registry.npmjs.org"))
+        );
+
+        let deny_policy = NetworkPolicy {
+            default: Decision::Deny.into(),
+            ..NetworkPolicy::default()
+        };
+        let deny_err =
+            maybe_stage_with_dependencies(dir.path(), &manifest, &[], &deny_policy).unwrap_err();
+        assert_eq!(
+            deny_err.downcast_ref::<NpmDepsNetworkError>(),
+            Some(&NpmDepsNetworkError::Denied("registry.npmjs.org"))
+        );
     }
 }
