@@ -529,6 +529,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-bin: false
+          cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@b6620ca104fb7b50dafa1109be9622abc1fdd381
         with:
@@ -599,6 +600,7 @@ jobs:
         if: needs.changes.outputs.heavy == 'true'
         with:
           cache-bin: false
+          cache-on-failure: true
           # PRs restore the cache seeded by main but skip the expensive
           # post-job save; sccache covers PR-specific compilation deltas.
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -910,6 +912,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-bin: false
+          cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@v7.1.0
         # The extension-host integration tests spawn the real bundle under

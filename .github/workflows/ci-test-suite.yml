@@ -110,6 +110,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-bin: false
+          cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@b6620ca104fb7b50dafa1109be9622abc1fdd381
         with:
