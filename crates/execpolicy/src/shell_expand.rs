@@ -821,7 +821,7 @@ static WRAPPERS: &[Wrapper] = &[
     },
     Wrapper {
         name: "parallel",
-        short_values: "ajdnILNPSt",
+        short_values: "ajdnEILNPSts",
         short_switches: "kmquX0",
         long_values: &[
             "arg-file",
@@ -1719,7 +1719,7 @@ impl Expander {
                             command_heads(&line.words).heads.iter().any(|&head| {
                                 let name = command_name(&line.words[head]);
                                 SHELL_NAMES.contains(&name.as_str())
-                                    || matches!(name.as_str(), "source" | ".")
+                                    || matches!(name.as_str(), "source" | "." | "at" | "batch")
                             })
                         });
                         for (delimiter, literal, strip_tabs) in heredocs.drain(..) {
@@ -1864,9 +1864,34 @@ impl Expander {
                     self.dynamic |= name != "eval" && head + 1 == tokens.len();
                     self.code_payload(&tokens[head + 1..].join(" "), args_dynamic, depth);
                 }
+                "alias" | "hash" => {
+                    if name == "alias" {
+                        self.dynamic = true;
+                    } else {
+                        self.dynamic |= tokens[head + 1..].iter().any(|token| token != "-r");
+                    }
+                    for at in head + 1..tokens.len() {
+                        if name == "hash"
+                            && let Some(flags) = tokens[at].strip_prefix('-')
+                            && !flags.starts_with('-')
+                            && let Some(offset) = flags.find('p')
+                        {
+                            let path = &flags[offset + 1..];
+                            if path.is_empty() {
+                                if let Some(path) = tokens.get(at + 1) {
+                                    self.code_payload(path, dynamic[at + 1], depth);
+                                }
+                            } else {
+                                self.code_payload(path, dynamic[at], depth);
+                            }
+                        } else if let Some((_, value)) = tokens[at].split_once('=') {
+                            self.code_payload(value, dynamic[at], depth);
+                        }
+                    }
+                }
                 _ if REBINDING_BUILTINS.contains(&name.as_str()) => self.dynamic = true,
-                "hash" => {
-                    self.dynamic |= tokens[head + 1..].iter().any(|token| token != "-r");
+                "at" | "batch" => {
+                    self.dynamic |= !line.heredoc && !at_only_manages_jobs(tokens, head, &dynamic);
                 }
                 "source" | "." => match tokens.get(head + 1) {
                     None if !line.heredoc => self.dynamic = true,
@@ -1924,15 +1949,24 @@ impl Expander {
                     }
                 }
                 "parallel" => {
-                    for &inner in heads.heads.iter().filter(|&&inner| inner > head) {
-                        if tokens[inner] == ":::" {
-                            for at in inner + 1..tokens.len() {
-                                if tokens[at].starts_with(":::") {
-                                    break;
-                                }
-                                self.code_payload(&tokens[at], dynamic[at], depth);
-                            }
+                    let inner: Vec<usize> = heads
+                        .heads
+                        .iter()
+                        .copied()
+                        .filter(|&inner| inner > head && !is_parallel_separator(&tokens[inner]))
+                        .collect();
+                    self.dynamic |= inner.is_empty();
+                    let mut code = false;
+                    for at in head + 1..tokens.len() {
+                        if is_parallel_separator(&tokens[at]) {
+                            code = matches!(tokens[at].as_str(), ":::" | ":::+");
+                        } else if code {
+                            self.code_payload(&tokens[at], dynamic[at], depth);
                         }
+                    }
+                    for inner in inner {
+                        let inner_dynamic = dynamic[inner..].iter().any(|dynamic| *dynamic);
+                        self.code_payload(&tokens[inner..].join(" "), inner_dynamic, depth);
                     }
                 }
                 // `cmd /c …` parses the rest as a cmd.exe command line, which
@@ -3032,6 +3066,49 @@ fn option_payloads(
         }
     }
     payloads
+}
+
+fn is_parallel_separator(token: &str) -> bool {
+    matches!(token, ":::" | ":::+" | "::::" | "::::+")
+}
+
+fn at_only_manages_jobs(tokens: &[String], head: usize, dynamic: &[bool]) -> bool {
+    let mut manages = false;
+    let mut at = head + 1;
+    while at < tokens.len() {
+        let token = tokens[at].as_str();
+        if dynamic[at] {
+            return false;
+        }
+        if token == "--" {
+            break;
+        }
+        if token.len() < 2 || !token.starts_with('-') {
+            if !manages {
+                return false;
+            }
+            at += 1;
+            continue;
+        }
+        if token.starts_with("--") {
+            return false;
+        }
+        for (offset, flag) in token[1..].char_indices() {
+            match flag {
+                'f' => return false,
+                'l' | 'r' | 'd' | 'c' => manages = true,
+                'q' | 't' => {
+                    if token[1 + offset + 1..].is_empty() {
+                        at += 1;
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+        at += 1;
+    }
+    manages
 }
 
 /// Mark the operands of an `xargs` that contain its replacement string
