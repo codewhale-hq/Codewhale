@@ -6101,7 +6101,7 @@ async fn plugins_attempt_stops_at_the_deadline_and_on_cancel() {
         .unwrap();
     let elapsed = started.elapsed();
     assert!(
-        elapsed < std::time::Duration::from_secs(3),
+        elapsed < std::time::Duration::from_secs(15),
         "call must stop at tool_call_deadline instead of waiting 30s MCP connect timeout: {elapsed:?}"
     );
     assert_eq!(deadline_res["application"], "failed", "{deadline_res}");

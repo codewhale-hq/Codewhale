@@ -580,7 +580,11 @@ async fn the_install_result_waits_for_the_load_and_reports_a_failed_start() {
     assert_eq!(codeless_outcome.tool_results.len(), 1);
     let codeless_json = parse_tool_json(&codeless_outcome.tool_results[0].1);
     assert_eq!(codeless_json["changed"], json!(true));
-    assert_eq!(codeless_json["application"], json!("applied"));
+    assert_eq!(
+        codeless_json["application"],
+        json!("applied"),
+        "{codeless_json}"
+    );
 
     f.manager.shutdown().await;
 }

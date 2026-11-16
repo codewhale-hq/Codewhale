@@ -426,7 +426,9 @@ async fn an_agent_record_from_another_project_is_listed_as_on_only_there() -> Re
     assert_eq!(summary["cohort"]["kind"], "agent");
     assert_eq!(
         summary["cohort"]["workspace"],
-        elsewhere.to_string_lossy().as_ref()
+        codewhale_config::normalize_project_workspace(&elsewhere)?
+            .to_string_lossy()
+            .as_ref()
     );
 
     let detail: serde_json::Value = client

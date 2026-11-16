@@ -380,6 +380,9 @@ fn start_tarball_server(
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     hits_srv.fetch_add(1, Ordering::SeqCst);
+                    stream
+                        .set_nonblocking(false)
+                        .expect("blocking accepted stream");
                     let mut request = Vec::new();
                     let mut buf = [0_u8; 1024];
                     loop {
