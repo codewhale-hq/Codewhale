@@ -126,7 +126,7 @@ manifest_digest() {
       digest = tolower($1)
       file = $2
       sub(/^\*/, "", file)
-      if (file == name && digest ~ /^[0-9a-f]{64}$/) {
+      if (file == name && length(digest) == 64 && digest !~ /[^0-9a-f]/) {
         print digest
         exit
       }
