@@ -320,7 +320,7 @@ jobs:
             --archive-file "$RUNNER_TEMP/test-archive/nextest-archive.tar.zst" \
             --extract-to "$RUNNER_TEMP/nextest-extract" --extract-overwrite \
             --workspace-remap . --profile ci \
-            --partition "count:${{ matrix.shard }}/${{ inputs.shards }}" \
+            --partition "slice:${{ matrix.shard }}/${{ inputs.shards }}" \
             -E "not ($NATIVE_FILTER)" || status=$?
           if [ -n "$monitor" ]; then kill "$monitor" 2>/dev/null || true; fi
           if [ "$status" -ne 0 ]; then exit "$status"; fi

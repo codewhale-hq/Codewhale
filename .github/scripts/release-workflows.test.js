@@ -84,7 +84,7 @@ assert.match(
   "nextest does not run doctests; the suite must run them once per OS",
 );
 const shardRun = namedStep(ciSuite, "Run tests");
-assert.match(shardRun, /--partition "count:\$\{\{ matrix\.shard \}\}\/\$\{\{ inputs\.shards \}\}"/);
+assert.match(shardRun, /--partition "slice:\$\{\{ matrix\.shard \}\}\/\$\{\{ inputs\.shards \}\}"/);
 assert.match(shardRun, /-E "not \(\$NATIVE_FILTER\)"/, "every shard must exclude the native tests that shard 1 runs apart");
 assert.match(namedStep(ciSuite, "Run native containment tests"), /-E "\$NATIVE_FILTER"/);
 assert.match(ciSuite, /nextest-shard-count\.py check counts/, "the suite must prove the shards add up to the archive's list");
