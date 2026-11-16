@@ -1,12 +1,9 @@
-#[path = "support/acp_conformance.rs"]
-mod conformance;
-
+use crate::conformance::{Allowed, Conformance, Side};
 use codewhale_engine::fleet::acp::{AcpClient, ControlWrite, PermissionPolicy};
 use codewhale_engine::fleet::host::{
     FleetHostAdapter, FleetWorkerCommand, FleetWorkerStartRequest, FleetWorkerTransport,
     LocalProcessFleetHostAdapter,
 };
-use conformance::{Allowed, Conformance, Side};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

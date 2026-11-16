@@ -84,7 +84,7 @@ async fn model_http_policy_reaches_primary_and_vision_transports() -> Result<()>
     let workspace = tempfile::tempdir()?;
     tokio::fs::write(
         workspace.path().join("probe.png"),
-        include_bytes!("fixtures/ocr_hello.png"),
+        include_bytes!("../fixtures/ocr_hello.png"),
     )
     .await?;
     let context = ToolContext::new(workspace.path());

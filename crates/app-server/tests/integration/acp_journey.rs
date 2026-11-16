@@ -1,6 +1,4 @@
-mod acp_support;
-
-use acp_support::{Client, fixture_config, text_of, updates};
+use crate::acp_support::{Client, fixture_config, text_of, updates};
 use anyhow::{Result, anyhow};
 use codewhale_app_server::acp_server::capture_frontend;
 use codewhale_engine::llm_client::mock::{CannedTurn, MockLlmClient, canned};

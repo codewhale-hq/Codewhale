@@ -881,12 +881,12 @@ for (const [label, workflow, expected] of [
 console.log(`Hermetic Rust workflow invocations OK: ${hermeticInvocations} checks passed.`);
 
 const nextest = read(".config/nextest.toml");
-const integrationGroup = nextest.search(/^filter = 'binary\(integration\)'$/m);
+const integrationGroup = nextest.search(/^filter = 'package\(codewhale-tui\) & binary\(integration\)'$/m);
 const telemetryGroup = nextest.indexOf(
-  "filter = 'binary(integration) & test(/^telemetry_contract::/)'",
+  "filter = 'package(codewhale-tui) & binary(integration) & test(/^telemetry_contract::/)'",
 );
 const execGroup = nextest.indexOf(
-  "filter = 'binary(integration) & test(/^exec_persistent_service::/)'",
+  "filter = 'package(codewhale-tui) & binary(integration) & test(/^exec_persistent_service::/)'",
 );
 assert.ok(integrationGroup >= 0, "nextest must bound the integration binary");
 assert.ok(

@@ -55,7 +55,7 @@ extension-host = { max-threads = 1 }
 # integration filters before binary(integration) so they are not stolen
 # by the three-thread group.
 [[profile.default.overrides]]
-filter = 'binary(integration) & test(/^telemetry_contract::/)'
+filter = 'package(codewhale-tui) & binary(integration) & test(/^telemetry_contract::/)'
 test-group = 'telemetry-contract'
 
 # Same hazard, different binary. `telemetry_kill_switch_dispatch` is a
@@ -84,12 +84,12 @@ filter = '(package(codewhale-engine) | package(codewhale-tui) | package(codewhal
 test-group = 'extension-host'
 
 [[profile.default.overrides]]
-filter = 'binary(integration) & test(/^exec_persistent_service::/)'
+filter = 'package(codewhale-tui) & binary(integration) & test(/^exec_persistent_service::/)'
 test-group = 'exec-persistent-service'
 slow-timeout = { period = "120s" }
 
 [[profile.default.overrides]]
-filter = 'binary(integration)'
+filter = 'package(codewhale-tui) & binary(integration)'
 test-group = 'spawns-binaries'
 
 [[profile.default.overrides]]
