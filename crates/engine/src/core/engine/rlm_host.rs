@@ -768,12 +768,25 @@ impl RlmDispatchedRequest {
         &mut self,
         observation: &crate::llm_client::RequestRetryObservation,
     ) -> std::io::Result<()> {
-        self.accounting_source
-            .bind_dispatch(&self.route, observation)?;
-        if let Some(record) = self.accounting_source.admit_dispatch(&self.route).await? {
-            self.usage.complete_record(self.reservation, &record).await;
-            if let Some(child) = &self.caller.child_accounting {
-                child.project_settled(&record).await?;
+        if let Err(error) = self
+            .accounting_source
+            .bind_dispatch(&self.route, observation)
+        {
+            tracing::warn!(%error, "RLM usage bind failed; continuing with unknown cost");
+            return Ok(());
+        }
+        match self.accounting_source.admit_dispatch(&self.route).await {
+            Ok(Some(record)) => {
+                self.usage.complete_record(self.reservation, &record).await;
+                if let Some(child) = &self.caller.child_accounting
+                    && let Err(error) = child.project_settled(&record).await
+                {
+                    tracing::warn!(%error, "RLM child usage projection failed; continuing with unknown cost");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, "RLM usage dispatch admission failed; continuing with unknown cost");
             }
         }
         Ok(())

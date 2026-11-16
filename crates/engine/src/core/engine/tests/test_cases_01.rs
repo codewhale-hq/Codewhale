@@ -1409,3 +1409,104 @@ async fn terminal_barrier_cancel_join_breaks_on_fresh_esc() {
     esc_task.await.unwrap();
     drop(registration);
 }
+
+#[tokio::test]
+async fn a_completed_turn_stays_completed_when_usage_cannot_be_retained() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let _cost = crate::cost_status::test_scope();
+    let workspace = tempdir().expect("tempdir");
+    let broken_sessions_file = workspace.path().join("not-a-sessions-dir");
+    std::fs::write(&broken_sessions_file, b"file").expect("create regular file sentinel");
+
+    let mut response = canned::simple_text_turn("completed without retained usage");
+    for event in &mut response {
+        if let codewhale_models::StreamEvent::MessageDelta { usage, .. } = event {
+            *usage = Some(Usage {
+                input_tokens: 12,
+                output_tokens: 4,
+                ..Usage::default()
+            });
+        }
+    }
+    let mock = std::sync::Arc::new(MockLlmClient::new(vec![response]));
+    let client: crate::core::model_client::SharedModelClient = mock.clone();
+    let config = Config::default();
+    let mut engine_config = deterministic_engine_config(workspace.path());
+    engine_config.runtime_services.accounting_origin = Some(
+        crate::cost_status::NativeUsageOrigin::session(
+            crate::cost_status::scope_token(),
+            broken_sessions_file,
+            "unretained-session".to_string(),
+        ),
+    );
+    let (engine, handle) = Engine::new_with_model_client(engine_config, &config, client);
+    let task = tokio::spawn(engine.run());
+
+    handle
+        .send(external_user_message_op(
+            "complete with unwritable origin",
+            AppMode::Agent,
+            &config,
+        ))
+        .await
+        .expect("send turn");
+
+    let mut rx = handle.rx_event.write().await;
+    let (status, error) = loop {
+        let event = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+            .await
+            .expect("timed out waiting for TurnComplete")
+            .expect("engine event channel open");
+        if let Event::TurnComplete { status, error, .. } = event {
+            break (status, error);
+        }
+    };
+    drop(rx);
+    assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(mock.call_count(), 1);
+
+    handle.send(Op::Shutdown).await.expect("shutdown engine");
+    task.await.expect("engine task");
+
+    let owner = "failing-retained-sink-owner";
+    crate::cost_status::register_runtime_usage_sink(
+        owner,
+        std::sync::Arc::new(|_| false),
+    );
+    let mock2 = std::sync::Arc::new(MockLlmClient::new(vec![canned::simple_text_turn(
+        "completed despite failing sink",
+    )]));
+    let client2: crate::core::model_client::SharedModelClient = mock2.clone();
+    let mut engine_config2 = deterministic_engine_config(workspace.path());
+    engine_config2.compaction.runtime_cost_owner = Some(owner.to_string());
+    let (engine2, handle2) = Engine::new_with_model_client(engine_config2, &config, client2);
+    let task2 = tokio::spawn(engine2.run());
+    handle2
+        .send(external_user_message_op(
+            "complete with failing runtime sink",
+            AppMode::Agent,
+            &config,
+        ))
+        .await
+        .expect("send second turn");
+
+    let mut rx2 = handle2.rx_event.write().await;
+    let (status2, error2) = loop {
+        let event = tokio::time::timeout(model_turn_event_timeout(), rx2.recv())
+            .await
+            .expect("timed out waiting for second TurnComplete")
+            .expect("second engine event channel open");
+        if let Event::TurnComplete { status, error, .. } = event {
+            break (status, error);
+        }
+    };
+    drop(rx2);
+    assert_eq!(status2, TurnOutcomeStatus::Completed, "{error2:?}");
+    assert!(error2.is_none(), "{error2:?}");
+    assert_eq!(mock2.call_count(), 1);
+
+    handle2.send(Op::Shutdown).await.expect("shutdown engine2");
+    task2.await.expect("engine2 task");
+}

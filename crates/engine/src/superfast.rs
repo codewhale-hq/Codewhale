@@ -293,10 +293,6 @@ pub fn spawn_shadow_gate(
     let config = config.clone();
     // Capture before detaching; the next session/turn must never acquire it.
     let usage_context = ShadowUsageContext::capture(runtime_owner, fallback_origin);
-    if !usage_context.source.has_captured_origin() {
-        tracing::warn!(target: "superfast", "decision gate has no admitted accounting origin");
-        return None;
-    }
     let cancel_token = cancel_token.clone();
     Some(runtime.spawn(async move {
         let outcome = evaluate(
@@ -378,19 +374,13 @@ async fn evaluate(
     let request_route = client.effective_route_envelope(&settings.model, chrono::Utc::now());
     let observation = match usage_context.source.observe_route(&request_route) {
         Ok(observation) => observation,
-        Err(_) => {
-            return ShadowOutcome::Failed {
-                failure: AutoRouterFailure::NotRunnable,
-                latency_ms: 0,
-            };
+        Err(error) => {
+            tracing::warn!(%error, "decision gate route observation failed; continuing with unknown cost");
+            usage_context.source.observation()
         }
     };
     if let Err(error) = usage_context.source.admit_dispatch(&request_route).await {
-        tracing::warn!(%error, "provider source admission failed");
-        return ShadowOutcome::Failed {
-            failure: AutoRouterFailure::NotRunnable,
-            latency_ms: 0,
-        };
+        tracing::warn!(%error, "provider source admission failed; continuing with unknown cost");
     }
     let started = Instant::now();
     let answer = tokio::select! {

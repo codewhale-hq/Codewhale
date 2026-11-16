@@ -387,13 +387,12 @@ pub async fn run_advisor_for_turn(
     let observation = match usage_context.source.observe_route(&route) {
         Ok(observation) => observation,
         Err(error) => {
-            tracing::warn!(%error, "advisor accounting admission failed");
-            return;
+            tracing::warn!(%error, "advisor accounting admission failed; continuing with unknown cost");
+            usage_context.source.observation()
         }
     };
     if let Err(error) = usage_context.source.admit_dispatch(&route).await {
-        tracing::warn!(%error, "advisor source admission failed");
-        return;
+        tracing::warn!(%error, "advisor source admission failed; continuing with unknown cost");
     }
     let wire = observation.wire_observations.clone();
     let response = crate::llm_client::observe_request_retries(
@@ -401,28 +400,28 @@ pub async fn run_advisor_for_turn(
         client.create_message(request),
     )
     .await;
-    let record = match usage_context
+    let wire = wire.drain();
+    match usage_context
         .source
-        .response_record(&route, &response, &wire.drain())
+        .response_record(&route, &response, &wire)
     {
-        Ok(record) => record,
-        Err(error) => {
-            tracing::warn!(%error, "advisor usage source was refused");
-            return;
+        Ok(record) => {
+            if let Err(error) = crate::cost_status::settle_runtime_usage_record(
+                usage_context.cost_scope,
+                usage_context
+                    .runtime_usage_lease
+                    .as_ref()
+                    .map(crate::cost_status::RuntimeUsageLease::owner),
+                &record,
+            )
+            .await
+            {
+                tracing::warn!(%error, "advisor usage remains unacknowledged; continuing");
+            }
         }
-    };
-    if let Err(error) = crate::cost_status::settle_runtime_usage_record(
-        usage_context.cost_scope,
-        usage_context
-            .runtime_usage_lease
-            .as_ref()
-            .map(crate::cost_status::RuntimeUsageLease::owner),
-        &record,
-    )
-    .await
-    {
-        tracing::warn!(%error, "advisor usage remains unacknowledged");
-        return;
+        Err(error) => {
+            tracing::warn!(%error, "advisor usage source preparation failed; continuing");
+        }
     }
     let response = match response {
         Ok(response) => response,

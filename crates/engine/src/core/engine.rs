@@ -7205,32 +7205,25 @@ impl Engine {
             .iter()
             .filter(|record| record.settlement.is_some())
         {
-            let settled = if record.has_captured_origin() {
-                crate::cost_status::settle_runtime_usage_record(
-                    crate::cost_status::scope_token(),
-                    initial_usage_owner.as_deref(),
-                    record,
-                )
-                .await
-            } else {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "initial usage has no captured native origin",
-                ))
-            };
-            if let Err(error) = settled {
-                let message = format!(
-                    "Cannot start the turn while classifier usage remains unsettled: {error}"
+            if !record.has_captured_origin() {
+                tracing::warn!(
+                    source_id = %record.source_id,
+                    "initial usage has no captured native origin; continuing with unknown cost"
                 );
-                let _ = self
-                    .send_event(Event::error(ErrorEnvelope::classify(
-                        message.clone(),
-                        false,
-                    )))
-                    .await;
-                return SendMessageOutcome::NotStarted {
-                    error: Some(message),
-                };
+                continue;
+            }
+            if let Err(error) = crate::cost_status::settle_runtime_usage_record(
+                crate::cost_status::scope_token(),
+                initial_usage_owner.as_deref(),
+                record,
+            )
+            .await
+            {
+                tracing::warn!(
+                    source_id = %record.source_id,
+                    %error,
+                    "initial routed usage settlement failed; continuing with unknown cost"
+                );
             }
         }
         if autonomous && self.cancel_token.is_cancelled() {
@@ -7871,7 +7864,7 @@ impl Engine {
             None
         };
 
-        let turn_accounting_origin = self
+        let turn_accounting_origin = match self
             .config
             .compaction
             .runtime_cost_owner
@@ -7883,9 +7876,13 @@ impl Engine {
                 )
             })
             .transpose()
-            .map(|origin| {
-                origin.or_else(|| self.config.runtime_services.accounting_origin.clone())
-            });
+        {
+            Ok(origin) => origin.or_else(|| self.config.runtime_services.accounting_origin.clone()),
+            Err(error) => {
+                tracing::warn!(%error, "turn accounting origin unavailable; continuing without retained flush");
+                self.config.runtime_services.accounting_origin.clone()
+            }
+        };
 
         let previous_goal_objective = self.config.goal_objective.clone();
         let previous_goal_token_budget = self.config.goal_token_budget;
@@ -8183,7 +8180,7 @@ impl Engine {
         // so the stall watchdog never reports a turn that already ended.
         self.turn_heartbeat.idle();
         let _post_timing = codewhale_runtime::logging::PhaseTimer::start("turn_postprocessing");
-        let (mut status, mut error) = match turn_result {
+        let (mut status, error) = match turn_result {
             Ok(outcome) => outcome,
             Err(panic) => {
                 let detail = codewhale_util::utils::panic_message(&*panic);
@@ -8199,18 +8196,10 @@ impl Engine {
             }
         };
 
-        let accounting_settlement = match turn_accounting_origin {
-            Ok(Some(origin)) => origin.flush_retained_usage().await,
-            Ok(None) => Ok(()),
-            Err(error) => Err(error),
-        };
-        if let Err(accounting_error) = accounting_settlement {
-            if status == TurnOutcomeStatus::Completed {
-                status = TurnOutcomeStatus::Failed;
-            }
-            error.get_or_insert_with(|| {
-                format!("Turn usage remains unacknowledged: {accounting_error}")
-            });
+        if let Some(origin) = turn_accounting_origin
+            && let Err(accounting_error) = origin.flush_retained_usage().await
+        {
+            tracing::warn!(%accounting_error, "turn usage remains unacknowledged; keeping turn outcome");
         }
 
         // Update session usage
@@ -8492,11 +8481,11 @@ impl Engine {
         let purge = async {
             let origin =
                 if let Some(origin) = self.config.runtime_services.accounting_origin.clone() {
-                    origin
+                    Some(origin)
                 } else {
                     let scope = crate::cost_status::scope_token();
                     let session_id = self.session.id.clone();
-                    codewhale_runtime::runtime_control::owner_work(move || {
+                    match codewhale_runtime::runtime_control::owner_work(move || {
                         let manager = crate::session_manager::SessionManager::default_location()?;
                         Ok(crate::cost_status::NativeUsageOrigin::session(
                             scope,
@@ -8505,7 +8494,13 @@ impl Engine {
                         ))
                     })
                     .await
-                    .map_err(|error| format!("Purge accounting admission failed: {error}"))?
+                    {
+                        Ok(origin) => Some(origin),
+                        Err(error) => {
+                            tracing::warn!(%error, "purge accounting admission failed; continuing with unknown cost");
+                            None
+                        }
+                    }
                 };
             run_purge(
                 &client,
@@ -8693,8 +8688,7 @@ impl Engine {
             {
                 Ok(origin) => tool_context.accounting_origin = Some(origin),
                 Err(error) => {
-                    tracing::warn!(%error, "off-turn child accounting admission failed");
-                    return None;
+                    tracing::warn!(%error, "off-turn child accounting admission failed; continuing with unknown cost");
                 }
             }
         }

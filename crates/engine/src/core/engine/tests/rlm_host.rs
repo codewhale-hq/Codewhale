@@ -962,3 +962,101 @@ async fn a_plugin_completion_carries_no_constitution_and_no_plugin_prompt_sectio
     assert!(requests[1].tools.as_ref().is_none_or(Vec::is_empty));
     assert!(isolated_messages.contains("PLUGIN_PROMPT_SENTINEL"));
 }
+
+#[tokio::test]
+async fn a_complete_rlm_response_is_used_when_its_settlement_is_not_acknowledged() {
+    let _cost = crate::cost_status::test_scope();
+    let workspace = tempfile::tempdir().unwrap();
+    let broken_sessions_file = workspace.path().join("not-a-dir");
+    std::fs::write(&broken_sessions_file, b"file").unwrap();
+    let config = fixture_config("captured-model");
+    let mock = Arc::new(crate::llm_client::mock::MockLlmClient::new(Vec::new()));
+    mock.push_message_response(MessageResponse {
+        id: "rlm-complete-unsettled".into(),
+        r#type: "message".into(),
+        role: "assistant".into(),
+        content: vec![ContentBlock::Text {
+            text: "complete RLM reply without acknowledgement".into(),
+            cache_control: None,
+        }],
+        model: "captured-model".into(),
+        stop_reason: Some("end_turn".into()),
+        stop_sequence: None,
+        container: None,
+        usage: Usage {
+            input_tokens: 19,
+            output_tokens: 7,
+            ..Usage::default()
+        },
+        title: None,
+        stop_details: None,
+        refusal: None,
+    });
+    let (mut engine, _handle) = Engine::new_with_model_client(
+        EngineConfig {
+            workspace: workspace.path().to_path_buf(),
+            model: "captured-model".into(),
+            snapshots_enabled: false,
+            memory_enabled: false,
+            subagents_enabled: false,
+            terminal_chrome_enabled: false,
+            turn_wall_clock: Duration::from_secs(60),
+            ..EngineConfig::default()
+        },
+        &config,
+        Arc::new(ReplyStream {
+            replies: mock.clone(),
+            model: "captured-model".into(),
+        }),
+    );
+    install_fixture_route(&mut engine);
+    let mut context = admitted_context(&engine, "rlm-unacknowledged-origin");
+    context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+        crate::cost_status::scope_token(),
+        broken_sessions_file,
+        "broken-rlm-session".into(),
+    ));
+    let caller = CapturedRlmCaller::capture(
+        &engine,
+        &TurnAuthority::from_effective_fields(
+            engine.applied_runtime_authority().mode,
+            engine.applied_runtime_authority().allow_shell,
+            engine.applied_runtime_authority().trust_mode,
+            engine.applied_runtime_authority().auto_approve,
+            engine.applied_runtime_authority().approval_mode,
+        ),
+        &TurnRouteContext {
+            provider: engine.api_provider,
+            model: engine.session.model.clone(),
+            capabilities: engine.active_route_capabilities,
+            limits: engine.active_route_limits,
+            client: engine.codewhale_client.clone(),
+            api_config: Box::new(engine.api_config.clone()),
+            locale_tag: "en".into(),
+            role_models: engine.subagent_role_models(),
+            auto_model: false,
+            reasoning_effort: None,
+            reasoning_effort_auto: false,
+        },
+        &context,
+        "rlm-unacknowledged-turn",
+    )
+    .expect("capture caller");
+
+    let result = caller
+        .dispatch(RlmInvocation {
+            prompt: "deliver complete reply".into(),
+            mode: RlmMode::Completion,
+            prompt_policy: RlmPromptPolicy::Session,
+            max_tokens: None,
+            task_instructions: None,
+            deadline: Some(tokio::time::Instant::now() + Duration::from_secs(60)),
+            gate: None,
+            events: None,
+            usage: RlmUsageAccumulator::new(),
+        })
+        .await;
+    assert!(result.error.is_none(), "{result:?}");
+    assert_eq!(result.answer, "complete RLM reply without acknowledgement");
+    assert_eq!(mock.call_count(), 1);
+}

@@ -406,29 +406,41 @@ impl Engine {
             started_at,
         });
         core.accounting_owner = crate::cost_status::UsageSpendOwner::Primary;
-        core.accounting_origin =
-            if let Some(owner) = self.config.compaction.runtime_cost_owner.as_deref() {
-                Some(crate::cost_status::NativeUsageOrigin::runtime(
-                    crate::cost_status::scope_token(),
-                    owner,
-                )?)
-            } else if let Some(origin) = self.config.runtime_services.accounting_origin.clone() {
-                Some(origin)
-            } else {
-                let scope = crate::cost_status::scope_token();
-                let session_id = self.session.id.clone();
-                Some(
-                    codewhale_runtime::runtime_control::owner_work(move || {
-                        let manager = crate::session_manager::SessionManager::default_location()?;
-                        Ok(crate::cost_status::NativeUsageOrigin::session(
-                            scope,
-                            manager.sessions_dir().to_path_buf(),
-                            session_id,
-                        ))
-                    })
-                    .await?,
-                )
-            };
+        core.accounting_origin = if let Some(owner) =
+            self.config.compaction.runtime_cost_owner.as_deref()
+        {
+            match crate::cost_status::NativeUsageOrigin::runtime(
+                crate::cost_status::scope_token(),
+                owner,
+            ) {
+                Ok(origin) => Some(origin),
+                Err(error) => {
+                    tracing::warn!(%error, "review accounting origin unavailable; continuing with unknown cost");
+                    self.config.runtime_services.accounting_origin.clone()
+                }
+            }
+        } else if let Some(origin) = self.config.runtime_services.accounting_origin.clone() {
+            Some(origin)
+        } else {
+            let scope = crate::cost_status::scope_token();
+            let session_id = self.session.id.clone();
+            match codewhale_runtime::runtime_control::owner_work(move || {
+                let manager = crate::session_manager::SessionManager::default_location()?;
+                Ok(crate::cost_status::NativeUsageOrigin::session(
+                    scope,
+                    manager.sessions_dir().to_path_buf(),
+                    session_id,
+                ))
+            })
+            .await
+            {
+                Ok(origin) => Some(origin),
+                Err(error) => {
+                    tracing::warn!(%error, "review session accounting admission failed; continuing with unknown cost");
+                    None
+                }
+            }
+        };
         let result = tokio::select! {
             biased;
             result = crate::llm_client::observe_request_retries(Some(observation),
@@ -439,7 +451,7 @@ impl Engine {
             .stop_diagnostics
             .transport_retries
             .saturating_add(transport_retries.load(std::sync::atomic::Ordering::Relaxed));
-        let accounting = self
+        let accounting = match self
             .settle_provider_request_receipt(
                 &mut pending,
                 result.as_ref().ok().map(|value| &value.usage),
@@ -452,7 +464,13 @@ impl Engine {
                 },
             )
             .await
-            .map_err(anyhow::Error::msg)?;
+        {
+            Ok(accounting) => accounting,
+            Err(error) => {
+                tracing::warn!(%error, "review provider usage settlement failed; continuing with unknown cost");
+                None
+            }
+        };
         let mut result = result?;
         let accounting = result.source_records.last().cloned().or(accounting);
         turn.add_parent_usage(&result.usage);

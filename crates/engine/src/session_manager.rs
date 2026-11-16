@@ -3403,23 +3403,37 @@ impl SessionManager {
         for record in
             crate::cost_status::retained_session_usage_records(&self.sessions_dir, session_id)
         {
-            let Some((store, session, operation, scope)) = record.captured_session_origin()? else {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "retained usage lacks its native Session origin",
-                ));
-            };
-            if store != self.sessions_dir || session != session_id {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "retained usage belongs to another Session origin",
-                ));
-            }
-            if !record.is_acknowledged() {
-                self.persist_runtime_usage_record_admitted(session_id, &operation, &record)?;
-                record.acknowledge_persisted()?;
-                record.acknowledge_live_projection()?;
-                crate::cost_status::record_interactive_runtime_usage(scope, record.clone());
+            match record.captured_session_origin() {
+                Ok(Some((store, session, operation, scope)))
+                    if store == self.sessions_dir && session == session_id =>
+                {
+                    if !record.is_acknowledged() {
+                        if let Err(error) = self
+                            .persist_runtime_usage_record_admitted(session_id, &operation, &record)
+                            .and_then(|_| {
+                                record.acknowledge_persisted()?;
+                                record.acknowledge_live_projection()?;
+                                Ok(())
+                            })
+                        {
+                            tracing::warn!(%error, session_id = %session_id, source_id = %record.source_id, "retained usage could not be persisted; continuing with unknown cost");
+                        } else {
+                            crate::cost_status::record_interactive_runtime_usage(
+                                scope,
+                                record.clone(),
+                            );
+                        }
+                    }
+                }
+                Ok(Some(_)) => {
+                    tracing::warn!(session_id = %session_id, source_id = %record.source_id, "retained usage belongs to another Session origin; skipping");
+                }
+                Ok(None) => {
+                    tracing::warn!(session_id = %session_id, source_id = %record.source_id, "retained usage lacks native Session origin; skipping");
+                }
+                Err(error) => {
+                    tracing::warn!(%error, session_id = %session_id, source_id = %record.source_id, "retained usage origin inspection failed; skipping");
+                }
             }
             crate::cost_status::retire_session_usage_record(
                 &self.sessions_dir,

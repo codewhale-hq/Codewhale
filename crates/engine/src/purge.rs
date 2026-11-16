@@ -714,7 +714,7 @@ pub async fn run_purge(
     model: &str,
     reasoning_effort: Option<String>,
     max_tokens: u32,
-    accounting_origin: crate::cost_status::NativeUsageOrigin,
+    accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
 ) -> Result<PurgeResult, String> {
     // 1. Build the purge prompt from the current conversation.
     let prompt = build_purge_prompt(messages);
@@ -769,27 +769,37 @@ pub async fn run_purge(
     let source = crate::cost_status::NativeUsageSource::capture_with_origin(
         format!("purge:{}", uuid::Uuid::new_v4()),
         crate::cost_status::UsageSpendOwner::Auxiliary,
-        Some(accounting_origin),
+        accounting_origin,
     );
-    let observation = source
-        .observe_route(&cost_route)
-        .map_err(|error| error.to_string())?;
-    source
-        .admit_dispatch(&cost_route)
-        .await
-        .map_err(|error| error.to_string())?;
+    let observation = match source.observe_route(&cost_route) {
+        Ok(observation) => observation,
+        Err(error) => {
+            tracing::warn!(%error, "purge route observation failed; continuing with unknown cost");
+            source.observation()
+        }
+    };
+    if let Err(error) = source.admit_dispatch(&cost_route).await {
+        tracing::warn!(%error, "purge dispatch admission failed; continuing with unknown cost");
+    }
     let wire = observation.wire_observations.clone();
     let response = crate::llm_client::observe_request_retries(
         Some(observation),
         client.create_message(request),
     )
     .await;
-    let record = source
-        .response_record(&cost_route, &response, &wire.drain())
-        .map_err(|error| error.to_string())?;
-    crate::cost_status::settle_runtime_usage_record(cost_scope, None, &record)
-        .await
-        .map_err(|error| format!("Purge usage settlement failed: {error}"))?;
+    let wire = wire.drain();
+    match source.response_record(&cost_route, &response, &wire) {
+        Ok(record) => {
+            if let Err(error) =
+                crate::cost_status::settle_runtime_usage_record(cost_scope, None, &record).await
+            {
+                tracing::warn!(%error, "purge usage settlement failed; continuing with unknown cost");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "purge usage preparation failed; continuing with unknown cost");
+        }
+    }
     let response = response.map_err(|error| format!("Purge API error: {error}"))?;
 
     // A truncated response can still carry a complete-looking `purge_context`
@@ -930,12 +940,14 @@ mod tests {
                 "mock",
                 None,
                 4096,
-                crate::session_manager::SessionManager::default_location()
-                    .expect("fixture manager")
-                    .expect_absent_session(session_id)
-                    .expect("native fixture source")
-                    .usage_origin(crate::cost_status::scope_token())
-                    .expect("native fixture origin"),
+                Some(
+                    crate::session_manager::SessionManager::default_location()
+                        .expect("fixture manager")
+                        .expect_absent_session(session_id)
+                        .expect("native fixture source")
+                        .usage_origin(crate::cost_status::scope_token())
+                        .expect("native fixture origin"),
+                ),
             ))
             .unwrap();
         assert_eq!(messages, original);
@@ -1284,12 +1296,14 @@ mod tests {
             "mock",
             None,
             4096,
-            crate::session_manager::SessionManager::default_location()
-                .expect("fixture manager")
-                .expect_absent_session("purge-test")
-                .expect("native fixture source")
-                .usage_origin(crate::cost_status::scope_token())
-                .expect("native fixture origin"),
+            Some(
+                crate::session_manager::SessionManager::default_location()
+                    .expect("fixture manager")
+                    .expect_absent_session("purge-test")
+                    .expect("native fixture source")
+                    .usage_origin(crate::cost_status::scope_token())
+                    .expect("native fixture origin"),
+            ),
         )
         .await
         .unwrap();
@@ -1336,12 +1350,14 @@ mod tests {
             "mock",
             None,
             4096,
-            crate::session_manager::SessionManager::default_location()
-                .expect("fixture manager")
-                .expect_absent_session("purge-test")
-                .expect("native fixture source")
-                .usage_origin(crate::cost_status::scope_token())
-                .expect("native fixture origin"),
+            Some(
+                crate::session_manager::SessionManager::default_location()
+                    .expect("fixture manager")
+                    .expect_absent_session("purge-test")
+                    .expect("native fixture source")
+                    .usage_origin(crate::cost_status::scope_token())
+                    .expect("native fixture origin"),
+            ),
         )
         .await
         .unwrap();
@@ -1376,12 +1392,14 @@ mod tests {
             "mock",
             None,
             4096,
-            crate::session_manager::SessionManager::default_location()
-                .expect("fixture manager")
-                .expect_absent_session("purge-test")
-                .expect("native fixture source")
-                .usage_origin(crate::cost_status::scope_token())
-                .expect("native fixture origin"),
+            Some(
+                crate::session_manager::SessionManager::default_location()
+                    .expect("fixture manager")
+                    .expect_absent_session("purge-test")
+                    .expect("native fixture source")
+                    .usage_origin(crate::cost_status::scope_token())
+                    .expect("native fixture origin"),
+            ),
         )
         .await
         .unwrap_err();
@@ -1405,15 +1423,58 @@ mod tests {
             "mock",
             None,
             4096,
-            crate::session_manager::SessionManager::default_location()
-                .expect("fixture manager")
-                .expect_absent_session("purge-test")
-                .expect("native fixture source")
-                .usage_origin(crate::cost_status::scope_token())
-                .expect("native fixture origin"),
+            Some(
+                crate::session_manager::SessionManager::default_location()
+                    .expect("fixture manager")
+                    .expect_absent_session("purge-test")
+                    .expect("native fixture source")
+                    .usage_origin(crate::cost_status::scope_token())
+                    .expect("native fixture origin"),
+            ),
         )
         .await
         .unwrap_err();
         assert!(err.contains("Purge API error"));
+    }
+
+    #[tokio::test]
+    async fn purge_succeeds_with_unknown_cost() {
+        let _cost_guard = crate::cost_status::test_scope();
+        let workspace = tempfile::tempdir().unwrap();
+        let broken_sessions_file = workspace.path().join("not-a-sessions-dir");
+        std::fs::write(&broken_sessions_file, b"file").unwrap();
+
+        for origin in [
+            None,
+            Some(crate::cost_status::NativeUsageOrigin::session(
+                crate::cost_status::scope_token(),
+                broken_sessions_file,
+                "purge-broken-session".to_string(),
+            )),
+        ] {
+            let mock = MockLlmClient::new(vec![]);
+            mock.push_message_response(msg_response_with_tool_call(json!([
+                {"op": "remove", "msg": 2}
+            ])));
+            let messages = vec![
+                msg_text("user", "hello"),
+                msg_text("assistant", "remove me"),
+                msg_text("user", "bye"),
+            ];
+            let result = run_purge(
+                &mock,
+                ProviderKind::Deepseek,
+                "purge-unknown-cost",
+                &messages,
+                "mock",
+                None,
+                4096,
+                origin,
+            )
+            .await
+            .expect("purge must succeed with unknown cost");
+            assert_eq!(result.removed_count, 1);
+            assert_eq!(result.messages.len(), 2);
+        }
     }
 }

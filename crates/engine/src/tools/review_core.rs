@@ -757,21 +757,54 @@ pub(crate) async fn accounted_model_call(
         owner,
         origin,
     );
-    let observation = source.observe_route(&route)?;
-    source.admit_dispatch(&route).await?;
+    let observation = match source.observe_route(&route) {
+        Ok(observation) => observation,
+        Err(error) => {
+            tracing::warn!(%error, "review accounting observation failed; continuing with unknown cost");
+            source.observation()
+        }
+    };
+    if let Err(error) = source.admit_dispatch(&route).await {
+        tracing::warn!(%error, "review source admission failed; continuing with unknown cost");
+    }
     let wire = observation.wire_observations.clone();
     let response =
         crate::llm_client::observe_request_retries(Some(observation), client.create_message(body))
             .await;
-    let record = source.response_record(&route, &response, &wire.drain())?;
-    if record.has_captured_origin() {
-        crate::cost_status::settle_runtime_usage_record(
-            crate::cost_status::scope_token(),
-            None,
-            &record,
-        )
-        .await?;
-    }
+    let wire = wire.drain();
+    let record = match source.response_record(&route, &response, &wire) {
+        Ok(record) => {
+            if record.has_captured_origin()
+                && let Err(error) = crate::cost_status::settle_runtime_usage_record(
+                    crate::cost_status::scope_token(),
+                    None,
+                    &record,
+                )
+                .await
+            {
+                tracing::warn!(%error, "review usage remains unacknowledged; continuing with unknown cost");
+            }
+            record
+        }
+        Err(error) => {
+            tracing::warn!(%error, "review usage settlement failed; continuing with unknown cost");
+            let usage = response
+                .as_ref()
+                .map(|response| response.usage.clone())
+                .unwrap_or_default();
+            if require_usd_price {
+                crate::cost_status::RuntimeUsageRecord::legacy(
+                    source.source_id(),
+                    crate::cost_status::EffectiveRouteUsage {
+                        route: route.clone(),
+                        usage,
+                    },
+                )
+            } else {
+                crate::cost_status::unknown_cost_record(source.source_id(), &route, usage)
+            }
+        }
+    };
     Ok((response?, record))
 }
 
@@ -1982,5 +2015,51 @@ mod tests {
         let tools = repository_tool_workspace(work.path(), None);
         assert!(!marker.exists(), "nested filter ran");
         assert!(tools.is_some());
+    }
+
+    #[tokio::test]
+    async fn review_succeeds_when_its_usage_cannot_be_settled() {
+        let _cost = crate::cost_status::test_scope();
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let broken_sessions_file = workspace.path().join("not-a-sessions-dir");
+        std::fs::write(&broken_sessions_file, b"file").expect("create regular file sentinel");
+
+        let client = ScriptedClient::new(vec![response(vec![ContentBlock::Text {
+            text: final_review(),
+            cache_control: None,
+        }])]);
+        let mut request = ReviewCoreRequest::new(DIFF, "Review with broken accounting.");
+        request.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+            crate::cost_status::scope_token(),
+            broken_sessions_file.clone(),
+            "review-unsettled-session".to_string(),
+        ));
+        let result = run_review_core(&client, "test-model", request)
+            .await
+            .expect("review without money cap must succeed when usage cannot be settled");
+        assert_eq!(result.outcome, ReviewCoreOutcome::Completed);
+        assert_eq!(client.seen.lock().expect("lock").len(), 1);
+
+        let capped_client = ScriptedClient::new(vec![response(vec![ContentBlock::Text {
+            text: final_review(),
+            cache_control: None,
+        }])]);
+        let mut capped_request = ReviewCoreRequest::new(DIFF, "Review with unquoted money cap.");
+        capped_request.money_cap_usd = Some(1.0);
+        capped_request.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+            crate::cost_status::scope_token(),
+            broken_sessions_file,
+            "review-capped-session".to_string(),
+        ));
+        let err = match run_review_core(&capped_client, "test-model", capped_request).await {
+            Ok(_) => panic!("money cap without a verified frozen USD quote must still refuse"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("review money cap requires a verified frozen USD quote before dispatch"),
+            "{err:#}"
+        );
+        assert_eq!(capped_client.seen.lock().expect("lock").len(), 0);
     }
 }

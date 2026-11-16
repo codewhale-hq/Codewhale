@@ -1508,14 +1508,29 @@ impl ChildDispatchedRequest {
         &mut self,
         observation: &crate::llm_client::RequestRetryObservation,
     ) -> std::io::Result<()> {
-        self.accounting_source
-            .bind_dispatch(&self.route, observation)?;
-        if let Some(record) = self.accounting_source.admit_dispatch(&self.route).await? {
-            self.job
-                .authority
-                .accounting_projection()
-                .project_settled(&record)
-                .await?;
+        if let Err(error) = self
+            .accounting_source
+            .bind_dispatch(&self.route, observation)
+        {
+            tracing::warn!(%error, "child usage bind failed; continuing with unknown cost");
+            return Ok(());
+        }
+        match self.accounting_source.admit_dispatch(&self.route).await {
+            Ok(Some(record)) => {
+                if let Err(error) = self
+                    .job
+                    .authority
+                    .accounting_projection()
+                    .project_settled(&record)
+                    .await
+                {
+                    tracing::warn!(%error, "child usage projection failed; continuing with unknown cost");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, "child dispatch admission failed; continuing with unknown cost");
+            }
         }
         Ok(())
     }

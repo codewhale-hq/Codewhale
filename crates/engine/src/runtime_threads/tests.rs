@@ -27394,3 +27394,144 @@ async fn runtime_threads_syncs_child_auto_review_blocks_without_retry_grant() ->
     owner_mgr.shutdown_and_wait().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn a_runtime_thread_turn_finishes_when_an_inherited_usage_receipt_is_missing() -> Result<()> {
+    let _cost_scope = crate::cost_status::test_scope();
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+
+    let mut present_owner = sample_turn(
+        &thread.id,
+        "turn_present_owner",
+        RuntimeTurnStatus::Completed,
+    );
+    present_owner.schema_version = SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION;
+    manager.store.save_turn(&present_owner)?;
+
+    let mut inherited_from_present = sample_turn(
+        &thread.id,
+        "turn_missing_specific_receipt",
+        RuntimeTurnStatus::Completed,
+    );
+    inherited_from_present.schema_version = SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION;
+    inherited_from_present.source_usage_origin_turn_id = Some("turn_present_owner".to_string());
+    let route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
+        ProviderKind::Deepseek,
+        "deepseek",
+        "deepseek-v4-flash",
+        Some("https://api.deepseek.com/v1"),
+        Utc::now(),
+    );
+    let record_b = crate::cost_status::NativeUsageSource::capture(
+        "runtime:missing-receipt-key",
+        crate::cost_status::UsageSpendOwner::Primary,
+    )
+    .reported(
+        &route,
+        &Usage {
+            input_tokens: 5,
+            output_tokens: 2,
+            ..Usage::default()
+        },
+    )?;
+    let key_b = routed_usage_source_fingerprint(&record_b.source_id);
+    inherited_from_present
+        .routed_usage_source_ids
+        .push(key_b.clone());
+    inherited_from_present
+        .source_usage_records
+        .insert(key_b, record_b.persisted());
+    inherited_from_present.source_accounting = true;
+    manager.store.save_turn(&inherited_from_present)?;
+
+    let mut inherited_turn = sample_turn(
+        &thread.id,
+        "turn_missing_original_receipt",
+        RuntimeTurnStatus::Completed,
+    );
+    inherited_turn.schema_version = SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION;
+    inherited_turn.source_usage_origin_turn_id = Some("turn_missing_owner".to_string());
+    let record = crate::cost_status::NativeUsageSource::capture(
+        "runtime:missing-inherited-source",
+        crate::cost_status::UsageSpendOwner::Primary,
+    )
+    .reported(
+        &route,
+        &Usage {
+            input_tokens: 9,
+            output_tokens: 3,
+            ..Usage::default()
+        },
+    )?;
+    let key = routed_usage_source_fingerprint(&record.source_id);
+    inherited_turn.routed_usage_source_ids.push(key.clone());
+    inherited_turn
+        .source_usage_records
+        .insert(key, record.persisted());
+    inherited_turn.source_accounting = true;
+    manager.store.save_turn(&inherited_turn)?;
+
+    let summary = manager
+        .aggregate_usage(None, None, UsageGroupBy::Thread)
+        .await?;
+    assert_eq!(summary.totals.input_tokens, 14);
+    assert_eq!(summary.totals.output_tokens, 5);
+
+    let mut harness = install_mock_engine(&manager, &thread.id).await;
+    let live_turn = manager
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "finish cleanly with missing inherited usage".to_string(),
+                ..StartTurnRequest::default()
+            },
+        )
+        .await?;
+    assert!(matches!(
+        harness.rx_op.recv().await,
+        Some(Op::SendMessage(TurnSpec { .. }))
+    ));
+    harness
+        .tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "done".to_string(),
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage {
+                input_tokens: 4,
+                output_tokens: 2,
+                ..Usage::default()
+            },
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+    let terminal = wait_for_terminal_turn(&manager, &live_turn.id).await?;
+    assert_eq!(terminal.status, RuntimeTurnStatus::Completed);
+    drop(harness);
+    manager.shutdown_and_wait().await?;
+    Ok(())
+}

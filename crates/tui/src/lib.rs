@@ -11457,7 +11457,8 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         }),
         _ => None,
     };
-    let (_, review_source, _review_lease) = admit_cli_saved_operation(
+    let mut review_accounting_origin = None;
+    let _review_lease = match admit_cli_saved_operation(
         None,
         uuid::Uuid::new_v4().to_string(),
         review_workspace.clone(),
@@ -11468,12 +11469,24 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         format!("Review the following diff:\n\n{diff}"),
     )
     .await
-    .context("could not admit the review's saved accounting operation")?;
-    let review_accounting_origin =
-        review_source.usage_origin(codewhale_engine::cost_status::scope_token())?;
+    {
+        Ok((_, review_source, lease)) => {
+            match review_source.usage_origin(codewhale_engine::cost_status::scope_token()) {
+                Ok(origin) => review_accounting_origin = Some(origin),
+                Err(error) => {
+                    tracing::warn!(%error, "review accounting origin unavailable; continuing with unknown cost")
+                }
+            }
+            Some(lease)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not admit review saved accounting operation; continuing with unknown cost");
+            None
+        }
+    };
     let mut review_context = codewhale_engine::tools::spec::ToolContext::new(&review_workspace)
         .with_features(config.features());
-    review_context.accounting_origin = Some(review_accounting_origin.clone());
+    review_context.accounting_origin = review_accounting_origin.clone();
     // #6510: one review prompt authority. Plain diffs and PRs both ask for
     // the structured review contract; a plain diff renders it locally.
     //
@@ -11515,7 +11528,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         &model,
         route_input,
         force_configured_route,
-        Some(review_accounting_origin.clone()),
+        review_accounting_origin.clone(),
     )
     .await?;
     let execution_config = review_config_with_spend_rates(config, &route, review_rates)?;
@@ -11604,7 +11617,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         request.budget = review_budget.tool_budget();
         request.max_output_tokens = Some(review_allowance);
         request.reasoning_effort = reasoning_effort;
-        request.accounting_origin = Some(review_accounting_origin.clone());
+        request.accounting_origin = review_accounting_origin.clone();
         if let Some(cap) = review_budget
             .money_cap_usd
             .filter(|_| review_budget.money_limit_supported)
@@ -15183,7 +15196,8 @@ async fn run_workflow_tool_command_inner(
     initialize_cloud_facts(&config);
     let model = resolve_exec_model(&config, None);
     let workflow_session_id = uuid::Uuid::new_v4().to_string();
-    let (_, workflow_source, _workflow_lease) = admit_cli_saved_operation(
+    let mut workflow_accounting_origin = None;
+    let _workflow_lease = match admit_cli_saved_operation(
         None,
         workflow_session_id.clone(),
         workspace.clone(),
@@ -15194,15 +15208,27 @@ async fn run_workflow_tool_command_inner(
         format!("Run this Workflow:\n{}", serde_json::to_string(&input)?),
     )
     .await
-    .context("could not admit the Workflow's saved accounting operation")?;
-    let workflow_accounting_origin =
-        workflow_source.usage_origin(codewhale_engine::cost_status::scope_token())?;
+    {
+        Ok((_, workflow_source, lease)) => {
+            match workflow_source.usage_origin(codewhale_engine::cost_status::scope_token()) {
+                Ok(origin) => workflow_accounting_origin = Some(origin),
+                Err(error) => {
+                    tracing::warn!(%error, "workflow accounting origin unavailable; continuing with unknown cost")
+                }
+            }
+            Some(lease)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not admit the Workflow's saved accounting operation; continuing with unknown cost");
+            None
+        }
+    };
     let route = resolve_cli_exec_route(
         &config,
         &model,
         "Run a checked-in Workflow through the host runtime",
         true,
-        Some(workflow_accounting_origin.clone()),
+        workflow_accounting_origin.clone(),
     )
     .await?;
     let execution_config = config_for_cli_route(&config, &route)?;
@@ -15409,7 +15435,7 @@ async fn build_direct_workflow_tool(
     workspace: &Path,
     event_tx: tokio::sync::mpsc::Sender<codewhale_engine::core::events::Event>,
     plugin_registry: std::sync::Arc<codewhale_plugins::PluginRegistry>,
-    accounting_origin: codewhale_engine::cost_status::NativeUsageOrigin,
+    accounting_origin: Option<codewhale_engine::cost_status::NativeUsageOrigin>,
 ) -> Result<(
     codewhale_engine::tools::workflow::WorkflowTool,
     codewhale_engine::tools::ToolContext,
@@ -15472,7 +15498,7 @@ async fn build_direct_workflow_tool(
             config.sandbox_network_access,
         ),
     ));
-    context.accounting_origin = Some(accounting_origin);
+    context.accounting_origin = accounting_origin;
     let network_policy = config.network.clone().map(|network| {
         codewhale_net::network_policy::NetworkPolicyDecider::with_default_audit(
             codewhale_net::network_policy::NetworkPolicy::from(network),

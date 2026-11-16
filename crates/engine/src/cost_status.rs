@@ -3627,6 +3627,19 @@ pub(crate) fn retire_session_usage_records(
     Ok(())
 }
 
+pub(crate) fn unknown_cost_record(
+    source_id: impl Into<String>,
+    route: &EffectiveRouteEnvelope,
+    usage: Usage,
+) -> RuntimeUsageRecord {
+    let mut route = route.sanitized_for_persistence();
+    if route.billing_mode != RouteBillingMode::Subscription {
+        route.billing_mode = RouteBillingMode::Unknown;
+    }
+    route.provider_live_pricing = None;
+    RuntimeUsageRecord::legacy(source_id, EffectiveRouteUsage { route, usage })
+}
+
 pub async fn settle_runtime_usage_record(
     scope: CostScopeToken,
     runtime_owner: Option<&str>,

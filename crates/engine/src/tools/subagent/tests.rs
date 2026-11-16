@@ -29995,3 +29995,75 @@ async fn subagent_return_check_skips_non_auto_modes_and_zero_actions_and_deliver
         )));
     }
 }
+
+#[tokio::test]
+async fn a_sub_agent_finishes_when_its_usage_source_changed_route() {
+    let _cost_scope = crate::cost_status::test_scope();
+    let workspace = tempdir().expect("tempdir");
+    let agent_id = "agent_route_changed";
+    let mut manager = SubAgentManager::new(workspace.path().to_path_buf(), 2);
+    manager.register_worker_for_session(
+        make_worker_spec(agent_id, workspace.path().to_path_buf()),
+        "sess-route-change",
+        None,
+    );
+
+    let initial_route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
+        ProviderKind::Deepseek,
+        "deepseek",
+        "deepseek-v4-flash",
+        Some("https://api.deepseek.com/v1"),
+        chrono::Utc::now(),
+    );
+    let changed_route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
+        ProviderKind::Openai,
+        "openai",
+        "gpt-5",
+        Some("https://api.openai.com/v1"),
+        chrono::Utc::now(),
+    );
+    let source_id = "subagent:route-change-source";
+    let key = crate::cost_status::usage_source_fingerprint(source_id);
+    {
+        let worker = manager
+            .worker_records
+            .get_mut(agent_id)
+            .expect("registered worker");
+        worker.missing_usage_sources.insert(
+            key.clone(),
+            crate::cost_status::MissingUsageCoverage::for_route(
+                &initial_route,
+                crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            ),
+        );
+    }
+
+    let origin = crate::cost_status::NativeUsageOrigin::session(
+        crate::cost_status::scope_token(),
+        workspace.path().to_path_buf(),
+        "sess-route-change".to_string(),
+    );
+    let source = crate::cost_status::NativeUsageSource::capture_with_origin(
+        source_id,
+        crate::cost_status::UsageSpendOwner::Auxiliary,
+        Some(origin),
+    );
+    let settled_other_route = source
+        .reported(
+            &changed_route,
+            &Usage {
+                input_tokens: 15,
+                output_tokens: 6,
+                ..Usage::default()
+            },
+        )
+        .expect("source settles on new route");
+
+    let recorded = manager
+        .record_worker_source_admitted(agent_id, &settled_other_route)
+        .expect("route change must not fail sub-agent usage recording");
+    assert!(recorded);
+    let worker = manager.get_worker_record(agent_id).expect("worker record");
+    assert!(worker.has_unreported_usage);
+    assert!(worker.source_usage_records.contains_key(&key));
+}

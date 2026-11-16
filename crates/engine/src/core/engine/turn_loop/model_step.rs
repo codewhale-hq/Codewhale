@@ -123,10 +123,8 @@ impl Engine {
         {
             Ok(origin) => origin.or_else(|| self.config.runtime_services.accounting_origin.clone()),
             Err(error) => {
-                return PhaseResult::Return((
-                    TurnOutcomeStatus::Failed,
-                    Some(format!("provider accounting admission failed: {error}")),
-                ));
+                tracing::warn!(%error, "provider accounting admission failed; continuing with unknown cost");
+                self.config.runtime_services.accounting_origin.clone()
             }
         };
         let accounting_source = crate::cost_status::NativeUsageSource::capture_with_origin(
@@ -135,16 +133,13 @@ impl Engine {
             accounting_origin.filter(|_| self.child_host.is_none() && self.rlm_host.is_none()),
         );
         if let Err(error) = accounting_source.bind_dispatch(&request_route, &retry_observation) {
-            return PhaseResult::Return((TurnOutcomeStatus::Failed, Some(error.to_string())));
+            tracing::warn!(%error, "provider usage bind failed; continuing with unknown cost");
         }
         if self.child_host.is_none()
             && self.rlm_host.is_none()
             && let Err(error) = accounting_source.admit_dispatch(&request_route).await
         {
-            return PhaseResult::Return((
-                TurnOutcomeStatus::Failed,
-                Some(format!("provider source admission failed: {error}")),
-            ));
+            tracing::warn!(%error, "provider source admission failed; continuing with unknown cost");
         }
         let dispatch_observation = retry_observation.clone();
         let mut request_receipt = Some(PendingProviderRequestReceipt {
@@ -185,13 +180,11 @@ impl Engine {
                 if let Some(dispatch) = rlm_dispatch.as_mut()
                     && let Err(error) = dispatch.bind_dispatch(&dispatch_observation).await
                 {
-                    return PhaseResult::Return((
-                        TurnOutcomeStatus::Failed,
-                        Some(error.to_string()),
-                    ));
+                    tracing::warn!(%error, "RLM usage bind failed; continuing with unknown cost");
                 }
-                let opening =
-                    crate::llm_client::observe_request_retries(Some(retry_observation), async {
+                let opening = crate::llm_client::observe_request_retries(
+                    Some(retry_observation),
+                    async {
                         request_started = true;
                         if let Some(receipt) = request_receipt.as_mut() {
                             receipt.invoked = true;
@@ -221,8 +214,11 @@ impl Engine {
                                 source,
                                 route,
                             ));
-                            if let Some(dispatch) = child_dispatch.as_mut() {
-                                dispatch.bind_dispatch(&dispatch_observation).await?;
+                            if let Some(dispatch) = child_dispatch.as_mut()
+                                && let Err(error) =
+                                    dispatch.bind_dispatch(&dispatch_observation).await
+                            {
+                                tracing::warn!(%error, "child usage bind failed; continuing with unknown cost");
                             }
                         }
                         if let Some(job) = child_job.as_ref() {
@@ -239,7 +235,8 @@ impl Engine {
                         } else {
                             client.create_message_stream(stream_request.clone()).await
                         }
-                    });
+                    },
+                );
                 tokio::pin!(opening);
                 tokio::select! {
                     biased;
@@ -539,7 +536,7 @@ impl Engine {
             stream_start,
             first_token_at,
             request_dispatched_at,
-            mut stream_error,
+            stream_error,
         } = self
             .process_stream(
                 stream,
@@ -568,7 +565,7 @@ impl Engine {
             .as_ref()
             .is_some_and(|dispatch| !dispatch.settlement_acknowledged())
         {
-            stream_error.get_or_insert_with(|| "RLM usage settlement failed".to_string());
+            tracing::warn!("RLM usage settlement was not acknowledged; using complete response");
         }
         let response_stream_failed = steer_preempted || stream_error.is_some();
         progress.turn_error = progress.turn_error.take().or(stream_error.clone());

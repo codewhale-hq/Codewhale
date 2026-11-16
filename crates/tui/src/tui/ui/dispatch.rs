@@ -733,15 +733,15 @@ pub(crate) fn prepare_user_dispatch(
     };
     let allowed_tools = allowed_tools_for_message(app.active_allowed_tools.clone(), &message);
 
-    let accounting_origin = app
-        .session_write_receipt
-        .as_ref()
-        .map(|source| source.usage_origin(codewhale_engine::cost_status::scope_token()))
-        .transpose()?;
-    anyhow::ensure!(
-        !should_auto_resolve || accounting_origin.is_some(),
-        "Auto routing has no admitted session accounting origin"
-    );
+    let accounting_origin = app.session_write_receipt.as_ref().and_then(|source| {
+        match source.usage_origin(codewhale_engine::cost_status::scope_token()) {
+            Ok(origin) => Some(origin),
+            Err(error) => {
+                tracing::warn!(%error, "auto routing session accounting origin unavailable; continuing with unknown cost");
+                None
+            }
+        }
+    });
     let input_authorship = if extension_command {
         codewhale_engine::core::ops::TurnInputAuthorship::NotPerson
     } else if let Some(plan) = message.approved_plan.as_ref() {

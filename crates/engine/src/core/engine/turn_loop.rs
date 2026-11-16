@@ -1530,53 +1530,47 @@ impl Engine {
         let origin = if let Some(child) = child_accounting.as_ref() {
             child.usage_origin()
         } else {
-            self.config
+            match self
+                .config
                 .compaction
                 .runtime_cost_owner
                 .as_deref()
                 .map(|owner| crate::cost_status::NativeUsageOrigin::runtime(cost_scope, owner))
                 .transpose()
-                .map_err(|error| {
-                    Box::new((
-                        ToolError::execution_failed(format!(
-                            "review accounting admission failed: {error}"
-                        )),
-                        AutoReviewOutcomeEffect::Continue,
-                    ))
-                })?
-                .or_else(|| self.config.runtime_services.accounting_origin.clone())
+            {
+                Ok(origin) => {
+                    origin.or_else(|| self.config.runtime_services.accounting_origin.clone())
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "review accounting admission failed; continuing with unknown cost");
+                    self.config.runtime_services.accounting_origin.clone()
+                }
+            }
         };
         let source = crate::cost_status::NativeUsageSource::capture_with_origin(
             format!("auto-review:{}:{tool_id}", turn.id),
             crate::cost_status::UsageSpendOwner::Auxiliary,
             origin,
         );
-        let observation = source.observe_route(&review_route).map_err(|error| {
-            Box::new((
-                ToolError::execution_failed(error.to_string()),
-                AutoReviewOutcomeEffect::Continue,
-            ))
-        })?;
-        if let Some(record) = source
-            .admit_dispatch(&review_route)
-            .await
-            .map_err(|error| {
-                Box::new((
-                    ToolError::execution_failed(error.to_string()),
-                    AutoReviewOutcomeEffect::Continue,
-                ))
-            })?
-            && let Some(child) = child_accounting.as_ref()
-        {
-            child
-                .project_settled_response(&record)
-                .await
-                .map_err(|error| {
-                    Box::new((
-                        ToolError::execution_failed(error.to_string()),
-                        AutoReviewOutcomeEffect::Continue,
-                    ))
-                })?;
+        let observation = match source.observe_route(&review_route) {
+            Ok(observation) => observation,
+            Err(error) => {
+                tracing::warn!(%error, "review accounting observation failed; continuing with unknown cost");
+                source.observation()
+            }
+        };
+        match source.admit_dispatch(&review_route).await {
+            Ok(Some(record)) => {
+                if let Some(child) = child_accounting.as_ref()
+                    && let Err(error) = child.project_settled_response(&record).await
+                {
+                    tracing::warn!(%error, "review child usage projection failed; continuing with unknown cost");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, "review dispatch admission failed; continuing with unknown cost");
+            }
         }
         let wire = observation.wire_observations.clone();
         let started = Instant::now();
@@ -1596,46 +1590,35 @@ impl Engine {
         let usage = review.usage.as_ref().unwrap_or(&empty);
         let has_response = review.usage.is_some();
         let coverage = wire.usage_coverage(usage_has_reported_data(usage), has_response);
-        let record = source
-            .prepare_observed(
-                &review_route,
-                usage,
-                coverage,
-                if has_response {
-                    crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
-                } else {
-                    crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
-                },
-                &wire,
-            )
-            .map_err(|error| {
-                Box::new((
-                    ToolError::execution_failed(error.to_string()),
-                    AutoReviewOutcomeEffect::Continue,
-                ))
-            })?;
-        if let Some(child) = child_accounting.as_ref() {
-            child.settle_response(&record).await.map_err(|error| {
-                Box::new((
-                    ToolError::execution_failed(error.to_string()),
-                    AutoReviewOutcomeEffect::Continue,
-                ))
-            })?;
-        } else {
-            crate::cost_status::settle_runtime_usage_record(
-                cost_scope,
-                self.config.compaction.runtime_cost_owner.as_deref(),
-                &record,
-            )
-            .await
-            .map_err(|error| {
-                Box::new((
-                    ToolError::execution_failed(format!(
-                        "review usage remains unacknowledged: {error}"
-                    )),
-                    AutoReviewOutcomeEffect::Continue,
-                ))
-            })?;
+        match source.prepare_observed(
+            &review_route,
+            usage,
+            coverage,
+            if has_response {
+                crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
+            } else {
+                crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+            },
+            &wire,
+        ) {
+            Ok(record) => {
+                if let Some(child) = child_accounting.as_ref() {
+                    if let Err(error) = child.settle_response(&record).await {
+                        tracing::warn!(%error, "review child usage settlement failed; continuing with unknown cost");
+                    }
+                } else if let Err(error) = crate::cost_status::settle_runtime_usage_record(
+                    cost_scope,
+                    self.config.compaction.runtime_cost_owner.as_deref(),
+                    &record,
+                )
+                .await
+                {
+                    tracing::warn!(%error, "review usage remains unacknowledged; continuing with unknown cost");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "review usage preparation failed; continuing with unknown cost");
+            }
         }
         if let Some(usage) = &review.usage {
             turn.add_usage(usage);
@@ -5401,7 +5384,6 @@ impl Engine {
             );
             match prepared {
                 Ok(record) => {
-                    accounting_record = Some(record.clone());
                     match crate::cost_status::settle_runtime_usage_record(
                         pending.accounting_scope,
                         pending.accounting_owner.as_deref(),
@@ -5409,24 +5391,35 @@ impl Engine {
                     )
                     .await
                     {
-                        Ok(()) => None,
-                        Err(error) => Some(error.to_string()),
+                        Ok(()) => {
+                            accounting_record = Some(record);
+                            None
+                        }
+                        Err(error) => {
+                            accounting_record = Some(crate::cost_status::unknown_cost_record(
+                                &record.source_id,
+                                &pending.route,
+                                usage.cloned().unwrap_or_default(),
+                            ));
+                            Some(error.to_string())
+                        }
                     }
                 }
-                Err(error) => Some(error.to_string()),
+                Err(error) => {
+                    accounting_record = Some(crate::cost_status::unknown_cost_record(
+                        pending.accounting_source.source_id(),
+                        &pending.route,
+                        usage.cloned().unwrap_or_default(),
+                    ));
+                    Some(error.to_string())
+                }
             }
         } else {
             None
         };
         if let Some(error) = accounting_error.as_ref() {
-            tracing::error!(%error, "provider usage has no durable acknowledgement");
-            let _ = self
-                .send_event(Event::status(format!(
-                    "Provider usage settlement is uncertain: {error}"
-                )))
-                .await;
+            tracing::warn!(%error, "provider usage has no durable acknowledgement; continuing with unknown cost");
         }
-        let failed = accounting_error.clone();
         let _ = self.send_event(Event::ProviderRequestReceipt {
             receipt: json!({
                 "source_accounting": pending.primary,
@@ -5454,10 +5447,7 @@ impl Engine {
                 "cache_attribution": "Local prefix changes and wire schema measurements are context for reported usage, not proof that eviction caused a miss or that unreported retries were free.",
             }),
         }).await;
-        match failed {
-            Some(error) => Err(error),
-            None => Ok(accounting_record),
-        }
+        Ok(accounting_record)
     }
 
     async fn process_stream(

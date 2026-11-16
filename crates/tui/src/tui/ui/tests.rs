@@ -36688,3 +36688,16 @@ fn child_auto_review_block_receipt_stays_non_approvable() {
     assert!(app.latest_approvable_auto_review_block().is_none());
     assert!(!super::event_loop::queue_auto_review_retry_from_r(&mut app));
 }
+
+#[test]
+fn the_terminal_sends_with_auto_routing_and_no_usage_origin() {
+    let mut app = create_test_app();
+    app.auto_model = true;
+    app.session_write_receipt = None;
+    let message = QueuedMessage::new("send under auto routing without origin".to_string(), None);
+    let prepared = prepare_user_dispatch(&mut app, &Config::default(), message).expect(
+        "terminal send with Auto routing must succeed when session accounting origin is absent",
+    );
+    assert!(prepared.should_auto_resolve);
+    assert!(prepared.accounting_origin.is_none());
+}

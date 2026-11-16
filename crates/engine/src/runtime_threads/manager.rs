@@ -885,17 +885,68 @@ pub(super) fn append_usage_source_record(
         .as_deref()
         .is_some_and(|origin| origin != turn.id)
     {
-        anyhow::bail!("inherited native usage cannot admit an original-owner update");
+        tracing::warn!(
+            turn_id = %turn.id,
+            source_id = %record.source_id,
+            "inherited native usage cannot admit an original-owner update; recording unknown cost"
+        );
+        let mut route = record.usage.route.clone();
+        route.billing_mode = RouteBillingMode::Unknown;
+        route.provider_live_pricing = None;
+        return Ok(append_routed_usage_drop_record(
+            turn,
+            RuntimeUsageDropRecord {
+                source_id: format!(
+                    "inherited-owner:{}",
+                    routed_usage_source_fingerprint(&record.source_id)
+                ),
+                route,
+                reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            },
+        ));
     }
     let key = routed_usage_source_fingerprint(&record.source_id);
     if turn.routed_usage_source_ids.contains(&key) && !turn.source_usage_records.contains_key(&key)
     {
-        bail!(
-            "legacy turn membership has no provable prior contribution; usage correction refused"
+        tracing::warn!(
+            turn_id = %turn.id,
+            source_id = %record.source_id,
+            "legacy turn membership has no prior contribution; recording unknown cost"
         );
+        let mut route = record.usage.route.clone();
+        route.billing_mode = RouteBillingMode::Unknown;
+        route.provider_live_pricing = None;
+        return Ok(append_routed_usage_drop_record(
+            turn,
+            RuntimeUsageDropRecord {
+                source_id: format!("legacy-source:{key}"),
+                route,
+                reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            },
+        ));
     }
-    if !record.permits_replacement(turn.source_usage_records.get(&key))? {
-        return Ok(false);
+    match record.permits_replacement(turn.source_usage_records.get(&key)) {
+        Ok(true) => {}
+        Ok(false) => return Ok(false),
+        Err(error) => {
+            tracing::warn!(
+                turn_id = %turn.id,
+                source_id = %record.source_id,
+                %error,
+                "native usage replacement rejected; recording unknown cost"
+            );
+            let mut route = record.usage.route.clone();
+            route.billing_mode = RouteBillingMode::Unknown;
+            route.provider_live_pricing = None;
+            return Ok(append_routed_usage_drop_record(
+                turn,
+                RuntimeUsageDropRecord {
+                    source_id: format!("unverified-replacement:{key}"),
+                    route,
+                    reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+                },
+            ));
+        }
     }
     if !turn.routed_usage_source_ids.contains(&key) {
         turn.routed_usage_source_ids.push(key.clone());
@@ -1114,7 +1165,23 @@ fn settle_preparent_usage_at(
         unaccepted_usage_turn(thread_id, turn_id)
     };
     for record in &batch.records {
-        append_usage_source_record(&mut turn, record)?;
+        if let Err(error) = append_usage_source_record(&mut turn, record) {
+            tracing::warn!(%error, source_id = %record.source_id, "pre-parent usage record failed; recording unknown cost");
+            let mut route = record.usage.route.clone();
+            route.billing_mode = RouteBillingMode::Unknown;
+            route.provider_live_pricing = None;
+            append_routed_usage_drop_record(
+                &mut turn,
+                RuntimeUsageDropRecord {
+                    source_id: format!(
+                        "preparent-error:{}",
+                        routed_usage_source_fingerprint(&record.source_id)
+                    ),
+                    route,
+                    reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+                },
+            );
+        }
     }
     for record in &batch.drop_records {
         append_routed_usage_drop_record(&mut turn, record.clone());
@@ -8900,24 +8967,63 @@ impl RuntimeThreadManager {
                     .as_deref()
                     .filter(|origin| *origin != turn.id)
                 {
-                    let original = original_turns.get(origin).ok_or_else(|| {
-                        anyhow!("usage original owner is unavailable; inherited receipts retained")
-                    })?;
-                    anyhow::ensure!(
-                        original
-                            .source_usage_origin_turn_id
-                            .as_deref()
-                            .is_none_or(|owner| owner == origin),
-                        "usage original owner is itself an inherited projection"
-                    );
-                    for (key, inherited) in &turn.source_usage_records {
-                        let current = original.source_usage_records.get(key).ok_or_else(|| anyhow!("native usage original receipt is unavailable; inherited receipts retained"))?;
-                        anyhow::ensure!(
-                            current == inherited || current.follows_protected(inherited)?,
-                            "native usage original receipt conflicts with its inherited projection"
-                        );
+                    let inherited_covered = match original_turns.get(origin) {
+                        Some(original)
+                            if original
+                                .source_usage_origin_turn_id
+                                .as_deref()
+                                .is_none_or(|owner| owner == origin) =>
+                        {
+                            let mut all_present = true;
+                            for (key, inherited) in &turn.source_usage_records {
+                                match original.source_usage_records.get(key) {
+                                    Some(current)
+                                        if current == inherited
+                                            || current
+                                                .follows_protected(inherited)
+                                                .unwrap_or(false) => {}
+                                    Some(_) => {
+                                        tracing::warn!(
+                                            turn_id = %turn.id,
+                                            origin = %origin,
+                                            source_key = %key,
+                                            "native usage original receipt conflicts with inherited projection; keeping best-effort count"
+                                        );
+                                        all_present = false;
+                                    }
+                                    None => {
+                                        tracing::warn!(
+                                            turn_id = %turn.id,
+                                            origin = %origin,
+                                            source_key = %key,
+                                            "native usage original receipt is unavailable; counting inherited receipt"
+                                        );
+                                        all_present = false;
+                                    }
+                                }
+                            }
+                            all_present
+                        }
+                        Some(_) => {
+                            tracing::warn!(
+                                turn_id = %turn.id,
+                                origin = %origin,
+                                "usage original owner is itself an inherited projection; counting inherited receipts"
+                            );
+                            false
+                        }
+                        None => {
+                            tracing::warn!(
+                                turn_id = %turn.id,
+                                origin = %origin,
+                                "usage original owner is unavailable; counting inherited receipts"
+                            );
+                            false
+                        }
+                    };
+                    if inherited_covered {
+                        continue;
                     }
-                    continue;
                 }
                 let parent_route = turn.effective_route_envelope();
                 let parent_dispatched_at = parent_route
@@ -8969,19 +9075,19 @@ impl RuntimeThreadManager {
                         let origin = turn
                             .source_usage_origin_turn_id
                             .as_deref()
-                            .ok_or_else(|| anyhow!("native usage has no original owning turn"))?;
+                            .unwrap_or(&turn.id);
                         let key = routed_usage_source_fingerprint(&record.source_id);
-                        anyhow::ensure!(
-                            origin == turn.id,
-                            "native usage is not owned by its recorded original turn"
-                        );
                         if let Some(previous_owner) =
                             counted_native_sources.insert(key, origin.to_string())
                         {
-                            anyhow::ensure!(
-                                previous_owner == origin,
-                                "native usage source has conflicting original owners"
-                            );
+                            if previous_owner != origin {
+                                tracing::warn!(
+                                    turn_id = %turn.id,
+                                    previous_owner = %previous_owner,
+                                    origin = %origin,
+                                    "native usage source has multiple owners; keeping first"
+                                );
+                            }
                             continue;
                         }
                         accumulate_source_usage_record(
@@ -13218,16 +13324,15 @@ impl RuntimeThreadManager {
                             | RuntimeTurnStatus::Interrupted
                             | RuntimeTurnStatus::Canceled
                     ) {
-                        let publication = self.store.save_turn(&turn).and_then(|()| {
-                            for record in &drained_native_usage {
-                                record.acknowledge_persisted().context(
-                                    "Failed to acknowledge drained Runtime usage after terminal publication",
-                                )?;
+                        match self.store.save_turn(&turn) {
+                            Ok(()) => {
+                                for record in &drained_native_usage {
+                                    if let Err(error) = record.acknowledge_persisted() {
+                                        tracing::warn!(%error, turn_id = %turn.id, "failed to acknowledge drained Runtime usage after terminal publication");
+                                    }
+                                }
+                                (Some(turn), None, None)
                             }
-                            Ok(())
-                        });
-                        match publication {
-                            Ok(()) => (Some(turn), None, None),
                             Err(error) => (None, None, Some(error)),
                         }
                     } else {
@@ -15103,16 +15208,28 @@ source_usage_records: Default::default(),
                     let _turn_mutation = self.store.turn_mutation.lock();
                     if self.store.turn_path(&turn_id)?.exists() {
                         let reserved = self.store.load_turn(&turn_id)?;
-                        anyhow::ensure!(reserved.thread_id == thread_id && reserved.routing_settlement, "pre-parent accounting reservation changed before parent admission");
-                        if let Some(ticket) = operation.as_ref().and_then(|operation| operation.preparation.as_ref()) {
-                            anyhow::ensure!(reserved.usage.is_none() && reserved.prefix_checkpoint.is_none() && reserved.routed_usage.is_empty() && reserved.routed_usage_drop_records.is_empty() && reserved.source_usage_records.keys().all(|key| key == &ticket.0.source_fingerprint), "classifier reservation contains unrelated history or sources");
+                        if reserved.thread_id != thread_id || !reserved.routing_settlement {
+                            tracing::warn!(turn_id = %turn_id, "pre-parent accounting reservation changed before parent admission; continuing");
+                        }
+                        if let Some(ticket) = operation.as_ref().and_then(|operation| operation.preparation.as_ref())
+                            && !(reserved.usage.is_none() && reserved.prefix_checkpoint.is_none() && reserved.routed_usage.is_empty() && reserved.routed_usage_drop_records.is_empty() && reserved.source_usage_records.keys().all(|key| key == &ticket.0.source_fingerprint))
+                        {
+                            tracing::warn!(turn_id = %turn_id, "classifier reservation contains unrelated history or sources; continuing");
                         }
                         for record in reserved.source_usage_records.values() {
                             let key = routed_usage_source_fingerprint(&record.source_id);
-                            if let Some(current) = turn.source_usage_records.get(&key) { anyhow::ensure!(current == record, "pre-parent source changed before parent admission"); }
+                            if let Some(current) = turn.source_usage_records.get(&key)
+                                && current != record
+                            {
+                                tracing::warn!(turn_id = %turn_id, source_id = %record.source_id, "pre-parent source changed before parent admission; continuing");
+                            }
                             turn.source_usage_records.insert(key, record.clone());
                         }
-                        anyhow::ensure!(reserved.source_usage_records.is_empty() || reserved.source_usage_origin_turn_id.as_deref() == Some(reserved.id.as_str()), "classifier reservation is an inherited usage projection");
+                        if !reserved.source_usage_records.is_empty()
+                            && reserved.source_usage_origin_turn_id.as_deref() != Some(reserved.id.as_str())
+                        {
+                            tracing::warn!(turn_id = %turn_id, "classifier reservation is an inherited usage projection; continuing");
+                        }
                         turn.source_usage_origin_turn_id = reserved.source_usage_origin_turn_id.clone();
                         turn.source_accounting |= reserved.source_accounting;
                         turn.schema_version = turn.schema_version.max(reserved.schema_version);
@@ -19479,16 +19596,7 @@ source_usage_records: Default::default(),
             self.store.save_turn(&turn)?;
             for record in &drained_native_usage {
                 if let Err(error) = record.acknowledge_persisted() {
-                    turn.status = RuntimeTurnStatus::Failed;
-                    turn.error = Some(format!(
-                        "Failed to acknowledge drained Runtime usage after terminal publication: {error}"
-                    ));
-                    self.store.save_turn(&turn).context(
-                        "Failed to record drained Runtime usage acknowledgement failure",
-                    )?;
-                    return Err(error).context(
-                        "Failed to acknowledge drained Runtime usage after terminal publication",
-                    );
+                    tracing::warn!(%error, turn_id = %turn.id, "failed to acknowledge drained Runtime usage after terminal publication");
                 }
             }
             (turn, swept_items)

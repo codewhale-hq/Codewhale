@@ -2729,3 +2729,123 @@ async fn auto_review_non_git_snapshots_and_protected_paths_in_turn_loop() {
     handle_off.send(Op::Shutdown).await.expect("shutdown off");
     task_off.await.expect("engine_off shutdown");
 }
+
+#[tokio::test]
+async fn auto_review_applies_the_reviewers_verdict_when_its_usage_cannot_be_settled() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let _cost = crate::cost_status::test_scope();
+
+    for verdict in ["allow", "deny", "unavailable"] {
+        for failure_phase in ["before_call", "after_call"] {
+            let workspace = tempdir().expect("tempdir");
+            fs::create_dir(workspace.path().join(".git")).expect("git marker");
+            let call_id = format!("call-unsettled-{verdict}-{failure_phase}");
+            let mock = std::sync::Arc::new(MockLlmClient::new(vec![canned::tool_call_turn(
+                &call_id,
+                "File",
+                r#"{"action":"write","path":".env","content":"secret=1\n"}"#,
+            )]));
+            let call_id_follow = call_id.clone();
+            mock.push_factory(move |request| {
+                let results = guardian_tool_results(request, &call_id_follow);
+                assert_eq!(results.len(), 1, "{verdict}/{failure_phase}");
+                match verdict {
+                    "allow" => assert_ne!(results[0].1, Some(true), "{verdict}/{failure_phase}"),
+                    _ => assert_eq!(results[0].1, Some(true), "{verdict}/{failure_phase}"),
+                }
+                canned::simple_text_turn("follow-up complete")
+            });
+            let guardian_reply = match verdict {
+                "allow" => {
+                    r#"{"risk_level":"low","decision":"allow","reason":"isolated test fixture"}"#
+                }
+                "deny" => {
+                    r#"{"risk_level":"medium","decision":"deny","reason":"blocked env write"}"#
+                }
+                _ => "not valid guardian JSON",
+            };
+            mock.push_message_response(guardian_fixture_response(guardian_reply));
+
+            let client: crate::core::model_client::SharedModelClient = mock.clone();
+            let config = Config::default();
+            let mut engine_config = deterministic_engine_config(workspace.path());
+            if failure_phase == "before_call" {
+                engine_config.compaction.runtime_cost_owner =
+                    Some(format!("missing-guardian-owner-{verdict}"));
+            } else {
+                let sink_owner = format!("failing-after-guardian-{verdict}");
+                let sink_calls = std::sync::Arc::new(AtomicUsize::new(0));
+                let sink_calls_closure = std::sync::Arc::clone(&sink_calls);
+                crate::cost_status::register_runtime_usage_sink(
+                    &sink_owner,
+                    std::sync::Arc::new(move |_| sink_calls_closure.fetch_add(1, Ordering::SeqCst) == 0),
+                );
+                engine_config.compaction.runtime_cost_owner = Some(sink_owner);
+            }
+            let (engine, handle) =
+                Engine::new_with_model_client(engine_config, &config, client);
+            let auto_review_state = std::sync::Arc::clone(&engine.auto_review_state);
+            let task = tokio::spawn(engine.run());
+
+            handle
+                .send(auto_review_message_op(
+                    "Attempt held env write.",
+                    &config,
+                ))
+                .await
+                .expect("send guardian turn");
+
+            let (completion, _, _, receipts) =
+                collect_guardian_journey_with_receipts(&handle, &call_id).await;
+            assert_eq!(mock.captured_requests().len(), 3, "{verdict}/{failure_phase}");
+            assert_eq!(receipts.len(), 1, "{verdict}/{failure_phase}: {receipts:?}");
+            assert_eq!(
+                receipts[0].gate,
+                crate::core::events::ToolGate::AutoReviewGuardian
+            );
+
+            match verdict {
+                "allow" => {
+                    assert!(
+                        completion.expect("allow result").success,
+                        "{verdict}/{failure_phase}"
+                    );
+                    assert_eq!(
+                        receipts[0].decision,
+                        crate::core::events::ToolGateVerdict::Allowed
+                    );
+                    assert!(workspace.path().join(".env").exists());
+                    assert_eq!(auto_review_state.lock().total_blocks(), 0);
+                }
+                "deny" => {
+                    let error = completion.expect_err("deny must block tool execution");
+                    assert!(error.to_string().contains("blocked env write"), "{error}");
+                    assert_eq!(
+                        receipts[0].decision,
+                        crate::core::events::ToolGateVerdict::Denied
+                    );
+                    assert!(!workspace.path().join(".env").exists());
+                    assert_eq!(auto_review_state.lock().total_blocks(), 1);
+                    assert_eq!(auto_review_state.lock().consecutive_blocks(), 1);
+                    assert_eq!(handle.list_auto_review_blocks().len(), 1);
+                }
+                _ => {
+                    let error = completion.expect_err("unavailable must deny closed");
+                    assert!(error.to_string().contains("fail closed"), "{error}");
+                    assert_eq!(
+                        receipts[0].decision,
+                        crate::core::events::ToolGateVerdict::Unavailable
+                    );
+                    assert!(!workspace.path().join(".env").exists());
+                    assert_eq!(auto_review_state.lock().consecutive_unavailable(), 1);
+                    assert_eq!(handle.list_auto_review_blocks().len(), 1);
+                }
+            }
+
+            handle.send(Op::Shutdown).await.expect("shutdown engine");
+            task.await.expect("engine task");
+        }
+    }
+}

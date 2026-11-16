@@ -540,10 +540,16 @@ async fn direct_workflow_tool_runs_without_an_operator_model_turn() {
     let origin = source
         .usage_origin(codewhale_engine::cost_status::scope_token())
         .expect("captured Workflow usage origin");
-    let (tool, context) =
-        build_direct_workflow_tool(&config, &route, workspace.path(), event_tx, plugins, origin)
-            .await
-            .expect("build direct workflow runtime");
+    let (tool, context) = build_direct_workflow_tool(
+        &config,
+        &route,
+        workspace.path(),
+        event_tx,
+        plugins,
+        Some(origin),
+    )
+    .await
+    .expect("build direct workflow runtime");
 
     let result = tool
         .execute(

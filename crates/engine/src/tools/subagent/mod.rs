@@ -7702,53 +7702,123 @@ impl SubAgentManager {
             .worker_records
             .get_mut(worker_id)
             .ok_or_else(|| anyhow!("usage worker is unavailable"))?;
-        if record
+        let route_changed = record
             .missing_usage_sources
             .get(&key)
-            .is_some_and(|coverage| !coverage.matches_route(&source.usage.route))
-        {
-            return Err(anyhow!("worker usage source changed its captured route"));
+            .is_some_and(|coverage| !coverage.matches_route(&source.usage.route));
+        if route_changed {
+            tracing::warn!(
+                worker_id = %worker_id,
+                source_id = %source.source_id,
+                "worker usage source changed its captured route; recording unknown cost"
+            );
+            record.missing_usage_sources.remove(&key);
+            record.legacy_unreported_usage = true;
+            record.usage_source_fingerprints.insert(key.clone());
+            let unknown = crate::cost_status::unknown_cost_record(
+                &source.source_id,
+                &source.usage.route,
+                source.usage.usage.clone(),
+            );
+            record.source_usage_records.insert(key, (unknown, None));
+            record.has_unreported_usage = true;
+            record.updated_at_ms = epoch_millis_now();
+            refresh_usage_note(&mut record.usage);
+            return Ok(true);
         }
         let previous = record.source_usage_records.get(&key);
         if record.usage_source_fingerprints.contains(&key) && previous.is_none() {
-            return Err(anyhow!(
-                "legacy worker source has no provable prior contribution"
-            ));
+            tracing::warn!(
+                worker_id = %worker_id,
+                source_id = %source.source_id,
+                "legacy worker source has no provable prior contribution; recording unknown cost"
+            );
+            record.legacy_unreported_usage = true;
+            let unknown = crate::cost_status::unknown_cost_record(
+                &source.source_id,
+                &source.usage.route,
+                source.usage.usage.clone(),
+            );
+            record.source_usage_records.insert(key, (unknown, None));
+            record.has_unreported_usage = true;
+            record.updated_at_ms = epoch_millis_now();
+            refresh_usage_note(&mut record.usage);
+            return Ok(true);
         }
-        if !source.permits_replacement(previous.map(|old| &old.0))? {
-            return Ok(false);
+        match source.permits_replacement(previous.map(|old| &old.0)) {
+            Ok(true) => {}
+            Ok(false) => return Ok(false),
+            Err(error) => {
+                tracing::warn!(
+                    worker_id = %worker_id,
+                    source_id = %source.source_id,
+                    %error,
+                    "worker usage replacement rejected; recording unknown cost"
+                );
+                record.legacy_unreported_usage = true;
+                let unknown = crate::cost_status::unknown_cost_record(
+                    &source.source_id,
+                    &source.usage.route,
+                    source.usage.usage.clone(),
+                );
+                record.source_usage_records.insert(key, (unknown, None));
+                record.has_unreported_usage = true;
+                record.updated_at_ms = epoch_millis_now();
+                refresh_usage_note(&mut record.usage);
+                return Ok(true);
+            }
         }
         if !source.is_acknowledged() {
-            tracing::warn!("worker usage source has no durable acknowledgement; not counted");
-            return Ok(false);
+            tracing::warn!(
+                "worker usage source has no durable acknowledgement; recording unknown cost"
+            );
+            record.legacy_unreported_usage = true;
+            record.usage_source_fingerprints.insert(key.clone());
+            let unknown = crate::cost_status::unknown_cost_record(
+                &source.source_id,
+                &source.usage.route,
+                source.usage.usage.clone(),
+            );
+            record.source_usage_records.insert(key, (unknown, None));
+            record.has_unreported_usage = true;
+            record.updated_at_ms = epoch_millis_now();
+            refresh_usage_note(&mut record.usage);
+            return Ok(true);
         }
-        let revision = source
-            .settlement
-            .as_ref()
-            .ok_or_else(|| anyhow!("worker source has no revision"))?;
+        let Some(revision) = source.settlement.as_ref() else {
+            tracing::warn!(
+                worker_id = %worker_id,
+                source_id = %source.source_id,
+                "worker source has no revision; recording unknown cost"
+            );
+            record.legacy_unreported_usage = true;
+            record.usage_source_fingerprints.insert(key.clone());
+            let unknown = crate::cost_status::unknown_cost_record(
+                &source.source_id,
+                &source.usage.route,
+                source.usage.usage.clone(),
+            );
+            record.source_usage_records.insert(key, (unknown, None));
+            record.has_unreported_usage = true;
+            record.updated_at_ms = epoch_millis_now();
+            refresh_usage_note(&mut record.usage);
+            return Ok(true);
+        };
         let reported = revision.coverage == crate::llm_client::ProviderUsageCoverage::Reported;
         let incomplete = revision.coverage == crate::llm_client::ProviderUsageCoverage::Incomplete;
         let old_usage = previous.map(|old| &old.0.usage.usage);
         let old_cost = previous.and_then(|old| old.1);
         if let Some((prior, cost)) = previous {
-            prior.validate()?;
+            if let Err(error) = prior.validate() {
+                tracing::warn!(%error, "worker prior usage receipt validation failed; continuing");
+            }
             let expected_cost = crate::cost_status::UsageSourceContribution::for_record(prior);
             let expected_cost = (expected_cost.priced > 0)
                 .then(|| priced_usd_microusd(&prior.usage.route.audit_frozen(&prior.usage.usage)))
                 .flatten();
-            anyhow::ensure!(
-                *cost == expected_cost,
-                "worker prior cost does not match its frozen receipt"
-            );
-            anyhow::ensure!(
-                record.usage.input_tokens.unwrap_or(0) >= u64::from(prior.usage.usage.input_tokens)
-                    && record.usage.output_tokens.unwrap_or(0)
-                        >= u64::from(prior.usage.usage.output_tokens)
-                    && record.usage.total_tokens.unwrap_or(0)
-                        >= usage_total_tokens(&prior.usage.usage)
-                    && record.usage.cost_microusd.unwrap_or(0) >= cost.unwrap_or(0),
-                "worker projection is missing its prior source contribution"
-            );
+            if *cost != expected_cost {
+                tracing::warn!("worker prior cost does not match its frozen receipt; continuing");
+            }
         }
         let contribution = crate::cost_status::UsageSourceContribution::for_record(source);
         let priced = (contribution.priced > 0)

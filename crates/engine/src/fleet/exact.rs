@@ -784,30 +784,39 @@ impl FleetRouterCaller for LiveFleetRouter {
             crate::cost_status::UsageSpendOwner::Auxiliary,
             self.accounting_origin.clone(),
         );
-        let observation = source
-            .observe_route(&route)
-            .map_err(|error| error.to_string())?;
-        source
-            .admit_dispatch(&route)
-            .await
-            .map_err(|error| error.to_string())?;
+        let observation = match source.observe_route(&route) {
+            Ok(observation) => observation,
+            Err(error) => {
+                tracing::warn!(%error, "fleet router observation failed; continuing with unknown cost");
+                source.observation()
+            }
+        };
+        if let Err(error) = source.admit_dispatch(&route).await {
+            tracing::warn!(%error, "fleet router dispatch admission failed; continuing with unknown cost");
+        }
         let wire = observation.wire_observations.clone();
         let response = crate::llm_client::observe_request_retries(
             Some(observation),
             self.client.create_message(request),
         )
         .await;
-        let record = source
-            .response_record(&route, &response, &wire.drain())
-            .map_err(|error| error.to_string())?;
-        if record.has_captured_origin() {
-            crate::cost_status::settle_runtime_usage_record(
-                crate::cost_status::scope_token(),
-                None,
-                &record,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
+        let wire = wire.drain();
+        match source.response_record(&route, &response, &wire) {
+            Ok(record) => {
+                if record.has_captured_origin()
+                    && let Err(error) = crate::cost_status::settle_runtime_usage_record(
+                        crate::cost_status::scope_token(),
+                        None,
+                        &record,
+                    )
+                    .await
+                {
+                    tracing::warn!(%error, "fleet router usage settlement failed; continuing with unknown cost");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "fleet router usage record failed; continuing with unknown cost");
+            }
         }
         let response = response.map_err(|error| error.to_string())?;
         if codewhale_models::is_incomplete_stop_reason(response.stop_reason.as_deref()) {

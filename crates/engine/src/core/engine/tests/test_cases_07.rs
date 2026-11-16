@@ -1955,3 +1955,53 @@ async fn auto_review_interactive_owner_present_forces_prompt_on_critical_path_de
         task.await.expect("engine task");
     }
 }
+
+#[tokio::test]
+async fn a_model_step_dispatches_when_accounting_admission_fails() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let _cost_scope = crate::cost_status::test_scope();
+    let workspace = tempdir().expect("tempdir");
+    let mock = std::sync::Arc::new(MockLlmClient::new(vec![canned::simple_text_turn(
+        "dispatched without admission",
+    )]));
+    let client: crate::core::model_client::SharedModelClient = mock.clone();
+    let config = Config::default();
+    let mut engine_config = deterministic_engine_config(workspace.path());
+    engine_config.compaction.runtime_cost_owner = Some("missing-accounting-owner".to_string());
+    let (engine, handle) = Engine::new_with_model_client(engine_config, &config, client);
+    let task = tokio::spawn(engine.run());
+
+    handle
+        .send(external_user_message_op(
+            "run model step despite missing owner",
+            AppMode::Agent,
+            &config,
+        ))
+        .await
+        .expect("send turn");
+
+    let mut rx = handle.rx_event.write().await;
+    let mut saw_message = false;
+    let (status, error) = loop {
+        let event = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+            .await
+            .expect("timed out waiting for TurnComplete")
+            .expect("engine event channel open");
+        match event {
+            Event::MessageDelta { content, .. } if content.contains("dispatched") => {
+                saw_message = true;
+            }
+            Event::TurnComplete { status, error, .. } => break (status, error),
+            _ => {}
+        }
+    };
+    drop(rx);
+    assert_eq!(mock.call_count(), 1);
+    assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+    assert!(error.is_none(), "{error:?}");
+    assert!(saw_message);
+
+    handle.send(Op::Shutdown).await.expect("shutdown engine");
+    task.await.expect("engine task");
+}
