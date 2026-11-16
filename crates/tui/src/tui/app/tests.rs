@@ -8721,6 +8721,12 @@ fn a_session_start_notice_names_active_agent_approved_plugins() {
         )
         .expect("skill");
     }
+    #[cfg(unix)]
+    std::fs::set_permissions(
+        ctx.user_plugins_dir(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("private user plugin dir");
 
     {
         let mut other_registry = ctx.registry_for_workspace(&other_project);
