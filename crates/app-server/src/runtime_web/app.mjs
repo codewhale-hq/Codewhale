@@ -687,11 +687,14 @@ export function newThreadDefaults(catalog) {
     ? catalog.providers.filter((provider) => String(provider?.id || "").trim())
     : [];
   const current = String(catalog?.current || "").trim();
-  const provider = providers.find((entry) => entry.id === current) || providers[0] || null;
+  const currentProviderId = String(catalog?.current_provider_id || "").trim();
+  const provider = providers.find((entry) => entry.id === current
+    && (!currentProviderId || entry.model_provider_id === currentProviderId));
+  const selected = provider || providers.find((entry) => entry.id === current) || providers[0] || null;
   return {
-    providerId: String(provider?.id || "").trim(),
-    modelProviderId: String(provider?.model_provider_id || "").trim(),
-    model: String(provider?.default_model || "").trim(),
+    providerId: String(selected?.id || "").trim(),
+    modelProviderId: String(selected?.model_provider_id || "").trim(),
+    model: String(selected?.default_model || "").trim(),
   };
 }
 
@@ -808,8 +811,9 @@ const MAX_PROVIDER_MODEL_PAGES = Math.ceil(
  * Runtime API boundary and tests can prove catalogs larger than one page are
  * not silently truncated. Cursors are opaque and may never repeat.
  */
-export async function collectProviderModelPages(providerId, fetchPage) {
+export async function collectProviderModelPages(providerId, fetchPage, modelProviderId = "") {
   const provider = String(providerId || "").trim();
+  const exactProviderId = String(modelProviderId || "").trim();
   if (!provider || typeof fetchPage !== "function") {
     throw new Error("A provider and page loader are required.");
   }
@@ -820,11 +824,13 @@ export async function collectProviderModelPages(providerId, fetchPage) {
   let cursor = "";
   for (let page = 0; page < MAX_PROVIDER_MODEL_PAGES; page += 1) {
     const query = new URLSearchParams({ limit: String(PROVIDER_MODELS_PAGE_SIZE) });
+    if (exactProviderId) query.set("model_provider_id", exactProviderId);
     if (cursor) query.set("cursor", cursor);
     const response = await fetchPage(
       `/v1/providers/${encodeURIComponent(provider)}/models?${query.toString()}`,
     );
-    if (String(response?.provider || "") !== provider) {
+    if (String(response?.provider || "") !== provider
+      || (exactProviderId && String(response?.model_provider_id || "") !== exactProviderId)) {
       throw new Error("The Runtime returned a model page for a different provider.");
     }
     if (!Array.isArray(response?.models)
@@ -1943,8 +1949,7 @@ function startBrowserClient() {
   }
 
   function selectedNewThreadProvider() {
-    const providerId = dom.newThreadProvider.value;
-    return app.providerCatalog?.providers?.find((provider) => provider.id === providerId) || null;
+    return app.providerCatalog?.providers?.[dom.newThreadProvider.selectedIndex] || null;
   }
 
   function selectedNewThreadModel() {
@@ -1996,9 +2001,8 @@ function startBrowserClient() {
     dom.newThreadModelInputField.hidden = hasCatalog;
   }
 
-  async function loadNewThreadModels(providerId, preferredModel, generation) {
+  async function loadNewThreadModels(provider, preferredModel, generation) {
     if (generation !== app.newThreadGeneration || !dom.newThreadDialog.open) return;
-    const provider = app.providerCatalog?.providers?.find((entry) => entry.id === providerId);
     app.newThreadModels = [];
     dom.newThreadModel.replaceChildren();
     dom.newThreadModelInput.value = "";
@@ -2029,7 +2033,7 @@ function startBrowserClient() {
           throw new Error("The model request was superseded.");
         }
         return page;
-      });
+      }, provider.model_provider_id);
       if (generation !== app.newThreadGeneration || !dom.newThreadDialog.open) return;
       const seen = new Set();
       const models = [];
@@ -2095,17 +2099,19 @@ function startBrowserClient() {
         : [];
       if (providers.length === 0) throw new Error("The Runtime returned no providers.");
       app.providerCatalog = { ...catalog, providers };
-      for (const provider of providers) {
+      for (const [index, provider] of providers.entries()) {
         const option = document.createElement("option");
-        option.value = provider.id;
+        option.value = String(index);
         setSafeText(option, providerOptionLabel(provider));
         dom.newThreadProvider.append(option);
       }
       const defaults = newThreadDefaults(app.providerCatalog);
-      dom.newThreadProvider.value = defaults.providerId;
+      const defaultIndex = providers.findIndex((provider) => provider.id === defaults.providerId
+        && (provider.model_provider_id || "") === defaults.modelProviderId);
+      dom.newThreadProvider.selectedIndex = Math.max(defaultIndex, 0);
       dom.newThreadProvider.disabled = false;
       dom.newThreadProvider.focus({ preventScroll: true });
-      await loadNewThreadModels(defaults.providerId, defaults.model, generation);
+      await loadNewThreadModels(selectedNewThreadProvider(), defaults.model, generation);
     } catch (error) {
       if (generation !== app.newThreadGeneration || !dom.newThreadDialog.open) return;
       app.newThreadLoading = false;
@@ -2120,7 +2126,7 @@ function startBrowserClient() {
     let request;
     try {
       request = buildCreateThreadRequest(
-        dom.newThreadProvider.value,
+        provider?.id,
         selectedNewThreadModel(),
         provider?.model_provider_id,
       );
@@ -2296,11 +2302,7 @@ function startBrowserClient() {
   dom.newThreadProvider.addEventListener("change", () => {
     const provider = selectedNewThreadProvider();
     const generation = ++app.newThreadGeneration;
-    void loadNewThreadModels(
-      provider?.id || "",
-      provider?.default_model || "",
-      generation,
-    );
+    void loadNewThreadModels(provider, provider?.default_model || "", generation);
   });
   dom.newThreadModel.addEventListener("change", syncNewThreadControls);
   dom.newThreadModelInput.addEventListener("input", syncNewThreadControls);
