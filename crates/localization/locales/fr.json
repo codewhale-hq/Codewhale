@@ -2535,7 +2535,7 @@
   "PlanHandoffKeepPlanningDetail": "Rester en Plan. Rien n'est modifié.",
   "PlanHandoffProceed": "Allez-y, appliquez le plan.",
   "PlanHandoffTodoNote": "Suivez ce plan avec todo_write : gardez l'élément \"{title}\" dans votre liste et marquez-le comme terminé quand le plan est achevé.",
-  "PetAppearanceLegacy": "Le compagnon utilise une ancienne version. Redémarrez-le après la mise à jour de Codewhale pour choisir le style de baleine et la langue du texte.",
+  "PetAppearanceLegacy": "Le compagnon utilise une ancienne version. Redémarrez-le après la mise à jour de Codewhale pour choisir le style de baleine.",
   "PluginOAuthBrowser": "Appuyez sur Entrée pour vous connecter dans le navigateur, ou Échap pour revenir. Aucune clé API nécessaire.",
   "PluginOAuthReady": "{provider} : connexion établie. Choisissez un modèle.",
   "PluginOAuthLocalLogout": "{provider} : connexion locale supprimée. L’accès distant reste inchangé.",

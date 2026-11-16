@@ -2535,7 +2535,7 @@
   "PlanHandoffKeepPlanningDetail": "Stay in Plan. Nothing is changed.",
   "PlanHandoffProceed": "Go ahead with the plan.",
   "PlanHandoffTodoNote": "Track this plan with todo_write: keep the item \"{title}\" in your list and mark it completed when the plan is done.",
-  "PetAppearanceLegacy": "The pet companion is running an older version. Restart it after updating Codewhale to use whale styles and text languages.",
+  "PetAppearanceLegacy": "The pet companion is running an older version. Restart it after updating Codewhale to use whale styles.",
   "PluginOAuthBrowser": "Press Enter to connect in your browser. Esc returns. No API key is needed.",
   "PluginOAuthReady": "{provider}: connected. Choose a model.",
   "PluginOAuthLocalLogout": "{provider}: disconnected on this device. Remote access is unchanged.",

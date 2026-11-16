@@ -9,8 +9,7 @@
 
 use codewhale_command_contract::config::{
     CommandAccountState, CommandPetBodyStyle, CommandPetControl, CommandPetLabel,
-    CommandPetTextLanguage, CommandWorkSurfaceContext, CommandWorkflowSummary, ConfigMessage,
-    ConfigReply, TrustPathError,
+    CommandWorkSurfaceContext, CommandWorkflowSummary, ConfigMessage, ConfigReply, TrustPathError,
 };
 use codewhale_command_contract::facets::CommandModeSelection;
 use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts};
@@ -631,7 +630,7 @@ fn is_conversation_mode_word(arg: &str) -> bool {
 pub(super) const MODE_USAGE: &str = "/mode [work|plan|1|2|<conversation mode>]";
 
 /// `/pet` usage, shared with the registration metadata.
-pub const PET_USAGE: &str = "/pet [on|off|inspect|status|appearance|style [smooth|pixel]|language [auto|en|zh-Hans|zh-Hant|ja]|source|export|sound [on|off]|avatar [whale|cove|braille|pixels|particles|whale-girl|key]|action [name|live]|view [name|live]]";
+pub const PET_USAGE: &str = "/pet [on|off|inspect|status|appearance|style [smooth|pixel]|source|export|sound [on|off]|avatar [whale|cove|braille|pixels|particles|whale-girl|key]|action [name|live]|view [name|live]]";
 
 pub fn connect(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandResult {
     let raw = arg.map(str::trim).unwrap_or("");
@@ -1109,25 +1108,7 @@ pub fn pet(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandRes
             let Some(body) = CommandPetBodyStyle::parse(value) else {
                 return usage();
             };
-            queued(
-                facet,
-                CommandPetControl::Appearance {
-                    body: Some(body),
-                    language: None,
-                },
-            )
-        }
-        ["language", value] => {
-            let Some(language) = CommandPetTextLanguage::parse(value) else {
-                return usage();
-            };
-            queued(
-                facet,
-                CommandPetControl::Appearance {
-                    body: None,
-                    language: Some(language),
-                },
-            )
+            queued(facet, CommandPetControl::Appearance { body })
         }
         ["source"] => queued(facet, CommandPetControl::Select),
         ["export"] => {

@@ -21,7 +21,7 @@ use std::{
     time::{Duration, Instant},
 };
 mod appearance;
-pub use appearance::{BodyStyle, TextLanguage};
+pub use appearance::BodyStyle;
 mod audio;
 mod audio_cursor;
 mod avatars;
@@ -39,10 +39,7 @@ mod worker;
 use live::{Command, Notice, Presentation, Worker};
 #[derive(Clone, Copy)]
 pub enum Control {
-    Appearance {
-        body: Option<BodyStyle>,
-        language: Option<TextLanguage>,
-    },
+    Appearance { body: BodyStyle },
     Sound,
     Browser,
     Select,
@@ -402,8 +399,8 @@ pub fn cycle_view(app: &mut App, forward: bool) {
 }
 fn apply(state: &mut PetWatch, control: Control, agents: &[codewhale_ratatui::Subagent<'_>]) {
     match control {
-        Control::Appearance { body, language } => {
-            state.send(Command::Appearance { body, language });
+        Control::Appearance { body } => {
+            state.send(Command::Appearance { body });
         }
         Control::Browser => state.send(Command::Browser),
         Control::Select => state.send(Command::Select),

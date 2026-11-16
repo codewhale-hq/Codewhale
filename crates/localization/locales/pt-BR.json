@@ -2535,7 +2535,7 @@
   "PlanHandoffKeepPlanningDetail": "Permanecer em Plan. Nada é alterado.",
   "PlanHandoffProceed": "Pode seguir com o plano.",
   "PlanHandoffTodoNote": "Acompanhe este plano com todo_write: mantenha o item \"{title}\" na sua lista e marque-o como concluído quando o plano terminar.",
-  "PetAppearanceLegacy": "O pet está usando uma versão anterior. Reinicie-o após atualizar o Codewhale para escolher o estilo da baleia e o idioma do texto.",
+  "PetAppearanceLegacy": "O pet está usando uma versão anterior. Reinicie-o após atualizar o Codewhale para escolher o estilo da baleia.",
   "PluginOAuthBrowser": "Pressione Enter para entrar pelo navegador ou Esc para voltar. Não é necessária uma chave de API.",
   "PluginOAuthReady": "{provider}: sessão iniciada. Escolha um modelo.",
   "PluginOAuthLocalLogout": "{provider}: sessão local removida. O acesso remoto não foi alterado.",

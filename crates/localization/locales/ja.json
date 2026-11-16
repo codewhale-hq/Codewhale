@@ -2535,7 +2535,7 @@
   "PlanHandoffKeepPlanningDetail": "Plan のままにします。何も変更されません。",
   "PlanHandoffProceed": "計画どおりに進めてください。",
   "PlanHandoffTodoNote": "この計画を todo_write で追跡してください。リストに項目「{title}」を残し、計画が終わったら完了にしてください。",
-  "PetAppearanceLegacy": "ペットは以前のバージョンで動作しています。Codewhale を更新してペットを再起動すると、クジラのスタイルと文字の言語を選べます。",
+  "PetAppearanceLegacy": "ペットは以前のバージョンで動作しています。Codewhale を更新してペットを再起動すると、クジラのスタイルを選べます。",
   "PluginOAuthBrowser": "Enter でブラウザーからログインします。Esc で戻ります。API キーは不要です。",
   "PluginOAuthReady": "{provider}：ログインしました。モデルを選択してください。",
   "PluginOAuthLocalLogout": "{provider}：この端末の認証情報を削除しました。サーバーの認可は解除されていません。",

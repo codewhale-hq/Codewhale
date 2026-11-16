@@ -2535,7 +2535,7 @@
   "PlanHandoffKeepPlanningDetail": "Tetap di Plan. Tidak ada yang diubah.",
   "PlanHandoffProceed": "Silakan jalankan rencananya.",
   "PlanHandoffTodoNote": "Lacak rencana ini dengan todo_write: pertahankan item \"{title}\" di daftar Anda dan tandai selesai setelah rencana rampung.",
-  "PetAppearanceLegacy": "Pet masih memakai versi lama. Mulai ulang pet setelah memperbarui Codewhale untuk memilih gaya paus dan bahasa teks.",
+  "PetAppearanceLegacy": "Pet masih memakai versi lama. Mulai ulang pet setelah memperbarui Codewhale untuk memilih gaya paus.",
   "PluginOAuthBrowser": "Tekan Enter untuk masuk melalui peramban atau Esc untuk kembali. Kunci API tidak diperlukan.",
   "PluginOAuthReady": "{provider}: berhasil masuk. Pilih model.",
   "PluginOAuthLocalLogout": "{provider}: data masuk lokal dihapus. Akses jarak jauh tidak berubah.",

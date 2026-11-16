@@ -50,6 +50,15 @@ as a mark and a word, so it reads without colour or motion:
 | Done | `✓ Done` | The last turn completed. |
 | Failed | `✕ failed` | The last turn ended in failure. |
 
+While a turn runs, the whale's dots leave it and become the thing the work is,
+in motion, then return: a wrench for commands and tools, a pencil for edits, a
+book for reading, a lens for searching, a flask for tests, a globe for
+browsing, a pointer for computer use, stacked layers for memory, a bulb for
+thinking, a speech bubble for replies, a pod of small whales for parallel
+agents, a ringing bell when it needs you and a check mark when it is done.
+Reduced motion holds one still pose of the form. The caption keeps the same
+meaning in words.
+
 The status bar underneath keeps its usual live readouts, such as the agent
 count (`2 agents`) and the work bar. Transient notices, such as a retry
 (`Retry attempt: transport 1/3; network error; waiting 0.94s`), show on the

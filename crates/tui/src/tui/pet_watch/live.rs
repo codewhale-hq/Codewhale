@@ -138,10 +138,7 @@ pub struct View {
 }
 #[derive(Clone)]
 pub enum Command {
-    Appearance {
-        body: Option<super::BodyStyle>,
-        language: Option<super::TextLanguage>,
-    },
+    Appearance { body: super::BodyStyle },
     Observe(String),
     Select,
     Browser,
@@ -425,8 +422,7 @@ fn run(
     let mut sequence = 0u64;
     let mut acknowledged = 0u64;
     let mut action: Option<Value> = None;
-    let mut appearance_patch: Option<(Option<super::BodyStyle>, Option<super::TextLanguage>)> =
-        None;
+    let mut appearance_patch: Option<super::BodyStyle> = None;
     let mut last_action = Instant::now() - Duration::from_secs(1);
     let mut last_produce = Instant::now();
     let mut last_audio = Instant::now();
@@ -474,11 +470,7 @@ fn run(
         let mut browser = false;
         for command in commands {
             match command {
-                Command::Appearance { body, language } => {
-                    let patch = appearance_patch.get_or_insert((None, None));
-                    patch.0 = body.or(patch.0);
-                    patch.1 = language.or(patch.1);
-                }
+                Command::Appearance { body } => appearance_patch = Some(body),
                 Command::Observe(text) => {
                     if !events.push(&text)? {
                         // Overflow is a coverage gap, never a truncated batch:
@@ -578,18 +570,13 @@ fn run(
         }
         let Some(s) = &scene else { continue };
         if action.is_none()
-            && let Some((body, language)) = appearance_patch.take()
+            && let Some(body) = appearance_patch.take()
         {
             if s.display_language.is_none() {
                 let _ = notices.try_send(Notice::AppearanceLegacy);
             } else {
                 let mut appearance = s.appearance.clone();
-                if let Some(body) = body {
-                    appearance.body_style = body;
-                }
-                if let Some(language) = language {
-                    appearance.text_language = language;
-                }
+                appearance.body_style = body;
                 action = Some(
                     json!({"identity":s.identity,"client":id,"seq":sequence+1,"source_revision":s.source_revision,"action":{"kind":"appearance","appearance":appearance}}),
                 );

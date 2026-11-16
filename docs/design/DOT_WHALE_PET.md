@@ -1,11 +1,11 @@
 # Dot-whale habitat and Watch
 
 The original 980-point whale remains the canonical body of one persistent
-world. Its owner now prepares a living-glyph presentation from admitted Engine
-activity: the dots form the selected language’s existing activity phrases, then
-return to the whale. This presentation uses the existing world clock; it does
-not replace the simulation, recording format or score. Original recordings
-retain their expression-version behavior.
+world. Its owner now prepares a whale-forms presentation from admitted Engine
+activity: the dots leave the whale, become the thing the work is, in motion,
+then return to the whale. This presentation uses the existing world clock; it
+does not replace the simulation, recording format or score. Original
+recordings retain their expression-version behavior.
 
 The underwater transcript's completion visitor remains a bounded decoration.
 The explicit `/pet` habitat observes foreground activity through the shared
@@ -24,7 +24,7 @@ painter or a captured preview alone does not establish a live client connection.
   It consumes `WhaleCameo` and `AmbientActivity`; it never reads a wall clock,
   schedules a frame, or classifies model/tool text.
 
-## Living-glyph presentation
+## Whale forms
 
 `pet/src/core/pet-native.ts` prepares live and Still views of the owner's same
 980-point body. `dot-field.ts` projects those points and their materials from
@@ -37,60 +37,83 @@ The smooth presentation samples 980 interior points from the existing filled
 pet mark, preserving its eye, mouth and curled negative space at home. The
 optional pixel presentation derives 980 colored drone positions from the
 approved 192-cell pixel whale. The browser paints its lossless pixel mark at
-rest, fading it into those drones as they travel into words; terminal views
-paint the same prepared drone geometry. Both styles share the world and clock. During activity,
-all 980 points become the prepared activity phrase in the whale's fixed
-footprint. Chinese phrases of up to three characters use one line; longer
-phrases use two lines. English wraps at spaces; Japanese wraps at phrase
-boundaries. Every language keeps the same envelope. Ordinary captions retain
-the full meaning in the interface language.
-Every occupied glyph-mask pixel receives a particle, preserving stroke detail
-in compact views. No separate tool icon overlays the character.
+rest, fading it into those drones as they leave; terminal views paint the same
+prepared drone geometry. Both styles share the world, the clock and the forms.
+
+During activity all 980 points leave the whale and become the thing the work
+is, in motion (CURRENT_DECISIONS §205.5). Shape, movement and colour carry the
+meaning; `dot-forms.ts` owns the thirteen forms:
+
+| Activity | Form | Hue |
+| --- | --- | --- |
+| executing, tool | a wrench turning a bolt | 198 |
+| editing | a pencil writing a line | 172 |
+| reading | an open book, a page turning | 186 |
+| searching | a lens sweeping lines of text | 205 |
+| testing | a flask bubbling | 150 |
+| browsing | a globe turning | 212 |
+| computer | a pointer clicking a button | 222 |
+| memory | layers settling into a stack | 268 |
+| thinking | a bulb lighting up | 48 |
+| responding | a speech bubble typing | 190 |
+| delegating | a pod of small whales: two for up to two parallel agents, otherwise three | 200 |
+| waiting (needs you) | a bell ringing, in a warm hue | 38 |
+| done | a check mark, then home | 160 |
+
+Each form is a list of parts sampled with a seeded generator. Dots are
+allocated to parts by area and assigned by rank, so each dot travels a short
+way from its place in the whale. Both body styles are compiled once at module
+load. A form is a pure function of its kind, the body style, the dot index and
+the time: no `Math.random`, wall clock or DOM, and identical input gives
+identical output. Forms are drawn at 1.22 times their authored size and every
+point stays inside ±0.94. Observed failure tints the form hue 16.
 
 An 8.4-second cycle returns all 980 points to the filled whale between
 expressions, using the presentation's admission timestamp rather than its
-heartbeats. Completion holds its character for 800 ms and settles into the
-whale within 1.7 seconds. The materials stay within an ocean palette, with warm glyph accents for waiting or
-observed failure. Still presents the full-size phrase during activity and
-the filled whale at rest, without the cycle or swim.
-`build-dot-glyphs.py --whale-body` reproducibly derives the
-interior sampling from the pinned alpha mask in `pet/public/whale.png`.
+heartbeats. Dots leave with a short stagger. Completion holds the check for
+800 ms and settles into the whale within 1.7 seconds. Still presents one fixed
+pose of the form, evaluated at 1.3 seconds of its motion, during activity and
+the filled whale at rest, without the cycle or swim; it never shows a
+mid-morph pose. Unobserved, stale and idle presentations stay the whale.
+`build-dot-bodies.py --whale-body` reproducibly derives the interior sampling
+from the pinned alpha mask in `pet/public/whale.png`.
 
-The generator reads the existing tool and phase labels from the English,
-Simplified Chinese, Traditional Chinese and Japanese locale packs, using the
-same typed activity mapping as the terminal caption. The Simplified Chinese
-phrases are: `读取 编辑 搜索 验证 运行 使用浏览器 操作电脑 检索上下文
-调用工具 思考 回复 智能体工作中 等你处理 完成`. Updating that locale and regenerating
-the masks keeps the pet's wording consistent with the interface. Labels never
-fall back to a single-character abbreviation. Flowing ink and light
-express the action within the phrase: reading scans rows, searching moves a
-spotlight, writing traces across strokes, memory draws light inward and
-delegating runs concurrent bands. Glyph masks in `dot-glyphs.ts` are generated
-by `pet/scripts/build-dot-glyphs.py`; font provenance and license are in
-`pet/assets/dot-glyphs-LICENSE.txt`. Captions carry the meaning independently of
-color, motion and the viewer's ability to read a small glyph.
+Ordinary captions keep the meaning without relying on shape or colour. The
+owner's `displayPhrase` is the activity label from the producer's interface
+locale (English, Simplified Chinese, Traditional Chinese or Japanese, else
+English), taken from the same locale-pack strings the terminal uses;
+`displayLanguage` names that caption's language. A pet test compares those
+labels with the locale packs.
 
-Whale style and large-text language are independent saved appearance settings.
-`/pet style smooth|pixel` selects the body; `/pet language auto|en|zh-Hans|zh-Hant|ja`
-selects the phrases. The appearance studio exposes the same choices. `auto`
-follows the active producer’s interface locale; other interface languages use
-English large text until masks are available. An English reader can select
-Chinese or Japanese large text while keeping an English caption for its meaning.
-These preferences do not change the Engine language, session, score, checkpoint,
-recording or audio. Old appearance files default to smooth and auto. An older
-running owner keeps its existing producer contract; style and language changes
-report that the companion needs to be updated and restarted.
+What this design does not do: forms carry no text, so they do not say which
+file, command or page is involved; that stays in captions and the inspector.
+Forms are not chosen from tool names or arguments, only from the typed
+activity kind. The pod shows at most three whales however many agents run.
+Forms do not follow the interface language, have no user-selectable variants,
+and do not change the Engine language, session, score, checkpoint, recording or
+audio. In the terminal the forms appear only in the `whale` view, which draws
+the companion's prepared points; `cove` and `braille` draw the local whale.
+All thirteen forms were checked there at 140x40 and 80x24; in smaller
+terminals thin parts can thin out in Braille, and the caption is the legible
+fallback.
+
+Whale style is a saved appearance setting. `/pet style smooth|pixel` selects
+the body, and the appearance studio exposes the same choice. Appearance files
+saved with the removed large-text language field still load; the field is
+ignored and dropped on the next save. An older running owner keeps its existing
+producer contract; a style change reports that the companion needs to be
+updated and restarted.
 
 `pet/assets/pixel-whale.svg` is the approved exploration 34 (192-cell grid),
 with the same aurora palette and silhouette as the smooth brand mark. Its
 SHA-256 is `9d3742fbf325aedc18435d7b15e89178b8684ccbb40cd55a32e60bed156de700`.
-`build-dot-glyphs.py --pixel-body` verifies that source and derives the drone
+`build-dot-bodies.py --pixel-body` verifies that source and derives the drone
 positions. The lossless transparent 1024px WebP is generated from that SVG
 with ImageMagick: `magick -background none -density 384 pet/assets/pixel-whale.svg
 -filter point -resize 1024x1024 -define webp:lossless=true pet/public/pixel-whale.webp`.
-`build-pet.mjs` checks that the embedded terminal image and native cores match
-their canonical sources. Custom particle colors also tint the browser’s pixel
-mark; selecting a color preset preserves style and language.
+`build-pet.mjs` checks that the embedded terminal image and the embedded native
+core match their canonical sources. Custom particle colors also tint the
+browser's pixel mark; selecting a color preset preserves the style.
 
 The Engine admits `activity_kind` and optional `action_id` on operation start
 and completion. The projection exposes `activityKind` and `actionId`, including
@@ -191,8 +214,8 @@ successful Kitty query, with synchronized output and a known cell size in
 pixels; otherwise it shows the Braille particles. `CODEWHALE_PET_GRAPHICS=braille`
 also disables that image. Full habitat focus uses the existing modal stack.
 
-The complete ownership, source selection, storage/reconnect, graphics, audio,
-legacy habitat contracts live in [pet/SHARED.md](../../pet/SHARED.md).
+The complete ownership, source selection, storage/reconnect, graphics, audio
+and legacy habitat contracts live in [pet/SHARED.md](../../pet/SHARED.md).
 That document supersedes the former per-session Watch worker and app-local
 live-world ownership. Completion cameos remain bounded transcript decorations.
 

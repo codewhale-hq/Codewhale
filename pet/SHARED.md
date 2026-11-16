@@ -35,19 +35,18 @@ In the running application:
 | --- | --- |
 | `/pet` | Toggle pet mode for this terminal: the habitat takes the whole content viewport now and on every accepted turn |
 | `/pet on` / `/pet off` | Enable or disable explicitly; `off` closes the view and stops automatic entry while the companion keeps the pet alive |
-| `/pet appearance` | Configure the shared palette, whale style and large-text language in the authenticated local browser studio |
+| `/pet appearance` | Configure the shared palette and whale style in the authenticated local browser studio |
 | `/pet style smooth\|pixel` | Choose the smooth aurora or pixel whale |
-| `/pet language auto\|en\|zh-Hans\|zh-Hant\|ja` | Choose large activity phrases independently of the interface language |
 | `/pet source` | Explicitly select this terminal session as the source |
 | `/pet sound on\|off` | Request/release the companion's audio device |
 | `/pet export` | Save a replay to this saved session's artifacts |
 | `/pet status` | Mode, view, identity and measured terminal output counters |
 
-Large text follows the interface language by default. English, Simplified
-Chinese, Traditional Chinese and Japanese phrases are available; other
-interface languages currently use English large text. A fixed choice lets an
-English reader learn Chinese or Japanese phrases beside the normal English
-status. Both whale styles turn their 980 drones into these same activity words.
+During activity both whale styles turn their 980 drones into the thing the
+work is, in motion: a wrench for running, a pencil for editing, a book for
+reading and so on, then return to the whale (forms and their meanings:
+`docs/design/DOT_WHALE_PET.md`). The caption under the pet keeps the activity
+in the interface language.
 The saved presentation settings leave the pet’s identity and recording intact.
 
 The pet has no workbar panel. In the terminal it is the pet main view above the
@@ -81,8 +80,9 @@ ordered, durable action contract and reach every attached view; they never enter
 the simulation's interaction journal or change its replay digest. The terminal and
 browser views consume the shared background, material, dot size and glow.
 
-For an isolated, provider-free review, serve `pet/dist` and open
-`shared.html?preview=1`. Compare all eight looks, toggle Still, and choose
+For an isolated, provider-free review, run `npm --prefix pet run build`, serve
+the output with `python3 -m http.server --directory pet/dist 8000` and open
+`http://127.0.0.1:8000/shared.html?preview=1`. Compare all eight looks, toggle Still, and choose
 **Preview work → result**. The canonical world drives the animation; the answer
 is explicitly illustrative and no task or provider is run. The live studio's
 preview detaches into an isolated world and offers **Return to live pet**.

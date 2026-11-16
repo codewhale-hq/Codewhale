@@ -62,8 +62,7 @@ python3 pet/scripts/check-shared.py target/debug/codewhale-tui
 Do not rerun a full library test link that is already exhausting the machine.
 Report build/resource blockers and continue independent source/browser QA.
 Manually inspect `/pet`, narrow layouts, paste/Enter focus, session
-save/reopen, immutable `/pet export`, and import that exported JSON in
-the browser. Unknown must remain legible; stale approvals must not resurrect.
+save/reopen and immutable `/pet export`. Unknown must remain legible; stale approvals must not resurrect.
 Use a disposable session and synthetic/loopback telemetry for this assignment.
 
 With FFmpeg's `ffplay` on PATH, explicitly enable `/pet sound on`.

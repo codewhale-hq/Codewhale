@@ -18,7 +18,7 @@ export const docsPet: DocsPetDict = {
       id: "turn-on",
       title: "Turn it on",
       blocks: [
-        { note: "Pet mode has been available since 0.9.13. Version 0.10.2 added the animated whale, the persistent message box, /pet style, /pet language and the views selected with Ctrl+]." },
+        { note: "Pet mode has been available since 0.9.13. Version 0.10.2 added the animated whale, the persistent message box, /pet style and the views selected with Ctrl+]. The whale's dots now become the thing the work is, such as a wrench, a pencil or a book, then return to the whale; the large activity words and /pet language are gone." },
         {
           code: "/pet on        # pet mode becomes the main view\n/pet off       # back to the standard view\n/pet status    # on or off, and the companion's identity",
           lang: "Codewhale",

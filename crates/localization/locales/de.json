@@ -2535,7 +2535,7 @@
   "PlanHandoffKeepPlanningDetail": "In Plan bleiben. Nichts wird geändert.",
   "PlanHandoffProceed": "Setze den Plan jetzt um.",
   "PlanHandoffTodoNote": "Verfolge diesen Plan mit todo_write: Behalte den Eintrag \"{title}\" in deiner Liste und markiere ihn als erledigt, sobald der Plan abgeschlossen ist.",
-  "PetAppearanceLegacy": "Das Haustier verwendet eine ältere Version. Starte es nach dem Codewhale-Update neu, um den Walstil und die Textsprache auszuwählen.",
+  "PetAppearanceLegacy": "Das Haustier verwendet eine ältere Version. Starte es nach dem Codewhale-Update neu, um den Walstil auszuwählen.",
   "PluginOAuthBrowser": "Mit Eingabe im Browser anmelden, mit Esc zurück. Kein API-Schlüssel erforderlich.",
   "PluginOAuthReady": "{provider}: angemeldet. Wählen Sie ein Modell.",
   "PluginOAuthLocalLogout": "{provider}: lokale Anmeldung entfernt. Der Fernzugriff bleibt unverändert.",

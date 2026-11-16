@@ -2535,7 +2535,7 @@
   "PlanHandoffKeepPlanningDetail": "Ở lại Plan. Không có gì thay đổi.",
   "PlanHandoffProceed": "Hãy làm theo kế hoạch.",
   "PlanHandoffTodoNote": "Theo dõi kế hoạch này bằng todo_write: giữ mục \"{title}\" trong danh sách của bạn và đánh dấu đã hoàn tất khi kế hoạch xong.",
-  "PetAppearanceLegacy": "Thú cưng đang dùng phiên bản cũ. Khởi động lại sau khi cập nhật Codewhale để chọn kiểu cá voi và ngôn ngữ văn bản.",
+  "PetAppearanceLegacy": "Thú cưng đang dùng phiên bản cũ. Khởi động lại sau khi cập nhật Codewhale để chọn kiểu cá voi.",
   "PluginOAuthBrowser": "Nhấn Enter để đăng nhập bằng trình duyệt hoặc Esc để quay lại. Không cần khóa API.",
   "PluginOAuthReady": "{provider}: đã đăng nhập. Hãy chọn mô hình.",
   "PluginOAuthLocalLogout": "{provider}: đã xóa thông tin đăng nhập cục bộ. Quyền truy cập từ xa không đổi.",

@@ -2535,7 +2535,7 @@
   "PlanHandoffKeepPlanningDetail": "留在 Plan。不做任何更改。",
   "PlanHandoffProceed": "按计划开始执行。",
   "PlanHandoffTodoNote": "使用 todo_write 跟踪此计划：在列表中保留条目「{title}」，并在计划完成后将其标记为已完成。",
-  "PetAppearanceLegacy": "宠物仍在使用旧版本。更新 Codewhale 后重启宠物，即可选择鲸鱼样式和文字语言。",
+  "PetAppearanceLegacy": "宠物仍在使用旧版本。更新 Codewhale 后重启宠物，即可选择鲸鱼样式。",
   "PluginOAuthBrowser": "按 Enter 打开浏览器登录，按 Esc 返回。不需要 API Key。",
   "PluginOAuthReady": "{provider}：已登录，请选择模型。",
   "PluginOAuthLocalLogout": "{provider}：已删除本机登录凭据，未撤销服务端授权。",

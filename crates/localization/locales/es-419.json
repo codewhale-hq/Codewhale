@@ -2535,7 +2535,7 @@
   "PlanHandoffKeepPlanningDetail": "Sigue en Plan. No se cambia nada.",
   "PlanHandoffProceed": "Adelante con el plan.",
   "PlanHandoffTodoNote": "Haz seguimiento de este plan con todo_write: mantén el elemento \"{title}\" en tu lista y márcalo como completado cuando el plan esté terminado.",
-  "PetAppearanceLegacy": "La mascota usa una versión anterior. Reiníciala después de actualizar Codewhale para elegir el estilo de ballena y el idioma del texto.",
+  "PetAppearanceLegacy": "La mascota usa una versión anterior. Reiníciala después de actualizar Codewhale para elegir el estilo de ballena.",
   "PluginOAuthBrowser": "Presiona Intro para iniciar sesión en el navegador o Esc para volver. No se necesita una clave API.",
   "PluginOAuthReady": "{provider}: sesión iniciada. Elige un modelo.",
   "PluginOAuthLocalLogout": "{provider}: se eliminó la sesión local. El acceso remoto no cambió.",
