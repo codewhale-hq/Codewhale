@@ -373,8 +373,9 @@ function loadPrivateKeyFromEnv() {
 export function validateTrustedKeys(keys) {
   const seen = new Set();
   for (const key of keys) {
-    if (!KEY_ID_RE.test(key.keyId) || seen.has(key.keyId) || !["active", "retired"].includes(key.status) || strictBase64(key.publicKey, 32).length !== 32) throw new Error("invalid or duplicated pinned key");
+    if (!KEY_ID_RE.test(key.keyId) || seen.has(key.keyId) || !["active", "retired"].includes(key.status) || !["founder", "automation"].includes(key.role) || strictBase64(key.publicKey, 32).length !== 32 || seen.has(key.publicKey)) throw new Error("invalid or duplicated pinned key");
     seen.add(key.keyId);
+    seen.add(key.publicKey);
   }
   return keys;
 }
@@ -387,8 +388,8 @@ export function parseTsKeys(text) {
   const table = tables[0];
   const body = table[1].replace(/^\s*\/\/.*$/gm, "");
   const keys = [];
-  const remainder = body.replace(/\{\s*keyId:\s*"([^"]+)",\s*publicKey:\s*"([^"]+)",\s*status:\s*"([^"]+)"\s*,?\s*\}/g, (_, keyId, publicKey, status) => {
-    keys.push({ keyId, publicKey, status });
+  const remainder = body.replace(/\{\s*keyId:\s*"([^"]+)",\s*publicKey:\s*"([^"]+)",\s*status:\s*"([^"]+)",\s*role:\s*"([^"]+)"\s*,?\s*\}/g, (_, keyId, publicKey, status, role) => {
+    keys.push({ keyId, publicKey, status, role });
     return "";
   });
   if (remainder.replace(/[\s,]/g, "")) throw new Error("unparsed TypeScript TRUSTED_KEYS entry");
@@ -400,11 +401,69 @@ function loadTrustedKeysFromRepo() {
   return new Map(keys.map((key) => [key.keyId, key]));
 }
 
+const AUTOMATION_CHANNEL_SUFFIX = "-models";
+const AUTOMATION_MAX_VALIDITY_MS = 7 * 24 * 60 * 60 * 1000;
+const AUTOMATION_MAX_MODELS = 256;
+const AUTOMATION_PAYLOAD_FIELDS = new Set([
+  "schema_version", "channel", "facts_version", "published_at", "not_after", "applies_to",
+  "models", "provider_defaults", "release", "announcements",
+]);
+const AUTOMATION_MODEL_FIELDS = new Set([
+  "provider", "id", "op", "context_window", "max_output", "reasoning", "display_name",
+  "deprecated_at", "replacement", "note", "applies_to", "pricing_withheld",
+]);
+
+export function automationScopeViolation(facts, channel) {
+  const published = utcTime(facts.published_at);
+  const expires = facts.not_after == null ? null : utcTime(facts.not_after);
+  if (published === null || (facts.not_after != null && expires === null)) return "timestamp is not whole-second UTC";
+  if (!channel.endsWith(AUTOMATION_CHANNEL_SUFFIX) || channel.length <= AUTOMATION_CHANNEL_SUFFIX.length || !/^[a-z0-9]/.test(channel)) return `channel ${JSON.stringify(channel)} is not an automation channel`;
+  const plain = (value, max) => value === undefined || (typeof value === "string" && [...value].length <= max && !/\p{Cc}/u.test(value));
+  if (!plain(facts.applies_to, 200)) return "applies_to is too long or not plain";
+  if (isPlainObject(facts.provider_defaults) && Object.keys(facts.provider_defaults).length > 0) return "provider defaults";
+  if (facts.release != null) return "release facts";
+  if (Array.isArray(facts.announcements) && facts.announcements.length > 0) return "announcements";
+  const unknown = Object.keys(facts).find((field) => !AUTOMATION_PAYLOAD_FIELDS.has(field));
+  if (unknown !== undefined) return `field ${JSON.stringify(unknown)} is not allowed`;
+  const models = facts.models === undefined ? [] : facts.models;
+  if (!Array.isArray(models)) return "models is not a list";
+  if (models.length > AUTOMATION_MAX_MODELS) return `more than ${AUTOMATION_MAX_MODELS} models`;
+  for (const model of models) {
+    if (!isPlainObject(model) || typeof model.provider !== "string" || !model.provider || typeof model.id !== "string" || !model.id) return "malformed model entry";
+    const name = `${model.provider}/${model.id}`;
+    const field = Object.keys(model).find((key) => !AUTOMATION_MODEL_FIELDS.has(key));
+    if (field !== undefined) return `${name}: field ${JSON.stringify(field)} is not allowed`;
+    const nullField = Object.keys(model).find((key) => model[key] === null);
+    if (nullField !== undefined) return `${name}: field ${JSON.stringify(nullField)} is null`;
+    const op = model.op === undefined ? "upsert" : model.op;
+    if (op !== "upsert" && op !== "deprecate") return `${name} is not an upsert or deprecation`;
+    if (model.reasoning !== undefined && typeof model.reasoning !== "boolean") return `${name}: malformed model entry`;
+    if (!plain(model.provider, 64) || !plain(model.id, 200) || !plain(model.display_name, 120) || !plain(model.deprecated_at, 40) ||
+        !plain(model.replacement, 200) || !plain(model.note, 300) || !plain(model.applies_to, 200) || !plain(model.pricing_withheld, 300)) return `${name}: text too long or not plain`;
+    const window = model.context_window;
+    const output = model.max_output;
+    const windowOk = window === undefined || (typeof window === "number" && Number.isSafeInteger(window) && window >= 1024 && window <= 20_000_000);
+    const outputOk = output === undefined || (typeof output === "number" && Number.isSafeInteger(output) && output >= 1 && output <= 2_000_000 && (typeof window !== "number" || output <= window));
+    if (!windowOk || !outputOk) return `${name}: limit out of range`;
+  }
+  const wholeSecond = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+  if (typeof facts.published_at !== "string" || !wholeSecond.test(facts.published_at) ||
+      (facts.not_after != null && (typeof facts.not_after !== "string" || !wholeSecond.test(facts.not_after)))) return "timestamp is not whole-second UTC";
+  if (facts.facts_version !== published / 1000) return "facts_version is not the publication time";
+  if (expires === null) return "no not_after";
+  if (expires <= published || expires - published > AUTOMATION_MAX_VALIDITY_MS) return "validity outside the automation limit";
+  return null;
+}
+
 export function activePublishingKey(envelope, keys, now = Date.now()) {
   const key = validateTrustedKeys(keys).find((key) => key.keyId === envelope.key_id && key.status === "active");
   if (!key) throw new Error("primary signing key is not pinned and active; refusing publication");
   const check = verifyEnvelope(envelope, key.publicKey);
   if (!check.ok) throw new Error(`envelope does not verify: ${check.errors.join("; ")}`);
+  if (key.role !== "founder") {
+    const violation = automationScopeViolation(check.payload, envelope.channel);
+    if (violation !== null) throw new Error(`payload is outside the automation key's scope: ${violation}`);
+  }
   if (!Number.isFinite(now) || utcTime(check.payload.published_at) > now + 300_000 ||
       (check.payload.not_after != null && utcTime(check.payload.not_after) <= now)) throw new Error("publication timestamp is future or expired");
   return { key, check };
@@ -604,12 +663,20 @@ async function main(argv) {
   if (cmd === "verify") {
     const envelope = readJson(resolve(String(positional[1] ?? "")));
     let pub = flags["public-key"];
+    let trusted;
     if (!pub) {
-      const trusted = loadTrustedKeysFromRepo().get(envelope.key_id);
+      trusted = loadTrustedKeysFromRepo().get(envelope.key_id);
       if (!trusted || trusted.status !== "active") throw new Error("key is not pinned and active; use --public-key only for explicit offline verification");
       pub = trusted.publicKey;
     }
     const result = verifyEnvelope(envelope, String(pub));
+    if (result.ok && trusted && trusted.role !== "founder") {
+      const violation = automationScopeViolation(result.payload, envelope.channel);
+      if (violation !== null) {
+        result.ok = false;
+        result.errors = [`payload is outside the automation key's scope: ${violation}`];
+      }
+    }
     console.log(JSON.stringify({ ok: result.ok, errors: result.errors, channel: envelope.channel, facts_version: envelope.facts_version, key_id: envelope.key_id, sha256: result.sha256 ?? null }, null, 2));
     return result.ok ? 0 : 1;
   }

@@ -1,15 +1,17 @@
 # Signed cloud facts
 
 Cloud facts are an optional signed overlay for model metadata and unset provider
-model defaults. They are **off by default**. The production trust tables in Rust
-and the website are empty, so enabling the setting currently reports an inert
-layer and does not fetch or trust a production channel.
+model defaults. They are **off by default**: a client fetches nothing unless the
+setting is turned on.
 
-This source slice does not establish a deployed endpoint, published database
-row, signing-key custody, or a real provider request. The JSON under
-`docs/cloud-facts/stable.json` is unsigned authoring material; its release entry
-matches the checked-in `web/data/latest-published-release.json` receipt. It is
-not a publication receipt. Public test fixtures establish local behavior only.
+One production key, `cwf-2026-09`, is pinned in the Rust and website trust
+tables with the `founder` role. This document and the source it describes do
+not establish a deployed endpoint, a published database row, signing-key
+custody, or a real provider request; check the live channel for those. The JSON
+under `docs/cloud-facts/stable.json` is unsigned authoring material; its release
+entry matches the checked-in `web/data/latest-published-release.json` receipt.
+It is not a publication receipt. Public test fixtures establish local behavior
+only.
 
 Related: [catalog refresh](CATALOG_REFRESH.md) and [provider routes](PROVIDERS.md).
 
@@ -42,6 +44,55 @@ network success is never a startup dependency. Missing, rejected, inapplicable
 or expired facts leave the remaining catalog authorities usable. Status reports
 whether facts are off, inert, verified, rejected or unavailable through the
 existing compact catalog/status surface.
+
+## Key roles
+
+Every pinned key has a role, recorded in both trust tables and compared by
+`check:facts`. One public key may appear under one key ID only.
+
+- `founder`: held by a person, may sign any payload the client understands, on
+  any channel.
+- `automation`: for a scheduled publisher. A payload authenticated only by an
+  automation key is accepted when all of the following hold, and is otherwise
+  rejected whole as outside the key's scope:
+  - the channel the client asked for ends in `-models`. An automation key can
+    never authenticate `stable`, `beta` or any other founder channel, so it
+    cannot replace a founder release or move that channel's rollback floor;
+  - `facts_version` equals `published_at` in Unix seconds, so a version cannot
+    run ahead of the clock and exhaust the channel's version space;
+  - `not_after` is present, later than `published_at`, and at most seven days
+    after it. Both timestamps are whole-second UTC;
+  - it carries at most 256 model entries and no provider defaults, release
+    facts, announcements or field outside the known payload fields;
+  - every model entry is an upsert or a deprecation using only `provider`,
+    `id`, `op`, `context_window`, `max_output`, `reasoning`, `display_name`,
+    `deprecated_at`, `replacement`, `note`, `applies_to` and
+    `pricing_withheld`. Prices, `allow_unlisted`, `reasoning_options` and any
+    other field are refused;
+  - text fields are plain (no control characters) and bounded, a context window
+    is between 1,024 and 20,000,000 tokens, and a maximum output is between 1
+    and 2,000,000 and not above the context window.
+
+  The same rule is written three times: `automation_scope_violation` in
+  `crates/config/src/cloud_facts/verify.rs`, `automationScopeViolation` in
+  `web/lib/cloud-facts.ts`, and the function of that name in
+  `web/scripts/facts-publish.mjs`. All three are tested against
+  `docs/cloud-facts/fixtures/automation-scope-cases.json`.
+
+If an envelope carries both a founder and an automation signature that verify,
+the founder signature decides and the scope does not apply.
+
+What this does not do:
+
+- **No automation key is pinned**, and a test in each language fails if one
+  appears without that test being changed.
+- **No client fetches a `-models` channel.** Until one does, a pinned
+  automation key would authenticate nothing a client asks for.
+- **No scheduled publisher exists**, and `emit-sql --public-key` still performs
+  no pin, role or scope check.
+- The seven-day limit bounds one payload. A client keeps applying a cached
+  payload through the existing 48-hour grace after `not_after`, and whoever
+  holds the key can sign a new payload at any time.
 
 ## Verification and expiration
 

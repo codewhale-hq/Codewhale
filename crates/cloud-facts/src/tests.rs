@@ -47,6 +47,7 @@ fn test_keys() -> &'static [TrustedKey] {
                 62, 48, 131, 121, 35, 42, 55, 216, 23, 50, 219, 39, 181,
             ],
             status: KeyStatus::Active,
+            role: codewhale_config::cloud_facts::KeyRole::Founder,
         }]
     })
 }

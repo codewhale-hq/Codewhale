@@ -23,7 +23,8 @@ pub mod types;
 pub mod verify;
 
 pub use keys::{
-    DOMAIN, ENVELOPE_VERSION, KeyStatus, MAX_ENVELOPE_BYTES, MAX_PAYLOAD_BYTES,
+    AUTOMATION_CHANNEL_SUFFIX, AUTOMATION_MAX_MODELS, AUTOMATION_MAX_VALIDITY_SECS, DOMAIN,
+    ENVELOPE_VERSION, KeyRole, KeyStatus, MAX_ENVELOPE_BYTES, MAX_PAYLOAD_BYTES,
     SUPPORTED_SCHEMA_VERSION, TRUSTED_KEYS, TrustedKey,
 };
 pub use overlay::{
@@ -35,7 +36,9 @@ pub use types::{
     Announcement, AnnouncementLevel, CloudFacts, ModelFact, ModelOp, PricingFact,
     ProviderDefaultFact, ReleaseFact, Surface,
 };
-pub use verify::{Envelope, FactsRejection, VerifiedFacts, verify_envelope};
+pub use verify::{
+    Envelope, FactsRejection, VerifiedFacts, automation_scope_violation, verify_envelope,
+};
 
 /// Whether any pinned key can authenticate a release. With none, the layer is
 /// inert regardless of the feature flag.

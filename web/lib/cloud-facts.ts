@@ -1,6 +1,6 @@
 /** Verified facts/v1 delivery. Supabase and KV are untrusted transports; only
  * active, pinned public keys authenticate the exact payload bytes. */
-import { DOMAIN, MAX_PAYLOAD_BYTES, TRUSTED_KEYS, type TrustedKey } from "./cloud-facts/keys";
+import { AUTOMATION_CHANNEL_SUFFIX, AUTOMATION_MAX_MODELS, AUTOMATION_MAX_VALIDITY_MS, DOMAIN, MAX_PAYLOAD_BYTES, TRUSTED_KEYS, type KeyRole, type TrustedKey } from "./cloud-facts/keys";
 import { readBoundedBody } from "./bounded-body";
 import { readBoundedKvJson, type KVStreamNamespace } from "./kv";
 
@@ -57,7 +57,7 @@ export interface CloudFactsEnv {
 }
 
 type Rejection = "no-active-keys" | "unknown-key" | "retired-key" | "bad-signature" |
-  "bad-envelope" | "bad-payload" | "sha-mismatch" | "wrong-channel" | "expired";
+  "bad-envelope" | "bad-payload" | "sha-mismatch" | "wrong-channel" | "expired" | "out-of-scope";
 export type Verification =
   | { ok: true; keyId: string; mode: "verified" }
   | { ok: false; reason: Rejection };
@@ -117,12 +117,14 @@ export function signingMessage(keyId: string, payload: Uint8Array): Uint8Array {
 }
 
 function hasActiveKeys(keys: readonly TrustedKey[]): boolean {
-  const ids = new Set<string>();
+  const seen = new Set<string>();
   try {
     for (const key of keys) {
-      if (!KEY_ID_RE.test(key.keyId) || ids.has(key.keyId) ||
-          !["active", "retired"].includes(key.status) || b64ToBytes(key.publicKey, 32).length !== 32) return false;
-      ids.add(key.keyId);
+      if (!KEY_ID_RE.test(key.keyId) || seen.has(key.keyId) || seen.has(key.publicKey) ||
+          !["active", "retired"].includes(key.status) || !["founder", "automation"].includes(key.role) ||
+          b64ToBytes(key.publicKey, 32).length !== 32) return false;
+      seen.add(key.keyId);
+      seen.add(key.publicKey);
     }
     return keys.some((key) => key.status === "active");
   } catch { return false; }
@@ -182,6 +184,54 @@ export async function etagFor(envelope: CloudFactsEnvelope): Promise<string> {
   return `"${await sha256Hex(new TextEncoder().encode(JSON.stringify(envelope)))}"`;
 }
 
+const AUTOMATION_PAYLOAD_FIELDS = new Set([
+  "schema_version", "channel", "facts_version", "published_at", "not_after", "applies_to",
+  "models", "provider_defaults", "release", "announcements",
+]);
+const AUTOMATION_MODEL_FIELDS = new Set([
+  "provider", "id", "op", "context_window", "max_output", "reasoning", "display_name",
+  "deprecated_at", "replacement", "note", "applies_to", "pricing_withheld",
+]);
+
+export function automationScopeViolation(facts: Record<string, unknown>, channel: string, published: number, expires: number | null): string | null {
+  if (!channel.endsWith(AUTOMATION_CHANNEL_SUFFIX) || channel.length <= AUTOMATION_CHANNEL_SUFFIX.length || !/^[a-z0-9]/.test(channel)) return `channel ${JSON.stringify(channel)} is not an automation channel`;
+  const plain = (value: unknown, max: number): boolean => value === undefined || (typeof value === "string" && [...value].length <= max && !/\p{Cc}/u.test(value));
+  if (!plain(facts.applies_to, 200)) return "applies_to is too long or not plain";
+  if (isObject(facts.provider_defaults) && Object.keys(facts.provider_defaults).length > 0) return "provider defaults";
+  if (facts.release != null) return "release facts";
+  if (Array.isArray(facts.announcements) && facts.announcements.length > 0) return "announcements";
+  const unknown = Object.keys(facts).find((field) => !AUTOMATION_PAYLOAD_FIELDS.has(field));
+  if (unknown !== undefined) return `field ${JSON.stringify(unknown)} is not allowed`;
+  const models = facts.models === undefined ? [] : facts.models;
+  if (!Array.isArray(models)) return "models is not a list";
+  if (models.length > AUTOMATION_MAX_MODELS) return `more than ${AUTOMATION_MAX_MODELS} models`;
+  for (const model of models) {
+    if (!isObject(model) || typeof model.provider !== "string" || !model.provider || typeof model.id !== "string" || !model.id) return "malformed model entry";
+    const name = `${model.provider}/${model.id}`;
+    const field = Object.keys(model).find((key) => !AUTOMATION_MODEL_FIELDS.has(key));
+    if (field !== undefined) return `${name}: field ${JSON.stringify(field)} is not allowed`;
+    const nullField = Object.keys(model).find((key) => model[key] === null);
+    if (nullField !== undefined) return `${name}: field ${JSON.stringify(nullField)} is null`;
+    const op = model.op === undefined ? "upsert" : model.op;
+    if (op !== "upsert" && op !== "deprecate") return `${name} is not an upsert or deprecation`;
+    if (model.reasoning !== undefined && typeof model.reasoning !== "boolean") return `${name}: malformed model entry`;
+    if (!plain(model.provider, 64) || !plain(model.id, 200) || !plain(model.display_name, 120) || !plain(model.deprecated_at, 40) ||
+        !plain(model.replacement, 200) || !plain(model.note, 300) || !plain(model.applies_to, 200) || !plain(model.pricing_withheld, 300)) return `${name}: text too long or not plain`;
+    const window = model.context_window;
+    const output = model.max_output;
+    const windowOk = window === undefined || (typeof window === "number" && Number.isSafeInteger(window) && window >= 1024 && window <= 20_000_000);
+    const outputOk = output === undefined || (typeof output === "number" && Number.isSafeInteger(output) && output >= 1 && output <= 2_000_000 && (typeof window !== "number" || output <= window));
+    if (!windowOk || !outputOk) return `${name}: limit out of range`;
+  }
+  const wholeSecond = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+  if (typeof facts.published_at !== "string" || !wholeSecond.test(facts.published_at) ||
+      (facts.not_after != null && (typeof facts.not_after !== "string" || !wholeSecond.test(facts.not_after)))) return "timestamp is not whole-second UTC";
+  if (facts.facts_version !== published / 1000) return "facts_version is not the publication time";
+  if (expires === null) return "no not_after";
+  if (expires <= published || expires - published > AUTOMATION_MAX_VALIDITY_MS) return "validity outside the automation limit";
+  return null;
+}
+
 /** Authenticate first, then validate signed metadata. A channel serves all
  * client versions; each client evaluates the validated applicability range. */
 export async function verifyEnvelope(
@@ -196,6 +246,7 @@ export async function verifyEnvelope(
   try { payload = b64ToBytes(envelope.payload_b64, MAX_PAYLOAD_BYTES); }
   catch { return { ok: false, reason: "bad-envelope" }; }
   let keyId: string | undefined;
+  let keyRole: KeyRole | undefined;
   let sawKnown = false;
   let sawRetired = false;
   for (const candidate of [envelope, ...envelope.sigs]) {
@@ -206,8 +257,15 @@ export async function verifyEnvelope(
     try {
       const publicKey = await crypto.subtle.importKey("raw", b64ToBytes(key.publicKey, 32) as BufferSource, { name: "Ed25519" }, false, ["verify"]);
       if (await crypto.subtle.verify({ name: "Ed25519" }, publicKey, b64ToBytes(candidate.sig_b64, 64) as BufferSource, signingMessage(candidate.key_id, payload) as BufferSource)) {
-        keyId = candidate.key_id;
-        break;
+        if (key.role === "founder") {
+          keyId = candidate.key_id;
+          keyRole = key.role;
+          break;
+        }
+        if (keyId === undefined) {
+          keyId = candidate.key_id;
+          keyRole = key.role;
+        }
       }
     } catch { /* An invalid candidate cannot authenticate the payload. */ }
   }
@@ -235,6 +293,7 @@ export async function verifyEnvelope(
   const expires = facts.not_after == null ? null : utcTime(facts.not_after);
   if (!Number.isFinite(now) || published > now + CLOCK_SKEW_MS ||
       (expires !== null && expires <= published)) return { ok: false, reason: "bad-payload" };
+  if (keyRole !== "founder" && automationScopeViolation(facts, opts.channel ?? envelope.channel, published, expires) !== null) return { ok: false, reason: "out-of-scope" };
   if (expires !== null && now >= expires) return { ok: false, reason: "expired" };
   return { ok: true, keyId, mode: "verified" };
 }

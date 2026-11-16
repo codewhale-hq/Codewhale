@@ -17,12 +17,12 @@ import { parseRustKeys, parseTsKeys } from "../scripts/check-cloud-facts.mjs";
 const fixturePath = new URL("../../docs/cloud-facts/fixtures/envelope-stable-v7.json", import.meta.url);
 const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as CloudFactsEnvelope;
 const futureFixture = JSON.parse(readFileSync(new URL("../../docs/cloud-facts/fixtures/envelope-future-only-v8.json", import.meta.url), "utf8")) as CloudFactsEnvelope;
-const TEST_KEY: TrustedKey = { keyId: "cwf-test-only", publicKey: "8+FLDW4OorUETUVks0hpQAi5Lj4wg3kjKjfYFzLbJ7U=", status: "active" };
+const TEST_KEY: TrustedKey = { keyId: "cwf-test-only", publicKey: "8+FLDW4OorUETUVks0hpQAi5Lj4wg3kjKjfYFzLbJ7U=", status: "active", role: "founder" };
 const NOW = Date.parse("2026-09-07T00:00:00Z");
 const basePayload = JSON.parse(Buffer.from(fixture.payload_b64, "base64").toString("utf8"));
 // Ephemeral test keys exist only in memory and never enter production anchors.
 const ephemeral = generateKeyPairSync("ed25519");
-const EPHEMERAL_KEY: TrustedKey = { keyId: "cwf-ephemeral-test", publicKey: ephemeral.publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64"), status: "active" };
+const EPHEMERAL_KEY: TrustedKey = { keyId: "cwf-ephemeral-test", publicKey: ephemeral.publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64"), status: "active", role: "founder" };
 
 function signed(overrides: Record<string, unknown> = {}): CloudFactsEnvelope {
   const payload = { ...basePayload, ...overrides };
@@ -140,6 +140,9 @@ describe("cloud facts verification", () => {
     expect(await verifyEnvelope(expired, [EPHEMERAL_KEY], { now: NOW })).toEqual({ ok: false, reason: "expired" });
     expect((await resolveCloudFacts("stable", env, { keys: [EPHEMERAL_KEY], now: () => NOW, fetchImpl: supabaseFetch([rowFrom(expired)]) })).kind).toBe("unverifiable");
     expect((await verifyEnvelope(signed({ not_after: "2026-08-29T00:00:00Z" }), [EPHEMERAL_KEY], { now: NOW })).ok).toBe(false);
+    const zeroValidity = signed({ not_after: basePayload.published_at });
+    expect(await verifyEnvelope(zeroValidity, [EPHEMERAL_KEY], { now: NOW })).toEqual({ ok: false, reason: "bad-payload" });
+    expect(verifyForPublisher(zeroValidity, EPHEMERAL_KEY.publicKey).ok).toBe(false);
   });
 
   it("rejects oversized/noncanonical base64 and hostile signature shapes without throwing", async () => {
@@ -414,11 +417,15 @@ describe("facts publisher boundaries", () => {
     expect(() => parseRustKeys("pub const TRUSTED_KEYS: &[TrustedKey] = &[make_key()];")).toThrow();
     expect(() => parseTsKeys("// export const TRUSTED_KEYS: readonly TrustedKey[] = [];\nexport const TRUSTED_KEYS = makeKeys();")).toThrow();
     expect(() => parseRustKeys("// pub const TRUSTED_KEYS: &[TrustedKey] = &[];\npub const TRUSTED_KEYS: &[TrustedKey] = &[make_key()];")).toThrow();
-    const entry = `{ keyId: "${TEST_KEY.keyId}", publicKey: "${TEST_KEY.publicKey}", status: "active" }`;
+    const entry = `{ keyId: "${TEST_KEY.keyId}", publicKey: "${TEST_KEY.publicKey}", status: "active", role: "founder" }`;
     expect(() => parseTsKeys(`export const TRUSTED_KEYS: readonly TrustedKey[] = [${entry}, ${entry}];`)).toThrow();
     expect(() => parseTsKeys(`export const TRUSTED_KEYS: readonly TrustedKey[] = [${entry.replace(TEST_KEY.publicKey, "bad")}];`)).toThrow();
-    const rust = `pub const TRUSTED_KEYS: &[TrustedKey] = &[TrustedKey { key_id: "${TEST_KEY.keyId}", public_key: [${[...Buffer.from(TEST_KEY.publicKey, "base64")].join(",")}], status: KeyStatus::Active }];`;
+    const rust = `pub const TRUSTED_KEYS: &[TrustedKey] = &[TrustedKey { key_id: "${TEST_KEY.keyId}", public_key: [${[...Buffer.from(TEST_KEY.publicKey, "base64")].join(",")}], status: KeyStatus::Active, role: KeyRole::Founder }];`;
     expect(parseRustKeys(rust)).toEqual([TEST_KEY]);
+    expect(parseRustKeys(rust.replace("KeyRole::Founder", "KeyRole::Automation"))).toEqual([{ ...TEST_KEY, role: "automation" }]);
+    expect(() => parseRustKeys(rust.replace(", role: KeyRole::Founder", ""))).toThrow();
+    expect(() => parseTsKeys(`export const TRUSTED_KEYS: readonly TrustedKey[] = [${entry.replace(', role: "founder"', "")}];`)).toThrow();
+    expect(() => parseTsKeys(`export const TRUSTED_KEYS: readonly TrustedKey[] = [${entry.replace('"founder"', '"root"')}];`)).toThrow();
   });
 
   it("bounds publisher file/response reads and rejects symlink and hardlink inputs", async () => {
@@ -449,5 +456,62 @@ describe("facts publisher boundaries", () => {
     expect(execFileSync(process.execPath, [checker], { encoding: "utf8" })).toContain(
       `${active} active production keys`,
     );
+  });
+});
+
+describe("automation key scope", () => {
+  const AUTOMATION_KEY: TrustedKey = { ...EPHEMERAL_KEY, role: "automation" };
+  const fixture = JSON.parse(readFileSync(new URL("../../docs/cloud-facts/fixtures/automation-scope-cases.json", import.meta.url), "utf8")) as
+    { now: number; cases: { name: string; channel: string; payload: Record<string, unknown>; out_of_scope: string | null }[] };
+  const now = fixture.now * 1000;
+
+  function sealed(payload: Record<string, unknown>, extra: CloudFactsEnvelope["sigs"] = []): CloudFactsEnvelope {
+    const bytes = Buffer.from(JSON.stringify(payload));
+    return {
+      envelope: 1, channel: payload.channel as string, facts_version: payload.facts_version as number,
+      schema_version: payload.schema_version as number, key_id: EPHEMERAL_KEY.keyId, alg: "ed25519",
+      applies_to: payload.applies_to as string, published_at: payload.published_at as string,
+      not_after: (payload.not_after as string | undefined) ?? null, payload_b64: bytes.toString("base64"),
+      sig_b64: sign(null, signingMessage(EPHEMERAL_KEY.keyId, bytes), ephemeral.privateKey).toString("base64"),
+      sigs: extra, sha256: createHash("sha256").update(bytes).digest("hex"),
+    };
+  }
+
+  it("judges every shared case as the fixture says, in the relay and in the publish script", async () => {
+    expect(fixture.cases).toHaveLength(25);
+    for (const { name, channel, payload, out_of_scope } of fixture.cases) {
+      const envelope = sealed(payload);
+      const relay = await verifyEnvelope(envelope, [AUTOMATION_KEY], { channel, now });
+      const publish = () => activePublishingKey(envelope, [AUTOMATION_KEY], now);
+      if (out_of_scope === null) {
+        expect(relay, name).toEqual({ ok: true, keyId: AUTOMATION_KEY.keyId, mode: "verified" });
+        expect(publish().key.keyId, name).toBe(AUTOMATION_KEY.keyId);
+      } else {
+        expect(relay, name).toEqual({ ok: false, reason: "out-of-scope" });
+        expect(publish, name).toThrow();
+      }
+      expect((await verifyEnvelope(envelope, [EPHEMERAL_KEY], { channel, now })).ok, name).toBe(true);
+    }
+  });
+
+  it("lets a founder signature decide in either order, and never a retired one", async () => {
+    const founder = generateKeyPairSync("ed25519");
+    const FOUNDER_KEY: TrustedKey = { keyId: "cwf-founder-test", publicKey: founder.publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64"), status: "active", role: "founder" };
+    const payload = fixture.cases.find((entry) => entry.name === "default model")!.payload;
+    const bytes = Buffer.from(JSON.stringify(payload));
+    const founderSig = { key_id: FOUNDER_KEY.keyId, sig_b64: sign(null, signingMessage(FOUNDER_KEY.keyId, bytes), founder.privateKey).toString("base64") };
+    const autoFirst = sealed(payload, [founderSig]);
+    const opts = { channel: "stable-models", now };
+    expect(await verifyEnvelope(autoFirst, [AUTOMATION_KEY, FOUNDER_KEY], opts)).toMatchObject({ ok: true, keyId: FOUNDER_KEY.keyId });
+    const founderFirst = { ...autoFirst, key_id: founderSig.key_id, sig_b64: founderSig.sig_b64, sigs: [{ key_id: autoFirst.key_id, sig_b64: autoFirst.sig_b64 }] };
+    expect(await verifyEnvelope(founderFirst, [AUTOMATION_KEY, FOUNDER_KEY], opts)).toMatchObject({ ok: true, keyId: FOUNDER_KEY.keyId });
+    expect(await verifyEnvelope(autoFirst, [AUTOMATION_KEY, { ...FOUNDER_KEY, status: "retired" }], opts)).toEqual({ ok: false, reason: "out-of-scope" });
+  });
+
+  it("pins no automation key in production and rejects one key under two ids", async () => {
+    expect(TRUSTED_KEYS.every((key) => key.role === "founder")).toBe(true);
+    const entry = (id: string, role: string) => `{ keyId: "${id}", publicKey: "${TEST_KEY.publicKey}", status: "active", role: "${role}" }`;
+    expect(() => parseTsKeys(`export const TRUSTED_KEYS: readonly TrustedKey[] = [${entry("cwf-a", "founder")}, ${entry("cwf-b", "automation")}];`)).toThrow();
+    expect(await verifyEnvelope(sealed(fixture.cases[0].payload), [EPHEMERAL_KEY, { ...AUTOMATION_KEY, keyId: "cwf-dup-key" }], { channel: "stable-models", now })).toEqual({ ok: false, reason: "no-active-keys" });
   });
 });
