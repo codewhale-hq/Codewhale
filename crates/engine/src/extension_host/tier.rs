@@ -296,7 +296,7 @@ impl BuiltinModule {
 /// The built-in modules the core pins. MCP is started only by the explicit
 /// Host SDK backend. The host build records the same digest; the drift
 /// test refuses any row/file mismatch.
-pub const BUILTIN_MODULES: &[BuiltinModule] = &[
+pub static BUILTIN_MODULES: &[BuiltinModule] = &[
     BuiltinModule {
         id: "harness",
         source_sha256: "ac65aa44a3824dcdb0060db426bf530a088fd593e58b9f4cfdaefbc09a5fa037",

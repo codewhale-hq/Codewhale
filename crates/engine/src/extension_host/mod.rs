@@ -615,6 +615,7 @@ pub struct ManagerShared {
     /// [`tier::BUILTIN_MODULES`] in production; a test substitutes its
     /// own through [`ExtensionHostManager::with_builtin_modules`].
     builtin_modules: &'static [BuiltinModule],
+    materialize_default_builtins: bool,
     attachments: Mutex<BTreeMap<u64, AttachmentState>>,
     next_attachment: AtomicU64,
     /// One registry for both tiers: an owner's entry records which.
@@ -1668,20 +1669,29 @@ pub struct ExtensionHostManager {
 impl ExtensionHostManager {
     #[must_use]
     pub fn new(options: ExtensionHostOptions) -> Self {
-        Self::with_builtin_modules(options, tier::BUILTIN_MODULES)
+        Self::build(options, tier::BUILTIN_MODULES, true)
     }
 
     /// A manager with its own built-in module table. Production passes the
-    /// const table through [`Self::new`]; a test passes one of its own to
+    /// static table through [`Self::new`]; a test passes one of its own to
     /// exercise tier 0 without a production row.
     fn with_builtin_modules(
         options: ExtensionHostOptions,
         builtin_modules: &'static [BuiltinModule],
     ) -> Self {
+        Self::build(options, builtin_modules, false)
+    }
+
+    fn build(
+        options: ExtensionHostOptions,
+        builtin_modules: &'static [BuiltinModule],
+        materialize_default_builtins: bool,
+    ) -> Self {
         Self {
             shared: Arc::new(ManagerShared {
                 options,
                 builtin_modules,
+                materialize_default_builtins,
                 attachments: Mutex::new(BTreeMap::new()),
                 next_attachment: AtomicU64::new(0),
                 registry: Mutex::new(OwnerRegistry::new()),
@@ -3099,10 +3109,7 @@ impl ExtensionHostManager {
         if !supervisor::bundle_dir(&root, bundle_sha256())
             .join("builtin")
             .exists()
-            && std::ptr::eq(
-                shared.builtin_modules.as_ptr(),
-                tier::BUILTIN_MODULES.as_ptr(),
-            )
+            && shared.materialize_default_builtins
         {
             let materialize_root = root.clone();
             tokio::task::spawn_blocking(move || materialize_bundle(&materialize_root))
