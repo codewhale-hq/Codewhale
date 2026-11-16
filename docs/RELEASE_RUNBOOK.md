@@ -244,7 +244,30 @@ The manual `ci.yml` path verifies that the dispatch resolved to
 `expected_sha`, disables light-change shortcuts, and forces the heavy Rust,
 workflow, mobile, Actions, Linux, macOS, Windows, npm-wrapper, and documentation
 gates. A mismatch fails before those gates start; it never silently tests a
-different head.
+different head. The Linux, macOS and Windows suites run as `Sharded tests (<os>)`
+(`ci-test-suite.yml`): one test build per OS, parallel nextest shards of that
+archive, and a `Suite check` job that fails unless the shards together ran
+exactly the tests the archive lists; read that job, not only the shard jobs.
+
+`ci.yml` also takes optional scoped-run inputs for a quick answer from an agent
+or a maintainer. With `crate` (one workspace package, for example
+`codewhale-tui`) and/or `filter` (a nextest filterset such as
+`test(auto_review)`) set, only the `Scoped test` job runs, on the operating
+systems named by `os` (default `ubuntu-latest`; a comma-separated list or
+`all`), and the full suite and every other gate are skipped. `expected_sha`
+stays required and is still verified:
+
+```bash
+gh workflow run ci.yml --ref ci/my-task \
+  -f expected_sha="$(git rev-parse HEAD)" \
+  -f crate=codewhale-tui -f filter='test(auto_review)'
+```
+
+A scoped run proves a slice, never a release; release evidence is a full
+dispatch with the scoped inputs empty. A newer dispatch on the same non-main
+branch, and a newer push to a pull request, cancels the older run of the same
+workflow; runs on `main` are keyed by SHA and never cancel each other, and a
+scoped run never cancels a full one.
 
 Verify beforehand that clean local `HEAD`, `main` and `origin/main` agree.
 Record both run URLs, resolved SHAs and required job results; inspect executed
