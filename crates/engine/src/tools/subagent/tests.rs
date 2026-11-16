@@ -2449,22 +2449,11 @@ async fn detached_interactive_usage_after_mailbox_seal_reaches_session_accountin
     root.context = ToolContext::new(tmp.path()).with_state_namespace("session-detached-usage");
     root.accounting_origin = SubAgentAccountingOrigin::capture(&root.context);
     root.mailbox = Some(mailbox.clone());
-    let runtime_owner = "interactive:session-detached-usage:turn-parent";
-    crate::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
-        runtime_owner,
+    root.context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
         crate::cost_status::scope_token(),
-        "session-detached-usage",
-        "turn-parent",
-        &sessions,
-    );
-    root.runtime_usage_lease = crate::cost_status::acquire_runtime_usage_lease(runtime_owner);
-    root.context.accounting_origin = Some(
-        crate::cost_status::NativeUsageOrigin::runtime(
-            crate::cost_status::scope_token(),
-            runtime_owner,
-        )
-        .expect("fixture captured runtime origin"),
-    );
+        sessions.sessions_dir().to_path_buf(),
+        "session-detached-usage".to_string(),
+    ));
     let detached = root.background_runtime();
 
     let mut cases = [
@@ -2549,7 +2538,6 @@ async fn detached_interactive_usage_after_mailbox_seal_reaches_session_accountin
     });
 
     mailbox.seal();
-    crate::cost_status::finish_runtime_usage_owner(runtime_owner);
     release_usage_tx
         .send(())
         .expect("detached child remains live after mailbox seal");
@@ -2632,26 +2620,15 @@ async fn child_guardian_usage_source_is_sanitized_and_replay_idempotent() {
         None,
     );
 
-    let runtime_owner = "interactive:guardian-usage-session:turn-parent";
-    crate::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
-        runtime_owner,
-        crate::cost_status::scope_token(),
-        "guardian-usage-session",
-        "turn-parent",
-        &sessions,
-    );
     let mut runtime = stub_runtime();
     runtime.manager = Arc::clone(&manager);
     runtime.context = ToolContext::new(tmp.path()).with_state_namespace("guardian-usage-session");
     runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
-    runtime.runtime_usage_lease = crate::cost_status::acquire_runtime_usage_lease(runtime_owner);
-    runtime.context.accounting_origin = Some(
-        crate::cost_status::NativeUsageOrigin::runtime(
-            crate::cost_status::scope_token(),
-            runtime_owner,
-        )
-        .expect("fixture captured runtime origin"),
-    );
+    runtime.context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+        crate::cost_status::scope_token(),
+        sessions.sessions_dir().to_path_buf(),
+        "guardian-usage-session".to_string(),
+    ));
 
     let source_id = child_guardian_usage_source_id("agent_guardian", "tool-fixed");
     assert_eq!(
@@ -2693,7 +2670,6 @@ async fn child_guardian_usage_source_is_sanitized_and_replay_idempotent() {
     // call a second time in either the session or worker projection.
     record_provider_response_usage(&runtime, "agent_guardian", &source_id, route, &usage).await;
 
-    crate::cost_status::finish_runtime_usage_owner(runtime_owner);
     let pending = crate::cost_status::drain();
     assert_eq!(pending.source_records.len(), 1);
     let session_usage = sessions
@@ -2760,7 +2736,6 @@ async fn ownerless_no_mailbox_provider_usage_reaches_accounting_once() {
         sessions.sessions_dir().to_path_buf(),
         "direct-usage-session".to_string(),
     ));
-    assert!(runtime.runtime_usage_lease.is_none());
     assert!(runtime.mailbox.is_none());
 
     let source_id = "subagent:agent_direct:step:1:response:direct";
@@ -2873,7 +2848,6 @@ async fn ownerless_child_usage_crossing_new_settles_to_its_dispatch_origin_once(
         origin_session_id.to_string(),
     ));
     let child = root.background_runtime();
-    assert!(child.runtime_usage_lease.is_none());
     assert!(child.mailbox.is_none());
 
     let mut route = crate::cost_status::EffectiveRouteEnvelope::capture(
@@ -2947,11 +2921,7 @@ async fn ownerless_child_usage_crossing_new_settles_to_its_dispatch_origin_once(
     for record in &replacement_live.source_records {
         assert!(
             receipt
-                .project_usage_record(
-                    crate::cost_status::scope_token(),
-                    record,
-                    &mut replacement_projection.metadata.cost,
-                )
+                .project_usage_record(record, &mut replacement_projection.metadata.cost)
                 .expect("foreign source projection")
                 .is_none()
         );
@@ -3040,28 +3010,17 @@ async fn provider_success_without_usage_records_one_route_aware_gap_and_no_zero_
         None,
     );
 
-    let runtime_owner = "interactive:missing-usage-session:turn-parent";
-    crate::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
-        runtime_owner,
-        crate::cost_status::scope_token(),
-        "missing-usage-session",
-        "turn-parent",
-        &sessions,
-    );
     let (mailbox, mut mailbox_rx) = Mailbox::new(CancellationToken::new());
     let mut runtime = stub_runtime();
     runtime.manager = Arc::clone(&manager);
     runtime.context = ToolContext::new(tmp.path()).with_state_namespace("missing-usage-session");
     runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
     runtime.mailbox = Some(mailbox);
-    runtime.runtime_usage_lease = crate::cost_status::acquire_runtime_usage_lease(runtime_owner);
-    runtime.context.accounting_origin = Some(
-        crate::cost_status::NativeUsageOrigin::runtime(
-            crate::cost_status::scope_token(),
-            runtime_owner,
-        )
-        .expect("fixture captured runtime origin"),
-    );
+    runtime.context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+        crate::cost_status::scope_token(),
+        sessions.sessions_dir().to_path_buf(),
+        "missing-usage-session".to_string(),
+    ));
 
     let source_id = child_guardian_usage_source_id("agent_missing_usage", "tool-fixed");
     let route = crate::cost_status::EffectiveRouteEnvelope::capture(
@@ -3087,7 +3046,6 @@ async fn provider_success_without_usage_records_one_route_aware_gap_and_no_zero_
         !mailbox_rx.has_pending(),
         "missing usage must not also publish a priced-zero TokenUsage message"
     );
-    crate::cost_status::finish_runtime_usage_owner(runtime_owner);
     let pending = crate::cost_status::drain();
     assert_eq!(pending.source_records.len(), 1);
     let session_usage = sessions
@@ -16468,7 +16426,6 @@ pub fn stub_runtime() -> SubAgentRuntime {
         cancel_token: CancellationToken::new(),
         foreground_children: None,
         mailbox: None,
-        runtime_usage_lease: None,
         accounting_origin,
         parent_agent_id: None,
         parent_completion_tx: None,
@@ -28961,22 +28918,23 @@ async fn settled_projection_waiter_releases_origin_lease_and_mailbox_before_meta
     let sink_weak = Arc::downgrade(&sink_lifetime);
     let sink_calls = Arc::new(AtomicUsize::new(0));
     let captured_calls = sink_calls.clone();
-    crate::cost_status::register_runtime_usage_sink(
-        owner,
-        Arc::new(move |_| {
-            let _held = &sink_lifetime;
-            captured_calls.fetch_add(1, Ordering::SeqCst);
-            true
-        }),
-    );
     let (mailbox, mut receiver) = Mailbox::new(CancellationToken::new());
     let mut runtime = stub_runtime();
     runtime.manager = manager.clone();
     runtime.mailbox = Some(mailbox);
-    runtime.runtime_usage_lease = crate::cost_status::acquire_runtime_usage_lease(owner);
+    runtime.context.accounting_origin =
+        Some(crate::cost_status::NativeUsageOrigin::captured_runtime(
+            crate::cost_status::scope_token(),
+            owner.to_string(),
+            Arc::new(move |_| {
+                let _held = &sink_lifetime;
+                captured_calls.fetch_add(1, Ordering::SeqCst);
+                true
+            }),
+        ));
+    let origin = runtime.context.accounting_origin.clone();
     let projection = engine::ChildAccountingProjection::capture(&runtime, &worker);
     drop(runtime);
-    crate::cost_status::finish_runtime_usage_owner(owner);
     let route = crate::cost_status::EffectiveRouteEnvelope::capture(
         None,
         ProviderKind::Deepseek,
@@ -28993,41 +28951,27 @@ async fn settled_projection_waiter_releases_origin_lease_and_mailbox_before_meta
     let source = crate::cost_status::NativeUsageSource::capture_with_origin(
         "settled-response",
         crate::cost_status::UsageSpendOwner::Auxiliary,
-        Some(
-            crate::cost_status::NativeUsageOrigin::runtime(
-                crate::cost_status::scope_token(),
-                owner,
-            )
-            .unwrap(),
-        ),
+        None,
     );
-    let reservation = source.admit_dispatch(&route).await.unwrap().unwrap();
-    projection.project_settled(&reservation).await.unwrap();
-    drop(reservation);
-    let settled = source.reported(&route, &usage).unwrap();
-    crate::cost_status::report_runtime_usage_record(
+    let settled = source.reported(&route, &usage);
+    crate::cost_status::record_runtime_usage(
         crate::cost_status::scope_token(),
-        Some(owner),
+        origin.as_ref(),
         &settled,
-    )
-    .unwrap();
-    assert!(settled.is_acknowledged());
+    );
+    drop(origin);
     let contribution = crate::cost_status::UsageSourceContribution::for_record(&settled);
     let expected_cost = (contribution.priced > 0)
         .then(|| priced_usd_microusd(&route.audit_frozen(&usage)))
         .flatten();
     drop(source);
-    assert_eq!(sink_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(sink_calls.load(Ordering::SeqCst), 1);
     let held_metadata = manager.write().await;
     let mut waiting = Box::pin(projection.project_settled(&settled));
     assert!(futures_util::poll!(&mut waiting).is_pending());
     drop(waiting);
     drop(projection);
     drop(settled);
-    assert!(
-        crate::cost_status::acquire_runtime_usage_lease(owner).is_none(),
-        "the metadata waiter must not extend the registered billing lease"
-    );
     assert!(
         tokio::time::timeout(Duration::from_secs(1), receiver.recv())
             .await
@@ -29037,13 +28981,8 @@ async fn settled_projection_waiter_releases_origin_lease_and_mailbox_before_meta
     );
     assert_eq!(
         sink_calls.load(Ordering::SeqCst),
-        2,
+        1,
         "metadata projection never republishes billing"
-    );
-    assert!(
-        crate::cost_status::take_runtime_usage(owner)
-            .records
-            .is_empty()
     );
     drop(held_metadata);
     tokio::time::timeout(Duration::from_secs(1), async {
@@ -29069,7 +29008,7 @@ async fn settled_projection_waiter_releases_origin_lease_and_mailbox_before_meta
     })
     .await
     .unwrap();
-    assert_eq!(sink_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(sink_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -29994,4 +29933,74 @@ async fn subagent_return_check_skips_non_auto_modes_and_zero_actions_and_deliver
             ContentBlock::Text { text, .. } if text == "Caller delivered output."
         )));
     }
+}
+
+#[tokio::test]
+async fn a_sub_agent_finishes_when_its_usage_source_changed_route() {
+    let _cost_scope = crate::cost_status::test_scope();
+    let workspace = tempdir().expect("tempdir");
+    let agent_id = "agent_route_changed";
+    let mut manager = SubAgentManager::new(workspace.path().to_path_buf(), 2);
+    manager.register_worker_for_session(
+        make_worker_spec(agent_id, workspace.path().to_path_buf()),
+        "sess-route-change",
+        None,
+    );
+
+    let initial_route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
+        ProviderKind::Deepseek,
+        "deepseek",
+        "deepseek-v4-flash",
+        Some("https://api.deepseek.com/v1"),
+        chrono::Utc::now(),
+    );
+    let changed_route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
+        ProviderKind::Openai,
+        "openai",
+        "gpt-5",
+        Some("https://api.openai.com/v1"),
+        chrono::Utc::now(),
+    );
+    let source_id = "subagent:route-change-source";
+    let key = crate::cost_status::usage_source_fingerprint(source_id);
+    {
+        let worker = manager
+            .worker_records
+            .get_mut(agent_id)
+            .expect("registered worker");
+        let unknown =
+            crate::cost_status::unknown_cost_record(source_id, &initial_route, Usage::default());
+        worker
+            .source_usage_records
+            .insert(key.clone(), (unknown, None));
+        worker.usage_source_fingerprints.insert(key.clone());
+        worker.has_unreported_usage = true;
+    }
+
+    let origin = crate::cost_status::NativeUsageOrigin::session(
+        crate::cost_status::scope_token(),
+        workspace.path().to_path_buf(),
+        "sess-route-change".to_string(),
+    );
+    let source = crate::cost_status::NativeUsageSource::capture_with_origin(
+        source_id,
+        crate::cost_status::UsageSpendOwner::Auxiliary,
+        Some(origin),
+    );
+    let settled_other_route = source.reported(
+        &changed_route,
+        &Usage {
+            input_tokens: 15,
+            output_tokens: 6,
+            ..Usage::default()
+        },
+    );
+
+    let recorded = manager
+        .record_worker_source_admitted(agent_id, &settled_other_route)
+        .expect("route change must not fail sub-agent usage recording");
+    assert!(recorded);
+    let worker = manager.get_worker_record(agent_id).expect("worker record");
+    assert!(worker.has_unreported_usage);
+    assert!(worker.source_usage_records.contains_key(&key));
 }

@@ -3262,8 +3262,6 @@ async fn agent_runs_runtime_api_exposes_persisted_worker_receipts() -> Result<()
         },
         usage_source_fingerprints: Default::default(),
         source_usage_records: Default::default(),
-        missing_usage_sources: Default::default(),
-        missing_usage_overflowed: false,
         legacy_unreported_usage: false,
         has_unreported_usage: false,
         delivery_evidence: Default::default(),

@@ -2403,6 +2403,96 @@ fn subscription_route_hides_stale_session_dollars_in_footer() {
 }
 
 #[test]
+fn session_cost_label_renders_money_or_unknown_without_plan_names_or_local() {
+    let unknown = codewhale_localization::tr(
+        codewhale_localization::Locale::En,
+        codewhale_localization::MessageId::CmdCostUnknownValue,
+    )
+    .into_owned();
+
+    let mut sub = App::new(test_options(false), &Config::default());
+    sub.billing_presentation =
+        codewhale_engine::route_billing::BillingPresentation::Subscription("Codex OAuth quota");
+    assert_eq!(sub.session_cost_label(), unknown);
+    assert_eq!(sub.status_cost_label().as_deref(), Some(unknown.as_str()));
+
+    let mut local = App::new(test_options(false), &Config::default());
+    local.billing_presentation = codewhale_engine::route_billing::BillingPresentation::Local;
+    assert_eq!(local.session_cost_label(), unknown);
+    assert_eq!(local.status_cost_label().as_deref(), Some(unknown.as_str()));
+
+    let mut metered = App::new(test_options(false), &Config::default());
+    metered.api_provider = ProviderKind::Deepseek;
+    metered.model = "deepseek-v4-flash".to_string();
+    metered.billing_presentation = codewhale_engine::route_billing::BillingPresentation::Metered;
+    assert_eq!(metered.session_cost_label(), "$0.00");
+    assert_eq!(metered.status_cost_label(), None);
+
+    metered.session.cost_priced_turns = 1;
+    metered.accrue_session_cost_estimate(CostEstimate::usd_only(0.42));
+    assert_eq!(metered.session_cost_label(), "$0.42");
+    assert_eq!(metered.status_cost_label(), None);
+
+    metered.session.cost_unpriced_turns = 1;
+    assert_eq!(metered.session_cost_label(), "$0.42");
+    assert_eq!(metered.status_cost_label().as_deref(), Some("$0.42"));
+}
+
+#[test]
+fn late_reported_usage_prunes_stale_request_outcome_unknown_reason() {
+    let mut app = App::new(test_options(false), &Config::default());
+    let route = codewhale_engine::cost_status::EffectiveRouteEnvelope::capture(
+        None,
+        ProviderKind::Deepseek,
+        "deepseek",
+        "deepseek-v4-flash",
+        Some(ProviderKind::Deepseek.provider().default_base_url()),
+        chrono::Utc::now(),
+    );
+    let drop_pool = codewhale_engine::cost_status::background_cost_for_runtime_drop(
+        &codewhale_engine::cost_status::RuntimeUsageDropRecord {
+            reason: codewhale_engine::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            source_id: "cw-7882-late-source".to_string(),
+            route: route.clone(),
+        },
+    );
+    app.absorb_pending_background_cost(&drop_pool);
+    assert_eq!(app.session.cost_unpriced_turns, 1);
+    assert!(
+        app.session
+            .cost_unpriced_reasons
+            .contains("request_outcome_unknown")
+    );
+
+    let settled = codewhale_engine::cost_status::NativeUsageSource::capture(
+        "cw-7882-late-source",
+        codewhale_engine::cost_status::UsageSpendOwner::Auxiliary,
+    )
+    .reported(
+        &route,
+        &codewhale_models::Usage {
+            input_tokens: 1_000,
+            output_tokens: 200,
+            ..Default::default()
+        },
+    );
+    let settled_pool = codewhale_engine::cost_status::background_cost_for_runtime_usage(&settled);
+    app.absorb_pending_background_cost(&settled_pool);
+    assert_eq!(app.session.cost_priced_turns, 1);
+    assert_eq!(app.session.cost_unpriced_turns, 0);
+    assert!(
+        !app.session
+            .cost_unpriced_reasons
+            .contains("request_outcome_unknown")
+    );
+    assert!(
+        !app.session
+            .cost_cny_unpriced_reasons
+            .contains("request_outcome_unknown")
+    );
+}
+
+#[test]
 fn provider_switch_keeps_audited_cumulative_spend_visible() {
     let mut app = App::new(test_options(false), &Config::default());
     let usage = codewhale_models::Usage {

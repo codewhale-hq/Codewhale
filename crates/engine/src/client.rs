@@ -3872,8 +3872,7 @@ impl CodewhaleClient {
         source: &crate::cost_status::NativeUsageSource,
     ) -> Result<TranslationProviderResponse> {
         let route = self.effective_route_envelope(model, chrono::Utc::now());
-        let observation = source.observe_route(&route)?;
-        source.admit_dispatch(&route).await?;
+        let observation = source.observation();
         let wire = observation.wire_observations.clone();
         let response = crate::llm_client::observe_request_retries(
             Some(observation),
@@ -3908,7 +3907,7 @@ impl CodewhaleClient {
                 },
             }
         };
-        let record = source.prepare_observed(
+        let record = source.prepare_record(
             &route,
             &usage,
             coverage,
@@ -3918,14 +3917,10 @@ impl CodewhaleClient {
                 crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
             },
             &wire,
-        )?;
-        if record.has_captured_origin() {
-            crate::cost_status::settle_runtime_usage_record(
-                crate::cost_status::scope_token(),
-                None,
-                &record,
-            )
-            .await?;
+        );
+        if let Some(origin) = source.origin() {
+            crate::cost_status::record_runtime_usage_async(origin.scope(), Some(origin), &record)
+                .await;
         }
         response.map(|mut response| {
             response.accounting = Some(record);

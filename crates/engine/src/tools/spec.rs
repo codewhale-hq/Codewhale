@@ -95,9 +95,13 @@ pub trait DynamicToolExecutor: Send + Sync {
 /// contexts keep working. Tools that need durable task/automation state fail
 /// closed with a clear "not available" error when the relevant service is not
 /// attached.
+pub type OwnerAccountingOriginLookup =
+    Arc<dyn Fn(&str) -> Option<crate::cost_status::NativeUsageOrigin> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct RuntimeToolServices {
     pub accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
+    pub owner_accounting_origin: Option<OwnerAccountingOriginLookup>,
     pub runtime_mcp_servers: Option<(PathBuf, crate::mcp::SharedRuntimeMcpServers)>,
     pub shell_manager: Option<SharedShellManager>,
     /// True only for the real headless exec host after it has established the
@@ -131,6 +135,7 @@ impl Default for RuntimeToolServices {
     fn default() -> Self {
         Self {
             accounting_origin: None,
+            owner_accounting_origin: None,
             runtime_mcp_servers: None,
             shell_manager: None,
             persist_services_enabled: false,

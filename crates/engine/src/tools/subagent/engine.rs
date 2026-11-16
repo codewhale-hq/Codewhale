@@ -6,17 +6,27 @@ use super::*;
 /// carries no ChildGrant, tool/config authority, job, kernel or new ledger.
 #[derive(Clone)]
 pub struct ChildAccountingProjection {
-    origin: SubAgentAccountingOrigin,
-    runtime_usage_lease: Option<crate::cost_status::RuntimeUsageLease>,
+    cost_scope: crate::cost_status::CostScopeToken,
+    accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
     manager: SharedSubAgentManager,
     mailbox: Option<Mailbox>,
     owner: String,
 }
 impl ChildAccountingProjection {
     pub(super) fn capture(runtime: &SubAgentRuntime, owner: &str) -> Self {
+        let accounting_origin = {
+            let origin = runtime.context.accounting_origin.clone();
+            #[cfg(any(test, feature = "test-support"))]
+            let origin = origin.or_else(|| runtime.accounting_origin.test_session_origin());
+            origin
+        };
+        let cost_scope = accounting_origin.as_ref().map_or(
+            runtime.accounting_origin.cost_scope,
+            crate::cost_status::NativeUsageOrigin::scope,
+        );
         Self {
-            origin: runtime.accounting_origin.clone(),
-            runtime_usage_lease: runtime.runtime_usage_lease.clone(),
+            cost_scope,
+            accounting_origin,
             manager: runtime.manager.clone(),
             mailbox: runtime.mailbox.clone(),
             owner: owner.to_owned(),
@@ -26,11 +36,11 @@ impl ChildAccountingProjection {
         &self,
         record: &crate::cost_status::RuntimeUsageRecord,
     ) -> std::io::Result<Option<u64>> {
-        let owner = self
-            .runtime_usage_lease
-            .as_ref()
-            .map(crate::cost_status::RuntimeUsageLease::owner);
-        crate::cost_status::report_runtime_usage_record(self.origin.cost_scope, owner, record)?;
+        crate::cost_status::record_runtime_usage(
+            self.cost_scope,
+            self.accounting_origin.as_ref(),
+            record,
+        );
         let reported = record.settlement.as_ref().is_some_and(|revision| {
             revision.coverage == crate::llm_client::ProviderUsageCoverage::Reported
                 || (revision.coverage == crate::llm_client::ProviderUsageCoverage::Incomplete
@@ -1200,8 +1210,6 @@ impl ChildJob {
             job: self.clone(),
             route,
             settled: None,
-            refused: false,
-            projected: false,
         }
     }
     pub fn record_activation_provider_stop(&self, reason: Option<&str>, failed: bool) {
@@ -1478,8 +1486,6 @@ pub struct ChildDispatchedRequest {
     job: Arc<ChildJob>,
     route: crate::cost_status::EffectiveRouteEnvelope,
     settled: Option<crate::cost_status::RuntimeUsageRecord>,
-    refused: bool,
-    projected: bool,
 }
 /// Only a typed authoritative rejection proves the dispatched operation
 /// produced no billable response. Network/body/cancellation ambiguity does not.
@@ -1501,24 +1507,6 @@ pub fn provider_request_refusal_proven(error: &anyhow::Error) -> bool {
     )
 }
 impl ChildDispatchedRequest {
-    pub(crate) fn settlement_acknowledged(&self) -> bool {
-        self.refused || self.projected
-    }
-    pub(crate) async fn bind_dispatch(
-        &mut self,
-        observation: &crate::llm_client::RequestRetryObservation,
-    ) -> std::io::Result<()> {
-        self.accounting_source
-            .bind_dispatch(&self.route, observation)?;
-        if let Some(record) = self.accounting_source.admit_dispatch(&self.route).await? {
-            self.job
-                .authority
-                .accounting_projection()
-                .project_settled(&record)
-                .await?;
-        }
-        Ok(())
-    }
     pub async fn settle_open_error(&mut self, error: &anyhow::Error) {
         let wire = self.accounting_source.observed_wire();
         let coverage = if wire.last_transmission.is_some() {
@@ -1534,34 +1522,19 @@ impl ChildDispatchedRequest {
                 _ => crate::llm_client::ProviderUsageCoverage::Missing,
             }
         };
-        let record = match self.accounting_source.prepare_observed(
+        let record = self.accounting_source.prepare_record(
             &self.route,
             &Usage::default(),
             coverage,
             crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
             &wire,
-        ) {
-            Ok(record) => record,
-            Err(error) => {
-                tracing::warn!(%error, "child refusal receipt was not admitted");
-                return;
-            }
-        };
+        );
         let accounting = self.job.authority.accounting_projection();
-        let published = accounting.publish_async(&record).await;
-        let projected = if published.is_ok() {
-            accounting.project_settled(&record).await
-        } else {
-            Err(std::io::Error::other("child refusal persistence failed"))
-        };
+        let _ = accounting.publish_async(&record).await;
+        if let Err(error) = accounting.project_settled(&record).await {
+            tracing::warn!(%error, "worker usage projection failed");
+        }
         self.settled = Some(record);
-        self.projected = projected.is_ok();
-        self.refused = self.projected
-            && matches!(
-                coverage,
-                crate::llm_client::ProviderUsageCoverage::Rejected
-                    | crate::llm_client::ProviderUsageCoverage::NotDispatched
-            );
     }
     pub async fn settle(&mut self, usage: &Usage, complete: bool) {
         let reason = if complete {
@@ -1576,31 +1549,19 @@ impl ChildDispatchedRequest {
         } else {
             crate::llm_client::ProviderUsageCoverage::Missing
         };
-        let record = match self.accounting_source.prepare_observed(
+        let record = self.accounting_source.prepare_record(
             &self.route,
             usage,
             coverage,
             reason,
             &self.accounting_source.observed_wire(),
-        ) {
-            Ok(record) => record,
-            Err(error) => {
-                tracing::warn!(%error, "child usage predecessor remains unsettled");
-                return;
-            }
-        };
+        );
         let accounting = self.job.authority.accounting_projection();
-        if let Err(error) = accounting.publish_async(&record).await {
-            tracing::warn!(%error, "child provider usage remains unacknowledged");
-        }
+        let _ = accounting.publish_async(&record).await;
         self.settled = Some(record.clone());
-        self.projected = match accounting.project_settled(&record).await {
-            Ok(()) => record.is_acknowledged(),
-            Err(error) => {
-                tracing::warn!(%error, "worker usage publication failed");
-                false
-            }
-        };
+        if let Err(error) = accounting.project_settled(&record).await {
+            tracing::warn!(%error, "worker usage publication failed");
+        }
     }
 }
 

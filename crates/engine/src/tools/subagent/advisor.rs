@@ -112,38 +112,26 @@ pub struct EmissionGuard {
 
 /// Accounting ownership captured while the originating turn is still live.
 ///
-/// Runtime turns retain their durable sink through the lease; otherwise the
-/// already captured native Session origin remains authoritative. Neither path
-/// can spill into a later session.
 #[derive(Debug)]
 pub struct AdvisorUsageContext {
     cost_scope: crate::cost_status::CostScopeToken,
-    runtime_usage_lease: Option<crate::cost_status::RuntimeUsageLease>,
     source: crate::cost_status::NativeUsageSource,
 }
 
 impl AdvisorUsageContext {
     #[must_use]
-    pub fn capture(
-        runtime_owner: Option<&str>,
-        fallback_origin: Option<crate::cost_status::NativeUsageOrigin>,
-    ) -> Self {
+    pub fn capture(accounting_origin: Option<crate::cost_status::NativeUsageOrigin>) -> Self {
+        let cost_scope = accounting_origin.as_ref().map_or_else(
+            crate::cost_status::scope_token,
+            crate::cost_status::NativeUsageOrigin::scope,
+        );
         Self {
-            cost_scope: crate::cost_status::scope_token(),
+            cost_scope,
             source: crate::cost_status::NativeUsageSource::capture_with_origin(
                 format!("advisor:{}", uuid::Uuid::new_v4()),
                 crate::cost_status::UsageSpendOwner::Auxiliary,
-                match runtime_owner {
-                    Some(owner) => crate::cost_status::NativeUsageOrigin::runtime(
-                        crate::cost_status::scope_token(),
-                        owner,
-                    )
-                    .ok(),
-                    None => fallback_origin,
-                },
+                accounting_origin,
             ),
-            runtime_usage_lease: runtime_owner
-                .and_then(crate::cost_status::acquire_runtime_usage_lease),
         }
     }
 }
@@ -384,46 +372,23 @@ pub async fn run_advisor_for_turn(
         title: None,
     };
 
-    let observation = match usage_context.source.observe_route(&route) {
-        Ok(observation) => observation,
-        Err(error) => {
-            tracing::warn!(%error, "advisor accounting admission failed");
-            return;
-        }
-    };
-    if let Err(error) = usage_context.source.admit_dispatch(&route).await {
-        tracing::warn!(%error, "advisor source admission failed");
-        return;
-    }
+    let observation = usage_context.source.observation();
     let wire = observation.wire_observations.clone();
     let response = crate::llm_client::observe_request_retries(
         Some(observation),
         client.create_message(request),
     )
     .await;
-    let record = match usage_context
+    let wire = wire.drain();
+    let record = usage_context
         .source
-        .response_record(&route, &response, &wire.drain())
-    {
-        Ok(record) => record,
-        Err(error) => {
-            tracing::warn!(%error, "advisor usage source was refused");
-            return;
-        }
-    };
-    if let Err(error) = crate::cost_status::settle_runtime_usage_record(
+        .response_record(&route, &response, &wire);
+    crate::cost_status::record_runtime_usage_async(
         usage_context.cost_scope,
-        usage_context
-            .runtime_usage_lease
-            .as_ref()
-            .map(crate::cost_status::RuntimeUsageLease::owner),
+        usage_context.source.origin(),
         &record,
     )
-    .await
-    {
-        tracing::warn!(%error, "advisor usage remains unacknowledged");
-        return;
-    }
+    .await;
     let response = match response {
         Ok(response) => response,
         Err(error) => {
@@ -1071,14 +1036,10 @@ mod tests {
         let guard = std::sync::Arc::new(tokio::sync::Mutex::new(emission_guard));
         let (tx, mut rx) = mpsc::channel(1);
         let directory = tempfile::tempdir().unwrap();
-        let manager =
-            crate::session_manager::SessionManager::new(directory.path().to_path_buf()).unwrap();
-        crate::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
-            "advisor-loopback-fixture",
+        let origin = crate::cost_status::NativeUsageOrigin::session(
             crate::cost_status::scope_token(),
-            "advisor-fixture",
-            "advisor-turn",
-            &manager,
+            directory.path().to_path_buf(),
+            "advisor-fixture".to_string(),
         );
         run_advisor_for_turn(
             "advisor-turn".to_string(),
@@ -1093,12 +1054,11 @@ mod tests {
             client,
             route_config,
             "deepseek-chat".to_string(),
-            AdvisorUsageContext::capture(Some("advisor-loopback-fixture"), None),
+            AdvisorUsageContext::capture(Some(origin)),
             guard,
             tx,
         )
         .await;
-        crate::cost_status::finish_runtime_usage_owner("advisor-loopback-fixture");
         let mut pending = crate::cost_status::drain();
         let mut cost = crate::session_manager::SessionCostSnapshot::default();
         for record in &pending.source_records {

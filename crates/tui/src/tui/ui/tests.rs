@@ -850,16 +850,13 @@ fn settled_child_fixture_record(
         codewhale_engine::cost_status::UsageSpendOwner::Auxiliary,
         Some(origin),
     );
-    let record = source
-        .prepare(
-            route,
-            usage,
-            codewhale_engine::llm_client::ProviderUsageCoverage::Reported,
-            codewhale_engine::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
-        )
-        .expect("native fixture record");
-    codewhale_engine::cost_status::report_runtime_usage_record(scope, None, &record)
-        .expect("durable fixture publication");
+    let record = source.prepare(
+        route,
+        usage,
+        codewhale_engine::llm_client::ProviderUsageCoverage::Reported,
+        codewhale_engine::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
+    );
+    codewhale_engine::cost_status::record_runtime_usage(scope, None, &record);
     record
 }
 
@@ -10041,15 +10038,11 @@ fn apply_loaded_session_replaces_cost_coverage_with_the_loaded_total() {
     assert!(codewhale_engine::cost_status::usage_source_seen(
         "subagent:agent-reload:step:1:response:late"
     ));
-    let replay_owner = "interactive:reloaded-session:turn-replay";
-    codewhale_engine::cost_status::register_interactive_runtime_usage_sink(
-        replay_owner,
-        codewhale_engine::cost_status::scope_token(),
-    );
-    codewhale_engine::cost_status::report_effective_route_for_runtime(
-        codewhale_engine::cost_status::scope_token(),
-        Some(replay_owner),
+    let replay_source = codewhale_engine::cost_status::NativeUsageSource::capture(
         "subagent:agent-reload:step:1:response:late",
+        codewhale_engine::cost_status::UsageSpendOwner::Auxiliary,
+    );
+    let replay_record = replay_source.reported(
         &codewhale_engine::cost_status::EffectiveRouteEnvelope::capture(
             None,
             ProviderKind::Anthropic,
@@ -10064,7 +10057,11 @@ fn apply_loaded_session_replaces_cost_coverage_with_the_loaded_total() {
             ..Usage::default()
         },
     );
-    codewhale_engine::cost_status::finish_runtime_usage_owner(replay_owner);
+    codewhale_engine::cost_status::record_runtime_usage(
+        codewhale_engine::cost_status::scope_token(),
+        None,
+        &replay_record,
+    );
     assert!(
         codewhale_engine::cost_status::drain().is_empty(),
         "a re-delivered provider response must remain deduped after reload"
@@ -18050,14 +18047,6 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
         .expect("native origin read")
         .write_receipt;
     let origin_scope = codewhale_engine::cost_status::scope_token();
-    let owner = "interactive:active-deleted-origin:origin-turn";
-    codewhale_engine::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
-        owner,
-        origin_scope,
-        &session.metadata.id,
-        "origin-turn",
-        &manager,
-    );
     let route = test_mailbox_route(ProviderKind::Deepseek, "deepseek-v4-flash");
     let usage = codewhale_models::Usage {
         input_tokens: 10_000,
@@ -18071,18 +18060,18 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
             .is_some_and(|cost| cost.usd > 0.0)
     );
     let source_id = "subagent:deleted-origin:response";
+    let origin = app
+        .session_write_receipt
+        .as_ref()
+        .expect("native source")
+        .usage_origin(origin_scope)
+        .expect("native origin");
     let source = codewhale_engine::cost_status::NativeUsageSource::capture_with_origin(
         source_id,
         codewhale_engine::cost_status::UsageSpendOwner::Auxiliary,
-        Some(
-            app.session_write_receipt
-                .as_ref()
-                .expect("native source")
-                .usage_origin(origin_scope)
-                .expect("native origin"),
-        ),
+        Some(origin.clone()),
     );
-    let record = source.reported(&route, &usage).expect("native receipt");
+    let record = source.reported(&route, &usage);
     let mailbox = codewhale_engine::tools::subagent::MailboxMessage::usage_record(
         "agent-deleted-origin",
         record.clone(),
@@ -18094,16 +18083,10 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
     // an active-origin callback, not the already-covered stale-scope path.
     assert_eq!(codewhale_engine::cost_status::scope_token(), origin_scope);
     for seq in 1..=2 {
-        codewhale_engine::cost_status::report_runtime_usage_record(origin_scope, None, &record)
-            .expect("handled retired receipt");
+        codewhale_engine::cost_status::record_runtime_usage(origin_scope, Some(&origin), &record);
         handle_subagent_mailbox_for_turn(&mut app, "origin-turn", seq, &mailbox);
     }
     assert!(codewhale_engine::cost_status::drain().is_empty());
-    let fallback = codewhale_engine::cost_status::take_runtime_usage(owner);
-    assert!(fallback.records.is_empty());
-    assert!(fallback.drop_records.is_empty());
-    assert_eq!(fallback.dropped_records, 0);
-    codewhale_engine::cost_status::finish_runtime_usage_owner(owner);
     assert_eq!(app.session.subagent_cost, 0.0);
     assert_eq!(app.session.subagent_cost_cny, 0.0);
     assert_eq!(app.session.cost_priced_turns, 0);
@@ -36687,4 +36670,17 @@ fn child_auto_review_block_receipt_stays_non_approvable() {
     assert!(!entry.approvable);
     assert!(app.latest_approvable_auto_review_block().is_none());
     assert!(!super::event_loop::queue_auto_review_retry_from_r(&mut app));
+}
+
+#[test]
+fn the_terminal_sends_with_auto_routing_and_no_usage_origin() {
+    let mut app = create_test_app();
+    app.auto_model = true;
+    app.session_write_receipt = None;
+    let message = QueuedMessage::new("send under auto routing without origin".to_string(), None);
+    let prepared = prepare_user_dispatch(&mut app, &Config::default(), message).expect(
+        "terminal send with Auto routing must succeed when session accounting origin is absent",
+    );
+    assert!(prepared.should_auto_resolve);
+    assert!(prepared.accounting_origin.is_none());
 }

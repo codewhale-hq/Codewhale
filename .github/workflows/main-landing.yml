@@ -37,7 +37,7 @@ concurrency:
 jobs:
   preflight:
     name: Landing preflight
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -63,7 +63,7 @@ jobs:
   full-ci:
     name: Dispatch full CI
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       actions: write

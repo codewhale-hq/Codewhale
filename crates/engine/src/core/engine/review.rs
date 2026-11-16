@@ -380,14 +380,40 @@ impl Engine {
         let started_at = Instant::now();
         let observation = self.request_retry_observation();
         let transport_retries = observation.retries.clone();
+        let origin = if let Some(origin) = self.turn_accounting_origin() {
+            Some(origin)
+        } else {
+            let scope = crate::cost_status::scope_token();
+            let session_id = self.session.id.clone();
+            match codewhale_runtime::runtime_control::owner_work(move || {
+                let manager = crate::session_manager::SessionManager::default_location()?;
+                Ok(crate::cost_status::NativeUsageOrigin::session(
+                    scope,
+                    manager.sessions_dir().to_path_buf(),
+                    session_id,
+                ))
+            })
+            .await
+            {
+                Ok(origin) => Some(origin),
+                Err(error) => {
+                    tracing::warn!(%error, "review session accounting admission failed; continuing with unknown cost");
+                    None
+                }
+            }
+        };
         let mut pending = Some(super::turn_loop::PendingProviderRequestReceipt {
             request_id: observation.request_id.clone(),
-            accounting_source: crate::cost_status::NativeUsageSource::capture(
+            accounting_source: crate::cost_status::NativeUsageSource::capture_with_origin(
                 observation.request_id.clone(),
                 crate::cost_status::UsageSpendOwner::Primary,
+                origin.clone(),
             ),
-            accounting_scope: crate::cost_status::scope_token(),
-            accounting_owner: self.config.compaction.runtime_cost_owner.clone(),
+            accounting_scope: origin.as_ref().map_or_else(
+                crate::cost_status::scope_token,
+                crate::cost_status::NativeUsageOrigin::scope,
+            ),
+            accounting_origin: origin.clone(),
             route: client.effective_route_envelope(&self.session.model, chrono::Utc::now()),
             primary: true,
             accounting_owned_elsewhere: true,
@@ -406,29 +432,7 @@ impl Engine {
             started_at,
         });
         core.accounting_owner = crate::cost_status::UsageSpendOwner::Primary;
-        core.accounting_origin =
-            if let Some(owner) = self.config.compaction.runtime_cost_owner.as_deref() {
-                Some(crate::cost_status::NativeUsageOrigin::runtime(
-                    crate::cost_status::scope_token(),
-                    owner,
-                )?)
-            } else if let Some(origin) = self.config.runtime_services.accounting_origin.clone() {
-                Some(origin)
-            } else {
-                let scope = crate::cost_status::scope_token();
-                let session_id = self.session.id.clone();
-                Some(
-                    codewhale_runtime::runtime_control::owner_work(move || {
-                        let manager = crate::session_manager::SessionManager::default_location()?;
-                        Ok(crate::cost_status::NativeUsageOrigin::session(
-                            scope,
-                            manager.sessions_dir().to_path_buf(),
-                            session_id,
-                        ))
-                    })
-                    .await?,
-                )
-            };
+        core.accounting_origin = origin;
         let result = tokio::select! {
             biased;
             result = crate::llm_client::observe_request_retries(Some(observation),
@@ -452,7 +456,8 @@ impl Engine {
                 },
             )
             .await
-            .map_err(anyhow::Error::msg)?;
+            .ok()
+            .flatten();
         let mut result = result?;
         let accounting = result.source_records.last().cloned().or(accounting);
         turn.add_parent_usage(&result.usage);

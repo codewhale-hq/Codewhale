@@ -4923,18 +4923,9 @@ pub(crate) fn apply_loaded_session_with_goal(
     app.session.displayed_cost_high_water_cny = 0.0;
     app.last_billed_input_tokens = None;
     app.restore_cost_snapshot(&session.metadata.cost);
-    codewhale_engine::cost_status::restore_usage_source_ledger(
-        session
-            .metadata
-            .cost
-            .usage_source_fingerprints
-            .iter()
-            .cloned(),
-        &session.metadata.cost.missing_usage_sources,
-        session.metadata.cost.missing_usage_overflowed,
-    );
     codewhale_engine::cost_status::restore_accounted_usage_sources(
         &session.metadata.cost.accounted_usage_sources,
+        &session.metadata.cost.usage_source_fingerprints,
     );
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;

@@ -570,14 +570,22 @@ fn split_by_workspace(
                 inside.push(row);
             }
             None => {
-                if row.index == "R"
-                    && let Some(path) = old_path
-                {
+                let renamed = row.index == "R" || row.worktree == "R";
+                if renamed && let Some(path) = old_path {
+                    let worktree_side = row.worktree == "R";
                     inside.push(GitFileEntry {
                         path,
-                        index: "D".to_string(),
-                        worktree: " ".to_string(),
-                        staged: true,
+                        index: if worktree_side {
+                            " ".to_string()
+                        } else {
+                            "D".to_string()
+                        },
+                        worktree: if worktree_side {
+                            "D".to_string()
+                        } else {
+                            " ".to_string()
+                        },
+                        staged: !worktree_side,
                         status: "deleted",
                         old_path: None,
                         rev: None,
@@ -3243,6 +3251,50 @@ mod tests {
         // The projected row can unstage the in-workspace deletion.
         git(&ws, &["restore", "--staged", "--", "a.txt"]);
         assert_ne!(index_token(&ws), detail.index_token.unwrap());
+    }
+
+    #[test]
+    fn review_outgoing_worktree_rename_exposes_source_deletion() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::create_dir(root.join("sub")).unwrap();
+        git(root, &["mv", "a.txt", "sub/a.txt"]);
+        git(root, &["commit", "-q", "-m", "inside"]);
+        git(root, &["mv", "sub/a.txt", "outside.txt"]);
+        git(root, &["reset"]);
+        git(root, &["add", "-N", "outside.txt"]);
+        let ws = root.join("sub");
+        let detail = collect_git_status_detail(&ws).unwrap();
+        assert_eq!(detail.files.len(), 1);
+        let row = &detail.files[0];
+        assert_eq!(row.path, "a.txt");
+        assert_eq!(row.index, " ");
+        assert_eq!(row.worktree, "D");
+        assert_eq!(row.status, "deleted");
+        assert!(!row.staged);
+        assert!(row.old_path.is_none());
+        let expect = expect_file("a.txt", row.rev.clone().unwrap());
+        assert!(check_preconditions(&ws, &expect).unwrap().is_ok());
+    }
+
+    #[test]
+    fn outgoing_copy_keeps_its_source_inside_the_workspace() {
+        let row = GitFileEntry {
+            path: "outside.txt".to_string(),
+            index: "C".to_string(),
+            worktree: " ".to_string(),
+            staged: true,
+            status: "copied",
+            old_path: Some("sub/a.txt".to_string()),
+            rev: None,
+        };
+        let (inside, outside) = split_by_workspace(vec![row], "sub/");
+        assert!(
+            inside.is_empty(),
+            "a copy leaves its source in place, so it must not read as a deletion: {:?}",
+            inside.iter().map(|row| &row.path).collect::<Vec<_>>()
+        );
+        assert_eq!(outside.len(), 1);
     }
 
     #[test]

@@ -259,11 +259,11 @@ fn parse_invoke_block(content: &str, id_counter: &mut u32) -> Option<ParsedToolC
 /// Parse XML-style parameters like <parameter name="foo">value</parameter>
 fn parse_xml_parameters(content: &str) -> Value {
     let param_regex = Regex::new(
-        "<(?:parameter|param)\\s+name\\s*=\\s*\"([^\"]+)\"[^>]*>(.*?)</(?:parameter|param)>",
+        "(?s)<(?:parameter|param)\\s+name\\s*=\\s*\"([^\"]+)\"[^>]*>(.*?)</(?:parameter|param)>",
     )
     .ok();
     let simple_tag_regex =
-        Regex::new("<([a-zA-Z_][a-zA-Z0-9_]*)>(.*?)</([a-zA-Z_][a-zA-Z0-9_]*)>").ok();
+        Regex::new("(?s)<([a-zA-Z_][a-zA-Z0-9_]*)>(.*?)</([a-zA-Z_][a-zA-Z0-9_]*)>").ok();
 
     let mut map = serde_json::Map::new();
 
@@ -590,6 +590,24 @@ mod tests {
             result.tool_calls[0].args,
             json!({"content": "mode=dev", "path": "out.txt"})
         );
+    }
+
+    #[test]
+    fn xml_parameters_preserve_multiline_content() {
+        for parameter in [
+            "<parameter name=\"content\">first line\nsecond line</parameter>",
+            "<content>first line\nsecond line</content>",
+        ] {
+            let text = format!("<invoke name=\"write_file\">{parameter}</invoke>");
+            let result = parse_tool_calls(&text);
+            assert_eq!(result.tool_calls.len(), 1);
+            assert_eq!(result.tool_calls[0].name, "write_file");
+            assert_eq!(
+                result.tool_calls[0].args,
+                json!({"content": "first line\nsecond line"})
+            );
+            assert!(result.clean_text.is_empty());
+        }
     }
 
     #[test]

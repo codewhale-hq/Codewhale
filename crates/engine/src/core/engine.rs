@@ -1063,6 +1063,7 @@ pub struct Engine {
     child_host: Option<child_host::ChildHostState>,
     turn_narrowing: TurnNarrowing,
     turn_acp_shell_ceiling: Option<bool>,
+    active_turn_accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
     config: EngineConfig,
     api_config: Config,
     instruction_settings: crate::project_context::InstructionSettings,
@@ -2801,6 +2802,7 @@ impl Engine {
             turn_owner_present: false,
             turn_narrowing: TurnNarrowing::Inherit,
             turn_acp_shell_ceiling: None,
+            active_turn_accounting_origin: None,
             codewhale_client,
             model_client,
             model_client_injected: false,
@@ -2941,15 +2943,14 @@ impl Engine {
         #[cfg(any(test, feature = "test-support"))]
         if engine.config.compaction.runtime_cost_owner.is_none()
             && engine.config.runtime_services.accounting_origin.is_none()
+            && let Ok(dir) = crate::session_manager::default_sessions_dir()
         {
-            let owner = format!("test-standalone:{}", engine.session.id);
-            crate::usage_persistence::register_persistent_interactive_runtime_usage_sink(
-                &owner,
-                crate::cost_status::scope_token(),
-                &engine.session.id,
-                "test-standalone",
-            );
-            engine.config.compaction.runtime_cost_owner = Some(owner);
+            engine.config.runtime_services.accounting_origin =
+                Some(crate::cost_status::NativeUsageOrigin::session(
+                    crate::cost_status::scope_token(),
+                    dir,
+                    engine.session.id.clone(),
+                ));
         }
         (engine, handle)
     }
@@ -6564,17 +6565,12 @@ impl Engine {
         let plan_state = self.config.plan_state.clone();
 
         let mut tool_context = self.build_tool_context_for_turn(input_policy, &route);
-        if wiring.is_live()
-            && let Some(owner) = self.config.compaction.runtime_cost_owner.as_deref()
-        {
-            tool_context.accounting_origin = crate::cost_status::NativeUsageOrigin::runtime(
-                crate::cost_status::scope_token(),
-                owner,
-            )
-            .ok();
-        }
-        if tool_context.accounting_origin.is_none() {
-            tool_context.accounting_origin = self.config.runtime_services.accounting_origin.clone();
+        if wiring.is_live() {
+            if let Some(origin) = self.turn_accounting_origin() {
+                tool_context.accounting_origin = Some(origin);
+            }
+        } else if tool_context.accounting_origin.is_none() {
+            tool_context.accounting_origin = self.turn_accounting_origin();
         }
         // Ensure MCP pool is initialized before building the tool registry,
         // so start_mcp_server can be registered when Feature::Mcp is enabled.
@@ -7199,44 +7195,27 @@ impl Engine {
         let route = *route;
         let compaction = *compaction;
         let initial_routed_usage = *initial_routed_usage;
-        let initial_usage_owner = compaction.runtime_cost_owner.clone();
+        let initial_origin = self.turn_accounting_origin();
+        let initial_cost_scope = initial_origin.as_ref().map_or_else(
+            crate::cost_status::scope_token,
+            crate::cost_status::NativeUsageOrigin::scope,
+        );
         for record in initial_routed_usage
             .records
             .iter()
             .filter(|record| record.settlement.is_some())
         {
-            let settled = if record.has_captured_origin() {
-                crate::cost_status::settle_runtime_usage_record(
-                    crate::cost_status::scope_token(),
-                    initial_usage_owner.as_deref(),
-                    record,
-                )
-                .await
-            } else {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "initial usage has no captured native origin",
-                ))
-            };
-            if let Err(error) = settled {
-                let message = format!(
-                    "Cannot start the turn while classifier usage remains unsettled: {error}"
-                );
-                let _ = self
-                    .send_event(Event::error(ErrorEnvelope::classify(
-                        message.clone(),
-                        false,
-                    )))
-                    .await;
-                return SendMessageOutcome::NotStarted {
-                    error: Some(message),
-                };
-            }
+            crate::cost_status::record_runtime_usage_async(
+                initial_cost_scope,
+                initial_origin.as_ref(),
+                record,
+            )
+            .await;
         }
         if autonomous && self.cancel_token.is_cancelled() {
-            crate::cost_status::report_runtime_usage_batch(
-                crate::cost_status::scope_token(),
-                initial_usage_owner.as_deref(),
+            crate::cost_status::record_runtime_usage_batch(
+                initial_cost_scope,
+                initial_origin.as_ref(),
                 &initial_routed_usage,
             );
             return SendMessageOutcome::NotStarted { error: None };
@@ -7247,9 +7226,9 @@ impl Engine {
             Ok(images) => images,
             Err(error) => {
                 let message = error.to_string();
-                crate::cost_status::report_runtime_usage_batch(
-                    crate::cost_status::scope_token(),
-                    initial_usage_owner.as_deref(),
+                crate::cost_status::record_runtime_usage_batch(
+                    initial_cost_scope,
+                    initial_origin.as_ref(),
                     &initial_routed_usage,
                 );
                 let _ = self
@@ -7316,9 +7295,9 @@ impl Engine {
                     crate::prompts::load_user_constitution_block()
                 }
                 Err(error) => {
-                    crate::cost_status::report_runtime_usage_batch(
-                        crate::cost_status::scope_token(),
-                        initial_usage_owner.as_deref(),
+                    crate::cost_status::record_runtime_usage_batch(
+                        initial_cost_scope,
+                        initial_origin.as_ref(),
                         &initial_routed_usage,
                     );
                     let _ = self
@@ -7377,9 +7356,9 @@ impl Engine {
                 // A queued operation is not an admitted turn. No TurnStarted,
                 // session mutation or provider dispatch happened, but an Auto
                 // classifier may already have produced billed routed usage.
-                crate::cost_status::report_runtime_usage_batch(
-                    crate::cost_status::scope_token(),
-                    initial_usage_owner.as_deref(),
+                crate::cost_status::record_runtime_usage_batch(
+                    initial_cost_scope,
+                    initial_origin.as_ref(),
                     &initial_routed_usage,
                 );
                 return SendMessageOutcome::NotStarted {
@@ -7393,9 +7372,9 @@ impl Engine {
         let whale_soul = match whale_soul {
             Ok(voice) => voice,
             Err(error) => {
-                crate::cost_status::report_runtime_usage_batch(
-                    crate::cost_status::scope_token(),
-                    initial_usage_owner.as_deref(),
+                crate::cost_status::record_runtime_usage_batch(
+                    initial_cost_scope,
+                    initial_origin.as_ref(),
                     &initial_routed_usage,
                 );
                 self.sync_unstarted_goal_for_terminal_projection(
@@ -7464,10 +7443,9 @@ impl Engine {
         let dispatched_product =
             crate::route_billing::capture_product(&route.config, &route.identity);
         if let Err(err) = self.install_resolved_runtime_route_async(route).await {
-            let cost_scope = crate::cost_status::scope_token();
-            crate::cost_status::report_runtime_usage_batch(
-                cost_scope,
-                initial_usage_owner.as_deref(),
+            crate::cost_status::record_runtime_usage_batch(
+                initial_cost_scope,
+                initial_origin.as_ref(),
                 &initial_routed_usage,
             );
             self.sync_unstarted_goal_for_terminal_projection(
@@ -7733,10 +7711,9 @@ impl Engine {
             u64::try_from(initial_routed_usage.drop_records.len()).unwrap_or(u64::MAX),
         );
         turn.add_routed_usage_dropped_records(residual_dropped_records);
-        let initial_cost_scope = crate::cost_status::scope_token();
-        crate::cost_status::report_runtime_usage_batch(
+        crate::cost_status::record_runtime_usage_batch(
             initial_cost_scope,
-            initial_usage_owner.as_deref(),
+            initial_origin.as_ref(),
             &crate::cost_status::RuntimeUsageBatch {
                 decisions: initial_routed_usage.decisions.clone(),
                 records: initial_routed_usage.records.clone(),
@@ -7754,11 +7731,12 @@ impl Engine {
                 .await;
         }
         for record in &initial_routed_usage.drop_records {
-            crate::cost_status::report_unreceipted_provider_success(
+            crate::cost_status::report_missing_runtime_usage(
                 initial_cost_scope,
-                initial_usage_owner.as_deref(),
+                initial_origin.as_ref(),
                 &record.source_id,
                 &record.route,
+                record.reason,
             );
         }
 
@@ -7851,41 +7829,28 @@ impl Engine {
             return outcome;
         }
 
-        // Headless/runtime hosts supply their durable turn owner; an embedded
-        // host may supply its captured Session origin. Only an otherwise
-        // unowned interactive turn installs this turn-local fallback, after
-        // pre-dispatch failures, and retires it at settlement.
-        let interactive_runtime_cost_owner = if self.config.compaction.runtime_cost_owner.is_none()
-            && self.config.runtime_services.accounting_origin.is_none()
-        {
-            let owner = format!("interactive:{}:{}", self.session.id, turn.id);
-            crate::usage_persistence::register_persistent_interactive_runtime_usage_sink(
-                &owner,
-                crate::cost_status::scope_token(),
-                &self.session.id,
-                &turn.id,
-            );
-            self.config.compaction.runtime_cost_owner = Some(owner.clone());
-            Some(owner)
+        self.active_turn_accounting_origin = if let Some(origin) = self.turn_accounting_origin() {
+            Some(origin)
         } else {
-            None
-        };
-
-        let turn_accounting_origin = self
-            .config
-            .compaction
-            .runtime_cost_owner
-            .as_deref()
-            .map(|owner| {
-                crate::cost_status::NativeUsageOrigin::runtime(
-                    crate::cost_status::scope_token(),
-                    owner,
-                )
+            let scope = crate::cost_status::scope_token();
+            let session_id = self.session.id.clone();
+            match codewhale_runtime::runtime_control::owner_work(move || {
+                let manager = crate::session_manager::SessionManager::default_location()?;
+                Ok(crate::cost_status::NativeUsageOrigin::session(
+                    scope,
+                    manager.sessions_dir().to_path_buf(),
+                    session_id,
+                ))
             })
-            .transpose()
-            .map(|origin| {
-                origin.or_else(|| self.config.runtime_services.accounting_origin.clone())
-            });
+            .await
+            {
+                Ok(origin) => Some(origin),
+                Err(error) => {
+                    tracing::warn!(%error, "turn accounting origin unavailable; continuing with unknown cost");
+                    None
+                }
+            }
+        };
 
         let previous_goal_objective = self.config.goal_objective.clone();
         let previous_goal_token_budget = self.config.goal_token_budget;
@@ -8183,7 +8148,7 @@ impl Engine {
         // so the stall watchdog never reports a turn that already ended.
         self.turn_heartbeat.idle();
         let _post_timing = codewhale_runtime::logging::PhaseTimer::start("turn_postprocessing");
-        let (mut status, mut error) = match turn_result {
+        let (mut status, error) = match turn_result {
             Ok(outcome) => outcome,
             Err(panic) => {
                 let detail = codewhale_util::utils::panic_message(&*panic);
@@ -8198,20 +8163,6 @@ impl Engine {
                 )
             }
         };
-
-        let accounting_settlement = match turn_accounting_origin {
-            Ok(Some(origin)) => origin.flush_retained_usage().await,
-            Ok(None) => Ok(()),
-            Err(error) => Err(error),
-        };
-        if let Err(accounting_error) = accounting_settlement {
-            if status == TurnOutcomeStatus::Completed {
-                status = TurnOutcomeStatus::Failed;
-            }
-            error.get_or_insert_with(|| {
-                format!("Turn usage remains unacknowledged: {accounting_error}")
-            });
-        }
 
         // Update session usage
         self.session.total_usage.add(&turn.usage);
@@ -8262,10 +8213,6 @@ impl Engine {
                 }
             }
         }
-        // The advisor is dispatched after TurnComplete, but its usage still
-        // belongs to this originating turn. Acquire the owner lease before an
-        // interactive owner is marked terminal so a late provider response
-        // retains its exact sink instead of falling into a later session.
         let advisor_usage_context = (!is_review
             && !self.is_acp_turn()
             && self.config.advisor_config.enabled
@@ -8273,18 +8220,10 @@ impl Engine {
             && self.codewhale_client.is_some())
         .then(|| {
             crate::tools::subagent::advisor::AdvisorUsageContext::capture(
-                self.config.compaction.runtime_cost_owner.as_deref(),
-                self.config.runtime_services.accounting_origin.clone(),
+                self.turn_accounting_origin(),
             )
         });
-        if let Some(owner) = interactive_runtime_cost_owner.as_deref() {
-            crate::cost_status::finish_runtime_usage_owner(owner);
-            // This owner is turn-local. Leaving it in the reusable engine
-            // config makes the next interactive turn skip registration and
-            // route background usage into a retired sink/journal. Host-owned
-            // runtime turn ids never enter this branch and remain untouched.
-            self.config.compaction.runtime_cost_owner = None;
-        }
+        self.active_turn_accounting_origin = None;
 
         // Emit turn complete event — after all post-turn bookkeeping so
         // the terminal is immediately responsive when the UI receives it.
@@ -8490,13 +8429,12 @@ impl Engine {
         let messages_before = self.session.messages.len();
 
         let purge = async {
-            let origin =
-                if let Some(origin) = self.config.runtime_services.accounting_origin.clone() {
-                    origin
-                } else {
+            let origin = if let Some(origin) = self.turn_accounting_origin() {
+                Some(origin)
+            } else {
                     let scope = crate::cost_status::scope_token();
                     let session_id = self.session.id.clone();
-                    codewhale_runtime::runtime_control::owner_work(move || {
+                    match codewhale_runtime::runtime_control::owner_work(move || {
                         let manager = crate::session_manager::SessionManager::default_location()?;
                         Ok(crate::cost_status::NativeUsageOrigin::session(
                             scope,
@@ -8505,7 +8443,13 @@ impl Engine {
                         ))
                     })
                     .await
-                    .map_err(|error| format!("Purge accounting admission failed: {error}"))?
+                    {
+                        Ok(origin) => Some(origin),
+                        Err(error) => {
+                            tracing::warn!(%error, "purge accounting admission failed; continuing with unknown cost");
+                            None
+                        }
+                    }
                 };
             run_purge(
                 &client,
@@ -8639,6 +8583,25 @@ impl Engine {
         models
     }
 
+    fn turn_accounting_origin(&self) -> Option<crate::cost_status::NativeUsageOrigin> {
+        self.active_turn_accounting_origin
+            .clone()
+            .or_else(|| {
+                self.config
+                    .compaction
+                    .runtime_cost_owner
+                    .as_deref()
+                    .and_then(|owner| {
+                        self.config
+                            .runtime_services
+                            .owner_accounting_origin
+                            .as_ref()
+                            .and_then(|resolve| resolve(owner))
+                    })
+            })
+            .or_else(|| self.config.runtime_services.accounting_origin.clone())
+    }
+
     fn build_tool_context(&self, mode: AppMode, auto_approve: bool) -> ToolContext {
         let authority = TurnAuthority::from_effective_fields(
             mode,
@@ -8662,7 +8625,7 @@ impl Engine {
         };
         let mut context = self.build_tool_context_for_turn(&authority, &route);
         if context.accounting_origin.is_none() {
-            context.accounting_origin = self.config.runtime_services.accounting_origin.clone();
+            context.accounting_origin = self.turn_accounting_origin();
         }
         context
     }
@@ -8693,8 +8656,7 @@ impl Engine {
             {
                 Ok(origin) => tool_context.accounting_origin = Some(origin),
                 Err(error) => {
-                    tracing::warn!(%error, "off-turn child accounting admission failed");
-                    return None;
+                    tracing::warn!(%error, "off-turn child accounting admission failed; continuing with unknown cost");
                 }
             }
         }
