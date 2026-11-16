@@ -1287,6 +1287,27 @@ fn is_managed_policy_error(msg: &str) -> bool {
     msg.contains("Managed plugin policy") || msg.contains("forbidden by the managed plugin policy")
 }
 
+fn map_enable_failure_diagnostic(
+    err: &str,
+    has_native: bool,
+    host_policy_enabled: bool,
+    scrub: &ScrubContext<'_>,
+) -> String {
+    if !host_policy_enabled
+        && has_native
+        && err.contains("has no supported declarative components to activate")
+        && let Some((_, labels)) = err.rsplit_once("; inactive: ")
+    {
+        if labels.trim() == "native" {
+            return HOST_OFF_DIAGNOSTIC.to_string();
+        }
+        if labels.split(',').any(|label| label.trim() == "native") {
+            return format!("{HOST_OFF_DIAGNOSTIC}; {}", scrub_message(err, scrub));
+        }
+    }
+    scrub_message(err, scrub)
+}
+
 fn is_existing_own(
     registry: &PluginRegistry,
     plugin: &LoadedPlugin,
@@ -4348,6 +4369,7 @@ async fn finish_post_install(
         Failed {
             registry: Arc<PluginRegistry>,
             enabled: bool,
+            has_native: bool,
             err: String,
         },
         Overridden {
@@ -4400,6 +4422,9 @@ async fn finish_post_install(
         if let Err(err) = commit_res {
             let latest = reg.rediscover_for_workspace(reg.workspace());
             let persisted_enabled = latest.get(&selector).is_some_and(|p| p.enabled);
+            let has_native = latest
+                .get(&selector)
+                .map_or(loaded.inventory.native > 0, |p| p.inventory.native > 0);
             if want_enabled && is_managed_policy_error(&err) {
                 return PostCommit::Overridden {
                     registry: latest,
@@ -4410,6 +4435,7 @@ async fn finish_post_install(
             return PostCommit::Failed {
                 registry: latest,
                 enabled: persisted_enabled,
+                has_native,
                 err,
             };
         }
@@ -4566,6 +4592,7 @@ async fn finish_post_install(
         PostCommit::Failed {
             registry: fresh,
             enabled,
+            has_native,
             err,
         } => {
             let scrub = ScrubContext {
@@ -4575,7 +4602,11 @@ async fn finish_post_install(
                 user_plugins_dir: fresh.user_plugins_dir(),
                 state_path: fresh.state_path(),
             };
-            let diag = scrub_message(&err, &scrub);
+            let diag = if want_enabled {
+                map_enable_failure_diagnostic(&err, has_native, policy, &scrub)
+            } else {
+                scrub_message(&err, &scrub)
+            };
             let services = plugin_services(fresh.get(&installed_name));
             settle_non_active_change(
                 call,
@@ -6229,7 +6260,14 @@ async fn toggle(
                 user_plugins_dir: fresh.user_plugins_dir(),
                 state_path: fresh.state_path(),
             };
-            let diag = scrub_message(&err, &scrub);
+            let has_native = fresh
+                .get(plugin_now.id.as_str())
+                .map_or(plugin_now.inventory.native > 0, |p| p.inventory.native > 0);
+            let diag = if want_enabled {
+                map_enable_failure_diagnostic(&err, has_native, policy, &scrub)
+            } else {
+                scrub_message(&err, &scrub)
+            };
             let mark = changed.then(|| {
                 make_change_mark(
                     &bundle_name,

@@ -6922,3 +6922,68 @@ async fn plugins_mixed_dsh_bundle_qualifies_required_native_mcp_connector() {
 
     f.manager.shutdown().await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_only_install_and_enable_with_extension_host_off_names_switch() {
+    let _policy = TestPolicyGuard::extension_host(false);
+    let mut f = PluginsFixture::new();
+    f.reload_registry();
+    f.posture.switch_for_tests(ApprovalMode::Bypass);
+
+    let install_src =
+        write_native_bundle(&f.config.workspace, "native-off-src", "native-off", "1.0.0");
+    let install_res = f
+        .call_admitted(
+            &f.context,
+            "install",
+            json!({"target": install_src.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(install_res["application"], "failed", "{install_res}");
+    assert_eq!(install_res["stage"], "enable", "{install_res}");
+    assert_eq!(install_res["changed"], true, "{install_res}");
+    assert_eq!(install_res["enabled"], false, "{install_res}");
+    assert_eq!(
+        install_res["error"]["diagnostic"],
+        "the extension host is switched off in this process, so native plugin code did not start",
+        "{install_res}"
+    );
+
+    let toggle_src = write_native_bundle(
+        &f.config.workspace,
+        "native-toggle-src",
+        "native-toggle",
+        "1.0.0",
+    );
+    let disabled_install = f
+        .call_admitted(
+            &f.context,
+            "install",
+            json!({"target": toggle_src.to_string_lossy(), "enabled": false}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        disabled_install["application"], "applied",
+        "{disabled_install}"
+    );
+    assert_eq!(disabled_install["enabled"], false, "{disabled_install}");
+
+    f.reload_registry();
+    let enable_res = f
+        .call_admitted(&f.context, "enable", json!({"target": "native-toggle"}))
+        .await
+        .unwrap();
+    assert_eq!(enable_res["application"], "failed", "{enable_res}");
+    assert_eq!(enable_res["stage"], "enable", "{enable_res}");
+    assert_eq!(enable_res["changed"], false, "{enable_res}");
+    assert_eq!(enable_res["enabled"], false, "{enable_res}");
+    assert_eq!(
+        enable_res["error"]["diagnostic"],
+        "the extension host is switched off in this process, so native plugin code did not start",
+        "{enable_res}"
+    );
+
+    f.manager.shutdown().await;
+}
