@@ -9604,7 +9604,8 @@ impl Engine {
             };
             let connecting =
                 Self::mcp_connecting_names(&*pool.lock().await, &self.mcp_connection_errors);
-            let needs_schema = connecting.iter().any(|server| names.contains(server));
+            let needs_schema = !explicit.connects.is_empty()
+                || connecting.iter().any(|server| names.contains(server));
             if !needs_schema {
                 break;
             }
@@ -9697,6 +9698,9 @@ impl Engine {
         for (name, error) in errors {
             self.mcp_connection_errors
                 .insert(name, crate::mcp::format_mcp_error_for_display(&error));
+        }
+        for (name, _) in &pending {
+            self.mcp_connection_errors.remove(name.as_str());
         }
         state.catalog_generation = generation;
         state.names = pending.iter().map(|(name, _)| name.clone()).collect();

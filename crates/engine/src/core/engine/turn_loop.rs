@@ -5222,11 +5222,6 @@ impl Engine {
         tool_policy
             .registry
             .set_plugin_registry(Some(Arc::clone(&fresh_plugins)));
-        if let Some(pool) = self.mcp_pool.as_ref().cloned() {
-            let mut pool = pool.lock().await;
-            let _ = pool.bind_caller_plugins(Arc::clone(&fresh_plugins));
-        }
-
         let previous_names = std::mem::take(&mut tool_policy.extension_tool_names);
         let previously_active: std::collections::HashSet<String> = previous_names
             .iter()
@@ -5253,6 +5248,22 @@ impl Engine {
             } else {
                 std::collections::HashSet::new()
             };
+
+        if let Some(pool) = self.mcp_pool.as_ref().cloned() {
+            let rebound = {
+                let mut pool = pool.lock().await;
+                pool.bind_caller_plugins(Arc::clone(&fresh_plugins)).is_ok()
+            };
+            if rebound {
+                self.refresh_current_mcp_catalog(tool_policy, tool_catalog, active_tool_names)
+                    .await;
+                if !self.mcp_boot_in_flight {
+                    let _ = self
+                        .start_mcp_session_boot(super::McpConnectRefresh::IfChanged)
+                        .await;
+                }
+            }
+        }
 
         let removed_only: std::collections::HashSet<String> =
             previous_names.difference(&next_names).cloned().collect();

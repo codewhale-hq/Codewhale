@@ -1510,3 +1510,240 @@ async fn the_installing_call_survives_its_own_refresh() {
 
     f.manager.shutdown().await;
 }
+
+#[tokio::test]
+async fn required_connector_installed_mid_turn_is_discoverable_and_callable_next_turn() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let Some(f) = RefreshFixture::new(
+        "required_connector_installed_mid_turn_is_discoverable_and_callable_next_turn",
+    ) else {
+        return;
+    };
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback mcp");
+    let port = listener.local_addr().expect("mcp local addr").port();
+    let server_handle = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 4096];
+                let mut header_end = None;
+                loop {
+                    let Ok(n) = stream.read(&mut tmp).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        header_end = Some(pos + 4);
+                        break;
+                    }
+                }
+                let Some(head_len) = header_end else {
+                    return;
+                };
+                let head = String::from_utf8_lossy(&buf[..head_len]).into_owned();
+                let content_length = head
+                    .lines()
+                    .find_map(|line| {
+                        let (k, v) = line.split_once(':')?;
+                        k.eq_ignore_ascii_case("content-length")
+                            .then(|| v.trim().parse::<usize>().ok())?
+                    })
+                    .unwrap_or(0);
+                while buf.len() < head_len + content_length {
+                    let Ok(n) = stream.read(&mut tmp).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                }
+                let request_line = head.lines().next().unwrap_or("");
+                if request_line.starts_with("GET ") {
+                    let resp = "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                    return;
+                }
+                let body = &buf[head_len..head_len + content_length];
+                let payload: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+                let method = payload.get("method").and_then(Value::as_str).unwrap_or("");
+                let id = payload.get("id").cloned().unwrap_or(Value::Null);
+                if method == "notifications/initialized" || id.is_null() {
+                    let resp =
+                        "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                    return;
+                }
+                let rpc_response = match method {
+                    "initialize" => json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "protocolVersion": "2025-03-26",
+                            "capabilities": { "tools": { "listChanged": false } },
+                            "serverInfo": { "name": "demo-mcp", "version": "1.0.0" }
+                        }
+                    }),
+                    "tools/list" => json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "tools": [{
+                                "name": "demo_ping",
+                                "description": "Loopback MCP ping.",
+                                "inputSchema": {
+                                    "type": "object",
+                                    "properties": {},
+                                    "additionalProperties": false
+                                }
+                            }]
+                        }
+                    }),
+                    "resources/list" => json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": { "resources": [] }
+                    }),
+                    "resources/templates/list" => json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": { "resourceTemplates": [] }
+                    }),
+                    "prompts/list" => json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": { "prompts": [] }
+                    }),
+                    "tools/call" => json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "content": [{ "type": "text", "text": "connector-pong" }],
+                            "isError": false
+                        }
+                    }),
+                    _ => json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {}
+                    }),
+                };
+                let sse_body = format!("event: message\ndata: {rpc_response}\n\n");
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nMcp-Session-Id: refresh-mcp-session\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    sse_body.len(),
+                    sse_body
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+            });
+        }
+    });
+
+    let src_dir = f.workspace.join("plugins/demo-mcp");
+    fs::create_dir_all(&src_dir).expect("mcp src dir");
+    fs::write(
+        src_dir.join("package.json"),
+        json!({
+            "name": "@local/demo-mcp",
+            "version": "1.0.0",
+            "private": true,
+            "type": "module",
+            "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+        })
+        .to_string(),
+    )
+    .expect("package.json");
+    fs::write(
+        src_dir.join("cordis.patch.yml"),
+        format!(
+            "- insert:\n    - id: demo-mcp\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: demo\n        transport: streamable-http\n        url: http://127.0.0.1:{port}/mcp\n        failOnStartupError: true\n"
+        ),
+    )
+    .expect("cordis.patch.yml");
+
+    let mock = Arc::new(MockLlmClient::new(Vec::new()));
+    mock.push_turn(canned::tool_call_turn(
+        "call-install-mcp",
+        "plugin_manager",
+        &json!({
+            "action": "install_bundle",
+            "target": src_dir.to_string_lossy(),
+        })
+        .to_string(),
+    ));
+    mock.push_turn(canned::simple_text_turn("connector installed"));
+    mock.push_turn(canned::tool_call_turn(
+        "call-search-mcp",
+        "tool_search",
+        r#"{"query":"mcp demo_ping"}"#,
+    ));
+    mock.push_factory(|req| {
+        let tool_text = req
+            .messages
+            .iter()
+            .rev()
+            .flat_map(|msg| msg.content.iter().rev())
+            .find_map(|block| match block {
+                codewhale_models::ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let parsed: Value = serde_json::from_str(&tool_text).expect("tool search json");
+        let tool_name = parsed["tool_references"]
+            .as_array()
+            .and_then(|arr| {
+                arr.iter().find_map(|item| {
+                    let name = item.get("tool_name").and_then(Value::as_str)?;
+                    (name.contains("mcp_plugin-") && name.ends_with("demo_ping"))
+                        .then(|| name.to_string())
+                })
+            })
+            .unwrap_or_else(|| panic!("expected demo_ping reference in:\n{tool_text}"));
+        canned::tool_call_turn("call-mcp-ping", &tool_name, "{}")
+    });
+    mock.push_turn(canned::simple_text_turn("connector called"));
+
+    let config = Config::default();
+    let (handle, task) = spawn_refresh_engine(f.engine_config(f.discover()), Arc::clone(&mock));
+    let t1 = drive_refresh_turn(
+        &handle,
+        turn_op("install demo-mcp", ApprovalMode::Suggest, &config),
+        RefreshApproval::ApproveUser,
+    )
+    .await;
+    let install_json = parse_tool_json(&t1.tool_results[0].1);
+    assert_eq!(install_json["application"], json!("applied"));
+
+    let t2 = drive_refresh_turn(
+        &handle,
+        turn_op("search and call demo_ping", ApprovalMode::Suggest, &config),
+        RefreshApproval::ApproveUser,
+    )
+    .await;
+    shutdown_refresh_engine(handle, task).await;
+    server_handle.abort();
+
+    let (_, ping_res) = t2
+        .tool_results
+        .iter()
+        .find(|(name, _)| name.ends_with("demo_ping"))
+        .expect("demo_ping result");
+    let ping_ok = ping_res.as_ref().expect("demo_ping succeeded");
+    assert!(
+        ping_ok.content.contains("connector-pong"),
+        "{}",
+        ping_ok.content
+    );
+
+    f.manager.shutdown().await;
+}
