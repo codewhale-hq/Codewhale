@@ -1675,6 +1675,7 @@ impl ExtensionHostManager {
     /// A manager with its own built-in module table. Production passes the
     /// static table through [`Self::new`]; a test passes one of its own to
     /// exercise tier 0 without a production row.
+    #[cfg(test)]
     fn with_builtin_modules(
         options: ExtensionHostOptions,
         builtin_modules: &'static [BuiltinModule],
