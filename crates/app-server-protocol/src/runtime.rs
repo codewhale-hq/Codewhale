@@ -134,6 +134,8 @@ pub struct RuntimeCapabilities {
     /// cannot broaden a conversation while it has an active turn.
     #[serde(default)]
     pub thread_shell_consent: bool,
+    #[serde(default)]
+    pub thread_standing_context: bool,
     pub turns: bool,
     /// `POST /v1/threads/{id}/turns` accepts a durable, thread-scoped
     /// `operation_key` and returns the original turn for exact retries.
@@ -551,6 +553,7 @@ mod tests {
             worktrees: true,
             job_operations: true,
             thread_shell_consent: true,
+            thread_standing_context: true,
             turns: true,
             turn_operation_idempotency: true,
             turn_operation_lookup: true,

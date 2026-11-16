@@ -68,6 +68,7 @@ export type RuntimeCapabilities = {
   worktrees: boolean
   job_operations: boolean
   thread_shell_consent: boolean
+  thread_standing_context: boolean
   turns: boolean
   turn_operation_idempotency: boolean
   turn_operation_lookup: boolean

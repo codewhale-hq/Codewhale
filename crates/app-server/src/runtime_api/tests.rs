@@ -23223,6 +23223,162 @@ async fn thread_context_reports_live_budget_from_the_engine() -> Result<()> {
 }
 
 #[tokio::test]
+async fn thread_standing_context_reports_the_installed_receipt() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let repo = tmp.path().join("repo");
+    let workspace = repo.join("pkg");
+    fs::create_dir_all(repo.join(".git"))?;
+    fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n")?;
+    fs::create_dir_all(&workspace)?;
+    let kept_text = "Run cargo fmt before committing.\n";
+    fs::write(repo.join("AGENTS.md"), kept_text)?;
+    fs::write(workspace.join("AGENTS.md"), "  \n\t\n")?;
+    let (addr, _runtime_threads, handle) = spawn_test_server_with_root_token_mobile_workspace(
+        tmp.path().join("runtime"),
+        tmp.path().join("sessions"),
+        Some("standing-token".to_string()),
+        false,
+        workspace.clone(),
+    )
+    .await?
+    .context("standing context test requires a loopback listener")?;
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}");
+
+    let status = client
+        .get(format!("{base}/v1/threads/thread-x/context/standing"))
+        .send()
+        .await?
+        .status();
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let status = client
+        .get(format!("{base}/v1/threads/thread-missing/context/standing"))
+        .bearer_auth("standing-token")
+        .send()
+        .await?
+        .status();
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let thread: Value = client
+        .post(format!("{base}/v1/threads"))
+        .bearer_auth("standing-token")
+        .json(&json!({ "workspace": workspace }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let thread_id = thread["id"].as_str().unwrap().to_string();
+
+    let body: Value = client
+        .get(format!("{base}/v1/threads/{thread_id}/context/standing"))
+        .bearer_auth("standing-token")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(body["schema_version"], 1);
+    assert_eq!(body["live"], true);
+    assert_eq!(body["basis"], "installed_receipt");
+    assert_eq!(body["estimated"], true);
+    assert_eq!(
+        body["not_measured"],
+        json!(["skills", "agents", "mcp_tool_schemas", "memory"])
+    );
+    assert_eq!(body["delivery"]["cap_bytes"], 65_536);
+    assert!(body["delivery"]["delivered"].is_null());
+    assert_eq!(body["items_omitted"], 0);
+
+    let items = body["items"].as_array().unwrap();
+    let project: Vec<&Value> = items
+        .iter()
+        .filter(|item| item["scope"] == "project")
+        .collect();
+    let kept = project
+        .iter()
+        .find(|item| item["action"] == "kept")
+        .context("the parent AGENTS.md is reported kept")?;
+    assert_eq!(kept["path"], "../AGENTS.md");
+    assert_eq!(kept["origin"], "agents");
+    assert_eq!(
+        kept["tokens_kept"].as_u64().unwrap(),
+        codewhale_engine::project_context::estimate_instruction_tokens(kept_text.trim_end()) as u64
+    );
+    let skipped = project
+        .iter()
+        .find(|item| item["action"] == "skipped")
+        .context("the empty workspace AGENTS.md is reported skipped")?;
+    assert_eq!(skipped["path"], "AGENTS.md");
+    assert_eq!(skipped["limit"], "empty_file");
+    for item in items {
+        let path = item["path"].as_str().unwrap_or_default();
+        assert!(
+            !std::path::Path::new(path).is_absolute(),
+            "absolute path leaked: {path}"
+        );
+    }
+
+    handle.abort();
+    Ok(())
+}
+
+#[test]
+fn thread_standing_context_items_are_relative_inert_and_bounded() {
+    let roots = [std::path::PathBuf::from("/repo/pkg")];
+    let homes = [std::path::PathBuf::from("/home/me")];
+    let display = |path: &str, global: bool| {
+        context::standing_display_path(std::path::Path::new(path), global, &roots, &homes)
+    };
+    assert_eq!(display("/repo/pkg/AGENTS.md", false), "AGENTS.md");
+    assert_eq!(display("/repo/AGENTS.md", false), "../AGENTS.md");
+    assert_eq!(
+        display("/repo/.codewhale/instructions.md", false),
+        "../.codewhale/instructions.md"
+    );
+    assert_eq!(
+        display("/repo/.claude/CLAUDE.md", false),
+        "../.claude/CLAUDE.md"
+    );
+    assert_eq!(display("/elsewhere/AGENTS.md", false), "AGENTS.md");
+    assert_eq!(
+        display("/home/me/.codewhale/AGENTS.md", true),
+        "~/.codewhale/AGENTS.md"
+    );
+    assert_eq!(display("/srv/rules.md", true), "rules.md");
+    assert_eq!(
+        context::standing_display_path(
+            std::path::Path::new("/srv/secret/rules.md"),
+            true,
+            &roots,
+            &[std::path::PathBuf::from("/")],
+        ),
+        "rules.md"
+    );
+
+    let hostile = json!({
+        "path": "/repo/pkg/.codewhale/rules/a\u{1b}[31m\n\u{202e}x.md",
+        "scope": "Project",
+        "origin": "Rules",
+        "action": "Skipped",
+        "limit": "RulesCap",
+        "detail": { "kind": "unreadable", "reason": "secret text", "max_files": 50 },
+    });
+    let notices: Vec<Value> =
+        std::iter::repeat_n(hostile, context::STANDING_MAX_ITEMS + 5).collect();
+    let (items, omitted) = context::standing_items(&notices, &roots, &homes);
+    assert_eq!(items.len(), context::STANDING_MAX_ITEMS);
+    assert_eq!(omitted, 5);
+    assert_eq!(items[0]["path"], ".codewhale/rules/a?[31m??x.md");
+    assert_eq!(items[0]["label"], "a?[31m??x.md");
+    assert_eq!(items[0]["limit"], "rules_cap");
+    assert_eq!(
+        items[0]["detail"],
+        json!({ "kind": "unreadable", "max_files": 50 })
+    );
+}
+
+#[tokio::test]
 async fn provider_key_write_is_write_only_and_reports_readiness() -> Result<()> {
     // The credential store is only exposed to tests under an explicit isolated
     // home plus an explicit backend — both scoped to this test by the env lock.

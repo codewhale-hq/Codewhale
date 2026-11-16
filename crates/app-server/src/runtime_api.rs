@@ -1694,6 +1694,7 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         worktrees: true,
         job_operations: true,
         thread_shell_consent: true,
+        thread_standing_context: true,
         turns: true,
         turn_operation_idempotency: true,
         turn_operation_lookup: true,
@@ -3231,6 +3232,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             post(terminal::terminal_kill),
         )
         .route("/v1/threads/{id}/context", get(context::get_thread_context))
+        .route(
+            "/v1/threads/{id}/context/standing",
+            get(context::get_thread_standing_context),
+        )
         .route(
             "/v1/threads/{id}/members",
             post(members::start_thread_member)

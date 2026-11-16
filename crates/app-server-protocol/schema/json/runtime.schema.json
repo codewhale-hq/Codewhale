@@ -318,6 +318,10 @@
           "description": "Explicit per-thread shell opt-in is checked against loaded policy and\ncannot broaden a conversation while it has an active turn.",
           "default": false
         },
+        "thread_standing_context": {
+          "type": "boolean",
+          "default": false
+        },
         "turns": {
           "type": "boolean"
         },
@@ -484,6 +488,7 @@
         "worktrees",
         "job_operations",
         "thread_shell_consent",
+        "thread_standing_context",
         "turns",
         "turn_operation_idempotency",
         "turn_operation_lookup",

@@ -204,6 +204,7 @@ registration index.
 | POST | `/v1/threads/{id}/commands/builtin` |
 | POST | `/v1/threads/{id}/compact` |
 | GET | `/v1/threads/{id}/context` |
+| GET | `/v1/threads/{id}/context/standing` |
 | GET | `/v1/threads/{id}/events` |
 | POST | `/v1/threads/{id}/file-revert` |
 | POST | `/v1/threads/{id}/fork` |
@@ -275,4 +276,4 @@ registration index.
 | GET / POST | `/v1/worktrees` |
 | POST | `/v1/worktrees/remove` |
 
-The source contains 255 distinct literal paths in this table.
+The source contains 256 distinct literal paths in this table.

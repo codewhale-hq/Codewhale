@@ -2936,6 +2936,36 @@ thread deletion.
   invented number — and `live: false` marks responses where the engine
   could not be loaded and only the store-recorded route's static window
   resolved.
+- `GET /v1/threads/{id}/context/standing` (capability
+  `thread_standing_context`) — the standing-instruction receipt the live
+  Engine session already holds, read-only. `schema_version`, `basis`
+  (`installed_receipt`; `no_receipt` before the session has assembled one;
+  `unavailable` with `live: false` when the engine could not be loaded),
+  `estimator` with `estimated: true` (token counts are the conservative
+  `max(chars/3, bytes/4)` estimate, not a tokenizer), `global_tokens`,
+  `project_tokens`, `constitution_tokens`, `retained_block_tokens`, the
+  resolved `budgets`, and `items[]` with `label`, `path`, `scope`, `origin`,
+  `action` (`kept|trimmed|skipped|refused`), `limit` (`none`,
+  `scope_budget`, `static_guard`, `file_ceiling`, `file_content`,
+  `empty_file`, `rules_cap`, `rules_budget`, `duplicate_path`), `tokens_kept`,
+  `tokens_dropped`, `bytes_kept`, `bytes_dropped`, `fallback_selected` and a
+  typed `detail` (`kind` plus its numeric fields; never an error text).
+  `items` holds at most 200 entries and `items_omitted` counts the rest.
+  Paths are workspace-relative for project items (`../AGENTS.md` for a
+  parent directory's file, `../.claude/CLAUDE.md` for one in its
+  subfolder), `~/...` for global items under the home directory, and a bare
+  file name otherwise; no absolute path is returned, and control characters
+  in labels and paths arrive as `?`. `delivery.cap_bytes` is the
+  65,536-byte limit on the instruction text before the preamble and
+  escaping are added. When a workspace-instructions message was recorded,
+  `delivery.delivered` gives `message_bytes` and `message_tokens` for the
+  delivered reminder body (preamble included, runtime envelope excluded) and
+  `truncated`; read truncation from `truncated`, never by comparing
+  `message_bytes` with `cap_bytes`. The receipt itself does not include that
+  cap. The totals, `budgets`, `items_omitted` and `delivery` keys appear
+  only with `basis: installed_receipt`. `not_measured` lists what the Engine
+  does not measure per item (`skills`, `agents`, `mcp_tool_schemas`,
+  `memory`): show "not measured yet", never zero. An unknown thread is 404.
 
 **Thread-scoped reads.** `GET /v1/git`, `/v1/changes`, `/v1/diff`,
 `/v1/workspace/diff`, `/v1/git/graph`, `/v1/workspace/files` and
