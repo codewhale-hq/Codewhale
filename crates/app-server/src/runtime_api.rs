@@ -1558,7 +1558,16 @@ struct DecideApprovalBody {
     #[serde(default)]
     remember: bool,
     #[serde(default)]
+    remember_scope: Option<RememberScope>,
+    #[serde(default)]
     client: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RememberScope {
+    Thread,
+    Workspace,
 }
 
 #[derive(Debug, Serialize)]
@@ -1567,6 +1576,16 @@ struct DecideApprovalResponse {
     approval_id: String,
     decision: String,
     delivered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    standing_rules: Option<Vec<codewhale_execpolicy::ToolAskRule>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemovePermissionRuleBody {
+    token: String,
+    #[serde(default)]
+    client: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1708,6 +1727,9 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         // SSE journal frames carry their durable `seq` as the event id, and the
         // thread event stream resumes from `Last-Event-ID`.
         event_stream_resume: true,
+        permission_rules: true,
+        approval_remember_workspace: true,
+        approval_grants_list: true,
     }
 }
 
@@ -3359,6 +3381,9 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/goals", get(list_goals))
         .route("/v1/approvals", get(list_approvals))
         .route("/v1/approvals/{approval_id}", post(decide_approval))
+        .route("/v1/approval-grants", get(list_approval_grants))
+        .route("/v1/permissions/rules", get(list_permission_rules))
+        .route("/v1/permissions/rules/remove", post(remove_permission_rule))
         .route(
             "/v1/threads/{id}/approval-grants/{grant_id}",
             delete(revoke_approval_grant),
@@ -7173,10 +7198,126 @@ async fn decide_approval(
             )));
         }
     };
+    if req.remember_scope.is_some() && !req.remember {
+        return Err(
+            ApiError::bad_request("remember_scope requires \"remember\": true")
+                .with_code("invalid_remember_scope"),
+        );
+    }
     let responder = resolve_approval_responder(auth_caller, req.client)?;
+    if req.remember_scope == Some(RememberScope::Workspace) {
+        if !matches!(decision, ExternalApprovalDecision::Allow { .. }) {
+            return Err(ApiError::bad_request(
+                "remember_scope \"workspace\" is valid only with decision \"allow\"",
+            )
+            .with_code("invalid_remember_scope"));
+        }
+        return settle_approval_with_standing_rule(state, approval_id, responder)
+            .await
+            .map(Json);
+    }
     Ok(Json(
         settle_approval_request(&state, approval_id, None, decision, responder).await?,
     ))
+}
+
+async fn settle_approval_with_standing_rule(
+    state: RuntimeApiState,
+    approval_id: String,
+    responder: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+) -> Result<DecideApprovalResponse, ApiError> {
+    let runtime_threads = state.runtime_threads.clone();
+    let id = approval_id.clone();
+    let settled = tokio::spawn(async move {
+        runtime_threads
+            .deliver_approval_with_standing_rule(&id, responder)
+            .await
+    })
+    .await
+    .map_err(|_| ApiError::internal("standing rule task failed"))?
+    .map_err(map_permission_rule_error)?;
+    let Some((delivered, rules)) = settled else {
+        return Err(ApiError::not_found(format!(
+            "no pending approval with id '{approval_id}'"
+        )));
+    };
+    Ok(DecideApprovalResponse {
+        ok: true,
+        approval_id,
+        decision: "allow".to_owned(),
+        delivered,
+        standing_rules: Some(rules),
+    })
+}
+
+fn map_permission_rule_error(error: anyhow::Error) -> ApiError {
+    use codewhale_engine::runtime_threads::manager::{
+        ApprovalOwnerRequired, PermissionRulesUnavailable, StalePermissionToken,
+        StandingRuleIneligible,
+    };
+    if error.is::<ApprovalOwnerRequired>() {
+        ApiError::forbidden(error.to_string()).with_code("owner_required")
+    } else if error.is::<StandingRuleIneligible>() {
+        ApiError::unprocessable(error.to_string()).with_code("standing_rule_ineligible")
+    } else if error.is::<StalePermissionToken>() {
+        ApiError::conflict(error.to_string()).with_code("stale_permission_token")
+    } else if error.is::<PermissionRulesUnavailable>() {
+        ApiError::conflict(error.to_string()).with_code("permissions_unavailable")
+    } else if error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists)
+    {
+        ApiError::conflict(error.to_string())
+    } else {
+        ApiError::internal(format!("permission rule update failed: {error:#}"))
+    }
+}
+
+async fn list_permission_rules(
+    State(state): State<RuntimeApiState>,
+) -> Json<codewhale_engine::runtime_threads::manager::PermissionRulesListing> {
+    Json(state.runtime_threads.list_permission_rules().await)
+}
+
+async fn remove_permission_rule(
+    State(state): State<RuntimeApiState>,
+    axum::Extension(auth_caller): axum::Extension<auth::RuntimeAuthCaller>,
+    Json(req): Json<RemovePermissionRuleBody>,
+) -> Result<Json<Value>, ApiError> {
+    let responder = resolve_approval_responder(auth_caller, req.client)?;
+    if req.token.len() != 24
+        || !req
+            .token
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(
+            ApiError::bad_request("token must be a listed removal token")
+                .with_code("invalid_permission_token"),
+        );
+    }
+    let runtime_threads = state.runtime_threads.clone();
+    let removed = tokio::spawn(async move {
+        runtime_threads
+            .remove_permission_rule_by_token(&req.token, responder)
+            .await
+    })
+    .await
+    .map_err(|_| ApiError::internal("permission removal task failed"))?
+    .map_err(map_permission_rule_error)?;
+    Ok(Json(
+        json!({ "ok": true, "removed": removed, "applied_to": "this_runtime" }),
+    ))
+}
+
+async fn list_approval_grants(
+    State(state): State<RuntimeApiState>,
+) -> Result<Json<codewhale_engine::runtime_threads::manager::StandingGrantsListing>, ApiError> {
+    let runtime_threads = state.runtime_threads.clone();
+    tokio::task::spawn_blocking(move || runtime_threads.list_standing_grants())
+        .await
+        .map(Json)
+        .map_err(|_| ApiError::internal("approval grant read task failed"))
 }
 
 async fn settle_approval_request(
@@ -7242,6 +7383,7 @@ async fn settle_approval_request_in_workspace(
         }
         .to_owned(),
         delivered,
+        standing_rules: None,
     })
 }
 
@@ -12256,6 +12398,8 @@ fn map_compat_stream_event(
                     "turn_id": event.turn_id,
                     "decision": payload.get("decision"),
                     "remember": payload.get("remember"),
+                    "remember_scope": payload.get("remember_scope"),
+                    "standing_rules": payload.get("standing_rules"),
                     "auto": payload.get("auto"),
                     "timeout": payload.get("timeout"),
                     // Set when the decision was forced by a turn interrupt

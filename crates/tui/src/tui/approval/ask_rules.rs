@@ -1,18 +1,14 @@
-//! Persistent permission-rule construction and save-preview formatting.
+//! Save-preview formatting for persistent permission rules.
 //!
-//! This module owns the policy for turning an already-classified approval
-//! request into exact ask/allow rules. It deliberately has no modal state or
+//! The rules themselves come from
+//! `codewhale_engine::core::authority::persistent_rules`, shared with the
+//! Runtime approval route. This module deliberately has no modal state or
 //! rendering code: views consume the validated rules and their bounded text
 //! preview without re-parsing tool inputs.
-
-use std::path::Path;
 
 use codewhale_config::ToolAskRule;
 use codewhale_execpolicy::PermissionAction;
 use codewhale_localization::{Locale, MessageId, tr};
-use serde_json::Value;
-
-use codewhale_execpolicy::canonical_action::canonical_action_alias;
 
 /// Human-readable preview of rules an approval action would append.
 ///
@@ -104,125 +100,4 @@ fn sanitize_preview_value(value: &str) -> String {
         .replace('\r', "\\r")
         .replace('\n', "\\n")
         .replace('\t', "\\t")
-}
-
-#[must_use]
-pub(super) fn build_persistent_ask_rules(
-    tool_name: &str,
-    params: &Value,
-    workspace: &Path,
-) -> Vec<ToolAskRule> {
-    let semantic = canonical_action_alias(tool_name, params);
-    match semantic {
-        "exec_shell" => build_exec_shell_ask_rules(params),
-        // File writes save an exact, workspace-relative path so a later
-        // edit/write of the same file is matched. read_file stays out: this
-        // boundary is about persisting *write* approvals only.
-        "write_file" | "edit_file" => build_file_write_ask_rules(semantic, params, workspace),
-        "apply_patch" => build_apply_patch_ask_rules(params, workspace),
-        _ => Vec::new(),
-    }
-}
-
-#[must_use]
-pub(super) fn build_persistent_allow_rules(
-    tool_name: &str,
-    params: &Value,
-    workspace: &Path,
-    exact_rules: &[ToolAskRule],
-) -> Vec<ToolAskRule> {
-    if exact_rules.is_empty() {
-        return Vec::new();
-    }
-
-    if tool_name == "exec_shell" {
-        let Some(command) = params.get("command").and_then(Value::as_str) else {
-            return Vec::new();
-        };
-        if !matches!(
-            codewhale_execpolicy::command_safety::analyze_command(command).level,
-            codewhale_execpolicy::command_safety::SafetyLevel::Safe
-                | codewhale_execpolicy::command_safety::SafetyLevel::WorkspaceSafe
-        ) {
-            return Vec::new();
-        }
-    }
-
-    let workspace = workspace.to_string_lossy();
-    let Some(workspace) = codewhale_execpolicy::normalize_workspace_scope(workspace.as_ref())
-    else {
-        return Vec::new();
-    };
-
-    exact_rules
-        .iter()
-        .cloned()
-        .map(|rule| rule.into_exact_workspace_allow(workspace.clone()))
-        .collect()
-}
-
-#[must_use]
-fn build_exec_shell_ask_rules(params: &Value) -> Vec<ToolAskRule> {
-    let Some(command) = params
-        .get("command")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|command| !command.is_empty())
-    else {
-        return Vec::new();
-    };
-    vec![ToolAskRule::exec_shell(command)]
-}
-
-#[must_use]
-fn build_file_write_ask_rules(
-    tool_name: &str,
-    params: &Value,
-    workspace: &Path,
-) -> Vec<ToolAskRule> {
-    let Some(path) = params
-        .get("path")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-    else {
-        return Vec::new();
-    };
-    // Reuse the canonical matcher normalization so the saved rule equals what
-    // runtime matching compares against. `None` (and the degenerate
-    // workspace-root case) means the path is empty, traversing, drive-relative,
-    // or outside the workspace, so we save nothing and the `S` shortcut and
-    // preview stay disabled.
-    let workspace = workspace.to_string_lossy();
-    let Some(relative) =
-        codewhale_execpolicy::normalize_workspace_relative_path(path, workspace.as_ref())
-            .filter(|relative| !relative.is_empty())
-    else {
-        return Vec::new();
-    };
-    vec![ToolAskRule::file_path(tool_name, relative)]
-}
-
-#[must_use]
-fn build_apply_patch_ask_rules(params: &Value, workspace: &Path) -> Vec<ToolAskRule> {
-    let Ok(preflight) = codewhale_tools::patch_preflight::preflight_apply_patch(params) else {
-        return Vec::new();
-    };
-    let workspace = workspace.to_string_lossy();
-    let mut rules = Vec::new();
-
-    for path in preflight.touched_files {
-        let Some(relative) =
-            codewhale_execpolicy::normalize_workspace_relative_path(&path, workspace.as_ref())
-                .filter(|relative| !relative.is_empty())
-        else {
-            return Vec::new();
-        };
-        let rule = ToolAskRule::file_path("apply_patch", relative);
-        if !rules.contains(&rule) {
-            rules.push(rule);
-        }
-    }
-
-    rules
 }

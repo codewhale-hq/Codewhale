@@ -2626,7 +2626,10 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   that moved into the old position. Confirmed removal and approval-card appends
   share the adjacent `permissions.toml.lock`, preserve unrelated TOML comments
   and formatting, and atomically replace the file. The running TUI reloads the
-  user ruleset without clearing session-only approvals.
+  user ruleset without clearing session-only approvals. The Runtime API
+  exposes the same list, token-bound removal and repo-scoped allow save for
+  the desktop app ([Runtime API](RUNTIME_API.md), "Permission rules and
+  grants").
 
   This editor intentionally does not create or rewrite rules, persist deny
   choices from approval cards, expand globs, or create broad

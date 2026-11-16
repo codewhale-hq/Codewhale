@@ -27698,3 +27698,336 @@ async fn plugin_changed_emits_status_item_and_thread_plugin_changed_event() -> R
     owner_mgr.shutdown_and_wait().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn workspace_remember_scope_saves_exact_repo_rule_and_live_threads_follow_it() -> Result<()> {
+    use crate::core::engine::{ToolAskRuleDecision, exec_shell_ask_rule_decision_for_policy};
+    use crate::runtime_threads::manager::{
+        ApprovalOwnerRequired, ApprovalResponder, PermissionRulesListing, StalePermissionToken,
+        StandingRuleIneligible,
+    };
+    use codewhale_execpolicy::ToolAskRule;
+
+    let tmp = tempfile::tempdir()?;
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home)?;
+    let mut config = Config::default();
+    config.loaded_config_path = Some(home.join("config.toml"));
+    let owner = RuntimeThreadManager::open_owner_host(
+        config,
+        workspace.clone(),
+        test_manager_config(tmp.path().join("owner")),
+        Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace)),
+        None,
+        None,
+    )?;
+    let request = || CreateThreadRequest {
+        workspace: Some(workspace.clone()),
+        ..Default::default()
+    };
+    let thread_a = owner.create_thread(request()).await?;
+    let thread_b = owner.create_thread(request()).await?;
+    let mut harness = install_mock_engine(&owner, &thread_a.id).await;
+    let _harness_b = install_mock_engine(&owner, &thread_b.id).await;
+    owner
+        .active
+        .lock()
+        .await
+        .engines
+        .get_mut(&thread_b.id)
+        .context("thread b engine")?
+        .engine
+        .set_exec_policy(codewhale_execpolicy::ExecPolicyEngine::default());
+    let thread_workspace = owner.store.load_thread(&thread_a.id)?.workspace;
+    let cargo_test = json!({ "command": "cargo test" });
+    let live_decisions = |manager: &RuntimeThreadManager| {
+        let manager_engines = manager.active.try_lock().expect("active lock");
+        [&thread_a.id, &thread_b.id]
+            .into_iter()
+            .map(|id| {
+                exec_shell_ask_rule_decision_for_policy(
+                    manager_engines.engines[id].engine.exec_policy(),
+                    "exec_shell",
+                    &cargo_test,
+                    &thread_workspace,
+                    ApprovalMode::Suggest,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(live_decisions(&owner), vec![None, None]);
+
+    owner
+        .start_turn(
+            &thread_a.id,
+            StartTurnRequest {
+                prompt: "run the tests".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert!(matches!(
+        harness.rx_op.recv().await,
+        Some(Op::SendMessage(TurnSpec { .. }))
+    ));
+    let ask = |id: &str, tool_name: &str, input: serde_json::Value| EngineEvent::ApprovalRequired {
+        publication: None,
+        approval_key: crate::tools::approval_cache::build_approval_key(tool_name, &input).0,
+        approval_grouping_key: crate::tools::approval_cache::build_approval_grouping_key(
+            tool_name, &input,
+        )
+        .0,
+        id: id.to_string(),
+        tool_name: tool_name.to_string(),
+        description: "Run a shell command".to_string(),
+        input,
+        intent_summary: None,
+        approval_force_prompt: false,
+    };
+    let permissions_path = home.join("permissions.toml");
+
+    for (call, tool_name, input) in [
+        (
+            "call_unsafe",
+            "exec_shell",
+            json!({ "command": "rm -rf build" }),
+        ),
+        (
+            "call_web",
+            "web.run",
+            json!({ "search_query": [{ "q": "espresso" }] }),
+        ),
+    ] {
+        harness.tx_event.send(ask(call, tool_name, input)).await?;
+        let approval = await_approval_identity(&owner, &thread_a.id, call).await?;
+        let refused = owner
+            .deliver_approval_with_standing_rule(&approval, Some(ApprovalResponder::Desktop))
+            .await
+            .expect_err("ineligible request must not save a rule");
+        assert!(
+            refused.is::<StandingRuleIneligible>(),
+            "{call}: {refused:#}"
+        );
+        assert!(!permissions_path.exists(), "{call} wrote a rule");
+        assert!(
+            owner
+                .deliver_external_approval(
+                    &approval,
+                    ExternalApprovalDecision::Deny { remember: false }
+                )
+                .await?,
+            "{call} stays answerable after the refusal"
+        );
+        assert_eq!(
+            harness.recv_approval_event().await,
+            Some(MockApprovalEvent::Denied {
+                id: call.to_string()
+            })
+        );
+    }
+
+    harness
+        .tx_event
+        .send(ask("call_ok", "exec_shell", cargo_test.clone()))
+        .await?;
+    let approval = await_approval_identity(&owner, &thread_a.id, "call_ok").await?;
+    let not_owner = owner
+        .deliver_approval_with_standing_rule(&approval, Some(ApprovalResponder::Phone))
+        .await
+        .expect_err("a phone cannot save a standing rule");
+    assert!(not_owner.is::<ApprovalOwnerRequired>());
+    assert!(!permissions_path.exists());
+
+    let (delivered, rules) = owner
+        .deliver_approval_with_standing_rule(&approval, Some(ApprovalResponder::Desktop))
+        .await?
+        .context("approval was pending")?;
+    assert!(delivered);
+    let expected = vec![
+        ToolAskRule::exec_shell("cargo test").into_exact_workspace_allow(
+            codewhale_execpolicy::normalize_workspace_scope(&thread_workspace.to_string_lossy())
+                .context("workspace scope")?,
+        ),
+    ];
+    assert_eq!(rules, expected);
+    assert_eq!(
+        harness.recv_approval_event().await,
+        Some(MockApprovalEvent::Approved {
+            id: "call_ok".to_string()
+        })
+    );
+    let snapshot = codewhale_config::load_permissions_snapshot(Some(home.join("config.toml")))?;
+    assert_eq!(snapshot.rules(), expected.as_slice());
+    assert!(
+        owner
+            .get_thread_detail(&thread_a.id)
+            .await?
+            .approval_grants
+            .is_empty(),
+        "a workspace rule is not also a thread grant"
+    );
+    let decided = owner
+        .events_since(&thread_a.id, None)?
+        .into_iter()
+        .find(|event| {
+            event.event == "approval.decided" && event.payload["tool_call_id"] == "call_ok"
+        })
+        .context("approval.decided for call_ok")?;
+    assert_eq!(decided.payload["remember"], true);
+    assert_eq!(decided.payload["remember_scope"], "workspace");
+    assert_eq!(decided.payload["standing_rules"], json!(expected));
+    let events = owner.events_since(&thread_a.id, None)?;
+    let required = events
+        .iter()
+        .find(|event| {
+            event.event == "approval.required" && event.payload["tool_call_id"] == "call_ok"
+        })
+        .context("approval.required for call_ok")?;
+    assert_eq!(
+        required.payload["standing_rule_candidates"],
+        json!(expected),
+        "the prompt shows the exact rule a save would write"
+    );
+    let saved = events
+        .iter()
+        .find(|event| event.event == "permission.rules_saved")
+        .context("permission.rules_saved")?;
+    assert_eq!(saved.payload["approval_id"], json!(approval));
+    assert_eq!(saved.payload["standing_rules"], json!(expected));
+    assert_eq!(
+        live_decisions(&owner),
+        vec![
+            Some(ToolAskRuleDecision::Allow),
+            Some(ToolAskRuleDecision::Allow)
+        ],
+        "both live threads in the workspace allow the identical call"
+    );
+    assert_ne!(
+        exec_shell_ask_rule_decision_for_policy(
+            &owner.read_config().exec_policy_engine,
+            "exec_shell",
+            &json!({ "command": "cargo test --release" }),
+            &thread_workspace,
+            ApprovalMode::Suggest,
+        ),
+        Some(ToolAskRuleDecision::Allow),
+        "the rule is exact"
+    );
+
+    let PermissionRulesListing::Ok { exists, rules, .. } = owner.list_permission_rules().await
+    else {
+        panic!("permission rules should be readable");
+    };
+    assert!(exists);
+    assert_eq!(rules.len(), 1);
+    let token = rules[0].removal_token.clone();
+    let not_owner = owner
+        .remove_permission_rule_by_token(&token, Some(ApprovalResponder::Phone))
+        .await
+        .expect_err("a phone cannot remove a rule");
+    assert!(not_owner.is::<ApprovalOwnerRequired>());
+    let removed = owner
+        .remove_permission_rule_by_token(&token, Some(ApprovalResponder::Desktop))
+        .await?;
+    assert_eq!(removed, expected[0]);
+    let stale = owner
+        .remove_permission_rule_by_token(&token, Some(ApprovalResponder::Desktop))
+        .await
+        .expect_err("a used token is stale");
+    assert!(stale.is::<StalePermissionToken>());
+    assert_eq!(
+        live_decisions(&owner),
+        vec![None, None],
+        "revoking takes effect on the next matching request in live threads"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn standing_rule_refuses_sub_agent_approvals_and_holds_other_answers_while_claimed()
+-> Result<()> {
+    use crate::runtime_threads::manager::{
+        ApprovalResponder, PermissionRulesUnavailable, StandingRuleIneligible,
+    };
+
+    let tmp = tempfile::tempdir()?;
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(home.join("permissions.toml"))?;
+    let mut config = Config::default();
+    config.loaded_config_path = Some(home.join("config.toml"));
+    let owner = RuntimeThreadManager::open_owner_host(
+        config,
+        workspace.clone(),
+        test_manager_config(tmp.path().join("owner")),
+        Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace)),
+        None,
+        None,
+    )?;
+    let thread = owner
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace.clone()),
+            ..Default::default()
+        })
+        .await?;
+    let write = json!({ "path": "src/lib.rs", "content": "fn main() {}" });
+
+    let (child, _child_rx) = owner.register_pending_tool_call_approval_for_test(
+        &thread.id,
+        "agent:worker:approval:0b6c",
+        "write_file",
+        write.clone(),
+    );
+    let refused = owner
+        .deliver_approval_with_standing_rule(&child, Some(ApprovalResponder::Desktop))
+        .await
+        .expect_err("a sub-agent approval must not save a rule");
+    assert!(refused.is::<StandingRuleIneligible>(), "{refused:#}");
+
+    let (approval, answer) = owner.register_pending_tool_call_approval_for_test(
+        &thread.id,
+        "call-write",
+        "write_file",
+        write,
+    );
+    owner.standing_rule_claimed_for_test(&approval, true);
+    for decision in [
+        ExternalApprovalDecision::Allow { remember: false },
+        ExternalApprovalDecision::Deny { remember: false },
+    ] {
+        let conflict = owner
+            .deliver_external_approval(&approval, decision)
+            .await
+            .expect_err("an answer during a standing-rule save must conflict, not join");
+        assert!(
+            conflict
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists),
+            "{conflict:#}"
+        );
+    }
+    owner.standing_rule_claimed_for_test(&approval, false);
+
+    let failed = owner
+        .deliver_approval_with_standing_rule(&approval, Some(ApprovalResponder::Desktop))
+        .await
+        .expect_err("an unreadable permissions file must refuse the save");
+    assert!(failed.is::<PermissionRulesUnavailable>(), "{failed:#}");
+    assert!(
+        owner
+            .deliver_external_approval(
+                &approval,
+                ExternalApprovalDecision::Allow { remember: false }
+            )
+            .await?,
+        "a failed save releases the claim, so allow-once still answers"
+    );
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), answer).await??,
+        ExternalApprovalDecision::Allow { remember: false }
+    );
+    Ok(())
+}

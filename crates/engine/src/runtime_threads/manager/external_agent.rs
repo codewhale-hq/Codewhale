@@ -2042,6 +2042,7 @@ impl RuntimeThreadManager {
                     responder: None,
                     agent_settled: Some(settled_rx),
                     owner_only: false,
+                    standing_rules: None,
                 });
                 return (id, rx, settled_tx);
             }

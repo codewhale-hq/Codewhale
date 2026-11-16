@@ -451,6 +451,21 @@
           "type": "boolean",
           "description": "`GET /v1/threads/{id}/events` puts the durable `seq` on every journal\nframe as the SSE `id:` and resumes from a `Last-Event-ID` header, so a\nbrowser `EventSource` reconnects without a cursor in the query string.",
           "default": false
+        },
+        "permission_rules": {
+          "type": "boolean",
+          "description": "`GET /v1/permissions/rules` lists the user `permissions.toml` rules\nwith per-rule removal tokens, and `POST /v1/permissions/rules/remove`\nremoves one for an owner caller.",
+          "default": false
+        },
+        "approval_remember_workspace": {
+          "type": "boolean",
+          "description": "`POST /v1/approvals/{id}` accepts `remember_scope: \"workspace\"`, which\nsaves the exact repo-scoped allow rule to `permissions.toml`.",
+          "default": false
+        },
+        "approval_grants_list": {
+          "type": "boolean",
+          "description": "`GET /v1/approval-grants` lists active and suspended grants across\nthreads.",
+          "default": false
         }
       },
       "required": [
@@ -499,7 +514,10 @@
         "skill_detail",
         "plugin_management",
         "agent_mail",
-        "event_stream_resume"
+        "event_stream_resume",
+        "permission_rules",
+        "approval_remember_workspace",
+        "approval_grants_list"
       ],
       "description": "Fixed capability map advertised by `GET /v1/runtime/info`.\n\nAll fields are required on serialization so clients can rely on the shape."
     },

@@ -818,6 +818,7 @@ pub struct EngineHandle {
     mcp_pool_slot: Arc<StdMutex<McpPoolSlot>>,
     owner_surface_attached: bool,
     host_profile: host_profile::EngineHostProfile,
+    exec_policy: codewhale_execpolicy::ExecPolicyEngine,
 }
 
 #[derive(Default)]
@@ -2932,6 +2933,7 @@ impl Engine {
             mcp_pool_slot: Arc::clone(&engine.mcp_pool_slot),
             owner_surface_attached: false,
             host_profile,
+            exec_policy: engine.config.exec_policy_engine.clone(),
         };
 
         (engine, handle)
@@ -12009,6 +12011,7 @@ pub fn mock_engine_handle() -> MockEngineHandle {
         mcp_pool_slot: Arc::default(),
         owner_surface_attached: false,
         host_profile: host_profile::EngineHostProfile::Normal,
+        exec_policy: codewhale_execpolicy::ExecPolicyEngine::default(),
     };
 
     MockEngineHandle {

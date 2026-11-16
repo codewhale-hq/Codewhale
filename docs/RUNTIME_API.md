@@ -1947,6 +1947,80 @@ suspended, and matching calls prompt again, until an authenticated client
 resumes the thread. A grant store that cannot be read holds no grants, so every
 call prompts. A forced (non-bypassable) prompt is never answered by a grant.
 
+`"remember": true, "remember_scope": "workspace"` on an `allow` saves the
+same exact, repo-scoped allow rule the terminal's "always allow this exact
+rule in this repo" writes to the user `permissions.toml`, then allows the call
+once; it records no thread grant. `remember_scope: "thread"` is the session
+grant above, and `remember_scope` without `"remember": true`, or `workspace`
+with `deny`, is `400 invalid_remember_scope`. Only an attached owner runtime
+and an owner caller may save one (`403 owner_required`, the same check as
+Auto-Review retry approval). Only a shell command classified safe, or a
+`write_file`, `edit_file` or `apply_patch` inside the thread's workspace, is
+eligible; publish-like, destructive or credential-touching calls,
+repository-law holds, sub-agent approvals, external-agent approvals and
+archived threads are `422 standing_rule_ineligible`, nothing is written and the
+approval stays pending. "In this repo" means the conversation's recorded
+workspace folder, exactly as spelt: not the git root, and not another path to
+the same folder. `approval.required` carries `standing_rule_candidates[]`, the
+exact rules a save would write (empty when the prompt is not eligible), so a
+client can show the rule before offering the button. While a save is being
+written, any other answer to that approval is `409`; if the save fails, the
+approval can be answered again. A config or permissions file that cannot be
+read or written is `409 permissions_unavailable`. The response adds
+`standing_rules[]` (each `{ tool, command?, command_exact?, path?, workspace,
+action }`); repeating the same request while the approval is still settling
+returns the same rules.
+Every save appends a `permission.rules_saved` event (`approval_id`,
+`tool_call_id`, `tool_name`, `standing_rules`) to the thread, whatever happens
+to the call. `approval.decided` also carries `remember_scope: "workspace"` and
+the same `standing_rules` whenever a rule was saved for that approval; there
+they mean "a rule was saved", and `remember` is `true` only when the call was
+also allowed. If the prompt is withdrawn, cancelled or times out while the rule
+is being written, the rule stays, the response says `delivered: false`, and
+`permission.rules_saved` is the record. Running threads of this Runtime use the
+new rule on their next matching call.
+
+A client sends `remember_scope` only when `GET /v1/runtime/info` reports
+`capabilities.approval_remember_workspace`, and treats a `200` without
+`standing_rules` as "no rule was saved": the request body ignores unknown
+fields, so an older Runtime, or a misspelt field, answers the request as the
+plain `remember` choice.
+
+**Permission rules and grants**
+- `GET /v1/permissions/rules` returns
+  `{ status: "ok", path, exists, rules[] }` for the user `permissions.toml`
+  sibling of the config the Runtime loaded. Each rule is
+  `{ index, tool, command, command_exact, path, workspace, action, layer, removal_token }`
+  (`layer` is `user`). A missing file is `exists: false` with no rules. A file
+  that cannot be read or parsed, or a Runtime with no user config, answers
+  `{ status: "unavailable", reason }` with no `rules`, never an empty list.
+  Values are returned as data; clients escape them.
+- `POST /v1/permissions/rules/remove` with
+  `{ "token": "<removal_token>", "client"?: "desktop"|"tui"|"web"|"phone"|"acp" }`
+  removes that one rule and answers `{ ok, removed }`. Removing a `deny` or
+  `ask` rule loosens policy, so it requires an attached owner runtime and an
+  owner caller (`403 owner_required`); watch tokens are refused by the
+  read-only gate. A token that is not 24 lowercase hex characters is `400
+  invalid_permission_token`. A token that no longer describes the current file
+  (the file changed after listing, or the rule was already removed) is `409
+  stale_permission_token` and writes nothing; a file that cannot be read or
+  written is `409 permissions_unavailable`. The response's `applied_to:
+  "this_runtime"` says the scope of the live effect: running threads of this
+  Runtime stop using the rule on their next matching call, but a running
+  terminal session or another Runtime process on the same `permissions.toml`
+  keeps the rule in memory until it reloads or restarts.
+- `GET /v1/approval-grants` returns `{ status: "ok", grants[] }` across every
+  thread: `{ grant_id, scope_kind, thread_id, workspace_id, effect, tool_name,
+  label, summary, created_at, last_used_at, uses, state, suspended_reason }`.
+  Suspended grants are listed with `state: "suspended"`. An unreadable grant
+  store answers `{ status: "unavailable", reason }`.
+
+Running threads pick up rule changes made through these routes. `GET
+/v1/permissions/rules` lists the file, not the live policy: an edit to
+`permissions.toml` made by hand or by the terminal does not reach a running
+Runtime thread until `POST /v1/config/reload`, which re-reads the file and
+applies it to running threads and to threads started afterwards.
+
 **Auto-Review blocks and one-use retry grants**
 - `GET /v1/threads/{id}/auto-review/blocks` returns `{ thread_id, blocks[] }`
   listing recorded Auto-Review blocks on the thread (`receipt_id`,
@@ -3838,7 +3912,8 @@ Common event names: `thread.started`, `thread.forked`, `turn.started`,
 `approval.timeout`, `user_input.required`, `user_input.answered`,
 `user_input.canceled`, `tool_call.requested`, `tool_call.resolved`,
 `tool_call.timeout`, `tool_call.canceled`, `sandbox.denied`,
-`turn.workspace_snapshot`, `turn.provider_request`, `runtime.store_failure`.
+`permission.rules_saved`, `turn.workspace_snapshot`, `turn.provider_request`,
+`runtime.store_failure`.
 
 `turn.usage` is one model call's receipt, emitted when a parent model call
 reports usage — not once per turn. Its `payload` carries the call's `usage`,

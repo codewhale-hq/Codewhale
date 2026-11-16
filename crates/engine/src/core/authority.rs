@@ -6,6 +6,7 @@
 
 pub mod auto_review;
 pub mod grants;
+pub mod persistent_rules;
 pub mod risk;
 
 pub use risk::{RiskLevel, classify_risk};

@@ -6479,7 +6479,9 @@ async fn stream_compat_mapping_handles_expected_runtime_events() -> Result<()> {
         payload: json!({
             "approval_id": "approval_test",
             "decision": "allow",
-            "remember": false,
+            "remember": true,
+            "remember_scope": "workspace",
+            "standing_rules": [{ "tool": "exec_shell", "command": "cargo test", "action": "allow" }],
             "internal_secret": "approval-decision-secret",
         }),
     };
@@ -6493,6 +6495,8 @@ async fn stream_compat_mapping_handles_expected_runtime_events() -> Result<()> {
     let text = String::from_utf8_lossy(&body);
     assert!(text.contains("event: approval.decided"));
     assert!(text.contains("\"decision\":\"allow\""));
+    assert!(text.contains("\"remember_scope\":\"workspace\""), "{text}");
+    assert!(text.contains("\"command\":\"cargo test\""), "{text}");
     assert!(!text.contains("approval-decision-secret"));
 
     // A resolution forced by a turn interrupt or turn teardown must
@@ -28692,6 +28696,301 @@ async fn runtime_api_auto_review_blocks_and_approve_enforce_owner_surface_and_st
     );
 
     drop(harness);
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn permission_rules_routes_list_remove_and_save_workspace_rules_for_owners_only() -> Result<()>
+{
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().to_path_buf();
+    let workspace = root.join("workspace");
+    let home = root.join("home");
+    fs::create_dir_all(&home)?;
+    let config_path = home.join("config.toml");
+    let permissions_path = home.join("permissions.toml");
+    let token = "permission-rules-owner-token".to_string();
+    let mut config = Config::default().with_legacy_root(
+        Some("runtime-api-test-key".to_string()),
+        Some("http://127.0.0.1:1/v1".to_string()),
+    );
+    config.loaded_config_path = Some(config_path.clone());
+    let Some((addr, runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root.clone(),
+            root.join("sessions"),
+            Some(token.clone()),
+            false,
+            workspace,
+            TestServerOverrides {
+                owner_host: true,
+                config: Some(config),
+                ..TestServerOverrides::default()
+            },
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}");
+    let info: Value = client
+        .get(format!("{base}/v1/runtime/info"))
+        .bearer_auth(&token)
+        .send()
+        .await?
+        .json()
+        .await?;
+    for flag in [
+        "permission_rules",
+        "approval_remember_workspace",
+        "approval_grants_list",
+    ] {
+        assert_eq!(info["capabilities"][flag], true, "{flag}");
+    }
+    let list = || async {
+        let body: Value = client
+            .get(format!("{base}/v1/permissions/rules"))
+            .bearer_auth(&token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Result::<Value>::Ok(body)
+    };
+    let absent = list().await?;
+    assert_eq!(absent["status"], "ok");
+    assert_eq!(absent["exists"], false);
+    assert_eq!(absent["rules"], json!([]));
+
+    fs::write(&permissions_path, "rules = [ { tool = ")?;
+    let invalid = list().await?;
+    assert_eq!(invalid["status"], "unavailable", "{invalid:#}");
+    assert!(invalid.get("rules").is_none(), "{invalid:#}");
+
+    let original = "# keep me\n[[rules]]\ntool = \"exec_shell\"\ncommand = \"git push\"\naction = \"deny\"\n\n[[rules]]\ntool = \"write_file\"\npath = \"notes.md\"\naction = \"ask\"\n";
+    fs::write(&permissions_path, original)?;
+    let listed = list().await?;
+    assert_eq!(listed["status"], "ok");
+    assert_eq!(listed["exists"], true);
+    let rules = listed["rules"].as_array().context("rules")?;
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0]["tool"], "exec_shell");
+    assert_eq!(rules[0]["command"], "git push");
+    assert_eq!(rules[0]["action"], "deny");
+    assert_eq!(rules[0]["layer"], "user");
+    assert_eq!(rules[1]["path"], "notes.md");
+    let deny_token = rules[0]["removal_token"]
+        .as_str()
+        .context("token")?
+        .to_string();
+    let ask_token = rules[1]["removal_token"]
+        .as_str()
+        .context("token")?
+        .to_string();
+
+    let mint = |intent: &'static str| {
+        let client = client.clone();
+        let base = base.clone();
+        let token = token.clone();
+        async move {
+            let minted: Value = client
+                .post(format!("{base}/v1/auth/client-tokens"))
+                .bearer_auth(&token)
+                .json(&json!({ "device_id": format!("{intent}-device"), "intent": intent }))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            Result::<String>::Ok(minted["token"].as_str().context("token")?.to_string())
+        }
+    };
+    let watch_token = mint("watch").await?;
+    let drive_token = mint("drive").await?;
+    let remove = |bearer: String, body: Value| {
+        client
+            .post(format!("{base}/v1/permissions/rules/remove"))
+            .bearer_auth(bearer)
+            .json(&body)
+            .send()
+    };
+    let refused = remove(
+        watch_token,
+        json!({ "token": deny_token, "client": "desktop" }),
+    )
+    .await?;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    for (bearer, body) in [
+        (
+            drive_token.clone(),
+            json!({ "token": deny_token, "client": "desktop" }),
+        ),
+        (drive_token.clone(), json!({ "token": deny_token })),
+        (token.clone(), json!({ "token": deny_token })),
+        (
+            token.clone(),
+            json!({ "token": deny_token, "client": "phone" }),
+        ),
+    ] {
+        let refused = remove(bearer, body.clone()).await?;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN, "{body}");
+        let error: Value = refused.json().await?;
+        assert_eq!(error["error"]["code"], "owner_required", "{body}");
+    }
+    assert_eq!(fs::read_to_string(&permissions_path)?, original);
+    let malformed = remove(
+        token.clone(),
+        json!({ "token": "not-a-token", "client": "desktop" }),
+    )
+    .await?;
+    assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+    let error: Value = malformed.json().await?;
+    assert_eq!(error["error"]["code"], "invalid_permission_token");
+
+    let removed = remove(
+        token.clone(),
+        json!({ "token": deny_token, "client": "desktop" }),
+    )
+    .await?;
+    assert_eq!(removed.status(), StatusCode::OK);
+    let removed: Value = removed.json().await?;
+    assert_eq!(removed["removed"]["command"], "git push");
+    assert_eq!(removed["applied_to"], "this_runtime");
+    let after_removal = fs::read_to_string(&permissions_path)?;
+    assert!(after_removal.starts_with("# keep me\n"), "{after_removal}");
+    assert!(!after_removal.contains("git push"), "{after_removal}");
+    assert!(after_removal.contains("notes.md"), "{after_removal}");
+
+    let stale = remove(
+        token.clone(),
+        json!({ "token": ask_token, "client": "desktop" }),
+    )
+    .await?;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    let error: Value = stale.json().await?;
+    assert_eq!(error["error"]["code"], "stale_permission_token");
+    assert_eq!(fs::read_to_string(&permissions_path)?, after_removal);
+
+    let grants: Value = client
+        .get(format!("{base}/v1/approval-grants"))
+        .bearer_auth(&token)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(grants["status"], "ok");
+    assert_eq!(grants["grants"], json!([]));
+
+    let created: Value = client
+        .post(format!("{base}/v1/threads"))
+        .bearer_auth(&token)
+        .json(&json!({}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let thread_id = created["id"].as_str().context("thread id")?.to_string();
+    let decide = |approval_id: &str, body: Value| {
+        client
+            .post(format!("{base}/v1/approvals/{approval_id}"))
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+    };
+
+    let (unsafe_id, _unsafe_rx) = runtime_threads
+        .register_pending_tool_approval_for_thread_for_test(
+            &thread_id,
+            "exec_shell",
+            json!({ "command": "rm -rf build" }),
+        );
+    for (body, status, code) in [
+        (
+            json!({ "decision": "deny", "remember": true, "remember_scope": "workspace", "client": "desktop" }),
+            StatusCode::BAD_REQUEST,
+            "invalid_remember_scope",
+        ),
+        (
+            json!({ "decision": "allow", "remember_scope": "workspace", "client": "desktop" }),
+            StatusCode::BAD_REQUEST,
+            "invalid_remember_scope",
+        ),
+        (
+            json!({ "decision": "allow", "remember": true, "remember_scope": "workspace", "client": "phone" }),
+            StatusCode::FORBIDDEN,
+            "owner_required",
+        ),
+        (
+            json!({ "decision": "allow", "remember": true, "remember_scope": "workspace", "client": "desktop" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "standing_rule_ineligible",
+        ),
+    ] {
+        let resp = decide(&unsafe_id, body.clone()).await?;
+        assert_eq!(resp.status(), status, "{body}");
+        let error: Value = resp.json().await?;
+        assert_eq!(error["error"]["code"], code, "{body}");
+    }
+    assert_eq!(fs::read_to_string(&permissions_path)?, after_removal);
+
+    let (child_id, _child_rx) = runtime_threads.register_pending_tool_call_approval_for_test(
+        &thread_id,
+        "agent:worker:approval:0b6c",
+        "exec_shell",
+        json!({ "command": "cargo test" }),
+    );
+    let child = decide(
+        &child_id,
+        json!({ "decision": "allow", "remember": true, "remember_scope": "workspace", "client": "desktop" }),
+    )
+    .await?;
+    assert_eq!(child.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let error: Value = child.json().await?;
+    assert_eq!(error["error"]["code"], "standing_rule_ineligible");
+    assert_eq!(fs::read_to_string(&permissions_path)?, after_removal);
+
+    let (safe_id, safe_rx) = runtime_threads.register_pending_tool_approval_for_thread_for_test(
+        &thread_id,
+        "exec_shell",
+        json!({ "command": "cargo test" }),
+    );
+    let saved = decide(
+        &safe_id,
+        json!({ "decision": "allow", "remember": true, "remember_scope": "workspace", "client": "desktop" }),
+    )
+    .await?;
+    assert_eq!(saved.status(), StatusCode::OK);
+    let saved: Value = saved.json().await?;
+    assert_eq!(saved["decision"], "allow");
+    assert_eq!(saved["delivered"], true);
+    assert_eq!(saved["standing_rules"][0]["command"], "cargo test");
+    assert_eq!(saved["standing_rules"][0]["command_exact"], true);
+    assert_eq!(saved["standing_rules"][0]["action"], "allow");
+    assert!(saved["standing_rules"][0]["workspace"].is_string());
+    assert_eq!(
+        tokio::time::timeout(ci_scaled(Duration::from_secs(1)), safe_rx).await??,
+        ExternalApprovalDecision::Allow { remember: false }
+    );
+    let rules = list().await?;
+    assert_eq!(rules["rules"].as_array().map(Vec::len), Some(2));
+    assert_eq!(rules["rules"][1]["command"], "cargo test");
+
+    let (legacy_id, legacy_rx) =
+        runtime_threads.register_pending_approval_for_thread_for_test(&thread_id, "legacy");
+    let legacy = decide(&legacy_id, json!({ "decision": "allow", "remember": true })).await?;
+    assert_eq!(legacy.status(), StatusCode::OK);
+    let legacy: Value = legacy.json().await?;
+    assert!(legacy.get("standing_rules").is_none());
+    assert_eq!(
+        legacy_rx.await?,
+        ExternalApprovalDecision::Allow { remember: true }
+    );
+
     handle.abort();
     Ok(())
 }

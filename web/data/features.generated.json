@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "baf3361fc87616ca33aec27c48b9ff89e5ae040104d0d5c7b20c462e261a92d6"
+    "sha256": "95e955c523ffef399ce16f67ffb82ccec95abadfe072496ea8abd33117fe6e8f"
   },
   "features": [
     {
@@ -170,7 +170,8 @@
       "summary": "Decides allow, ask or deny for each tool call from layered permission rules.",
       "status": "stable",
       "surfaces": {
-        "tui": "stable"
+        "tui": "stable",
+        "api": "preview"
       },
       "since": "0.1.0",
       "flag": "exec_policy",

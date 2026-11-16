@@ -924,6 +924,7 @@ fn engine_handle_try_send_does_not_block_when_op_channel_is_full() {
         ),
         terminal_worker_events: None,
         mcp_pool_slot: Arc::default(),
+        exec_policy: codewhale_execpolicy::ExecPolicyEngine::default(),
     };
 
     // Fill the op channel with one message (capacity = 1).

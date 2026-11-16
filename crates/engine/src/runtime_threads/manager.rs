@@ -3,6 +3,11 @@ use codewhale_app_server_protocol::runtime::watch_event::WatchEventReceipt;
 
 mod external_agent;
 pub mod history;
+mod permission_rules;
+pub use permission_rules::{
+    PermissionRuleView, PermissionRulesListing, PermissionRulesUnavailable, StalePermissionToken,
+    StandingGrantView, StandingGrantsListing, StandingRuleIneligible,
+};
 
 pub(super) const EVENT_CHANNEL_CAPACITY: usize = 1024;
 pub(super) const MAX_ACTIVE_THREADS_DEFAULT: usize = 8;
@@ -3728,6 +3733,7 @@ pub(super) struct PendingApprovalEntry {
     pub(super) responder: Option<ApprovalResponder>,
     pub(super) agent_settled: Option<watch::Receiver<Option<bool>>>,
     pub(super) owner_only: bool,
+    pub(super) standing_rules: Option<permission_rules::StandingRuleState>,
 }
 
 pub(super) struct PendingUserInputEntry {
@@ -4349,6 +4355,7 @@ impl RuntimeThreadManager {
                 "Reloaded runtime controls; provider route will apply on the next turn"
             );
         }
+        self.resync_user_permission_ruleset().await;
         Ok(workshop_activation)
     }
 
@@ -5052,6 +5059,7 @@ impl RuntimeThreadManager {
                     responder: None,
                     agent_settled: None,
                     owner_only,
+                    standing_rules: None,
                 });
                 return (id, rx);
             }
@@ -5393,6 +5401,16 @@ impl RuntimeThreadManager {
             {
                 return Err(ApprovalOwnerRequired.into());
             }
+            if matches!(
+                entry.standing_rules,
+                Some(permission_rules::StandingRuleState::Claimed)
+            ) {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "approval is being answered with a standing rule",
+                )
+                .into());
+            }
             if let Some(previous) = entry.proposed {
                 if previous != decision {
                     return Err(io::Error::new(
@@ -5414,6 +5432,17 @@ impl RuntimeThreadManager {
             (entry.publication.clone(), entry.agent_settled.clone())
         };
         let (publication, agent_settled) = publication;
+        self.await_delivered_approval(approval_id, decision, publication, agent_settled)
+            .await
+    }
+
+    pub(super) async fn await_delivered_approval(
+        &self,
+        approval_id: &str,
+        decision: ExternalApprovalDecision,
+        publication: Option<crate::core::engine::NativeApprovalPublication>,
+        agent_settled: Option<watch::Receiver<Option<bool>>>,
+    ) -> Result<bool> {
         if let Some(settled) = agent_settled {
             return external_agent::await_agent_settlement(settled).await;
         }
@@ -5424,7 +5453,7 @@ impl RuntimeThreadManager {
                 return Ok(true);
             }
             #[cfg(not(any(test, feature = "test-support")))]
-            bail!("approval has no captured Core publication source");
+            bail!("approval {approval_id} has no captured Core publication source");
         };
         let receipt = publication.published().await?;
         Ok(matches!(
@@ -18753,6 +18782,9 @@ source_usage_records: Default::default(),
                             "id": approval_id, "approval_id": approval_id, "tool_call_id": id,
                             "tool_name": tool_name, "input": input, "summary": summary,
                             "description": description, "intent_summary": intent_summary,
+                            "standing_rule_candidates": summary_workspace.as_deref().map(|workspace| {
+                                permission_rules::standing_rule_candidates(Some(&id), &tool_name, &input, &description, workspace)
+                            }).unwrap_or_default(),
                         })).await {
                         let _ = publication.acknowledge(Err(format!("Runtime approval request append failed: {error}")));
                         self.cancel_pending_approval(&approval_id);
@@ -18897,6 +18929,16 @@ source_usage_records: Default::default(),
                         .and_then(|entry| entry.responder)
                     {
                         payload["responder"] = json!(responder);
+                    }
+                    if let Some(permission_rules::StandingRuleState::Saved(rules)) = self
+                        .pending_approvals
+                        .lock()
+                        .get(&approval_id)
+                        .and_then(|entry| entry.standing_rules.clone())
+                    {
+                        payload["remember"] = json!(allowed);
+                        payload["remember_scope"] = json!("workspace");
+                        payload["standing_rules"] = json!(rules);
                     }
                     if let Some(posture) = denied_posture {
                         payload["posture"] = json!(posture);
@@ -20333,6 +20375,7 @@ source_usage_records: Default::default(),
         let route = self.resolved_route_for_thread(&config, &thread)?;
         engine.set_host_profile(self.host_profile);
         engine.set_owner_surface_attached(self.owner_surface_attached);
+        engine.set_exec_policy(config.exec_policy_engine.clone());
         {
             let mut selected = self.subagent_manager.lock().await;
             if let Some(manager) = selected.as_ref() {

@@ -40,6 +40,7 @@ registration index.
 | GET | `/v1/agents/external` |
 | GET | `/v1/agents/external/{id}/options` |
 | GET | `/v1/agents/external/quota` |
+| GET | `/v1/approval-grants` |
 | GET | `/v1/approvals` |
 | POST | `/v1/approvals/{approval_id}` |
 | GET | `/v1/apps/avatars` |
@@ -141,6 +142,8 @@ registration index.
 | POST | `/v1/operate/keepalive` |
 | PUT | `/v1/operate/plan` |
 | POST | `/v1/operate/stop` |
+| GET | `/v1/permissions/rules` |
+| POST | `/v1/permissions/rules/remove` |
 | GET | `/v1/plan` |
 | GET | `/v1/plans` |
 | GET | `/v1/process` |
@@ -272,4 +275,4 @@ registration index.
 | GET / POST | `/v1/worktrees` |
 | POST | `/v1/worktrees/remove` |
 
-The source contains 252 distinct literal paths in this table.
+The source contains 255 distinct literal paths in this table.

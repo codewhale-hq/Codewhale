@@ -99,6 +99,9 @@ export type RuntimeCapabilities = {
   plugin_management: boolean
   agent_mail: boolean
   event_stream_resume: boolean
+  permission_rules: boolean
+  approval_remember_workspace: boolean
+  approval_grants_list: boolean
   [key: string]: Json | undefined
 }
 

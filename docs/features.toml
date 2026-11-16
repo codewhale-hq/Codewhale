@@ -165,7 +165,7 @@ id = "exec-policy"
 name = "Execution policy"
 summary = "Decides allow, ask or deny for each tool call from layered permission rules."
 status = "stable"
-surfaces = { tui = "stable" }
+surfaces = { tui = "stable", api = "preview" }
 since = "0.1.0"
 flag = "exec_policy"
 docs = "docs/AUTHORIZATION_ORDER.md"
