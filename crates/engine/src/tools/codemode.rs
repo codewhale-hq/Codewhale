@@ -2076,7 +2076,7 @@ mod tests {
         let workspace = note.parent().unwrap().to_path_buf();
         let (context, _asked) = gated_context(
             &workspace,
-            Duration::from_millis(400),
+            Duration::from_millis(2000),
             Duration::ZERO,
             None,
             run_as_asked,
@@ -2115,8 +2115,8 @@ mod tests {
         // person deciding an approval would.
         let (context, _asked) = gated_context(
             &workspace,
-            Duration::from_millis(300),
-            Duration::from_millis(500),
+            Duration::from_millis(1500),
+            Duration::from_millis(2000),
             None,
             run_as_asked,
         );

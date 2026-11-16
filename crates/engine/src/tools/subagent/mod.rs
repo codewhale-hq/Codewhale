@@ -5980,7 +5980,7 @@ impl SubAgentManager {
             || self
                 .store_authority
                 .as_ref()
-                .is_some_and(|authority| authority.owned.lock().contains(id))
+                .is_some_and(|authority| authority.owned.lock().contains_key(id))
     }
 
     fn admitted_store_authority(&mut self) -> Result<Option<Arc<SubAgentStoreAuthority>>> {
@@ -6016,7 +6016,7 @@ impl SubAgentManager {
         self.coordination = image.state.coordination.clone();
         self.foreign_live_owners =
             live_foreign_store_owners(&image, &authority.path, &authority.writer);
-        let owned = authority.owned.lock().clone();
+        let owned: HashSet<String> = authority.owned.lock().keys().cloned().collect();
         let agent_ids = image
             .state
             .agents
@@ -6046,7 +6046,11 @@ impl SubAgentManager {
                         .get(&persisted.id)
                         .is_some_and(|writer| authority.writer_is_live(writer))
                 {
-                    authority.owned.lock().insert(persisted.id.clone());
+                    authority
+                        .owned
+                        .lock()
+                        .entry(persisted.id.clone())
+                        .or_insert(0);
                     adopted.push(persisted.id.clone());
                 }
             }
@@ -6089,7 +6093,11 @@ impl SubAgentManager {
                     .get(&record.spec.worker_id)
                     .is_some_and(|writer| authority.writer_is_live(writer));
                 if !writer_live {
-                    authority.owned.lock().insert(record.spec.worker_id.clone());
+                    authority
+                        .owned
+                        .lock()
+                        .entry(record.spec.worker_id.clone())
+                        .or_insert(0);
                     adopted.push(record.spec.worker_id.clone());
                 }
                 let origin = image
@@ -6170,7 +6178,7 @@ impl SubAgentManager {
                 .record_writers
                 .iter()
                 .filter(|(_, writer)| *writer == &authority.writer)
-                .map(|(id, _)| id.clone())
+                .map(|(id, _)| (id.clone(), 0))
                 .collect();
             self.foreign_live_owners =
                 live_foreign_store_owners(&committed, &authority.path, &authority.writer);
@@ -6795,7 +6803,11 @@ impl SubAgentManager {
     ) {
         let worker_id = spec.worker_id.clone();
         if let Some(authority) = self.store_authority.as_ref() {
-            authority.owned.lock().insert(worker_id.clone());
+            let min_seq = self
+                .persist_sequence
+                .load(std::sync::atomic::Ordering::Acquire)
+                .saturating_add(1);
+            authority.owned.lock().insert(worker_id.clone(), min_seq);
         }
         let now_ms = epoch_millis_now();
         let mut record = AgentWorkerRecord::new_for_session(
@@ -13467,7 +13479,7 @@ struct SubAgentStoreAuthority {
     path: PathBuf,
     writer: String,
     _lease: fs::File,
-    owned: parking_lot::Mutex<HashSet<String>>,
+    owned: parking_lot::Mutex<HashMap<String, u64>>,
     transaction: parking_lot::Mutex<Option<SubAgentStoreTransaction>>,
     revision: std::sync::atomic::AtomicU64,
     published_sequence: std::sync::atomic::AtomicU64,
@@ -13795,7 +13807,7 @@ impl SubAgentStoreAuthority {
             path: path.to_path_buf(),
             writer: writer.into(),
             _lease: lease,
-            owned: parking_lot::Mutex::new(HashSet::new()),
+            owned: parking_lot::Mutex::new(HashMap::new()),
             transaction: parking_lot::Mutex::new(None),
             revision: std::sync::atomic::AtomicU64::new(image.revision),
             published_sequence: std::sync::atomic::AtomicU64::new(
@@ -13965,8 +13977,13 @@ impl SubAgentStoreAuthority {
             );
             return Ok(());
         }
-        let owned = self.owned.lock().clone();
-        let mut selected = owned;
+        let mut selected: HashSet<String> = self
+            .owned
+            .lock()
+            .iter()
+            .filter(|(_, min_seq)| **min_seq <= value.snapshot_sequence)
+            .map(|(id, _)| id.clone())
+            .collect();
         if let Some(id) = terminal {
             selected.insert(id.to_string());
         }
@@ -14242,12 +14259,15 @@ impl SubAgentStoreAuthority {
             value.snapshot_sequence,
             std::sync::atomic::Ordering::Release,
         );
-        *self.owned.lock() = next
-            .record_writers
-            .iter()
-            .filter(|(_, writer)| *writer == &self.writer)
-            .map(|(id, _)| id.clone())
-            .collect();
+        {
+            let mut owned = self.owned.lock();
+            owned.retain(|_, min_seq| *min_seq > value.snapshot_sequence);
+            for (id, writer) in &next.record_writers {
+                if writer == &self.writer {
+                    owned.entry(id.clone()).or_insert(0);
+                }
+            }
+        }
         *image = next;
         Ok(())
     }

@@ -1703,6 +1703,14 @@ impl CoreCalls {
             }
             outcome = arm(call) => outcome,
         };
+        if cx.cancel.is_cancelled() {
+            rollback.rollback("cancelled");
+            return Err(cancelled("dsh/broker was cancelled by its host"));
+        }
+        if withdraw.is_cancelled() {
+            rollback.rollback("invocation_ended");
+            return Err(cancelled("dsh/broker invocation ended"));
+        }
         if shared
             .registry
             .lock()
