@@ -620,10 +620,16 @@ async fn event_capacity_cancelled_repl_child_keeps_unknown_cost_and_discards_ker
         cost.unpriced_turns, 2,
         "the cancelled child's unknown outcome and the root turn's unpriced mock-model usage"
     );
-    assert_eq!(cost.missing_usage_sources.len(), 1);
-    assert!(cost.missing_usage_sources.values().all(|coverage| {
-        coverage.reason == crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
-            && coverage.money_metered
+    assert_eq!(cost.accounted_usage_sources.len(), 1);
+    assert!(cost.accounted_usage_sources.values().all(|entry| {
+        entry.record.settlement.as_ref().is_some_and(|settlement| {
+            settlement.reason == crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+        }) && entry
+            .record
+            .usage
+            .route
+            .audit_frozen(&entry.record.usage.usage)
+            .counts_toward_money_coverage()
     }));
     assert_eq!(
         client.inner.call_count(),
@@ -1470,17 +1476,17 @@ async fn a_completed_turn_stays_completed_when_usage_cannot_be_retained() {
     handle.send(Op::Shutdown).await.expect("shutdown engine");
     task.await.expect("engine task");
 
-    let owner = "failing-retained-sink-owner";
-    crate::cost_status::register_runtime_usage_sink(
-        owner,
-        std::sync::Arc::new(|_| false),
-    );
     let mock2 = std::sync::Arc::new(MockLlmClient::new(vec![canned::simple_text_turn(
         "completed despite failing sink",
     )]));
     let client2: crate::core::model_client::SharedModelClient = mock2.clone();
     let mut engine_config2 = deterministic_engine_config(workspace.path());
-    engine_config2.compaction.runtime_cost_owner = Some(owner.to_string());
+    engine_config2.runtime_services.accounting_origin =
+        Some(crate::cost_status::NativeUsageOrigin::captured_runtime(
+            crate::cost_status::scope_token(),
+            "failing-retained-sink-owner".to_string(),
+            std::sync::Arc::new(|_| false),
+        ));
     let (engine2, handle2) = Engine::new_with_model_client(engine_config2, &config, client2);
     let task2 = tokio::spawn(engine2.run());
     handle2

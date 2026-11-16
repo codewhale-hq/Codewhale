@@ -6818,9 +6818,9 @@ fn runtime_usage_sink_survives_parent_terminal_and_restart_exactly_once() -> Res
     );
     manager.store.save_turn(&turn)?;
     manager.register_runtime_usage_sink(&turn.id);
-    let lease = crate::cost_status::acquire_runtime_usage_lease(&turn.id)
-        .expect("active runtime owner lease");
-    crate::cost_status::finish_runtime_usage_owner(&turn.id);
+    let origin = manager
+        .accounting_origin_for_turn(&turn.id)
+        .expect("registered runtime origin");
 
     let route = crate::cost_status::EffectiveRouteEnvelope::capture(
         None,
@@ -6830,56 +6830,46 @@ fn runtime_usage_sink_survives_parent_terminal_and_restart_exactly_once() -> Res
         Some(ProviderKind::Deepseek.provider().default_base_url()),
         Utc::now(),
     );
-    crate::cost_status::report_effective_route_for_runtime(
-        crate::cost_status::scope_token(),
-        Some(&turn.id),
+    let record = crate::cost_status::RuntimeUsageRecord::legacy(
         "compaction:response:test",
-        &route,
-        &Usage {
-            input_tokens: 17,
-            output_tokens: 3,
-            ..Usage::default()
+        crate::cost_status::EffectiveRouteUsage {
+            route: route.sanitized_for_persistence(),
+            usage: Usage {
+                input_tokens: 17,
+                output_tokens: 3,
+                ..Usage::default()
+            },
         },
     );
-    crate::cost_status::report_effective_route_for_runtime(
+    crate::cost_status::record_runtime_usage(
         crate::cost_status::scope_token(),
-        Some(&turn.id),
-        "compaction:response:test",
-        &route,
-        &Usage {
-            input_tokens: 17,
-            output_tokens: 3,
-            ..Usage::default()
-        },
+        Some(&origin),
+        &record,
     );
-    drop(lease);
+    crate::cost_status::record_runtime_usage(
+        crate::cost_status::scope_token(),
+        Some(&origin),
+        &record,
+    );
+    drop(origin);
     drop(manager);
 
     let reopened = test_manager(data_dir.clone())?;
     reopened.register_runtime_usage_sink(&turn.id);
-    crate::cost_status::report_effective_route_for_runtime(
+    let reopened_origin = reopened
+        .accounting_origin_for_turn(&turn.id)
+        .expect("reopened runtime origin");
+    crate::cost_status::record_runtime_usage(
         crate::cost_status::scope_token(),
-        Some(&turn.id),
-        "compaction:response:test",
-        &route,
-        &Usage {
-            input_tokens: 17,
-            output_tokens: 3,
-            ..Usage::default()
-        },
+        Some(&reopened_origin),
+        &record,
     );
-    crate::cost_status::finish_runtime_usage_owner(&turn.id);
+    drop(reopened_origin);
     drop(reopened);
     let reopened = test_manager(data_dir)?;
     let persisted = reopened.store.load_turn(&turn.id)?;
     assert_eq!(persisted.routed_usage.len(), 1);
     assert_eq!(persisted.routed_usage[0].usage.input_tokens, 17);
-    assert!(
-        crate::cost_status::take_runtime_usage(&turn.id)
-            .records
-            .is_empty(),
-        "successful synchronous persistence must not duplicate into fallback"
-    );
     assert!(
         crate::cost_status::drain().is_empty(),
         "runtime-owned usage must not duplicate into the TUI pool"
@@ -6973,13 +6963,14 @@ async fn raw_metadata_missing_usage_deduplicates_direct_drop_and_legacy_totals()
         append_initial_routed_usage_to_turn(&mut turn, &batch);
         manager.store.save_turn(&turn)?;
         manager.register_runtime_usage_sink(&turn.id);
-        crate::cost_status::report_unreceipted_provider_success(
+        let origin = manager.accounting_origin_for_turn(&turn.id);
+        crate::cost_status::report_missing_runtime_usage(
             crate::cost_status::scope_token(),
-            Some(&turn.id),
+            origin.as_ref(),
             &format!("routed:{}", routed_usage_source_fingerprint(source_id)),
             &route,
+            crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
         );
-        crate::cost_status::finish_runtime_usage_owner(&turn.id);
         let persisted = manager.store.load_turn(&turn.id)?;
         assert!(persisted.routed_usage.is_empty());
         assert_eq!(persisted.routed_usage_drop_records.len(), 1);
@@ -9257,13 +9248,11 @@ async fn routing_settlement_preserves_latest_accepted_turn_after_restart_and_for
     let settlement_id = settle_unaccepted_routed_usage(&manager.store, &thread.id, &batch)?;
     assert!(manager.store.load_turn(&settlement_id)?.routing_settlement);
     manager.register_runtime_usage_sink(&accepted.id);
+    let origin = manager.accounting_origin_for_turn(&accepted.id);
     let native_source = crate::cost_status::NativeUsageSource::capture_with_origin(
         "native-fork-receipt",
         crate::cost_status::UsageSpendOwner::Primary,
-        Some(crate::cost_status::NativeUsageOrigin::runtime(
-            crate::cost_status::scope_token(),
-            &accepted.id,
-        )?),
+        origin.clone(),
     );
     let native_route = crate::cost_status::EffectiveRouteEnvelope::capture(
         None,
@@ -9282,15 +9271,15 @@ async fn routing_settlement_preserves_latest_accepted_turn_after_restart_and_for
         },
         crate::llm_client::ProviderUsageCoverage::Reported,
         crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
-    )?;
-    crate::cost_status::report_runtime_usage_record(
+    );
+    crate::cost_status::record_runtime_usage(
         crate::cost_status::scope_token(),
-        Some(&accepted.id),
+        origin.as_ref(),
         &native_record,
-    )?;
-    crate::cost_status::finish_runtime_usage_owner(&accepted.id);
+    );
     drop(native_record);
     drop(native_source);
+    drop(origin);
     drop(manager);
 
     let reopened = test_manager(runtime_dir)?;
@@ -9478,7 +9467,8 @@ async fn terminal_settlement_preserves_late_sink_receipts_during_pending_request
         harness.rx_op.recv().await,
         Some(Op::SendMessage(TurnSpec { .. }))
     ));
-    let lease = crate::cost_status::acquire_runtime_usage_lease(&turn.id)
+    let origin = manager
+        .accounting_origin_for_turn(&turn.id)
         .context("admitted turn installs a persistent sink")?;
     manager.register_pending_user_input(
         &thread.id,
@@ -9543,22 +9533,28 @@ async fn terminal_settlement_preserves_late_sink_receipts_during_pending_request
         Some(ProviderKind::Deepseek.provider().default_base_url()),
         Utc::now(),
     );
-    crate::cost_status::report_effective_route_for_runtime(
-        crate::cost_status::scope_token(),
-        Some(&turn.id),
+    let late_record = crate::cost_status::RuntimeUsageRecord::legacy(
         "late-success-during-cleanup",
-        &route,
-        &Usage {
-            input_tokens: 27,
-            output_tokens: 4,
-            ..Usage::default()
+        crate::cost_status::EffectiveRouteUsage {
+            route: route.sanitized_for_persistence(),
+            usage: Usage {
+                input_tokens: 27,
+                output_tokens: 4,
+                ..Usage::default()
+            },
         },
     );
-    crate::cost_status::report_unreceipted_provider_success(
+    crate::cost_status::record_runtime_usage(
         crate::cost_status::scope_token(),
-        Some(&turn.id),
+        Some(&origin),
+        &late_record,
+    );
+    crate::cost_status::report_missing_runtime_usage(
+        crate::cost_status::scope_token(),
+        Some(&origin),
         "late-missing-during-cleanup",
         &route,
+        crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
     );
     let persisted_during_cleanup = manager.store.load_turn(&turn.id)?;
     assert_eq!(persisted_during_cleanup.routed_usage.len(), 1);
@@ -9591,7 +9587,7 @@ async fn terminal_settlement_preserves_late_sink_receipts_during_pending_request
     assert_eq!(totals.input_tokens, 35);
     assert_eq!(totals.output_tokens, 9);
     assert_eq!(totals.dropped_usage_records, 1);
-    drop(lease);
+    drop(origin);
     Ok(())
 }
 
@@ -9619,19 +9615,17 @@ async fn monitor_deduplicates_sink_and_metadata_and_persists_metadata_only_missi
     ));
     let mut batch =
         classifier_settlement_batch("child-route", "child/model", "sink-and-metadata", 1);
+    let origin = manager.accounting_origin_for_turn(&turn.id);
     let source = crate::cost_status::NativeUsageSource::capture_with_origin(
         batch.records[0].source_id.clone(),
         crate::cost_status::UsageSpendOwner::Auxiliary,
-        Some(crate::cost_status::NativeUsageOrigin::runtime(
-            crate::cost_status::scope_token(),
-            &turn.id,
-        )?),
+        origin.clone(),
     );
     batch.records[0] =
-        source.reported(&batch.records[0].usage.route, &batch.records[0].usage.usage)?;
-    crate::cost_status::report_runtime_usage_batch(
+        source.reported(&batch.records[0].usage.route, &batch.records[0].usage.usage);
+    crate::cost_status::record_runtime_usage_batch(
         crate::cost_status::scope_token(),
-        Some(&turn.id),
+        origin.as_ref(),
         &batch,
     );
     batch
@@ -26017,21 +26011,22 @@ async fn decision_receipt_lease_persists_terminal_turn_and_replays_exactly_once(
     );
     manager.store.save_turn(&turn)?;
     manager.register_runtime_usage_sink(&turn.id);
-    let lease = crate::cost_status::acquire_runtime_usage_lease(&turn.id).expect("origin lease");
-    crate::cost_status::finish_runtime_usage_owner(&turn.id);
+    let origin = manager
+        .accounting_origin_for_turn(&turn.id)
+        .expect("origin");
     let receipt = crate::cost_status::decision_receipt_fixture("raw-runtime-decision-id");
     let batch = crate::cost_status::RuntimeUsageBatch {
         decisions: vec![receipt.clone()],
         ..Default::default()
     };
     for _ in 0..2 {
-        crate::cost_status::report_runtime_usage_batch(
+        crate::cost_status::record_runtime_usage_batch(
             crate::cost_status::scope_token(),
-            Some(&turn.id),
+            Some(&origin),
             &batch,
         );
     }
-    drop(lease);
+    drop(origin);
     drop(manager);
     let restarted = test_manager(directory)?;
     let reloaded = restarted.store.load_turn(&turn.id)?;
@@ -27436,7 +27431,7 @@ async fn a_runtime_thread_turn_finishes_when_an_inherited_usage_receipt_is_missi
             output_tokens: 2,
             ..Usage::default()
         },
-    )?;
+    );
     let key_b = routed_usage_source_fingerprint(&record_b.source_id);
     inherited_from_present
         .routed_usage_source_ids
@@ -27465,7 +27460,7 @@ async fn a_runtime_thread_turn_finishes_when_an_inherited_usage_receipt_is_missi
             output_tokens: 3,
             ..Usage::default()
         },
-    )?;
+    );
     let key = routed_usage_source_fingerprint(&record.source_id);
     inherited_turn.routed_usage_source_ids.push(key.clone());
     inherited_turn

@@ -57,8 +57,6 @@ pub struct CapturedRlmCaller {
     deadline: Option<tokio::time::Instant>,
     origin_scope: crate::cost_status::CostScopeToken,
     child_accounting: Option<crate::tools::subagent::engine::ChildAccountingProjection>,
-    runtime_owner: Option<String>,
-    _runtime_lease: Option<crate::cost_status::RuntimeUsageLease>,
 }
 impl std::fmt::Debug for CapturedRlmCaller {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -125,10 +123,6 @@ impl CapturedRlmCaller {
             .child_host
             .as_ref()
             .map(|child| child.authority.accounting_projection());
-        let runtime_owner = engine.config.compaction.runtime_cost_owner.clone();
-        let runtime_lease = runtime_owner
-            .as_deref()
-            .and_then(crate::cost_status::acquire_runtime_usage_lease);
         let deadline = context
             .turn_deadline
             .into_iter()
@@ -165,8 +159,6 @@ impl CapturedRlmCaller {
                 deadline,
                 origin_scope: crate::cost_status::scope_token(),
                 child_accounting,
-                runtime_owner,
-                _runtime_lease: runtime_lease,
             };
         result.validate_context(context)?;
         Ok(result)
@@ -455,7 +447,7 @@ impl Engine {
             );
             config.hook_executor = None;
         }
-        config.compaction.runtime_cost_owner = caller.runtime_owner.clone();
+        config.runtime_services.accounting_origin = caller.context.accounting_origin.clone();
         let system_prompt = if isolated {
             crate::rlm::prompt::isolated_plugin_rlm_prompt(invocation.task_instructions.as_deref())?
         } else {
@@ -761,36 +753,6 @@ pub(super) struct RlmDispatchedRequest {
     refused: bool,
 }
 impl RlmDispatchedRequest {
-    pub(crate) fn settlement_acknowledged(&self) -> bool {
-        self.refused || self.projected
-    }
-    pub(crate) async fn bind_dispatch(
-        &mut self,
-        observation: &crate::llm_client::RequestRetryObservation,
-    ) -> std::io::Result<()> {
-        if let Err(error) = self
-            .accounting_source
-            .bind_dispatch(&self.route, observation)
-        {
-            tracing::warn!(%error, "RLM usage bind failed; continuing with unknown cost");
-            return Ok(());
-        }
-        match self.accounting_source.admit_dispatch(&self.route).await {
-            Ok(Some(record)) => {
-                self.usage.complete_record(self.reservation, &record).await;
-                if let Some(child) = &self.caller.child_accounting
-                    && let Err(error) = child.project_settled(&record).await
-                {
-                    tracing::warn!(%error, "RLM child usage projection failed; continuing with unknown cost");
-                }
-            }
-            Ok(None) => {}
-            Err(error) => {
-                tracing::warn!(%error, "RLM usage dispatch admission failed; continuing with unknown cost");
-            }
-        }
-        Ok(())
-    }
     pub(super) async fn settle_open_error(&mut self, error: &anyhow::Error) {
         let wire = self.accounting_source.observed_wire();
         let coverage = if wire.last_transmission.is_some() {
@@ -809,27 +771,21 @@ impl RlmDispatchedRequest {
                 _ => crate::llm_client::ProviderUsageCoverage::Missing,
             }
         };
-        let record = match self.accounting_source.prepare_observed(
+        let record = self.accounting_source.prepare_record(
             &self.route,
             &Usage::default(),
             coverage,
             crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
             &wire,
-        ) {
-            Ok(record) => record,
-            Err(error) => {
-                tracing::warn!(%error, "RLM refusal receipt was not admitted");
-                return;
-            }
-        };
-        let published = self.caller.publish_response_async(&record).await;
+        );
+        self.caller.publish_response_async(&record).await;
         self.usage.complete_record(self.reservation, &record).await;
         let projected = if let Some(child) = &self.caller.child_accounting {
             child.project_settled(&record).await
         } else {
             Ok(())
         };
-        self.projected = published.is_ok() && projected.is_ok();
+        self.projected = projected.is_ok();
         self.settled = Some(record);
         self.refused = self.projected
             && matches!(
@@ -844,27 +800,21 @@ impl RlmDispatchedRequest {
             self.settle(&Usage::default(), false).await;
             return;
         }
-        let record = match self.accounting_source.prepare_observed(
+        let record = self.accounting_source.prepare_record(
             &self.route,
             &Usage::default(),
             crate::llm_client::ProviderUsageCoverage::NotDispatched,
             crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
             &wire,
-        ) {
-            Ok(record) => record,
-            Err(error) => {
-                tracing::warn!(%error, "uninvoked RLM reservation remains unsettled");
-                return;
-            }
-        };
-        let published = self.caller.publish_response_async(&record).await;
+        );
+        self.caller.publish_response_async(&record).await;
         self.usage.complete_record(self.reservation, &record).await;
         let projected = if let Some(child) = &self.caller.child_accounting {
             child.project_settled(&record).await
         } else {
             Ok(())
         };
-        self.projected = published.is_ok() && projected.is_ok();
+        self.projected = projected.is_ok();
         self.refused = self.projected;
         self.settled = Some(record);
     }
@@ -884,22 +834,14 @@ impl RlmDispatchedRequest {
         } else {
             crate::llm_client::ProviderUsageCoverage::Missing
         };
-        let record = match self.accounting_source.prepare_observed(
+        let record = self.accounting_source.prepare_record(
             &self.route,
             usage,
             coverage,
             reason,
             &self.accounting_source.observed_wire(),
-        ) {
-            Ok(record) => record,
-            Err(error) => {
-                tracing::error!(%error, "RLM usage predecessor remains unsettled");
-                return;
-            }
-        };
-        if let Err(error) = self.caller.publish_response_async(&record).await {
-            tracing::warn!(%error, "RLM usage has no durable acknowledgement");
-        }
+        );
+        self.caller.publish_response_async(&record).await;
         self.settled = Some(record.clone());
         self.usage.complete_record(self.reservation, &record).await;
         let projected = if let Some(child) = &self.caller.child_accounting {
@@ -907,7 +849,31 @@ impl RlmDispatchedRequest {
         } else {
             Ok(())
         };
-        self.projected = record.is_acknowledged() && projected.is_ok();
+        self.projected = projected.is_ok();
+    }
+}
+
+impl Drop for RlmDispatchedRequest {
+    fn drop(&mut self) {
+        if self.settled.is_some() || self.refused {
+            return;
+        }
+        let wire = self.accounting_source.observed_wire();
+        let coverage = if wire.last_transmission.is_some() {
+            wire.usage_coverage(false, false)
+        } else {
+            crate::llm_client::ProviderUsageCoverage::Missing
+        };
+        let record = self.accounting_source.prepare_record(
+            &self.route,
+            &Usage::default(),
+            coverage,
+            crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            &wire,
+        );
+        self.caller.publish_response(&record);
+        self.usage.complete_record_sync(self.reservation, &record);
+        self.settled = Some(record);
     }
 }
 
@@ -915,41 +881,30 @@ impl CapturedRlmCaller {
     async fn publish_response_async(
         self: &Arc<Self>,
         record: &crate::cost_status::RuntimeUsageRecord,
-    ) -> std::io::Result<Option<u64>> {
+    ) {
         let caller = Arc::clone(self);
         let record = record.clone();
         #[cfg(any(test, feature = "test-support"))]
         let origin = crate::cost_status::test_cost_scope_id();
-        codewhale_runtime::runtime_control::owner_work(move || {
+        let _ = codewhale_runtime::runtime_control::owner_work(move || {
             #[cfg(any(test, feature = "test-support"))]
             let _origin = crate::cost_status::bind_test_cost_scope(origin);
-            caller
-                .publish_response(&record)
-                .map_err(anyhow::Error::from)
+            caller.publish_response(&record);
+            Ok(())
         })
-        .await
-        .map_err(std::io::Error::other)
+        .await;
     }
 
-    fn publish_response(
-        &self,
-        record: &crate::cost_status::RuntimeUsageRecord,
-    ) -> std::io::Result<Option<u64>> {
+    fn publish_response(&self, record: &crate::cost_status::RuntimeUsageRecord) {
         if let Some(child) = &self.child_accounting {
-            return child.publish(record);
+            let _ = child.publish(record);
+            return;
         }
-        crate::cost_status::report_runtime_usage_record(
+        crate::cost_status::record_runtime_usage(
             self.origin_scope,
-            self.runtime_owner.as_deref(),
+            self.context.accounting_origin.as_ref(),
             record,
-        )?;
-        Ok(usage_has_reported_data(&record.usage.usage)
-            .then(|| {
-                crate::tools::subagent::priced_usd_microusd(
-                    &record.usage.route.audit_frozen(&record.usage.usage),
-                )
-            })
-            .flatten())
+        );
     }
 }
 

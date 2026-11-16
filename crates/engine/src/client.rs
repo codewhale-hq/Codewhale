@@ -3872,16 +3872,7 @@ impl CodewhaleClient {
         source: &crate::cost_status::NativeUsageSource,
     ) -> Result<TranslationProviderResponse> {
         let route = self.effective_route_envelope(model, chrono::Utc::now());
-        let observation = match source.observe_route(&route) {
-            Ok(observation) => observation,
-            Err(error) => {
-                tracing::warn!(%error, "translation route observation failed; continuing with unknown cost");
-                source.observation()
-            }
-        };
-        if let Err(error) = source.admit_dispatch(&route).await {
-            tracing::warn!(%error, "translation dispatch admission failed; continuing with unknown cost");
-        }
+        let observation = source.observation();
         let wire = observation.wire_observations.clone();
         let response = crate::llm_client::observe_request_retries(
             Some(observation),
@@ -3916,7 +3907,7 @@ impl CodewhaleClient {
                 },
             }
         };
-        let record = match source.prepare_observed(
+        let record = source.prepare_record(
             &route,
             &usage,
             coverage,
@@ -3926,31 +3917,11 @@ impl CodewhaleClient {
                 crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
             },
             &wire,
-        ) {
-            Ok(record) => {
-                if record.has_captured_origin()
-                    && let Err(error) = crate::cost_status::settle_runtime_usage_record(
-                        crate::cost_status::scope_token(),
-                        None,
-                        &record,
-                    )
-                    .await
-                {
-                    tracing::warn!(%error, "translation usage settlement failed; continuing with unknown cost");
-                    crate::cost_status::unknown_cost_record(
-                        &record.source_id,
-                        &route,
-                        usage.clone(),
-                    )
-                } else {
-                    record
-                }
-            }
-            Err(error) => {
-                tracing::warn!(%error, "translation usage preparation failed; continuing with unknown cost");
-                crate::cost_status::unknown_cost_record(source.source_id(), &route, usage)
-            }
-        };
+        );
+        if let Some(origin) = source.origin() {
+            crate::cost_status::record_runtime_usage_async(origin.scope(), Some(origin), &record)
+                .await;
+        }
         response.map(|mut response| {
             response.accounting = Some(record);
             response

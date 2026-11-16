@@ -1516,16 +1516,7 @@ async fn auto_route_inventory_recommendation(
             crate::cost_status::UsageSpendOwner::Auxiliary,
         )
     });
-    let observation = match accounting_source.observe_route(&request_route) {
-        Ok(observation) => observation,
-        Err(error) => {
-            tracing::warn!(%error, "classifier route observation failed; continuing with unknown cost");
-            accounting_source.observation()
-        }
-    };
-    if let Err(error) = accounting_source.admit_dispatch(&request_route).await {
-        tracing::warn!(%error, "classifier dispatch admission failed; continuing with unknown cost");
-    }
+    let observation = accounting_source.observation();
     let response = if allow_response_cache {
         tokio::time::timeout(
             Duration::from_secs(inventory.router_timeout_secs),
@@ -1580,41 +1571,10 @@ async fn auto_route_inventory_recommendation(
     } else {
         crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
     };
-    let record = match accounting_source.prepare_observed(
-        &request_route,
-        &usage,
-        coverage,
-        reason,
-        &wire,
-    ) {
-        Ok(record) => {
-            if record.has_captured_origin()
-                && let Err(error) = crate::cost_status::settle_runtime_usage_record(
-                    crate::cost_status::scope_token(),
-                    None,
-                    &record,
-                )
-                .await
-            {
-                tracing::warn!(%error, "classifier usage settlement failed; continuing with unknown cost");
-                crate::cost_status::unknown_cost_record(
-                    &record.source_id,
-                    &request_route,
-                    usage.clone(),
-                )
-            } else {
-                record
-            }
-        }
-        Err(error) => {
-            tracing::warn!(%error, "classifier usage preparation failed; continuing with unknown cost");
-            crate::cost_status::unknown_cost_record(
-                accounting_source.source_id(),
-                &request_route,
-                usage,
-            )
-        }
-    };
+    let record = accounting_source.prepare_record(&request_route, &usage, coverage, reason, &wire);
+    if let Some(origin) = accounting_source.origin() {
+        crate::cost_status::record_runtime_usage_async(origin.scope(), Some(origin), &record).await;
+    }
     match response {
         Some(response) => Ok(auto_route_attempt_from_provider_response(
             request_route,
@@ -1763,16 +1723,7 @@ async fn auto_route_decision_recommendation(
     // own Custom/Unknown identity; no chat price or zero-cost claim is inherited.
     let request_route =
         client.effective_route_envelope(&inventory.router_model, chrono::Utc::now());
-    let observation = match accounting_source.observe_route(&request_route) {
-        Ok(observation) => observation,
-        Err(error) => {
-            tracing::warn!(%error, "decision classifier route observation failed; continuing with unknown cost");
-            accounting_source.observation()
-        }
-    };
-    if let Err(error) = accounting_source.admit_dispatch(&request_route).await {
-        tracing::warn!(%error, "decision classifier dispatch admission failed; continuing with unknown cost");
-    }
+    let observation = accounting_source.observation();
     let started = Instant::now();
     let outcome = tokio::time::timeout(
         Duration::from_secs(inventory.router_timeout_secs),
@@ -1824,41 +1775,10 @@ async fn auto_route_decision_recommendation(
     } else {
         crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
     };
-    let record = match accounting_source.prepare_observed(
-        &request_route,
-        &usage,
-        coverage,
-        reason,
-        &wire,
-    ) {
-        Ok(record) => {
-            if record.has_captured_origin()
-                && let Err(error) = crate::cost_status::settle_runtime_usage_record(
-                    crate::cost_status::scope_token(),
-                    None,
-                    &record,
-                )
-                .await
-            {
-                tracing::warn!(%error, "decision classifier usage settlement failed; continuing with unknown cost");
-                crate::cost_status::unknown_cost_record(
-                    &record.source_id,
-                    &request_route,
-                    usage.clone(),
-                )
-            } else {
-                record
-            }
-        }
-        Err(error) => {
-            tracing::warn!(%error, "decision classifier usage preparation failed; continuing with unknown cost");
-            crate::cost_status::unknown_cost_record(
-                accounting_source.source_id(),
-                &request_route,
-                usage,
-            )
-        }
-    };
+    let record = accounting_source.prepare_record(&request_route, &usage, coverage, reason, &wire);
+    if let Some(origin) = accounting_source.origin() {
+        crate::cost_status::record_runtime_usage_async(origin.scope(), Some(origin), &record).await;
+    }
     Ok(match response {
         Some(response) => decision_attempt_from_response(
             config.auto_cost_saving(),
@@ -1961,24 +1881,16 @@ pub fn decision_usage_batch(
     } else {
         wire.usage_coverage(auto_route_usage_has_reported_data(&usage), complete)
     };
-    match source.prepare_observed(
+    let record = source.prepare_record(
         request_route,
         &usage,
         coverage,
         crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
         wire,
-    ) {
-        Ok(record) => crate::cost_status::RuntimeUsageBatch {
-            records: vec![record],
-            ..Default::default()
-        },
-        Err(error) => {
-            tracing::error!(%error, "decision source predecessor remains unresolved");
-            crate::cost_status::RuntimeUsageBatch {
-                dropped_records: 1,
-                ..Default::default()
-            }
-        }
+    );
+    crate::cost_status::RuntimeUsageBatch {
+        records: vec![record],
+        ..Default::default()
     }
 }
 
@@ -2398,9 +2310,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            let record = native
-                .reported(&route, &response.usage)
-                .expect("native fixture response");
+            let record = native.reported(&route, &response.usage);
             auto_route_attempt_from_response(route, &response, &inventory, record)
         };
 
@@ -2434,9 +2344,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            let record = native
-                .reported(&route, &response.usage)
-                .expect("native fixture response");
+            let record = native.reported(&route, &response.usage);
             auto_route_attempt_from_response(route, &response, &inventory, record)
         };
         let incomplete = {
@@ -2459,9 +2367,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            let record = native
-                .reported(&route, &response.usage)
-                .expect("native fixture response");
+            let record = native.reported(&route, &response.usage);
             auto_route_attempt_from_response(route, &response, &inventory, record)
         };
         let missing_usage_route =
@@ -2481,9 +2387,7 @@ mod tests {
                 "stop",
                 codewhale_models::Usage::default(),
             );
-            let record = native
-                .reported(&route, &response.usage)
-                .expect("native fixture response");
+            let record = native.reported(&route, &response.usage);
             auto_route_attempt_from_provider_response(route, &response, &inventory, record)
         };
         assert_eq!(missing_usage.routed_usage.len(), 1);
@@ -2519,14 +2423,12 @@ mod tests {
             );
             let route = client
                 .effective_route_envelope(model, second_at + chrono::Duration::nanoseconds(3));
-            let record = native
-                .prepare(
-                    &route,
-                    &codewhale_models::Usage::default(),
-                    crate::llm_client::ProviderUsageCoverage::Missing,
-                    crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
-                )
-                .unwrap();
+            let record = native.prepare(
+                &route,
+                &codewhale_models::Usage::default(),
+                crate::llm_client::ProviderUsageCoverage::Missing,
+                crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            );
             auto_route_attempt_with_dropped_response(record, AutoRouterFailure::Transport)
         };
         assert_eq!(transport.routed_usage_dropped_records, 0);
@@ -4423,7 +4325,7 @@ mod decision_router_tests {
                     "router-no-origin".to_string(),
                     crate::cost_status::UsageSpendOwner::Auxiliary,
                 );
-                assert!(!s.has_captured_origin());
+                assert!(s.origin().is_none());
                 s
             });
             let selection = auto_route_via_router(

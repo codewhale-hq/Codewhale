@@ -675,12 +675,10 @@ impl Engine {
         // Fired only on the first model request of the turn, where the raw
         // user message decides intent. See `crate::superfast`.
         if turn.step == 0 {
-            // Detached on purpose: dropping the handle does not cancel it.
             drop(crate::superfast::spawn_shadow_gate(
                 &self.api_config,
                 &stream_request.messages,
-                self.config.compaction.runtime_cost_owner.as_deref(),
-                self.config.runtime_services.accounting_origin.clone(),
+                self.turn_accounting_origin(),
                 &self.cancel_token,
             ));
         }

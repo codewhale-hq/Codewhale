@@ -187,14 +187,12 @@
                     .unwrap(),
             ),
         );
-        let record = source
-            .prepare(
-                &partial.route,
-                partial.usage.as_ref().unwrap(),
-                crate::llm_client::ProviderUsageCoverage::Incomplete,
-                crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
-            )
-            .unwrap();
+        let record = source.prepare(
+            &partial.route,
+            partial.usage.as_ref().unwrap(),
+            crate::llm_client::ProviderUsageCoverage::Incomplete,
+            crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
+        );
         manager
             .with_session_write_admission("decision-partial-origin", || {
                 manager.persist_runtime_usage_record_admitted(
@@ -1464,9 +1462,6 @@
                 .to_string()]
             .into(),
             usage_source_fingerprints: ["response-fingerprint".to_string()].into(),
-            missing_usage_sources: Default::default(),
-            missing_usage_overflowed: false,
-            in_flight_usage_sources: Default::default(),
             coverage_recorded: true,
         };
         let json = serde_json::to_string(&full).expect("serialize");
@@ -1497,6 +1492,92 @@
         for needle in ["http", "api_key", "authorization", "bearer", "sk-"] {
             assert!(!lower.contains(needle), "{needle} leaked into {json}");
         }
+    }
+
+    #[test]
+    fn saved_session_with_legacy_cost_coverage_fields_loads_and_preserves_cost() {
+        let dir = tempdir().expect("tempdir");
+        let manager = SessionManager::new(dir.path().to_path_buf()).expect("manager");
+        let saved = create_saved_session_with_id_and_mode(
+            "legacy-cost-fields".to_string(),
+            &[],
+            "deepseek-v4-flash",
+            dir.path(),
+            42,
+            None,
+            Some("agent"),
+        );
+        manager.save_session(&saved).expect("save baseline");
+        let path = dir.path().join("legacy-cost-fields.json");
+        let mut raw: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("read baseline")).expect("parse");
+        let route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
+            ProviderKind::Deepseek,
+            "deepseek",
+            "deepseek-v4-flash",
+            Some("https://api.deepseek.com/v1"),
+            Utc::now(),
+        );
+        let source = crate::cost_status::NativeUsageSource::capture(
+            "legacy-turn-source",
+            crate::cost_status::UsageSpendOwner::Primary,
+        );
+        let record = source.reported(
+            &route,
+            &codewhale_models::Usage {
+                input_tokens: 20,
+                output_tokens: 22,
+                ..Default::default()
+            },
+        );
+        let fingerprint = crate::cost_status::usage_source_fingerprint("legacy-turn-source");
+        let contribution = crate::cost_status::UsageSourceContribution::for_record(&record);
+        raw["metadata"]["cost"] = serde_json::json!({
+            "session_cost_usd": 1.25,
+            "session_cost_cny": 0.5,
+            "subagent_cost_usd": 0.25,
+            "subagent_cost_cny": 0.0,
+            "displayed_cost_high_water_usd": 1.50,
+            "displayed_cost_high_water_cny": 0.5,
+            "priced_turns": 2,
+            "unpriced_turns": 1,
+            "cny_priced_turns": 1,
+            "cny_unpriced_turns": 0,
+            "unpriced_reasons": [],
+            "cny_unpriced_reasons": [],
+            "unpriced_classes": [],
+            "pricing_provenances": ["models_dev_bundled"],
+            "live_pricing_defects": [],
+            "live_pricing_unusable_defects": [],
+            "route_receipts": ["provider=deepseek identity=- model=deepseek-v4-flash surface=first-party-payg endpoint_fp=abc currency=usd"],
+            "usage_source_fingerprints": [fingerprint],
+            "accounted_usage_sources": { (fingerprint): contribution },
+            "missing_usage_sources": {
+                "legacy-missing-fp": {
+                    "reason": "request_outcome_unknown",
+                    "money_metered": true,
+                    "route_sha256": "deadbeef"
+                }
+            },
+            "missing_usage_overflowed": false,
+            "in_flight_usage_sources": ["legacy-in-flight-fp"],
+            "coverage_recorded": true
+        });
+        fs::write(&path, serde_json::to_vec_pretty(&raw).expect("encode"))
+            .expect("write legacy fixture");
+
+        let loaded = manager
+            .load_session_snapshot("legacy-cost-fields")
+            .expect("load session with legacy cost fields");
+        assert!((loaded.metadata.cost.session_cost_usd - 1.25).abs() < 1e-12);
+        assert!((loaded.metadata.cost.subagent_cost_usd - 0.25).abs() < 1e-12);
+        assert!((loaded.metadata.cost.total_usd() - 1.50).abs() < 1e-12);
+        assert!((loaded.metadata.cost.total_cny() - 0.5).abs() < 1e-12);
+        assert_eq!(loaded.metadata.cost.priced_turns, 2);
+        assert_eq!(loaded.metadata.cost.unpriced_turns, 1);
+        assert!(loaded.metadata.cost.coverage_recorded);
+        assert_eq!(loaded.metadata.cost.usage_source_fingerprints.len(), 1);
+        assert_eq!(loaded.metadata.cost.accounted_usage_sources.len(), 1);
     }
 
     /// The USD and CNY totals a snapshot reports are projections of one
@@ -1655,7 +1736,7 @@
         }
         let missing = manager.load_session_snapshot("overflow-origin").unwrap();
         assert_eq!(missing.metadata.cost.unpriced_turns, 65);
-        assert_eq!(missing.metadata.cost.missing_usage_sources.len(), 64);
+        assert_eq!(missing.metadata.cost.accounted_usage_sources.len(), 64);
         manager.save_session(&missing).unwrap();
         drop(manager);
         let manager = SessionManager::new(sessions).unwrap();
@@ -1703,7 +1784,14 @@
         assert_eq!(known.metadata.total_tokens, 130);
         assert_eq!(known.metadata.cost.priced_turns, 65);
         assert_eq!(known.metadata.cost.unpriced_turns, 1);
-        assert!(known.metadata.cost.missing_usage_sources.is_empty());
+        assert!(
+            known
+                .metadata
+                .cost
+                .accounted_usage_sources
+                .values()
+                .all(|entry| entry.unpriced == 0)
+        );
         assert!(
             known
                 .metadata

@@ -380,46 +380,7 @@ impl Engine {
         let started_at = Instant::now();
         let observation = self.request_retry_observation();
         let transport_retries = observation.retries.clone();
-        let mut pending = Some(super::turn_loop::PendingProviderRequestReceipt {
-            request_id: observation.request_id.clone(),
-            accounting_source: crate::cost_status::NativeUsageSource::capture(
-                observation.request_id.clone(),
-                crate::cost_status::UsageSpendOwner::Primary,
-            ),
-            accounting_scope: crate::cost_status::scope_token(),
-            accounting_owner: self.config.compaction.runtime_cost_owner.clone(),
-            route: client.effective_route_envelope(&self.session.model, chrono::Utc::now()),
-            primary: true,
-            accounting_owned_elsewhere: true,
-            invoked: true,
-            turn_id: turn.id.clone(),
-            request_index: turn.stop_diagnostics.model_requests_started,
-            prefix_check: serde_json::json!({
-                "review_request_fingerprint": fingerprint(request)?, "model": self.session.model,
-                "max_tokens": cap, "reasoning_effort": core.reasoning_effort,
-                "system_prompt_sha256": codewhale_runtime::hashing::sha256_hex(crate::tools::review_core::review_system_prompt()),
-                "user_message_sha256": codewhale_runtime::hashing::sha256_hex(user_message(request)),
-            }),
-            reused_preparation: false,
-            wire: observation.wire_observations.clone(),
-            transport_retries: transport_retries.clone(),
-            started_at,
-        });
-        core.accounting_owner = crate::cost_status::UsageSpendOwner::Primary;
-        core.accounting_origin = if let Some(owner) =
-            self.config.compaction.runtime_cost_owner.as_deref()
-        {
-            match crate::cost_status::NativeUsageOrigin::runtime(
-                crate::cost_status::scope_token(),
-                owner,
-            ) {
-                Ok(origin) => Some(origin),
-                Err(error) => {
-                    tracing::warn!(%error, "review accounting origin unavailable; continuing with unknown cost");
-                    self.config.runtime_services.accounting_origin.clone()
-                }
-            }
-        } else if let Some(origin) = self.config.runtime_services.accounting_origin.clone() {
+        let origin = if let Some(origin) = self.turn_accounting_origin() {
             Some(origin)
         } else {
             let scope = crate::cost_status::scope_token();
@@ -441,6 +402,37 @@ impl Engine {
                 }
             }
         };
+        let mut pending = Some(super::turn_loop::PendingProviderRequestReceipt {
+            request_id: observation.request_id.clone(),
+            accounting_source: crate::cost_status::NativeUsageSource::capture_with_origin(
+                observation.request_id.clone(),
+                crate::cost_status::UsageSpendOwner::Primary,
+                origin.clone(),
+            ),
+            accounting_scope: origin.as_ref().map_or_else(
+                crate::cost_status::scope_token,
+                crate::cost_status::NativeUsageOrigin::scope,
+            ),
+            accounting_origin: origin.clone(),
+            route: client.effective_route_envelope(&self.session.model, chrono::Utc::now()),
+            primary: true,
+            accounting_owned_elsewhere: true,
+            invoked: true,
+            turn_id: turn.id.clone(),
+            request_index: turn.stop_diagnostics.model_requests_started,
+            prefix_check: serde_json::json!({
+                "review_request_fingerprint": fingerprint(request)?, "model": self.session.model,
+                "max_tokens": cap, "reasoning_effort": core.reasoning_effort,
+                "system_prompt_sha256": codewhale_runtime::hashing::sha256_hex(crate::tools::review_core::review_system_prompt()),
+                "user_message_sha256": codewhale_runtime::hashing::sha256_hex(user_message(request)),
+            }),
+            reused_preparation: false,
+            wire: observation.wire_observations.clone(),
+            transport_retries: transport_retries.clone(),
+            started_at,
+        });
+        core.accounting_owner = crate::cost_status::UsageSpendOwner::Primary;
+        core.accounting_origin = origin;
         let result = tokio::select! {
             biased;
             result = crate::llm_client::observe_request_retries(Some(observation),
@@ -451,7 +443,7 @@ impl Engine {
             .stop_diagnostics
             .transport_retries
             .saturating_add(transport_retries.load(std::sync::atomic::Ordering::Relaxed));
-        let accounting = match self
+        let accounting = self
             .settle_provider_request_receipt(
                 &mut pending,
                 result.as_ref().ok().map(|value| &value.usage),
@@ -464,13 +456,8 @@ impl Engine {
                 },
             )
             .await
-        {
-            Ok(accounting) => accounting,
-            Err(error) => {
-                tracing::warn!(%error, "review provider usage settlement failed; continuing with unknown cost");
-                None
-            }
-        };
+            .ok()
+            .flatten();
         let mut result = result?;
         let accounting = result.source_records.last().cloned().or(accounting);
         turn.add_parent_usage(&result.usage);

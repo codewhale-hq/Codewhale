@@ -1338,6 +1338,7 @@ pub async fn run_tui(
     }
     app.runtime_services = RuntimeToolServices {
         accounting_origin: None,
+        owner_accounting_origin: None,
         runtime_mcp_servers: app.runtime_services.runtime_mcp_servers.clone(),
 
         shell_manager: Some(shell_manager),
@@ -4929,7 +4930,7 @@ pub(crate) async fn run_event_loop(
                                             source,
                                         ),
                                     );
-                                    codewhale_engine::cost_status::acknowledge_retired_usage_source(
+                                    codewhale_engine::cost_status::mark_retired_usage_source(
                                         codewhale_engine::cost_status::scope_token(),
                                         source,
                                     );
@@ -4949,13 +4950,7 @@ pub(crate) async fn run_event_loop(
                                 }
                             }
                             if let Some(error) = receipt["accounting_error"].as_str() {
-                                app.session
-                                    .cost_unpriced_reasons
-                                    .insert("usage_settlement_unacknowledged".into());
-                                app.session
-                                    .cost_cny_unpriced_reasons
-                                    .insert("usage_settlement_unacknowledged".into());
-                                app.session.missing_usage_overflowed = true;
+                                app.mark_usage_uncertain("usage_settlement_unacknowledged");
                                 app.status_message = Some(format!(
                                     "Provider usage settlement is uncertain: {error}"
                                 ));
@@ -8808,8 +8803,7 @@ mod session_boot_event_tests {
         let assistant = TranslationAccountingContext::capture(&app, "assistant", 1);
         let record_a = assistant
             .source
-            .reported(&translation_test_route(), &usage_a)
-            .unwrap();
+            .reported(&translation_test_route(), &usage_a);
         manager
             .persist_runtime_usage_record("session-translation", &record_a)
             .unwrap();
@@ -8823,8 +8817,7 @@ mod session_boot_event_tests {
         let thinking = TranslationAccountingContext::capture(&app, "thinking", 2);
         let record_b = thinking
             .source
-            .reported(&translation_test_route(), &usage_b)
-            .unwrap();
+            .reported(&translation_test_route(), &usage_b);
         manager
             .persist_runtime_usage_record("session-translation", &record_b)
             .unwrap();
@@ -8873,13 +8866,10 @@ mod session_boot_event_tests {
                 .unwrap(),
         );
         let context = TranslationAccountingContext::capture(&app, "assistant", 7);
-        let record = context
-            .source
-            .reported(
-                &translation_test_route(),
-                &codewhale_models::Usage::default(),
-            )
-            .unwrap();
+        let record = context.source.reported(
+            &translation_test_route(),
+            &codewhale_models::Usage::default(),
+        );
         manager
             .persist_runtime_usage_record("session-translation-missing-usage", &record)
             .unwrap();
@@ -9009,7 +8999,7 @@ mod session_boot_event_tests {
         let mut app = test_app();
         app.session_write_receipt = None;
         let accounting = TranslationAccountingContext::capture(&app, "assistant", 1);
-        assert!(!accounting.source.has_captured_origin());
+        assert!(accounting.source.origin().is_none());
 
         let response = client
             .translate_with_usage("Hello", "deepseek-chat", "Spanish", &accounting.source)

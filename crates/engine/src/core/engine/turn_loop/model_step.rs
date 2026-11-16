@@ -108,45 +108,22 @@ impl Engine {
         let transport_retries = retry_observation.retries.clone();
         let request_route =
             client.effective_route_envelope(&stream_request.model, chrono::Utc::now());
-        let accounting_origin = match self
-            .config
-            .compaction
-            .runtime_cost_owner
-            .as_deref()
-            .map(|owner| {
-                crate::cost_status::NativeUsageOrigin::runtime(
-                    crate::cost_status::scope_token(),
-                    owner,
-                )
-            })
-            .transpose()
-        {
-            Ok(origin) => origin.or_else(|| self.config.runtime_services.accounting_origin.clone()),
-            Err(error) => {
-                tracing::warn!(%error, "provider accounting admission failed; continuing with unknown cost");
-                self.config.runtime_services.accounting_origin.clone()
-            }
-        };
+        let accounting_origin = self.turn_accounting_origin();
         let accounting_source = crate::cost_status::NativeUsageSource::capture_with_origin(
             retry_observation.request_id.clone(),
             crate::cost_status::UsageSpendOwner::Primary,
-            accounting_origin.filter(|_| self.child_host.is_none() && self.rlm_host.is_none()),
+            accounting_origin
+                .clone()
+                .filter(|_| self.child_host.is_none() && self.rlm_host.is_none()),
         );
-        if let Err(error) = accounting_source.bind_dispatch(&request_route, &retry_observation) {
-            tracing::warn!(%error, "provider usage bind failed; continuing with unknown cost");
-        }
-        if self.child_host.is_none()
-            && self.rlm_host.is_none()
-            && let Err(error) = accounting_source.admit_dispatch(&request_route).await
-        {
-            tracing::warn!(%error, "provider source admission failed; continuing with unknown cost");
-        }
-        let dispatch_observation = retry_observation.clone();
         let mut request_receipt = Some(PendingProviderRequestReceipt {
             request_id: retry_observation.request_id.clone(),
             accounting_source,
-            accounting_scope: crate::cost_status::scope_token(),
-            accounting_owner: self.config.compaction.runtime_cost_owner.clone(),
+            accounting_scope: accounting_origin.as_ref().map_or_else(
+                crate::cost_status::scope_token,
+                crate::cost_status::NativeUsageOrigin::scope,
+            ),
+            accounting_origin,
             route: request_route,
             primary: self.child_host.is_none() && self.rlm_host.is_none(),
             accounting_owned_elsewhere: false,
@@ -177,14 +154,8 @@ impl Engine {
             Err(error) => Some(Err(error)),
             Ok(request) => {
                 rlm_dispatch = request;
-                if let Some(dispatch) = rlm_dispatch.as_mut()
-                    && let Err(error) = dispatch.bind_dispatch(&dispatch_observation).await
-                {
-                    tracing::warn!(%error, "RLM usage bind failed; continuing with unknown cost");
-                }
-                let opening = crate::llm_client::observe_request_retries(
-                    Some(retry_observation),
-                    async {
+                let opening =
+                    crate::llm_client::observe_request_retries(Some(retry_observation), async {
                         request_started = true;
                         if let Some(receipt) = request_receipt.as_mut() {
                             receipt.invoked = true;
@@ -214,12 +185,6 @@ impl Engine {
                                 source,
                                 route,
                             ));
-                            if let Some(dispatch) = child_dispatch.as_mut()
-                                && let Err(error) =
-                                    dispatch.bind_dispatch(&dispatch_observation).await
-                            {
-                                tracing::warn!(%error, "child usage bind failed; continuing with unknown cost");
-                            }
                         }
                         if let Some(job) = child_job.as_ref() {
                             tokio::time::timeout(
@@ -235,8 +200,7 @@ impl Engine {
                         } else {
                             client.create_message_stream(stream_request.clone()).await
                         }
-                    },
-                );
+                    });
                 tokio::pin!(opening);
                 tokio::select! {
                     biased;
@@ -558,15 +522,6 @@ impl Engine {
                 )
                 .await;
         }
-        // C02-05: a response whose stream failed or was steered — a provider error
-        // frame, a transport error, a stall, or a cap — is not a complete
-        // response. Nothing it collected may execute or continue the turn.
-        if rlm_dispatch
-            .as_ref()
-            .is_some_and(|dispatch| !dispatch.settlement_acknowledged())
-        {
-            tracing::warn!("RLM usage settlement was not acknowledged; using complete response");
-        }
         let response_stream_failed = steer_preempted || stream_error.is_some();
         progress.turn_error = progress.turn_error.take().or(stream_error.clone());
         turn.stop_diagnostics
@@ -628,12 +583,6 @@ impl Engine {
                     !response_stream_failed && !self.cancel_token.is_cancelled(),
                 )
                 .await;
-        }
-        if child_dispatch
-            .as_ref()
-            .is_some_and(|dispatch| !dispatch.settlement_acknowledged())
-        {
-            tracing::warn!("child usage settlement was not acknowledged; the turn continues");
         }
         drop(child_dispatch.take());
         if let Some(job) = child_job.as_ref() {

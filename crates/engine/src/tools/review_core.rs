@@ -757,54 +757,16 @@ pub(crate) async fn accounted_model_call(
         owner,
         origin,
     );
-    let observation = match source.observe_route(&route) {
-        Ok(observation) => observation,
-        Err(error) => {
-            tracing::warn!(%error, "review accounting observation failed; continuing with unknown cost");
-            source.observation()
-        }
-    };
-    if let Err(error) = source.admit_dispatch(&route).await {
-        tracing::warn!(%error, "review source admission failed; continuing with unknown cost");
-    }
+    let observation = source.observation();
     let wire = observation.wire_observations.clone();
     let response =
         crate::llm_client::observe_request_retries(Some(observation), client.create_message(body))
             .await;
     let wire = wire.drain();
-    let record = match source.response_record(&route, &response, &wire) {
-        Ok(record) => {
-            if record.has_captured_origin()
-                && let Err(error) = crate::cost_status::settle_runtime_usage_record(
-                    crate::cost_status::scope_token(),
-                    None,
-                    &record,
-                )
-                .await
-            {
-                tracing::warn!(%error, "review usage remains unacknowledged; continuing with unknown cost");
-            }
-            record
-        }
-        Err(error) => {
-            tracing::warn!(%error, "review usage settlement failed; continuing with unknown cost");
-            let usage = response
-                .as_ref()
-                .map(|response| response.usage.clone())
-                .unwrap_or_default();
-            if require_usd_price {
-                crate::cost_status::RuntimeUsageRecord::legacy(
-                    source.source_id(),
-                    crate::cost_status::EffectiveRouteUsage {
-                        route: route.clone(),
-                        usage,
-                    },
-                )
-            } else {
-                crate::cost_status::unknown_cost_record(source.source_id(), &route, usage)
-            }
-        }
-    };
+    let record = source.response_record(&route, &response, &wire);
+    if let Some(origin) = source.origin() {
+        crate::cost_status::record_runtime_usage_async(origin.scope(), Some(origin), &record).await;
+    }
     Ok((response?, record))
 }
 

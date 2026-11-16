@@ -313,7 +313,7 @@ async fn test_preset(app: &mut App, config: &Config, preset: RouterPreset) {
                 Ok((selection, latency_ms)) => {
                     // The test call is real spend: settle it into session
                     // cost exactly as a turn's routing call is settled.
-                    codewhale_engine::cost_status::report_runtime_usage_batch(
+                    codewhale_engine::cost_status::record_runtime_usage_batch(
                         cost_scope,
                         None,
                         &codewhale_engine::cost_status::RuntimeUsageBatch {

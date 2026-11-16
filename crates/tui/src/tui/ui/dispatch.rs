@@ -948,7 +948,7 @@ pub(super) struct UnacceptedDispatchUsage {
 impl Drop for UnacceptedDispatchUsage {
     fn drop(&mut self) {
         if let Some(batch) = self.batch.as_ref() {
-            codewhale_engine::cost_status::report_runtime_usage_batch(self.scope, None, batch);
+            codewhale_engine::cost_status::record_runtime_usage_batch(self.scope, None, batch);
         }
     }
 }

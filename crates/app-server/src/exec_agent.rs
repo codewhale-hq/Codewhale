@@ -3578,54 +3578,47 @@ fn persist_exec_session(
         let Some(source) = receipt["source_id"].as_str() else {
             continue;
         };
-        if receipt["usage_reported"].as_bool() == Some(true) {
-            saved.metadata.cost.usage_source_fingerprints.insert(
-                codewhale_engine::cost_status::usage_source_fingerprint(source),
-            );
-        }
         let coverage = receipt.get("coverage").cloned().and_then(|value| {
             serde_json::from_value::<codewhale_engine::llm_client::ProviderUsageCoverage>(value)
                 .ok()
         });
-        if matches!(
+        let missing_coverage = matches!(
             coverage,
             Some(
                 codewhale_engine::llm_client::ProviderUsageCoverage::Missing
                     | codewhale_engine::llm_client::ProviderUsageCoverage::Incomplete
             )
-        ) && let Some(route) = receipt.get("route").cloned().and_then(|value| {
-            serde_json::from_value::<codewhale_engine::cost_status::EffectiveRouteEnvelope>(value)
+        );
+        if missing_coverage
+            && let Some(route) = receipt.get("route").cloned().and_then(|value| {
+                serde_json::from_value::<codewhale_engine::cost_status::EffectiveRouteEnvelope>(
+                    value,
+                )
                 .ok()
-        }) {
+            })
+        {
             let reason =
                 if receipt["outcome"] == "completed" || receipt["outcome"] == "review_response" {
                     codewhale_engine::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
                 } else {
                     codewhale_engine::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
                 };
-            let pool = codewhale_engine::cost_status::background_cost_for_runtime_drop(
-                &codewhale_engine::cost_status::RuntimeUsageDropRecord {
-                    source_id: source.to_string(),
-                    route,
-                    reason,
-                },
+            let drop_record = codewhale_engine::cost_status::RuntimeUsageDropRecord {
+                source_id: source.to_string(),
+                route,
+                reason,
+            };
+            if let Err(error) = saved
+                .metadata
+                .cost
+                .project_usage_record(&drop_record.as_usage_record())
+            {
+                tracing::warn!(%error, source_id = %source, "agent missing usage projection skipped");
+            }
+        } else if receipt["usage_reported"].as_bool() == Some(true) {
+            saved.metadata.cost.usage_source_fingerprints.insert(
+                codewhale_engine::cost_status::usage_source_fingerprint(source),
             );
-            let cost = &mut saved.metadata.cost;
-            let pool = codewhale_engine::cost_status::project_missing_usage_ledger(
-                &mut cost.missing_usage_sources,
-                &mut cost.missing_usage_overflowed,
-                &mut cost.unpriced_turns,
-                &mut cost.cny_unpriced_turns,
-                &pool,
-            );
-            cost.unpriced_turns = cost.unpriced_turns.saturating_add(pool.unpriced_turns);
-            cost.cny_unpriced_turns = cost
-                .cny_unpriced_turns
-                .saturating_add(pool.cny_unpriced_turns);
-            cost.unpriced_reasons
-                .extend(pool.unpriced_reasons.into_iter().map(str::to_string));
-            cost.cny_unpriced_reasons
-                .extend(pool.cny_unpriced_reasons.into_iter().map(str::to_string));
         }
     }
     saved.make_storage_compatible();

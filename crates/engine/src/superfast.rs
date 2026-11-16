@@ -74,24 +74,16 @@ use tokio_util::sync::CancellationToken;
 struct ShadowUsageContext {
     scope: crate::cost_status::CostScopeToken,
     source: crate::cost_status::NativeUsageSource,
-    runtime_owner: Option<String>,
-    // Retains the origin's existing durable ledger until settlement finishes.
-    _lease: Option<crate::cost_status::RuntimeUsageLease>,
     #[cfg(any(test, feature = "test-support"))]
     test_origin: std::thread::ThreadId,
 }
 
 impl ShadowUsageContext {
-    fn capture(
-        owner: Option<&str>,
-        fallback_origin: Option<crate::cost_status::NativeUsageOrigin>,
-    ) -> Self {
-        let owner = owner.map(str::trim).filter(|owner| !owner.is_empty());
-        let scope = crate::cost_status::scope_token();
-        let origin = match owner {
-            Some(owner) => crate::cost_status::NativeUsageOrigin::runtime(scope, owner).ok(),
-            None => fallback_origin,
-        };
+    fn capture(accounting_origin: Option<crate::cost_status::NativeUsageOrigin>) -> Self {
+        let scope = accounting_origin.as_ref().map_or_else(
+            crate::cost_status::scope_token,
+            crate::cost_status::NativeUsageOrigin::scope,
+        );
         Self {
             scope,
             source: crate::cost_status::NativeUsageSource::capture_with_origin(
@@ -100,10 +92,8 @@ impl ShadowUsageContext {
                     crate::cost_status::usage_source_fingerprint(&uuid::Uuid::new_v4().to_string())
                 ),
                 crate::cost_status::UsageSpendOwner::Auxiliary,
-                origin,
+                accounting_origin,
             ),
-            runtime_owner: owner.map(str::to_owned),
-            _lease: owner.and_then(crate::cost_status::acquire_runtime_usage_lease),
             #[cfg(any(test, feature = "test-support"))]
             test_origin: crate::cost_status::test_cost_scope_id(),
         }
@@ -111,18 +101,14 @@ impl ShadowUsageContext {
 
     async fn report(&self, batch: crate::cost_status::RuntimeUsageBatch) {
         let context = self.clone();
-        // Existing sinks may write the origin-session ledger. Keep their
-        // filesystem/SQLite work off Tokio workers as well.
         let settled = codewhale_runtime::runtime_control::owner_work(move || {
             #[cfg(any(test, feature = "test-support"))]
             let _origin = crate::cost_status::bind_test_cost_scope(context.test_origin);
-            crate::cost_status::report_runtime_usage_batch(
+            crate::cost_status::record_runtime_usage_batch(
                 context.scope,
-                context.runtime_owner.as_deref(),
+                context.source.origin(),
                 &batch,
             );
-            // Release the lease while its captured test binding is still live.
-            drop(context);
             Ok(())
         })
         .await;
@@ -277,8 +263,7 @@ fn last_user_text(messages: &[Message]) -> Option<String> {
 pub fn spawn_shadow_gate(
     config: &Config,
     messages: &[Message],
-    runtime_owner: Option<&str>,
-    fallback_origin: Option<crate::cost_status::NativeUsageOrigin>,
+    accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
     cancel_token: &CancellationToken,
 ) -> Option<tokio::task::JoinHandle<ShadowOutcome>> {
     let settings = match ShadowSettings::from_env()? {
@@ -291,8 +276,7 @@ pub fn spawn_shadow_gate(
     let latest_request = last_user_text(messages)?;
     let runtime = tokio::runtime::Handle::try_current().ok()?;
     let config = config.clone();
-    // Capture before detaching; the next session/turn must never acquire it.
-    let usage_context = ShadowUsageContext::capture(runtime_owner, fallback_origin);
+    let usage_context = ShadowUsageContext::capture(accounting_origin);
     let cancel_token = cancel_token.clone();
     Some(runtime.spawn(async move {
         let outcome = evaluate(
@@ -372,16 +356,7 @@ async fn evaluate(
     };
     let body = decision_body(&client, &settings.model, latest_request);
     let request_route = client.effective_route_envelope(&settings.model, chrono::Utc::now());
-    let observation = match usage_context.source.observe_route(&request_route) {
-        Ok(observation) => observation,
-        Err(error) => {
-            tracing::warn!(%error, "decision gate route observation failed; continuing with unknown cost");
-            usage_context.source.observation()
-        }
-    };
-    if let Err(error) = usage_context.source.admit_dispatch(&request_route).await {
-        tracing::warn!(%error, "provider source admission failed; continuing with unknown cost");
-    }
+    let observation = usage_context.source.observation();
     let started = Instant::now();
     let answer = tokio::select! {
         biased;
@@ -396,9 +371,15 @@ async fn evaluate(
         Err(failure) => {
             if !wire.transmissions.is_empty() {
                 usage_context
-                    .report(match usage_context.source.prepare_observed(&request_route, &codewhale_models::Usage::default(), wire.usage_coverage(false, false), crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown, &wire) {
-                        Ok(record) => crate::cost_status::RuntimeUsageBatch { records: vec![record], ..Default::default() },
-                        Err(error) => { tracing::error!(%error, "shadow usage predecessor remains unsettled"); crate::cost_status::RuntimeUsageBatch { dropped_records: 1, ..Default::default() } }
+                    .report(crate::cost_status::RuntimeUsageBatch {
+                        records: vec![usage_context.source.prepare_record(
+                            &request_route,
+                            &codewhale_models::Usage::default(),
+                            wire.usage_coverage(false, false),
+                            crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+                            &wire,
+                        )],
+                        ..Default::default()
                     })
                     .await;
             }
@@ -612,10 +593,6 @@ mod tests {
                 EnvVarGuard::remove(TIMEOUT_VAR),
             ]),
         }
-        crate::cost_status::register_runtime_usage_sink(
-            "shadow-loopback-fixture",
-            std::sync::Arc::new(|_| true),
-        );
         Env {
             _guards: guards,
             _home: home,
@@ -687,13 +664,7 @@ mod tests {
     }
 
     async fn run(messages: &[Message]) -> Option<ShadowOutcome> {
-        let handle = spawn_shadow_gate(
-            &config(),
-            messages,
-            Some("shadow-loopback-fixture"),
-            None,
-            &CancellationToken::new(),
-        )?;
+        let handle = spawn_shadow_gate(&config(), messages, None, &CancellationToken::new())?;
         Some(handle.await.expect("shadow task"))
     }
 
@@ -827,7 +798,6 @@ mod tests {
         let handle = spawn_shadow_gate(
             &config(),
             &turn("Run the tests"),
-            Some("shadow-loopback-fixture"),
             None,
             &CancellationToken::new(),
         )
@@ -993,16 +963,10 @@ mod tests {
         let _env = hermetic_env(Some((&server, 2_000)));
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let outcome = spawn_shadow_gate(
-            &config(),
-            &turn("hi"),
-            Some("shadow-loopback-fixture"),
-            None,
-            &cancel,
-        )
-        .expect("task")
-        .await
-        .expect("joined");
+        let outcome = spawn_shadow_gate(&config(), &turn("hi"), None, &cancel)
+            .expect("task")
+            .await
+            .expect("joined");
         assert!(matches!(
             outcome,
             ShadowOutcome::Failed {
@@ -1027,21 +991,20 @@ mod tests {
             .mount(&server)
             .await;
         let _env = hermetic_env(Some((&server, 3_000)));
-        let owner = "superfast-cancel-owner";
-        let dropped = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let sink = dropped.clone();
-        crate::cost_status::register_runtime_usage_sink_with_drop(
-            owner,
+        let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = recorded.clone();
+        let origin = crate::cost_status::NativeUsageOrigin::captured_runtime(
+            crate::cost_status::scope_token(),
+            "superfast-cancel-owner".to_string(),
             std::sync::Arc::new(move |record| {
-                sink.lock().expect("drop sink").push(record);
+                sink.lock().expect("usage sink").push(record);
                 true
             }),
-            None,
         );
 
         let cancel = CancellationToken::new();
         let handle =
-            spawn_shadow_gate(&config(), &turn("hi"), Some(owner), None, &cancel).expect("task");
+            spawn_shadow_gate(&config(), &turn("hi"), Some(origin), &cancel).expect("task");
         tokio::time::timeout(Duration::from_secs(1), async {
             while requests(&server).await.is_empty() {
                 tokio::task::yield_now().await;
@@ -1063,28 +1026,15 @@ mod tests {
             }
         ));
         assert!(start.elapsed() < Duration::from_millis(300));
-        let records = dropped.lock().expect("drop records");
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[0].usage.usage, codewhale_models::Usage::default());
-        assert!(
-            records[0]
-                .settlement
-                .as_ref()
-                .unwrap()
-                .physical_requests
-                .is_empty()
-        );
+        let records = recorded.lock().expect("usage records");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].usage.route.provider_identity, "typesafe");
         assert_eq!(
             records[0].settlement.as_ref().unwrap().coverage,
             crate::llm_client::ProviderUsageCoverage::Missing
         );
-        assert_eq!(records[1].usage.route.provider_identity, "typesafe");
         assert_eq!(
-            records[1].settlement.as_ref().unwrap().coverage,
-            crate::llm_client::ProviderUsageCoverage::Missing
-        );
-        assert_eq!(
-            records[1]
+            records[0]
                 .settlement
                 .as_ref()
                 .unwrap()
@@ -1092,14 +1042,10 @@ mod tests {
                 .len(),
             1
         );
-        let batch = crate::cost_status::take_runtime_usage(owner);
-        assert!(batch.records.is_empty());
-        assert!(batch.drop_records.is_empty());
-        crate::cost_status::finish_runtime_usage_owner(owner);
     }
 
     #[tokio::test]
-    async fn owner_lease_retains_late_usage_and_invalid_answer_cost() {
+    async fn captured_origin_retains_late_usage_and_invalid_answer_cost() {
         let server = MockServer::start().await;
         let mut body = noul_body(0.9, 0.1);
         body["answers"]["needs_tool"]["noul"] = 2.0.into();
@@ -1115,34 +1061,30 @@ mod tests {
             .mount(&server)
             .await;
         let _env = hermetic_env(Some((&server, 2_000)));
-        let owner = "superfast-late-owner";
         let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = observed.clone();
-        crate::cost_status::register_runtime_usage_sink(
-            owner,
+        let decisions = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let decision_sink = decisions.clone();
+        let origin = crate::cost_status::NativeUsageOrigin::captured_runtime_with_sinks(
+            crate::cost_status::scope_token(),
+            "superfast-late-owner".to_string(),
             std::sync::Arc::new(move |record| {
                 sink.lock().expect("sink").push(record);
                 true
             }),
-        );
-        let decisions = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let decision_sink = decisions.clone();
-        crate::cost_status::register_runtime_decision_sink(
-            owner,
-            std::sync::Arc::new(move |receipt| {
+            None,
+            Some(std::sync::Arc::new(move |receipt| {
                 decision_sink.lock().expect("decision sink").push(receipt);
                 true
-            }),
+            })),
         );
         let handle = spawn_shadow_gate(
             &config(),
             &turn("hi"),
-            Some(owner),
-            None,
+            Some(origin),
             &CancellationToken::new(),
         )
         .expect("task");
-        crate::cost_status::finish_runtime_usage_owner(owner);
         let outcome = handle.await.expect("joined");
         assert!(matches!(
             outcome,
@@ -1152,25 +1094,12 @@ mod tests {
             }
         ));
         let records = observed.lock().expect("records");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].usage.usage.input_tokens, 121);
+        assert_eq!(records[0].usage.usage.output_tokens, 8);
+        assert_eq!(records[0].usage.route.provider_identity, "typesafe");
         assert_eq!(
-            records.len(),
-            2,
-            "retired origin still owns its reservation and late response"
-        );
-        assert_eq!(records[0].usage.usage, codewhale_models::Usage::default());
-        assert!(
-            records[0]
-                .settlement
-                .as_ref()
-                .unwrap()
-                .physical_requests
-                .is_empty()
-        );
-        assert_eq!(records[1].usage.usage.input_tokens, 121);
-        assert_eq!(records[1].usage.usage.output_tokens, 8);
-        assert_eq!(records[1].usage.route.provider_identity, "typesafe");
-        assert_eq!(
-            records[1].usage.route.billing_mode,
+            records[0].usage.route.billing_mode,
             crate::cost_status::RouteBillingMode::Unknown
         );
         let receipts = decisions.lock().expect("decision receipts");
@@ -1181,16 +1110,10 @@ mod tests {
             receipts[0].evidence.provider_reported_cost_usd.as_deref(),
             Some("0.000012054")
         );
-        assert!(
-            crate::cost_status::take_runtime_usage(owner)
-                .records
-                .is_empty(),
-            "settled response must not enter fallback journal"
-        );
     }
 
     #[tokio::test]
-    async fn oversized_decision_body_fails_closed_with_dispatched_coverage_gap() {
+    async fn oversized_decision_body_records_dispatched_coverage_gap() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/systemone"))
@@ -1199,22 +1122,20 @@ mod tests {
             .mount(&server)
             .await;
         let _env = hermetic_env(Some((&server, 2_000)));
-        let owner = "superfast-oversized-owner";
-        let drops = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let sink = drops.clone();
-        crate::cost_status::register_runtime_usage_sink_with_drop(
-            owner,
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = observed.clone();
+        let origin = crate::cost_status::NativeUsageOrigin::captured_runtime(
+            crate::cost_status::scope_token(),
+            "superfast-oversized-owner".to_string(),
             std::sync::Arc::new(move |record| {
-                sink.lock().expect("drops").push(record);
+                sink.lock().expect("usage sink").push(record);
                 true
             }),
-            None,
         );
         let handle = spawn_shadow_gate(
             &config(),
             &turn("hi"),
-            Some(owner),
-            None,
+            Some(origin),
             &CancellationToken::new(),
         )
         .expect("task");
@@ -1225,19 +1146,10 @@ mod tests {
                 ..
             }
         ));
-        let receipts = drops.lock().expect("drop receipts");
-        assert_eq!(receipts.len(), 2);
-        assert_eq!(receipts[0].usage.usage, codewhale_models::Usage::default());
-        assert!(
-            receipts[0]
-                .settlement
-                .as_ref()
-                .unwrap()
-                .physical_requests
-                .is_empty()
-        );
+        let receipts = observed.lock().expect("usage receipts");
+        assert_eq!(receipts.len(), 1);
         assert_eq!(
-            receipts[1]
+            receipts[0]
                 .settlement
                 .as_ref()
                 .unwrap()
@@ -1245,14 +1157,11 @@ mod tests {
                 .len(),
             1
         );
-        drop(receipts);
-        crate::cost_status::finish_runtime_usage_owner(owner);
     }
     #[tokio::test]
     async fn empty_origin_and_receipt_only_batch_use_the_existing_interactive_pool() {
         let _scope = crate::cost_status::test_scope();
-        let context = ShadowUsageContext::capture(Some("  "), None);
-        assert!(context.runtime_owner.is_none());
+        let context = ShadowUsageContext::capture(None);
         context
             .report(crate::cost_status::RuntimeUsageBatch {
                 decisions: vec![crate::cost_status::decision_receipt_fixture(
@@ -1271,11 +1180,6 @@ mod tests {
         assert_eq!(
             projected.unpriced_turns, 0,
             "diagnostic receipts do not mint a new charge"
-        );
-        assert!(
-            crate::cost_status::take_runtime_usage("  ")
-                .decisions
-                .is_empty()
         );
     }
 }

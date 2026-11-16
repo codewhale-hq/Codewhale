@@ -2032,14 +2032,6 @@ async fn create_summary(
         );
         let native_origin = if accounting_origin.is_some() {
             accounting_origin
-        } else if let Some(owner) = config.runtime_cost_owner.as_deref() {
-            match crate::cost_status::NativeUsageOrigin::runtime(cost_scope, owner) {
-                Ok(origin) => Some(origin),
-                Err(error) => {
-                    tracing::warn!(%error, "compaction runtime accounting origin failed; continuing with unknown cost");
-                    None
-                }
-            }
         } else if let Some(session_id) = prepared.session_id.as_ref() {
             let session_id = session_id.clone();
             match codewhale_runtime::runtime_control::owner_work(move || {
@@ -2073,32 +2065,10 @@ async fn create_summary(
                     sink.notice(format!("Making room: {message}"));
                     Box::pin(async {})
                 });
-                if let Err(error) = source.bind_dispatch(&cost_route, &observation) {
-                    tracing::warn!(%error, "compaction route bind failed; continuing with unknown cost");
-                }
                 observation
             }
-            None => match source.observe_route(&cost_route) {
-                Ok(observation) => observation,
-                Err(error) => {
-                    tracing::warn!(%error, "compaction route observation failed; continuing with unknown cost");
-                    source.observation()
-                }
-            },
+            None => source.observation(),
         };
-        match source.admit_dispatch(&cost_route).await {
-            Ok(Some(record)) => {
-                if let Some(sink) = notice_sink
-                    && let Err(error) = sink.settled_usage(&record).await
-                {
-                    tracing::warn!(%error, "compaction usage notice failed; continuing with unknown cost");
-                }
-            }
-            Ok(None) => {}
-            Err(error) => {
-                tracing::warn!(%error, "compaction dispatch admission failed; continuing with unknown cost");
-            }
-        }
         let wire = observation.wire_observations.clone();
         let response = crate::llm_client::observe_request_retries(
             Some(observation),
@@ -2106,41 +2076,11 @@ async fn create_summary(
         )
         .await;
         let wire = wire.drain();
-        let record = match source.response_record(&cost_route, &response, &wire) {
-            Ok(record) => {
-                if record.has_captured_origin()
-                    && let Err(error) = crate::cost_status::settle_runtime_usage_record(
-                        cost_scope,
-                        config.runtime_cost_owner.as_deref(),
-                        &record,
-                    )
-                    .await
-                {
-                    tracing::warn!(%error, "compaction usage settlement failed; continuing with unknown cost");
-                    crate::cost_status::unknown_cost_record(
-                        &record.source_id,
-                        &cost_route,
-                        response
-                            .as_ref()
-                            .map(|response| response.usage.clone())
-                            .unwrap_or_default(),
-                    )
-                } else {
-                    record
-                }
-            }
-            Err(error) => {
-                tracing::warn!(%error, "compaction usage preparation failed; continuing with unknown cost");
-                crate::cost_status::unknown_cost_record(
-                    source.source_id(),
-                    &cost_route,
-                    response
-                        .as_ref()
-                        .map(|response| response.usage.clone())
-                        .unwrap_or_default(),
-                )
-            }
-        };
+        let record = source.response_record(&cost_route, &response, &wire);
+        if let Some(origin) = source.origin() {
+            crate::cost_status::record_runtime_usage_async(origin.scope(), Some(origin), &record)
+                .await;
+        }
         if let Some(sink) = notice_sink
             && let Err(error) = sink.settled_usage(&record).await
         {

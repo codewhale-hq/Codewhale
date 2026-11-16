@@ -764,23 +764,17 @@ pub async fn run_purge(
         title: None,
     };
 
-    let cost_scope = crate::cost_status::scope_token();
+    let cost_scope = accounting_origin.as_ref().map_or_else(
+        crate::cost_status::scope_token,
+        crate::cost_status::NativeUsageOrigin::scope,
+    );
     let cost_route = client.effective_route_envelope(model, chrono::Utc::now());
     let source = crate::cost_status::NativeUsageSource::capture_with_origin(
         format!("purge:{}", uuid::Uuid::new_v4()),
         crate::cost_status::UsageSpendOwner::Auxiliary,
         accounting_origin,
     );
-    let observation = match source.observe_route(&cost_route) {
-        Ok(observation) => observation,
-        Err(error) => {
-            tracing::warn!(%error, "purge route observation failed; continuing with unknown cost");
-            source.observation()
-        }
-    };
-    if let Err(error) = source.admit_dispatch(&cost_route).await {
-        tracing::warn!(%error, "purge dispatch admission failed; continuing with unknown cost");
-    }
+    let observation = source.observation();
     let wire = observation.wire_observations.clone();
     let response = crate::llm_client::observe_request_retries(
         Some(observation),
@@ -788,18 +782,8 @@ pub async fn run_purge(
     )
     .await;
     let wire = wire.drain();
-    match source.response_record(&cost_route, &response, &wire) {
-        Ok(record) => {
-            if let Err(error) =
-                crate::cost_status::settle_runtime_usage_record(cost_scope, None, &record).await
-            {
-                tracing::warn!(%error, "purge usage settlement failed; continuing with unknown cost");
-            }
-        }
-        Err(error) => {
-            tracing::warn!(%error, "purge usage preparation failed; continuing with unknown cost");
-        }
-    }
+    let record = source.response_record(&cost_route, &response, &wire);
+    crate::cost_status::record_runtime_usage_async(cost_scope, source.origin(), &record).await;
     let response = response.map_err(|error| format!("Purge API error: {error}"))?;
 
     // A truncated response can still carry a complete-looking `purge_context`

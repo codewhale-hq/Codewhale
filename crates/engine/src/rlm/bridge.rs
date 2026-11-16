@@ -154,17 +154,11 @@ impl RlmUsageAccumulator {
         {
             return;
         }
-        match record.permits_replacement(slot.completed.then_some(&slot.record)) {
-            Ok(true) => {
-                slot.record = record.clone();
-                slot.completed = true;
-            }
-            Ok(false) => return,
-            Err(error) => {
-                tracing::warn!(%error, "RLM source projection refused its predecessor");
-                return;
-            }
+        if !record.supersedes(slot.completed.then_some(&slot.record)) {
+            return;
         }
+        slot.record = record.clone();
+        slot.completed = true;
         let mut usage = Usage::default();
         for slot in state.records.iter().flatten().filter(|slot| slot.completed) {
             crate::core::turn::add_usage_to(&mut usage, &slot.record.usage.usage);

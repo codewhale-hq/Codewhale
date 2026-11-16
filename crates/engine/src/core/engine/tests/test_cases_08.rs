@@ -2772,17 +2772,26 @@ async fn auto_review_applies_the_reviewers_verdict_when_its_usage_cannot_be_sett
             let config = Config::default();
             let mut engine_config = deterministic_engine_config(workspace.path());
             if failure_phase == "before_call" {
-                engine_config.compaction.runtime_cost_owner =
-                    Some(format!("missing-guardian-owner-{verdict}"));
+                let broken_path = workspace.path().join(format!("broken-before-{verdict}"));
+                std::fs::write(&broken_path, b"not a directory").unwrap();
+                engine_config.runtime_services.accounting_origin =
+                    Some(crate::cost_status::NativeUsageOrigin::session(
+                        crate::cost_status::scope_token(),
+                        broken_path,
+                        format!("guardian-before-{verdict}"),
+                    ));
             } else {
                 let sink_owner = format!("failing-after-guardian-{verdict}");
                 let sink_calls = std::sync::Arc::new(AtomicUsize::new(0));
                 let sink_calls_closure = std::sync::Arc::clone(&sink_calls);
-                crate::cost_status::register_runtime_usage_sink(
-                    &sink_owner,
-                    std::sync::Arc::new(move |_| sink_calls_closure.fetch_add(1, Ordering::SeqCst) == 0),
-                );
-                engine_config.compaction.runtime_cost_owner = Some(sink_owner);
+                engine_config.runtime_services.accounting_origin =
+                    Some(crate::cost_status::NativeUsageOrigin::captured_runtime(
+                        crate::cost_status::scope_token(),
+                        sink_owner,
+                        std::sync::Arc::new(move |_| {
+                            sink_calls_closure.fetch_add(1, Ordering::SeqCst) == 0
+                        }),
+                    ));
             }
             let (engine, handle) =
                 Engine::new_with_model_client(engine_config, &config, client);

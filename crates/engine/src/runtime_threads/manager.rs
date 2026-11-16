@@ -925,28 +925,26 @@ pub(super) fn append_usage_source_record(
             },
         ));
     }
-    match record.permits_replacement(turn.source_usage_records.get(&key)) {
-        Ok(true) => {}
-        Ok(false) => return Ok(false),
-        Err(error) => {
-            tracing::warn!(
-                turn_id = %turn.id,
-                source_id = %record.source_id,
-                %error,
-                "native usage replacement rejected; recording unknown cost"
-            );
-            let mut route = record.usage.route.clone();
-            route.billing_mode = RouteBillingMode::Unknown;
-            route.provider_live_pricing = None;
-            return Ok(append_routed_usage_drop_record(
-                turn,
-                RuntimeUsageDropRecord {
-                    source_id: format!("unverified-replacement:{key}"),
-                    route,
-                    reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
-                },
-            ));
-        }
+    if record.route_conflicts_with(turn.source_usage_records.get(&key)) {
+        tracing::warn!(
+            turn_id = %turn.id,
+            source_id = %record.source_id,
+            "native usage source changed captured route; recording unknown cost"
+        );
+        let mut route = record.usage.route.clone();
+        route.billing_mode = RouteBillingMode::Unknown;
+        route.provider_live_pricing = None;
+        return Ok(append_routed_usage_drop_record(
+            turn,
+            RuntimeUsageDropRecord {
+                source_id: format!("unverified-replacement:{key}"),
+                route,
+                reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            },
+        ));
+    }
+    if !record.supersedes(turn.source_usage_records.get(&key)) {
+        return Ok(false);
     }
     if !turn.routed_usage_source_ids.contains(&key) {
         turn.routed_usage_source_ids.push(key.clone());
@@ -1400,7 +1398,7 @@ impl Drop for InitialRoutedUsageSettlementGuard {
                     "Failed to persist a completed pre-turn provider call; \
                      falling back to in-process accounting"
                 );
-                crate::cost_status::report_runtime_usage_batch(self.cost_scope, None, &self.batch);
+                crate::cost_status::record_runtime_usage_batch(self.cost_scope, None, &self.batch);
             }
         }
     }
@@ -3563,6 +3561,8 @@ pub struct RuntimeThreadManager {
     automations:
         Arc<parking_lot::Mutex<Option<crate::automation_manager::SharedAutomationManager>>>,
     pub(super) pending_approvals: Arc<parking_lot::Mutex<HashMap<String, PendingApprovalEntry>>>,
+    pub(super) turn_accounting_origins:
+        Arc<parking_lot::Mutex<HashMap<String, crate::cost_status::NativeUsageOrigin>>>,
     /// Session approval grants per thread id.
     pub(super) grants: crate::core::authority::grants::GrantStore,
     pub(super) auto_review_blocks: Arc<
@@ -4577,6 +4577,7 @@ impl RuntimeThreadManager {
             task_execution_lease: Arc::new(parking_lot::Mutex::new(None)),
             automations: Arc::new(parking_lot::Mutex::new(None)),
             pending_approvals: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            turn_accounting_origins: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             grants,
             auto_review_blocks: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             pending_user_inputs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
@@ -7310,6 +7311,7 @@ impl RuntimeThreadManager {
                 task_execution_lease: task_execution_lease.clone(),
                 automations: automations.clone(),
                 pending_approvals: pending_approvals.clone(),
+                turn_accounting_origins: Arc::new(parking_lot::Mutex::new(HashMap::new())),
                 grants: grants.clone(),
                 auto_review_blocks: auto_review_blocks.clone(),
                 pending_user_inputs: pending_user_inputs.clone(),
@@ -8979,9 +8981,7 @@ impl RuntimeThreadManager {
                                 match original.source_usage_records.get(key) {
                                     Some(current)
                                         if current == inherited
-                                            || current
-                                                .follows_protected(inherited)
-                                                .unwrap_or(false) => {}
+                                            || current.follows_inherited(inherited) => {}
                                     Some(_) => {
                                         tracing::warn!(
                                             turn_id = %turn.id,
@@ -9329,7 +9329,7 @@ impl RuntimeThreadManager {
                 .unwrap_or(u32::MAX);
             }
             for record in records {
-                cost.project_usage_record_inner(record, true)?;
+                cost.project_usage_record(record)?;
             }
             cost.unpriced_reasons.extend(combined.unpriced_reasons);
             cost.cny_unpriced_reasons
@@ -13172,8 +13172,7 @@ impl RuntimeThreadManager {
             }
         }
         let now = Utc::now();
-        crate::cost_status::finish_runtime_usage_owner(turn_id);
-        let background_usage = crate::cost_status::take_runtime_usage(turn_id);
+        self.turn_accounting_origins.lock().remove(turn_id);
         let mut terminal_items = Vec::new();
         match self.store.list_items_for_turn(turn_id) {
             Ok(items) => {
@@ -13272,33 +13271,6 @@ impl RuntimeThreadManager {
             let _turn_mutation = self.store.turn_mutation.lock();
             match self.store.load_turn(turn_id) {
                 Ok(mut turn) => {
-                    let mut drained_native_usage = Vec::new();
-                    for receipt in &background_usage.decisions {
-                        append_decision_receipt(&mut turn, receipt);
-                    }
-                    for record in background_usage.records.iter().cloned() {
-                        match append_usage_source_record(&mut turn, &record) {
-                            Ok(_) => {
-                                if record.has_native_producer() {
-                                    drained_native_usage.push(record);
-                                }
-                            }
-                            Err(error) => {
-                                tracing::warn!(%error, "source receipt was retained without replacing turn accounting");
-                                turn.routed_usage_dropped_records =
-                                    turn.routed_usage_dropped_records.saturating_add(1);
-                            }
-                        }
-                    }
-                    for record in background_usage.drop_records.iter().cloned() {
-                        append_routed_usage_drop_record(&mut turn, record);
-                    }
-                    let background_residual = background_usage.dropped_records.saturating_sub(
-                        u64::try_from(background_usage.drop_records.len()).unwrap_or(u64::MAX),
-                    );
-                    turn.routed_usage_dropped_records = turn
-                        .routed_usage_dropped_records
-                        .saturating_add(background_residual);
                     if turn.status == RuntimeTurnStatus::InProgress {
                         turn.status = RuntimeTurnStatus::Failed;
                         if let Some(activity) = &mut turn.operation_activity {
@@ -13325,14 +13297,7 @@ impl RuntimeThreadManager {
                             | RuntimeTurnStatus::Canceled
                     ) {
                         match self.store.save_turn(&turn) {
-                            Ok(()) => {
-                                for record in &drained_native_usage {
-                                    if let Err(error) = record.acknowledge_persisted() {
-                                        tracing::warn!(%error, turn_id = %turn.id, "failed to acknowledge drained Runtime usage after terminal publication");
-                                    }
-                                }
-                                (Some(turn), None, None)
-                            }
+                            Ok(()) => (Some(turn), None, None),
                             Err(error) => (None, None, Some(error)),
                         }
                     } else {
@@ -14823,9 +14788,16 @@ impl RuntimeThreadManager {
             // engine, every early return must settle this completed
             // classifier call against its captured origin. The bounded clone
             // is intentionally kept out of the original/replayed turn.
-            let settlement = if initial_routed_usage.records.iter().all(|record| record.has_captured_origin() && record.is_acknowledged()) && initial_routed_usage.drop_records.is_empty() && initial_routed_usage.dropped_records == 0 {
-                None
-            } else { Some(InitialRoutedUsageSettlementGuard::new(self.store.clone(), thread_id, classifier_cost_scope, &initial_routed_usage)) };
+            let settlement = (!initial_routed_usage.drop_records.is_empty()
+                || initial_routed_usage.dropped_records > 0)
+                .then(|| {
+                    InitialRoutedUsageSettlementGuard::new(
+                        self.store.clone(),
+                        thread_id,
+                        classifier_cost_scope,
+                        &initial_routed_usage,
+                    )
+                });
             let route = resolve_runtime_thread_route(
                 &thread_config,
                 &selection.provider,
@@ -16103,6 +16075,10 @@ source_usage_records: Default::default(),
                             sink,
                         )
                     }),
+                    owner_accounting_origin: Some({
+                        let origins = Arc::clone(&self.turn_accounting_origins);
+                        Arc::new(move |owner| origins.lock().get(owner).cloned())
+                    }),
                     task_manager: self.task_manager.lock().upgrade(),
                     automations: self.automations.lock().clone(),
                     task_data_dir: Some(self.manager_cfg.task_data_dir.clone()),
@@ -17048,9 +17024,6 @@ source_usage_records: Default::default(),
                 if changed {
                     self.store.save_turn(&turn)?;
                 }
-                if record.has_native_producer() {
-                    record.acknowledge_persisted()?;
-                }
             }
             Err(error) => {
                 tracing::warn!(%error, "wire usage revision has no protected admission");
@@ -17102,6 +17075,14 @@ source_usage_records: Default::default(),
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(super) fn accounting_origin_for_turn(
+        &self,
+        turn_id: &str,
+    ) -> Option<crate::cost_status::NativeUsageOrigin> {
+        self.turn_accounting_origins.lock().get(turn_id).cloned()
+    }
+
     pub(super) fn register_runtime_usage_sink(&self, turn_id: &str) {
         let Ok(original_turn) = self.store.load_turn(turn_id) else {
             tracing::warn!("Runtime accounting owner has no admitted turn");
@@ -17121,52 +17102,49 @@ source_usage_records: Default::default(),
         let sink_turn_id = turn_id.to_string();
         let drop_store = self.store.clone();
         let drop_turn_id = turn_id.to_string();
-        crate::cost_status::register_runtime_usage_sink_with_drop(
-            turn_id,
-            Arc::new(move |record: RuntimeUsageRecord| {
-                if !owner_lock_is_at_path(&process_owner._file, &owner_path).unwrap_or(false) {
-                    return false;
+        let usage_sink = Arc::new(move |record: RuntimeUsageRecord| {
+            if !owner_lock_is_at_path(&process_owner._file, &owner_path).unwrap_or(false) {
+                return false;
+            }
+            let _thread_mutation = store.thread_mutation.lock();
+            if store.load_thread(&source_thread).is_err() {
+                return false;
+            }
+            let _turn_mutation = store.turn_mutation.lock();
+            let Ok(mut turn) = store.load_turn(&sink_turn_id) else {
+                return false;
+            };
+            if turn.thread_id != source_thread {
+                return false;
+            }
+            match append_usage_source_record(&mut turn, &record) {
+                Ok(_) => store.save_turn(&turn).is_ok(),
+                Err(error) => {
+                    tracing::warn!(%error, "durable Runtime usage correction refused");
+                    false
                 }
-                let _thread_mutation = store.thread_mutation.lock();
-                if store.load_thread(&source_thread).is_err() {
-                    return false;
-                }
-                let _turn_mutation = store.turn_mutation.lock();
-                let Ok(mut turn) = store.load_turn(&sink_turn_id) else {
-                    return false;
-                };
-                if turn.thread_id != source_thread {
-                    return false;
-                }
-                match append_usage_source_record(&mut turn, &record) {
-                    Ok(_) => store.save_turn(&turn).is_ok(),
-                    Err(error) => {
-                        tracing::warn!(%error, "durable Runtime usage correction refused");
-                        false
-                    }
-                }
-            }),
-            Some(Arc::new(move |record: RuntimeUsageDropRecord| {
-                if !owner_lock_is_at_path(&drop_owner._file, &drop_owner_path).unwrap_or(false) {
-                    return false;
-                }
-                let _thread_mutation = drop_store.thread_mutation.lock();
-                if drop_store.load_thread(&drop_thread).is_err() {
-                    return false;
-                }
-                let _turn_mutation = drop_store.turn_mutation.lock();
-                let Ok(mut turn) = drop_store.load_turn(&drop_turn_id) else {
-                    return false;
-                };
-                if turn.thread_id != drop_thread {
-                    return false;
-                }
-                if !append_routed_usage_drop_record(&mut turn, record) {
-                    return true;
-                }
-                drop_store.save_turn(&turn).is_ok()
-            })),
-        );
+            }
+        });
+        let drop_sink = Arc::new(move |record: RuntimeUsageDropRecord| {
+            if !owner_lock_is_at_path(&drop_owner._file, &drop_owner_path).unwrap_or(false) {
+                return false;
+            }
+            let _thread_mutation = drop_store.thread_mutation.lock();
+            if drop_store.load_thread(&drop_thread).is_err() {
+                return false;
+            }
+            let _turn_mutation = drop_store.turn_mutation.lock();
+            let Ok(mut turn) = drop_store.load_turn(&drop_turn_id) else {
+                return false;
+            };
+            if turn.thread_id != drop_thread {
+                return false;
+            }
+            if !append_routed_usage_drop_record(&mut turn, record) {
+                return true;
+            }
+            drop_store.save_turn(&turn).is_ok()
+        });
         let decision_store = self.store.clone();
         let decision_owner = self._process_owner_lock.clone();
         let decision_owner_path = self
@@ -17174,31 +17152,37 @@ source_usage_records: Default::default(),
             .data_dir
             .join(RUNTIME_PROCESS_OWNER_LOCK_FILE);
         let decision_turn_id = turn_id.to_string();
-        crate::cost_status::register_runtime_decision_sink(
-            turn_id,
-            Arc::new(move |receipt| {
-                if !owner_lock_is_at_path(&decision_owner._file, &decision_owner_path)
-                    .unwrap_or(false)
-                {
-                    return false;
-                }
-                let _thread_mutation = decision_store.thread_mutation.lock();
-                if decision_store.load_thread(&expected_thread).is_err() {
-                    return false;
-                }
-                let _turn_mutation = decision_store.turn_mutation.lock();
-                let Ok(mut turn) = decision_store.load_turn(&decision_turn_id) else {
-                    return false;
-                };
-                if turn.thread_id != expected_thread {
-                    return false;
-                }
-                if !append_decision_receipt(&mut turn, &receipt) {
-                    return true;
-                }
-                decision_store.save_turn(&turn).is_ok()
-            }),
+        let decision_sink = Arc::new(move |receipt| {
+            if !owner_lock_is_at_path(&decision_owner._file, &decision_owner_path).unwrap_or(false)
+            {
+                return false;
+            }
+            let _thread_mutation = decision_store.thread_mutation.lock();
+            if decision_store.load_thread(&expected_thread).is_err() {
+                return false;
+            }
+            let _turn_mutation = decision_store.turn_mutation.lock();
+            let Ok(mut turn) = decision_store.load_turn(&decision_turn_id) else {
+                return false;
+            };
+            if turn.thread_id != expected_thread {
+                return false;
+            }
+            if !append_decision_receipt(&mut turn, &receipt) {
+                return true;
+            }
+            decision_store.save_turn(&turn).is_ok()
+        });
+        let origin = crate::cost_status::NativeUsageOrigin::captured_runtime_with_sinks(
+            crate::cost_status::scope_token(),
+            turn_id.to_string(),
+            usage_sink,
+            Some(drop_sink),
+            Some(decision_sink),
         );
+        self.turn_accounting_origins
+            .lock()
+            .insert(turn_id.to_string(), origin);
     }
 
     /// Persist an engine status line as a completed `status` item.
@@ -19480,8 +19464,7 @@ source_usage_records: Default::default(),
         }
 
         let ended_at = Utc::now();
-        crate::cost_status::finish_runtime_usage_owner(&turn_id);
-        let background_usage = crate::cost_status::take_runtime_usage(&turn_id);
+        self.turn_accounting_origins.lock().remove(&turn_id);
 
         // A terminal turn can no longer answer an outstanding prompt. Commit
         // each cancellation while the request remains snapshot-authoritative,
@@ -19544,34 +19527,8 @@ source_usage_records: Default::default(),
             }
             turn.usage = turn_usage;
             turn.effective_route_usage = turn_effective_route_usage;
-            for receipt in &background_usage.decisions {
-                append_decision_receipt(&mut turn, receipt);
-            }
-            let mut drained_native_usage = Vec::new();
-            for record in background_usage.records {
-                match append_usage_source_record(&mut turn, &record) {
-                    Ok(_) => {
-                        if record.has_native_producer() {
-                            drained_native_usage.push(record);
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "source receipt was retained without replacing turn accounting");
-                        turn.routed_usage_dropped_records =
-                            turn.routed_usage_dropped_records.saturating_add(1);
-                    }
-                }
-            }
-            let background_exact_drop_count = background_usage.drop_records.len();
-            for record in background_usage.drop_records {
-                append_routed_usage_drop_record(&mut turn, record);
-            }
-            let background_residual = background_usage
-                .dropped_records
-                .saturating_sub(u64::try_from(background_exact_drop_count).unwrap_or(u64::MAX));
             turn.routed_usage_dropped_records = turn
                 .routed_usage_dropped_records
-                .saturating_add(background_residual)
                 .saturating_add(turn_routed_usage_dropped_records);
             turn.model_request_diagnostics =
                 turn_model_request_diagnostics.or(turn.model_request_diagnostics);
@@ -19594,11 +19551,6 @@ source_usage_records: Default::default(),
             // busy and refuses every later session save.
             let swept_items = self.settle_turn_items(&turn, turn_status, ended_at)?;
             self.store.save_turn(&turn)?;
-            for record in &drained_native_usage {
-                if let Err(error) = record.acknowledge_persisted() {
-                    tracing::warn!(%error, turn_id = %turn.id, "failed to acknowledge drained Runtime usage after terminal publication");
-                }
-            }
             (turn, swept_items)
         };
         // Published after the record guard is released: `emit_event` awaits,

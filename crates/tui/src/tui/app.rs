@@ -1205,10 +1205,6 @@ pub struct SessionState {
     pub subagent_usage_sources: HashSet<String>,
     pub accounted_usage_sources:
         std::collections::BTreeMap<String, codewhale_engine::cost_status::UsageSourceContribution>,
-    pub missing_usage_sources:
-        std::collections::BTreeMap<String, codewhale_engine::cost_status::MissingUsageCoverage>,
-    pub missing_usage_overflowed: bool,
-    pub in_flight_usage_sources: BTreeSet<String>,
     pub displayed_cost_high_water: f64,
     pub displayed_cost_high_water_cny: f64,
     pub last_prompt_tokens: Option<u32>,
@@ -1387,9 +1383,6 @@ impl Default for SessionState {
             subagent_cost_cny: 0.0,
             subagent_usage_sources: HashSet::new(),
             accounted_usage_sources: Default::default(),
-            missing_usage_sources: std::collections::BTreeMap::new(),
-            missing_usage_overflowed: false,
-            in_flight_usage_sources: BTreeSet::new(),
             displayed_cost_high_water: 0.0,
             displayed_cost_high_water_cny: 0.0,
             last_prompt_tokens: None,
@@ -4979,18 +4972,7 @@ impl App {
         &mut self,
         pool: &codewhale_engine::cost_status::PendingBackgroundCost,
     ) -> bool {
-        let pool = codewhale_engine::cost_status::project_missing_usage_ledger(
-            &mut self.session.missing_usage_sources,
-            &mut self.session.missing_usage_overflowed,
-            &mut self.session.cost_unpriced_turns,
-            &mut self.session.cost_cny_unpriced_turns,
-            pool,
-        );
-        let runtime_usage_arrived =
-            !pool.usage_source_fingerprints.is_empty() || pool.missing_usage_overflowed;
-        self.session
-            .subagent_usage_sources
-            .extend(pool.usage_source_fingerprints.iter().cloned());
+        let runtime_usage_arrived = !pool.usage_source_fingerprints.is_empty();
         if pool.estimate.is_positive() {
             self.accrue_subagent_cost_estimate(pool.estimate);
         }
@@ -5011,27 +4993,22 @@ impl App {
             &mut self.session.subagent_cache_write_tokens,
             pool.cache_write_tokens,
         );
-        self.absorb_background_cost_coverage(&pool);
+        self.absorb_background_cost_coverage(pool);
         let mut source_arrived = false;
         for record in &pool.source_records {
             match self.absorb_usage_source(record) {
                 Ok(changed) => source_arrived |= changed,
                 Err(error) => {
-                    tracing::warn!(%error, "live usage source projection refused");
-                    self.session
-                        .cost_unpriced_reasons
-                        .insert("usage_correction_unverified".into());
-                    self.session
-                        .cost_cny_unpriced_reasons
-                        .insert("usage_correction_unverified".into());
-                    self.session.missing_usage_overflowed = true;
+                    tracing::warn!(%error, "live usage source projection skipped");
+                    self.mark_usage_uncertain("usage_correction_unverified");
                 }
             }
         }
+        self.session
+            .subagent_usage_sources
+            .extend(pool.usage_source_fingerprints.iter().cloned());
         codewhale_engine::cost_status::prune_settled_missing_reasons(
-            &self.session.missing_usage_sources,
-            self.session.missing_usage_overflowed,
-            &mut self.session.in_flight_usage_sources,
+            &self.session.accounted_usage_sources,
             self.session.cost_unpriced_turns,
             self.session.cost_cny_unpriced_turns,
             &mut self.session.cost_unpriced_reasons,
@@ -5047,9 +5024,6 @@ impl App {
     /// that no longer contains them (#4318).
     pub fn reset_cost_coverage(&mut self) {
         self.session.accounted_usage_sources.clear();
-        self.session.missing_usage_sources.clear();
-        self.session.missing_usage_overflowed = false;
-        self.session.in_flight_usage_sources.clear();
         self.session.cost_priced_turns = 0;
         self.session.cost_unpriced_turns = 0;
         self.session.cost_cny_priced_turns = 0;
@@ -5157,9 +5131,6 @@ impl App {
         // A session restored as legacy-unknown stays unknown when re-saved:
         // re-writing it as "recorded" would launder the missing evidence into an
         // apparently complete zero.
-        cost.missing_usage_sources = self.session.missing_usage_sources.clone();
-        cost.missing_usage_overflowed = self.session.missing_usage_overflowed;
-        cost.in_flight_usage_sources = self.session.in_flight_usage_sources.clone();
         cost.coverage_recorded = !self.session.cost_coverage_unknown_legacy;
         cost.accounted_usage_sources = self.session.accounted_usage_sources.clone();
     }
@@ -5185,9 +5156,6 @@ impl App {
         self.session.subagent_usage_sources =
             cost.usage_source_fingerprints.iter().cloned().collect();
         self.session.accounted_usage_sources = cost.accounted_usage_sources.clone();
-        self.session.missing_usage_sources = cost.missing_usage_sources.clone();
-        self.session.missing_usage_overflowed = cost.missing_usage_overflowed;
-        self.session.in_flight_usage_sources = cost.in_flight_usage_sources.clone();
         self.session.cost_priced_turns = cost.priced_turns;
         self.session.cost_unpriced_turns = cost.unpriced_turns;
         self.session.cost_cny_priced_turns = cost.cny_priced_turns;
@@ -5235,6 +5203,12 @@ impl App {
         &mut self,
         record: &codewhale_engine::cost_status::RuntimeUsageRecord,
     ) -> Result<bool, String> {
+        if codewhale_engine::cost_status::is_usage_source_retired(
+            codewhale_engine::cost_status::scope_token(),
+            &record.source_id,
+        ) {
+            return Ok(false);
+        }
         let key = codewhale_engine::cost_status::usage_source_fingerprint(&record.source_id);
         let previous = self.session.accounted_usage_sources.get(&key).cloned();
         let mut cost = codewhale_engine::session_manager::SessionCostSnapshot::default();
@@ -5245,26 +5219,10 @@ impl App {
         {
             return Ok(false);
         }
-        let source = self
-            .session_write_receipt
-            .as_ref()
-            .ok_or_else(|| "cost projection has no admitted session scope".to_string())?;
-        let Some((old, new)) = source
-            .project_usage_record(
-                codewhale_engine::cost_status::scope_token(),
-                record,
-                &mut cost,
-            )
-            .map_err(|error| error.to_string())?
-        else {
-            return Ok(false);
-        };
-        if old == 0
-            && new == 0
-            && previous
-                .as_ref()
-                .is_some_and(|previous| previous.record == *record)
-        {
+        let (old, new) = cost
+            .project_usage_record(record)
+            .map_err(|error| error.to_string())?;
+        if old == 0 && new == 0 && cost.accounted_usage_sources.get(&key) == previous.as_ref() {
             return Ok(false);
         }
         self.restore_cost_snapshot(&cost);
