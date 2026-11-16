@@ -24,6 +24,8 @@ mod contextual_tips_pty;
 #[cfg(all(unix, feature = "long-running-tests"))]
 mod conversation_mode_pty;
 mod core_session_command_extraction;
+#[cfg(all(unix, feature = "long-running-tests"))]
+mod creator_acceptance;
 mod directory_listing_acceptance;
 mod epic_acceptance_harness;
 mod eval_smoke_acceptance;

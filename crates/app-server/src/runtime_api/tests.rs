@@ -20,6 +20,7 @@ mod command_catalog;
 #[cfg(unix)]
 mod control_socket_selection;
 mod conversation_modes;
+mod creator_screen;
 #[cfg(unix)]
 mod external_agent_options;
 #[cfg(unix)]

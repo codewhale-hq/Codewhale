@@ -25,6 +25,8 @@ use tempfile::tempdir;
 
 #[path = "tests/creator_gate.rs"]
 mod creator_gate;
+#[path = "tests/creator_loop.rs"]
+mod creator_loop;
 #[path = "tests/creator_refresh.rs"]
 mod creator_refresh;
 #[path = "tests/extension_creator.rs"]
