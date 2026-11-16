@@ -1004,6 +1004,29 @@ for (const [label, source] of [
   assert.deepEqual([...new Set(tags)], [pinnedTag], `${label}: Rust build images must match rust-toolchain.toml`);
 }
 
+let pinnedRunsOn = 0;
+for (const [file, source] of workflowSources) {
+  for (const [, value] of source.matchAll(/^[ \t]*runs-on:[ \t]*(.+)$/gm)) {
+    pinnedRunsOn += 1;
+    assert.doesNotMatch(
+      value.replace(/==\s*'ubuntu-latest'/g, ""),
+      /ubuntu-latest/,
+      `${file}: runs-on must name ubuntu-24.04, never ubuntu-latest: ${value}`,
+    );
+    for (const [, key] of value.matchAll(/matrix\.(\w+)/g)) {
+      const listsUbuntuLatest = new RegExp(`^[ \\t-]*${key}:.*ubuntu-latest`, "m").test(source);
+      if (listsUbuntuLatest) {
+        assert.match(
+          value,
+          new RegExp(`matrix\\.${key} == 'ubuntu-latest' && 'ubuntu-24\\.04'`),
+          `${file}: runs-on must map matrix.${key} ubuntu-latest to ubuntu-24.04: ${value}`,
+        );
+      }
+    }
+  }
+}
+assert.ok(pinnedRunsOn > 50, "runs-on pin contract must scan every workflow");
+
 console.log(
   "Workflow contracts OK: 6-target/12-asset single-runtime nightly and exact-head 8-target/38-asset release candidate.",
 );

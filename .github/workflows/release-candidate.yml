@@ -21,7 +21,7 @@ jobs:
   resolve:
     name: Resolve exact candidate source
     timeout-minutes: 10
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       sha: ${{ steps.source.outputs.sha }}
       version: ${{ steps.source.outputs.version }}
@@ -87,7 +87,7 @@ jobs:
     timeout-minutes: 15
     needs: resolve
     if: ${{ !cancelled() && needs.resolve.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: web

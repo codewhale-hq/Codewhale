@@ -273,7 +273,7 @@ class CiWiringTests(unittest.TestCase):
         block = ci[start:next_step]
         self.assertIn(
             "sh scripts/with-hermetic-test-home.sh cargo nextest run "
-            "-p codewhale-tui -p codewhale-runtime --lib --locked --no-tests=fail "
+            "-p codewhale-engine -p codewhale-tui -p codewhale-runtime --lib --locked --no-tests=fail "
             "-E 'test(auto_review) | test(authority) | test(sandbox)'", block
         )
         self.assertIn(
@@ -295,7 +295,7 @@ class CiWiringTests(unittest.TestCase):
         self.assertIn("default: nextest", ci)
         matrix = ci.split("  test:\n", 1)[1].split("    steps:\n", 1)[0]
         self.assertIn(
-            SHARED_PROCESS_MODE + " && '[\"ubuntu-latest\"]' || "
+            "(github.event_name == 'pull_request' || (" + SHARED_PROCESS_MODE + ")) && '[\"ubuntu-latest\"]' || "
             "'[\"ubuntu-latest\",\"macos-latest\",\"windows-latest\"]'", matrix,
         )
         self.assertIn("needs.changes.outputs.trusted == 'true'", matrix)

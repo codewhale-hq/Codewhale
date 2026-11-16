@@ -40,7 +40,7 @@ permissions:
 jobs:
   resolve:
     timeout-minutes: 10
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       sha: ${{ steps.release.outputs.sha }}
@@ -100,7 +100,7 @@ jobs:
     timeout-minutes: 30
     needs: resolve
     if: ${{ contains(inputs.channels, 'docker') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -170,7 +170,7 @@ jobs:
     timeout-minutes: 20
     needs: resolve
     if: ${{ contains(inputs.channels, 'homebrew') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
