@@ -169,6 +169,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The cost label shows an exact cost, an estimate or unknown.
 - **Docs for agents match the release:** `/llms-full.txt` and `/docs-markdown/*` now serve the documents as they were at the published release tag, from a committed snapshot that is checked against the published release.
 - **Extension host (experimental): trusted plugins ask for review once more.** With `extension_host` turned on, plugins you already trusted are shown for review again after this update, because the capability table they were reviewed against gained the `remote` service. No plugin can use that service yet: none is granted it.
 - **Website text for agents:** llms.txt now gives agents the install steps for the released version, the current release and the state of each part of Codewhale, from the same content as the pages. `/docs-markdown/install.md` serves those install steps as a page, and the main-branch documents beside it now say which release they can run ahead of.
@@ -188,6 +189,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Cost tracking can no longer fail your work: a turn, a review, an Auto-Review check, a purge, a sub-agent or an Auto routing decision finishes even when Codewhale cannot record its cost, and the cost then shows as unknown.
 - **Credential redaction:** text, JSON, and workflow-disclosure redaction now masks multi-line private-key blocks across PGP armor headers (including `Comment:` URLs), longer preambles, and 16-character wrapped lines; masks credential values inside nested or escaped JSON assignments, escaped quotes, `\u003c`/`\u003e` delimiters, and spaced or nested JSON objects and arrays; and treats plural token keys (`API_TOKENS`, `ACCESS_TOKENS`) and credential-shaped `tokens` values as credentials while keeping model and tokenizer metric names (`max_tokens`, `tokenizer`, `token_limit`, `tokens=5`) visible.
 - Child processes now inherit only the standard locale variables (`LC_ALL`, `LC_CTYPE` and the other locale categories, plus `LC_TERMINAL` and `LC_TERMINAL_VERSION`) and a listed set of `DOTNET_` host, SDK and runtime settings. Other `DOTNET_` variables, including application configuration keys, are no longer passed to child processes or MCP servers.
 - **Deny rules and command safety:** a command whose command word is not a plain literal, or that redefines a command name earlier in the same call, is now refused while a deny rule is configured; the background destroyer hold reads commands the shell tokenizer rejects, decodes ANSI-C escapes inside shell payloads, and holds Windows drive, UNC, and backslash recursive delete targets; and `sed`, `find`, `sort`, `rg`, `fd`, `uniq`, `env`, `less`, `more`, `ag`, `info` and `git` count as read-only only when their words are literal and use read-only flags, with `codewhale --version` and Windows trailing-backslash paths normalized before checking.

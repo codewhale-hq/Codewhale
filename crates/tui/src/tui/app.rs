@@ -5402,27 +5402,30 @@ impl App {
     }
 
     /// Price is one number, everywhere (design §2.11 item 5): the session
-    /// cost as the footer chip, the price view, and the roster print it.
-    /// Money routes print the amount; subscription and local routes print the
-    /// same words the chip uses; a metered route that has not spent yet prints
-    /// `$0.00`; a session with no confirmed price says `unknown` rather than
-    /// inventing a zero.
-    #[must_use]
-    pub fn session_cost_label(&self) -> String {
-        let chip = self.cumulative_usage_chip();
-        if matches!(chip, codewhale_engine::route_billing::UsageChip::Hidden) {
-            return self
-                .format_cost_amount(self.displayed_session_cost_for_currency(self.cost_currency));
-        }
-        codewhale_engine::route_billing::format_usage_chip(&chip, self.ui_locale).unwrap_or_else(
-            || {
+    /// cost as the price view and status surface print it — money routes print
+    /// exact or estimated dollars (or `$0.00` before spending), while
+    /// subscription, local, and unpriced sessions say `unknown` rather than
+    /// printing plan names, `"local"`, or an invented zero.
+    pub(crate) fn status_cost_label(&self) -> Option<String> {
+        use codewhale_engine::route_billing::UsageChip;
+        match self.cumulative_usage_chip() {
+            UsageChip::Money(_) | UsageChip::Hidden => None,
+            UsageChip::PricedSubtotal { amount, .. } => Some(amount),
+            UsageChip::Allowance { .. } | UsageChip::Local | UsageChip::Unknown(_) => Some(
                 codewhale_localization::tr(
                     self.ui_locale,
                     codewhale_localization::MessageId::CmdCostUnknownValue,
                 )
-                .into_owned()
-            },
-        )
+                .into_owned(),
+            ),
+        }
+    }
+
+    #[must_use]
+    pub fn session_cost_label(&self) -> String {
+        self.status_cost_label().unwrap_or_else(|| {
+            self.format_cost_amount(self.displayed_session_cost_for_currency(self.cost_currency))
+        })
     }
 
     pub(crate) fn cost_display_currency(&self, currency: CostCurrency) -> CostCurrency {
