@@ -288,7 +288,6 @@ pub trait CommandConfigContext {
 pub enum CommandPetControl {
     Sound,
     Browser,
-    Window,
     Select,
     FocusAgents,
     /// Body style and/or text language for `/pet style|language`.

@@ -145,7 +145,6 @@ pub enum Command {
     Observe(String),
     Select,
     Browser,
-    Window,
     Export,
     Wake,
 }
@@ -366,37 +365,6 @@ impl Client {
             webbrowser::open(&url).map_err(io::Error::other)
         }
     }
-    pub fn open_window(&self) -> io::Result<()> {
-        #[cfg(target_os = "macos")]
-        {
-            use std::process::{Command as Process, Stdio};
-            // The system launcher by absolute path: a bare `open` resolves
-            // through `PATH`, where a workspace entry could shadow it.
-            let mut process = Process::new("/usr/bin/open");
-            if let Some(path) = std::env::var_os("CODEWHALE_PET_APP") {
-                process.arg(path);
-            } else {
-                process.args(["-a", "Codewhale Pet"]);
-            }
-            process
-                .args(["--args", "--companion"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            if process.status()?.success() {
-                return Ok(());
-            }
-            Err(io::Error::other(
-                "Build or install the Codewhale Pet app to open its companion window",
-            ))
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Err(io::Error::other(
-                "The native companion window is currently available on macOS",
-            ))
-        }
-    }
 }
 impl Worker {
     pub fn start(session: Option<String>) -> io::Result<Self> {
@@ -503,7 +471,7 @@ fn run(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => Vec::new(),
         };
-        let (mut browser, mut window) = (false, false);
+        let mut browser = false;
         for command in commands {
             match command {
                 Command::Appearance { body, language } => {
@@ -533,7 +501,6 @@ fn run(
                     }
                 }
                 Command::Browser => browser = true,
-                Command::Window => window = true,
                 Command::Export => {
                     let result = client.get("/v1/export").and_then(|r| {
                         super::persistence::export(
@@ -551,14 +518,8 @@ fn run(
                 Command::Wake => {}
             }
         }
-        for launched in [
-            browser.then(|| client.open_browser()),
-            window.then(|| client.open_window()),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            let _ = notices.try_send(match launched {
+        if browser {
+            let _ = notices.try_send(match client.open_browser() {
                 Ok(()) => Notice::Opened,
                 Err(e) => Notice::Message(e.to_string()),
             });

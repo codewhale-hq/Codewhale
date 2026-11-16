@@ -60,7 +60,7 @@
   "PetModePaneHint": "{switch} mudar visão",
   "PetModeAgentHints": "{select} selecionar · {open} conversa",
   "PetModeReplyHints": "{scroll} rolar · {latest} mais recente",
-  "PetModeCompanionHints": "{sound} som · {browser} aparência · {window} janela",
+  "PetModeCompanionHints": "{sound} som · {browser} aparência",
   "PetModeInspectHint": "{inspect} respostas e agentes · /pet off visão padrão",
   "PetModeViewHint": "{cycle} visão: {view}",
   "PetViewNeeds": "{view} precisa de {requirement} · mostrando {shown}",

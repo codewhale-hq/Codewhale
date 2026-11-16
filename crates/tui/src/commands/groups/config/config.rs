@@ -631,7 +631,7 @@ fn is_conversation_mode_word(arg: &str) -> bool {
 pub(super) const MODE_USAGE: &str = "/mode [work|plan|1|2|<conversation mode>]";
 
 /// `/pet` usage, shared with the registration metadata.
-pub const PET_USAGE: &str = "/pet [on|off|inspect|status|appearance|style [smooth|pixel]|language [auto|en|zh-Hans|zh-Hant|ja]|window|source|export|sound [on|off]|avatar [whale|cove|braille|pixels|particles|whale-girl|key]|action [name|live]|view [name|live]]";
+pub const PET_USAGE: &str = "/pet [on|off|inspect|status|appearance|style [smooth|pixel]|language [auto|en|zh-Hans|zh-Hant|ja]|source|export|sound [on|off]|avatar [whale|cove|braille|pixels|particles|whale-girl|key]|action [name|live]|view [name|live]]";
 
 pub fn connect(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandResult {
     let raw = arg.map(str::trim).unwrap_or("");
@@ -1030,7 +1030,7 @@ pub fn import_claude(contexts: CommandContexts<'_>, arg: Option<&str>) -> Config
 }
 
 /// `/pet [on|off|...]`.
-/// `/pet [on|off|inspect|status|appearance|window|source|export|sound on|off|avatar [key]|action [name|live]|view [name|live]]`.
+/// `/pet [on|off|inspect|status|appearance|source|export|sound on|off|avatar [key]|action [name|live]|view [name|live]]`.
 /// The command owns the verb parsing and message composition; the pet facet
 /// observes and mutates the pet state and resolves the localized labels.
 pub fn pet(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandResult {
@@ -1129,7 +1129,6 @@ pub fn pet(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandRes
                 },
             )
         }
-        ["window"] => queued(facet, CommandPetControl::Window),
         ["source"] => queued(facet, CommandPetControl::Select),
         ["export"] => {
             if facet.export() {

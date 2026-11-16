@@ -12,8 +12,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test tests/*.test.mjs",
     "check": "npm run typecheck && node scripts/build-pet.mjs --check && npm test",
-    "start": "python3 -m http.server 4632 --bind 127.0.0.1 --directory dist",
-    "sync": "node scripts/build-pet.mjs --tui --apple --study"
+    "sync": "node scripts/build-pet.mjs --tui"
   },
   "devDependencies": {
     "typescript": "5.8.3"

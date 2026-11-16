@@ -60,7 +60,7 @@
   "PetModePaneHint": "{switch} 切換檢視",
   "PetModeAgentHints": "{select} 選取 · {open} 對話紀錄",
   "PetModeReplyHints": "{scroll} 捲動 · {latest} 回到最新",
-  "PetModeCompanionHints": "{sound} 音效 · {browser} 外觀 · {window} 視窗",
+  "PetModeCompanionHints": "{sound} 音效 · {browser} 外觀",
   "PetModeInspectHint": "{inspect} 回覆與代理程式 · /pet off 標準檢視",
   "PetModeViewHint": "{cycle} 檢視：{view}",
   "PetViewNeeds": "{view} 需要 {requirement} · 正在顯示 {shown}",

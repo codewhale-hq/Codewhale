@@ -183,8 +183,8 @@ a failure back to the operation's start. Typed `ShellPhase::Waiting/Approval`
 can extend an already witnessed human request, preserving the outstanding request without approach-to-owner steering.
 
 The presentation companion now owns the one persistent world. Terminal Watch,
-full-screen habitat, the owner's browser companion, macOS window, Apple Shared
-and Android Shared attach to its authenticated loopback snapshots. View
+full-screen habitat and the owner's browser companion attach to its
+authenticated loopback snapshots. View
 interpolation and stillness never advance or modify the world. The existing Ratatui draw loop owns pixel
 placement and cleanup. Only the opt-in `pixels` view draws an image, after a
 successful Kitty query, with synchronized output and a known cell size in
@@ -192,7 +192,7 @@ pixels; otherwise it shows the Braille particles. `CODEWHALE_PET_GRAPHICS=braill
 also disables that image. Full habitat focus uses the existing modal stack.
 
 The complete ownership, source selection, storage/reconnect, graphics, audio,
-legacy habitat and mobile contracts live in [pet/SHARED.md](../../pet/SHARED.md).
+legacy habitat contracts live in [pet/SHARED.md](../../pet/SHARED.md).
 That document supersedes the former per-session Watch worker and app-local
 live-world ownership. Completion cameos remain bounded transcript decorations.
 
@@ -203,13 +203,9 @@ at its own journal cursor. The standalone file recorder waits for durable replay
 live delivery to finish before extending any request as current. These frames
 are transport metadata; they do not enter the event journal or pet tape.
 The Runtime importer separately pairs request
-lifecycles and preserves failure receipt times. Its local SSE/CLI and browser
-fixtures pass. Typed synthetic Engine events have also passed through the actual
-Runtime journal/SSE endpoint, recorder process and Apple file watcher/PetHost:
-a fresh request appeared at 1,233 ms and cleared after its answer at 2,000 ms.
-That provider-free fixture proves active native file delivery; physical-phone
-transport and visual popover inspection are separate evidence. The source and
-liveness contracts are documented in `pet/README.md`.
+lifecycles and preserves failure receipt times. Its local SSE/CLI
+fixtures pass. The source and liveness contracts are documented in
+`pet/README.md`.
 
 Earlier phase evidence: the full TUI binary built offline, its foreground metadata projection test
 passes, and the real PTY walkthrough covers Watch selection, keyboard, mouse
@@ -221,11 +217,11 @@ lint and security checks. Later changes require their own hosted verdict.
 
 Local render fixtures exercise the actual ocean, glyph and ambient-life modules
 with literal shell enums extracted from `underwater.rs`; they do not run an
-Engine session. The portable conformance runner compares TypeScript, Rust and
-Swift across the original tape and an additional all-channel/error-burst/sleep
+Engine session. The portable conformance runner compares TypeScript and
+Rust across the original tape and an additional all-channel/error-burst/sleep
 tape, each with motion enabled and disabled. A missing tool or failed widget
 build now fails that runner instead of printing a false success.
 
-Full product builds, real session acceptance, packaged applications, audio,
-mobile builds and hosted CI remain separate proof requirements. The local
+Full product builds, real session acceptance, audio
+and hosted CI remain separate proof requirements. The local
 fixture and conformance checks do not establish those outcomes.

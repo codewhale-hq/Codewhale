@@ -1,8 +1,7 @@
 # One pet, attached views
 
 `codewhale-tui pet serve` owns the local pet independently of every window.
-Watch starts it when needed. The native macOS package can start its bundled
-owner as well. Closing a view releases its connection; the companion keeps the
+Watch starts it when needed. Closing a view releases its connection; the companion keeps the
 identity, clock, particle field and recording. It contains no agent turn loop,
 prompts, provider calls or second telemetry classifier.
 
@@ -15,20 +14,18 @@ flowchart LR
   O --> S[Private checkpoint and immutable archives]
   O --> W[Ratatui Watch / full habitat]
   O --> B[Browser view]
-  O --> N[Native companion / mobile view]
   O --> A[One optional audio device]
-  W & B & N -->|ordered interactions| O
+  W & B -->|ordered interactions| O
 ```
 
 ## Try it
 
-From the repository root, build the existing product binary and native view:
+From the repository root, build the existing product binary:
 
 ```sh
 npm --prefix pet ci --ignore-scripts
 npm --prefix pet run sync
 cargo build --locked -p codewhale-tui
-PET_OWNER_BINARY="$PWD/target/debug/codewhale-tui" ./pet/macos/build.sh
 ./target/debug/codewhale-tui
 ```
 
@@ -41,7 +38,6 @@ In the running application:
 | `/pet appearance` | Configure the shared palette, whale style and large-text language in the authenticated local browser studio |
 | `/pet style smooth\|pixel` | Choose the smooth aurora or pixel whale |
 | `/pet language auto\|en\|zh-Hans\|zh-Hant\|ja` | Choose large activity phrases independently of the interface language |
-| `/pet window` | Open the independently closable native macOS window |
 | `/pet source` | Explicitly select this terminal session as the source |
 | `/pet sound on\|off` | Request/release the companion's audio device |
 | `/pet export` | Save a replay to this saved session's artifacts |
@@ -58,14 +54,13 @@ The pet has no workbar panel. In the terminal it is the pet main view above the
 composer, with the F5 inspector over it. On the main view Ctrl+] cycles the
 pet's views: whale, cove, braille, pixels, particles, whale-girl and installed
 avatar packs. Escape leaves the inspector without cancelling the turn or
-touching the composer draft. F6 toggles sound, F8 opens the appearance studio,
-and F9 opens the native window, on the main view and in the inspector;
-reduced motion follows the shell's existing motion setting. Hints and key
+touching the composer draft. F6 toggles sound and F8 opens the appearance studio,
+on the main view and in the inspector; reduced motion follows the shell's existing motion setting. Hints and key
 admission use the existing shell binding table. The habitat uses the modal
 stack; composer contents, transcript, selection and active Engine state stay
 underneath it. Consent and approval views retain their existing priority.
 
-`CODEWHALE_PET_APP` can identify a locally built `.app`. `CODEWHALE_PET_HOME`
+`CODEWHALE_PET_HOME`
 selects an isolated companion directory; its default is
 `~/.codewhale/pet-shared`. `CODEWHALE_PET_PORT` chooses the initial loopback port
 (default 4633; zero allocates an unused port for tests). A saved world retains
@@ -83,8 +78,8 @@ and Cobalt presets. Background, upper light, particle color, activity colors,
 brightness, dot size, glow and environment are independently configurable.
 Export/import a versioned appearance JSON. Live appearance changes use the same
 ordered, durable action contract and reach every attached view; they never enter
-the simulation's interaction journal or change its replay digest. Native and
-terminal hosts consume the shared background, material, dot size and glow.
+the simulation's interaction journal or change its replay digest. The terminal and
+browser views consume the shared background, material, dot size and glow.
 
 For an isolated, provider-free review, serve `pet/dist` and open
 `shared.html?preview=1`. Compare all eight looks, toggle Still, and choose
@@ -119,8 +114,8 @@ The preview selector demonstrates thirteen action/unknown states. A complete
 answer. Search sweeps, file marks, editing brackets, test activity rings and
 parallel-agent marks use the canonical frame time, freeze under Still, and make
 no claim about progress percentages, test counts or successful outcomes. These
-extra drawn marks are currently a browser presentation treatment; terminal and
-native prepared views share the exact action caption and canonical work forms.
+extra drawn marks are currently a browser presentation treatment; terminal
+prepared views share the exact action caption and canonical work forms.
 
 Determinism and variety live at different boundaries:
 
@@ -221,33 +216,19 @@ Sound is off by default. One view leases the companion's single `ffplay`
 output, renewed every 500 ms and expired after two seconds. PCM comes from the
 existing deterministic score at 48 kHz. Closing, hiding, quiet mode and stale
 frames release or expire the lease. Late output is dropped through the bounded
-PCM queue. FFmpeg is optional and never downloaded automatically. On mobile,
-“Companion sound” controls the owner's speaker; it does not start a second
-phone player.
+PCM queue. FFmpeg is optional and never downloaded automatically.
 
-## Existing habitats and mobile
+## Existing habitats and the browser view
 
-Wild, Event demo, imported replay and File study remain explicitly isolated.
-Old browser IndexedDB recordings and per-session TUI
-`artifacts/pet/habitat.json` files are retained. Apple File study continues to
-use the former `live.json`; Android's File study keeps its `live` storage key.
-Shared views never overwrite or merge those worlds. Import their recordings in
-the standalone viewer to recover them.
+Per-session TUI `artifacts/pet/habitat.json` files are
+retained and recoverable. Shared views never overwrite or merge those worlds.
 
-The local browser can join using its “Join shared pet” file control and the
-private `connection.json`, or the terminal's browser command. The URL fragment
+The local browser joins through the terminal's browser command. The URL fragment
 is removed immediately; the owner exchanges the bearer for an HttpOnly,
 SameSite cookie. Host and Origin checks reject foreign origins. The listener is
 only `127.0.0.1`; no CORS, LAN listener or unauthenticated remote route is added.
-
-Apple and Android Shared modes consume the same immutable frame contract.
-They do not run their native simulation or native audio in this mode. Import
-`connection.json` with “Join shared pet”; it is retained privately. On an Android
-emulator or explicitly connected device, `adb reverse tcp:4633 tcp:4633` carries
-its loopback traffic to the desktop owner. iOS Simulator shares host loopback.
-Physical-device/cross-network use needs an explicitly established authenticated
-loopback tunnel. The existing Runtime's authenticated transport and progress
-contract are unchanged; no new remote deployment or compatibility claim is made.
+The existing Runtime's authenticated transport and progress contract are
+unchanged; no new remote deployment or compatibility claim is made.
 
 ## Verification
 
@@ -259,6 +240,6 @@ inspection. `npm --prefix pet run check` covers unchanged replay/score semantics
 and presentation immutability. The product's `pet_watch` tests exercise real
 transport encoding, braille, focus restoration, storage and PCM boundaries.
 
-Build/test receipts, actual native/browser screenshots, terminal visual
+Build/test receipts, actual browser screenshots, terminal visual
 qualification and independent exact-SHA review are separate evidence. See
 `QA.md` for the current measured results and outstanding limitations.

@@ -30,8 +30,6 @@ rsync -az --delete --itemize-changes \
   --exclude codewhale-inference \
   --exclude pet/conformance-results \
   --exclude extensions/vscode/out \
-  --exclude pet/ios/build \
-  --exclude pet/android/build \
   --exclude npm/codewhale/bin/downloads \
   --exclude .devin \
   "$SRC" "$DEST"

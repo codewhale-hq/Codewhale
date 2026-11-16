@@ -60,7 +60,7 @@
   "PetModePaneHint": "{switch} ganti tampilan",
   "PetModeAgentHints": "{select} pilih · {open} percakapan",
   "PetModeReplyHints": "{scroll} gulir · {latest} terbaru",
-  "PetModeCompanionHints": "{sound} suara · {browser} tampilan · {window} jendela",
+  "PetModeCompanionHints": "{sound} suara · {browser} tampilan",
   "PetModeInspectHint": "{inspect} balasan dan agen · /pet off tampilan biasa",
   "PetModeViewHint": "{cycle} tampilan: {view}",
   "PetViewNeeds": "{view} memerlukan {requirement} · menampilkan {shown}",

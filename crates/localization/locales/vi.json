@@ -60,7 +60,7 @@
   "PetModePaneHint": "{switch} đổi chế độ xem",
   "PetModeAgentHints": "{select} chọn · {open} hội thoại",
   "PetModeReplyHints": "{scroll} cuộn · {latest} mới nhất",
-  "PetModeCompanionHints": "{sound} âm thanh · {browser} giao diện · {window} cửa sổ",
+  "PetModeCompanionHints": "{sound} âm thanh · {browser} giao diện",
   "PetModeInspectHint": "{inspect} phản hồi và tác tử · /pet off giao diện thường",
   "PetModeViewHint": "{cycle} chế độ xem: {view}",
   "PetViewNeeds": "{view} cần {requirement} · đang hiển thị {shown}",

@@ -2,7 +2,7 @@
 //
 // This is a faithful, DOM-free port of the consort study's particle engine
 // (grammar.js). The same code — same constants, same order of operations — is
-// what the Rust, Swift and Kotlin cores implement. Four rules keep the view
+// what the Rust core implements. Four rules keep the view
 // identical on every surface:
 //
 //   1. The body is the same 980 points, loaded from whale-points.tsv — never

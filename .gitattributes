@@ -20,8 +20,6 @@ crates/telemetry/tests/golden/*.json text eol=lf
 # emits LF, so a CRLF Windows checkout reported all three as stale and would
 # embed different bytes.
 crates/tui/src/tui/pet_watch/pet-native.js text eol=lf
-pet/ios/Resources/pet-native.js text eol=lf
-pet/ios/Resources/demo.jsonl text eol=lf
 # Tideline component goldens (crates/tui/src/tui/goldens/*.txt) are
 # fs::read_to_string'd and compared byte for byte against buffer dumps that
 # always join rows with LF (golden_harness.rs::render_golden_text), so a

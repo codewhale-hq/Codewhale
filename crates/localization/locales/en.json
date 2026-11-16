@@ -60,7 +60,7 @@
   "PetModePaneHint": "{switch} switch view",
   "PetModeAgentHints": "{select} select · {open} transcript",
   "PetModeReplyHints": "{scroll} scroll · {latest} latest",
-  "PetModeCompanionHints": "{sound} sound · {browser} appearance · {window} window",
+  "PetModeCompanionHints": "{sound} sound · {browser} appearance",
   "PetModeInspectHint": "{inspect} replies & agents · /pet off standard view",
   "PetModeViewHint": "{cycle} view: {view}",
   "PetViewNeeds": "{view} needs {requirement} · showing {shown}",

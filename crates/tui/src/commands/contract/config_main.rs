@@ -245,7 +245,6 @@ impl CommandPetContext for PetAdapter<'_> {
         let control = match control {
             CommandPetControl::Sound => Control::Sound,
             CommandPetControl::Browser => Control::Browser,
-            CommandPetControl::Window => Control::Window,
             CommandPetControl::Select => Control::Select,
             CommandPetControl::FocusAgents => Control::FocusAgents,
             CommandPetControl::Appearance { body, language } => Control::Appearance {

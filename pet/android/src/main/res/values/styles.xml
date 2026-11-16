@@ -1,8 +1,0 @@
-<resources>
-    <style name="PetTheme" parent="android:style/Theme.Material.NoActionBar">
-        <item name="android:fontFamily">sans</item>
-        <item name="android:windowLightStatusBar">false</item>
-        <item name="android:colorAccent">#73c9b5</item>
-        <item name="android:windowBackground">#071319</item>
-    </style>
-</resources>

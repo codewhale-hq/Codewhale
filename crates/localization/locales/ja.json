@@ -60,7 +60,7 @@
   "PetModePaneHint": "{switch} 表示を切替",
   "PetModeAgentHints": "{select} 選択 · {open} 会話履歴",
   "PetModeReplyHints": "{scroll} スクロール · {latest} 最新へ",
-  "PetModeCompanionHints": "{sound} 音声 · {browser} 外観 · {window} ウィンドウ",
+  "PetModeCompanionHints": "{sound} 音声 · {browser} 外観",
   "PetModeInspectHint": "{inspect} 返信・エージェント · /pet off 通常表示",
   "PetModeViewHint": "{cycle} 表示: {view}",
   "PetViewNeeds": "{view} には {requirement} が必要 · {shown} を表示中",

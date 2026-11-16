@@ -60,7 +60,7 @@
   "PetModePaneHint": "{switch} 切换视图",
   "PetModeAgentHints": "{select} 选择 · {open} 对话记录",
   "PetModeReplyHints": "{scroll} 滚动 · {latest} 回到最新",
-  "PetModeCompanionHints": "{sound} 声音 · {browser} 外观 · {window} 窗口",
+  "PetModeCompanionHints": "{sound} 声音 · {browser} 外观",
   "PetModeInspectHint": "{inspect} 回复与智能体 · /pet off 标准视图",
   "PetModeViewHint": "{cycle} 视图：{view}",
   "PetViewNeeds": "{view} 需要 {requirement} · 正在显示 {shown}",

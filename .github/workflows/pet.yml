@@ -26,7 +26,7 @@ jobs:
       - run: npm --prefix pet run check
       - run: npm --prefix pet run sync
       - name: Embedded sources match canonical core
-        run: git diff --exit-code -- crates/tui/src/tui/pet_watch/pet-native.js pet/ios/Resources
+        run: git diff --exit-code -- crates/tui/src/tui/pet_watch/pet-native.js
       # The authored body is checked in five times and nothing kept the copies
       # in step, so the Rust core silently carried a different whale from every
       # other surface and conformance never passed. Compare them directly: no
@@ -42,7 +42,7 @@ jobs:
           done
       - run: cargo fetch --locked --manifest-path pet/tui/Cargo.toml
       - name: TypeScript and Rust parity, including reduced motion
-        run: ./pet/verify.sh --no-swift
+        run: ./pet/verify.sh
   recorder:
     name: recorder (${{ matrix.os }})
     strategy:
@@ -69,43 +69,3 @@ jobs:
         run: |
           cargo build --locked -j 2 -p codewhale-cli --bin codewhale
           python3 pet/scripts/check-shared.py target/debug/codewhale
-      - name: Build and exercise the Apple host and PCM boundary
-        if: runner.os == 'macOS'
-        run: PET_OWNER_BINARY="$PWD/target/debug/codewhale" ./pet/scripts/check-apple.sh
-      - name: Package the locally signed macOS app
-        if: runner.os == 'macOS'
-        run: ditto -c -k --keepParent pet/macos/CodewhalePet.app codewhale-pet-macos.zip
-      - uses: actions/upload-artifact@v7
-        if: runner.os == 'macOS'
-        with:
-          name: codewhale-pet-macos
-          path: codewhale-pet-macos.zip
-          if-no-files-found: error
-  android:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-java@v6.1.0
-        with:
-          distribution: temurin
-          java-version: '17'
-      - name: Enable emulator acceleration on the disposable runner
-        run: sudo chmod a+rw /dev/kvm
-      - uses: reactivecircus/android-emulator-runner@v2.38.0
-        with:
-          api-level: 35
-          arch: x86_64
-          target: google_apis
-          profile: pixel_7
-          disable-animations: false
-          working-directory: pet/android
-          script: ./gradlew --no-daemon assembleDebug connectedDebugAndroidTest lintDebug
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: codewhale-pet-android
-          path: |
-            pet/android/build/outputs/apk/debug/*.apk
-            pet/android/build/reports/androidTests/
-            pet/android/build/reports/lint-results-debug.*

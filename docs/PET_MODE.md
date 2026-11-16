@@ -95,17 +95,16 @@ inspector over it:
 | `Ctrl+]` / `Ctrl+Tab`, `Ctrl+Shift+Tab` | Next or previous pet view (main view only). The Tab chords require a terminal that sends them; use `Ctrl+]` in Terminal.app. |
 | `F6` | Turn the companion's sound on or off. |
 | `F8` | Open the appearance studio in your browser. |
-| `F9` | Open the native Codewhale Pet window (macOS). |
 | `Esc` | Back to the message box. Your draft, the transcript, and any running turn are untouched. |
 | `Tab` | Switch between the Reply and Agents panes. |
 | `Up` / `Down`, `PgUp` / `PgDn`, `Home` / `End` | Scroll the focused pane. |
 | `Enter` (Agents pane) | Open the selected agent's transcript. |
 | `c` | Copy the last finished reply, through the same path as `/copy`. |
 
-`F5`, `F6`, `F8` and `F9` work on the main view and in the inspector. On a Mac
+`F5`, `F6` and `F8` work on the main view and in the inspector. On a Mac
 keyboard the top row sends media keys unless Fn is held, so F-key hints
 throughout the TUI, including help, read `fn+F5`, `fn+F8` and so on; press
-Fn with the key. ASCII-safe hints keep that prefix. A successful `F8` or `F9` says
+Fn with the key. ASCII-safe hints keep that prefix. A successful `F8` says
 `habitat open`; a failed launch shows its own reason.
 
 ## Several terminals, one pet each
@@ -117,7 +116,7 @@ other shows `● working`. Nothing is mixed between sessions.
 Behind the scenes, all terminals on a machine share one local companion
 (`codewhale pet serve`, started automatically when a view needs it). The
 companion keeps the pet's identity, animation clock, saved recording, optional
-sound, and the appearance and window views. It follows one session at a time,
+sound, and the appearance view. It follows one session at a time,
 called the source:
 
 - The first saved terminal session to attach becomes the source.
@@ -155,7 +154,6 @@ This presentation data does not enter model requests or affect the KV cache.
 | `/pet status` | Show on or off, habitat open or closed, the companion's identity and tick, the source session, and measured output counters. |
 | `/pet source` | Make this terminal's session the companion's source. Needs a saved session. |
 | `/pet appearance` | Open the appearance studio (palette, brightness, dot size, glow) in your browser, on loopback. Same as `F8`. |
-| `/pet window` | Open the native Codewhale Pet window, if the macOS app is installed. Same as `F9`. If it is not installed, Codewhale says to build or install it. |
 | `/pet sound on`, `/pet sound off` | Turn the companion's sound on or off. Same toggle as `F6`. |
 | `/pet avatar [key]` | List the views, or choose one: `whale`, `cove`, `braille`, `pixels`, `particles`, `whale-girl`, and any avatar packs you have installed. |
 | `/pet action <name>`, `/pet view <name>`, `/pet action live` | Preview a named pose or view of the chosen avatar, or return to live. |
@@ -185,7 +183,7 @@ stays off.
   shows `particles` and says why.
 - **No companion.** If the companion cannot be reached, the view says so and the
   state word and mark continue to work, because they come from your session.
-  `/pet on`, `F8`, `F9` and the companion commands such as `/pet appearance`
+  `/pet on`, `F8` and the companion commands such as `/pet appearance`
   start it again.
 
 ## Privacy
@@ -216,7 +214,6 @@ execution API.
   snapshot until the turn finishes.
 - **One source at a time.** The companion's activity detail follows one session.
   Other terminals show their own state word and mark, not the detail.
-- **`/pet window` is macOS only** and needs the Codewhale Pet app.
 - **Sound needs `ffplay`** and one terminal holds the output at a time.
 - **The chosen view is not saved.** It lasts for this run of Codewhale,
   including session switches; a restart begins on `whale`.
@@ -224,8 +221,8 @@ execution API.
   only on the main view.
 - **`Ctrl+]` cannot open the work bar** while the pet main view is showing. Use
   `/pet off` first.
-- **The browser studio and the macOS window are not views in the ring**, because
-  each press would start a process. Use `F8` and `F9`.
+- **The browser studio is not a view in the ring**, because each press would
+  start a process. Use `F8`.
 - **No sixel or iTerm2 images.** The `pixels` view draws only through kitty
   graphics.
 

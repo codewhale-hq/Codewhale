@@ -60,7 +60,7 @@
   "PetModePaneHint": "{switch} 보기 전환",
   "PetModeAgentHints": "{select} 선택 · {open} 대화 기록",
   "PetModeReplyHints": "{scroll} 스크롤 · {latest} 최신으로",
-  "PetModeCompanionHints": "{sound} 소리 · {browser} 외형 · {window} 창",
+  "PetModeCompanionHints": "{sound} 소리 · {browser} 외형",
   "PetModeInspectHint": "{inspect} 답변 및 에이전트 · /pet off 기본 보기",
   "PetModeViewHint": "{cycle} 보기: {view}",
   "PetViewNeeds": "{view}에는 {requirement} 필요 · {shown} 표시 중",

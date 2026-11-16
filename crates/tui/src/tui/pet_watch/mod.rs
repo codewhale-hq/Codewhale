@@ -45,7 +45,6 @@ pub enum Control {
     },
     Sound,
     Browser,
-    Window,
     Select,
     Scroll(i16),
     FocusAgents,
@@ -387,7 +386,7 @@ fn metadata(event: &Event, turn_id: Option<&str>) -> Option<String> {
 pub fn command(app: &mut App, control: Control) -> bool {
     if matches!(
         control,
-        Control::Appearance { .. } | Control::Browser | Control::Window | Control::Select
+        Control::Appearance { .. } | Control::Browser | Control::Select
     ) {
         app.pet_watch.revive();
     }
@@ -407,7 +406,6 @@ fn apply(state: &mut PetWatch, control: Control, agents: &[codewhale_ratatui::Su
             state.send(Command::Appearance { body, language });
         }
         Control::Browser => state.send(Command::Browser),
-        Control::Window => state.send(Command::Window),
         Control::Select => state.send(Command::Select),
         Control::Sound => state.sound_requested = !state.sound_requested,
         Control::Scroll(delta) => state.full.scroll(agents, delta),
@@ -485,9 +483,6 @@ pub fn handle_key(app: &mut App, key: &crossterm::event::KeyEvent) -> bool {
         }
         Some(Id::PetBrowser) if showing => {
             command(app, Control::Browser);
-        }
-        Some(Id::PetWindow) if showing => {
-            command(app, Control::Window);
         }
         _ => return false,
     }

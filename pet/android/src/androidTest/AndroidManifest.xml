@@ -1,8 +1,0 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application>
-        <!-- Instrumentation-only, synthetic local-file fixture. -->
-        <provider android:name="codewhale.pet.PetLiveTestProvider"
-            android:authorities="dev.shannonlabs.codewhale.pet.test.live"
-            android:exported="true" />
-    </application>
-</manifest>

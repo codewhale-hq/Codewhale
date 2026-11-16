@@ -60,7 +60,7 @@
   "PetModePaneHint": "{switch} змінити вигляд",
   "PetModeAgentHints": "{select} вибрати · {open} розмова",
   "PetModeReplyHints": "{scroll} прокручування · {latest} до останнього",
-  "PetModeCompanionHints": "{sound} звук · {browser} зовнішність · {window} вікно",
+  "PetModeCompanionHints": "{sound} звук · {browser} зовнішність",
   "PetModeInspectHint": "{inspect} відповіді й агенти · /pet off звичайний вигляд",
   "PetModeViewHint": "{cycle} вигляд: {view}",
   "PetViewNeeds": "Для {view} потрібно {requirement} · показано {shown}",
