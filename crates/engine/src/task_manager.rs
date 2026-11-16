@@ -5196,7 +5196,7 @@ mod tests {
 
     #[tokio::test]
     async fn persists_and_recovers_task_records() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager =
             TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
                 .await?;
@@ -5419,7 +5419,7 @@ mod tests {
 
     #[tokio::test]
     async fn preallocated_task_ids_are_validated_and_collision_safe() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager =
             TaskManager::start_with_executor(test_config(root), Arc::new(MockExecutor)).await?;
         let request = NewTaskRequest::from_prompt("preallocated owner identity");
@@ -5454,7 +5454,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_queue_write_leaves_no_replayable_task_record() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager =
             TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
                 .await?;
@@ -5487,7 +5487,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_tasks_scopes_results_to_workspace_before_limit() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager =
             TaskManager::start_with_executor(test_config(root), Arc::new(MockExecutor)).await?;
 
@@ -5516,7 +5516,7 @@ mod tests {
 
     #[tokio::test]
     async fn task_controls_are_session_owned_and_legacy_records_fail_closed() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager =
             TaskManager::start_with_executor(test_config(root), Arc::new(MockExecutor)).await?;
 
@@ -5767,7 +5767,7 @@ mod tests {
         // #3757 boot-persist narrowing: TaskManager::start must persist only
         // the reconciled queue and the running->failed recoveries — a
         // completed task's file must be byte-identical across a restart.
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager =
             TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
                 .await?;
@@ -5799,7 +5799,7 @@ mod tests {
 
     #[test]
     fn legacy_running_tasks_are_preserved_without_assuming_owner_death() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let tasks_dir = root.join("tasks");
         fs::create_dir_all(&tasks_dir)?;
         let queue_path = root.join("queue.json");
@@ -5892,9 +5892,8 @@ mod tests {
 
     #[tokio::test]
     async fn default_workspace_updates_for_future_tasks() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
-        let new_workspace =
-            std::env::temp_dir().join(format!("deepseek-workspace-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
+        let new_workspace = crate::test_support::test_scratch_dir("deepseek-workspace");
         let manager =
             TaskManager::start_with_executor(test_config(root), Arc::new(MockExecutor)).await?;
 
@@ -5910,7 +5909,7 @@ mod tests {
 
     #[tokio::test]
     async fn record_tool_metadata_updates_explicit_task() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager =
             TaskManager::start_with_executor(test_config(root), Arc::new(MockExecutor)).await?;
 
@@ -5966,7 +5965,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_running_task_marks_canceled() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager = TaskManager::start_with_executor(
             test_config(root),
             Arc::new(CooperativeIdleCancelExecutor),
@@ -5987,7 +5986,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_finished_task_returns_atomic_already_finished_outcome() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager =
             TaskManager::start_with_executor(test_config(root), Arc::new(MockExecutor)).await?;
         let task = manager
@@ -6010,7 +6009,7 @@ mod tests {
     // silently elevate the spawned task's privileges.
     #[tokio::test]
     async fn add_task_without_optional_fields_does_not_grant_shell_or_auto_approve() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager =
             TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
                 .await?;
@@ -6053,7 +6052,7 @@ mod tests {
     /// `auto_approve` bit is only read when no posture is given.
     #[tokio::test]
     async fn add_task_pins_the_posture_its_thread_starts_on() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager =
             TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
                 .await?;
@@ -6080,7 +6079,7 @@ mod tests {
     /// durably queued.
     #[tokio::test]
     async fn add_task_refuses_a_posture_the_thread_would_reject() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager =
             TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
                 .await?;
@@ -6112,7 +6111,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_newer_task_schema_on_recovery() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager =
             TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
                 .await?;
@@ -6732,7 +6731,7 @@ mod tests {
 
     #[tokio::test]
     async fn never_terminalizing_execution_fails_with_idle_timeout() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager =
             TaskManager::start_with_executor(short_test_config(root), Arc::new(DeafHangExecutor))
                 .await?;
@@ -6754,7 +6753,7 @@ mod tests {
 
     #[tokio::test]
     async fn forced_timeout_keeps_all_partial_message_output() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager = TaskManager::start_with_executor(
             short_test_config(root),
             Arc::new(PartialThenHangExecutor),
@@ -6773,7 +6772,7 @@ mod tests {
 
     #[tokio::test]
     async fn cooperative_cancel_after_idle_timeout_keeps_timeout_reason() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager = TaskManager::start_with_executor(
             short_test_config(root),
             Arc::new(CooperativeIdleCancelExecutor),
@@ -6797,7 +6796,7 @@ mod tests {
 
     #[tokio::test]
     async fn heartbeat_status_does_not_refresh_idle_timeout() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager =
             TaskManager::start_with_executor(short_test_config(root), Arc::new(HeartbeatExecutor))
                 .await?;
@@ -6812,7 +6811,7 @@ mod tests {
 
     #[tokio::test]
     async fn active_progress_keeps_idle_alive_until_wall_timeout() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager = TaskManager::start_with_executor(
             short_test_config(root),
             Arc::new(ProgressHeartbeatExecutor),
@@ -6829,7 +6828,7 @@ mod tests {
 
     #[tokio::test]
     async fn cooperative_cancel_after_wall_timeout_keeps_timeout_reason() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager = TaskManager::start_with_executor(
             wall_timeout_test_config(root),
             Arc::new(CooperativeProgressCancelExecutor),
@@ -6853,7 +6852,7 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_terminalizes_a_stuck_running_task() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager =
             TaskManager::start_with_executor(short_test_config(root), Arc::new(DeafHangExecutor))
                 .await?;
@@ -6870,7 +6869,7 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_cancel_signal_does_not_spin_during_grace() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let polls = Arc::new(AtomicUsize::new(0));
         let manager = TaskManager::start_with_executor(
             short_test_config(root),
@@ -6898,7 +6897,7 @@ mod tests {
 
     #[tokio::test]
     async fn forced_idle_timeout_releases_the_worker_for_later_tasks() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager = TaskManager::start_with_executor(
             short_test_config(root),
             Arc::new(PromptRouterExecutor),
@@ -6935,7 +6934,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_then_completed_result_is_recorded_as_canceled() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager = TaskManager::start_with_executor(
             test_config(root),
             Arc::new(CompleteAfterCancelExecutor),
@@ -6955,7 +6954,7 @@ mod tests {
 
     #[tokio::test]
     async fn long_stream_timeline_is_bounded() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let manager =
             TaskManager::start_with_executor(test_config(root.clone()), Arc::new(FloodExecutor))
                 .await?;
@@ -7877,7 +7876,7 @@ mod tests {
 
     #[tokio::test]
     async fn supervisor_wall_clock_follows_human_wait_signals() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
         let mut config = short_test_config(root);
         // Short config's fail-safe cap (300ms) is shorter than the wait
         // below; this test pins the wall exclusion, not the fail-safe.

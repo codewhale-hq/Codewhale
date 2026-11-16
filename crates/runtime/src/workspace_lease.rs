@@ -590,7 +590,7 @@ mod tests {
     use super::*;
 
     fn temp_workspace(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("cw-ws-lease-{}-{}", tag, std::process::id()));
+        let dir = crate::test_support::test_scratch_dir(&format!("cw-ws-lease-{tag}"));
         std::fs::create_dir_all(&dir).expect("create workspace");
         dir
     }

@@ -1583,7 +1583,7 @@ async fn spawn_test_server() -> Result<
         tokio::task::JoinHandle<()>,
     )>,
 > {
-    let root = std::env::temp_dir().join(format!("deepseek-runtime-api-{}", Uuid::new_v4()));
+    let root = codewhale_engine::test_support::test_scratch_dir("deepseek-runtime-api");
     let sessions_dir = root.join("sessions");
     spawn_test_server_with_root(root, sessions_dir).await
 }
@@ -1597,7 +1597,7 @@ async fn spawn_test_server_with_config_path(
         tokio::task::JoinHandle<()>,
     )>,
 > {
-    let root = std::env::temp_dir().join(format!("codewhale-config-api-{}", Uuid::new_v4()));
+    let root = codewhale_engine::test_support::test_scratch_dir("codewhale-config-api");
     let sessions_dir = root.join("sessions");
     let workspace = root.join("workspace");
     fs::create_dir_all(&root)?;
@@ -1625,7 +1625,7 @@ async fn spawn_test_server_with_config_path_and_profile(
         tokio::task::JoinHandle<()>,
     )>,
 > {
-    let root = std::env::temp_dir().join(format!("codewhale-config-api-{}", Uuid::new_v4()));
+    let root = codewhale_engine::test_support::test_scratch_dir("codewhale-config-api");
     let sessions_dir = root.join("sessions");
     let workspace = root.join("workspace");
     fs::create_dir_all(&root)?;
@@ -2162,7 +2162,7 @@ async fn mcp_tools_endpoint_is_passive_until_connect_requested() -> Result<()> {
 
 #[tokio::test]
 async fn runtime_token_guard_protects_v1_routes() -> Result<()> {
-    let root = std::env::temp_dir().join(format!("deepseek-runtime-api-{}", Uuid::new_v4()));
+    let root = codewhale_engine::test_support::test_scratch_dir("deepseek-runtime-api");
     let sessions_dir = root.join("sessions");
     let token = "local-test-token".to_string();
     let Some((addr, _runtime_threads, handle)) =
@@ -9515,7 +9515,7 @@ fn snapshots_endpoint_lists_workspace_snapshots() -> Result<()> {
 async fn spawn_server_with_saved_sessions(
     sessions: &[(&str, &str, bool)],
 ) -> Result<Option<(SocketAddr, PathBuf, tokio::task::JoinHandle<()>)>> {
-    let root = std::env::temp_dir().join(format!("codewhale-session-routes-{}", Uuid::new_v4()));
+    let root = codewhale_engine::test_support::test_scratch_dir("codewhale-session-routes");
     let sessions_dir = root.join("sessions");
     let workspace = root.join("workspace");
     fs::create_dir_all(&workspace)?;
@@ -26588,7 +26588,7 @@ mod thread_snapshot_ownership {
     }
 
     fn test_root(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("codewhale-6621-{name}-{}", Uuid::new_v4()))
+        codewhale_engine::test_support::test_scratch_dir(&format!("codewhale-6621-{name}"))
     }
 
     /// A session save must not be refused because a finished turn still lists

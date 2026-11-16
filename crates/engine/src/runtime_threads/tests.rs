@@ -2396,7 +2396,7 @@ mod recovery {
 }
 
 fn test_runtime_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("deepseek-runtime-threads-{}", Uuid::new_v4()))
+    crate::test_support::test_scratch_dir("deepseek-runtime-threads")
 }
 
 const EVENT_PROCESS_ROLE_ENV: &str = "CODEWHALE_TEST_EVENT_PROCESS_ROLE";
@@ -11164,7 +11164,7 @@ async fn update_thread_workspace_rejects_empty_path() -> Result<()> {
 #[tokio::test]
 async fn workspace_restore_guard_rejects_overlapping_active_turns() -> Result<()> {
     let manager = test_manager(test_runtime_dir())?;
-    let root = std::env::temp_dir().join(format!("codewhale-restore-guard-{}", Uuid::new_v4()));
+    let root = crate::test_support::test_scratch_dir("codewhale-restore-guard");
     let busy = root.join("busy");
     let nested = busy.join("nested");
     let idle = root.join("idle");

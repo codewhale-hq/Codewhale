@@ -2751,9 +2751,9 @@ impl Engine {
                 }
                 #[cfg(any(test, feature = "test-support"))]
                 {
-                    Ok(ApprovalReceiptStore::new(std::env::temp_dir().join(
-                        format!("codewhale-approval-tests-{}", uuid::Uuid::new_v4()),
-                    )))
+                    Ok(ApprovalReceiptStore::new(
+                        crate::test_support::test_scratch_dir("codewhale-approval-tests"),
+                    ))
                 }
             },
             EngineHostSetup::approval_store,

@@ -16445,10 +16445,7 @@ pub fn stub_runtime() -> SubAgentRuntime {
         parent_pinned_project_instructions: std::sync::Arc::default(),
         parent_auto_review_state: None,
         approval_receipt_store: Some(Ok(crate::approval_log::ApprovalReceiptStore::new(
-            std::env::temp_dir().join(format!(
-                "codewhale-child-approval-tests-{}",
-                uuid::Uuid::new_v4()
-            )),
+            crate::test_support::test_scratch_dir("codewhale-child-approval-tests"),
         ))),
         mcp_pool: None,
         mcp_auth_context: crate::mcp::process_mcp_auth_context(),

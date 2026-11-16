@@ -607,10 +607,7 @@ mod tests {
 
     use std::path::Path;
 
-    use std::time::SystemTime;
-
     use super::test_support::*;
-    use std::time::UNIX_EPOCH;
 
     struct EnvGuard {
         _home: crate::test_support::EnvVarGuard,
@@ -642,11 +639,7 @@ mod tests {
     }
 
     fn temp_root(prefix: &str) -> std::path::PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+        crate::test_support::test_scratch_dir(prefix)
     }
 
     #[test]
