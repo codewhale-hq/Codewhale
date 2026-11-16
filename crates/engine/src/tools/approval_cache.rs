@@ -146,15 +146,6 @@ pub fn build_approval_grouping_key(tool_name: &str, input: &serde_json::Value) -
     ApprovalKey(fingerprint)
 }
 
-/// Exact and grouping keys for one call, as the engine puts them on an
-/// approval request. A tool with an [`approval_scope`] (extension tools) is
-/// keyed `<scope>:<tool_name>:<hash of input>` for both, so its grants are
-/// bound to the reviewed plugin build and never widened to a family; every
-/// other tool keeps [`build_approval_key`] / [`build_approval_grouping_key`].
-/// The registry's captured owning agent prefixes both keys with `agent:<id>:`,
-/// so its grants and denials never cover a parent or sibling's call.
-///
-/// [`approval_scope`]: crate::tools::spec::ToolSpec::approval_scope
 /// Prefix on approval keys minted for human-confirmed `plugin_manager` changes.
 pub const CREATOR_HUMAN_APPROVAL_KEY_PREFIX: &str = "creator-human:";
 
@@ -166,6 +157,15 @@ pub fn forces_full_access_prompt_for_key(approval_key: &str) -> bool {
         || approval_key.starts_with(CREATOR_HUMAN_APPROVAL_KEY_PREFIX)
 }
 
+/// Exact and grouping keys for one call, as the engine puts them on an
+/// approval request. A tool with an [`approval_scope`] (extension tools) is
+/// keyed `<scope>:<tool_name>:<hash of input>` for both, so its grants are
+/// bound to the reviewed plugin build and never widened to a family; every
+/// other tool keeps [`build_approval_key`] / [`build_approval_grouping_key`].
+/// The registry's captured owning agent prefixes both keys with `agent:<id>:`,
+/// so its grants and denials never cover a parent or sibling's call.
+///
+/// [`approval_scope`]: crate::tools::spec::ToolSpec::approval_scope
 #[must_use]
 pub fn approval_keys_for_call(
     registry: Option<&crate::tools::ToolRegistry>,
