@@ -600,17 +600,13 @@ fn modelstudio_reasoning_effort_for_model(effort: &str) -> Option<&'static str> 
 /// would make the same host DeepSeek for strict tools and Responses but not for
 /// reasoning, silently dropping the toggle those configs rely on.
 fn is_deepseek_chat_host(base_url: &str) -> bool {
-    let trimmed = base_url.trim();
-    let Some((scheme, authority_and_path)) = trimmed.split_once("://") else {
-        return false;
-    };
-    if !scheme.eq_ignore_ascii_case("https") {
-        return false;
-    }
-    let authority = authority_and_path.split('/').next().unwrap_or_default();
-    let host_and_port = authority.rsplit('@').next().unwrap_or_default();
-    let host = host_and_port.split(':').next().unwrap_or_default();
-    host.eq_ignore_ascii_case("api.deepseek.com") || host.eq_ignore_ascii_case("api.deepseeki.com")
+    reqwest::Url::parse(base_url.trim()).is_ok_and(|url| {
+        url.scheme() == "https"
+            && matches!(
+                url.host_str(),
+                Some("api.deepseek.com" | "api.deepseeki.com")
+            )
+    })
 }
 
 /// Final reasoning-control pass shared by streaming and non-streaming Chat

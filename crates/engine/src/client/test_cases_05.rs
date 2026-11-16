@@ -1794,6 +1794,8 @@
         for base_url in [
             "https://api.deepseek.com.evil.example/v1",
             "https://api.deepseek.com@evil.example/v1",
+            "https://relay.example?x=@api.deepseek.com/v1",
+            "https://relay.example#@api.deepseek.com/v1",
             "http://api.deepseek.com/v1",
         ] {
             let mut body = json!({});
