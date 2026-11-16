@@ -3777,17 +3777,9 @@ mod tests {
 
         let mut registry = codewhale_plugins::PluginDiscoveryContext::capture_pre_dotenv()
             .registry_for_workspace(&workspace);
-        let token = registry.get("bundle").unwrap().review_token();
-        registry
-            .trust_reviewed(
-                "bundle",
-                codewhale_plugins::host_services::ReviewApproval::person_without_services(
-                    codewhale_plugins::host_services::PersonVia::ApprovalCard,
-                ),
-                &token,
-            )
-            .unwrap();
-        registry.set_enabled("bundle", true).unwrap();
+        let registry_mut = std::sync::Arc::make_mut(&mut registry);
+        registry_mut.trust("bundle").unwrap();
+        registry_mut.enable("bundle").unwrap();
         crate::commands::user_registry::install_plugin_registry(&workspace, &registry);
 
         let app = App::new_with_plugin_registry(
