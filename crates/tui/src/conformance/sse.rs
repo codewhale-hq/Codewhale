@@ -306,6 +306,8 @@ fn request_for_case(case: &Value) -> MessageRequest {
         stream: Some(true),
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     }
 }
 

@@ -17,7 +17,8 @@ import {reviewedSkillModule} from './skill-filesystem.ts'
 import {reviewedHookModule} from './shell-hooks.ts'
 import {admitReviewedClosure,importReviewedModule} from './resolve-hooks.ts'
 import { PERSONA, reviewedPersonaModule } from './persona.ts'
-import { AGENT_PRESETS, defineReviewedAgentPresets, type PresetCatalog, type PreparedPreset } from './agent-presets.ts'
+import { AGENT_PRESETS, defineReviewedAgentPresets, issuePresetReceipt, revokePresetReceipt, type PresetCatalog, type PreparedPreset } from './agent-presets.ts'
+import { reviewedCotTranslationModule } from './cot-translation.ts'
 import compatibility from './compatibility.json' with { type: 'json' }
 
 const MAX_LAYERS = 64
@@ -108,6 +109,10 @@ function checkRows(rows: EntryOptions[], depth = 0, count = { value: 0 }): void 
     if (row === null || typeof row !== 'object' || Array.isArray(row)) throw new Error('entry row must be an object')
     assignmentSafe(row)
     if (row.id !== undefined && (typeof row.id !== 'string' || row.id.length > 512)) throw new Error('entry id must be a bounded string')
+    const isolate = (row as { isolate?: unknown }).isolate
+    if (isolate !== undefined && isolate !== null && (typeof isolate !== 'object' || Array.isArray(isolate) || Object.hasOwn(isolate, 'translator'))) {
+      throw new Error('composition row cannot override translator isolation')
+    }
     if (!(row.group===true && row.name===undefined) && (typeof row.name !== 'string' || row.name.length === 0 || row.name.length > 4096)) throw new Error('entry name must be a bounded string')
     if ((row.group || row.name==='cordis:group' || row.name==='@deepseek-ai/cordis-plugin-group') && Array.isArray(row.config)) checkRows(row.config, depth + 1, count)
   }
@@ -213,7 +218,7 @@ class ReviewedTree extends EntryTree {
     this.base = base
     this.spec = spec
     const modules = new Map<string, ReviewedModule>()
-    if (!Array.isArray(spec.modules) || spec.modules.length > MAX_ROWS || !spec.files || Object.keys(spec.files).length > 4096) throw new Error('invalid reviewed module closure')
+    if (!Array.isArray(spec.modules) || spec.modules.length > MAX_ROWS || !spec.files || Object.keys(spec.files).length > 16384) throw new Error('invalid reviewed module closure')
     for (const module of spec.modules) {
       if (!module || typeof module.name !== 'string' || module.name.length === 0 || module.name.length > 4096 || modules.has(module.name) || !plainRelative(module.path) || !SHA256.test(module.sha256)
         || spec.files[module.path] !== module.sha256) throw new Error('module map differs from reviewed closure')
@@ -233,6 +238,11 @@ class ReviewedTree extends EntryTree {
     if(name==='@deepseek-ai/dsh-skill-filesystem')return reviewedSkillModule()
     if(name==='@deepseek-ai/dsh-hooks-claude-code')return reviewedHookModule('claude-code',fileURLToPath(this.base),this.spec.files)
     if(name==='@deepseek-ai/dsh-hooks-codex')return reviewedHookModule('codex',fileURLToPath(this.base),this.spec.files)
+    const rowBridge = Object.hasOwn(compatibility.row_bridges, name)
+      ? (compatibility.row_bridges as Record<string, string>)[name]
+      : undefined
+    if (rowBridge === 'host-spine') return Object.freeze({ name, apply() {} })
+    if (rowBridge === 'cot-translation') return reviewedCotTranslationModule()
     if (UNSUPPORTED_ROWS.has(name)) throw new Error(`${name}: ${UNSUPPORTED_ROWS.get(name)}`)
     const module = this.modules.get(name)
     if (!module) throw new Error(`row requires ${JSON.stringify(name)}, absent from the reviewed module closure`)
@@ -334,7 +344,7 @@ export async function mountReviewedComposition(ctx: Context, baseUrl: string, sp
   const review = reviewComposition(spec)
   // Anonymous legacy structural groups are explicit Group fibers; preserve the
   // source patch identity comparison and normalize only the mounted projection.
-  function groups(rows: EntryOptions[]) { for (const row of rows) { if (row.group===true && row.name===undefined) row.name='cordis:group'; if (row.group===true && Array.isArray(row.config)) groups(row.config) } }
+  function groups(rows: EntryOptions[]) { for (const row of rows) { if (row.group===true && row.name===undefined) row.name='cordis:group'; if (row.name===AGENT_PRESETS) row.isolate = { ...row.isolate, agentPresets: true }; if ((row.group===true || row.name==='cordis:group' || row.name==='@deepseek-ai/cordis-plugin-group') && Array.isArray(row.config)) groups(row.config) } }
   groups(review.entries)
   const installed = loaders.get(ctx.root)
   if (!installed) throw new Error('composition loader was not installed by this host')
@@ -343,6 +353,7 @@ export async function mountReviewedComposition(ctx: Context, baseUrl: string, sp
     baseUrl,
     [Context.isolate]: Object.assign(Object.create(ctx[Context.isolate]), {
       loader: installed.ctx[Context.isolate].loader,
+      translator: Symbol('translator'),
     }),
   })
   const config: ReviewedMountConfig = { baseUrl, spec, review, releaseClosure: admitReviewedClosure(baseUrl, spec.files) }
@@ -387,6 +398,8 @@ function leakedServices(ctx: Context, mount: Fiber): string[] {
 export async function mountReviewedPreset(ctx: Context, baseUrl: string, spec: ReviewedComposition, catalog: PresetCatalog, selected: PreparedPreset): Promise<CompositionMount> {
   if (!selected) throw new Error('agent-presets: explicit selection is required when no default is configured')
   const entries = structuredClone(reviewComposition(spec).entries)
+  const snapshot = { catalog, selected, base_url: baseUrl }
+  const receipt = issuePresetReceipt(snapshot)
   let found = 0
   function prepare(rows: EntryOptions[]) {
     for (const row of rows) {
@@ -395,14 +408,22 @@ export async function mountReviewedPreset(ctx: Context, baseUrl: string, spec: R
       } else if (row.name === AGENT_PRESETS) {
         found++
         row.isolate = { ...row.isolate, agentPresets: true }
-        row.config = { codewhale_reviewed: { catalog, selected, base_url: baseUrl } }
+        row.config = { codewhale_reviewed: snapshot, codewhale_receipt: receipt }
       }
     }
   }
   prepare(entries)
-  if (found !== 1) throw new Error('exactly one raw roster row is required for a selected preset')
+  if (found !== 1) {
+    revokePresetReceipt(receipt)
+    throw new Error('exactly one raw roster row is required for a selected preset')
+  }
   const source = JSON.stringify([{ insert: entries }])
-  const top = await mountReviewedComposition(ctx, baseUrl, { ...spec, layers: [{ path: 'selected-preset.json', sha256: digest(source), source }] })
+  let top: CompositionMount
+  try {
+    top = await mountReviewedComposition(ctx, baseUrl, { ...spec, layers: [{ path: 'selected-preset.json', sha256: digest(source), source }] })
+  } finally {
+    revokePresetReceipt(receipt)
+  }
   try {
     // Service injection requires ACTIVE. Build the raw roster's scope first,
     // then mount its selected subtree, matching upstream's later standing mount.

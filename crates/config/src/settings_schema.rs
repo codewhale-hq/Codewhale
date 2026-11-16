@@ -605,7 +605,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
     def(
         "show_thinking",
         SettingKind::Bool(SHOW_THINKING),
-        "false",
+        "true",
         ui(
             TAB_APPEARANCE,
             "display",
@@ -1313,7 +1313,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
     def(
         "telemetry",
         SettingKind::Bool(TELEMETRY),
-        "false",
+        "true",
         ui(
             TAB_TRUST,
             "network",
@@ -1544,6 +1544,12 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
         "operate_deprecation_shown",
         SettingKind::Bool(ON_OFF),
         "false",
+        None,
+    ),
+    def(
+        "account_preferences_notice_shown",
+        SettingKind::String,
+        "",
         None,
     ),
     // Round 3 work-bar placement migration ran once (`top` → `bottom`).

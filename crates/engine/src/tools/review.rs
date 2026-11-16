@@ -2889,6 +2889,7 @@ mod tests {
         first.server_tool_use = Some(codewhale_models::ServerToolUsage {
             code_execution_requests: Some(1),
             tool_search_requests: None,
+            ..Default::default()
         });
         let second = Usage {
             input_tokens: 20,
@@ -2900,6 +2901,7 @@ mod tests {
             server_tool_use: Some(codewhale_models::ServerToolUsage {
                 code_execution_requests: Some(2),
                 tool_search_requests: Some(3),
+                ..Default::default()
             }),
             ..Default::default()
         };

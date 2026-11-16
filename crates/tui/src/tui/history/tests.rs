@@ -2288,6 +2288,7 @@ fn a_plan_card_surfaces_every_populated_artifact_section() {
             verification_plan: Some("Run focused renderer tests".to_string()),
             risks_and_unknowns: Some("Metadata-only plans can disappear".to_string()),
             handoff_packet: Some("Next agent should inspect relay output".to_string()),
+            replan_if: vec!["Renderer omits plan card sections".to_string()],
             items: vec![codewhale_engine::tools::plan::PlanItemArg {
                 step: "Render artifact sections".to_string(),
                 status: StepStatus::InProgress,
@@ -2307,6 +2308,8 @@ fn a_plan_card_surfaces_every_populated_artifact_section() {
         "file:",
         "verify:",
         "handoff:",
+        "replan if:",
+        "Renderer omits plan card sections",
         "Render artifact sections",
     ] {
         assert!(visible.contains(needle), "missing {needle:?}: {visible}");

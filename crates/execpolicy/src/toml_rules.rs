@@ -70,7 +70,7 @@ impl ExecPolicyConfig {
         // broader auto-approval.
         let expansion = crate::shell_expand::expand_command(command);
         let prefix_eligible = prefix_grant_is_eligible(command, &expansion);
-        let deny_targets = expansion.commands;
+        let deny_targets: Vec<String> = expansion.deny_commands().map(ToOwned::to_owned).collect();
         // A command word only known at run time cannot be checked against a
         // deny pattern: fail closed while any deny pattern is configured, and
         // never let an allow pattern written for the outer command approve

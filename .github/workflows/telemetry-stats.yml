@@ -1,0 +1,32 @@
+name: Telemetry Stats
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Tests, types and bundle check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: telemetry-stats/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+        working-directory: telemetry-stats
+      - name: Run tests
+        run: npm test
+        working-directory: telemetry-stats
+      - name: TypeScript type check
+        run: npm run typecheck
+        working-directory: telemetry-stats
+      - name: Bundle check
+        run: npm run check
+        working-directory: telemetry-stats

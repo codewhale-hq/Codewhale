@@ -12,7 +12,7 @@
 # Or mount an env file:
 #   docker run --rm -it --env-file .env codewhale
 
-ARG RUST_VERSION=1.88
+ARG RUST_VERSION=1.100.0
 
 # ── Stage 1: Build ────────────────────────────────────────────────────
 FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-slim-bookworm AS builder

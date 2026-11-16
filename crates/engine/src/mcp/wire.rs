@@ -33,6 +33,21 @@ impl std::fmt::Display for McpSessionRejected {
 
 impl std::error::Error for McpSessionRejected {}
 
+#[derive(Debug)]
+pub(super) struct McpServerReplyUnsupported(pub String);
+
+impl std::fmt::Display for McpServerReplyUnsupported {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for McpServerReplyUnsupported {}
+
+pub(super) fn is_mcp_server_reply_unsupported_error(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<McpServerReplyUnsupported>().is_some()
+}
+
 /// The transport refused the session id, so the server provably did not run
 /// the request. This is the only failure after which a non-idempotent
 /// `tools/call` may be replayed on a fresh connection. Typed, not matched on

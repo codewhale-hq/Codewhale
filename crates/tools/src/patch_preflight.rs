@@ -437,11 +437,10 @@ where
 
     // Parse hunk lines
     let mut hunk_lines = Vec::new();
-    let expected_lines = old_count.max(new_count) + old_count.min(new_count);
     let mut old_remaining = old_count;
     let mut new_remaining = new_count;
 
-    for _ in 0..expected_lines * 2 {
+    loop {
         // `--- ` opens the next file section once this hunk's counts are
         // spent, or when `+++ ` follows (a header after a miscounted hunk).
         // Otherwise it is a removed line whose text starts `-- `. Reading it
@@ -456,7 +455,6 @@ where
         if next_file_header {
             break;
         }
-        // Allow for more lines than expected
         match lines.peek() {
             Some(line) if line.starts_with("@@") => break,
             Some(line) if line.starts_with('-') => {

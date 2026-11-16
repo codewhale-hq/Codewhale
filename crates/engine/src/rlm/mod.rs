@@ -15,6 +15,7 @@
 use codewhale_models::Usage;
 
 pub mod bridge;
+pub(crate) mod kernel;
 pub mod prompt;
 pub mod session;
 pub mod turn;
@@ -46,6 +47,7 @@ mod tests {
             server_tool_use: Some(codewhale_models::ServerToolUsage {
                 code_execution_requests: Some(2),
                 tool_search_requests: Some(1),
+                ..Default::default()
             }),
             ..Usage::default()
         };
@@ -63,6 +65,7 @@ mod tests {
             Some(codewhale_models::ServerToolUsage {
                 code_execution_requests: Some(2),
                 tool_search_requests: Some(1),
+                ..Default::default()
             })
         );
     }

@@ -335,7 +335,7 @@ impl DisplayNormalizer {
 
     pub fn push(&mut self, text: &str, tag: usize, emit: &mut impl FnMut(DisplayGrapheme<'_>)) {
         for ch in text.chars() {
-            if codewhale_secrets::sanitize::is_bidi_control(ch) {
+            if codewhale_sanitize::sanitize::is_bidi_control(ch) {
                 continue;
             }
             let ch = if ch != '\t' && (ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}')) {

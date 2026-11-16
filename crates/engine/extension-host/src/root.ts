@@ -1,5 +1,5 @@
 import { ReviewedLoader, installCompositionLoader } from './dsh/composition.ts'
-import { DSH_ADAPTERS, type AdapterHost, type DshAdapter } from './dsh/adapters.ts'
+import { BUILTIN_DSH_ADAPTERS, DSH_ADAPTERS, type AdapterHost, type DshAdapter } from './dsh/adapters.ts'
 /**
  * The Cordis root that plugin fibers run under.
  *
@@ -70,6 +70,7 @@ export const REFUSED_SERVICES = new Set(compatibility.refused_services)
 /** Services the root provides; `inject` of anything else fails activation. */
 const PROVIDED_SERVICES = new Set(Object.values(compatibility.provided_services).flat())
 const CORDIS_SERVICES = new Set(compatibility.provided_services.cordis)
+const CREATOR_SERVICES = new Set(['pluginManager', 'sandboxPolicy', 'approval'])
 
 const ACTIVATE_DEADLINE_MS = 5_000
 const DISPOSE_DEADLINE_MS = 2_000
@@ -138,6 +139,7 @@ function withDeadline<T>(promise: Promise<T>, ms: number, label: string): Promis
 
 export interface ToolInvocation {
   owner: OwnerRecord
+  callId: string
   session: object | undefined
   agent: object | undefined
   questionTicket: string | undefined
@@ -432,11 +434,15 @@ export class HostRoot {
           : undefined
       },
       log: (level, message, owner) => host.log(level, message, owner),
-      broker: async (ctx, service, method, input) => {
+      broker: async (ctx, service, method, input, signal?: AbortSignal) => {
+        if (signal !== undefined && !(signal instanceof AbortSignal)) {
+          throw new RpcError(ErrorCode.InvalidParams, 'signal must be an AbortSignal')
+        }
         const invocation = adapterHost.liveInvocation(ctx)
         const ticket = invocation?.brokerTickets.get(service)
         if (invocation === undefined || ticket === undefined) throw new RpcError(ErrorCode.NotAvailable, `the ${String(service).slice(0, 64)} broker is only available to a live tool invocation the core gave a ticket for it`)
-        return rpc.request<unknown>('dsh/broker', { owner: invocation.owner.ref, ticket, service, method, input }, invocation.signal)
+        const combined = signal === undefined ? invocation.signal : AbortSignal.any([invocation.signal, signal])
+        return rpc.request<unknown>('dsh/broker', { owner: invocation.owner.ref, ticket, service, method, input }, combined)
       },
     }
     const shims = new Map<string, new (ctx: any) => Service>([
@@ -459,7 +465,18 @@ export class HostRoot {
       ...[...PROVIDED_SERVICES].filter((name) => !CORDIS_SERVICES.has(name) && !shims.has(name)).map((name) => `${name} is declared in compatibility.json but has no installed service`),
     ]
     if (mismatched.length > 0) throw new Error(`DSH provided services disagree with the installed services: ${mismatched.join('; ')}`)
-    for (const [name, shim] of shims) {
+    const builtinExtras: Array<[string, new (ctx: any) => Service]> = []
+    if (tier === 'builtin') {
+      for (const adapter of BUILTIN_DSH_ADAPTERS) {
+        const shim = adapter.define(adapterHost)
+        if (shims.has(adapter.service)) {
+          shims.set(adapter.service, shim)
+        } else {
+          builtinExtras.push([adapter.service, shim])
+        }
+      }
+    }
+    for (const [name, shim] of [...shims, ...builtinExtras]) {
       shimClasses.set(name, shim)
       root.plugin(shim)
     }
@@ -571,7 +588,9 @@ export class HostRoot {
         return { status: 'ok', tools: [], commands: [] }
       }
       const plugin = pickPlugin(module)
-      const missing = Object.keys(Inject.resolve(plugin.inject)).filter((name) => !PROVIDED_SERVICES.has(name))
+      const creatorAllowed = this.tier === 'builtin' && owner.ref.plugin_id === 'host:creator'
+      const creatorRestricted = this.tier === 'builtin' && !creatorAllowed
+      const missing = Object.keys(Inject.resolve(plugin.inject)).filter((name) => (!PROVIDED_SERVICES.has(name) || (creatorRestricted && CREATOR_SERVICES.has(name))) && !(creatorAllowed && CREATOR_SERVICES.has(name)))
       if (missing.length > 0) {
         const owned = missing.filter((name) => REFUSED_SERVICES.has(name))
         throw new Error(`requires ${missing.map((name) => `\`${name}\``).join(', ')}, not provided by the Codewhale extension host in this phase`
@@ -730,6 +749,7 @@ export class HostRoot {
     const closed = new AbortController()
     const invocation: ToolInvocation = {
       owner: local.owner,
+      callId,
       session: agent?.session,
       agent,
       questionTicket: identity?.question_ticket,
@@ -844,11 +864,30 @@ function renderResult(definition: any, input: unknown, value: unknown): ToolResu
   const content: ContentBlockWire[] = []
   if (Array.isArray(blocks)) {
     for (const block of blocks) {
-      if (!block || typeof block !== 'object' || (block as any).type !== 'text' || typeof (block as any).text !== 'string') {
-        throw new ToolOutputError(definition.name, ['output.render returned an unsupported content block; this host accepts text blocks only'])
+      if (!block || typeof block !== 'object' || Array.isArray(block)) {
+        throw new ToolOutputError(definition.name, ['output.render returned an unsupported content block; this host accepts text or saved image blocks only'])
       }
-      if (Reflect.ownKeys(block).some(key => key !== 'type' && key !== 'text')) throw new ToolOutputError(definition.name, ['output.render returned unsupported text-block fields'])
-      content.push({ type: 'text', text: (block as any).text })
+      const kind = (block as any).type
+      if (kind === 'text') {
+        if (typeof (block as any).text !== 'string') {
+          throw new ToolOutputError(definition.name, ['output.render returned an unsupported content block; this host accepts text or saved image blocks only'])
+        }
+        if (Reflect.ownKeys(block).some(key => key !== 'type' && key !== 'text')) throw new ToolOutputError(definition.name, ['output.render returned unsupported text-block fields'])
+        content.push({ type: 'text', text: (block as any).text })
+      } else if (kind === 'image') {
+        const attachment = (block as any).attachment
+        if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) {
+          throw new ToolOutputError(definition.name, ['output.render returned an unsupported content block; image blocks require a saved attachment reference'])
+        }
+        if (Reflect.ownKeys(block).some(key => key !== 'type' && key !== 'attachment')) throw new ToolOutputError(definition.name, ['output.render returned unsupported image-block fields'])
+        const attachmentId = (attachment as any).attachmentId
+        if (typeof attachmentId !== 'string' || attachmentId.length === 0 || attachmentId.length > 256) {
+          throw new ToolOutputError(definition.name, ['output.render returned an image block without a valid attachmentId'])
+        }
+        content.push({ type: 'image_ref', attachment_id: attachmentId })
+      } else {
+        throw new ToolOutputError(definition.name, ['output.render returned an unsupported content block; this host accepts text or saved image blocks only'])
+      }
     }
   } else {
     content.push({ type: 'text', text: typeof value === 'string' ? value : safeStringify(value) })

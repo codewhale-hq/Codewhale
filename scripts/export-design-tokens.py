@@ -142,6 +142,11 @@ def gpui_geometry(data, digest):
     for mode, stops in data["water"].items():
         ramp = ", ".join(f"#{stop['color']} {stop['at']}%" for stop in stops)
         lines.append(f"  --gpui-water-{mode}: linear-gradient(180deg, {ramp});")
+    for mode, light in data["surface_light"].items():
+        stops = ", ".join(
+            f"rgb({' '.join(str(v) for v in bytes.fromhex(stop['color']['hex']))} / {stop['color']['alpha']:g}) {stop['at']}%"
+            for stop in light["stops"])
+        lines.append(f"  --gpui-surface-light-{mode}: radial-gradient(ellipse at {light['x']}% {light['y']}%, {stops});")
     rise, deep = data["ombre"]["rise"], data["ombre"]["deep"]
     lines.append(f"  --gpui-ombre: linear-gradient(135deg, #{rise}, #{deep});")
     fallbacks = ", ".join(json.dumps(v) for v in data["typography"]["fallbacks"])

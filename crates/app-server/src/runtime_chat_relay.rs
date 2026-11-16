@@ -318,11 +318,14 @@ impl RuntimeChatRelayHost {
         let task_data_dir = private_dir.join("tasks");
         let mut manager_cfg = RuntimeThreadManagerConfig::from_task_data_dir(task_data_dir);
         manager_cfg.data_dir = private_dir.join("runtime");
-        let manager = RuntimeThreadManager::open_with_plugin_registry(
+        let manager = RuntimeThreadManager::open_host(
             execution_config,
             chat_workspace,
             manager_cfg,
             relay_plugin_registry,
+            codewhale_engine::core::engine::EngineHostProfile::Headless,
+            None,
+            None,
         )
         .map_err(|_| "Runtime Chat could not open its isolated native thread store.".to_string())?;
 
@@ -559,6 +562,7 @@ impl RuntimeChatRelayHost {
                 parent_thread_id: None,
                 executor: None,
                 environment: None,
+                agent_preset: None,
                 operation_key: None,
                 model: Some(command.model.clone()),
                 model_provider: Some(command.model_provider.clone()),
@@ -579,6 +583,7 @@ impl RuntimeChatRelayHost {
                 dynamic_tools: Vec::new(),
                 environments: Vec::new(),
                 add_dirs: Vec::new(),
+                disallowed_tools: Vec::new(),
             })
             .await
             .map_err(|_| "Runtime Chat could not create its replay fixture.".to_string())?
@@ -721,8 +726,10 @@ impl RuntimeChatRelayHost {
                     parent_thread_id: None,
                     executor: None,
                     environment: None,
+                    agent_preset: None,
                     dynamic_tools: Vec::new(),
                     environments: Vec::new(),
+                    disallowed_tools: Vec::new(),
                 })
                 .await
                 .map_err(|_| {

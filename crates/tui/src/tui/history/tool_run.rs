@@ -170,6 +170,7 @@ fn tool_display_name(tool: &ToolCell) -> &str {
         ToolCell::Mcp(cell) => cell.tool.as_str(),
         ToolCell::WebSearch(_) => "web_search",
         ToolCell::ViewImage(_) => "view_image",
+        ToolCell::DataDisplay(_) => "show_data",
         ToolCell::Exploring(_) => "explore",
         ToolCell::Exec(_) => "shell",
         ToolCell::PlanUpdate(_) => "update_plan",

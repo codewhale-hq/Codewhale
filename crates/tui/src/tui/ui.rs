@@ -18,7 +18,6 @@ use codewhale_core::ContextReference;
 use codewhale_error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_release::InstallMethod;
-use codewhale_runtime::resource_telemetry::estimate_output_tokens_from_text;
 // On Windows the push/pop helpers write the escapes directly; crossterm's
 // PushKeyboardEnhancementFlags / PopKeyboardEnhancementFlags commands are
 // never referenced, so the imports are gated to avoid -D warnings failures.
@@ -78,7 +77,7 @@ use codewhale_engine::client::{
 };
 use codewhale_engine::compaction::CompactionConfig;
 use codewhale_engine::compaction::{estimate_input_tokens_conservative, estimate_tokens};
-use codewhale_engine::core::engine::{EngineConfig, EngineHandle, spawn_engine};
+use codewhale_engine::core::engine::{EngineConfig, EngineHandle};
 use codewhale_engine::core::events::Event as EngineEvent;
 use codewhale_engine::core::ops::{Op, ProviderRuntimeStatus, UserInputProvenance};
 use codewhale_engine::hooks::{HookExecutor, TurnEndPayloadInput, TurnEndTotals};
@@ -506,7 +505,7 @@ async fn spawn_tui_engine(
     api_config: &Config,
     mcp_handoff: Option<codewhale_engine::mcp::McpHandoff>,
 ) -> EngineHandle {
-    let handle = spawn_engine(
+    let handle = codewhale_engine::core::engine::spawn_tui_engine(
         build_engine_config(app, api_config),
         api_config,
         mcp_handoff,
@@ -582,6 +581,7 @@ async fn spawn_tui_engine_with_session(
                     model: app.model.clone(),
                     workspace: app.workspace.clone(),
                     mode: app.mode,
+                    agent_preset: app.agent_preset(),
                 })
                 .await?;
         }
@@ -981,7 +981,9 @@ pub(crate) use compaction_flow::*;
 pub(crate) use provider_setup::*;
 mod dispatch;
 mod dispatch_prepare;
+mod external_catalog;
 pub(crate) use dispatch_prepare::*;
+pub(crate) use external_catalog::*;
 pub(crate) mod fatal_signal_guard;
 // #6169: runtime half of the foreground-ownership contract — restore on stop,
 // rebuild on continue. Sits next to the fatal guard because both write the same

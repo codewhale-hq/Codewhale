@@ -301,6 +301,10 @@ impl ToolSpec for StartRuntimeMcpServer {
         // Refuse shell wrappers and anything outside the runtime allowlist.
         if let Some(ref cmd) = parsed.config.command {
             validate_runtime_command(cmd)?;
+            parsed.config.env.insert(
+                crate::tools::shell::AGENT_PROJECT_ENV.to_string(),
+                context.workspace.to_string_lossy().into_owned(),
+            );
         }
 
         // Reject shell metacharacters in arguments to prevent injection.

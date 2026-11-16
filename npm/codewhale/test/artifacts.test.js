@@ -232,3 +232,61 @@ test("an explicit release base takes precedence over the CNB shortcut", () => {
     }
   });
 });
+
+test("validateReleaseUrl enforces HTTPS and allowlisted release hosts", () => {
+  const { redactUrl, validateReleaseUrl } = require(ARTIFACTS_PATH);
+
+  assert.equal(
+    validateReleaseUrl("https://github.com/codewhale-hq/CodeWhale/releases/download/v1.0.0/asset").hostname,
+    "github.com",
+  );
+  assert.equal(
+    validateReleaseUrl("https://sub.cnb.cool/path").hostname,
+    "sub.cnb.cool",
+  );
+  assert.equal(
+    validateReleaseUrl("https://mirror.example/v1/asset", {
+      env: { CODEWHALE_RELEASE_BASE_URL: "https://mirror.example/v1" },
+    }).hostname,
+    "mirror.example",
+  );
+  assert.equal(
+    validateReleaseUrl("https://cdn.example.net/asset", {
+      env: { CODEWHALE_UPDATE_ALLOWED_HOSTS: "other.example, cdn.example.net" },
+    }).hostname,
+    "cdn.example.net",
+  );
+
+  assert.throws(
+    () => validateReleaseUrl("http://github.com/asset"),
+    /requires HTTPS/,
+  );
+  assert.throws(
+    () =>
+      validateReleaseUrl("http://mirror.example/asset", {
+        env: { CODEWHALE_RELEASE_BASE_URL: "http://mirror.example" },
+      }),
+    /requires HTTPS/,
+  );
+  assert.throws(
+    () => validateReleaseUrl("http://127.0.0.1:8080/asset"),
+    /requires HTTPS/,
+  );
+  assert.equal(
+    validateReleaseUrl("http://127.0.0.1:8080/asset", { allowLoopbackHttp: true }).hostname,
+    "127.0.0.1",
+  );
+  assert.throws(
+    () => validateReleaseUrl("https://unlisted.example.test/asset", { env: {} }),
+    /not an allowed release host/,
+  );
+
+  assert.equal(
+    redactUrl("https://user:secret@github.com/path?q=1"),
+    "https://github.com/path?q=1",
+  );
+  assert.equal(
+    redactUrl("http://user:secret@not a valid host/path"),
+    "http://not a valid host/path",
+  );
+});

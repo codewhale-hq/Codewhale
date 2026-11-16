@@ -654,6 +654,9 @@ pub(crate) fn reasoning_effort_receipt_for_route(
 }
 
 pub(crate) async fn sync_mode_update(app: &mut App, engine_handle: &EngineHandle) {
+    if app.mode != AppMode::Agent || app.approval_mode != ApprovalMode::Auto {
+        app.revoke_approvable_auto_review_receipts();
+    }
     // #6150: non-blocking send on the input path. ChangeMode is safe to drop
     // on a full channel — `try_send` still publishes the live authority
     // snapshot, which the drain applies before the next queued op.
@@ -936,6 +939,7 @@ async fn switch_provider_inner(
                 model: app.model.clone(),
                 workspace: app.workspace.clone(),
                 mode: app.mode,
+                agent_preset: app.agent_preset(),
             })
             .await;
     }

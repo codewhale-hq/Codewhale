@@ -5,6 +5,7 @@
 //! and `web.run` cannot disagree about HTML, Markdown, PDF, or media handling.
 
 use super::adapter::{AdapterFailure, AdapterResult};
+use super::scrape::decode_html_entities;
 use std::sync::OnceLock;
 
 use encoding_rs::{Encoding, UTF_8, UTF_16BE, UTF_16LE};
@@ -480,7 +481,7 @@ fn html_to_plain_text(html: &str) -> String {
     let without_tags = TAG_RE
         .get_or_init(|| Regex::new(r"(?s)<[^>]+>").expect("tag regex"))
         .replace_all(html, " ");
-    normalize_text(&decode_common_entities(&without_tags))
+    normalize_text(&decode_html_entities(&without_tags))
 }
 
 fn normalize_text(text: &str) -> String {
@@ -490,23 +491,13 @@ fn normalize_text(text: &str) -> String {
         .into_owned()
 }
 
-fn decode_common_entities(value: &str) -> String {
-    value
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-}
-
 fn html_title(html: &str) -> Option<String> {
     let capture = TITLE_RE
         .get_or_init(|| {
             Regex::new(r"(?is)<title(?:\s[^>]*)?>(.*?)</title\s*>").expect("title regex")
         })
         .captures(html)?;
-    let title = normalize_text(&decode_common_entities(capture.get(1)?.as_str()));
+    let title = normalize_text(&decode_html_entities(capture.get(1)?.as_str()));
     (!title.is_empty()).then_some(title)
 }
 
@@ -554,7 +545,7 @@ fn meta_content(html: &str, attribute: &str, key: &str) -> Option<String> {
             html_attribute_value(tag, attribute)
                 .filter(|value| value.eq_ignore_ascii_case(key))
                 .and_then(|_| html_attribute_value(tag, "content"))
-                .map(|content| normalize_text(&decode_common_entities(&content)))
+                .map(|content| normalize_text(&decode_html_entities(&content)))
                 .filter(|content| !content.is_empty())
         })
 }
@@ -1041,6 +1032,18 @@ fn split_pdf_pages(text: &str) -> Vec<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn html_to_plain_text_does_not_double_decode_escaped_entities() {
+        assert_eq!(
+            html_to_plain_text("<p>Use &amp;lt;br&amp;gt; here</p>"),
+            "Use &lt;br&gt; here"
+        );
+        assert_eq!(
+            html_title("<title>&amp;quot;quoted&amp;quot;</title>").as_deref(),
+            Some("&quot;quoted&quot;")
+        );
+    }
 
     #[tokio::test]
     async fn html_becomes_readable_markdown_without_page_chrome() {

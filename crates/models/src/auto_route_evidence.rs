@@ -11,6 +11,8 @@ pub struct AutoRouteDecisionEvidence {
     pub probabilities_bp: BTreeMap<String, u16>,
     pub confidence_bp: u16,
     pub min_confidence_bp: u16,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub abstained_questions: Vec<String>,
     /// `[auto] cost_saving` kept the fast tier because the strong tier's
     /// probability was below the cost-saving floor.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

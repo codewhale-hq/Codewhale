@@ -1,0 +1,25 @@
+{
+  "name": "codewhale-telemetry-stats",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Private, read-only aggregate stats page for Codewhale telemetry: a separate Cloudflare Worker that reads Analytics Engine in place and keeps daily totals with no install ids",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "dev": "wrangler dev",
+    "check": "wrangler deploy --dry-run --outdir=.wrangler/dry-run",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.7.3",
+    "vitest": "^5.0.5",
+    "wrangler": "^4.145.0"
+  },
+  "overrides": {
+    "sharp": "0.35.5",
+    "undici": "7.30.1",
+    "source-map-js": "1.2.2"
+  }
+}

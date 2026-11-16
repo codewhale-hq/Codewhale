@@ -1,0 +1,360 @@
+---
+source: src/components/chart.rs
+assertion_line: 1242
+expression: "testing::snapshot(12, |area, buf, theme|\n{\n    let row = |y: u16, h: u16|\n    { Rect::new(area.x, area.y + y, area.width, h).intersection(area) };\n    DataSparkline::new(\"Requests\",\n    &values).unit(\"rpm\").paint(row(0, 1), buf, theme);\n    DataBars::new(\"Tokens by model\",\n    &items).unit(\"tokens\").paint(row(2, 5), buf, theme);\n    DataTrend::new(\"Latency\",\n    &values).unit(\"ms\").rows(5).paint(row(7, 5), buf, theme);\n})"
+---
+== dark-truecolor · 40x12
+Requests  ▁▃▅▄▅▆▇███▆▅▄▃▂▁  now 45.6 rpm
+
+Tokens by model
+opus    ██████████████████  12.4k tokens
+sonnet  ███████████▌        7900 tokens
+haiku   ████▌               3100 tokens
+cache                       0 tokens
+Latency  now 45.6 ms
+69.7 ms │  ⡠⠒⠑⠒⠒⠢⣀             ⡀⡠⠔⠉⠉⢢⡀
+        │⢀⠔⠁      ⢇          ⢀⠔⠉     ⠈⠑⢄
+        │⠁         ⠑⠢⡀      ⡠⠊
+17.2 ms │            ⠈⠱⣀⣀⠤⠊⠊
+---
+r0 c0..8 fg=Foreground bg=Background bold
+r0 c8..10 bg=Background
+r0 c10..26 fg=Accent bg=Background
+r0 c26..28 bg=Background
+r0 c28..32 fg=Muted bg=Background
+r0 c32..40 fg=Foreground bg=Background
+r1 c0..40 bg=Background
+r2 c0..15 fg=Foreground bg=Background bold
+r2 c15..40 bg=Background
+r3 c0..6 fg=Foreground bg=Background
+r3 c6..8 bg=Background
+r3 c8..26 fg=Accent bg=Background
+r3 c26..28 bg=Background
+r3 c28..40 fg=Muted bg=Background
+r4 c0..6 fg=Foreground bg=Background
+r4 c6..8 bg=Background
+r4 c8..20 fg=Accent bg=Background
+r4 c20..28 bg=Background
+r4 c28..39 fg=Muted bg=Background
+r4 c39..40 bg=Background
+r5 c0..6 fg=Foreground bg=Background
+r5 c6..8 bg=Background
+r5 c8..13 fg=Accent bg=Background
+r5 c13..28 bg=Background
+r5 c28..39 fg=Muted bg=Background
+r5 c39..40 bg=Background
+r6 c0..6 fg=Foreground bg=Background
+r6 c6..28 bg=Background
+r6 c28..36 fg=Muted bg=Background
+r6 c36..40 bg=Background
+r7 c0..7 fg=Foreground bg=Background bold
+r7 c7..9 bg=Background
+r7 c9..13 fg=Muted bg=Background
+r7 c13..20 fg=Foreground bg=Background
+r7 c20..40 bg=Background
+r8 c0..8 fg=Muted bg=Background
+r8 c8..9 fg=Dim bg=Background
+r8 c9..11 bg=Background
+r8 c11..18 fg=Accent bg=Background
+r8 c18..31 bg=Background
+r8 c31..38 fg=Accent bg=Background
+r8 c38..40 bg=Background
+r9 c0..8 fg=Muted bg=Background
+r9 c8..9 fg=Dim bg=Background
+r9 c9..12 fg=Accent bg=Background
+r9 c12..18 bg=Background
+r9 c18..19 fg=Accent bg=Background
+r9 c19..29 bg=Background
+r9 c29..32 fg=Accent bg=Background
+r9 c32..37 bg=Background
+r9 c37..40 fg=Accent bg=Background
+r10 c0..8 fg=Muted bg=Background
+r10 c8..9 fg=Dim bg=Background
+r10 c9..10 fg=Accent bg=Background
+r10 c10..19 bg=Background
+r10 c19..22 fg=Accent bg=Background
+r10 c22..28 bg=Background
+r10 c28..30 fg=Accent bg=Background
+r10 c30..40 bg=Background
+r11 c0..8 fg=Muted bg=Background
+r11 c8..9 fg=Dim bg=Background
+r11 c9..21 bg=Background
+r11 c21..28 fg=Accent bg=Background
+r11 c28..40 bg=Background
+
+== dark-truecolor · 80x12
+Requests  ▂▁▁▁▁▁▂▂▂▃▃▄▅▆▆▆▇▇████▇▇▆▆▅▅  now 45.6 rpm  min 17.2 rpm  max 69.7 rpm
+
+Tokens by model
+opus    ██████████████████████████████████████████████████████████  12.4k tokens
+sonnet  █████████████████████████████████████                       7900 tokens
+haiku   ██████████████▌                                             3100 tokens
+cache                                                               0 tokens
+Latency  now 45.6 ms  min 17.2 ms  max 69.7 ms
+69.7 ms │     ⣀⠤⠒⠊⠑⠒⠒⠒⠒⠒⠒⠢⠤⢄⣀                               ⣀ ⣀⡠⠤⠒⠒⠉⠉⠉⠉⠢⢄⣀⣀
+        │ ⣀⠤⠒⠉               ⠑⠤⣀                        ⢀⡠⠒⠉ ⠉             ⠉⠑⠒⠤⣀
+        │⠉                      ⠉⠑⠒⠤⢄⣀               ⡠⠔⠊⠁
+17.2 ms │                             ⠉⠑⢄⣀⣀⣀⣀⣀⠤⠤⠒⠊⠒⠊⠉
+---
+r0 c0..8 fg=Foreground bg=Background bold
+r0 c8..10 bg=Background
+r0 c10..38 fg=Accent bg=Background
+r0 c38..40 bg=Background
+r0 c40..44 fg=Muted bg=Background
+r0 c44..52 fg=Foreground bg=Background
+r0 c52..54 bg=Background
+r0 c54..58 fg=Muted bg=Background
+r0 c58..66 fg=Foreground bg=Background
+r0 c66..68 bg=Background
+r0 c68..72 fg=Muted bg=Background
+r0 c72..80 fg=Foreground bg=Background
+r1 c0..80 bg=Background
+r2 c0..15 fg=Foreground bg=Background bold
+r2 c15..80 bg=Background
+r3 c0..6 fg=Foreground bg=Background
+r3 c6..8 bg=Background
+r3 c8..66 fg=Accent bg=Background
+r3 c66..68 bg=Background
+r3 c68..80 fg=Muted bg=Background
+r4 c0..6 fg=Foreground bg=Background
+r4 c6..8 bg=Background
+r4 c8..45 fg=Accent bg=Background
+r4 c45..68 bg=Background
+r4 c68..79 fg=Muted bg=Background
+r4 c79..80 bg=Background
+r5 c0..6 fg=Foreground bg=Background
+r5 c6..8 bg=Background
+r5 c8..23 fg=Accent bg=Background
+r5 c23..68 bg=Background
+r5 c68..79 fg=Muted bg=Background
+r5 c79..80 bg=Background
+r6 c0..6 fg=Foreground bg=Background
+r6 c6..68 bg=Background
+r6 c68..76 fg=Muted bg=Background
+r6 c76..80 bg=Background
+r7 c0..7 fg=Foreground bg=Background bold
+r7 c7..9 bg=Background
+r7 c9..13 fg=Muted bg=Background
+r7 c13..20 fg=Foreground bg=Background
+r7 c20..22 bg=Background
+r7 c22..26 fg=Muted bg=Background
+r7 c26..33 fg=Foreground bg=Background
+r7 c33..35 bg=Background
+r7 c35..39 fg=Muted bg=Background
+r7 c39..46 fg=Foreground bg=Background
+r7 c46..80 bg=Background
+r8 c0..8 fg=Muted bg=Background
+r8 c8..9 fg=Dim bg=Background
+r8 c9..14 bg=Background
+r8 c14..29 fg=Accent bg=Background
+r8 c29..60 bg=Background
+r8 c60..61 fg=Accent bg=Background
+r8 c61..62 bg=Background
+r8 c62..75 fg=Accent bg=Background
+r8 c75..80 bg=Background
+r9 c0..8 fg=Muted bg=Background
+r9 c8..9 fg=Dim bg=Background
+r9 c9..10 bg=Background
+r9 c10..14 fg=Accent bg=Background
+r9 c14..29 bg=Background
+r9 c29..32 fg=Accent bg=Background
+r9 c32..56 bg=Background
+r9 c56..60 fg=Accent bg=Background
+r9 c60..61 bg=Background
+r9 c61..62 fg=Accent bg=Background
+r9 c62..75 bg=Background
+r9 c75..80 fg=Accent bg=Background
+r10 c0..8 fg=Muted bg=Background
+r10 c8..9 fg=Dim bg=Background
+r10 c9..10 fg=Accent bg=Background
+r10 c10..32 bg=Background
+r10 c32..38 fg=Accent bg=Background
+r10 c38..53 bg=Background
+r10 c53..57 fg=Accent bg=Background
+r10 c57..80 bg=Background
+r11 c0..8 fg=Muted bg=Background
+r11 c8..9 fg=Dim bg=Background
+r11 c9..38 bg=Background
+r11 c38..53 fg=Accent bg=Background
+r11 c53..80 bg=Background
+
+== dark-truecolor · 120x12
+Requests  ▄▅▆▆▇██▇██▇▇▇▇▅▅▄▄▃▃▂▁▁▁▁▁▂▂▂▃▃▄▅▆▆▆▇▇████▇▇▆▆▅▅  now 45.6 rpm  min 17.2 rpm  max 69.7 rpm
+
+Tokens by model
+opus    ██████████████████████████████████████████████████████████████████████████████████████████████████  12.4k tokens
+sonnet  ██████████████████████████████████████████████████████████████▍                                     7900 tokens
+haiku   ████████████████████████▌                                                                           3100 tokens
+cache                                                                                                       0 tokens
+Latency  now 45.6 ms  min 17.2 ms  max 69.7 ms
+69.7 ms │       ⢀⣀⠤⠤⠒⠒⠊⠉⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠢⠤⠤⠤⣀⣀                                                 ⣀⡀ ⣀⣀⠤⠤⠒⠒⠒⠊⠉⠉⠉⠉⠉⠉⠒⠤⢄⣀⣀⣀
+        │ ⢀⣀⠤⠔⠒⠉⠁                       ⠉⠢⠤⣀⣀                                      ⣀⡠⠤⠒⠊⠉ ⠈⠉                    ⠉⠉⠑⠒⠒⠤⠤⣀
+        │⠉⠁                                  ⠉⠉⠒⠒⠢⠤⢄⣀⣀                       ⢀⣀⠤⠔⠊⠉
+17.2 ms │                                             ⠉⠉⠑⠢⢄⣀⣀⣀⣀⣀⣀⣀⡠⠤⠤⠤⠒⠒⠊⠑⠒⠒⠉⠁
+---
+r0 c0..8 fg=Foreground bg=Background bold
+r0 c8..10 bg=Background
+r0 c10..58 fg=Accent bg=Background
+r0 c58..60 bg=Background
+r0 c60..64 fg=Muted bg=Background
+r0 c64..72 fg=Foreground bg=Background
+r0 c72..74 bg=Background
+r0 c74..78 fg=Muted bg=Background
+r0 c78..86 fg=Foreground bg=Background
+r0 c86..88 bg=Background
+r0 c88..92 fg=Muted bg=Background
+r0 c92..100 fg=Foreground bg=Background
+r0 c100..120 bg=Background
+r1 c0..120 bg=Background
+r2 c0..15 fg=Foreground bg=Background bold
+r2 c15..120 bg=Background
+r3 c0..6 fg=Foreground bg=Background
+r3 c6..8 bg=Background
+r3 c8..106 fg=Accent bg=Background
+r3 c106..108 bg=Background
+r3 c108..120 fg=Muted bg=Background
+r4 c0..6 fg=Foreground bg=Background
+r4 c6..8 bg=Background
+r4 c8..71 fg=Accent bg=Background
+r4 c71..108 bg=Background
+r4 c108..119 fg=Muted bg=Background
+r4 c119..120 bg=Background
+r5 c0..6 fg=Foreground bg=Background
+r5 c6..8 bg=Background
+r5 c8..33 fg=Accent bg=Background
+r5 c33..108 bg=Background
+r5 c108..119 fg=Muted bg=Background
+r5 c119..120 bg=Background
+r6 c0..6 fg=Foreground bg=Background
+r6 c6..108 bg=Background
+r6 c108..116 fg=Muted bg=Background
+r6 c116..120 bg=Background
+r7 c0..7 fg=Foreground bg=Background bold
+r7 c7..9 bg=Background
+r7 c9..13 fg=Muted bg=Background
+r7 c13..20 fg=Foreground bg=Background
+r7 c20..22 bg=Background
+r7 c22..26 fg=Muted bg=Background
+r7 c26..33 fg=Foreground bg=Background
+r7 c33..35 bg=Background
+r7 c35..39 fg=Muted bg=Background
+r7 c39..46 fg=Foreground bg=Background
+r7 c46..120 bg=Background
+r8 c0..8 fg=Muted bg=Background
+r8 c8..9 fg=Dim bg=Background
+r8 c9..16 bg=Background
+r8 c16..40 fg=Accent bg=Background
+r8 c40..89 bg=Background
+r8 c89..91 fg=Accent bg=Background
+r8 c91..92 bg=Background
+r8 c92..112 fg=Accent bg=Background
+r8 c112..120 bg=Background
+r9 c0..8 fg=Muted bg=Background
+r9 c8..9 fg=Dim bg=Background
+r9 c9..10 bg=Background
+r9 c10..17 fg=Accent bg=Background
+r9 c17..40 bg=Background
+r9 c40..45 fg=Accent bg=Background
+r9 c45..83 bg=Background
+r9 c83..89 fg=Accent bg=Background
+r9 c89..90 bg=Background
+r9 c90..92 fg=Accent bg=Background
+r9 c92..112 bg=Background
+r9 c112..120 fg=Accent bg=Background
+r10 c0..8 fg=Muted bg=Background
+r10 c8..9 fg=Dim bg=Background
+r10 c9..11 fg=Accent bg=Background
+r10 c11..45 bg=Background
+r10 c45..54 fg=Accent bg=Background
+r10 c54..77 bg=Background
+r10 c77..83 fg=Accent bg=Background
+r10 c83..120 bg=Background
+r11 c0..8 fg=Muted bg=Background
+r11 c8..9 fg=Dim bg=Background
+r11 c9..54 bg=Background
+r11 c54..78 fg=Accent bg=Background
+r11 c78..120 bg=Background
+
+== no-color · 40x12
+Requests  ▁▃▅▄▅▆▇███▆▅▄▃▂▁  now 45.6 rpm
+
+Tokens by model
+opus    ██████████████████  12.4k tokens
+sonnet  ███████████▌        7900 tokens
+haiku   ████▌               3100 tokens
+cache                       0 tokens
+Latency  now 45.6 ms
+69.7 ms │  ⡠⠒⠑⠒⠒⠢⣀             ⡀⡠⠔⠉⠉⢢⡀
+        │⢀⠔⠁      ⢇          ⢀⠔⠉     ⠈⠑⢄
+        │⠁         ⠑⠢⡀      ⡠⠊
+17.2 ms │            ⠈⠱⣀⣀⠤⠊⠊
+
+== no-color · 80x12
+Requests  ▂▁▁▁▁▁▂▂▂▃▃▄▅▆▆▆▇▇████▇▇▆▆▅▅  now 45.6 rpm  min 17.2 rpm  max 69.7 rpm
+
+Tokens by model
+opus    ██████████████████████████████████████████████████████████  12.4k tokens
+sonnet  █████████████████████████████████████                       7900 tokens
+haiku   ██████████████▌                                             3100 tokens
+cache                                                               0 tokens
+Latency  now 45.6 ms  min 17.2 ms  max 69.7 ms
+69.7 ms │     ⣀⠤⠒⠊⠑⠒⠒⠒⠒⠒⠒⠢⠤⢄⣀                               ⣀ ⣀⡠⠤⠒⠒⠉⠉⠉⠉⠢⢄⣀⣀
+        │ ⣀⠤⠒⠉               ⠑⠤⣀                        ⢀⡠⠒⠉ ⠉             ⠉⠑⠒⠤⣀
+        │⠉                      ⠉⠑⠒⠤⢄⣀               ⡠⠔⠊⠁
+17.2 ms │                             ⠉⠑⢄⣀⣀⣀⣀⣀⠤⠤⠒⠊⠒⠊⠉
+
+== no-color · 120x12
+Requests  ▄▅▆▆▇██▇██▇▇▇▇▅▅▄▄▃▃▂▁▁▁▁▁▂▂▂▃▃▄▅▆▆▆▇▇████▇▇▆▆▅▅  now 45.6 rpm  min 17.2 rpm  max 69.7 rpm
+
+Tokens by model
+opus    ██████████████████████████████████████████████████████████████████████████████████████████████████  12.4k tokens
+sonnet  ██████████████████████████████████████████████████████████████▍                                     7900 tokens
+haiku   ████████████████████████▌                                                                           3100 tokens
+cache                                                                                                       0 tokens
+Latency  now 45.6 ms  min 17.2 ms  max 69.7 ms
+69.7 ms │       ⢀⣀⠤⠤⠒⠒⠊⠉⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠢⠤⠤⠤⣀⣀                                                 ⣀⡀ ⣀⣀⠤⠤⠒⠒⠒⠊⠉⠉⠉⠉⠉⠉⠒⠤⢄⣀⣀⣀
+        │ ⢀⣀⠤⠔⠒⠉⠁                       ⠉⠢⠤⣀⣀                                      ⣀⡠⠤⠒⠊⠉ ⠈⠉                    ⠉⠉⠑⠒⠒⠤⠤⣀
+        │⠉⠁                                  ⠉⠉⠒⠒⠢⠤⢄⣀⣀                       ⢀⣀⠤⠔⠊⠉
+17.2 ms │                                             ⠉⠉⠑⠢⢄⣀⣀⣀⣀⣀⣀⣀⡠⠤⠤⠤⠒⠒⠊⠑⠒⠒⠉⠁
+
+== ascii · 40x12
+Requests  _.---=####=--.__  now 45.6 rpm
+
+Tokens by model
+opus    ##################  12.4k tokens
+sonnet  ############        7900 tokens
+haiku   #####               3100 tokens
+cache                       0 tokens
+Latency  now 45.6 ms
+69.7 ms |  .......             .....:.
+        |...      :          ...     ...
+        |.         ...      ..
+17.2 ms |            .:.....
+
+== ascii · 80x12
+Requests  _________..--===########==--  now 45.6 rpm  min 17.2 rpm  max 69.7 rpm
+
+Tokens by model
+opus    ##########################################################  12.4k tokens
+sonnet  #####################################                       7900 tokens
+haiku   ###############                                             3100 tokens
+cache                                                               0 tokens
+Latency  now 45.6 ms  min 17.2 ms  max 69.7 ms
+69.7 ms |     ...............                               . .............
+        | ....               ...                        .... .             .....
+        |.                      ......               ....
+17.2 ms |                             ...............
+
+== ascii · 120x12
+Requests  --==##########----.._________..--===########==--  now 45.6 rpm  min 17.2 rpm  max 69.7 rpm
+
+Tokens by model
+opus    ##################################################################################################  12.4k tokens
+sonnet  ###############################################################                                     7900 tokens
+haiku   #########################                                                                           3100 tokens
+cache                                                                                                       0 tokens
+Latency  now 45.6 ms  min 17.2 ms  max 69.7 ms
+69.7 ms |       ........................                                                 .. ....................
+        | .......                       .....                                      ...... ..                    ........
+        |..                                  .........                       ......
+17.2 ms |                                             ........................

@@ -80,6 +80,7 @@ pub struct UserCommandMetadata {
     pub aliases: Vec<String>,
     pub hidden: bool,
     pub plugin_authority: Option<codewhale_config::PluginAuthority>,
+    pub workspace_sourced: bool,
     /// Set for a command contributed by an extension-host plugin: it runs in
     /// the host (`command/run`) instead of expanding `body`.
     pub extension: Option<codewhale_engine::extension_host::command::ExtensionCommandRef>,
@@ -246,6 +247,7 @@ impl UserCommandRegistry {
                 let (mut metadata, errors) =
                     parse_metadata(entry.name, &entry.content, &entry.path);
                 metadata.plugin_authority = entry.plugin_authority;
+                metadata.workspace_sourced = entry.workspace_sourced;
                 (metadata, errors, entry.path, entry.workspace_sourced)
             })
             .collect::<Vec<_>>();
@@ -395,6 +397,7 @@ impl UserCommandRegistry {
                     aliases: Vec::new(),
                     hidden: false,
                     plugin_authority: Some(entry.authority),
+                    workspace_sourced: false,
                     extension: Some(reference),
                 },
             );
@@ -482,6 +485,7 @@ fn parse_metadata(
         aliases: Vec::new(),
         hidden: false,
         plugin_authority: None,
+        workspace_sourced: false,
         extension: None,
     };
     let mut configured_name = None;

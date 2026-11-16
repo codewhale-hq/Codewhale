@@ -70,6 +70,23 @@ impl CommandPermissionsContext for PermissionsAdapter<'_> {
             })
             .map_err(|error| format!("{error:#}"))
     }
+    fn blocked_actions(&self) -> Vec<BlockedPermissionAction> {
+        self.host
+            .app
+            .borrow()
+            .auto_review_blocked_receipts
+            .iter()
+            .map(|entry| BlockedPermissionAction {
+                receipt_id: (!entry.receipt_id.is_empty()).then(|| entry.receipt_id.clone()),
+                tool_name: entry.tool_name.clone(),
+                rule: entry.rule.clone().unwrap_or_else(|| entry.gate.clone()),
+                reason: entry.reason.clone(),
+                action_summary: entry.action_summary.clone(),
+                approvable: entry.approvable,
+                approved: entry.approved,
+            })
+            .collect()
+    }
 }
 impl CommandConfigStatusContext for ConfigStatusAdapter<'_> {
     fn snapshot(&self) -> ConfigStatusView {
@@ -197,19 +214,7 @@ fn project_status(app: &App) -> ConfigStatusView {
         cache_miss_tokens: app.session.displayed_total_cache_miss_tokens(),
         cost: app.session_cost_for_currency(app.cost_currency),
         currency: to_command_currency(app.cost_display_currency(app.cost_currency)),
-        cost_label: match app.cumulative_usage_chip() {
-            chip @ codewhale_engine::route_billing::UsageChip::PricedSubtotal { .. } => {
-                codewhale_engine::route_billing::format_usage_chip(&chip, app.ui_locale)
-            }
-            codewhale_engine::route_billing::UsageChip::Unknown(_) => Some(
-                codewhale_localization::tr(
-                    app.ui_locale,
-                    codewhale_localization::MessageId::CmdCostUnknownValue,
-                )
-                .into_owned(),
-            ),
-            _ => None,
-        },
+        cost_label: app.status_cost_label(),
         metrics,
         ascii_safe: crate::tui::color_compat::ascii_safe_enabled(),
         tool_outputs: outputs,

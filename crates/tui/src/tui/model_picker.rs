@@ -5296,7 +5296,7 @@ mod tests {
     fn locked_model_keeps_keyboard_focus_visible_without_becoming_selectable() {
         let mut picker = test_picker();
         picker.model_rows[0].selectable = false;
-        picker.model_rows[0].blocked_reason = Some("missing key".to_string());
+        picker.model_rows[0].blocked_reason = Some("needs key".to_string());
         let area = Rect::new(0, 0, 100, 32);
         let mut buf = Buffer::empty(area);
         picker.render(area, &mut buf);

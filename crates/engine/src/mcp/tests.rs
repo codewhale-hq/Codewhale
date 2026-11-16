@@ -76,6 +76,21 @@ fn mark_workspace_trusted(workspace: &Path) -> WorkspaceTrustConfigGuard {
     guard
 }
 
+fn approve_project_mcp_for_test(workspace: &Path) {
+    let reviewed = project_authority::review_project_mcp(workspace).unwrap();
+    project_authority::approve_project_mcp(workspace, &reviewed.digest).unwrap();
+}
+
+fn record_project_mcp_receipt_for_test(workspace: &Path) {
+    let reviewed = project_authority::review_project_mcp(workspace).unwrap();
+    codewhale_runtime::config::save_workspace_project_receipt(
+        &reviewed.workspace,
+        codewhale_runtime::config::MCP_RECEIPT_KEY,
+        &reviewed.digest,
+    )
+    .unwrap();
+}
+
 #[test]
 fn test_mcp_config_defaults() {
     let config = McpConfig::default();
@@ -882,6 +897,7 @@ fn workspace_mcp_config_merges_with_project_overrides() {
         }"#,
     )
     .unwrap();
+    approve_project_mcp_for_test(&workspace);
 
     let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
@@ -922,6 +938,7 @@ fn workspace_manager_snapshot_counts_global_and_project_servers() {
         }"#,
     )
     .unwrap();
+    approve_project_mcp_for_test(&workspace);
 
     let plain = manager_snapshot_from_config(&global_path, false).unwrap();
     let merged =
@@ -2378,6 +2395,220 @@ fn workspace_mcp_config_ignores_project_file_until_workspace_trusted() {
 }
 
 #[test]
+fn workspace_mcp_config_does_not_load_project_file_on_trust_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let global_path = dir.path().join("global-mcp.json");
+    let workspace = dir.path().join("workspace");
+    let project_dir = workspace.join(".codewhale");
+    fs::create_dir_all(&project_dir).unwrap();
+    let _trust = mark_workspace_trusted(&workspace);
+    fs::write(
+        &global_path,
+        r#"{"servers": {"global": {"command": "node", "args": ["global.js"]}}}"#,
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("mcp.json"),
+        r#"{"servers": {"project": {"command": "php", "args": ["artisan", "boost:mcp"]}}}"#,
+    )
+    .unwrap();
+
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+
+    assert!(cfg.servers.contains_key("global"));
+    assert!(!cfg.servers.contains_key("project"));
+}
+
+#[test]
+fn project_mcp_approval_binds_the_exact_file_contents() {
+    let dir = tempfile::tempdir().unwrap();
+    let global_path = dir.path().join("global-mcp.json");
+    let workspace = dir.path().join("workspace");
+    let project_dir = workspace.join(".codewhale");
+    fs::create_dir_all(&project_dir).unwrap();
+    let _trust = mark_workspace_trusted(&workspace);
+    fs::write(&global_path, r#"{"servers": {}}"#).unwrap();
+    let project_path = project_dir.join("mcp.json");
+    let reviewed_bytes = r#"{"servers": {"project": {"command": "node", "args": ["a.js"]}}}"#;
+    fs::write(&project_path, reviewed_bytes).unwrap();
+
+    assert!(matches!(
+        project_authority::project_mcp_status(&workspace),
+        project_authority::ProjectMcpStatus::Unapproved { .. }
+    ));
+    assert!(project_server_names(&global_path, &workspace).is_empty());
+    assert!(matches!(
+        resolve_server_scope(&global_path, &workspace, "project"),
+        McpServerScope::Plugin
+    ));
+    assert!(
+        project_authority::approve_project_mcp(&workspace, "0".repeat(64).as_str()).is_err(),
+        "a digest that does not match the file is refused"
+    );
+
+    approve_project_mcp_for_test(&workspace);
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+    assert!(cfg.servers.contains_key("project"));
+    assert!(project_server_names(&global_path, &workspace).contains("project"));
+    assert!(matches!(
+        resolve_server_scope(&global_path, &workspace, "project"),
+        McpServerScope::Project(_)
+    ));
+
+    fs::write(
+        &project_path,
+        r#"{"servers": {"project": {"command": "node", "args": ["b.js"]}}}"#,
+    )
+    .unwrap();
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+    assert!(
+        !cfg.servers.contains_key("project"),
+        "a changed project file loads nothing until it is approved again"
+    );
+    assert!(project_server_names(&global_path, &workspace).is_empty());
+
+    fs::write(&project_path, reviewed_bytes).unwrap();
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+    assert!(
+        cfg.servers.contains_key("project"),
+        "the approval names bytes, not a moment in time"
+    );
+
+    project_authority::revoke_project_mcp(&workspace).unwrap();
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+    assert!(!cfg.servers.contains_key("project"));
+}
+
+#[test]
+fn project_mcp_approval_cannot_come_from_the_repository_or_another_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let global_path = dir.path().join("global-mcp.json");
+    let workspace = dir.path().join("workspace");
+    let other = dir.path().join("other");
+    fs::create_dir_all(workspace.join(".codewhale")).unwrap();
+    fs::create_dir_all(other.join(".codewhale")).unwrap();
+    let _trust = mark_workspace_trusted(&workspace);
+    fs::write(&global_path, r#"{"servers": {}}"#).unwrap();
+    let body = r#"{"servers": {"project": {"command": "node", "args": ["a.js"]}}}"#;
+    fs::write(workspace.join(".codewhale").join("mcp.json"), body).unwrap();
+    fs::write(other.join(".codewhale").join("mcp.json"), body).unwrap();
+
+    let reviewed = project_authority::review_project_mcp(&workspace).unwrap();
+    let key = workspace.canonicalize().unwrap();
+    let key = key.to_string_lossy().replace('\\', "\\\\");
+    fs::write(
+        workspace.join(".codewhale").join("config.toml"),
+        format!(
+            "mcp_sha256 = \"{d}\"\n[projects.\"{key}\"]\ntrust_level = \"trusted\"\nmcp_sha256 = \"{d}\"\n",
+            d = reviewed.digest
+        ),
+    )
+    .unwrap();
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+    assert!(!cfg.servers.contains_key("project"));
+
+    approve_project_mcp_for_test(&workspace);
+    let cfg = load_config_with_workspace(&global_path, &other).unwrap();
+    assert!(
+        !cfg.servers.contains_key("project"),
+        "an approval is bound to one workspace"
+    );
+    assert!(
+        project_authority::approve_project_mcp(&other, &reviewed.digest).is_err(),
+        "an untrusted workspace cannot be approved"
+    );
+}
+
+#[test]
+fn project_mcp_approval_refuses_invalid_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("workspace");
+    fs::create_dir_all(workspace.join(".codewhale")).unwrap();
+    let _trust = mark_workspace_trusted(&workspace);
+    let path = workspace.join(".codewhale").join("mcp.json");
+
+    fs::write(&path, "{ not json").unwrap();
+    let reviewed = project_authority::review_project_mcp(&workspace).unwrap();
+    assert!(project_authority::approve_project_mcp(&workspace, &reviewed.digest).is_err());
+
+    fs::write(
+        &path,
+        r#"{"servers": {"project": {"command": "node", "cwd": "../outside"}}}"#,
+    )
+    .unwrap();
+    let reviewed = project_authority::review_project_mcp(&workspace).unwrap();
+    let error = project_authority::approve_project_mcp(&workspace, &reviewed.digest).unwrap_err();
+    assert!(error.contains("must stay within workspace"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn project_mcp_approval_refuses_a_symlinked_project_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let global_path = dir.path().join("global-mcp.json");
+    let workspace = dir.path().join("workspace");
+    let project_dir = workspace.join(".codewhale");
+    fs::create_dir_all(&project_dir).unwrap();
+    let _trust = mark_workspace_trusted(&workspace);
+    fs::write(&global_path, r#"{"servers": {}}"#).unwrap();
+    fs::write(
+        project_dir.join("mcp.json"),
+        r#"{"servers": {"project": {"command": "node", "args": ["a.js"]}}}"#,
+    )
+    .unwrap();
+    approve_project_mcp_for_test(&workspace);
+    assert!(
+        load_config_with_workspace(&global_path, &workspace)
+            .unwrap()
+            .servers
+            .contains_key("project")
+    );
+
+    let moved = dir.path().join("moved");
+    fs::rename(&project_dir, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &project_dir).unwrap();
+
+    assert!(project_authority::review_project_mcp(&workspace).is_err());
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+    assert!(!cfg.servers.contains_key("project"));
+}
+
+#[test]
+fn product_edits_of_an_approved_project_file_keep_its_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let global_path = dir.path().join("global-mcp.json");
+    let workspace = dir.path().join("workspace");
+    let project_dir = workspace.join(".codewhale");
+    fs::create_dir_all(&project_dir).unwrap();
+    let _trust = mark_workspace_trusted(&workspace);
+    fs::write(&global_path, r#"{"servers": {}}"#).unwrap();
+    let project_path = project_dir.join("mcp.json");
+    fs::write(
+        &project_path,
+        r#"{"servers": {"project": {"command": "node", "args": ["a.js"]}, "second": {"command": "node", "args": ["b.js"]}}}"#,
+    )
+    .unwrap();
+    approve_project_mcp_for_test(&workspace);
+
+    set_server_enabled(&project_path, "project", false).unwrap();
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+    assert!(!cfg.servers["project"].is_enabled());
+    assert!(cfg.servers.contains_key("second"));
+
+    fs::write(
+        &project_path,
+        r#"{"servers": {"project": {"command": "node", "args": ["evil.js"]}}}"#,
+    )
+    .unwrap();
+    let _ = set_server_enabled(&project_path, "project", true);
+    let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
+    assert!(
+        !cfg.servers.contains_key("project"),
+        "an edit on top of unreviewed bytes does not carry the approval"
+    );
+}
+
+#[test]
 fn workspace_mcp_config_ignores_project_local_legacy_trust_marker() {
     let dir = tempfile::tempdir().unwrap();
     let global_path = dir.path().join("global-mcp.json");
@@ -2457,6 +2688,7 @@ fn workspace_mcp_config_resolves_relative_cwd_from_workspace() {
         r#"{"servers": {"project": {"command": "node", "args": ["server.js"], "cwd": "tools/mcp"}}}"#,
     )
     .unwrap();
+    approve_project_mcp_for_test(&workspace);
 
     let cfg = load_config_with_workspace(&global_path, &workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
@@ -2482,6 +2714,7 @@ fn workspace_mcp_config_rejects_project_cwd_escape() {
         r#"{"servers": {"project": {"command": "node", "args": ["server.js"], "cwd": "../outside"}}}"#,
     )
     .unwrap();
+    record_project_mcp_receipt_for_test(&workspace);
 
     let err = load_config_with_workspace(&global_path, &workspace)
         .expect_err("project MCP cwd escape must be rejected");
@@ -2511,6 +2744,7 @@ fn workspace_mcp_config_rejects_symlinked_project_cwd_escape() {
         r#"{"servers": {"project": {"command": "node", "args": ["server.js"], "cwd": "tools"}}}"#,
     )
     .unwrap();
+    record_project_mcp_receipt_for_test(&workspace);
 
     let err = load_config_with_workspace(&global_path, &workspace)
         .expect_err("project MCP symlink cwd escape must be rejected");
@@ -2564,6 +2798,7 @@ async fn workspace_mcp_pool_reload_picks_up_project_config_creation() {
         r#"{"servers": {"project": {"command": "php", "args": ["artisan", "boost:mcp"]}}}"#,
     )
     .unwrap();
+    approve_project_mcp_for_test(&workspace);
 
     assert!(pool.reload_if_config_changed().await.unwrap());
     let names: std::collections::BTreeSet<String> = pool.server_names().into_iter().collect();
@@ -2599,6 +2834,7 @@ async fn workspace_mcp_pool_reload_picks_up_project_config_after_workspace_trust
     assert_eq!(pool.server_names(), vec!["global".to_string()]);
 
     write_workspace_trust_config(&trust_env.config_path, &workspace);
+    approve_project_mcp_for_test(&workspace);
 
     assert!(pool.reload_if_config_changed().await.unwrap());
     let names: std::collections::BTreeSet<String> = pool.server_names().into_iter().collect();
@@ -2627,6 +2863,7 @@ async fn workspace_mcp_pool_reload_drops_project_config_after_workspace_trust_re
         r#"{"servers": {"project": {"command": "php", "args": ["artisan", "boost:mcp"]}}}"#,
     )
     .unwrap();
+    approve_project_mcp_for_test(&workspace);
 
     let mut pool = McpPool::from_config_path_with_workspace(&global_path, &workspace)
         .unwrap()
@@ -2663,6 +2900,7 @@ async fn workspace_mcp_pool_reload_drops_project_config_after_deletion() {
         r#"{"servers": {"project": {"command": "php", "args": ["artisan", "boost:mcp"]}}}"#,
     )
     .unwrap();
+    approve_project_mcp_for_test(&workspace);
 
     let mut pool = McpPool::from_config_path_with_workspace(&global_path, &workspace)
         .unwrap()
@@ -3312,6 +3550,269 @@ async fn call_method_skips_notifications_and_unmatched_responses() {
     assert_eq!(sent[0]["jsonrpc"], "2.0");
     assert_eq!(sent[0]["id"], "1");
     assert_eq!(sent[0]["method"], "tools/call");
+}
+
+#[tokio::test]
+async fn call_method_answers_server_requests_instead_of_taking_them_as_the_reply() {
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let transport = ScriptedValueTransport {
+        sent: Arc::clone(&sent),
+        responses: VecDeque::from([
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "ping"})),
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": "1", "method": "roots/list"})),
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"ok": true}})),
+        ]),
+    };
+    let mut conn = test_connection(Box::new(transport));
+
+    let result = conn
+        .call_method("tools/call", serde_json::json!({"name": "echo"}), 1)
+        .await
+        .unwrap();
+
+    assert_eq!(result, serde_json::json!({"ok": true}));
+    let sent = sent.lock().unwrap();
+    assert_eq!(sent.len(), 3);
+    assert_eq!(
+        sent[1],
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {}})
+    );
+    assert_eq!(sent[2]["id"], "1");
+    assert_eq!(sent[2]["error"]["code"], -32601);
+}
+
+struct ReplyRefusingTransport {
+    sent: Arc<Mutex<Vec<serde_json::Value>>>,
+    responses: VecDeque<Vec<u8>>,
+}
+
+#[async_trait::async_trait]
+impl McpTransport for ReplyRefusingTransport {
+    async fn send(&mut self, msg: Vec<u8>) -> Result<()> {
+        self.sent
+            .lock()
+            .unwrap()
+            .push(serde_json::from_slice(&msg)?);
+        Ok(())
+    }
+
+    async fn send_reply(&mut self, _msg: Vec<u8>) -> Result<()> {
+        Err(super::wire::McpServerReplyUnsupported(
+            "MCP Streamable HTTP refused a reply to a server request: status=405 Method Not Allowed"
+                .to_string(),
+        )
+        .into())
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>> {
+        self.responses
+            .pop_front()
+            .context("scripted transport exhausted")
+    }
+}
+
+#[tokio::test]
+async fn call_method_keeps_its_reply_when_answering_a_server_request_fails() {
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let transport = ReplyRefusingTransport {
+        sent: Arc::clone(&sent),
+        responses: VecDeque::from([
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "ping"})),
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"ok": true}})),
+        ]),
+    };
+    let mut conn = test_connection(Box::new(transport));
+
+    let result = conn
+        .call_method("tools/call", serde_json::json!({"name": "echo"}), 1)
+        .await
+        .unwrap();
+
+    assert_eq!(result, serde_json::json!({"ok": true}));
+    assert_eq!(conn.state, ConnectionState::Ready);
+    let sent = sent.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["method"], "tools/call");
+}
+
+enum ScriptedReplyBehavior {
+    Complete,
+    Stall,
+    Fail(&'static str),
+}
+
+struct HangingReplyTransport {
+    sent: Arc<Mutex<Vec<serde_json::Value>>>,
+    responses: VecDeque<Vec<u8>>,
+    reply_behavior: ScriptedReplyBehavior,
+    reply_started: Arc<AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl McpTransport for HangingReplyTransport {
+    async fn send(&mut self, msg: Vec<u8>) -> Result<()> {
+        self.sent
+            .lock()
+            .unwrap()
+            .push(serde_json::from_slice(&msg)?);
+        Ok(())
+    }
+
+    async fn send_reply(&mut self, msg: Vec<u8>) -> Result<()> {
+        self.reply_started.store(true, AtomicOrdering::SeqCst);
+        match self.reply_behavior {
+            ScriptedReplyBehavior::Complete => {
+                self.sent
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::from_slice(&msg)?);
+                Ok(())
+            }
+            ScriptedReplyBehavior::Stall => std::future::pending::<Result<()>>().await,
+            ScriptedReplyBehavior::Fail(reason) => Err(anyhow::anyhow!("{reason}")),
+        }
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>> {
+        match self.responses.pop_front() {
+            Some(response) => Ok(response),
+            None => std::future::pending().await,
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn answer_server_request_disconnects_when_dropped_mid_write_and_restores_on_completion() {
+    let stalled_started = Arc::new(AtomicBool::new(false));
+    let mut stalled_conn = test_connection(Box::new(HangingReplyTransport {
+        sent: Arc::new(Mutex::new(Vec::new())),
+        responses: VecDeque::from([json_frame(
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}),
+        )]),
+        reply_behavior: ScriptedReplyBehavior::Stall,
+        reply_started: Arc::clone(&stalled_started),
+    }));
+
+    let err = stalled_conn
+        .call_method("tools/call", serde_json::json!({"name": "echo"}), 1)
+        .await
+        .expect_err("a stalled server-request reply must time out at the request deadline");
+    assert!(
+        err.to_string()
+            .contains("MCP method 'tools/call' on server 'mock' timed out after 1s"),
+        "unexpected error: {err:#}"
+    );
+    assert!(stalled_started.load(AtomicOrdering::SeqCst));
+    assert_eq!(stalled_conn.state(), ConnectionState::Disconnected);
+    assert!(!stalled_conn.is_ready());
+
+    let ok_sent = Arc::new(Mutex::new(Vec::new()));
+    let mut ok_conn = test_connection(Box::new(HangingReplyTransport {
+        sent: Arc::clone(&ok_sent),
+        responses: VecDeque::from([
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "ping"})),
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"ok": true}})),
+        ]),
+        reply_behavior: ScriptedReplyBehavior::Complete,
+        reply_started: Arc::new(AtomicBool::new(false)),
+    }));
+
+    let result = ok_conn
+        .call_method("tools/call", serde_json::json!({"name": "echo"}), 1)
+        .await
+        .expect("a completed server-request reply should finish the call");
+    assert_eq!(result, serde_json::json!({"ok": true}));
+    assert_eq!(ok_conn.state(), ConnectionState::Ready);
+    assert!(ok_conn.is_ready());
+    assert_eq!(ok_sent.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn answer_server_request_disconnects_on_fatal_send_reply_error() {
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let reply_started = Arc::new(AtomicBool::new(false));
+    let mut conn = test_connection(Box::new(HangingReplyTransport {
+        sent: Arc::clone(&sent),
+        responses: VecDeque::from([
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "ping"})),
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"ok": true}})),
+        ]),
+        reply_behavior: ScriptedReplyBehavior::Fail("Broken pipe (os error 32)"),
+        reply_started: Arc::clone(&reply_started),
+    }));
+
+    let err = conn
+        .call_method("tools/call", serde_json::json!({"name": "echo"}), 5)
+        .await
+        .expect_err("a fatal I/O failure on send_reply must fail the call and disconnect");
+    assert!(reply_started.load(AtomicOrdering::SeqCst));
+    assert!(
+        err.to_string().contains("Broken pipe (os error 32)"),
+        "unexpected error: {err:#}"
+    );
+    assert!(super::wire::is_mcp_connection_lost_error(&err));
+    assert!(!super::wire::is_mcp_session_rejected_error(&err));
+    assert_eq!(conn.state(), ConnectionState::Disconnected);
+    assert!(!conn.is_ready());
+    assert_eq!(sent.lock().unwrap().len(), 1);
+
+    let retry_err = conn
+        .call_method("tools/call", serde_json::json!({"name": "echo"}), 5)
+        .await
+        .expect_err("a disconnected connection must fail closed without writing again");
+    assert!(
+        retry_err.to_string().contains("is not ready"),
+        "unexpected error: {retry_err:#}"
+    );
+    assert_eq!(sent.lock().unwrap().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn discover_all_aborts_when_optional_discovery_disconnects_mid_server_reply() {
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let reply_started = Arc::new(AtomicBool::new(false));
+    let mut conn = test_connection(Box::new(HangingReplyTransport {
+        sent: Arc::clone(&sent),
+        responses: VecDeque::from([
+            json_frame(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"tools": [{"name": "search", "inputSchema": {}}]}
+            })),
+            json_frame(serde_json::json!({"jsonrpc": "2.0", "id": 99, "method": "ping"})),
+        ]),
+        reply_behavior: ScriptedReplyBehavior::Stall,
+        reply_started: Arc::clone(&reply_started),
+    }));
+    conn.state = ConnectionState::Connecting;
+    conn.discovery_timeout = Duration::from_millis(60);
+
+    let err = conn
+        .discover_all()
+        .await
+        .expect_err("a stalled server-request reply in optional discovery must abort discover_all");
+    assert!(reply_started.load(AtomicOrdering::SeqCst));
+    assert!(
+        err.to_string().contains("is disconnected"),
+        "unexpected error: {err:#}"
+    );
+    assert_eq!(conn.state(), ConnectionState::Disconnected);
+    assert!(!conn.is_ready());
+    let methods: Vec<_> = sent
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|message| message.get("method").and_then(|method| method.as_str()))
+        .map(str::to_string)
+        .collect();
+    assert_eq!(methods, ["tools/list", "resources/list"]);
+
+    let send_err = conn
+        .send(serde_json::json!({"jsonrpc": "2.0", "method": "prompts/list"}))
+        .await
+        .expect_err("sending after disconnect must fail without calling transport");
+    assert!(send_err.to_string().contains("is disconnected"));
+    assert_eq!(sent.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -6768,6 +7269,64 @@ async fn custom_headers_applied_to_get_preflight() {
         header_seen.load(AtomicOrdering::SeqCst),
         "GET preflight must include user-configured custom headers"
     );
+}
+
+#[tokio::test]
+async fn refused_reply_to_a_server_request_does_not_fall_back_to_sse() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let _env = crate::test_support::lock_test_env();
+    let _lock = lock_mcp_loopback_tests().await;
+    let _no_proxy = crate::test_support::EnvVarGuard::set("NO_PROXY", "*,127.0.0.1");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let requests_srv = Arc::clone(&requests);
+
+    let server = tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = socket.read(&mut buf).await.unwrap();
+            let request_line = String::from_utf8_lossy(&buf[..n])
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            requests_srv.lock().unwrap().push(request_line);
+            socket
+                .write_all(
+                    b"HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        }
+    });
+
+    let url = format!("http://{addr}/mcp");
+    let mut transport = HttpTransport::new(
+        test_mcp_http_client(&url),
+        url,
+        tokio_util::sync::CancellationToken::new(),
+        Duration::from_secs(2),
+    );
+
+    let result = transport
+        .send_reply(json_frame(
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {}}),
+        ))
+        .await;
+
+    server.abort();
+    let err = result.expect_err("a refused reply reports the refusal");
+    assert!(
+        super::wire::is_mcp_server_reply_unsupported_error(&err),
+        "unexpected error: {err:#}"
+    );
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1, "requests seen: {requests:?}");
+    assert!(requests[0].starts_with("POST "), "{requests:?}");
 }
 
 // === add_runtime_server_config conflict tests ===

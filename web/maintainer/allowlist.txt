@@ -7,7 +7,6 @@ copy-freshness: web/lib/content/tools.ts
 copy-freshness: web/lib/content/reference-guides.ts
 copy-freshness: web/lib/content/runtime-integrations.ts
 copy-freshness: web/lib/content/product.ts
-copy-freshness: web/lib/content/home-overview.ts
 copy-freshness: web/lib/content/onboarding-check.ts
 copy-freshness: web/lib/i18n/dictionaries/en/computer-use.ts
 copy-freshness: web/lib/i18n/dictionaries/en/features.ts
@@ -24,7 +23,6 @@ link-health: web/lib/content/tools.ts
 link-health: web/lib/content/reference-guides.ts
 link-health: web/lib/content/runtime-integrations.ts
 link-health: web/lib/content/product.ts
-link-health: web/lib/content/home-overview.ts
 link-health: web/lib/content/onboarding-check.ts
 link-health: web/lib/i18n/dictionaries/en/computer-use.ts
 link-health: web/lib/i18n/dictionaries/en/features.ts

@@ -1,0 +1,14 @@
+[
+  {
+    "detectedLanguage": {
+      "language": "zh-Hans",
+      "score": 1.0
+    },
+    "translations": [
+      {
+        "text": "Hello from Bing",
+        "to": "en"
+      }
+    ]
+  }
+]

@@ -152,7 +152,7 @@ codewhale auth set --provider moonshot --api-key "你的中国区Kimi API key"
 
 **第三步：在 Codewhale 里切换**
 
-1. 输入 `/provider` 打开提供商选择器 → 选 **moonshot**（可能显示 missing key，不用管，继续选）
+1. 输入 `/provider` 打开提供商选择器 → 选 **moonshot**（可能显示 needs key，不用管，继续选）
 2. 如果提示输入 key，就粘贴你的中国区 key
 3. 选模型：`/model kimi-k3`（最强，1M 上下文）或 `/model kimi-k2.7-code`（默认稳定）
 4. 发一条测试消息，能正常回复就说明切换成功
@@ -410,7 +410,7 @@ default_text_model = "deepseek-v4-pro"
 | `/setup` | 重新打开首次设置流程 |
 | `/compact` | 对话太长时压缩上下文、省 token |
 | `/review` | 让 AI 对代码做结构化审查 |
-| `/skills` | 打开 Extensions → Skills；`/skills manage` 打开技能管理器 |
+| `/skills` | 打开 Plugins → Skills；`/skills manage` 打开技能管理器 |
 | `/status` | 查看当前模型/路由等状态 |
 | `/export` | 导出对话 |
 | `/constitution` | 管理宪章（高级） |

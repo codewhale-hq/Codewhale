@@ -357,6 +357,7 @@ impl AutomationTool {
             trust_mode,
             auto_approve,
             delivery_mode: optional_delivery_mode(input)?,
+            disallowed_tools: context.disallowed_tools.clone(),
             status: Some(
                 if input
                     .get("paused")
@@ -568,6 +569,15 @@ fn require_within_session_authority(
     automation: &AutomationRecord,
     verb: &str,
 ) -> Result<(), ToolError> {
+    if !crate::task_manager::deny_rules_cover(
+        &automation.disallowed_tools,
+        &context.disallowed_tools,
+    ) {
+        return Err(ToolError::permission_denied(format!(
+            "automation: cannot {verb} `{}`: it was created without every tool deny rule this session runs under. Ask the user to {verb} it from a session that holds that access.",
+            automation.id,
+        )));
+    }
     let stored = [
         ("allow_shell", automation.allow_shell),
         ("trust_mode", automation.trust_mode),
@@ -749,6 +759,70 @@ fn optional_delivery_mode(input: &Value) -> Result<Option<AutomationDeliveryMode
 mod tests {
     use super::*;
     use crate::tools::spec::ToolSpec;
+
+    #[tokio::test]
+    async fn stored_automation_carries_the_creating_session_deny_rules() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let manager = crate::automation_manager::AutomationManager::open_for_test(
+            workspace.path().join("automations"),
+        )
+        .expect("automation manager");
+        let shared = std::sync::Arc::new(tokio::sync::Mutex::new(manager));
+        let tool = AutomationTool::new("automation");
+        let mut restricted = ToolContext::new(workspace.path());
+        restricted.runtime.automations = Some(shared.clone());
+        restricted.disallowed_tools = vec!["mcp_secret_*".to_string()];
+        let mut open = ToolContext::new(workspace.path());
+        open.runtime.automations = Some(shared.clone());
+        let create = |name: &str| {
+            json!({
+                "action": "create",
+                "name": name,
+                "prompt": "summarise the day",
+                "rrule": "FREQ=HOURLY",
+                "paused": true
+            })
+        };
+
+        let created = tool
+            .execute(create("restricted"), &restricted)
+            .await
+            .expect("create accepted");
+        let record: Value = serde_json::from_str(&created.content).expect("record json");
+        assert_eq!(
+            record["disallowed_tools"],
+            json!(["mcp_secret_*"]),
+            "{record}"
+        );
+        let restricted_id = record["id"].as_str().expect("id").to_string();
+
+        let created = tool
+            .execute(create("open"), &open)
+            .await
+            .expect("create accepted");
+        let record: Value = serde_json::from_str(&created.content).expect("record json");
+        assert!(record.get("disallowed_tools").is_none(), "{record}");
+        let open_id = record["id"].as_str().expect("id").to_string();
+
+        tool.execute(
+            json!({"action": "update", "automation_id": restricted_id, "prompt": "again"}),
+            &restricted,
+        )
+        .await
+        .expect("a session may edit what runs under its own rules");
+        for action in ["update", "resume"] {
+            let refused = tool
+                .execute(
+                    json!({"action": action, "automation_id": open_id, "prompt": "inject"}),
+                    &restricted,
+                )
+                .await;
+            assert!(
+                refused.is_err(),
+                "{action}: an automation without the session's deny rules is out of reach"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn create_and_update_cap_requested_authority_at_the_session() {

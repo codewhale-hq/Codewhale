@@ -300,7 +300,7 @@ pub(crate) fn remove_plaintext_api_keys_in_array(array: &mut toml_edit::Array) {
 pub(crate) fn backup_value_carries_secret(value: &toml_edit::Value) -> bool {
     value
         .as_str()
-        .is_some_and(codewhale_secrets::sanitize::contains_secret)
+        .is_some_and(codewhale_sanitize::sanitize::contains_secret)
 }
 
 pub(crate) fn scrub_backup_decor(decor: &mut toml_edit::Decor) {
@@ -331,7 +331,7 @@ pub(crate) fn scrub_backup_comments(text: &str) -> String {
                     comment
                         .split_once('=')
                         .is_some_and(|(key, _)| is_sensitive_config_key(key))
-                        || codewhale_secrets::sanitize::contains_secret(comment)
+                        || codewhale_sanitize::sanitize::contains_secret(comment)
                 })
         })
         .collect()

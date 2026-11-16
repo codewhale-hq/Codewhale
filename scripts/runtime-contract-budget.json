@@ -1,4 +1,5 @@
 {
+  "_agy_20261114_main_remeasure": "2026-11-14: record merged CW-8215 (059529678f5) schema growth on Act and Operate full catalogs (plan replan_if and send_later delay_seconds parameters: 87575 -> 87803 bytes, 21894 -> 21951 estimated tokens; +228 B / +57 estimated tokens) measured provider-free on current origin/main (9b567b2b25a + native_runtime Windows fix); tool identities, Plan surfaces, active surfaces, and prompt ceilings are unchanged. bytes/4 remains an estimate, not provider usage or billing.",
   "_claude_20261017_task_shell_wait": "2026-10-17: ecf50ab598 makes task_shell_wait eager on Act/Operate (DEFAULT_ACTIVE_NATIVE_TOOLS; Plan registers only the foreground shell, so its surfaces gain no tool). The bash description, timeout parameter and backgrounded-result texts now name task_shell_wait directly instead of via tool_search. Measured provider-free on macOS aarch64 from 72c1327be4: Act/Operate active 37822 -> 38870 B (+1048 = task_shell_wait schema plus the wording), 9456 -> 9718 estimated tokens, 14 -> 15 tools, name-set identity re-hashed; Act/Operate full 84503 -> 84582 (+79), Plan active 36292 -> 36370 (+78), Plan full 55282 -> 55360 (+78) from the wording alone. Removes the mid-session tool_search activation and change:tool_surface re-pin each background job used to cost (CW-7450). Re-lock from a Linux Lint run if CI reports drift. bytes/4 remains an estimate, not provider usage or billing.",
   "_claude_20261108_eager_agents_ask_options": "2026-11-08: 5ba1aa63bc (eager sub-agents and goals by default, clearer tool text) and 080554911c (ask the user with options when a choice is theirs) intentionally grow the base system prompt from 7231 to 9063 bytes and change every representative-stage identity; the shared tool-description edits are recorded in their commit messages. Measured provider-free on macOS aarch64 with the existing runtime-contract metric tests on source e59a119643. Hosted Linux Lint on e59a119643 reported only the base-stage identity change, so the numeric ceilings are unchanged in kind.",
   "_codex_0101_remeasure": "2026-10-01: lock the composed candidate measurement after the audited composition-required schema repair (46835a2fc, D04-11) and shared finance-timeout documentation (7c36620d4, D03-m3). Their parent-surface causal controls are recorded in 6655b191e. Act/Operate full catalog measured 84151 bytes / 21038 estimated tokens versus stale 83988 / 20997; no tools or surface identities changed. Plan/active surfaces and other budgets use their measured values. Estimate only, not provider usage. Receipt: CW/artifacts/codex-0101-takeover-20260930/root-runtime-contract-receipt.json.",
@@ -13,6 +14,7 @@
   "_compaction_archive_recall_20261031": "2026-10-31: the compaction-archive recall slice adds context_archive_get and context_archive_search to every production surface that already carries the other read tools - Plan active 13 -> 15, Plan full 30 -> 32, Act/Operate active 15 -> 17, Act/Operate full 51 -> 53, measured provider-free on Windows x86_64 as +875 active bytes and +1923 full bytes per Act/Operate surface. No tool left a surface. --update also absorbed pre-existing drift from the prompt and tool commits merged after the 2026-10-26 budget lock (4cf2d2cff ran with [skip ci]): the representative base stage and the system-prompt byte counts move by 3-5 bytes with no matching source change in this slice. 55 metrics, 21 identities. bytes/4 remains an estimate, not provider usage or billing.",
   "_lean_harness_20261109": "2026-11-09: the lean harness (CURRENT_DECISIONS \u00a794; CW-7923/CW-7926) intentionally shrinks the prompt core (base representative stage 9063 -> 5749 bytes; total 11707 -> 7181), drops the skills index from the prompt (discovery is load_skill by search), defers context_archive_get, context_archive_search and workflow behind tool_search, moves workspace instructions into a history message, and pages read results in lines only. Every representative-stage identity re-hashes and numeric ceilings move down with the smaller surfaces. Measured provider-free on macOS aarch64 from fdff4514a9 with the existing runtime-contract metric tests through scripts/dev-cargo.sh. bytes/4 remains an estimate, not provider usage or billing.",
   "_pr7046_jsonpath_description": "2026-10-22: grew by the merged contributor PR #7046 (b961994290), which documented the JSONPath subset the web tool actually accepts. That is one model-visible description string on web_tool's `fields` argument: active catalog +132 bytes, full catalog +295 bytes, the same in act, operate and plan. No tool was added and no identity changed; the growth is the text the model needs to stop sending recursive descent and filters that the parser rejects. Remeasured on afeb9cea31's tree, 55 metrics, 21 identities.",
+  "_sub_20261114_task_shell_wait": "2026-11-14: task_shell_wait adds optional task_ids and until (\"any\"|\"all\") on Act/Operate (Plan does not register task_shell_wait). Measured provider-free on Linux x86_64 atop CW-8215's runtime-contract budget: Act/Operate active tool schemas 29275 -> 29697 B (+422 B), 7319 -> 7425 estimated tokens; Act/Operate full tool schemas 87803 -> 88225 B (+422 B), 21951 -> 22057 estimated tokens. Plan schemas, all tool names/counts/identities, representative-context stages, skill-discovery, and system-prompt ceilings are unchanged. bytes/4 remains an estimate, not provider usage or billing.",
   "document_kind": "codewhale.runtime_contract_budget",
   "representative_context": {
     "fixture_id": "representative-v1",
@@ -99,9 +101,9 @@
     "modes": {
       "act": {
         "active": {
-          "bytes": 29275,
+          "bytes": 30093,
           "identity_sha256": "b65a725eff7dfecae4ab406ec82bb87cfee959def9f2482c33527675a6a7fdb1",
-          "tokens_est": 7319,
+          "tokens_est": 7524,
           "tool_names": [
             "agent",
             "bash",
@@ -123,9 +125,9 @@
           "tools": 16
         },
         "full": {
-          "bytes": 86316,
-          "identity_sha256": "b63d6fb294f6c92e4c7eedfa9d775886459f51798a3fd22ae4f931d5ed6cf41b",
-          "tokens_est": 21579,
+          "bytes": 88621,
+          "identity_sha256": "039b381a0c854e739088c0d5432abfc7b8ca9f0e2260051dc507ac5e1354b6d0",
+          "tokens_est": 22156,
           "tool_names": [
             "Git",
             "Run",
@@ -164,6 +166,7 @@
             "send_later",
             "session_get",
             "session_search",
+            "show_data",
             "speech",
             "task_shell_wait",
             "tasks",
@@ -182,14 +185,14 @@
             "workflow",
             "write"
           ],
-          "tools": 54
+          "tools": 55
         }
       },
       "operate": {
         "active": {
-          "bytes": 29275,
+          "bytes": 30093,
           "identity_sha256": "b65a725eff7dfecae4ab406ec82bb87cfee959def9f2482c33527675a6a7fdb1",
-          "tokens_est": 7319,
+          "tokens_est": 7524,
           "tool_names": [
             "agent",
             "bash",
@@ -211,9 +214,9 @@
           "tools": 16
         },
         "full": {
-          "bytes": 86316,
-          "identity_sha256": "b63d6fb294f6c92e4c7eedfa9d775886459f51798a3fd22ae4f931d5ed6cf41b",
-          "tokens_est": 21579,
+          "bytes": 88621,
+          "identity_sha256": "039b381a0c854e739088c0d5432abfc7b8ca9f0e2260051dc507ac5e1354b6d0",
+          "tokens_est": 22156,
           "tool_names": [
             "Git",
             "Run",
@@ -252,6 +255,7 @@
             "send_later",
             "session_get",
             "session_search",
+            "show_data",
             "speech",
             "task_shell_wait",
             "tasks",
@@ -270,14 +274,14 @@
             "workflow",
             "write"
           ],
-          "tools": 54
+          "tools": 55
         }
       },
       "plan": {
         "active": {
-          "bytes": 27049,
+          "bytes": 27445,
           "identity_sha256": "1fc2bf6f4ef5d7562fa066bb1888ec80e780f07ea304ca0115073b67c56cbff9",
-          "tokens_est": 6763,
+          "tokens_est": 6862,
           "tool_names": [
             "agent",
             "bash",
@@ -297,9 +301,9 @@
           "tools": 14
         },
         "full": {
-          "bytes": 56473,
-          "identity_sha256": "f9578ac50bc6b69d793dd70090ecb4d7c9b2a8ad957dba57726c1da84ecc1cf9",
-          "tokens_est": 14119,
+          "bytes": 58128,
+          "identity_sha256": "191267223f8667b24726e08d57e13acdc84e7a7e5507591a6212946f8026d15a",
+          "tokens_est": 14532,
           "tool_names": [
             "Git",
             "Web",
@@ -326,6 +330,7 @@
             "request_user_input",
             "review",
             "send_later",
+            "show_data",
             "tasks",
             "todo_write",
             "tool_search",
@@ -335,7 +340,7 @@
             "workflow",
             "write"
           ],
-          "tools": 33
+          "tools": 34
         }
       }
     },

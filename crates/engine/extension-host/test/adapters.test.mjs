@@ -44,13 +44,26 @@ before(async () => {
 const adapterFor = (service) => ({ service, define: () => class extends Service { constructor(ctx) { super(ctx, service) } } })
 
 test('the shipped adapter table holds the reviewed adapters, and the root still builds', () => {
-  assert.deepEqual(DSH_ADAPTERS.map((adapter) => adapter.service), ['sessions', 'systemPrompt', 'subagents', 'agents', 'remote'])
+  assert.deepEqual(DSH_ADAPTERS.map((adapter) => adapter.service), [
+    'sessions',
+    'systemPrompt',
+    'subagents',
+    'agents',
+    'remote',
+    'workspace',
+    'llm',
+    'credentials',
+    'settings',
+    'pluginManager',
+    'deepseekAccount',
+    'terminal',
+  ])
   assert.ok(new HostRoot(rpc, 'plugin'))
   assert.ok(new HostRoot(rpc, 'builtin'))
 })
 
 test('an adapter for a service compatibility.json does not declare is refused at construction', () => {
-  assert.throws(() => new HostRoot(rpc, 'plugin', [...DSH_ADAPTERS, adapterFor('llm')]), /llm is installed but not declared in compatibility\.json/)
+  assert.throws(() => new HostRoot(rpc, 'plugin', [...DSH_ADAPTERS, adapterFor('fs')]), /fs is installed but not declared in compatibility\.json/)
 })
 
 test('an adapter may not replace a service the root already provides', () => {
@@ -62,8 +75,12 @@ test('the adapter broker refuses locally, without sending, when no live invocati
   const sent = []
   const peer = { ...rpc, request: async (method, params) => { sent.push([method, params]); return {} } }
   let host
-  const capture = { service: 'llm', define: (adapterHost) => { host = adapterHost; return adapterFor('llm').define() } }
-  assert.throws(() => new HostRoot(peer, 'plugin', [capture]), /not declared in compatibility\.json/)
+  const adapters = DSH_ADAPTERS.map((adapter) =>
+    adapter.service === 'llm'
+      ? { service: 'llm', define: (adapterHost) => { host = adapterHost; return adapter.define(adapterHost) } }
+      : adapter,
+  )
+  assert.ok(new HostRoot(peer, 'plugin', adapters))
   for (const service of ['workspace', 'llm', 'vault']) {
     await assert.rejects(host.broker({}, service, 'read', {}), (error) => error.code === -32001 && /broker is only available to a live tool invocation/.test(error.message))
   }

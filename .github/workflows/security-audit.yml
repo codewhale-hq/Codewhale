@@ -18,7 +18,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
       - name: Install cargo-audit
         run: cargo install cargo-audit
       - name: Run cargo audit
@@ -38,6 +38,7 @@ jobs:
           - { name: root, directory: . }
           - { name: web, directory: web }
           - { name: telemetry-ingest, directory: telemetry-ingest }
+          - { name: telemetry-stats, directory: telemetry-stats }
           - { name: extension-host, directory: crates/engine/extension-host }
           - { name: vscode, directory: extensions/vscode }
           - { name: feishu-bridge, directory: integrations/feishu-bridge }
@@ -76,9 +77,8 @@ jobs:
       - name: Audit website with verified build dependency mitigation
         if: matrix.name == 'web'
         run: npm run audit:dependencies -- --report "${{ runner.temp }}/npm-audit.json"
-      # The VS Code extension's packager toolchain carries one unfixed high
-      # advisory that never runs for users (DEPENDENCY_SECURITY.md at the repo
-      # root). It is admitted by name; anything else fails the job.
+      # The VS Code extension's packager dependency override is recorded in
+      # docs/dependency-maintenance.md; any reported vulnerability fails the job.
       - name: Audit extension with reviewed packager advisory acceptance
         if: matrix.name == 'vscode'
         run: npm run audit:dependencies -- --report "${{ runner.temp }}/npm-audit.json"

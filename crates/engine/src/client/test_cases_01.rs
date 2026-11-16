@@ -763,6 +763,8 @@ async fn chat_stream_drains_chunks_carrying_more_lines_than_the_per_chunk_cap() 
         stream: Some(true),
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
 
     let mut stream = client
@@ -819,6 +821,8 @@ async fn chat_stream_eof_without_done_or_finish_reason_is_error() {
         stream: Some(true),
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
 
     let mut stream = client
@@ -883,6 +887,8 @@ async fn chat_stream_finish_reason_without_done_is_terminal() {
         stream: Some(true),
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
 
     let mut stream = client
@@ -960,6 +966,8 @@ async fn capture_deepseek_chat_request(
         stream: Some(streaming),
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
     let client = deepseek_request_boundary_client(route_base_url, server.uri());
 
@@ -1196,6 +1204,8 @@ async fn ollama_cloud_uses_authenticated_openai_compatible_v1_wire() {
                 stream: Some(false),
                 temperature: None,
                 top_p: None,
+                safety_check: None,
+                title: None,
             })
             .await
             .expect("Ollama Cloud request succeeds");
@@ -1271,6 +1281,8 @@ async fn cache_free_message_call_neither_reads_nor_writes_global_cache() {
         stream: Some(false),
         temperature: Some(0.0),
         top_p: None,
+        safety_check: None,
+        title: None,
     };
     let prepared = client
         .prepare_outbound_request(request.clone(), false)
@@ -1295,6 +1307,9 @@ async fn cache_free_message_call_neither_reads_nor_writes_global_cache() {
             stop_sequence: None,
             container: None,
             usage: Default::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         },
     );
 
@@ -1374,6 +1389,8 @@ async fn cache_free_classifier_429_does_not_publish_global_retry_or_rate_limit_s
         stream: Some(false),
         temperature: Some(0.0),
         top_p: None,
+        safety_check: None,
+        title: None,
     };
     let error = client
         .create_message_without_response_cache(
@@ -1468,6 +1485,8 @@ fn k3_request_fixture(model: &str, effort: Option<&str>, stream: bool) -> Messag
         stream: Some(stream),
         temperature: Some(0.25),
         top_p: Some(0.75),
+        safety_check: None,
+        title: None,
     }
 }
 

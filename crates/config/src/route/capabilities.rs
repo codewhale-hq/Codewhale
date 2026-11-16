@@ -121,6 +121,18 @@ pub(crate) fn documented_moonshot_web_search_for_route(
     CapabilityState::Unknown
 }
 
+#[must_use]
+pub(crate) fn documented_deepseek_web_search_for_route(
+    provider: ProviderKind,
+    wire_model_id: &str,
+    base_url: &str,
+) -> CapabilityState {
+    if !is_official_deepseek_route(provider, base_url) {
+        return CapabilityState::Unknown;
+    }
+    documented_server_side_web_search("deepseek", wire_model_id)
+}
+
 /// Return the provider Files API fact for exact DeepSeek direct offerings.
 ///
 /// DeepSeek stores one uploaded image per account (`purpose=user_data`) and
@@ -423,5 +435,43 @@ mod tests {
                 CapabilityState::Unknown
             );
         }
+    }
+
+    #[test]
+    fn deepseek_web_search_fact_is_exact_to_official_routes() {
+        for model in ["deepseek-v4-pro", "deepseek-flash", "deepseek-v4-flash"] {
+            assert_eq!(
+                documented_deepseek_web_search_for_route(
+                    ProviderKind::Deepseek,
+                    model,
+                    "https://api.deepseek.com/v1"
+                ),
+                CapabilityState::Supported
+            );
+            assert_eq!(
+                documented_deepseek_web_search_for_route(
+                    ProviderKind::DeepseekAnthropic,
+                    model,
+                    "https://api.deepseek.com/anthropic"
+                ),
+                CapabilityState::Supported
+            );
+            assert_eq!(
+                documented_deepseek_web_search_for_route(
+                    ProviderKind::Deepseek,
+                    model,
+                    "https://openrouter.ai/api/v1"
+                ),
+                CapabilityState::Unknown
+            );
+        }
+        assert_eq!(
+            documented_deepseek_web_search_for_route(
+                ProviderKind::Openai,
+                "gpt-4o",
+                "https://api.openai.com/v1"
+            ),
+            CapabilityState::Unknown
+        );
     }
 }

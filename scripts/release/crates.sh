@@ -23,7 +23,6 @@ release_crates=(
   # Path+version dependency of cli/tui — must publish before those crates.
   codewhale-telemetry
   codewhale-lane
-  codewhale-agent
   codewhale-core
   # Shared command shapes depend on protocol, never on core/runtime services.
   codewhale-command-contract

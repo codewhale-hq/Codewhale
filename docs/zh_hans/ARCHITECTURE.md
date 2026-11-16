@@ -13,7 +13,7 @@ Codewhale Engine 是现有 Rust 执行运行时。[Runtime API](RUNTIME_API.md) 
 - `crates/net` 拥有网络策略与审计、目标地址和 DNS 检查、代理解析及 Claude 导入规划。工具上下文、传输授权、重定向和响应大小限制仍由调用方负责。纯扩展宿主设置归 `crates/config` 所有。
 - `crates/notify` 拥有共享通知内容脱敏、注意力和类别门控、声音策略及本地音频派发。TUI 保留终端输出端，原生宿主保留横幅提交通道。
 - `crates/util` 拥有共享字符串、路径与原子写入辅助函数、受限工作区文件访问、链接与文件身份检查、捆绑文件读取、`.git` 名称规则和独占文件锁。
-- `crates/dependencies` 负责外部工具解析与受限子进程探测；`crates/snapshot` 负责回合前后的侧仓库快照；`crates/lsp` 负责语言服务器客户端；`crates/repl` 负责 Python REPL 运行时与 RLM 上下文文件。
+- `crates/dependencies` 负责外部工具解析与受限子进程探测；`crates/snapshot` 负责回合前后的侧仓库快照；`crates/lsp` 负责语言服务器客户端；`crates/repl` 负责 Python REPL 运行时及其 stdin 协议。
 - `crates/plugins` 拥有插件清单、发现、信任审查、安装与市场解析。其仅用于测试的构造函数与策略守卫位于仅限开发依赖的 `test-support` 特性之后；DSH 组合审查器由 TUI 在启动时注册。
 - `crates/skill-install` 拥有社区技能安装器（GitHub 与压缩包来源、精选注册表、受限解压、安装与信任标记）、包内容摘要以及共享的 `SKILL.md` 前置元数据读取器。其 SSRF DNS 固定与缩短的超时仅在仅限开发依赖的 `test-support` 特性下放宽。
 - `crates/tui` 正按照 `docs/design/TUI_DECONSTRUCTION.md` 记录的顺序拆分为以智能体
@@ -112,8 +112,6 @@ Codewhale Engine 是现有 Rust 执行运行时。[Runtime API](RUNTIME_API.md) 
   在同一进程内启动终端和无头模式（`run`、`exec`、`doctor`、`sessions`……）。
   `crates/tui` 是库；`codew` 和旧发布文件名的别名包含相同的可执行程序。
 - **`crates/tools`** - 共享的工具调用原语，包括 TUI 运行时使用的工具结果/错误/能力类型。
-- **`crates/agent`** - 模型/提供商（provider）注册表（ModelRegistry），用于把模型 ID
-  解析到提供商端点。
 - **`crates/app-server`** - 用于无头智能体工作流的 HTTP/SSE + JSON-RPC 应用服务器
   传输层。唯一的可执行程序将 `app-server --http`/`--mobile` 在同一进程内
   路由到由 `codewhale_tui` 库承载的运行时 API。
@@ -137,8 +135,7 @@ Codewhale Engine 是现有 Rust 执行运行时。[Runtime API](RUNTIME_API.md) 
   调用方会话，`share_session=true` 明确拒绝。子智能体也以已捕获的准入事实
   使用同一个 Engine；两种嵌套宿主都不再保留独立循环例外。
 - **`crates/execpolicy`** - 用于工具执行决策的审批（approval）/沙箱（sandbox）策略引擎。
-- **`crates/hooks`** - 响应、工具、作业和审批生命周期事件的事件接收端（sink：stdout、
-  JSONL 文件、webhook、Unix socket），外加可选启用的 lifecycle outbox。
+- **`crates/hooks`** - 可选启用的 lifecycle outbox（以 JSONL 文件和 webhook 投递生命周期事件）。
   用户在工具调用前后运行命令的自定义 shell 钩子（hook）是 `crates/engine/src/hooks.rs`
   里的另一套系统。
 - **`crates/localization`** - 面向用户的 UI 界面字符串的语言环境注册表
@@ -214,7 +211,7 @@ Chat Completions 驱动回合。
     已退役（见 `subagent/coord.rs` 模块文档）
   - `spec.rs` - 工具规格
   - `rlm.rs` - 持久化的递归语言模型（RLM）会话——持久的本地 Python REPL 子进程
-    （清理过环境变量，但没有操作系统级沙箱），支持语义化辅助调用和 `var_handle` 输出
+    （经由与 `code_execution` 相同的沙箱启动器启动，并清理过环境变量），支持语义化辅助调用和 `var_handle` 输出
 
 ### 扩展系统
 

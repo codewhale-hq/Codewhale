@@ -44,7 +44,7 @@ Fleet 角色是委派工作面向用户的词汇：父智能体通过 `agent` �
 
 在进程内部，解析后的权限是一个对象——`crates/agent-contract/src/worker_profile.rs` 中的 `ChildGrant`：`files`（none/read/write）、`shell`（none/inspect/verify/full）、`network`、`desktop`（绝不授予子智能体）、具名工具 `surface`、调用方的显式 `scope`，以及剩余的 `spawn` 深度。角色是这个对象上的一组预设（`ChildGrant::for_role`）；`ChildGrant::resolve` 把它与由父智能体派生的 profile 取交集。子智能体的工具目录、分发时的拒绝和能力包络读取的是同一组字段——可见的工具就可以调用，被拒绝的工具永远不会出现。
 
-会话的**权限姿态**在每个子智能体内部的适用方式，与它在父回合上完全一致：在 Auto-Review 下，同一个确定性底线和一次性的模型守护者来裁决 `worker` 被扣留的调用（从不弹提示；守护者不可用时拒绝，即 fail closed）；在 Ask 下，角色无法代为决定的被扣留调用，会作为审批提示出现在父智能体的 UI 中，`worker` 显式地等待（`waiting for user`），在无法弹提示的主机上则带着原因被拒绝；Full Access 与父回合完全一致地生效，用户已授予的调用不会再被 Auto-Review 底线拦下。每一次无人被提示的裁决，都是该 `worker` 转录中的一行备注（聚焦它时可见）和一条审计日志记录。参见 `docs/MODES.md`。
+会话的**权限姿态**在每个子智能体内部的适用方式，与它在父回合上完全一致：在 Auto-Review 下，同一个确定性底线和一次性的模型守护者来裁决 `worker` 被扣留的调用（从不弹提示；守护者不可用时拒绝，即 fail closed），并在运行过工具调用的子智能体返回时对照根所有者请求对其纯调用动作列表做一次审查——发现风险或审查不可用时在返回报告顶部前置经过清洗的 `[Auto-Review warning: ...]` 提示，并将子智能体阻断同步到父会话的已阻断动作列表中（不授予重试许可）；在 Ask 下，角色无法代为决定的被扣留调用，会作为审批提示出现在父智能体的 UI 中，`worker` 显式地等待（`waiting for user`），在无法弹提示的主机上则带着原因被拒绝；Full Access 与父回合完全一致地生效，用户已授予的调用不会再被 Auto-Review 底线拦下。每一次无人被提示的裁决，都是该 `worker` 转录中的一行备注（聚焦它时可见）和一条审计日志记录。参见 `docs/MODES.md`。
 
 每个角色完整的系统提示词位于 `crates/engine/src/tools/subagent/mod.rs`（搜索 `*_AGENT_INTRO`）。提示词前缀在子智能体启动时自动加载；父智能体的委派提示词成为第一个回合的用户消息。
 
@@ -76,7 +76,7 @@ Fleet 角色是委派工作面向用户的词汇：父智能体通过 `agent` �
 
 - `worktree_branch`：要创建的确切分支。
 - `worktree_base`：要从中开出分支的 git ref；默认为 `HEAD`。
-- `worktree_path`：确切的检出路径。相对路径和绝对路径都必须位于默认的同级 `.codewhale-worktrees/<repo>/` 根目录之下（检查之前会先解析符号链接）。任何 worktree 请求都保留审批卡片，即使是只读角色。
+- `worktree_path`：确切的检出路径。相对路径和绝对路径都必须位于默认的同级 `.codewhale-worktrees/<repo>/` 根目录之下，并且通向该检出的路径上的任何符号链接（包括根目录本身）都会被拒绝。任何 worktree 请求都保留审批卡片，即使是只读角色，其中包括 `workspace_policy: "worktree"`。
 
 `cwd` 可以与 `worktree` 组合：所请求的目录成为发现锚点，仓库根（以及新的检出）由此解析（`prepare_child_workspace`）。没有 `worktree` 时，`cwd` 仍是对父工作区内已创建目录的手动逃生舱。
 

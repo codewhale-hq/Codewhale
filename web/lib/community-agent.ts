@@ -12,6 +12,7 @@
 
 import type { DraftClaimLockNamespace, DraftClaimLockStub, DraftLockAction } from "./draft-claim-lock";
 
+import { maintainerTokenUsable } from "./maintainer-token";
 import { requestChat, type ChatMessage, type DeepSeekEnv } from "./deepseek";
 export type { DeepSeekEnv } from "./deepseek";
 
@@ -722,6 +723,7 @@ export async function deleteDraft(kv: KVNamespace | undefined, key: string): Pro
 
 const SESSION_PREFIX = "session:admin:";
 const SESSION_TTL_SEC = 60 * 60 * 24; // 24h
+const SESSION_TOKEN_DOMAIN = "codewhale-web:admin-session:v1:";
 
 function toBase64Url(bytes: Uint8Array): string {
   let s = "";
@@ -738,21 +740,39 @@ export async function safeEqual(a: string, b: string): Promise<boolean> {
   return diff === 0;
 }
 
-export async function createSession(kv: KVNamespace | undefined): Promise<string | null> {
-  if (!kv) return null;
+async function tokenFingerprint(token: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(SESSION_TOKEN_DOMAIN + token)));
+  let hex = "";
+  for (const byte of digest) hex += byte.toString(16).padStart(2, "0");
+  return hex;
+}
+
+export async function createSession(kv: KVNamespace | undefined, token: string | undefined): Promise<string | null> {
+  if (!kv || !maintainerTokenUsable(token)) return null;
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   const sid = toBase64Url(bytes);
-  const value = JSON.stringify({ createdAt: Date.now() });
+  const value = JSON.stringify({ createdAt: Date.now(), tokenFingerprint: await tokenFingerprint(token) });
   await kv.put(SESSION_PREFIX + sid, value, { expirationTtl: SESSION_TTL_SEC });
   return sid;
 }
 
-export async function validateSession(kv: KVNamespace | undefined, sid: string | undefined | null): Promise<boolean> {
-  if (!kv || !sid) return false;
+export async function validateSession(
+  kv: KVNamespace | undefined,
+  sid: string | undefined | null,
+  token: string | undefined,
+): Promise<boolean> {
+  if (!kv || !sid || !maintainerTokenUsable(token)) return false;
   if (!/^[A-Za-z0-9_-]{40,64}$/.test(sid)) return false;
   const raw = await kv.get(SESSION_PREFIX + sid);
-  return raw !== null;
+  if (raw === null) return false;
+  let stored: unknown;
+  try {
+    stored = (JSON.parse(raw) as { tokenFingerprint?: unknown }).tokenFingerprint;
+  } catch {
+    return false;
+  }
+  return typeof stored === "string" && (await safeEqual(stored, await tokenFingerprint(token)));
 }
 
 export async function deleteSession(kv: KVNamespace | undefined, sid: string | undefined | null): Promise<void> {

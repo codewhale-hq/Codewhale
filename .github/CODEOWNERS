@@ -1,8 +1,2 @@
 # Default owner for everything in the repo.
 * @Hmbown
-
-# AI code review is advisory and not wired through CODEOWNERS: GitHub CODEOWNERS
-# only accepts users and teams, not bots. @Hmbown stays the human code owner.
-#   - Claude: .github/workflows/claude-review.yml (GitHub Actions).
-#   - Codex/ChatGPT: the ChatGPT Codex cloud integration (chatgpt.com/codex ->
-#     connect GitHub -> enable Code review), authed by the ChatGPT subscription.

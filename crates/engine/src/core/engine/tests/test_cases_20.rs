@@ -1412,6 +1412,157 @@ async fn configured_mcp_servers_are_named_to_the_model_once_without_loading_them
 }
 
 #[tokio::test]
+async fn computer_use_consent_prompts_in_interactive_auto_review_and_refuses_unattended() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use codewhale_app_server_protocol::runtime::DynamicToolSpec;
+
+    let cu_tool = DynamicToolSpec {
+        namespace: None,
+        name: "mcp_codewhale-cu_consent_allow".to_string(),
+        description: "Approve app automation consent".to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "app": { "type": "string" },
+                "bundle_id": { "type": "string" }
+            }
+        }),
+        defer_loading: false,
+    };
+    let cu_op = |config: &Config| {
+        let mut op = auto_review_message_op("request consent", config);
+        if let Op::SendMessage(ref mut spec) = op {
+            spec.dynamic_tools = vec![cu_tool.clone()];
+        }
+        op
+    };
+
+    let tmp = tempdir().expect("tempdir");
+    let config = Config::default();
+
+    let interactive_mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn(
+            "call_cu_interactive",
+            "mcp_codewhale-cu_consent_allow",
+            r#"{"app":"Safari","bundle_id":"com.apple.Safari"}"#,
+        ),
+        canned::simple_text_turn("consent flow finished"),
+    ]));
+    let (mut interactive_engine, mut interactive_handle) = Engine::new_with_model_client(
+        EngineConfig {
+            workspace: tmp.path().to_path_buf(),
+            snapshots_enabled: false,
+            subagents_enabled: false,
+            memory_enabled: false,
+            ..EngineConfig::default()
+        },
+        &config,
+        interactive_mock,
+    );
+    interactive_engine.attach_owner_surface_for_tests(&mut interactive_handle);
+    let interactive_task = tokio::spawn(interactive_engine.run());
+    interactive_handle
+        .send(cu_op(&config))
+        .await
+        .expect("send interactive CU turn");
+    let mut saw_prompt = false;
+    let mut saw_started = false;
+    let mut rx = interactive_handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timed out waiting for interactive CU turn")
+    {
+        match event {
+            Event::ApprovalRequired {
+                id,
+                tool_name,
+                approval_force_prompt,
+                ..
+            } => {
+                assert_eq!(tool_name, "mcp_codewhale-cu_consent_allow");
+                assert!(approval_force_prompt);
+                saw_prompt = true;
+                interactive_handle
+                    .approve_tool_call(&id)
+                    .await
+                    .expect("approve CU card");
+            }
+            Event::ToolCallStarted { .. } => {
+                saw_started = true;
+            }
+            Event::TurnComplete { status, error, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+    assert!(saw_prompt, "interactive Auto-Review must open CU consent card");
+    assert!(
+        saw_started,
+        "approved CU consent card must dispatch past Auto-Review gate"
+    );
+    interactive_handle.send(Op::Shutdown).await.expect("shutdown");
+    tokio::time::timeout(model_turn_event_timeout(), interactive_task)
+        .await
+        .expect("shutdown timeout")
+        .expect("engine task");
+
+    let unattended_mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn(
+            "call_cu_unattended",
+            "mcp_codewhale-cu_consent_allow",
+            r#"{"app":"Safari","bundle_id":"com.apple.Safari"}"#,
+        ),
+        canned::simple_text_turn("refused"),
+    ]));
+    let (unattended_engine, unattended_handle) = Engine::new_with_model_client(
+        EngineConfig {
+            workspace: tmp.path().to_path_buf(),
+            snapshots_enabled: false,
+            subagents_enabled: false,
+            memory_enabled: false,
+            ..EngineConfig::default()
+        },
+        &config,
+        unattended_mock,
+    );
+    let unattended_task = tokio::spawn(unattended_engine.run());
+    unattended_handle
+        .send(cu_op(&config))
+        .await
+        .expect("send unattended CU turn");
+    let mut unattended_err = None;
+    let mut unattended_rx = unattended_handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), unattended_rx.recv())
+        .await
+        .expect("timed out waiting for unattended CU turn")
+    {
+        match event {
+            Event::ApprovalRequired { .. } => {
+                panic!("unattended Auto-Review must not open CU consent card")
+            }
+            Event::ToolCallComplete { result, .. } => {
+                unattended_err = Some(result.expect_err("unattended CU must be refused"));
+            }
+            Event::TurnComplete { .. } => break,
+            _ => {}
+        }
+    }
+    drop(unattended_rx);
+    assert!(matches!(
+        unattended_err.expect("unattended CU tool failure"),
+        crate::tools::spec::ToolError::PermissionDenied { .. }
+    ));
+    unattended_handle.send(Op::Shutdown).await.expect("shutdown");
+    tokio::time::timeout(model_turn_event_timeout(), unattended_task)
+        .await
+        .expect("shutdown timeout")
+        .expect("engine task");
+}
+
+#[tokio::test]
 async fn no_configured_mcp_servers_adds_nothing_to_history() {
     let tmp = tempdir().expect("tempdir");
     let (mut engine, _handle) = Engine::new(

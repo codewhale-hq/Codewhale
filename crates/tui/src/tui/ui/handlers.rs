@@ -740,7 +740,7 @@ fn mcp_scoped_config_path(
 
 /// Whether a turn (or its compaction work) owns the engine. The engine
 /// services ops only between turns, so an op sent now waits for that turn.
-fn mcp_engine_busy(app: &App) -> bool {
+pub(super) fn mcp_engine_busy(app: &App) -> bool {
     app.is_loading
         || app.dispatch_in_flight
         || matches!(app.runtime_turn_status.as_deref(), Some("in_progress"))
@@ -977,6 +977,9 @@ pub(crate) async fn handle_mcp_ui_action(
                     false
                 }
             };
+            if let Some(note) = crate::project_mcp_approval_note(&app.workspace) {
+                sections.push(note);
+            }
             if app.mcp_reload_required {
                 sections.push(
                     "MCP config changed since the live pool loaded. Run /mcp reload to apply it."
@@ -1001,6 +1004,47 @@ pub(crate) async fn handle_mcp_ui_action(
             return;
         }
         crate::tui::app::McpUiAction::Show => Ok(()),
+        crate::tui::app::McpUiAction::ProjectReview => {
+            use codewhale_engine::mcp::project_authority::review_project_mcp;
+            match review_project_mcp(&app.workspace) {
+                Ok(reviewed) => {
+                    message = Some(format!(
+                        "Project MCP servers start processes and open connections as you. Review this file and any scripts it runs before approval.\n\n{}\n\nTo approve these exact contents: /mcp approve {}",
+                        codewhale_engine::hooks::sanitize_hook_text(
+                            &reviewed.contents,
+                            reviewed.contents.chars().count()
+                        ),
+                        reviewed.digest
+                    ));
+                    Ok(())
+                }
+                Err(error) => Err(anyhow::anyhow!(error)),
+            }
+        }
+        crate::tui::app::McpUiAction::ProjectApprove { digest } => {
+            changed = true;
+            codewhale_engine::mcp::project_authority::approve_project_mcp(
+                &app.workspace,
+                digest.trim(),
+            )
+            .map_err(anyhow::Error::msg)
+            .map(|()| {
+                message = Some(
+                    "Approved these exact project MCP servers. Changes to the file require another review."
+                        .to_string(),
+                );
+            })
+        }
+        crate::tui::app::McpUiAction::ProjectRevoke => {
+            changed = true;
+            codewhale_engine::mcp::project_authority::revoke_project_mcp(&app.workspace)
+                .map_err(anyhow::Error::msg)
+                .map(|()| {
+                    message = Some(
+                        "Project MCP approval revoked. Project servers are unloaded.".to_string(),
+                    );
+                })
+        }
         crate::tui::app::McpUiAction::Init { force } => {
             changed = true;
             match mcp::init_config(&path, force) {
@@ -1790,6 +1834,7 @@ pub(crate) async fn apply_plan_handoff_with_checkpoint(
                 return Ok(());
             }
             QueuedMessage::new(plan_handoff_proceed_message(app, &plan), None)
+                .with_approved_plan(Some(plan.text))
         }
     };
     // Consume before ordinary composer admission. Its existing recovery owns
@@ -2287,6 +2332,7 @@ pub(crate) async fn handle_view_events(
                                 model: app.model.clone(),
                                 workspace: app.workspace.clone(),
                                 mode: app.mode,
+                                agent_preset: app.agent_preset(),
                             })
                             .await;
                         let _ = engine_handle
@@ -3021,11 +3067,9 @@ pub(crate) async fn handle_view_events(
             }
             ViewEvent::SetupOpenModeRequested => {
                 if app.view_stack.top_kind() != Some(ModalKind::ModePicker) {
-                    app.view_stack
-                        .push(crate::tui::views::mode_picker::ModePickerView::new(
-                            app.mode,
-                            app.ui_locale,
-                        ));
+                    let view =
+                        crate::tui::views::mode_picker::ModePickerView::for_app(app, config).await;
+                    app.view_stack.push(view);
                     app.status_message =
                         Some("Work mode picker opened from /setup runtime posture.".to_string());
                 }
@@ -3458,6 +3502,19 @@ pub(crate) async fn handle_view_events(
                     sync_mode_update(app, engine_handle).await;
                 }
                 app.add_message(HistoryCell::System { content: msg });
+            }
+            ViewEvent::ConversationModeSelected { id } => {
+                let content = match crate::tui::conversation_mode::set_in_place(
+                    app,
+                    config,
+                    engine_handle,
+                    &id,
+                )
+                .await
+                {
+                    Ok(message) | Err(message) => message,
+                };
+                app.add_message(HistoryCell::System { content });
             }
             ViewEvent::BacktrackStep { direction } => {
                 app.backtrack.step(direction);

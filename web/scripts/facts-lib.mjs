@@ -102,12 +102,15 @@ export function deriveToolCount() {
 export function deriveContributorCount() {
   const contributors = JSON.parse(read("docs/contributors.json") ?? "null");
   const people = contributors?.people;
+  const unlinked = contributors?.unlinked_commit_names ?? [];
   if (!Array.isArray(people) || people.length === 0 || people.some((person) =>
     !person || typeof person.login !== "string" || person.login.trim().length === 0)
-    || new Set(people.map((person) => person.login.toLowerCase())).size !== people.length) {
+    || new Set(people.map((person) => person.login.toLowerCase())).size !== people.length
+    || !Array.isArray(unlinked) || unlinked.some((name) => typeof name !== "string" || name.trim().length === 0)) {
     throw new Error("missing or malformed contributor roster");
   }
-  return people.length;
+  const logins = new Set(people.map((person) => person.login.toLowerCase()));
+  return people.length + unlinked.filter((name) => !logins.has(name.toLowerCase())).length;
 }
 
 export function deriveLicense() {

@@ -327,7 +327,6 @@ mod tests {
     use crate::llm_client::mock::MockLlmClient;
     use crate::rlm::bridge::RlmUsageAccumulator;
     use codewhale_models::{MessageRequest, MessageResponse};
-    use std::path::PathBuf;
     use std::sync::Arc;
     use tokio::sync::mpsc;
 
@@ -354,6 +353,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         });
         let client: Arc<dyn Replies> = mock;
         let (tx, _rx) = mpsc::channel(8);
@@ -442,6 +444,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: usage.clone(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         });
         let client: Arc<dyn Replies> = mock.clone();
         let (tx, _rx) = mpsc::channel(8);
@@ -497,6 +502,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         });
         let client: Arc<dyn Replies> = mock;
         let (tx, _rx) = mpsc::channel(8);
@@ -546,6 +554,9 @@ mod tests {
             stop_reason: Some("end_turn".to_string()),
             stop_sequence: None,
             container: None,
+            title: None,
+            stop_details: None,
+            refusal: None,
             usage: Usage {
                 input_tokens: 5,
                 output_tokens: 5,
@@ -657,7 +668,7 @@ mod tests {
         assert!(codewhale_dependencies::Python::resolve().is_some());
         for pending_model in [true, false] {
             let partial = if pending_model {
-                "```repl\nprint(_os.environ['RLM_CONTEXT_FILE'])\n```"
+                "```repl\nprint(len(content))\n```"
             } else {
                 "```repl\nimport time\ntime.sleep(60)\nFINAL('too late')\n```"
             };
@@ -674,6 +685,7 @@ mod tests {
             let call = caller.dispatch(crate::core::engine::rlm_host::RlmInvocation {
                 prompt: "long context".to_string(),
                 mode: crate::core::engine::rlm_host::RlmMode::Recursive { depth_remaining: 0 },
+                prompt_policy: crate::core::engine::rlm_host::RlmPromptPolicy::Session,
                 max_tokens: None,
                 task_instructions: None,
                 deadline: Some(tokio::time::Instant::now() + Duration::from_secs(5)),
@@ -754,12 +766,11 @@ mod tests {
             if pending_model {
                 assert_eq!(result.trace.len(), 1, "keep completed rounds");
                 assert!(!result.trace[0].had_error);
-                let context_path = PathBuf::from(result.trace[0].stdout_preview.trim());
-                assert!(
-                    context_path.is_absolute(),
-                    "REPL must report its context path"
+                assert_eq!(
+                    result.trace[0].stdout_preview.trim(),
+                    "12",
+                    "the kernel received its context over stdin"
                 );
-                assert!(!context_path.exists(), "timeout must clean up context");
             }
             let mut saw_timeout = false;
             while let Ok(event) = rx.try_recv() {
@@ -805,6 +816,7 @@ mod tests {
                 let call = caller.dispatch(crate::core::engine::rlm_host::RlmInvocation {
                     prompt: "long context".to_string(),
                     mode: crate::core::engine::rlm_host::RlmMode::Completion,
+                    prompt_policy: crate::core::engine::rlm_host::RlmPromptPolicy::Session,
                     max_tokens: None,
                     task_instructions: None,
                     deadline: Some(tokio::time::Instant::now() + Duration::from_secs(1)),
@@ -1016,6 +1028,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         });
         let (tx, _rx) = mpsc::channel(64);
         let result = run_fixture(

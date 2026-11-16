@@ -28,19 +28,21 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use codewhale_command_contract::facets::{
-    CommandPluginContext, CommandPresentationContext, PluginDetail, PluginDiagnosticLevel,
-    PluginMutationOutcome, PluginMutationReceipt,
+    CommandPluginContext, CommandPresentationContext, CommandSessionLifecycleContext, PluginDetail,
+    PluginDiagnosticLevel, PluginMutationOutcome, PluginMutationReceipt,
 };
 use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts, CommandHandler};
 use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
 
 use crate::commands::CommandResult;
+use crate::commands::groups::session::transition_blocked_message;
 use crate::commands::traits::{CommandGroup, ContextualCommand};
 #[cfg(test)]
 use crate::tui::app::App;
 use crate::tui::app::AppAction;
 
 pub(crate) mod dsh_import;
+pub(crate) mod headless;
 mod kimi_import;
 pub(crate) mod legacy;
 pub(crate) mod marketplace;
@@ -67,7 +69,7 @@ impl CommandGroup for PluginsCommands {
 pub(in crate::commands) const PLUGINS_INFO: CommandInfo = CommandInfo {
     name: "plugin",
     aliases: &["plugins", "extensions"],
-    usage: "/plugin [list|status|show|suggest|validate|export|install|import|update|uninstall|trust|enable|restage|disable|revoke|reload|doctor|tools|marketplace|dismissals]",
+    usage: "/plugin [list|status|show|create|suggest|validate|export|install|import|update|uninstall|trust|enable|restage|disable|revoke|reload|doctor|tools|marketplace|dismissals]",
     description_key: "cmd_plugin_description",
 };
 
@@ -82,7 +84,8 @@ impl RegisterCommand<CommandResult> for PluginsCmd {
         CommandHandler::Contextual {
             capabilities: CommandCapabilities::WORKSPACE
                 .union(CommandCapabilities::PRESENTATION)
-                .union(CommandCapabilities::PLUGIN),
+                .union(CommandCapabilities::PLUGIN)
+                .union(CommandCapabilities::SESSION_LIFECYCLE),
             handler: plugins_contextual,
         }
     }
@@ -99,7 +102,17 @@ fn plugins_contextual(contexts: CommandContexts<'_>, arg: Option<&str>) -> Comma
     let Some(plugin) = parts.plugin.as_deref_mut() else {
         return CommandResult::error("Command capability unavailable: plugin");
     };
-    plugins(&workspace.workspace(), presentation, plugin, arg, None)
+    let Some(lifecycle) = parts.lifecycle.as_deref_mut() else {
+        return CommandResult::error("Command capability unavailable: session_lifecycle");
+    };
+    plugins(
+        &workspace.workspace(),
+        presentation,
+        plugin,
+        lifecycle,
+        arg,
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -116,7 +129,8 @@ fn plugins_with_kimi_home_override(
     let mut bundle = app.command_contexts();
     let capabilities = CommandCapabilities::WORKSPACE
         .union(CommandCapabilities::PRESENTATION)
-        .union(CommandCapabilities::PLUGIN);
+        .union(CommandCapabilities::PLUGIN)
+        .union(CommandCapabilities::SESSION_LIFECYCLE);
     let mut contexts = bundle.contexts(capabilities).into_parts();
     let Some(workspace) = contexts.workspace.as_deref() else {
         return CommandResult::error("Command capability unavailable: workspace");
@@ -127,7 +141,17 @@ fn plugins_with_kimi_home_override(
     let Some(plugin) = contexts.plugin.as_deref_mut() else {
         return CommandResult::error("Command capability unavailable: plugin");
     };
-    plugins(&workspace.workspace(), presentation, plugin, arg, kimi_home)
+    let Some(lifecycle) = contexts.lifecycle.as_deref_mut() else {
+        return CommandResult::error("Command capability unavailable: session_lifecycle");
+    };
+    plugins(
+        &workspace.workspace(),
+        presentation,
+        plugin,
+        lifecycle,
+        arg,
+        kimi_home,
+    )
 }
 
 /// Portable `/plugin` dispatch (FEAT-020 Phase 4).
@@ -139,6 +163,7 @@ pub(super) fn plugins(
     workspace: &Path,
     presentation: &mut dyn CommandPresentationContext,
     plugin: &mut dyn CommandPluginContext,
+    lifecycle: &mut dyn CommandSessionLifecycleContext,
     arg: Option<&str>,
     kimi_home: Option<&Path>,
 ) -> CommandResult {
@@ -155,7 +180,7 @@ pub(super) fn plugins(
         ["restage"] => CommandResult::error("Usage: /plugin restage <name>"),
         ["restage", selector] => mutate_bundle(presentation, plugin, selector, Mutation::Restage),
         ["help"] => CommandResult::message(format!(
-            "{}\n\n/plugin import kimi [list]\n/plugin import kimi approve <name> <content-hash>\n{}\n{}",
+            "{}\n\n/plugin create [idea]\n/plugin import kimi [list]\n/plugin import kimi approve <name> <content-hash>\n{}\n{}",
             translate(presentation, "cmd_plugin_bundle_usage"),
             dsh_import::USAGE,
             DOCTOR_USAGE
@@ -205,6 +230,7 @@ pub(super) fn plugins(
         ["dismissals", ..] => CommandResult::error("Usage: /plugin dismissals [reset [<name>]]"),
         ["tools"] => legacy_tools(presentation, plugin, None),
         ["tools", name] => legacy_tools(presentation, plugin, Some(name)),
+        ["create", ..] => create_plugin(lifecycle, create_draft_from_arg(arg.unwrap_or_default())),
         [selector] => {
             if plugin.detail(selector).is_ok() {
                 show_bundle(presentation, plugin, selector)
@@ -215,6 +241,37 @@ pub(super) fn plugins(
             }
         }
         _ => CommandResult::error(translate(presentation, "cmd_plugin_bundle_usage")),
+    }
+}
+
+fn create_draft_from_arg(raw: &str) -> Option<String> {
+    let trimmed = raw.trim_start();
+    let rest = trimmed.strip_prefix("create")?;
+    let delimiter = rest.chars().next()?;
+    if !delimiter.is_whitespace() {
+        return None;
+    }
+    let idea = &rest[delimiter.len_utf8()..];
+    (!idea.trim().is_empty()).then(|| idea.to_string())
+}
+
+fn create_plugin(
+    lifecycle: &mut dyn CommandSessionLifecycleContext,
+    draft: Option<String>,
+) -> CommandResult {
+    if lifecycle.transition_blocked() {
+        return CommandResult::error(transition_blocked_message(
+            "start a new session",
+            &lifecycle.transition_blockers(),
+        ));
+    }
+    match lifecycle.fresh_session(false, Some("creator")) {
+        Ok(receipt) => CommandResult::action(AppAction::NewSession {
+            sync: receipt.sync,
+            force: false,
+            draft,
+        }),
+        Err(error) => CommandResult::error(error),
     }
 }
 

@@ -419,14 +419,16 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
             .unwrap_or_else(|| "(none)".to_string());
         app.clear_history();
         app.session_turn_outcomes = session.turn_outcomes.clone();
+        app.delegated_writes = session
+            .delegated_writes
+            .iter()
+            .map(|(seq, paths)| ((session_id.clone(), *seq), paths.iter().cloned().collect()))
+            .collect();
         app.session_artifacts = session.artifacts.clone();
         app.session_context_references = session.context_references.clone();
-        app.extend_history(
-            session
-                .messages
-                .iter()
-                .flat_map(crate::tui::history::history_cells_from_message),
-        );
+        app.extend_history(session.messages.iter().flat_map(|message| {
+            crate::tui::history::history_cells_from_message_with_results(message, &session.messages)
+        }));
         app.scroll_to_bottom();
         Ok(SessionBranchOutcome {
             leaf_display,
@@ -438,6 +440,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
                 model: app.model.clone(),
                 workspace: app.workspace.clone(),
                 mode: to_command_mode(app.mode),
+                agent_preset: app.agent_preset(),
             },
         })
     }
@@ -734,6 +737,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
                 model: app.model.clone(),
                 workspace: app.workspace.clone(),
                 mode,
+                agent_preset: app.agent_preset(),
             },
         })
     }
@@ -796,6 +800,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
         forked.journal = Some(forked_journal);
         forked.leaf_id = forked.journal.as_ref().and_then(|j| j.leaf_id.clone());
         forked.messages = messages;
+        forked.agent_preset = source_session.agent_preset.clone();
         forked.metadata.spawn_depth = forked.journal.as_ref().map(|j| j.spawn_depth).unwrap_or(0);
         forked.metadata.parent_session_id = Some(source_session.metadata.id.clone());
         forked.metadata.forked_from_message_count = Some(source_session.metadata.message_count);
@@ -834,12 +839,36 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
                 model: app.model.clone(),
                 workspace: app.workspace.clone(),
                 mode,
+                agent_preset: app.agent_preset(),
             },
         })
     }
 
-    fn fresh_session(&mut self, force: bool) -> Result<SessionNewReceipt, String> {
+    fn fresh_session(
+        &mut self,
+        force: bool,
+        conversation_mode: Option<&str>,
+    ) -> Result<SessionNewReceipt, String> {
         let app = self.host.app.borrow();
+        let agent_preset = match conversation_mode {
+            None => None,
+            Some(id) => {
+                let table = crate::tui::conversation_mode::current_table_blocking(self.host.config);
+                match crate::tui::conversation_mode::resolve(app.ui_locale, &table, id) {
+                    crate::tui::conversation_mode::Resolution::Unknown(message) => {
+                        return Err(message);
+                    }
+                    crate::tui::conversation_mode::Resolution::Unavailable { name, reason } => {
+                        return Err(crate::tui::conversation_mode::unavailable_message(
+                            app.ui_locale,
+                            &name,
+                            &reason,
+                        ));
+                    }
+                    crate::tui::conversation_mode::Resolution::Ready { stored, .. } => stored,
+                }
+            }
+        };
         if !force {
             let mut blockers: Vec<&'static str> = Vec::new();
             if !app.input.trim().is_empty() {
@@ -871,6 +900,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
                 model: app.model.clone(),
                 workspace: app.workspace.clone(),
                 mode,
+                agent_preset,
             },
         })
     }
@@ -1552,6 +1582,7 @@ fn plan_snapshot_to_sections(
         verification_plan: snapshot.verification_plan.clone(),
         risks_and_unknowns: snapshot.risks_and_unknowns.clone(),
         handoff_packet: snapshot.handoff_packet.clone(),
+        replan_if: snapshot.replan_if.clone(),
         items: snapshot
             .items
             .iter()
@@ -1723,6 +1754,7 @@ fn import_session_container(
             model: app.model.clone(),
             workspace: app.workspace.clone(),
             mode: to_command_mode(app.mode),
+            agent_preset: app.agent_preset(),
         },
     })
 }
@@ -1967,7 +1999,9 @@ fn project_block(block: &ContentBlock) -> ExportBlock {
                 )
             }),
         },
-        ContentBlock::ServerToolUse { id, name, input } => ExportBlock::ServerToolCall {
+        ContentBlock::ServerToolUse {
+            id, name, input, ..
+        } => ExportBlock::ServerToolCall {
             id: id.clone(),
             name: name.clone(),
             input: input.clone(),
@@ -1975,6 +2009,11 @@ fn project_block(block: &ContentBlock) -> ExportBlock {
         ContentBlock::ToolSearchToolResult {
             tool_use_id,
             content,
+        }
+        | ContentBlock::WebSearchToolResult {
+            tool_use_id,
+            content,
+            ..
         } => ExportBlock::ToolSearchResult {
             tool_use_id: tool_use_id.clone(),
             content: content.clone(),
@@ -1982,9 +2021,36 @@ fn project_block(block: &ContentBlock) -> ExportBlock {
         ContentBlock::CodeExecutionToolResult {
             tool_use_id,
             content,
+        }
+        | ContentBlock::WebFetchToolResult {
+            tool_use_id,
+            content,
+            ..
         } => ExportBlock::CodeExecutionResult {
             tool_use_id: tool_use_id.clone(),
             content: content.clone(),
+        },
+        ContentBlock::WebSearchCall {
+            id,
+            kind,
+            action,
+            sources,
+            page,
+            ..
+        } => ExportBlock::ServerToolCall {
+            id: id.clone(),
+            name: kind
+                .clone()
+                .unwrap_or_else(|| "web_search_call".to_string()),
+            input: serde_json::json!({ "action": action, "sources": sources, "page": page }),
+        },
+        ContentBlock::ServerToolCalls { steps } => ExportBlock::ServerToolCall {
+            id: String::new(),
+            name: "server_tool_calls".to_string(),
+            input: serde_json::Value::Array(steps.clone()),
+        },
+        ContentBlock::File { file_id } => ExportBlock::Text {
+            text: format!("[file: {file_id}]"),
         },
     }
 }
@@ -3845,7 +3911,7 @@ fn portable_mcp_server(
 }
 
 /// Convert a TUI-owned loaded plugin into the portable full detail.
-fn portable_detail(plugin: &codewhale_plugins::types::LoadedPlugin) -> PluginDetail {
+pub(crate) fn portable_detail(plugin: &codewhale_plugins::types::LoadedPlugin) -> PluginDetail {
     let mcp_servers = plugin
         .manifest
         .mcp_servers
@@ -4750,6 +4816,9 @@ impl CommandPluginContext for PluginAdapter<'_> {
                 source_version: conversion.source_version,
                 content_hash,
                 skills: conversion.skills,
+                commands: conversion.commands,
+                agents: conversion.agents,
+                hooks: conversion.hooks,
                 remote_servers: conversion.remote_servers,
                 local_servers: conversion.local_servers,
                 network_hosts: conversion.network_hosts,
@@ -5413,6 +5482,8 @@ mod tests {
             skill_instruction: None,
             skill_provenance: None,
             extension_command: None,
+            approved_plan: None,
+            owner_input: false,
             history_echoed: false,
         });
         {
@@ -7433,7 +7504,9 @@ mod tests {
             let mut bundle = app.command_contexts();
             let mut parts = bundle.parts();
             let facet = parts.lifecycle.as_deref_mut().expect("lifecycle slot");
-            let err = facet.fresh_session(true).expect_err("busy work state");
+            let err = facet
+                .fresh_session(true, None)
+                .expect_err("busy work state");
             assert!(err.contains("Work state is busy"), "{err}");
         }
         assert_eq!(app.api_messages.len(), 1);
@@ -7452,7 +7525,7 @@ mod tests {
             let mut bundle = app.command_contexts();
             let mut parts = bundle.parts();
             let facet = parts.lifecycle.as_deref_mut().expect("lifecycle slot");
-            let err = facet.fresh_session(false).expect_err("blocker text");
+            let err = facet.fresh_session(false, None).expect_err("blocker text");
             assert!(err.contains("/new --force"), "{err}");
         }
         assert_eq!(app.input, "draft text");
@@ -7463,7 +7536,7 @@ mod tests {
             let mut parts = bundle.parts();
             let facet = parts.lifecycle.as_deref_mut().expect("lifecycle slot");
             let ok = facet
-                .fresh_session(true)
+                .fresh_session(true, None)
                 .expect("force prepares a new session");
             assert_eq!(app.current_session_id.as_deref(), Some("old-session"));
             assert_eq!(app.input, "draft text");

@@ -1,7 +1,7 @@
 # First-party plugin marketplace
 
 Codewhale includes an offline snapshot of the `codewhale` catalog in the same
-marketplace store consumed by the terminal, Extensions, recommendations, and
+marketplace store consumed by the terminal screen, recommendations, and
 Runtime API. Browse the [public first-party marketplace](https://github.com/codewhale-hq/codewhale-plugin-marketplace)
 for current entries and their prerequisites. Its contents can be newer than
 the snapshot in your installed CLI. Browsing a catalog does not fetch or

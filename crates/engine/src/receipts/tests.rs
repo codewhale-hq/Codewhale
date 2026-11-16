@@ -1292,3 +1292,28 @@ fn thread_receipt_sums_turn_tokens_and_points_to_the_usage_endpoint_for_cost() {
             .any(|note| note.starts_with("Cost:"))
     );
 }
+
+#[test]
+fn edit_line_counts_match_git_numstat_for_the_same_edit() {
+    let block = "a\nb\nc\nd\ne\n";
+    let counts = |old: &str, new: &str| {
+        edit_line_counts(&json!({"path": "f", "search": old, "replace": new}))
+    };
+    let some = |added: u64, removed: u64| (Some(added), Some(removed));
+
+    assert_eq!(counts(block, "a\nb\nc\nd\ne\nx\ny\n"), some(2, 0), "insert");
+    assert_eq!(
+        counts(block, "a\nb\nX\nd\ne\n"),
+        some(1, 1),
+        "replace one line"
+    );
+    assert_eq!(counts(block, "a\nb\nd\ne\n"), some(0, 1), "delete");
+    assert_eq!(counts("a\nb", "a\nb\nc"), some(1, 0), "no trailing newline");
+    assert_eq!(counts("", "x\ny\nz\n"), some(3, 0), "whole new text");
+
+    let multi = edit_line_counts(&json!({"path": "f", "edits": [
+        {"search": block, "replace": "a\nb\nX\nd\ne\n"},
+        {"search": "q\nr\n", "replace": "q\nr\ns\n"},
+    ]}));
+    assert_eq!(multi, some(2, 1), "multi-edit sums per pair");
+}

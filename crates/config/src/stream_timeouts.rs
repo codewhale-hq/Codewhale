@@ -27,10 +27,11 @@ pub fn resolve_stream_open_timeout(configured_secs: Option<u64>) -> std::time::D
             secs.clamp(MIN_STREAM_OPEN_TIMEOUT_SECS, MAX_STREAM_OPEN_TIMEOUT_SECS),
         ),
         _ => stream_open_timeout_from_env(
-            std::env::var("CODEWHALE_STREAM_OPEN_TIMEOUT_SECS")
-                .or_else(|_| std::env::var("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS"))
-                .ok()
-                .as_deref(),
+            crate::env_overrides::env_non_blank(&[
+                "CODEWHALE_STREAM_OPEN_TIMEOUT_SECS",
+                "DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS",
+            ])
+            .as_deref(),
         ),
     }
 }
@@ -50,9 +51,7 @@ pub fn stream_open_timeout_from_env(value: Option<&str>) -> std::time::Duration 
 /// `false`, ...) leaves HTTP/2 on.
 #[must_use]
 pub fn force_http1_from_env() -> bool {
-    std::env::var("CODEWHALE_FORCE_HTTP1")
-        .or_else(|_| std::env::var("DEEPSEEK_FORCE_HTTP1"))
-        .ok()
+    crate::env_overrides::env_non_blank(&["CODEWHALE_FORCE_HTTP1", "DEEPSEEK_FORCE_HTTP1"])
         .map(|v| v.trim().to_ascii_lowercase())
         .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
 }

@@ -69,13 +69,18 @@ impl Engine {
                 // Nothing to deliver; dropping `pending` settles it.
                 continue;
             }
-            let steer = pending.commit().trim().to_string();
+            let (raw_steer, person_text) = self.commit_pending_steer_with_intent(pending);
+            let steer = raw_steer.trim().to_string();
             accepted_steer = true;
             self.session
                 .working_set
                 .observe_user_message(&steer, &self.session.workspace);
             self.add_session_message(self.user_text_message_with_turn_metadata(steer.clone()))
                 .await;
+            if let Some(person_text) = person_text {
+                let index = self.session.messages.len().saturating_sub(1);
+                self.session.record_person_message(person_text, Some(index));
+            }
             let _ = self
                 .send_event(Event::status(format!(
                     "Steer input accepted: {}",
@@ -458,6 +463,13 @@ impl Engine {
             .await;
         }
 
+        for notice in self.take_auto_review_retry_notices() {
+            self.add_session_message(
+                self.runtime_text_message_with_turn_metadata(notice, UserInputProvenance::Runtime),
+            )
+            .await;
+        }
+
         // Three-zone prefix contract (#2264): freeze baseline on first
         // turn, verify against it on subsequent turns. Operates alongside
         // PrefixStabilityManager as an independent diagnostic layer.
@@ -663,12 +675,10 @@ impl Engine {
         // Fired only on the first model request of the turn, where the raw
         // user message decides intent. See `crate::superfast`.
         if turn.step == 0 {
-            // Detached on purpose: dropping the handle does not cancel it.
             drop(crate::superfast::spawn_shadow_gate(
                 &self.api_config,
                 &stream_request.messages,
-                self.config.compaction.runtime_cost_owner.as_deref(),
-                self.config.runtime_services.accounting_origin.clone(),
+                self.turn_accounting_origin(),
                 &self.cancel_token,
             ));
         }

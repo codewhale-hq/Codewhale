@@ -5,13 +5,6 @@ use std::path::PathBuf;
 /// On-disk schema for the `[hook_sinks]` table.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HookSinksToml {
-    /// Unix domain socket path used by the app-server event sink.
-    ///
-    /// Known limitation: only `codewhale app-server` reads this table; the
-    /// TUI and the Runtime API do not dispatch hook events to it.
-    ///
-    /// When unset, no Unix socket sink is registered. There is deliberately no
-    /// shared `/tmp` default because socket ownership should be explicit.
     #[serde(default)]
     pub unix_socket_path: Option<PathBuf>,
 }

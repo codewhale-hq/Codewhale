@@ -50,6 +50,8 @@ fn request(effort: &str) -> MessageRequest {
         stream: None,
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     }
 }
 

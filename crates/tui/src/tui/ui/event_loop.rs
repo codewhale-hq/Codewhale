@@ -643,6 +643,31 @@ pub(super) fn handle_transcript_space(app: &mut App) -> bool {
     true
 }
 
+pub(super) fn queue_auto_review_retry_from_r(app: &mut App) -> bool {
+    if !app.view_stack.is_empty()
+        || app.is_history_search_active()
+        || app.vim_is_normal_mode()
+        || app.vim_is_visual_mode()
+        || !app.input.is_empty()
+        || app.mode != AppMode::Agent
+        || app.approval_mode != ApprovalMode::Auto
+        || !visible_slash_menu_entries(app, SLASH_MENU_LIMIT).is_empty()
+        || !crate::tui::file_mention::visible_mention_menu_entries(app, app.mention_menu_limit)
+            .is_empty()
+    {
+        return false;
+    }
+    let Some(target) = app
+        .latest_approvable_auto_review_block()
+        .filter(|entry| !entry.receipt_id.is_empty())
+        .map(|entry| entry.receipt_id.clone())
+    else {
+        return false;
+    };
+    app.pending_auto_review_retry = Some(target);
+    true
+}
+
 /// Route plain input that must be decided before the composer sees it.
 ///
 /// The raw-paste fallback intentionally holds the first ASCII character for
@@ -680,6 +705,11 @@ pub(super) fn flush_paste_burst_before_composer(app: &mut App, now: Instant) -> 
         }
         codewhale_tui_kit::paste_burst::FlushResult::Typed(' ')
             if app.input.is_empty() && handle_transcript_space(app) =>
+        {
+            true
+        }
+        codewhale_tui_kit::paste_burst::FlushResult::Typed('r')
+            if app.input.is_empty() && queue_auto_review_retry_from_r(app) =>
         {
             true
         }
@@ -930,6 +960,8 @@ pub async fn run_tui(
     options: TuiOptions,
     plugin_registry: std::sync::Arc<codewhale_plugins::PluginRegistry>,
     pending_telemetry_notice: Option<codewhale_engine::telemetry_notice::PendingTelemetryNotice>,
+    launch_conversation_mode: Option<String>,
+    permission_mode: Option<codewhale_engine::runtime_options::PermissionMode>,
 ) -> Result<()> {
     // Install notification, sound, category, and attention policy before any
     // producer (including the model-facing notify tool) can emit an event.
@@ -1105,6 +1137,8 @@ pub async fn run_tui(
     let mut config = config.clone();
     let config = &mut config;
     let mut app = App::new_with_plugin_registry(options.clone(), config, plugin_registry);
+    app.install_conversation_mode(launch_conversation_mode, None);
+    app.apply_cli_permission_mode(permission_mode);
     let _cursor_accent_guard = codewhale_tui_kit::cursor_accent::CursorAccentGuard::install(
         app.low_motion || !app.fancy_animations,
         app.ui_theme.accent_primary,
@@ -1304,6 +1338,7 @@ pub async fn run_tui(
     }
     app.runtime_services = RuntimeToolServices {
         accounting_origin: None,
+        owner_accounting_origin: None,
         runtime_mcp_servers: app.runtime_services.runtime_mcp_servers.clone(),
 
         shell_manager: Some(shell_manager),
@@ -2640,7 +2675,17 @@ pub(crate) async fn run_event_loop(
         // #1830/#2317: service any already-arrived terminal keys before a
         // potentially long engine batch so composer/modal input stays live.
         collect_pending_terminal_events(&terminal_input, &mut pending_terminal_events)?;
-        app.maybe_poll_plugin_catalog_idle();
+        if let Some(change) = app.poll_external_catalog_changes(mcp_engine_busy(app)) {
+            apply_external_catalog_change(
+                terminal,
+                app,
+                &mut engine_handle,
+                &task_manager,
+                config,
+                change,
+            )
+            .await?;
+        }
 
         if drain_remote_control_events(app, config, &engine_handle).await? {
             app.needs_redraw = true;
@@ -2942,20 +2987,14 @@ pub(crate) async fn run_event_loop(
                             let target_language =
                                 app.ui_locale.translation_target_name().to_string();
                             tokio::spawn(async move {
-                                let response = if !accounting.source.has_captured_origin() {
-                                    Err(anyhow::anyhow!(
-                                        "Translation has no admitted session accounting origin"
-                                    ))
-                                } else {
-                                    client
-                                        .translate_with_usage(
-                                            &original_text,
-                                            &translation_model,
-                                            &target_language,
-                                            &accounting.source,
-                                        )
-                                        .await
-                                };
+                                let response = client
+                                    .translate_with_usage(
+                                        &original_text,
+                                        &translation_model,
+                                        &target_language,
+                                        &accounting.source,
+                                    )
+                                    .await;
                                 let settled = accounting.settle(response);
                                 let _ = tx.send(TranslationEvent::AssistantMessage {
                                     origin_session_fingerprint,
@@ -3064,20 +3103,14 @@ pub(crate) async fn run_event_loop(
                                 let target_language =
                                     app.ui_locale.translation_target_name().to_string();
                                 tokio::spawn(async move {
-                                    let response = if !accounting.source.has_captured_origin() {
-                                        Err(anyhow::anyhow!(
-                                            "Translation has no admitted session accounting origin"
-                                        ))
-                                    } else {
-                                        client
-                                            .translate_with_usage(
-                                                &original_thinking,
-                                                &translation_model,
-                                                &target_language,
-                                                &accounting.source,
-                                            )
-                                            .await
-                                    };
+                                    let response = client
+                                        .translate_with_usage(
+                                            &original_thinking,
+                                            &translation_model,
+                                            &target_language,
+                                            &accounting.source,
+                                        )
+                                        .await;
                                     let settled = accounting.settle(response);
                                     let _ = tx.send(TranslationEvent::Thinking {
                                         origin_session_fingerprint,
@@ -4262,6 +4295,12 @@ pub(crate) async fn run_event_loop(
                             }
                         }
                     }
+                    EngineEvent::ConversationTitle { title } => {
+                        apply_conversation_title(app, &title);
+                    }
+                    EngineEvent::ContentFilterRefusal { reason, refusal } => {
+                        apply_content_filter_refusal(app, &reason, refusal.as_deref());
+                    }
                     EngineEvent::LspRepairUpdate {
                         diagnostics_found,
                         files,
@@ -4891,7 +4930,7 @@ pub(crate) async fn run_event_loop(
                                             source,
                                         ),
                                     );
-                                    codewhale_engine::cost_status::acknowledge_retired_usage_source(
+                                    codewhale_engine::cost_status::mark_retired_usage_source(
                                         codewhale_engine::cost_status::scope_token(),
                                         source,
                                     );
@@ -4911,13 +4950,7 @@ pub(crate) async fn run_event_loop(
                                 }
                             }
                             if let Some(error) = receipt["accounting_error"].as_str() {
-                                app.session
-                                    .cost_unpriced_reasons
-                                    .insert("usage_settlement_unacknowledged".into());
-                                app.session
-                                    .cost_cny_unpriced_reasons
-                                    .insert("usage_settlement_unacknowledged".into());
-                                app.session.missing_usage_overflowed = true;
+                                app.mark_usage_uncertain("usage_settlement_unacknowledged");
                                 app.status_message = Some(format!(
                                     "Provider usage settlement is uncertain: {error}"
                                 ));
@@ -5074,41 +5107,101 @@ pub(crate) async fn run_event_loop(
                         gate,
                         decision,
                         risk,
+                        reviewer_model,
                         reason,
+                        rule,
+                        receipt_id,
+                        call_digest,
+                        action_summary,
                     } => {
-                        // A permission decision nobody was prompted for. It
-                        // goes to `audit.log` (what `/permissions` promises;
-                        // until 0.10.1 only `CODEWHALE_TOOL_AUDIT_LOG` got
-                        // it), written off the event loop (#6149). The
-                        // transcript gets a one-line receipt so the person
-                        // can see who decided and why, without a modal. It is
-                        // held until the tool card completes so it lands
-                        // under that card rather than inside a running run.
-                        let mut audit = crate::tui::gate_receipts::tool_gate_audit_record(
-                            agent_id.as_deref(),
-                            &tool_id,
-                            &tool_name,
-                            gate,
-                            decision,
-                            risk.as_deref(),
-                            &reason,
-                        );
+                        let mut audit =
+                            crate::tui::gate_receipts::tool_gate_audit_record_with_metadata(
+                                agent_id.as_deref(),
+                                &tool_id,
+                                &tool_name,
+                                gate,
+                                decision,
+                                risk.as_deref(),
+                                reviewer_model.as_deref(),
+                                &reason,
+                                rule.as_deref(),
+                                receipt_id.as_deref(),
+                                call_digest.as_deref(),
+                                action_summary.as_deref(),
+                            );
                         audit["session_id"] = serde_json::json!(app.current_session_id);
                         tokio::task::spawn_blocking(move || {
                             log_sensitive_event("tool.gate.decision", audit);
                         });
-                        let receipt = crate::tui::gate_receipts::tool_gate_receipt(
+                        let is_block = matches!(
+                            decision,
+                            codewhale_engine::core::events::ToolGateVerdict::Denied
+                                | codewhale_engine::core::events::ToolGateVerdict::Unavailable
+                        );
+                        let is_auto_review_gate = matches!(
+                            gate,
+                            codewhale_engine::core::events::ToolGate::AutoReviewDeterministic
+                                | codewhale_engine::core::events::ToolGate::AutoReviewGuardian
+                        );
+                        let verdict_label = match decision {
+                            codewhale_engine::core::events::ToolGateVerdict::Unavailable => {
+                                "unavailable"
+                            }
+                            codewhale_engine::core::events::ToolGateVerdict::Denied => "denied",
+                            codewhale_engine::core::events::ToolGateVerdict::Allowed => "allowed",
+                        }
+                        .to_string();
+                        let receipt_hint_id = if agent_id.is_none() {
+                            if is_block {
+                                let summary =
+                                    action_summary.clone().unwrap_or_else(|| tool_name.clone());
+                                app.record_auto_review_blocked_receipt(
+                                    receipt_id.clone(),
+                                    tool_id.clone(),
+                                    tool_name.clone(),
+                                    gate.as_str().to_string(),
+                                    verdict_label,
+                                    rule.clone(),
+                                    reason.clone(),
+                                    call_digest.clone(),
+                                    summary,
+                                );
+                            }
+                            receipt_id.as_deref()
+                        } else {
+                            if is_block
+                                && is_auto_review_gate
+                                && let Some(ref child_id) = agent_id
+                            {
+                                let base_summary =
+                                    action_summary.clone().unwrap_or_else(|| tool_name.clone());
+                                let summary = format!("[sub-agent {child_id}] {base_summary}");
+                                app.record_auto_review_blocked_receipt_for_agent(
+                                    Some(child_id.clone()),
+                                    None,
+                                    tool_id.clone(),
+                                    tool_name.clone(),
+                                    gate.as_str().to_string(),
+                                    verdict_label,
+                                    rule.clone(),
+                                    reason.clone(),
+                                    None,
+                                    summary,
+                                );
+                            }
+                            None
+                        };
+                        let receipt = crate::tui::gate_receipts::tool_gate_receipt_with_retry_info(
                             app.ui_locale,
                             &tool_name,
                             gate,
                             decision,
                             risk.as_deref(),
+                            reviewer_model.as_deref(),
                             &reason,
+                            receipt_hint_id,
                         );
                         if let Some(agent_id) = agent_id {
-                            // A child's decision belongs to the child's
-                            // conversation: it renders under that tool card
-                            // in focus mode, not in the main transcript.
                             app.child_gate_receipts
                                 .entry(agent_id.clone())
                                 .or_default()
@@ -5123,6 +5216,23 @@ pub(crate) async fn run_event_loop(
                         } else {
                             app.pending_gate_receipts.push((tool_id, receipt));
                         }
+                    }
+                    EngineEvent::AutoReviewPaused {
+                        reason,
+                        approval_mode,
+                    } => {
+                        app.sync_auto_review_paused_posture(approval_mode);
+                        let notice = crate::tui::gate_receipts::auto_review_paused_receipt(
+                            app.ui_locale,
+                            &reason,
+                        );
+                        app.add_message(HistoryCell::System {
+                            content: notice.clone(),
+                        });
+                        app.push_status_toast_record(
+                            StatusToast::new(notice, StatusToastLevel::Warning, Some(12_000))
+                                .for_event("auto-review-paused"),
+                        );
                     }
                 }
             }
@@ -5144,6 +5254,7 @@ pub(crate) async fn run_event_loop(
                         model: app.model.clone(),
                         workspace: app.workspace.clone(),
                         mode: app.mode,
+                        agent_preset: app.agent_preset(),
                     })
                     .await;
             }
@@ -5506,6 +5617,9 @@ pub(crate) async fn run_event_loop(
 
         let now = Instant::now();
         flush_paste_burst_before_composer(app, now);
+        if let Some(target) = app.pending_auto_review_retry.take() {
+            super::apply::apply_approve_auto_review_retry(app, &engine_handle, &target);
+        }
         crate::tui::work_surface::poll_terminal(app);
         app.sync_status_message_to_toasts();
         // Drain background-LLM cost (compaction summaries, seam
@@ -6429,30 +6543,23 @@ pub(crate) async fn run_event_loop(
                         onboarding::finish_ready_and_open_composer(app);
                         open_theme_picker(app);
                     }
-                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('1')
-                        if app.onboarding == OnboardingState::TrustDirectory =>
-                    {
-                        if let Err(err) = complete_trust_directory_onboarding(app, config) {
-                            app.status_message = Some(format!("Failed to trust workspace: {err}"));
+                    _ if app.onboarding == OnboardingState::TrustDirectory => {
+                        match onboarding::trust_directory::choice_for_key(key.code, key.modifiers) {
+                            Some(onboarding::trust_directory::TrustChoice::Trust) => {
+                                if let Err(err) = complete_trust_directory_onboarding(app, config) {
+                                    app.status_message =
+                                        Some(format!("Failed to trust workspace: {err}"));
+                                }
+                            }
+                            Some(onboarding::trust_directory::TrustChoice::ContinueUntrusted) => {
+                                continue_without_trusting_directory(app);
+                            }
+                            Some(onboarding::trust_directory::TrustChoice::Quit) => {
+                                let _ = engine_handle.send(Op::Shutdown).await;
+                                return Ok(());
+                            }
+                            None => {}
                         }
-                    }
-                    // Number keys mirror the footer's reading order (1 trust,
-                    // 2 continue untrusted, 3 quit) so the displayed digits
-                    // are sequential instead of 1/3/2.
-                    KeyCode::Char('u') | KeyCode::Char('U') | KeyCode::Char('2')
-                        if app.onboarding == OnboardingState::TrustDirectory =>
-                    {
-                        continue_without_trusting_directory(app);
-                    }
-                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('3')
-                        if app.onboarding == OnboardingState::TrustDirectory =>
-                    {
-                        let _ = engine_handle.send(Op::Shutdown).await;
-                        return Ok(());
-                    }
-                    KeyCode::Esc if app.onboarding == OnboardingState::TrustDirectory => {
-                        let _ = engine_handle.send(Op::Shutdown).await;
-                        return Ok(());
                     }
                     _ => {}
                 }
@@ -6842,6 +6949,9 @@ pub(crate) async fn run_event_loop(
 
             let now = event_observed_at;
             flush_paste_burst_before_composer(app, now);
+            if let Some(target) = app.pending_auto_review_retry.take() {
+                super::apply::apply_approve_auto_review_retry(app, &engine_handle, &target);
+            }
 
             // On Windows, AltGr is delivered as `Ctrl+Alt`; treat
             // AltGr-typed chars (e.g. European layouts producing `@`, `\`,
@@ -7055,6 +7165,17 @@ pub(crate) async fn run_event_loop(
                     let _ = handle_transcript_space(app);
                     continue;
                 }
+                KeyCode::Char('r')
+                    if key.modifiers == KeyModifiers::NONE
+                        && !slash_menu_open
+                        && !mention_menu_open
+                        && queue_auto_review_retry_from_r(app) =>
+                {
+                    if let Some(target) = app.pending_auto_review_retry.take() {
+                        super::apply::apply_approve_auto_review_retry(app, &engine_handle, &target);
+                    }
+                    continue;
+                }
                 KeyCode::Char('t') | KeyCode::Char('T')
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.modifiers.contains(KeyModifiers::SHIFT) =>
@@ -7232,14 +7353,16 @@ pub(crate) async fn run_event_loop(
                     continue;
                 }
                 // An idle operator can dismiss the persistent context warning
-                // without affecting vim or attachment handling. While a turn
-                // is active Esc retains its cancellation meaning.
+                // or the account preferences notice without affecting vim or
+                // attachment handling. While a turn is active Esc retains its
+                // cancellation meaning.
                 KeyCode::Esc
                     if !app.is_loading
                         && app.input.is_empty()
                         && !slash_menu_open
                         && !mention_menu_open
-                        && app.dismiss_context_pressure_warning() =>
+                        && (app.dismiss_context_pressure_warning()
+                            || app.dismiss_account_preferences_notice()) =>
                 {
                     continue;
                 }
@@ -8015,6 +8138,8 @@ pub(crate) async fn run_cache_warmup(app: &App, config: &Config) -> Result<Cache
         stream: None,
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
     let warmup = build_cache_warmup_request(&request);
     let inspection = inspect_prompt_for_request(&warmup);
@@ -8678,8 +8803,7 @@ mod session_boot_event_tests {
         let assistant = TranslationAccountingContext::capture(&app, "assistant", 1);
         let record_a = assistant
             .source
-            .reported(&translation_test_route(), &usage_a)
-            .unwrap();
+            .reported(&translation_test_route(), &usage_a);
         manager
             .persist_runtime_usage_record("session-translation", &record_a)
             .unwrap();
@@ -8693,8 +8817,7 @@ mod session_boot_event_tests {
         let thinking = TranslationAccountingContext::capture(&app, "thinking", 2);
         let record_b = thinking
             .source
-            .reported(&translation_test_route(), &usage_b)
-            .unwrap();
+            .reported(&translation_test_route(), &usage_b);
         manager
             .persist_runtime_usage_record("session-translation", &record_b)
             .unwrap();
@@ -8743,13 +8866,10 @@ mod session_boot_event_tests {
                 .unwrap(),
         );
         let context = TranslationAccountingContext::capture(&app, "assistant", 7);
-        let record = context
-            .source
-            .reported(
-                &translation_test_route(),
-                &codewhale_models::Usage::default(),
-            )
-            .unwrap();
+        let record = context.source.reported(
+            &translation_test_route(),
+            &codewhale_models::Usage::default(),
+        );
         manager
             .persist_runtime_usage_record("session-translation-missing-usage", &record)
             .unwrap();
@@ -8843,6 +8963,51 @@ mod session_boot_event_tests {
             "fixed fingerprints must distinguish ids with the same long prefix"
         );
     }
+
+    #[tokio::test]
+    async fn translation_runs_without_a_usage_origin() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _env = codewhale_engine::test_support::lock_test_env();
+        let _scope = codewhale_engine::cost_status::test_scope();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "chatcmpl-translation",
+                "object": "chat.completion",
+                "model": "deepseek-chat",
+                "choices": [{
+                    "index": 0,
+                    "message": { "role": "assistant", "content": "Hola" },
+                    "finish_reason": "stop"
+                }],
+                "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut config = Config::default();
+        config.provider = Some("deepseek".to_string());
+        let providers = config.providers.get_or_insert_with(Default::default);
+        providers.deepseek.api_key = Some("test-deepseek-key".to_string());
+        providers.deepseek.base_url = Some(format!("{}/v1", server.uri()));
+        let client = codewhale_engine::client::CodewhaleClient::new(&config).expect("client");
+
+        let mut app = test_app();
+        app.session_write_receipt = None;
+        let accounting = TranslationAccountingContext::capture(&app, "assistant", 1);
+        assert!(accounting.source.origin().is_none());
+
+        let response = client
+            .translate_with_usage("Hello", "deepseek-chat", "Spanish", &accounting.source)
+            .await
+            .expect("translation must run without an admitted usage origin");
+        let settled = accounting.settle(Ok(response));
+        assert_eq!(settled.translated.expect("translated text"), "Hola");
+    }
 }
 
 #[cfg(test)]
@@ -8901,6 +9066,7 @@ mod launch_session_sync_tests {
                 model,
                 workspace: workspace.path().to_path_buf(),
                 mode: AppMode::Agent,
+                agent_preset: None,
             })
             .await
             .expect("sync session");
@@ -9326,14 +9492,45 @@ pub(super) fn apply_engine_status(app: &mut App, message: String) -> bool {
         app.add_message(HistoryCell::System { content: message });
         return true;
     }
-    // The account-profile fallback notice is sent once per engine; keep it in
-    // the transcript so the next turn's status line cannot erase it.
-    let retain = app.tr(MessageId::ProfileConstitutionUnavailableLocal) == message.as_str();
-    if retain {
-        app.add_message(HistoryCell::System {
-            content: message.clone(),
-        });
+    if app.tr(MessageId::ProfileConstitutionUnavailableLocal) == message.as_str() {
+        app.notify_account_preferences_not_loaded();
+        return false;
     }
     app.status_message = Some(message);
-    retain
+    false
+}
+
+pub(super) fn sanitize_server_ui_text(raw: &str, single_line: bool) -> String {
+    let mut stripped = String::new();
+    codewhale_sanitize::sanitize::strip_ansi_into(raw, &mut stripped);
+    if single_line {
+        stripped
+            .chars()
+            .map(|ch| match ch {
+                '\n' | '\r' | '\t' => ' ',
+                ch if ch.is_control() => ' ',
+                ch => ch,
+            })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        stripped
+            .chars()
+            .filter(|&ch| ch == '\n' || ch == '\t' || !ch.is_control())
+            .collect()
+    }
+}
+
+pub(super) fn apply_conversation_title(app: &mut App, title: &str) {
+    let sanitized = sanitize_server_ui_text(title, true);
+    app.status_message = Some(format!("Title: {sanitized}"));
+}
+
+pub(super) fn apply_content_filter_refusal(app: &mut App, reason: &str, refusal: Option<&str>) {
+    let detail = sanitize_server_ui_text(refusal.unwrap_or(reason), false);
+    app.add_message(HistoryCell::System {
+        content: format!("Content filtered: {detail}"),
+    });
 }
