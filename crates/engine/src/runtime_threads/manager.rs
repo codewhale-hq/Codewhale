@@ -831,6 +831,7 @@ pub(super) fn thread_execution_state_matches(left: &ThreadRecord, right: &Thread
         && left.model_provider_id == right.model_provider_id
         && left.reasoning_effort == right.reasoning_effort
         && left.allowed_tools == right.allowed_tools
+        && left.disallowed_tools == right.disallowed_tools
         && left.workspace == right.workspace
         && left.mode == right.mode
         && left.permission_posture == right.permission_posture
@@ -884,16 +885,65 @@ pub(super) fn append_usage_source_record(
         .as_deref()
         .is_some_and(|origin| origin != turn.id)
     {
-        anyhow::bail!("inherited native usage cannot admit an original-owner update");
+        tracing::warn!(
+            turn_id = %turn.id,
+            source_id = %record.source_id,
+            "inherited native usage cannot admit an original-owner update; recording unknown cost"
+        );
+        let mut route = record.usage.route.clone();
+        route.billing_mode = RouteBillingMode::Unknown;
+        route.provider_live_pricing = None;
+        return Ok(append_routed_usage_drop_record(
+            turn,
+            RuntimeUsageDropRecord {
+                source_id: format!(
+                    "inherited-owner:{}",
+                    routed_usage_source_fingerprint(&record.source_id)
+                ),
+                route,
+                reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            },
+        ));
     }
     let key = routed_usage_source_fingerprint(&record.source_id);
     if turn.routed_usage_source_ids.contains(&key) && !turn.source_usage_records.contains_key(&key)
     {
-        bail!(
-            "legacy turn membership has no provable prior contribution; usage correction refused"
+        tracing::warn!(
+            turn_id = %turn.id,
+            source_id = %record.source_id,
+            "legacy turn membership has no prior contribution; recording unknown cost"
         );
+        let mut route = record.usage.route.clone();
+        route.billing_mode = RouteBillingMode::Unknown;
+        route.provider_live_pricing = None;
+        return Ok(append_routed_usage_drop_record(
+            turn,
+            RuntimeUsageDropRecord {
+                source_id: format!("legacy-source:{key}"),
+                route,
+                reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            },
+        ));
     }
-    if !record.permits_replacement(turn.source_usage_records.get(&key))? {
+    if record.route_conflicts_with(turn.source_usage_records.get(&key)) {
+        tracing::warn!(
+            turn_id = %turn.id,
+            source_id = %record.source_id,
+            "native usage source changed captured route; recording unknown cost"
+        );
+        let mut route = record.usage.route.clone();
+        route.billing_mode = RouteBillingMode::Unknown;
+        route.provider_live_pricing = None;
+        return Ok(append_routed_usage_drop_record(
+            turn,
+            RuntimeUsageDropRecord {
+                source_id: format!("unverified-replacement:{key}"),
+                route,
+                reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            },
+        ));
+    }
+    if !record.supersedes(turn.source_usage_records.get(&key)) {
         return Ok(false);
     }
     if !turn.routed_usage_source_ids.contains(&key) {
@@ -1113,7 +1163,23 @@ fn settle_preparent_usage_at(
         unaccepted_usage_turn(thread_id, turn_id)
     };
     for record in &batch.records {
-        append_usage_source_record(&mut turn, record)?;
+        if let Err(error) = append_usage_source_record(&mut turn, record) {
+            tracing::warn!(%error, source_id = %record.source_id, "pre-parent usage record failed; recording unknown cost");
+            let mut route = record.usage.route.clone();
+            route.billing_mode = RouteBillingMode::Unknown;
+            route.provider_live_pricing = None;
+            append_routed_usage_drop_record(
+                &mut turn,
+                RuntimeUsageDropRecord {
+                    source_id: format!(
+                        "preparent-error:{}",
+                        routed_usage_source_fingerprint(&record.source_id)
+                    ),
+                    route,
+                    reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+                },
+            );
+        }
     }
     for record in &batch.drop_records {
         append_routed_usage_drop_record(&mut turn, record.clone());
@@ -1185,6 +1251,7 @@ fn unaccepted_usage_turn(thread_id: &str, turn_id: &str) -> TurnRecord {
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     }
 }
 
@@ -1331,7 +1398,7 @@ impl Drop for InitialRoutedUsageSettlementGuard {
                     "Failed to persist a completed pre-turn provider call; \
                      falling back to in-process accounting"
                 );
-                crate::cost_status::report_runtime_usage_batch(self.cost_scope, None, &self.batch);
+                crate::cost_status::record_runtime_usage_batch(self.cost_scope, None, &self.batch);
             }
         }
     }
@@ -1438,6 +1505,12 @@ pub struct CreateThreadRequest {
     /// An empty array intentionally disables every model-visible tool.
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
+    #[serde(
+        default,
+        alias = "disallowedTools",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub disallowed_tools: Vec<String>,
     /// Extra directories the file tools may read and write outside the
     /// workspace. Each path must exist and be a directory.
     #[serde(default, alias = "addDirs")]
@@ -1465,6 +1538,8 @@ pub struct CreateThreadRequest {
     pub executor: Option<CreateThreadExecutor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<ThreadEnvironment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_preset: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1490,6 +1565,8 @@ pub struct CreateThreadExecutorConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UpdateThreadRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workspace: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_idle: Option<bool>,
     pub archived: Option<bool>,
     pub allow_shell: Option<bool>,
@@ -1514,6 +1591,8 @@ pub struct UpdateThreadRequest {
     /// route name in `model_provider`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_preset: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1831,6 +1910,7 @@ pub(super) enum RuntimeTurnInputSource {
     Scheduled {
         task_id: String,
     },
+    AsyncCompletionWake,
 }
 
 impl RuntimeTurnInputSource {
@@ -1846,7 +1926,7 @@ impl RuntimeTurnInputSource {
             Self::GoalContinuation {
                 continuation_index, ..
             } if *continuation_index > 0 => crate::core::ops::UserInputProvenance::GoalContinuation,
-            Self::GoalContinuation { .. } | Self::Scheduled { .. } => {
+            Self::GoalContinuation { .. } | Self::Scheduled { .. } | Self::AsyncCompletionWake => {
                 crate::core::ops::UserInputProvenance::Runtime
             }
         }
@@ -1859,7 +1939,9 @@ impl RuntimeTurnInputSource {
             | Self::ExtensionCommand { .. }
             | Self::WatchEvent(_) => None,
             Self::AgentMail { message_id, .. } => Some(message_id),
-            Self::GoalContinuation { .. } | Self::Scheduled { .. } => None,
+            Self::GoalContinuation { .. } | Self::Scheduled { .. } | Self::AsyncCompletionWake => {
+                None
+            }
         }
     }
 
@@ -1870,6 +1952,7 @@ impl RuntimeTurnInputSource {
             | Self::Review(_)
             | Self::ExtensionCommand { .. }
             | Self::Scheduled { .. } => Some(prompt.to_string()),
+            Self::AsyncCompletionWake => Some("[runtime] Background work finished".to_string()),
             // The provider projection contains runtime-only framing. Persist
             // the bounded canonical mail summary instead, so history and app
             // clients never mistake that projection for typed user input.
@@ -1933,6 +2016,9 @@ impl RuntimeTurnInputSource {
             Self::Scheduled { task_id } => Some(json!({
                 "input_provenance": "scheduled",
                 "task_id": task_id,
+            })),
+            Self::AsyncCompletionWake => Some(json!({
+                "input_provenance": "async_completion_wake",
             })),
         }
     }
@@ -2898,6 +2984,8 @@ pub(super) fn runtime_compaction_config(
 #[derive(Debug, Clone)]
 pub(super) struct ActiveTurnState {
     pub(super) narrowing: crate::core::engine::TurnNarrowing,
+    pub(super) run_origin: crate::core::authority::auto_review::RunOrigin,
+    pub(super) owner_present: bool,
     pub(super) turn_id: String,
     pub(super) goal_id: Option<String>,
     pub(super) goal_progress: Option<crate::tools::goal::GoalSnapshot>,
@@ -3046,6 +3134,7 @@ pub struct DroppedTurnSnapshots {
     /// only restore what the snapshots hold, so each is checked against the
     /// snapshot exclusions.
     pub declared_writes: Vec<String>,
+    pub delegated_writes: Vec<String>,
     /// Tool calls recorded as failed, canceled or never started: whatever
     /// paths their snapshot receipts declare, they wrote nothing.
     pub unrun_tool_calls: std::collections::BTreeSet<String>,
@@ -3437,6 +3526,7 @@ pub(super) struct RecoveredTurnReceipt {
 #[derive(Clone)]
 pub struct RuntimeThreadManager {
     pub(super) host_profile: crate::core::engine::EngineHostProfile,
+    pub(super) owner_surface_attached: bool,
     pub(super) config: Arc<parking_lot::RwLock<Config>>,
     pub(super) workspace: PathBuf,
     pub(super) plugin_registry: Option<Arc<codewhale_plugins::PluginRegistry>>,
@@ -3471,8 +3561,15 @@ pub struct RuntimeThreadManager {
     automations:
         Arc<parking_lot::Mutex<Option<crate::automation_manager::SharedAutomationManager>>>,
     pub(super) pending_approvals: Arc<parking_lot::Mutex<HashMap<String, PendingApprovalEntry>>>,
+    pub(super) turn_accounting_origins:
+        Arc<parking_lot::Mutex<HashMap<String, crate::cost_status::NativeUsageOrigin>>>,
     /// Session approval grants per thread id.
     pub(super) grants: crate::core::authority::grants::GrantStore,
+    pub(super) auto_review_blocks: Arc<
+        parking_lot::Mutex<
+            HashMap<String, Vec<crate::core::authority::auto_review::AutoReviewBlockedAction>>,
+        >,
+    >,
     pub(super) pending_user_inputs:
         Arc<parking_lot::Mutex<HashMap<(String, String), PendingUserInputEntry>>>,
     pub(super) pending_dynamic_tools:
@@ -3488,6 +3585,9 @@ pub struct RuntimeThreadManager {
     pub(super) hook_base: Arc<std::sync::OnceLock<crate::hooks::HookExecutor>>,
     #[cfg(any(test, feature = "test-support"))]
     snapshot_test_hook: Arc<parking_lot::Mutex<Option<mpsc::UnboundedSender<SnapshotTestPoint>>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    update_admission_test_hook:
+        Arc<parking_lot::Mutex<Option<mpsc::UnboundedSender<oneshot::Sender<()>>>>>,
     #[cfg(any(test, feature = "test-support"))]
     replay_test_hook: Arc<parking_lot::Mutex<Option<mpsc::UnboundedSender<ReplayTestPoint>>>>,
     /// Test seam: the model client every engine this manager builds uses in
@@ -3585,6 +3685,13 @@ pub enum ApprovalResponder {
     Acp,
 }
 
+impl ApprovalResponder {
+    #[must_use]
+    pub const fn is_owner_surface(self) -> bool {
+        matches!(self, Self::Desktop | Self::Tui | Self::Web)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalApprovalBinding {
     pub thread_id: String,
@@ -3596,6 +3703,21 @@ pub struct ExternalApprovalBinding {
 #[error("approval does not belong to the claimed thread, turn or tool call")]
 pub struct ApprovalBindingMismatch;
 
+#[derive(Debug, thiserror::Error)]
+#[error("only the owner surface may answer this approval")]
+pub struct ApprovalOwnerRequired;
+
+#[derive(Debug, thiserror::Error)]
+#[error("thread is outside the selected workspace")]
+pub struct ThreadWorkspaceMismatch;
+
+fn require_thread_workspace(thread: &ThreadRecord, expected: Option<&Path>) -> Result<()> {
+    if expected.is_some_and(|workspace| workspace != thread.workspace.as_path()) {
+        return Err(ThreadWorkspaceMismatch.into());
+    }
+    Ok(())
+}
+
 pub(super) struct PendingApprovalEntry {
     pub(super) thread_id: String,
     pub(super) request: PendingApprovalRequest,
@@ -3604,6 +3726,7 @@ pub(super) struct PendingApprovalEntry {
     pub(super) proposed: Option<ExternalApprovalDecision>,
     pub(super) responder: Option<ApprovalResponder>,
     pub(super) agent_settled: Option<watch::Receiver<Option<bool>>>,
+    pub(super) owner_only: bool,
 }
 
 pub(super) struct PendingUserInputEntry {
@@ -3966,6 +4089,12 @@ impl RuntimeThreadManager {
         self.config.read()
     }
 
+    pub fn extension_host_options(&self) -> crate::extension_host::ExtensionHostOptions {
+        crate::extension_host::ExtensionHostOptions::from_config(
+            self.read_config().extension_host.as_ref(),
+        )
+    }
+
     pub(super) fn resolved_route_for_thread(
         &self,
         config: &Config,
@@ -4199,6 +4328,7 @@ impl RuntimeThreadManager {
             None,
             None,
             crate::core::engine::EngineHostProfile::Normal,
+            false,
             None,
         )
     }
@@ -4216,6 +4346,7 @@ impl RuntimeThreadManager {
             Some(plugin_registry),
             None,
             crate::core::engine::EngineHostProfile::Normal,
+            false,
             None,
         )
     }
@@ -4250,6 +4381,7 @@ impl RuntimeThreadManager {
                     Some(plugin_registry),
                     None,
                     crate::core::engine::EngineHostProfile::Normal,
+                    false,
                     None,
                 );
             }
@@ -4263,6 +4395,7 @@ impl RuntimeThreadManager {
             Some(plugin_registry),
             binding,
             crate::core::engine::EngineHostProfile::Normal,
+            false,
             None,
         )
     }
@@ -4291,6 +4424,7 @@ impl RuntimeThreadManager {
             Some(plugin_registry),
             Some(binding),
             crate::core::engine::EngineHostProfile::Normal,
+            false,
             None,
         )
     }
@@ -4333,10 +4467,38 @@ impl RuntimeThreadManager {
             Some(plugins),
             binding,
             host_profile,
+            false,
             preheld_lock,
         )
     }
 
+    pub fn open_owner_host(
+        config: Config,
+        workspace: PathBuf,
+        manager_cfg: RuntimeThreadManagerConfig,
+        plugins: Arc<codewhale_plugins::PluginRegistry>,
+        preheld_lock: Option<RuntimeProcessOwnerLock>,
+        binding: Option<&RuntimeStoreBinding>,
+    ) -> Result<Self> {
+        Self::open_inner(
+            config,
+            workspace,
+            manager_cfg,
+            Some(plugins),
+            binding,
+            crate::core::engine::EngineHostProfile::Normal,
+            true,
+            preheld_lock,
+        )
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn is_owner_surface_attached_for_test(&self) -> bool {
+        self.owner_surface_attached
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn open_inner(
         mut config: Config,
         workspace: PathBuf,
@@ -4344,8 +4506,11 @@ impl RuntimeThreadManager {
         plugin_registry: Option<Arc<codewhale_plugins::PluginRegistry>>,
         binding: Option<&RuntimeStoreBinding>,
         host_profile: crate::core::engine::EngineHostProfile,
+        owner_surface_attached: bool,
         preheld_lock: Option<RuntimeProcessOwnerLock>,
     ) -> Result<Self> {
+        let owner_surface_attached = owner_surface_attached
+            && matches!(host_profile, crate::core::engine::EngineHostProfile::Normal);
         // A public RuntimeThreadManager owns independent native threads. They
         // may run concurrently with the interactive TUI because their events
         // cannot be projected into that TUI's attached CWC run. The private
@@ -4385,6 +4550,7 @@ impl RuntimeThreadManager {
         let event_pump_stop = CancellationToken::new();
         let manager = Self {
             host_profile,
+            owner_surface_attached,
             config: Arc::new(parking_lot::RwLock::new(config)),
             workspace,
             plugin_registry,
@@ -4411,7 +4577,9 @@ impl RuntimeThreadManager {
             task_execution_lease: Arc::new(parking_lot::Mutex::new(None)),
             automations: Arc::new(parking_lot::Mutex::new(None)),
             pending_approvals: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            turn_accounting_origins: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             grants,
+            auto_review_blocks: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             pending_user_inputs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             pending_dynamic_tools: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             pending_commands: Arc::new(parking_lot::Mutex::new(HashMap::new())),
@@ -4421,6 +4589,8 @@ impl RuntimeThreadManager {
             hook_base: Arc::new(std::sync::OnceLock::new()),
             #[cfg(any(test, feature = "test-support"))]
             snapshot_test_hook: Arc::new(parking_lot::Mutex::new(None)),
+            #[cfg(any(test, feature = "test-support"))]
+            update_admission_test_hook: Arc::new(parking_lot::Mutex::new(None)),
             #[cfg(any(test, feature = "test-support"))]
             replay_test_hook: Arc::new(parking_lot::Mutex::new(None)),
             #[cfg(any(test, feature = "test-support"))]
@@ -4708,13 +4878,27 @@ impl RuntimeThreadManager {
         }))
     }
 
+    pub fn with_thread_in_workspace<T>(
+        &self,
+        thread_id: &str,
+        expected_workspace: &Path,
+        operation: impl FnOnce(&ThreadRecord) -> Result<T>,
+    ) -> Result<T> {
+        let _thread_mutation = self.store.thread_mutation.lock();
+        let thread = self.store.load_thread(thread_id)?;
+        require_thread_workspace(&thread, Some(expected_workspace))?;
+        operation(&thread)
+    }
+
     pub async fn start_scheduled_turn(
         &self,
         thread_id: &str,
         prompt: &str,
         task_id: &str,
+        expected_workspace: &Path,
     ) -> Result<Option<TurnRecord>> {
         let thread = self.get_thread(thread_id).await?;
+        require_thread_workspace(&thread, Some(expected_workspace))?;
         if thread.archived {
             bail!("thread {thread_id} is archived");
         }
@@ -4731,6 +4915,7 @@ impl RuntimeThreadManager {
         }
         let request = StartTurnRequest {
             prompt: prompt.to_string(),
+            expected_workspace: Some(expected_workspace.to_path_buf()),
             ..Default::default()
         };
         match self
@@ -4751,6 +4936,52 @@ impl RuntimeThreadManager {
         }
     }
 
+    pub async fn start_task_turn(
+        &self,
+        thread_id: &str,
+        req: StartTurnRequest,
+        task_id: &str,
+    ) -> Result<TurnRecord> {
+        let (turn, _) = self
+            .start_turn_with_source(
+                thread_id,
+                req,
+                RuntimeTurnInputSource::Scheduled {
+                    task_id: task_id.to_string(),
+                },
+                None,
+                false,
+            )
+            .await?;
+        Ok(turn)
+    }
+
+    pub(super) fn mint_turn_origin_for_source(
+        &self,
+        input_source: &RuntimeTurnInputSource,
+        narrowing: crate::core::engine::TurnNarrowing,
+    ) -> (crate::core::authority::auto_review::RunOrigin, bool) {
+        use crate::core::authority::auto_review::RunOrigin;
+        if narrowing.is_acp() || self.host_profile.is_acp() || self.host_profile.is_headless() {
+            return (RunOrigin::Headless, false);
+        }
+        match input_source {
+            RuntimeTurnInputSource::ExternalUser | RuntimeTurnInputSource::Review(_) => {
+                if self.owner_surface_attached {
+                    (RunOrigin::Interactive, true)
+                } else {
+                    (RunOrigin::Background, false)
+                }
+            }
+            RuntimeTurnInputSource::WatchEvent(_)
+            | RuntimeTurnInputSource::ExtensionCommand { .. }
+            | RuntimeTurnInputSource::AgentMail { .. }
+            | RuntimeTurnInputSource::GoalContinuation { .. }
+            | RuntimeTurnInputSource::Scheduled { .. }
+            | RuntimeTurnInputSource::AsyncCompletionWake => (RunOrigin::Background, false),
+        }
+    }
+
     /// Mints an approval identifier that no provider can predict or collide
     /// with. Every `approval_id` an external client ever sees comes from here,
     /// so `approval_id` never carries a provider tool-call ID and a client can
@@ -4759,11 +4990,12 @@ impl RuntimeThreadManager {
         format!("approval_{}", Uuid::new_v4().simple())
     }
 
-    pub(super) fn register_pending_approval(
+    pub(super) fn register_pending_approval_with_policy(
         &self,
         thread_id: &str,
         mut request: PendingApprovalRequest,
         publication: Option<crate::core::engine::NativeApprovalPublication>,
+        owner_only: bool,
     ) -> (String, oneshot::Receiver<ExternalApprovalDecision>) {
         // Provider call IDs can repeat across sessions and responses. Mint the
         // external capability here so delivery and cleanup can only settle this
@@ -4782,6 +5014,7 @@ impl RuntimeThreadManager {
                     proposed: None,
                     responder: None,
                     agent_settled: None,
+                    owner_only,
                 });
                 return (id, rx);
             }
@@ -5082,7 +5315,27 @@ impl RuntimeThreadManager {
         decision: ExternalApprovalDecision,
         responder: Option<ApprovalResponder>,
     ) -> Result<bool> {
+        self.deliver_approval_from_workspace(approval_id, binding, decision, responder, None)
+            .await
+    }
+
+    pub async fn deliver_approval_from_workspace(
+        &self,
+        approval_id: &str,
+        binding: Option<&ExternalApprovalBinding>,
+        decision: ExternalApprovalDecision,
+        responder: Option<ApprovalResponder>,
+        expected_workspace: Option<&Path>,
+    ) -> Result<bool> {
         let publication = {
+            let _thread_mutation = expected_workspace.map(|_| self.store.thread_mutation.lock());
+            if let Some(expected) = expected_workspace {
+                let binding = binding.ok_or(ApprovalBindingMismatch)?;
+                require_thread_workspace(
+                    &self.store.load_thread(&binding.thread_id)?,
+                    Some(expected),
+                )?;
+            }
             let mut pending = self.pending_approvals.lock();
             let Some(entry) = pending.get_mut(approval_id) else {
                 return Ok(false);
@@ -5096,6 +5349,12 @@ impl RuntimeThreadManager {
                         .is_some_and(|id| entry.request.tool_call_id.as_deref() != Some(id)))
             {
                 return Err(ApprovalBindingMismatch.into());
+            }
+            if entry.owner_only
+                && !(self.owner_surface_attached
+                    && responder.is_some_and(ApprovalResponder::is_owner_surface))
+            {
+                return Err(ApprovalOwnerRequired.into());
             }
             if let Some(previous) = entry.proposed {
                 if previous != decision {
@@ -5446,7 +5705,7 @@ impl RuntimeThreadManager {
         thread_id: &str,
         label: &str,
     ) -> (String, oneshot::Receiver<ExternalApprovalDecision>) {
-        self.register_pending_approval(
+        self.register_pending_approval_with_policy(
             thread_id,
             PendingApprovalRequest {
                 // Overwritten by the mint; a caller-supplied ID is never honored.
@@ -5462,6 +5721,30 @@ impl RuntimeThreadManager {
                 summary: None,
             },
             None,
+            false,
+        )
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn register_owner_only_pending_approval_for_thread_for_test(
+        &self,
+        thread_id: &str,
+        label: &str,
+    ) -> (String, oneshot::Receiver<ExternalApprovalDecision>) {
+        self.register_pending_approval_with_policy(
+            thread_id,
+            PendingApprovalRequest {
+                id: String::new(),
+                turn_id: "test-turn".to_string(),
+                tool_name: "exec_shell".to_string(),
+                input: None,
+                description: format!("test approval {label}"),
+                intent_summary: None,
+                tool_call_id: Some(label.to_string()),
+                summary: None,
+            },
+            None,
+            true,
         )
     }
 
@@ -5589,6 +5872,8 @@ impl RuntimeThreadManager {
     /// deleting a thread calls this, so a grant never outlives the
     /// conversation it was given in.
     pub(super) fn take_approval_grants(&self, thread_id: &str) -> Vec<RuntimeApprovalGrant> {
+        crate::extension_host::end_remote_session(thread_id);
+        self.auto_review_blocks.lock().remove(thread_id);
         self.grants
             .revoke_thread(thread_id, "runtime", "thread archived or deleted")
             .iter()
@@ -5620,6 +5905,94 @@ impl RuntimeThreadManager {
         )
         .await?;
         Ok(true)
+    }
+
+    pub async fn list_auto_review_blocks(
+        &self,
+        thread_id: &str,
+        expected_workspace: Option<&Path>,
+    ) -> Result<Vec<crate::core::authority::auto_review::AutoReviewBlockedAction>> {
+        let thread = self
+            .store
+            .load_thread(thread_id)
+            .with_context(|| format!("Thread not found: {thread_id}"))?;
+        require_thread_workspace(&thread, expected_workspace)?;
+        let engine = {
+            let active = self.active.lock().await;
+            active
+                .engines
+                .get(thread_id)
+                .map(|state| state.engine.clone())
+        };
+        if let Some(engine) = engine {
+            let blocks = engine.list_auto_review_blocks();
+            self.auto_review_blocks
+                .lock()
+                .insert(thread_id.to_string(), blocks.clone());
+            return Ok(blocks);
+        }
+        Ok(self
+            .auto_review_blocks
+            .lock()
+            .get(thread_id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    pub async fn approve_auto_review_retry(
+        &self,
+        thread_id: &str,
+        target: &str,
+        responder: Option<ApprovalResponder>,
+        expected_workspace: Option<&Path>,
+    ) -> Result<crate::core::authority::auto_review::AutoReviewRetryGrant> {
+        if !(self.owner_surface_attached
+            && responder.is_some_and(ApprovalResponder::is_owner_surface))
+        {
+            return Err(ApprovalOwnerRequired.into());
+        }
+        let thread = self
+            .store
+            .load_thread(thread_id)
+            .with_context(|| format!("Thread not found: {thread_id}"))?;
+        require_thread_workspace(&thread, expected_workspace)?;
+        anyhow::ensure!(!thread.archived, "thread {thread_id} is archived");
+        let policy = RuntimePolicyProjection::from_persisted(
+            &thread.mode,
+            thread.permission_posture.as_deref(),
+            thread.auto_approve,
+        );
+        if policy.permission != codewhale_execpolicy::ApprovalMode::Auto {
+            return Err(crate::core::engine::AutoReviewRetryApprovalError::NotInAutoReview.into());
+        }
+        let engine = {
+            let active = self.active.lock().await;
+            active
+                .engines
+                .get(thread_id)
+                .map(|state| state.engine.clone())
+        };
+        let Some(engine) = engine else {
+            return Err(
+                crate::core::engine::AutoReviewRetryApprovalError::InvalidTarget(format!(
+                    "no blocked action matching '{target}'"
+                ))
+                .into(),
+            );
+        };
+        let grant = engine.approve_auto_review_retry(target)?;
+        self.auto_review_blocks
+            .lock()
+            .insert(thread_id.to_string(), engine.list_auto_review_blocks());
+        self.emit_event(
+            thread_id,
+            None,
+            None,
+            "auto_review.retry_approved",
+            json!({ "grant": &grant }),
+        )
+        .await?;
+        Ok(grant)
     }
 
     #[must_use]
@@ -6589,6 +6962,704 @@ impl RuntimeThreadManager {
         self.track_receipt_worker(worker);
     }
 
+    const ASYNC_COMPLETION_WAKE_DEBOUNCE: std::time::Duration =
+        std::time::Duration::from_millis(75);
+    const IDLE_SHELL_WAKE_POLL_INTERVAL: std::time::Duration =
+        std::time::Duration::from_millis(150);
+    const ASYNC_COMPLETION_WAKE_PROMPT: &'static str = "[runtime] Background work finished";
+
+    pub(super) fn parse_resumed_subagent_completion_count(message: &str) -> Option<usize> {
+        let rest = message.strip_prefix("Resuming turn with ")?;
+        if !rest.contains("sub-agent completion(s)") {
+            return None;
+        }
+        rest.split_whitespace().next()?.parse::<usize>().ok()
+    }
+
+    fn async_wake_arm_op(
+        is_shell: bool,
+        manager_key: usize,
+        owner: Option<std::sync::Weak<Mutex<ActiveThreads>>>,
+        thread_id: &str,
+        arm: bool,
+    ) -> bool {
+        type WakeOwnerMap = HashMap<(usize, String), std::sync::Weak<Mutex<ActiveThreads>>>;
+        static ARMED_WAKES: std::sync::OnceLock<parking_lot::Mutex<WakeOwnerMap>> =
+            std::sync::OnceLock::new();
+        static ARMED_SHELL_MONITORS: std::sync::OnceLock<parking_lot::Mutex<WakeOwnerMap>> =
+            std::sync::OnceLock::new();
+        let table = if is_shell {
+            ARMED_SHELL_MONITORS.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+        } else {
+            ARMED_WAKES.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+        };
+        let mut guard = table.lock();
+        guard.retain(|_, existing| existing.upgrade().is_some());
+        let key = (manager_key, thread_id.to_string());
+        if arm {
+            let Some(owner) = owner else {
+                return false;
+            };
+            if guard.contains_key(&key) {
+                return false;
+            }
+            guard.insert(key, owner);
+            true
+        } else {
+            guard.remove(&key).is_some()
+        }
+    }
+
+    fn async_completion_wake_arm(&self, thread_id: &str) -> bool {
+        Self::async_wake_arm_op(
+            false,
+            Arc::as_ptr(&self.active) as usize,
+            Some(Arc::downgrade(&self.active)),
+            thread_id,
+            true,
+        )
+    }
+
+    fn async_completion_wake_release_key(manager_key: usize, thread_id: &str) {
+        let _ = Self::async_wake_arm_op(false, manager_key, None, thread_id, false);
+    }
+
+    fn async_shell_monitor_arm(&self, thread_id: &str) -> bool {
+        Self::async_wake_arm_op(
+            true,
+            Arc::as_ptr(&self.active) as usize,
+            Some(Arc::downgrade(&self.active)),
+            thread_id,
+            true,
+        )
+    }
+
+    fn async_shell_monitor_release_key(manager_key: usize, thread_id: &str) {
+        let _ = Self::async_wake_arm_op(true, manager_key, None, thread_id, false);
+    }
+
+    fn async_subagent_wake_op(
+        &self,
+        thread_id: &str,
+        op: u8,
+        agent_id: Option<&str>,
+        flag: bool,
+        count: usize,
+        ids: &[String],
+    ) -> (bool, Vec<String>, HashSet<String>) {
+        #[derive(Default)]
+        struct SubAgentWakeEntry {
+            owner: std::sync::Weak<Mutex<ActiveThreads>>,
+            pending: Vec<String>,
+            late_after_turn_complete: Vec<String>,
+            delivered: HashSet<String>,
+            active_turn_ids: Vec<String>,
+            active_turn_drained: usize,
+            saw_turn_complete: bool,
+        }
+
+        static STATES: std::sync::OnceLock<
+            parking_lot::Mutex<HashMap<(usize, String), SubAgentWakeEntry>>,
+        > = std::sync::OnceLock::new();
+        let table = STATES.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
+        let manager_key = Arc::as_ptr(&self.active) as usize;
+        let mut guard = table.lock();
+        guard.retain(|_, entry| entry.owner.upgrade().is_some());
+        let entry = guard
+            .entry((manager_key, thread_id.to_string()))
+            .or_insert_with(|| SubAgentWakeEntry {
+                owner: Arc::downgrade(&self.active),
+                ..Default::default()
+            });
+        entry.owner = Arc::downgrade(&self.active);
+
+        match op {
+            0 => {
+                entry.active_turn_ids.clear();
+                for pending_id in entry.pending.drain(..) {
+                    if !entry.delivered.contains(&pending_id)
+                        && !entry.active_turn_ids.contains(&pending_id)
+                    {
+                        entry.active_turn_ids.push(pending_id);
+                    }
+                }
+                for late in entry.late_after_turn_complete.drain(..) {
+                    if !entry.delivered.contains(&late) && !entry.active_turn_ids.contains(&late) {
+                        entry.active_turn_ids.push(late);
+                    }
+                }
+                entry.active_turn_drained = 0;
+                entry.saw_turn_complete = false;
+                (false, Vec::new(), HashSet::new())
+            }
+            1 => {
+                entry.saw_turn_complete = true;
+                (false, Vec::new(), HashSet::new())
+            }
+            2 => {
+                entry.active_turn_drained = entry.active_turn_drained.saturating_add(count);
+                (false, Vec::new(), HashSet::new())
+            }
+            3 => {
+                let Some(id) = agent_id else {
+                    return (false, Vec::new(), HashSet::new());
+                };
+                if entry.delivered.contains(id) {
+                    return (false, Vec::new(), HashSet::new());
+                }
+                if flag {
+                    if !entry.pending.iter().any(|existing| existing == id) {
+                        entry.pending.push(id.to_string());
+                    }
+                    (true, Vec::new(), HashSet::new())
+                } else if entry.saw_turn_complete {
+                    if !entry
+                        .late_after_turn_complete
+                        .iter()
+                        .any(|existing| existing == id)
+                    {
+                        entry.late_after_turn_complete.push(id.to_string());
+                    }
+                    (false, Vec::new(), HashSet::new())
+                } else {
+                    if !entry.active_turn_ids.iter().any(|existing| existing == id) {
+                        entry.active_turn_ids.push(id.to_string());
+                    }
+                    (false, Vec::new(), HashSet::new())
+                }
+            }
+            4 => {
+                let mut remaining_drain = entry.active_turn_drained;
+                let active_ids = std::mem::take(&mut entry.active_turn_ids);
+                for id in active_ids {
+                    if entry.delivered.contains(&id) {
+                        continue;
+                    }
+                    if remaining_drain > 0 {
+                        remaining_drain -= 1;
+                        entry.delivered.insert(id);
+                    } else if !entry.pending.iter().any(|existing| existing == &id) {
+                        entry.pending.push(id);
+                    }
+                }
+                for late in entry.late_after_turn_complete.drain(..) {
+                    if !entry.delivered.contains(&late)
+                        && !entry.pending.iter().any(|existing| existing == &late)
+                    {
+                        entry.pending.push(late);
+                    }
+                }
+                entry.active_turn_drained = 0;
+                entry.saw_turn_complete = false;
+                (!entry.pending.is_empty(), Vec::new(), HashSet::new())
+            }
+            5 => (false, Vec::new(), entry.delivered.clone()),
+            6 => (false, entry.pending.clone(), entry.delivered.clone()),
+            7 => {
+                let keep: HashSet<&str> = ids.iter().map(String::as_str).collect();
+                entry.pending.retain(|id| keep.contains(id.as_str()));
+                (false, Vec::new(), HashSet::new())
+            }
+            8 => {
+                let mark: HashSet<&str> = ids.iter().map(String::as_str).collect();
+                entry.pending.retain(|id| !mark.contains(id.as_str()));
+                for id in ids {
+                    entry.delivered.insert(id.clone());
+                }
+                (false, Vec::new(), HashSet::new())
+            }
+            _ => (false, Vec::new(), HashSet::new()),
+        }
+    }
+
+    pub(super) fn async_wake_on_turn_started(&self, thread_id: &str) {
+        let _ = self.async_subagent_wake_op(thread_id, 0, None, false, 0, &[]);
+    }
+
+    pub(super) fn async_wake_on_turn_complete(&self, thread_id: &str) {
+        let _ = self.async_subagent_wake_op(thread_id, 1, None, false, 0, &[]);
+    }
+
+    pub(super) fn async_wake_on_resumed_status(&self, thread_id: &str, count: usize) {
+        if count > 0 {
+            let _ = self.async_subagent_wake_op(thread_id, 2, None, false, count, &[]);
+        }
+    }
+
+    fn async_wake_on_agent_complete(
+        &self,
+        thread_id: &str,
+        agent_id: &str,
+        idle_now: bool,
+    ) -> bool {
+        self.async_subagent_wake_op(thread_id, 3, Some(agent_id), idle_now, 0, &[])
+            .0
+    }
+
+    fn async_wake_settle_turn(&self, thread_id: &str, turn_completed: bool) -> bool {
+        self.async_subagent_wake_op(thread_id, 4, None, turn_completed, 0, &[])
+            .0
+    }
+
+    fn async_wake_delivered_ids(&self, thread_id: &str) -> HashSet<String> {
+        self.async_subagent_wake_op(thread_id, 5, None, false, 0, &[])
+            .2
+    }
+
+    fn async_wake_pending_snapshot(&self, thread_id: &str) -> (Vec<String>, HashSet<String>) {
+        let (_, pending, delivered) =
+            self.async_subagent_wake_op(thread_id, 6, None, false, 0, &[]);
+        (pending, delivered)
+    }
+
+    fn async_wake_prune_pending(&self, thread_id: &str, keep_ids: &[String]) {
+        let _ = self.async_subagent_wake_op(thread_id, 7, None, false, 0, keep_ids);
+    }
+
+    fn async_wake_mark_delivered(&self, thread_id: &str, ids: &[String]) {
+        if !ids.is_empty() {
+            let _ = self.async_subagent_wake_op(thread_id, 8, None, false, 0, ids);
+        }
+    }
+
+    pub(super) fn weak_wake_manager(
+        &self,
+    ) -> Arc<dyn Fn() -> Option<RuntimeThreadManager> + Send + Sync> {
+        let host_profile = self.host_profile;
+        let owner_surface_attached = self.owner_surface_attached;
+        let config = self.config.clone();
+        let workspace = self.workspace.clone();
+        let plugin_registry = self.plugin_registry.clone();
+        let store = self.store.clone();
+        let weak_process_owner_lock = Arc::downgrade(&self._process_owner_lock);
+        let config_admission = self.config_admission.clone();
+        let engine_load = self.engine_load.clone();
+        let shutdown_drain = self.shutdown_drain.clone();
+        let engine_workers = self.engine_workers.clone();
+        let subagent_manager = self.subagent_manager.clone();
+        let turn_monitors = self.turn_monitors.clone();
+        let event_monitors = self.event_monitors.clone();
+        let event_reader_wake = self.event_reader_wake.clone();
+        let event_pump_stop = self.event_pump_stop.clone();
+        let weak_event_pump_owner = Arc::downgrade(&self._event_pump_owner);
+        let weak_active = Arc::downgrade(&self.active);
+        let event_emit = self.event_emit.clone();
+        let projection_locks = self.projection_locks.clone();
+        let event_tx = self.event_tx.clone();
+        let manager_cfg = self.manager_cfg.clone();
+        let runtime_mcp_servers = self.runtime_mcp_servers.clone();
+        let cancel_token = self.cancel_token.clone();
+        let task_manager = self.task_manager.clone();
+        let task_execution_lease = self.task_execution_lease.clone();
+        let automations = self.automations.clone();
+        let pending_approvals = self.pending_approvals.clone();
+        let grants = self.grants.clone();
+        let auto_review_blocks = self.auto_review_blocks.clone();
+        let pending_user_inputs = self.pending_user_inputs.clone();
+        let pending_dynamic_tools = self.pending_dynamic_tools.clone();
+        let pending_commands = self.pending_commands.clone();
+        let recovery_receipts = self.recovery_receipts.clone();
+        let notices = self.notices.clone();
+        let recovery_flush = self.recovery_flush.clone();
+        let hook_base = self.hook_base.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let snapshot_test_hook = self.snapshot_test_hook.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let update_admission_test_hook = self.update_admission_test_hook.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let replay_test_hook = self.replay_test_hook.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let test_model_client = self.test_model_client.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let test_approval_decision_timeout_ms = self.test_approval_decision_timeout_ms.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let test_dynamic_tool_result_timeout_ms = self.test_dynamic_tool_result_timeout_ms.clone();
+
+        Arc::new(move || {
+            if cancel_token.is_cancelled() || event_pump_stop.is_cancelled() {
+                return None;
+            }
+            let process_owner_lock = weak_process_owner_lock.upgrade()?;
+            let event_pump_owner = weak_event_pump_owner.upgrade()?;
+            let active = weak_active.upgrade()?;
+            Some(RuntimeThreadManager {
+                host_profile,
+                owner_surface_attached,
+                config: config.clone(),
+                workspace: workspace.clone(),
+                plugin_registry: plugin_registry.clone(),
+                store: store.clone(),
+                _process_owner_lock: process_owner_lock,
+                config_admission: config_admission.clone(),
+                engine_load: engine_load.clone(),
+                shutdown_drain: shutdown_drain.clone(),
+                engine_workers: engine_workers.clone(),
+                subagent_manager: subagent_manager.clone(),
+                turn_monitors: turn_monitors.clone(),
+                event_monitors: event_monitors.clone(),
+                event_reader_wake: event_reader_wake.clone(),
+                event_pump_stop: event_pump_stop.clone(),
+                _event_pump_owner: event_pump_owner,
+                active,
+                event_emit: event_emit.clone(),
+                projection_locks: projection_locks.clone(),
+                event_tx: event_tx.clone(),
+                manager_cfg: manager_cfg.clone(),
+                runtime_mcp_servers: runtime_mcp_servers.clone(),
+                cancel_token: cancel_token.clone(),
+                task_manager: task_manager.clone(),
+                task_execution_lease: task_execution_lease.clone(),
+                automations: automations.clone(),
+                pending_approvals: pending_approvals.clone(),
+                turn_accounting_origins: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+                grants: grants.clone(),
+                auto_review_blocks: auto_review_blocks.clone(),
+                pending_user_inputs: pending_user_inputs.clone(),
+                pending_dynamic_tools: pending_dynamic_tools.clone(),
+                pending_commands: pending_commands.clone(),
+                recovery_receipts: recovery_receipts.clone(),
+                notices: notices.clone(),
+                recovery_flush: recovery_flush.clone(),
+                hook_base: hook_base.clone(),
+                #[cfg(any(test, feature = "test-support"))]
+                snapshot_test_hook: snapshot_test_hook.clone(),
+                #[cfg(any(test, feature = "test-support"))]
+                update_admission_test_hook: update_admission_test_hook.clone(),
+                #[cfg(any(test, feature = "test-support"))]
+                replay_test_hook: replay_test_hook.clone(),
+                #[cfg(any(test, feature = "test-support"))]
+                test_model_client: test_model_client.clone(),
+                #[cfg(any(test, feature = "test-support"))]
+                test_approval_decision_timeout_ms: test_approval_decision_timeout_ms.clone(),
+                #[cfg(any(test, feature = "test-support"))]
+                test_dynamic_tool_result_timeout_ms: test_dynamic_tool_result_timeout_ms.clone(),
+            })
+        })
+    }
+
+    pub(super) async fn handle_agent_complete_async_wake(
+        &self,
+        thread_id: &str,
+        agent_id: &str,
+        subagent_manager: &SharedSubAgentManager,
+        active_weak: &std::sync::Weak<Mutex<ActiveThreads>>,
+        identity: &std::sync::Weak<AsyncRwLock<mpsc::Receiver<EngineEvent>>>,
+    ) {
+        if self.cancel_token.is_cancelled()
+            || self.event_pump_stop.is_cancelled()
+            || self.is_acp_host()
+        {
+            return;
+        }
+        let delivered = self.async_wake_delivered_ids(thread_id);
+        let eligible = {
+            let guard = subagent_manager.read().await;
+            guard
+                .terminal_results_excluding_for_session(thread_id, &delivered)
+                .into_iter()
+                .any(|result| result.agent_id == agent_id)
+        };
+        if !eligible {
+            return;
+        }
+        let Some(active) = active_weak.upgrade() else {
+            return;
+        };
+        let (owns_receiver, engine_active, turn_is_active) = {
+            let guard = active.lock().await;
+            guard
+                .engines
+                .get(thread_id)
+                .map(|state| {
+                    let owns_receiver = identity
+                        .upgrade()
+                        .is_some_and(|receiver| Arc::ptr_eq(&receiver, &state.engine.rx_event));
+                    (
+                        owns_receiver,
+                        !state.engine.is_cancelled(),
+                        state.active_turn.is_some(),
+                    )
+                })
+                .unwrap_or((false, false, false))
+        };
+        if !owns_receiver || !engine_active {
+            return;
+        }
+        if self.async_wake_on_agent_complete(thread_id, agent_id, !turn_is_active) {
+            self.spawn_async_completion_wake(thread_id.to_string());
+        }
+    }
+
+    pub(super) async fn handle_non_acp_turn_settled_async_completions(
+        &self,
+        thread_id: &str,
+        turn_completed: bool,
+    ) {
+        let has_pending_subagent = self.async_wake_settle_turn(thread_id, turn_completed);
+        if !turn_completed
+            || self.cancel_token.is_cancelled()
+            || self.event_pump_stop.is_cancelled()
+            || self.is_acp_host()
+        {
+            return;
+        }
+        let Ok(thread) = self.get_thread(thread_id).await else {
+            return;
+        };
+        if thread.archived || thread.executor.is_some() {
+            return;
+        }
+        let (engine_ready, shell_manager) = {
+            let active = self.active.lock().await;
+            let engine_ready = active
+                .engines
+                .get(thread_id)
+                .is_some_and(|state| !state.engine.is_cancelled() && state.active_turn.is_none());
+            let shell_manager = active.shell_managers.get(thread_id).cloned();
+            (engine_ready, shell_manager)
+        };
+        if !engine_ready {
+            return;
+        }
+        let (has_finished_shell, may_have_shell) = shell_manager
+            .and_then(|manager| {
+                manager.lock().ok().map(|mut guard| {
+                    (
+                        guard.has_finished_unreported_jobs_for_session(thread_id),
+                        guard.may_have_undelivered_completion_for_session(thread_id),
+                    )
+                })
+            })
+            .unwrap_or((false, false));
+        if has_pending_subagent || has_finished_shell {
+            self.spawn_async_completion_wake(thread_id.to_string());
+        }
+        if may_have_shell {
+            self.spawn_idle_shell_completion_monitor(thread_id.to_string());
+        }
+    }
+
+    pub(super) async fn deliver_async_completion_wake(&self, thread_id: &str) -> Result<()> {
+        if self.cancel_token.is_cancelled()
+            || self.event_pump_stop.is_cancelled()
+            || self.is_acp_host()
+        {
+            return Ok(());
+        }
+        self.ensure_accepting_execution()?;
+        let thread = match self.get_thread(thread_id).await {
+            Ok(thread) => thread,
+            Err(_) => return Ok(()),
+        };
+        if thread.archived || thread.executor.is_some() {
+            return Ok(());
+        }
+        let (subagent_manager, shell_manager) = {
+            let active = self.active.lock().await;
+            let Some(state) = active.engines.get(thread_id) else {
+                return Ok(());
+            };
+            if state.engine.is_cancelled() || state.active_turn.is_some() {
+                return Ok(());
+            }
+            (
+                state.engine.subagent_manager(),
+                active.shell_managers.get(thread_id).cloned(),
+            )
+        };
+        let has_finished_shell = shell_manager.as_ref().is_some_and(|manager| {
+            manager
+                .lock()
+                .is_ok_and(|mut guard| guard.has_finished_unreported_jobs_for_session(thread_id))
+        });
+        let (pending_ids, delivered_ids) = self.async_wake_pending_snapshot(thread_id);
+        let claimed_subagent_ids = if pending_ids.is_empty() {
+            Vec::new()
+        } else {
+            let eligible_ids: HashSet<String> = {
+                let guard = subagent_manager.read().await;
+                guard
+                    .terminal_results_excluding_for_session(thread_id, &delivered_ids)
+                    .into_iter()
+                    .map(|result| result.agent_id)
+                    .collect()
+            };
+            let claimed: Vec<String> = pending_ids
+                .into_iter()
+                .filter(|id| eligible_ids.contains(id))
+                .collect();
+            self.async_wake_prune_pending(thread_id, &claimed);
+            claimed
+        };
+        if !has_finished_shell && claimed_subagent_ids.is_empty() {
+            return Ok(());
+        }
+        let request = StartTurnRequest {
+            prompt: Self::ASYNC_COMPLETION_WAKE_PROMPT.to_string(),
+            ..Default::default()
+        };
+        match Box::pin(self.start_turn_with_source(
+            thread_id,
+            request,
+            RuntimeTurnInputSource::AsyncCompletionWake,
+            None,
+            false,
+        ))
+        .await
+        {
+            Ok((_turn, _replayed)) => {
+                self.async_wake_mark_delivered(thread_id, &claimed_subagent_ids);
+                Ok(())
+            }
+            Err(error) if error.to_string().contains("already has an active") => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(super) fn spawn_async_completion_wake(&self, thread_id: String) {
+        if self.cancel_token.is_cancelled()
+            || self.event_pump_stop.is_cancelled()
+            || self.is_acp_host()
+        {
+            return;
+        }
+        if !self.async_completion_wake_arm(&thread_id) {
+            return;
+        }
+        let manager_key = Arc::as_ptr(&self.active) as usize;
+        let weak = self.weak_wake_manager();
+        let cancel = self.cancel_token.clone();
+        let stop = self.event_pump_stop.clone();
+        let worker = tokio::spawn(async move {
+            struct WakeArmGuard {
+                manager_key: usize,
+                thread_id: String,
+                armed: bool,
+            }
+            impl Drop for WakeArmGuard {
+                fn drop(&mut self) {
+                    if self.armed {
+                        RuntimeThreadManager::async_completion_wake_release_key(
+                            self.manager_key,
+                            &self.thread_id,
+                        );
+                    }
+                }
+            }
+            let mut guard = WakeArmGuard {
+                manager_key,
+                thread_id: thread_id.clone(),
+                armed: true,
+            };
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return,
+                _ = stop.cancelled() => return,
+                _ = tokio::time::sleep(Self::ASYNC_COMPLETION_WAKE_DEBOUNCE) => {}
+            }
+            guard.armed = false;
+            Self::async_completion_wake_release_key(manager_key, &thread_id);
+            let Some(manager) = weak() else {
+                return;
+            };
+            if let Err(error) = Box::pin(manager.deliver_async_completion_wake(&thread_id)).await {
+                tracing::warn!(
+                    thread_id,
+                    %error,
+                    "Failed to deliver coalesced async completion wake"
+                );
+            }
+        });
+        self.track_receipt_worker(worker);
+    }
+
+    pub(super) fn spawn_idle_shell_completion_monitor(&self, thread_id: String) {
+        if self.cancel_token.is_cancelled()
+            || self.event_pump_stop.is_cancelled()
+            || self.is_acp_host()
+        {
+            return;
+        }
+        if !self.async_shell_monitor_arm(&thread_id) {
+            return;
+        }
+        let manager_key = Arc::as_ptr(&self.active) as usize;
+        let weak = self.weak_wake_manager();
+        let cancel = self.cancel_token.clone();
+        let stop = self.event_pump_stop.clone();
+        let worker = tokio::spawn(async move {
+            struct ShellMonitorGuard {
+                manager_key: usize,
+                thread_id: String,
+            }
+            impl Drop for ShellMonitorGuard {
+                fn drop(&mut self) {
+                    RuntimeThreadManager::async_shell_monitor_release_key(
+                        self.manager_key,
+                        &self.thread_id,
+                    );
+                }
+            }
+            let _guard = ShellMonitorGuard {
+                manager_key,
+                thread_id: thread_id.clone(),
+            };
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => break,
+                    _ = stop.cancelled() => break,
+                    _ = tokio::time::sleep(Self::IDLE_SHELL_WAKE_POLL_INTERVAL) => {}
+                }
+                let Some(manager) = weak() else {
+                    break;
+                };
+                if manager.ensure_accepting_execution().is_err() || manager.is_acp_host() {
+                    break;
+                }
+                let Ok(thread) = manager.get_thread(&thread_id).await else {
+                    break;
+                };
+                if thread.archived || thread.executor.is_some() {
+                    break;
+                }
+                let (engine_alive, is_idle, shell_manager) = {
+                    let active = manager.active.lock().await;
+                    let engine_alive = active
+                        .engines
+                        .get(&thread_id)
+                        .is_some_and(|state| !state.engine.is_cancelled());
+                    let is_idle = active
+                        .engines
+                        .get(&thread_id)
+                        .is_some_and(|state| state.active_turn.is_none());
+                    let shell_manager = active.shell_managers.get(&thread_id).cloned();
+                    (engine_alive, is_idle, shell_manager)
+                };
+                if !engine_alive {
+                    break;
+                }
+                let Some(shell_manager) = shell_manager else {
+                    break;
+                };
+                let (has_finished, may_have_pending) = match shell_manager.lock() {
+                    Ok(mut guard) => (
+                        guard.has_finished_unreported_jobs_for_session(&thread_id),
+                        guard.may_have_undelivered_completion_for_session(&thread_id),
+                    ),
+                    Err(_) => break,
+                };
+                if !may_have_pending {
+                    break;
+                }
+                if has_finished && is_idle {
+                    manager.spawn_async_completion_wake(thread_id.clone());
+                }
+            }
+        });
+        self.track_receipt_worker(worker);
+    }
+
     pub(super) fn projection_lock(&self, thread_id: &str) -> Arc<Mutex<()>> {
         let mut locks = self.projection_locks.lock();
         Arc::clone(
@@ -7124,6 +8195,11 @@ impl RuntimeThreadManager {
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    pub fn set_update_admission_test_hook(&self, hook: mpsc::UnboundedSender<oneshot::Sender<()>>) {
+        *self.update_admission_test_hook.lock() = Some(hook);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn events_path_for_test(&self, thread_id: &str) -> Result<PathBuf> {
         self.store.events_path(thread_id)
     }
@@ -7171,6 +8247,26 @@ impl RuntimeThreadManager {
         if let Some(environment) = req.environment.as_ref() {
             return Err(environment.refusal().into());
         }
+        if req.executor.is_some() && req.agent_preset.is_some() {
+            return Err(crate::conversation_modes::ModeRefusal::with_executor().into());
+        }
+        let agent_preset = match req.agent_preset.as_deref() {
+            Some(id) => {
+                let plugin_creator_enabled = self
+                    .read_config()
+                    .features()
+                    .enabled(codewhale_runtime::features::Feature::PluginCreator);
+                let selection = crate::conversation_modes::select(
+                    id,
+                    self.extension_host_options(),
+                    plugin_creator_enabled,
+                )
+                .await?;
+                selection.require_available()?;
+                crate::conversation_modes::stored_form(&selection.id)
+            }
+            None => None,
+        };
         let executor = match req.executor.as_ref() {
             Some(requested) => {
                 anyhow::ensure!(
@@ -7279,8 +8375,9 @@ impl RuntimeThreadManager {
             }
             None => None,
         };
+        let disallowed_tools = crate::task_manager::normalize_deny_rules(req.disallowed_tools);
         let thread = ThreadRecord {
-            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            schema_version: super::required_thread_schema_version(&disallowed_tools),
             id: match reserved_id {
                 Some(id) => validated_record_id(&id, "reserved history thread id")?.to_string(),
                 None => runtime_record_id("thr"),
@@ -7292,6 +8389,7 @@ impl RuntimeThreadManager {
             model_provider_id,
             reasoning_effort,
             allowed_tools: req.allowed_tools,
+            disallowed_tools,
             add_dirs,
             workspace,
             mode,
@@ -7311,6 +8409,7 @@ impl RuntimeThreadManager {
             last_read: None,
             executor,
             environment: None,
+            agent_preset,
         };
         if let Some(operation_key) = req.operation_key {
             let key_fingerprint = runtime_turn_operation_key_fingerprint(
@@ -7318,28 +8417,35 @@ impl RuntimeThreadManager {
                 ":thread-create:",
                 &operation_key,
             )?;
+            let mut fingerprint_body = json!({
+                "version": 1,
+                "model": thread.model,
+                "model_provider": thread.model_provider,
+                "model_provider_id": thread.model_provider_id,
+                "reasoning_effort": thread.reasoning_effort,
+                "allowed_tools": thread.allowed_tools,
+                "add_dirs": thread.add_dirs,
+                "workspace": thread.workspace,
+                "mode": thread.mode,
+                "permission_posture": thread.permission_posture,
+                "allow_shell": thread.allow_shell,
+                "trust_mode": thread.trust_mode,
+                "auto_approve": thread.auto_approve,
+                "archived": thread.archived,
+                "system_prompt": thread.system_prompt,
+                "task_id": thread.task_id,
+                "dynamic_tools": req.dynamic_tools,
+                "environments": req.environments,
+                "executor": thread.executor,
+            });
+            if let Some(preset) = thread.agent_preset.as_ref() {
+                fingerprint_body["agent_preset"] = json!(preset);
+            }
+            if !thread.disallowed_tools.is_empty() {
+                fingerprint_body["disallowed_tools"] = json!(thread.disallowed_tools);
+            }
             let request_fingerprint =
-                codewhale_runtime::hashing::sha256_hex(serde_json::to_vec(&json!({
-                    "version": 1,
-                    "model": thread.model,
-                    "model_provider": thread.model_provider,
-                    "model_provider_id": thread.model_provider_id,
-                    "reasoning_effort": thread.reasoning_effort,
-                    "allowed_tools": thread.allowed_tools,
-                    "add_dirs": thread.add_dirs,
-                    "workspace": thread.workspace,
-                    "mode": thread.mode,
-                    "permission_posture": thread.permission_posture,
-                    "allow_shell": thread.allow_shell,
-                    "trust_mode": thread.trust_mode,
-                    "auto_approve": thread.auto_approve,
-                    "archived": thread.archived,
-                    "system_prompt": thread.system_prompt,
-                    "task_id": thread.task_id,
-                    "dynamic_tools": req.dynamic_tools,
-                    "environments": req.environments,
-                    "executor": thread.executor,
-                }))?);
+                codewhale_runtime::hashing::sha256_hex(serde_json::to_vec(&fingerprint_body)?);
             let _emit_order = self.event_emit.lock().await;
             let store = self.store.clone();
             let (thread, event) = tokio::task::spawn_blocking(move || {
@@ -7863,24 +8969,61 @@ impl RuntimeThreadManager {
                     .as_deref()
                     .filter(|origin| *origin != turn.id)
                 {
-                    let original = original_turns.get(origin).ok_or_else(|| {
-                        anyhow!("usage original owner is unavailable; inherited receipts retained")
-                    })?;
-                    anyhow::ensure!(
-                        original
-                            .source_usage_origin_turn_id
-                            .as_deref()
-                            .is_none_or(|owner| owner == origin),
-                        "usage original owner is itself an inherited projection"
-                    );
-                    for (key, inherited) in &turn.source_usage_records {
-                        let current = original.source_usage_records.get(key).ok_or_else(|| anyhow!("native usage original receipt is unavailable; inherited receipts retained"))?;
-                        anyhow::ensure!(
-                            current == inherited || current.follows_protected(inherited)?,
-                            "native usage original receipt conflicts with its inherited projection"
-                        );
+                    let inherited_covered = match original_turns.get(origin) {
+                        Some(original)
+                            if original
+                                .source_usage_origin_turn_id
+                                .as_deref()
+                                .is_none_or(|owner| owner == origin) =>
+                        {
+                            let mut all_present = true;
+                            for (key, inherited) in &turn.source_usage_records {
+                                match original.source_usage_records.get(key) {
+                                    Some(current)
+                                        if current == inherited
+                                            || current.follows_inherited(inherited) => {}
+                                    Some(_) => {
+                                        tracing::warn!(
+                                            turn_id = %turn.id,
+                                            origin = %origin,
+                                            source_key = %key,
+                                            "native usage original receipt conflicts with inherited projection; keeping best-effort count"
+                                        );
+                                        all_present = false;
+                                    }
+                                    None => {
+                                        tracing::warn!(
+                                            turn_id = %turn.id,
+                                            origin = %origin,
+                                            source_key = %key,
+                                            "native usage original receipt is unavailable; counting inherited receipt"
+                                        );
+                                        all_present = false;
+                                    }
+                                }
+                            }
+                            all_present
+                        }
+                        Some(_) => {
+                            tracing::warn!(
+                                turn_id = %turn.id,
+                                origin = %origin,
+                                "usage original owner is itself an inherited projection; counting inherited receipts"
+                            );
+                            false
+                        }
+                        None => {
+                            tracing::warn!(
+                                turn_id = %turn.id,
+                                origin = %origin,
+                                "usage original owner is unavailable; counting inherited receipts"
+                            );
+                            false
+                        }
+                    };
+                    if inherited_covered {
+                        continue;
                     }
-                    continue;
                 }
                 let parent_route = turn.effective_route_envelope();
                 let parent_dispatched_at = parent_route
@@ -7932,19 +9075,19 @@ impl RuntimeThreadManager {
                         let origin = turn
                             .source_usage_origin_turn_id
                             .as_deref()
-                            .ok_or_else(|| anyhow!("native usage has no original owning turn"))?;
+                            .unwrap_or(&turn.id);
                         let key = routed_usage_source_fingerprint(&record.source_id);
-                        anyhow::ensure!(
-                            origin == turn.id,
-                            "native usage is not owned by its recorded original turn"
-                        );
                         if let Some(previous_owner) =
                             counted_native_sources.insert(key, origin.to_string())
                         {
-                            anyhow::ensure!(
-                                previous_owner == origin,
-                                "native usage source has conflicting original owners"
-                            );
+                            if previous_owner != origin {
+                                tracing::warn!(
+                                    turn_id = %turn.id,
+                                    previous_owner = %previous_owner,
+                                    origin = %origin,
+                                    "native usage source has multiple owners; keeping first"
+                                );
+                            }
                             continue;
                         }
                         accumulate_source_usage_record(
@@ -8186,7 +9329,7 @@ impl RuntimeThreadManager {
                 .unwrap_or(u32::MAX);
             }
             for record in records {
-                cost.project_usage_record_inner(record, true)?;
+                cost.project_usage_record(record)?;
             }
             cost.unpriced_reasons.extend(combined.unpriced_reasons);
             cost.cny_unpriced_reasons
@@ -8400,9 +9543,34 @@ impl RuntimeThreadManager {
             && req.workspace.is_none()
             && req.model_provider.is_none()
             && req.model_provider_id.is_none()
+            && req.agent_preset.is_none()
         {
             bail!("At least one thread field is required");
         }
+        let preset_selection = match req.agent_preset.as_deref() {
+            Some(preset_id) => {
+                if self
+                    .store
+                    .load_thread(id)
+                    .is_ok_and(|thread| thread.executor.is_some())
+                {
+                    return Err(crate::conversation_modes::ModeRefusal::with_executor().into());
+                }
+                let plugin_creator_enabled = self
+                    .read_config()
+                    .features()
+                    .enabled(codewhale_runtime::features::Feature::PluginCreator);
+                Some(
+                    crate::conversation_modes::select(
+                        preset_id,
+                        self.extension_host_options(),
+                        plugin_creator_enabled,
+                    )
+                    .await?,
+                )
+            }
+            None => None,
+        };
         if (req.model.is_some()
             || req.model_provider.is_some()
             || req.model_provider_id.is_some()
@@ -8490,6 +9658,17 @@ impl RuntimeThreadManager {
         } else {
             None
         };
+        #[cfg(any(test, feature = "test-support"))]
+        if req.expected_workspace.is_some() {
+            let hook = { self.update_admission_test_hook.lock().take() };
+            if let Some(hook) = hook {
+                let (resume, wait) = oneshot::channel();
+                hook.send(resume)
+                    .map_err(|_| anyhow!("update admission hook closed"))?;
+                wait.await
+                    .map_err(|_| anyhow!("update admission hook dropped resume"))?;
+            }
+        }
         let configured_sandbox_mode = self.read_config().sandbox_mode.clone();
         let (thread, changes, evicted_engine, posture_engine, ended_grants, permission_receipt) = {
             // Take the active guard first so a workspace mutation can check
@@ -8501,6 +9680,7 @@ impl RuntimeThreadManager {
                 .store
                 .load_thread(id)
                 .with_context(|| format!("Thread not found: {id}"))?;
+            require_thread_workspace(&thread, req.expected_workspace.as_deref())?;
             if req.expected_idle == Some(true)
                 && active
                     .engines
@@ -8571,6 +9751,24 @@ impl RuntimeThreadManager {
                 thread.trust_mode = trust_mode;
                 changes.insert("trust_mode".to_string(), json!(trust_mode));
             }
+            if let Some(selection) = preset_selection.as_ref() {
+                let current =
+                    crate::conversation_modes::effective_id(thread.agent_preset.as_deref());
+                if selection.id != current {
+                    if thread.latest_turn_id.is_some()
+                        || active
+                            .engines
+                            .get(id)
+                            .and_then(|state| state.active_turn.as_ref())
+                            .is_some()
+                    {
+                        return Err(crate::conversation_modes::ModeRefusal::locked().into());
+                    }
+                    selection.require_available()?;
+                    thread.agent_preset = crate::conversation_modes::stored_form(&selection.id);
+                    changes.insert("agent_preset".to_string(), json!(selection.id));
+                }
+            }
             let requested_model = match provider_switch {
                 Some((model_provider, model_provider_id, model)) => {
                     if thread.model_provider.as_deref() != Some(model_provider.as_str())
@@ -8639,7 +9837,9 @@ impl RuntimeThreadManager {
             }
 
             let workspace_changed = changes.contains_key("workspace");
-            let rebuild_engine = workspace_changed || changes.contains_key("system_prompt");
+            let rebuild_engine = workspace_changed
+                || changes.contains_key("system_prompt")
+                || changes.contains_key("agent_preset");
             if rebuild_engine
                 && active
                     .engines
@@ -8724,6 +9924,7 @@ impl RuntimeThreadManager {
         }
 
         if let Some(engine) = evicted_engine {
+            self.auto_review_blocks.lock().remove(&thread.id);
             let _ = engine.send(Op::Shutdown).await;
         }
 
@@ -8744,6 +9945,11 @@ impl RuntimeThreadManager {
                 approval_mode: policy.permission,
                 configured_sandbox_mode: configured_sandbox_mode.clone(),
             });
+            self.auto_review_blocks
+                .lock()
+                .insert(thread.id.clone(), engine.list_auto_review_blocks());
+        } else if changes.get("workspace").is_some() {
+            self.auto_review_blocks.lock().remove(&thread.id);
         }
 
         if !changes.is_empty() {
@@ -9097,6 +10303,7 @@ impl RuntimeThreadManager {
                     thread.auto_approve,
                 )
                 .mode,
+                agent_preset: thread.agent_preset.clone(),
             })
             .await?;
         let observed = engine.get_session_snapshot().await?;
@@ -9330,6 +10537,8 @@ impl RuntimeThreadManager {
             .ok_or_else(|| anyhow!("no engine installed for {thread_id}"))?;
         state.active_turn = turn_id.map(|turn_id| ActiveTurnState {
             narrowing: crate::core::engine::TurnNarrowing::Inherit,
+            run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+            owner_present: false,
             turn_id: turn_id.to_string(),
             goal_id: None,
             goal_progress: None,
@@ -9577,6 +10786,14 @@ impl RuntimeThreadManager {
     }
 
     pub async fn get_thread_detail(&self, id: &str) -> Result<ThreadDetail> {
+        self.get_thread_detail_in_workspace(id, None).await
+    }
+
+    pub async fn get_thread_detail_in_workspace(
+        &self,
+        id: &str,
+        expected_workspace: Option<&Path>,
+    ) -> Result<ThreadDetail> {
         self.flush_recovery_receipts_for_thread(id).await?;
         // Hold the per-thread projection boundary from cursor capture through
         // item reads. A streamed delta is therefore either entirely before
@@ -9607,11 +10824,16 @@ impl RuntimeThreadManager {
         // flush and this read would re-enter recovery and wait forever on the
         // projection lock held by this snapshot.
         let store = self.store.clone();
+        let snapshot_workspace = expected_workspace.map(Path::to_path_buf);
         let snapshot_thread_id = id.to_string();
         let (thread, turns, items, command_receipts) = tokio::task::spawn_blocking(move || {
+            let _thread_mutation = snapshot_workspace
+                .as_ref()
+                .map(|_| store.thread_mutation.lock());
             let thread = store
                 .load_thread(&snapshot_thread_id)
                 .with_context(|| format!("Thread not found: {snapshot_thread_id}"))?;
+            require_thread_workspace(&thread, snapshot_workspace.as_deref())?;
             let mut turns = store.list_turns_for_thread(&snapshot_thread_id)?;
             turns.retain(|turn| runtime_usage_partition_parent(turn).is_none());
             let turn_ids: Vec<String> = turns.iter().map(|turn| turn.id.clone()).collect();
@@ -9659,8 +10881,19 @@ impl RuntimeThreadManager {
         // somebody opens, instead of making every launch read every item in
         // every store to find the few that need it.
         let items = self.repair_terminal_turn_items(id, &turns, items).await?;
-        let (pending_approvals, pending_user_inputs) = self.pending_requests_for_thread(id);
-        let pending_dynamic_tool_calls = self.pending_dynamic_tool_calls_for_thread(id);
+        let (pending_approvals, pending_user_inputs, pending_dynamic_tool_calls, approval_grants) = {
+            let _thread_mutation = expected_workspace.map(|_| self.store.thread_mutation.lock());
+            if expected_workspace.is_some() {
+                require_thread_workspace(&self.store.load_thread(id)?, expected_workspace)?;
+            }
+            let (approvals, inputs) = self.pending_requests_for_thread(id);
+            (
+                approvals,
+                inputs,
+                self.pending_dynamic_tool_calls_for_thread(id),
+                self.approval_grants_for_thread(id),
+            )
+        };
         Ok(ThreadDetail {
             thread,
             turns,
@@ -9670,7 +10903,7 @@ impl RuntimeThreadManager {
             pending_approvals,
             pending_user_inputs,
             pending_dynamic_tool_calls,
-            approval_grants: self.approval_grants_for_thread(id),
+            approval_grants,
         })
     }
 
@@ -10512,6 +11745,7 @@ impl RuntimeThreadManager {
                         && (ran_tools || !ran_here),
                     snapshots: turn.workspace_snapshots.clone(),
                     declared_writes,
+                    delegated_writes: turn.delegated_writes.clone(),
                     unrun_tool_calls,
                 }
             })
@@ -11142,7 +12376,7 @@ impl RuntimeThreadManager {
                 };
                 if !turn_seed.image_content.is_empty() {
                     item.set_image_content(turn_seed.image_content.clone());
-                    thread.schema_version = IMAGE_RUNTIME_SCHEMA_VERSION;
+                    thread.schema_version = thread.schema_version.max(IMAGE_RUNTIME_SCHEMA_VERSION);
                 }
                 seed_items.push(item);
                 item_ids.push(item_id);
@@ -11358,6 +12592,7 @@ impl RuntimeThreadManager {
                     artifacts: Vec::new(),
                     workspace: None,
                     workspace_snapshots: Vec::new(),
+                    delegated_writes: Vec::new(),
                 });
 
                 thread.latest_turn_id = Some(turn_id);
@@ -11937,8 +13172,7 @@ impl RuntimeThreadManager {
             }
         }
         let now = Utc::now();
-        crate::cost_status::finish_runtime_usage_owner(turn_id);
-        let background_usage = crate::cost_status::take_runtime_usage(turn_id);
+        self.turn_accounting_origins.lock().remove(turn_id);
         let mut terminal_items = Vec::new();
         match self.store.list_items_for_turn(turn_id) {
             Ok(items) => {
@@ -12037,33 +13271,6 @@ impl RuntimeThreadManager {
             let _turn_mutation = self.store.turn_mutation.lock();
             match self.store.load_turn(turn_id) {
                 Ok(mut turn) => {
-                    let mut drained_native_usage = Vec::new();
-                    for receipt in &background_usage.decisions {
-                        append_decision_receipt(&mut turn, receipt);
-                    }
-                    for record in background_usage.records.iter().cloned() {
-                        match append_usage_source_record(&mut turn, &record) {
-                            Ok(_) => {
-                                if record.has_native_producer() {
-                                    drained_native_usage.push(record);
-                                }
-                            }
-                            Err(error) => {
-                                tracing::warn!(%error, "source receipt was retained without replacing turn accounting");
-                                turn.routed_usage_dropped_records =
-                                    turn.routed_usage_dropped_records.saturating_add(1);
-                            }
-                        }
-                    }
-                    for record in background_usage.drop_records.iter().cloned() {
-                        append_routed_usage_drop_record(&mut turn, record);
-                    }
-                    let background_residual = background_usage.dropped_records.saturating_sub(
-                        u64::try_from(background_usage.drop_records.len()).unwrap_or(u64::MAX),
-                    );
-                    turn.routed_usage_dropped_records = turn
-                        .routed_usage_dropped_records
-                        .saturating_add(background_residual);
                     if turn.status == RuntimeTurnStatus::InProgress {
                         turn.status = RuntimeTurnStatus::Failed;
                         if let Some(activity) = &mut turn.operation_activity {
@@ -12089,15 +13296,7 @@ impl RuntimeThreadManager {
                             | RuntimeTurnStatus::Interrupted
                             | RuntimeTurnStatus::Canceled
                     ) {
-                        let publication = self.store.save_turn(&turn).and_then(|()| {
-                            for record in &drained_native_usage {
-                                record.acknowledge_persisted().context(
-                                    "Failed to acknowledge drained Runtime usage after terminal publication",
-                                )?;
-                            }
-                            Ok(())
-                        });
-                        match publication {
+                        match self.store.save_turn(&turn) {
                             Ok(()) => (Some(turn), None, None),
                             Err(error) => (None, None, Some(error)),
                         }
@@ -12343,6 +13542,23 @@ impl RuntimeThreadManager {
                 };
                 match outcome {
                     SteerOutcome::Accepted => {
+                        if manager.owner_surface_attached
+                            && matches!(
+                                manager.host_profile,
+                                crate::core::engine::EngineHostProfile::Normal
+                            )
+                        {
+                            let mut active = manager.active.lock().await;
+                            if let Some(active_thread) = active.engines.get_mut(&turn.thread_id)
+                                && let Some(active_turn) = active_thread.active_turn.as_mut()
+                                && active_turn.turn_id == turn.id
+                                && !active_turn.narrowing.is_acp()
+                            {
+                                active_turn.run_origin =
+                                    crate::core::authority::auto_review::RunOrigin::Interactive;
+                                active_turn.owner_present = true;
+                            }
+                        }
                         if let Err(err) = manager
                             .emit_event(
                                 &turn.thread_id,
@@ -12999,6 +14215,23 @@ impl RuntimeThreadManager {
         self.start_turn_inner(thread_id, req, None).await
     }
 
+    pub async fn start_turn_owner(
+        &self,
+        thread_id: &str,
+        req: StartTurnRequest,
+    ) -> Result<TurnRecord> {
+        self.start_turn_with_source_for_caller(
+            thread_id,
+            req,
+            RuntimeTurnInputSource::ExternalUser,
+            None,
+            false,
+            true,
+        )
+        .await
+        .map(|(turn, _replayed)| turn)
+    }
+
     /// Start a turn and report whether the durable `operation_key` made it a
     /// replay of an already-accepted submission.
     ///
@@ -13013,6 +14246,22 @@ impl RuntimeThreadManager {
     ) -> Result<(TurnRecord, bool)> {
         self.start_turn_inner_reporting_replay(thread_id, req, None)
             .await
+    }
+
+    pub async fn start_turn_owner_reporting_replay(
+        &self,
+        thread_id: &str,
+        req: StartTurnRequest,
+    ) -> Result<(TurnRecord, bool)> {
+        self.start_turn_with_source_for_caller(
+            thread_id,
+            req,
+            RuntimeTurnInputSource::ExternalUser,
+            None,
+            false,
+            true,
+        )
+        .await
     }
 
     pub async fn start_turn_with_reserved_id(
@@ -13090,13 +14339,34 @@ impl RuntimeThreadManager {
         reserved_turn_id: Option<&str>,
         stored_image_bytes: bool,
     ) -> Result<(TurnRecord, bool)> {
-        self.start_turn_with_narrowing(
+        self.start_turn_with_source_for_caller(
+            thread_id,
+            req,
+            input_source,
+            reserved_turn_id,
+            stored_image_bytes,
+            false,
+        )
+        .await
+    }
+
+    pub(super) async fn start_turn_with_source_for_caller(
+        &self,
+        thread_id: &str,
+        req: StartTurnRequest,
+        input_source: RuntimeTurnInputSource,
+        reserved_turn_id: Option<&str>,
+        stored_image_bytes: bool,
+        owner_composer: bool,
+    ) -> Result<(TurnRecord, bool)> {
+        self.start_turn_with_narrowing_for_caller(
             thread_id,
             req,
             input_source,
             reserved_turn_id,
             stored_image_bytes,
             crate::core::engine::TurnNarrowing::Inherit,
+            owner_composer,
         )
         .await
     }
@@ -13127,6 +14397,29 @@ impl RuntimeThreadManager {
         reserved_turn_id: Option<&str>,
         stored_image_bytes: bool,
         narrowing: crate::core::engine::TurnNarrowing,
+    ) -> Result<(TurnRecord, bool)> {
+        self.start_turn_with_narrowing_for_caller(
+            thread_id,
+            req,
+            input_source,
+            reserved_turn_id,
+            stored_image_bytes,
+            narrowing,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn start_turn_with_narrowing_for_caller(
+        &self,
+        thread_id: &str,
+        req: StartTurnRequest,
+        input_source: RuntimeTurnInputSource,
+        reserved_turn_id: Option<&str>,
+        stored_image_bytes: bool,
+        narrowing: crate::core::engine::TurnNarrowing,
+        owner_composer: bool,
     ) -> Result<(TurnRecord, bool)> {
         // Heap-allocate the turn-start state machine. Its future holds two full
         // Config clones plus ThreadRecord/EngineHandle/TurnRecord/TurnItemRecord
@@ -13186,7 +14479,7 @@ impl RuntimeThreadManager {
             return Err(environment.refusal().into());
         }
         if req.expected_workspace.as_ref().is_some_and(|workspace| workspace != &thread.workspace) {
-            bail!("Thread workspace changed from the selected frontend admission");
+            return Err(ThreadWorkspaceMismatch.into());
         }
         if thread.executor.is_some() {
             anyhow::ensure!(!narrowing.is_acp(), "an ACP frontend turn cannot run in a session with another agent");
@@ -13495,9 +14788,16 @@ impl RuntimeThreadManager {
             // engine, every early return must settle this completed
             // classifier call against its captured origin. The bounded clone
             // is intentionally kept out of the original/replayed turn.
-            let settlement = if initial_routed_usage.records.iter().all(|record| record.has_captured_origin() && record.is_acknowledged()) && initial_routed_usage.drop_records.is_empty() && initial_routed_usage.dropped_records == 0 {
-                None
-            } else { Some(InitialRoutedUsageSettlementGuard::new(self.store.clone(), thread_id, classifier_cost_scope, &initial_routed_usage)) };
+            let settlement = (!initial_routed_usage.drop_records.is_empty()
+                || initial_routed_usage.dropped_records > 0)
+                .then(|| {
+                    InitialRoutedUsageSettlementGuard::new(
+                        self.store.clone(),
+                        thread_id,
+                        classifier_cost_scope,
+                        &initial_routed_usage,
+                    )
+                });
             let route = resolve_runtime_thread_route(
                 &thread_config,
                 &selection.provider,
@@ -13648,6 +14948,7 @@ source_usage_records: Default::default(),
             artifacts: Vec::new(),
             workspace: None,
             workspace_snapshots: Vec::new(),
+            delegated_writes: Vec::new(),
 
 };
         append_initial_routed_usage_to_turn(&mut turn, &initial_routed_usage);
@@ -13719,6 +15020,20 @@ source_usage_records: Default::default(),
             .engines
             .get(thread_id)
             .and_then(|state| state.hook_executor.clone());
+        let input_authorship = if owner_composer
+            && matches!(input_source, RuntimeTurnInputSource::ExternalUser)
+            && self.owner_surface_attached
+            && matches!(
+                self.host_profile,
+                crate::core::engine::EngineHostProfile::Normal
+            )
+            && !narrowing.is_acp()
+            && !cfg_snapshot.runtime_chat_isolated
+        {
+            crate::core::ops::TurnInputAuthorship::Person(prompt.clone())
+        } else {
+            crate::core::ops::TurnInputAuthorship::NotPerson
+        };
         let spec = TurnSpec {
             profile_constitution: req.profile_constitution,
             max_output_tokens,
@@ -13746,6 +15061,7 @@ source_usage_records: Default::default(),
             approval_mode: policy.permission,
             verbosity,
             provenance: input_source.provenance(),
+            input_authorship,
             // Durable-runtime submissions carry no host correlation token.
             submission_id: None,
         };
@@ -13832,14 +15148,18 @@ source_usage_records: Default::default(),
             let _thread_mutation = self.store.thread_mutation.lock();
             let mut current_thread = self.store.load_thread(thread_id)?;
             if expected_workspace.as_ref().is_some_and(|workspace| workspace != &current_thread.workspace) {
-                bail!("Thread workspace changed before selected frontend admission");
+                return Err(ThreadWorkspaceMismatch.into());
             }
             if !thread_execution_state_matches(&thread, &current_thread) {
                 bail!("Thread execution settings changed while preparing the turn; retry");
             }
+            let (turn_run_origin, turn_owner_present) =
+                self.mint_turn_origin_for_source(&input_source, narrowing);
             let previous_active_route = (state.route_identity.clone(), state.route_model.clone());
             state.active_turn = Some(ActiveTurnState {
                 narrowing,
+                run_origin: turn_run_origin,
+                owner_present: turn_owner_present,
                 goal_id: (!narrowing.is_acp()).then(||turn_goal.as_ref().map(|goal| goal.goal_id.clone())).flatten(),
                 turn_id: turn_id.clone(),
                 goal_progress: None,
@@ -13860,16 +15180,28 @@ source_usage_records: Default::default(),
                     let _turn_mutation = self.store.turn_mutation.lock();
                     if self.store.turn_path(&turn_id)?.exists() {
                         let reserved = self.store.load_turn(&turn_id)?;
-                        anyhow::ensure!(reserved.thread_id == thread_id && reserved.routing_settlement, "pre-parent accounting reservation changed before parent admission");
-                        if let Some(ticket) = operation.as_ref().and_then(|operation| operation.preparation.as_ref()) {
-                            anyhow::ensure!(reserved.usage.is_none() && reserved.prefix_checkpoint.is_none() && reserved.routed_usage.is_empty() && reserved.routed_usage_drop_records.is_empty() && reserved.source_usage_records.keys().all(|key| key == &ticket.0.source_fingerprint), "classifier reservation contains unrelated history or sources");
+                        if reserved.thread_id != thread_id || !reserved.routing_settlement {
+                            tracing::warn!(turn_id = %turn_id, "pre-parent accounting reservation changed before parent admission; continuing");
+                        }
+                        if let Some(ticket) = operation.as_ref().and_then(|operation| operation.preparation.as_ref())
+                            && !(reserved.usage.is_none() && reserved.prefix_checkpoint.is_none() && reserved.routed_usage.is_empty() && reserved.routed_usage_drop_records.is_empty() && reserved.source_usage_records.keys().all(|key| key == &ticket.0.source_fingerprint))
+                        {
+                            tracing::warn!(turn_id = %turn_id, "classifier reservation contains unrelated history or sources; continuing");
                         }
                         for record in reserved.source_usage_records.values() {
                             let key = routed_usage_source_fingerprint(&record.source_id);
-                            if let Some(current) = turn.source_usage_records.get(&key) { anyhow::ensure!(current == record, "pre-parent source changed before parent admission"); }
+                            if let Some(current) = turn.source_usage_records.get(&key)
+                                && current != record
+                            {
+                                tracing::warn!(turn_id = %turn_id, source_id = %record.source_id, "pre-parent source changed before parent admission; continuing");
+                            }
                             turn.source_usage_records.insert(key, record.clone());
                         }
-                        anyhow::ensure!(reserved.source_usage_records.is_empty() || reserved.source_usage_origin_turn_id.as_deref() == Some(reserved.id.as_str()), "classifier reservation is an inherited usage projection");
+                        if !reserved.source_usage_records.is_empty()
+                            && reserved.source_usage_origin_turn_id.as_deref() != Some(reserved.id.as_str())
+                        {
+                            tracing::warn!(turn_id = %turn_id, "classifier reservation is an inherited usage projection; continuing");
+                        }
                         turn.source_usage_origin_turn_id = reserved.source_usage_origin_turn_id.clone();
                         turn.source_accounting |= reserved.source_accounting;
                         turn.schema_version = turn.schema_version.max(reserved.schema_version);
@@ -13932,7 +15264,13 @@ source_usage_records: Default::default(),
                 policy.permission,
                 configured_sandbox_mode,
             );
-            if narrowing.is_acp() { engine.send_reserved_acp_op(permit, op); } else { engine.send_reserved_op(permit, op); }
+            engine.send_reserved_op_with_origin(
+                permit,
+                op,
+                narrowing,
+                turn_run_origin,
+                turn_owner_present,
+            );
             if let Some(settlement) = initial_routed_usage_settlement.as_mut() {
                 settlement.disarm();
             }
@@ -13958,11 +15296,27 @@ source_usage_records: Default::default(),
     }
 
     pub async fn interrupt_turn(&self, thread_id: &str, turn_id: &str) -> Result<TurnRecord> {
+        self.interrupt_turn_in_workspace(thread_id, turn_id, None)
+            .await
+    }
+
+    pub async fn interrupt_turn_in_workspace(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        expected_workspace: Option<&Path>,
+    ) -> Result<TurnRecord> {
         if self.external_thread_loaded(thread_id).await {
-            return self.interrupt_external_turn(thread_id, turn_id).await;
+            return self
+                .interrupt_external_turn_in_workspace(thread_id, turn_id, expected_workspace)
+                .await;
         }
         {
             let mut active = self.active.lock().await;
+            if expected_workspace.is_some() {
+                let _thread_mutation = self.store.thread_mutation.lock();
+                require_thread_workspace(&self.store.load_thread(thread_id)?, expected_workspace)?;
+            }
             let Some(active_thread) = active.engines.get_mut(thread_id) else {
                 bail!("Thread is not loaded");
             };
@@ -14005,6 +15359,17 @@ source_usage_records: Default::default(),
         thread_id: &str,
         turn_id: &str,
         req: SteerTurnRequest,
+    ) -> Result<TurnRecord> {
+        self.steer_turn_for_caller(thread_id, turn_id, req, false)
+            .await
+    }
+
+    pub async fn steer_turn_for_caller(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        req: SteerTurnRequest,
+        owner_composer: bool,
     ) -> Result<TurnRecord> {
         let _admission = self.config_admission.read().await;
         self.ensure_accepting_execution()?;
@@ -14107,9 +15472,24 @@ source_usage_records: Default::default(),
                     };
                 }
             };
+            let is_owner_steer = owner_composer
+                && self.owner_surface_attached
+                && matches!(
+                    self.host_profile,
+                    crate::core::engine::EngineHostProfile::Normal
+                )
+                && !active_turn.narrowing.is_acp()
+                && active_turn.run_origin
+                    == crate::core::authority::auto_review::RunOrigin::Interactive
+                && !self.config.read().runtime_chat_isolated;
+            let person_text = is_owner_steer.then(|| prompt.clone());
             // The reserved send has no await/failure point. From here the
             // engine and durable record agree even if the API caller drops.
-            let outcome_rx = permit.send_with_outcome(prompt.clone());
+            let outcome_rx = permit.send_with_outcome_and_authorship(
+                prompt.clone(),
+                is_owner_steer,
+                person_text,
+            );
             touch_lru(&mut active.lru, thread_id);
             queued_turn = turn.clone();
             self.spawn_steer_settlement(turn, item, prompt, outcome_rx)
@@ -14244,6 +15624,7 @@ source_usage_records: Default::default(),
             artifacts: Vec::new(),
             workspace: None,
             workspace_snapshots: Vec::new(),
+            delegated_writes: Vec::new(),
         };
         let op = Op::CompactContext {
             id: compaction_id.clone(),
@@ -14270,6 +15651,8 @@ source_usage_records: Default::default(),
             let previous_active_route = (state.route_identity.clone(), state.route_model.clone());
             state.active_turn = Some(ActiveTurnState {
                 narrowing: crate::core::engine::TurnNarrowing::Inherit,
+                run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+                owner_present: false,
                 goal_id: None,
                 turn_id: turn_id.clone(),
                 goal_progress: None,
@@ -14601,6 +15984,7 @@ source_usage_records: Default::default(),
                 mcp_oauth_callback_url: cfg.mcp_oauth_callback_url.clone(),
                 skills_dir: cfg.skills_dir(),
                 skills_config: std::sync::Arc::new(cfg.skills_config()),
+                agent_preset: thread.agent_preset.clone(),
                 instructions: if isolated_chat {
                     Vec::new()
                 } else {
@@ -14691,6 +16075,10 @@ source_usage_records: Default::default(),
                             sink,
                         )
                     }),
+                    owner_accounting_origin: Some({
+                        let origins = Arc::clone(&self.turn_accounting_origins);
+                        Arc::new(move |owner| origins.lock().get(owner).cloned())
+                    }),
                     task_manager: self.task_manager.lock().upgrade(),
                     automations: self.automations.lock().clone(),
                     task_data_dir: Some(self.manager_cfg.task_data_dir.clone()),
@@ -14763,7 +16151,8 @@ source_usage_records: Default::default(),
                     cfg.reasoning_only_reprompt_message().to_string(),
                 ),
                 allowed_tools: isolated_chat.then(Vec::new),
-                disallowed_tools: None,
+                disallowed_tools: (!thread.disallowed_tools.is_empty())
+                    .then(|| thread.disallowed_tools.clone()),
                 max_tool_calls: None,
                 hook_executor: Some(Arc::clone(&thread_hooks)),
                 locale_tag: codewhale_localization::resolve_locale(&settings.locale)
@@ -14810,10 +16199,11 @@ source_usage_records: Default::default(),
                     await_retained_completion(&completion).await?;
                 }
             }
-            let (engine, worker) = spawn_engine_with_authoritative_route_config(
+            let (engine, worker) = crate::core::engine::spawn_runtime_engine_with_owner_surface(
                 engine_cfg,
                 &cfg,
                 self.host_profile,
+                self.owner_surface_attached,
                 Arc::clone(&self.config),
                 model_client,
                 Some(subagent_manager),
@@ -14852,6 +16242,7 @@ source_usage_records: Default::default(),
                             thread.auto_approve,
                         )
                         .mode,
+                        agent_preset: thread.agent_preset.clone(),
                     })
                     .await
                     .map_err(|e| anyhow!("Failed to sync thread session: {e}"))?;
@@ -14942,6 +16333,9 @@ source_usage_records: Default::default(),
             owner: Arc::downgrade(&self._process_owner_lock),
         };
         let input_settlement = self.user_input_settlement(&thread.id);
+        let allow_reactive_wake = !self.is_acp_host() && thread.executor.is_none();
+        let weak_wake_manager = self.weak_wake_manager();
+        let pump_cancel = self.cancel_token.clone();
         let handle = engine.clone();
         let thread_id = thread.id.clone();
         let pump = tokio::spawn(async move {
@@ -14951,6 +16345,51 @@ source_usage_records: Default::default(),
                     event = async { original.write().await.recv().await } => match event { Some(event) => event, None => break },
                     _ = stop.cancelled() => break,
                 };
+                if allow_reactive_wake
+                    && !stop.is_cancelled()
+                    && !pump_cancel.is_cancelled()
+                    && !handle.is_cancelled()
+                {
+                    enum WakeTurnSignal {
+                        Started,
+                        Complete,
+                        Resumed(usize),
+                    }
+                    let signal = match &event {
+                        EngineEvent::TurnStarted { .. } => Some(WakeTurnSignal::Started),
+                        EngineEvent::TurnComplete { .. } => Some(WakeTurnSignal::Complete),
+                        EngineEvent::Status { message } => {
+                            Self::parse_resumed_subagent_completion_count(message)
+                                .map(WakeTurnSignal::Resumed)
+                        }
+                        _ => None,
+                    };
+                    if let Some(signal) = signal
+                        && let Some(active_arc) = active.upgrade()
+                    {
+                        let owns_receiver = {
+                            let guard = active_arc.lock().await;
+                            guard.engines.get(&thread_id).is_some_and(|state| {
+                                identity.upgrade().is_some_and(|receiver| {
+                                    Arc::ptr_eq(&receiver, &state.engine.rx_event)
+                                })
+                            })
+                        };
+                        if owns_receiver && let Some(manager) = weak_wake_manager() {
+                            match signal {
+                                WakeTurnSignal::Started => {
+                                    manager.async_wake_on_turn_started(&thread_id);
+                                }
+                                WakeTurnSignal::Complete => {
+                                    manager.async_wake_on_turn_complete(&thread_id);
+                                }
+                                WakeTurnSignal::Resumed(count) => {
+                                    manager.async_wake_on_resumed_status(&thread_id, count);
+                                }
+                            }
+                        }
+                    }
+                }
                 if matches!(
                     &event,
                     EngineEvent::AgentSpawned { .. }
@@ -14993,6 +16432,30 @@ source_usage_records: Default::default(),
                         } else {
                             false
                         };
+                    if allow_reactive_wake
+                        && !stop.is_cancelled()
+                        && !pump_cancel.is_cancelled()
+                        && !handle.is_cancelled()
+                        && let EngineEvent::AgentComplete {
+                            owner_session_id,
+                            id,
+                            parent_run_id,
+                            ..
+                        } = &event
+                        && owner_session_id == &thread_id
+                        && parent_run_id.is_none()
+                        && let Some(manager) = weak_wake_manager()
+                    {
+                        manager
+                            .handle_agent_complete_async_wake(
+                                &thread_id,
+                                id,
+                                &sink.manager,
+                                &active,
+                                &identity,
+                            )
+                            .await;
+                    }
                     if !owns_origin {
                         continue;
                     }
@@ -15561,9 +17024,6 @@ source_usage_records: Default::default(),
                 if changed {
                     self.store.save_turn(&turn)?;
                 }
-                if record.has_native_producer() {
-                    record.acknowledge_persisted()?;
-                }
             }
             Err(error) => {
                 tracing::warn!(%error, "wire usage revision has no protected admission");
@@ -15615,6 +17075,14 @@ source_usage_records: Default::default(),
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(super) fn accounting_origin_for_turn(
+        &self,
+        turn_id: &str,
+    ) -> Option<crate::cost_status::NativeUsageOrigin> {
+        self.turn_accounting_origins.lock().get(turn_id).cloned()
+    }
+
     pub(super) fn register_runtime_usage_sink(&self, turn_id: &str) {
         let Ok(original_turn) = self.store.load_turn(turn_id) else {
             tracing::warn!("Runtime accounting owner has no admitted turn");
@@ -15634,52 +17102,49 @@ source_usage_records: Default::default(),
         let sink_turn_id = turn_id.to_string();
         let drop_store = self.store.clone();
         let drop_turn_id = turn_id.to_string();
-        crate::cost_status::register_runtime_usage_sink_with_drop(
-            turn_id,
-            Arc::new(move |record: RuntimeUsageRecord| {
-                if !owner_lock_is_at_path(&process_owner._file, &owner_path).unwrap_or(false) {
-                    return false;
+        let usage_sink = Arc::new(move |record: RuntimeUsageRecord| {
+            if !owner_lock_is_at_path(&process_owner._file, &owner_path).unwrap_or(false) {
+                return false;
+            }
+            let _thread_mutation = store.thread_mutation.lock();
+            if store.load_thread(&source_thread).is_err() {
+                return false;
+            }
+            let _turn_mutation = store.turn_mutation.lock();
+            let Ok(mut turn) = store.load_turn(&sink_turn_id) else {
+                return false;
+            };
+            if turn.thread_id != source_thread {
+                return false;
+            }
+            match append_usage_source_record(&mut turn, &record) {
+                Ok(_) => store.save_turn(&turn).is_ok(),
+                Err(error) => {
+                    tracing::warn!(%error, "durable Runtime usage correction refused");
+                    false
                 }
-                let _thread_mutation = store.thread_mutation.lock();
-                if store.load_thread(&source_thread).is_err() {
-                    return false;
-                }
-                let _turn_mutation = store.turn_mutation.lock();
-                let Ok(mut turn) = store.load_turn(&sink_turn_id) else {
-                    return false;
-                };
-                if turn.thread_id != source_thread {
-                    return false;
-                }
-                match append_usage_source_record(&mut turn, &record) {
-                    Ok(_) => store.save_turn(&turn).is_ok(),
-                    Err(error) => {
-                        tracing::warn!(%error, "durable Runtime usage correction refused");
-                        false
-                    }
-                }
-            }),
-            Some(Arc::new(move |record: RuntimeUsageDropRecord| {
-                if !owner_lock_is_at_path(&drop_owner._file, &drop_owner_path).unwrap_or(false) {
-                    return false;
-                }
-                let _thread_mutation = drop_store.thread_mutation.lock();
-                if drop_store.load_thread(&drop_thread).is_err() {
-                    return false;
-                }
-                let _turn_mutation = drop_store.turn_mutation.lock();
-                let Ok(mut turn) = drop_store.load_turn(&drop_turn_id) else {
-                    return false;
-                };
-                if turn.thread_id != drop_thread {
-                    return false;
-                }
-                if !append_routed_usage_drop_record(&mut turn, record) {
-                    return true;
-                }
-                drop_store.save_turn(&turn).is_ok()
-            })),
-        );
+            }
+        });
+        let drop_sink = Arc::new(move |record: RuntimeUsageDropRecord| {
+            if !owner_lock_is_at_path(&drop_owner._file, &drop_owner_path).unwrap_or(false) {
+                return false;
+            }
+            let _thread_mutation = drop_store.thread_mutation.lock();
+            if drop_store.load_thread(&drop_thread).is_err() {
+                return false;
+            }
+            let _turn_mutation = drop_store.turn_mutation.lock();
+            let Ok(mut turn) = drop_store.load_turn(&drop_turn_id) else {
+                return false;
+            };
+            if turn.thread_id != drop_thread {
+                return false;
+            }
+            if !append_routed_usage_drop_record(&mut turn, record) {
+                return true;
+            }
+            drop_store.save_turn(&turn).is_ok()
+        });
         let decision_store = self.store.clone();
         let decision_owner = self._process_owner_lock.clone();
         let decision_owner_path = self
@@ -15687,31 +17152,37 @@ source_usage_records: Default::default(),
             .data_dir
             .join(RUNTIME_PROCESS_OWNER_LOCK_FILE);
         let decision_turn_id = turn_id.to_string();
-        crate::cost_status::register_runtime_decision_sink(
-            turn_id,
-            Arc::new(move |receipt| {
-                if !owner_lock_is_at_path(&decision_owner._file, &decision_owner_path)
-                    .unwrap_or(false)
-                {
-                    return false;
-                }
-                let _thread_mutation = decision_store.thread_mutation.lock();
-                if decision_store.load_thread(&expected_thread).is_err() {
-                    return false;
-                }
-                let _turn_mutation = decision_store.turn_mutation.lock();
-                let Ok(mut turn) = decision_store.load_turn(&decision_turn_id) else {
-                    return false;
-                };
-                if turn.thread_id != expected_thread {
-                    return false;
-                }
-                if !append_decision_receipt(&mut turn, &receipt) {
-                    return true;
-                }
-                decision_store.save_turn(&turn).is_ok()
-            }),
+        let decision_sink = Arc::new(move |receipt| {
+            if !owner_lock_is_at_path(&decision_owner._file, &decision_owner_path).unwrap_or(false)
+            {
+                return false;
+            }
+            let _thread_mutation = decision_store.thread_mutation.lock();
+            if decision_store.load_thread(&expected_thread).is_err() {
+                return false;
+            }
+            let _turn_mutation = decision_store.turn_mutation.lock();
+            let Ok(mut turn) = decision_store.load_turn(&decision_turn_id) else {
+                return false;
+            };
+            if turn.thread_id != expected_thread {
+                return false;
+            }
+            if !append_decision_receipt(&mut turn, &receipt) {
+                return true;
+            }
+            decision_store.save_turn(&turn).is_ok()
+        });
+        let origin = crate::cost_status::NativeUsageOrigin::captured_runtime_with_sinks(
+            crate::cost_status::scope_token(),
+            turn_id.to_string(),
+            usage_sink,
+            Some(drop_sink),
+            Some(decision_sink),
         );
+        self.turn_accounting_origins
+            .lock()
+            .insert(turn_id.to_string(), origin);
     }
 
     /// Persist an engine status line as a completed `status` item.
@@ -16839,6 +18310,37 @@ source_usage_records: Default::default(),
                         self.append_unverified_routed_usage_to_turn(&turn_id, &source_id, *route)?;
                     }
                 }
+                EngineEvent::SubAgentMailbox {
+                    owner_session_id,
+                    turn_id: mailbox_turn_id,
+                    message: crate::tools::subagent::MailboxMessage::FileWrites { paths, .. },
+                    ..
+                } if owner_session_id == thread_id => {
+                    let belongs_to_turn = engine_turn_id
+                        .as_deref()
+                        .is_some_and(|started| started == mailbox_turn_id);
+                    if belongs_to_turn {
+                        let recorded = {
+                            let _turn_mutation = self.store.turn_mutation.lock();
+                            self.store.load_turn(&turn_id).and_then(|mut turn| {
+                                for path in paths {
+                                    if !turn.delegated_writes.contains(&path) {
+                                        turn.delegated_writes.push(path);
+                                    }
+                                }
+                                self.store.save_turn(&turn)
+                            })
+                        };
+                        if let Err(err) = recorded {
+                            tracing::warn!(
+                                target: "snapshot",
+                                thread_id = %thread_id,
+                                turn_id = %turn_id,
+                                "sub-agent file writes were not recorded; undoing this turn will refuse them: {err:#}"
+                            );
+                        }
+                    }
+                }
                 EngineEvent::CompactionStarted {
                     id, auto, message, ..
                 } => {
@@ -17085,6 +18587,8 @@ source_usage_records: Default::default(),
                         }
                         crate::core::authority::grants::GrantVerdict::NoMatch => (None, None),
                     };
+                    let (turn_run_origin, turn_owner_present) =
+                        self.active_turn_origin(&thread_id, &turn_id).await;
                     // This resolver reads the exact live approval posture only;
                     // Core already owns mode and shell admission for this call.
                     let approval_authority = TurnAuthority::from_effective_fields(
@@ -17093,7 +18597,8 @@ source_usage_records: Default::default(),
                         trust_mode,
                         auto_approve,
                         approval_mode,
-                    );
+                    )
+                    .with_rust_origin(turn_run_origin, turn_owner_present);
                     let disposition = resolve_approval_request_disposition(
                         &approval_authority,
                         grant.is_some(),
@@ -17161,13 +18666,18 @@ source_usage_records: Default::default(),
                         ));
                     }
                     let is_automatic = automatic.is_some();
+                    let owner_only = approval_authority.approval_mode_for_session()
+                        == ApprovalMode::Auto
+                        && approval_force_prompt
+                        && disposition == ApprovalRequestDisposition::Prompt;
                     let (approval_id, mut answer) = if is_automatic {
                         (Self::mint_approval_id(), None)
                     } else {
-                        let (approval_id, receiver) = self.register_pending_approval(
+                        let (approval_id, receiver) = self.register_pending_approval_with_policy(
                             &thread_id,
                             pending_request,
                             Some(publication.clone()),
+                            owner_only,
                         );
                         (approval_id, Some(receiver))
                     };
@@ -17830,6 +19340,74 @@ source_usage_records: Default::default(),
                     }
                     latest_goal_snapshot = Some(snapshot);
                 }
+                EngineEvent::ToolGateDecision { decision, .. } => {
+                    if decision != crate::core::events::ToolGateVerdict::Allowed {
+                        self.auto_review_blocks
+                            .lock()
+                            .insert(thread_id.clone(), engine.list_auto_review_blocks());
+                    }
+                }
+                EngineEvent::AutoReviewPaused {
+                    reason,
+                    approval_mode,
+                } => {
+                    let posture = match approval_mode {
+                        codewhale_execpolicy::ApprovalMode::Suggest => "ask",
+                        codewhale_execpolicy::ApprovalMode::AcceptEdits => "accept_edits",
+                        codewhale_execpolicy::ApprovalMode::Bypass => "full_access",
+                        codewhale_execpolicy::ApprovalMode::Auto => "auto_review",
+                        codewhale_execpolicy::ApprovalMode::Never => "never",
+                    };
+                    let updated_thread = {
+                        let _thread_mutation = self.store.thread_mutation.lock();
+                        let mut thread = self.store.load_thread(&thread_id)?;
+                        if thread.permission_posture.as_deref() != Some(posture)
+                            || (posture != "full_access" && thread.auto_approve)
+                        {
+                            thread.permission_posture = Some(posture.to_string());
+                            if posture != "full_access" {
+                                thread.auto_approve = false;
+                            }
+                            thread.updated_at = Utc::now();
+                            self.store.save_thread(&thread)?;
+                            Some(thread)
+                        } else {
+                            None
+                        }
+                    };
+                    self.auto_review_blocks
+                        .lock()
+                        .insert(thread_id.clone(), engine.list_auto_review_blocks());
+                    if let Some(thread) = updated_thread {
+                        self.emit_event(
+                            &thread_id,
+                            Some(&turn_id),
+                            None,
+                            "thread.updated",
+                            json!({
+                                "thread": thread,
+                                "changes": {
+                                    "permission_posture": posture,
+                                    "auto_approve": false,
+                                },
+                            }),
+                        )
+                        .await?;
+                    }
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        None,
+                        "auto_review.paused",
+                        json!({
+                            "reason": &reason,
+                            "permission_posture": posture,
+                        }),
+                    )
+                    .await?;
+                    self.publish_status_item(&thread_id, &turn_id, reason, &settled_approval_calls)
+                        .await?;
+                }
                 _ => {}
             }
         }
@@ -17886,8 +19464,7 @@ source_usage_records: Default::default(),
         }
 
         let ended_at = Utc::now();
-        crate::cost_status::finish_runtime_usage_owner(&turn_id);
-        let background_usage = crate::cost_status::take_runtime_usage(&turn_id);
+        self.turn_accounting_origins.lock().remove(&turn_id);
 
         // A terminal turn can no longer answer an outstanding prompt. Commit
         // each cancellation while the request remains snapshot-authoritative,
@@ -17950,34 +19527,8 @@ source_usage_records: Default::default(),
             }
             turn.usage = turn_usage;
             turn.effective_route_usage = turn_effective_route_usage;
-            for receipt in &background_usage.decisions {
-                append_decision_receipt(&mut turn, receipt);
-            }
-            let mut drained_native_usage = Vec::new();
-            for record in background_usage.records {
-                match append_usage_source_record(&mut turn, &record) {
-                    Ok(_) => {
-                        if record.has_native_producer() {
-                            drained_native_usage.push(record);
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "source receipt was retained without replacing turn accounting");
-                        turn.routed_usage_dropped_records =
-                            turn.routed_usage_dropped_records.saturating_add(1);
-                    }
-                }
-            }
-            let background_exact_drop_count = background_usage.drop_records.len();
-            for record in background_usage.drop_records {
-                append_routed_usage_drop_record(&mut turn, record);
-            }
-            let background_residual = background_usage
-                .dropped_records
-                .saturating_sub(u64::try_from(background_exact_drop_count).unwrap_or(u64::MAX));
             turn.routed_usage_dropped_records = turn
                 .routed_usage_dropped_records
-                .saturating_add(background_residual)
                 .saturating_add(turn_routed_usage_dropped_records);
             turn.model_request_diagnostics =
                 turn_model_request_diagnostics.or(turn.model_request_diagnostics);
@@ -18000,20 +19551,6 @@ source_usage_records: Default::default(),
             // busy and refuses every later session save.
             let swept_items = self.settle_turn_items(&turn, turn_status, ended_at)?;
             self.store.save_turn(&turn)?;
-            for record in &drained_native_usage {
-                if let Err(error) = record.acknowledge_persisted() {
-                    turn.status = RuntimeTurnStatus::Failed;
-                    turn.error = Some(format!(
-                        "Failed to acknowledge drained Runtime usage after terminal publication: {error}"
-                    ));
-                    self.store.save_turn(&turn).context(
-                        "Failed to record drained Runtime usage acknowledgement failure",
-                    )?;
-                    return Err(error).context(
-                        "Failed to acknowledge drained Runtime usage after terminal publication",
-                    );
-                }
-            }
             (turn, swept_items)
         };
         // Published after the record guard is released: `emit_event` awaits,
@@ -18081,6 +19618,11 @@ source_usage_records: Default::default(),
         // next one, keeping every wake explicit and bounded to one turn.
         if !admitted_acp {
             self.spawn_agent_mail_safe_boundary_delivery(thread_id.clone());
+            self.handle_non_acp_turn_settled_async_completions(
+                &thread_id,
+                turn.status == RuntimeTurnStatus::Completed,
+            )
+            .await;
         }
 
         Ok(())
@@ -18365,6 +19907,33 @@ source_usage_records: Default::default(),
         Some(engine.runtime_permission_authority())
     }
 
+    pub(super) async fn active_turn_origin(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> (crate::core::authority::auto_review::RunOrigin, bool) {
+        let active = self.active.lock().await;
+        let Some(state) = active.engines.get(thread_id) else {
+            return (
+                crate::core::authority::auto_review::RunOrigin::Background,
+                false,
+            );
+        };
+        let Some(turn) = state.active_turn.as_ref() else {
+            return (
+                crate::core::authority::auto_review::RunOrigin::Background,
+                false,
+            );
+        };
+        if turn.turn_id != turn_id || turn.interrupt_requested {
+            return (
+                crate::core::authority::auto_review::RunOrigin::Background,
+                false,
+            );
+        }
+        (turn.run_origin, turn.owner_present)
+    }
+
     #[cfg(test)]
     pub(super) async fn active_turn_flags(
         &self,
@@ -18614,10 +20183,16 @@ source_usage_records: Default::default(),
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub async fn install_test_engine(&self, thread_id: &str, engine: EngineHandle) -> Result<()> {
+    pub async fn install_test_engine(
+        &self,
+        thread_id: &str,
+        mut engine: EngineHandle,
+    ) -> Result<()> {
         let thread = self.get_thread(thread_id).await?;
         let config = self.read_config().clone();
         let route = self.resolved_route_for_thread(&config, &thread)?;
+        engine.set_host_profile(self.host_profile);
+        engine.set_owner_surface_attached(self.owner_surface_attached);
         {
             let mut selected = self.subagent_manager.lock().await;
             if let Some(manager) = selected.as_ref() {
@@ -18644,6 +20219,69 @@ source_usage_records: Default::default(),
         );
         touch_lru(&mut active.lru, thread_id);
         Ok(())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn register_auto_review_block_for_test(
+        &self,
+        thread_id: &str,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+        rule: Option<&str>,
+        reason: &str,
+        verdict: &str,
+        approvable: bool,
+    ) -> Result<Option<String>> {
+        let engine = {
+            let active = self.active.lock().await;
+            active
+                .engines
+                .get(thread_id)
+                .map(|state| state.engine.clone())
+        };
+        if let Some(engine) = engine {
+            engine.set_auto_review_authority_for_test(codewhale_execpolicy::ApprovalMode::Auto);
+            let receipt_id = engine.record_auto_review_block_for_test(
+                "tool-test-1",
+                tool_name,
+                tool_input,
+                rule,
+                reason,
+                "auto_review",
+                verdict,
+                approvable,
+            );
+            self.auto_review_blocks
+                .lock()
+                .insert(thread_id.to_string(), engine.list_auto_review_blocks());
+            return Ok(receipt_id);
+        }
+        let call_digest =
+            crate::core::authority::auto_review::auto_review_call_digest(tool_name, tool_input);
+        let action_summary =
+            crate::core::authority::auto_review::auto_review_action_summary(tool_name, tool_input);
+        let mut guard = self.auto_review_blocks.lock();
+        let entry = guard.entry(thread_id.to_string()).or_default();
+        let seq = entry.len() + 1;
+        let receipt_id = format!("ar-{seq}");
+        entry.push(
+            crate::core::authority::auto_review::AutoReviewBlockedAction {
+                receipt_id: receipt_id.clone(),
+                call_digest,
+                tool_id: format!("tool-test-{seq}"),
+                tool_name: tool_name.to_string(),
+                action_summary,
+                rule: rule.map(str::to_string),
+                reason: reason.to_string(),
+                gate: "auto_review".to_string(),
+                verdict: verdict.to_string(),
+                approved: false,
+                approvable,
+                agent_id: None,
+            },
+        );
+        Ok(approvable.then_some(receipt_id))
     }
 }
 
@@ -18973,21 +20611,12 @@ pub async fn receipt_secret_values(config: Config) -> Result<Vec<String>> {
 }
 
 pub fn summarize_text(text: &str, limit: usize) -> String {
-    let take = limit.saturating_sub(3);
-    let mut count = 0;
-    let mut out = String::new();
-    for ch in text.chars() {
-        if count >= take {
-            out.push_str("...");
-            return out;
-        }
-        if ch.is_control() && ch != '\n' && ch != '\t' {
-            continue;
-        }
-        out.push(ch);
-        count += 1;
-    }
-    out
+    let visible: String = text
+        .chars()
+        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+        .take(limit.saturating_add(1))
+        .collect();
+    crate::rlm::turn::truncate_text(&visible, limit)
 }
 
 pub(super) fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {

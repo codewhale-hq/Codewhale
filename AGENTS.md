@@ -259,9 +259,16 @@ prefer merging the contributor's PR itself). When a contributor's work
 lands as our commit, the contributor is that commit's **author** (`git commit
 --author` with their GitHub-linked address), it carries `Harvested from PR #N by
 @handle`, and maintainers or agents go in `Co-authored-by`. GitHub's contributor
-list counts commit authors only: about 200 harvested commits authored by
-maintainer identities left their contributors off it, which is why
-`docs/CONTRIBUTORS.md` carries the full wall (`scripts/contributor-wall.py`).
+count takes commit authors and the `Co-authored-by` trailers in a commit's final
+trailer block, and only addresses linked to an account: a trailer cut off by a
+blank line, an unlinked email, or a noreply address carrying someone else's
+numeric id credits nobody or the wrong person. Harvested commits authored by
+maintainer identities without such a trailer left their contributors off it,
+which is why `docs/CONTRIBUTORS.md` carries the full wall
+(`scripts/contributor-wall.py`). Credit lost in history that cannot change is
+restored by a later commit with one trailer per person, naming each pull
+request; `scripts/check-contributor-credit.py` fails the release window when a
+harvest, a trailer or a noreply id would leave someone uncounted.
 A maintainer closes their PR by hand with a thank-you naming the commit;
 nothing closes a PR automatically. Canonical human identities come from
 `.github/AUTHOR_MAP`.

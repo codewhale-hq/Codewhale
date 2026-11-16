@@ -1,0 +1,32 @@
+{
+  "pinnedAt": "2026-11-14",
+  "tarballs": [
+    {
+      "name": "@deepseek-ai/dsh-experimental-cot-translation-bundle",
+      "version": "0.2.2-rc.1",
+      "filename": "deepseek-ai-dsh-experimental-cot-translation-bundle-0.2.2-rc.1.tgz",
+      "size": 75973,
+      "shasum": "55702d627c6ac8e6bea6a21cf6210c0493cbd8e8",
+      "sha256": "60293ca63bfb200cf0b77d01e6cd1df915d674c090ba49586f968ff359087497",
+      "integrity": "sha512-5HOquL3iKidlJATbd9LqlLaz682QcyQuR8VLTEJbEwgcq6KL0hCJZ47WHF9XNkTM4McdFrd2TEPSDUl3yXNKIw=="
+    },
+    {
+      "name": "@deepseek-ai/dsh-experimental-translator",
+      "version": "0.2.2-rc.1",
+      "filename": "deepseek-ai-dsh-experimental-translator-0.2.2-rc.1.tgz",
+      "size": 32725,
+      "shasum": "fd6cbbd8b0562447df4b62230fe532e9e1c2de3b",
+      "sha256": "861d439e5f0c9ce7b9f36075b66ac39f079068932e52c2aa802d8e6872b5518b",
+      "integrity": "sha512-OJZ6Arwe4BrlajCYQ9jYZp/qh9Xc5NpOnuJ6Cm7D3xQFtszCq08JM3hZWHqPk/Nq8N7IinnVYRCKS6b9VFoD+w=="
+    },
+    {
+      "name": "@deepseek-ai/dsh-experimental-client-ui-cot-translation",
+      "version": "0.2.2-rc.1",
+      "filename": "deepseek-ai-dsh-experimental-client-ui-cot-translation-0.2.2-rc.1.tgz",
+      "size": 33785,
+      "shasum": "3a7d99d3da5eec0004cd658ec800189c005d0bf8",
+      "sha256": "4c5f6019e9bc43b3ed9db48069d243c78f849f3cb0d63ea39ef2a9f7aee497f5",
+      "integrity": "sha512-rN6pYwu2vssh06ogDEggGvsxflhSy1SooT/EDEE8D9kGP1NZ82YgwOEOclwprITT8ds+6vFST+7KUMONJh/vLA=="
+    }
+  ]
+}

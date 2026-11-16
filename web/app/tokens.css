@@ -390,6 +390,8 @@
   --gpui-breakpoint-wide: 1200px;
   --gpui-water-dark: linear-gradient(180deg, #0b1e3a 0%, #071326 35%, #04090f 75%, #030508 100%);
   --gpui-water-light: linear-gradient(180deg, #bfe1f2 0%, #dceef3 30%, #e7f0f6 62%, #f1f5f9 100%);
+  --gpui-surface-light-dark: radial-gradient(ellipse at 55% 0%, rgb(40 150 230 / 0.32) 0%, rgb(11 72 187 / 0.1) 45%, rgb(11 72 187 / 0) 75%);
+  --gpui-surface-light-light: radial-gradient(ellipse at 55% 0%, rgb(255 255 255 / 0.85) 0%, rgb(255 255 255 / 0.25) 40%, rgb(255 255 255 / 0) 72%);
   --gpui-ombre: linear-gradient(135deg, #1775c9, #0b48bb);
   --gpui-font-fallbacks: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC";
   --gpui-mono-size: 0.8125rem;

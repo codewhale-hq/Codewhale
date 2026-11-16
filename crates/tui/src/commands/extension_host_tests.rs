@@ -19,7 +19,7 @@ use codewhale_engine::extension_host::registry::{OwnerRegistry, OwnerState};
 use codewhale_engine::extension_host::test_support::{
     FixturePlugins, fake_authority, installed, node_for_tests, plugin_id,
 };
-use codewhale_engine::extension_host::tier::HostTier;
+use codewhale_engine::extension_host::tier::HostCohort;
 use codewhale_plugins::activation::TestPolicyGuard;
 
 /// The real catalog answers to every built-in name, every alias and the fixed
@@ -70,7 +70,7 @@ fn the_real_built_in_catalog_refuses_every_name_alias_and_mode_alias() {
     let mut registry = OwnerRegistry::new();
     let owner = registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "a",
             "a",
             Some(fake_authority("a")),
@@ -365,7 +365,7 @@ async fn extension_commands_never_shadow_built_ins_or_other_plugins() {
                 generation: 1,
                 owner_token: "t".into(),
             },
-            tier: HostTier::Plugin,
+            cohort: HostCohort::reviewed(),
             plugin_name: "p".into(),
             content_hash: "h".into(),
             name: name.to_string(),

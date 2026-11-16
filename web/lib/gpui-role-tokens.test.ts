@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { resolveWhale } from "./whale-tokens";
 import { siteCss } from "./site-css";
@@ -51,11 +52,10 @@ function contrast(a: string, b: string): number {
 
 const light = () => roleBlock(":root");
 const pinnedDark = () => roleBlock(':root[data-theme="dark"]');
-const stage = () => roleBlock(".stage,\n.site-footer");
 
 describe("role tokens", () => {
-  it("defines every role in light, pinned-dark and the stage", () => {
-    for (const [name, scheme] of [["light", light()], ["pinned", pinnedDark()], ["stage", stage()]] as const) {
+  it("defines every role in light and pinned-dark", () => {
+    for (const [name, scheme] of [["light", light()], ["pinned", pinnedDark()]] as const) {
       for (const role of ROLES) expect(scheme, `${name}.${role}`).toHaveProperty(role);
     }
     // Light is the site's appearance: dark is a reader's pin, never the OS.
@@ -74,17 +74,19 @@ describe("role tokens", () => {
         expect(hex(scheme[role]), `${mode}.${role}`).toBe(gpui(mode, name));
       }
     }
-    for (const role of ["text", "muted", "accent", "ring", "live", "attention", "danger"]) {
-      expect(stage()[role], `stage.${role}`).toMatch(/^var\(--gpui-dark-[\w-]+\)$/);
-    }
     expect(hex(light().bg)).toBe("#f1f5f9");
     expect(hex(pinnedDark().bg)).toBe("#030508");
     expect(CSS).not.toMatch(/--kit-(warm-paper|foam|mist|bioluminescence|ink|slate)/);
-    for (const role of ["bg", "surface", "panel"]) expect(stage()[role], role).toMatch(/^var\(--ocean-[\w-]+\)$/);
+  });
+
+  it("re-declares no role for the footer: it sits on the page's own ground", () => {
+    expect(CSS).not.toMatch(/\.stage\b/);
+    expect(CSS).not.toMatch(/\.site-footer\s*\{[^}]*--(bg|text|muted):/);
+    expect(CSS).not.toMatch(/--sea(-[\w-]+)?:/);
   });
 
   it("keeps every text ink at WCAG AA on every ground, in every scheme", () => {
-    for (const [name, scheme] of [["light", light()], ["dark", pinnedDark()], ["stage", stage()]] as const) {
+    for (const [name, scheme] of [["light", light()], ["dark", pinnedDark()]] as const) {
       for (const ground of GROUNDS) {
         for (const ink of TEXT_INKS) {
           expect(contrast(hex(scheme[ink]), hex(scheme[ground])), `${name}: ${ink} on ${ground}`).toBeGreaterThanOrEqual(4.5);
@@ -107,18 +109,20 @@ describe("role tokens", () => {
     expect(hex("var(--brand-light)")).toBe("#1e8fd8");
   });
 
-  it("keeps stage text readable across the sea", () => {
-    const stops = (token: string): string[] => {
-      const ramp = CSS.match(new RegExp(`--${token}:\\s*linear-gradient\\(([^;]+)\\);`))?.[1] ?? "";
-      return [...ramp.matchAll(/#[0-9a-f]{6}|var\(--[\w-]+\)/gi)].map((m) => hex(m[0]));
-    };
-    for (const token of ["sea", "sea-band"]) {
-      const ramp = stops(token);
-      expect(ramp.length, token).toBeGreaterThanOrEqual(3);
-      for (const stop of ramp) {
-        expect(contrast(hex(stage().muted), stop), `${token}: muted on ${stop}`).toBeGreaterThanOrEqual(4.5);
-        expect(contrast(hex(stage().text), stop), `${token}: text on ${stop}`).toBeGreaterThanOrEqual(4.5);
+  it("keeps the home's text readable across the water, in both schemes", () => {
+    const tokens = readFileSync(new URL("../app/tokens.css", import.meta.url), "utf8");
+    for (const [mode, scheme] of [["light", light()], ["dark", pinnedDark()]] as const) {
+      expect(scheme["home-sky"], mode).toContain(`var(--gpui-surface-light-${mode})`);
+      const ramp = tokens.match(new RegExp(`--gpui-water-${mode}:\\s*linear-gradient\\(([^;]+)\\);`))?.[1] ?? "";
+      const stops = [...ramp.matchAll(/#[0-9a-f]{6}/gi)].map((m) => m[0].toLowerCase());
+      expect(stops.length, mode).toBeGreaterThanOrEqual(3);
+      for (const stop of stops) {
+        for (const ink of ["text", "muted", "live"]) {
+          expect(contrast(hex(scheme[ink]), stop), `${mode}: ${ink} on ${stop}`).toBeGreaterThanOrEqual(4.5);
+        }
       }
+      const band = [...CSS.matchAll(/--home-band: (#[0-9a-f]{6});/g)].map((m) => m[1])[mode === "light" ? 0 : 1];
+      expect(stops, `${mode} band`).toContain(band);
     }
   });
 });

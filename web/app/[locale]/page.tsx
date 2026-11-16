@@ -3,255 +3,291 @@ import Image from "next/image";
 import Link from "next/link";
 import { HeroInstall } from "@/components/hero-install";
 import { Icon } from "@/components/icon";
-import { Section } from "@/components/page-header";
-import { Strata } from "@/components/strata";
-import { NativeTerminalGallery } from "@/components/native-terminal-gallery";
-import { LivingHeroWhale } from "@/components/living-hero-whale";
-import { releaseView } from "@/lib/capabilities";
-import { getFacts } from "@/lib/facts";
-import { GitHubStar, FaceWall, MergedList, PulseStats, statsAsOf } from "@/components/project-pulse";
-import { LiveStarLink } from "@/components/github-live";
-import { loadProjectPulse } from "@/lib/project-pulse";
-import { PROJECT_COPY } from "@/lib/content/project";
-import { HOME_OVERVIEW } from "@/lib/content/home-overview";
-import { PRODUCT_COPY } from "@/lib/content/product";
+import { readAsOf } from "@/components/project-pulse";
+import { InlineCode } from "@/components/route/inline-code";
+import { RouteMap, type RoutePart } from "@/components/route/product-route";
+import { SessionFrames, type SessionFrame } from "@/components/route/session-frames";
+import { TerminalCapture } from "@/components/terminal-capture";
+import { releaseView, runtimeCapabilityContext } from "@/lib/capabilities";
+import { captureCaption, frameNote } from "@/lib/capture-caption";
 import { PARTNER_PROMO } from "@/lib/content/partner-promo";
-import { daysLeft, isActiveAt } from "@/lib/expiry";
-import { fill, getChrome, getComputerUse, getHome, pickText, splitToken } from "@/lib/i18n/dictionaries";
-import { REPO_ISSUES_URL, REPO_URL } from "@/lib/i18n/links";
+import { PROJECT_COPY } from "@/lib/content/project";
+import { PRODUCT_MAP_STATE_KEY, PRODUCT_MAP_TEXT_KEYS, productMap, type ProductMapId } from "@/lib/content/product-map";
+import { getFacts } from "@/lib/facts";
+import { fill, getChrome, getContribute, getHome, pickText, splitToken } from "@/lib/i18n/dictionaries";
+import type { HomeDict } from "@/lib/i18n/dictionaries/types";
+import { REPO_URL } from "@/lib/i18n/links";
+import { pluralText } from "@/lib/i18n/plural";
 import { serializeJsonLd } from "@/lib/json-ld";
-import { TERMINAL_SCREENSHOT } from "@/lib/media-manifest";
+import { RELEASED_CAPTURE_FRAMES, type ReleasedCaptureFrameId } from "@/lib/released-capture.generated";
+import { parseExclusions, repoActivityView, type ActivityPull } from "@/lib/repo-activity";
 import { buildSoftwareApplicationJsonLd } from "@/lib/software-application-schema";
-import { getReleaseUpdates } from "@/lib/release-updates";
 
-// Resolve published releases at request time; source fetches cache for five
-// minutes. `getFacts()` rejects legacy or older KV snapshots.
-export const dynamic = "force-dynamic";
+export const revalidate = 300;
+
+const PART_DOC: Partial<Record<ProductMapId, string>> = {
+  terminal: "/install",
+  localBrowser: "/docs/web",
+  manyAgents: "/docs/fleet",
+};
+
+const SESSION_STEPS = [
+  { key: "02-task-prompt", name: "frameLabelPrompt", summary: "frameSummaryPrompt" },
+  { key: "03-task-diff", name: "frameLabelEdit", summary: "frameSummaryEdit" },
+  { key: "04-task-approval", name: "frameLabelApproval", summary: "frameSummaryApproval" },
+  { key: "05-task-result", name: "frameLabelResult", summary: "frameSummaryResult" },
+] as const satisfies readonly { key: string; name: keyof HomeDict; summary: keyof HomeDict }[];
+const SESSION_OPENS_ON = 2;
+const PROVIDER_ROWS = [9, 21] as const;
+const RECEIPT_ROWS_NARROW = [18, 60] as const;
+const MERGED_ROWS = 8;
+
+const avatar = (url: string, size: number) => `${url}${url.includes("?") ? "&" : "?"}s=${size}`;
+
+function latestPerAccount(pulls: readonly ActivityPull[], limit: number): ActivityPull[] {
+  const seen = new Set<string>();
+  const rows: ActivityPull[] = [];
+  for (const pull of pulls) {
+    if (seen.has(pull.login)) continue;
+    seen.add(pull.login);
+    rows.push(pull);
+    if (rows.length === limit) break;
+  }
+  return rows;
+}
+
+function splitCount(text: string, count: string): [string, string] {
+  const at = text.indexOf(count);
+  return at < 0 ? [text, ""] : [text.slice(0, at), text.slice(at + count.length)];
+}
+
+interface Fact {
+  key: string;
+  before: string;
+  number: string | null;
+  after: string;
+  href: string;
+}
 
 export default async function HomePage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
   const d = getHome(locale);
   const chrome = getChrome(locale);
+  const contribute = getContribute(locale);
   const facts = await getFacts();
-  const updates = await getReleaseUpdates(facts.latestPublishedRelease);
-  const pulse = await loadProjectPulse(5, 48);
+  const release = facts.latestPublishedRelease;
+  const jsonLd = buildSoftwareApplicationJsonLd(release, locale);
+  const numbers = new Intl.NumberFormat(chrome.dateLocale);
+  const promoLeft = Date.parse(PARTNER_PROMO.endsAt) - Date.now();
+  const promoDays = Math.max(1, Math.ceil(promoLeft / 86_400_000));
+  const showPromo = promoLeft > 0 && PARTNER_PROMO.locales.includes(locale);
+
+  const parts: RoutePart[] = productMap({ capabilities: runtimeCapabilityContext(facts) }).map((row) => {
+    const keys = PRODUCT_MAP_TEXT_KEYS[row.id];
+    return {
+      id: row.id,
+      state: row.state,
+      name: d[keys.name],
+      stateWord: d[PRODUCT_MAP_STATE_KEY[row.state]],
+      sentence: row.sentenceHolds ? d[keys.sentence] : null,
+      href: row.state === "released" ? (PART_DOC[row.id] ?? null) : null,
+    };
+  });
+
+  const frame = (id: ReleasedCaptureFrameId, summary: string, rows?: readonly [number, number]) => (
+    <TerminalCapture data={RELEASED_CAPTURE_FRAMES[id]} label={summary} regionLabel={d.shotPreview} rows={rows} />
+  );
+  const sessionWide = SESSION_STEPS.map((step) => RELEASED_CAPTURE_FRAMES[`cols100/${step.key}`]);
+  const sessionCaption = captureCaption(sessionWide).caption;
+  const session: SessionFrame[] = SESSION_STEPS.map((step, index) => ({
+    key: step.key,
+    name: d[step.name],
+    wide: frame(`cols100/${step.key}`, d[step.summary]),
+    narrow: frame(`cols48/${step.key}`, d[step.summary]),
+    note: frameNote(sessionWide[index]).needsPostureNote,
+  }));
+  const providerNote = frameNote(RELEASED_CAPTURE_FRAMES["cols56/01-custom-form"]).needsPostureNote;
+
   const released = releaseView(facts);
-  const sourceVersion = facts.version ?? "unknown";
-  const publishedRelease = updates.terminal.release;
-  const sourceIsPublished = publishedRelease?.version === sourceVersion;
-  const promoDays = daysLeft(PARTNER_PROMO.endsAt);
-  const showPromo = isActiveAt(PARTNER_PROMO.endsAt) && PARTNER_PROMO.locales.includes(locale);
-  const jsonLd = buildSoftwareApplicationJsonLd(publishedRelease, locale);
-  const ledeParts = splitToken(d.heroIntro, "brand");
-  const gateways = new Set(["OpenRouter", "Together", "OpenAI Codex"]);
-  const makers = [...new Set(released.models.map((model) => model.provider).filter((name): name is string => !!name && !gateways.has(name)))]
-    .sort((a, b) => a.localeCompare(b));
-  const firstParty = new Set(makers);
-  const newest = released.models
-    .filter((model) => model.addedAt && model.provider && firstParty.has(model.provider))
-    .sort((a, b) => (b.addedAt ?? "").localeCompare(a.addedAt ?? ""))
-    .slice(0, 6);
-  const releaseDate = publishedRelease
-    ? new Intl.DateTimeFormat(chrome.dateLocale, { month: "short", day: "numeric", year: "numeric" }).format(new Date(publishedRelease.publishedAt))
-    : null;
+  const counted = (key: string, forms: HomeDict["factModels"], n: number, href: string): Fact => {
+    const number = numbers.format(n);
+    const [before, after] = splitCount(pluralText(forms, n, locale, chrome.dateLocale), number);
+    return { key, before, number, after, href };
+  };
+  const plain = (key: string, text: string, href: string): Fact => ({ key, before: text, number: null, after: "", href });
+  const manyAgents = parts.find((part) => part.id === "manyAgents");
+  const factList: Fact[] = [
+    plain("rust", d.factRust, REPO_URL),
+    ...(facts.license ? [plain("license", fill(d.factLicense, { license: facts.license }), `${REPO_URL}/blob/main/LICENSE`)] : []),
+    ...(released.counts
+      ? [
+          counted("providers", d.factProviders, released.counts.providerRoutes, `/${locale}/models`),
+          counted("models", d.factModels, released.counts.models, `/${locale}/models`),
+        ]
+      : []),
+    ...(manyAgents?.state === "released" ? [plain("agents", manyAgents.name, `/${locale}${PART_DOC.manyAgents}`)] : []),
+  ];
+
+  const activity = repoActivityView();
+  const merged = latestPerAccount(activity?.pulls ?? [], MERGED_ROWS);
+  const accountForms = parseExclusions().confirmed ? contribute.mergedPeopleCount : contribute.mergedAccountsCount;
+  const accounts = activity?.count != null ? pluralText(accountForms, activity.count, locale, chrome.dateLocale) : null;
+  const accountsAsOf = readAsOf(activity?.readAt, locale);
+  const contributors = numbers.format(facts.contributorCount);
+  const [contributorsBefore, contributorsAfter] = splitCount(pluralText(d.contributorsCount, facts.contributorCount, locale, chrome.dateLocale), contributors);
+
+  const titleAnswer = d.heroTitle.slice(d.heroTitleLead.length).trim();
+  const brand = (text: string) =>
+    splitToken(text, "brand").map((part, index) => (
+      <Fragment key={index}>
+        {index > 0 ? <bdi>Codewhale</bdi> : null}
+        {part}
+      </Fragment>
+    ));
+
+  const install = (
+    <div className="home-install">
+      <HeroInstall locale={locale} ariaLabel={d.heroInstallAria} copyLabel={d.copy} copiedLabel={d.copied} />
+      <p className="home-version">
+        {release ? <span>{fill(d.installNote, { version: release.version })}</span> : null}
+        <a href={REPO_URL} className="home-version-link">
+          {d.readTheCode}
+        </a>
+      </p>
+    </div>
+  );
+  const factRow =
+    factList.length > 0 ? (
+      <ul className="home-facts" role="list" aria-label={d.factsLabel}>
+        {factList.map((fact) => {
+          const content = (
+            <>
+              {fact.before}
+              {fact.number ? <strong className="tabular">{fact.number}</strong> : null}
+              {fact.after}
+            </>
+          );
+          return (
+            <li key={fact.key}>
+              {fact.href.startsWith("/") ? <Link href={fact.href}>{content}</Link> : <a href={fact.href}>{content}</a>}
+            </li>
+          );
+        })}
+      </ul>
+    ) : null;
+  const sessionShot = (
+    <SessionFrames frames={session} initial={SESSION_OPENS_ON} label={d.shotPreview} caption={sessionCaption ? d[sessionCaption] : null} note={d.captureFrameNoPosture} />
+  );
 
   return (
     <div className="home">
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: serializeJsonLd(jsonLd) }}
-      />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeJsonLd(jsonLd) }} />
 
-      <div className="home-intro">
-        <div className="home-water" aria-hidden="true"><Strata /></div>
-        <section className="home-hero" aria-labelledby="home-title">
-          <div className="home-hero-inner">
-            <div className="home-hero-copy">
-              <h1 id="home-title" className="home-title">{d.heroTitle}</h1>
-              <p className="home-lede">
-                {ledeParts.map((part, index) => (
-                  <Fragment key={index}>
-                    {index > 0 && <strong>Codewhale</strong>}
-                    {part}
-                  </Fragment>
-                ))}
-              </p>
-              <HeroInstall locale={locale} ariaLabel={d.heroInstallAria} copyLabel={d.copy} copiedLabel={d.copied} />
-              <div className="actions">
-                <Link href={`/${locale}/install`} className="btn btn-primary btn-lg">
-                  {d.getCodewhale}
-                </Link>
-                <GitHubStar stars={pulse.stats?.stars ?? undefined} locale={locale} asOf={statsAsOf(pulse.stats, locale)} />
-                <Link href={`/${locale}/contribute`} className="btn btn-ghost btn-lg">
-                  {d.contribute}
-                  <Icon name="arrow-right" className="icon icon-flip" />
-                </Link>
-              </div>
-            </div>
-            <div className="home-whale">
-              <LivingHeroWhale locale={locale} />
-            </div>
+      <section className="home-hero" data-hero="center" aria-labelledby="home-title">
+        <div className="home-hero-text">
+          <h1 id="home-title" className="home-title">
+            <span className="home-title-lead">{d.heroTitleLead}</span> <span className="home-title-answer">{titleAnswer}</span>
+          </h1>
+          <p className="home-subhead">{brand(d.heroIntro)}</p>
+          {install}
+        </div>
+        <div className="home-hero-shot">{sessionShot}</div>
+        {factRow}
+      </section>
+
+      <div className="home-sections">
+        <section className="home-section home-split" aria-labelledby="home-model">
+          <div className="home-text">
+            <h2 id="home-model" className="home-h2">{d.sectionModelHeading}</h2>
+            <p className="home-body"><InlineCode text={d.sectionModelBody} /></p>
           </div>
+          <figure className="home-figure">
+            <div className="home-frame home-only-wide">{frame("cols56/01-custom-form", d.frameSummaryProvider, PROVIDER_ROWS)}</div>
+            <div className="home-frame home-only-narrow">{frame("cols48/01-custom-form", d.frameSummaryProvider, PROVIDER_ROWS)}</div>
+            {providerNote ? <figcaption className="home-caption">{d.captureFrameNoPosture}</figcaption> : null}
+          </figure>
         </section>
 
-        <section className="home-terminal" aria-label={d.shotPreview}>
-          <div className="home-terminal-inner">
-            <figure className="home-shot figure">
-              <div className="figure-frame stage" dir="ltr">
-                <NativeTerminalGallery
-                  locale={locale}
-                  defaultFrame="home"
-                  regionLabel={d.shotPreview}
-                  label={fill(d.screenshotAlt, { version: TERMINAL_SCREENSHOT.version })}
-                />
-              </div>
-            </figure>
-            <div
-              className="home-proof"
-              data-source-state={sourceIsPublished ? "published release" : "source candidate"}
-              data-source-state-label={sourceIsPublished ? d.publishedRelease : d.sourceCandidate}
-            >
-              {publishedRelease ? (
-                <Link href={`/${locale}/changelog`} className="section-link">
-                  {fill(pickText(HOME_OVERVIEW.releaseLabel, locale), { version: `v${publishedRelease.version}` })}
-                  {releaseDate ? <span className="home-proof-date"> · {releaseDate}</span> : null}
-                </Link>
-              ) : (
-                <Link href={`/${locale}/changelog`} className="section-link">{chrome.footerChangelog}</Link>
-              )}
-              <LiveStarLink initial={pulse.stats?.stars ?? undefined} label={pickText(PROJECT_COPY.statStars, locale)} href={REPO_URL} numberLocale={chrome.dateLocale} asOf={statsAsOf(pulse.stats, locale)} />
-              <Link href={`/${locale}/contribute`} className="section-link">{fill(d.proofContributors, { count: facts.contributorCount })}</Link>
-              <span>{facts.license ?? "MIT"}</span>
-              <Link href={`/${locale}/roadmap`} className="section-link">{chrome.footerRoadmap}</Link>
+        {showPromo && (
+          <aside className="home-promo-bar home-promo-inline" aria-label={PARTNER_PROMO.title}>
+            <div className="home-promo-bar-inner">
+              <Image src={PARTNER_PROMO.image.src} alt="" width={64} height={36} className="home-promo-bar-art" unoptimized />
+              <p>
+                <strong>{PARTNER_PROMO.title}</strong>
+                <span>{pickText(PARTNER_PROMO.bar, locale)}</span>
+                <span className="home-promo-bar-days">{fill(pickText(promoDays === 1 ? PARTNER_PROMO.dayLeft : PARTNER_PROMO.daysLeft, locale), { count: promoDays })}</span>
+              </p>
+              <span className="home-promo-bar-tag">{pickText(PARTNER_PROMO.referralTag, locale)}</span>
+              <p className="home-promo-bar-disclosure">{pickText(PARTNER_PROMO.disclosure, locale)}</p>
+              <a href={PARTNER_PROMO.href} rel="sponsored noopener" className="btn btn-primary">
+                {pickText(PARTNER_PROMO.cta, locale)}
+                <Icon name="external" className="icon" />
+              </a>
             </div>
+          </aside>
+        )}
+
+        <section className="home-section home-split home-split-flip" aria-labelledby="home-control">
+          <div className="home-text">
+            <h2 id="home-control" className="home-h2">{d.sectionControlHeading}</h2>
+            <p className="home-body"><InlineCode text={d.sectionControlBody} /></p>
           </div>
+          <figure className="home-figure">
+            <div className="home-frame home-only-wide">{frame("cols56/06-receipt", d.frameSummaryReceipt)}</div>
+            <div className="home-frame home-only-narrow">{frame("cols48/06b-receipt-tall", d.frameSummaryReceipt, RECEIPT_ROWS_NARROW)}</div>
+          </figure>
         </section>
       </div>
 
-      <div className="home-body">
-        <Section
-          id="home-models"
-          className="home-section"
-          title={d.modelsHeading}
-          scope={released.counts && publishedRelease ? fill(pickText(HOME_OVERVIEW.modelsCount, locale), { version: `v${publishedRelease.version}`, routes: released.counts.providerRoutes, models: released.counts.models }) : undefined}
-          link={<Link href={`/${locale}/models`} className="section-link">{d.modelsLink}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
-        >
-          <ul className="home-makers" role="list">
-            {makers.map((maker) => <li key={maker} className="pill">{maker}</li>)}
-            <li className="pill pill-quiet">{pickText(HOME_OVERVIEW.modelsAny, locale)}</li>
-          </ul>
-          {newest.length > 0 && (
-            <div className="home-newest">
-              <h3 className="home-newest-title">{pickText(HOME_OVERVIEW.modelsNewest, locale)}</h3>
-              <ol className="home-newest-list" role="list">
-                {newest.map((model) => (
-                  <li key={model.id}>
-                    <code>{model.id}</code>
-                    <span>{model.provider}</span>
+      <section className="home-direction" aria-labelledby="home-direction">
+        <div className="home-direction-head">
+          <h2 id="home-direction" className="home-h3">{d.sectionDirectionHeading}</h2>
+          <p className="home-body"><InlineCode text={d.sectionDirectionBody} /></p>
+        </div>
+        <RouteMap parts={parts} engine={d.mapHeading} label={d.sectionDirectionHeading} locale={locale} />
+      </section>
+
+      <div className="home-sections">
+        <section className="home-section home-split" aria-labelledby="home-open">
+          <div className="home-text">
+            <h2 id="home-open" className="home-h2">{d.sectionOpenHeading}</h2>
+            <p className="home-body"><InlineCode text={d.sectionOpenBody} /></p>
+          </div>
+          <div className="home-people">
+            <p className="home-count">
+              {contributorsBefore.trim() ? <span className="home-count-label">{contributorsBefore.trim()}</span> : null}
+              <a className="home-count-number tabular" href={`${REPO_URL}/blob/main/docs/CONTRIBUTORS.md`}>{contributors}</a>
+              {contributorsAfter.trim() ? <span className="home-count-label">{contributorsAfter.trim()}</span> : null}
+            </p>
+            {accounts ? (
+              <p className="home-accounts tabular" title={accountsAsOf}>
+                {accounts}
+                {accountsAsOf ? <span className="sr-only"> {accountsAsOf}</span> : null}
+              </p>
+            ) : null}
+            {merged.length > 0 ? (
+              <ol className="home-merged" role="list" aria-label={pickText(PROJECT_COPY.mergedHeading, locale)}>
+                {merged.map((pull) => (
+                  <li key={pull.number}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={avatar(pull.avatar, 48)} alt="" width={24} height={24} loading="lazy" decoding="async" />
+                    <span className="home-merged-login" dir="ltr">{pull.login}</span>
+                    <a className="home-merged-title" href={pull.url} dir="ltr" lang="en">{pull.title}</a>
                   </li>
                 ))}
               </ol>
-            </div>
-          )}
-          {showPromo && (
-            <aside className="home-promo-bar home-promo-inline" aria-label={PARTNER_PROMO.title}>
-              <div className="home-promo-bar-inner">
-                <Image src={PARTNER_PROMO.image.src} alt="" width={64} height={36} className="home-promo-bar-art" unoptimized />
-                <p>
-                  <strong>{PARTNER_PROMO.title}</strong>
-                  <span>{pickText(PARTNER_PROMO.bar, locale)}</span>
-                  <span className="home-promo-bar-days">{fill(pickText(promoDays === 1 ? PARTNER_PROMO.dayLeft : PARTNER_PROMO.daysLeft, locale), { count: promoDays })}</span>
-                </p>
-                <span className="home-promo-bar-tag">{pickText(PARTNER_PROMO.referralTag, locale)}</span>
-                <p className="home-promo-bar-disclosure">{pickText(PARTNER_PROMO.disclosure, locale)}</p>
-                <a href={PARTNER_PROMO.href} rel="sponsored noopener" className="btn btn-primary">
-                  {pickText(PARTNER_PROMO.cta, locale)}
-                  <Icon name="external" className="icon" />
-                </a>
-              </div>
-            </aside>
-          )}
-        </Section>
-
-        <Section
-          id="home-capabilities"
-          className="home-section"
-          title={pickText(PRODUCT_COPY.workHeading, locale)}
-          link={<Link href={`/${locale}/features`} className="section-link">{chrome.navFeatures}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
-        >
-          <dl className="home-work-patterns">
-            {PRODUCT_COPY.workPatterns.slice(0, 3).map((pattern) => (
-              <div key={pattern.href}>
-                <dt>{pickText(pattern.title, locale)}</dt>
-                <dd>
-                  <p>{pickText(pattern.body, locale)}</p>
-                  <Link className="section-link" href={pattern.href.startsWith("/") ? `/${locale}${pattern.href}` : pattern.href}><code>{pattern.command}</code></Link>
-                </dd>
-              </div>
-            ))}
-            <div>
-              <dt>{pickText(HOME_OVERVIEW.computerUseTitle, locale)} <span className="pill pill-quiet">{pickText(HOME_OVERVIEW.computerUseTag, locale)}</span></dt>
-              <dd>
-                <p>{pickText(HOME_OVERVIEW.computerUseBody, locale)}</p>
-                <Link className="section-link" href={`/${locale}/computer-use`}>{getComputerUse(locale).setup}<Icon name="arrow-right" className="icon icon-flip" /></Link>
-              </dd>
-            </div>
-          </dl>
-        </Section>
-
-        <Section
-          id="home-plugins"
-          className="home-section"
-          title={pickText(HOME_OVERVIEW.pluginsTitle, locale)}
-          scope={pickText(HOME_OVERVIEW.pluginsBody, locale)}
-          link={<Link href={`/${locale}/plugins`} className="section-link">{pickText(HOME_OVERVIEW.pluginsLink, locale)}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
-        />
-
-        <Section
-          id="home-community"
-          className="home-section home-community"
-          label={pickText(PROJECT_COPY.liveLabel, locale)}
-          title={pickText(PROJECT_COPY.liveHeading, locale)}
-          scope={pickText(PROJECT_COPY.liveScope, locale)}
-          link={<Link href={`/${locale}/feed`} className="section-link">{pickText(PROJECT_COPY.liveLink, locale)}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
-        >
-          <div className="pulse">
-            <div className="pulse-side">
-              <PulseStats stats={pulse.stats} contributors={facts.contributorCount} locale={locale} />
-            </div>
-            {pulse.merged.length > 0 ? (
-              <div className="pulse-main">
-                <h3 className="pulse-heading"><span className="status status-live"><span className="status-dot" aria-hidden="true" />{pickText(PROJECT_COPY.mergedHeading, locale)}</span></h3>
-                <MergedList items={pulse.merged} locale={locale} />
-              </div>
-            ) : (
-              <MergedList items={pulse.merged} locale={locale} />
-            )}
+            ) : null}
           </div>
-          <FaceWall faces={pulse.faces} total={facts.contributorCount} locale={locale} />
-          <div className="actions">
-            <a href={`${REPO_ISSUES_URL}/new/choose`} className="btn btn-primary btn-lg">
-              {pickText(PROJECT_COPY.loopFeedback, locale)}
-              <Icon name="external" className="icon" />
-            </a>
-            <Link href={`/${locale}/contribute`} className="btn btn-ghost btn-lg">
-              {pickText(PROJECT_COPY.loopHelp, locale)}
-              <Icon name="arrow-right" className="icon icon-flip" />
-            </Link>
-          </div>
-        </Section>
+        </section>
       </div>
 
-      <section className="home-install stage sea-continues" aria-labelledby="home-install">
-        <div className="home-install-inner">
-          <h2 className="section-title" id="home-install">{d.startHeading}</h2>
-          <div className="actions">
-            <Link href={`/${locale}/install`} className="btn btn-primary btn-lg">
-              {d.getCodewhale}
-              <Icon name="arrow-right" className="icon icon-flip" />
-            </Link>
-            <Link href={`/${locale}/docs/guide`} className="btn btn-ghost btn-lg">{chrome.footerGuide}</Link>
+      <section className="home-start" aria-labelledby="home-start">
+        <div className="home-start-inner">
+          <div className="home-text">
+            <h2 id="home-start" className="home-h2">{d.sectionStartHeading}</h2>
+            <p className="home-body"><InlineCode text={d.sectionStartBody} /></p>
           </div>
+          {install}
         </div>
       </section>
     </div>

@@ -6,7 +6,7 @@ import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync} from 'node:fs'
 import {join,dirname} from 'node:path'
 import {tmpdir} from 'node:os'
 import {fileURLToPath} from 'node:url'
-import {reviewAgentPresets,containedPackageModule} from '../dist/agent-presets.mjs'
+import {reviewAgentPresets,containedPackageModule,defineReviewedAgentPresets} from '../dist/agent-presets.mjs'
 import {spawnSync} from 'node:child_process'
 import {activate,startHost} from './harness.mjs'
 const hash=s=>createHash('sha256').update(s).digest('hex')
@@ -128,7 +128,6 @@ test('real raw roster mounts all five registries under one exact selected entry 
   assert.deepEqual(await host.call('ext/deactivate',{owner:first.ref}),{disposed:true,leaked:[]})
 })
 
-
 test('absent raw default stays visible and requires explicit selection before real host mount',async t=>{
   const noDefault={...cfg};delete noDefault.default
   const contents={'presets/a/agent.cordis.yml':'- name: ./row.mjs\n','presets/a/row.mjs':authoredRow('A'),'presets/b/agent.cordis.yml':empty}
@@ -235,4 +234,43 @@ test('real raw persona rows admit stock additive templates under exact sibling s
   assert.deepEqual(await host.call('ext/deactivate',{owner:first.ref,entry:a}),{disposed:true,leaked:[]})
   for (const row of rows) assert.equal(host.registry.some(event=>event.op==='unregister' && event.handle===row.handle),row.scope.path===a.path)
   assert.deepEqual(await host.call('ext/deactivate',{owner:first.ref}),{disposed:true,leaked:[]})
+})
+
+test('mixed agentPresets row mounts inert without receipt and refuses spoofed codewhale_reviewed or codewhale_receipt',async t=>{
+  const root=mkdtempSync(join(tmpdir(),'cw-mixed-presets-'));t.after(()=>rmSync(root,{recursive:true,force:true}))
+  const {Context}=await import('@deepseek-ai/cordis')
+  const ctx=new Context()
+  ctx.provide('loader',{})
+  const fiber=ctx.plugin(defineReviewedAgentPresets(async()=>{throw new Error('inert mount must not run')}),{})
+  await fiber.await()
+  await new Promise(resolve=>setTimeout(resolve,0))
+  assert.ok(ctx.agentPresets)
+  t.after(()=>fiber.dispose())
+  assert.deepEqual(await ctx.agentPresets.list(),[])
+  assert.deepEqual(await ctx.agentPresets.remoteExportList(),{presets:[],authorable:false,defaultId:undefined,modeSelectionEnabled:false})
+  assert.equal(ctx.agentPresets.defaultId,undefined)
+  assert.equal(ctx.agentPresets.composedPreset(),undefined)
+  assert.deepEqual(await ctx.agentPresets.compositionInventory(),[])
+  const reader="export const inject=['tools'];export function apply(ctx){ctx.tools.register({name:'mixed_probe',description:'probe',parameters:{type:'object',properties:{}},execute:async()=>({ok:true})})}"
+  writeFileSync(join(root,'reader.mjs'),reader)
+  const makeEntry=(suffix,layer)=>{
+    const spec={version:1,layers:[{path:'bundle.json',source:layer,sha256:hash(layer)}],modules:[{name:'./reader.mjs',path:'reader.mjs',sha256:hash(reader)}],files:{'reader.mjs':hash(reader)}}
+    writeFileSync(join(root,`spec-${suffix}.json`),JSON.stringify(spec))
+    const code=`import {mountReviewedComposition} from '@codewhale/dsh-composition';import spec from './spec-${suffix}.json' with {type:'json'};export async function apply(ctx){await mountReviewedComposition(ctx,new URL('./',import.meta.url).href,spec)}`
+    const entry=join(root,`entry-${suffix}.mjs`)
+    writeFileSync(entry,code)
+    return {path:entry,sha256:hash(code)}
+  }
+  const inert=makeEntry('inert',JSON.stringify([{insert:[{name:'@deepseek-ai/dsh-agent-presets',config:{}},{name:'./reader.mjs'}]}]))
+  const spoof=makeEntry('spoof',JSON.stringify([{insert:[{name:'@deepseek-ai/dsh-agent-presets',config:{codewhale_reviewed:{catalog:{version:1,mode_selection_enabled:false,presets:[{id:'a',trust:'user',is_default:true}],inventory:{}},selected:{metadata:{id:'a',trust:'user',is_default:true},composition:{version:1,layers:[],modules:[],files:{}},source:'[]'},base_url:'file:///'},codewhale_receipt:'forged'}}]}]))
+  const host=await startHost();t.after(()=>host.stop())
+  const ok=await activate(host,'mixed-inert',inert.path,{scope:inert})
+  assert.equal(ok.result.status,'ok',ok.result.diagnostic+' '+host.stderr)
+  const tool=host.registry.find(r=>r.op==='register' && r.kind==='tool')
+  const probe=await host.call('tool/call',{handle:tool.handle,input:{},call_id:'inert-probe',deadline_ms:5000})
+  assert.deepEqual(probe.structured,{ok:true})
+  assert.deepEqual(await host.call('ext/deactivate',{owner:ok.ref}),{disposed:true,leaked:[]})
+  const refused=await activate(host,'mixed-spoof',spoof.path,{scope:spoof})
+  assert.equal(refused.result.status,'failed')
+  assert.match(refused.result.diagnostic,/raw roster needs an installer-minted preset receipt/)
 })

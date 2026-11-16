@@ -341,7 +341,7 @@ pub(crate) fn open_diff_pager(app: &mut App, title: String, diff: &str) {
     // A patch is file content. Keep the terminal-injection boundary
     // `PagerView::from_text` applies to every other pager body.
     let mut sanitized = String::with_capacity(diff.len());
-    codewhale_tui_kit::osc8::strip_ansi_into(diff, &mut sanitized);
+    codewhale_sanitize::sanitize::strip_ansi_into(diff, &mut sanitized);
     app.view_stack.push(PagerView::from_diff(
         title,
         sanitized,

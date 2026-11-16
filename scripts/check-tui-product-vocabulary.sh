@@ -24,7 +24,8 @@ fi
 # Founder decision 2026-09-01: `fleet` is the public product term for the
 # assembled model team; `Pod` is retired from customer-facing copy. The
 # English source locale is the gate; other locale packs migrate with their
-# translation sweep. `/pod` and `codewhale pod` remain parser aliases.
+# translation sweep. `/pod` answers "Unknown command" and `codewhale pod` is
+# plain prompt text.
 if grep -En '": "[^"]*[Pp]od' crates/localization/locales/en.json; then
   printf '%s\n' 'retired Pod vocabulary remains in English product copy' >&2
   exit 1

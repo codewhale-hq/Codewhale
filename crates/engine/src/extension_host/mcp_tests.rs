@@ -2,7 +2,7 @@
 //! fixture child. The child is a local MCP peer, never a provider or real app.
 use super::*;
 use crate::extension_host::test_support::{FixturePlugins, node_for_tests};
-use crate::extension_host::{ExtensionHostOptions, TestManagerGuard};
+use crate::extension_host::{ExtensionHostOptions, HostTier, TestManagerGuard};
 use crate::mcp::{McpConnection, McpTransport};
 use codewhale_config::McpBackend;
 use codewhale_mcp::config::McpTimeouts;
@@ -358,12 +358,12 @@ async fn host_withdrawal_revokes_unwritten_grant_and_broker_lifetime() {
     manager
         .shared
         .core_calls
-        .revoke_host(HostTier::Builtin, transport.session.host_generation);
+        .revoke_host(HostCohort::Builtin, transport.session.host_generation);
     manager.shared.mcp_users.fetch_sub(
         manager
             .shared
             .mcp_broker
-            .revoke_host(HostTier::Builtin, transport.session.host_generation),
+            .revoke_host(&HostCohort::Builtin, transport.session.host_generation),
         std::sync::atomic::Ordering::SeqCst,
     );
     let (cx, _, _) = HostRequestContext::for_test(12);
@@ -487,7 +487,7 @@ async fn computer_use_protocol_bootstrap_and_human_decision_stay_in_rust() {
     // Ticket-visible params do not contain the attestation added at the pipe.
     let transport = SdkTransport {
         manager: Arc::clone(&manager),
-        host: manager.shared.ready_host(HostTier::Builtin).unwrap(),
+        host: manager.shared.ready_host(&HostCohort::Builtin).unwrap(),
         session: Arc::clone(&session),
         session_id: session.session_id.clone(),
         replies: Default::default(),
@@ -731,7 +731,7 @@ async fn host_mcp_without_native_keeps_restart_policy_and_harness_closed() {
             .lock()
             .unwrap()
             .owners()
-            .any(|owner| owner.tier == HostTier::Plugin)
+            .any(|owner| owner.tier() == HostTier::Plugin)
     );
     let second = transport(&config).await;
     assert_ne!(first.session.owner, second.session.owner);

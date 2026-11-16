@@ -80,7 +80,7 @@ function failureFor(error: unknown): CoreCallError {
 
 function toResult(wire: ToolResultWire): CoreCallResult {
   const result: CoreCallResult = {
-    content: wire.content.map((block) => block.text).join('\n'),
+    content: wire.content.map((block) => (block.type === 'text' ? block.text : `[image ${block.attachment_id}]`)).join('\n'),
     isError: wire.is_error,
   }
   if (wire.structured !== undefined) result.structured = wire.structured

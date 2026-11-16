@@ -1,81 +1,74 @@
 import Link from "next/link";
-import { GITEE_ENABLED, type Locale } from "@/lib/i18n/config";
+import type { Locale } from "@/lib/i18n/config";
 import { getChrome } from "@/lib/i18n/dictionaries";
 import {
   footerDocsLinks,
   footerLegalLinks,
   footerProductLinks,
   footerProjectLinks,
+  type ChromeLink,
 } from "@/lib/i18n/links";
 import { SITE_CONTACT_EMAIL } from "@/lib/page-meta";
 import { reviewState } from "@/lib/i18n/review-state";
 import { USAGE_COUNTING_COPY } from "@/lib/content/usage-counting";
 import { pickText } from "@/lib/i18n/dictionaries";
 
+function FooterList({ links }: { links: ChromeLink[] }) {
+  return (
+    <div className="site-footer-list">
+      {links.map((item) => <Link key={item.href} href={item.href}>{item.label}</Link>)}
+    </div>
+  );
+}
+
 /**
- * Site footer: the sea below one horizon line, in both appearances.
- * One dictionary path for every routed locale; four short link columns
- * (Product, Docs, Project, Legal) everywhere.
+ * Site footer: the page's own ground under one hairline, in both
+ * appearances. One dictionary path for every routed locale; four short link
+ * columns (Product, Docs, Project, Legal), which fold into four disclosures
+ * on a phone.
  */
 export function Footer({ locale = "en" }: { locale?: Locale }) {
   const chrome = getChrome(locale);
   const homeHref = `/${locale}`;
-  const product = footerProductLinks(locale, chrome);
-  const docs = footerDocsLinks(locale, chrome);
-  const project = footerProjectLinks(locale, chrome);
-  const legal = footerLegalLinks(locale, chrome, pickText(USAGE_COUNTING_COPY.footerLink, locale));
+  const groups: { label: string; links: ChromeLink[] }[] = [
+    { label: chrome.footerProduct, links: footerProductLinks(locale, chrome) },
+    { label: chrome.footerDocs, links: footerDocsLinks(locale, chrome) },
+    { label: chrome.footerProject, links: footerProjectLinks(locale, chrome) },
+    { label: chrome.footerLegal, links: footerLegalLinks(locale, chrome, pickText(USAGE_COUNTING_COPY.footerLink, locale)) },
+  ];
 
   return (
     <footer className="site-footer">
-      <div className="site-footer-sea">
-        <div className="horizon" aria-hidden="true" />
-        <div className="sea-texture" aria-hidden="true" />
-        <div className="site-footer-main">
-          <div className="site-footer-brand">
-            <Link href={homeHref} className="site-wordmark site-wordmark-footer" aria-label="Codewhale">
-              <span className="brand-mark" aria-hidden="true" />
-              <span className="wordmark" aria-hidden="true" />
-            </Link>
-          </div>
-
-          <div className="site-footer-links">
-            <div className="site-footer-group">
-              <span className="site-footer-label">{chrome.footerProduct}</span>
-              <div className="site-footer-list">
-                {product.map((item) => <Link key={item.href} href={item.href}>{item.label}</Link>)}
-              </div>
-            </div>
-            <div className="site-footer-group">
-              <span className="site-footer-label">{chrome.footerDocs}</span>
-              <div className="site-footer-list">
-                {docs.map((item) => <Link key={item.href} href={item.href}>{item.label}</Link>)}
-              </div>
-            </div>
-            <div className="site-footer-group">
-              <span className="site-footer-label">{chrome.footerProject}</span>
-              <div className="site-footer-list">
-                {project.map((item) => <Link key={item.href} href={item.href}>{item.label}</Link>)}
-              </div>
-            </div>
-            <div className="site-footer-group">
-              <span className="site-footer-label">{chrome.footerLegal}</span>
-              <div className="site-footer-list">
-                {legal.map((item) => <Link key={item.href} href={item.href}>{item.label}</Link>)}
-              </div>
-            </div>
-          </div>
+      <div className="site-footer-main">
+        <div className="site-footer-brand">
+          <Link href={homeHref} className="site-wordmark site-wordmark-footer" aria-label="Codewhale">
+            <span className="brand-mark" aria-hidden="true" />
+            <span className="wordmark" aria-hidden="true" />
+          </Link>
         </div>
 
-        <div className="site-footer-meta">
-          <div className="site-footer-meta-links">
-            {GITEE_ENABLED && <a href="https://gitee.com/codewhale-hq/CodeWhale">Gitee</a>}
-            <a href="https://cnb.cool/codewhale.net/codewhale">CNB</a>
-            <a href="https://npmmirror.com/package/codewhale">npmmirror</a>
-            <a href={`mailto:${SITE_CONTACT_EMAIL}`}>{SITE_CONTACT_EMAIL}</a>
-          </div>
-          <span>© {new Date().getFullYear()} Codewhale</span>
-          {reviewState(locale) === "machine" && <span className="site-footer-review">{chrome.translationMachineDraft}</span>}
+        <div className="site-footer-links">
+          {groups.map((group) => (
+            <div key={group.label} className="site-footer-group">
+              <span className="site-footer-label">{group.label}</span>
+              <FooterList links={group.links} />
+            </div>
+          ))}
         </div>
+        <div className="site-footer-folds">
+          {groups.map((group) => (
+            <details key={group.label} className="site-footer-fold" name="site-footer">
+              <summary>{group.label}</summary>
+              <FooterList links={group.links} />
+            </details>
+          ))}
+        </div>
+      </div>
+
+      <div className="site-footer-meta">
+        <a href={`mailto:${SITE_CONTACT_EMAIL}`}>{SITE_CONTACT_EMAIL}</a>
+        <span>© {new Date().getFullYear()} Codewhale</span>
+        {reviewState(locale) === "machine" && <span className="site-footer-review">{chrome.translationMachineDraft}</span>}
       </div>
     </footer>
   );

@@ -85,12 +85,26 @@ download() {
   url="$1"
   out="$2"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url" -o "$out"
+    download_tool=curl
   elif command -v wget >/dev/null 2>&1; then
-    wget -q "$url" -O "$out"
+    download_tool=wget
   else
     fail "curl or wget is required"
   fi
+  attempt=1
+  while :; do
+    if [ "$download_tool" = curl ]; then
+      curl --proto '=https' --tlsv1.2 -fsSL "$url" -o "$out" && return 0
+    else
+      wget --https-only -q "$url" -O "$out" && return 0
+    fi
+    rm -f "$out"
+    if [ "$attempt" -ge 3 ]; then
+      fail "Download failed. This is usually a network blip; run the same command again."
+    fi
+    attempt=$((attempt + 1))
+    sleep "${CODEWHALE_INSTALL_RETRY_DELAY:-1}"
+  done
 }
 
 sha256_file() {
@@ -534,17 +548,8 @@ say "  $install_dir/codew"
 if [ -n "$recovery_dir" ]; then
   say "Previous files are kept in $recovery_dir for 30 days. Undo: \"$install_dir/codewhale\" doctor --restore $(basename "$recovery_dir")"
 fi
-"$install_dir/codewhale" doctor --installs --brief </dev/null 2>/dev/null || true
-
-case "$target" in
-  macos-*)
-    if ! command -v node >/dev/null 2>&1; then
-      say ""
-      say "Computer Use is included and needs Node.js 20 or newer on PATH."
-      say "Install Node.js from https://nodejs.org/, then restart Codewhale to enable Computer Use."
-    fi
-    ;;
-esac
+CODEWHALE_TELEMETRY=0 CODEWHALE_NO_UPDATE_CHECK=1 "$install_dir/codewhale" doctor --installs --brief </dev/null 2>/dev/null || true
+say "Usage reporting is on by default (counts only, never your code or conversations). Turn it off: \"$install_dir/codewhale\" config set telemetry false"
 
 say ""
 say "Use this installation: \"$install_dir/codewhale\""

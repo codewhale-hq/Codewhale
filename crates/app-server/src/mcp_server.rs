@@ -76,6 +76,18 @@ impl McpServerSettings {
         }
     }
 
+    fn refuse_shell_tools(&mut self) -> Vec<String> {
+        let (refused, kept): (Vec<String>, Vec<String>) = std::mem::take(&mut self.expose_tools)
+            .into_iter()
+            .partition(|name| {
+                build_exposed_tools(std::slice::from_ref(name))
+                    .iter()
+                    .any(|tool| tool.internal == "exec_shell")
+            });
+        self.expose_tools = kept;
+        refused
+    }
+
     fn from_toml(contents: &str) -> Result<Self> {
         let config: McpServerConfigFile = toml::from_str(contents)?;
         Ok(Self {
@@ -98,12 +110,21 @@ pub async fn run_mcp_server(
     workspace: PathBuf,
     skills_dir: PathBuf,
     skills_config: std::sync::Arc<codewhale_runtime::config::SkillsConfig>,
+    tool_launcher_configured: bool,
 ) -> Result<()> {
     // Settings load is a synchronous config read; keep it off the async
     // worker per the blocking-call convention.
-    let settings = tokio::task::spawn_blocking(McpServerSettings::load)
+    let mut settings = tokio::task::spawn_blocking(McpServerSettings::load)
         .await
         .context("MCP server settings task failed")??;
+    if tool_launcher_configured {
+        for name in settings.refuse_shell_tools() {
+            eprintln!(
+                "codewhale mcp server: not exposing '{name}': the managed configuration sets \
+                 tool_launcher, and this server does not run commands through it."
+            );
+        }
+    }
     let server = McpServer::new(workspace, settings, skills_dir, skills_config)?;
     // stdout carries the protocol; the notice goes to stderr so an operator
     // whose config lists write tools sees why they are missing.
@@ -904,6 +925,21 @@ mod tests {
                 .iter()
                 .all(|tool| tool.annotations.as_ref().unwrap().read_only_hint == Some(true))
         );
+    }
+
+    #[test]
+    fn a_tool_launcher_refuses_shell_tools_even_when_the_operator_allows_them() {
+        let mut settings = McpServerSettings::from_toml(
+            "[server]\nexpose_tools = [\"file_read\", \"shell\", \"exec_shell\", \"Bash\"]\nrequire_approval = false\n",
+        )
+        .expect("parse config");
+        assert_eq!(settings.refuse_shell_tools(), vec!["shell", "exec_shell"]);
+        let server = test_server(PathBuf::from("."), settings);
+        let names: Vec<&str> = server.tools.iter().map(|tool| tool.name.as_ref()).collect();
+        assert_eq!(names, vec!["file_read"]);
+        for internal in ["exec_shell", "Bash", "bash"] {
+            assert!(server.registry.get(internal).is_none(), "{internal}");
+        }
     }
 
     #[test]

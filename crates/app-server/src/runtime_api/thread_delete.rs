@@ -51,6 +51,9 @@ pub(super) async fn delete_thread(
         .await
         .map_err(map_thread_err)?;
     tracing::info!(thread_id = %id, "runtime thread deleted");
+    if let Some(mobile) = state.mobile.as_ref() {
+        mobile.revoke_remote_session(&id);
+    }
     let Some(session_id) = thread.session_id.clone() else {
         return Ok(Json(json!({ "deleted": id, "session_deleted": false })));
     };

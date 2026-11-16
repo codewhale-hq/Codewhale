@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 
 pub mod autoupdate;
@@ -61,6 +61,152 @@ const CNB_RELEASE_ASSET_BASE: &str = "https://cnb.cool/codewhale.net/codewhale/-
 const RELEASE_METADATA_TIMEOUT: Duration = Duration::from_secs(5);
 const RELEASE_METADATA_MAX_BYTES: usize = 8 * 1024 * 1024;
 const ERROR_BODY_MAX_BYTES: usize = 4 * 1024;
+
+pub const UPDATE_MAX_REDIRECTS: usize = 10;
+
+const UPDATE_GITHUB_HOSTS: &[&str] = &[
+    "github.com",
+    "api.github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    "github-releases.githubusercontent.com",
+];
+
+const UPDATE_CNB_HOST: &str = "cnb.cool";
+
+pub const UPDATE_ALLOWED_HOSTS_ENV: &str = "CODEWHALE_UPDATE_ALLOWED_HOSTS";
+
+#[derive(Debug, Clone)]
+pub struct UpdateTransportPolicy {
+    extra_hosts: Vec<String>,
+    #[cfg(any(test, debug_assertions))]
+    allow_loopback_http: bool,
+}
+
+pub fn redact_url(url: &reqwest::Url) -> String {
+    if url.username().is_empty() && url.password().is_none() {
+        return url.to_string();
+    }
+    let mut sanitized = url.clone();
+    let _ = sanitized.set_username("");
+    let _ = sanitized.set_password(None);
+    sanitized.to_string()
+}
+
+pub fn redact_url_str(raw: &str) -> String {
+    match reqwest::Url::parse(raw) {
+        Ok(url) => redact_url(&url),
+        Err(_) => "<invalid URL>".to_string(),
+    }
+}
+
+impl UpdateTransportPolicy {
+    pub fn from_env() -> Self {
+        let mut policy = Self::strict();
+        if let Some(base_url) = explicit_release_base_url_from_env()
+            && let Ok(url) = reqwest::Url::parse(&base_url)
+            && let Some(host) = url.host_str()
+        {
+            policy.extra_hosts.push(host.to_ascii_lowercase());
+        }
+        if let Ok(hosts) = std::env::var(UPDATE_ALLOWED_HOSTS_ENV) {
+            policy.extra_hosts.extend(
+                hosts
+                    .split(',')
+                    .map(|host| host.trim().to_ascii_lowercase())
+                    .filter(|host| !host.is_empty()),
+            );
+        }
+        policy
+    }
+
+    pub fn strict() -> Self {
+        Self {
+            extra_hosts: Vec::new(),
+            #[cfg(any(test, debug_assertions))]
+            allow_loopback_http: false,
+        }
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    pub fn with_loopback_http(mut self, allow: bool) -> Self {
+        self.allow_loopback_http = allow;
+        self
+    }
+
+    pub fn host_is_allowed(&self, host: &str) -> bool {
+        let host = host.to_ascii_lowercase();
+        UPDATE_GITHUB_HOSTS.contains(&host.as_str())
+            || host == UPDATE_CNB_HOST
+            || host
+                .strip_suffix(UPDATE_CNB_HOST)
+                .is_some_and(|prefix| prefix.ends_with('.'))
+            || self.extra_hosts.contains(&host)
+    }
+
+    pub fn check_url(&self, url: &reqwest::Url) -> std::result::Result<(), String> {
+        if cfg!(debug_assertions)
+            && std::env::var_os("CODEWHALE_UPDATE_ALLOW_LOOPBACK_HTTP").is_some()
+            && url.scheme() == "http"
+            && matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
+        {
+            return Ok(());
+        }
+        #[cfg(any(test, debug_assertions))]
+        if self.allow_loopback_http
+            && url.scheme() == "http"
+            && matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
+        {
+            return Ok(());
+        }
+        if url.scheme() != "https" {
+            return Err(format!(
+                "update URL must use HTTPS, not {}: {}",
+                url.scheme(),
+                redact_url(url)
+            ));
+        }
+        let host = url.host_str().unwrap_or_default();
+        if !self.host_is_allowed(host) {
+            return Err(format!(
+                "update host {host:?} is not an allowed release host. A private mirror's host \
+                 is allowed when it is the {RELEASE_BASE_URL_ENV} HTTPS base URL; any other host \
+                 can be added with {UPDATE_ALLOWED_HOSTS_ENV}=host1,host2"
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn check_str(&self, url: &str) -> Result<()> {
+        let parsed = reqwest::Url::parse(url)
+            .with_context(|| format!("invalid update URL {}", redact_url_str(url)))?;
+        self.check_url(&parsed).map_err(|message| anyhow!(message))
+    }
+}
+
+pub fn update_redirect_policy(policy: UpdateTransportPolicy) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() > UPDATE_MAX_REDIRECTS {
+            return attempt.error("too many redirects");
+        }
+        match policy.check_url(attempt.url()) {
+            Ok(()) => attempt.follow(),
+            Err(message) => attempt.error(format!("update redirect refused: {message}")),
+        }
+    })
+}
+
+pub fn release_http_client(
+    timeout: Duration,
+    policy: &UpdateTransportPolicy,
+) -> Result<reqwest::Client> {
+    platform_http_client_builder()
+        .user_agent(UPDATE_USER_AGENT)
+        .timeout(timeout)
+        .redirect(update_redirect_policy(policy.clone()))
+        .build()
+        .context("failed to build release check HTTP client")
+}
 
 /// Build a reqwest client builder with the TLS roots appropriate for the
 /// current platform.
@@ -260,21 +406,28 @@ pub fn update_network_fallback_hint() -> String {
 ///
 /// `description` is included in error messages to identify the request purpose.
 pub async fn fetch_release_json_async(url: &str, description: &str) -> Result<String> {
-    let client = platform_http_client_builder()
-        .user_agent(UPDATE_USER_AGENT)
-        .timeout(RELEASE_METADATA_TIMEOUT)
-        .build()
-        .context("failed to build release check HTTP client")?;
+    fetch_release_json_async_with_policy(url, description, &UpdateTransportPolicy::from_env()).await
+}
+
+async fn fetch_release_json_async_with_policy(
+    url: &str,
+    description: &str,
+    policy: &UpdateTransportPolicy,
+) -> Result<String> {
+    policy.check_str(url)?;
+    let safe_url = redact_url_str(url);
+    let client = release_http_client(RELEASE_METADATA_TIMEOUT, policy)?;
     let response = client
         .get(url)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
         .await
-        .with_context(|| format!("failed to fetch {description} from {url}"))?;
+        .map_err(reqwest::Error::without_url)
+        .with_context(|| format!("failed to fetch {description} from {safe_url}"))?;
     let status = response.status();
     let bytes = read_http_response(response, RELEASE_METADATA_MAX_BYTES)
         .await
-        .with_context(|| format!("failed to read {description} response from {url}"))?;
+        .with_context(|| format!("failed to read {description} response from {safe_url}"))?;
     let body = String::from_utf8_lossy(&bytes);
     if !status.is_success() {
         bail!("GitHub release request failed with HTTP {status}: {body}");
@@ -292,6 +445,7 @@ pub async fn read_http_response(
     while let Some(chunk) = response
         .chunk()
         .await
+        .map_err(reqwest::Error::without_url)
         .context("failed to read HTTP response")?
     {
         let remaining = limit.saturating_add(1) - bytes.len();
@@ -336,6 +490,17 @@ fn finish_update_body(
     Ok(diagnostic.into_bytes())
 }
 
+fn sanitize_blocking_read_error(err: std::io::Error) -> anyhow::Error {
+    let kind = err.kind();
+    match err.into_inner() {
+        Some(inner) => match inner.downcast::<reqwest::Error>() {
+            Ok(req_err) => anyhow::Error::new(std::io::Error::new(kind, req_err.without_url())),
+            Err(other) => anyhow::Error::new(std::io::Error::new(kind, other)),
+        },
+        None => anyhow::Error::new(std::io::Error::from(kind)),
+    }
+}
+
 pub fn read_update_response(
     response: reqwest::blocking::Response,
     max_bytes: usize,
@@ -345,7 +510,8 @@ pub fn read_update_response(
     let mut bytes = Vec::new();
     response
         .take((limit as u64).saturating_add(1))
-        .read_to_end(&mut bytes)?;
+        .read_to_end(&mut bytes)
+        .map_err(sanitize_blocking_read_error)?;
     finish_update_body(bytes, status, limit)
 }
 
@@ -971,6 +1137,111 @@ mod tests {
         assert!(
             err.to_string().contains("no beta release found"),
             "unexpected error: {err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_release_json_async_refuses_http_and_unlisted_hosts_without_connecting() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let addr = listener.local_addr().expect("addr");
+        let plain_url = format!("http://{addr}/releases/latest");
+        let err = fetch_release_json_async(&plain_url, "latest release")
+            .await
+            .expect_err("plain HTTP must be refused");
+        assert!(format!("{err:#}").contains("HTTPS"), "{err:#}");
+        assert!(listener.accept().is_err(), "refused URL must not connect");
+
+        let closed_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let closed_addr = closed_listener.local_addr().expect("addr");
+        drop(closed_listener);
+        let loopback_policy = UpdateTransportPolicy {
+            extra_hosts: vec!["127.0.0.1".to_string()],
+            allow_loopback_http: false,
+        };
+        let secret_url = format!("https://user:secret@{closed_addr}/test");
+        let err =
+            fetch_release_json_async_with_policy(&secret_url, "latest release", &loopback_policy)
+                .await
+                .expect_err("closed loopback HTTPS target must error without leaking userinfo");
+        let secret_err_text = format!("{err:#}");
+        assert!(
+            secret_err_text.contains("failed to fetch"),
+            "{secret_err_text}"
+        );
+        assert!(!secret_err_text.contains("secret"), "{secret_err_text}");
+        assert!(!secret_err_text.contains("user:"), "{secret_err_text}");
+
+        let err = fetch_release_json_async(
+            "http://user:secret@unlisted.example.test/releases/latest",
+            "latest release",
+        )
+        .await
+        .expect_err("HTTP with userinfo must be refused");
+        let text = format!("{err:#}");
+        assert!(text.contains("HTTPS"), "{text}");
+        assert!(!text.contains("secret"), "{text}");
+
+        let err = fetch_release_json_async(
+            "https://unlisted.example.test/releases/latest",
+            "latest release",
+        )
+        .await
+        .expect_err("unlisted host must be refused");
+        assert!(
+            format!("{err:#}").contains("not an allowed release host"),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn release_http_client_refuses_redirect_to_http_or_unlisted_host() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let target_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        target_listener.set_nonblocking(true).expect("nonblocking");
+        let target_url = format!(
+            "http://{}/next",
+            target_listener.local_addr().expect("addr")
+        );
+
+        for location in [target_url.as_str(), "https://download.evil.example/next"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
+            let addr = listener.local_addr().expect("addr");
+            let location = location.to_string();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let mut buf = [0_u8; 2048];
+                let _ = stream.read(&mut buf).await.expect("read");
+                let reply = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                stream.write_all(reply.as_bytes()).await.expect("write");
+            });
+
+            let client =
+                release_http_client(Duration::from_secs(5), &UpdateTransportPolicy::strict())
+                    .expect("client");
+            let err = client
+                .get(format!("http://{addr}/start"))
+                .send()
+                .await
+                .expect_err("redirect must be refused");
+            let mut text = err.to_string();
+            let mut source = std::error::Error::source(&err);
+            while let Some(cause) = source {
+                text.push_str(&format!(": {cause}"));
+                source = cause.source();
+            }
+            assert!(text.contains("update redirect refused"), "{text}");
+            server.await.expect("server task");
+        }
+
+        assert!(
+            target_listener.accept().is_err(),
+            "refused redirect target must never be contacted"
         );
     }
 }

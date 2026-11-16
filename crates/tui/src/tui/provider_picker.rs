@@ -119,8 +119,22 @@ impl ProviderOffer {
     }
 
     pub(crate) fn render(&self, locale: Locale, area: Rect, buf: &mut Buffer) -> Rect {
+        self.render_if(crate::tui::orca_offer::available(locale), locale, area, buf)
+    }
+
+    fn render_if(&self, available: bool, locale: Locale, area: Rect, buf: &mut Buffer) -> Rect {
         self.clear();
-        if area.height < 4 || area.width < 20 || !crate::tui::orca_offer::available(locale) {
+        if area.height < 4 || area.width < 20 || !available {
+            return area;
+        }
+        let disclosure = wrap_to_width(
+            &tr(locale, MessageId::OrcaRouterOfferDisclosure),
+            usize::from(area.width),
+        );
+        let rows = u16::try_from(disclosure.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(1);
+        if rows > area.height.saturating_sub(3) {
             return area;
         }
         let chord = crate::tui::shell_key_routing::display_chord(
@@ -143,8 +157,49 @@ impl ProviderOffer {
                 Style::default().fg(palette::WHALE_ACTION).underlined()
             })
             .render(row, buf);
-        Rect::new(area.x, area.y + 1, area.width, area.height - 1)
+        for (index, line) in disclosure.into_iter().enumerate() {
+            let y = area.y + 1 + u16::try_from(index).unwrap_or(0);
+            Paragraph::new(line)
+                .style(Style::default().fg(palette::TEXT_MUTED))
+                .render(Rect::new(area.x, y, area.width, 1), buf);
+        }
+        Rect::new(area.x, area.y + rows, area.width, area.height - rows)
     }
+}
+
+fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthChar;
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut line_width = 0;
+    let mut last_space: Option<usize> = None;
+    for ch in text.chars() {
+        let w = ch.width().unwrap_or(0);
+        if line_width + w > width {
+            if let Some(at) = last_space {
+                let rest = line.split_off(at);
+                lines.push(line.trim_end().to_owned());
+                line = rest.trim_start().to_owned();
+            } else {
+                lines.push(std::mem::take(&mut line));
+            }
+            line_width = unicode_width::UnicodeWidthStr::width(line.as_str());
+            last_space = None;
+        }
+        if ch == ' ' {
+            if line.is_empty() {
+                continue;
+            }
+            last_space = Some(line.len());
+        }
+        line.push(ch);
+        line_width += w;
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 const DS4_PROVIDER_ID: &str = "ds4";
@@ -737,7 +792,15 @@ impl ProviderDashboardRow {
                     billing_presentation:
                         codewhale_engine::route_billing::BillingPresentation::Unknown,
                     maturity: ProviderMaturity::for_provider(provider),
-                    messages: vec![format!("provider admission failed: {error}")],
+                    messages: if provider == ProviderKind::Custom
+                        && !is_active
+                        && configured.is_none()
+                        && provider_descriptor(&provider_id).is_none()
+                    {
+                        Vec::new()
+                    } else {
+                        vec![format!("provider admission failed: {error}")]
+                    },
                     external_credential_status: None,
                     is_active,
                     has_key: false,
@@ -1140,6 +1203,9 @@ impl ProviderDashboardRow {
     /// repeats. One owner so the renderer and the tests cannot disagree about
     /// what a provider's state reads as.
     fn detail_state_line(&self) -> String {
+        if self.is_custom_placeholder() {
+            return "needs endpoint".to_string();
+        }
         let auth = match self.auth_status {
             ProviderAuthStatus::Missing | ProviderAuthStatus::Configured => String::new(),
             status => format!(" | {}", status.label()),
@@ -1164,7 +1230,7 @@ impl ProviderDashboardRow {
     fn list_row_hint(&self, view: ProviderListView) -> String {
         match view {
             // `readiness` already reads as prose ("key saved · not checked",
-            // "missing key"); `auth_status` said the same thing again in
+            // "needs key"); `auth_status` said the same thing again in
             // machine spelling ("key:configured", "key:not-set").
             ProviderListView::Configured => self.readiness.label().to_string(),
             ProviderListView::Catalog => {
@@ -5891,6 +5957,75 @@ mod tests {
     }
 
     #[test]
+    fn featured_offer_row_is_followed_by_its_disclosure_in_every_locale_and_width() {
+        for locale in Locale::shipped_complete() {
+            let disclosure = tr(*locale, MessageId::OrcaRouterOfferDisclosure).into_owned();
+            let label = tr(*locale, MessageId::OrcaRouterOfferRecommended).into_owned();
+            for width in [100u16, 56, 48, 30] {
+                let area = Rect::new(0, 0, width, 24);
+                let mut buf = Buffer::empty(area);
+                let offer = ProviderOffer::default();
+                let rest = offer.render_if(true, *locale, area, &mut buf);
+                let lines: Vec<String> = (0..24)
+                    .map(|y| {
+                        (0..width)
+                            .map(|x| buf[(x, y)].symbol())
+                            .collect::<String>()
+                            .trim_end()
+                            .to_owned()
+                    })
+                    .collect();
+                let chord = crate::tui::shell_key_routing::display_chord(
+                    crate::tui::shell_key_routing::binding(
+                        crate::tui::shell_key_routing::ShellBindingId::ProviderOffer,
+                    )
+                    .footer_chord,
+                );
+                let budget = usize::from(width)
+                    .saturating_sub(unicode_width::UnicodeWidthStr::width(chord.as_ref()) + 3);
+                let expected_label = codewhale_tui_kit::ui_text::semantic_truncate(&label, budget);
+                if width >= 48 {
+                    assert_eq!(expected_label, label, "{} {width}", locale.tag());
+                }
+                let squash = |text: &str| text.split_whitespace().collect::<String>();
+                assert!(
+                    squash(&lines[0]).starts_with(&squash(&expected_label))
+                        && lines[0].contains("OrcaRouter")
+                        && lines[0].ends_with(chord.as_ref()),
+                    "{} {width}: {:?}",
+                    locale.tag(),
+                    lines[0]
+                );
+                let shown = lines[1..usize::from(rest.y)].concat();
+                assert_eq!(
+                    squash(&shown),
+                    squash(&disclosure),
+                    "{} {width}",
+                    locale.tag()
+                );
+                assert!(
+                    lines[usize::from(rest.y)..].iter().all(String::is_empty),
+                    "{} {width}: list area overprinted",
+                    locale.tag()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn featured_offer_shows_neither_row_nor_disclosure_when_unavailable() {
+        let area = Rect::new(0, 0, 100, 24);
+        let mut buf = Buffer::empty(area);
+        let offer = ProviderOffer::default();
+        assert_eq!(offer.render(Locale::ZhHans, area, &mut buf), area);
+        assert_eq!(offer.render_if(false, Locale::En, area, &mut buf), area);
+        assert!(
+            (0..24).all(|y| (0..100).all(|x| buf[(x, y)].symbol() == " ")),
+            "nothing may be drawn"
+        );
+    }
+
+    #[test]
     fn failed_live_catalog_refresh_names_the_working_fallback() {
         assert_eq!(
             catalog_freshness_title_suffix_for(ModelsDevFreshness::Failed),
@@ -6238,6 +6373,40 @@ mod tests {
         assert_eq!(
             row.list_row_hint(ProviderListView::Catalog),
             "needs endpoint"
+        );
+    }
+
+    #[test]
+    fn fresh_install_custom_slot_reads_needs_endpoint_without_legacy_or_error() {
+        let picker = ProviderPickerView::new(ProviderKind::Custom, &Config::default());
+        let row = picker
+            .rows
+            .iter()
+            .find(|row| row.provider_id == ProviderKind::Custom.as_str())
+            .expect("custom slot");
+        assert!(row.is_custom_placeholder());
+        assert_eq!(row.detail_state_line(), "needs endpoint");
+        assert!(!row.detail_state_line().contains("legacy"));
+        assert!(row.messages.is_empty(), "{:?}", row.messages);
+    }
+
+    #[test]
+    fn selected_custom_route_without_an_endpoint_keeps_its_admission_error() {
+        let mut config = Config::default();
+        config.provider = Some("custom".to_string());
+        let picker = ProviderPickerView::new(ProviderKind::Custom, &config);
+        let row = picker
+            .rows
+            .iter()
+            .find(|row| row.provider_id == ProviderKind::Custom.as_str())
+            .expect("custom slot");
+        assert!(!row.is_custom_placeholder());
+        assert!(
+            row.messages
+                .iter()
+                .any(|m| m.contains("provider admission failed")),
+            "{:?}",
+            row.messages
         );
     }
 
@@ -8223,9 +8392,9 @@ mod tests {
 
         assert_eq!(row.auth_status, ProviderAuthStatus::Missing);
         assert_eq!(row.readiness, ResolvedProviderReadiness::MissingKey);
-        assert_eq!(row.readiness.label(), "missing key");
+        assert_eq!(row.readiness.label(), "needs key");
         let hint = row.detail_state_line();
-        assert!(hint.contains("missing key"));
+        assert!(hint.contains("needs key"));
         assert!(!hint.contains("key:not-set"));
         assert!(!hint.contains("needs-auth"));
         assert!(!hint.contains("auth:missing"));

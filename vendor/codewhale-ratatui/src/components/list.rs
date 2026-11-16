@@ -381,7 +381,7 @@ pub(crate) fn paint_scrollbar(
     } else {
         ("█", "│")
     };
-    let mut state = ScrollbarState::new(len.saturating_sub(visible))
+    let mut state = ScrollbarState::new(len.saturating_sub(visible).saturating_add(1))
         .position(offset)
         .viewport_content_length(visible);
     Scrollbar::new(ScrollbarOrientation::VerticalRight)

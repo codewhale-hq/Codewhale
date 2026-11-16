@@ -4,7 +4,7 @@
 //! exposure, worktree application, replay, and model execution are layered on
 //! top only after their cancellation and evidence semantics are proven.
 
-mod elevation;
+pub mod elevation;
 /// Setup-time Fleet composition: a suggestion schema with no runtime authority.
 ///
 /// Deliberately **not** re-exported from the crate root. The setup wizard uses
@@ -31,8 +31,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use elevation::{
-    DEFAULT_HIGH_BUDGET_THRESHOLD, ElevationOptions, PlanRiskHint, WorkflowPlanElevation,
-    assess_plan_risk_string, assess_workflow_elevation, is_shell_tool, is_write_tool,
+    DEFAULT_HIGH_BUDGET_THRESHOLD, ElevationOptions, PlanRiskHint, ToolAuthority,
+    WorkflowPlanElevation, assess_plan_risk_string, assess_workflow_elevation, is_shell_tool,
+    is_write_tool, tool_name_authority,
 };
 pub use fleet_exact::{
     EXACT_FLEET_SCHEMA_KIND, EXACT_FLEET_SCHEMA_REVISION, ExactFleet, ExactFleetError, ExactMember,
@@ -66,7 +67,7 @@ pub use js_authoring::{
 };
 pub use model_policy::*;
 pub use named_fleet::{
-    FleetDocument, FleetSchema, FleetSearchRoot, NamedFleet, NamedFleetError,
+    FleetDocument, FleetFileReader, FleetSchema, FleetSearchRoot, NamedFleet, NamedFleetError,
     STOPSHIP_REQUIRED_ROLES, exact_schema_revision, load_named_fleet, load_named_fleet_file,
     parse_named_fleet, split_qualified_fleet_name, validate_fleet_file_stem,
 };

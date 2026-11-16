@@ -11,6 +11,7 @@
   overflow: hidden;
 }
 .plugin-kinds > li { display: grid; align-content: start; gap: var(--space-1); min-width: 0; padding: var(--space-4); background: var(--panel); }
+.plugin-kinds-coming { border-style: dashed; }
 .plugin-kinds h3 { font-size: var(--text-ui); font-weight: 600; }
 .plugin-kinds p { color: var(--muted); font-size: var(--text-ui); line-height: 1.55; }
 

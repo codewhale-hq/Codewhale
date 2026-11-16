@@ -411,7 +411,7 @@ impl WriterState {
         append_result
     }
 
-    /// Append complete JSONL lines, mirroring [`crate::JsonlHookSink`]:
+    /// Append complete JSONL lines:
     /// lazy parent directories, append mode, flush before returning. The
     /// writer task is the only appender for this outbox, so no extra lock is
     /// needed here; the queue already serializes. The whole batch shares one

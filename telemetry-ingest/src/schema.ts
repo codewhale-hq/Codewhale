@@ -22,6 +22,8 @@ export const SCHEMA_VERSION = 4;
 /** Notice-v5 batches without `model_usage`, `tool_usage` or the `ci` source. */
 export const V3_SCHEMA_VERSION = 3;
 
+export const V6_SCHEMA_VERSION = 6;
+
 export const FUNNEL_SCHEMA_VERSION = 5;
 export const FUNNEL_NOTICE_VERSION = 7;
 export const FUNNEL_COUNTER_FIELDS = [
@@ -33,6 +35,8 @@ export const FUNNEL_COUNTER_FIELDS = [
 
 /** Disclosed default-on policy, not a record of human acceptance. */
 export const NOTICE_VERSION = 6;
+
+export const V6_NOTICE_VERSION = 8;
 
 /** The notice version schema v3 batches carry. */
 export const V3_NOTICE_VERSION = 5;
@@ -146,6 +150,11 @@ export const SESSION_SOURCES = [
   "ci",
 ] as const;
 
+export const V6_ONLY_SESSION_SOURCES = ["fleet_worker", "agent", "scripted"] as const;
+export const V6_SESSION_SOURCES = [...SESSION_SOURCES, ...V6_ONLY_SESSION_SOURCES] as const;
+
+export const INSTALL_AGES = ["new_today", "under_week", "older"] as const;
+
 /** `DurationBucket` wire spellings. */
 export const DURATION_BUCKETS = [
   "lt_1m",
@@ -156,6 +165,8 @@ export const DURATION_BUCKETS = [
 
 /** `ExitClass::as_str`. */
 export const EXIT_CLASSES = ["clean", "signal", "panic", "error"] as const;
+
+export const V6_EXIT_CLASSES = [...EXIT_CLASSES, "unclean"] as const;
 
 /** `ColdStartBucket` wire spellings. */
 export const COLD_START_BUCKETS = [
@@ -210,6 +221,19 @@ export const MODEL_COUNTER_FIELDS = [
   "cache_read_tokens",
   "cache_write_tokens",
 ] as const;
+
+export const MODEL_COUNTER_FIELDS_V6_EXTRA = [
+  "requests",
+  "reasoning_tokens",
+  "generation_secs",
+] as const;
+
+export const V6_MODEL_COUNTER_FIELDS = [
+  ...MODEL_COUNTER_FIELDS,
+  ...MODEL_COUNTER_FIELDS_V6_EXTRA,
+] as const;
+
+export const CONTEXT_FIELDS = ["lt_32k", "32k_128k", "128k_256k", "gte_256k"] as const;
 
 /** `event::TOOL_NAMES` plus the `mcp` and `other` buckets. */
 export const TOOL_NAMES = [
@@ -284,6 +308,12 @@ export const EVENT_FIELDS: Readonly<Record<string, readonly string[]>> = {
   tool_usage: ["event", "tool", "calls", "errors"],
   operations_summary: ["event", ...OPERATIONS_FIELDS],
   funnel_usage: ["event", "counters"],
+};
+
+export const V6_EVENT_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  ...EVENT_FIELDS,
+  session_start: ["event", "source", "install_age"],
+  model_usage: ["event", "provider", "model", "counters", "turn_wall", "context"],
 };
 
 /** Every event discriminant, for the doc-match test. */
@@ -430,7 +460,7 @@ export type FunnelCounters = Record<(typeof FUNNEL_COUNTER_FIELDS)[number], numb
 
 export type Event =
   | { event: "install_or_upgrade"; kind: string; previous_version: string | null }
-  | { event: "session_start"; source: string }
+  | { event: "session_start"; source: string; install_age?: string | null }
   | {
       event: "session_end";
       duration_bucket: string;
@@ -448,8 +478,10 @@ export type Event =
       event: "model_usage";
       provider: string;
       model: string;
-      counters: Record<(typeof MODEL_COUNTER_FIELDS)[number], number>;
+      counters: Record<(typeof MODEL_COUNTER_FIELDS)[number], number> &
+        Partial<Record<(typeof MODEL_COUNTER_FIELDS_V6_EXTRA)[number], number>>;
       turn_wall: TurnWall;
+      context?: Record<(typeof CONTEXT_FIELDS)[number], number>;
     }
   | { event: "tool_usage"; tool: string; calls: number; errors: number }
   | ({ event: "operations_summary" } & Record<(typeof OPERATIONS_FIELDS)[number], number>);
@@ -546,13 +578,28 @@ function u32Map(
   return null;
 }
 
-function validateEvent(value: unknown, where: string): string | null {
+function u32Fields(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+  where: string,
+): string | null {
+  for (const field of fields) {
+    const item = value[field];
+    if (typeof item !== "number" || !Number.isInteger(item) || item < 0 || item > U32_MAX) {
+      return `${where}.${field}: not a u32`;
+    }
+  }
+  return null;
+}
+
+function validateEvent(value: unknown, where: string, v6 = false): string | null {
   if (!isPlainObject(value)) return `${where}: not an object`;
   const name = value.event;
-  if (typeof name !== "string" || !Object.hasOwn(EVENT_FIELDS, name)) {
+  const eventFields = v6 ? V6_EVENT_FIELDS : EVENT_FIELDS;
+  if (typeof name !== "string" || !Object.hasOwn(eventFields, name)) {
     return `${where}: unknown event discriminant`;
   }
-  const keyError = keysExactly(value, EVENT_FIELDS[name], `${where}(${name})`);
+  const keyError = keysExactly(value, eventFields[name], `${where}(${name})`);
   if (keyError) return keyError;
 
   switch (name) {
@@ -575,8 +622,15 @@ function validateEvent(value: unknown, where: string): string | null {
       }
       return null;
     }
-    case "session_start":
-      return enumString(value.source, SESSION_SOURCES, `${where}.source`);
+    case "session_start": {
+      const sourceError = enumString(
+        value.source,
+        v6 ? V6_SESSION_SOURCES : SESSION_SOURCES,
+        `${where}.source`,
+      );
+      if (sourceError || !v6 || value.install_age === null) return sourceError;
+      return enumString(value.install_age, INSTALL_AGES, `${where}.install_age`);
+    }
     case "session_end": {
       const bucketError = enumString(
         value.duration_bucket,
@@ -586,7 +640,7 @@ function validateEvent(value: unknown, where: string): string | null {
       if (bucketError) return bucketError;
       const exitError = enumString(
         value.exit_class,
-        EXIT_CLASSES,
+        v6 ? V6_EXIT_CLASSES : EXIT_CLASSES,
         `${where}.exit_class`,
       );
       if (exitError) return exitError;
@@ -638,9 +692,14 @@ function validateEvent(value: unknown, where: string): string | null {
       if (typeof value.model !== "string" || !MODEL_RE.test(value.model)) {
         return `${where}.model: not a catalogued model id`;
       }
+      const counterError = v6
+        ? countMap(value.counters, V6_MODEL_COUNTER_FIELDS, `${where}.counters`, Number.MAX_SAFE_INTEGER) ??
+          u32Fields(value.counters as Record<string, unknown>, ["requests", "generation_secs"], `${where}.counters`)
+        : countMap(value.counters, MODEL_COUNTER_FIELDS, `${where}.counters`, Number.MAX_SAFE_INTEGER);
       return (
-        countMap(value.counters, MODEL_COUNTER_FIELDS, `${where}.counters`, Number.MAX_SAFE_INTEGER) ??
-        u32Map(value.turn_wall, TURN_WALL_FIELDS, `${where}.turn_wall`)
+        counterError ??
+        u32Map(value.turn_wall, TURN_WALL_FIELDS, `${where}.turn_wall`) ??
+        (v6 ? u32Map(value.context, CONTEXT_FIELDS, `${where}.context`) : null)
       );
     }
     case "tool_usage":
@@ -675,15 +734,12 @@ export function validateBatch(value: unknown): Accepted | Rejection {
 
   const legacy = value.schema_version === 1;
   const explicitConsent = value.schema_version === 2;
+  const v3 = value.schema_version === V3_SCHEMA_VERSION;
+  const v4 = value.schema_version === SCHEMA_VERSION;
   const funnel = value.schema_version === FUNNEL_SCHEMA_VERSION;
-  const preUsage = value.schema_version !== SCHEMA_VERSION && !funnel;
-  if (
-    !legacy &&
-    !explicitConsent &&
-    value.schema_version !== SCHEMA_VERSION &&
-    !funnel &&
-    value.schema_version !== V3_SCHEMA_VERSION
-  ) {
+  const v6 = value.schema_version === V6_SCHEMA_VERSION;
+  const preUsage = legacy || explicitConsent || v3;
+  if (!legacy && !explicitConsent && !v3 && !v4 && !funnel && !v6) {
     return { ok: false, reason: "batch.schema_version: unsupported" };
   }
   const fields = legacy ? LEGACY_ENVELOPE_FIELDS : explicitConsent ? V2_ENVELOPE_FIELDS : ENVELOPE_FIELDS;
@@ -695,7 +751,7 @@ export function validateBatch(value: unknown): Accepted | Rejection {
   if (
     !legacy &&
     !explicitConsent &&
-    value.notice_version !== (funnel ? FUNNEL_NOTICE_VERSION : preUsage ? V3_NOTICE_VERSION : NOTICE_VERSION)
+    value.notice_version !== (funnel ? FUNNEL_NOTICE_VERSION : v6 ? V6_NOTICE_VERSION : preUsage ? V3_NOTICE_VERSION : NOTICE_VERSION)
   ) {
     return { ok: false, reason: "batch.notice_version: current policy required" };
   }
@@ -753,7 +809,7 @@ export function validateBatch(value: unknown): Accepted | Rejection {
         return { ok: false, reason: "events: aggregate product/operations events require schema v2 or v3" };
       }
       if (preUsage && (event.event === "model_usage" || event.event === "tool_usage")) {
-        return { ok: false, reason: "events: model_usage and tool_usage require schema v4" };
+        return { ok: false, reason: "events: model_usage and tool_usage require schema v4 or later" };
       }
       if (preUsage && event.event === "session_start" && event.source === "ci") {
         return { ok: false, reason: "events: the ci session source requires schema v4" };
@@ -762,7 +818,7 @@ export function validateBatch(value: unknown): Accepted | Rejection {
         return { ok: false, reason: "events: operations_summary requires control-plane surface" };
       }
     }
-    const eventError = validateEvent(event, `events[${index}]`);
+    const eventError = validateEvent(event, `events[${index}]`, v6);
     if (eventError) return { ok: false, reason: eventError };
   }
 

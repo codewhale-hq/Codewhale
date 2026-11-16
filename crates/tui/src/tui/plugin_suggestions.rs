@@ -31,6 +31,22 @@ use codewhale_plugins::recommend::{
 
 const CATALOG_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
+pub const MCP_CONFIG_NUDGE: &str =
+    "MCP servers changed on disk. They apply when the session is idle, or run /mcp reload.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExternalCatalogChange {
+    pub plugins: bool,
+    pub mcp: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpConfigWatch {
+    pub digest: Option<[u8; 32]>,
+    pub generation: u64,
+    pub notified: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginCtaPhase {
     Hidden,
@@ -124,24 +140,63 @@ impl App {
         true
     }
 
-    /// Cheap idle poll so on-disk plugin changes can surface between turns,
-    /// not only on send. Fingerprints directories; never auto-reloads.
-    pub fn maybe_poll_plugin_catalog_idle(&mut self) {
+    pub fn poll_external_catalog_changes(
+        &mut self,
+        engine_busy: bool,
+    ) -> Option<ExternalCatalogChange> {
         let now = Instant::now();
         if self
             .last_plugin_catalog_poll
             .is_some_and(|seen| now.duration_since(seen) < CATALOG_POLL_INTERVAL)
         {
-            return;
+            return None;
         }
         self.last_plugin_catalog_poll = Some(now);
-        if let Some(message) = codewhale_plugins::plugin_reload_nudge(
-            self.plugin_registry.as_ref(),
-            &mut self.plugin_reload_nudge_stamp,
-        ) {
-            self.push_status_toast(message, StatusToastLevel::Warning, Some(8_000));
-            self.needs_redraw = true;
+        let digest = codewhale_plugins::discovery::file_content_digest(&self.mcp_config_path);
+        let generation = self.mcp_snapshot_generation;
+        let watch = self.mcp_config_watch.get_or_insert(McpConfigWatch {
+            digest,
+            generation,
+            notified: false,
+        });
+        if watch.generation != generation {
+            *watch = McpConfigWatch {
+                digest,
+                generation,
+                notified: false,
+            };
         }
+        let mcp = watch.digest != digest;
+        let mcp_unannounced = mcp && !std::mem::replace(&mut watch.notified, true);
+        let plugins = self.plugin_registry.on_disk_catalog_changed();
+        if !plugins && !mcp {
+            return None;
+        }
+        if engine_busy || self.pending_fresh_session.is_some() {
+            if plugins
+                && let Some(message) = codewhale_plugins::plugin_reload_nudge(
+                    self.plugin_registry.as_ref(),
+                    &mut self.plugin_reload_nudge_stamp,
+                )
+            {
+                self.push_status_toast(message, StatusToastLevel::Warning, Some(8_000));
+                self.needs_redraw = true;
+            }
+            if mcp_unannounced {
+                self.push_status_toast(MCP_CONFIG_NUDGE, StatusToastLevel::Warning, Some(8_000));
+                self.needs_redraw = true;
+            }
+            return None;
+        }
+        Some(ExternalCatalogChange { plugins, mcp })
+    }
+
+    pub fn mark_external_catalog_applied(&mut self) {
+        self.mcp_config_watch = Some(McpConfigWatch {
+            digest: codewhale_plugins::discovery::file_content_digest(&self.mcp_config_path),
+            generation: self.mcp_snapshot_generation,
+            notified: false,
+        });
     }
 
     #[must_use]
@@ -318,13 +373,14 @@ mod tests {
             "schema_version = 1\n[plugin]\nname = \"supabase\"\nversion = \"1.0.0\"\ndescription = \"Hosted Postgres and auth\"\nkeywords = [\"supabase\"]\n",
         )
         .unwrap();
-        let temp = TempDir::new().unwrap();
+        let app_dir = root.path().join("app");
+        fs::create_dir_all(&app_dir).unwrap();
         let options = TuiOptions {
-            config_path: Some(temp.path().join("config.toml")),
-            skills_dir: temp.path().join("skills"),
-            memory_path: temp.path().join("memory.md"),
-            notes_path: temp.path().join("notes.txt"),
-            mcp_config_path: temp.path().join("mcp.json"),
+            config_path: Some(app_dir.join("config.toml")),
+            skills_dir: app_dir.join("skills"),
+            memory_path: app_dir.join("memory.md"),
+            notes_path: app_dir.join("notes.txt"),
+            mcp_config_path: app_dir.join("mcp.json"),
             ..crate::tui::test_support::test_tui_options(root.path())
         };
         let discovery = codewhale_plugins::PluginDiscoveryContext::capture_pre_dotenv();
@@ -418,11 +474,52 @@ mod tests {
     }
 
     #[test]
+    fn external_state_and_mcp_writes_apply_when_idle_and_toast_while_busy() {
+        let _lock = crate::test_support::lock_test_env();
+        let (mut app, _root, _home) = app_with_supabase_plugin();
+        assert_eq!(app.poll_external_catalog_changes(false), None);
+
+        let state_path = app.plugin_registry.state_path().unwrap().to_path_buf();
+        fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+        fs::write(&state_path, "{\"version\":1,\"plugins\":{}}").unwrap();
+        fs::write(&app.mcp_config_path, "{\"servers\":{}}").unwrap();
+
+        app.last_plugin_catalog_poll = None;
+        assert_eq!(app.poll_external_catalog_changes(true), None);
+        let toasts = app
+            .status_toasts
+            .iter()
+            .map(|toast| toast.text.to_string())
+            .collect::<Vec<_>>();
+        assert!(toasts.iter().any(|text| text.contains("Plugins changed")));
+        assert!(
+            toasts
+                .iter()
+                .any(|text| text.contains("MCP servers changed"))
+        );
+
+        app.last_plugin_catalog_poll = None;
+        assert_eq!(
+            app.poll_external_catalog_changes(false),
+            Some(ExternalCatalogChange {
+                plugins: true,
+                mcp: true
+            })
+        );
+        app.mark_external_catalog_applied();
+        app.plugin_registry = app
+            .plugin_registry
+            .rediscover_for_workspace(&app.workspace.clone());
+        app.last_plugin_catalog_poll = None;
+        assert_eq!(app.poll_external_catalog_changes(false), None);
+    }
+
+    #[test]
     fn typing_a_matching_draft_never_shows_a_row() {
         let _lock = crate::test_support::lock_test_env();
         let (mut app, _root, _home) = app_with_supabase_plugin();
         app.input = "add supabase auth to login".to_string();
-        app.maybe_poll_plugin_catalog_idle();
+        let _ = app.poll_external_catalog_changes(false);
         assert!(!app.plugin_cta.phase.is_visible());
         assert_eq!(app.plugin_cta_row_height(), 0);
     }

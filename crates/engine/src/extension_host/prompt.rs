@@ -49,7 +49,7 @@ fn selected(
         .live_prompt_sections()
         .into_iter()
         .filter(|section| {
-            section.tier == HostTier::Plugin
+            section.tier() == HostTier::Plugin
                 && desired.includes(
                     &section.owner.plugin_id,
                     &section.content_hash,
@@ -78,7 +78,7 @@ impl HostAttachment {
                 continue;
             }
             shared
-                .live_host(section.tier, |registry| {
+                .live_host(&section.cohort, |registry| {
                     if registry.is_live_prompt_section(section.handle, &section.owner) {
                         Ok(section.owner.clone())
                     } else {
@@ -296,6 +296,7 @@ fn render_prompt_sections_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extension_host::HostCohort;
     use crate::extension_host::protocol::{RegisterKind, RegisterParams, RegisterSpecWire};
     use crate::extension_host::test_support::{FixturePlugins, fake_authority, node_for_tests};
     use codewhale_config::OwnerRef;
@@ -319,7 +320,7 @@ mod tests {
     fn owner(registry: &mut OwnerRegistry, id: &str) -> OwnerRef {
         registry
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 id,
                 id,
                 Some(fake_authority(id)),

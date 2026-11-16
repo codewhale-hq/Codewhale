@@ -81,14 +81,17 @@ pub fn fleet_search_roots(workspace: &std::path::Path) -> Vec<FleetSearchRoot> {
     if let Ok(home) = personal_fleet_root() {
         roots.push(FleetSearchRoot::new("codewhale_home", home));
     }
-    roots.push(FleetSearchRoot::new(
-        "workspace",
-        workspace.join(".codewhale"),
-    ));
-    roots.push(FleetSearchRoot::new(
-        "workspace_root",
-        workspace.to_path_buf(),
-    ));
+    roots.push(
+        FleetSearchRoot::new(
+            "workspace",
+            codewhale_util::files::workspace_state_dir(workspace),
+        )
+        .with_reader(super::store::read_repository_fleet_file),
+    );
+    roots.push(
+        FleetSearchRoot::new("workspace_root", workspace.to_path_buf())
+            .with_reader(super::store::read_repository_fleet_file),
+    );
     roots
 }
 
@@ -769,6 +772,8 @@ impl FleetRouterCaller for LiveFleetRouter {
             stream: Some(false),
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         };
 
         let route = self
@@ -779,30 +784,18 @@ impl FleetRouterCaller for LiveFleetRouter {
             crate::cost_status::UsageSpendOwner::Auxiliary,
             self.accounting_origin.clone(),
         );
-        let observation = source
-            .observe_route(&route)
-            .map_err(|error| error.to_string())?;
-        source
-            .admit_dispatch(&route)
-            .await
-            .map_err(|error| error.to_string())?;
+        let observation = source.observation();
         let wire = observation.wire_observations.clone();
         let response = crate::llm_client::observe_request_retries(
             Some(observation),
             self.client.create_message(request),
         )
         .await;
-        let record = source
-            .response_record(&route, &response, &wire.drain())
-            .map_err(|error| error.to_string())?;
-        if record.has_captured_origin() {
-            crate::cost_status::settle_runtime_usage_record(
-                crate::cost_status::scope_token(),
-                None,
-                &record,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
+        let wire = wire.drain();
+        let record = source.response_record(&route, &response, &wire);
+        if let Some(origin) = source.origin() {
+            crate::cost_status::record_runtime_usage_async(origin.scope(), Some(origin), &record)
+                .await;
         }
         let response = response.map_err(|error| error.to_string())?;
         if codewhale_models::is_incomplete_stop_reason(response.stop_reason.as_deref()) {

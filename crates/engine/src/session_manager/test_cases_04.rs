@@ -346,3 +346,41 @@
             primary.join("sessions")
         );
     }
+
+    #[test]
+    fn saved_session_without_agent_preset_loads_and_round_trips_the_mode() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+        let session = create_saved_session(&[], "test-model", tmp.path(), 0, None);
+        let mut raw = serde_json::to_value(&session).expect("serialize");
+        assert!(raw.get("agent_preset").is_none());
+        let legacy: SavedSession = serde_json::from_value(raw.clone()).expect("legacy load");
+        assert_eq!(legacy.agent_preset, None);
+        raw["agent_preset"] = serde_json::json!("creator");
+        let saved: SavedSession = serde_json::from_value(raw).expect("mode load");
+        manager.save_session(&saved).expect("save");
+        let loaded = manager.load_session(&saved.metadata.id).expect("load");
+        assert_eq!(loaded.agent_preset.as_deref(), Some("creator"));
+    }
+
+    #[test]
+    fn a_hand_edited_agent_preset_still_loads_and_never_becomes_standard() {
+        let session = create_saved_session(&[], "test-model", std::path::Path::new("."), 0, None);
+        let base = serde_json::to_value(&session).expect("serialize");
+        let big = "x".repeat(1_000_000);
+        for (edited, expected) in [
+            (serde_json::Value::Null, None),
+            (serde_json::json!("creator"), Some("creator".to_string())),
+            (serde_json::json!(""), Some(String::new())),
+            (serde_json::json!("../x"), Some("../x".to_string())),
+            (serde_json::json!(5), Some("5".to_string())),
+            (serde_json::json!(true), Some("true".to_string())),
+            (serde_json::json!({"a": 1}), Some("{\"a\":1}".to_string())),
+            (serde_json::json!(big.clone()), Some(big)),
+        ] {
+            let mut raw = base.clone();
+            raw["agent_preset"] = edited;
+            let loaded: SavedSession = serde_json::from_value(raw).expect("loads");
+            assert_eq!(loaded.agent_preset, expected);
+        }
+    }

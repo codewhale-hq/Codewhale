@@ -1215,6 +1215,8 @@
                     stream: Some(false),
                     temperature: None,
                     top_p: None,
+                    safety_check: None,
+                    title: None,
                 },
                 false,
             )
@@ -1280,6 +1282,8 @@
                             stream: Some(false),
                             temperature: None,
                             top_p: None,
+                            safety_check: None,
+                            title: None,
                         },
                         false,
                     )
@@ -1357,6 +1361,8 @@
                     stream: Some(false),
                     temperature: None,
                     top_p: None,
+                    safety_check: None,
+                    title: None,
                 },
                 false,
             )
@@ -1448,6 +1454,8 @@
                     stream: Some(true),
                     temperature: None,
                     top_p: None,
+                    safety_check: None,
+                    title: None,
                 },
                 true,
             )
@@ -1495,6 +1503,8 @@
                         stream: Some(true),
                         temperature: None,
                         top_p: None,
+                        safety_check: None,
+                        title: None,
                     },
                     true,
                 )

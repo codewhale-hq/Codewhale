@@ -16,7 +16,7 @@ use super::protocol::{
 use super::registry::OwnerState;
 use super::supervisor::HostRequestContext;
 use super::ticket::{Grant, Presented, Ticket, TicketKind};
-use super::tier::HostTier;
+use super::tier::HostCohort;
 use super::{ExtensionHostManager, ManagerShared, activation};
 use crate::tools::spec::{ToolContext, ToolError, ToolResult};
 use codewhale_config::OwnerRef;
@@ -41,7 +41,7 @@ struct Caller {
     origin_call_id: Option<String>,
     authorities: Vec<PluginAuthority>,
     native_owners: Vec<OwnerRef>,
-    native_host_generation: Option<u64>,
+    native_host_generations: Vec<(HostCohort, u64)>,
     requires_native_policy: bool,
 }
 impl Caller {
@@ -75,31 +75,31 @@ impl Caller {
                 }
             }
         }
-        let native_host_generation = if authorities.is_empty() {
-            None
-        } else {
-            Some(
-                shared
-                    .ready_host(HostTier::Plugin)
-                    .map_err(|status| status.to_string())?
-                    .generation,
-            )
-        };
-        let native_owners = {
+        let (native_owners, native_host_generations) = {
             let registry = shared.registry.lock().expect("registry lock");
-            authorities
-                .iter()
-                .map(|authority| {
-                    registry
-                        .owner(authority.plugin_id.as_str())
-                        .filter(|owner| {
-                            owner.state == OwnerState::Active
-                                && owner.content_hash == authority.content_hash
-                        })
-                        .map(|owner| owner.owner.clone())
-                        .ok_or_else(|| "Native caller owner is no longer live".to_string())
-                })
-                .collect::<Result<Vec<_>, _>>()?
+            let mut owners = Vec::new();
+            let mut cohorts = std::collections::HashSet::new();
+            for authority in &authorities {
+                let owner = registry
+                    .owner(authority.plugin_id.as_str())
+                    .filter(|owner| {
+                        owner.state == OwnerState::Active
+                            && owner.content_hash == authority.content_hash
+                    })
+                    .ok_or_else(|| "Native caller owner is no longer live".to_string())?;
+                owners.push(owner.owner.clone());
+                cohorts.insert(owner.cohort.clone());
+            }
+            drop(registry);
+            let mut generations = Vec::new();
+            for cohort in cohorts {
+                let host_generation = shared
+                    .ready_host(&cohort)
+                    .map_err(|status| status.to_string())?
+                    .generation;
+                generations.push((cohort, host_generation));
+            }
+            (owners, generations)
         };
         Ok(Self {
             workspace: caller.workspace,
@@ -110,7 +110,7 @@ impl Caller {
             origin_call_id: caller.origin_call_id,
             authorities,
             native_owners,
-            native_host_generation,
+            native_host_generations,
             requires_native_policy: true,
         })
     }
@@ -120,15 +120,17 @@ impl Caller {
         {
             return Err("extension host is disabled".into());
         }
-        if let Some(generation) = self.native_host_generation {
+        for (cohort, generation) in &self.native_host_generations {
             if shared
-                .ready_host(HostTier::Plugin)
+                .ready_host(cohort)
                 .map_err(|status| status.to_string())?
                 .generation
-                != generation
+                != *generation
             {
                 return Err("Native caller host restarted".into());
             }
+        }
+        if !self.native_host_generations.is_empty() {
             let registry = shared.registry.lock().expect("registry lock");
             for owner in &self.native_owners {
                 let active = registry
@@ -312,7 +314,7 @@ impl Job {
         if shared.builtin.host_generation.load(Ordering::SeqCst) != self.generation {
             return Err("execution host restarted".into());
         }
-        shared.live_owner_authority(HostTier::Builtin, |registry| {
+        shared.live_owner_authority(HostCohort::Builtin, |registry| {
             registry
                 .owner("host:harness")
                 .filter(|entry| entry.owner == self.owner && entry.state == OwnerState::Active)
@@ -385,11 +387,15 @@ impl Broker {
             }
         }
     }
-    pub(super) fn revoke_host(&self, tier: HostTier, generation: u64) {
+    pub(super) fn revoke_host(&self, cohort: impl Into<HostCohort>, generation: u64) {
+        let cohort = cohort.into();
         for job in self.jobs.lock().expect("execution lock").values() {
-            if (tier == HostTier::Builtin && job.generation == generation)
-                || (tier == HostTier::Plugin
-                    && job.caller.native_host_generation == Some(generation))
+            if (cohort == HostCohort::Builtin && job.generation == generation)
+                || job
+                    .caller
+                    .native_host_generations
+                    .iter()
+                    .any(|(c, g)| *c == cohort && *g == generation)
             {
                 job.cancel.cancel();
             }
@@ -456,7 +462,7 @@ impl Broker {
         if let Err(error) = shared.core_calls.tickets.redeem(&Presented {
             ticket: &params.ticket,
             kind: TicketKind::Execution,
-            tier: HostTier::Builtin,
+            cohort: HostCohort::Builtin,
             host_generation: generation,
             owner: &params.owner,
             method: "exec/redeem",
@@ -621,7 +627,7 @@ async fn run_job(shared: Arc<ManagerShared>, job: Arc<Job>) -> Result<Value, Str
                     target["captured_sha256"] = json!(step.digest());
                     let ticket = shared.core_calls.tickets.mint(Grant {
                         kind: TicketKind::Execution,
-                        tier: HostTier::Builtin,
+                        cohort: HostCohort::Builtin,
                         host_generation: job.generation,
                         owner: job.owner.clone(),
                         method: "exec/redeem",
@@ -1122,7 +1128,7 @@ impl ExtensionHostManager {
         }
         let ticket = self.shared.core_calls.tickets.mint(Grant {
             kind: TicketKind::Execution,
-            tier: HostTier::Builtin,
+            cohort: HostCohort::Builtin,
             host_generation: generation,
             owner: owner.clone(),
             method: "exec/redeem",
@@ -1267,7 +1273,7 @@ impl ExtensionHostManager {
         let target = json!({"caller":caller.target(&id),"hook":metadata});
         let ticket = self.shared.core_calls.tickets.mint(Grant {
             kind: TicketKind::Execution,
-            tier: HostTier::Builtin,
+            cohort: HostCohort::Builtin,
             host_generation: generation,
             owner: owner.clone(),
             method: "exec/redeem",
@@ -1379,7 +1385,7 @@ mod tests {
             origin_call_id: Some("call".into()),
             authorities: Vec::new(),
             native_owners: Vec::new(),
-            native_host_generation: None,
+            native_host_generations: Vec::new(),
             requires_native_policy: true,
         }
     }
@@ -1393,7 +1399,7 @@ mod tests {
     fn grant(owner: OwnerRef, target: Value) -> Grant {
         Grant {
             kind: TicketKind::Execution,
-            tier: HostTier::Builtin,
+            cohort: HostCohort::Builtin,
             host_generation: 4,
             owner,
             method: "exec/redeem",
@@ -1558,7 +1564,7 @@ mod tests {
         let mut present = Presented {
             ticket: ticket.expose(),
             kind: TicketKind::McpOperation,
-            tier: HostTier::Builtin,
+            cohort: HostCohort::Builtin,
             host_generation: 4,
             owner: &owner,
             method: "exec/redeem",
@@ -1748,7 +1754,7 @@ mod tests {
             target["captured_sha256"] = json!(input.digest());
             let ticket = manager.shared.core_calls.tickets.mint(Grant {
                 kind: TicketKind::Execution,
-                tier: HostTier::Builtin,
+                cohort: HostCohort::Builtin,
                 host_generation: generation,
                 owner: owner.clone(),
                 method: "exec/redeem",
@@ -1867,7 +1873,7 @@ mod tests {
         assert_ne!(target["captured_sha256"], job.target["captured_sha256"]);
         let wrong_kind = manager.shared.core_calls.tickets.mint(Grant {
             kind: TicketKind::McpOperation,
-            tier: HostTier::Builtin,
+            cohort: HostCohort::Builtin,
             host_generation: generation,
             owner: owner.clone(),
             method: "exec/redeem",
@@ -1900,7 +1906,7 @@ mod tests {
         altered_target["captured_sha256"] = json!("changed-command-or-image");
         let mismatch = manager.shared.core_calls.tickets.mint(Grant {
             kind: TicketKind::Execution,
-            tier: HostTier::Builtin,
+            cohort: HostCohort::Builtin,
             host_generation: generation,
             owner: owner.clone(),
             method: "exec/redeem",

@@ -665,6 +665,8 @@
                 stream: Some(false),
                 temperature: None,
                 top_p: None,
+                safety_check: None,
+                title: None,
             })
             .await
             .expect("message succeeds");
@@ -766,6 +768,8 @@
             stream: None,
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         };
 
         let openai = build_chat_messages_for_request_and_provider(&request, ProviderKind::Openai);
@@ -1065,6 +1069,8 @@
             stream: None,
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         };
 
         let out = build_chat_messages_for_request(&request);
@@ -1121,6 +1127,8 @@
             stream: None,
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         };
 
         let out = build_chat_messages_for_request(&request);
@@ -1173,6 +1181,8 @@
                 stream: None,
                 temperature: None,
                 top_p: None,
+                safety_check: None,
+                title: None,
             };
 
         let inspection = inspect_prompt_for_request(&request);
@@ -1238,6 +1248,8 @@
                     stream: None,
                     temperature: None,
                     top_p: None,
+                    safety_check: None,
+                    title: None,
                 }
         }
 
@@ -1301,6 +1313,8 @@
             stream: None,
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         };
 
         let first = inspect_prompt_for_request(&request);
@@ -1357,6 +1371,8 @@
                 stream: Some(true),
                 temperature: Some(0.7),
                 top_p: None,
+                safety_check: None,
+                title: None,
             };
 
         let warmup = build_cache_warmup_request(&request);

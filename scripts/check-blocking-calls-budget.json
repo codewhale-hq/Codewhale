@@ -12,6 +12,9 @@
   "crates/app-server-protocol/src/bin/export.rs": {
     "std_fs": 3
   },
+  "crates/app-server/src/daemon_client.rs": {
+    "path_canonicalize": 1
+  },
   "crates/app-server/src/mcp_server.rs": {
     "std_fs": 1
   },
@@ -28,7 +31,7 @@
     "std_fs": 4
   },
   "crates/app-server/src/runtime_api/git.rs": {
-    "std_fs": 6
+    "std_fs": 8
   },
   "crates/app-server/src/runtime_api/jobs.rs": {
     "std_fs": 3
@@ -116,7 +119,11 @@
     "path_canonicalize": 2
   },
   "crates/engine/src/core/authority/auto_review.rs": {
-    "path_canonicalize": 3
+    "path_canonicalize": 5,
+    "std_fs": 1
+  },
+  "crates/engine/src/core/authority/auto_review/routine.rs": {
+    "path_canonicalize": 2
   },
   "crates/engine/src/core/engine/tool_execution.rs": {
     "std_fs": 1
@@ -129,7 +136,7 @@
   },
   "crates/engine/src/extension_host/supervisor.rs": {
     "path_canonicalize": 7,
-    "std_fs": 5
+    "std_fs": 6
   },
   "crates/engine/src/extension_host/windows.rs": {
     "path_canonicalize": 1
@@ -244,7 +251,7 @@
     "std_fs": 1
   },
   "crates/engine/src/tools/spec.rs": {
-    "path_canonicalize": 7
+    "path_canonicalize": 10
   },
   "crates/engine/src/tools/speech.rs": {
     "std_fs": 1
@@ -254,11 +261,11 @@
   },
   "crates/engine/src/tools/subagent/mod.rs": {
     "path_canonicalize": 4,
-    "std_fs": 3,
+    "std_fs": 2,
     "thread_sleep": 1
   },
   "crates/engine/src/tools/subagent/worktree.rs": {
-    "path_canonicalize": 6
+    "path_canonicalize": 5
   },
   "crates/engine/src/tools/terminal_session.rs": {
     "path_canonicalize": 1,
@@ -357,12 +364,6 @@
   "crates/release/src/launch.rs": {
     "std_fs": 2
   },
-  "crates/repl/src/lib.rs": {
-    "std_fs": 2
-  },
-  "crates/repl/src/runtime.rs": {
-    "std_fs": 1
-  },
   "crates/runtime/src/artifacts.rs": {
     "std_fs": 2
   },
@@ -449,6 +450,9 @@
   },
   "crates/tui/src/commands/groups/core/acceptance.rs": {
     "std_fs": 1
+  },
+  "crates/tui/src/commands/groups/plugins/headless.rs": {
+    "std_fs": 3
   },
   "crates/tui/src/commands/groups/project/init.rs": {
     "std_fs": 13
@@ -561,8 +565,8 @@
     "path_canonicalize": 2
   },
   "crates/util/src/files.rs": {
-    "path_canonicalize": 5,
-    "std_fs": 5,
+    "path_canonicalize": 6,
+    "std_fs": 7,
     "thread_sleep": 1
   },
   "crates/util/src/git_metadata.rs": {
@@ -580,8 +584,5 @@
   },
   "crates/workflow/src/named_fleet.rs": {
     "std_fs": 3
-  },
-  "crates/workflow/src/reasoning_router.rs": {
-    "std_fs": 1
   }
 }

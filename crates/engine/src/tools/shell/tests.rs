@@ -29,7 +29,9 @@ fn shell_catalog_guidance_matches_execution() {
     assert_eq!(tool.name(), "bash");
     assert!(tool.model_visible());
     assert!(!command.contains("action=run"));
-    assert!(!tool.description().contains("background=true"));
+    assert!(tool.description().contains("background=true"));
+    assert!(tool.description().contains("cwd"));
+    assert!(tool.description().contains("description"));
     assert!(
         tool.description().contains(
             "In Ask, after a sandbox denial, retry the exact command once with sandbox_permissions (the narrowest wider mode that suffices) and a one-sentence justification; the approval prompt asks the user."
@@ -97,7 +99,9 @@ fn lowercase_bash_schema_is_small_contract() {
             .cloned()
             .collect::<std::collections::BTreeSet<_>>(),
         [
+            "background",
             "command",
+            "cwd",
             "description",
             "justification",
             "read_only",
@@ -108,6 +112,8 @@ fn lowercase_bash_schema_is_small_contract() {
         .map(str::to_string)
         .collect()
     );
+    assert_eq!(schema["properties"]["cwd"]["type"], "string");
+    assert_eq!(schema["properties"]["background"]["type"], "boolean");
     assert!(!BashTool::new("Bash").model_visible());
 }
 
@@ -257,6 +263,8 @@ fn contract_bash_nonzero_is_an_error_with_status_after_output() {
         },
         None,
         &ToolContext::new("."),
+        None,
+        false,
         None,
         false,
         None,
@@ -2777,7 +2785,7 @@ fn contract_bash_denial_surfaces_the_escalation_shape() {
     let mut result = failed_network_shell_result("", "Operation not permitted");
     result.sandbox_denied = true;
 
-    let error = finish_contract_bash_result(result, None, &ctx, None, false, None)
+    let error = finish_contract_bash_result(result, None, &ctx, None, false, None, false, None)
         .expect_err("sandbox denial is a failed call");
 
     assert!(
@@ -4295,6 +4303,7 @@ fn killed_shell_does_not_wait_for_blocked_reader_threads() {
         id: "killed-reader".to_string(),
         owner_session_id: "windows-test-session".to_string(),
         command: "test".to_string(),
+        description: None,
         working_dir: std::path::PathBuf::from("."),
         status: ShellStatus::Killed,
         exit_code: None,
@@ -6130,5 +6139,256 @@ fn a_tool_launcher_clamps_a_danger_full_access_escalation() {
     assert!(
         format!("{error:#}").contains("nothing was run"),
         "{error:#}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn every_model_run_shell_command_carries_the_agent_project() {
+    let workspace = tempdir().expect("workspace");
+    let project = workspace.path().to_string_lossy().into_owned();
+    let command = "printf '%s' \"${CODEWHALE_AGENT_PROJECT-unset}\"";
+    let mut sandboxed = ToolContext::new(workspace.path());
+    sandboxed.auto_approve = true;
+    let mut full_access = ToolContext::new(workspace.path())
+        .with_elevated_sandbox_policy(ExecutionSandboxPolicy::DangerFullAccess);
+    full_access.auto_approve = true;
+    for context in [&sandboxed, &full_access] {
+        for tool in [BashTool::new("exec_shell"), BashTool::new("Bash")] {
+            let result = tool
+                .execute(json!({ "command": command }), context)
+                .await
+                .expect("shell runs");
+            assert_eq!(result.content.trim(), project, "{result:?}");
+        }
+        let result = LowercaseBashTool
+            .execute(json!({ "command": command }), context)
+            .await
+            .expect("bash runs");
+        assert_eq!(result.content.trim(), project, "{result:?}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn persistent_terminal_commands_carry_the_agent_project() {
+    use crate::tools::terminal_session::{TerminalResetTool, TerminalRunTool, TerminalSendTool};
+    let workspace = tempdir().expect("workspace");
+    let marked = format!("MARK={}", workspace.path().display());
+    let mut context = ToolContext::new(workspace.path())
+        .with_elevated_sandbox_policy(ExecutionSandboxPolicy::DangerFullAccess);
+    context.auto_approve = true;
+    let session = format!("agent-mark-{}", uuid::Uuid::new_v4().simple());
+    let print = "printf 'MARK=%s\\n' \"${CODEWHALE_AGENT_PROJECT-unset}\"";
+
+    let run = TerminalRunTool
+        .execute(
+            json!({ "command": print, "session": session, "timeout_secs": 30 }),
+            &context,
+        )
+        .await
+        .expect("terminal/run");
+    assert!(run.content.contains(&marked), "{}", run.content);
+
+    let sent = TerminalSendTool
+        .execute(
+            json!({ "session": session, "text": format!("{print}\n"), "wait_ms": 2000 }),
+            &context,
+        )
+        .await
+        .expect("terminal/send");
+    assert!(sent.content.contains(&marked), "{}", sent.content);
+    let _ = TerminalResetTool
+        .execute(json!({ "session": session }), &context)
+        .await;
+}
+
+#[test]
+fn lowercase_bash_contract_translates_description_cwd_and_background() {
+    let translated = super::contract_bash_legacy_input(&json!({
+        "command": "cargo test",
+        "description": "  run unit tests  ",
+        "cwd": "crates/engine",
+        "background": true,
+    }))
+    .expect("valid bash input");
+    assert_eq!(translated["command"], "cargo test");
+    assert_eq!(translated["description"], "run unit tests");
+    assert_eq!(translated["cwd"], "crates/engine");
+    assert_eq!(translated["background"], true);
+
+    let blank_desc = super::contract_bash_legacy_input(&json!({
+        "command": "pwd",
+        "description": "   \t\n  ",
+    }))
+    .expect("blank description drops cleanly");
+    assert!(blank_desc.get("description").is_none());
+
+    let readonly_bg_false = super::contract_bash_legacy_input(&json!({
+        "command": "pwd",
+        "description": "check dir",
+        "read_only": true,
+        "background": false,
+    }))
+    .expect("read_only with background=false translates");
+    assert_eq!(readonly_bg_false["background"], false);
+    assert_eq!(readonly_bg_false["description"], "check dir");
+
+    for invalid in [
+        json!({"command": "pwd", "cwd": 123}),
+        json!({"command": "pwd", "description": 42}),
+        json!({"command": "pwd", "background": "true"}),
+        json!({"command": "pwd", "background": null}),
+        json!({"command": "sleep 5", "read_only": true, "background": true}),
+    ] {
+        assert!(
+            super::contract_bash_legacy_input(&invalid).is_err(),
+            "expected invalid input for {invalid}"
+        );
+    }
+
+    assert!(LowercaseBashTool.supports_parallel_for(&json!({
+        "command": "cargo test",
+        "background": true,
+    })));
+    assert!(LowercaseBashTool.starts_detached_for(&json!({
+        "command": "cargo test",
+        "background": true,
+    })));
+    assert!(!LowercaseBashTool.is_read_only_for(&json!({
+        "command": "cargo test",
+        "background": true,
+    })));
+    assert!(LowercaseBashTool.is_read_only_for(&json!({
+        "command": "git status -s",
+        "description": "git status",
+    })));
+    assert!(LowercaseBashTool.supports_parallel_for(&json!({
+        "command": "git status -s",
+        "description": "git status",
+    })));
+    assert!(!LowercaseBashTool.supports_parallel_for(&json!({
+        "command": "sleep 5",
+        "read_only": true,
+        "background": true,
+    })));
+    assert!(!LowercaseBashTool.is_read_only_for(&json!({
+        "command": "sleep 5",
+        "read_only": true,
+        "background": true,
+    })));
+
+    let workspace = tempdir().expect("workspace");
+    let ctx = ToolContext::new(workspace.path());
+    assert!(
+        LowercaseBashTool
+            .refusal_before_approval(
+                &json!({"command": "rm -rf /", "read_only": true, "background": true}),
+                &ctx,
+            )
+            .is_some()
+    );
+    assert!(
+        LowercaseBashTool
+            .refusal_before_approval(
+                &json!({"command": "sleep 5", "read_only": true, "background": true}),
+                &ctx,
+            )
+            .is_none()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn lowercase_bash_persists_description_respects_cwd_and_supports_background() {
+    let workspace = tempdir().expect("workspace");
+    let subdir = workspace.path().join("sub");
+    std::fs::create_dir_all(&subdir).expect("create subdir");
+    let mut ctx = ToolContext::new(workspace.path());
+    ctx.auto_approve = true;
+
+    let fg = LowercaseBashTool
+        .execute(
+            json!({
+                "command": "pwd",
+                "cwd": "sub",
+                "description": "  print subdir  ",
+            }),
+            &ctx,
+        )
+        .await
+        .expect("foreground bash in cwd");
+    assert_eq!(
+        fg.content.trim(),
+        subdir.canonicalize().unwrap().to_string_lossy()
+    );
+    assert_eq!(fg.metadata.as_ref().unwrap()["description"], "print subdir");
+
+    let escaped = LowercaseBashTool
+        .execute(
+            json!({
+                "command": "pwd",
+                "cwd": "../outside",
+            }),
+            &ctx,
+        )
+        .await
+        .expect_err("cwd outside workspace must fail");
+    assert!(
+        escaped.to_string().contains("outside") || escaped.to_string().contains("workspace"),
+        "{escaped}"
+    );
+
+    let bg = LowercaseBashTool
+        .execute(
+            json!({
+                "command": sleep_command(30),
+                "cwd": "sub",
+                "background": true,
+                "description": "  background sleeper  ",
+            }),
+            &ctx,
+        )
+        .await
+        .expect("background bash start");
+    let bg_meta = bg.metadata.expect("background metadata");
+    assert_eq!(bg_meta["status"], "Running");
+    assert_eq!(bg_meta["backgrounded"], true);
+    assert_eq!(bg_meta["description"], "background sleeper");
+    let task_id = bg_meta["task_id"].as_str().expect("task_id");
+
+    {
+        let mut manager = ctx.shell_manager.lock().expect("shell manager lock");
+        let detail = manager.inspect_job(task_id).expect("inspect bg job");
+        assert_eq!(
+            detail.snapshot.description.as_deref(),
+            Some("background sleeper")
+        );
+        assert_eq!(detail.snapshot.cwd, subdir.canonicalize().unwrap());
+        let serialized = serde_json::to_value(&detail.snapshot).expect("serialize snapshot");
+        assert_eq!(serialized["description"], "background sleeper");
+        manager.kill(task_id).expect("kill bg job");
+    }
+
+    let bash_tool = BashTool::new("Bash");
+    assert_eq!(
+        bash_tool.input_schema()["properties"]["description"]["type"],
+        "string"
+    );
+    let legacy = bash_tool
+        .execute(
+            json!({
+                "action": "run",
+                "command": "printf ok",
+                "description": "  legacy run label  ",
+            }),
+            &ctx,
+        )
+        .await
+        .expect("BashTool action=run with description");
+    assert_eq!(legacy.content, "ok");
+    assert_eq!(
+        legacy.metadata.as_ref().unwrap()["description"],
+        "legacy run label"
     );
 }

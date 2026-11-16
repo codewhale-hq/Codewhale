@@ -2,16 +2,16 @@ import Link from "next/link";
 import { Icon } from "@/components/icon";
 import { PageHeader, Section } from "@/components/page-header";
 import { buildPageMetadata } from "@/lib/page-meta";
-import { PLUGINS_COPY, PLUGIN_KINDS, FEATURED_CONNECTORS, CATALOG_FEATURED, PLUGIN_SOURCES, PLUGIN_COMMANDS, PLUGIN_COMPATIBILITY } from "@/lib/content/plugins";
+import { PLUGINS_COPY, PLUGINS_COMING, pluginsComingApplies, PLUGIN_KINDS, FEATURED_CONNECTORS, CATALOG_FEATURED, PLUGIN_SOURCES, PLUGIN_COMMANDS, PLUGIN_COMPATIBILITY } from "@/lib/content/plugins";
 import { CATALOG_PLUGINS, CONNECTORS, type ConnectorAuth } from "@/lib/content/connectors.generated";
 import type { LocalizedText } from "@/lib/content/vocabulary";
+import { getFacts } from "@/lib/facts";
 import { pickText } from "@/lib/i18n/dictionaries";
 import { FallbackRegion } from "@/components/fallback-region";
 
 export const revalidate = 300;
 
 const MARKETPLACE_REPO = "https://github.com/codewhale-hq/codewhale-plugin-marketplace";
-const AUTHORING_DOC = "https://github.com/codewhale-hq/CodeWhale/blob/main/docs/PLUGIN_AUTHORING.md";
 const DSH_REPO = "https://github.com/deepseek-ai/deepseek-harness";
 const DSH_COMPAT_DOC = "https://github.com/codewhale-hq/Codewhale/blob/main/docs/DSH_PLUGIN_COMPAT.md";
 
@@ -35,6 +35,8 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
 export default async function PluginsPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
   const t = (copy: LocalizedText) => pickText(copy, locale);
+  const showComing = pluginsComingApplies((await getFacts()).latestPublishedRelease);
+  const authoringDoc = `/${locale}/docs/plugin-authoring`;
   const localHref = (href: string) => (href.startsWith("/") ? `/${locale}${href}` : href);
   const moreConnectors = CONNECTORS.length - featuredConnectors.length;
   const moreCatalog = CATALOG_PLUGINS.length - CATALOG_FEATURED.length;
@@ -49,7 +51,7 @@ export default async function PluginsPage({ params }: { params: Promise<{ locale
         actions={
           <>
             <Link href="#catalog-title" className="btn btn-primary btn-lg">{t(PLUGINS_COPY.marketplaceCta)}</Link>
-            <Link href={AUTHORING_DOC} className="btn btn-secondary btn-lg">{t(PLUGINS_COPY.docsCta)}</Link>
+            <Link href={authoringDoc} className="btn btn-secondary btn-lg">{t(PLUGINS_COPY.docsCta)}</Link>
           </>
         }
       />
@@ -77,6 +79,19 @@ export default async function PluginsPage({ params }: { params: Promise<{ locale
             </Link>
           </div>
         </Section>
+
+        {showComing ? (
+          <Section id="coming-title" title={t(PLUGINS_COPY.comingTitle)} scope={t(PLUGINS_COPY.comingLead)}>
+            <ul className="plugin-kinds plugin-kinds-coming" role="list" data-release-scope="coming">
+              {PLUGINS_COMING.map((item) => (
+                <li key={item.title.en}>
+                  <h3>{t(item.title)}</h3>
+                  <p>{t(item.detail)}</p>
+                </li>
+              ))}
+            </ul>
+          </Section>
+        ) : null}
 
         <Section id="connectors-title" title={t(PLUGINS_COPY.connectorsTitle)} scope={t(PLUGINS_COPY.connectorsLead)}>
           <ul className="connector-grid" role="list">
@@ -173,7 +188,7 @@ export default async function PluginsPage({ params }: { params: Promise<{ locale
 
         <Section id="contribute-title" title={t(PLUGINS_COPY.contributeTitle)} scope={t(PLUGINS_COPY.contributeLead)}>
           <div className="actions">
-            <Link href={AUTHORING_DOC} className="btn btn-secondary">{t(PLUGINS_COPY.docsCta)}</Link>
+            <Link href={authoringDoc} className="btn btn-secondary">{t(PLUGINS_COPY.docsCta)}</Link>
             <Link href={`${MARKETPLACE_REPO}/issues`} className="section-link">{t(PLUGINS_COPY.contributeLink)}<Icon name="external" className="icon" /></Link>
           </div>
         </Section>

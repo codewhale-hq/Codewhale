@@ -203,6 +203,7 @@ impl<'a> Segmented<'a> {
             let label = text::display_safe(option);
             let w = u16::try_from(text::width(&label)).unwrap_or(0);
             if i == selected {
+                buf.set_style(Rect::new(x, row.y, w + 2, 1), theme.bg(Role::Selected));
                 buf.set_stringn(x, row.y, "[", 1, bracket);
                 buf.set_stringn(x + 1, row.y, &label, usize::from(w), chosen);
                 buf.set_stringn(x + 1 + w, row.y, "]", 1, bracket);
@@ -239,11 +240,23 @@ impl<'a> Segmented<'a> {
         } else {
             (text::truncate(&current, width, theme.ascii()), width)
         };
-        let label_style = theme.fg(Role::Foreground).add_modifier(if disabled {
-            Modifier::BOLD | Modifier::DIM
-        } else {
-            Modifier::BOLD
-        });
+        let label_style = theme
+            .fg(if self.focused && !disabled {
+                Role::Accent
+            } else {
+                Role::Foreground
+            })
+            .patch(theme.bg(Role::Selected))
+            .add_modifier(
+                Modifier::BOLD
+                    | if disabled {
+                        Modifier::DIM
+                    } else if self.focused {
+                        Modifier::UNDERLINED
+                    } else {
+                        Modifier::empty()
+                    },
+            );
         buf.set_stringn(row.x, row.y, &label, width, label_style);
         if suffix_x < width {
             let x = row.x + u16::try_from(suffix_x).unwrap_or(0);

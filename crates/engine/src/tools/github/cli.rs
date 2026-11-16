@@ -98,7 +98,10 @@ pub(super) fn ensure_github_repo(context: &ToolContext) -> Result<(), ToolError>
 }
 
 pub(super) fn git_status_porcelain(context: &ToolContext) -> Result<String, ToolError> {
-    let out = codewhale_dependencies::Git::output(&["status", "--porcelain"], &context.workspace)
+    let out = codewhale_dependencies::Git::status_command(&context.workspace)
+        .map_err(|e| ToolError::execution_failed(format!("failed to prepare git status: {e}")))?
+        .arg("--porcelain")
+        .output()
         .map_err(|e| ToolError::execution_failed(format!("failed to run git status: {e}")))?;
     if !out.status.success() {
         return Err(ToolError::execution_failed(format!(
@@ -252,7 +255,7 @@ pub(super) async fn host_git_status(
     let command = codewhale_dependencies::Git::status_command(&context.workspace)
         .map_err(|error| ToolError::not_available(format!("git is unavailable: {error}")))?;
     let mut command = tokio::process::Command::from(command);
-    command.args(["status", "--porcelain=v1", "--ignore-submodules=dirty"]);
+    command.arg("--porcelain=v1");
     host_output(&mut command, &[], cancel, "Git repository inspection").await
 }
 async fn host_output(

@@ -181,7 +181,7 @@ impl ToolSpec for GrepFilesTool {
 
         // Resolve search path
         let search_path =
-            crate::tools::file::resolve_guarded_read_path(context, path_str, "grep_files")?;
+            crate::tools::file::resolve_guarded_display_path(context, path_str, "grep_files")?;
 
         let workspace = context.workspace.clone();
         let cancel_token = context.cancel_token.clone();

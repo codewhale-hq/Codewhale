@@ -3108,7 +3108,8 @@ fn policy_control_waits_for_foreign_test_env_overrides_to_restore() {
     let temp = tempfile::tempdir().expect("tempdir");
     let config_path = temp.path().join("config.toml");
     let workspace = temp.path().join("workspace");
-    let managed_config_path = temp.path().join("missing-managed.toml");
+    let managed_config_path = temp.path().join("empty-managed.toml");
+    fs::write(&managed_config_path, "").expect("empty managed config");
     let requirements_path = temp.path().join("missing-requirements.toml");
     let (started_tx, started_rx) = mpsc::channel();
     let (tx, rx) = mpsc::channel();
@@ -6476,10 +6477,7 @@ fn deepseek_model_env_overrides_default_text_model() -> Result<()> {
 fn retired_deepseek_aliases_from_env_are_migrated_before_runtime() -> Result<()> {
     let _lock = lock_test_env();
     let temp_root = tempfile::tempdir()?;
-    let _managed_config = crate::test_support::EnvVarGuard::set(
-        "DEEPSEEK_MANAGED_CONFIG_PATH",
-        temp_root.path().join("missing-managed.toml"),
-    );
+    let _managed_config = no_managed_config(temp_root.path());
 
     for (provider, alias, expected_effort) in [
         ("deepseek", "deepseek-chat", "off"),
@@ -12198,10 +12196,7 @@ fn tool_launcher_is_refused_outside_the_managed_layer() -> Result<()> {
     let _lock = lock_test_env();
     let temp_root = tempfile::tempdir()?;
     let _guard = EnvGuard::new(temp_root.path());
-    let _managed = EnvVarGuard::set(
-        "CODEWHALE_MANAGED_CONFIG_PATH",
-        temp_root.path().join("absent-managed.toml"),
-    );
+    let _managed = no_managed_config(temp_root.path());
     let config_path = temp_root.path().join("config.toml");
     for document in [
         "tool_launcher = [\"/usr/bin/sudo\", \"-n\", \"-u\", \"agent\", \"--\"]\n",
@@ -12372,14 +12367,59 @@ fn the_managed_file_named_by_the_host_survives_a_provider_that_resolves_late() -
             ConfigEnvironmentPolicy::Runtime,
             &mut late_provider,
         );
-        if let Ok(config) = loaded {
-            assert_eq!(
-                config.tool_launcher.as_deref(),
-                Some(["/usr/bin/sudo", "-n"].map(str::to_string).as_slice()),
-                "{user_file}"
-            );
-        }
+        let error = loaded.expect_err("a plugin provider does not load under a managed file");
+        assert!(
+            format!("{error:#}").contains("a provider that only a plugin declares"),
+            "{user_file}: {error:#}"
+        );
     }
+    Ok(())
+}
+
+#[test]
+fn a_named_managed_file_that_cannot_be_read_is_a_load_error() -> Result<()> {
+    let _lock = lock_test_env();
+    let temp_root = tempfile::tempdir()?;
+    let _guard = EnvGuard::new(temp_root.path());
+    let _legacy_managed = EnvVarGuard::remove("DEEPSEEK_MANAGED_CONFIG_PATH");
+    let config_path = temp_root.path().join("config.toml");
+    fs::write(&config_path, "")?;
+    let missing = temp_root.path().join("missing-managed.toml");
+    for named in [missing.clone(), temp_root.path().to_path_buf()] {
+        let _managed = EnvVarGuard::set("CODEWHALE_MANAGED_CONFIG_PATH", &named);
+        let error = Config::load(Some(config_path.clone()), None).expect_err("closed");
+        assert!(
+            format!("{error:#}").contains("does not start without a managed configuration"),
+            "{error:#}"
+        );
+    }
+
+    let _managed = EnvVarGuard::remove("CODEWHALE_MANAGED_CONFIG_PATH");
+    fs::write(
+        &config_path,
+        format!(
+            "managed_config_path = {}\n",
+            toml::Value::String(missing.display().to_string())
+        ),
+    )?;
+    let error = Config::load(Some(config_path.clone()), None).expect_err("closed");
+    assert!(
+        format!("{error:#}").contains("does not start without a managed configuration"),
+        "{error:#}"
+    );
+
+    fs::write(&config_path, "")?;
+    let empty = temp_root.path().join("empty-managed.toml");
+    fs::write(&empty, "")?;
+    let _blank = EnvVarGuard::set("CODEWHALE_MANAGED_CONFIG_PATH", "");
+    let _legacy = EnvVarGuard::set("DEEPSEEK_MANAGED_CONFIG_PATH", &missing);
+    let error = Config::load(Some(config_path.clone()), None).expect_err("blank defers");
+    assert!(
+        format!("{error:#}").contains("missing-managed.toml"),
+        "{error:#}"
+    );
+    let _legacy = EnvVarGuard::set("DEEPSEEK_MANAGED_CONFIG_PATH", &empty);
+    Config::load(Some(config_path), None)?;
     Ok(())
 }
 

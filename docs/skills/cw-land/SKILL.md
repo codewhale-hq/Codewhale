@@ -97,8 +97,13 @@ Stage 5 of the loop: [cw-orient](../cw-orient/SKILL.md) →
 
    Co-authored-by: <maintainer or agent identity>
    ```
-   GitHub's contributor list counts authors only, and
-   `check-contributor-credit.py` flags a harvested handle who is not credited.
+   GitHub's contributor count takes authors and `Co-authored-by` trailers in
+   the final trailer block (no blank line between trailers) whose address is
+   linked to the account, and `check-contributor-credit.py` flags a harvested
+   handle who is not credited, a trailer GitHub cannot parse, and a noreply id
+   that belongs to someone else. It accepts credit only from a noreply address
+   whose id matches `.github/AUTHOR_MAP`, or from a raw email listed there, so
+   add the contributor's line to `AUTHOR_MAP` when it is missing.
    Resolve the address from `.github/AUTHOR_MAP`, else
    `gh api users/<handle> --jq '"\(.id)+\(.login)@users.noreply.github.com"'`.
    A clean cherry-pick keeps the author by itself. This step is the single

@@ -7,7 +7,7 @@
 //! re-invoke [`validate_fetch_target`] on every new Location.
 
 use crate::tools::spec::{ToolContext, ToolError};
-use codewhale_net::guard::{DnsPin, fetch_target_host, validate_fetch_destination};
+use codewhale_net::guard::{DnsPin, PrivateTargets, fetch_target_host, validate_fetch_destination};
 use codewhale_net::network_policy::Decision;
 
 /// Validate that `url` is a safe fetch target under SSRF and network policy.
@@ -20,10 +20,11 @@ pub async fn validate_fetch_target(
     url: &reqwest::Url,
     context: &ToolContext,
     tool: &str,
+    private: PrivateTargets,
 ) -> Result<DnsPin, ToolError> {
     let host = fetch_target_host(url)?;
     validate_network_policy(&host, context, tool)?;
-    validate_fetch_destination(host, context.network_policy.as_ref(), tool, true).await
+    validate_fetch_destination(host, context.network_policy.as_ref(), tool, true, private).await
 }
 
 pub fn validate_network_policy(
@@ -60,7 +61,7 @@ mod tests {
     #[tokio::test]
     async fn redirected_localhost_hostname_is_rejected() {
         let url = reqwest::Url::parse("http://localhost:8080/admin").unwrap();
-        let err = validate_fetch_target(&url, &ctx(), "fetch_url")
+        let err = validate_fetch_target(&url, &ctx(), "fetch_url", PrivateTargets::TypedLocalHosts)
             .await
             .unwrap_err();
         assert!(format!("{err}").contains("localhost"));
@@ -69,7 +70,7 @@ mod tests {
     #[tokio::test]
     async fn redirected_private_ip_literal_is_rejected() {
         let url = reqwest::Url::parse("http://169.254.169.254/latest/meta-data").unwrap();
-        let err = validate_fetch_target(&url, &ctx(), "fetch_url")
+        let err = validate_fetch_target(&url, &ctx(), "fetch_url", PrivateTargets::TypedLocalHosts)
             .await
             .unwrap_err();
         assert!(format!("{err}").contains("restricted address"));
@@ -79,7 +80,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_ipv6_literal_loopback() {
         let url = reqwest::Url::parse("http://[::1]/").unwrap();
-        let err = validate_fetch_target(&url, &ctx(), "fetch_url")
+        let err = validate_fetch_target(&url, &ctx(), "fetch_url", PrivateTargets::TypedLocalHosts)
             .await
             .expect_err("[::1] must be rejected as restricted");
         assert!(format!("{err}").contains("restricted"));
@@ -88,7 +89,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_ipv6_literal_ula() {
         let url = reqwest::Url::parse("http://[fc00::1]/").unwrap();
-        let err = validate_fetch_target(&url, &ctx(), "fetch_url")
+        let err = validate_fetch_target(&url, &ctx(), "fetch_url", PrivateTargets::TypedLocalHosts)
             .await
             .expect_err("[fc00::1] must be rejected as restricted");
         assert!(format!("{err}").contains("restricted"));
@@ -97,7 +98,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_ipv6_literal_link_local() {
         let url = reqwest::Url::parse("http://[fe80::1]/").unwrap();
-        let err = validate_fetch_target(&url, &ctx(), "fetch_url")
+        let err = validate_fetch_target(&url, &ctx(), "fetch_url", PrivateTargets::TypedLocalHosts)
             .await
             .expect_err("[fe80::1] must be rejected as restricted");
         assert!(format!("{err}").contains("restricted"));
@@ -106,7 +107,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_ipv6_literal_ipv4_mapped_loopback() {
         let url = reqwest::Url::parse("http://[::ffff:127.0.0.1]/").unwrap();
-        let err = validate_fetch_target(&url, &ctx(), "fetch_url")
+        let err = validate_fetch_target(&url, &ctx(), "fetch_url", PrivateTargets::TypedLocalHosts)
             .await
             .expect_err("[::ffff:127.0.0.1] must be rejected as restricted");
         assert!(format!("{err}").contains("restricted"));
@@ -115,7 +116,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_ipv6_literal_unspecified() {
         let url = reqwest::Url::parse("http://[::]/").unwrap();
-        let err = validate_fetch_target(&url, &ctx(), "fetch_url")
+        let err = validate_fetch_target(&url, &ctx(), "fetch_url", PrivateTargets::TypedLocalHosts)
             .await
             .expect_err("[::] must be rejected as restricted");
         assert!(format!("{err}").contains("restricted"));
@@ -135,7 +136,7 @@ mod tests {
         let decider = NetworkPolicyDecider::new(policy, None);
         let ctx = ToolContext::new(PathBuf::from(".")).with_network_policy(decider);
         let url = reqwest::Url::parse("https://example.com/redirect-target").unwrap();
-        let err = validate_fetch_target(&url, &ctx, "fetch_url")
+        let err = validate_fetch_target(&url, &ctx, "fetch_url", PrivateTargets::TypedLocalHosts)
             .await
             .unwrap_err();
         assert!(format!("{err}").contains("blocked"));
@@ -146,7 +147,7 @@ mod tests {
         let url =
             reqwest::Url::parse("https://codewhale-unresolvable-fetch-target.invalid/resource")
                 .unwrap();
-        let err = validate_fetch_target(&url, &ctx(), "fetch_url")
+        let err = validate_fetch_target(&url, &ctx(), "fetch_url", PrivateTargets::TypedLocalHosts)
             .await
             .expect_err("unresolved host must fail preflight");
         let message = format!("{err}");
@@ -161,7 +162,7 @@ mod tests {
         let url =
             reqwest::Url::parse("https://codewhale-unresolvable-web-run-target.invalid/resource")
                 .unwrap();
-        let err = validate_fetch_target(&url, &ctx(), "web_run")
+        let err = validate_fetch_target(&url, &ctx(), "web_run", PrivateTargets::TypedLocalHosts)
             .await
             .expect_err("unresolved host must fail preflight");
         let message = format!("{err}");

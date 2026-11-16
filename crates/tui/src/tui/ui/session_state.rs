@@ -1116,6 +1116,7 @@ pub(crate) fn begin_launch_session(
         model: app.model.clone(),
         workspace: app.workspace.clone(),
         mode: app.mode,
+        agent_preset: app.agent_preset(),
     })
 }
 
@@ -1165,6 +1166,7 @@ pub(crate) async fn switch_workspace(
                 model: app.model.clone(),
                 workspace: workspace.clone(),
                 mode: app.mode,
+                agent_preset: app.agent_preset(),
             })
             .await;
     }
@@ -1873,6 +1875,7 @@ pub(crate) struct PendingFreshSession {
     model: String,
     workspace: PathBuf,
     mode: AppMode,
+    agent_preset: Option<String>,
     queue_transition: Option<OfflineQueueTransition>,
     write_receipt: codewhale_engine::session_manager::SessionWriteReceipt,
     input: String,
@@ -1883,6 +1886,7 @@ pub(crate) struct PendingFreshSession {
     skill_provenance: Option<codewhale_skills::SkillProvenance>,
     queued: VecDeque<QueuedMessage>,
     queued_draft: Option<QueuedMessage>,
+    pub(crate) draft: Option<String>,
     phase: FreshSessionPhase,
     started: Instant,
     deadline_reported: bool,
@@ -1893,6 +1897,7 @@ pub(crate) fn begin_fresh_session(
     engine: &EngineHandle,
     sync: codewhale_command_contract::facets::SessionSyncPayload,
     force: bool,
+    draft: Option<String>,
 ) -> Result<(), String> {
     if app.session_transition_blocked() || app.remote_control.runtime_chat_blocks_local_dispatch() {
         return Err("Cannot start a new session while the current session is busy.".to_string());
@@ -1907,6 +1912,7 @@ pub(crate) fn begin_fresh_session(
                 .to_string(),
         );
     }
+    let agent_preset = sync.agent_preset.clone();
     let id = sync
         .session_id
         .filter(|id| !id.is_empty())
@@ -1940,6 +1946,7 @@ pub(crate) fn begin_fresh_session(
         model: app.model.clone(),
         workspace: app.workspace.clone(),
         mode: app.mode,
+        agent_preset,
         queue_transition,
         write_receipt,
         input: app.input.clone(),
@@ -1950,6 +1957,7 @@ pub(crate) fn begin_fresh_session(
         skill_provenance: app.active_skill_provenance.clone(),
         queued: app.queued_messages.clone(),
         queued_draft: app.queued_draft.clone(),
+        draft,
         phase: FreshSessionPhase::Inspecting(rx),
         started: Instant::now(),
         deadline_reported: false,
@@ -2025,6 +2033,7 @@ pub(crate) fn poll_fresh_session(app: &mut App, engine: &EngineHandle) -> bool {
                     model: pending.model.clone(),
                     workspace: pending.workspace.clone(),
                     mode: pending.mode,
+                    agent_preset: pending.agent_preset.clone(),
                 },
             );
             engine.send_reserved_op(
@@ -2060,6 +2069,7 @@ pub(crate) fn poll_fresh_session(app: &mut App, engine: &EngineHandle) -> bool {
                 return false;
             }
             pending.phase = FreshSessionPhase::Uncertain;
+            pending.draft = None;
             surface_session_load_failure(app, "New session acknowledgement did not match the requested Engine transition; input is preserved and sending remains blocked.".to_string());
         }
         Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
@@ -2068,6 +2078,7 @@ pub(crate) fn poll_fresh_session(app: &mut App, engine: &EngineHandle) -> bool {
                 return false;
             }
             pending.phase = FreshSessionPhase::Uncertain;
+            pending.draft = None;
             surface_session_load_failure(app, "The Engine dropped the new-session acknowledgement; input is preserved and the transition remains unresolved.".to_string());
         }
         Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
@@ -2121,6 +2132,7 @@ pub(crate) fn acknowledge_fresh_session(
     }) {
         if let Some(pending) = app.pending_fresh_session.as_mut() {
             pending.phase = FreshSessionPhase::Uncertain;
+            pending.draft = None;
         }
         surface_session_load_failure(app, "Another Engine session update superseded the confirmed transition; input is preserved and sending remains blocked.".to_string());
         return false;
@@ -2148,6 +2160,7 @@ fn commit_fresh_session(app: &mut App, mut pending: PendingFreshSession) -> bool
         || app.admitted_provider_identity().ok() != Some(&pending.provider_identity)
     {
         pending.phase = FreshSessionPhase::Uncertain;
+        pending.draft = None;
         surface_session_load_failure(app, "The UI changed while the Engine confirmed a new session; input is preserved and the transition remains unresolved.".to_string());
         app.pending_fresh_session = Some(pending);
         return false;
@@ -2188,6 +2201,12 @@ fn commit_fresh_session(app: &mut App, mut pending: PendingFreshSession) -> bool
     app.session_context_references.clear();
     app.tool_evidence.clear();
     app.set_current_session_id(Some(pending.id.clone()));
+    app.install_conversation_mode(pending.agent_preset.clone(), None);
+    if let Some(draft) = pending.draft.take().filter(|_| !preserve_input) {
+        app.input = draft;
+        app.cursor_position = app.input.chars().count();
+        app.line_began_with_slash = false;
+    }
     app.session_write_receipt = Some(pending.write_receipt);
     app.session_write_owner =
         Some(codewhale_engine::session_manager::SessionWriteOwner::Control(pending.control));

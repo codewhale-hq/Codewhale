@@ -16,7 +16,7 @@ test-thread-scoped-state = ["test-support"]
 
 [dependencies]
 codewhale-config = { path = "../config", version = "0.10.3" }
-codewhale-secrets = { path = "../secrets", version = "0.10.3" }
+codewhale-sanitize = { path = "../sanitize", version = "0.10.3" }
 regex = "1.11"
 tempfile.workspace = true
 tracing.workspace = true

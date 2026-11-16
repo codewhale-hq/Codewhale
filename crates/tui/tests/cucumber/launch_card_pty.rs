@@ -604,6 +604,18 @@ fn wait(tui: &mut Harness, text: &str) {
     }
 }
 
+fn wait_for_plugins_screen(tui: &mut Harness) {
+    if let Err(error) = tui.wait_for(
+        |frame| frame.contains("Plugins") && frame.contains("Connectors"),
+        WAIT,
+    ) {
+        panic!(
+            "waiting for the Plugins screen: {error}\n{}",
+            tui.diagnostics()
+        );
+    }
+}
+
 fn click_text(tui: &mut Harness, text: &str) {
     tui.pump();
     let (row, col) = tui
@@ -617,13 +629,13 @@ fn click_text(tui: &mut Harness, text: &str) {
 fn local_slash_navigation_does_not_create_rewindable_user_turns() {
     let (_workspace, mut tui) = start_with_titles(24, 80, false, &[]);
     // The first command leaves home; the others use the active-session path.
-    for (command, title) in [
-        ("/settings", "Settings"),
-        ("/skills", "Extensions"),
-        ("/mcp", "Extensions"),
-    ] {
+    for (command, title) in [("/settings", "Settings"), ("/skills", ""), ("/mcp", "")] {
         tui.type_line(command).unwrap();
-        wait(&mut tui, title);
+        if title.is_empty() {
+            wait_for_plugins_screen(&mut tui);
+        } else {
+            wait(&mut tui, title);
+        }
         tui.send(keys::key::esc()).unwrap();
         tui.wait_for_idle(Duration::from_millis(200), WAIT).unwrap();
         assert!(
@@ -665,7 +677,7 @@ fn raw_slash_input_keeps_a_steady_submit_cue_and_runs_on_enter_without_another_k
         tui.diagnostics()
     );
     tui.send(keys::key::enter()).unwrap();
-    wait(&mut tui, "Extensions");
+    wait_for_plugins_screen(&mut tui);
     tui.shutdown();
 }
 
@@ -704,7 +716,7 @@ fn launch_mcp_summary_opens_manager_by_click_and_keyboard() {
         wait(&mut tui, "MCP");
         capture(&mut tui, "home-mcp");
         click_text(&mut tui, "MCP");
-        wait(&mut tui, "Extensions");
+        wait_for_plugins_screen(&mut tui);
         wait(&mut tui, "launch-proof");
         capture(&mut tui, "mcp");
         tui.send(keys::key::esc()).unwrap();
@@ -714,7 +726,7 @@ fn launch_mcp_summary_opens_manager_by_click_and_keyboard() {
             tui.send(keys::key::down()).unwrap();
         }
         tui.send(keys::key::enter()).unwrap();
-        wait(&mut tui, "Extensions");
+        wait_for_plugins_screen(&mut tui);
         wait(&mut tui, "launch-proof");
         tui.shutdown();
     }
@@ -766,6 +778,33 @@ pub(super) fn capture(tui: &mut Harness, name: &str) {
 }
 
 #[test]
+fn plugin_command_opens_plugins_screen_with_kind_filters() {
+    for (rows, cols) in [(24, 80), (32, 120)] {
+        let (_workspace, mut tui) = start(rows, cols, true);
+        tui.paste("/plugin").unwrap();
+        tui.wait_for_idle(Duration::from_millis(300), WAIT).unwrap();
+        tui.send(keys::key::enter()).unwrap();
+        wait_for_plugins_screen(&mut tui);
+        tui.wait_for_idle(Duration::from_millis(300), WAIT).unwrap();
+        let frame = tui.frame();
+        println!("--- /plugin at {cols}x{rows} ---\n{}", frame.text());
+        for label in ["Hooks", "Installed", "Skills", "Connectors"] {
+            assert!(
+                frame.contains(label),
+                "missing filter {label:?} at {cols}x{rows}\n{}",
+                frame.text()
+            );
+        }
+        assert!(
+            !frame.contains("Extensions"),
+            "the screen still says Extensions at {cols}x{rows}\n{}",
+            frame.text()
+        );
+        tui.shutdown();
+    }
+}
+
+#[test]
 #[ignore = "opt-in visual evidence; writes only with QA_LAUNCH_CAPTURE_DIR"]
 fn workbench_settings_visual_evidence() {
     assert!(std::env::var_os("QA_LAUNCH_CAPTURE_DIR").is_some());
@@ -773,7 +812,7 @@ fn workbench_settings_visual_evidence() {
         ("/model", "route ·", "models"),
         ("/provider", "Provider", "providers"),
         ("/fleet", "Coordinator", "fleet"),
-        ("/plugin", "Extensions", "plugins"),
+        ("/plugin", "Installed", "plugins"),
         ("/config", "Settings", "settings"),
         ("/statusline", "Status", "statusline"),
     ] {

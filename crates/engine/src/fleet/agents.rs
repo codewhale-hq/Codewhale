@@ -187,6 +187,19 @@ pub const AGENTS: &[ExternalAgent] = &[
         adapter_binary: None,
         adapter_cli_env: None,
     },
+    ExternalAgent {
+        id: "qwen-code",
+        name: "Qwen Code",
+        binary: "qwen",
+        acp_args: Some(&["--acp"]),
+        website: "https://github.com/QwenLM/qwen-code",
+        min_version: Some("0.6.1"),
+        upgrade: Some("npm i -g @qwen-code/qwen-code@latest"),
+        login: None,
+        adapter: None,
+        adapter_binary: None,
+        adapter_cli_env: None,
+    },
 ];
 
 const FIXTURE_AGENT: ExternalAgent = ExternalAgent {

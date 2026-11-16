@@ -3,41 +3,58 @@ import type { HomeDict } from "../types";
 /** English reference home copy: useful work with chosen models and connected tools. */
 export const home: HomeDict = {
   metaTitle: "Codewhale · The model can be anyone's. The agent should be yours.",
-  metaDescription: "Codewhale is becoming the open environment where you build software with many agents, on any model, on your own computer and in the cloud. It starts today in your terminal and your browser, open source and yours to read.",
+  metaDescription: "Codewhale is an open-source coding agent for your terminal, written in Rust. It works with any model, can split one task across several agents, and every line of it is yours to read.",
 
   heroTitle: "The model can be anyone's. The agent should be yours.",
   heroTitleLead: "The model can be anyone's.",
-  heroIntro: "{brand} is becoming the open environment where you build software with many agents, on any model, on your own computer and in the cloud. It starts today in your terminal and your browser, open source and yours to read.",
+  heroIntro: "{brand} is an open-source coding agent for your terminal, written in Rust. It works with any model, can split one task across several agents, and every line of it is yours to read.",
   readTheCode: "Read the code",
   installNote: "Version {version} is released, and it needs no account.",
   captionDevelopment: "A development build in a real terminal: the edits and tests ran for real, and the model is a scripted demo.",
   captionReleased: "A real terminal session: the edits and tests ran for real, and the model is a scripted demo.",
-  captureFrameNoPosture: "The model name and the Ask setting are shown on the frames before and after this one.",
+  captureFrameNoPosture: "The Prompt and Result frames show the model name and the Ask setting.",
   frameLabelPrompt: "Prompt",
   frameLabelEdit: "Edit",
   frameLabelApproval: "Approval",
   frameLabelResult: "Result",
-  frameLabelReceipt: "Receipt",
+  frameSummaryPrompt: "Codewhale in a terminal. The request “Add a --json flag to ls.py so the tests pass, then run the tests.” has been sent, and the status line shows Ask and the model scripted-demo.",
+  frameSummaryEdit: "Codewhale in a terminal. It read ls.py and changed it, the diff shows the added lines, and a card asks whether to run python3 -m unittest -q.",
+  frameSummaryApproval: "Codewhale in a terminal. The change to ls.py is shown, and the command python3 -m unittest -q waits for approval. The card asks “Do you want to proceed?” and offers to allow it once, allow it for this conversation or not allow it.",
+  frameSummaryResult: "Codewhale in a terminal. After approval the command ran 2 tests and printed OK. Codewhale says it added --json to ls.py and both tests pass, and that this session uses a scripted local model.",
+  frameSummaryProvider: "Codewhale in a terminal. The Custom provider form for an OpenAI-compatible endpoint, with the name scripted_local, a base URL on this computer, the default model scripted-demo and an optional API key variable.",
+  frameSummaryReceipt: "Codewhale in a terminal. The receipt of the session: 1 file changed and 1 command run, the command approved by you and the file change made without asking under Ask, then a list of what the receipt does not record.",
   getCodewhale: "Install Codewhale",
   heroInstallAria: "Install command",
   shotPreview: "Local terminal demo",
   screenshotAlt:
     "Codewhale v{version}: a captured terminal view with the conversation, message composer and session controls.",
 
-  belief: "The model you use is usually someone else's. You rent it, and it changes under you. The agent is different. It reads your files, runs your commands, holds what you are working on and acts in your name, so it should belong to you. Codewhale is that agent. It is open source, so you can read every line of it, or ask it to read itself to you. It works with any model you choose, you decide what it may do without asking, and it leaves a record you can read. We are building it into one place where you and many agents make software together, from your terminal to a computer in the cloud, and it stays yours the whole way.",
-
   sectionModelHeading: "Any model can work through your agent.",
   sectionModelBody: "Use a built-in provider, any OpenAI-compatible endpoint or a model on your own machine, and change models between turns. Codewhale runs in your repository with no account, and `codewhale web` lets you work with it in your browser on your own machine.",
   sectionControlHeading: "Your agent answers to you.",
   sectionControlBody: "You decide what Codewhale may do without asking, and its commands can run in a sandbox on macOS and Linux. Every session leaves a receipt of the files it changed, the commands it ran and who approved each step.",
-  sectionAgentsHeading: "Several agents can share one task with you.",
-  sectionAgentsBody: "Codewhale splits a job across agents with roles such as explorer, implementer and reviewer, and you can watch, inspect and stop each one. A Fleet keeps a ledger, so a run can pick up again after a restart.",
   sectionDirectionHeading: "Here is where your agent is going.",
   sectionDirectionBody: "Codewhale is becoming one environment across your terminal, a desktop app, the browser and cloud computers, all run by one engine, so your work can move between them and stay yours. Each part below says where it stands today.",
   sectionOpenHeading: "Codewhale is built in the open by the people who use it.",
   sectionOpenBody: "It began as an open-source terminal tool for one model and became a project that hundreds of people in many languages build together. You can read its code, change it, or ask it to explain itself.",
   sectionStartHeading: "Make your agent yours today.",
   sectionStartBody: "Install Codewhale and run it in a repository with a model key you already have or a model on your own computer. You need no account, and `codewhale update` keeps it current.",
+
+  contributorsCount: {
+    one: "{n} contributor",
+    other: "{n} contributors",
+  },
+  factsLabel: "Codewhale at a glance",
+  factRust: "Written in Rust",
+  factLicense: "Open source, {license} license",
+  factProviders: {
+    one: "{n} provider route",
+    other: "{n} provider routes",
+  },
+  factModels: {
+    one: "{n} model",
+    other: "{n} models",
+  },
 
   mapHeading: "One engine",
   mapStateReleased: "Released",
@@ -57,15 +74,6 @@ export const home: HomeDict = {
   mapOneSession: "One session across them",
   mapOneSessionSentence: "We are building one session that goes with you from the terminal to the desktop, the browser and the cloud, and stays yours the whole way.",
 
-  proofContributors: "{count} contributors",
-  sourceCandidate: "Unreleased",
-  publishedRelease: "released",
-
-  modelsHeading: "Use the models you choose",
-  modelsLink: "Browse models and providers",
-
-  startHeading: "Start with one useful task",
   copy: "Copy",
   copied: "Copied ✓",
-  contribute: "Contribute",
 };

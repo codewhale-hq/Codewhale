@@ -500,7 +500,7 @@ async fn execute_command(
             } else {
                 SubmitDisposition::Immediate
             };
-            let message = QueuedMessage::new(text, None);
+            let message = QueuedMessage::new(text, None).without_owner_input();
             // Delivery failures surface through the app's own status/toast
             // and recovery paths; the verb still answers with what it asked
             // for (dispatched vs queued).

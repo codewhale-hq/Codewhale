@@ -117,7 +117,7 @@ struct Cli {
     #[arg(
         long,
         value_name = "BOOL",
-        help = "Control aggregate usage counting (default on; Codewhale + PostHog; \
+        help = "Control usage reporting (default on; Codewhale + PostHog; \
                 durable off: config set telemetry false; CODEWHALE_TELEMETRY=0 always wins)"
     )]
     telemetry: Option<bool>,
@@ -156,6 +156,10 @@ struct Cli {
     session_id: Option<String>,
     #[arg(short = 'p', long = "prompt", value_name = "PROMPT")]
     prompt_flag: Option<String>,
+    /// Conversation mode for a new interactive session (for example
+    /// `creator`). With `--resume` or `--continue` it must match the saved mode.
+    #[arg(long = "conversation-mode", value_name = "MODE")]
+    conversation_mode: Option<String>,
     /// Per-run config override (`KEY=VALUE`), repeatable, never saved.
     /// Runtime keys: provider, model/default_text_model, verbosity,
     /// approval_policy, sandbox_mode, telemetry. Dedicated flags win;
@@ -234,10 +238,10 @@ enum Commands {
     #[command(about = "Install a plugin bundle without trusting or enabling it")]
     Install(TuiPassthroughArgs),
     #[command(
-        about = "Inspect or restage reviewed plugin bundles",
+        about = "Install, inspect, review, trust, enable, disable, update, uninstall or revoke plugin bundles",
         alias = "plugin",
         override_usage = "codewhale plugins <COMMAND>",
-        after_help = "Commands:\n  status [NAME] [--json]  Inspect plugin status and diagnostics\n  list [NAME] [--json]    Alias of status\n  restage <NAME> [--json]  Restore an eligible reviewed plugin snapshot"
+        after_help = "Commands:\n  install <SPEC> [--json]  Install a plugin bundle without trusting or enabling it\n  status [NAME] [--json]  Inspect plugin status and diagnostics\n  list [NAME] [--json]    Alias of status\n  show <NAME> [--json]    Show the capability review without prompting or trusting\n  restage <NAME> [--json]  Restore an eligible reviewed plugin snapshot\n  trust <NAME> [--json]  Show the capability review; in a terminal, then ask\n  trust <NAME> --review-token T [--yes] [--json]  Trust exactly the content the bundle review token names\n  enable <NAME> [--json]  Enable a trusted plugin\n  disable <NAME> [--json]  Disable a plugin, keeping its trust\n  update <NAME> [--json]  Update an installed plugin bundle from its recorded source\n  uninstall <NAME> [--yes] [--json]  Disable if needed and remove an installed plugin bundle\n  revoke <NAME> [--json]  Revoke trust\n\nThe bundle review token ties trust to exact content; it does not show that anyone read the review,\nand it is not the host-service review token. A --yes trust is recorded as the command line. When\nCODEWHALE_AGENT_PROJECT marks the process, as it does every command the agent runs, trust and enable\nare the agent's, for that project only; that mark is a label the agent could remove in Full Access."
     )]
     Plugins(TuiPassthroughArgs),
     /// Bootstrap MCP config and/or skills directories.
@@ -257,6 +261,7 @@ Run options such as --model, --provider, --config and --profile work before or a
 
 Common forwarded flags:
   --auto                           Enable tools with automatic approvals and Full Access by default
+  --permission-mode <MODE>         Start in ask, accept-edits, plan, auto-review, or full-access
   --sandbox <POLICY>               Override the sandbox policy for this run
   --json                           Emit summary JSON
   --resume <SESSION_ID>            Resume a previous session by ID or prefix
@@ -1384,12 +1389,8 @@ fn run_workflow_command(
                 workspace.clone()
             };
 
-            // A fleet is an optional pin layer, not a requirement: role-only
-            // tasks resolve against the built-in roster and the session route
-            // (matching the TUI tool path). When a fleet IS given, it is
-            // loaded and validated before the run starts.
             if let Some(name) = fleet.as_deref() {
-                let roots = named_fleet_search_roots(&workspace);
+                let roots = codewhale_engine::fleet::exact::fleet_search_roots(&workspace);
                 let loaded =
                     codewhale_workflow::load_named_fleet(name, &roots).with_context(|| {
                         format!("load Fleet `{name}` from {}", display_roots(&roots))
@@ -1535,23 +1536,10 @@ fn validate_workflow_source_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The same roots, in the same order, as the TUI's `fleet_search_roots`:
-/// `$CODEWHALE_HOME`, then `<workspace>/.codewhale` (where the Fleet store
-/// saves folder Fleets), then the workspace root for checked-in rosters.
-fn named_fleet_search_roots(workspace: &Path) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Ok(home) = codewhale_config::codewhale_home() {
-        roots.push(home);
-    }
-    roots.push(workspace.join(".codewhale"));
-    roots.push(workspace.to_path_buf());
-    roots
-}
-
-fn display_roots(roots: &[PathBuf]) -> String {
+fn display_roots(roots: &[codewhale_workflow::FleetSearchRoot]) -> String {
     roots
         .iter()
-        .map(|root| root.display().to_string())
+        .map(|root| root.root.display().to_string())
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -1957,7 +1945,7 @@ enum ConfigCommand {
     Unset {
         key: String,
     },
-    /// Review aggregate usage counting by Codewhale and PostHog (default on).
+    /// Review usage reporting by Codewhale and PostHog (default on).
     Telemetry {
         /// Optional compatibility form: enable future sessions under this policy version.
         #[arg(long, value_name = "VERSION")]
@@ -2116,6 +2104,12 @@ impl From<ApprovalModeArg> for AskForApproval {
 
 #[derive(Debug, Args)]
 struct AppServerArgs {
+    #[arg(long, requires_all = ["stdio", "native_runtime"], conflicts_with_all = ["http", "mobile", "socket", "host", "port", "workers", "config", "auth_token", "insecure_no_auth", "cors_origin"])]
+    attach_only: bool,
+    #[arg(long, requires = "attach_only")]
+    native_runtime: bool,
+    #[arg(long, requires = "attach_only")]
+    describe_target: bool,
     /// Serve the full HTTP/SSE runtime API (`/v1/*`: sessions, threads, turns,
     /// approvals, events, usage, fleet, tasks). This is the canonical runtime
     /// API surface; it delegates to the same server as `codewhale serve --http`.
@@ -2172,6 +2166,7 @@ fn install_rustls_crypto_provider() {
 
 pub fn run_cli() -> std::process::ExitCode {
     install_rustls_crypto_provider();
+    codewhale_engine::install_lane_git();
 
     let outcome = run();
     codewhale_app_server::runtime_api::listener::discard_runtime_listener_handoff();
@@ -2404,6 +2399,21 @@ fn run() -> Result<()> {
             || matches!(cli.command.as_ref(), Some(Commands::AppServer(args)) if args.http),
         "An inherited Runtime listener requires serve --http or app-server --http"
     );
+    if let Some(Commands::AppServer(args)) = cli.command.as_ref()
+        && args.attach_only
+    {
+        anyhow::ensure!(
+            matches.ids().all(|id| matches.value_source(id.as_str())
+                != Some(clap::parser::ValueSource::CommandLine)),
+            "attach-only accepts its selection only through the input prelude"
+        );
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        return runtime.block_on(codewhale_app_server::native_runtime::run_attach_only(
+            args.describe_target,
+        ));
+    }
     #[cfg(not(target_env = "ohos"))]
     if !inherited_listener
         && !matches!(
@@ -2964,6 +2974,10 @@ fn root_tui_passthrough(cli: &Cli) -> Result<Vec<String>> {
         forwarded.push("--resume".to_string());
         forwarded.push(session_id.to_string());
     }
+    if let Some(mode) = cli.conversation_mode.as_deref() {
+        forwarded.push("--conversation-mode".to_string());
+        forwarded.push(mode.to_string());
+    }
 
     let prompt =
         cli.prompt_flag
@@ -3192,6 +3206,7 @@ fn capture_exec_startup_options(cli: &mut Cli) -> Result<()> {
             "--base-url" => cli.base_url.is_some(),
             "--config" => cli.config.is_some(),
             "--profile" => cli.profile.is_some(),
+            "--permission-mode" => cli.permission_mode.is_some(),
             _ => {
                 forwarded.push(arg.clone());
                 continue;
@@ -3217,6 +3232,10 @@ fn capture_exec_startup_options(cli: &mut Cli) -> Result<()> {
     cli.base_url = cli.base_url.take().or(captured.base_url);
     cli.config = cli.config.take().or(captured.runtime_options.config);
     cli.profile = cli.profile.take().or(captured.runtime_options.profile);
+    cli.permission_mode = cli
+        .permission_mode
+        .take()
+        .or(captured.runtime_options.permission_mode);
     let Some(Commands::Exec(args)) = cli.command.as_mut() else {
         unreachable!("only exec startup options were captured");
     };
@@ -6304,7 +6323,10 @@ fn thread_control_mutation_options(
         "thread history controls cannot import --api-key or --base-url; configure/authenticate the owning Runtime, then select its config/profile (values omitted)"
     );
     anyhow::ensure!(
-        !cli.yolo && cli.verbosity.is_none() && cli.telemetry.is_none(),
+        !cli.yolo
+            && cli.permission_mode.is_none()
+            && cli.verbosity.is_none()
+            && cli.telemetry.is_none(),
         "unsupported per-run thread setting; configure the owning Runtime instead (values omitted)"
     );
     for spec in &cli.overrides {
@@ -6792,6 +6814,10 @@ fn apply_tui_env(cli: &Cli, resolved_runtime: &ResolvedRuntimeOptions, passthrou
         codewhale_config::TELEMETRY_FLOOR_ENV,
         if floor { "1" } else { "0" },
     );
+    set_tui_env(
+        codewhale_config::TELEMETRY_SOURCE_ENV,
+        resolved_runtime.telemetry_source.as_str(),
+    );
     if let Some(endpoint) = resolved_runtime.telemetry_endpoint.as_ref() {
         set_tui_env("CODEWHALE_TELEMETRY_ENDPOINT", endpoint);
     }
@@ -7223,6 +7249,51 @@ mod tests {
         assert!(
             std::env::var("DEEPSEEK_YOLO").is_err(),
             "--yolo must not write the retired DEEPSEEK_YOLO alias (#5443)"
+        );
+    }
+
+    #[test]
+    fn permission_mode_parses_on_root_and_exec() {
+        use codewhale_engine::runtime_options::PermissionMode;
+
+        for (raw, expected) in [
+            ("ask", PermissionMode::Ask),
+            ("accept-edits", PermissionMode::AcceptEdits),
+            ("plan", PermissionMode::Plan),
+            ("auto-review", PermissionMode::AutoReview),
+            ("full-access", PermissionMode::FullAccess),
+        ] {
+            let root = parse_ok(&["codewhale", "--permission-mode", raw]);
+            assert_eq!(root.permission_mode, Some(expected));
+
+            let exec = parse_ok(&["codewhale", "exec", "--permission-mode", raw, "hello"]);
+            assert_eq!(exec.permission_mode, Some(expected));
+        }
+
+        assert!(Cli::try_parse_from(["codewhale", "--permission-mode", "invalid"]).is_err());
+    }
+
+    #[test]
+    fn dispatcher_hands_the_telemetry_source_to_the_tui() {
+        let _lock = env_lock();
+        let _guards = [
+            ScopedEnvVar::remove("CODEWHALE_TELEMETRY"),
+            ScopedEnvVar::remove("DEEPSEEK_TELEMETRY"),
+            ScopedEnvVar::remove(codewhale_config::TELEMETRY_FLOOR_ENV),
+            ScopedEnvVar::remove(codewhale_config::TELEMETRY_SOURCE_ENV),
+        ];
+
+        let cli = parse_ok(&["codewhale"]);
+        let mut runtime = resolved_runtime_for_test(ProviderKind::NvidiaNim, ProviderSource::Cli);
+        runtime.telemetry = false;
+        runtime.telemetry_source = codewhale_config::TelemetrySource::Config;
+        apply_tui_env(&cli, &runtime, &[]);
+
+        assert_eq!(std::env::var("CODEWHALE_TELEMETRY").as_deref(), Ok("false"));
+        assert!(std::env::var(codewhale_config::TELEMETRY_FLOOR_ENV).is_ok());
+        assert_eq!(
+            std::env::var(codewhale_config::TELEMETRY_SOURCE_ENV).as_deref(),
+            Ok("config")
         );
     }
 
@@ -8474,6 +8545,40 @@ verbosity = "concise"
     }
 
     #[test]
+    fn native_attach_cli_requires_explicit_nonstarting_transport() {
+        let parsed = Cli::try_parse_from([
+            "codewhale",
+            "app-server",
+            "--stdio",
+            "--attach-only",
+            "--native-runtime",
+            "--describe-target",
+        ])
+        .unwrap();
+        let Some(Commands::AppServer(args)) = parsed.command else {
+            panic!("expected app-server");
+        };
+        assert!(args.attach_only && args.native_runtime && args.describe_target && args.stdio);
+        for extra in ["--http", "--mobile", "--socket", "--insecure-no-auth"] {
+            assert!(
+                Cli::try_parse_from([
+                    "codewhale",
+                    "app-server",
+                    "--stdio",
+                    "--attach-only",
+                    "--native-runtime",
+                    extra
+                ])
+                .is_err()
+            );
+        }
+        assert!(Cli::try_parse_from(["codewhale", "app-server", "--native-runtime"]).is_err());
+        assert!(
+            Cli::try_parse_from(["codewhale", "app-server", "--stdio", "--attach-only"]).is_err()
+        );
+    }
+
+    #[test]
     fn app_server_in_process_transports_honor_the_global_config() {
         let cli = parse_ok(&[
             "codewhale",
@@ -9050,6 +9155,9 @@ verbosity = "concise"
     #[test]
     fn app_server_serve_passthrough_maps_flags_to_serve() {
         let args = AppServerArgs {
+            attach_only: false,
+            native_runtime: false,
+            describe_target: false,
             http: true,
             mobile: false,
             stdio: false,
@@ -9090,6 +9198,9 @@ verbosity = "concise"
     #[test]
     fn app_server_serve_passthrough_mobile_defaults_are_minimal() {
         let args = AppServerArgs {
+            attach_only: false,
+            native_runtime: false,
+            describe_target: false,
             http: false,
             mobile: true,
             stdio: false,
@@ -9611,13 +9722,13 @@ verbosity = "concise"
     #[test]
     fn named_fleet_search_roots_include_the_saved_workspace_dir() {
         let workspace = Path::new("/ws");
-        let roots = named_fleet_search_roots(workspace);
+        let roots = codewhale_engine::fleet::exact::fleet_search_roots(workspace);
         let tail: Vec<&Path> = roots
             .iter()
             .rev()
             .take(2)
             .rev()
-            .map(PathBuf::as_path)
+            .map(|root| root.root.as_path())
             .collect();
         assert_eq!(tail, [Path::new("/ws/.codewhale"), Path::new("/ws")]);
     }
@@ -13305,6 +13416,24 @@ verbosity = "concise"
     }
 
     #[test]
+    fn top_level_conversation_mode_is_forwarded_and_is_not_prompt_text() {
+        let cli = parse_ok(&["codewhale", "--conversation-mode", "creator"]);
+
+        assert_eq!(cli.conversation_mode.as_deref(), Some("creator"));
+        assert!(cli.prompt.is_empty());
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--conversation-mode", "creator"]
+        );
+
+        let cli = parse_ok(&["codewhale", "--conversation-mode", "creator", "hello"]);
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--conversation-mode", "creator", "--prompt", "hello"]
+        );
+    }
+
+    #[test]
     fn parses_top_level_continue_for_interactive_resume() {
         let cli = parse_ok(&["codewhale", "--continue"]);
 
@@ -13518,6 +13647,7 @@ verbosity = "concise"
         assert!(exec.contains("codewhale --model MODEL exec"), "{exec}");
         assert!(exec.contains("codewhale exec --model MODEL"), "{exec}");
         assert!(exec.contains("--sandbox <POLICY>"), "{exec}");
+        assert!(exec.contains("--permission-mode <MODE>"), "{exec}");
         assert!(exec.contains("Full Access"), "{exec}");
         assert!(
             exec.contains("no shell sandbox and trust mode on"),

@@ -32,6 +32,7 @@ mod http;
 pub mod http_client;
 pub mod oauth;
 pub mod process_broker;
+pub mod project_authority;
 pub mod sse;
 mod stdio;
 mod streamable_http;
@@ -47,7 +48,8 @@ use self::stdio::StdioTransport;
 pub use self::wire::MAX_MCP_RESPONSE_BYTES;
 pub use self::wire::read_line_capped;
 use self::wire::{
-    is_mcp_connection_lost_error, is_mcp_session_rejected_error, is_mcp_stale_session_body,
+    is_mcp_connection_lost_error, is_mcp_server_reply_unsupported_error,
+    is_mcp_session_rejected_error, is_mcp_stale_session_body,
 };
 use codewhale_mcp::config::{
     McpConfig, McpProvenance, McpServerConfig, McpServerOAuthConfig, McpTimeouts,
@@ -1669,6 +1671,10 @@ pub trait McpTransport: Send + Sync {
 
     async fn recv(&mut self) -> Result<Vec<u8>>;
 
+    async fn send_reply(&mut self, msg: Vec<u8>) -> Result<()> {
+        self.send(msg).await
+    }
+
     /// Record the protocol revision negotiated at `initialize`. Only the
     /// Streamable HTTP transport uses it (the `MCP-Protocol-Version` header on
     /// subsequent requests); stdio and legacy SSE have no header channel, so
@@ -2262,6 +2268,7 @@ impl McpConnection {
             .await
             .with_context(|| format!("MCP server '{name}' discovery failed"))?;
 
+        conn.ensure_not_disconnected()?;
         conn.state = ConnectionState::Ready;
         Ok(conn)
     }
@@ -2372,8 +2379,20 @@ impl McpConnection {
         Ok(())
     }
 
+    fn ensure_not_disconnected(&mut self) -> Result<()> {
+        if self.cancel_token.is_cancelled() {
+            self.state = ConnectionState::Disconnected;
+            anyhow::bail!("MCP connection '{}' was cancelled", self.name);
+        }
+        if self.state == ConnectionState::Disconnected {
+            anyhow::bail!("MCP connection '{}' is disconnected", self.name);
+        }
+        Ok(())
+    }
+
     /// Discover and admit one complete tools/resources/prompts generation.
     async fn discover_all(&mut self) -> Result<()> {
+        self.ensure_not_disconnected()?;
         let capabilities = self.server_capabilities;
         let server = self.name.clone();
         let discovery_timeout = self.discovery_timeout;
@@ -2413,6 +2432,7 @@ impl McpConnection {
                 self.discover_resources(&mut budget),
             )
             .await;
+            self.ensure_not_disconnected()?;
             resource_templates = run_optional_discovery(
                 &server,
                 "resources/templates/list",
@@ -2420,6 +2440,7 @@ impl McpConnection {
                 self.discover_resource_templates(&mut budget),
             )
             .await;
+            self.ensure_not_disconnected()?;
         }
         if capabilities.is_none_or(|capabilities| capabilities.prompts) {
             prompts = run_optional_discovery(
@@ -2429,6 +2450,7 @@ impl McpConnection {
                 self.discover_prompts(&mut budget),
             )
             .await;
+            self.ensure_not_disconnected()?;
         }
         if self.skills_extension {
             skills = run_optional_discovery(
@@ -2438,6 +2460,7 @@ impl McpConnection {
                 self.discover_skills(&mut budget),
             )
             .await;
+            self.ensure_not_disconnected()?;
         }
         // Ordinary optional-method errors remain best effort. Admit only the
         // freshly staged families; do not mix them with an old generation.
@@ -3101,6 +3124,7 @@ impl McpConnection {
         decision: Option<&crate::core::engine::HumanDecision>,
         timeout: Duration,
     ) -> Result<()> {
+        self.ensure_not_disconnected()?;
         anyhow::ensure!(
             self.runtime_registration_is_current(),
             "MCP runtime registration changed before dispatch; retry against the current config"
@@ -3108,6 +3132,7 @@ impl McpConnection {
         let bytes = serde_json::to_vec(&msg).context("Failed to serialize MCP JSON-RPC message")?;
         let cancel_token = self.cancel_token.clone();
         let name = self.name.clone();
+        let prev_state = std::mem::replace(&mut self.state, ConnectionState::Disconnected);
         let result = tokio::select! {
             biased;
             _ = cancel_token.cancelled() => {
@@ -3115,14 +3140,72 @@ impl McpConnection {
             }
             result = self.transport.send_decided(bytes, decision, timeout) => result,
         };
-        if result.is_err() {
+        if result.is_ok() {
             // A dead write side is as fatal as a dead read side: the pool
             // reuses any connection whose `is_ready()` is true, so leaving
             // this one in `Ready` would hand the same broken transport back
             // on every later call instead of rebuilding it.
-            self.state = ConnectionState::Disconnected;
+            self.state = prev_state;
         }
         result
+    }
+
+    async fn answer_server_request(&mut self, reply: &serde_json::Value) -> Result<()> {
+        self.ensure_not_disconnected()?;
+        let bytes = match serde_json::to_vec(reply) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracing::debug!(
+                    target: "mcp",
+                    server = %self.name,
+                    error = %err,
+                    "could not serialize an MCP server request reply"
+                );
+                return Ok(());
+            }
+        };
+        let prev_state = std::mem::replace(&mut self.state, ConnectionState::Disconnected);
+        let cancel_token = self.cancel_token.clone();
+        let name = self.name.clone();
+        let (result, cancelled) = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                (Err(anyhow::anyhow!("MCP connection '{name}' was cancelled")), true)
+            }
+            result = self.transport.send_reply(bytes) => (result, false),
+        };
+        match result {
+            Ok(()) if !cancelled => {
+                self.state = prev_state;
+                Ok(())
+            }
+            Err(err) if !cancelled && is_mcp_server_reply_unsupported_error(&err) => {
+                self.state = prev_state;
+                tracing::debug!(
+                    target: "mcp",
+                    server = %self.name,
+                    error = %err,
+                    "could not answer an MCP server request"
+                );
+                Ok(())
+            }
+            other => {
+                let err = match other {
+                    Ok(()) => anyhow::anyhow!("MCP connection '{}' was cancelled", self.name),
+                    Err(err) => err,
+                };
+                tracing::debug!(
+                    target: "mcp",
+                    server = %self.name,
+                    error = %err,
+                    "could not answer an MCP server request"
+                );
+                anyhow::bail!(
+                    "MCP connection '{}' failed while answering server request: {err:#}",
+                    self.name
+                );
+            }
+        }
     }
 
     /// Handshake and discovery receive: each frame wait is bounded by the read
@@ -3201,6 +3284,22 @@ impl McpConnection {
                     .is_some_and(is_mcp_list_changed_method)
             {
                 self.catalog_stale = true;
+            }
+            if let Some(method) = value.get("method") {
+                if let Some(id) = value.get("id") {
+                    let method = method.as_str().unwrap_or_default();
+                    let reply = if method == "ping" {
+                        serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {}})
+                    } else {
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {"code": -32601, "message": format!("Method not found: {method}")}
+                        })
+                    };
+                    self.answer_server_request(&reply).await?;
+                }
+                continue;
             }
             if response_id_matches(value.get("id"), &expected_id) {
                 // Marks the connection stale so it is rebuilt, but this is a
@@ -3690,23 +3789,6 @@ impl McpPool {
         pool.workspace = Some(workspace);
         pool.plugin_registry = Some(plugins);
         Ok(pool)
-    }
-
-    /// Construct a source-aware empty pool after the initial config load
-    /// failed. Keeping the source paths means a later edit or explicit
-    /// `/mcp reload` can recover in-process instead of pinning the session to
-    /// an ad-hoc pool that has no files to re-read.
-    pub fn empty_with_workspace_config_sources(
-        path: &std::path::Path,
-        workspace: &Path,
-        plugins: Arc<codewhale_plugins::PluginRegistry>,
-    ) -> Result<Self> {
-        Self::empty_with_workspace_config_sources_and_auth_context(
-            path,
-            workspace,
-            plugins,
-            process_mcp_auth_context(),
-        )
     }
 
     pub fn empty_with_workspace_config_sources_and_auth_context(
@@ -7413,7 +7495,7 @@ pub enum McpServerScope {
     /// The user's own config file, shared by every workspace.
     Global,
     /// `<workspace>/.codewhale/mcp.json`, honoured only once the workspace
-    /// is trusted in user-owned config (#417).
+    /// is trusted in user-owned config (#417) and its exact contents are approved.
     Project(PathBuf),
     /// Contributed by an installed plugin bundle. It lives in no config
     /// file, so it is switched off by disabling the plugin that owns it.
@@ -7448,16 +7530,15 @@ pub fn project_server_names(global_path: &Path, workspace: &Path) -> BTreeSet<St
     let Ok(workspace) = checked_workspace_path(workspace) else {
         return BTreeSet::new();
     };
-    if !workspace_allows_project_mcp_config(&workspace) {
-        return BTreeSet::new();
-    }
     let Ok(project_path) = checked_workspace_mcp_config_path(&workspace) else {
         return BTreeSet::new();
     };
     if !project_path.exists() || paths_refer_to_same_config(global_path, &project_path) {
         return BTreeSet::new();
     }
-    load_config(&project_path)
+    project_authority::approved_project_mcp(&workspace)
+        .ok()
+        .and_then(|reviewed| serde_json::from_str::<McpConfig>(&reviewed.contents).ok())
         .map(|config| config.servers.into_keys().collect())
         .unwrap_or_default()
 }
@@ -7465,11 +7546,13 @@ pub fn project_server_names(global_path: &Path, workspace: &Path) -> BTreeSet<St
 #[must_use]
 pub fn resolve_server_scope(global_path: &Path, workspace: &Path, name: &str) -> McpServerScope {
     if let Ok(workspace) = checked_workspace_path(workspace)
-        && workspace_allows_project_mcp_config(&workspace)
         && let Ok(project_path) = checked_workspace_mcp_config_path(&workspace)
         && project_path.exists()
         && !paths_refer_to_same_config(global_path, &project_path)
-        && load_config(&project_path).is_ok_and(|config| config.servers.contains_key(name))
+        && project_authority::approved_project_mcp(&workspace)
+            .ok()
+            .and_then(|reviewed| serde_json::from_str::<McpConfig>(&reviewed.contents).ok())
+            .is_some_and(|config| config.servers.contains_key(name))
     {
         return McpServerScope::Project(project_path);
     }
@@ -7704,15 +7787,20 @@ pub fn load_config_with_workspace_and_plugins(
         return merge_plugin_mcp_servers(merged, plugins);
     }
     // Workspace-local MCP can spawn stdio servers, so it is only honored after
-    // the user has trusted this workspace in user-owned config. Do not accept
-    // project-local legacy trust markers here: a repository could carry those
-    // files itself and silently reintroduce the project-scope `mcp_config_path`
-    // risk denied in #417.
-    if !workspace_allows_project_mcp_config(&workspace) {
+    // the user has trusted this workspace and approved the exact file contents
+    // in user-owned config. Do not accept project-local legacy trust markers
+    // here: a repository could carry those files itself and silently
+    // reintroduce the project-scope `mcp_config_path` risk denied in #417.
+    let Ok(reviewed) = project_authority::approved_project_mcp(&workspace) else {
         return merge_plugin_mcp_servers(merged, plugins);
-    }
+    };
 
-    let mut project = load_config(&project_path)?;
+    let mut project: McpConfig = serde_json::from_str(&reviewed.contents).map_err(|_| {
+        anyhow::anyhow!(
+            "Failed to parse MCP config {}; file contents were omitted",
+            codewhale_config::quote_os_path(&project_path)
+        )
+    })?;
     for server in project.servers.values_mut() {
         server.always_allow_tools.clear();
         if server.command.is_some() && server.url.is_none() {
@@ -7954,10 +8042,6 @@ fn resolve_plugin_mcp_cwd(plugin_path: &Path, cwd: Option<&Path>) -> Result<Path
         anyhow::bail!("reviewed plugin MCP path escaped its staged root");
     }
     Ok(resolved)
-}
-
-fn workspace_allows_project_mcp_config(workspace: &Path) -> bool {
-    codewhale_runtime::config::is_workspace_trusted(workspace)
 }
 
 fn checked_workspace_mcp_config_path(workspace: &Path) -> Result<PathBuf> {
@@ -8281,6 +8365,7 @@ pub fn mutate_config<T>(
         }
         write_atomic(path, rendered.as_bytes())
             .with_context(|| format!("Failed to write MCP config {}", path.display()))?;
+        project_authority::carry_approval_across_product_edit(path, original.as_deref(), &rendered);
         Ok((result, config_revision(Some(&rendered))))
     })
 }

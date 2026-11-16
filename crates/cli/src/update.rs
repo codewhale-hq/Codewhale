@@ -17,10 +17,10 @@ use anyhow::{Context, Result, anyhow, bail};
 use codewhale_release::install::GITHUB_MIGRATION_HELP;
 use codewhale_release::{
     CHECKSUM_MANIFEST_ASSET, InstallMethod, ReleaseChannel, ReleaseQuery, UPDATE_USER_AGENT,
-    cnb_mirror_override_active, cnb_mirror_supports_target, cnb_release_base_url,
-    compare_release_versions, is_beta_tag, mirror_asset_url, parse_release_json,
-    read_release_metadata, read_update_response, resolve_release_query, update_is_needed,
-    update_network_fallback_hint,
+    UpdateTransportPolicy, cnb_mirror_override_active, cnb_mirror_supports_target,
+    cnb_release_base_url, compare_release_versions, is_beta_tag, mirror_asset_url,
+    parse_release_json, read_release_metadata, read_update_response, redact_url, redact_url_str,
+    resolve_release_query, update_is_needed, update_network_fallback_hint, update_redirect_policy,
 };
 use reqwest::Proxy;
 use std::io::Write;
@@ -1256,7 +1256,7 @@ impl UpdateReleaseSource {
     /// without rerunning the updater.
     fn describe(&self) -> String {
         match self.base_url() {
-            Some(base_url) => format!("{} ({base_url})", self.label()),
+            Some(base_url) => format!("{} ({})", self.label(), redact_url_str(base_url)),
             None => self.label().to_string(),
         }
     }
@@ -1604,16 +1604,16 @@ fn probe_release_source(
     candidate: &ReleaseSourceCandidate,
     fetch_manifest: &ManifestFetcher,
 ) -> Result<(HashMap<String, String>, Vec<u8>)> {
+    let safe_manifest_url = redact_url_str(&candidate.manifest_url);
     let bytes = fetch_manifest(candidate)
-        .with_context(|| format!("failed to fetch {}", candidate.manifest_url))?;
+        .with_context(|| format!("failed to fetch {safe_manifest_url}"))?;
     let text = std::str::from_utf8(&bytes)
-        .with_context(|| format!("{} is not valid UTF-8", candidate.manifest_url))?;
+        .with_context(|| format!("{safe_manifest_url} is not valid UTF-8"))?;
     let checksums = parse_checksum_manifest(text)
-        .with_context(|| format!("failed to parse {}", candidate.manifest_url))?;
+        .with_context(|| format!("failed to parse {safe_manifest_url}"))?;
     if !checksums.contains_key(&candidate.binary_name) {
         bail!(
-            "{} does not list {}",
-            candidate.manifest_url,
+            "{safe_manifest_url} does not list {}",
             candidate.binary_name
         );
     }
@@ -1875,8 +1875,9 @@ struct Asset {
 pub(crate) fn validate_and_build_proxy(proxy_str: &str) -> Result<Proxy> {
     let proxy_url = reqwest::Url::parse(proxy_str).with_context(|| {
         format!(
-            "invalid proxy URL: {proxy_str}\n\
-             Expected format: http://host:port, https://host:port, or socks5://host:port"
+            "invalid proxy URL: {}\n\
+             Expected format: http://host:port, https://host:port, or socks5://host:port",
+            redact_url_str(proxy_str)
         )
     })?;
     Proxy::all(proxy_url).context("failed to configure update proxy")
@@ -1899,153 +1900,35 @@ fn update_http_client_with_policy(
         .context("failed to build update HTTP client")
 }
 
-/// Most redirects an update request follows.
-const UPDATE_MAX_REDIRECTS: usize = 10;
-
 /// Largest update response held in memory. Release archives are tens of
 /// megabytes; a server that keeps sending is cut off instead of exhausting
 /// memory before the checksum is ever compared.
 const UPDATE_MAX_RESPONSE_BYTES: usize = 512 * 1024 * 1024;
 
-/// Hosts an update may contact without any operator configuration: GitHub's
-/// API and release pages, and the three hosts GitHub has served release
-/// assets from.
-const UPDATE_GITHUB_HOSTS: &[&str] = &[
-    "github.com",
-    "api.github.com",
-    "objects.githubusercontent.com",
-    "release-assets.githubusercontent.com",
-    "github-releases.githubusercontent.com",
-];
-
-/// The first-party CNB mirror, which `CODEWHALE_USE_CNB_MIRROR=1` and the
-/// proactive Linux x64 probe select.
-const UPDATE_CNB_HOST: &str = "cnb.cool";
-
-/// Extra hosts the operator trusts for updates, comma separated. A mirror set
-/// with `CODEWHALE_RELEASE_BASE_URL` already allows its own host; this is for
-/// a mirror that redirects asset downloads to a separate download host.
-const UPDATE_ALLOWED_HOSTS_ENV: &str = "CODEWHALE_UPDATE_ALLOWED_HOSTS";
-
-/// Where an update request may go. Every request and every redirect hop must
-/// be HTTPS and must name an allowed host, so a redirect or a poisoned asset
-/// URL cannot move a download to a host nobody chose.
-#[derive(Debug, Clone)]
-struct UpdateTransportPolicy {
-    extra_hosts: Vec<String>,
-    /// Unit tests serve fixtures from loopback over plain HTTP; the tests that
-    /// prove the policy build `strict()` and never set this.
-    #[cfg(test)]
-    allow_loopback_http: bool,
-}
-
-impl UpdateTransportPolicy {
-    /// The built-in hosts plus what the operator configured: the host of an
-    /// explicit release mirror, and `CODEWHALE_UPDATE_ALLOWED_HOSTS`.
-    fn from_env() -> Self {
-        let mut policy = Self::strict();
-        if let Some(base_url) = codewhale_release::explicit_release_base_url_from_env()
-            && let Ok(url) = reqwest::Url::parse(&base_url)
-            && let Some(host) = url.host_str()
-        {
-            policy.extra_hosts.push(host.to_ascii_lowercase());
-        }
-        if let Ok(hosts) = std::env::var(UPDATE_ALLOWED_HOSTS_ENV) {
-            policy.extra_hosts.extend(
-                hosts
-                    .split(',')
-                    .map(|host| host.trim().to_ascii_lowercase())
-                    .filter(|host| !host.is_empty()),
-            );
-        }
-        #[cfg(test)]
-        {
-            policy.allow_loopback_http = true;
-        }
+fn update_transport_policy() -> UpdateTransportPolicy {
+    let policy = UpdateTransportPolicy::from_env();
+    #[cfg(all(test, debug_assertions))]
+    {
+        policy.with_loopback_http(true)
+    }
+    #[cfg(not(all(test, debug_assertions)))]
+    {
         policy
     }
-
-    fn strict() -> Self {
-        Self {
-            extra_hosts: Vec::new(),
-            #[cfg(test)]
-            allow_loopback_http: false,
-        }
-    }
-
-    fn host_is_allowed(&self, host: &str) -> bool {
-        let host = host.to_ascii_lowercase();
-        UPDATE_GITHUB_HOSTS.contains(&host.as_str())
-            || host == UPDATE_CNB_HOST
-            || host
-                .strip_suffix(UPDATE_CNB_HOST)
-                .is_some_and(|prefix| prefix.ends_with('.'))
-            || self.extra_hosts.contains(&host)
-    }
-
-    /// Refuse anything that is not HTTPS to an allowed host.
-    fn check_url(&self, url: &reqwest::Url) -> std::result::Result<(), String> {
-        if cfg!(debug_assertions)
-            && std::env::var_os("CODEWHALE_UPDATE_ALLOW_LOOPBACK_HTTP").is_some()
-            && url.scheme() == "http"
-            && matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
-        {
-            return Ok(());
-        }
-        #[cfg(test)]
-        if self.allow_loopback_http
-            && url.scheme() == "http"
-            && matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
-        {
-            return Ok(());
-        }
-        if url.scheme() != "https" {
-            return Err(format!(
-                "update URL must use HTTPS, not {}: {url}",
-                url.scheme()
-            ));
-        }
-        let host = url.host_str().unwrap_or_default();
-        if !self.host_is_allowed(host) {
-            return Err(format!(
-                "update host {host:?} is not an allowed release host. A private mirror's host \
-                 is allowed when it is the {} HTTPS base URL; any other host can be added with \
-                 {UPDATE_ALLOWED_HOSTS_ENV}=host1,host2",
-                codewhale_release::RELEASE_BASE_URL_ENV
-            ));
-        }
-        Ok(())
-    }
-
-    fn check_str(&self, url: &str) -> Result<()> {
-        let parsed =
-            reqwest::Url::parse(url).with_context(|| format!("invalid update URL {url}"))?;
-        self.check_url(&parsed).map_err(|message| anyhow!(message))
-    }
-}
-
-/// Follow redirects, but only over HTTPS and only to an allowed host: a
-/// request that started encrypted must not finish over a channel anyone on the
-/// path can rewrite, or on a host nobody chose.
-fn update_redirect_policy(policy: UpdateTransportPolicy) -> reqwest::redirect::Policy {
-    reqwest::redirect::Policy::custom(move |attempt| {
-        if attempt.previous().len() > UPDATE_MAX_REDIRECTS {
-            return attempt.error("too many redirects");
-        }
-        match policy.check_url(attempt.url()) {
-            Ok(()) => attempt.follow(),
-            Err(message) => attempt.error(format!("update redirect refused: {message}")),
-        }
-    })
 }
 
 /// Fetch the latest release metadata from GitHub.
 fn fetch_latest_release(channel: ReleaseChannel, proxy: Option<&Proxy>) -> Result<FetchedRelease> {
     match resolve_release_query(channel) {
         ReleaseQuery::Mirror { base_url, version } => {
-            UpdateTransportPolicy::from_env()
+            update_transport_policy()
                 .check_str(&base_url)
-                .with_context(|| format!("release mirror {base_url} cannot be used"))?;
+                .with_context(|| {
+                    format!(
+                        "release mirror {} cannot be used",
+                        redact_url_str(&base_url)
+                    )
+                })?;
             Ok(FetchedRelease {
                 release: release_from_mirror_base_url(
                     &base_url,
@@ -2138,28 +2021,31 @@ fn fetch_release_json_once(
     description: &str,
     proxy: Option<&Proxy>,
 ) -> Result<(reqwest::StatusCode, String)> {
-    let policy = UpdateTransportPolicy::from_env();
+    let safe_url = redact_url_str(url);
+    let policy = update_transport_policy();
     policy.check_str(url)?;
     let client = update_http_client_with_policy(proxy, UPDATE_DOWNLOAD_TIMEOUT, &policy)?;
     let response = client
         .get(url)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
-        .with_context(|| format!("failed to fetch {description} from {url}"))?;
+        .map_err(reqwest::Error::without_url)
+        .with_context(|| format!("failed to fetch {description} from {safe_url}"))?;
     let status = response.status();
     let body = read_release_metadata(response)
-        .with_context(|| format!("failed to read {description} response body from {url}"))?;
+        .with_context(|| format!("failed to read {description} response body from {safe_url}"))?;
     Ok((status, body))
 }
 
 fn fetch_release_json(url: &str, description: &str, proxy: Option<&Proxy>) -> Result<String> {
+    let safe_url = redact_url_str(url);
     let mut last_error = None;
     for attempt in 1..=UPDATE_HTTP_ATTEMPTS {
         match fetch_release_json_once(url, description, proxy) {
             Ok((status, body)) if status.is_success() => return Ok(body),
             Ok((status, body)) => {
                 let error =
-                    anyhow!("failed to fetch {description} from {url}: HTTP {status}\n{body}");
+                    anyhow!("failed to fetch {description} from {safe_url}: HTTP {status}\n{body}");
                 if should_retry_http_status(status) && attempt < UPDATE_HTTP_ATTEMPTS {
                     last_error = Some(error);
                     sleep_before_update_retry(attempt);
@@ -2174,7 +2060,7 @@ fn fetch_release_json(url: &str, description: &str, proxy: Option<&Proxy>) -> Re
             Err(error) => return Err(error),
         }
     }
-    Err(last_error.unwrap_or_else(|| anyhow!("failed to fetch {description} from {url}")))
+    Err(last_error.unwrap_or_else(|| anyhow!("failed to fetch {description} from {safe_url}")))
 }
 
 fn should_retry_http_status(status: reqwest::StatusCode) -> bool {
@@ -2205,7 +2091,8 @@ fn fetch_latest_stable_release_from_redirect(proxy: Option<&Proxy>) -> Result<Re
 }
 
 fn fetch_latest_stable_tag_from_redirect_url(url: &str, proxy: Option<&Proxy>) -> Result<String> {
-    let policy = UpdateTransportPolicy::from_env();
+    let safe_url = redact_url_str(url);
+    let policy = update_transport_policy();
     policy.check_str(url)?;
     let client = update_http_client_with_policy(proxy, UPDATE_DOWNLOAD_TIMEOUT, &policy)?;
     let mut last_error = None;
@@ -2219,7 +2106,8 @@ fn fetch_latest_stable_tag_from_redirect_url(url: &str, proxy: Option<&Proxy>) -
             Err(error) => return Err(error),
         }
     }
-    Err(last_error.unwrap_or_else(|| anyhow!("failed to resolve latest stable release from {url}")))
+    Err(last_error
+        .unwrap_or_else(|| anyhow!("failed to resolve latest stable release from {safe_url}")))
 }
 
 fn fetch_latest_stable_tag_from_redirect_url_once(
@@ -2227,10 +2115,12 @@ fn fetch_latest_stable_tag_from_redirect_url_once(
     policy: &UpdateTransportPolicy,
     url: &str,
 ) -> Result<String> {
+    let safe_url = redact_url_str(url);
     let response = client
         .get(url)
         .send()
-        .with_context(|| format!("failed to fetch release redirect from {url}"))?;
+        .map_err(reqwest::Error::without_url)
+        .with_context(|| format!("failed to fetch release redirect from {safe_url}"))?;
     let status = response.status();
     let final_url = response.url().clone();
     // Every hop was already checked; the page that names the tag must still be
@@ -2244,12 +2134,16 @@ fn fetch_latest_stable_tag_from_redirect_url_once(
         return Ok(tag_name);
     }
     let body = read_release_metadata(response)
-        .with_context(|| format!("failed to read release redirect response from {url}"))?;
+        .with_context(|| format!("failed to read release redirect response from {safe_url}"))?;
     if !status.is_success() {
-        bail!("failed to fetch release redirect from {url}: HTTP {status}\n{body}");
+        bail!("failed to fetch release redirect from {safe_url}: HTTP {status}\n{body}");
     }
-    release_tag_from_github_release_html(&body)
-        .with_context(|| format!("release redirect did not resolve to a tag URL: {final_url}"))
+    release_tag_from_github_release_html(&body).with_context(|| {
+        format!(
+            "release redirect did not resolve to a tag URL: {}",
+            redact_url(&final_url)
+        )
+    })
 }
 
 fn release_tag_from_github_release_url(url: &reqwest::Url) -> Option<String> {
@@ -2313,6 +2207,7 @@ fn download_url_with_timeout(
     proxy: Option<&Proxy>,
     timeout: Duration,
 ) -> Result<Vec<u8>> {
+    let safe_url = redact_url_str(url);
     let mut last_error = None;
     for attempt in 1..=UPDATE_HTTP_ATTEMPTS {
         match download_url_once(url, proxy, timeout) {
@@ -2334,7 +2229,7 @@ fn download_url_with_timeout(
             Err(error) => return Err(error),
         }
     }
-    Err(last_error.unwrap_or_else(|| anyhow!("failed to download {url}")))
+    Err(last_error.unwrap_or_else(|| anyhow!("failed to download {safe_url}")))
 }
 
 fn download_url_once(
@@ -2343,7 +2238,7 @@ fn download_url_once(
     timeout: Duration,
 ) -> Result<(reqwest::StatusCode, Vec<u8>)> {
     download_url_once_with(
-        &UpdateTransportPolicy::from_env(),
+        &update_transport_policy(),
         UPDATE_MAX_RESPONSE_BYTES,
         url,
         proxy,
@@ -2358,15 +2253,17 @@ fn download_url_once_with(
     proxy: Option<&Proxy>,
     timeout: Duration,
 ) -> Result<(reqwest::StatusCode, Vec<u8>)> {
+    let safe_url = redact_url_str(url);
     policy.check_str(url)?;
     let client = update_http_client_with_policy(proxy, timeout, policy)?;
     let response = client
         .get(url)
         .send()
-        .with_context(|| format!("failed to download {url}"))?;
+        .map_err(reqwest::Error::without_url)
+        .with_context(|| format!("failed to download {safe_url}"))?;
     let status = response.status();
     let bytes = read_update_response(response, max_bytes)
-        .with_context(|| format!("failed to read response body from {url}"))?;
+        .with_context(|| format!("failed to read response body from {safe_url}"))?;
     Ok((status, bytes))
 }
 
@@ -2717,6 +2614,7 @@ fn backup_path_for(target: &Path) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codewhale_release::UPDATE_ALLOWED_HOSTS_ENV;
     use std::ffi::OsString;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -5197,8 +5095,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
 
     #[test]
     fn a_response_past_the_size_cap_is_refused_and_one_at_the_cap_is_kept() {
-        let mut policy = UpdateTransportPolicy::strict();
-        policy.allow_loopback_http = true;
+        let policy = UpdateTransportPolicy::strict().with_loopback_http(true);
         let (url, _rx, handle) = serve_http_once("200 OK", "application/octet-stream", &[7_u8; 64]);
         let error = download_url_once_with(&policy, 63, &url, None, Duration::from_secs(5))
             .expect_err("one byte over the cap is refused");
@@ -5210,6 +5107,52 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             .expect("a body exactly at the cap is kept");
         assert_eq!(bytes.len(), 64);
         handle.join().expect("fixture thread");
+    }
+
+    #[test]
+    fn release_errors_and_sources_redact_url_userinfo() {
+        let _guard = UpdateEnvGuard::clear();
+        set_update_env(
+            codewhale_release::RELEASE_BASE_URL_ENV,
+            "http://user:secret@mirror.example/assets",
+        );
+        let mirror_err = fetch_latest_release(ReleaseChannel::Stable, None)
+            .expect_err("HTTP mirror with userinfo must fail");
+        let mirror_text = format!("{mirror_err:#}");
+        assert!(mirror_text.contains("HTTPS"), "{mirror_text}");
+        assert!(!mirror_text.contains("secret"), "{mirror_text}");
+        assert!(!mirror_text.contains("user:"), "{mirror_text}");
+
+        let mirror_desc = UpdateReleaseSource::Mirror {
+            base_url: "https://user:secret@mirror.example/assets".to_string(),
+        }
+        .describe();
+        assert!(
+            mirror_desc.contains("https://mirror.example/assets"),
+            "{mirror_desc}"
+        );
+        assert!(!mirror_desc.contains("secret"), "{mirror_desc}");
+        assert!(!mirror_desc.contains("user:"), "{mirror_desc}");
+
+        let closed = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let closed_addr = closed.local_addr().expect("addr");
+        drop(closed);
+        set_update_env(UPDATE_ALLOWED_HOSTS_ENV, "127.0.0.1");
+        let download_err = download_url_once_with(
+            &UpdateTransportPolicy::from_env(),
+            UPDATE_MAX_RESPONSE_BYTES,
+            &format!("https://user:secret@{closed_addr}/codewhale"),
+            None,
+            Duration::from_secs(5),
+        )
+        .expect_err("closed loopback HTTPS must fail without leaking userinfo");
+        let download_text = format!("{download_err:#}");
+        assert!(
+            download_text.contains("failed to download"),
+            "{download_text}"
+        );
+        assert!(!download_text.contains("secret"), "{download_text}");
+        assert!(!download_text.contains("user:"), "{download_text}");
     }
 
     #[test]

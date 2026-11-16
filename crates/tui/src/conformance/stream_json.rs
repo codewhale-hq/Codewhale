@@ -45,12 +45,22 @@ pub(super) fn to_json(event: &StreamEvent) -> Value {
             "index": index,
         }),
         StreamEvent::MessageDelta { delta, usage } => {
+            let mut delta_json = json!({
+                "stop_reason": delta.stop_reason,
+                "stop_sequence": delta.stop_sequence,
+            });
+            if let Some(title) = &delta.title {
+                delta_json["title"] = json!(title);
+            }
+            if let Some(stop_details) = &delta.stop_details {
+                delta_json["stop_details"] = stop_details.clone();
+            }
+            if let Some(refusal) = &delta.refusal {
+                delta_json["refusal"] = json!(refusal);
+            }
             let mut value = json!({
                 "type": "message_delta",
-                "delta": {
-                    "stop_reason": delta.stop_reason,
-                    "stop_sequence": delta.stop_sequence,
-                },
+                "delta": delta_json,
             });
             if let Some(usage) = usage {
                 value["usage"] = serde_json::to_value(usage).expect("Usage serializes");
@@ -93,11 +103,76 @@ fn block_start_json(block: &ContentBlockStart) -> Value {
             }
             value
         }
-        ContentBlockStart::ServerToolUse { id, name, input } => json!({
-            "type": "server_tool_use",
+        ContentBlockStart::ServerToolUse {
+            id,
+            name,
+            input,
+            kind,
+            caller,
+        } => {
+            let mut value = json!({
+                "type": "server_tool_use",
+                "id": id,
+                "name": name,
+                "input": input,
+            });
+            if let Some(kind) = kind {
+                value["kind"] = json!(kind);
+            }
+            if let Some(caller) = caller {
+                value["caller"] = serde_json::to_value(caller).expect("ToolCaller serializes");
+            }
+            value
+        }
+        ContentBlockStart::WebSearchToolResult {
+            tool_use_id,
+            content,
+            kind,
+        } => {
+            let mut value = json!({
+                "type": "web_search_tool_result",
+                "tool_use_id": tool_use_id,
+                "content": content,
+            });
+            if let Some(kind) = kind {
+                value["kind"] = json!(kind);
+            }
+            value
+        }
+        ContentBlockStart::WebFetchToolResult {
+            tool_use_id,
+            content,
+            kind,
+            signature,
+        } => {
+            let mut value = json!({
+                "type": "web_fetch_tool_result",
+                "tool_use_id": tool_use_id,
+                "content": content,
+            });
+            if let Some(kind) = kind {
+                value["kind"] = json!(kind);
+            }
+            if let Some(signature) = signature {
+                value["signature"] = json!(signature);
+            }
+            value
+        }
+        ContentBlockStart::WebSearchCall {
+            id,
+            status,
+            kind,
+            action,
+        } => json!({
+            "type": "web_search_call",
             "id": id,
-            "name": name,
-            "input": input,
+            "status": status,
+            "kind": kind,
+            "action": action,
+        }),
+        ContentBlockStart::ServerToolCalls { steps } => json!({
+            "type": "server_tool_calls",
+            "steps": steps,
         }),
     }
 }
@@ -117,6 +192,36 @@ fn delta_json(delta: &Delta) -> Value {
         Delta::ReasoningStateDelta { state } => json!({
             "type": "reasoning_state_delta",
             "state": serde_json::to_value(state).expect("OpaqueReasoningState serializes"),
+        }),
+        Delta::CitationsDelta { citation } => json!({
+            "type": "citations_delta",
+            "citation": citation,
+        }),
+        Delta::RefusalDelta { refusal } => json!({
+            "type": "refusal_delta",
+            "refusal": refusal,
+        }),
+        Delta::WebSearchCallDelta {
+            status,
+            kind,
+            action,
+            sources,
+            page,
+            signature,
+            error,
+        } => json!({
+            "type": "web_search_call_delta",
+            "status": status,
+            "kind": kind,
+            "action": action,
+            "sources": sources,
+            "page": page,
+            "signature": signature,
+            "error": error,
+        }),
+        Delta::ServerToolCallsDelta { steps } => json!({
+            "type": "server_tool_calls_delta",
+            "steps": steps,
         }),
     }
 }

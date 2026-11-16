@@ -9,6 +9,15 @@ export const HEADER_LEN = 8
 export const MAX_FRAME = 33554432
 export const MAX_INFLIGHT = 256
 
+export const IMAGE_LIMITS = {
+  maxImageBytes: 5242880,
+  maxImagesPerMessage: 1,
+  maxMessageImageBytes: 5242880,
+  maxImagePixels: 33554432,
+  maxImageDimension: 8192,
+  mediaTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const,
+} as const
+
 /** JSON-RPC error codes used on this channel. */
 export const ErrorCode = {
   ParseError: -32700,
@@ -25,7 +34,7 @@ export const ErrorCode = {
 
 export type Direction = 'core_to_host' | 'host_to_core'
 
-export const DSH_SERVICES = ['workspace', 'llm', 'network', 'settings', 'catalog', 'terminal', 'remote'] as const
+export const DSH_SERVICES = ['workspace', 'llm', 'network', 'settings', 'catalog', 'terminal', 'remote', 'attachments', 'plugins'] as const
 export type DshService = typeof DSH_SERVICES[number]
 
 /** Every method either side may send, and the trust tiers it is allowed on; nothing else is admitted. */
@@ -347,10 +356,7 @@ export interface CommandRunParams {
   origin_turn_id?: string
 }
 
-export interface ContentBlockWire {
-  text: string
-  type: 'text'
-}
+export type ContentBlockWire = { type: 'text'; text: string } | { type: 'image_ref'; attachment_id: string }
 
 export interface CoreCallParams {
   owner: OwnerRef

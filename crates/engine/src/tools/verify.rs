@@ -622,6 +622,8 @@ fn build_critic_request(
         // provider's own defaults apply and fixed-sampling routes don't reject.
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     }
 }
 
@@ -921,6 +923,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         }
     }
 

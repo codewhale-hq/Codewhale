@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/plugin.json",
+  "name": "dsh-attachments",
+  "version": "0.1.0",
+  "description": "Consumer-shaped DSH attachments fixture matching modlens and dsh-image-gen call shapes.",
+  "license": "MIT",
+  "extensions": {
+    "net.codewhale": {
+      "native": {
+        "path": "index.mjs"
+      }
+    }
+  }
+}

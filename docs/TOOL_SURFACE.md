@@ -101,8 +101,9 @@ one-shot user approval. The approved policy affects only that call.
 
 Both tools read source from stdin, return stdout/stderr/return_code, and keep
 the existing timeout and process-tree cleanup. They are not persistent REPLs;
-tracebacks refer to stdin rather than a temporary script path. The separate
-RLM/REPL kernel is not changed by this launcher integration.
+tracebacks refer to stdin rather than a temporary script path. The persistent
+Python kernels behind `rlm` and inline `repl` fences start through the same
+launcher, so they run under the same effective policy.
 
 Platform/backend limits of the shared launcher still apply: no available local
 wrapper means workspace-write remains unenforced, while read-only is refused.
@@ -118,11 +119,20 @@ does not mean "unable to research."
 
 The durable `github`, `automation`, and `rlm` action families are also deferred
 by default. `rlm` owns `open`, `eval`, `configure`, and `close` actions for a
-persistent local Python session (a subprocess with a scrubbed environment, not
-an OS sandbox). Inline ```` ```repl ```` fences in a reply run in the same kind of
-kernel only when `code_execution` is on the turn's surface (never in Plan mode),
-only when the fence opens its own line, and only after `code_execution`'s
-approval under the session posture. Feature-gated native tools may be added to
+persistent local Python session. Inline ```` ```repl ```` fences in a reply run in
+the same kind of kernel only when `code_execution` is on the turn's surface
+(never in Plan mode), only when the fence opens its own line, and only after
+`code_execution`'s approval under the session posture. These kernels start
+through the launcher `code_execution` uses, with the sanitized child
+environment, so the session's sandbox policy and wrapper apply to them: a
+read-only policy without an enforcing wrapper refuses to start one, and a
+session running commands in an external sandbox backend starts no local kernel.
+The long input reaches the kernel over stdin, never through a file. A kernel is
+dropped whenever the sandbox policy it started under changes, and an `rlm`
+context opened under one policy is closed by a call under another. Where the
+platform has no enforcing wrapper (Linux without bubblewrap, Windows) a
+workspace-write policy stays unenforced, as for `exec_shell` and
+`code_execution`. Feature-gated native tools may be added to
 the active or deferred catalog only when their implementation and host
 dependencies are available.
 

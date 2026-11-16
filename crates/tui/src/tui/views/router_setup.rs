@@ -309,16 +309,11 @@ async fn test_preset(app: &mut App, config: &Config, preset: RouterPreset) {
                 .session_write_receipt
                 .as_ref()
                 .and_then(|source| source.usage_origin(cost_scope).ok());
-            if origin.is_none() {
-                app.status_message =
-                    Some("Router test has no admitted session accounting origin".to_string());
-                return;
-            }
             match codewhale_engine::model_routing::test_auto_router(&candidate, origin).await {
                 Ok((selection, latency_ms)) => {
                     // The test call is real spend: settle it into session
                     // cost exactly as a turn's routing call is settled.
-                    codewhale_engine::cost_status::report_runtime_usage_batch(
+                    codewhale_engine::cost_status::record_runtime_usage_batch(
                         cost_scope,
                         None,
                         &codewhale_engine::cost_status::RuntimeUsageBatch {

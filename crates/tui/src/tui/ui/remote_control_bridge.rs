@@ -223,7 +223,7 @@ pub(crate) async fn drain_remote_control_events(
                             );
                             continue;
                         }
-                        let message = QueuedMessage::new(prompt, None);
+                        let message = QueuedMessage::new(prompt, None).without_owner_input();
                         app.remote_control.set_applying_remote_command(true);
                         let result = dispatch_user_message_with_recovery(
                             app,

@@ -141,12 +141,6 @@ impl PathRestoreAction {
     }
 }
 
-/// The safety snapshot a path restore writes first, or one already taken.
-enum RestoreBackup<'a> {
-    Take(&'a str),
-    Existing(&'a SnapshotId),
-}
-
 /// Report of what `SnapshotRepo::restore_paths` did to one path.
 #[derive(Debug, Clone)]
 pub struct PathRestoreOutcome {
@@ -1256,51 +1250,15 @@ impl SnapshotRepo {
         prune_emptied_dirs: bool,
         preflight: impl FnOnce() -> io::Result<()>,
     ) -> io::Result<Vec<PathRestoreOutcome>> {
-        self.restore_path_plan_backed_up(
-            plan,
-            RestoreBackup::Take(backup_label),
-            prune_emptied_dirs,
-            preflight,
-        )
-    }
-
-    /// [`Self::restore_path_plan`] with a safety snapshot the caller already
-    /// took (`backup`, a commit id) instead of a new one. `preflight` must
-    /// prove every planned path is still as `backup` holds it, so the backup
-    /// is as good as one taken now; reusing it keeps a second snapshot, and
-    /// the prune that comes with it, out of the window between planning and
-    /// the first write.
-    pub fn restore_path_plan_with_backup(
-        &self,
-        plan: &[(PathBuf, SnapshotId)],
-        backup: &SnapshotId,
-        prune_emptied_dirs: bool,
-        preflight: impl FnOnce() -> io::Result<()>,
-    ) -> io::Result<Vec<PathRestoreOutcome>> {
-        self.restore_path_plan_backed_up(
-            plan,
-            RestoreBackup::Existing(backup),
-            prune_emptied_dirs,
-            preflight,
-        )
-    }
-
-    fn restore_path_plan_backed_up(
-        &self,
-        plan: &[(PathBuf, SnapshotId)],
-        backup: RestoreBackup<'_>,
-        prune_emptied_dirs: bool,
-        preflight: impl FnOnce() -> io::Result<()>,
-    ) -> io::Result<Vec<PathRestoreOutcome>> {
         self.with_write_lock(|| {
-            self.restore_path_plan_locked(plan, backup, prune_emptied_dirs, preflight)
+            self.restore_path_plan_locked(plan, backup_label, prune_emptied_dirs, preflight)
         })
     }
 
     fn restore_path_plan_locked(
         &self,
         plan: &[(PathBuf, SnapshotId)],
-        backup: RestoreBackup<'_>,
+        backup_label: &str,
         prune_emptied_dirs: bool,
         preflight: impl FnOnce() -> io::Result<()>,
     ) -> io::Result<Vec<PathRestoreOutcome>> {
@@ -1318,10 +1276,7 @@ impl SnapshotRepo {
 
         // A durable backup is required for this destructive API. Ignored
         // files cannot be removed/overwritten if the snapshot cannot retain them.
-        let backup = match backup {
-            RestoreBackup::Take(label) => self.snapshot_with_session(label, None)?,
-            RestoreBackup::Existing(id) => id.clone(),
-        };
+        let backup = self.snapshot_with_session(backup_label, None)?;
         for (rel, _, _, in_work) in &pre_state {
             if *in_work && !self.snapshot_contains_regular_file(&backup, rel)? {
                 return Err(io_other(
@@ -1457,6 +1412,7 @@ impl SnapshotRepo {
                 .arg(&self.git_dir)
                 .arg("--work-tree")
                 .arg(&self.work_tree)
+                .args(["-c", "core.quotePath=false"])
                 .args(args);
             let output = run_bounded_git(&mut cmd, subcommand)?;
             if !output.status.success() {
@@ -1850,7 +1806,7 @@ impl SnapshotRepo {
             .duration_since(UNIX_EPOCH)
             .map_err(|e| io_other(format!("clock error: {e}")))?
             .as_secs() as i64;
-        let cutoff = now - max_age.as_secs() as i64;
+        let cutoff = now.saturating_sub(i64::try_from(max_age.as_secs()).unwrap_or(i64::MAX));
 
         let snapshots = self.list(usize::MAX)?;
         if snapshots.is_empty() {
@@ -3948,6 +3904,22 @@ mod tests {
         assert_eq!(list[0].label, "turn:1");
     }
 
+    #[test]
+    fn prune_with_an_age_beyond_i64_keeps_every_snapshot() {
+        let tmp = tempdir().unwrap();
+        let (repo, _home) = make_repo(tmp.path());
+        std::fs::write(repo.work_tree().join("f.txt"), "v0").unwrap();
+        repo.snapshot("turn:0").unwrap();
+        std::thread::sleep(Duration::from_millis(1100));
+
+        let removed = repo
+            .prune_older_than(Duration::from_secs(u64::MAX))
+            .unwrap();
+
+        assert_eq!(removed, 0);
+        assert_eq!(repo.list(10).unwrap().len(), 1);
+    }
+
     /// The 2026-08-04 regression: with a cut in the MIDDLE of history,
     /// `prune_older_than` used to `update-ref HEAD <oldest survivor>`, which
     /// orphaned (and gc destroyed) the NEWEST snapshots while keeping the
@@ -4890,6 +4862,24 @@ mod tests {
             .expect("changes");
         assert_eq!(none.names, "");
         assert_eq!(none.patch, "");
+    }
+
+    #[test]
+    fn work_tree_changes_since_names_non_ascii_paths_as_written() {
+        let tmp = tempdir().unwrap();
+        let (repo, _home) = make_repo(tmp.path());
+        let ws = repo.work_tree().to_path_buf();
+        std::fs::write(ws.join("笔记 📝.md"), b"old\n").unwrap();
+        let before = repo.snapshot("pre-turn:1").expect("snapshot");
+        git_output(&repo, &["config", "core.quotePath", "true"]);
+        std::fs::write(ws.join("笔记 📝.md"), b"new\n").unwrap();
+
+        let changes = repo
+            .work_tree_changes_since(&before, 1 << 20)
+            .expect("changes");
+        assert_eq!(changes.names, "笔记 📝.md\n");
+        assert!(changes.stat.contains("笔记 📝.md"), "{}", changes.stat);
+        assert!(changes.patch.contains("b/笔记 📝.md"), "{}", changes.patch);
     }
 
     /// A tree the repo no longer holds — the receipt outlived the object —

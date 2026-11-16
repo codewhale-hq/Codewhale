@@ -106,6 +106,7 @@ impl MarketplaceStore {
         // Every surface consumes this same projection. Browsing is offline
         // and read-only; installation and updates use the reviewed installer.
         // A user's local catalog or removal always takes precedence.
+        replace_superseded_embedded_catalog(&mut state)?;
         if !state.first_party_removed && !state.catalogs.contains_key("codewhale") {
             state
                 .catalogs
@@ -235,6 +236,7 @@ impl MarketplaceStore {
             .write()
             .map_err(|e| format!("failed to lock marketplace state for update: {e}"))?;
         let mut next = self.load_unlocked()?;
+        replace_superseded_embedded_catalog(&mut next)?;
         let result = mutate(&mut next)?;
         save_state_with_hardener(&self.path, &next, harden_plugin_state_file)?;
         Ok(result)
@@ -313,17 +315,53 @@ fn collapse_same_source_catalogs(mut state: MarketplaceState) -> MarketplaceStat
     state
 }
 
-fn first_party_catalog() -> Result<StoredMarketplaceCatalog, String> {
-    #[derive(Deserialize)]
-    struct Snapshot {
-        repository: String,
-        revision: String,
-        catalog: serde_json::Value,
-    }
-    let snapshot: Snapshot =
+#[derive(Deserialize)]
+struct EmbeddedSnapshot {
+    repository: String,
+    revision: String,
+    catalog: serde_json::Value,
+}
+
+impl EmbeddedSnapshot {
+    fn embedded() -> Result<Self, String> {
         serde_json::from_str(include_str!("../../assets/first-party-marketplace.json"))
-            .map_err(|error| format!("invalid bundled marketplace: {error}"))?;
-    let source = format!("{}/tree/{}", snapshot.repository, snapshot.revision);
+            .map_err(|error| format!("invalid bundled marketplace: {error}"))
+    }
+
+    fn source(&self) -> String {
+        format!("{}/tree/{}", self.repository, self.revision)
+    }
+
+    fn supersedes(&self, source_path: &str) -> bool {
+        source_path
+            .strip_prefix(&format!("{}/tree/", self.repository))
+            .is_some_and(|revision| {
+                revision != self.revision
+                    && revision.len() == 40
+                    && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+    }
+}
+
+fn replace_superseded_embedded_catalog(state: &mut MarketplaceState) -> Result<(), String> {
+    if state.first_party_removed {
+        return Ok(());
+    }
+    let Some(stored) = state.catalogs.get("codewhale") else {
+        return Ok(());
+    };
+    let snapshot = EmbeddedSnapshot::embedded()?;
+    if snapshot.supersedes(&stored.source_path) {
+        state
+            .catalogs
+            .insert("codewhale".into(), first_party_catalog()?);
+    }
+    Ok(())
+}
+
+fn first_party_catalog() -> Result<StoredMarketplaceCatalog, String> {
+    let snapshot = EmbeddedSnapshot::embedded()?;
+    let source = snapshot.source();
     let mut catalog = super::parsers::parse_catalog(super::parsers::MarketplaceDocument {
         catalog_id: MarketplaceCatalogId::new("codewhale"),
         format: super::types::MarketplaceFormat::Codewhale,
@@ -371,10 +409,8 @@ mod tests {
                 panic!("uninstallable candidate")
             };
             if candidate.name == "computer-use" {
-                assert_eq!(
-                    spec,
-                    "https://github.com/codewhale-hq/codewhale-cu-plugin/releases/download/v0.16.0/computer-use.tar.gz#sha256=11a4f5c97c32717fa5648d10c080aa0db48a4798ccdf0d17112d1ae5b9133ae4"
-                );
+                let (source, sha256) = snapshot_entry_pin("computer-use");
+                assert_eq!(spec, format!("{source}#sha256={sha256}"));
             } else {
                 assert!(spec.starts_with(
                     "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/"
@@ -399,6 +435,122 @@ mod tests {
             store.load().unwrap().get("codewhale").unwrap().source_path,
             "/reviewed/local/marketplace.json"
         );
+    }
+
+    fn snapshot_plugins() -> Vec<serde_json::Value> {
+        let snapshot: serde_json::Value =
+            serde_json::from_str(include_str!("../../assets/first-party-marketplace.json"))
+                .unwrap();
+        snapshot["catalog"]["plugins"].as_array().unwrap().clone()
+    }
+
+    fn snapshot_entry_pin(name: &str) -> (String, String) {
+        let entry = snapshot_plugins()
+            .into_iter()
+            .find(|entry| entry["name"] == name)
+            .unwrap();
+        (
+            entry["source"].as_str().unwrap().to_string(),
+            entry["sha256"].as_str().unwrap().to_string(),
+        )
+    }
+
+    #[test]
+    fn every_remote_snapshot_entry_carries_a_sha256() {
+        let snapshot = EmbeddedSnapshot::embedded().unwrap();
+        let pinned_bundle = format!(
+            "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/{}#",
+            snapshot.revision
+        );
+        let mut remote = 0;
+        for entry in snapshot_plugins() {
+            let source = entry["source"].as_str().unwrap();
+            assert!(
+                source.starts_with("https://"),
+                "{source} is not a pinned remote source"
+            );
+            if source.starts_with(&pinned_bundle) {
+                continue;
+            }
+            remote += 1;
+            let sha256 = entry["sha256"].as_str().unwrap_or_default();
+            assert!(
+                sha256.len() == 64
+                    && sha256
+                        .bytes()
+                        .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+                "{} has no sha256",
+                entry["name"]
+            );
+            assert!(
+                !source.contains("/latest/"),
+                "{} follows a floating release",
+                entry["name"]
+            );
+        }
+        assert!(remote >= 1, "the computer-use release asset is remote");
+    }
+
+    fn write_state(store: &MarketplaceStore, source_path: &str) {
+        let mut catalog = first_party_catalog().unwrap();
+        catalog.source_path = source_path.to_string();
+        catalog.catalog.candidates.clear();
+        let mut state = MarketplaceState::default();
+        state.catalogs.insert("codewhale".into(), catalog);
+        ensure_private_plugin_state_directory(store.path().parent().unwrap()).unwrap();
+        fs::write(store.path(), serde_json::to_string(&state).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_saved_copy_of_an_older_embedded_snapshot_is_replaced() {
+        let root = tempfile::tempdir().unwrap();
+        let store = MarketplaceStore::open(Some(&root.path().join("plugins/state.json"))).unwrap();
+        let snapshot = EmbeddedSnapshot::embedded().unwrap();
+        let older = format!("{}/tree/{}", snapshot.repository, "0".repeat(40));
+        write_state(&store, &older);
+
+        let loaded = store.load().unwrap();
+        let kept = loaded.get("codewhale").unwrap();
+        assert_eq!(kept.source_path, snapshot.source());
+        assert!(kept.catalog.total_candidates() > 0);
+
+        store
+            .add(
+                &MarketplaceCatalogId::new("codewhale"),
+                first_party_catalog().unwrap(),
+            )
+            .unwrap();
+        let persisted: MarketplaceState =
+            serde_json::from_str(&fs::read_to_string(store.path()).unwrap()).unwrap();
+        assert_eq!(
+            persisted.get("codewhale").unwrap().source_path,
+            snapshot.source()
+        );
+    }
+
+    #[test]
+    fn desktop_bundled_and_person_added_catalogs_are_kept() {
+        let snapshot = EmbeddedSnapshot::embedded().unwrap();
+        let bundled_file = Path::new("resources")
+            .join("marketplace")
+            .join("marketplace.json")
+            .display()
+            .to_string();
+        let moving_branch = format!("{}/tree/main", snapshot.repository);
+        for source in [
+            bundled_file.as_str(),
+            "https://example.com/team/marketplace.json",
+            moving_branch.as_str(),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let store =
+                MarketplaceStore::open(Some(&root.path().join("plugins/state.json"))).unwrap();
+            write_state(&store, source);
+            let loaded = store.load().unwrap();
+            let kept = loaded.get("codewhale").unwrap();
+            assert_eq!(kept.source_path, source);
+            assert_eq!(kept.catalog.total_candidates(), 0);
+        }
     }
 
     #[test]

@@ -79,25 +79,29 @@ pub struct PluginArchiveMismatch {
 use crate::manifest::PluginManifest;
 use codewhale_net::network_policy::NetworkPolicy;
 use codewhale_skill_install::install::{
-    self as skill_install, FetchOutcome, INSTALLED_FROM_MARKER, InstallSource, InstalledFromMarker,
-    fetch_tarball, sha256_hex, source_spec_string,
+    FetchOutcome, INSTALLED_FROM_MARKER, InstallSource, InstalledFromMarker, fetch_tarball,
+    sha256_hex, source_spec_string,
 };
 
 pub mod dsh;
+pub(crate) mod npm_deps;
 mod place;
 mod stage;
+mod summary;
 mod tarball;
 
 #[cfg(test)]
 mod tests;
 
+pub use npm_deps::NpmDepsNetworkError;
 use place::{ensure_target_within_plugins_dir, finalize_install, plugin_target_path};
 use stage::stage_local_copy;
-use tarball::stage_tarball;
+pub use summary::{PluginSummary, PreviousInstall, SummaryClause, SummaryInput, build_summary};
+use tarball::stage_tarball_with_network;
 
 /// Default per-bundle size cap. Mirrors the skill installer; the runtime
 /// staging budget in `registry.rs` stays the outer bound.
-pub const DEFAULT_MAX_SIZE_BYTES: u64 = skill_install::DEFAULT_MAX_SIZE_BYTES;
+pub const DEFAULT_MAX_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Source parsing
@@ -127,6 +131,14 @@ impl PluginInstallSource {
     ///   (via [`InstallSource::parse`]; registry names are unreachable here)
     /// * `path:<dir>` or any other value → [`PluginInstallSource::LocalPath`]
     pub fn parse(spec: &str) -> Result<Self> {
+        Self::parse_inner(spec, true)
+    }
+
+    pub fn parse_syntax(spec: &str) -> Result<Self> {
+        Self::parse_inner(spec, false)
+    }
+
+    fn parse_inner(spec: &str, inspect_fs: bool) -> Result<Self> {
         let trimmed = spec.trim();
         if trimmed.is_empty() {
             bail!("install source must not be empty");
@@ -194,7 +206,7 @@ impl PluginInstallSource {
             ))));
         }
         if let Some(path) = trimmed.strip_prefix("path:") {
-            return Self::local(path);
+            return Self::local(path, inspect_fs);
         }
         if let Some(path) = trimmed.strip_prefix("dsh:") {
             let path = path.trim();
@@ -218,17 +230,16 @@ impl PluginInstallSource {
                 }
             };
         }
-        Self::local(trimmed)
+        Self::local(trimmed, inspect_fs)
     }
 
-    fn local(spec: &str) -> Result<Self> {
+    fn local(spec: &str, inspect_fs: bool) -> Result<Self> {
         let trimmed = spec.trim();
         if trimmed.is_empty() {
             bail!("local install path must not be empty");
         }
         let path = PathBuf::from(trimmed);
-        if crate::agent_plugin::resolve_manifest_path(&path).is_none() && dsh::is_dsh_package(&path)
-        {
+        if inspect_fs && dsh::try_is_dsh_package(&path)? {
             return Ok(Self::Dsh(path));
         }
         Ok(Self::LocalPath(path))
@@ -368,6 +379,8 @@ pub enum PluginInstallError {
     PathTraversal(String),
     #[error("bundle is too large; uncompressed total would exceed {limit} bytes")]
     OversizedBundle { limit: u64 },
+    #[error("archive entry name is longer than {limit} bytes")]
+    EntryNameTooLong { limit: usize },
     #[error(
         "archive must contain exactly one plugin bundle root (a directory holding plugin.json, kimi.plugin.json, or plugin.toml); found {0} (install a single plugin bundle, not a mono-repo)"
     )]
@@ -475,7 +488,22 @@ async fn install_inner(
             )
         }
         PluginInstallSource::Dsh(package) => {
-            let converted = convert_dsh_off_runtime(package.clone()).await?;
+            let converted = match convert_dsh_off_runtime(package.clone(), network.clone()).await {
+                Ok(converted) => converted,
+                Err(err) => {
+                    if let Some(net_err) = err.downcast_ref::<NpmDepsNetworkError>() {
+                        return Ok(match net_err {
+                            NpmDepsNetworkError::NeedsApproval(host) => {
+                                PluginInstallOutcome::NeedsApproval((*host).to_string())
+                            }
+                            NpmDepsNetworkError::Denied(host) => {
+                                PluginInstallOutcome::NetworkDenied((*host).to_string())
+                            }
+                        });
+                    }
+                    return Err(err);
+                }
+            };
             install_converted_dsh(
                 converted,
                 user_plugins_dir,
@@ -499,6 +527,7 @@ async fn install_inner(
                 remote,
                 &bytes,
                 &url,
+                network,
                 user_plugins_dir,
                 max_size,
                 update,
@@ -519,7 +548,7 @@ struct ConvertedDsh {
 
 /// Parse and convert off the async runtime: conversion reads and copies the
 /// whole package synchronously.
-async fn convert_dsh_off_runtime(package: PathBuf) -> Result<ConvertedDsh> {
+async fn convert_dsh_off_runtime(package: PathBuf, network: NetworkPolicy) -> Result<ConvertedDsh> {
     #[cfg(any(test, feature = "test-support"))]
     let env_scope = codewhale_runtime::test_support::env_scope_ticket();
     tokio::task::spawn_blocking(move || {
@@ -528,7 +557,8 @@ async fn convert_dsh_off_runtime(package: PathBuf) -> Result<ConvertedDsh> {
         let canonical = package
             .canonicalize()
             .with_context(|| format!("failed to resolve {}", package.display()))?;
-        let (scratch, bundle, _conversion) = dsh::convert_to_scratch(&canonical)?;
+        let (scratch, bundle, _conversion) =
+            dsh::convert_to_scratch_with_network(&canonical, Some(&network))?;
         Ok(ConvertedDsh {
             canonical,
             _scratch: scratch,
@@ -574,7 +604,21 @@ fn install_converted_dsh(
 /// Review a DSH package without installing it: the conversion receipt and the
 /// content hash that an exact install of the same package will stage.
 pub fn preview_dsh(package: &Path) -> Result<(dsh::DshConversion, String)> {
-    let (_scratch, bundle, conversion) = dsh::convert_to_scratch(package)?;
+    preview_dsh_with_network_opt(package, None)
+}
+
+pub fn preview_dsh_with_network(
+    package: &Path,
+    network: &NetworkPolicy,
+) -> Result<(dsh::DshConversion, String)> {
+    preview_dsh_with_network_opt(package, Some(network))
+}
+
+fn preview_dsh_with_network_opt(
+    package: &Path,
+    network: Option<&NetworkPolicy>,
+) -> Result<(dsh::DshConversion, String)> {
+    let (_scratch, bundle, conversion) = dsh::convert_to_scratch_with_network(package, network)?;
     let manifest = crate::agent_plugin::resolve_manifest_path(&bundle)
         .context("converted DSH bundle has no manifest")?;
     let validated = PluginManifest::validate_from_path(&manifest)
@@ -601,6 +645,174 @@ fn verify_expected_content_hash(
     .into())
 }
 
+#[derive(Debug, Clone)]
+pub struct DownloadedRemote {
+    pub remote: InstallSource,
+    pub resolved_url: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub enum RemoteDownloadOutcome {
+    Downloaded {
+        archive: DownloadedRemote,
+        has_npm_deps: bool,
+    },
+    NeedsApproval(String),
+    NetworkDenied(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedRemote {
+    pub remote: InstallSource,
+    pub resolved_url: String,
+    pub bytes: Vec<u8>,
+    pub name: String,
+    pub content_hash: String,
+}
+
+#[derive(Debug)]
+pub enum RemotePreviewOutcome {
+    Ready(PreparedRemote),
+    NeedsApproval(String),
+    NetworkDenied(String),
+}
+
+pub async fn download_remote_install_archive(
+    remote: InstallSource,
+    max_size: u64,
+    network: &NetworkPolicy,
+) -> Result<RemoteDownloadOutcome> {
+    let (bytes, url) = match fetch_tarball(&remote, network, max_size).await? {
+        FetchOutcome::Bytes { bytes, url } => (bytes, url),
+        FetchOutcome::NeedsApproval(host) => {
+            return Ok(RemoteDownloadOutcome::NeedsApproval(host));
+        }
+        FetchOutcome::Denied(host) => {
+            return Ok(RemoteDownloadOutcome::NetworkDenied(host));
+        }
+    };
+    let checksum = sha256_hex(&bytes);
+    let (bundle_path, pinned_sha256) = remote_fragment(&remote)?;
+    if let Some(pinned) = pinned_sha256
+        && pinned != checksum
+    {
+        return Err(PluginArchiveMismatch {
+            url,
+            expected: pinned,
+            actual: checksum,
+        }
+        .into());
+    }
+    let bytes_clone = bytes.clone();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_scope = codewhale_runtime::test_support::env_scope_ticket();
+    let has_npm_deps = tokio::task::spawn_blocking(move || -> Result<bool> {
+        #[cfg(any(test, feature = "test-support"))]
+        let _env_scope = codewhale_runtime::test_support::join_env_scope(env_scope);
+        let scan =
+            tarball::scan_tarball_for_bundle(&bytes_clone, max_size, bundle_path.as_deref())?;
+        if !scan.is_dsh {
+            return Ok(false);
+        }
+        let raw_dir = tempfile::tempdir().context("failed to create DSH extraction dir")?;
+        tarball::extract_into(&scan, &bytes_clone, raw_dir.path(), max_size)?;
+        dsh::has_unresolved_npm_dependencies(raw_dir.path())
+    })
+    .await
+    .context("remote archive inspection task failed")??;
+    Ok(RemoteDownloadOutcome::Downloaded {
+        archive: DownloadedRemote {
+            remote,
+            resolved_url: url,
+            bytes,
+        },
+        has_npm_deps,
+    })
+}
+
+pub async fn stage_downloaded_remote_install(
+    archive: DownloadedRemote,
+    max_size: u64,
+    network: Option<&NetworkPolicy>,
+) -> Result<RemotePreviewOutcome> {
+    let (bundle_path, _) = remote_fragment(&archive.remote)?;
+    let network_clone = network.cloned();
+    let bytes_clone = archive.bytes.clone();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_scope = codewhale_runtime::test_support::env_scope_ticket();
+    let staged = tokio::task::spawn_blocking(move || -> Result<_> {
+        #[cfg(any(test, feature = "test-support"))]
+        let _env_scope = codewhale_runtime::test_support::join_env_scope(env_scope);
+        let stage_root = tempfile::Builder::new()
+            .prefix("codewhale-remote-preview-")
+            .tempdir()?;
+        let staged = stage_tarball_with_network(
+            &bytes_clone,
+            stage_root.path(),
+            max_size,
+            bundle_path.as_deref(),
+            network_clone.as_ref(),
+        )?;
+        Ok((staged.name, staged.content_hash))
+    })
+    .await
+    .context("remote preview staging task failed")?;
+    match staged {
+        Ok((name, content_hash)) => Ok(RemotePreviewOutcome::Ready(PreparedRemote {
+            remote: archive.remote,
+            resolved_url: archive.resolved_url,
+            bytes: archive.bytes,
+            name,
+            content_hash,
+        })),
+        Err(err) => match err.downcast_ref::<NpmDepsNetworkError>() {
+            Some(NpmDepsNetworkError::NeedsApproval(host)) => {
+                Ok(RemotePreviewOutcome::NeedsApproval((*host).to_string()))
+            }
+            Some(NpmDepsNetworkError::Denied(host)) => {
+                Ok(RemotePreviewOutcome::NetworkDenied((*host).to_string()))
+            }
+            None => Err(err),
+        },
+    }
+}
+
+pub async fn prepare_remote_install(
+    remote: InstallSource,
+    max_size: u64,
+    network: &NetworkPolicy,
+) -> Result<RemotePreviewOutcome> {
+    match download_remote_install_archive(remote, max_size, network).await? {
+        RemoteDownloadOutcome::Downloaded { archive, .. } => {
+            stage_downloaded_remote_install(archive, max_size, Some(network)).await
+        }
+        RemoteDownloadOutcome::NeedsApproval(host) => Ok(RemotePreviewOutcome::NeedsApproval(host)),
+        RemoteDownloadOutcome::NetworkDenied(host) => Ok(RemotePreviewOutcome::NetworkDenied(host)),
+    }
+}
+
+pub fn install_prepared_remote(
+    prepared: &PreparedRemote,
+    user_plugins_dir: &Path,
+    max_size: u64,
+    network: &NetworkPolicy,
+    name_conflict: &(dyn Fn(&str) -> Option<String> + Send + Sync),
+    expected_content_hash: &str,
+) -> Result<PluginInstallOutcome> {
+    install_remote_bytes(
+        &prepared.remote,
+        &prepared.bytes,
+        &prepared.resolved_url,
+        network,
+        user_plugins_dir,
+        max_size,
+        false,
+        name_conflict,
+        Some(expected_content_hash),
+    )
+}
+
 /// Stage and finalize an already-downloaded remote tarball. Kept separate
 /// from [`install`] so [`update`] can compare the checksum of the bytes it
 /// already fetched instead of downloading twice.
@@ -609,6 +821,7 @@ fn install_remote_bytes(
     remote: &InstallSource,
     bytes: &[u8],
     url: &str,
+    network: &NetworkPolicy,
     user_plugins_dir: &Path,
     max_size: u64,
     update: bool,
@@ -627,7 +840,28 @@ fn install_remote_bytes(
         }
         .into());
     }
-    let staged = stage_tarball(bytes, user_plugins_dir, max_size, bundle_path.as_deref())?;
+    let staged = match stage_tarball_with_network(
+        bytes,
+        user_plugins_dir,
+        max_size,
+        bundle_path.as_deref(),
+        Some(network),
+    ) {
+        Ok(staged) => staged,
+        Err(err) => {
+            if let Some(net_err) = err.downcast_ref::<NpmDepsNetworkError>() {
+                return Ok(match net_err {
+                    NpmDepsNetworkError::NeedsApproval(host) => {
+                        PluginInstallOutcome::NeedsApproval((*host).to_string())
+                    }
+                    NpmDepsNetworkError::Denied(host) => {
+                        PluginInstallOutcome::NetworkDenied((*host).to_string())
+                    }
+                });
+            }
+            return Err(err);
+        }
+    };
     verify_expected_content_hash(&staged, expected_content_hash)?;
     if let Some(conflict) = name_conflict(&staged.name) {
         let _ = fs::remove_dir_all(&staged.staged_path);
@@ -668,7 +902,15 @@ pub async fn update(
         .with_context(|| format!("failed to read {}", marker_path.display()))?;
     let marker: InstalledFromMarker = serde_json::from_str(&marker_body)
         .with_context(|| format!("malformed {INSTALLED_FROM_MARKER} for {name}"))?;
-    let source = PluginInstallSource::parse(&marker.spec)?;
+    let source = if let Some(path) = marker.spec.trim().strip_prefix("path:") {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            bail!("local install path must not be empty");
+        }
+        PluginInstallSource::LocalPath(PathBuf::from(trimmed))
+    } else {
+        PluginInstallSource::parse(&marker.spec)?
+    };
     if let PluginInstallSource::LocalPath(path) = &source {
         let path = path.clone();
         let user_plugins_dir = user_plugins_dir.to_path_buf();
@@ -723,10 +965,22 @@ pub async fn update(
         .context("local plugin update task failed")?;
     }
     if let PluginInstallSource::Dsh(package) = &source {
-        // Re-convert the recorded package. An identical converted bundle is
-        // no change; a different one replaces the installed copy, and its
-        // new content hash invalidates the trust receipt at next discovery.
-        let converted = convert_dsh_off_runtime(package.clone()).await?;
+        let converted = match convert_dsh_off_runtime(package.clone(), network.clone()).await {
+            Ok(converted) => converted,
+            Err(err) => {
+                if let Some(net_err) = err.downcast_ref::<NpmDepsNetworkError>() {
+                    return Ok(match net_err {
+                        NpmDepsNetworkError::NeedsApproval(host) => {
+                            PluginUpdateResult::NeedsApproval((*host).to_string())
+                        }
+                        NpmDepsNetworkError::Denied(host) => {
+                            PluginUpdateResult::NetworkDenied((*host).to_string())
+                        }
+                    });
+                }
+                return Err(err);
+            }
+        };
         let content_hash = {
             let manifest = crate::agent_plugin::resolve_manifest_path(&converted.bundle)
                 .context("converted DSH bundle has no manifest")?;
@@ -782,6 +1036,7 @@ pub async fn update(
         &remote,
         &bytes,
         &url,
+        network,
         user_plugins_dir,
         max_size,
         true,
@@ -801,6 +1056,23 @@ pub async fn update(
     }
 }
 
+/// Check whether `bundle_root` carries a regular, non-link `.installed-from` file.
+pub fn has_regular_install_marker(bundle_root: &Path) -> bool {
+    let marker = bundle_root.join(INSTALLED_FROM_MARKER);
+    let Ok(meta) = fs::symlink_metadata(&marker) else {
+        return false;
+    };
+    if codewhale_util::path_identity::metadata_is_link_or_reparse(&meta) || !meta.is_file() {
+        return false;
+    }
+    let Ok(file) = codewhale_util::bundle_file::open_bundle_file(&marker) else {
+        return false;
+    };
+    file.metadata().is_ok_and(|opened| {
+        opened.is_file() && !codewhale_util::path_identity::metadata_is_link_or_reparse(&opened)
+    })
+}
+
 /// Remove a plugin installed via `/plugin install`.
 ///
 /// Refuses to touch any directory that doesn't carry the `.installed-from`
@@ -809,14 +1081,159 @@ pub async fn update(
 /// controller does) and prune the registry state entry afterwards.
 pub fn uninstall(name: &str, user_plugins_dir: &Path) -> Result<()> {
     let target = plugin_target_path(name, user_plugins_dir)?;
-    if !target.exists() {
+    let Ok(target_meta) = fs::symlink_metadata(&target) else {
         bail!("plugin '{name}' is not installed at {}", target.display());
-    }
+    };
     ensure_target_within_plugins_dir(&target, user_plugins_dir)?;
-    if !target.join(INSTALLED_FROM_MARKER).exists() {
+    if codewhale_util::path_identity::metadata_is_link_or_reparse(&target_meta)
+        || !target_meta.is_dir()
+        || !has_regular_install_marker(&target)
+    {
         return Err(PluginInstallError::NotInstalledHere(name.to_string()).into());
     }
     fs::remove_dir_all(&target)
         .with_context(|| format!("failed to remove {}", target.display()))?;
     Ok(())
+}
+
+#[derive(PartialEq, Eq)]
+enum NormalizedSegment {
+    Disk(u8),
+    Unc(String, String),
+    Device(String),
+    Verbatim(String),
+    Root,
+    Normal(std::ffi::OsString),
+}
+
+fn normalized_segments(path: &Path) -> Option<Vec<NormalizedSegment>> {
+    use std::path::{Component, Prefix};
+
+    let mut segments = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => {
+                let seg = match prefix.kind() {
+                    Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+                        NormalizedSegment::Disk(drive.to_ascii_uppercase())
+                    }
+                    Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+                        NormalizedSegment::Unc(
+                            server.to_string_lossy().to_ascii_lowercase(),
+                            share.to_string_lossy().to_ascii_lowercase(),
+                        )
+                    }
+                    Prefix::DeviceNS(device) => {
+                        NormalizedSegment::Device(device.to_string_lossy().to_ascii_lowercase())
+                    }
+                    Prefix::Verbatim(rest) => {
+                        NormalizedSegment::Verbatim(rest.to_string_lossy().to_ascii_lowercase())
+                    }
+                };
+                segments.push(seg);
+            }
+            Component::RootDir => segments.push(NormalizedSegment::Root),
+            Component::CurDir => {}
+            Component::ParentDir => return None,
+            Component::Normal(part) => {
+                #[cfg(windows)]
+                let normalized =
+                    std::ffi::OsString::from(part.to_string_lossy().to_ascii_lowercase());
+                #[cfg(not(windows))]
+                let normalized = part.to_os_string();
+                segments.push(NormalizedSegment::Normal(normalized));
+            }
+        }
+    }
+    Some(segments)
+}
+
+#[must_use]
+pub fn path_is_within(parent: &Path, child: &Path, allow_equal: bool) -> bool {
+    let (Some(parent), Some(child)) = (normalized_segments(parent), normalized_segments(child))
+    else {
+        return false;
+    };
+    if child.len() < parent.len() || (!allow_equal && child.len() == parent.len()) {
+        return false;
+    }
+    child[..parent.len()] == parent[..]
+}
+
+#[must_use]
+pub fn clean_dir_is_strictly_inside(folder: &Path, project: &Path) -> bool {
+    use std::ffi::OsStr;
+    use std::path::Component;
+
+    if !folder.is_absolute()
+        || folder
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
+        return false;
+    }
+    let (Ok(canon_folder), Ok(canon_project)) =
+        (fs::canonicalize(folder), fs::canonicalize(project))
+    else {
+        return false;
+    };
+    if !path_is_within(&canon_project, &canon_folder, false) {
+        return false;
+    }
+    let mut cursor = Some(folder);
+    while let Some(current) = cursor {
+        let Ok(canon_current) = fs::canonicalize(current) else {
+            return false;
+        };
+        if !path_is_within(&canon_project, &canon_current, false) {
+            return path_is_within(&canon_project, &canon_current, true);
+        }
+        let Ok(metadata) = fs::symlink_metadata(current) else {
+            return false;
+        };
+        if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata)
+            || !metadata.file_type().is_dir()
+        {
+            return false;
+        }
+        if current.file_name() == Some(OsStr::new(".git")) {
+            return false;
+        }
+        cursor = current.parent();
+    }
+    false
+}
+
+#[must_use]
+pub fn installed_by_the_agent(bundle_root: &Path, project: &Path) -> bool {
+    use std::io::Read as _;
+
+    let marker_path = bundle_root.join(INSTALLED_FROM_MARKER);
+    let Ok(metadata) = fs::symlink_metadata(&marker_path) else {
+        return false;
+    };
+    if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata)
+        || !metadata.file_type().is_file()
+    {
+        return false;
+    }
+    let Ok(file) = codewhale_util::bundle_file::open_bundle_file(&marker_path) else {
+        return false;
+    };
+    let mut body = String::new();
+    if file.take(64 * 1024 + 1).read_to_string(&mut body).is_err() || body.len() > 64 * 1024 {
+        return false;
+    }
+    let Ok(marker) = serde_json::from_str::<InstalledFromMarker>(&body) else {
+        return false;
+    };
+    let Ok(source) = PluginInstallSource::parse(&marker.spec) else {
+        return false;
+    };
+    match source {
+        PluginInstallSource::LocalPath(folder) | PluginInstallSource::Dsh(folder) => {
+            clean_dir_is_strictly_inside(&folder, project)
+        }
+        PluginInstallSource::Remote(_) => false,
+    }
 }

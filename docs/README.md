@@ -91,7 +91,8 @@ is the source. Translations live beside their English page (`*.id.md`) or in
   [lifecycle outbox changelog](changelog-lifecycle-outbox.md)
 - [Rebrand: DeepSeek TUI to Codewhale](REBRAND.md) and
   [legacy `.deepseek/` paths](LEGACY_PATHS.md)
-- [Third-party notices](THIRD_PARTY_NOTICES.md)
+- Third-party notices for [adapted designs](THIRD_PARTY_NOTICES.md) and
+  [vendored sources](../THIRD_PARTY_NOTICES.md)
 - Historical plans: [TUI modularization](TUI_MODULARIZATION.md),
   [post-0.9.1 seams](POST_0_9_1_SEAMS.md),
   [runtime simplification](RUNTIME_SIMPLIFICATION_DESIGN.md),

@@ -49,8 +49,8 @@ cargo build --release --locked -p codewhale-cli
 target/release/codewhale --version
 ```
 
-See the Cargo section for build prerequisites; use the repository's stable Rust
-selection (declared minimum 1.89). Windows uses `target/release/codewhale.exe`
+See the Cargo section for build prerequisites; use the repository's pinned Rust
+1.100.0 (declared minimum 1.89). Windows uses `target/release/codewhale.exe`
 and needs MSVC. A development build is separate from a signed release package.
 For mainland-China downloads and source validation, see [CNB mirror](CNB_MIRROR.md).
 The [Tencent Lighthouse bootstrap](../scripts/tencent-lighthouse/README.md) is
@@ -231,10 +231,8 @@ Re-checked on macOS 26.1, Apple silicon (`macos-arm64`), with a fresh `HOME`:
   checksums with the system tools, and installed `codewhale` and `codew`
   (64 MiB each, Mach-O arm64) in 4.3 s. Both report
   `codewhale 0.10.0 (1be1a703b975)`. They ran without a Gatekeeper prompt.
-* When Node isn't on `PATH`, it also prints `Computer Use is included and needs
-  Node.js 20 or newer on PATH.` The core TUI works without Node, but Computer Use
-  and the JavaScript execution tool (`js_execution`) stay unavailable until Node
-  is on `PATH`.
+* The core TUI works without Node; the JavaScript execution tool
+  (`js_execution`) needs Node on `PATH`.
 * `codewhale doctor` behaves as on Linux (exit 0, `All checks complete!` with no
   key, file-based secret store under `~/.codewhale/secrets/`), except that it
   reports `✓ sandbox available: macos-seatbelt`.
@@ -543,25 +541,25 @@ cargo install --path crates/cli --locked      # installs ~/.cargo/bin/codewhale
 
 Things to know (observed):
 
-* The repo contains `rust-toolchain.toml` (`channel = "stable"`). The first
-  `cargo` command inside the checkout **silently downloads the latest stable
-  toolchain** (about 250 MB), whatever your default is.
-* The workspace treats every compiler warning as an error. With Rust 1.89
-  the build **fails** after about 11 minutes with 8
-  `error: this lint expectation is unfulfilled` errors in `codewhale-tui`. Use
-  the stable toolchain the repo selects. Don't pass an older `+toolchain`.
+* The repo contains `rust-toolchain.toml` (`channel = "1.100.0"`). With rustup,
+  the first `cargo` command inside the checkout **silently downloads Rust
+  1.100.0** (about 250 MB) if you do not have it, whatever your default is.
+* The workspace treats every compiler warning as an error. The declared
+  minimum is Rust 1.89, which CI's MSRV job checks, but release binaries and
+  the repository's own checks use 1.100.0. Without rustup, use rustc 1.89 or
+  newer.
 * The workspace release profile uses thin LTO. On a 4-vCPU / 15 GB VM, the
   `codewhale-tui` crate alone compiled for more than an hour, peaking at
   6–8 GB of RAM. Budget 16 GB or more, and expect this to be the slowest install
   path by far. `target/` grew past 1.2 GB.
 
-Tested result: **works** on the repo-selected stable Rust (1.98.1).
+Tested result: **works** on Rust 1.98.1, the version the repository selected when this was measured.
 * `Finished release profile … in 83m 12s`. A Nix build competed for CPU and
   memory for most of that time, so treat it as an upper bound.
 * `target/` ended at **3.1 GB**. Delete it afterwards with `cargo clean`.
 * The binary reports `codewhale 0.10.0 (dev)`, and `exec` worked.
 * Cargo prints `warning: default toolchain implicitly overridden with
-  stable-x86_64-unknown-linux-gnu by rustup toolchain file`, which is harmless.
+  1.100.0-x86_64-unknown-linux-gnu by rustup toolchain file`, which is harmless.
 * **Cargo builds provide no `codew`.**
 
 **Upgrade:** re-run the same `cargo install … --force` (for crates.io, you can
@@ -602,8 +600,8 @@ Tested with Homebrew 7.0.6 against the v0.10.0 tap formula: the install took
 release binaries, so there's no compile. It provides **both** `codewhale` and
 `codew`. The `Hmbown/deepseek-tui` tap formula also depends on `node`, which
 pulled in 31 bottles (~560 MB) on Linux. That `node` dependency belongs to
-this tap formula only. The core TUI runs without Node; Computer Use and the JS
-execution tool use it when it is on PATH.
+this tap formula only. The core TUI runs without Node; the JS execution tool
+uses it when it is on PATH.
 
 * **Upgrade:** `brew upgrade codewhale`. (`codewhale update` refuses, and
   suggests migrating.)

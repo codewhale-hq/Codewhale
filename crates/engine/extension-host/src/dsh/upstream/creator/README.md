@@ -7,7 +7,7 @@ SHA-256 of every file; `test/creator-pin.test.mjs` fails when a file drifts.
 
 - `plugin-manager/tools.js`: `@deepseek-ai/dsh-plugin-manager` `lib/types/tools.js`
 - `tool-cordis/index.js`: `@deepseek-ai/dsh-tool-cordis` `lib/index.js`
-- `sandbox/escalation.js`: not yet pinned (see `UPSTREAM.json`, `pending`)
+- `sandbox/escalation.js`: `@deepseek-ai/dsh-sandbox` `lib/index.js` lines 9-42, 68-71, 137-158 (escalation helpers and `approveEscalation` excerpt)
 
 The four authoring skills of `@deepseek-ai/dsh-agent-preset` are pinned beside
 the skills crate at `crates/skills/assets/dsh-creator/`.

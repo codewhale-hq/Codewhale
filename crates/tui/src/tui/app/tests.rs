@@ -185,6 +185,46 @@ fn feature_intro_shows_once_persists_then_is_idempotent() {
 }
 
 #[test]
+fn account_preferences_notice_shows_once_per_sign_in_and_can_be_dismissed() {
+    let _env_lock = lock_test_env();
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = tmp.path().join("config.toml");
+    let _env = EnvVarGuard::set(
+        "DEEPSEEK_CONFIG_PATH",
+        config_path.to_string_lossy().as_ref(),
+    );
+    let shown = |app: &App| {
+        let notice = app
+            .tr(MessageId::AccountPreferencesNotLoaded)
+            .replace("{command}", "codewhale login");
+        app.status_toasts
+            .iter()
+            .filter(|toast| toast.text == notice && toast.kind == StatusToastKind::Standing)
+            .count()
+    };
+
+    let mut app = App::new(test_options(false), &Config::default());
+    app.notify_account_preferences_not_loaded_for("first-sign-in");
+    app.notify_account_preferences_not_loaded_for("first-sign-in");
+    assert_eq!(shown(&app), 1);
+    assert_eq!(
+        Settings::load()
+            .expect("settings should load")
+            .account_preferences_notice_shown
+            .as_deref(),
+        Some("first-sign-in")
+    );
+    assert!(app.dismiss_account_preferences_notice());
+    assert_eq!(shown(&app), 0);
+
+    let mut later_session = App::new(test_options(false), &Config::default());
+    later_session.notify_account_preferences_not_loaded_for("first-sign-in");
+    assert_eq!(shown(&later_session), 0, "the same sign-in is told once");
+    later_session.notify_account_preferences_not_loaded_for("second-sign-in");
+    assert_eq!(shown(&later_session), 1, "a later sign-in is told again");
+}
+
+#[test]
 fn initial_input_scenario() {
     // Scenario consolidation of: initial_input_prefill_waits_for_manual_submit, initial_input_submit_marks_startup_dispatch
     // from initial_input_prefill_waits_for_manual_submit
@@ -2363,6 +2403,96 @@ fn subscription_route_hides_stale_session_dollars_in_footer() {
 }
 
 #[test]
+fn session_cost_label_renders_money_or_unknown_without_plan_names_or_local() {
+    let unknown = codewhale_localization::tr(
+        codewhale_localization::Locale::En,
+        codewhale_localization::MessageId::CmdCostUnknownValue,
+    )
+    .into_owned();
+
+    let mut sub = App::new(test_options(false), &Config::default());
+    sub.billing_presentation =
+        codewhale_engine::route_billing::BillingPresentation::Subscription("Codex OAuth quota");
+    assert_eq!(sub.session_cost_label(), unknown);
+    assert_eq!(sub.status_cost_label().as_deref(), Some(unknown.as_str()));
+
+    let mut local = App::new(test_options(false), &Config::default());
+    local.billing_presentation = codewhale_engine::route_billing::BillingPresentation::Local;
+    assert_eq!(local.session_cost_label(), unknown);
+    assert_eq!(local.status_cost_label().as_deref(), Some(unknown.as_str()));
+
+    let mut metered = App::new(test_options(false), &Config::default());
+    metered.api_provider = ProviderKind::Deepseek;
+    metered.model = "deepseek-v4-flash".to_string();
+    metered.billing_presentation = codewhale_engine::route_billing::BillingPresentation::Metered;
+    assert_eq!(metered.session_cost_label(), "$0.00");
+    assert_eq!(metered.status_cost_label(), None);
+
+    metered.session.cost_priced_turns = 1;
+    metered.accrue_session_cost_estimate(CostEstimate::usd_only(0.42));
+    assert_eq!(metered.session_cost_label(), "$0.42");
+    assert_eq!(metered.status_cost_label(), None);
+
+    metered.session.cost_unpriced_turns = 1;
+    assert_eq!(metered.session_cost_label(), "$0.42");
+    assert_eq!(metered.status_cost_label().as_deref(), Some("$0.42"));
+}
+
+#[test]
+fn late_reported_usage_prunes_stale_request_outcome_unknown_reason() {
+    let mut app = App::new(test_options(false), &Config::default());
+    let route = codewhale_engine::cost_status::EffectiveRouteEnvelope::capture(
+        None,
+        ProviderKind::Deepseek,
+        "deepseek",
+        "deepseek-v4-flash",
+        Some(ProviderKind::Deepseek.provider().default_base_url()),
+        chrono::Utc::now(),
+    );
+    let drop_pool = codewhale_engine::cost_status::background_cost_for_runtime_drop(
+        &codewhale_engine::cost_status::RuntimeUsageDropRecord {
+            reason: codewhale_engine::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            source_id: "cw-7882-late-source".to_string(),
+            route: route.clone(),
+        },
+    );
+    app.absorb_pending_background_cost(&drop_pool);
+    assert_eq!(app.session.cost_unpriced_turns, 1);
+    assert!(
+        app.session
+            .cost_unpriced_reasons
+            .contains("request_outcome_unknown")
+    );
+
+    let settled = codewhale_engine::cost_status::NativeUsageSource::capture(
+        "cw-7882-late-source",
+        codewhale_engine::cost_status::UsageSpendOwner::Auxiliary,
+    )
+    .reported(
+        &route,
+        &codewhale_models::Usage {
+            input_tokens: 1_000,
+            output_tokens: 200,
+            ..Default::default()
+        },
+    );
+    let settled_pool = codewhale_engine::cost_status::background_cost_for_runtime_usage(&settled);
+    app.absorb_pending_background_cost(&settled_pool);
+    assert_eq!(app.session.cost_priced_turns, 1);
+    assert_eq!(app.session.cost_unpriced_turns, 0);
+    assert!(
+        !app.session
+            .cost_unpriced_reasons
+            .contains("request_outcome_unknown")
+    );
+    assert!(
+        !app.session
+            .cost_cny_unpriced_reasons
+            .contains("request_outcome_unknown")
+    );
+}
+
+#[test]
 fn provider_switch_keeps_audited_cumulative_spend_visible() {
     let mut app = App::new(test_options(false), &Config::default());
     let usage = codewhale_models::Usage {
@@ -4021,6 +4151,48 @@ fn base_policy_for_mode_projects_the_mode_permission_table() {
 }
 
 #[test]
+fn every_dial_step_writes_one_permissions_receipt() {
+    let _env_lock = lock_test_env();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config_path = tmp.path().join("config.toml");
+    let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+    let mut options = test_options(false);
+    options.start_in_agent_mode = true;
+    options.config_path = Some(config_path);
+    let mut app = App::new(options, &Config::default());
+    app.set_agent_approval_posture(ApprovalMode::AcceptEdits);
+    app.history.clear();
+    app.yolo_compat_notified = true;
+
+    let mut receipts = Vec::new();
+    for _ in 0..5 {
+        let before = app.history.len();
+        assert!(app.step_permission_dial(false).changed());
+        let added: Vec<String> = app.history[before..]
+            .iter()
+            .filter_map(|cell| match cell {
+                HistoryCell::System { content } if content.starts_with("Permissions changed") => {
+                    Some(content.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(added.len(), 1, "one receipt per press: {added:?}");
+        receipts.extend(added);
+    }
+    assert_eq!(
+        receipts,
+        [
+            "Permissions changed to plan",
+            "Permissions changed to auto",
+            "Permissions changed to Full Access",
+            "Permissions changed to ask",
+            "Permissions changed to accept edits",
+        ]
+    );
+}
+
+#[test]
 fn cycle_approval_scenario() {
     // Scenario consolidation of: the permission dial walk, cycle_approval_posture_emits_rebinding_notice_once
     // from the permission dial walk
@@ -4053,6 +4225,36 @@ fn cycle_approval_scenario() {
             std::fs::read_to_string(tmp.path().join("settings.toml")).expect("settings");
         assert!(persisted.contains("permission_posture = \"ask\""));
     }
+    {
+        let _env_lock = lock_test_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("config.toml");
+        let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+        let mut options = test_options(false);
+        options.start_in_agent_mode = true;
+        options.config_path = Some(config_path);
+        let mut config = Config::default();
+        config.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+            disabled: true,
+            ..Default::default()
+        });
+        let mut app = App::new(options, &config);
+        app.set_agent_approval_posture(ApprovalMode::Suggest);
+
+        for (mode, posture) in [
+            (AppMode::Agent, ApprovalMode::AcceptEdits),
+            (AppMode::Plan, ApprovalMode::AcceptEdits),
+            (AppMode::Agent, ApprovalMode::Bypass),
+            (AppMode::Agent, ApprovalMode::Suggest),
+        ] {
+            assert!(app.step_permission_dial(false).changed());
+            assert_eq!(app.mode, mode);
+            assert_eq!(app.mode_prefs.agent_approval_mode, posture);
+            if mode == AppMode::Agent {
+                assert_eq!(app.approval_mode, posture);
+            }
+        }
+    }
     // from cycle_approval_posture_emits_rebinding_notice_once
     {
         let _env_lock = lock_test_env();
@@ -4080,6 +4282,132 @@ fn cycle_approval_scenario() {
             .count();
         assert_eq!(notices, 1, "notice is one-shot per session");
     }
+}
+
+#[test]
+fn auto_review_posture_transition_emits_broad_allow_pause_note_when_suspended() {
+    let _env_lock = lock_test_env();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config_path = tmp.path().join("config.toml");
+    let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+    let mut options = test_options(false);
+    options.start_in_agent_mode = true;
+    options.config_path = Some(config_path);
+
+    let mut broad_shell_allow = codewhale_runtime::config::AutoReviewRuleConfig::default();
+    broad_shell_allow.id = Some("broad-shell".to_string());
+    broad_shell_allow.action_kind = Some("shell".to_string());
+    broad_shell_allow.reason = Some("allow shell".to_string());
+
+    let mut cfg = Config::default();
+    cfg.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+        allow: vec![broad_shell_allow],
+        ..Default::default()
+    });
+    let mut app = App::new(options.clone(), &cfg);
+    app.ui_locale = codewhale_localization::Locale::En;
+    app.set_agent_approval_posture(ApprovalMode::Suggest);
+
+    let before = app.history.len();
+    assert!(app.select_approval_posture(ApprovalMode::Auto));
+    let notes: Vec<_> = app.history[before..]
+        .iter()
+        .filter_map(|cell| match cell {
+            HistoryCell::System { content }
+                if content.contains("Broad allow rules are paused while Auto-Review is on") =>
+            {
+                Some(content.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+
+    assert!(app.select_approval_posture(ApprovalMode::Suggest));
+    let step_before = app.history.len();
+    assert!(app.select_approval_posture(ApprovalMode::Auto));
+    let notes_second: Vec<_> = app.history[step_before..]
+        .iter()
+        .filter_map(|cell| match cell {
+            HistoryCell::System { content }
+                if content.contains("Broad allow rules are paused while Auto-Review is on") =>
+            {
+                Some(content.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notes_second.len(), 1, "{notes_second:?}");
+
+    let mut clean_app = App::new(options, &Config::default());
+    clean_app.ui_locale = codewhale_localization::Locale::En;
+    clean_app.set_agent_approval_posture(ApprovalMode::Suggest);
+    let clean_before = clean_app.history.len();
+    assert!(clean_app.select_approval_posture(ApprovalMode::Auto));
+    let clean_notes: Vec<_> = clean_app.history[clean_before..]
+        .iter()
+        .filter_map(|cell| match cell {
+            HistoryCell::System { content } if content.contains("Broad allow rules are paused") => {
+                Some(content.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(clean_notes.is_empty(), "{clean_notes:?}");
+}
+
+#[test]
+fn startup_in_auto_review_emits_broad_allow_pause_note_once() {
+    let _env_lock = lock_test_env();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config_path = tmp.path().join("config.toml");
+    let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+    let mut options = test_options(false);
+    options.start_in_agent_mode = true;
+    options.config_path = Some(config_path);
+
+    let mut broad_shell_allow = codewhale_runtime::config::AutoReviewRuleConfig::default();
+    broad_shell_allow.id = Some("broad-shell".to_string());
+    broad_shell_allow.action_kind = Some("shell".to_string());
+    broad_shell_allow.reason = Some("allow shell".to_string());
+
+    let mut cfg = Config::default();
+    cfg.approval_policy = Some("auto-review".to_string());
+    cfg.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+        allow: vec![broad_shell_allow],
+        ..Default::default()
+    });
+    let mut app = App::new(options.clone(), &cfg);
+    app.ui_locale = codewhale_localization::Locale::En;
+    let count_notes = |a: &App| {
+        let expected = a.tr(MessageId::AutoReceiptBroadAllowsPaused);
+        a.history
+            .iter()
+            .filter(|cell| matches!(cell, HistoryCell::System { content } if content == expected.as_ref()))
+            .count()
+    };
+    assert_eq!(count_notes(&app), 1);
+
+    app.apply_cli_permission_mode(Some(
+        codewhale_engine::runtime_options::PermissionMode::AutoReview,
+    ));
+    assert_eq!(count_notes(&app), 1);
+
+    let mut clean_cfg = Config::default();
+    clean_cfg.approval_policy = Some("auto-review".to_string());
+    let clean_app = App::new(options.clone(), &clean_cfg);
+    assert_eq!(count_notes(&clean_app), 0);
+
+    let mut cli_cfg = cfg;
+    cli_cfg.approval_policy = None;
+    let mut cli_app = App::new(options, &cli_cfg);
+    cli_app.ui_locale = codewhale_localization::Locale::En;
+    assert_eq!(count_notes(&cli_app), 0);
+    cli_app.apply_cli_permission_mode(Some(
+        codewhale_engine::runtime_options::PermissionMode::AutoReview,
+    ));
+    assert_eq!(cli_app.approval_mode, ApprovalMode::Auto);
+    assert_eq!(count_notes(&cli_app), 1);
 }
 
 #[test]

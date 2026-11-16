@@ -938,21 +938,6 @@ pre.gs-step-commands { margin-top: var(--space-1); font-size: var(--text-caption
 .session-media-caption strong { color: var(--text); font-size: var(--text-body); }
 .session-media-caption a { color: var(--accent); font-size: var(--text-caption); }
 
-/* ---------- the horizon ---------- */
-/* One calm, empty horizon per page: a straight line where the sky meets the
-   sea. Nothing stands on it but the whale. The sea below is the stage. */
-.horizon {
-  position: relative;
-  height: 1px;
-  background: var(--horizon-light);
-}
-
-.sea { background: var(--sea), var(--ocean-abyss); }
-
-@media (forced-colors: active) {
-  .horizon { background: CanvasText; }
-}
-
 /* ---------- search field ---------- */
 .search-field { position: relative; }
 .search-field .search-input { padding-inline: 2.5rem 3rem; }

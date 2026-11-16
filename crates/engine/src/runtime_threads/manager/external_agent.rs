@@ -1081,6 +1081,7 @@ impl RuntimeThreadManager {
             artifacts: Vec::new(),
             workspace: None,
             workspace_snapshots: Vec::new(),
+            delegated_writes: Vec::new(),
         };
         let mut active = self.active.lock().await;
         let Some(state) = active.external.get_mut(&thread.id) else {
@@ -1932,13 +1933,21 @@ impl RuntimeThreadManager {
         Ok(())
     }
 
-    pub(super) async fn interrupt_external_turn(
+    pub(super) async fn interrupt_external_turn_in_workspace(
         &self,
         thread_id: &str,
         turn_id: &str,
+        expected_workspace: Option<&std::path::Path>,
     ) -> Result<TurnRecord> {
         let session = {
             let mut active = self.active.lock().await;
+            if expected_workspace.is_some() {
+                let _thread_mutation = self.store.thread_mutation.lock();
+                super::require_thread_workspace(
+                    &self.store.load_thread(thread_id)?,
+                    expected_workspace,
+                )?;
+            }
             let Some(state) = active.external.get_mut(thread_id) else {
                 bail!("Thread is not loaded");
             };
@@ -2032,6 +2041,7 @@ impl RuntimeThreadManager {
                     proposed: None,
                     responder: None,
                     agent_settled: Some(settled_rx),
+                    owner_only: false,
                 });
                 return (id, rx, settled_tx);
             }

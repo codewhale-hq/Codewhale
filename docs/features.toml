@@ -141,8 +141,8 @@ owner = "crates/engine/src/tools/apply_patch.rs"
 
 [[feature]]
 id = "mcp-client"
-name = "MCP client"
-summary = "Connects MCP servers, exposes permitted tools and records connection status for the model."
+name = "MCP connectors"
+summary = "A plugin kind: connects MCP servers, exposes permitted tools and records connection status for the model."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 since = "0.1.0"
@@ -213,6 +213,17 @@ surfaces = { tui = "preview", web = "none", api = "preview" }
 since = "0.10.1"
 flag = "extension_host"
 docs = "docs/EXTENSIONS.md"
+owner = "crates/engine/src/extension_host"
+
+[[feature]]
+id = "plugin-creator"
+name = "Plugin creator"
+summary = "Enables the built-in plugin_manager tool and Creator mode host module while Rust retains permission gates."
+status = "experimental"
+surfaces = { tui = "preview", web = "none", api = "preview" }
+since = "unreleased"
+flag = "plugin_creator"
+docs = "docs/MODES.md"
 owner = "crates/engine/src/extension_host"
 
 [[feature]]
@@ -319,7 +330,7 @@ owner = "crates/engine/src/tools/review_host.rs"
 [[feature]]
 id = "modes"
 name = "Modes"
-summary = "Plan and Work modes; Plan is a stop on the Shift+Tab dial, Operate parses as Work; a finished plan offers work."
+summary = "Plan and Work modes on the Shift+Tab dial; a conversation is Standard or Creator mode, fixed after its first message."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/MODES.md"
@@ -492,6 +503,15 @@ since = "unreleased"
 owner = "crates/engine/src/tools/present.rs"
 
 [[feature]]
+id = "show-data"
+name = "Charts in the transcript"
+summary = "Read-only show_data tool: display sparklines, labelled bars or trends, with matching text summaries."
+status = "experimental"
+surfaces = { tui = "preview", api = "partial" }
+since = "unreleased"
+owner = "crates/engine/src/tools/show_data.rs"
+
+[[feature]]
 id = "read-media"
 name = "read_media"
 summary = "Reads and preprocesses images for vision-capable models with size and privacy guards."
@@ -532,8 +552,8 @@ owner = "crates/memory"
 
 [[feature]]
 id = "skills"
-name = "Skills"
-summary = "Trusted instruction packages with bundle policy, invocation controls and shared, configurable index limits."
+name = "Skill plugins"
+summary = "A plugin kind: trusted instruction packages with bundle policy, invocation controls and configurable index limits."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/SKILLS.md"
@@ -542,7 +562,7 @@ owner = "crates/skills/src"
 [[feature]]
 id = "plugins"
 name = "Plugins"
-summary = "Installs, reviews and trusts plugin bundles, reports their status, and restores missing reviewed runtime snapshots."
+summary = "Everything you add is a plugin: installs, reviews and trusts bundles, shows status, restores missing reviewed snapshots."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PLUGINS.md"
@@ -585,8 +605,8 @@ owner = "crates/net/src/import_claude.rs"
 
 [[feature]]
 id = "hooks"
-name = "Hooks"
-summary = "Runs user commands on session and tool events, with an execution receipt after shell tools."
+name = "Hook plugins"
+summary = "A plugin kind: runs user commands on session and tool events, with an execution receipt after shell tools."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/HOOKS.md"
@@ -805,7 +825,7 @@ owner = "crates/tui/src/commands/groups/session/export.rs"
 [[feature]]
 id = "live-thinking"
 name = "Live thinking"
-summary = "/verbose toggles live model thinking in the transcript."
+summary = "Model thinking shows live in the transcript, then collapses under a Thought header; /verbose shows it in full."
 status = "stable"
 surfaces = { tui = "stable" }
 owner = "crates/tui/src/commands/groups/config/mod.rs"
@@ -1052,3 +1072,13 @@ surfaces = { tui = "stable" }
 since = "unreleased"
 docs = "docs/CONFIGURATION.md"
 owner = "crates/config/src/provider_toml.rs"
+
+[[feature]]
+id = "native-runtime-attachment"
+name = "Native Runtime attachment"
+summary = "Attach-only native clients select an authenticated existing owner and a fixed workspace."
+status = "experimental"
+surfaces = { api = "partial" }
+since = "unreleased"
+owner = "crates/app-server/src/native_runtime.rs"
+docs = "docs/NATIVE_RUNTIME.md"

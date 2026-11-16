@@ -643,6 +643,7 @@ async fn edit_last_turn_restores_the_exchange_when_the_replacement_never_starts(
             model: "deepseek-v4-pro".to_string(),
             workspace: tmp.path().to_path_buf(),
             mode: AppMode::Agent,
+            agent_preset: None,
         })
         .await
         .unwrap();
@@ -659,6 +660,111 @@ async fn edit_last_turn_restores_the_exchange_when_the_replacement_never_starts(
     assert_eq!(
         after.messages, before.messages,
         "a replacement that never started must not cost the original exchange"
+    );
+    handle.send(Op::Shutdown).await.unwrap();
+    run.await.unwrap();
+}
+
+async fn sync_with_mode(
+    handle: &EngineHandle,
+    workspace: &std::path::Path,
+    session_id: &str,
+    messages: Vec<Message>,
+    agent_preset: Option<&str>,
+) {
+    handle
+        .send(Op::SyncSession {
+            expected: None,
+            control: crate::core::ops::SessionControlId::new(),
+            session_id: Some(session_id.to_string()),
+            messages,
+            system_prompt: None,
+            system_prompt_override: false,
+            model: "deepseek-v4-pro".to_string(),
+            workspace: workspace.to_path_buf(),
+            mode: AppMode::Agent,
+            agent_preset: agent_preset.map(str::to_string),
+        })
+        .await
+        .unwrap();
+}
+
+fn user_text(text: &str) -> Message {
+    Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+        }],
+    }
+}
+
+#[tokio::test]
+async fn sync_session_installs_the_conversation_mode_on_the_engine_session() {
+    let tmp = tempdir().unwrap();
+    let (engine, handle) = quiet_engine(deterministic_engine_config(tmp.path()));
+    let run = tokio::spawn(engine.run());
+    assert_eq!(session_snapshot(&handle).await.agent_preset, None);
+    sync_with_mode(
+        &handle,
+        tmp.path(),
+        "blank-one",
+        Vec::new(),
+        Some("creator"),
+    )
+    .await;
+    assert_eq!(
+        session_snapshot(&handle).await.agent_preset.as_deref(),
+        Some("creator")
+    );
+    sync_with_mode(&handle, tmp.path(), "blank-one", Vec::new(), None).await;
+    assert_eq!(
+        session_snapshot(&handle).await.agent_preset,
+        None,
+        "a still-blank conversation may change its mode"
+    );
+    sync_with_mode(
+        &handle,
+        tmp.path(),
+        "other",
+        vec![user_text("hi")],
+        Some("creator"),
+    )
+    .await;
+    assert_eq!(
+        session_snapshot(&handle).await.agent_preset.as_deref(),
+        Some("creator"),
+        "another conversation installs its own mode"
+    );
+    sync_with_mode(&handle, tmp.path(), "fresh", Vec::new(), None).await;
+    assert_eq!(session_snapshot(&handle).await.agent_preset, None);
+    handle.send(Op::Shutdown).await.unwrap();
+    run.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_sync_of_the_same_conversation_with_messages_cannot_change_its_conversation_mode() {
+    let tmp = tempdir().unwrap();
+    let (engine, handle) = quiet_engine(deterministic_engine_config(tmp.path()));
+    let run = tokio::spawn(engine.run());
+    let history = vec![user_text("first message")];
+    sync_with_mode(
+        &handle,
+        tmp.path(),
+        "locked",
+        history.clone(),
+        Some("creator"),
+    )
+    .await;
+    sync_with_mode(&handle, tmp.path(), "locked", history.clone(), None).await;
+    assert_eq!(
+        session_snapshot(&handle).await.agent_preset.as_deref(),
+        Some("creator")
+    );
+    sync_with_mode(&handle, tmp.path(), "locked", history, Some("minimal")).await;
+    assert_eq!(
+        session_snapshot(&handle).await.agent_preset.as_deref(),
+        Some("creator")
     );
     handle.send(Op::Shutdown).await.unwrap();
     run.await.unwrap();

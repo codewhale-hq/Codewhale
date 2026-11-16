@@ -240,6 +240,8 @@ pub(super) struct PluginReviewPayload {
     pub(super) commands: Vec<String>,
     pub(super) agents: Vec<String>,
     pub(super) hooks: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) host_services: Option<codewhale_plugins::host_services::HostServiceReview>,
 }
 
 #[derive(Debug, Serialize)]
@@ -342,6 +344,8 @@ pub(super) struct TrustPluginRequest {
     /// Review token from `GET /v1/apps/plugins/{selector}`. Required: trust
     /// is an explicit confirmation bound to both SHA-256 receipts.
     pub(super) token: String,
+    #[serde(default)]
+    pub(super) host_services_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -457,7 +461,10 @@ fn file_stem(path: &std::path::Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-fn review_payload(plugin: &LoadedPlugin) -> PluginReviewPayload {
+fn review_payload(
+    plugin: &LoadedPlugin,
+    registry: Option<&codewhale_plugins::PluginRegistry>,
+) -> PluginReviewPayload {
     let mut mcp_servers: Vec<_> = plugin
         .manifest
         .mcp_servers
@@ -501,6 +508,12 @@ fn review_payload(plugin: &LoadedPlugin) -> PluginReviewPayload {
         .collect();
     skills.sort_by(|a, b| a.name.cmp(&b.name));
 
+    let host_services = registry
+        .and_then(|reg| {
+            reg.host_service_review_for(plugin.name(), &PluginApprover::person(PersonVia::App))
+        })
+        .filter(|review| !review.lines.is_empty());
+
     PluginReviewPayload {
         token: plugin.review_token(),
         capabilities: plugin.inventory.supported_labels(),
@@ -513,17 +526,21 @@ fn review_payload(plugin: &LoadedPlugin) -> PluginReviewPayload {
         commands,
         agents,
         hooks,
+        host_services,
     }
 }
 
-fn plugin_detail(plugin: &LoadedPlugin) -> PluginDetailResponse {
+fn plugin_detail(
+    plugin: &LoadedPlugin,
+    registry: Option<&codewhale_plugins::PluginRegistry>,
+) -> PluginDetailResponse {
     PluginDetailResponse {
         summary: plugin_summary(plugin),
         repository: plugin.manifest.plugin.repository.clone(),
         license: plugin.manifest.plugin.license.clone(),
         keywords: plugin.manifest.plugin.keywords.clone(),
         staged: plugin.staged_root.is_some(),
-        review: review_payload(plugin),
+        review: review_payload(plugin, registry),
     }
 }
 
@@ -1409,7 +1426,7 @@ async fn run_registry_mutation(
     mutation: RegistryMutation<'_>,
 ) -> Result<PluginActionResponse, ApiError> {
     let registry = registry_for_state(state);
-    if let RegistryMutation::Trust { token } = &mutation {
+    if let RegistryMutation::Trust { token, .. } = &mutation {
         let Some(plugin) = registry.get(selector) else {
             return Err(ApiError::not_found(format!(
                 "plugin '{selector}' not found"
@@ -1433,11 +1450,14 @@ async fn run_registry_mutation(
 
     let mut registry = (*registry).clone();
     let result = match mutation {
-        RegistryMutation::Trust { .. } => registry.trust_reviewed(
+        RegistryMutation::Trust {
+            host_services_token,
+            ..
+        } => registry.trust_reviewed(
             selector,
             ReviewApproval {
                 approved_by: PluginApprover::person(PersonVia::App),
-                host_services: None,
+                host_services: host_services_token.map(str::to_owned),
             },
         ),
         RegistryMutation::Enable => {
@@ -1491,7 +1511,10 @@ async fn run_registry_mutation(
 }
 
 enum RegistryMutation<'a> {
-    Trust { token: &'a str },
+    Trust {
+        token: &'a str,
+        host_services_token: Option<&'a str>,
+    },
     Enable,
     Restage,
     Disable,
@@ -1717,7 +1740,12 @@ pub(super) async fn get_plugin(
     State(state): State<RuntimeApiState>,
     Path(selector): Path<String>,
 ) -> Result<Json<PluginDetailResponse>, ApiError> {
-    Ok(Json(plugin_detail(&find_plugin(&state, &selector)?)))
+    let registry = registry_for_state(&state);
+    let plugin = registry
+        .get(&selector)
+        .cloned()
+        .ok_or_else(|| ApiError::not_found(format!("plugin '{selector}' not found")))?;
+    Ok(Json(plugin_detail(&plugin, Some(&registry))))
 }
 
 pub(super) async fn get_plugin_ui(
@@ -1946,11 +1974,19 @@ pub(super) async fn preview_dsh_plugin_api(
     } else {
         state.workspace.join(requested)
     };
+    let network = {
+        let config = state.config.read();
+        config
+            .network
+            .clone()
+            .map(codewhale_net::network_policy::NetworkPolicy::from)
+            .unwrap_or_default()
+    };
     let preview = tokio::task::spawn_blocking(move || {
         let canonical = path
             .canonicalize()
             .map_err(|_| format!("DSH package not found at {}", path.display()))?;
-        codewhale_plugins::install::preview_dsh(&canonical)
+        codewhale_plugins::install::preview_dsh_with_network(&canonical, &network)
             .map(|(conversion, content_hash)| (canonical, conversion, content_hash))
             .map_err(|error| format!("{error:#}"))
     })
@@ -2009,7 +2045,10 @@ pub(super) async fn trust_plugin_api(
         run_registry_mutation(
             &state,
             &selector,
-            RegistryMutation::Trust { token: &req.token },
+            RegistryMutation::Trust {
+                token: &req.token,
+                host_services_token: req.host_services_token.as_deref(),
+            },
         )
         .await?,
     ))
@@ -2222,7 +2261,7 @@ pub(super) struct CatalogRowEnvelope {
     pub(super) row: CatalogRow,
 }
 
-const CATALOG_BUILTIN_KEYS: &[&str] = &["subagents", "web_search", "shell_tool"];
+const CATALOG_BUILTIN_KEYS: &[&str] = &["subagents", "web_search", "shell_tool", "plugin_creator"];
 const AGENT_LOOP_ID: &str = "agent_loop";
 
 fn catalog_title(key: &str) -> String {
@@ -2230,6 +2269,7 @@ fn catalog_title(key: &str) -> String {
         "subagents" => "Subagent".to_string(),
         "web_search" => "Web search".to_string(),
         "shell_tool" => "Shell".to_string(),
+        "plugin_creator" => "Plugin creator".to_string(),
         other => super::humanize_schema_key(other),
     }
 }
@@ -2239,6 +2279,7 @@ fn catalog_description(key: &str) -> Option<String> {
         "subagents" => "Delegate bounded tasks to focused child agents with isolated context.",
         "web_search" => "Search and fetch live web pages while answering.",
         "shell_tool" => "Run commands in your workspace terminal with approval controls.",
+        "plugin_creator" => "Enable the built-in plugin_manager tool and Creator mode host module.",
         "apply_patch" => "Apply structured multi-file patches as one reviewed change.",
         "mcp" => "Connect Model Context Protocol servers and their tools.",
         "exec_policy" => "Check shell commands against your exec policy before they run.",
@@ -2286,12 +2327,18 @@ fn subagents_settings(config: &codewhale_runtime::config::Config) -> (Value, Val
 fn catalog_feature_row(
     config: &codewhale_runtime::config::Config,
     spec: &codewhale_runtime::features::FeatureSpec,
+    creator_reason: Option<&str>,
 ) -> CatalogRow {
     let (settings_schema, settings) = if spec.key == "subagents" {
         let (schema, settings) = subagents_settings(config);
         (Some(schema), Some(settings))
     } else {
         (None, None)
+    };
+    let (available, unavailable_reason) = if spec.key == "plugin_creator" {
+        (creator_reason.is_none(), creator_reason.map(str::to_string))
+    } else {
+        (true, None)
     };
     CatalogRow {
         id: spec.key.to_string(),
@@ -2300,8 +2347,8 @@ fn catalog_feature_row(
         icon: Some(spec.key.to_string()),
         experimental: spec.stage == codewhale_runtime::features::Stage::Experimental,
         enabled: config.features().enabled(spec.id),
-        available: true,
-        unavailable_reason: None,
+        available,
+        unavailable_reason,
         settings_schema,
         settings,
         restart_required: spec.key == "extension_host",
@@ -2331,12 +2378,15 @@ fn agent_loop_row() -> CatalogRow {
     }
 }
 
-fn build_catalog(config: &codewhale_runtime::config::Config) -> CatalogResponse {
+fn build_catalog(
+    config: &codewhale_runtime::config::Config,
+    creator_reason: Option<&str>,
+) -> CatalogResponse {
     let mut builtin = Vec::new();
     let mut experimental = Vec::new();
     let mut more = Vec::new();
     for spec in codewhale_runtime::features::FEATURES {
-        let row = catalog_feature_row(config, spec);
+        let row = catalog_feature_row(config, spec, creator_reason);
         if CATALOG_BUILTIN_KEYS.contains(&spec.key) {
             builtin.push(row);
         } else if spec.stage == codewhale_runtime::features::Stage::Experimental {
@@ -2359,8 +2409,12 @@ fn build_catalog(config: &codewhale_runtime::config::Config) -> CatalogResponse 
     }
 }
 
-fn find_catalog_row(config: &codewhale_runtime::config::Config, id: &str) -> Option<CatalogRow> {
-    let catalog = build_catalog(config);
+fn find_catalog_row(
+    config: &codewhale_runtime::config::Config,
+    creator_reason: Option<&str>,
+    id: &str,
+) -> Option<CatalogRow> {
+    let catalog = build_catalog(config, creator_reason);
     catalog
         .builtin
         .into_iter()
@@ -2369,12 +2423,29 @@ fn find_catalog_row(config: &codewhale_runtime::config::Config, id: &str) -> Opt
         .find(|row| row.id == id)
 }
 
+async fn catalog_creator_reason_for(state: &RuntimeApiState, id: Option<&str>) -> Option<String> {
+    if matches!(id, Some(other) if other != "plugin_creator") {
+        return None;
+    }
+    let plugin_creator_enabled = state
+        .config
+        .read()
+        .features()
+        .enabled(codewhale_runtime::features::Feature::PluginCreator);
+    codewhale_engine::conversation_modes::creator_unavailable_reason(
+        state.runtime_threads.extension_host_options(),
+        plugin_creator_enabled,
+    )
+    .await
+}
+
 /// `GET /v1/apps/plugins/catalog`
 pub(super) async fn list_plugin_catalog(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<CatalogResponse>, ApiError> {
+    let creator_reason = catalog_creator_reason_for(&state, None).await;
     let config = state.config.read();
-    Ok(Json(build_catalog(&config)))
+    Ok(Json(build_catalog(&config, creator_reason.as_deref())))
 }
 
 async fn reload_after_catalog_write(state: RuntimeApiState) -> Result<(), ApiError> {
@@ -2429,8 +2500,9 @@ async fn set_catalog_enabled(
     )
     .map_err(|e| ApiError::internal(format!("Failed to persist setting: {e}")))?;
     reload_after_catalog_write(state.clone()).await?;
+    let creator_reason = catalog_creator_reason_for(&state, Some(&id)).await;
     let config = state.config.read();
-    let row = find_catalog_row(&config, &id).ok_or_else(|| {
+    let row = find_catalog_row(&config, creator_reason.as_deref(), &id).ok_or_else(|| {
         ApiError::internal(format!("catalog plugin '{id}' vanished after reload"))
     })?;
     Ok(Json(CatalogRowEnvelope { row }))
@@ -2463,9 +2535,10 @@ pub(super) async fn put_catalog_settings(
     Path(id): Path<String>,
     Json(req): Json<CatalogSettingsRequest>,
 ) -> Result<Json<CatalogRowEnvelope>, ApiError> {
+    let creator_reason = catalog_creator_reason_for(&state, Some(&id)).await;
     {
         let config = state.config.read();
-        if find_catalog_row(&config, &id).is_none() {
+        if find_catalog_row(&config, creator_reason.as_deref(), &id).is_none() {
             return Err(ApiError::not_found(format!(
                 "catalog plugin '{id}' not found"
             )));
@@ -2506,8 +2579,9 @@ pub(super) async fn put_catalog_settings(
         .map_err(|e| ApiError::internal(format!("Failed to persist setting: {e}")))?;
         reload_after_catalog_write(state.clone()).await?;
     }
+    let creator_reason = catalog_creator_reason_for(&state, Some(&id)).await;
     let config = state.config.read();
-    let row = find_catalog_row(&config, &id).ok_or_else(|| {
+    let row = find_catalog_row(&config, creator_reason.as_deref(), &id).ok_or_else(|| {
         ApiError::internal(format!("catalog plugin '{id}' vanished after reload"))
     })?;
     Ok(Json(CatalogRowEnvelope { row }))

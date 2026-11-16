@@ -389,6 +389,12 @@ impl Paint for Tabs<'_> {
                 end += 1 + cells(badge);
             }
             buf.set_stringn(end, y, right_pad, room(end), pad_style);
+            if is_selected {
+                buf.set_style(
+                    Rect::new(x, y, end.saturating_add(1).min(area.right()) - x, 1),
+                    theme.bg(Role::Selected),
+                );
+            }
             if is_selected && underline_row {
                 let rule = glyphs::pick("─", ascii);
                 for dx in x + 1..end {

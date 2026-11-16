@@ -26,7 +26,7 @@ use crate::runtime_threads::{
     RUNTIME_STORE_FAILURE_EVENT, RuntimeEventRecord, RuntimeProcessOwnerLock, RuntimeTurnStatus,
     manager::CreateThreadRequest, manager::RuntimeThreadManager,
     manager::RuntimeThreadManagerConfig, manager::SharedRuntimeThreadManager,
-    manager::StartTurnRequest,
+    manager::StartTurnRequest, manager::summarize_text,
 };
 use codewhale_runtime::config::Config;
 use codewhale_util::utils::spawn_supervised;
@@ -49,6 +49,16 @@ const PARKED_POLL_CAP: Duration = Duration::from_secs(2);
 // v4 binds execution to a trusted Runtime scope. Older executors must not
 // ignore its eligibility or generation fence.
 const CURRENT_TASK_SCHEMA_VERSION: u32 = 4;
+const DENY_RULES_TASK_SCHEMA_VERSION: u32 = 5;
+const MAX_SUPPORTED_TASK_SCHEMA_VERSION: u32 = DENY_RULES_TASK_SCHEMA_VERSION;
+
+const fn required_task_schema_version(disallowed_tools: &[String]) -> u32 {
+    if disallowed_tools.is_empty() {
+        CURRENT_TASK_SCHEMA_VERSION
+    } else {
+        DENY_RULES_TASK_SCHEMA_VERSION
+    }
+}
 const STORE_REFRESH_INTERVAL: Duration = Duration::from_millis(200);
 /// How long a worker with nothing claimable naps between queue-fingerprint
 /// checks. An in-process notify still wakes it at once; this only bounds how
@@ -342,6 +352,8 @@ pub struct TaskRecord {
     /// posture from that bit exactly as it always did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_posture: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
     pub status: TaskStatus,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
@@ -485,6 +497,8 @@ pub struct NewTaskRequest {
     /// Posture for the thread this task runs on. Takes precedence over
     /// `auto_approve`, which the runtime only reads when no posture is given.
     pub permission_posture: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
     pub owner_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination_thread_id: Option<String>,
@@ -505,6 +519,7 @@ impl NewTaskRequest {
             trust_mode: Some(task.trust_mode),
             auto_approve: Some(task.auto_approve),
             permission_posture: task.permission_posture.clone(),
+            disallowed_tools: task.disallowed_tools.clone(),
             owner_session_id: task.owner_session_id.clone(),
             destination_thread_id: task.destination_thread_id.clone(),
         }
@@ -525,6 +540,7 @@ impl NewTaskRequest {
             trust_mode: None,
             auto_approve: Some(true),
             permission_posture: None,
+            disallowed_tools: Vec::new(),
             owner_session_id: None,
             destination_thread_id: None,
         }
@@ -852,6 +868,7 @@ pub struct ExecutionTask {
     trust_mode: bool,
     auto_approve: bool,
     permission_posture: Option<String>,
+    disallowed_tools: Vec<String>,
     destination_thread_id: Option<String>,
 }
 
@@ -869,6 +886,7 @@ impl From<&TaskRecord> for ExecutionTask {
             trust_mode: task.trust_mode,
             auto_approve: task.auto_approve,
             permission_posture: task.permission_posture.clone(),
+            disallowed_tools: task.disallowed_tools.clone(),
             destination_thread_id: task.destination_thread_id.clone(),
         }
     }
@@ -886,6 +904,7 @@ impl ExecutionTask {
             trust_mode: Some(self.trust_mode),
             auto_approve: Some(self.auto_approve),
             permission_posture: self.permission_posture.clone(),
+            disallowed_tools: self.disallowed_tools.clone(),
             task_id: Some(self.id.clone()),
             ..Default::default()
         }
@@ -1067,11 +1086,27 @@ impl TaskExecutor for EngineTaskExecutor {
             return TaskExecutionResult::from_reason(TaskTerminalReason::Canceled, None);
         }
         let (thread_id, turn) = if let Some(destination) = task.destination_thread_id.clone() {
+            if !task.disallowed_tools.is_empty() {
+                match self.runtime_threads.get_thread(&destination).await {
+                    Ok(thread)
+                        if deny_rules_cover(&thread.disallowed_tools, &task.disallowed_tools) => {}
+                    Ok(_) => {
+                        return TaskExecutionResult::failed(format!(
+                            "Destination thread {destination} does not run under the deny rules this task was created with"
+                        ));
+                    }
+                    Err(err) => {
+                        return TaskExecutionResult::failed(format!(
+                            "Destination thread {destination} cannot take this turn: {err}"
+                        ));
+                    }
+                }
+            }
             let deadline = Instant::now() + self.limits.wall_time;
             let turn = loop {
                 match self
                     .runtime_threads
-                    .start_scheduled_turn(&destination, &task.prompt, &task.id)
+                    .start_scheduled_turn(&destination, &task.prompt, &task.id, &task.workspace)
                     .await
                 {
                     Ok(Some(turn)) => break turn,
@@ -1118,7 +1153,7 @@ impl TaskExecutor for EngineTaskExecutor {
             }
             match self
                 .runtime_threads
-                .start_turn(&thread.id, task.turn_request())
+                .start_task_turn(&thread.id, task.turn_request(), &task.id)
                 .await
             {
                 Ok(turn) => (thread.id, turn),
@@ -2349,9 +2384,10 @@ impl TaskManager {
             req.auto_approve,
         )?;
         validate_preallocated_task_id(&task_id)?;
+        let disallowed_tools = normalize_deny_rules(req.disallowed_tools);
 
         let task = TaskRecord {
-            schema_version: CURRENT_TASK_SCHEMA_VERSION,
+            schema_version: required_task_schema_version(&disallowed_tools),
             // 16 random hex chars (was 8; ~60 bits of entropy once UUIDv4's
             // fixed version nibble is discounted): task ids live in durable
             // state that accumulates across restarts, and a collision
@@ -2378,6 +2414,7 @@ impl TaskManager {
             // (GHSA-72w5-pf8h-xfp4).
             auto_approve: req.auto_approve.unwrap_or(false),
             permission_posture: req.permission_posture,
+            disallowed_tools,
             status: TaskStatus::Queued,
             created_at: Utc::now(),
             started_at: None,
@@ -3877,6 +3914,12 @@ impl TaskManager {
 
     fn persist_task_locked(&self, task: &TaskRecord) -> Result<()> {
         let path = self.tasks_dir.join(format!("{}.json", task.id));
+        let min_version = required_task_schema_version(&task.disallowed_tools);
+        if task.schema_version < min_version {
+            let mut updated = task.clone();
+            updated.schema_version = min_version;
+            return write_json_atomic(&path, &updated);
+        }
         write_json_atomic(&path, task)
     }
 }
@@ -3898,10 +3941,38 @@ fn read_bound_task_file(path: &Path, task_id: &str) -> Result<Option<TaskRecord>
         Err(error) => return Err(error).context("read bound task"),
     };
     let task: TaskRecord = serde_json::from_slice(&bytes).context("decode bound task")?;
-    if task.id != task_id || task.schema_version > CURRENT_TASK_SCHEMA_VERSION {
+    if task.id != task_id || task.schema_version > MAX_SUPPORTED_TASK_SCHEMA_VERSION {
         bail!("Bound task identity or schema does not match its durable admission");
     }
     Ok(Some(task))
+}
+
+pub fn normalize_deny_rules(rules: Vec<String>) -> Vec<String> {
+    let mut seen = Vec::with_capacity(rules.len());
+    for rule in rules {
+        let rule = rule.trim();
+        if !rule.is_empty() && !seen.iter().any(|existing: &String| existing == rule) {
+            seen.push(rule.to_string());
+        }
+    }
+    seen
+}
+
+fn deny_rule_covers(held: &str, required: &str) -> bool {
+    let held = held.to_ascii_lowercase();
+    let required = required.to_ascii_lowercase();
+    match (held.strip_suffix('*'), required.strip_suffix('*')) {
+        (Some(held_prefix), Some(required_prefix)) => required_prefix.starts_with(held_prefix),
+        (Some(held_prefix), None) => required.starts_with(held_prefix),
+        (None, Some(_)) => false,
+        (None, None) => held == required,
+    }
+}
+
+pub fn deny_rules_cover(held: &[String], required: &[String]) -> bool {
+    required
+        .iter()
+        .all(|rule| held.iter().any(|held| deny_rule_covers(held, rule)))
 }
 
 pub fn validate_bound_task_request(task: &TaskRecord, request: &NewTaskRequest) -> Result<()> {
@@ -3933,6 +4004,7 @@ pub fn validate_bound_task_request(task: &TaskRecord, request: &NewTaskRequest) 
             .as_deref()
             .is_some_and(|value| Some(value) != task.permission_posture.as_deref())
         || task.auto_approve != request.auto_approve.unwrap_or(false)
+        || task.disallowed_tools != normalize_deny_rules(request.disallowed_tools.clone())
     {
         bail!("Task admission replay does not match the bound request");
     }
@@ -3961,11 +4033,11 @@ fn load_state(tasks_dir: &Path, queue_path: &Path) -> Result<LoadedTaskState> {
                 .with_context(|| format!("Failed to read task file {}", path.display()))?;
             let task: TaskRecord = serde_json::from_str(&content)
                 .with_context(|| format!("Failed to parse task file {}", path.display()))?;
-            if task.schema_version > CURRENT_TASK_SCHEMA_VERSION {
+            if task.schema_version > MAX_SUPPORTED_TASK_SCHEMA_VERSION {
                 bail!(
                     "Task schema v{} is newer than supported v{}",
                     task.schema_version,
-                    CURRENT_TASK_SCHEMA_VERSION
+                    MAX_SUPPORTED_TASK_SCHEMA_VERSION
                 );
             }
             ensure_safe_storage_id("task id", &task.id)?;
@@ -4177,24 +4249,6 @@ fn summarize_json(value: &Value) -> Option<String> {
     Some(summarize_text(&text, TIMELINE_SUMMARY_LIMIT))
 }
 
-fn summarize_text(text: &str, limit: usize) -> String {
-    let take = limit.saturating_sub(3);
-    let mut count = 0;
-    let mut out = String::new();
-    for ch in text.chars() {
-        if count >= take {
-            out.push_str("...");
-            return out;
-        }
-        if ch.is_control() && ch != '\n' && ch != '\t' {
-            continue;
-        }
-        out.push(ch);
-        count += 1;
-    }
-    out
-}
-
 fn ensure_safe_storage_id(kind: &str, value: &str) -> Result<()> {
     let mut components = Path::new(value).components();
     let Some(component) = components.next() else {
@@ -4299,6 +4353,33 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::time::Duration;
+
+    #[test]
+    fn deny_rules_cover_only_when_every_required_rule_is_held() {
+        let rules = |items: &[&str]| items.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert!(deny_rules_cover(&[], &[]));
+        assert!(!deny_rules_cover(&[], &rules(&["mcp_secret_*"])));
+        assert!(deny_rules_cover(
+            &rules(&["MCP_secret_*", "Bash"]),
+            &rules(&["mcp_secret_*"])
+        ));
+        assert!(deny_rules_cover(
+            &rules(&["mcp_*"]),
+            &rules(&["mcp_secret_*", "mcp_secret_read"])
+        ));
+        assert!(!deny_rules_cover(
+            &rules(&["mcp_secret_read"]),
+            &rules(&["mcp_secret_*"])
+        ));
+        assert!(!deny_rules_cover(
+            &rules(&["mcp_secret_*"]),
+            &rules(&["mcp_*"])
+        ));
+        assert_eq!(
+            normalize_deny_rules(rules(&[" a ", "", "a", "b*"])),
+            rules(&["a", "b*"])
+        );
+    }
 
     struct MockExecutor;
 
@@ -5006,14 +5087,16 @@ mod tests {
             Arc::new(MockExecutor),
         )
         .await?;
-        sleep(STORE_IDLE_POLL_INTERVAL + Duration::from_millis(300)).await;
+        settle_queue_fixture(&manager).await?;
+        inspect_settled_workers(&manager).await?;
         manager.fingerprint_reads.store(0, Ordering::Relaxed);
         manager.store_loads.store(0, Ordering::Relaxed);
 
-        let window = Duration::from_secs(3);
-        sleep(window).await;
+        let started = Instant::now();
+        sleep(Duration::from_secs(3)).await;
         let reads = manager.fingerprint_reads.load(Ordering::Relaxed);
         let loads = manager.store_loads.load(Ordering::Relaxed);
+        let window = started.elapsed();
         let ticks = (window.as_millis() / STORE_SETTLED_NAP.as_millis()) as usize + 1;
         assert!(
             reads <= workers * ticks,
@@ -5777,6 +5860,7 @@ mod tests {
                 summary: "Task started".to_string(),
                 detail_path: None,
             }],
+            disallowed_tools: Vec::new(),
         };
         fs::write(
             tasks_dir.join(format!("{task_id}.json")),
@@ -5945,6 +6029,7 @@ mod tests {
             auto_approve: None,
             permission_posture: None,
             owner_session_id: None,
+            disallowed_tools: Vec::new(),
         };
         let task = manager.add_task(req).await?;
 
@@ -6475,6 +6560,7 @@ mod tests {
             github_events: Vec::new(),
             tool_calls: Vec::new(),
             timeline: Vec::new(),
+            disallowed_tools: Vec::new(),
         }
     }
 
@@ -7092,6 +7178,34 @@ mod tests {
             .await?;
             assert_eq!(task.result_summary.as_deref(), Some(expected), "{status}");
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn task_with_deny_rules_refuses_a_destination_thread_that_lacks_them() -> Result<()> {
+        let runtime = Arc::new(test_runtime_manager().await?);
+        let open = runtime
+            .create_thread(CreateThreadRequest::default())
+            .await?;
+        let mut record = sample_task_record();
+        record.destination_thread_id = Some(open.id.clone());
+        record.disallowed_tools = vec!["mcp_secret_*".to_string()];
+        let (tx, rx) = mpsc::channel(64);
+        tokio::spawn(drain_task_events(rx));
+        let executor =
+            EngineTaskExecutor::new(runtime, TaskExecutionLimits::short_for_tests(), false);
+        let result = executor
+            .execute(ExecutionTask::from(&record), tx, CancellationToken::new())
+            .await;
+        assert_eq!(result.status, TaskStatus::Failed);
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("deny rules")),
+            "{:?}",
+            result.error
+        );
         Ok(())
     }
 
@@ -8494,6 +8608,70 @@ mod tests {
             .expect("a terminal store fault ends the turn");
         assert_eq!(status, RuntimeTurnStatus::Failed);
         assert!(error.is_some_and(|message| message.contains(path)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn denied_task_uses_v5_schema_while_open_task_stays_v4() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path().to_path_buf();
+        let manager =
+            TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
+                .await?;
+
+        let open = manager
+            .add_task(NewTaskRequest {
+                disallowed_tools: vec!["   ".to_string()],
+                ..NewTaskRequest::from_prompt("open task")
+            })
+            .await?;
+        let mut restricted_req = NewTaskRequest::from_prompt("restricted task");
+        restricted_req.disallowed_tools = vec!["shell".to_string(), " shell ".to_string()];
+        let restricted = manager.add_task(restricted_req).await?;
+
+        assert_eq!(open.schema_version, CURRENT_TASK_SCHEMA_VERSION);
+        assert!(open.disallowed_tools.is_empty());
+        assert_eq!(restricted.schema_version, DENY_RULES_TASK_SCHEMA_VERSION);
+        assert_eq!(restricted.disallowed_tools, vec!["shell"]);
+
+        let _ = wait_for_terminal_state(&manager, &open.id, Duration::from_secs(10)).await?;
+        let _ = wait_for_terminal_state(&manager, &restricted.id, Duration::from_secs(10)).await?;
+        manager.shutdown_and_wait().await?;
+        drop(manager);
+
+        let open_json: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+            root.join("tasks").join(format!("{}.json", open.id)),
+        )?)?;
+        assert_eq!(open_json["schema_version"], CURRENT_TASK_SCHEMA_VERSION);
+        assert!(open_json.get("disallowed_tools").is_none());
+
+        let restricted_path = root.join("tasks").join(format!("{}.json", restricted.id));
+        let mut restricted_json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&restricted_path)?)?;
+        assert_eq!(
+            restricted_json["schema_version"],
+            DENY_RULES_TASK_SCHEMA_VERSION
+        );
+        assert_eq!(restricted_json["disallowed_tools"], json!(["shell"]));
+
+        let reloaded =
+            TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
+                .await?;
+        let reloaded_task = reloaded.get_task(&restricted.id).await?;
+        assert_eq!(reloaded_task.schema_version, DENY_RULES_TASK_SCHEMA_VERSION);
+        assert_eq!(reloaded_task.disallowed_tools, vec!["shell"]);
+        reloaded.shutdown_and_wait().await?;
+        drop(reloaded);
+
+        restricted_json["schema_version"] = json!(MAX_SUPPORTED_TASK_SCHEMA_VERSION + 1);
+        fs::write(
+            &restricted_path,
+            serde_json::to_string_pretty(&restricted_json)?,
+        )?;
+        match TaskManager::start_with_executor(test_config(root), Arc::new(MockExecutor)).await {
+            Ok(_) => panic!("manager should reject task schema v6"),
+            Err(err) => assert!(err.to_string().contains("newer than supported"), "{err:#}"),
+        }
         Ok(())
     }
 }

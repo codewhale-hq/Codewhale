@@ -547,17 +547,10 @@ fn worker_unknown_usage_promotes_exact_route_once_and_survives_serialization() {
         Some("https://api.deepseek.com/v1"),
         chrono::Utc::now(),
     );
-    manager.record_worker_missing_usage(
-        &id,
-        "late-response",
-        crate::cost_status::MissingUsageCoverage::for_route(
-            &route,
-            crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
-        ),
-    );
+    manager.record_worker_missing_usage(&id, "late-response", &route);
     let encoded = serde_json::to_vec(manager.worker_records.get(&id).unwrap()).unwrap();
     let restored: AgentWorkerRecord = serde_json::from_slice(&encoded).unwrap();
-    assert_eq!(restored.missing_usage_sources.len(), 1);
+    assert_eq!(restored.source_usage_records.len(), 1);
     assert!(restored.has_unreported_usage);
     manager.worker_records.insert(id.clone(), restored);
     let usage = Usage {
@@ -575,13 +568,12 @@ fn worker_unknown_usage_promotes_exact_route_once_and_survives_serialization() {
     let record = &manager.worker_records[&id];
     assert_eq!(record.usage.total_tokens, Some(20));
     assert_eq!(record.usage.cost_microusd, Some(20));
-    assert!(record.missing_usage_sources.is_empty());
     assert!(!record.has_unreported_usage);
     assert_eq!(record.usage_source_fingerprints.len(), 1);
 }
 
 #[test]
-fn worker_missing_overflow_and_legacy_gap_remain_after_exact_promotions() {
+fn worker_legacy_gap_remains_after_exact_promotions() {
     let dir = tempdir().unwrap();
     let mut manager = SubAgentManager::new(dir.path().to_path_buf(), 4);
     let id = child(&mut manager, "bounded-unknown", None, None);
@@ -594,20 +586,11 @@ fn worker_missing_overflow_and_legacy_gap_remain_after_exact_promotions() {
         Some("https://api.deepseek.com/v1"),
         chrono::Utc::now(),
     );
-    for index in 0..65 {
-        manager.record_worker_missing_usage(
-            &id,
-            &format!("request-{index}"),
-            crate::cost_status::MissingUsageCoverage::for_route(
-                &route,
-                crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
-            ),
-        );
+    for index in 0..4 {
+        manager.record_worker_missing_usage(&id, &format!("request-{index}"), &route);
     }
-    assert_eq!(manager.worker_records[&id].missing_usage_sources.len(), 64);
     let encoded = serde_json::to_vec(&manager.worker_records[&id]).unwrap();
     let restored: AgentWorkerRecord = serde_json::from_slice(&encoded).unwrap();
-    assert!(restored.missing_usage_overflowed);
     assert!(restored.legacy_unreported_usage);
     manager.worker_records.insert(id.clone(), restored);
     let usage = Usage {
@@ -615,7 +598,7 @@ fn worker_missing_overflow_and_legacy_gap_remain_after_exact_promotions() {
         output_tokens: 1,
         ..Default::default()
     };
-    for index in 0..65 {
+    for index in 0..4 {
         for _ in 0..2 {
             manager.record_worker_routed_usage(
                 &id,
@@ -627,8 +610,7 @@ fn worker_missing_overflow_and_legacy_gap_remain_after_exact_promotions() {
         }
     }
     let record = &manager.worker_records[&id];
-    assert_eq!(record.usage.total_tokens, Some(130));
-    assert!(record.missing_usage_sources.is_empty());
+    assert_eq!(record.usage.total_tokens, Some(8));
     assert!(record.has_unreported_usage);
-    assert!(record.missing_usage_overflowed && record.legacy_unreported_usage);
+    assert!(record.legacy_unreported_usage);
 }
