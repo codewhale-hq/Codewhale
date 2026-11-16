@@ -40,6 +40,23 @@ Run `/mode` to open the mode picker, or switch directly with `/mode work` or
 `/mode plan`. `operate` and its spellings still parse, as Work, and say that
 Operate was retired, so an older setting or script never errors.
 
+The picker has two groups. **Conversation mode** lists the modes the Engine
+offers, Standard mode and Creator mode, each with a one-line description; a
+mode that cannot be used yet is listed, disabled, with its reason. **Permissions**
+holds Work and Plan, still on `1` and `2`; the conversation modes have no
+number keys. A conversation's mode is chosen before its first message and is
+fixed after it: `/mode creator` or the picker's first group changes a blank
+conversation in place, and after the first message the picker shows the group
+as locked and `/mode creator` is refused with a note to start a new
+conversation. `/new` starts a Standard conversation, `/new creator` starts a
+Creator mode conversation (`--force` still combines). Resume, `/load`, `/fork`
+and `/clear` keep the conversation's saved mode, and the mode name appears in the
+footer when it is not Standard. A mode never changes a permission: Creator
+mode in Plan is still Plan. `codewhale` and `codewhale exec` take
+`--conversation-mode <MODE>` to start a new session in a mode; with `--resume`,
+`--session-id` or `--continue` it must match the session's saved mode, or the
+run exits with code 2 before any model call.
+
 - **Plan**: design-first prompting. The stable primitive names remain familiar, but the runtime centrally refuses file mutation and shell execution. Read-only inspection and policy-allowed research, including deferred Web search/fetch, remain available. When a Plan turn successfully finishes a nonempty response, including a prose-only plan, the TUI asks how to continue: Work (Ask), Work (Accept Edits), Work (Auto-Review), or keep planning. Work sends the exact approved response as a normal follow-up and preserves that turn's existing To-dos, or adds one pending plan item without replacing unrelated work.
 - **Work** (internally `agent`): ordinary multi-step execution. The first-turn toolbox includes `read`, `write`, `edit`, `file_search`, `grep_files`, `bash`, `agent`, `todo_write`, `present`, and `load_skill`, plus `create_goal`, `get_goal`, `update_goal`, and `task_shell_wait` so goal and background-shell controls are available without discovery. The agent calls `create_goal` when a request is a durable objective; the host never infers a goal from wording, and the contract must not tell the model otherwise. Approval, sandbox, repository law, and managed policy decide what may execute.
 - **Operate is retired.** It was Work with an orchestration contract, and that contract now lives in every session's constitution: make a goal of a durable request, keep the plan visible, fan independent work out to parallel sub-agents, and have an independent reviewer try to refute a non-trivial change. A saved `default_mode = "operate"` loads as Work and says so once; a Runtime API request with `mode: "operate"` runs as `agent` with the default posture (Accept Edits) and logs one notice per process, never an error. Agents forked from an older Operate conversation do not inherit its contract. Multi-agent work stays on `agent`, `workflow` and `/fleet` in every mode.
@@ -224,38 +241,128 @@ Legacy note: `/set approval_mode ...` was retired in favor of `/config`.
   questions remain available in interactive sessions through `request_user_input`;
   a question parks the turn until answered, canceled, or its configured timeout
   expires. Headless `exec` withholds that tool because it has no responder.
-  Tool safety holds remain separate from user questions. Two layers decide approvals. The
-  **deterministic floor** (configured block rules plus the built-in safety
-  floor) allows proven-safe calls and hard-blocks publish-like actions and
-  destructive background/headless work; it is never model-reviewed. Fallback
-  holds — calls the deterministic engine could not prove safe — escalate to a
-  one-shot **model guardian** (v0.9.8) that returns risk, allow/deny, and a
-  rationale. The guardian sees the exact held call and deterministic
-  observations in separate JSON fields; conversation history, skill
-  instructions, attachments, and expanded model context are excluded. It does
-  not infer user intent or compute a generic user-intent score.
-  High or critical risk cannot auto-run even if the model says allow. It has no
-  tools, remembers no rules, and denies rather than truncates an oversized
-  exact call. Exactly one reviewer request is made; incomplete or malformed
-  output, timeout, cancellation, or provider failure fails closed. Repeated
-  denials stop the turn: after three guardian denials in a row, or ten among
-  the turn's last fifty reviews, the turn ends as interrupted with a status
-  line, and calls still in that batch are refused without another review.
-  Only explicit denials count (not timeouts or failures), an allowed review
-  resets the run of three, the count starts fresh with each turn, and a child
-  agent counts its own turns. Headless
-  adapters use the deterministic-only tier. Repo-law
-  holds that explicitly require a person block in Auto-Review rather than
-  opening a hidden approval modal.
+  Tool safety holds remain separate from user questions. Each turn carries an
+  engine-minted run origin (`Interactive` only when started or steered directly
+  from the owner's active TUI composer or signed-in owner runtime composer with
+  an owner surface attached; `Headless` for `exec` and ACP runs, including
+  `approval_policy = "auto"`; `Background` for detached starts, detached
+  children, tasks, automations, and delayed `send_later` runs) and an owner
+  presence signal (`owner_present`), neither of which can be supplied by a
+  host or request field. Two layers decide approvals. The **deterministic
+  floor** (configured block rules plus the built-in safety floor) allows
+  proven-safe calls (including explicit routine workspace test and build
+  commands with trailing `2>&1` or `>/dev/null` and a single `head`, `tail`,
+  or literal `grep` filter — excluding `cargo run`, non-routine `make` targets,
+  `git add`, `git commit`, discard flags, or your own block rules), hard-blocks
+  package and release publishing (`npm publish`, `cargo publish`, `gh release`,
+  and release tools) as well as destructive unattended work (`Background`,
+  `Headless`, or any turn where `owner_present` is false) and any unattended
+  repository push or tag mutation (`!owner_present`), holds repository-remote
+  pushes in interactive sessions (`owner_present`) plus named soft rules
+  (`force-push`, `git-tag`, `deploy-branch`, `git-discard`, `infra-destroy`,
+  `ci-or-pr-bypass`, `print-credentials`, `secret-commit`, and `deploy-wrapper`)
+  and writes, edits, deletes, or moves targeting `AGENTS.md`, `CLAUDE.md`, or
+  loaded instruction files for guardian review ahead of `auto_review.allow`
+  rules, holds file or shell writes targeting protected repository,
+  credential, IDE/agent, workflow, shell startup, or autostart paths
+  (`.git`, `.codewhale/`, `.vscode/`, `.claude/`, `.mcp.json`, `.claude.json`,
+  `.github/workflows/`, `.gitconfig`, `.config/gh/hosts.yml`, shell rc/profile
+  files, `Library/LaunchAgents/`, `.config/autostart/`, `.cargo/config.toml`,
+  `.config/fish/`, `.config/systemd/user/`, and Windows `Startup`, including
+  symlink and path-alias targets) for guardian review ahead of narrow allow
+  rules and routine checks, evaluates bounded workspace writes in non-git
+  folders as safe only when local snapshots are enabled (`snapshots_enabled`)
+  and the workspace root is not `/` or a user home/top-level folder (while
+  still routing file deletions or full-file empties in non-git folders to
+  guardian review, and leaving Accept Edits' git-work-tree carve-out
+  unchanged), includes `.claude.json` and `.config/gh/hosts.yml` in the
+  `print-credentials` rule, prompts once per Auto-Review session when an
+  interactive owner can confirm the first shell read resolving outside the
+  workspace (ignoring standard pseudo-devices such as `/dev/null`, routing
+  unattended/non-prompting runs to the guardian, and resetting when leaving
+  Auto-Review or rewinding/resetting the session), and holds critical-path
+  deletions (filesystem root, home folder, the project root or any ancestor of
+  it, and `.git` folders) so interactive sessions with `owner_present` ask you
+  while unattended or headless sessions refuse; the built-in floor is never
+  model-reviewed and never waits for an approval card on other holds or
+  unattended work.
+  Fallback holds — calls the deterministic engine could not prove safe,
+  interactive repository pushes, outbound web requests, and named soft-rule
+  holds — escalate to a one-shot **model reviewer** that returns risk,
+  allow/deny, and a rationale using `auto_review.reviewer_model` (when unset, it
+  picks a capable model on the session's active provider route when matched or
+  falls back to the session model without switching providers or accounts).
+  Soft-rule holds carry the rule name in hold observations, block reasons, and
+  receipts and require an explicit request from you for that action rather than
+  broad instructions. The reviewer receives
+  structured untrusted-evidence JSON containing the exact `proposed_tool_call`
+  (including `description`), deterministic observations (including
+  `person_approved_retry` and any triggering `soft_rule`), redacted earlier
+  non-read `recent_actions` from the current turn, optional `approved_plan`,
+  optional user/managed-configured `environment` scope entries (project
+  `.codewhale/config.toml` overlays cannot set or modify
+  `auto_review.environment`), pinned `project_instructions` captured
+  at session start with separate user and repository labels and SHA-256 hashes
+  (never re-read from disk mid-session), and typed `person_messages` from the
+  conversation owner newest first (on subagent turns, inherited from the root
+  conversation rather than child briefs; empty on agent-created `Background`
+  threads). Attached `@file` bodies, skill instructions, expanded context, tool
+  outputs, and assistant prose are never passed to the reviewer. Context is
+  capped at 64 KiB; the current request and exact proposed call are never
+  truncated (exceeding the cap alone fails closed as unavailable), and under
+  budget pressure repository instructions, user instructions, and then oldest
+  middle `person_messages` trim first while preserving the earliest typed limit
+  and latest request. High or critical risk cannot auto-run unless you approve a
+  one-use retry of that exact call, and an explicit guardian denial still
+  blocks even then. It has no tools, remembers no rules, and makes a single
+  request with a fail-closed result on incomplete or malformed output, timeout,
+  cancellation, or provider failure. Every Auto-Review block names the rule and
+  reason and invites either another route or, on interactive owner-present
+  blocks eligible for retry, one-use owner approval of that exact call via the
+  block receipt (`r` in an empty composer), `/permissions blocked`, or the
+  Runtime API (`POST /v1/threads/{id}/auto-review/approve`). Each retry grant is
+  bound to the exact canonical `(tool_name, call_digest)`, is consumed once on
+  retry, still passes every non-Auto-Review gate (hooks, typed permissions, repo
+  law, deterministic floor, and sandbox), never extends to children or extension
+  calls, and clears when leaving Auto-Review or resetting the conversation. When
+  `owner_present` is true (and not a child worker), 3 consecutive blocks, 20
+  total blocks in the conversation, or 3 consecutive unavailable reviewer checks
+  switches Permissions to Ask (`AutoReviewPaused`) and continues in Ask
+  (switching back to Auto-Review resets the counters). Unattended runs
+  (`owner_present` false) never fall back to Ask; they continue past blocks and
+  end as interrupted with a blocked-actions summary at 20 total blocks or 10
+  consecutive unavailable reviewer checks. An allowed review resets consecutive
+  block and unavailable counts, while an explicit guardian denial resets the
+  consecutive unavailable count. Headless `exec` turns consult the model
+  guardian for fallback non-destructive holds while applying the deterministic
+  unattended rules to destructive work; ACP turns use deterministic rules only
+  and refuse guardian consultation.
+  When `owner_present` is true (an interactive TUI or owner runtime surface
+  turn), non-extension forced prompts — typed `permissions.toml` `ask` rules, `tool_call_before`
+  hook `ask`, prompt-only tools such as Computer Use consent and script cards, and
+  repo-law holds that require a person — open the
+  normal approval card instead of being waived or failing closed, unless a hard
+  block (`hidden_unicode` or a configured `auto_review.block` rule) applies; on
+  runtime threads, only the owner's surface (`desktop`, `tui`, or `web`) may
+  answer such a card. Held extension calls in Auto-Review route through the
+  Auto-Review reviewer with their host-minted plugin identity and never clear via
+  routine tiers or allow rules (while independent typed rules, hook holds, and
+  safety-floor blocks still apply). When `owner_present` is false (`Background`, `Headless`,
+  or unattached turns), unattended and headless runs never open an approval card,
+  refuse forced prompts naming the rule without registering a pending approval,
+  and block repo-law holds that require a person.
 
 The LLM reviewer is closest to OpenAI Codex's experimental Auto-Review at
 commit [`6fc6b9d6d2580d62622fc9884b5f5707f6505a5e`](https://github.com/openai/codex/tree/6fc6b9d6d2580d62622fc9884b5f5707f6505a5e).
 Codex's [guardian entry point](https://github.com/openai/codex/blob/6fc6b9d6d2580d62622fc9884b5f5707f6505a5e/codex-rs/core/src/guardian/mod.rs)
-reconstructs conversation context and runs a dedicated review session.
-Codewhale deliberately adopts only the exact-action structured decision,
-90-second deadline, fail-closed result, and per-turn denial circuit breaker. It
-does not copy Codex's transcript reconstruction, user-authorization score,
-reviewer tools, retries, persistent review session, or denial ledger.
+reconstructs full conversation transcripts and runs a dedicated review session.
+Codewhale passes only Rust-recorded owner `person_messages`, optional approved
+plan text, redacted earlier non-read actions, session-pinned instructions,
+deterministic observations, and the exact `proposed_tool_call` within a 64 KiB
+cap, paired with a 90-second deadline, fail-closed result, and per-turn denial
+circuit breaker. It excludes assistant prose and tool outputs and does not copy
+Codex's transcript reconstruction, user-authorization score, reviewer tools,
+retries, persistent review session, or denial ledger.
 
 Kimi Code at commit
 [`1414d4602898f406e540b23342cb18db23ff9efc`](https://github.com/MoonshotAI/kimi-code/tree/1414d4602898f406e540b23342cb18db23ff9efc)
@@ -308,7 +415,19 @@ auto-approve bit:
   policy (proven-safe calls run; publish-like and destructive background work
   is hard-blocked) and, for holds it cannot prove safe, the same one-shot
   model guardian using the child's own session client. No prompt is ever
-  opened for a child; an unavailable guardian denies, fail closed.
+  opened for a child; an unavailable guardian denies, fail closed. When a child
+  returns to an Auto-Review parent after running one or more tool calls, the
+  guardian reviews its executed action list once (tool names and compacted,
+  redacted call inputs only — never tool results or child report prose)
+  against the root owner messages (`person_messages`), approved plan, and
+  pinned project instructions. If the reviewer flags a concern or cannot run
+  (unavailable, timed out, cancelled, or over the guardian context budget),
+  the engine prepends a sanitized `[Auto-Review warning: ...]` banner at the
+  top of the report delivered back to the parent. Auto-Review blocks from
+  child calls and return reviews are recorded in the parent's blocked-actions
+  list (`/permissions blocked` and `GET /v1/threads/{id}/auto-review/blocks`)
+  as `[sub-agent <id>]` entries with retry approval disallowed
+  (`approvable: false`).
 - **Ask** and **Accept Edits**: a call the role may delegate runs. A held call is raised as an
   approval prompt in the parent's UI (`agent:<id>:approval:<n>`) when the
   host is an interactive TUI; the worker waits visibly (`waiting for user`)
@@ -322,7 +441,7 @@ auto-approve bit:
 Role posture and the execution envelope are checked before and after this
 gate and never widen. Every decision a person did not make at a prompt is
 written to the audit log and to the child's transcript as a one-line note
-(`Auto-Review allowed 'bash' (low risk, model guardian): …`), visible when
+(`Auto-Review allowed 'bash' (low risk, model guardian) [reviewer: <model>]: …`), visible when
 the worker is focused.
 
 ## Small-Screen Status Behavior
@@ -379,6 +498,7 @@ Run `codewhale --help` for the canonical list. Common flags:
 - `-r, --resume <ID|PREFIX|latest>`: resume a saved session
 - `-c, --continue`: resume the most recent session in this workspace
 - `--max-subagents <N>`: clamp to `1..=128`
+- `--permission-mode <ask|accept-edits|plan|auto-review|full-access>`: start in the named permission mode (works on `codewhale` and `codewhale exec`). `codewhale exec --auto` keeps meaning Full Access. When managed config sets `auto_review.disabled = true`, `Shift+Tab` skips Auto-Review, and `--permission-mode auto-review`, `/auto`, and `approval_policy = "auto"` are refused.
 - `--full-access`: start with Full Access, no approval prompts and no Codewhale sandbox; the same as `yolo = true`. `serve --acp --full-access` and `--full-access serve --acp` are equivalent.
 - `--mouse-capture` / `--no-mouse-capture`: opt in or out of internal mouse scrolling, transcript selection, right-click context actions, and transcript scrollbar dragging. Mouse capture is enabled by default on non-Windows terminals and on Windows Terminal/ConEmu/Cmder so drag selection copies only transcript text, removes visual wrap-column line breaks from paragraphs, and stays scoped to the transcript pane; hold Shift while dragging or use `--no-mouse-capture` for raw terminal selection. It defaults off on legacy Windows console (CMD without `WT_SESSION` / `ConEmuPID`) and inside JetBrains JediTerm — PyCharm/IDEA/CLion/etc. — where the terminal advertises mouse support but forwards SGR mouse events as raw text (#878, #898). Use `--mouse-capture` to opt in anywhere it's defaulted off. Raw terminal selection may cross the right workbar and include visual wraps because the terminal, not the TUI, owns the selection.
 - `--profile <NAME>`: select config profile

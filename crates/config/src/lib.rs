@@ -121,7 +121,7 @@ pub use extension_toml::*;
 pub use fleet::*;
 pub use hotbar::*;
 pub use model_normalization::*;
-pub(crate) use path_io::*;
+pub use path_io::*;
 pub use permissions::*;
 pub use project_config::*;
 pub use provider_chain::*;

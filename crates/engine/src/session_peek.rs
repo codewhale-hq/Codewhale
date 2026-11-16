@@ -160,12 +160,30 @@ fn entry_for_blocks(default_kind: PeekEntryKind, blocks: &[ContentBlock]) -> Pee
             // rather than their shape: the size is the honest number, and any
             // field of the payload could be a credential.
             ContentBlock::ToolSearchToolResult { content, .. }
-            | ContentBlock::CodeExecutionToolResult { content, .. } => {
+            | ContentBlock::CodeExecutionToolResult { content, .. }
+            | ContentBlock::WebSearchToolResult { content, .. }
+            | ContentBlock::WebFetchToolResult { content, .. } => {
                 kind = PeekEntryKind::Tool;
                 parts.push(format!(
                     "[tool result: {} chars]",
                     content.to_string().len()
                 ));
+            }
+            ContentBlock::WebSearchCall {
+                kind: call_kind, ..
+            } => {
+                kind = PeekEntryKind::Tool;
+                parts.push(format!(
+                    "[web search call: {}]",
+                    call_kind.as_deref().unwrap_or("search")
+                ));
+            }
+            ContentBlock::ServerToolCalls { steps } => {
+                kind = PeekEntryKind::Tool;
+                parts.push(format!("[server tool calls: {} steps]", steps.len()));
+            }
+            ContentBlock::File { file_id } => {
+                parts.push(format!("[file: {file_id}]"));
             }
             ContentBlock::ImageUrl { .. } => {
                 kind = PeekEntryKind::Tool;
@@ -203,7 +221,7 @@ pub const REDACTED_PLACEHOLDER: &str = "[redacted]";
 
 /// Mask credential-shaped substrings.
 ///
-/// The shared export sanitizer ([`codewhale_secrets::sanitize::sanitize_text`],
+/// The shared export sanitizer ([`codewhale_sanitize::sanitize::sanitize_text`],
 /// also used by `/export`) runs first: it covers `Bearer <token>`, JWTs,
 /// URL credentials, PEM blocks, and quoted JSON/TOML keyed secrets. A
 /// token-level pass then masks the extra bare prefixes (AWS, Google, Hugging
@@ -211,7 +229,7 @@ pub const REDACTED_PLACEHOLDER: &str = "[redacted]";
 /// peek line is cheap; leaking a key over a LAN is not.
 #[must_use]
 pub fn redact(text: &str) -> (String, bool) {
-    let sanitized = codewhale_secrets::sanitize::sanitize_text(text);
+    let sanitized = codewhale_sanitize::sanitize::sanitize_text(text);
     // The sanitizer also strips control bytes and normalises URLs, so compare
     // placeholder counts rather than bytes to decide whether it redacted.
     let mut redacted = redaction_marks(&sanitized) > redaction_marks(text);

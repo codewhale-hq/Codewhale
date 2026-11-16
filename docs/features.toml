@@ -216,6 +216,17 @@ docs = "docs/EXTENSIONS.md"
 owner = "crates/engine/src/extension_host"
 
 [[feature]]
+id = "plugin-creator"
+name = "Plugin creator"
+summary = "Enables the built-in plugin_manager tool and Creator mode host module while Rust retains permission gates."
+status = "experimental"
+surfaces = { tui = "preview", web = "none", api = "preview" }
+since = "unreleased"
+flag = "plugin_creator"
+docs = "docs/MODES.md"
+owner = "crates/engine/src/extension_host"
+
+[[feature]]
 id = "finance-host"
 name = "Finance host"
 summary = "Routes opted-in finance tools through the bundled Native host under the existing permission and sandbox gates."
@@ -319,7 +330,7 @@ owner = "crates/engine/src/tools/review_host.rs"
 [[feature]]
 id = "modes"
 name = "Modes"
-summary = "Plan and Work modes; Plan is a stop on the Shift+Tab dial, Operate parses as Work; a finished plan offers work."
+summary = "Plan and Work modes on the Shift+Tab dial; a conversation is Standard or Creator mode, fixed after its first message."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/MODES.md"
@@ -490,6 +501,15 @@ status = "experimental"
 surfaces = { tui = "preview", api = "partial" }
 since = "unreleased"
 owner = "crates/engine/src/tools/present.rs"
+
+[[feature]]
+id = "show-data"
+name = "Charts in the transcript"
+summary = "Read-only show_data tool: display sparklines, labelled bars or trends, with matching text summaries."
+status = "experimental"
+surfaces = { tui = "preview", api = "partial" }
+since = "unreleased"
+owner = "crates/engine/src/tools/show_data.rs"
 
 [[feature]]
 id = "read-media"
@@ -805,7 +825,7 @@ owner = "crates/tui/src/commands/groups/session/export.rs"
 [[feature]]
 id = "live-thinking"
 name = "Live thinking"
-summary = "/verbose toggles live model thinking in the transcript."
+summary = "Model thinking shows live in the transcript, then collapses under a Thought header; /verbose shows it in full."
 status = "stable"
 surfaces = { tui = "stable" }
 owner = "crates/tui/src/commands/groups/config/mod.rs"
@@ -1052,3 +1072,13 @@ surfaces = { tui = "stable" }
 since = "unreleased"
 docs = "docs/CONFIGURATION.md"
 owner = "crates/config/src/provider_toml.rs"
+
+[[feature]]
+id = "native-runtime-attachment"
+name = "Native Runtime attachment"
+summary = "Attach-only native clients select an authenticated existing owner and a fixed workspace."
+status = "experimental"
+surfaces = { api = "partial" }
+since = "unreleased"
+owner = "crates/app-server/src/native_runtime.rs"
+docs = "docs/NATIVE_RUNTIME.md"

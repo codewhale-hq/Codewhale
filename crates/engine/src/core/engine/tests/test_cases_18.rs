@@ -60,6 +60,7 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -303,6 +304,7 @@ async fn run_reasoning_only_turn_with_reprompts(
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -897,6 +899,8 @@ fn engine_handle_try_send_does_not_block_when_op_channel_is_full() {
         tx_user_input: mpsc::channel(1).0,
         tx_steer: mpsc::channel(1).0,
         turn_controls: Arc::new(StdMutex::new(handle::TurnControls::default())),
+        host_profile: EngineHostProfile::Normal,
+        owner_surface_attached: false,
         shared_paused: Arc::new(StdMutex::new(false)),
         client_preflight_required: true,
         live_runtime_authority: Arc::new(StdMutex::new(LiveRuntimeAuthorityState::new(
@@ -909,6 +913,9 @@ fn engine_handle_try_send_does_not_block_when_op_channel_is_full() {
                 None,
             ),
         ))),
+        auto_review_state: Arc::new(parking_lot::Mutex::new(
+            crate::core::authority::auto_review::AutoReviewConversationState::default(),
+        )),
         compaction_cancellation: Arc::new(StdMutex::new(CompactionCancellationState::default())),
         turn_heartbeat: turn_heartbeat::TurnHeartbeat::new(),
         subagent_manager: crate::tools::subagent::new_shared_subagent_manager(

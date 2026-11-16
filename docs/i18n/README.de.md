@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fd76d718e3a2 -->
+<!-- source: README.md sha256:c66c04179a4e -->
 <div align="center">
 
 <picture>
@@ -79,7 +79,7 @@ Mehr als 40 Anbieter sind eingebaut, darunter Anthropic, OpenAI, DeepSeek, Googl
 
 ### Erweiterungen
 
-Verbinde [MCP-Server](../MCP.md), füge [Skills](../SKILLS.md) und [Plugins](../PLUGINS.md) hinzu und führe [Hooks](../HOOKS.md) bei Sitzungs- und Werkzeugereignissen aus. Der Code-Modus (experimentell, standardmäßig an) lässt das Modell ein `execute_tools`-Programm schreiben, das mehrere MCP- und Plugin-Werkzeuge aufruft; jeder Aufruf folgt weiter deinen Freigaberegeln und behält seinen Beleg. Das in v0.10.2 enthaltene Computer-Use-Plugin (experimentell, nur macOS) kann andere Apps beobachten und bedienen; es bleibt aus, bis du seinen Zugriff geprüft und es aktiviert hast ([Anleitung](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)). Kommt in 0.10.3: Das Plugin erscheint [separat](https://github.com/codewhale-hq/codewhale-cu-plugin).
+Verbinde [MCP-Server](../MCP.md), füge [Skills](../SKILLS.md) und [Plugins](../PLUGINS.md) hinzu und führe [Hooks](../HOOKS.md) bei Sitzungs- und Werkzeugereignissen aus. Der Code-Modus (experimentell, standardmäßig an) lässt das Modell ein `execute_tools`-Programm schreiben, das mehrere MCP- und Plugin-Werkzeuge aufruft; jeder Aufruf folgt weiter deinen Freigaberegeln und behält seinen Beleg. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) ist ein separates, eigenständig veröffentlichtes Plugin (experimentell, nur macOS) und bleibt aus, bis du seinen Zugriff geprüft und es aktiviert hast.
 
 ### Wege, es zu starten
 

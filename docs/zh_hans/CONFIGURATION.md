@@ -255,7 +255,7 @@ codewhale account keys remove deepseek   # remove the account's saved key
 
 `codewhale config export --portable [--project] [--out FILE]` 写出一份可移植、不含机密的配置包：排序后的 TOML，其中凭据和机器特有的键（API key、base URL、socket 路径）会被丢弃，绝不会用脱敏占位符顶替。不带 `--out` 时，配置包输出到 stdout。类型化的表、数组、数字、布尔值和日期时间保持其类型。与机器绑定的权限刻意设为不可移植：项目信任覆盖、凭据读取器、会自动运行的 hooks、可执行的 LSP 定义和本地路径绑定都会被省略，而不是复制到新主机。信任相关设置（`yolo`、`allow_shell`、`approval_policy`、`sandbox_mode`、`sandbox_network_access` 以及沙箱读取拒绝列表路径）以及本地端点或可执行文件（`[lifecycle_outbox]`、`[extension_host]`、`[control_socket]`）同样如此。带有凭据的 URL——含 userinfo、含名称表明它携带令牌的查询参数，或 Slack/Discord/Teams webhook 路径——按凭据处理。
 
-`codewhale config import <FILE|HTTPS_URL|-> [--dry-run] [--yes] [--project]` 应用一份配置包。信封是严格的（`schema_version = 1`，kind 为 `codewhale.portable-config`；未知字段会失败）。导入会打印一份确定性的计划——新增 / 更改 / 跳过 / 冲突 / 拒绝——然后征求同意，除非给了 `--yes`；无头使用则必须带它。形似凭据的条目会按键名和值的形态被拒绝；拒绝信息会指出字段，绝不会指出值。远程配置包只允许来自 HTTPS（loopback 的 http 除外），上限 5 MiB。应用时会把目标文档备份到 `<config>.bundle-backup-<timestamp>-<random>`，任何失败都会回滚，并且重新导入已应用过的配置包不会改变任何东西。
+`codewhale config import <FILE|HTTPS_URL|-> [--dry-run] [--yes] [--project]` 应用一份配置包。信封是严格的（`schema_version = 1`，kind 为 `codewhale.portable-config`；未知字段会失败）。导入会打印一份确定性的计划——新增 / 更改 / 跳过 / 冲突 / 拒绝——然后征求同意，除非给了 `--yes`；无头使用则必须带它。形似凭据的条目会按键名和值的形态被拒绝；拒绝信息会指出字段，绝不会指出值。远程配置包只允许来自 HTTPS（loopback 的 http 除外），上限 5 MiB。首次请求和每一次重定向都遵守 `[network]` 策略，并拒绝 loopback、私有、链路本地和云元数据地址（包括解析到这些地址的主机名）；仅有的例外是你自己输入的 loopback URL，以及你在 `network.allow` 中列出的 `localhost` 名称或私有 IP 地址（重定向到其他主机时不适用）。当设置了 `HTTPS_PROXY`（或 `HTTP_PROXY`，且未被 `NO_PROXY` 命中）时，非本地跳转会将解析交给代理服务器，并跳过本地 DNS 解析检查。应用时会把目标文档备份到 `<config>.bundle-backup-<timestamp>-<random>`，任何失败都会回滚，并且重新导入已应用过的配置包不会改变任何东西。
 
 导入还会拒绝导出所省略的那些不可移植的权限类别，包括嵌套/驼峰/点号形式的凭据键和 cookie 头。这样，手工编写的或远程的配置包就无法重新引入机器信任、本地凭据访问，或本地导出会拒绝携带的可自动执行命令。结构化的表会被深度合并：可移植的模型或偏好更新不会抹掉目标本地的 provider 凭据、端点、hooks 或可执行定义——这些是刻意从配置包中省略的。数组和标量值仍会替换对应的可移植值。
 
@@ -1152,7 +1152,7 @@ codewhale 还把用户偏好存储在：
 - `mention_menu_limit`(整数，默认 `128`)：输入区渲染可见窗口之前保留的 `@`-提及弹出候选最大数。可见行仍取决于终端高度。
 - `mention_walk_depth`(整数，默认 `10`)：`@`-提及补全遍历的最大工作区深度。在深度嵌套的工作区设为 `0` 表示无限深度；在非常大的仓库保持默认，除非需要。
 - `mention_menu_behavior`(`fuzzy`、`browser`；默认 `fuzzy`)：控制 `@`-提及补全如何填充。`fuzzy` 搜索工作区并应用提及 frecency。`browser` 只按确定性字母顺序列出当前输入目录段的直接子项。
-- `show_thinking`(on/off)
+- `show_thinking`（on/off，默认 on）：在对话记录中显示模型思考，流式输出时实时显示，回答开始后折叠到“思考用时 …”标题下。设为 off 则隐藏思考；回答和工具仍然可见。`settings.toml` 中已保存的值保持不变。
 - `thinking_default_expanded`（on/off，默认 off）：启用 `show_thinking` 时，让思考块初始以展开状态渲染。Space 仍可切换所选块，并且它只决定你尚未动过的块：你自己展开或折叠过的块，即使之后更改这个设置，也会保持该状态。这在 Space 绑定可能被拦截的 SSH/tmux 环境中很有用。
 - `thinking_preview_lines`(整数，默认 `2`):**折叠**的已完成思考仍显示多少正文行。`0` 仅头部；`10` 是较旧的完整显示。实时流式预览不变。用 Space 展开块，或设置 `thinking_default_expanded` 打开每个块。
 - `help_expand_groups`(on/off，默认 off)：让帮助/快捷键从每个组展开开始。默认折叠长尾(Grok 风格)；输入过滤仍展开匹配。
@@ -1290,7 +1290,9 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
   **这是纵深防御，不是安全边界。** 它无法阻止指向被拒绝文件的硬链接、已经复制进工作区的机密、间接读取（`ssh-agent`、`security find-generic-password`、`aws sts …`）、`danger-full-access` 下 shell 命令的读取、MCP 服务器或其他未被包裹的子进程的读取，也无法阻止对*已经被*读取的内容的外泄。真正起作用的仍应是最小权限的凭据和短期令牌。
 
-- `permissions.toml`(同级文件，可选)：与 `config.toml` 相邻加载的类型化权限规则记录，例如 `~/.codewhale/permissions.toml`。这个活动用户文件是今天唯一的权限规则来源；项目配置覆盖不加载项目本地的 `permissions.toml`。规则的 `workspace` 可选字段是它的仓库作用域，不是第二个来源。手工编写的 `[[rules]]` 条目接受 `tool`、可选 `command` 或 `path`、可选绝对 `workspace`、可选 `command_exact = true` 和可选 `action = "deny" | "ask" | "allow"`；省略 `action` 默认 `"ask"`。`workspace` 把规则限制到该仓库，而 `command_exact = true` 把命令规则从历史的 arity 感知前缀匹配改为完整命令匹配。`deny` 在基于模式的审批处理之前阻止匹配调用，`allow` 跳过匹配调用的审批，`ask` 只在可以提示的模式中强制审批。在 TUI 自动批准路径之外，`approval_policy = "never"` 下匹配的 `ask` 规则被拒绝，因为没有提示可显示。在 Full Access / 自动批准会话中，`ask` 规则不会将会话降级为提示或阻断；显式 `deny` 规则仍按当前执行策略逻辑阻断。
+- `permissions.toml`(同级文件，可选)：与 `config.toml` 相邻加载的类型化权限规则记录，例如 `~/.codewhale/permissions.toml`。这个活动用户文件是今天唯一的权限规则来源；项目配置覆盖不加载项目本地的 `permissions.toml`。规则的 `workspace` 可选字段是它的仓库作用域，不是第二个来源。手工编写的 `[[rules]]` 条目接受 `tool`、可选 `command` 或 `path`、可选绝对 `workspace`、可选 `command_exact = true` 和可选 `action = "deny" | "ask" | "allow"`；省略 `action` 默认 `"ask"`。`workspace` 把规则限制到该仓库，而 `command_exact = true` 把命令规则从历史的 arity 感知前缀匹配改为完整命令匹配。`deny` 在基于模式的审批处理之前阻止匹配调用，`allow` 跳过匹配调用的审批，`ask` 只在可以提示的模式中强制审批。在 Auto-Review 中，宽泛的带类型 `allow` 规则（不带 `command` 的 `exec_shell`/`bash`、`*`/`python*`/`npm run *` 等通配命令、`python`/`node`/`npm run`/`cargo run` 等脚本运行器前缀、`agent`/`subagent`/`spawn_agent`、`*`，以及不带 `path` 的写文件/编辑/补丁规则）会在不修改 `permissions.toml` 的情况下暂停，并在离开 Auto-Review 时自动恢复；进入 Auto-Review 且存在被暂停的宽泛允许规则时会显示一行提示。窄范围带类型 `allow`（所有静态展开片段均无包装或标志参数的 `exec_shell`/`bash` 命令，或非智能体/非扩展且文件工具带显式 `path` 的精确工具规则）在未命中安全底线、软规则、钩子/扩展拦截或 `auto_review.review_all_shell` 时跳过 Auto-Review 审查模型。在 TUI 自动批准路径之外，`approval_policy = "never"` 下匹配的 `ask` 规则被拒绝，因为没有提示可显示。在 Full Access / 自动批准会话中，`ask` 规则不会将会话降级为提示或阻断；显式 `deny` 规则仍按当前执行策略逻辑阻断。
+
+  命令 `deny` 规则按静态解析的命令行（包括常见的 shell、包装器与启动器调用）进行匹配，当命令词只能在运行时确定时会失效保护（fail closed）。它们不覆盖脚本文件、内联解释器代码（如 `python -c`、`perl -e`）、重命名的二进制文件、具有相同效果的替代命令，也不覆盖远程主机或容器镜像内部超出本地命令行拼写范围的执行。请将执行沙箱作为真正的隔离控制边界。
 
   在受支持的审批卡片中，按 `S` 允许该请求一次，并把精确的 `action = "ask"` 规则追加到这个文件。对于符合条件的安全请求，选择**始终允许本仓库中的这条确切规则**(快捷键 `P`)来追加带当前绝对 `workspace` 作用域的 `action = "allow"` 规则。记住的 shell 授予设置 `command_exact = true`，所以之后带额外参数的命令不会继承该授予。文件和补丁授予保留现有验证路径产生的精确工作区相对路径。受支持的保存刻意很窄：`exec_shell` 存储确切批准的命令字符串；`write_file` 和 `edit_file` 存储确切工作区相对文件路径；`apply_patch` 为 apply-patch 预检验证过的每个触碰文件存储一条确切的工作区相对 `path` 规则。现有 exec 命令匹配对手工编写的前缀规则保持 arity 感知；审批卡片允许授予使用完整命令匹配。文件路径规范化为运行时匹配使用的同一工作区相对形式。
 
@@ -1315,9 +1317,16 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
   action = "session.compact"
   ```
 
-- `[auto_review]`(表，可选)：工具调用审查策略——确定性底线加模型守卫层。这一层位于现有权限档位之上；它可以拦住或阻断工具调用，但不是自动推送、自动合并或托管审查服务。先检查阻断规则，然后是内置安全底线，再是允许规则。在 Ask 中，安全拦阻打开审批，会话授权或 allow 规则都无法应答它；在 Auto-Review 或非交互 `never` 档位中，它作为硬阻断失败关闭。Full Access 跳过内置底线。即使 allow 规则匹配，安全底线仍覆盖类似发布的动作、破坏性的后台/无头动作，以及请求体携带凭据文件或名称表明是机密的变量、或读取由这两者或 `env`/`printenv` 送入的 stdin 的 `curl`/`wget` 上传；超过 64 KiB 或 4,096 个词、且文本中任意位置含有 `curl` 或 `wget` 的 shell 命令、shell 输入或校验器，以及嵌套过深而无法读取的调用，同样会被拦住。在 Full Access 之外，它还会在每个档位拒绝含有隐藏 Unicode 字符（双向控制符、零宽及其他不可见字符、标签字符、孤立的变体选择符，以及 shell 输入中 ASCII 控制键之外的终端控制字符）的 shell 命令、shell 输入或校验器，并写出该码位及其位置。
+- `[auto_review]`(表，可选)：工具调用审查策略——确定性底线加模型守卫层。这一层位于现有权限档位之上；它可以拦住或阻断工具调用，但不是自动推送、自动合并或托管审查服务。`auto_review.reviewer_model`(字符串，可选，亦可通过 `/config auto_review.reviewer_model <model|default> [--save]` 设置)指定守卫模型，必须留在当前会话的提供商路由内；未设置时会为主要提供商路由自动选择有能力的目录模型或回退到当前会话模型，从不跨越提供商或账户。`auto_review.environment`（字符串数组，可选，仅限用户与受管配置）记录受信任的环境范围说明（例如受信任的仓库远端、账户、主机或存储桶），在守卫审查推送与出站网络请求时作为 `environment` 字段传入上下文；条目不能为空白且不能包含控制字符，项目级 `.codewhale/config.toml` 不能设置或修改 `[auto_review]` 或 `auto_review.environment`（遇到项目级 `[auto_review]` 表会带警告忽略）。评估顺序为：先检查阻断规则，然后是内置安全底线，再是 Auto-Review 命名软规则（`force-push`、`git-tag`、`deploy-branch`、`git-discard`、`infra-destroy`、`ci-or-pr-bypass`、`print-credentials`、`secret-commit`、`deploy-wrapper`）和受保护指令文件修改，最后才检查允许规则。在 Ask 与 Accept Edits 中，安全拦阻打开审批，会话授权或 allow 规则都无法应答它；在 Auto-Review 或非交互 `never` 档位中，它作为硬阻断失败关闭。Full Access 跳过内置底线。在 Auto-Review 下，包发布与发行版发布（如 `npm publish`、`cargo publish`、`gh release` 及发布工具）、破坏性的后台/无头工作、检测到的凭据上传与隐藏 Unicode 仍由内置安全底线硬阻断；仓库远端 `git push` 在 `owner_present` 为真的交互回合交由守卫结合你的请求和 `auto_review.environment` 审查，在无人值守回合（`!owner_present`）由安全底线硬阻断。命名软规则在 `allow` 规则之前对常见的 git/shell/部署形态保持拦截，并在阻断原因与回执中写出规则名称，需要用户对当前动作提出具体请求才能放行。在 Full Access 之外，安全检查还会在每个档位拒绝含有隐藏 Unicode 字符（双向控制符、零宽及其他不可见字符、标签字符、孤立变体选择符及 shell 输入中 ASCII 控制键之外的终端控制字符）的 shell 命令、shell 输入或校验器，并写出码位与位置。
 
   ```toml
+  [auto_review]
+  reviewer_model = "claude-sonnet-4-6"
+  environment = [
+    "trusted git remote: github.com/org/repo",
+    "trusted staging API: https://staging.example.internal",
+  ]
+
   [[auto_review.allow]]
   id = "read-only-inspection"
   action_kind = "read"
@@ -1329,9 +1338,10 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
   reason = "Release and publish actions require maintainer review."
   ```
 
-  规则匹配器是精确 `tool` 和/或 `action_kind`。至少需要一个匹配器。`action_kind` 接受六个决策相关种类 `read`、`write`、`shell`、`external`、`publish` 和 `destructive`。无效名称让配置验证失败，而不是静默扩大到另一个策略类。在阻断规则中，旧名称保持保守兼容别名：`network`、`git`、`mcp_action`、`browser` 和 `unknown` 映射到 `external`；`secret` 映射到 `destructive`；`mcp_read` 映射到 `read`。允许规则中退役的窄种类验证失败，而不是扩大到更宽类别。退役的 `text_contains` 匹配器同样验证失败，而不是静默扩大旧的意图依赖规则。交互式 Auto-Review 中的回退拦阻升级为一次无状态守卫请求。请求包含确切被拦调用和确定性观察作为独立 JSON 字段。对话历史、技能指令、附加文件内容和其它展开的模型上下文被排除。守卫不推断用户意图，不算授权分数。它不暴露工具，返回风险级别、允许/拒绝和理由。高或关键风险即使模型说允许也不能自动运行。过大的确切调用被拒绝而不是截断。只做一次审查请求；不完整或格式错误的输出、超时、取消、provider 失败或空理由都失败关闭。确定性底线从不被模型审查，无头适配器使用仅确定性层级。固定的 Codex、Kimi 和 DeepSeek 源边界从[权限档位](MODES.md#权限姿态)链接。审查结果发出 `tool.auto_review` 审计事件，`gate = "guardian"`。
+  规则匹配器是精确 `tool` 和/或 `action_kind`。至少需要一个匹配器。`action_kind` 接受六个决策相关种类 `read`、`write`、`shell`、`external`、`publish` 和 `destructive`。无效名称让配置验证失败，而不是静默扩大到另一个策略类。在 Auto-Review 中，宽泛的 `[[auto_review.allow]]` 规则——即 `action_kind` 归一化为 `shell`、`external`、`write`、`destructive` 或 `publish`（且未指定非 shell/非智能体工具），或 `tool` 匹配 `exec_shell`、`bash`、`agent`、`*`——会被带警告忽略，仅保留具体的非 shell/非智能体工具允许规则。设置 `auto_review.review_all_shell = true`（仅限用户与受管配置，项目级 `.codewhale/config.toml` 会忽略）可在底线、阻断、命名软规则与扩展拦截之后，将每一条 shell 命令（包括普通只读命令与窄带类型允许命令）送往 Auto-Review 审查模型。在阻断规则中，旧名称保持保守兼容别名：`network`、`git`、`mcp_action`、`browser` 和 `unknown` 映射到 `external`；`secret` 映射到 `destructive`；`mcp_read` 映射到 `read`。允许规则中退役的窄种类验证失败，而不是扩大到更宽类别。退役的 `text_contains` 匹配器同样验证失败，而不是静默扩大旧的意图依赖规则。Auto-Review 中的回退拦阻升级为一次 64 KiB 预算内的无状态守卫请求，作为不受信任证据的独立 JSON 字段传入：由 Rust 记录的交互式用户输入(`person_messages`，最新在前)、已批准计划(`approved_plan`)、本回合此前经脱敏的非只读动作(`recent_actions`)、会话启动时固定的用户级与仓库级指令(附哈希，回合途中不重读)、确定性观察以及确切被拦调用(保留 `description`)。工具输出、助手文本、附加 `@` 文件内容、技能正文与非所有者/自动生成的提示均排除在 `person_messages` 之外。高或严重风险即使模型说允许也不能自动运行；过大的当前请求或确切调用直接返回不可用并失败关闭而不是截断。只做一次审查请求；不完整或格式错误的输出、超时、取消、provider 失败或空理由都失败关闭。确定性底线从不被模型审查，无头适配器使用仅确定性层级。固定的 Codex、Kimi 和 DeepSeek 源边界从[权限档位](MODES.md#权限姿态)链接。审查结果发出 `tool.auto_review` 审计事件(`gate = "guardian"`，并记录 `reviewer_model`)，对话记录回执也会显示解析出的审查模型。
 
   Auto-Review 决策在启用工具审计日志时发出 `tool.auto_review` 审计事件，`gate = "deterministic"`。未来的 PreToolUse/PostToolUse hooks 可以在这层周围添加观察者输入，但配置的 Auto-Review 策略在工具调用被允许继续之前评估。
+  在受管配置的 `[auto_review]` 下设置 `disabled = true` 可关闭 Auto-Review：`Shift+Tab` 会跳过 Auto-Review，且 `--permission-mode auto-review`、`/auto` 和 `approval_policy = "auto"` 都会被拒绝。受管 `[auto_review]` 表会整体替换用户的 `[auto_review]` 表，而不是逐键合并。
 
 - `managed_config_path`(字符串，可选)：用户/环境配置之后加载的受管配置文件。
 
@@ -1367,7 +1377,7 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
   `/config subagents status` 打印全局值和活动 provider 的解析 profile，这样速率限制调整在 TUI 中可见。`[subagents.models]` 接受小写的 Fleet 角色键，如 `worker`、`scout`、`planner`、`reviewer`、`builder` 和 `verifier`；旧类型键在 v0.9.x 期间仍被接受。值在派生时对照活动 provider 验证；直接 DeepSeek 需要 DeepSeek ID，而 OpenAI 兼容/自定义 provider 路由把显式模型 ID 透传给该 provider。要把子智能体路由到不同于父会话的 provider，保存带显式 `provider` 和 `model` 字段的 Fleet/AgentProfile(包括 `lm-studio` 这样的用户命名自定义 provider)，并调用 `agent(profile: "...")`；见 [SUBAGENTS.md](SUBAGENTS.md)。
 
-- `skills_dir`(字符串，可选)：默认 `~/.codewhale/skills`(每个技能是包含 `SKILL.md` 的目录)。工作区获得信任后，项目技能优先于全局技能，其中 `.codewhale/skills` 优先于 `.agents/skills` 等兼容目录。顶层 `./skills` 需要显式设置 `[skills] flat_workspace_root = true` 或 `skills_dir` 才会加载。运行时还发现全局 agentskills.io 兼容的 `~/.agents/skills` 和更广的 Claude 生态系统 `~/.claude/skills`。在默认捆绑策略且未设置 `skills_dir` 时，首次启动为常见工作流安装带版本的捆绑技能，包括技能创建、委派、MCP/插件脚手架、文档、演示文稿、电子表格及 PDF。飞书/Lark 不属于默认安装包。只有 CodeWhale 自有的根(`<workspace>/.codewhale/skills` 和 `~/.codewhale/skills`)是可写安装/导入目标；兼容 harness 根保持只读。裸 `/skills` 打开 Extensions → Skills(仅自有，零网络)；`/skills manage` 打开技能管理器。管理器、审计状态、来源标记和变更规则见 [SKILLS.md](SKILLS.md)，可移植 `SKILL.md` 包与 Claude Code 插件运行时之间的受支持边界见 [CLAUDE_PLUGIN_COMPAT.md](CLAUDE_PLUGIN_COMPAT.md)。
+- `skills_dir`(字符串，可选)：默认 `~/.codewhale/skills`(每个技能是包含 `SKILL.md` 的目录)。工作区获得信任后，项目技能优先于全局技能，其中 `.codewhale/skills` 优先于 `.agents/skills` 等兼容目录。顶层 `./skills` 需要显式设置 `[skills] flat_workspace_root = true` 或 `skills_dir` 才会加载。运行时还发现全局 agentskills.io 兼容的 `~/.agents/skills` 和更广的 Claude 生态系统 `~/.claude/skills`。在默认捆绑策略且未设置 `skills_dir` 时，首次启动为常见工作流安装带版本的捆绑技能，包括技能创建、委派、MCP/插件脚手架、文档、演示文稿、电子表格及 PDF。飞书/Lark 不属于默认安装包。只有 CodeWhale 自有的根(`<workspace>/.codewhale/skills` 和 `~/.codewhale/skills`)是可写安装/导入目标；兼容 harness 根保持只读。裸 `/skills` 打开 Plugins → Skills(仅自有，零网络)；`/skills manage` 打开技能管理器。管理器、审计状态、来源标记和变更规则见 [SKILLS.md](SKILLS.md)，可移植 `SKILL.md` 包与 Claude Code 插件运行时之间的受支持边界见 [CLAUDE_PLUGIN_COMPAT.md](CLAUDE_PLUGIN_COMPAT.md)。
 
 - `[skills.bundled].install`（默认 `"auto"`，另可设 `"all"` 或 `"none"`）：独立控制捆绑安装。`auto` 保留删除即退出规则，设置 `skills_dir` 时停止安装；`all` 补装已启用的缺失技能，只写入 `$CODEWHALE_HOME/skills`（通常为 `~/.codewhale/skills`），不受发现目录覆盖影响；`none` 不写文件或版本标记。修改版和托管正文始终保留。
 - `[skills.bundled].selected` / `disabled` / `explicit_only`（名称数组，默认 `[]`）：空选择列表启用整个安装包，非空列表限制安装和发现。禁用优先，并允许低优先级目录的同名副本生效。显式调用保留用户调用，移除模型索引及模型加载权限。别名沿用规范名称策略；仅影响全局自有目录中可识别的发行副本，不删除文件。配置档逐字段合并，显式空列表清空继承值。`doctor` 报告未知及忽略条目，`/skills inspect` 显示路径和原因。详见 [SKILLS.md](SKILLS.md#捆绑技能)。

@@ -1707,10 +1707,23 @@ fn message_text_for_history(message: &codewhale_models::Message, locale: Locale)
                     .replace("{input}", &truncate(&input.to_string(), 180))
             }
             codewhale_models::ContentBlock::ToolSearchToolResult { content, .. }
-            | codewhale_models::ContentBlock::CodeExecutionToolResult { content, .. } => {
+            | codewhale_models::ContentBlock::CodeExecutionToolResult { content, .. }
+            | codewhale_models::ContentBlock::WebSearchToolResult { content, .. }
+            | codewhale_models::ContentBlock::WebFetchToolResult { content, .. } => {
                 tr(locale, MessageId::SessionsToolResult)
                     .replace("{content}", &truncate(&content.to_string(), 220))
             }
+            codewhale_models::ContentBlock::WebSearchCall { kind, .. } => {
+                tr(locale, MessageId::SessionsServerTool)
+                    .replace("{name}", kind.as_deref().unwrap_or("web_search"))
+                    .replace("{input}", "")
+            }
+            codewhale_models::ContentBlock::ServerToolCalls { steps } => {
+                tr(locale, MessageId::SessionsServerTool)
+                    .replace("{name}", "server_tool_calls")
+                    .replace("{input}", &steps.len().to_string())
+            }
+            codewhale_models::ContentBlock::File { file_id } => format!("[file: {file_id}]"),
             codewhale_models::ContentBlock::ImageUrl { .. } => {
                 tr(locale, MessageId::SessionsImage).into_owned()
             }

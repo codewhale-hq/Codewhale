@@ -1004,6 +1004,11 @@ pub fn estimate_message_chars(messages: &[Message]) -> usize {
                 ContentBlock::ServerToolUse { .. }
                 | ContentBlock::ToolSearchToolResult { .. }
                 | ContentBlock::CodeExecutionToolResult { .. }
+                | ContentBlock::WebSearchToolResult { .. }
+                | ContentBlock::WebFetchToolResult { .. }
+                | ContentBlock::WebSearchCall { .. }
+                | ContentBlock::ServerToolCalls { .. }
+                | ContentBlock::File { .. }
                 | ContentBlock::ImageUrl { .. } => {}
             }
         }

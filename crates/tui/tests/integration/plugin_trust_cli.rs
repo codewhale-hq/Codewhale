@@ -465,3 +465,72 @@ async fn a_prompt_answered_through_the_agents_terminal_tools_is_the_agents() {
     );
     assert_eq!(plugin["approved_by"]["posture"], "command_line", "{plugin}");
 }
+
+#[cfg(unix)]
+#[test]
+fn auto_review_mark_records_auto_review_posture_with_provenance_and_refuses_bad_env() {
+    let fixture = Fixture::new();
+    let source = write_bundle(&fixture.workspace.path().join("source"));
+    fixture.ok(&["install", source.to_str().unwrap()]);
+    let token = review(&fixture);
+    let project = fixture.workspace.path().to_str().expect("utf-8 path");
+
+    let missing_ids = [
+        ("CODEWHALE_AGENT_PROJECT", project),
+        ("CODEWHALE_AGENT_POSTURE", "auto_review"),
+        ("CODEWHALE_AGENT_THREAD_ID", "thread-cli-1"),
+    ];
+    fixture.refused_with(
+        &trust_args(&token),
+        &missing_ids,
+        "thread, turn and tool call",
+    );
+    assert_ne!(fixture.status()["trust"], "trusted");
+
+    let bad_posture = [
+        ("CODEWHALE_AGENT_PROJECT", project),
+        ("CODEWHALE_AGENT_POSTURE", "bogus_mode"),
+    ];
+    fixture.refused_with(
+        &trust_args(&token),
+        &bad_posture,
+        "Unsupported CODEWHALE_AGENT_POSTURE",
+    );
+
+    let auto_review_env = [
+        ("CODEWHALE_AGENT_PROJECT", project),
+        ("CODEWHALE_AGENT_POSTURE", "auto_review"),
+        ("CODEWHALE_AGENT_THREAD_ID", "thread-cli-1"),
+        ("CODEWHALE_AGENT_TURN_ID", "turn-cli-2"),
+        ("CODEWHALE_AGENT_TOOL_CALL_ID", "call-cli-3"),
+    ];
+    fixture.ok_with(&trust_args(&token), &auto_review_env);
+    fixture.ok_with(&["plugins", "enable", "demo"], &auto_review_env);
+
+    let plugin = fixture.status();
+    assert_eq!(plugin["approved_by"]["kind"], "agent", "{plugin}");
+    assert_eq!(plugin["approved_by"]["posture"], "auto_review", "{plugin}");
+    assert_eq!(
+        plugin["approved_by"]["thread_id"], "thread-cli-1",
+        "{plugin}"
+    );
+    assert_eq!(plugin["approved_by"]["turn_id"], "turn-cli-2", "{plugin}");
+    assert_eq!(
+        plugin["approved_by"]["tool_call_id"], "call-cli-3",
+        "{plugin}"
+    );
+    assert_eq!(plugin["enabled_by"]["kind"], "agent", "{plugin}");
+    assert_eq!(plugin["enabled_by"]["posture"], "auto_review", "{plugin}");
+    assert_eq!(
+        plugin["enabled_by"]["thread_id"], "thread-cli-1",
+        "{plugin}"
+    );
+    assert_eq!(plugin["active"], true, "{plugin}");
+
+    let status_out = fixture.ok(&["plugins", "status", "demo"]);
+    let status_text = String::from_utf8_lossy(&status_out.stdout);
+    assert!(
+        status_text.contains("approved by the agent in Auto-Review"),
+        "{status_text}"
+    );
+}

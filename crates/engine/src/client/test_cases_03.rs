@@ -606,6 +606,8 @@ fn request_with_tool_result(content: impl Into<String>) -> MessageRequest {
         stream: None,
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     }
 }
 

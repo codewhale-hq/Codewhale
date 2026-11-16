@@ -946,6 +946,8 @@ pub(crate) async fn build_preview_request_inputs(
         skill_instruction: app.active_skill.clone(),
         skill_provenance: app.active_skill_provenance.clone(),
         extension_command: None,
+        approved_plan: None,
+        owner_input: false,
         history_echoed: false,
     };
     let mut git_cache = crate::tui::git_mention::GitMentionCache::default();
@@ -1066,6 +1068,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         mcp_oauth_callback_url: config.mcp_oauth_callback_url.clone(),
         skills_dir: app.skills_dir.clone(),
         skills_config: app.skills_config.clone(),
+        agent_preset: app.agent_preset(),
         plugin_registry: Some(std::sync::Arc::clone(&app.plugin_registry)),
         instructions: configured_instruction_sources(config),
         project_context_pack_enabled: config.project_context_pack_enabled(),
@@ -1361,6 +1364,7 @@ pub(crate) fn build_session_snapshot(
         app.system_prompt.as_ref(),
         Some(app.mode.as_setting()),
     );
+    session.agent_preset = app.agent_preset();
     session.write_receipt = if app.current_session_id.is_none() {
         Some(
             manager
@@ -1418,6 +1422,12 @@ pub(crate) fn build_session_snapshot(
     session.context_references = app.session_context_references.clone();
     session.artifacts = app.session_artifacts.clone();
     session.turn_outcomes = app.session_turn_outcomes.clone();
+    session.delegated_writes = app
+        .delegated_writes
+        .iter()
+        .filter(|((owner, _), _)| owner == &session.metadata.id)
+        .map(|((_, seq), paths)| (*seq, paths.iter().cloned().collect()))
+        .collect();
     session.work_state = work_state;
     session.last_auto_route = app.auto_route_for_persistence();
     session.window_title.clone_from(&app.window_title);
@@ -1437,8 +1447,8 @@ pub(crate) fn build_session_snapshot(
 }
 
 /// The stream sanitizer lives with the other output sanitizers in
-/// `codewhale-secrets`; the event loop reaches it through this module.
-pub(crate) use codewhale_secrets::sanitize::sanitize_stream_chunk;
+/// `codewhale-sanitize`; the event loop reaches it through this module.
+pub(crate) use codewhale_sanitize::sanitize::sanitize_stream_chunk;
 
 /// Ensure an in-flight streaming Assistant cell exists in history and return
 /// its index. Thinking cells go through `streaming_thinking::ensure_active_entry`
@@ -1489,6 +1499,15 @@ pub(crate) fn append_streaming_text(app: &mut App, index: usize, text: &str) {
             to_revision,
             content_len,
         });
+    }
+}
+
+fn estimate_output_tokens_from_text(text: &str) -> u64 {
+    let chars = text.chars().count() as u64;
+    if chars == 0 {
+        0
+    } else {
+        chars.saturating_add(3) / 4
     }
 }
 
@@ -1555,7 +1574,10 @@ pub(crate) fn commit_streaming_display_tick(
         updated = true;
     }
 
-    if app.streaming_state.has_pending_stream_text(0) {
+    if streaming_thinking::render_owed_revision(app, now) {
+        updated = true;
+    }
+    if app.streaming_state.has_pending_stream_text(0) || app.thinking_revision_owed {
         stream_display_clock.note_delta(now);
     }
 
@@ -2562,9 +2584,18 @@ pub(crate) fn workflow_tool_is_running(app: &App) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        drain_text_block, register_info_interaction_targets, render_info_row, short_title_truncate,
+        drain_text_block, estimate_output_tokens_from_text, register_info_interaction_targets,
+        render_info_row, short_title_truncate,
     };
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn estimated_streaming_tokens_round_up_from_text_chars() {
+        assert_eq!(estimate_output_tokens_from_text(""), 0);
+        assert_eq!(estimate_output_tokens_from_text("abc"), 1);
+        assert_eq!(estimate_output_tokens_from_text("abcd"), 1);
+        assert_eq!(estimate_output_tokens_from_text("abcde"), 2);
+    }
 
     /// #7123: the text drain must never take a reasoning block. A reasoning
     /// tail handed to the assistant cell would appear as prose, which is the

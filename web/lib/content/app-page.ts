@@ -62,12 +62,12 @@ export const APP_COPY = {
       width: 1440,
       height: 725,
       alt: {
-        en: "The desktop app showing a session named Explain this codebase. A sub-agent is running, and a side panel lists the agent, one changed file, the git branch and a short activity log.",
-        zh: "桌面应用中名为 Explain this codebase 的会话。一个子智能体正在运行，侧边栏列出该智能体、一个已更改的文件、Git 分支和简短的活动记录。",
+        en: "The desktop app showing a session named Codewhale core. A cloud agent named Fix prompt tests changed two files, ran an approved test command, and the side panel lists Changes, Ready to review, Environment, People and Activity.",
+        zh: "桌面应用中名为 Codewhale core 的会话。名为 Fix prompt tests 的云端智能体修改了两个文件并运行了已批准的测试命令，侧边栏列出更改、待审阅、环境、成员和活动记录。",
       },
       caption: {
-        en: "A session with a sub-agent running. The side panel keeps agents, changes and activity next to the conversation. Development build capture.",
-        zh: "子智能体运行中的会话。侧边栏把智能体、改动和活动记录放在对话旁边。开发版本截图。",
+        en: "A session with a cloud agent ready to review. The side panel keeps changes, environment, people and activity next to the conversation. Development build capture.",
+        zh: "云端智能体完成改动待审阅的会话。侧边栏把更改、环境、成员和活动记录放在对话旁边。开发版本截图。",
       },
     },
     {
@@ -75,8 +75,8 @@ export const APP_COPY = {
       width: 1440,
       height: 725,
       alt: {
-        en: "The desktop app asking Run a command? with the exact shell command shown and three buttons: Allow once, Allow for this conversation and Don't allow.",
-        zh: "桌面应用弹出“Run a command?”的询问，显示完整的 shell 命令，并提供三个按钮：Allow once、Allow for this conversation 和 Don't allow。",
+        en: "The desktop app asking Run a command? with the exact shell command shown and two buttons: Allow once and Don't allow.",
+        zh: "桌面应用弹出“Run a command?”的询问，显示完整的 shell 命令，并提供两个按钮：Allow once 和 Don't allow。",
       },
       caption: {
         en: "A command waits for your answer before it runs, with the exact command in view. Development build capture.",
@@ -88,12 +88,12 @@ export const APP_COPY = {
       width: 1440,
       height: 725,
       alt: {
-        en: "The desktop app's new session screen with the model picker open and filtered to two DeepSeek models, beside a thinking-level menu with Default, Off, Low, High and Max.",
-        zh: "桌面应用的新会话界面，模型选择器已打开并筛选出两个 DeepSeek 模型，旁边是包含 Default、Off、Low、High 和 Max 的思考强度菜单。",
+        en: "The desktop app's new session screen with the model picker open, DeepSeek selected on the provider rail, four DeepSeek models listed, and a switch at the bottom for This session or New sessions.",
+        zh: "桌面应用的新会话界面，模型选择器已打开，左侧供应商栏选中 DeepSeek 并列出四个 DeepSeek 模型，底部提供“当前会话”或“新会话”的切换开关。",
       },
       caption: {
-        en: "Choose a model and a thinking level before you start. Development build capture.",
-        zh: "开始前选择模型和思考强度。开发版本截图。",
+        en: "Pick a provider and model before you start, and choose whether the setting applies to this session or new sessions. Development build capture.",
+        zh: "开始前按供应商选择模型，并决定设置应用于当前会话还是新会话。开发版本截图。",
       },
     },
   ] satisfies AppShot[],

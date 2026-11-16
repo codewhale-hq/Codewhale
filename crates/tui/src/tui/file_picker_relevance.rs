@@ -14,7 +14,7 @@
 //! make path discovery resilient to quoting, leading `./`, and
 //! trailing `:line` markers.
 
-use codewhale_dependencies::{ExternalTool, Git};
+use codewhale_dependencies::Git;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -82,15 +82,10 @@ pub(super) fn build_relevance(app: &App) -> FilePickerRelevance {
 /// task rather than the event loop (#3905), so it lives here but is called
 /// from `file_picker.rs`.
 pub(super) fn modified_workspace_paths(workspace: &Path) -> Vec<String> {
-    let Some(mut cmd) = Git::command() else {
+    let Ok(mut cmd) = Git::status_command(workspace) else {
         return Vec::new();
     };
-    let Ok(output) = cmd
-        .arg("-C")
-        .arg(workspace)
-        .args(["status", "--short", "--untracked-files=normal"])
-        .output()
-    else {
+    let Ok(output) = cmd.args(["--short", "--untracked-files=normal"]).output() else {
         return Vec::new();
     };
     if !output.status.success() {
@@ -254,4 +249,57 @@ fn workspace_path_to_picker_string(path: &Path) -> Option<String> {
         out.push_str(&component.as_os_str().to_string_lossy());
     }
     if out.is_empty() { None } else { Some(out) }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use codewhale_dependencies::ExternalTool;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn modified_paths_run_no_repository_configured_monitor() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let path = workspace.path();
+        let marker = outside.path().join("marker");
+        let git = |args: &[&str]| {
+            let output = Git::output(args, path).expect("git spawns");
+            assert!(
+                output.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(path.join("a.md"), "original\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+        let monitor = outside.path().join("fsmonitor.sh");
+        std::fs::write(
+            &monitor,
+            format!(
+                "#!/bin/sh\nprintf touched > '{}'\nexit 1\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&monitor, std::fs::Permissions::from_mode(0o700)).unwrap();
+        git(&["config", "core.fsmonitor", monitor.to_str().unwrap()]);
+        std::fs::write(path.join("a.md"), "changed\n").unwrap();
+
+        let control = Git::output(&["status", "--short"], path).expect("status");
+        assert!(control.status.success());
+        assert!(marker.exists(), "positive control: repository monitor");
+        std::fs::remove_file(&marker).unwrap();
+
+        assert_eq!(modified_workspace_paths(path), ["a.md"]);
+        assert!(
+            !marker.exists(),
+            "the file picker ran the repository monitor"
+        );
+    }
 }

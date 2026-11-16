@@ -158,6 +158,7 @@ pub struct LoadedPlugin {
     pub enabled_by: Option<super::host_services::PluginApprover>,
     pub host_services: Vec<super::host_services::HostService>,
     pub outside_reach: bool,
+    pub install_nonce: Option<String>,
     pub skill_snapshots: Vec<PluginSkillSnapshot>,
     pub diagnostics: Vec<PluginDiagnostic>,
 }

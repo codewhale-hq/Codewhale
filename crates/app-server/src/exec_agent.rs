@@ -180,6 +180,7 @@ async fn persist_exec_checkpoint(
                 Some(write_request.as_ref()),
                 &captured_source,
                 &captured_owner,
+                snapshot.agent_preset.as_deref(),
             )?;
             Ok(publication)
         },
@@ -235,14 +236,16 @@ pub async fn run_exec_agent(
     tool_authority_json: Option<String>,
     exec_hooks_enabled: bool,
     plugin_registry: std::sync::Arc<codewhale_plugins::PluginRegistry>,
+    permission_mode: Option<codewhale_engine::runtime_options::PermissionMode>,
     // #6510: plain `exec` (no tool-surface flag). The caller passes an empty
     // allowlist; this also skips workspace snapshots, LSP and the automation
     // store, and writes the one-shot `--json` receipt shape.
     one_shot: bool,
+    conversation_mode: Option<String>,
 ) -> Result<()> {
     use codewhale_config::AppMode;
     use codewhale_engine::compaction::CompactionConfig;
-    use codewhale_engine::core::engine::{EngineConfig, spawn_engine};
+    use codewhale_engine::core::engine::{EngineConfig, spawn_headless_engine};
     use codewhale_engine::core::events::Event;
     use codewhale_engine::core::ops::Op;
     use codewhale_engine::tools::plan::new_shared_plan_state;
@@ -308,6 +311,10 @@ pub async fn run_exec_agent(
     let mut exec_write_receipt = resume_session
         .as_ref()
         .and_then(|saved| saved.write_receipt.clone());
+    let exec_agent_preset = resume_session.as_ref().map_or_else(
+        || conversation_mode.clone(),
+        |saved| saved.agent_preset.clone(),
+    );
     let exec_is_fresh = resume_session.is_none();
 
     let exec_session_id = fleet_capture
@@ -329,7 +336,7 @@ pub async fn run_exec_agent(
         || output_format == ExecOutputFormat::StreamJson;
     let mut exec_session_manager = fleet_capture.map(|(_, manager)| Arc::new(manager));
     let _exec_operation_lease = if exec_is_fresh {
-        let (manager, source, lease) = admit_cli_saved_operation(
+        match admit_cli_saved_operation(
             exec_session_manager.clone(),
             exec_session_id.clone(),
             exec_session_workspace.clone(),
@@ -340,10 +347,17 @@ pub async fn run_exec_agent(
             prompt.to_string(),
         )
         .await
-        .context("could not admit exec's saved accounting operation")?;
-        exec_session_manager = Some(manager);
-        exec_write_receipt = Some(source);
-        Some(lease)
+        {
+            Ok((manager, source, lease)) => {
+                exec_session_manager = Some(manager);
+                exec_write_receipt = Some(source);
+                Some(lease)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not admit exec's saved accounting operation; continuing with unknown cost");
+                None
+            }
+        }
     } else {
         None
     };
@@ -363,16 +377,21 @@ pub async fn run_exec_agent(
         open_exec_session_manager()?;
     }
 
-    let accounting_origin = exec_write_receipt
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("exec has no admitted original session source"))?
-        .usage_origin(codewhale_engine::cost_status::scope_token())?;
+    let accounting_origin = exec_write_receipt.as_ref().and_then(|receipt| {
+        match receipt.usage_origin(codewhale_engine::cost_status::scope_token()) {
+            Ok(origin) => Some(origin),
+            Err(error) => {
+                tracing::warn!(%error, "exec accounting origin unavailable; continuing with unknown cost");
+                None
+            }
+        }
+    });
     let route = resolve_cli_exec_route(
         config,
         model,
         prompt,
         force_configured_route,
-        Some(accounting_origin.clone()),
+        accounting_origin.clone(),
     )
     .await?;
     let execution_config = config_for_cli_route(config, &route)?;
@@ -415,9 +434,16 @@ pub async fn run_exec_agent(
     let approval_posture = if auto_approve { "auto_tools" } else { "ask" }.to_string();
     // The Full Access posture travels in the op's auto_approve/approval_mode
     // fields; modes no longer carry permission.
-    let mode = AppMode::Agent;
+    let mode = match permission_mode {
+        Some(codewhale_engine::runtime_options::PermissionMode::Plan) => AppMode::Plan,
+        _ => AppMode::Agent,
+    };
     let turn_approval_mode = if auto_approve {
         ApprovalMode::Bypass
+    } else if let Some(explicit_mode) =
+        permission_mode.and_then(codewhale_engine::runtime_options::PermissionMode::approval_mode)
+    {
+        explicit_mode
     } else {
         execution_config
             .approval_policy
@@ -557,7 +583,7 @@ pub async fn run_exec_agent(
         codewhale_engine::tools::shell::new_shared_shell_manager(workspace.clone());
     let exec_automations = exec_automation_services(fleet_authority_active || one_shot)?;
     let runtime_services = codewhale_engine::tools::spec::RuntimeToolServices {
-        accounting_origin: Some(accounting_origin),
+        accounting_origin,
         shell_manager: Some(exec_shell_manager.clone()),
         persist_services_enabled,
         automations: exec_automations,
@@ -587,6 +613,7 @@ pub async fn run_exec_agent(
         mcp_oauth_callback_url: None,
         skills_dir: execution_config.skills_dir(),
         skills_config: std::sync::Arc::new(execution_config.skills_config()),
+        agent_preset: exec_agent_preset.clone(),
         instructions: {
             let mut instrs: Vec<codewhale_engine::prompts::InstructionSource> = execution_config
                 .instructions_paths()
@@ -741,7 +768,7 @@ pub async fn run_exec_agent(
             .unwrap_or_else(codewhale_engine::tools::subagent::AdvisorConfig::disabled),
     };
 
-    let engine_handle = spawn_engine(engine_config, &execution_config, None).await;
+    let engine_handle = spawn_headless_engine(engine_config, &execution_config, None).await;
     // A restricted posture that resolves to no enforcing sandbox must reach
     // the person running exec, not only the model's posture line: policy-only
     // is accepted (read-only already fails closed in the shell tool), but it
@@ -784,12 +811,31 @@ pub async fn run_exec_agent(
                 model: saved.metadata.model,
                 workspace: saved.metadata.workspace,
                 mode,
+                agent_preset: saved.agent_preset,
             })
             .await?;
         loaded_session_id = Some(saved_id.clone());
         if output_format == ExecOutputFormat::Text && !json_output {
             eprintln!("{}", exec_resumed_session_line(&saved_id));
         }
+    }
+
+    if loaded_session_id.is_none() && exec_agent_preset.is_some() {
+        let snapshot = engine_handle.get_session_snapshot().await?;
+        engine_handle
+            .send(Op::SyncSession {
+                expected: None,
+                control: codewhale_engine::core::ops::SessionControlId::new(),
+                session_id: Some(snapshot.session_id),
+                messages: Vec::new(),
+                system_prompt: None,
+                system_prompt_override: false,
+                model: snapshot.model,
+                workspace: snapshot.workspace,
+                mode,
+                agent_preset: exec_agent_preset.clone(),
+            })
+            .await?;
     }
 
     // Lifecycle outbox (`[lifecycle_outbox]`): headless `codewhale exec`
@@ -837,6 +883,7 @@ pub async fn run_exec_agent(
             approval_mode: turn_approval_mode,
             verbosity: execution_config.verbosity.clone(),
             provenance: codewhale_engine::core::ops::UserInputProvenance::ExternalUser,
+            input_authorship: codewhale_engine::core::ops::TurnInputAuthorship::NotPerson,
             // Headless exec does not correlate submissions.
             submission_id: None,
         }))
@@ -1440,6 +1487,7 @@ pub async fn run_exec_agent(
                             None,
                             source,
                             owner,
+                            exec_agent_preset.as_deref(),
                         )
                     });
                     match saved {
@@ -1949,7 +1997,7 @@ mod tests {
             config
                 .features
                 .disable(codewhale_runtime::features::Feature::Mcp);
-            let handle = codewhale_engine::core::engine::spawn_engine(
+            let handle = codewhale_engine::core::engine::spawn_headless_engine(
                 config,
                 &codewhale_runtime::config::Config::default(),
                 None,
@@ -2127,6 +2175,7 @@ mod tests {
             system_prompt: None,
             instruction_assembly: None,
             mode: "exec".into(),
+            agent_preset: None,
         });
         let caller = SessionCheckpointCaller {
             session_id: snapshot.session_id.clone(),
@@ -2195,6 +2244,7 @@ mod tests {
             None,
             source.as_ref().unwrap(),
             snapshot.source.as_ref().unwrap(),
+            None,
         )
         .unwrap();
         source = Some(publication.write_receipt());
@@ -2315,6 +2365,58 @@ mod tests {
                 .unwrap()
                 .messages,
             completed
+        );
+    }
+
+    #[test]
+    fn exec_session_file_keeps_the_conversation_mode_it_was_started_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager =
+            codewhale_engine::session_manager::SessionManager::new(tmp.path().join("exec-mode"))
+                .unwrap();
+        let workspace = tmp.path().join("workspace");
+        let messages: Vec<codewhale_models::Message> = serde_json::from_value(serde_json::json!([
+            {"role":"user","content":[{"type":"text","text":"hello"}]}
+        ]))
+        .unwrap();
+        let owner =
+            codewhale_engine::core::ops::SessionSnapshotSource::turn("exec-turn".into(), None);
+        let save = |source: &codewhale_engine::session_manager::SessionWriteReceipt,
+                    preset: Option<&str>| {
+            crate::exec_agent::persist_exec_session(
+                &messages,
+                "model",
+                crate::exec_agent::PersistedProviderRoute {
+                    kind: "custom",
+                    id: None,
+                },
+                &workspace,
+                &None,
+                Some("exec-mode-session"),
+                1,
+                None,
+                &manager,
+                &[],
+                None,
+                source,
+                &owner,
+                preset,
+            )
+            .unwrap()
+        };
+        let first = save(
+            &manager.expect_absent_session("exec-mode-session").unwrap(),
+            Some("creator"),
+        );
+        let saved = manager.load_session_snapshot("exec-mode-session").unwrap();
+        assert_eq!(saved.agent_preset.as_deref(), Some("creator"));
+
+        save(&first.write_receipt(), None);
+        let saved = manager.load_session_snapshot("exec-mode-session").unwrap();
+        assert_eq!(
+            saved.agent_preset.as_deref(),
+            Some("creator"),
+            "a later save without the mode does not turn the conversation into Standard"
         );
     }
 
@@ -3250,7 +3352,9 @@ fn exec_stream_input_analysis(
                     }
                 }
                 ContentBlock::ToolSearchToolResult { content, .. }
-                | ContentBlock::CodeExecutionToolResult { content, .. } => {
+                | ContentBlock::CodeExecutionToolResult { content, .. }
+                | ContentBlock::WebSearchToolResult { content, .. }
+                | ContentBlock::WebFetchToolResult { content, .. } => {
                     analysis.tool_result_count += 1;
                     exec_stream_add_json_estimate(
                         content,
@@ -3258,7 +3362,10 @@ fn exec_stream_input_analysis(
                         &mut analysis.tool_result_estimated_tokens,
                     );
                 }
-                ContentBlock::ImageUrl { .. } => {}
+                ContentBlock::WebSearchCall { .. } | ContentBlock::ServerToolCalls { .. } => {
+                    analysis.tool_use_count += 1;
+                }
+                ContentBlock::File { .. } | ContentBlock::ImageUrl { .. } => {}
             }
         }
     }
@@ -3377,6 +3484,7 @@ fn persist_exec_session(
     checkpoint: Option<&codewhale_engine::core::events::SessionCheckpointRequest>,
     source: &session_manager::SessionWriteReceipt,
     owner: &codewhale_engine::core::ops::SessionSnapshotSource,
+    agent_preset: Option<&str>,
 ) -> Result<session_manager::SessionPublication> {
     let captured = source.capture(session_manager::SessionWriteOwner::Engine(owner.clone()))?;
     if checkpoint.is_some() {
@@ -3422,6 +3530,9 @@ fn persist_exec_session(
             Some("exec"),
         )
     };
+    if saved.agent_preset.is_none() {
+        saved.agent_preset = agent_preset.map(str::to_string);
+    }
     saved.write_receipt = Some(captured);
     stamp_exec_session_metadata(
         &mut saved,
@@ -3467,54 +3578,47 @@ fn persist_exec_session(
         let Some(source) = receipt["source_id"].as_str() else {
             continue;
         };
-        if receipt["usage_reported"].as_bool() == Some(true) {
-            saved.metadata.cost.usage_source_fingerprints.insert(
-                codewhale_engine::cost_status::usage_source_fingerprint(source),
-            );
-        }
         let coverage = receipt.get("coverage").cloned().and_then(|value| {
             serde_json::from_value::<codewhale_engine::llm_client::ProviderUsageCoverage>(value)
                 .ok()
         });
-        if matches!(
+        let missing_coverage = matches!(
             coverage,
             Some(
                 codewhale_engine::llm_client::ProviderUsageCoverage::Missing
                     | codewhale_engine::llm_client::ProviderUsageCoverage::Incomplete
             )
-        ) && let Some(route) = receipt.get("route").cloned().and_then(|value| {
-            serde_json::from_value::<codewhale_engine::cost_status::EffectiveRouteEnvelope>(value)
+        );
+        if missing_coverage
+            && let Some(route) = receipt.get("route").cloned().and_then(|value| {
+                serde_json::from_value::<codewhale_engine::cost_status::EffectiveRouteEnvelope>(
+                    value,
+                )
                 .ok()
-        }) {
+            })
+        {
             let reason =
                 if receipt["outcome"] == "completed" || receipt["outcome"] == "review_response" {
                     codewhale_engine::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
                 } else {
                     codewhale_engine::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
                 };
-            let pool = codewhale_engine::cost_status::background_cost_for_runtime_drop(
-                &codewhale_engine::cost_status::RuntimeUsageDropRecord {
-                    source_id: source.to_string(),
-                    route,
-                    reason,
-                },
+            let drop_record = codewhale_engine::cost_status::RuntimeUsageDropRecord {
+                source_id: source.to_string(),
+                route,
+                reason,
+            };
+            if let Err(error) = saved
+                .metadata
+                .cost
+                .project_usage_record(&drop_record.as_usage_record())
+            {
+                tracing::warn!(%error, source_id = %source, "agent missing usage projection skipped");
+            }
+        } else if receipt["usage_reported"].as_bool() == Some(true) {
+            saved.metadata.cost.usage_source_fingerprints.insert(
+                codewhale_engine::cost_status::usage_source_fingerprint(source),
             );
-            let cost = &mut saved.metadata.cost;
-            let pool = codewhale_engine::cost_status::project_missing_usage_ledger(
-                &mut cost.missing_usage_sources,
-                &mut cost.missing_usage_overflowed,
-                &mut cost.unpriced_turns,
-                &mut cost.cny_unpriced_turns,
-                &pool,
-            );
-            cost.unpriced_turns = cost.unpriced_turns.saturating_add(pool.unpriced_turns);
-            cost.cny_unpriced_turns = cost
-                .cny_unpriced_turns
-                .saturating_add(pool.cny_unpriced_turns);
-            cost.unpriced_reasons
-                .extend(pool.unpriced_reasons.into_iter().map(str::to_string));
-            cost.cny_unpriced_reasons
-                .extend(pool.cny_unpriced_reasons.into_iter().map(str::to_string));
         }
     }
     saved.make_storage_compatible();
@@ -3644,6 +3748,7 @@ fn apply_fleet_engine_feature_caps(
     if fleet_authority_active {
         features.disable(codewhale_runtime::features::Feature::Subagents);
         features.disable(codewhale_runtime::features::Feature::Mcp);
+        features.disable(codewhale_runtime::features::Feature::PluginCreator);
         if shell_authority != codewhale_engine::tools::spec::ToolShellAuthority::ReadOnly {
             features.disable(codewhale_runtime::features::Feature::ShellTool);
         }

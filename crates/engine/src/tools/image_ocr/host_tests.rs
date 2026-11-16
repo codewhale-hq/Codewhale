@@ -71,7 +71,7 @@ async fn real_host_ocr_and_read_file_preserve_native_first_and_tesseract_results
     let manager = new_manager(node, root.path());
     let _manager = TestManagerGuard::install(Arc::clone(&manager));
     let image = root.path().canonicalize().unwrap().join("image.png");
-    std::fs::write(&image, b"private-image-fixture").unwrap();
+    std::fs::write(&image, b"GIF89a private-image-fixture").unwrap();
     let marker = root.path().join("tesseract-launched");
     let tess = binary(
         root.path(),
@@ -131,7 +131,7 @@ async fn real_host_ocr_no_backend_native_failure_and_parser_errors_match_default
     let manager = new_manager(node, root.path());
     let _manager = TestManagerGuard::install(Arc::clone(&manager));
     let image = root.path().canonicalize().unwrap().join("image.png");
-    std::fs::write(&image, b"fixture").unwrap();
+    std::fs::write(&image, b"GIF89a fixture").unwrap();
     for native in [
         Ok(None),
         Err(ToolError::execution_failed("Native framework refusal")),
@@ -191,7 +191,7 @@ async fn ocr_guards_run_before_host_start_and_host_refusal_has_no_fallback() {
     ));
     std::fs::write(
         root.path().canonicalize().unwrap().join("image.png"),
-        b"fixture",
+        b"GIF89a fixture",
     )
     .unwrap();
     let refused = ImageOcrTool
@@ -283,7 +283,7 @@ async fn real_host_ocr_cancellation_bounds_parser_tree_and_never_replays() {
     let manager = new_manager(node, root.path());
     let _manager = TestManagerGuard::install(Arc::clone(&manager));
     let image = root.path().canonicalize().unwrap().join("image.png");
-    std::fs::write(&image, b"fixture").unwrap();
+    std::fs::write(&image, b"GIF89a fixture").unwrap();
     let warm = overrides(Ok(Some("warm".into())), None);
     ocr_image_path(&image, &context(root.path(), true))
         .await
@@ -406,14 +406,17 @@ async fn real_host_ocr_retains_captured_bytes_after_original_path_replacement() 
     let image = root.path().canonicalize().unwrap().join("receipt.png");
     let tess = binary(root.path(), "/bin/cat \"$1\"");
     for host in [false, true] {
-        std::fs::write(&image, b"captured original image").unwrap();
+        std::fs::write(&image, b"GIF89a captured original image").unwrap();
         let original = image.clone();
         let observed = Arc::new(std::sync::Mutex::new(None));
         let record = Arc::clone(&observed);
         let value = TestOverrides {
             native: Arc::new(move |staged| {
                 assert_ne!(staged, original.as_path());
-                assert_eq!(std::fs::read(staged).unwrap(), b"captured original image");
+                assert_eq!(
+                    std::fs::read(staged).unwrap(),
+                    b"GIF89a captured original image"
+                );
                 *record.lock().unwrap() = Some(staged.to_path_buf());
                 std::fs::remove_file(&original).unwrap();
                 std::fs::write(&original, b"replacement image must not be parsed").unwrap();
@@ -426,7 +429,7 @@ async fn real_host_ocr_retains_captured_bytes_after_original_path_replacement() 
             .execute(json!({"path":"receipt.png"}), &context(root.path(), host))
             .await
             .unwrap();
-        assert_eq!(result.content, "captured original image");
+        assert_eq!(result.content, "GIF89a captured original image");
         assert_eq!(
             std::fs::read(&image).unwrap(),
             b"replacement image must not be parsed"
@@ -445,7 +448,7 @@ async fn ocr_capture_reuses_bounded_anchored_reader_and_content_digest() {
     let root = tempfile::tempdir().unwrap();
     let root_path = root.path().canonicalize().unwrap();
     let image = root_path.join("receipt.png");
-    std::fs::write(&image, b"captured original image").unwrap();
+    std::fs::write(&image, b"GIF89a captured original image").unwrap();
     let ctx = context(&root_path, false);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let first = CapturedOcr::capture(&image, &ctx, deadline).await.unwrap();
@@ -453,7 +456,7 @@ async fn ocr_capture_reuses_bounded_anchored_reader_and_content_digest() {
     assert_ne!(first.path, second.path);
     assert_eq!(
         first.digest(),
-        codewhale_runtime::hashing::sha256_hex(b"captured original image")
+        codewhale_runtime::hashing::sha256_hex(b"GIF89a captured original image")
     );
     assert_eq!(first.digest(), second.digest());
     let staged = first.path.clone();
@@ -479,4 +482,59 @@ async fn ocr_capture_reuses_bounded_anchored_reader_and_content_digest() {
             .to_string()
             .contains("16 MiB")
     );
+}
+#[tokio::test(flavor = "current_thread")]
+async fn ocr_backend_runs_in_an_empty_private_directory_and_never_sees_non_images() {
+    let _home = crate::test_support::SealedHome::new();
+    let root = tempfile::tempdir().unwrap();
+    let root_path = root.path().canonicalize().unwrap();
+    let fixture =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ocr_hello.png");
+    std::fs::copy(&fixture, root_path.join("image.png")).unwrap();
+    let report = root_path.join("report");
+    std::fs::create_dir(&report).unwrap();
+    let tess = binary(
+        &root_path,
+        &format!(
+            "pwd -P > '{0}/cwd'; ls -A > '{0}/listing'; ls -A \"$(dirname \"$1\")\" >> '{0}/listing'; printf done",
+            report.display()
+        ),
+    );
+    let _override = overrides(Ok(None), Some(tess.into_os_string()));
+    let ctx = context(&root_path, false);
+    let result = ImageOcrTool
+        .execute(json!({"path":"image.png"}), &ctx)
+        .await
+        .unwrap();
+    assert_eq!(result.content, "done");
+    let cwd = std::fs::read_to_string(report.join("cwd")).unwrap();
+    assert!(!cwd.trim().is_empty());
+    assert!(!std::path::Path::new(cwd.trim()).starts_with(&root_path));
+    let listing = std::fs::read_to_string(report.join("listing")).unwrap();
+    let mut lines = listing.lines().collect::<Vec<_>>();
+    lines.sort_unstable();
+    assert_eq!(lines, ["input", "work"], "{listing}");
+
+    let started = report.join("started");
+    let tess = binary(
+        &root_path,
+        &format!("touch '{}'; printf ran", started.display()),
+    );
+    let _override = overrides(Ok(None), Some(tess.into_os_string()));
+    let list = format!("{}\n", root_path.join("image.png").display());
+    for (name, bytes) in [
+        ("list.png", list.into_bytes()),
+        ("short.png", b"BMabcdefgh".to_vec()),
+    ] {
+        std::fs::write(root_path.join(name), bytes).unwrap();
+        ImageOcrTool
+            .execute(json!({"path":name}), &ctx)
+            .await
+            .unwrap_err();
+        crate::tools::file::ReadFileTool
+            .execute(json!({"path":name}), &ctx)
+            .await
+            .unwrap_err();
+    }
+    assert!(!started.exists());
 }

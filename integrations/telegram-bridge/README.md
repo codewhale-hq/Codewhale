@@ -70,6 +70,25 @@ tap targets for common actions. Approval buttons map to the same runtime API as
 the explicit "Allow + remember" button.
 
 
+## Thread ownership
+
+A thread belongs to the chat that created it. The bridge records the owner in
+the thread map when it creates a thread. `/threads` lists only the threads this
+chat created, and `/resume` accepts only an ID this chat created. Any other ID,
+including a thread started from the desktop app, the TUI or another chat, gets
+one fixed reply and is never sent to the Runtime.
+
+When an existing thread map is first loaded, each chat keeps only the thread it
+is bound to, and only after the bridge asks the Runtime once whether that thread
+was started by this bridge in the configured workspace. A thread started from
+the desktop app, the TUI or another client is dropped from the chat, and so is a
+thread that several chats point at. Those chats send `/new` to start a new
+thread. If the Runtime cannot be reached at start, the bridge retries every 30
+seconds and meanwhile gives the fixed reply. An existing thread map records only
+the thread each chat is bound to, so threads a chat created earlier and has
+since left with `/new` are no longer listed or resumable. Review the thread map
+after upgrading.
+
 ## Restart access checks
 
 Recovered deliveries require a saved, previously admitted sender identity that
@@ -109,4 +128,5 @@ number or text, or send the answer as a normal message. Answer multiple question
 on separate lines. The bridge checks the current Runtime question, turn, and
 recorded initiating human before submitting an answer. Other group members
 cannot answer, approve, or interrupt that person's turn. Group thread lists and
-resume controls stay within that group's current conversation.
+resume controls stay within that group's current conversation and, like private
+chats, only cover threads that chat created.

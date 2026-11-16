@@ -17,7 +17,7 @@ they do not cost context on machines that will never hit them.
   worktrees). Those spawned shells only see the repo's `rust-toolchain.toml`
   override while inside `/workspace`, so without a global default they fail with
   "rustup could not choose a version of rustc to run". The update script runs
-  `rustup default stable` to fix this.
+  `rustup default 1.100.0` to fix this.
 - **Known env-specific test failures at `/workspace` (not code bugs):** because
   the checkout sits directly under `/`, two `codewhale-tui` subagent tests fail
   here — `git_repo_root_reports_attempted_paths_when_no_repo_found` (cannot
@@ -171,6 +171,15 @@ function's reference page), labelled apart from the #6953 reporter-observed
 exports; the x64 profile now allows 471 pairs and the ARM64 profile 473. The
 same limit applies: the candidate still has to pass the import check against
 its final executable bytes, and neither addition is a 14393 or installer run.
+
+Release candidate run 43320217667, built after the stable toolchain moved to
+Rust 1.100.0, stopped the check on two more kernel32.dll pairs,
+`GetLogicalDrives` and `QueryDosDeviceW`, which the Rust 1.100.0 standard
+library's Windows file system code imports. Probe run 43330905781 (Windows 11
+ARM64 build 26200.9725) resolved all 449 imports of that candidate's ARM64
+executables. For x64 the 2 pairs are documented Microsoft API contracts
+(Windows XP minimum on each function's reference page); the x64 profile now
+allows 473 pairs and the ARM64 profile 475, with the same limits as above.
 
 At this snapshot, startup/installation of the final release bytes on an actual
 1607 machine and the candidate's generated uninstaller were still unqualified.

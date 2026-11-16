@@ -22,6 +22,7 @@ registration index.
 | GET | `/` |
 | GET | `/__codewhale/bootstrap/{nonce}` |
 | GET | `/__codewhale/mobile/bootstrap/{nonce}` |
+| GET | `/__codewhale/mobile/pair/{secret}` |
 | POST | `/__codewhale/mobile/session` |
 | POST | `/__codewhale/mobile/stream-ticket` |
 | POST | `/__codewhale/web/stream-ticket` |
@@ -54,6 +55,7 @@ registration index.
 | POST | `/v1/apps/mcp/servers/{name}/enable` |
 | POST | `/v1/apps/mcp/servers/{name}/reconnect` |
 | GET | `/v1/apps/mcp/tools` |
+| GET | `/v1/apps/plugin-index` |
 | GET | `/v1/apps/plugins` |
 | DELETE / GET | `/v1/apps/plugins/{selector}` |
 | POST | `/v1/apps/plugins/{selector}/disable` |
@@ -95,6 +97,9 @@ registration index.
 | GET | `/v1/definition` |
 | GET | `/v1/diagnostics` |
 | GET | `/v1/diff` |
+| GET | `/v1/dsh/remote/pairings` |
+| DELETE | `/v1/dsh/remote/pairings/{grant}` |
+| POST | `/v1/dsh/remote/pairings/{grant}/present` |
 | POST | `/v1/fleet/placement` |
 | GET | `/v1/fleet/profiles` |
 | GET | `/v1/fleet/profiles/{id}/document` |
@@ -189,6 +194,8 @@ registration index.
 | POST | `/v1/threads/{id}/agent-mail/{message_id}/deliver` |
 | POST | `/v1/threads/{id}/agent-mail/{message_id}/read` |
 | DELETE | `/v1/threads/{id}/approval-grants/{grant_id}` |
+| POST | `/v1/threads/{id}/auto-review/approve` |
+| GET | `/v1/threads/{id}/auto-review/blocks` |
 | POST | `/v1/threads/{id}/commands` |
 | DELETE / GET | `/v1/threads/{id}/commands/{operation_key}` |
 | POST | `/v1/threads/{id}/commands/builtin` |
@@ -252,6 +259,8 @@ registration index.
 | POST | `/v1/voice/control` |
 | POST | `/v1/voice/dictate` |
 | POST | `/v1/voice/send` |
+| POST | `/v1/voice/transcribe` |
+| POST | `/v1/voice/tts` |
 | GET / PUT | `/v1/whale/soul` |
 | GET | `/v1/workspace/diff` |
 | GET / PUT | `/v1/workspace/files` |
@@ -263,4 +272,4 @@ registration index.
 | GET / POST | `/v1/worktrees` |
 | POST | `/v1/worktrees/remove` |
 
-The source contains 243 distinct literal paths in this table.
+The source contains 252 distinct literal paths in this table.

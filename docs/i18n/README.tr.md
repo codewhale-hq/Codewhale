@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fd76d718e3a2 -->
+<!-- source: README.md sha256:c66c04179a4e -->
 <div align="center">
 
 <picture>
@@ -79,7 +79,7 @@ Anthropic, OpenAI, DeepSeek, Google, Mistral, Moonshot, OpenRouter ve xAI dahil 
 
 ### Uzantılar
 
-[MCP sunucularını](../MCP.md) bağlayın, [beceriler](../SKILLS.md) ve [eklentiler](../PLUGINS.md) ekleyin, oturum ve araç olaylarında [kancalar](../HOOKS.md) çalıştırın. Kod modu (deneysel, varsayılan olarak açık), modelin birkaç MCP ve eklenti aracını çağıran tek bir `execute_tools` programı yazmasına izin verir; her çağrı yine onay kurallarınıza uyar ve makbuzunu korur. v0.10.2 ile gelen Computer Use eklentisi (deneysel, yalnızca macOS) diğer uygulamaları izleyip kullanabilir ve siz erişimini inceleyip etkinleştirene kadar kapalı kalır ([kılavuz](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)). 0.10.3 ile gelecek: eklenti [ayrı olarak](https://github.com/codewhale-hq/codewhale-cu-plugin) yayımlanır.
+[MCP sunucularını](../MCP.md) bağlayın, [beceriler](../SKILLS.md) ve [eklentiler](../PLUGINS.md) ekleyin, oturum ve araç olaylarında [kancalar](../HOOKS.md) çalıştırın. Kod modu (deneysel, varsayılan olarak açık), modelin birkaç MCP ve eklenti aracını çağıran tek bir `execute_tools` programı yazmasına izin verir; her çağrı yine onay kurallarınıza uyar ve makbuzunu korur. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) bağımsız olarak yayımlanan ayrı bir eklentidir (deneysel, yalnızca macOS) ve siz erişimini inceleyip etkinleştirene kadar kapalı kalır.
 
 ### Çalıştırma yolları
 

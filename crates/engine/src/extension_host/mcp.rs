@@ -16,7 +16,7 @@ use super::protocol::*;
 use super::registry::OwnerState;
 use super::supervisor::{HostProcess, HostRequestContext};
 use super::ticket::{Grant, Presented, Ticket, TicketKind};
-use super::tier::HostTier;
+use super::tier::HostCohort;
 use super::{ExtensionHostManager, ManagerShared};
 use crate::core::engine::HumanDecision;
 use crate::mcp::process_broker::BrokerSession;
@@ -106,7 +106,7 @@ impl Session {
             bail!("MCP broker host generation is stale");
         }
         shared
-            .live_owner_authority(HostTier::Builtin, |registry| {
+            .live_owner_authority(HostCohort::Builtin, |registry| {
                 registry
                     .owner(&owner.plugin_id)
                     .filter(|entry| entry.owner == *owner && entry.state == OwnerState::Active)
@@ -235,8 +235,8 @@ impl Broker {
         });
         (before - sessions.len()) as u64
     }
-    pub(super) fn revoke_host(&self, tier: HostTier, generation: u64) -> u64 {
-        if tier != HostTier::Builtin {
+    pub(super) fn revoke_host(&self, cohort: &HostCohort, generation: u64) -> u64 {
+        if !cohort.is_builtin() {
             return 0;
         }
         let mut sessions = self.sessions.lock().expect("MCP broker lock");
@@ -368,7 +368,7 @@ impl Broker {
             .redeem(&Presented {
                 ticket: &params.ticket,
                 kind: TicketKind::McpLaunch,
-                tier: HostTier::Builtin,
+                cohort: HostCohort::Builtin,
                 host_generation: generation,
                 owner: &params.owner,
                 method: "proc/launch",
@@ -587,7 +587,7 @@ impl Broker {
                     .redeem(&Presented {
                         ticket,
                         kind: TicketKind::McpOperation,
-                        tier: HostTier::Builtin,
+                        cohort: HostCohort::Builtin,
                         host_generation: generation,
                         owner: &params.owner,
                         method: ticket_method,
@@ -907,7 +907,7 @@ impl SdkTransport {
         }
         let ticket = self.manager.shared.core_calls.tickets.mint(Grant {
             kind: TicketKind::McpOperation,
-            tier: HostTier::Builtin,
+            cohort: HostCohort::Builtin,
             host_generation: self.session.host_generation,
             owner: self.session.owner.clone(),
             method: if self.session.http.is_some() {
@@ -1003,7 +1003,7 @@ impl SdkTransport {
                 .tickets
                 .mint(Grant {
                     kind: TicketKind::McpLaunch,
-                    tier: HostTier::Builtin,
+                    cohort: HostCohort::Builtin,
                     host_generation: guard.transport.session.host_generation,
                     owner: guard.transport.session.owner.clone(),
                     method: if guard.transport.session.http.is_some() {

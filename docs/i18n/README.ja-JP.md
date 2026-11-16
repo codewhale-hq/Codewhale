@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fd76d718e3a2 -->
+<!-- source: README.md sha256:c66c04179a4e -->
 <div align="center">
 
 <picture>
@@ -79,7 +79,7 @@ Anthropic、OpenAI、DeepSeek、Google、Mistral、Moonshot、OpenRouter、xAI �
 
 ### 拡張
 
-[MCP サーバー](../MCP.md)を接続し、[スキル](../SKILLS.md)と[プラグイン](../PLUGINS.md)を追加し、セッションやツールのイベントで[フック](../HOOKS.md)を実行できます。コードモード（実験的、既定で有効）では、モデルが複数の MCP ツールやプラグインツールを呼び出す `execute_tools` プログラムを 1 つ書けます。各呼び出しはあなたの承認ルールに従い、レシートも残ります。v0.10.2 に同梱の Computer Use プラグイン（実験的、macOS のみ）は他のアプリを観察・操作でき、あなたがアクセス権を確認して有効にするまではオフのままです（[ガイド](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)）。0.10.3 で予定：このプラグインは[別途リリース](https://github.com/codewhale-hq/codewhale-cu-plugin)されます。
+[MCP サーバー](../MCP.md)を接続し、[スキル](../SKILLS.md)と[プラグイン](../PLUGINS.md)を追加し、セッションやツールのイベントで[フック](../HOOKS.md)を実行できます。コードモード（実験的、既定で有効）では、モデルが複数の MCP ツールやプラグインツールを呼び出す `execute_tools` プログラムを 1 つ書けます。各呼び出しはあなたの承認ルールに従い、レシートも残ります。[Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) は独立してリリースされる別のプラグイン（実験的、macOS のみ）で、アクセス権を確認して有効にするまでオフのままです。
 
 ### 実行方法
 

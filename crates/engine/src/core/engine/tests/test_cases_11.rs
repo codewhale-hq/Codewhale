@@ -560,6 +560,7 @@ async fn operate_model_shell_uses_normal_approval_and_workspace_sandbox() {
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -715,6 +716,7 @@ async fn posture_change_during_approval_wait(
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -930,6 +932,7 @@ async fn full_access_subagent_handoff_keeps_model_shell_free_of_approval_prompts
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::SubAgentHandoff,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -1066,6 +1069,7 @@ async fn assert_full_access_model_tool_batch_is_blocked(
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -1273,6 +1277,7 @@ async fn assert_full_access_model_tool_batch_runs(
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await

@@ -515,6 +515,7 @@ impl ToolSpec for RunVerifiersTool {
 
 /// Run quick auto verifier gates after a successful workflow completion (#4013).
 pub async fn run_workflow_completion_gates(context: &ToolContext) -> Result<Value, ToolError> {
+    crate::tools::execution_envelope::enforce_tool_denial(context, "run_verifiers", &json!({}))?;
     let gates = build_gate_plan(
         context,
         VerifierProfile::Auto,
@@ -609,10 +610,7 @@ fn start_background_gates(
 
         let command = render_gate_command(program, &gate.args)?;
         let mut env: HashMap<String, String> = gate.env.into_iter().collect();
-        env.insert(
-            crate::tools::shell::AGENT_PROJECT_ENV.to_string(),
-            context.workspace.to_string_lossy().into_owned(),
-        );
+        crate::tools::shell::insert_agent_mark_env(&mut env, context);
         let spawn_result = {
             let mut manager = context
                 .shell_manager

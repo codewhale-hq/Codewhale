@@ -9,12 +9,14 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use flate2::read::GzDecoder;
-
+use codewhale_skill_install::bounded_tar::{
+    MAX_ENTRY_NAME_BYTES, entry_names_within_bound, map_stream_limit, open_bounded_tarball,
+    read_body_within,
+};
 use codewhale_skill_install::install::is_safe_path;
 
 use super::PluginInstallError;
@@ -22,11 +24,22 @@ use super::stage::{StagedPlugin, fresh_staging_dir, validate_staged};
 
 /// Validate a tarball and extract the manifest-rooted subtree into a
 /// `.staging-*` sibling of the destination.
+#[cfg(test)]
 pub(super) fn stage_tarball(
     bytes: &[u8],
     user_plugins_dir: &Path,
     max_size: u64,
     bundle_path: Option<&str>,
+) -> Result<StagedPlugin> {
+    stage_tarball_with_network(bytes, user_plugins_dir, max_size, bundle_path, None)
+}
+
+pub(super) fn stage_tarball_with_network(
+    bytes: &[u8],
+    user_plugins_dir: &Path,
+    max_size: u64,
+    bundle_path: Option<&str>,
+    network: Option<&codewhale_net::network_policy::NetworkPolicy>,
 ) -> Result<StagedPlugin> {
     let scan = scan_tarball_for_bundle(bytes, max_size, bundle_path)?;
     let staged_path = fresh_staging_dir(user_plugins_dir)?;
@@ -34,7 +47,7 @@ pub(super) fn stage_tarball(
         let raw_dir = tempfile::tempdir().context("failed to create DSH extraction dir")?;
         extract_into(&scan, bytes, raw_dir.path(), max_size).and_then(|()| {
             let _ = fs::remove_dir_all(&staged_path);
-            super::dsh::convert_package(raw_dir.path(), &staged_path)?;
+            super::dsh::convert_package_with_network(raw_dir.path(), &staged_path, network)?;
             validate_staged(&staged_path)
         })
     } else {
@@ -57,7 +70,7 @@ pub(super) fn stage_tarball(
 #[derive(Debug)]
 pub(super) struct TarballScan {
     plugin_root: String,
-    is_dsh: bool,
+    pub(super) is_dsh: bool,
 }
 
 #[cfg(test)]
@@ -65,14 +78,27 @@ pub(super) fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
     scan_tarball_for_bundle(bytes, max_size, None)
 }
 
-fn scan_tarball_for_bundle(
+fn oversized_if_stream_limit(err: anyhow::Error, max_size: u64) -> anyhow::Error {
+    map_stream_limit(err, || {
+        PluginInstallError::OversizedBundle { limit: max_size }.into()
+    })
+}
+
+pub(super) fn scan_tarball_for_bundle(
     bytes: &[u8],
     max_size: u64,
     bundle_path: Option<&str>,
 ) -> Result<TarballScan> {
-    let cursor = std::io::Cursor::new(bytes);
-    let gz = GzDecoder::new(cursor);
-    let mut archive = tar::Archive::new(gz);
+    scan_bundle_entries(bytes, max_size, bundle_path)
+        .map_err(|err| oversized_if_stream_limit(err, max_size))
+}
+
+fn scan_bundle_entries(
+    bytes: &[u8],
+    max_size: u64,
+    bundle_path: Option<&str>,
+) -> Result<TarballScan> {
+    let mut archive = open_bounded_tarball(bytes, max_size);
 
     let mut total_size: u64 = 0;
     let mut manifest_paths: Vec<String> = Vec::new();
@@ -83,6 +109,12 @@ fn scan_tarball_for_bundle(
         .context("failed to read tar entries (corrupt archive?)")?
     {
         let mut entry = entry.context("failed to read tar entry")?;
+        if !entry_names_within_bound(&entry) {
+            return Err(PluginInstallError::EntryNameTooLong {
+                limit: MAX_ENTRY_NAME_BYTES,
+            }
+            .into());
+        }
         let header = entry.header().clone();
         let path = entry
             .path()
@@ -92,11 +124,9 @@ fn scan_tarball_for_bundle(
         if !is_safe_path(&path) {
             return Err(PluginInstallError::PathTraversal(path_str).into());
         }
-        if let Ok(size) = header.size() {
-            total_size = total_size.saturating_add(size);
-            if total_size > max_size {
-                return Err(PluginInstallError::OversizedBundle { limit: max_size }.into());
-            }
+        total_size = total_size.saturating_add(entry.size());
+        if total_size > max_size {
+            return Err(PluginInstallError::OversizedBundle { limit: max_size }.into());
         }
         if header.entry_type().is_file() {
             if path.file_name().is_some_and(|name| {
@@ -110,10 +140,13 @@ fn scan_tarball_for_bundle(
                     .components()
                     .any(|part| part.as_os_str() == std::ffi::OsStr::new("node_modules"))
             {
-                let mut raw = Vec::new();
-                if entry.by_ref().take(65_536).read_to_end(&mut raw).is_ok()
-                    && let Ok(text) = std::str::from_utf8(&raw)
-                    && let Ok(parsed) = super::dsh::parse_json(text)
+                let raw = read_body_within(&mut entry, 1_048_576)
+                    .context("failed to read package.json from archive")?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("package.json in archive exceeds the 1 MiB metadata limit")
+                    })?;
+                if let Ok(text) = std::str::from_utf8(&raw)
+                    && let Ok(parsed) = super::dsh::parse_package_json(text)
                     && parsed
                         .get("dsh")
                         .and_then(|dsh| dsh.get("bundle"))
@@ -145,31 +178,32 @@ fn scan_tarball_for_bundle(
     };
 
     let roots = filter_roots(&manifest_paths);
-    if roots.is_empty() {
-        let dsh_roots = filter_roots(&dsh_manifest_paths);
-        if dsh_roots.len() == 1 {
-            let plugin_root = dsh_roots.into_iter().next().unwrap_or_default();
-            return Ok(TarballScan {
-                plugin_root,
-                is_dsh: true,
-            });
-        }
+    let dsh_roots = filter_roots(&dsh_manifest_paths);
+    let all_roots: BTreeSet<String> = roots.union(&dsh_roots).cloned().collect();
+    if all_roots.len() != 1 {
+        return Err(PluginInstallError::PluginTomlRoots(all_roots.len()).into());
     }
-    if roots.len() != 1 {
-        return Err(PluginInstallError::PluginTomlRoots(roots.len()).into());
-    }
-    let plugin_root = roots.into_iter().next().unwrap_or_default();
+    let plugin_root = all_roots.into_iter().next().unwrap_or_default();
+    let is_dsh = dsh_roots.contains(&plugin_root);
     Ok(TarballScan {
         plugin_root,
-        is_dsh: false,
+        is_dsh,
     })
 }
 
 /// Second pass: extract only entries under the scanned bundle root.
-fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) -> Result<()> {
-    let cursor = std::io::Cursor::new(bytes);
-    let gz = GzDecoder::new(cursor);
-    let mut archive = tar::Archive::new(gz);
+pub(super) fn extract_into(
+    scan: &TarballScan,
+    bytes: &[u8],
+    dest: &Path,
+    max_size: u64,
+) -> Result<()> {
+    extract_entries(scan, bytes, dest, max_size)
+        .map_err(|err| oversized_if_stream_limit(err, max_size))
+}
+
+fn extract_entries(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) -> Result<()> {
+    let mut archive = open_bounded_tarball(bytes, max_size);
     let mut total_size: u64 = 0;
 
     for entry in archive
@@ -177,6 +211,12 @@ fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) ->
         .context("failed to read tar entries (corrupt archive?)")?
     {
         let mut entry = entry.context("failed to read tar entry")?;
+        if !entry_names_within_bound(&entry) {
+            return Err(PluginInstallError::EntryNameTooLong {
+                limit: MAX_ENTRY_NAME_BYTES,
+            }
+            .into());
+        }
         let header = entry.header().clone();
         let entry_type = header.entry_type();
         let path = entry
@@ -230,14 +270,10 @@ fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) ->
                 fs::create_dir_all(parent)
                     .with_context(|| format!("failed to create dir {}", parent.display()))?;
             }
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .with_context(|| format!("failed to read {}", path.display()))?;
+            let buf = read_body_within(&mut entry, max_size.saturating_sub(total_size))
+                .with_context(|| format!("failed to read {}", path.display()))?
+                .ok_or(PluginInstallError::OversizedBundle { limit: max_size })?;
             total_size = total_size.saturating_add(buf.len() as u64);
-            if total_size > max_size {
-                return Err(PluginInstallError::OversizedBundle { limit: max_size }.into());
-            }
             let mut options = fs::OpenOptions::new();
             options.create_new(true).write(true);
             #[cfg(unix)]

@@ -32,6 +32,10 @@ use codewhale_runtime::logging;
 
 use super::CodewhaleClient;
 use super::chat::REASONING_REPLAY_PLACEHOLDER;
+use super::deepseek_tools::{
+    deepseek_web_tool_kind, validate_and_apply_safety_check_and_title,
+    validate_deepseek_web_tool_choice, validate_deepseek_web_tools,
+};
 use super::prepared::WireDialect;
 use super::role_placement::{RolePlacement, role_placement};
 use super::wire::{
@@ -43,6 +47,7 @@ use super::wire::{
 use super::wire::{extract_sse_data_value, next_sse_line, push_sse_event_data};
 use crate::llm_client::LlmError;
 
+#[derive(Clone, Copy)]
 pub(super) struct ResponsesReplayContext<'a> {
     pub(super) provider_id: &'a str,
     pub(super) wire_model_id: &'a str,
@@ -153,6 +158,21 @@ pub(super) fn build_responses_wire_body(
     }
     body["input"] = json!(input);
 
+    if request
+        .messages
+        .iter()
+        .any(|m| m.role == codewhale_models::Role::LatestReminder)
+    {
+        bail!("latest_reminder is not supported in the Responses API");
+    }
+    let is_deepseek_route = provider_kind.is_some_and(|provider| {
+        matches!(
+            provider,
+            ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
+        )
+    }) || profile.id.as_str() == "deepseek_stateless_plain_reasoning";
+    validate_and_apply_safety_check_and_title(request, &mut body, is_deepseek_route)?;
+
     let tool_name_limit = provider_kind.map_or(TOOL_NAME_LIMIT_64, |provider| {
         tool_name_limit(provider, ToolNameWire::OpenAiCompatible)
     });
@@ -164,10 +184,19 @@ pub(super) fn build_responses_wire_body(
     )?;
     let mut omitted_tool_names = Vec::new();
     let mut omitted_logical_names = Vec::new();
-    // Convert tools to Responses function tools.
     if let Some(tools) = request.tools.as_ref() {
+        let has_deepseek_web_tools =
+            validate_deepseek_web_tools(tools, WireDialect::OpenAiResponses)?;
         let mut responses_tools = Vec::new();
         for tool in tools {
+            if let Some(kind) = deepseek_web_tool_kind(tool) {
+                let mut obj = json!({ "type": kind });
+                if let Some(subkind) = tool.input_schema.get("kind").and_then(Value::as_str) {
+                    obj["kind"] = json!(subkind);
+                }
+                responses_tools.push(obj);
+                continue;
+            }
             if tool_name_exceeds_limit(&tool.name, tool_name_limit) {
                 omitted_logical_names.push(tool.name.clone());
                 omitted_tool_names.push(to_api_tool_name(&tool.name));
@@ -199,6 +228,9 @@ pub(super) fn build_responses_wire_body(
                 }
             }
         }
+        if let Some(choice) = request.tool_choice.as_ref() {
+            validate_deepseek_web_tool_choice(choice, has_deepseek_web_tools)?;
+        }
         if let Some(name) = request.tool_choice.as_ref().and_then(forced_tool_name)
             && omitted_logical_names.iter().any(|omitted| omitted == name)
         {
@@ -211,7 +243,7 @@ pub(super) fn build_responses_wire_body(
         }
         if !responses_tools.is_empty() {
             body["tools"] = match profile.tools.envelope {
-                ToolEnvelopePolicy::NamespaceWrapped => {
+                ToolEnvelopePolicy::NamespaceWrapped if !has_deepseek_web_tools => {
                     let Some(namespace) = profile.tools.namespace else {
                         anyhow::bail!(
                             "responses profile {} wraps tools without a namespace",
@@ -222,7 +254,9 @@ pub(super) fn build_responses_wire_body(
                         "description": "Codewhale tools running under the user's local permissions.",
                         "tools": responses_tools }])
                 }
-                ToolEnvelopePolicy::FunctionArray => json!(responses_tools),
+                ToolEnvelopePolicy::NamespaceWrapped | ToolEnvelopePolicy::FunctionArray => {
+                    json!(responses_tools)
+                }
             };
             let tool_choice = request.tool_choice.as_ref().and_then(Value::as_str);
             body["tool_choice"] = if tool_choice == Some("none") {
@@ -367,6 +401,9 @@ impl CodewhaleClient {
                     stop_sequence: None,
                     container: None,
                     usage: Usage::default(),
+                    title: None,
+                    stop_details: None,
+                    refusal: None,
                 },
             });
 
@@ -569,24 +606,31 @@ impl CodewhaleClient {
                                             current_block_index =
                                                 Some(content_block_counter - 1);
                                         }
-                                        // DeepSeek can run server-side web
-                                        // search on this route, but Codewhale
-                                        // does not yet replay `web_search_call`
-                                        // items or their citations (the
-                                        // offering keeps
-                                        // `server_side_web_search: Unknown`).
-                                        // Surface a visible notice instead of
-                                        // dropping the item silently so the
-                                        // user is not handed an ungrounded
-                                        // answer with no explanation.
                                         "web_search_call" => {
                                             content_block_counter += 1;
+                                            let id = item
+                                                .get("id")
+                                                .and_then(Value::as_str)
+                                                .unwrap_or_default()
+                                                .to_string();
+                                            let status = item
+                                                .get("status")
+                                                .and_then(Value::as_str)
+                                                .unwrap_or("in_progress")
+                                                .to_string();
+                                            let kind = item
+                                                .get("kind")
+                                                .and_then(Value::as_str)
+                                                .map(str::to_string);
+                                            let action = item.get("action").cloned();
                                             yield Ok(StreamEvent::ContentBlockStart {
                                                 index: content_block_counter - 1,
-                                                content_block:
-                                                    ContentBlockStart::Text {
-                                                        text: "[Web search ran server-side; results are not replayed on this route.]".to_string(),
-                                                    },
+                                                content_block: ContentBlockStart::WebSearchCall {
+                                                    id,
+                                                    status,
+                                                    kind,
+                                                    action,
+                                                },
                                             });
                                             current_block_index =
                                                 Some(content_block_counter - 1);
@@ -655,32 +699,131 @@ impl CodewhaleClient {
                                     });
                                 }
                             }
+                            "response.output_text.annotation.added" => {
+                                if let Some(citation) = event.get("annotation").cloned()
+                                    && let Some(idx) = current_block_index
+                                {
+                                    yield Ok(StreamEvent::ContentBlockDelta {
+                                        index: idx,
+                                        delta: Delta::CitationsDelta { citation },
+                                    });
+                                }
+                            }
+                            "response.refusal.delta" => {
+                                if let Some(refusal) = event.get("delta").and_then(Value::as_str)
+                                    && let Some(idx) = current_block_index
+                                {
+                                    yield Ok(StreamEvent::ContentBlockDelta {
+                                        index: idx,
+                                        delta: Delta::RefusalDelta {
+                                            refusal: refusal.to_string(),
+                                        },
+                                    });
+                                }
+                            }
+                            "response.web_search_call.in_progress"
+                            | "response.web_search_call.searching"
+                            | "response.web_search_call.completed" => {
+                                if let Some(idx) = current_block_index {
+                                    let status = event_type
+                                        .strip_prefix("response.web_search_call.")
+                                        .map(str::to_string);
+                                    yield Ok(StreamEvent::ContentBlockDelta {
+                                        index: idx,
+                                        delta: Delta::WebSearchCallDelta {
+                                            status,
+                                            kind: None,
+                                            action: event.get("action").cloned(),
+                                            sources: event.get("sources").cloned(),
+                                            page: event.get("page").cloned(),
+                                            signature: event
+                                                .get("signature")
+                                                .and_then(Value::as_str)
+                                                .map(str::to_string),
+                                            error: event.get("error").cloned(),
+                                        },
+                                    });
+                                }
+                            }
                             "response.output_item.done" => {
                                 if let Some(idx) = current_block_index {
-                                    if let (Some((provider, api, model)), Some(item)) =
-                                        (reasoning_origin.as_ref(), event.get("item"))
-                                        && item.get("type").and_then(Value::as_str)
-                                            == Some("reasoning")
-                                        && let Some(encrypted_content) = item
-                                            .get("encrypted_content")
+                                    if let Some(item) = event.get("item") {
+                                        let item_type = item
+                                            .get("type")
                                             .and_then(Value::as_str)
-                                            .filter(|value| !value.is_empty())
-                                    {
-                                        yield Ok(StreamEvent::ContentBlockDelta {
-                                            index: idx,
-                                            delta: Delta::ReasoningStateDelta {
-                                                state: OpaqueReasoningState {
-                                                    provider: provider.clone(),
-                                                    api: api.clone(),
-                                                    model: model.clone(),
-                                                    id: item
-                                                        .get("id")
+                                            .unwrap_or("");
+                                        if item_type == "web_search_call" {
+                                            yield Ok(StreamEvent::ContentBlockDelta {
+                                                index: idx,
+                                                delta: Delta::WebSearchCallDelta {
+                                                    status: item
+                                                        .get("status")
                                                         .and_then(Value::as_str)
                                                         .map(str::to_string),
-                                                    encrypted_content: encrypted_content.to_string(),
+                                                    kind: item
+                                                        .get("kind")
+                                                        .and_then(Value::as_str)
+                                                        .map(str::to_string),
+                                                    action: item.get("action").cloned(),
+                                                    sources: item
+                                                        .get("sources")
+                                                        .cloned()
+                                                        .or_else(|| {
+                                                            item.pointer("/action/sources").cloned()
+                                                        }),
+                                                    page: item.get("page").cloned(),
+                                                    signature: item
+                                                        .get("signature")
+                                                        .and_then(Value::as_str)
+                                                        .map(str::to_string),
+                                                    error: item.get("error").cloned(),
                                                 },
-                                            },
-                                        });
+                                            });
+                                        } else if item_type == "message"
+                                            && let Some(parts) =
+                                                item.get("content").and_then(Value::as_array)
+                                        {
+                                            for part in parts {
+                                                if part.get("type").and_then(Value::as_str)
+                                                    == Some("refusal")
+                                                    && let Some(refusal) = part
+                                                        .get("refusal")
+                                                        .and_then(Value::as_str)
+                                                        .filter(|s| !s.is_empty())
+                                                {
+                                                    yield Ok(StreamEvent::ContentBlockDelta {
+                                                        index: idx,
+                                                        delta: Delta::RefusalDelta {
+                                                            refusal: refusal.to_string(),
+                                                        },
+                                                    });
+                                                }
+                                            }
+                                        } else if let Some((provider, api, model)) =
+                                            reasoning_origin.as_ref()
+                                            && item_type == "reasoning"
+                                            && let Some(encrypted_content) = item
+                                                .get("encrypted_content")
+                                                .and_then(Value::as_str)
+                                                .filter(|value| !value.is_empty())
+                                        {
+                                            yield Ok(StreamEvent::ContentBlockDelta {
+                                                index: idx,
+                                                delta: Delta::ReasoningStateDelta {
+                                                    state: OpaqueReasoningState {
+                                                        provider: provider.clone(),
+                                                        api: api.clone(),
+                                                        model: model.clone(),
+                                                        id: item
+                                                            .get("id")
+                                                            .and_then(Value::as_str)
+                                                            .map(str::to_string),
+                                                        encrypted_content: encrypted_content
+                                                            .to_string(),
+                                                    },
+                                                },
+                                            });
+                                        }
                                     }
                                     yield Ok(StreamEvent::ContentBlockStop { index: idx });
                                     current_block_index = None;
@@ -700,7 +843,13 @@ impl CodewhaleClient {
                                 {
                                     if let Some(usage_val) = event.pointer("/response/usage") {
                                         yield Ok(StreamEvent::MessageDelta {
-                                            delta: MessageDelta { stop_reason: None, stop_sequence: None },
+                                            delta: MessageDelta {
+                                                stop_reason: None,
+                                                stop_sequence: None,
+                                                title: None,
+                                                stop_details: None,
+                                                refusal: None,
+                                            },
                                             usage: Some(parse_responses_usage(usage_val)),
                                         });
                                     }
@@ -716,10 +865,18 @@ impl CodewhaleClient {
                                             Some(parse_responses_usage(usage_val));
                                     }
                                     let stop_reason = responses_stop_reason(resp, saw_tool_call);
+                                    let title = resp
+                                        .get("title")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_string);
+                                    let stop_details = resp.get("incomplete_details").cloned();
                                     yield Ok(StreamEvent::MessageDelta {
                                         delta: MessageDelta {
                                             stop_reason: Some(stop_reason),
                                             stop_sequence: None,
+                                            title,
+                                            stop_details,
+                                            refusal: None,
                                         },
                                         usage: usage_data.take(),
                                     });
@@ -734,7 +891,13 @@ impl CodewhaleClient {
                                 if strict_terminal {
                                     if let Some(usage_val) = event.pointer("/response/usage") {
                                         yield Ok(StreamEvent::MessageDelta {
-                                            delta: MessageDelta { stop_reason: None, stop_sequence: None },
+                                            delta: MessageDelta {
+                                                stop_reason: None,
+                                                stop_sequence: None,
+                                                title: None,
+                                                stop_details: None,
+                                                refusal: None,
+                                            },
                                             usage: Some(parse_responses_usage(usage_val)),
                                         });
                                     }
@@ -813,6 +976,9 @@ impl CodewhaleClient {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         };
         // Accumulated tool-call argument JSON, parallel to `response.content`.
         let mut tool_args: Vec<String> = Vec::new();
@@ -822,6 +988,9 @@ impl CodewhaleClient {
                 StreamEvent::MessageStart { message } => {
                     response.id = message.id;
                     response.usage = message.usage;
+                    if message.title.is_some() {
+                        response.title = message.title;
+                    }
                 }
                 StreamEvent::ContentBlockStart { content_block, .. } => {
                     let block = match content_block {
@@ -856,8 +1025,56 @@ impl CodewhaleClient {
                             caller,
                             thought_signature,
                         },
-                        ContentBlockStart::ServerToolUse { id, name, input } => {
-                            ContentBlock::ServerToolUse { id, name, input }
+                        ContentBlockStart::ServerToolUse {
+                            id,
+                            name,
+                            input,
+                            kind,
+                            caller,
+                        } => ContentBlock::ServerToolUse {
+                            id,
+                            name,
+                            input,
+                            kind,
+                            caller,
+                        },
+                        ContentBlockStart::WebSearchToolResult {
+                            tool_use_id,
+                            content,
+                            kind,
+                        } => ContentBlock::WebSearchToolResult {
+                            tool_use_id,
+                            content,
+                            kind,
+                        },
+                        ContentBlockStart::WebFetchToolResult {
+                            tool_use_id,
+                            content,
+                            kind,
+                            signature,
+                        } => ContentBlock::WebFetchToolResult {
+                            tool_use_id,
+                            content,
+                            kind,
+                            signature,
+                        },
+                        ContentBlockStart::WebSearchCall {
+                            id,
+                            status,
+                            kind,
+                            action,
+                        } => ContentBlock::WebSearchCall {
+                            id,
+                            status,
+                            kind,
+                            action,
+                            sources: None,
+                            page: None,
+                            signature: None,
+                            error: None,
+                        },
+                        ContentBlockStart::ServerToolCalls { steps } => {
+                            ContentBlock::ServerToolCalls { steps }
                         }
                     };
                     response.content.push(block);
@@ -898,6 +1115,63 @@ impl CodewhaleClient {
                                 *existing = Some(state);
                             }
                         }
+                        Delta::CitationsDelta { .. } => {}
+                        Delta::RefusalDelta { refusal } => {
+                            response
+                                .refusal
+                                .get_or_insert_with(String::new)
+                                .push_str(&refusal);
+                        }
+                        Delta::WebSearchCallDelta {
+                            status,
+                            kind,
+                            action,
+                            sources,
+                            page,
+                            signature,
+                            error,
+                        } => {
+                            if let Some(ContentBlock::WebSearchCall {
+                                status: existing_status,
+                                kind: existing_kind,
+                                action: existing_action,
+                                sources: existing_sources,
+                                page: existing_page,
+                                signature: existing_signature,
+                                error: existing_error,
+                                ..
+                            }) = response.content.get_mut(i)
+                            {
+                                if let Some(status) = status {
+                                    *existing_status = status;
+                                }
+                                if kind.is_some() {
+                                    *existing_kind = kind;
+                                }
+                                if action.is_some() {
+                                    *existing_action = action;
+                                }
+                                if sources.is_some() {
+                                    *existing_sources = sources;
+                                }
+                                if page.is_some() {
+                                    *existing_page = page;
+                                }
+                                if signature.is_some() {
+                                    *existing_signature = signature;
+                                }
+                                if error.is_some() {
+                                    *existing_error = error;
+                                }
+                            }
+                        }
+                        Delta::ServerToolCallsDelta { steps } => {
+                            if let Some(ContentBlock::ServerToolCalls { steps: existing }) =
+                                response.content.get_mut(i)
+                            {
+                                *existing = steps;
+                            }
+                        }
                     }
                 }
                 StreamEvent::ContentBlockStop { index } => {
@@ -914,6 +1188,15 @@ impl CodewhaleClient {
                 StreamEvent::MessageDelta { delta, usage } => {
                     if let Some(stop_reason) = delta.stop_reason {
                         response.stop_reason = Some(stop_reason);
+                    }
+                    if let Some(title) = delta.title {
+                        response.title = Some(title);
+                    }
+                    if let Some(stop_details) = delta.stop_details {
+                        response.stop_details = Some(stop_details);
+                    }
+                    if let Some(refusal) = delta.refusal {
+                        response.refusal = Some(refusal);
                     }
                     if let Some(usage) = usage {
                         response.usage = usage;
@@ -975,6 +1258,12 @@ pub(super) fn convert_messages_to_responses_input(
                             content_items.push(json!({
                                 "type": "input_image",
                                 "image_url": image_url.url,
+                            }));
+                        }
+                        ContentBlock::File { file_id } => {
+                            content_items.push(json!({
+                                "type": "input_file",
+                                "file_id": file_id,
                             }));
                         }
                         ContentBlock::ToolResult {
@@ -1122,6 +1411,43 @@ pub(super) fn convert_messages_to_responses_input(
                                 items.push(item);
                             }
                         }
+                        ContentBlock::WebSearchCall {
+                            id,
+                            status,
+                            kind,
+                            action,
+                            sources,
+                            page,
+                            signature,
+                            error,
+                        } => {
+                            let mut item = json!({ "type": "web_search_call" });
+                            if !id.is_empty() {
+                                item["id"] = json!(id);
+                            }
+                            if !status.is_empty() {
+                                item["status"] = json!(status);
+                            }
+                            if let Some(kind) = kind {
+                                item["kind"] = json!(kind);
+                            }
+                            if let Some(action) = action {
+                                item["action"] = action.clone();
+                            }
+                            if let Some(sources) = sources {
+                                item["sources"] = sources.clone();
+                            }
+                            if let Some(page) = page {
+                                item["page"] = page.clone();
+                            }
+                            if let Some(signature) = signature {
+                                item["signature"] = json!(signature);
+                            }
+                            if let Some(error) = error {
+                                item["error"] = error.clone();
+                            }
+                            items.push(item);
+                        }
                         _ => {}
                     }
                 }
@@ -1190,7 +1516,7 @@ pub(super) fn convert_messages_to_responses_input(
             }
             // The outbound seam refuses rejected pairs before body building;
             // keeping this arm empty is fail-closed defense in depth.
-            RolePlacement::Rejected => {}
+            RolePlacement::Rejected | RolePlacement::LatestReminder => {}
         }
     }
 
@@ -1426,7 +1752,8 @@ fn parse_responses_usage(val: &Value) -> Usage {
         prompt_cache_write_tokens,
         reasoning_tokens,
         reasoning_replay_tokens: None,
-        server_tool_use: None,
+        server_tool_use: super::wire::parse_server_tool_usage(Some(val)),
+        safety_tokens: super::wire::parse_safety_tokens(Some(val)),
 
         input_audio_tokens: val
             .pointer("/input_tokens_details/audio_tokens")

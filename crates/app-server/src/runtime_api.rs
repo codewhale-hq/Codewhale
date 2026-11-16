@@ -20,7 +20,7 @@ use axum::response::Html;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, delete, get, post, put};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
@@ -129,7 +129,9 @@ mod members;
 mod memory_lens;
 mod mobile;
 mod plans;
+mod plugin_index;
 mod plugins;
+mod remote_pairings;
 pub(crate) mod review;
 mod secrets;
 pub use self::secrets::{SetAccountModelAccessRequest, install_account_model_access};
@@ -252,6 +254,8 @@ pub struct RuntimeApiState {
     provider_connect: secrets::ProviderConnect,
     #[cfg(test)]
     compat_stream_test_hook: Option<tokio::sync::mpsc::UnboundedSender<CompatStreamTestPoint>>,
+    #[cfg(test)]
+    automation_admission_test_hook: Arc<parking_lot::Mutex<Option<AutomationAdmissionTestHook>>>,
 }
 
 // This is a cache bound inside the existing owner, matching the daemon's
@@ -386,7 +390,7 @@ impl RuntimeWorkspaceScopes {
         let owner = self.clone();
         codewhale_runtime::runtime_control::owner_work(move || {
             let (canonical, directory) =
-                codewhale_util::workspace_dir::open_workspace_directory(&lexical)?;
+                codewhale_util::workspace_dir::open_pinned_workspace_directory(&lexical)?;
             let directory = Arc::new(directory);
             let mut scopes = owner.scopes.lock();
             if let Some(scope) = scopes.get(&lexical) {
@@ -857,6 +861,21 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
     > {
         Box::pin(owner_calls::events(
             self.state.clone(),
+            thread_id,
+            since_seq,
+        ))
+    }
+    fn events_in_workspace(
+        &self,
+        workspace: PathBuf,
+        thread_id: String,
+        since_seq: u64,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<crate::RuntimeOwnerEventStream>> + Send + '_>,
+    > {
+        Box::pin(owner_calls::events_in_workspace(
+            self.state.clone(),
+            workspace,
             thread_id,
             since_seq,
         ))
@@ -1551,6 +1570,27 @@ struct DecideApprovalResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct ApproveAutoReviewRetryBody {
+    #[serde(alias = "receipt_id", alias = "call_digest")]
+    target: String,
+    #[serde(default)]
+    client: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+}
+
+#[derive(Debug, Serialize)]
+struct ApproveAutoReviewRetryResponse {
+    ok: bool,
+    thread_id: String,
+    grant: codewhale_engine::core::authority::auto_review::AutoReviewRetryGrant,
+}
+
+#[derive(Debug, Serialize)]
+struct AutoReviewBlocksResponse {
+    thread_id: String,
+    blocks: Vec<codewhale_engine::core::authority::auto_review::AutoReviewBlockedAction>,
+}
+
+#[derive(Debug, Deserialize)]
 struct SubmitUserInputBody {
     answers: Vec<codewhale_engine::tools::user_input::UserInputAnswer>,
 }
@@ -2006,20 +2046,26 @@ pub(crate) fn open_runtime_threads_for_host(
     // thread manager can spawn any of those engines, matching interactive and
     // headless exec startup.
     let workshop_activation = install_runtime_server_workshop_budgets(config);
-    let profile = if acp {
-        codewhale_engine::core::engine::EngineHostProfile::Acp
+    let manager = Arc::new(if acp {
+        RuntimeThreadManager::open_host(
+            config.clone(),
+            workspace,
+            manager_config,
+            plugin_registry,
+            codewhale_engine::core::engine::EngineHostProfile::Acp,
+            preheld_lock,
+            binding,
+        )?
     } else {
-        codewhale_engine::core::engine::EngineHostProfile::Normal
-    };
-    let manager = Arc::new(RuntimeThreadManager::open_host(
-        config.clone(),
-        workspace,
-        manager_config,
-        plugin_registry,
-        profile,
-        preheld_lock,
-        binding,
-    )?);
+        RuntimeThreadManager::open_owner_host(
+            config.clone(),
+            workspace,
+            manager_config,
+            plugin_registry,
+            preheld_lock,
+            binding,
+        )?
+    });
     if let Some(skills_dir) = config.bundled_skills_install_dir()
         && let Err(error) =
             codewhale_skills::install_system_skills(&skills_dir, &config.skills_config().bundled)
@@ -2442,6 +2488,8 @@ pub async fn run_http_server(
         provider_connect: Default::default(),
         #[cfg(test)]
         compat_stream_test_hook: None,
+        #[cfg(test)]
+        automation_admission_test_hook: Default::default(),
     };
     #[cfg(any(unix, windows))]
     let (owner_endpoint, control_state) = bind_captured_runtime_frontends(
@@ -2619,7 +2667,7 @@ fn selected_control_socket(options: &RuntimeApiOptions) -> Option<PathBuf> {
 /// `selected_store` is the store root this run resolved, the same value the
 /// thread manager will open.
 #[cfg(unix)]
-async fn store_selected_control_socket(
+pub(crate) async fn store_selected_control_socket(
     explicit: Option<PathBuf>,
     selected_store: &FsPath,
 ) -> Result<PathBuf> {
@@ -3207,6 +3255,14 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/voice/dictate", post(voice::voice_dictate))
         .route("/v1/voice/send", post(voice::voice_send))
         .route("/v1/voice/control", post(voice::voice_control))
+        .route(
+            "/v1/voice/transcribe",
+            post(voice::voice_transcribe).layer(DefaultBodyLimit::max(12 * 1024 * 1024)),
+        )
+        .route(
+            "/v1/voice/tts",
+            post(voice::voice_tts).layer(DefaultBodyLimit::max(64 * 1024)),
+        )
         .route("/v1/threads/{id}/resume", post(resume_thread))
         .route("/v1/threads/{id}/fork", post(fork_thread))
         .route("/v1/threads/{id}/undo", post(undo_thread_turn))
@@ -3308,6 +3364,14 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             delete(revoke_approval_grant),
         )
         .route(
+            "/v1/threads/{id}/auto-review/blocks",
+            get(list_auto_review_blocks),
+        )
+        .route(
+            "/v1/threads/{id}/auto-review/approve",
+            post(approve_auto_review_retry),
+        )
+        .route(
             "/v1/user-input/{thread_id}/{input_id}",
             post(submit_user_input).delete(cancel_user_input_request),
         )
@@ -3372,6 +3436,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/skills/{name}/audit", get(audit_skill_api))
         .route("/v1/apps/mcp/tools", get(list_mcp_tools))
         .route("/v1/apps/plugins", get(plugins::list_plugins))
+        .route("/v1/apps/plugin-index", get(plugin_index::get_plugin_index))
         .route("/v1/apps/avatars", get(avatars::list_avatars))
         .route(
             "/v1/apps/avatars/{handle}/atlases/{page}",
@@ -3576,6 +3641,27 @@ pub fn build_router(state: RuntimeApiState) -> Router {
                 .delete(clear_memory),
         )
         .route("/v1/memory/{id}", get(get_memory_entry))
+        .route(
+            "/v1/dsh/remote/pairings",
+            get(remote_pairings::list_pairings).layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::require_runtime_master_bearer,
+            )),
+        )
+        .route(
+            "/v1/dsh/remote/pairings/{grant}/present",
+            post(remote_pairings::present_pairing).layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::require_runtime_master_bearer,
+            )),
+        )
+        .route(
+            "/v1/dsh/remote/pairings/{grant}",
+            delete(remote_pairings::withdraw_pairing).layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::require_runtime_master_bearer,
+            )),
+        )
         .merge(memory_lens::routes())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -3602,6 +3688,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/__codewhale/mobile/bootstrap/{nonce}",
             get(exchange_mobile_bootstrap),
+        )
+        .route(
+            "/__codewhale/mobile/pair/{secret}",
+            get(remote_pairings::redeem_pairing),
         )
         .route("/__codewhale/mobile/session", post(exchange_mobile_session))
         .route(
@@ -3672,11 +3762,18 @@ async fn exchange_mobile_bootstrap(
         }
     };
 
+    mobile_redirect_response(session)
+}
+
+fn mobile_redirect_response(session: mobile::MobileSessionBootstrap) -> Response {
     let location = format!(
         "/mobile#request_proof={}&stream_ticket={}",
         session.request_proof, session.stream_ticket
     );
-    let cookie = mobile::mobile_session_cookie(&session.session_cookie);
+    let cookie = mobile::mobile_session_cookie_with_max_age(
+        &session.session_cookie,
+        session.session_ttl_seconds,
+    );
     let mut response = (StatusCode::SEE_OTHER, "").into_response();
     response.headers_mut().insert(
         header::LOCATION,
@@ -3710,8 +3807,17 @@ async fn refresh_mobile_stream_ticket(
     let Some(mobile_state) = state.mobile.as_ref() else {
         return mobile_not_found();
     };
-    if !auth::mobile_session_request_is_authorized(&req, &state, mobile_state) {
-        return mobile_unauthorized();
+    match auth::mobile_session_request_is_authorized(&req, &state, mobile_state) {
+        auth::RuntimeAuthDecision::Allow(_) => {}
+        auth::RuntimeAuthDecision::Forbidden(message) => {
+            let mut response =
+                (StatusCode::FORBIDDEN, Json(json!({ "error": message }))).into_response();
+            secure_mobile_response(&mut response);
+            return response;
+        }
+        auth::RuntimeAuthDecision::Unauthorized => {
+            return mobile_unauthorized();
+        }
     }
     let ticket = mobile_state.refresh_stream_ticket(
         req.headers()
@@ -3734,7 +3840,10 @@ async fn refresh_mobile_stream_ticket(
 }
 
 fn mobile_session_response(session: mobile::MobileSessionBootstrap) -> Response {
-    let cookie = mobile::mobile_session_cookie(&session.session_cookie);
+    let cookie = mobile::mobile_session_cookie_with_max_age(
+        &session.session_cookie,
+        session.session_ttl_seconds,
+    );
     let mut response = Json(MobileSessionResponse {
         request_proof: session.request_proof,
         stream_ticket: session.stream_ticket,
@@ -3750,7 +3859,7 @@ fn mobile_session_response(session: mobile::MobileSessionBootstrap) -> Response 
     response
 }
 
-fn mobile_not_found() -> Response {
+pub(super) fn mobile_not_found() -> Response {
     secured_mobile_text(StatusCode::NOT_FOUND, "not found")
 }
 
@@ -3760,13 +3869,13 @@ fn mobile_unauthorized() -> Response {
     response
 }
 
-fn secured_mobile_text(status: StatusCode, body: &'static str) -> Response {
+pub(super) fn secured_mobile_text(status: StatusCode, body: &'static str) -> Response {
     let mut response = (status, body).into_response();
     secure_mobile_response(&mut response);
     response
 }
 
-fn secure_mobile_response(response: &mut Response) {
+pub(super) fn secure_mobile_response(response: &mut Response) {
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(
@@ -3952,14 +4061,22 @@ async fn create_thread(
 
 async fn list_threads(
     State(state): State<RuntimeApiState>,
+    scope: Option<Extension<remote_pairings::RemoteSessionScope>>,
     Query(query): Query<ThreadsQuery>,
 ) -> Result<Json<Vec<ThreadRecord>>, ApiError> {
     let filter = resolve_thread_filter(query.include_archived, query.archived_only);
-    let threads = state
+    let scan_limit = if scope.is_some() { None } else { query.limit };
+    let mut threads = state
         .runtime_threads
-        .list_threads(filter, query.limit)
+        .list_threads(filter, scan_limit)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
+    if let Some(Extension(scope)) = scope {
+        threads.retain(|thread| thread.id == scope.session_id);
+        if let Some(limit) = query.limit {
+            threads.truncate(limit);
+        }
+    }
     Ok(Json(threads))
 }
 
@@ -4028,6 +4145,7 @@ fn distinct_paths(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
 
 async fn list_threads_summary(
     State(state): State<RuntimeApiState>,
+    scope: Option<Extension<remote_pairings::RemoteSessionScope>>,
     Query(query): Query<ThreadSummaryQuery>,
 ) -> Result<Json<Vec<ThreadSummary>>, ApiError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 500);
@@ -4062,7 +4180,7 @@ async fn list_threads_summary(
     //
     // Match on the thread record *before* harvesting row facts. Preview is
     // filled only for rows that are returned; it is not a search key.
-    let scan_limit = if search.is_some() || thread_ids.is_some() {
+    let scan_limit = if scope.is_some() || search.is_some() || thread_ids.is_some() {
         None
     } else {
         Some(limit)
@@ -4075,6 +4193,11 @@ async fn list_threads_summary(
 
     let mut rows = Vec::new();
     for thread in threads {
+        if let Some(Extension(scope)) = &scope
+            && thread.id != scope.session_id
+        {
+            continue;
+        }
         if rows.len() >= limit {
             break;
         }
@@ -5875,6 +5998,10 @@ struct CommandCatalogEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     origin: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    plugin_id: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    workspace_sourced: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     registration_id: Option<String>,
 }
 
@@ -5933,6 +6060,8 @@ fn command_catalog(
             shadowed_by,
             shadowed_aliases,
             origin: None,
+            plugin_id: None,
+            workspace_sourced: false,
             registration_id: None,
         });
     }
@@ -5956,6 +6085,8 @@ fn command_catalog(
             shadowed_by: None,
             shadowed_aliases: Vec::new(),
             origin: None,
+            plugin_id: command.plugin_id.clone(),
+            workspace_sourced: command.workspace_sourced,
             registration_id: None,
         });
     }
@@ -6038,6 +6169,8 @@ async fn list_commands(
                 shadowed_by: None,
                 shadowed_aliases: Vec::new(),
                 origin: Some(reference.origin.clone()),
+                plugin_id: Some(reference.plugin_id.clone()),
+                workspace_sourced: false,
                 registration_id: query
                     .thread_id
                     .as_deref()
@@ -6257,9 +6390,15 @@ async fn list_hooks(
 async fn list_modes(
     State(state): State<RuntimeApiState>,
 ) -> Json<codewhale_engine::conversation_modes::ConversationModeTable> {
+    let plugin_creator_enabled = state
+        .config
+        .read()
+        .features()
+        .enabled(codewhale_runtime::features::Feature::PluginCreator);
     Json(
         codewhale_engine::conversation_modes::current_table(
             state.runtime_threads.extension_host_options(),
+            plugin_creator_enabled,
         )
         .await,
     )
@@ -6979,8 +7118,45 @@ async fn list_approvals(
     Ok(Json(rows))
 }
 
+fn resolve_approval_responder(
+    auth_caller: auth::RuntimeAuthCaller,
+    client: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+) -> Result<Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>, ApiError> {
+    use codewhale_engine::runtime_threads::manager::ApprovalResponder;
+
+    match auth_caller {
+        auth::RuntimeAuthCaller::MasterOrLocal => Ok(client),
+        auth::RuntimeAuthCaller::WebSession => match client {
+            None | Some(ApprovalResponder::Web) => Ok(Some(ApprovalResponder::Web)),
+            Some(_) => Err(
+                ApiError::forbidden("web session cannot claim another client surface")
+                    .with_code("owner_required"),
+            ),
+        },
+        auth::RuntimeAuthCaller::MobileSession => {
+            if client.is_some_and(ApprovalResponder::is_owner_surface) {
+                return Err(
+                    ApiError::forbidden("only the owner surface may answer this approval")
+                        .with_code("owner_required"),
+                );
+            }
+            Ok(Some(ApprovalResponder::Phone))
+        }
+        auth::RuntimeAuthCaller::DeviceClient => {
+            if client.is_some_and(ApprovalResponder::is_owner_surface) {
+                return Err(
+                    ApiError::forbidden("only the owner surface may answer this approval")
+                        .with_code("owner_required"),
+                );
+            }
+            Ok(client)
+        }
+    }
+}
+
 async fn decide_approval(
     State(state): State<RuntimeApiState>,
+    axum::Extension(auth_caller): axum::Extension<auth::RuntimeAuthCaller>,
     Path(approval_id): Path<String>,
     Json(req): Json<DecideApprovalBody>,
 ) -> Result<Json<DecideApprovalResponse>, ApiError> {
@@ -6997,8 +7173,9 @@ async fn decide_approval(
             )));
         }
     };
+    let responder = resolve_approval_responder(auth_caller, req.client)?;
     Ok(Json(
-        settle_approval_request(&state, approval_id, None, decision, req.client).await?,
+        settle_approval_request(&state, approval_id, None, decision, responder).await?,
     ))
 }
 
@@ -7009,16 +7186,39 @@ async fn settle_approval_request(
     decision: ExternalApprovalDecision,
     responder: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
 ) -> Result<DecideApprovalResponse, ApiError> {
+    settle_approval_request_in_workspace(state, approval_id, binding, decision, responder, None)
+        .await
+}
+
+async fn settle_approval_request_in_workspace(
+    state: &RuntimeApiState,
+    approval_id: String,
+    binding: Option<&codewhale_engine::runtime_threads::manager::ExternalApprovalBinding>,
+    decision: ExternalApprovalDecision,
+    responder: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+    expected_workspace: Option<&FsPath>,
+) -> Result<DecideApprovalResponse, ApiError> {
     let delivered = state
         .runtime_threads
-        .deliver_approval_from(&approval_id, binding, decision, responder)
+        .deliver_approval_from_workspace(
+            &approval_id,
+            binding,
+            decision,
+            responder,
+            expected_workspace,
+        )
         .await
         .map_err(|error| {
-            if error
-                .downcast_ref::<codewhale_engine::runtime_threads::manager::ApprovalBindingMismatch>()
-                .is_some()
+            if error.is::<codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch>() {
+                ApiError::forbidden(error.to_string()).with_code("workspace_mismatch")
+            } else if error
+                .is::<codewhale_engine::runtime_threads::manager::ApprovalBindingMismatch>()
             {
                 ApiError::forbidden(error.to_string())
+            } else if error
+                .is::<codewhale_engine::runtime_threads::manager::ApprovalOwnerRequired>()
+            {
+                ApiError::forbidden(error.to_string()).with_code("owner_required")
             } else if error
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists)
@@ -7064,6 +7264,37 @@ async fn revoke_approval_grant(
     Ok(Json(
         json!({ "ok": true, "grant_id": grant_id, "revoked": true }),
     ))
+}
+
+async fn list_auto_review_blocks(
+    State(state): State<RuntimeApiState>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<AutoReviewBlocksResponse>, ApiError> {
+    let blocks = state
+        .runtime_threads
+        .list_auto_review_blocks(&thread_id, None)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(AutoReviewBlocksResponse { thread_id, blocks }))
+}
+
+async fn approve_auto_review_retry(
+    State(state): State<RuntimeApiState>,
+    axum::Extension(auth_caller): axum::Extension<auth::RuntimeAuthCaller>,
+    Path(thread_id): Path<String>,
+    Json(req): Json<ApproveAutoReviewRetryBody>,
+) -> Result<Json<ApproveAutoReviewRetryResponse>, ApiError> {
+    let responder = resolve_approval_responder(auth_caller, req.client)?;
+    let grant = state
+        .runtime_threads
+        .approve_auto_review_retry(&thread_id, &req.target, responder, None)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(ApproveAutoReviewRetryResponse {
+        ok: true,
+        thread_id,
+        grant,
+    }))
 }
 
 async fn submit_user_input(
@@ -7204,28 +7435,14 @@ fn mcp_management_config(
     .map_err(|e| ApiError::internal(format!("Failed to load MCP config: {e}")))?;
     let global = codewhale_engine::mcp::load_config(&global_path)
         .map_err(|e| ApiError::internal(format!("Failed to load MCP config: {e}")))?;
-    let project_path = codewhale_engine::mcp::workspace_mcp_config_path(&state.workspace);
-    let same_source = project_path == global_path
-        || project_path
-            .canonicalize()
-            .ok()
-            .zip(global_path.canonicalize().ok())
-            .is_some_and(|(project, global)| project == global);
-    let project = if !same_source
-        && codewhale_runtime::config::is_workspace_trusted(&state.workspace)
-    {
-        codewhale_engine::mcp::load_config(&project_path)
-            .map_err(|e| ApiError::internal(format!("Failed to load project MCP config: {e}")))?
-    } else {
-        codewhale_mcp::config::McpConfig::default()
-    };
+    let project = codewhale_engine::mcp::project_server_names(&global_path, &state.workspace);
     let origins = config
         .servers
         .iter()
         .map(|(name, server)| {
             let origin = if server.reviewed_plugin.is_some() {
                 "plugin"
-            } else if project.servers.contains_key(name) {
+            } else if project.contains(name) {
                 "project"
             } else if global.servers.contains_key(name) {
                 "global"
@@ -8465,6 +8682,7 @@ async fn create_trigger(
         owner_session_id: Some(owner_session_id),
         parent_trigger_id: None,
         destination_thread_id: destination,
+        disallowed_tools: Vec::new(),
     };
     automation_mutation(
         &state,
@@ -8502,25 +8720,73 @@ fn map_trigger_err(err: anyhow::Error) -> ApiError {
     }
 }
 
+#[cfg(test)]
+struct AutomationAdmissionTestHook {
+    arrived: tokio::sync::oneshot::Sender<()>,
+    resume: tokio::sync::oneshot::Receiver<()>,
+}
+
+#[cfg(test)]
+async fn automation_admission_test_point(state: &RuntimeApiState) {
+    let hook = { state.automation_admission_test_hook.lock().take() };
+    if let Some(hook) = hook {
+        let _ = hook.arrived.send(());
+        let _ = hook.resume.await;
+    }
+}
+
 async fn create_automation(
     State(state): State<RuntimeApiState>,
     headers: HeaderMap,
     Json(req): Json<CreateAutomationRequest>,
 ) -> Result<Response, ApiError> {
+    create_automation_in_workspace(state, headers, req, None).await
+}
+
+async fn create_automation_in_workspace(
+    state: RuntimeApiState,
+    headers: HeaderMap,
+    req: CreateAutomationRequest,
+    expected_workspace: Option<PathBuf>,
+) -> Result<Response, ApiError> {
     require_destination_thread(&state, req.destination_thread_id.as_deref()).await?;
+    #[cfg(test)]
+    if expected_workspace.is_some() {
+        automation_admission_test_point(&state).await;
+    }
     automation_mutation(
         &state,
         &headers,
         "POST /v1/automations",
         &req,
         StatusCode::CREATED,
-        |e| ApiError::bad_request(e.to_string()),
+        |e| {
+            if e.is::<codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch>() {
+                map_thread_err(e)
+            } else {
+                ApiError::bad_request(e.to_string())
+            }
+        },
         async {
-            state
-                .automations
-                .lock()
-                .await
-                .create_automation(req.clone())
+            let manager = state.automations.clone().lock_owned().await;
+            let runtime = state.runtime_threads.clone();
+            let req = req.clone();
+            let expected_workspace = expected_workspace.clone();
+            tokio::task::spawn_blocking(move || match expected_workspace.as_deref() {
+                Some(workspace) => runtime.with_thread_in_workspace(
+                    req.destination_thread_id.as_deref().ok_or(
+                        codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch,
+                    )?,
+                    workspace,
+                    |thread| {
+                        anyhow::ensure!(!thread.archived, "destination thread is archived");
+                        manager.create_automation(req.clone())
+                    },
+                ),
+                None => manager.create_automation(req.clone()),
+            })
+            .await
+            .context("automation create admission worker failed")?
         },
     )
     .await
@@ -8602,19 +8868,66 @@ async fn set_automation_status(
     action: &str,
     status: codewhale_engine::automation_manager::AutomationStatus,
 ) -> Result<Response, ApiError> {
+    set_automation_status_in_workspace(state, id, query, headers, action, status, None).await
+}
+
+async fn set_automation_status_in_workspace(
+    state: RuntimeApiState,
+    id: String,
+    query: AutomationPreconditionQuery,
+    headers: HeaderMap,
+    action: &str,
+    status: codewhale_engine::automation_manager::AutomationStatus,
+    expected_workspace: Option<PathBuf>,
+) -> Result<Response, ApiError> {
     let req = UpdateAutomationRequest {
         status: Some(status),
         expected_revision: query.expected_revision,
         ..UpdateAutomationRequest::default()
     };
+    #[cfg(test)]
+    if expected_workspace.is_some() {
+        automation_admission_test_point(&state).await;
+    }
     automation_mutation(
         &state,
         &headers,
         &format!("POST /v1/automations/{id}/{action}"),
         &query.expected_revision,
         StatusCode::OK,
-        map_automation_err,
-        async { state.automations.lock().await.update_automation(&id, req) },
+        |e| {
+            if e.is::<codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch>() {
+                map_thread_err(e)
+            } else {
+                map_automation_err(e)
+            }
+        },
+        async {
+            let manager = state.automations.clone().lock_owned().await;
+            let runtime = state.runtime_threads.clone();
+            let id = id.clone();
+            tokio::task::spawn_blocking(move || match expected_workspace.as_deref() {
+                Some(workspace) => {
+                    let record = manager.get_automation(&id)?;
+                    if record.cwds.as_slice() != [workspace.to_path_buf()] {
+                        return Err(
+                            codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch
+                                .into(),
+                        );
+                    }
+                    runtime.with_thread_in_workspace(
+                        record.destination_thread_id.as_deref().ok_or(
+                            codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch,
+                        )?,
+                        workspace,
+                        |_| manager.update_automation(&id, req),
+                    )
+                }
+                None => manager.update_automation(&id, req),
+            })
+            .await
+            .context("automation status admission worker failed")?
+        },
     )
     .await
 }
@@ -9072,6 +9385,11 @@ async fn update_thread(
         )
         .await
         .map_err(map_thread_err)?;
+    if thread.archived
+        && let Some(mobile) = state.mobile.as_ref()
+    {
+        mobile.revoke_remote_session(&id);
+    }
     Ok(Json(thread))
 }
 
@@ -9482,6 +9800,7 @@ fn attribute_window(
     workspace: &FsPath,
     turn_id: &str,
     receipts: &[codewhale_snapshot::WorkspaceSnapshotRef],
+    delegated: &std::collections::BTreeSet<PathBuf>,
 ) -> Result<
     (
         std::collections::BTreeSet<PathBuf>,
@@ -9558,6 +9877,11 @@ fn attribute_window(
                 _ => SpanWriter::Nobody,
             }
         };
+    }
+    for path in delegated {
+        if foreign.remove(path) {
+            owned.insert(path.clone());
+        }
     }
     Ok((owned, foreign))
 }
@@ -9733,7 +10057,12 @@ fn patch_undo_workspace_files_impl(
             })
             .filter_map(|receipt| receipt.write_paths.as_ref())
             .flatten();
-        for raw in turn.declared_writes.iter().chain(receipt_writes) {
+        for raw in turn
+            .declared_writes
+            .iter()
+            .chain(&turn.delegated_writes)
+            .chain(receipt_writes)
+        {
             let covered = match declared_write_path(workspace, raw) {
                 Some(rel) => !repo.path_is_excluded(&rel).map_err(|e| {
                     ApiError::internal(format!(
@@ -9759,7 +10088,12 @@ fn patch_undo_workspace_files_impl(
     for (turn, receipts) in windows {
         let (pre, pre_label) = resolve(&turn.turn_id, &receipts[0])?;
         let (post, _) = resolve(&turn.turn_id, &receipts[receipts.len() - 1])?;
-        let (owned, foreign) = attribute_window(workspace, &turn.turn_id, receipts)?;
+        let delegated = turn
+            .delegated_writes
+            .iter()
+            .filter_map(|raw| declared_write_path(workspace, raw))
+            .collect();
+        let (owned, foreign) = attribute_window(workspace, &turn.turn_id, receipts, &delegated)?;
         segments.push(UndoSegment {
             turn_id: turn.turn_id.clone(),
             pre,
@@ -10293,8 +10627,32 @@ async fn start_thread_watch_turn(
 
 async fn start_thread_turn(
     State(state): State<RuntimeApiState>,
+    caller: Option<axum::Extension<auth::RuntimeAuthCaller>>,
+    scope: Option<Extension<remote_pairings::RemoteSessionScope>>,
     Path(id): Path<String>,
     Json(value): Json<Value>,
+) -> Result<(StatusCode, Json<StartTurnResponse>), ApiError> {
+    let scope = scope.map(|Extension(remote_scope)| remote_scope);
+    if let Some(ref remote_scope) = scope
+        && remote_scope.session_id != id
+    {
+        return Err(ApiError::forbidden(
+            "paired remote devices are restricted to their paired conversation",
+        ));
+    }
+    let owner_composer = matches!(
+        caller,
+        Some(axum::Extension(auth::RuntimeAuthCaller::WebSession))
+    );
+    start_thread_turn_for_caller(State(state), Path(id), Json(value), owner_composer, scope).await
+}
+
+async fn start_thread_turn_for_caller(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Json(value): Json<Value>,
+    owner_composer: bool,
+    scope: Option<remote_pairings::RemoteSessionScope>,
 ) -> Result<(StatusCode, Json<StartTurnResponse>), ApiError> {
     if value.as_object().is_some_and(|object| {
         [
@@ -10302,6 +10660,8 @@ async fn start_thread_turn(
             "watchEvent",
             "input_provenance",
             "inputProvenance",
+            "input_authorship",
+            "inputAuthorship",
         ]
         .iter()
         .any(|key| object.contains_key(*key))
@@ -10314,6 +10674,8 @@ async fn start_thread_turn(
                 "watchEvent",
                 "input_provenance",
                 "inputProvenance",
+                "input_authorship",
+                "inputAuthorship",
             ]
             .iter()
             .any(|key| metadata.contains_key(*key))
@@ -10323,18 +10685,39 @@ async fn start_thread_turn(
             "Watch input requires the dedicated attested watch-turn endpoint",
         ));
     }
-    let req: StartTurnRequest = serde_json::from_value(value)
+    let mut req: StartTurnRequest = serde_json::from_value(value)
         .map_err(|error| ApiError::unprocessable(error.to_string()))?;
-    let (turn, replayed) = state
-        .runtime_threads
-        .start_turn_reporting_replay(&id, req)
-        .await
-        .map_err(map_thread_err)?;
+    if scope.is_some() {
+        sanitize_remote_turn_request(&mut req)?;
+    }
+    let expected_workspace = req.expected_workspace.clone();
+    let (turn, replayed) = if owner_composer {
+        state
+            .runtime_threads
+            .start_turn_owner_reporting_replay(&id, req)
+            .await
+            .map_err(map_thread_err)?
+    } else {
+        state
+            .runtime_threads
+            .start_turn_reporting_replay(&id, req)
+            .await
+            .map_err(map_thread_err)?
+    };
     let thread = state
         .runtime_threads
         .get_thread(&id)
         .await
         .map_err(map_thread_err)?;
+    if expected_workspace
+        .as_ref()
+        .is_some_and(|expected| expected != &thread.workspace)
+    {
+        return Err(
+            ApiError::forbidden("thread is outside the selected workspace")
+                .with_code("workspace_mismatch"),
+        );
+    }
     // A replay acknowledges work already accepted rather than admitting new
     // work: 200 tells the client "this is the turn I already started", which
     // is what lets an ambiguous submit resolve without duplicate messages or
@@ -10352,6 +10735,33 @@ async fn start_thread_turn(
             idempotent_replay: replayed,
         }),
     ))
+}
+
+fn sanitize_remote_turn_request(req: &mut StartTurnRequest) -> Result<(), ApiError> {
+    if req.mode.is_some()
+        || req.permission_posture.is_some()
+        || req.allowed_tools.is_some()
+        || !req.dynamic_tools.is_empty()
+        || req.model.is_some()
+        || req.model_provider.is_some()
+        || req.model_provider_id.is_some()
+        || req.account_model_owner.is_some()
+        || req.profile_constitution.is_some()
+        || req.reasoning_effort.is_some()
+        || req.max_output_tokens.is_some()
+        || req.environment_id.is_some()
+        || req.allow_shell == Some(true)
+        || req.trust_mode == Some(true)
+        || req.auto_approve == Some(true)
+    {
+        return Err(ApiError::forbidden(
+            "paired remote devices cannot override turn posture, tools, model, or environment",
+        ));
+    }
+    req.allow_shell = None;
+    req.trust_mode = None;
+    req.auto_approve = None;
+    Ok(())
 }
 
 async fn get_thread_turn_operation(
@@ -10484,12 +10894,17 @@ async fn cancel_agent_mail(
 
 async fn steer_thread_turn(
     State(state): State<RuntimeApiState>,
+    caller: Option<axum::Extension<auth::RuntimeAuthCaller>>,
     Path((id, turn_id)): Path<(String, String)>,
     Json(req): Json<SteerTurnRequest>,
 ) -> Result<Json<TurnRecord>, ApiError> {
+    let owner_composer = matches!(
+        caller,
+        Some(axum::Extension(auth::RuntimeAuthCaller::WebSession))
+    );
     let turn = state
         .runtime_threads
-        .steer_turn(&id, &turn_id, req)
+        .steer_turn_for_caller(&id, &turn_id, req, owner_composer)
         .await
         .map_err(map_thread_err)?;
     Ok(Json(turn))
@@ -10913,10 +11328,22 @@ async fn cancel_task(
 
 async fn stream_thread_events(
     State(state): State<RuntimeApiState>,
+    scope: Option<Extension<remote_pairings::RemoteSessionScope>>,
     Path(id): Path<String>,
     Query(mut query): Query<ThreadEventsQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    if let Some(Extension(ref remote_scope)) = scope {
+        if remote_scope.session_id != id {
+            return Err(ApiError::forbidden(
+                "paired remote devices are restricted to their paired conversation",
+            ));
+        }
+        if !remote_pairings::scope_is_live(&state, remote_scope).await {
+            remote_pairings::evict_scope(&state, remote_scope);
+            return Err(ApiError::unauthorized("Remote device pairing has ended"));
+        }
+    }
     // Two clients, two cursors. A browser `EventSource` can only replay through
     // the `Last-Event-ID` header it sets on reconnect (the ids now ride the
     // journal frames below); every other client passes `since_seq`. An explicit
@@ -10926,9 +11353,18 @@ async fn stream_thread_events(
     query.since_seq = query.since_seq.or_else(|| last_event_id(&headers));
 
     let progress = query.progress;
-    let stream = open_thread_event_frames(state, id, query)
-        .await?
-        .map(|frame| Ok::<_, Infallible>(thread_event_as_sse(frame)));
+    let initial_last_seq = query.since_seq.unwrap_or(0);
+    let frames = open_thread_event_frames(state.clone(), id.clone(), query).await?;
+    let stream = match scope {
+        Some(Extension(remote_scope)) => {
+            remote_scoped_thread_event_stream(state, id, remote_scope, frames, initial_last_seq)
+                .map(|frame| Ok::<_, Infallible>(thread_event_as_sse(frame)))
+                .boxed()
+        }
+        None => frames
+            .map(|frame| Ok::<_, Infallible>(thread_event_as_sse(frame)))
+            .boxed(),
+    };
 
     let mut response = Sse::new(stream)
         .keep_alive(
@@ -10951,16 +11387,123 @@ async fn stream_thread_events(
     Ok(response)
 }
 
+struct RemoteStreamWatcherGuard(tokio::task::JoinHandle<()>);
+
+impl Drop for RemoteStreamWatcherGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+fn remote_scoped_thread_event_stream(
+    state: RuntimeApiState,
+    thread_id: String,
+    remote_scope: remote_pairings::RemoteSessionScope,
+    mut inner: crate::RuntimeOwnerEventStream,
+    mut last_seq: u64,
+) -> impl futures_util::Stream<Item = crate::RuntimeOwnerEventFrame> {
+    let per_stream_cancel = CancellationToken::new();
+    let watcher_cancel = per_stream_cancel.clone();
+    let watcher_state = state.clone();
+    let watcher_scope = remote_scope.clone();
+    let _guard = RemoteStreamWatcherGuard(tokio::spawn(async move {
+        let deadline = tokio::time::Instant::from_std(watcher_scope.expires_at);
+        let sleep_ttl = tokio::time::sleep_until(deadline);
+        tokio::pin!(sleep_ttl);
+        let mut poll = tokio::time::interval(Duration::from_millis(250));
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        poll.tick().await;
+        loop {
+            tokio::select! {
+                () = watcher_scope.cancel.cancelled() => {
+                    watcher_cancel.cancel();
+                    break;
+                }
+                () = &mut sleep_ttl => {
+                    remote_pairings::evict_scope(&watcher_state, &watcher_scope);
+                    watcher_cancel.cancel();
+                    break;
+                }
+                _ = poll.tick() => {
+                    if !remote_pairings::scope_is_live(&watcher_state, &watcher_scope).await {
+                        remote_pairings::evict_scope(&watcher_state, &watcher_scope);
+                        watcher_cancel.cancel();
+                        break;
+                    }
+                }
+            }
+        }
+    }));
+    stream! {
+        let _keep_guard_alive = _guard;
+        loop {
+            if !remote_pairings::scope_is_live_sync(&remote_scope) {
+                remote_pairings::evict_scope(&state, &remote_scope);
+                yield thread_stream_end(&thread_id, ThreadStreamEnd::RemoteAccessRevoked, last_seq);
+                return;
+            }
+            let next = tokio::select! {
+                biased;
+                () = per_stream_cancel.cancelled() => None,
+                frame = inner.next() => Some(frame),
+            };
+            match next {
+                None => {
+                    remote_pairings::evict_scope(&state, &remote_scope);
+                    yield thread_stream_end(&thread_id, ThreadStreamEnd::RemoteAccessRevoked, last_seq);
+                    return;
+                }
+                Some(None) => return,
+                Some(Some(frame)) => {
+                    if !remote_pairings::scope_is_live_for_frame(&state, &remote_scope, &frame).await {
+                        remote_pairings::evict_scope(&state, &remote_scope);
+                        yield thread_stream_end(&thread_id, ThreadStreamEnd::RemoteAccessRevoked, last_seq);
+                        return;
+                    }
+                    if let Some(seq) = frame.sequence {
+                        last_seq = last_seq.max(seq);
+                    } else if frame.event == "stream.progress"
+                        && let Some(seq) = frame.data.get("seq").and_then(Value::as_u64)
+                    {
+                        last_seq = last_seq.max(seq);
+                    }
+                    let is_end = frame.event == "stream.end";
+                    yield frame;
+                    if is_end {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
 async fn open_thread_event_frames(
     state: RuntimeApiState,
     id: String,
     query: ThreadEventsQuery,
 ) -> Result<crate::RuntimeOwnerEventStream, ApiError> {
-    let _ = state
-        .runtime_threads
-        .get_thread(&id)
-        .await
-        .map_err(map_thread_err)?;
+    open_thread_event_frames_in_workspace(state, id, query, None).await
+}
+
+async fn open_thread_event_frames_in_workspace(
+    state: RuntimeApiState,
+    id: String,
+    query: ThreadEventsQuery,
+    expected_workspace: Option<PathBuf>,
+) -> Result<crate::RuntimeOwnerEventStream, ApiError> {
+    if let Some(workspace) = expected_workspace.as_deref() {
+        state
+            .runtime_threads
+            .with_thread_in_workspace(&id, workspace, |_| Ok(()))
+            .map_err(map_thread_err)?;
+    } else {
+        let _ = state
+            .runtime_threads
+            .get_thread(&id)
+            .await
+            .map_err(map_thread_err)?;
+    }
 
     // Subscribe before reading durable history. An event emitted while replay
     // is loaded is then present in both places (and deduped below) or queued
@@ -10979,6 +11522,12 @@ async fn open_thread_event_frames(
         .replay_events(&id, query.since_seq, query.replay_limit)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
+    if let Some(workspace) = expected_workspace.as_deref() {
+        state
+            .runtime_threads
+            .with_thread_in_workspace(&id, workspace, |_| Ok(()))
+            .map_err(map_thread_err)?;
+    }
 
     let stream = replay_live_thread_events(
         state.runtime_threads.clone(),
@@ -11027,6 +11576,7 @@ enum ThreadStreamEnd {
     CatchUpFailed,
     /// The Runtime API server is stopping (a terminating signal).
     RuntimeShutdown,
+    RemoteAccessRevoked,
 }
 
 impl ThreadStreamEnd {
@@ -11035,15 +11585,14 @@ impl ThreadStreamEnd {
             Self::ReplayFailed => "replay_failed",
             Self::CatchUpFailed => "catch_up_failed",
             Self::RuntimeShutdown => "runtime_shutdown",
+            Self::RemoteAccessRevoked => "remote_access_revoked",
         }
     }
 
-    /// Every current end is resumable from `last_seq`. The flag exists so the
-    /// client rule keys on it rather than on the reason list: a future
-    /// non-resumable end stops clients without a client change.
     const fn retryable(self) -> bool {
         match self {
             Self::ReplayFailed | Self::CatchUpFailed | Self::RuntimeShutdown => true,
+            Self::RemoteAccessRevoked => false,
         }
     }
 }
@@ -14875,6 +15424,32 @@ fn external_agent_refusal(err: &anyhow::Error) -> Option<ApiError> {
 }
 
 fn map_thread_err(err: anyhow::Error) -> ApiError {
+    if err.is::<codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch>() {
+        return ApiError::forbidden(err.to_string()).with_code("workspace_mismatch");
+    }
+    if err.is::<codewhale_engine::runtime_threads::manager::ApprovalOwnerRequired>() {
+        return ApiError::forbidden(err.to_string()).with_code("owner_required");
+    }
+    if let Some(error) =
+        err.downcast_ref::<codewhale_engine::core::engine::AutoReviewRetryApprovalError>()
+    {
+        use codewhale_engine::core::engine::AutoReviewRetryApprovalError;
+        return match error {
+            AutoReviewRetryApprovalError::OwnerRequired => {
+                ApiError::forbidden(error.to_string()).with_code("owner_required")
+            }
+            AutoReviewRetryApprovalError::NotInAutoReview => {
+                ApiError::conflict(error.to_string()).with_code("not_in_auto_review")
+            }
+            AutoReviewRetryApprovalError::InvalidTarget(detail) => {
+                if detail.contains("no blocked action") {
+                    ApiError::not_found(error.to_string())
+                } else {
+                    ApiError::conflict(error.to_string())
+                }
+            }
+        };
+    }
     if let Some(refusal) = external_agent_refusal(&err).or_else(|| mode_refusal(&err)) {
         return refusal;
     }
@@ -14990,6 +15565,14 @@ impl ApiError {
     fn forbidden(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::FORBIDDEN,
+            message: message.into(),
+            code: None,
+        }
+    }
+
+    fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
             message: message.into(),
             code: None,
         }
@@ -15192,6 +15775,8 @@ base_url = "http://127.0.0.1:9/v1"
             provider_switches: Arc::new(tokio::sync::Mutex::new(())),
             provider_connect: Default::default(),
             compat_stream_test_hook: None,
+            #[cfg(test)]
+            automation_admission_test_hook: Default::default(),
         };
         let router = build_router(state.clone());
         let server = tokio::spawn(async move {

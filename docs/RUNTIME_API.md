@@ -415,8 +415,9 @@ validation as turn operation keys and are scoped to the Runtime store owner.
 Exact retries return the original thread, including after response loss or
 restart; a different effective request with the same key returns HTTP 409.
 The fingerprint includes the resolved model/provider, workspace, reasoning,
-permission and shell policy, tool allowlist, archival state, prompt/task fields,
-dynamic tools and environments. Creation defaults are resolved before comparison.
+permission and shell policy, tool allowlist, tool denylist, archival state,
+prompt/task fields, dynamic tools and environments. Creation defaults are
+resolved before comparison.
 Operation records retain only fingerprints and reserved identity, never the raw
 key. Missing committed thread data is an error, never permission to create a
 replacement. Clients must require this capability before relying on creation
@@ -886,6 +887,13 @@ Plugin tools and configured MCP servers on this transport are on main after
 0.10.2; 0.10.2 itself does not have them.
 Client-supplied MCP servers, dynamic tools, task/PTY/background shell,
 interpreter, subagent and RLM lifecycles are unavailable on this transport.
+ACP has no tool search, so every connected MCP tool and its schema is sent with
+every request, and a server marked `lazy = true` never starts. A large MCP set
+therefore costs tokens on each turn and can exceed a provider's tool limit.
+MCP servers a model starts at run time stay out of an ACP-profile host. When
+`serve --acp` instead attaches to a running Runtime owner (see below), its turns
+use that owner's MCP pool, which includes servers started at run time in other
+sessions of the same workspace.
 Built-in overrides remove the
 whole compatibility alias family. Final dispatch rechecks the profile, so a
 fabricated alias, hook rewrite or omitted catalog entry cannot bypass it. Plan
@@ -906,7 +914,11 @@ produced.
 Tool updates begin `pending`. `in_progress` means Core reached final dispatch;
 `completed`/`failed` and typed image blocks come from the actual Core result.
 `session/request_permission` correlates a private JSON-RPC ID to the same
-Runtime-minted pending approval and Core execution ID. Only an exact live
+Runtime-minted pending approval and Core execution ID. When a plugin tool asks
+the core to run a tool that needs approval (`exec.core`), the request is shown
+on the plugin tool's call, names the nested tool and carries its input, and the
+answer releases the nested call; the nested call is decided under the session's
+permission setting. Only an exact live
 `allow-once` response can release that waiter; wrong IDs are ignored, invalid
 options deny, and cancellation withdraws it. ACP grants neither remembered
 permissions nor Native capabilities. Core typed rules, strict hooks, repo law,
@@ -1183,6 +1195,63 @@ steer or interrupt an active turn, and resolve normal tool approvals through
 do not expose it directly to another device or public network until Runtime has
 a TLS or verified transport boundary.
 
+#### Remote pairing grants (DSH remote service)
+
+Plugins granted the `remote` host service can request conversation-scoped
+pairings via Engine `dsh_remote`. Runtime exposes host management and loopback
+redemption over existing HTTP/SSE transport (no separate listener or WebSocket):
+
+- `GET /v1/dsh/remote/pairings` — requires the master `Authorization: Bearer`
+  header (never mobile/web cookies or device Watch/Drive tokens; returns `409`
+  if auth is off). Returns a JSON array with `grant`, `plugin_id`,
+  `plugin_name` (from the reviewed record), `session_id`, `state`
+  (`"awaiting_host"` or `"paired"`), `plugin_label`, `client_label`, and
+  `expires_in_seconds`. No pairing secret or client token is ever included.
+- `POST /v1/dsh/remote/pairings/{grant}/present` — master bearer only. Mints
+  and returns `{ "grant", "url", "expires_in_seconds" }` (`Cache-Control: no-store`)
+  where `url` is `http://<bind>/__codewhale/mobile/pair/<secret>`. Calling this
+  again replaces and invalidates the prior link; callers must only invoke it on
+  explicit human action, never by polling. Returns `404` with no detail when
+  unknown or already paired, and `409 Conflict` without minting a secret when
+  mobile control is off or `session_id` is not an active Runtime HTTP thread
+  (for example a terminal session or archived thread).
+- `DELETE /v1/dsh/remote/pairings/{grant}` — master bearer only. Ends a waiting
+  pairing or paired device session, returning `204 No Content` identically for
+  known and unknown grants.
+- `GET /__codewhale/mobile/pair/{secret}` — unauthenticated single-use loopback
+  redemption (`403` for non-loopback peers ignoring `X-Forwarded-For`; uniform
+  `401` fixed text for unknown, expired, replayed, withdrawn, or malformed
+  links). Issues a grant-backed mobile session (`HttpOnly; SameSite=Strict`
+  cookie clamped to the grant TTL plus origin-bound fragment proof and stream
+  ticket) without ever exposing the Engine client token or pairing secret in
+  cookies, fragments, URLs, response bodies, or logs.
+
+Grant-backed mobile sessions are validated against the Engine on every HTTP
+request and every SSE stream ticket, drop immediately (`401`) if withdrawn,
+revoked, expired, or if the bound conversation is archived/deleted (and terminate
+any already-open `GET /v1/threads/{id}/events` SSE stream cleanly with
+`stream.end { "reason": "remote_access_revoked", "retryable": false }` without
+delivering post-revocation events), and are strictly restricted to reading and
+sending/steering/interrupting turns in their single bound conversation
+(`GET /v1/threads` and `GET /v1/threads/summary` are filtered to that thread,
+`GET /v1/threads/{id}`, `GET /v1/threads/{id}/events`,
+`POST /v1/threads/{id}/turns`, `/steer`, `/interrupt`, and
+`POST /__codewhale/mobile/stream-ticket`). On `POST /v1/threads/{id}/turns`,
+paired device sessions cannot override `mode`, `permission_posture`,
+`allowed_tools`, `dynamic_tools`, `model`, `model_provider`,
+`model_provider_id`, `account_model_owner`, `profile_constitution`,
+`reasoning_effort`, `max_output_tokens`, or `environment_id` (`403 Forbidden`),
+nor pass `true` for `allow_shell`, `trust_mode`, or `auto_approve` (`403`);
+explicit `false` values on those three boolean flags are normalized to `None`
+so the conversation's existing posture is preserved. Foreign threads, thread
+creation, settings/secrets/terminals/files, pairing routes, and approval routes
+(`POST /v1/approvals/{approval_id}`) return `403 Forbidden`: approval cards are
+answered on the computer only.
+
+When UI clients render `plugin_label` or `client_label`, they MUST present them
+as quoted third-party text inside a directional isolate (such as `<bdi>`) beside
+`plugin_name`, and never as a heading or host-authored prose.
+
 ### Endpoints
 
 **Health**
@@ -1346,7 +1415,8 @@ provider, model, workspace, and permission fields:
   "model_provider": "openai-codex",
   "model": "gpt-5.6",
   "reasoning_effort": "high",
-  "allowed_tools": ["read_file", "search"]
+  "allowed_tools": ["read_file", "search"],
+  "disallowed_tools": ["shell"]
 }
 ```
 
@@ -1355,8 +1425,11 @@ provider, model, workspace, and permission fields:
 aliases are accepted and persisted canonically). `allowed_tools` is a
 model-visible allowlist. Omitting it keeps the normal configured catalog; an
 explicit empty array (`"allowed_tools": []`) exposes no tools to the model.
-Both fields are additive: older thread records and clients that omit them
-retain their previous behavior.
+`disallowed_tools` (also accepted as `disallowedTools`) attaches persistent
+tool deny rules to the thread (omitted from stored records when empty); denied
+tools remain blocked even if listed in `allowed_tools`, and non-empty rules
+participate in creation idempotency fingerprints. These fields are additive:
+older thread records and clients that omit them retain their previous behavior.
 
 ### Sessions on other agents (external agent threads)
 
@@ -1849,7 +1922,7 @@ ones like `-s` or `--porcelain` — a compound, wrapper, interpreter or
 unrecognised command, one with any other option, or one whose arguments are
 what runs or is installed (`go run`, `make`, `git bisect`, package installs)
 is granted as its full normalized command, and a
-shell interact or wait call as the exact call — a patch's file set, a `fetch_url` host, an MCP tool, a `web.run` action kind — for
+shell run given stdin (`stdin`, `input` or `data`), or a shell interact or wait call, as the exact call — a patch's file set, a `fetch_url` host, an MCP tool, a `web.run` action kind — for
 `open`, the hosts it opened). Computer Use consent and `app_script` calls, and
 any tool without a class, are granted for the exact call only. A grant never
 changes the thread's permission posture. Later matching calls on the thread are
@@ -1866,6 +1939,28 @@ restore them). Grants are stored in the Runtime data directory
 suspended, and matching calls prompt again, until an authenticated client
 resumes the thread. A grant store that cannot be read holds no grants, so every
 call prompts. A forced (non-bypassable) prompt is never answered by a grant.
+
+**Auto-Review blocks and one-use retry grants**
+- `GET /v1/threads/{id}/auto-review/blocks` returns `{ thread_id, blocks[] }`
+  listing recorded Auto-Review blocks on the thread (`receipt_id`,
+  `call_digest`, `tool_id`, `tool_name`, `action_summary`, `rule`, `reason`,
+  `gate`, `verdict`, `approved`, `approvable`).
+- `POST /v1/threads/{id}/auto-review/approve` with body
+  `{ "target": "<receipt_id_or_call_digest>", "client"?: "desktop"|"tui"|"web"|"phone"|"acp" }`
+  requires an attached owner runtime and an owner caller (`403 owner_required`
+  otherwise; `"desktop"`/`"phone"` web/cookie callers are also rejected), requires
+  the thread to remain in Auto-Review (`409 not_in_auto_review`), returns `404`
+  when no matching block exists or `409` when already approved or not
+  approvable, and otherwise mints one exact-call retry grant bound to
+  `(tool_name, call_digest)` returning `{ ok, thread_id, grant }` and emitting
+  `auto_review.retry_approved`. The retried call consumes the grant on one use
+  and still runs every non-Auto-Review gate (with `person_approved_retry` on
+  guardian review so high/critical risk may pass if guardian allows, while an
+  explicit guardian deny or failure still blocks). Child agents and extension
+  calls cannot create, read, or consume retry grants. If Auto-Review trips its
+  interactive thresholds (3 consecutive blocks, 20 total blocks, or 3
+  consecutive unavailable checks), it switches thread `permission_posture` to
+  `ask` and emits `auto_review.paused` + `thread.updated`.
 
 **User input**
 - `POST /v1/user-input/{thread_id}/{input_id}` with body
@@ -2277,12 +2372,12 @@ human gate. Auto-merge is `scripts/check-auto-merge.py --repo … --pr …
 `scripts/auto-merge-pr.py`. Do not invent a second checker.
 
 **Workspace trust** (the persisted project decision)
-- `GET /v1/workspace/status` reports `workspace_trusted`: whether the server’s workspace is trusted in the discovered user config. Project skills, commands and MCP configuration consult this decision. Project hooks require both workspace trust and separate approval of the exact hooks file.
+- `GET /v1/workspace/status` reports `workspace_trusted`: whether the server’s workspace is trusted in the discovered user config. Project skills and commands consult this decision. Project hooks and project MCP configuration require both workspace trust and separate approval of the exact file (`/hooks review`, `/mcp review`).
 - `POST /v1/workspace/trust` with `{"trusted": true|false}` records that decision and answers `{workspace, workspace_trusted, config_path, message}`.
 
 The handler reuses `config::set_workspace_trust`, the writer behind `/trust on|off --save`, and reads the decision back through `is_workspace_trusted`. The request accepts no path; it applies only to the server’s admitted workspace. `config_path` identifies the document written. Both read and write use default config discovery, including configured environment overrides; a runtime’s explicit `--config` argument does not select this trust document.
 
-Project skills and commands consult trust at their existing load or turn boundaries. Project hooks also need their separate digest approval and recheck authority before execution. Restart the engine to rebuild project MCP connections; this request does not disconnect an existing pool or interrupt a running turn. Project instruction files such as `AGENTS.md` and project rules are loaded by the existing context loader independently of this flag, so revoking workspace trust does not remove those instructions or their persisted history.
+Project skills and commands consult trust at their existing load or turn boundaries. Project hooks and project MCP servers (when `.codewhale/mcp.json` is already approved) also need their separate digest approval and recheck authority before execution; once approved, restart the engine or reload the pool to rebuild project MCP connections, as this request does not disconnect an existing pool or interrupt a running turn. Project instruction files such as `AGENTS.md` and project rules are loaded by the existing context loader independently of this flag, so revoking workspace trust does not remove those instructions or their persisted history.
 
 This persisted project decision is separate from a thread’s `trust_mode` / Full Access and from `/trust add <path>` external-path grants. `/trust on|off --save` changes session file-tool trust and the persisted project record. This HTTP route changes only the persisted project record. Its POST requires the same Runtime write authority as other state-changing routes; watch device tokens can read status but cannot write trust.
 
@@ -2672,6 +2767,35 @@ thread deletion.
   pure over the snapshot — so a client must not look for one. Anything that
   mutates the session stays a terminal-side command.
 
+**Plugin index**
+- `GET /v1/apps/plugin-index` — `{workspace, items: [...], unavailable: [...],
+  problems: [...]}`: one list across every plugin, skill, connector, hook and
+  hand-written command. It is a projection: each item's `row` is the row its
+  owner's own route returns (`/v1/apps/plugins`, `/v1/apps/plugins/catalog`,
+  `/v1/skills`, `/v1/apps/mcp/servers`, `/v1/hooks`, `/v1/commands`), and
+  `owner` names that route. Per item: `id`, `kind` (`plugin`, `skill`,
+  `connector`, `hook`, `command`), `name`, `description`, `source`
+  (`built_in`, `user`, `project`, `other_app`, `runtime`, `plugin`), `state`
+  (`enabled`, `disabled`, `needs_review`, `needs_sign_in`, `unavailable`) and
+  `labels` (what the item adds: `skill`, `connector`, `hook`, `command`,
+  `tool`, `profile`). A plugin item also has `adds` (`skills`, `connectors`,
+  `hooks`, `commands`, `profiles`: names, not rows), and what a plugin adds is
+  not listed a second time as an item of its own. A built-in switch is a
+  `plugin` item with a `tier` and no labels. `/v1/commands` rows carry
+  `plugin_id` (the same id as `/v1/apps/plugins`, and the `plugin:<id>` item)
+  for a command a plugin adds, and `workspace_sourced` for one read from the
+  project; a command item's `plugin` is that id. An owner that fails is named in
+  `unavailable` and the other kinds still list; `problems` carries the owners'
+  load warnings. Names under `adds` are file names, so a profile's `id` inside its
+  file can differ; a command another plugin registers through the extension host
+  is an item with `source` `plugin`. For an active plugin `adds.commands` comes
+  from the `/v1/commands` rows; for any other plugin, and for `hooks` and
+  `profiles`, it is the file names found in the bundle, at most 512 per kind,
+  with names holding control characters left out; a cut list is reported
+  under `problems`. A hook's row names no plugin, so `adds.hooks` stays file
+  names. `tool` means the plugin declares native or language-server components;
+  a screen a plugin draws is not labelled yet.
+
 **Hooks**
 - `GET /v1/hooks[?thread_id=...]` — `{workspace, enabled, hooks: [...],
   problems: [...]}`: the hook set Runtime API threads run for that workspace
@@ -2750,9 +2874,10 @@ LFS, keep working.
     16 MiB carry a display-only size-and-mtime token (`s-…`). Those tokens
     cannot guard writes. Unreadable paths, paths beneath symlinked
     directories, special files and broken nested repositories have `rev: null`;
-    other rows retain their tokens. If a broken tracked submodule aborts
-    porcelain, ordinary rows are recovered without submodule recursion and
-    the unreadable submodule is shown with `status: "unknown"`, `worktree: "?"`
+    other rows retain their tokens. Status never looks inside a submodule, so
+    a row for one reports only a changed commit, not dirty contents; an
+    unreadable tracked submodule is shown with `status: "unknown"`,
+    `worktree: "?"`
   - `revision` — the whole tree: `head_oid`, `index_token`, every row's
     `rev`, including the working-tree state of rows outside a subdirectory
     workspace. `null` when any row is stat-only or unreadable, a repository
@@ -2829,8 +2954,11 @@ guard. It is not an OS-wide process reservation.
 
 Diffs and precondition token reads run through the hardened review command
 (filters, fsmonitor, hooks, lazy fetches and replace-objects neutralized).
-Porcelain status uses normal Git, matching the workspace counts and filters;
-writes run through the non-interactive command path
+Porcelain status runs through the hardened status command: fsmonitor, hooks
+and the filter programs the repository itself configures are neutralized
+(the user's own global filters, such as Git LFS, keep working), and
+submodules compare by commit without a status inside them; writes run through
+the non-interactive command path
 (`GIT_TERMINAL_PROMPT=0`, BatchMode ssh) so a credential or host-key prompt
 can never hang a request. Path lists are workspace-relative under the same
 confinement as the file routes (traversal → 400, `.git` → 403), passed after
@@ -2986,32 +3114,44 @@ answers `200` with `ok: false` and a machine-readable `reason`
 (`no_server`, `lsp_disabled`, `lsp_error`); malformed input is a 400 and a
 missing file a 404.
 
-**Voice** (host dictation, APPS-98)
-- `GET /v1/voice` — capability: `available`, detected `recorder` command,
-  resolved `asr` `{kind, model}`, `modes`, `send_phrases`,
-  `max_record_seconds`
+**Voice** (host dictation & uploaded voice / TTS, CW-8218)
+- `GET /v1/voice` — capability: `available` (host mic recorder),
+  `upload_available`, `tts_available`, detected `recorder` command, resolved
+  `asr` `{kind, model}`, `modes`, `send_phrases`, `max_record_seconds`,
+  `max_upload_bytes`, `tts_voices`
 - `POST /v1/voice/dictate` — record then transcribe → `{ ok, text }`
 - `POST /v1/voice/send` — same capture with the "send it" / 发送/發送
   suffix contract: `send: true` tells the client to submit (empty `text`
   with `send: true` means submit the client's current draft)
 - `POST /v1/voice/control` `{ "composer": "draft text" }` — assisted
   dictation that shows the model the composer text; `assisted: false` in the
-  response means a free ASR backend (local whisper/Groq) handled the audio
-  and the composer context was never seen
+  response means local whisper, Groq, or DeepSeek ASR handled the audio and the
+  composer context was never seen
+- `POST /v1/voice/transcribe` `{ "audio_base64", "mime_type", "mode",
+  "composer", "language" }` — transcribe client-uploaded WAV/OGG audio without
+  requiring a host microphone (`CODEWHALE_DISABLE_VOICE=1` does not block
+  uploaded audio)
+- `POST /v1/voice/tts` `{ "text", "voice", "voice_id", "format",
+  "filter_markdown" }` — synthesize speech audio via the active Xiaomi MiMo or
+  configured DeepSeek Tools TTS route and answer JSON `{ ok: true, mime_type,
+  audio_base64, voice_id, provider, model, format }` or `{ ok: false, reason,
+  message }`
 
-The runtime owns the host microphone and the ASR dispatch — the same
-implementation the TUI's `/voice` commands run, headless. Recording is one
-blocking capture per host (requests serialize; the loser gets
-`ok:false`/`no_speech`, not a fought-over device). Provider ASR resolves its
-key lazily so local-whisper and Groq paths work without provider auth.
-Interim and final transcription use the selected ASR backend. If local whisper
-or Groq fails, the error stays on that backend: the runtime never retries the
-recording or composer text with the active model provider. Select provider ASR
-explicitly to use that route.
+The runtime owns the host microphone, uploaded audio decoding, TTS synthesis,
+and ASR dispatch — the same implementation the TUI's `/voice` commands run,
+headless. Recording is one blocking capture per host (requests serialize; the
+loser gets `ok:false`/`no_speech`, not a fought-over device). Provider ASR
+resolves its key lazily so local-whisper and Groq paths work without provider
+auth; uploaded audio and TTS support DeepSeek `/v1/tools/asr` and
+`/v1/tools/tts` when configured. Interim and final transcription use the
+selected ASR backend. If local whisper or Groq fails, the error stays on that
+backend: the runtime never retries the recording or composer text with the
+active model provider. Select provider ASR explicitly to use that route.
 Failure is data: `no_recorder`, `no_speech`, `no_provider_auth`,
-`transcription_failed`. `CODEWHALE_DISABLE_VOICE=1` is an operator
-kill-switch — a headless `serve --http` host reports `available: false` and
-every dictate call fails closed.
+`invalid_input`, `transcription_failed`, `synthesis_failed`.
+`CODEWHALE_DISABLE_VOICE=1` is an operator kill-switch for host microphone
+recording (`available: false`), while uploaded audio continues to follow
+`upload_available`.
 
 ## Provider and model selection
 
@@ -3270,7 +3410,7 @@ refuses OpenAI Codex. An Engine without this route answers `404`.
 
 Reports which external agent CLIs this computer already has, without starting a
 session. It covers Claude, Codex, DeepSeek Harness, Antigravity (`agy acp`),
-OpenCode, Kimi Code, Mistral Vibe, Qoder, CodeBuddy, Grok, Qwen Code and GitHub Copilot CLI. `state` is `installed` or `not_installed`; a binary islooked up on `PATH` (absolute entries only; on Windows the spawnable PATHEXT suffixes `.com/.exe/.bat/.cmd` and `%APPDATA%\npm`) and in the usual per-user bin directories. For an installed
+OpenCode, Kimi Code, Mistral Vibe, Qoder, CodeBuddy, Grok, Qwen Code and GitHub Copilot CLI. `state` is `installed` or `not_installed`; a binary is looked up on `PATH` (absolute entries only; on Windows the spawnable PATHEXT suffixes `.com/.exe/.bat/.cmd` and `%APPDATA%\npm`) and in the usual per-user bin directories. For an installed
 agent the route runs `--version` and, where the CLI speaks Agent Client Protocol
 itself, one `initialize` request on stdin, concurrently. `acp` is `native` when
 that handshake answered, `adapter` for CLIs that need a separate adapter
@@ -3588,6 +3728,7 @@ data: {"schema_version":1,"event":"stream.end","kind":"stream.end","thread_id":"
 | `replay_failed` | The durable history read that feeds the opening replay failed, including a replay worker crash after the first cursor | `true` |
 | `catch_up_failed` | After broadcast lag, the durable re-read from the stream's cursor could not be opened or failed | `true` |
 | `runtime_shutdown` | The Runtime API server is stopping (SIGINT, SIGTERM, or SIGHUP; Ctrl+C or Ctrl+Break on Windows). Open streams get this frame within a bounded drain window before the process exits | `true` |
+| `remote_access_revoked` | A grant-backed paired remote device session ended because the pairing was withdrawn, the plugin was revoked, the session TTL expired, or the bound conversation was archived/deleted | `false` |
 
 Every `200` response carries `x-codewhale-stream-end: 1`. With that header, an
 EOF **without** `stream.end` means the connection or the Runtime process died

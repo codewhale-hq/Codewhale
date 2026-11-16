@@ -35,7 +35,7 @@ jobs:
           package-manager-cache: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable 2026-07-18
         with:
-          toolchain: stable
+          toolchain: 1.100.0
       - name: Match dispatch to the requested commit
         id: source
         shell: bash
@@ -68,6 +68,8 @@ jobs:
 
           echo "sha=${actual}" >> "${GITHUB_OUTPUT}"
           echo "version=${workspace_version}" >> "${GITHUB_OUTPUT}"
+      - name: Check the first-party catalog snapshot is current
+        run: ./scripts/refresh-first-party-marketplace.sh --check
       - name: Check version and OHOS release contracts
         # --require-dated-release, as auto-tag.yml and release.yml run it:
         # release.yml only accepts an RC receipt for the exact tag SHA, so an

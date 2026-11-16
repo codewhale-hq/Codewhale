@@ -121,7 +121,7 @@ fn settle_failed_parent_route(
     error: String,
     initial_routed_usage: &crate::cost_status::RuntimeUsageBatch,
 ) -> String {
-    crate::cost_status::report_runtime_usage_batch(cost_scope, None, initial_routed_usage);
+    crate::cost_status::record_runtime_usage_batch(cost_scope, None, initial_routed_usage);
     error
 }
 

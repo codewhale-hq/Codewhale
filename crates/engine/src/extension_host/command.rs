@@ -204,7 +204,7 @@ pub enum CommandOutcome {
 
 fn strip_escapes(text: &str) -> String {
     let mut clean = String::with_capacity(text.len());
-    codewhale_secrets::sanitize::strip_ansi_into(text, &mut clean);
+    codewhale_sanitize::sanitize::strip_ansi_into(text, &mut clean);
     clean
 }
 

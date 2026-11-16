@@ -39,7 +39,7 @@ async function checkAuth(req: Request, env: CommunityAgentEnv): Promise<{ ok: bo
     }
   }
 
-  if (!sid || !(await validateSession(env.CURATED_KV, sid))) {
+  if (!sid || !(await validateSession(env.CURATED_KV, sid, env.MAINTAINER_TOKEN))) {
     return { ok: false, status: 401, error: "unauthorized" };
   }
   return { ok: true };

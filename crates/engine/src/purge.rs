@@ -259,6 +259,45 @@ fn format_content_block(buf: &mut String, blk_idx: usize, block: &ContentBlock) 
                 "  [{blk_idx}] CodeExecutionToolResult (id={tool_use_id}, content={snippet})"
             );
         }
+        ContentBlock::WebSearchToolResult {
+            tool_use_id,
+            content,
+            ..
+        } => {
+            let snippet = truncate_str(&content.to_string(), TOOL_RESULT_SNIPPET_CHARS);
+            let _ = writeln!(
+                buf,
+                "  [{blk_idx}] WebSearchToolResult (id={tool_use_id}, content={snippet})"
+            );
+        }
+        ContentBlock::WebFetchToolResult {
+            tool_use_id,
+            content,
+            ..
+        } => {
+            let snippet = truncate_str(&content.to_string(), TOOL_RESULT_SNIPPET_CHARS);
+            let _ = writeln!(
+                buf,
+                "  [{blk_idx}] WebFetchToolResult (id={tool_use_id}, content={snippet})"
+            );
+        }
+        ContentBlock::WebSearchCall {
+            id, kind, status, ..
+        } => {
+            let _ = writeln!(
+                buf,
+                "  [{blk_idx}] WebSearchCall (id={}, kind={}, status={})",
+                id,
+                kind.as_deref().unwrap_or(""),
+                status
+            );
+        }
+        ContentBlock::ServerToolCalls { steps } => {
+            let _ = writeln!(buf, "  [{blk_idx}] ServerToolCalls (steps={})", steps.len());
+        }
+        ContentBlock::File { file_id } => {
+            let _ = writeln!(buf, "  [{blk_idx}] File (file_id={file_id})");
+        }
         ContentBlock::ImageUrl { .. } => {}
     }
 }
@@ -527,7 +566,9 @@ fn cascade_tool_pair_removals(messages: &[Message], remove_set: &mut FastHashSet
                 }
                 ContentBlock::ToolResult { tool_use_id, .. }
                 | ContentBlock::ToolSearchToolResult { tool_use_id, .. }
-                | ContentBlock::CodeExecutionToolResult { tool_use_id, .. } => {
+                | ContentBlock::CodeExecutionToolResult { tool_use_id, .. }
+                | ContentBlock::WebSearchToolResult { tool_use_id, .. }
+                | ContentBlock::WebFetchToolResult { tool_use_id, .. } => {
                     (&mut result_id_to_idx, tool_use_id.as_str())
                 }
                 _ => continue,
@@ -566,7 +607,9 @@ fn cascade_tool_pair_removals(messages: &[Message], remove_set: &mut FastHashSet
                     }
                     ContentBlock::ToolResult { tool_use_id, .. }
                     | ContentBlock::ToolSearchToolResult { tool_use_id, .. }
-                    | ContentBlock::CodeExecutionToolResult { tool_use_id, .. } => {
+                    | ContentBlock::CodeExecutionToolResult { tool_use_id, .. }
+                    | ContentBlock::WebSearchToolResult { tool_use_id, .. }
+                    | ContentBlock::WebFetchToolResult { tool_use_id, .. } => {
                         if let Some(&(call_idx, provider_id)) = block
                             .tool_call_key()
                             .and_then(|key| call_id_to_idx.get(&key))
@@ -671,7 +714,7 @@ pub async fn run_purge(
     model: &str,
     reasoning_effort: Option<String>,
     max_tokens: u32,
-    accounting_origin: crate::cost_status::NativeUsageOrigin,
+    accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
 ) -> Result<PurgeResult, String> {
     // 1. Build the purge prompt from the current conversation.
     let prompt = build_purge_prompt(messages);
@@ -717,34 +760,30 @@ pub async fn run_purge(
         stream: Some(false),
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
 
-    let cost_scope = crate::cost_status::scope_token();
+    let cost_scope = accounting_origin.as_ref().map_or_else(
+        crate::cost_status::scope_token,
+        crate::cost_status::NativeUsageOrigin::scope,
+    );
     let cost_route = client.effective_route_envelope(model, chrono::Utc::now());
     let source = crate::cost_status::NativeUsageSource::capture_with_origin(
         format!("purge:{}", uuid::Uuid::new_v4()),
         crate::cost_status::UsageSpendOwner::Auxiliary,
-        Some(accounting_origin),
+        accounting_origin,
     );
-    let observation = source
-        .observe_route(&cost_route)
-        .map_err(|error| error.to_string())?;
-    source
-        .admit_dispatch(&cost_route)
-        .await
-        .map_err(|error| error.to_string())?;
+    let observation = source.observation();
     let wire = observation.wire_observations.clone();
     let response = crate::llm_client::observe_request_retries(
         Some(observation),
         client.create_message(request),
     )
     .await;
-    let record = source
-        .response_record(&cost_route, &response, &wire.drain())
-        .map_err(|error| error.to_string())?;
-    crate::cost_status::settle_runtime_usage_record(cost_scope, None, &record)
-        .await
-        .map_err(|error| format!("Purge usage settlement failed: {error}"))?;
+    let wire = wire.drain();
+    let record = source.response_record(&cost_route, &response, &wire);
+    crate::cost_status::record_runtime_usage_async(cost_scope, source.origin(), &record).await;
     let response = response.map_err(|error| format!("Purge API error: {error}"))?;
 
     // A truncated response can still carry a complete-looking `purge_context`
@@ -885,12 +924,14 @@ mod tests {
                 "mock",
                 None,
                 4096,
-                crate::session_manager::SessionManager::default_location()
-                    .expect("fixture manager")
-                    .expect_absent_session(session_id)
-                    .expect("native fixture source")
-                    .usage_origin(crate::cost_status::scope_token())
-                    .expect("native fixture origin"),
+                Some(
+                    crate::session_manager::SessionManager::default_location()
+                        .expect("fixture manager")
+                        .expect_absent_session(session_id)
+                        .expect("native fixture source")
+                        .usage_origin(crate::cost_status::scope_token())
+                        .expect("native fixture origin"),
+                ),
             ))
             .unwrap();
         assert_eq!(messages, original);
@@ -1188,6 +1229,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         }
     }
 
@@ -1205,6 +1249,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         }
     }
 
@@ -1233,12 +1280,14 @@ mod tests {
             "mock",
             None,
             4096,
-            crate::session_manager::SessionManager::default_location()
-                .expect("fixture manager")
-                .expect_absent_session("purge-test")
-                .expect("native fixture source")
-                .usage_origin(crate::cost_status::scope_token())
-                .expect("native fixture origin"),
+            Some(
+                crate::session_manager::SessionManager::default_location()
+                    .expect("fixture manager")
+                    .expect_absent_session("purge-test")
+                    .expect("native fixture source")
+                    .usage_origin(crate::cost_status::scope_token())
+                    .expect("native fixture origin"),
+            ),
         )
         .await
         .unwrap();
@@ -1285,12 +1334,14 @@ mod tests {
             "mock",
             None,
             4096,
-            crate::session_manager::SessionManager::default_location()
-                .expect("fixture manager")
-                .expect_absent_session("purge-test")
-                .expect("native fixture source")
-                .usage_origin(crate::cost_status::scope_token())
-                .expect("native fixture origin"),
+            Some(
+                crate::session_manager::SessionManager::default_location()
+                    .expect("fixture manager")
+                    .expect_absent_session("purge-test")
+                    .expect("native fixture source")
+                    .usage_origin(crate::cost_status::scope_token())
+                    .expect("native fixture origin"),
+            ),
         )
         .await
         .unwrap();
@@ -1325,12 +1376,14 @@ mod tests {
             "mock",
             None,
             4096,
-            crate::session_manager::SessionManager::default_location()
-                .expect("fixture manager")
-                .expect_absent_session("purge-test")
-                .expect("native fixture source")
-                .usage_origin(crate::cost_status::scope_token())
-                .expect("native fixture origin"),
+            Some(
+                crate::session_manager::SessionManager::default_location()
+                    .expect("fixture manager")
+                    .expect_absent_session("purge-test")
+                    .expect("native fixture source")
+                    .usage_origin(crate::cost_status::scope_token())
+                    .expect("native fixture origin"),
+            ),
         )
         .await
         .unwrap_err();
@@ -1354,15 +1407,58 @@ mod tests {
             "mock",
             None,
             4096,
-            crate::session_manager::SessionManager::default_location()
-                .expect("fixture manager")
-                .expect_absent_session("purge-test")
-                .expect("native fixture source")
-                .usage_origin(crate::cost_status::scope_token())
-                .expect("native fixture origin"),
+            Some(
+                crate::session_manager::SessionManager::default_location()
+                    .expect("fixture manager")
+                    .expect_absent_session("purge-test")
+                    .expect("native fixture source")
+                    .usage_origin(crate::cost_status::scope_token())
+                    .expect("native fixture origin"),
+            ),
         )
         .await
         .unwrap_err();
         assert!(err.contains("Purge API error"));
+    }
+
+    #[tokio::test]
+    async fn purge_succeeds_with_unknown_cost() {
+        let _cost_guard = crate::cost_status::test_scope();
+        let workspace = tempfile::tempdir().unwrap();
+        let broken_sessions_file = workspace.path().join("not-a-sessions-dir");
+        std::fs::write(&broken_sessions_file, b"file").unwrap();
+
+        for origin in [
+            None,
+            Some(crate::cost_status::NativeUsageOrigin::session(
+                crate::cost_status::scope_token(),
+                broken_sessions_file,
+                "purge-broken-session".to_string(),
+            )),
+        ] {
+            let mock = MockLlmClient::new(vec![]);
+            mock.push_message_response(msg_response_with_tool_call(json!([
+                {"op": "remove", "msg": 2}
+            ])));
+            let messages = vec![
+                msg_text("user", "hello"),
+                msg_text("assistant", "remove me"),
+                msg_text("user", "bye"),
+            ];
+            let result = run_purge(
+                &mock,
+                ProviderKind::Deepseek,
+                "purge-unknown-cost",
+                &messages,
+                "mock",
+                None,
+                4096,
+                origin,
+            )
+            .await
+            .expect("purge must succeed with unknown cost");
+            assert_eq!(result.removed_count, 1);
+            assert_eq!(result.messages.len(), 2);
+        }
     }
 }

@@ -304,7 +304,19 @@ fn is_allowed_parent_env_key(key: &OsStr) -> bool {
             | "LANGUAGE"
             | "LC_ALL"
             | "LC_CTYPE"
+            | "LC_COLLATE"
             | "LC_MESSAGES"
+            | "LC_MONETARY"
+            | "LC_NUMERIC"
+            | "LC_TIME"
+            | "LC_PAPER"
+            | "LC_NAME"
+            | "LC_ADDRESS"
+            | "LC_TELEPHONE"
+            | "LC_MEASUREMENT"
+            | "LC_IDENTIFICATION"
+            | "LC_TERMINAL"
+            | "LC_TERMINAL_VERSION"
             | "TERM"
             | "COLORTERM"
             | "NO_COLOR"
@@ -421,13 +433,88 @@ fn is_allowed_parent_env_key(key: &OsStr) -> bool {
             | "SSL_CERT_DIR"
             | "REQUESTS_CA_BUNDLE"
             | "CURL_CA_BUNDLE"
-    ) || normalized.starts_with("LC_")
-        || is_allowed_cargo_config_key(&normalized)
-        // .NET CLI / SDK configuration (DOTNET_ROOT, DOTNET_CLI_*,
-        // DOTNET_NOLOGO, DOTNET_CLI_TELEMETRY_OPTOUT, …). Paths and flags
-        // only — no secret-shaped values (#1857).
-        || normalized.starts_with("DOTNET_")
+    ) || is_allowed_cargo_config_key(&normalized)
+        || is_allowed_dotnet_child_env_key(&normalized)
         || is_allowed_platform_path_like_child_env_key(&normalized)
+}
+
+fn is_allowed_dotnet_child_env_key(normalized: &str) -> bool {
+    const SECRET_WORDS: [&str; 8] = [
+        "KEY", "CONNSTR", "PWD", "PASS", "DSN", "AUTH", "BEARER", "COOKIE",
+    ];
+    const SWITCHES: &[&str] = &[
+        "ROOT",
+        "ROOT(X86)",
+        "HOST_PATH",
+        "NOLOGO",
+        "SKIP_FIRST_TIME_EXPERIENCE",
+        "MULTILEVEL_LOOKUP",
+        "ENVIRONMENT",
+        "BUNDLE_EXTRACT_BASE_DIR",
+        "NUGET_SIGNATURE_VERIFICATION",
+        "ADD_GLOBAL_TOOLS_TO_PATH",
+        "USE_POLLING_FILE_WATCHER",
+        "RUNNING_IN_CONTAINER",
+        "GENERATE_ASPNET_CERTIFICATE",
+        "TOOLS_ALLOW_MANIFEST_IN_ROOT",
+        "ADDITIONAL_DEPS",
+        "SHARED_STORE",
+        "STARTUP_HOOKS",
+        "PROCESSOR_COUNT",
+        "HTTPREPL_PREFERRED_EDITOR",
+        "SDK_VERSION",
+        "VERSION",
+        "GCSERVER",
+        "GCCONCURRENT",
+        "GCGEN0SIZE",
+        "GCHEAPHARDLIMIT",
+        "GCHEAPHARDLIMITPERCENT",
+        "GCHEAPCOUNT",
+        "GCHEAPAFFINITIZEMASK",
+        "GCNOAFFINITIZE",
+        "GCCONSERVEMEMORY",
+        "GCCPUGROUP",
+        "TIEREDCOMPILATION",
+        "TIEREDPGO",
+        "TC_QUICKJIT",
+        "TC_QUICKJITFORLOOPS",
+        "TC_ONSTACKREPLACEMENT",
+        "READYTORUN",
+        "ENABLEDIAGNOSTICS",
+        "ENABLEDIAGNOSTICS_IPC",
+        "ENABLEDIAGNOSTICS_DEBUGGER",
+        "ENABLEDIAGNOSTICS_PROFILER",
+        "DBGENABLEMINIDUMP",
+        "DBGMINIDUMPTYPE",
+        "DBGMINIDUMPNAME",
+        "CREATEDUMPDIAGNOSTICS",
+        "DIAGNOSTICPORTS",
+        "ENABLEEVENTPIPE",
+        "EVENTPIPEOUTPUTPATH",
+        "EVENTPIPECONFIG",
+        "ENABLEWRITEXOREXECUTE",
+        "THREAD_USEALLCPUGROUPS",
+    ];
+    const FAMILIES: &[&str] = &[
+        "ROOT_",
+        "CLI_",
+        "SYSTEM_",
+        "ROLL_FORWARD",
+        "WATCH_",
+        "MSBUILD_SDK_RESOLVER_",
+    ];
+    let Some(name) = normalized.strip_prefix("DOTNET_") else {
+        return false;
+    };
+    if !SWITCHES.contains(&name) && !FAMILIES.iter().any(|family| name.starts_with(family)) {
+        return false;
+    }
+    if name.contains("__") || name.contains(':') {
+        return false;
+    }
+    let compact: String = name.chars().filter(|c| *c != '_').collect();
+    !SECRET_WORDS.iter().any(|word| compact.contains(word))
+        && !is_secret_like_child_env_key(normalized)
 }
 
 /// Cargo's `CARGO_*` configuration namespace (`CARGO_TARGET_DIR`,
@@ -500,6 +587,7 @@ fn is_secret_like_child_env_key(normalized: &str) -> bool {
         || normalized.contains("API_KEY")
         || normalized.contains("ACCESS_KEY")
         || normalized.contains("PRIVATE_KEY")
+        || normalized.contains("CONNECTIONSTRING")
         || normalized.ends_with("_KEY")
 }
 
@@ -1275,6 +1363,214 @@ mod tests {
                 !is_allowed_parent_env_key(OsStr::new(key)),
                 "child env must not keep {key}"
             );
+        }
+    }
+
+    #[test]
+    fn locale_and_dotnet_allowlists_drop_secret_shaped_names() {
+        for key in [
+            "LC_ALL",
+            "LC_CTYPE",
+            "LC_MESSAGES",
+            "LC_TIME",
+            "LC_COLLATE",
+            "LC_NUMERIC",
+            "LC_MONETARY",
+            "LC_PAPER",
+            "LC_NAME",
+            "LC_ADDRESS",
+            "LC_TELEPHONE",
+            "LC_MEASUREMENT",
+            "LC_IDENTIFICATION",
+            "LC_TERMINAL",
+            "LC_TERMINAL_VERSION",
+            "lc_time",
+            "DOTNET_ROOT",
+            "DOTNET_ROOT(x86)",
+            "DOTNET_ROOT_X64",
+            "DOTNET_HOST_PATH",
+            "DOTNET_CLI_HOME",
+            "DOTNET_NOLOGO",
+            "DOTNET_CLI_TELEMETRY_OPTOUT",
+            "DOTNET_SKIP_FIRST_TIME_EXPERIENCE",
+            "DOTNET_MULTILEVEL_LOOKUP",
+            "DOTNET_ROLL_FORWARD",
+            "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT",
+            "DOTNET_CLI_UI_LANGUAGE",
+            "DOTNET_ENVIRONMENT",
+            "DOTNET_BUNDLE_EXTRACT_BASE_DIR",
+            "DOTNET_NUGET_SIGNATURE_VERIFICATION",
+            "DOTNET_ADD_GLOBAL_TOOLS_TO_PATH",
+            "DOTNET_WATCH_SUPPRESS_LAUNCH_BROWSER",
+            "DOTNET_USE_POLLING_FILE_WATCHER",
+            "DOTNET_RUNNING_IN_CONTAINER",
+            "DOTNET_TieredPGO",
+            "DOTNET_TieredCompilation",
+            "DOTNET_GCHeapHardLimit",
+            "DOTNET_EnableDiagnostics",
+            "dotnet_gcServer",
+            "DOTNET_SDK_VERSION",
+            "DOTNET_SYSTEM_NET_DISABLEIPV6",
+            "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE",
+            "DOTNET_CLI_TELEMETRY_SESSIONID",
+            "DOTNET_WATCH_RESTART_ON_RUDE_EDIT",
+            "DOTNET_STARTUP_HOOKS",
+            "DOTNET_EventPipeOutputPath",
+            "DOTNET_DbgMiniDumpName",
+            "DOTNET_DiagnosticPorts",
+        ] {
+            assert!(
+                is_allowed_parent_env_key(OsStr::new(key)),
+                "child env should keep {key}"
+            );
+            assert!(
+                is_allowed_mcp_env_key(OsStr::new(key)),
+                "mcp env should keep {key}"
+            );
+        }
+        for key in [
+            "LC_X_TOKEN",
+            "LC_PROBE_SECRET_TOKEN",
+            "lc_probe_password",
+            "LC_PROBE_API_KEY",
+            "LC_PROBE_SIGNING_KEY",
+            "LC_APIKEY",
+            "LC_ApiKey",
+            "LC_OPENAI_APIKEY",
+            "LC_GH_PAT",
+            "LC_PAT",
+            "LC_PASS",
+            "LC_X_PASS",
+            "LC_PWD",
+            "LC_AUTH",
+            "LC_X_AUTH",
+            "LC_BEARER",
+            "LC_JWT",
+            "LC_DB_URL",
+            "LC_DSN",
+            "LC_ACCESSKEY",
+            "LC_PRIVATEKEY",
+            "LC_SESSION_COOKIE",
+            "LC_TIME_EXTRA",
+            "DOTNET_X_API_KEY",
+            "DOTNET_PROBE_API_KEY",
+            "DOTNET_PROBE_ACCESS_KEY",
+            "DOTNET_CONNECTIONSTRINGS__PROBE_PASSWORD",
+            "DOTNET_ConnectionStrings__Default",
+            "DOTNET_ConnectionStrings:Default",
+            "DOTNET_Data__DefaultConnection__ConnectionString",
+            "DOTNET_ConnStr",
+            "DOTNET_ApiKey",
+            "DOTNET_OpenAI__ApiKey",
+            "DOTNET_OpenAI:ApiKey",
+            "DOTNET_Stripe__ApiKey",
+            "DOTNET_Jwt__SigningKey",
+            "DOTNET_Jwt__Key",
+            "DOTNET_Jwt__Keys__0",
+            "DOTNET_Aws__AccessKey",
+            "DOTNET_Signing__PrivateKey",
+            "DOTNET_AzureStorage__AccountKey",
+            "DOTNET_ApplicationInsights__InstrumentationKey",
+            "DOTNET_Auth__ClientSecret",
+            "DOTNET_Auth__Bearer",
+            "DOTNET_Smtp__Pass",
+            "DOTNET_Db__Pwd",
+            "DOTNET_Database__ConnStr",
+            "DOTNET_Database__Url",
+            "DOTNET_Sentry__Dsn",
+            "DOTNET_Redis__Configuration",
+            "DOTNET_Azure__SasToken",
+            "dotnet_probe_credential",
+            "DOTNET_",
+            "DOTNET__",
+            "DOTNET_GH_PAT",
+            "DOTNET_PAT",
+            "DOTNET_NUGET_PAT",
+            "DOTNET_AzureDevOpsPat",
+            "DOTNET_JWT",
+            "DOTNET_DATABASE_URL",
+            "DOTNET_DB_URL",
+            "DOTNET_DatabaseUrl",
+            "DOTNET_DefaultConnection",
+            "DOTNET_RedisConfiguration",
+            "DOTNET_SentryUrl",
+            "DOTNET_SlackWebhookUrl",
+            "DOTNET_SasUrl",
+            "DOTNET_Hmac",
+            "DOTNET_Salt",
+            "DOTNET_Signature",
+            "DOTNET_Pfx",
+            "DOTNET_Otp",
+            "DOTNET_Creds",
+            "DOTNET_Cred",
+            "DOTNET_Pw",
+            "DOTNET_Pin",
+            "DOTNET_Mnemonic",
+            "DOTNET_Seed",
+            "DOTNET_SessionId",
+            "DOTNET_Login",
+            "DOTNET_License",
+            "DOTNET_Api\u{212A}ey",
+            "DOTNET_Api\u{FF2B}ey",
+            "DOTNET_TieredPGO_X",
+            "DOTNET_ROOT__X",
+        ] {
+            assert!(
+                !is_allowed_parent_env_key(OsStr::new(key)),
+                "child env must not keep {key}"
+            );
+            assert!(
+                !is_allowed_mcp_env_key(OsStr::new(key)),
+                "mcp env must not keep {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitized_envs_drop_secret_shaped_locale_and_dotnet_names() {
+        let _guard = crate::test_support::lock_test_env();
+        let secrets = [
+            "LC_PROBE_SECRET_TOKEN",
+            "LC_APIKEY",
+            "LC_GH_PAT",
+            "LC_PASS",
+            "DOTNET_PROBE_API_KEY",
+            "DOTNET_OpenAI__ApiKey",
+            "DOTNET_Jwt__SigningKey",
+            "DOTNET_Smtp__Pass",
+            "DOTNET_Db__Pwd",
+            "DOTNET_GH_PAT",
+            "DOTNET_DATABASE_URL",
+            "DOTNET_DefaultConnection",
+            "DOTNET_SlackWebhookUrl",
+        ];
+        let _secret_guards: Vec<_> = secrets
+            .iter()
+            .map(|name| EnvVarGuard::set(name, "probe-fixture-value"))
+            .collect();
+        let _dotnet_root = EnvVarGuard::set("DOTNET_ROOT", "/opt/dotnet");
+        let _lc_time = EnvVarGuard::set("LC_TIME", "C");
+
+        let parent: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        for env in [
+            sanitized_child_env(std::iter::empty::<(OsString, OsString)>()),
+            sanitized_mcp_env(std::iter::empty::<(OsString, OsString)>()),
+            sanitized_runtime_env_from(parent.clone()),
+            sanitized_plugin_mcp_env_from(
+                parent.clone(),
+                std::iter::empty::<(OsString, OsString)>(),
+            ),
+        ] {
+            let has = |name: &str| env.iter().any(|(key, _)| normalize_key(key) == name);
+            for name in secrets {
+                assert!(!has(name), "{name} reached the child env");
+            }
+            assert!(
+                env.iter()
+                    .all(|(_, value)| !value.to_string_lossy().contains("probe-fixture"))
+            );
+            assert!(has("DOTNET_ROOT"));
+            assert!(has("LC_TIME"));
         }
     }
 

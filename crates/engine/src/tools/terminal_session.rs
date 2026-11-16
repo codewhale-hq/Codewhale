@@ -499,6 +499,23 @@ pub fn get_or_create(
         }
         return Ok(session);
     }
+    if let Some((plugin_id, _)) = crate::extension_host::dsh_terminal::session_parts(name) {
+        let held = registry
+            .keys()
+            .filter(|entry| {
+                entry.workspace == key.workspace
+                    && entry.owner == key.owner
+                    && crate::extension_host::dsh_terminal::session_parts(&entry.name)
+                        .is_some_and(|(other, _)| other == plugin_id)
+            })
+            .count();
+        if held >= crate::extension_host::dsh_terminal::MAX_TERMINALS {
+            return Err(
+                "this plugin already holds the most terminals it may open in this session"
+                    .to_string(),
+            );
+        }
+    }
     let session = create_session(owner, name, workspace, policy, shell_manager)?;
     registry.insert(key, Registered::new(&session)?);
     Ok(session)
@@ -659,14 +676,13 @@ pub fn kill_session(session: &mut TerminalSession) -> Result<(), String> {
 }
 
 #[cfg(unix)]
-pub fn kill_owner_sessions(workspace: &Path, owner: &str) -> Result<usize, String> {
-    let workspace = canonical(workspace);
+fn kill_matching_sessions(mut matches: impl FnMut(&SessionKey) -> bool) -> Result<usize, String> {
     let mut registry = sessions()
         .lock()
         .map_err(|_| "terminal session registry lock poisoned".to_string())?;
     let keys = registry
         .keys()
-        .filter(|key| key.workspace == workspace && key.owner == owner)
+        .filter(|key| matches(key))
         .cloned()
         .collect::<Vec<_>>();
     let mut ended = 0;
@@ -687,8 +703,35 @@ pub fn kill_owner_sessions(workspace: &Path, owner: &str) -> Result<usize, Strin
     Ok(ended)
 }
 
+#[cfg(unix)]
+pub fn kill_owner_sessions(workspace: &Path, owner: &str) -> Result<usize, String> {
+    let workspace = canonical(workspace);
+    kill_matching_sessions(|key| key.workspace == workspace && key.owner == owner)
+}
+
+#[cfg(unix)]
+pub fn kill_sessions_named(prefix: &str) -> Result<usize, String> {
+    let valid_prefix = prefix
+        .strip_prefix("dsh:")
+        .and_then(|rest| rest.strip_suffix(':'))
+        .is_some_and(|plugin_id| !plugin_id.is_empty());
+    if !valid_prefix {
+        return Ok(0);
+    }
+    kill_matching_sessions(|key| {
+        key.name
+            .strip_prefix(prefix)
+            .is_some_and(crate::extension_host::dsh_terminal::is_valid_session_name)
+    })
+}
+
 #[cfg(not(unix))]
 pub fn kill_owner_sessions(_workspace: &std::path::Path, _owner: &str) -> Result<usize, String> {
+    Ok(0)
+}
+
+#[cfg(not(unix))]
+pub fn kill_sessions_named(_prefix: &str) -> Result<usize, String> {
     Ok(0)
 }
 
@@ -2412,5 +2455,137 @@ mod tests {
                 result.content
             );
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn kill_sessions_named_ends_only_matching_plugin_sessions_and_get_or_create_caps_per_plugin() {
+        let workspace = DockWorkspace::new();
+        let path = workspace.path();
+        let manager = test_shell_manager();
+        let policy = codewhale_sandbox::SandboxPolicy::DangerFullAccess;
+        let thread = format!("thread-named-{}", Uuid::new_v4());
+        let suffix = Uuid::new_v4().simple().to_string();
+        let plugin_a = format!("plug-a-{suffix}");
+        let plugin_ab = format!("{plugin_a}b");
+        let plugin_b = format!("plug-b-{suffix}");
+
+        let term1 = get_or_create(&thread, "term-1", path, policy.clone(), &manager).unwrap();
+        let colliding = get_or_create(
+            &thread,
+            &format!("dsh:{plugin_a}:b:x"),
+            path,
+            policy.clone(),
+            &manager,
+        )
+        .unwrap();
+        let other_prefix = get_or_create(
+            &thread,
+            &format!("dsh:{plugin_ab}:s0"),
+            path,
+            policy.clone(),
+            &manager,
+        )
+        .unwrap();
+        let other_plugin = get_or_create(
+            &thread,
+            &format!("dsh:{plugin_b}:s0"),
+            path,
+            policy.clone(),
+            &manager,
+        )
+        .unwrap();
+
+        let mut plugin_sessions = Vec::new();
+        for idx in 0..crate::extension_host::dsh_terminal::MAX_TERMINALS {
+            let session = get_or_create(
+                &thread,
+                &format!("dsh:{plugin_a}:s{idx}"),
+                path,
+                policy.clone(),
+                &manager,
+            )
+            .unwrap();
+            plugin_sessions.push(session);
+        }
+        assert!(
+            get_or_create(
+                &thread,
+                &format!("dsh:{plugin_a}:s0"),
+                path,
+                policy.clone(),
+                &manager,
+            )
+            .is_ok()
+        );
+        assert!(
+            get_or_create(
+                &thread,
+                &format!("dsh:{plugin_a}:overflow"),
+                path,
+                policy.clone(),
+                &manager,
+            )
+            .is_err()
+        );
+        assert!(get_or_create(&thread, "term-2", path, policy, &manager).is_ok());
+        {
+            let mut first = plugin_sessions[0].lock().unwrap();
+            start_command(&mut first, "sleep 30").unwrap();
+        }
+
+        assert_eq!(kill_sessions_named("").unwrap(), 0);
+        assert_eq!(kill_sessions_named("dsh::").unwrap(), 0);
+        assert_eq!(kill_sessions_named("term-").unwrap(), 0);
+        assert_eq!(
+            kill_sessions_named(&format!("dsh:{plugin_a}:")).unwrap(),
+            crate::extension_host::dsh_terminal::MAX_TERMINALS
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        for session in &plugin_sessions {
+            while session_exit_status(&mut session.lock().unwrap())
+                .unwrap()
+                .is_none()
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "killed plugin shell did not exit"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        for survivor in [&term1, &colliding, &other_prefix, &other_plugin] {
+            assert!(
+                session_exit_status(&mut survivor.lock().unwrap())
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        let remaining: Vec<String> = owned_sessions(path, &thread)
+            .unwrap()
+            .into_iter()
+            .map(|info| info.name)
+            .collect();
+        assert!(remaining.contains(&"term-1".to_string()), "{remaining:?}");
+        assert!(remaining.contains(&"term-2".to_string()), "{remaining:?}");
+        assert!(
+            remaining.contains(&format!("dsh:{plugin_a}:b:x")),
+            "{remaining:?}"
+        );
+        assert!(
+            remaining.contains(&format!("dsh:{plugin_ab}:s0")),
+            "{remaining:?}"
+        );
+        assert!(
+            remaining.contains(&format!("dsh:{plugin_b}:s0")),
+            "{remaining:?}"
+        );
+        assert!(
+            !remaining
+                .iter()
+                .any(|name| name.starts_with(&format!("dsh:{plugin_a}:s"))),
+            "{remaining:?}"
+        );
     }
 }

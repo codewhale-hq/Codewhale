@@ -16,8 +16,8 @@ Everything you add to Codewhale is a plugin. A skill, an MCP connector and a hoo
 are each a plugin, or part of one, and each has a kind: Skill, Connector, Hook,
 Command. A skill you set up by hand is a plugin of the kind Skill, a server you
 configure is a plugin of the kind Connector, and a hook you configure is a plugin
-of the kind Hook. They are still managed where they are today: Extensions →
-Skills, MCP and Hooks in the terminal, and Customize › Skills, Connectors and
+of the kind Hook. They are still managed where they are today: Plugins →
+Skills, Connectors and Hooks in the terminal, and Customize › Skills, Connectors and
 Hooks on the desktop. Their files, trust rules and commands (`/skills`, `/mcp`,
 `/hooks`) do not change. One Plugins list that shows every kind together is
 planned for 0.10.3 and is not in this build; today the kind labels appear on the
@@ -102,7 +102,7 @@ Codewhale is helpful about plugins, not pushy. The rules:
   task needs; a second call fails. Exec, ACP, and runtime-API sessions do not
   get the tool.
 - **Built-ins are never advertised.** Inspect existing bundles in `/plugin list`
-  and Extensions before installing another copy. The published v0.10.2 CLI
+  and Plugins before installing another copy. The published v0.10.2 CLI
   includes Computer Use; its layout differs from the current source candidate.
   See [Computer Use across versions](PLUGIN_MARKETPLACE.md#computer-use-across-versions).
 - **Specific terms only.** Generic words (accessibility, browser, chrome,
@@ -114,7 +114,7 @@ Codewhale is helpful about plugins, not pushy. The rules:
 - **Only what runs here.** Plugins whose `when.os` excludes this OS are not
   offered.
 - **Review before acting.** A model-requested row offers Review. Its button
-  opens the existing Extensions inventory: Plugins for an installed bundle,
+  opens the existing Plugins inventory: Installed for an installed bundle,
   Marketplace for a suggestion that is not installed. Nothing is installed,
   trusted, or enabled by that click. Choose the inventory's explicit action;
   trust still reviews the exact installed content before activation.
@@ -123,7 +123,7 @@ Codewhale is helpful about plugins, not pushy. The rules:
   persisted choice. `/plugin dismissals` lists both kinds, and
   `/plugin dismissals reset [<name>]` lets suggestions offer a plugin again.
 - **Discovery is passive.** Find new plugins in these docs,
-  `/plugin marketplace list`, Extensions, and the browser guide below.
+  `/plugin marketplace list`, Plugins, and the browser guide below.
 
 Codewhale does not invent a remote plugin URL; missing plugins are suggested
 only from available catalogs. On-disk bundle changes still toast
@@ -145,7 +145,8 @@ None of these is offered to you proactively. Add the one that fits the job.
 
 ## Sources
 
-`codewhale install <spec>` and `/plugin install <spec>` use the same installer.
+`codewhale install <spec>`, `codewhale plugins install <spec>`, and
+`/plugin install <spec>` use the same installer.
 The shell entry does not start a model or require model credentials. Both keep
 bundles disabled and untrusted until you explicitly review and enable them.
 
@@ -176,7 +177,10 @@ There is no registry index and no `git clone` in v1 — tarball-only fetching
 keeps the size cap and no-symlink guarantees of the installer. Downloads are
 gated by the per-domain network policy: an unknown host returns a
 "needs approval" error naming the host (`/network allow <host>`, then retry),
-a denied host aborts without touching disk.
+a denied host aborts without touching disk. Allowing a host never lets a
+download reach a local or private address: every request and redirect refuses
+loopback, private, link-local and cloud-metadata destinations, including a host
+name that resolves to one.
 
 The fetched tree must contain **exactly one** bundle root — a directory
 holding a `plugin.json`, compatible `kimi.plugin.json`,
@@ -247,6 +251,34 @@ matching and the plugin goes inactive until you review again.
   [Changing an installed pin](PLUGIN_MARKETPLACE.md#changing-an-installed-pin).
 - `uninstall` refuses enabled plugins (disable first), deletes the bundle
   directory, and removes its persisted trust/enablement entry.
+
+## Shell CLI
+
+Run the full plugin lifecycle from a shell without starting a session:
+
+```sh
+codewhale plugins install <spec> [--json]
+codewhale plugins show <name> [--json]
+codewhale plugins status [name] [--json]
+codewhale plugins trust <name> [--review-token TOKEN --yes] [--json]
+codewhale plugins enable <name> [--json]
+codewhale plugins disable <name> [--json]
+codewhale plugins update <name> [--json]
+codewhale plugins uninstall <name> [--yes] [--json]
+codewhale plugins revoke <name> [--json]
+codewhale plugins restage <name> [--json]
+```
+
+- `install` uses the same installer as `codewhale install <spec>` and leaves the
+  bundle disabled and untrusted.
+- `show` prints the same capability review as `trust` without prompting or
+  changing trust state.
+- `update` re-reads the recorded source and reports `updated to <version>` or
+  `already current` (or the network-approval message when a host needs
+  approval).
+- `uninstall` disables an enabled plugin first, then removes it. In a terminal
+  it asks `Remove <name> <version>? [y/N]` unless `--yes` is given; without a
+  terminal or with `--json`, `--yes` is required.
 
 ## Safety rules
 

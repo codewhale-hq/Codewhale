@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fd76d718e3a2 -->
+<!-- source: README.md sha256:c66c04179a4e -->
 <div align="center">
 
 <picture>
@@ -79,7 +79,7 @@ Wbudowano ponad 40 dostawców, w tym Anthropic, OpenAI, DeepSeek, Google, Mistra
 
 ### Rozszerzenia
 
-Podłączaj [serwery MCP](../MCP.md), dodawaj [umiejętności](../SKILLS.md) i [wtyczki](../PLUGINS.md) oraz uruchamiaj [hooki](../HOOKS.md) przy zdarzeniach sesji i narzędzi. Tryb kodu (eksperymentalny, domyślnie włączony) pozwala modelowi napisać jeden program `execute_tools`, który wywołuje kilka narzędzi MCP i wtyczek; każde wywołanie nadal podlega twoim regułom zatwierdzania i zachowuje potwierdzenie. Wtyczka Computer Use dołączona do v0.10.2 (eksperymentalna, tylko macOS) może obserwować inne aplikacje i nimi sterować; pozostaje wyłączona, dopóki nie sprawdzisz jej dostępu i jej nie włączysz ([przewodnik](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)). Nadchodzi w 0.10.3: wtyczka będzie wydawana [osobno](https://github.com/codewhale-hq/codewhale-cu-plugin).
+Podłączaj [serwery MCP](../MCP.md), dodawaj [umiejętności](../SKILLS.md) i [wtyczki](../PLUGINS.md) oraz uruchamiaj [hooki](../HOOKS.md) przy zdarzeniach sesji i narzędzi. Tryb kodu (eksperymentalny, domyślnie włączony) pozwala modelowi napisać jeden program `execute_tools`, który wywołuje kilka narzędzi MCP i wtyczek; każde wywołanie nadal podlega twoim regułom zatwierdzania i zachowuje potwierdzenie. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) to osobna wtyczka wydawana niezależnie (eksperymentalna, tylko macOS) i pozostaje wyłączona, dopóki nie sprawdzisz jej dostępu i jej nie włączysz.
 
 ### Sposoby uruchamiania
 

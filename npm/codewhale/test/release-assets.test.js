@@ -14,6 +14,7 @@ const {
   checksummedReleaseAssetNames,
   detectBinaryNames,
   LEGACY_TUI_BRIDGE_ASSET_NAMES,
+  transportOptions,
 } = require("../scripts/artifacts");
 const {
   assertChecksumManifestIncludes,
@@ -318,10 +319,14 @@ test("downloadJson confines credentials to the GitHub API origin across redirect
   const { PassThrough } = require("node:stream");
   const { EventEmitter } = require("node:events");
   const previous = process.env.GITHUB_TOKEN;
+  const previousAllowed = process.env.CODEWHALE_UPDATE_ALLOWED_HOSTS;
   process.env.GITHUB_TOKEN = "test-release-token";
+  process.env.CODEWHALE_UPDATE_ALLOWED_HOSTS = "downloads.example.test";
   t.after(() => {
     if (previous === undefined) delete process.env.GITHUB_TOKEN;
     else process.env.GITHUB_TOKEN = previous;
+    if (previousAllowed === undefined) delete process.env.CODEWHALE_UPDATE_ALLOWED_HOSTS;
+    else process.env.CODEWHALE_UPDATE_ALLOWED_HOSTS = previousAllowed;
   });
   const calls = [];
   const replies = [
@@ -361,6 +366,11 @@ function shrinkLimits(t, overrides) {
 }
 
 function listen(t, handler) {
+  const previousLoopback = transportOptions.allowLoopbackHttp;
+  transportOptions.allowLoopbackHttp = true;
+  t.after(() => {
+    transportOptions.allowLoopbackHttp = previousLoopback;
+  });
   const http = require("node:http");
   const server = http.createServer(handler);
   t.after(() => {
@@ -415,4 +425,59 @@ test("downloadJson destroys a metadata request that stalls", async (t) => {
   });
   await assert.rejects(downloadJson("https://api.github.com/stalled"), /timed out/);
   assert.equal(seen.timeout, 40);
+});
+
+test("verifier requests refuse plain HTTP and disallowed redirect targets without connecting", async (t) => {
+  const http = require("node:http");
+  const https = require("node:https");
+  const { PassThrough } = require("node:stream");
+  const { EventEmitter } = require("node:events");
+  let hits = 0;
+  const server = http.createServer((_req, res) => {
+    hits += 1;
+    res.writeHead(200);
+    res.end("unexpected");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const localHttpUrl = `http://127.0.0.1:${server.address().port}/asset`;
+
+  await assert.rejects(requestStatus(localHttpUrl, "HEAD"), /requires HTTPS/);
+  await assert.rejects(downloadText(localHttpUrl), /requires HTTPS/);
+  await assert.rejects(downloadJson(localHttpUrl), /requires HTTPS/);
+  await assert.rejects(downloadText("http://user:secret@github.com/asset"), (error) => {
+    assert.match(error.message, /requires HTTPS/);
+    assert.doesNotMatch(error.message, /secret/);
+    return true;
+  });
+
+  let nextRedirect = localHttpUrl;
+  const mockHandler = (_url, _options, callback) => {
+    const req = new EventEmitter();
+    req.destroy = () => {};
+    req.end = () => {};
+    const res = new PassThrough();
+    res.statusCode = 302;
+    res.headers = { location: nextRedirect };
+    process.nextTick(() => {
+      callback(res);
+      res.end();
+    });
+    return req;
+  };
+  t.mock.method(https, "get", mockHandler);
+  t.mock.method(https, "request", mockHandler);
+
+  await assert.rejects(requestStatus("https://github.com/start", "HEAD"), /requires HTTPS/);
+  await assert.rejects(downloadText("https://github.com/start"), /requires HTTPS/);
+  await assert.rejects(downloadJson("https://api.github.com/start"), /requires HTTPS/);
+
+  nextRedirect = "https://unlisted.example.test/asset";
+  await assert.rejects(requestStatus("https://github.com/start", "HEAD"), /not an allowed release host/);
+  await assert.rejects(downloadText("https://github.com/start"), /not an allowed release host/);
+  await assert.rejects(downloadJson("https://api.github.com/start"), /not an allowed release host/);
+  assert.equal(hits, 0);
 });

@@ -18,7 +18,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
       - name: Install cargo-audit
         run: cargo install cargo-audit
       - name: Run cargo audit
@@ -38,6 +38,7 @@ jobs:
           - { name: root, directory: . }
           - { name: web, directory: web }
           - { name: telemetry-ingest, directory: telemetry-ingest }
+          - { name: telemetry-stats, directory: telemetry-stats }
           - { name: extension-host, directory: crates/engine/extension-host }
           - { name: vscode, directory: extensions/vscode }
           - { name: feishu-bridge, directory: integrations/feishu-bridge }

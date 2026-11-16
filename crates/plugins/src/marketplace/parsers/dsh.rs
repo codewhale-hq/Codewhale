@@ -39,9 +39,13 @@
 //! GitHub repositories (archive tarballs) rather than a package
 //! subdirectory. So:
 //!
-//! - `npm` sources parse into [`MarketplaceSourceSpec::Npm`] and stay
-//!   [`MarketplaceInstallPlan::Unsupported`]: visible and truthful, never
-//!   implied installable.
+//! - `npm` sources parse into [`MarketplaceSourceSpec::Npm`] and plan the
+//!   reviewed installer's fetch of that exact version's registry tarball
+//!   (`npm:name@version`, or the tarball under a declared https
+//!   `registry`). Nothing runs npm and no dependency is installed; the
+//!   bundle still lands disabled and untrusted behind the content review.
+//!   A name, version or registry the installer cannot fetch exactly stays
+//!   [`MarketplaceInstallPlan::Unsupported`] with the reason.
 //! - `git` sources on `github.com` without a `path` become a pinned
 //!   `github:` install plan. A `path` (package inside a subdirectory) or a
 //!   non-GitHub host stays unsupported.
@@ -468,16 +472,25 @@ fn pick_version(
             ));
             continue;
         }
+        let registry = source.get("registry");
+        if source_type == "npm" && registry.is_some_and(|value| !value.is_string()) {
+            entry_diags.push(MarketplaceDiagnostic::warning(
+                "INVALID_REGISTRY",
+                format!(
+                    "`versions[{position}].source.registry` must be a URL string; the version was ignored"
+                ),
+                None,
+                None,
+            ));
+            continue;
+        }
         parsed.push((
             precedence,
             DshVersion {
                 version: raw_version.to_string(),
                 engines: engines.map(str::to_string),
                 source_type: source_type.to_string(),
-                registry: source
-                    .get("registry")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
+                registry: registry.and_then(Value::as_str).map(str::to_string),
                 git_url: source
                     .get("url")
                     .and_then(Value::as_str)
@@ -630,21 +643,25 @@ fn normalize_version_source(
     }
 
     if version.source_type == "npm" {
-        let mut reason = format!(
-            "DSH market npm source `{name}@{}` installs through npm; Codewhale does not execute npm. Install a DSH bundle from a GitHub repository, tarball, or local path",
-            version.version
-        );
-        if let Some(registry) = &version.registry {
-            reason.push_str(&format!(" (declared registry: {registry})"));
-        }
+        let plan = match crate::install::dsh::plan_npm_install(
+            name,
+            &version.version,
+            version.registry.as_deref(),
+        ) {
+            Ok(plan) => MarketplaceInstallPlan::Supported {
+                spec: plan.spec,
+                source_kind: "npm registry tarball".to_string(),
+            },
+            Err(reason) => MarketplaceInstallPlan::Unsupported {
+                reason,
+                raw: version.version.clone(),
+            },
+        };
         return (
             MarketplaceSourceSpec::Npm {
                 package: name.to_string(),
             },
-            MarketplaceInstallPlan::Unsupported {
-                reason,
-                raw: version.version.clone(),
-            },
+            plan,
         );
     }
 

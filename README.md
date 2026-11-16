@@ -119,12 +119,9 @@ Connect [MCP servers](docs/MCP.md), add [skills](docs/SKILLS.md) and
 [plugins](docs/PLUGINS.md), and run [hooks](docs/HOOKS.md) on session and tool
 events. Code mode (experimental, on by default) lets the model write one
 `execute_tools` program that calls several MCP and plugin tools; each call
-still meets your approval rules and keeps its receipt. The Computer Use plugin
-bundled with v0.10.2 (experimental, macOS only) can observe and operate other
-apps, and it stays off until you review its access and enable it
-([guide](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)).
-Coming in 0.10.3: the plugin is released
-[separately](https://github.com/codewhale-hq/codewhale-cu-plugin).
+still meets your approval rules and keeps its receipt. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin)
+is a separate plugin released on its own (experimental, macOS only), and stays
+off until you review its access and turn it on.
 
 ### Ways to run it
 

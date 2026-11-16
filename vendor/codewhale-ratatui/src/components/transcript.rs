@@ -1147,9 +1147,11 @@ impl TranscriptViewportPlan {
         if self.area.intersection(buf.area).is_empty() {
             return;
         }
-        if let Some(facts) = self.scrollbar {
+        if let Some(facts) = self.scrollbar
+            && facts.total > facts.visible
+        {
             let range = facts.total.saturating_sub(facts.visible);
-            let mut state = ScrollbarState::new(range)
+            let mut state = ScrollbarState::new(range.saturating_add(1))
                 .position(facts.top.min(range))
                 .viewport_content_length(facts.visible);
             Scrollbar::new(ScrollbarOrientation::VerticalRight)

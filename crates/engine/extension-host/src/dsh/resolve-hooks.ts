@@ -140,7 +140,7 @@ function installBunResolver(modules: Record<string, Record<string, unknown>>) {
         }
         if(!(closure.path in closure.receipt.files) || !unlinkedInside(closure.receipt,closure.path,args.path))throw new Error('module was absent from reviewed composition closure or contains a symbolic link')
         const bytes=readFileSync(args.path)
-        if(bytes.length>64*1024*1024 || createHash('sha256').update(bytes).digest('hex')!==closure.receipt.files[closure.path])throw new Error('composition module bytes changed after review')
+        if(bytes.length>256*1024*1024 || createHash('sha256').update(bytes).digest('hex')!==closure.receipt.files[closure.path])throw new Error('composition module bytes changed after review')
         // Bun 1.4 runtime onLoad treats its JSON loader as JS. Preserve exact
         // JSON semantics (including __proto__ data keys) via a JS data module.
         if(closure.path.endsWith('.json'))return {contents:`export default JSON.parse(${JSON.stringify(bytes.toString('utf8'))});`,loader:'js'}
@@ -211,7 +211,7 @@ export function admitReviewedClosure(baseUrl:string,files:Readonly<Record<string
   const id=pathKey(canonicalRoot)
   const accepted:Record<string,string>=Object.create(null)
   const keys=Object.keys(files)
-  if (keys.length>4096) throw new Error('reviewed composition closure exceeds its file limit')
+  if (keys.length>16384) throw new Error('reviewed composition closure exceeds its file limit')
   for (const key of keys) {
     if (!key || key.split('/').some(part=>!part || part==='.' || part==='..') || key.includes('\\') || key.includes(':') || isAbsolute(key) || !/^[a-f0-9]{64}$/.test(files[key])) throw new Error('invalid reviewed composition closure file')
     accepted[key]=files[key]
@@ -294,7 +294,7 @@ export function installResolveHooks(modules: Record<string, Record<string, unkno
         // its in-closure URL; refuse it here as the Bun loader does.
         if(!unlinkedInside(closure.receipt,closure.path,fileURLToPath(url))) throw new Error('module was absent from reviewed composition closure or contains a symbolic link')
         const source=typeof result.source==='string'?Buffer.from(result.source):Buffer.from(result.source as Uint8Array)
-        if(source.length>64*1024*1024 || createHash('sha256').update(source).digest('hex')!==closure.receipt.files[closure.path]) throw new Error('composition module bytes changed after review')
+        if(source.length>256*1024*1024 || createHash('sha256').update(source).digest('hex')!==closure.receipt.files[closure.path]) throw new Error('composition module bytes changed after review')
       }
       return result
     },

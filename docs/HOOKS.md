@@ -3,7 +3,7 @@
 
 Everything you add to Codewhale is a plugin. A hook in `config.toml` or a
 project `hooks.toml` is a plugin of the kind **Hook**, and a plugin bundle can
-also carry hooks. Hooks are still managed under Extensions → Hooks in the
+also carry hooks. Hooks are still managed under Plugins → Hooks in the
 terminal and Customize › Hooks on the desktop; one Plugins list that shows every
 kind together is planned for 0.10.3 and is not in this build. Configuration and
 the `/hooks` commands are unchanged.

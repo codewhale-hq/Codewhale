@@ -48,7 +48,7 @@ pub(crate) fn normalize_config_file_path(path: PathBuf) -> Result<PathBuf> {
     Ok(normalized)
 }
 
-pub(crate) fn normalize_project_workspace(workspace: &Path) -> Result<PathBuf> {
+pub fn normalize_project_workspace(workspace: &Path) -> Result<PathBuf> {
     if workspace.as_os_str().is_empty() {
         bail!("project workspace path cannot be empty");
     }

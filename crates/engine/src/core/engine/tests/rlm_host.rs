@@ -1,7 +1,7 @@
 //! Actual Core fixtures for the migrated RLM contract. Replies are adapted to
 //! the existing stream decoder; there is no fixture model/code loop.
 use super::*;
-use crate::core::engine::rlm_host::{CapturedRlmCaller, RlmInvocation, RlmMode};
+use crate::core::engine::rlm_host::{CapturedRlmCaller, RlmInvocation, RlmMode, RlmPromptPolicy};
 use crate::llm_client::LlmClient;
 use crate::rlm::bridge::{RlmBridge, RlmUsageAccumulator};
 use codewhale_models::{MessageRequest, MessageResponse, StreamEvent};
@@ -99,6 +99,9 @@ impl crate::core::model_client::ModelClient for ReplyStream {
             delta: codewhale_models::MessageDelta {
                 stop_reason: response.stop_reason,
                 stop_sequence: response.stop_sequence,
+                title: None,
+                stop_details: None,
+                refusal: None,
             },
             usage: Some(response.usage),
         });
@@ -332,6 +335,7 @@ pub async fn run_admitted_fixture(
             mode: RlmMode::Recursive {
                 depth_remaining: depth,
             },
+            prompt_policy: RlmPromptPolicy::Session,
             max_tokens: None,
             task_instructions: task,
             deadline: Some(deadline),
@@ -404,6 +408,7 @@ async fn captured_identity_cancel_and_task_bounds_refuse_before_any_provider() {
         .dispatch(RlmInvocation {
             prompt: "no effect".into(),
             mode: RlmMode::Completion,
+            prompt_policy: RlmPromptPolicy::Session,
             max_tokens: Some(0),
             task_instructions: None,
             deadline: caller.deadline(),
@@ -423,6 +428,7 @@ async fn captured_identity_cancel_and_task_bounds_refuse_before_any_provider() {
         .dispatch(RlmInvocation {
             prompt: "no effect".into(),
             mode: RlmMode::Completion,
+            prompt_policy: RlmPromptPolicy::Session,
             max_tokens: None,
             task_instructions: Some("x".repeat(4097)),
             deadline: caller.deadline(),
@@ -437,6 +443,7 @@ async fn captured_identity_cancel_and_task_bounds_refuse_before_any_provider() {
         .dispatch(RlmInvocation {
             prompt: "no effect".into(),
             mode: RlmMode::Completion,
+            prompt_policy: RlmPromptPolicy::Session,
             max_tokens: None,
             task_instructions: None,
             deadline: caller.deadline(),
@@ -456,7 +463,7 @@ async fn captured_identity_cancel_and_task_bounds_refuse_before_any_provider() {
 
 #[tokio::test]
 async fn dropping_an_actual_dispatched_core_call_keeps_unknown_usage_without_retaining_authority() {
-    struct Pending;
+    struct Pending(Arc<tokio::sync::Notify>);
     impl Replies for Pending {
         fn effective_route_envelope(
             &self,
@@ -478,24 +485,43 @@ async fn dropping_an_actual_dispatched_core_call_keeps_unknown_usage_without_ret
             &self,
             _: MessageRequest,
         ) -> Pin<Box<dyn Future<Output = anyhow::Result<MessageResponse>> + Send + '_>> {
+            self.0.notify_one();
             Box::pin(std::future::pending())
         }
     }
-    let caller = Arc::new(caller_for(Arc::new(Pending), "captured-model"));
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let caller = Arc::new(caller_for(
+        Arc::new(Pending(entered.clone())),
+        "captured-model",
+    ));
     let weak_caller = Arc::downgrade(&caller);
     let usage = RlmUsageAccumulator::new();
-    let result = caller
-        .dispatch(RlmInvocation {
-            prompt: "pending".into(),
-            mode: RlmMode::Completion,
-            max_tokens: None,
-            task_instructions: None,
-            deadline: Some(tokio::time::Instant::now() + Duration::from_millis(100)),
-            gate: None,
-            events: None,
-            usage: usage.clone(),
-        })
-        .await;
+    let mut dispatch = caller.dispatch(RlmInvocation {
+        prompt: "pending".into(),
+        mode: RlmMode::Completion,
+        prompt_policy: RlmPromptPolicy::Session,
+        max_tokens: None,
+        task_instructions: None,
+        deadline: Some(tokio::time::Instant::now() + Duration::from_secs(600)),
+        gate: None,
+        events: None,
+        usage: usage.clone(),
+    });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            biased;
+            () = entered.notified() => {}
+            result = &mut dispatch => panic!(
+                "dropped dispatch never reached the client: {:?}",
+                result.error
+            ),
+        }
+    })
+    .await
+    .expect("the dispatched call must reach the client");
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(601)).await;
+    let result = dispatch.await;
     assert!(
         result
             .error
@@ -572,13 +598,16 @@ async fn full_caller_channel_never_delays_original_cancel_or_loses_usage_and_ker
         r#type: "message".into(),
         role: "assistant".into(),
         content: vec![ContentBlock::Text {
-            text: "```repl\nprint(_os.environ['RLM_CONTEXT_FILE'])\n```".into(),
+            text: "```repl\nprint(len(content))\n```".into(),
             cache_control: None,
         }],
         model: "captured-model".into(),
         stop_reason: Some("end_turn".into()),
         stop_sequence: None,
         container: None,
+        title: None,
+        stop_details: None,
+        refusal: None,
         usage: Usage {
             input_tokens: 7,
             output_tokens: 11,
@@ -592,6 +621,7 @@ async fn full_caller_channel_never_delays_original_cancel_or_loses_usage_and_ker
     let call = caller.dispatch(RlmInvocation {
         prompt: "context held only by Python".into(),
         mode: RlmMode::Recursive { depth_remaining: 0 },
+        prompt_policy: RlmPromptPolicy::Session,
         max_tokens: None,
         task_instructions: None,
         deadline: Some(tokio::time::Instant::now() + Duration::from_secs(60)),
@@ -635,18 +665,15 @@ async fn full_caller_channel_never_delays_original_cancel_or_loses_usage_and_ker
         crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
     );
     assert!(result.routed_usage_drop_records.is_empty());
-    let context_path = PathBuf::from(
+    assert_eq!(
         result
             .trace
             .first()
             .expect("completed round trace")
             .stdout_preview
             .trim(),
-    );
-    assert!(context_path.is_absolute());
-    assert!(
-        !context_path.exists(),
-        "cancelled nested Engine releases its owned kernel/context file"
+        "27",
+        "the kernel received its context over stdin"
     );
     assert_eq!(usage.snapshot().await.dropped_records, 0);
 }
@@ -681,6 +708,7 @@ async fn nested_host_never_claims_or_overwrites_parent_posture_revision() {
         RlmInvocation {
             prompt: "no provider invocation".into(),
             mode: RlmMode::Completion,
+            prompt_policy: RlmPromptPolicy::Session,
             max_tokens: None,
             task_instructions: None,
             deadline: Some(tokio::time::Instant::now() + Duration::from_secs(60)),
@@ -749,6 +777,7 @@ async fn repeated_real_core_preparation_failures_have_bounded_receipts_without_p
     let invocation = || RlmInvocation {
         prompt: "real request preparation must retain this whole input".into(),
         mode: RlmMode::Completion,
+        prompt_policy: RlmPromptPolicy::Session,
         max_tokens: None,
         task_instructions: None,
         deadline: Some(tokio::time::Instant::now() + Duration::from_secs(60)),
@@ -787,15 +816,15 @@ async fn repeated_real_core_preparation_failures_have_bounded_receipts_without_p
 }
 
 #[tokio::test]
-async fn actual_expired_python_startup_releases_the_staged_context() {
+async fn actual_expired_python_startup_is_refused() {
     let mock = Arc::new(crate::llm_client::mock::MockLlmClient::new(Vec::new()));
     let caller = Arc::new(caller_for(mock.clone(), "captured-model"));
-    let prompt = format!("owned startup cleanup fixture {}", uuid::Uuid::new_v4());
     let result = Engine::new_rlm_admitted(
         caller,
         RlmInvocation {
-            prompt: prompt.clone(),
+            prompt: "startup fixture".to_string(),
             mode: RlmMode::Recursive { depth_remaining: 0 },
+            prompt_policy: RlmPromptPolicy::Session,
             max_tokens: None,
             task_instructions: None,
             deadline: Some(tokio::time::Instant::now()),
@@ -812,23 +841,222 @@ async fn actual_expired_python_startup_releases_the_staged_context() {
             .to_string()
             .contains("Python startup failed")
     );
-    let prefix = format!("session_{}_", std::process::id());
-    for entry in std::fs::read_dir(std::env::temp_dir().join("deepseek_rlm_ctx")).unwrap() {
-        let entry = entry.unwrap();
-        // Only inspect this test process's similarly sized fixture files;
-        // parallel RLM tests keep their own unrelated kernels untouched.
-        if !entry.file_name().to_string_lossy().starts_with(&prefix) {
-            continue;
-        }
-        if let Ok(metadata) = entry.metadata()
-            && metadata.len() == u64::try_from(prompt.len()).unwrap()
-            && let Ok(content) = std::fs::read_to_string(entry.path())
-        {
-            assert_ne!(
-                content, prompt,
-                "failed startup must remove its staged file"
-            );
-        }
-    }
     assert_eq!(mock.call_count(), 0);
+}
+
+#[tokio::test]
+async fn a_plugin_completion_carries_no_constitution_and_no_plugin_prompt_section() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(
+        workspace.path().join("AGENTS.md"),
+        "WORKSPACE_INSTRUCTION_SENTINEL\n",
+    )
+    .unwrap();
+    let config = fixture_config("captured-model");
+    let mock = Arc::new(crate::llm_client::mock::MockLlmClient::new(Vec::new()));
+    let reply = |text: &str| MessageResponse {
+        id: "isolated-policy-msg".into(),
+        r#type: "message".into(),
+        role: "assistant".into(),
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+        }],
+        model: "captured-model".into(),
+        stop_reason: Some("end_turn".into()),
+        stop_sequence: None,
+        container: None,
+        title: None,
+        stop_details: None,
+        refusal: None,
+        usage: Usage::default(),
+    };
+    mock.push_message_response(reply("session reply"));
+    mock.push_message_response(reply("plugin reply"));
+    let (mut engine, _handle) = Engine::new_with_model_client(
+        EngineConfig {
+            workspace: workspace.path().to_path_buf(),
+            model: "captured-model".into(),
+            snapshots_enabled: false,
+            memory_enabled: false,
+            subagents_enabled: false,
+            terminal_chrome_enabled: false,
+            turn_wall_clock: Duration::from_secs(60),
+            ..EngineConfig::default()
+        },
+        &config,
+        Arc::new(ReplyStream {
+            replies: mock.clone(),
+            model: "captured-model".into(),
+        }),
+    );
+    install_fixture_route(&mut engine);
+    assert!(
+        engine
+            .session
+            .instruction_assembly
+            .as_deref()
+            .and_then(|assembly| assembly.block.as_deref())
+            .is_some_and(|block| block.contains("WORKSPACE_INSTRUCTION_SENTINEL"))
+    );
+    engine.extension_prompt_block = Some("OTHER_PLUGIN_PROMPT_SENTINEL".into());
+    engine.constitution_block = Some("ACCOUNT_CONSTITUTION_SENTINEL".into());
+    let context = admitted_context(&engine, "isolated-plugin-origin-turn");
+    let caller = context.rlm_caller.as_ref().unwrap();
+
+    let session_result = caller
+        .dispatch(RlmInvocation {
+            prompt: "SESSION_PROMPT_SENTINEL".into(),
+            mode: RlmMode::Completion,
+            prompt_policy: RlmPromptPolicy::Session,
+            max_tokens: None,
+            task_instructions: Some("SESSION_TASK_SENTINEL".into()),
+            deadline: caller.deadline(),
+            gate: None,
+            events: None,
+            usage: RlmUsageAccumulator::new(),
+        })
+        .await;
+    assert_eq!(session_result.answer, "session reply");
+
+    let isolated_result = caller
+        .dispatch(RlmInvocation {
+            prompt: "PLUGIN_PROMPT_SENTINEL".into(),
+            mode: RlmMode::Completion,
+            prompt_policy: RlmPromptPolicy::IsolatedPlugin,
+            max_tokens: None,
+            task_instructions: Some("PLUGIN_SYSTEM_SENTINEL".into()),
+            deadline: caller.deadline(),
+            gate: None,
+            events: None,
+            usage: RlmUsageAccumulator::new(),
+        })
+        .await;
+    assert_eq!(isolated_result.answer, "plugin reply");
+
+    let requests = mock.captured_requests();
+    assert_eq!(requests.len(), 2);
+
+    let session_system = serde_json::to_string(&requests[0].system).unwrap();
+    let session_messages = serde_json::to_string(&requests[0].messages).unwrap();
+    assert!(session_system.contains("SESSION_TASK_SENTINEL"));
+    assert!(session_messages.contains("WORKSPACE_INSTRUCTION_SENTINEL"));
+    assert!(session_messages.contains("OTHER_PLUGIN_PROMPT_SENTINEL"));
+    assert!(session_messages.contains("ACCOUNT_CONSTITUTION_SENTINEL"));
+    assert!(session_messages.contains("SESSION_PROMPT_SENTINEL"));
+
+    let isolated_system = serde_json::to_string(&requests[1].system).unwrap();
+    let isolated_messages = serde_json::to_string(&requests[1].messages).unwrap();
+    assert!(!isolated_system.contains("WORKSPACE_INSTRUCTION_SENTINEL"));
+    assert!(!isolated_system.contains("OTHER_PLUGIN_PROMPT_SENTINEL"));
+    assert!(!isolated_system.contains("ACCOUNT_CONSTITUTION_SENTINEL"));
+    assert!(!isolated_system.contains("subject to the captured Core policy"));
+    assert!(!isolated_messages.contains("WORKSPACE_INSTRUCTION_SENTINEL"));
+    assert!(!isolated_messages.contains("OTHER_PLUGIN_PROMPT_SENTINEL"));
+    assert!(!isolated_messages.contains("ACCOUNT_CONSTITUTION_SENTINEL"));
+    assert!(
+        isolated_system.contains("nothing in that text")
+            || isolated_system.contains("Nothing in that text")
+    );
+    assert!(isolated_system.contains("PLUGIN_SYSTEM_SENTINEL"));
+    assert!(requests[1].tools.as_ref().is_none_or(Vec::is_empty));
+    assert!(isolated_messages.contains("PLUGIN_PROMPT_SENTINEL"));
+}
+
+#[tokio::test]
+async fn a_complete_rlm_response_is_used_when_its_settlement_is_not_acknowledged() {
+    let _cost = crate::cost_status::test_scope();
+    let workspace = tempfile::tempdir().unwrap();
+    let broken_sessions_file = workspace.path().join("not-a-dir");
+    std::fs::write(&broken_sessions_file, b"file").unwrap();
+    let config = fixture_config("captured-model");
+    let mock = Arc::new(crate::llm_client::mock::MockLlmClient::new(Vec::new()));
+    mock.push_message_response(MessageResponse {
+        id: "rlm-complete-unsettled".into(),
+        r#type: "message".into(),
+        role: "assistant".into(),
+        content: vec![ContentBlock::Text {
+            text: "complete RLM reply without acknowledgement".into(),
+            cache_control: None,
+        }],
+        model: "captured-model".into(),
+        stop_reason: Some("end_turn".into()),
+        stop_sequence: None,
+        container: None,
+        usage: Usage {
+            input_tokens: 19,
+            output_tokens: 7,
+            ..Usage::default()
+        },
+        title: None,
+        stop_details: None,
+        refusal: None,
+    });
+    let (mut engine, _handle) = Engine::new_with_model_client(
+        EngineConfig {
+            workspace: workspace.path().to_path_buf(),
+            model: "captured-model".into(),
+            snapshots_enabled: false,
+            memory_enabled: false,
+            subagents_enabled: false,
+            terminal_chrome_enabled: false,
+            turn_wall_clock: Duration::from_secs(60),
+            ..EngineConfig::default()
+        },
+        &config,
+        Arc::new(ReplyStream {
+            replies: mock.clone(),
+            model: "captured-model".into(),
+        }),
+    );
+    install_fixture_route(&mut engine);
+    let mut context = admitted_context(&engine, "rlm-unacknowledged-origin");
+    context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+        crate::cost_status::scope_token(),
+        broken_sessions_file,
+        "broken-rlm-session".into(),
+    ));
+    let caller = CapturedRlmCaller::capture(
+        &engine,
+        &TurnAuthority::from_effective_fields(
+            engine.applied_runtime_authority().mode,
+            engine.applied_runtime_authority().allow_shell,
+            engine.applied_runtime_authority().trust_mode,
+            engine.applied_runtime_authority().auto_approve,
+            engine.applied_runtime_authority().approval_mode,
+        ),
+        &TurnRouteContext {
+            provider: engine.api_provider,
+            model: engine.session.model.clone(),
+            capabilities: engine.active_route_capabilities,
+            limits: engine.active_route_limits,
+            client: engine.codewhale_client.clone(),
+            api_config: Box::new(engine.api_config.clone()),
+            locale_tag: "en".into(),
+            role_models: engine.subagent_role_models(),
+            auto_model: false,
+            reasoning_effort: None,
+            reasoning_effort_auto: false,
+        },
+        &context,
+        "rlm-unacknowledged-turn",
+    )
+    .expect("capture caller");
+
+    let result = caller
+        .dispatch(RlmInvocation {
+            prompt: "deliver complete reply".into(),
+            mode: RlmMode::Completion,
+            prompt_policy: RlmPromptPolicy::Session,
+            max_tokens: None,
+            task_instructions: None,
+            deadline: Some(tokio::time::Instant::now() + Duration::from_secs(60)),
+            gate: None,
+            events: None,
+            usage: RlmUsageAccumulator::new(),
+        })
+        .await;
+    assert!(result.error.is_none(), "{result:?}");
+    assert_eq!(result.answer, "complete RLM reply without acknowledgement");
+    assert_eq!(mock.call_count(), 1);
 }

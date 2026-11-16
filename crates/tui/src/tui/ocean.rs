@@ -345,6 +345,9 @@ impl OceanColumn {
         // Equality-matched opaque ground is actual pane evidence. A terminal
         // Reset/named ink supplies no RGB evidence; an OS hint cannot fill it.
         caps.appearance = codewhale_ratatui::detect::appearance_for_background(ground)?;
+        if caps.appearance != codewhale_ratatui::detect::Appearance::Dark {
+            return None;
+        }
         Some(
             codewhale_ratatui::Theme::new(caps)
                 .ground(codewhale_ratatui::Ground::Ocean)

@@ -5,8 +5,8 @@
 //! when the total is known:
 //!
 //! - no percentage, no time-remaining estimate, no smoothing: the bar fills
-//!   in whole cells, never reaches full before `done` reaches `total`, and
-//!   never shows a cell for work that has not happened;
+//!   in eighth cells (whole cells in ASCII), never reaches full before
+//!   `done` reaches `total`, and never shows work that has not happened;
 //! - when `done` passes `total` the words keep the real numbers (`7 of 5`);
 //!   only the painted fill is clamped;
 //! - when the total is unknown there is no bar at all, and the words say so
@@ -20,6 +20,7 @@ use std::borrow::Cow;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
+    symbols::block,
     text::{Line, Span},
     widgets::Widget,
 };
@@ -196,14 +197,35 @@ impl Paint for CountBar {
             let cells = (room - counting_w).saturating_sub(4).min(MAX_BAR);
             if cells >= MIN_BAR {
                 let filled = usize::from(self.filled(cells as u16));
+                let fraction = match self.total {
+                    Some(total) if !ascii && total > 0 && self.done < total => {
+                        ((u128::from(self.done) * cells as u128 * 8 / u128::from(total)) % 8)
+                            as usize
+                    }
+                    _ => 0,
+                };
                 spans.push(Span::raw("  "));
                 spans.push(Span::styled("[", theme.fg(Role::Muted)));
                 spans.push(Span::styled(
                     glyphs::pick("\u{2588}", ascii).repeat(filled),
                     theme.fg(self.state.role()),
                 ));
+                if fraction > 0 {
+                    let edge = [
+                        "",
+                        block::ONE_EIGHTH,
+                        block::ONE_QUARTER,
+                        block::THREE_EIGHTHS,
+                        block::HALF,
+                        block::FIVE_EIGHTHS,
+                        block::THREE_QUARTERS,
+                        block::SEVEN_EIGHTHS,
+                    ][fraction];
+                    spans.push(Span::styled(edge, theme.fg(self.state.role())));
+                }
                 spans.push(Span::styled(
-                    glyphs::pick("\u{2591}", ascii).repeat(cells - filled),
+                    glyphs::pick("\u{2591}", ascii)
+                        .repeat(cells - filled - usize::from(fraction > 0)),
                     theme.fg(Role::Dim),
                 ));
                 spans.push(Span::styled("]", theme.fg(Role::Muted)));

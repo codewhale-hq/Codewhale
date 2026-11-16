@@ -71,6 +71,38 @@ cp "$INSTALL_TEST_ASSETS/$asset" "$output"
   return { root, home, bin, archive, assets, destination, env, run, prepare, untouched };
 }
 
+function flakyCurl(f, failures) {
+  const counter = path.join(f.root, "curl-calls");
+  const real = fs.readFileSync(path.join(f.bin, "curl"), "utf8");
+  executable(path.join(f.bin, "curl"), `#!/bin/sh
+n=$(cat "${counter}" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "${counter}"
+if [ "$n" -le ${failures} ]; then echo "curl: (35) SSL_connect: SSL_ERROR_SYSCALL" >&2; exit 35; fi
+${real.replace("#!/bin/sh\n", "")}`);
+  f.env.CODEWHALE_INSTALL_RETRY_DELAY = "0";
+  return counter;
+}
+
+test("website: a download that fails twice with a connection error is retried and the install succeeds", t => {
+  const f = fixture(t, "website");
+  const counter = flakyCurl(f, 2);
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.readFileSync(counter, "utf8").trim(), "4");
+  assert.equal(fs.readFileSync(path.join(f.destination, "codewhale"), "utf8"), bytes);
+});
+
+test("website: three failed attempts end with the retry hint and install nothing", t => {
+  const f = fixture(t, "website");
+  const counter = flakyCurl(f, 99);
+  const result = f.run();
+  assert.notEqual(result.status, 0);
+  assert.equal(fs.readFileSync(counter, "utf8").trim(), "3");
+  assert.ok(result.stderr.includes("Download failed. This is usually a network blip; run the same command again."), result.stderr);
+  assert.equal(fs.existsSync(path.join(f.destination, "codewhale")), false);
+});
+
 for (const kind of ["website", "archive"]) {
   test(`${kind}: fresh installation verifies bytes, executable modes, and PATH shadowing`, t => {
     const f = fixture(t, kind);
@@ -124,19 +156,14 @@ ${hash}  codew
     f.untouched();
   });
 
-  test(`${kind}: on macOS without Node the Computer Use notice precedes the PATH block`, t => {
-    const noNode = ["/usr/bin", "/bin"].every(dir => !fs.existsSync(path.join(dir, "node")));
-    if (!noNode) return t.skip("node is installed in a system directory");
+  test(`${kind}: install output never mentions Computer Use or Node.js 20`, t => {
     const f = fixture(t, kind);
-    f.env.PATH = `${f.bin}:/usr/bin:/bin`;
+    const noNode = ["/usr/bin", "/bin"].every(dir => !fs.existsSync(path.join(dir, "node")));
+    if (noNode) f.env.PATH = `${f.bin}:/usr/bin:/bin`;
     const result = f.run();
     assert.equal(result.status, 0, result.stderr);
-    const out = result.stdout;
-    const notice = out.indexOf("Computer Use is included and needs Node.js 20");
-    assert.ok(notice >= 0, out);
-    assert.ok(notice < out.indexOf("PATH selects"), out);
-    assert.ok(notice < out.indexOf("Run this now, in this shell:"), out);
-    assert.equal(out.trim().split("\n").at(-1).trim(), "codewhale --version", out);
+    assert.ok(!result.stdout.includes("Computer Use"), result.stdout);
+    assert.ok(!result.stdout.includes("Node.js 20"), result.stdout);
     f.untouched();
   });
 
@@ -530,3 +557,34 @@ for (const kind of ['website', 'archive']) {
     f.untouched();
   });
 }
+
+test('website: downloaders require HTTPS and TLS 1.2+', t => {
+  const f = fixture(t, 'website');
+  const argsFile = path.join(f.root, 'curl-args');
+  f.env.INSTALL_TEST_CURL_ARGS = argsFile;
+  executable(path.join(f.bin, 'curl'), `#!/bin/sh
+printf '%s\n' "$*" >> "$INSTALL_TEST_CURL_ARGS"
+url=""; output=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) shift; output="$1" ;;
+    http*) url="$1" ;;
+  esac
+  shift
+done
+printf '%s\n' "$url" >> "$INSTALL_TEST_DOWNLOADS"
+asset="$(basename "$url")"
+cp "$INSTALL_TEST_ASSETS/$asset" "$output"
+`);
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  const invocations = fs.readFileSync(argsFile, 'utf8').trim().split('\n');
+  assert.ok(invocations.length >= 2);
+  for (const line of invocations) {
+    assert.ok(line.includes('--proto =https'), `expected --proto =https in: ${line}`);
+    assert.ok(line.includes('--tlsv1.2'), `expected --tlsv1.2 in: ${line}`);
+  }
+  const websiteScript = fs.readFileSync(path.join(repo, 'web/public/install.sh'), 'utf8');
+  assert.match(websiteScript, /curl --proto '=https' --tlsv1\.2 -fsSL/);
+  assert.match(websiteScript, /wget --https-only -q/);
+});

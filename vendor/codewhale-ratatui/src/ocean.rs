@@ -9,8 +9,9 @@
 //! Paint ordinary components first, then apply the column to their ordinary
 //! `Background` and `Sidebar` cells. Raised surfaces, selections, diff/code
 //! grounds, custom fills, symbols, inks and modifiers remain theirs. The
-//! authored dark field is available only on known dark truecolor Ocean
-//! grounds. Graphite, light, unknown grounds and lower depths keep the theme.
+//! authored dark field remains exact on Ocean; other measured truecolor
+//! themes draw depth and ambient light from their own grounds and accent.
+//! Terminal-owned grounds, unknown appearances and lower depths stay unchanged.
 //! Native chrome can join the same column with [`OceanColumn::apply_matching`]
 //! over its own region and explicit base ground. Native cached-row painting,
 //! semantic-surface projection and sparse caustics are adapted from the same
@@ -30,7 +31,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     Ground, MotionMode, Paint, Role, Theme,
-    color::{ColorDepth, blend, contrast_ratio, rgb},
+    color::{ColorDepth, blend, contrast_ratio, relative_luminance, rgb},
     detect::Appearance,
 };
 
@@ -55,7 +56,7 @@ impl OceanPhase {
     }
 }
 
-/// The native dark underwater ramp. Semantic tints come from [`Theme`].
+/// A depth ramp in the active theme's own colors. Semantic tints come from [`Theme`].
 /// [`Self::for_theme`] resolves the guarded default; [`Self::new`] supplies
 /// exact caller colors for pure math. Neither replaces a theme table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -102,27 +103,65 @@ impl OceanRamp {
         }
     }
 
-    /// Resolve the native field only where the host selected known dark
-    /// truecolor Ocean grounds. A terminal-owned base is never overwritten.
+    /// Resolve a measured truecolor field from the theme's painted RGB grounds.
+    /// Native Ocean keeps its authored stops; terminal-owned bases stay unpainted.
     #[must_use]
     pub fn for_theme(theme: &Theme) -> Option<Self> {
         if theme.depth() != ColorDepth::TrueColor
-            || theme.caps().appearance != Appearance::Dark
-            || theme.ground_kind() != Ground::Ocean
-            || theme
-                .native_palette()
-                .is_some_and(|palette| palette != crate::TuiPalette::Underwater)
+            || !theme.caps().paints_tokens()
             || !theme.paints_base_ground()
         {
             return None;
         }
+        let background = theme.color(Role::Background)?;
+        if !matches!(background, Color::Rgb(..)) {
+            return None;
+        }
+        let attention = theme.color(Role::Attention)?;
+        let failure = theme.color(Role::Danger)?;
+        if theme.caps().appearance == Appearance::Dark
+            && theme.ground_kind() == Ground::Ocean
+            && theme
+                .native_palette()
+                .is_none_or(|palette| palette == crate::TuiPalette::Underwater)
+        {
+            return Some(Self::new(
+                Self::SURFACE,
+                Self::MIDDLE,
+                Self::DEEP,
+                Self::AMBIENT,
+                attention,
+                failure,
+            ));
+        }
+        let mut brightest = background;
+        let mut darkest = background;
+        let mut high = relative_luminance(background)?;
+        let mut low = high;
+        for role in [Role::Surface, Role::Hover, Role::Sidebar] {
+            let color = theme.color(role)?;
+            if !matches!(color, Color::Rgb(..)) {
+                return None;
+            }
+            let luminance = relative_luminance(color)?;
+            if luminance > high {
+                brightest = color;
+                high = luminance;
+            }
+            if luminance < low {
+                darkest = color;
+                low = luminance;
+            }
+        }
+        let light = theme.caps().appearance == Appearance::Light;
+        let surface = mix_toward(background, brightest, if light { 0.45 } else { 0.35 });
         Some(Self::new(
-            Self::SURFACE,
-            Self::MIDDLE,
-            Self::DEEP,
-            Self::AMBIENT,
-            theme.color(Role::Attention)?,
-            theme.color(Role::Danger)?,
+            surface,
+            background,
+            mix_toward(background, darkest, if light { 0.45 } else { 0.65 }),
+            mix_toward(surface, theme.color(Role::Accent)?, 0.20),
+            attention,
+            failure,
         ))
     }
 
@@ -191,8 +230,9 @@ impl OceanRamp {
         }
     }
 
-    /// The native completion brightness: 88% → 112% at 320 ms → 100% at
-    /// 800 ms. The component uses it only for a reported `Done` phase in
+    /// Dark completion brightness: 88% → 112% at 320 ms → 100% at 800 ms.
+    /// Light grounds receive a gentle accent reflection over the same interval.
+    /// The component uses it only for a reported `Done` phase in
     /// [`MotionMode::Full`]; a stale completion clock cannot mask failure.
     #[must_use]
     pub fn color_at_completion_context(
@@ -204,6 +244,14 @@ impl OceanRamp {
     ) -> Color {
         let base = self.color_at_context(row, height, context_percent);
         let t = elapsed.as_millis().min(800) as f32 / 800.0;
+        if relative_luminance(base).is_some_and(|luminance| luminance >= 0.5) {
+            let pulse = if t <= 0.4 { t / 0.4 } else { (1.0 - t) / 0.6 };
+            return mix_toward(
+                base,
+                self.ambient,
+                0.12 * pulse * pulse * (3.0 - 2.0 * pulse),
+            );
+        }
         let brightness = if t <= 0.4 {
             0.88 + (1.12 - 0.88) * (t / 0.4)
         } else {
@@ -326,7 +374,7 @@ impl OceanColumn {
 
     /// Pure sampling at an absolute row. `viewport` supplies the default
     /// column bounds unless the builder already specifies shared bounds.
-    /// Returns `None` where the native authored field is unavailable.
+    /// Returns `None` where a measured RGB field is unavailable.
     #[must_use]
     pub fn color_at_y(&self, y: u16, viewport: Rect, theme: &Theme) -> Option<Color> {
         let ramp = OceanRamp::for_theme(theme)?;
@@ -372,15 +420,29 @@ impl OceanColumn {
     }
 
     /// Finish ordinary `Background` and `Sidebar` cells, clipped to the
-    /// buffer. Other fills remain exact. Visible inks must retain their
+    /// buffer. Colors shared with semantic fills remain exact; explicit
+    /// chrome regions can opt in through `apply_matching`. Visible inks must retain their
     /// contrast floor; unknown terminal inks and reversed cells are spared.
     pub fn apply(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
-        self.apply_grounds(
-            area,
-            buf,
-            theme,
-            &[theme.bg(Role::Background).bg, theme.bg(Role::Sidebar).bg],
-        );
+        let semantic = [
+            Role::Surface,
+            Role::Hover,
+            Role::Selected,
+            Role::DiffAddedTint,
+            Role::DiffRemovedTint,
+            Role::Accent,
+            Role::Live,
+            Role::Attention,
+            Role::Danger,
+        ]
+        .map(|role| theme.bg(role).bg);
+        let grounds = [Role::Background, Role::Sidebar].map(|role| {
+            theme
+                .bg(role)
+                .bg
+                .filter(|color| !semantic.contains(&Some(*color)))
+        });
+        self.apply_grounds(area, buf, theme, &grounds);
     }
 
     /// Continue the column through cells with the caller's explicit base
@@ -505,6 +567,7 @@ impl OceanColumn {
         let Some(ramp) = OceanRamp::for_theme(theme) else {
             return;
         };
+        let ramp = self.ramp.unwrap_or(ramp);
         let viewport = self.viewport.unwrap_or(area);
         let clipped = area.intersection(buf.area);
         let band = facts.band_rows.min(area.height);
@@ -539,6 +602,10 @@ impl OceanColumn {
                 let brightness =
                     ocean_caustic_brightness(facts.elapsed, local_x, local_y, depth * depth);
                 if let Color::Rgb(r, g, b) = water {
+                    if relative_luminance(water).is_some_and(|luminance| luminance >= 0.5) {
+                        cell.set_bg(mix_toward(water, ramp.ambient, (brightness - 1.0) * 1.5));
+                        continue;
+                    }
                     let scale =
                         |value| (f32::from(value) * brightness).round().clamp(0.0, 255.0) as u8;
                     cell.set_bg(Color::Rgb(scale(r), scale(g), scale(b)));

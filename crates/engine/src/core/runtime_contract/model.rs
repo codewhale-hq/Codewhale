@@ -59,6 +59,13 @@ pub trait ModelClient: Send + Sync {
             dispatched_at,
         )
     }
+    fn supports_catalog_reviewer_model(&self, _candidate: &str) -> bool {
+        let Some(provider) = codewhale_config::ProviderKind::parse(self.provider_name()) else {
+            return false;
+        };
+        self.billing_base_url()
+            .is_some_and(|url| codewhale_config::provider_base_url_is_official(provider, url))
+    }
     async fn create_message(&self, request: MessageRequest) -> Result<MessageResponse>;
     /// Fresh authorization evidence; cache-owning adapters must bypass it.
     async fn create_message_uncached(&self, request: MessageRequest) -> Result<MessageResponse> {
@@ -115,6 +122,10 @@ where
         dispatched_at: chrono::DateTime<chrono::Utc>,
     ) -> crate::cost_status::EffectiveRouteEnvelope {
         LlmClient::effective_route_envelope(self, requested_model, dispatched_at)
+    }
+
+    fn supports_catalog_reviewer_model(&self, candidate: &str) -> bool {
+        LlmClient::supports_catalog_reviewer_model(self, candidate)
     }
 
     async fn create_message(&self, request: MessageRequest) -> Result<MessageResponse> {

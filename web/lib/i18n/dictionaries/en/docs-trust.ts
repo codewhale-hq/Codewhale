@@ -61,9 +61,9 @@ export const docsTrust: DocsTrustDict = {
         },
         {
           rows: [
-            ["Never sent", "Prompts, responses, code, diffs, file contents, file or repository or branch names, paths, model ids, MCP server names, API keys or tokens, error message text, keystrokes, or any per-turn or per-tool timeline."],
+            ["Never sent", "Prompts, responses, code, diffs, file contents, file or repository or branch names, paths, model ids outside the bundled public catalog, MCP server names, API keys or tokens, error message text, keystrokes, or any per-turn or per-tool timeline."],
             ["Sent while on", "Version and platform classes, session length and outcome, feature and error counts as fixed categories, and a random install id that changes every 90 days."],
-            ["Where it goes", "`https://telemetry.codewhale.net/v1/telemetry`, a first-party service whose source is in the repository. It stores no IP address, country, or location, keeps no request logs, and holds data for three months."],
+            ["Where it goes", "`https://telemetry.codewhale.net/v1/telemetry`, a first-party service whose source is in the repository. It stores no IP address, country, or location, keeps no request logs, and holds raw data for three months; only aggregate daily totals with no install id are kept longer."],
             ["PostHog", "Forwarding to PostHog happens only if the service operator configures it separately; it carries the same fields and nothing more."],
           ],
         },

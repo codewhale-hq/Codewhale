@@ -52,7 +52,7 @@ OpenCode Zen 和 OpenCode Go 是一等提供商路由，配置方式与下文其
 - `crates/config/src/lib.rs` —— 共享的提供商 ID、默认值、环境变量优先级。
 - `crates/config/assets/provider_descriptors.json` —— 内置的 OpenAI 兼容主机描述符（即上文的已知可用主机表）。
 - `crates/tui/src/config.rs` —— TUI 提供商 ID、提供商能力元数据以及提供商特定的环境变量处理。
-- `crates/agent/src/lib.rs` —— `codewhale model resolve` 使用的静态 `ModelRegistry`（以及 `[model]` 配置面）。`codewhale model list` 则改为读取解析后的 provider lake，因此一次列表就能同时看到内置、实时与已配置的行。
+- `crates/config/src/catalog/reviewed.rs` —— `codewhale model resolve` 使用的已审阅选择器行（以及 `[model]` 配置面）。`codewhale model list` 则改为读取解析后的 provider lake，因此一次列表就能同时看到内置、实时与已配置的行。
 - `config.example.toml` 和 `docs/CONFIGURATION.md` —— 面向用户的配置示例和环境变量参考。
 - `scripts/check-provider-registry.py` —— 对规范提供商 ID、实时 TUI 提供商 ID、TOML 表名、静态注册表行和文档化默认值的漂移检查。
 
@@ -526,7 +526,7 @@ Kimi 仍然仅支持 API 密钥；对 Kimi 的外部授权被拒绝。
 | `deepseek-anthropic` | `[providers.deepseek_anthropic]` | `DEEPSEEK_API_KEY` | `DEEPSEEK_ANTHROPIC_BASE_URL`；默认 `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash`；兼容别名 `deepseek-chat`, `deepseek-reasoner` | 面向 Anthropic Messages 线协议的 DeepSeek 显式选择加入路由。使用 `/v1/messages`、`x-api-key` 和 `anthropic-version: 2023-06-01`。默认 Chat Completions 路径请保持 `provider = "deepseek"`。 |
 | `nvidia-nim` | `[providers.nvidia_nim]` | `NVIDIA_API_KEY`, `NVIDIA_NIM_API_KEY` | `NVIDIA_NIM_BASE_URL`, `NIM_BASE_URL`, `NVIDIA_BASE_URL`；默认 `https://integrate.api.nvidia.com/v1` | `deepseek-ai/deepseek-v4-pro`, `deepseek-ai/deepseek-v4-flash` | 通过 NVIDIA NIM 托管的 DeepSeek V4。TUI 配置路径接受 `NVIDIA_NIM_MODEL`。 |
 | `openai` | `[providers.openai]` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`；默认 `https://api.openai.com/v1` | `gpt-5.6`（默认）, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | 通用 OpenAI 兼容路由，其内置端点和回退目录均以 OpenAI 原生为准。[GPT-5.6 系列](https://developers.openai.com/api/docs/models/gpt-5.6-sol)使用 OpenAI 文档中记载的 1.05M 上下文、128K 最大输出和推理级别。自定义网关仍可自由选择由网关自己提供的显式模型。接受 `OPENAI_MODEL`。 |
-| `atlascloud` | `[providers.atlascloud]` | `ATLASCLOUD_API_KEY` | `ATLASCLOUD_BASE_URL`；默认 `https://api.atlascloud.ai/v1` | 默认 `deepseek-ai/deepseek-v4-flash`；选择 AtlasCloud 时显式的 `vendor/model-id` 值直通 | OpenAI 兼容托管路由。TUI 配置路径接受 `ATLASCLOUD_MODEL`，静态 `ModelRegistry` 保留 DeepSeek V4 回退行，提供商提示的 CLI 模型 ID 按原样发送给 AtlasCloud。当前提供商自有的模型列表与定价请查看 Atlas Cloud 自己的目录或 Coding Plan 页面。 |
+| `atlascloud` | `[providers.atlascloud]` | `ATLASCLOUD_API_KEY` | `ATLASCLOUD_BASE_URL`；默认 `https://api.atlascloud.ai/v1` | 默认 `deepseek-ai/deepseek-v4-flash`；选择 AtlasCloud 时显式的 `vendor/model-id` 值直通 | OpenAI 兼容托管路由。TUI 配置路径接受 `ATLASCLOUD_MODEL`，已审核的目录选择保留 DeepSeek V4 回退行，提供商提示的 CLI 模型 ID 按原样发送给 AtlasCloud。当前提供商自有的模型列表与定价请查看 Atlas Cloud 自己的目录或 Coding Plan 页面。 |
 | `wanjie-ark` | `[providers.wanjie_ark]` | `WANJIE_ARK_API_KEY`, `WANJIE_API_KEY`, `WANJIE_MAAS_API_KEY` | `WANJIE_ARK_BASE_URL`, `WANJIE_BASE_URL`, `WANJIE_MAAS_BASE_URL`；默认 `https://maas-openapi.wanjiedata.com/api/v1` | `deepseek-reasoner` | OpenAI 兼容托管路由。接受 `WANJIE_ARK_MODEL`, `WANJIE_MODEL` 和 `WANJIE_MAAS_MODEL`。 |
 | `volcengine` | `[providers.volcengine]` | `VOLCENGINE_API_KEY`, `VOLCENGINE_ARK_API_KEY`, `ARK_API_KEY` | `VOLCENGINE_BASE_URL`, `VOLCENGINE_ARK_BASE_URL`, `ARK_BASE_URL`；默认 `https://ark.cn-beijing.volces.com/api/coding/v3` | `DeepSeek-V4-Pro`, `DeepSeek-V4-Flash` | 火山引擎/Volcengine Ark OpenAI 兼容编码端点。接受 `VOLCENGINE_MODEL` 和 `VOLCENGINE_ARK_MODEL`。 |
 | `openrouter` | `[providers.openrouter]` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL`；默认 `https://openrouter.ai/api/v1` | `deepseek/deepseek-v4-pro`, `deepseek/deepseek-v4-flash`；近期大模型 ID 包括 `arcee-ai/trinity-large-thinking`, `minimax/minimax-m3`, `xiaomi/mimo-v2.5-pro`, `qwen/qwen3.6-flash`, `qwen/qwen3.6-35b-a3b`, `qwen/qwen3.6-max-preview`, `qwen/qwen3.6-27b`, `qwen/qwen3.6-plus`, `google/gemma-4-31b-it`, `z-ai/glm-5.1`, `z-ai/glm-5.2`, `moonshotai/kimi-k2.7-code`, `moonshotai/kimi-k2.6` | 附加的开放模型路由层。它不是 DeepSeek 的替代品；它让用户在选择 OpenRouter 时把受支持的模型 ID 路由过去。 |
@@ -815,7 +815,7 @@ MiniMax M3 使用输入长度和服务层级。Codewhale 省略 `service_tier`�
 
 这些值来自 [MiniMax 按量付费定价指南](https://platform.minimax.io/docs/guides/pricing-paygo)。M3 思考是自适应的或禁用；OpenAI 兼容 API 默认为自适应，Anthropic 兼容 API 默认为禁用。M2.7 思考无法禁用。当用户选择推理模式时，Codewhale 发送显式控制。
 
-工具调用支持由静态 `ModelRegistry` 和端点接受 OpenAI 兼容 `tools` 负载的能力分别跟踪。自定义 OpenAI 兼容或本地端点仍然可以拒绝工具调用，即使 Codewhale 能够发送该模式。
+工具调用支持由已审核的目录选择和端点接受 OpenAI 兼容 `tools` 负载的能力分别跟踪。自定义 OpenAI 兼容或本地端点仍然可以拒绝工具调用，即使 Codewhale 能够发送该模式。
 
 ### Hugging Face Inference Providers 说明
 
@@ -890,7 +890,7 @@ python3 scripts/check-provider-registry.py
 - `docs/PROVIDERS.md` 遗漏了一个规范的 `ProviderKind::as_str()` ID。
 - `crates/tui/src/config.rs` 的 `ApiProvider::as_str()` 偏离 `ProviderKind::as_str()`，除了显式的 `deepseek-cn` 旧别名。
 - 随附提供商表遗漏或添加了一个 `[providers.*]` TOML 表。
-- 静态模型注册表表偏离 `crates/agent/src/lib.rs` 使用的提供商。
+- 静态模型注册表表偏离已审阅目录选择器行使用的提供商。
 - `crates/tui/src/config.rs` 中的提供商默认模型或 base URL 常量在这里不再被提及。
 
 ## 提供商常见陷阱
@@ -905,5 +905,5 @@ python3 scripts/check-provider-registry.py
 
 这些项目属于 v0.8.48+ 提供商抽象里程碑或相关的提供商文档工作，但它们不是本 checkout 中原生随附的行为：
 
-- `codewhale-agent` 中一个统一的 `Provider` trait，拥有环境变量优先级、密钥解析、base URL 规范化、认证头构造和提供商元数据。这些职责目前仍然分散在 `crates/config`、`crates/secrets` 和 `crates/engine/src/client.rs` 中。
+- 一个统一的 `Provider` trait，拥有环境变量优先级、密钥解析、base URL 规范化、认证头构造和提供商元数据。这些职责目前仍然分散在 `crates/config`、`crates/secrets` 和 `crates/engine/src/client.rs` 中。
 - 选择器中的 Hugging Face 模型护照元数据，包括许可证、基础模型、上下文长度、聊天模板、工具调用支持、推理支持以及 gated/private 状态。

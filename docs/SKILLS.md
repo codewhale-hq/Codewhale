@@ -1,13 +1,13 @@
 # Skills Manager
 
-In the terminal, `/skills` opens **Extensions → Skills**. Enter on a skill opens the dedicated manager, also available directly through `/skills manage`, for existing install, update, remove, and trust operations. `/skill <name>` still activates a skill, and the explicit inspection, remote, sync, and suggestion subcommands remain available.
+In the terminal, `/skills` opens **Plugins → Skills**. Enter on a skill opens the dedicated manager, also available directly through `/skills manage`, for existing install, update, remove, and trust operations. `/skill <name>` still activates a skill, and the explicit inspection, remote, sync, and suggestion subcommands remain available.
 
 
 > 阅读简体中文版：[zh_hans/SKILLS.md](zh_hans/SKILLS.md)
 
 Everything you add to Codewhale is a plugin: a skill you set up by hand is a
 plugin of the kind **Skill**, and a skill inside a plugin bundle belongs to that
-plugin. Skills are still managed here, under Extensions → Skills and Customize ›
+plugin. Skills are still managed here, under Plugins → Skills and Customize ›
 Skills; one Plugins list that shows every kind together is planned for 0.10.3 and
 is not in this build. This page keeps the word "skill" for the kind; files, trust
 and the `/skills` commands are unchanged.
@@ -73,7 +73,7 @@ warning, and the session's skills directory falls back to the global one.
 
 | Command | Behavior |
 | --- | --- |
-| `/skills` | Opens Extensions → Skills (owned-only scan, **no network**). |
+| `/skills` | Opens Plugins → Skills (owned-only scan, **no network**). |
 | `/skills manage` | Opens the dedicated Skills Manager for audit and mutation. |
 | `/skills <prefix>` | Text list filtered by name prefix. |
 | `/skills inspect` | Text discovery mode, searched directories, and source paths. |

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fd76d718e3a2 -->
+<!-- source: README.md sha256:c66c04179a4e -->
 <div align="center">
 
 <picture>
@@ -79,7 +79,7 @@ Anthropic, OpenAI, DeepSeek, Google, Mistral, Moonshot, OpenRouter, xAI를 비�
 
 ### 확장
 
-[MCP 서버](../MCP.md)를 연결하고, [스킬](../SKILLS.md)과 [플러그인](../PLUGINS.md)을 추가하고, 세션과 도구 이벤트에서 [훅](../HOOKS.md)을 실행하세요. 코드 모드(실험적, 기본 사용)는 모델이 여러 MCP 도구와 플러그인 도구를 호출하는 `execute_tools` 프로그램 하나를 작성하게 합니다. 각 호출은 여전히 승인 규칙을 따르고 영수증을 남깁니다. v0.10.2에 포함된 Computer Use 플러그인(실험적, macOS 전용)은 다른 앱을 관찰하고 조작할 수 있으며, 접근 권한을 검토하고 켜기 전까지는 꺼져 있습니다([가이드](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)). 0.10.3 예정: 이 플러그인은 [별도로 릴리스](https://github.com/codewhale-hq/codewhale-cu-plugin)됩니다.
+[MCP 서버](../MCP.md)를 연결하고, [스킬](../SKILLS.md)과 [플러그인](../PLUGINS.md)을 추가하고, 세션과 도구 이벤트에서 [훅](../HOOKS.md)을 실행하세요. 코드 모드(실험적, 기본 사용)는 모델이 여러 MCP 도구와 플러그인 도구를 호출하는 `execute_tools` 프로그램 하나를 작성하게 합니다. 각 호출은 여전히 승인 규칙을 따르고 영수증을 남깁니다. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin)는 별도로 릴리스되는 독립 플러그인(실험적, macOS 전용)이며, 접근 권한을 검토하고 켜기 전까지는 꺼져 있습니다.
 
 ### 실행 방법
 

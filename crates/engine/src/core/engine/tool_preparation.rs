@@ -86,15 +86,20 @@ pub(super) fn prepare_tool_call(
         if computer_use_user_gate(name, &input).is_some() {
             let posture = registry.map(|registry| {
                 let context = registry.context();
-                (context.auto_approve, context.approval_mode)
+                (
+                    context.auto_approve,
+                    context.approval_mode,
+                    context.owner_present,
+                )
             });
-            let can_ask = posture.is_none_or(|(auto_approve, approval_mode)| {
+            let can_ask = posture.is_none_or(|(auto_approve, approval_mode, owner_present)| {
                 approval_mode.is_ask_family()
                     || auto_approve
                     || approval_mode == ApprovalMode::Bypass
+                    || (approval_mode == ApprovalMode::Auto && owner_present)
             });
             if !can_ask {
-                let label = posture.map_or("Full Access", |(auto_approve, approval_mode)| {
+                let label = posture.map_or("Full Access", |(auto_approve, approval_mode, _)| {
                     if auto_approve {
                         ApprovalMode::Bypass.permission_chip_label()
                     } else {

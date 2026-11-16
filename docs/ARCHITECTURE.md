@@ -13,7 +13,7 @@ boundary has held since v0.9.1):
 - `crates/net` owns network policy/auditing, destination and DNS guards, proxy resolution, and Claude import planning. Host tool context, transport grants, redirects and response limits stay with their callers. Pure extension-host settings belong to `crates/config`.
 - `crates/notify` owns shared notification payload redaction, attention/category gates, sound policy, and local audio dispatch. TUI retains terminal sinks and native hosts retain banner submission.
 - `crates/util` owns shared string/path/atomic-write helpers, confined workspace file access, link and file-identity checks, bundle file readers, the `.git` name rule and the exclusive file lock.
-- `crates/dependencies` owns external-tool resolution and bounded subprocess probes (git, python, node, bun); `crates/snapshot` the pre/post-turn side-repo snapshots; `crates/lsp` the language-server client; `crates/repl` the Python REPL runtime and RLM context files.
+- `crates/dependencies` owns external-tool resolution and bounded subprocess probes (git, python, node, bun); `crates/snapshot` the pre/post-turn side-repo snapshots; `crates/lsp` the language-server client; `crates/repl` the Python REPL runtime and its stdin protocol.
 - `crates/plugins` owns plugin manifests, discovery, trust review, install and marketplace parsing. Its test-only constructors and policy guards sit behind a dev-dependency-only `test-support` feature; the DSH composition reviewer is registered by the TUI at startup.
 - `crates/skill-install` owns the community-skill installer (GitHub and tarball sources, the curated registry, bounded extraction, install and trust markers), the package content digest and the shared `SKILL.md` frontmatter reader. Its SSRF DNS pin and shortened timeouts are relaxed only under its dev-dependency-only `test-support` feature.
 
@@ -127,7 +127,6 @@ rather than a traced write path.
   `codewhale_tui::run(RuntimeOptions, args)`. `crates/tui` is a library; the
   `codew` and legacy release filename aliases contain the same executable.
 - **`crates/tools`** - Shared tool invocation primitives, including tool result/error/capability types used by the TUI runtime.
-- **`crates/agent`** - Model/provider registry (ModelRegistry) for resolving model IDs to provider endpoints.
 - **`crates/agent-contract`** - Fleet role, child authority (`ChildAuthority`, `ChildGrant`) and worker runtime profile types the agent tool resolves before it spawns a child.
 - **`crates/app-server`** - HTTP/SSE + JSON-RPC app server transport for
   headless agent workflows. The canonical executable dispatches
@@ -160,9 +159,8 @@ rather than a traced write path.
   explicitly refuses. Child workers also use their captured admission in the
   same Engine; neither nested host retains a turn-loop exception.
 - **`crates/execpolicy`** - Approval/sandbox policy engine for tool execution decisions.
-- **`crates/hooks`** - Event sinks (stdout, JSONL file, webhook, Unix socket)
-  for response, tool, job and approval lifecycle events, plus the opt-in
-  lifecycle outbox. User-configured shell hooks that run commands around tool
+- **`crates/hooks`** - The opt-in lifecycle outbox (JSONL file and webhook
+  delivery of lifecycle events). User-configured shell hooks that run commands around tool
   calls are a separate system in `crates/engine/src/hooks.rs`.
 - **`crates/localization`** - Locale registry for user-facing UI chrome strings
   (`crates/localization/locales/*.json`); it never changes prompts or model
@@ -280,7 +278,7 @@ drives turns through Chat Completions.
     `agent_open`/`agent_eval`/`agent_close` lifecycle surface was retired
     (see the `subagent/coord.rs` module doc)
   - `spec.rs` - Tool specifications
-  - `rlm.rs` - Persistent Recursive Language Model (RLM) sessions — persistent local Python REPL subprocesses (environment-scrubbed, not OS-sandboxed) with semantic helper calls and `var_handle` output support
+  - `rlm.rs` - Persistent Recursive Language Model (RLM) sessions — persistent local Python REPL subprocesses (started through the same sandboxed launcher as `code_execution`, environment-scrubbed) with semantic helper calls and `var_handle` output support
 
 ### Extension Systems
 

@@ -11,6 +11,48 @@ pub const SOURCE_BUILTIN: &str = "builtin";
 
 pub const CREATOR_LOADS_ITS_OWN_TOOLS: bool = false;
 pub const CREATOR_NOT_READY_REASON: &str = "Creator mode is not ready in this build.";
+pub const CREATOR_KEY_OFF_REASON: &str =
+    "Plugin creator is off in [features] (plugin_creator = false).";
+
+pub const CREATOR_TOOL_NAMES: [&str; 3] = [
+    "plugin_manager",
+    "cordis_inspect_list",
+    "cordis_inspect_query",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Loadout {
+    pub always_load: &'static [&'static str],
+    pub creator_skills: bool,
+    pub first_turn_event: bool,
+}
+
+impl Loadout {
+    pub const STANDARD: Self = Self {
+        always_load: &[],
+        creator_skills: false,
+        first_turn_event: false,
+    };
+    pub const CREATOR: Self = Self {
+        always_load: &CREATOR_TOOL_NAMES,
+        creator_skills: true,
+        first_turn_event: true,
+    };
+}
+
+#[must_use]
+pub fn loadout(stored: Option<&str>) -> Loadout {
+    if effective_id(stored) == CREATOR {
+        Loadout::CREATOR
+    } else {
+        Loadout::STANDARD
+    }
+}
+
+#[must_use]
+pub fn is_creator(stored: Option<&str>) -> bool {
+    effective_id(stored) == CREATOR
+}
 
 const AVAILABILITY_TTL: Duration = Duration::from_secs(30);
 
@@ -166,7 +208,26 @@ fn probe_host_runtime(options: &ExtensionHostOptions) -> Option<String> {
     }
 }
 
-async fn creator_unavailable_reason(options: ExtensionHostOptions) -> Option<String> {
+pub async fn creator_unavailable_reason(
+    options: ExtensionHostOptions,
+    plugin_creator_enabled: bool,
+) -> Option<String> {
+    creator_unavailable_reason_with_ready(
+        options,
+        plugin_creator_enabled,
+        CREATOR_LOADS_ITS_OWN_TOOLS,
+    )
+    .await
+}
+
+async fn creator_unavailable_reason_with_ready(
+    options: ExtensionHostOptions,
+    plugin_creator_enabled: bool,
+    creator_ready: bool,
+) -> Option<String> {
+    if !plugin_creator_enabled {
+        return Some(CREATOR_KEY_OFF_REASON.to_string());
+    }
     #[cfg(any(test, feature = "test-support"))]
     if let Some(forced) = CREATOR_PROBE_OVERRIDE
         .lock()
@@ -175,7 +236,7 @@ async fn creator_unavailable_reason(options: ExtensionHostOptions) -> Option<Str
     {
         return forced;
     }
-    if !CREATOR_LOADS_ITS_OWN_TOOLS {
+    if !creator_ready {
         return Some(CREATOR_NOT_READY_REASON.to_string());
     }
     if let Some((at, reason)) = CREATOR_PROBE.lock().expect("probe cache").clone()
@@ -190,8 +251,11 @@ async fn creator_unavailable_reason(options: ExtensionHostOptions) -> Option<Str
     reason
 }
 
-pub async fn current_table(options: ExtensionHostOptions) -> ConversationModeTable {
-    table(creator_unavailable_reason(options).await)
+pub async fn current_table(
+    options: ExtensionHostOptions,
+    plugin_creator_enabled: bool,
+) -> ConversationModeTable {
+    table(creator_unavailable_reason(options, plugin_creator_enabled).await)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,8 +276,12 @@ impl ModeSelection {
     }
 }
 
-pub async fn select(id: &str, options: ExtensionHostOptions) -> Result<ModeSelection, ModeRefusal> {
-    let table = current_table(options).await;
+pub async fn select(
+    id: &str,
+    options: ExtensionHostOptions,
+    plugin_creator_enabled: bool,
+) -> Result<ModeSelection, ModeRefusal> {
+    let table = current_table(options, plugin_creator_enabled).await;
     match table.modes.into_iter().find(|mode| mode.id == id) {
         Some(mode) => Ok(ModeSelection {
             id: mode.id,
@@ -230,5 +298,51 @@ pub async fn select(id: &str, options: ExtensionHostOptions) -> Result<ModeSelec
             ModeRefusal::UNKNOWN_MODE,
             format!("`{id}` is not a conversation mode; GET /v1/modes lists them."),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn creator_unavailable_reasons_and_key_off_beats_probe_cache() {
+        let _unforced = CreatorAvailabilityGuard::unforced();
+        let options = ExtensionHostOptions::default();
+        assert_eq!(
+            creator_unavailable_reason(options.clone(), false).await,
+            Some(CREATOR_KEY_OFF_REASON.to_string())
+        );
+        assert_eq!(
+            creator_unavailable_reason(options.clone(), true).await,
+            Some(CREATOR_NOT_READY_REASON.to_string())
+        );
+
+        let missing_runtime = ExtensionHostOptions {
+            runtime: codewhale_config::extension_host::ExtensionHostRuntime::Node,
+            node_override: Some(PathBuf::from("/nonexistent/node-for-creator-test")),
+            ..Default::default()
+        };
+        let reason = probe_host_runtime(&missing_runtime).expect("missing runtime reason");
+        assert!(reason.contains("Node.js or Bun"), "{reason}");
+
+        {
+            let mut cache = CREATOR_PROBE.lock().expect("probe cache");
+            *cache = Some((Instant::now(), None));
+        }
+        assert_eq!(
+            creator_unavailable_reason_with_ready(options.clone(), true, true).await,
+            None
+        );
+        assert_eq!(
+            creator_unavailable_reason_with_ready(options.clone(), false, true).await,
+            Some(CREATOR_KEY_OFF_REASON.to_string())
+        );
+        assert_eq!(
+            creator_unavailable_reason(options, false).await,
+            Some(CREATOR_KEY_OFF_REASON.to_string())
+        );
+        *CREATOR_PROBE.lock().expect("probe cache") = None;
     }
 }

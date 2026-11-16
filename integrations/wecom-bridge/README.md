@@ -42,9 +42,9 @@ node src/index.mjs
 |------|------|
 | `/help` | 显示帮助 |
 | `/status` | runtime 和工作区状态 |
-| `/threads` | 最近的 runtime 线程 |
+| `/threads` | 此聊天创建的最近线程 |
 | `/new` | 为此聊天创建新线程 |
-| `/resume <thread_id>` | 绑定到此聊天的现有线程 |
+| `/resume <thread_id>` | 重新绑定此聊天创建的线程；其他聊天或桌面端创建的线程会被拒绝 |
 | `/model <name\|default>` | 设置或重置聊天模型 |
 | `/interrupt` | 中断活动 turn |
 | `/compact` | 压缩当前线程 |
@@ -52,6 +52,21 @@ node src/index.mjs
 | `/deny <approval_id>` | 拒绝待处理的工具调用 |
 
 其他所有内容均作为 Codewhale 提示发送。群聊中需要在消息前加 `/cw` 前缀。
+
+## 线程归属
+
+每个线程只属于创建它的聊天。bridge 在创建线程时把归属记录在
+`thread-map.json` 中；`/threads` 只列出此聊天创建的线程，`/resume` 只接受
+此聊天创建的线程 ID，其他 ID（包括桌面端、TUI 或其他聊天创建的线程）一律
+得到同一条固定回复，且不会请求 runtime。
+
+升级时，已有的 `thread-map.json` 中每个聊天只保留其当前绑定的线程，并且
+bridge 会先向 runtime 确认一次：该线程必须由本 bridge 在当前配置的工作区中
+创建。桌面端、TUI 或其他客户端创建的线程，以及被多个聊天同时引用的线程，
+都会从聊天中移除，这些聊天需要发送 `/new` 创建新线程。启动时若无法连接
+runtime，bridge 每 30 秒重试一次，期间返回同一条固定回复。已有的
+`thread-map.json` 只记录各聊天当前绑定的线程，此前创建并已用 `/new` 离开的
+线程不再被列出，也无法 `/resume`。升级后请检查该文件中的线程映射。
 
 ## 首次配对
 

@@ -330,6 +330,8 @@ fn message_split(app: &App) -> (u64, u64, usize) {
                     codewhale_models::ContentBlock::ToolResult { .. }
                         | codewhale_models::ContentBlock::ToolSearchToolResult { .. }
                         | codewhale_models::ContentBlock::CodeExecutionToolResult { .. }
+                        | codewhale_models::ContentBlock::WebSearchToolResult { .. }
+                        | codewhale_models::ContentBlock::WebFetchToolResult { .. }
                 )
             });
         if all_tool_results {

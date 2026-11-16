@@ -35,7 +35,6 @@ export const RELEASE_CONTRIBUTORS: string[] = [
   "@luochen211",
   "@gannp",
   "@Felixkw12",
-  "@MannXo",
 ];
 
 /**
@@ -43,7 +42,7 @@ export const RELEASE_CONTRIBUTORS: string[] = [
  * one. scripts/check-contributor-credit.py requires them here now; the release
  * cut moves them into RELEASE_CONTRIBUTORS with that release's changelog block.
  */
-export const UNRELEASED_CONTRIBUTORS: string[] = ["@luochen211", "@Lstarsky0", "@SamhandsomeLee", "@gaord"];
+export const UNRELEASED_CONTRIBUTORS: string[] = ["@luochen211", "@Lstarsky0", "@SamhandsomeLee", "@gaord", "@MannXo"];
 
 /**
  * Contributors who helped with reports, reproductions, and verification.

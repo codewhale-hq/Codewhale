@@ -16,9 +16,6 @@ fn requires_raw_shell(name: &str) -> bool {
             | "exec_interact"
             | "task_shell_start"
             | "task_gate_run"
-            // These owners start a fresh execution and currently cannot
-            // transport this command's deny ceiling. Fail closed until they
-            // can preserve it; inspection and cancellation stay available.
             | "task_create"
             | "automation_create"
             | "automation_update"

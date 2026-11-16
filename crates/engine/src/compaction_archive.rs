@@ -78,7 +78,9 @@ pub fn render_message(message: &Message) -> String {
             } => {
                 parts.push(format!("[tool_use {name}#{id}] {input}"));
             }
-            ContentBlock::ServerToolUse { id, name, input } => {
+            ContentBlock::ServerToolUse {
+                id, name, input, ..
+            } => {
                 parts.push(format!("[server_tool_use {name}#{id}] {input}"));
             }
             ContentBlock::ToolResult {
@@ -157,7 +159,9 @@ pub fn message_id(role: &str, message: &Message) -> String {
                 hash_str(&mut hasher, name);
                 hash_json(&mut hasher, input);
             }
-            ContentBlock::ServerToolUse { id, name, input } => {
+            ContentBlock::ServerToolUse {
+                id, name, input, ..
+            } => {
                 hasher.update(b"server_tool_use");
                 hash_str(&mut hasher, id);
                 hash_str(&mut hasher, name);
@@ -195,6 +199,39 @@ pub fn message_id(role: &str, message: &Message) -> String {
                 hasher.update(b"code_execution_tool_result");
                 hash_str(&mut hasher, tool_use_id);
                 hash_json(&mut hasher, content);
+            }
+            ContentBlock::WebSearchToolResult {
+                tool_use_id,
+                content,
+                ..
+            } => {
+                hasher.update(b"web_search_tool_result");
+                hash_str(&mut hasher, tool_use_id);
+                hash_json(&mut hasher, content);
+            }
+            ContentBlock::WebFetchToolResult {
+                tool_use_id,
+                content,
+                ..
+            } => {
+                hasher.update(b"web_fetch_tool_result");
+                hash_str(&mut hasher, tool_use_id);
+                hash_json(&mut hasher, content);
+            }
+            ContentBlock::WebSearchCall { id, kind, .. } => {
+                hasher.update(b"web_search_call");
+                hash_str(&mut hasher, id);
+                hash_str(&mut hasher, kind.as_deref().unwrap_or(""));
+            }
+            ContentBlock::ServerToolCalls { steps } => {
+                hasher.update(b"server_tool_calls");
+                for step in steps {
+                    hash_json(&mut hasher, step);
+                }
+            }
+            ContentBlock::File { file_id } => {
+                hasher.update(b"file");
+                hash_str(&mut hasher, file_id);
             }
         }
     }

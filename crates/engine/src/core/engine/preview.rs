@@ -340,7 +340,7 @@ impl Engine {
                 ),
                 standard_and_full_surfaces_collapsed: standard_and_full_collapse(
                     &surface.catalog,
-                    &self.config.tools_always_load,
+                    &self.effective_tools_always_load(),
                 ),
                 mcp_server_count,
                 mcp_tool_count: active_tools

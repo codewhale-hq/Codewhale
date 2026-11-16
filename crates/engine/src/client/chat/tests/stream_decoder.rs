@@ -1205,6 +1205,8 @@ fn cache_inspect_reports_turn_meta_dedup_metadata() {
         stream: None,
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
 
     let inspection = inspect_prompt_for_request(&request);
@@ -1300,6 +1302,8 @@ fn restored_tool_results_obey_the_active_route_budget() {
         stream: None,
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
     // The bundled 128K route and an explicit smaller offering both beat
     // the old unknown-route 100K ceiling. Streaming and blocking share it.
@@ -1578,6 +1582,8 @@ fn cache_inspect_reports_bounded_unowned_tool_result_metadata() {
         stream: None,
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
 
     let inspection = inspect_prompt_for_request(&request);
@@ -1683,4 +1689,203 @@ fn deepseek_flash_v41_classifies_reasoning_through_the_catalog() {
     // A non-reasoning DeepSeek name stays literal: the prefix alone is not
     // evidence, the catalog entry is.
     assert!(!requires_reasoning_content("deepseek-coder"));
+}
+
+#[test]
+fn deepseek_chat_web_tools_latest_reminder_replay_and_sse_parity() {
+    let request = MessageRequest {
+        model: "deepseek-v4".to_string(),
+        messages: vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::File {
+                    file_id: "file_chat_1".to_string(),
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ServerToolCalls {
+                    steps: vec![json!({ "type": "search", "query": "rust 2024" })],
+                }],
+            },
+            Message {
+                role: Role::LatestReminder,
+                content: vec![ContentBlock::Text {
+                    text: "Stay factual".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "Go on".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ],
+        max_tokens: 512,
+        system: None,
+        tools: Some(vec![
+            Tool {
+                tool_type: Some("deepseek_web_search".to_string()),
+                name: "deepseek_web_search".to_string(),
+                description: String::new(),
+                input_schema: json!({}),
+                allowed_callers: None,
+                defer_loading: None,
+                input_examples: None,
+                strict: None,
+                cache_control: None,
+            },
+            Tool {
+                tool_type: Some("deepseek_read_url".to_string()),
+                name: "deepseek_read_url".to_string(),
+                description: String::new(),
+                input_schema: json!({}),
+                allowed_callers: None,
+                defer_loading: None,
+                input_examples: None,
+                strict: None,
+                cache_control: None,
+            },
+        ]),
+        tool_choice: Some(json!("auto")),
+        metadata: None,
+        thinking: None,
+        reasoning_effort: None,
+        stream: Some(true),
+        temperature: None,
+        top_p: None,
+        safety_check: Some(codewhale_models::SafetyCheckConfig {
+            level: "high".to_string(),
+        }),
+        title: Some(codewhale_models::ConversationTitleConfig { enabled: true }),
+    };
+
+    let wire = build_chat_wire_body(
+        &request,
+        ProviderKind::Deepseek,
+        "https://api.deepseek.com/v1",
+        true,
+        None,
+    )
+    .expect("chat wire body builds")
+    .body;
+    assert_eq!(wire["tool_choice"], json!("auto"));
+    assert_eq!(wire["safety_check"], json!({ "level": "high" }));
+    assert_eq!(wire["title"], json!({ "enabled": true }));
+    assert_eq!(
+        wire["tools"],
+        json!([
+            { "type": "deepseek_web_search" },
+            { "type": "deepseek_read_url" }
+        ])
+    );
+    assert_eq!(
+        wire["messages"][0]["content"][0],
+        json!({ "type": "file", "file_id": "file_chat_1" })
+    );
+    assert_eq!(
+        wire["messages"][1]["server_tool_calls"],
+        json!([{ "type": "search", "query": "rust 2024" }])
+    );
+    assert_eq!(wire["messages"][2]["role"], "latest_reminder");
+
+    for bad_choice in [
+        json!("required"),
+        json!({ "type": "required" }),
+        json!({ "type": "any" }),
+        json!({ "type": "function", "function": { "name": "deepseek_web_search" } }),
+    ] {
+        let mut forced = request.clone();
+        forced.tool_choice = Some(bad_choice);
+        assert!(
+            build_chat_wire_body(
+                &forced,
+                ProviderKind::Deepseek,
+                "https://api.deepseek.com/v1",
+                true,
+                None,
+            )
+            .is_err()
+        );
+    }
+
+    assert!(
+        build_chat_wire_body(
+            &request,
+            ProviderKind::Openai,
+            "https://api.openai.com/v1",
+            true,
+            None,
+        )
+        .is_err()
+    );
+
+    let mut bad_opts = request;
+    bad_opts.metadata = Some(json!({ "web_search_options": {} }));
+    assert!(
+        build_chat_wire_body(
+            &bad_opts,
+            ProviderKind::Deepseek,
+            "https://api.deepseek.com/v1",
+            true,
+            None,
+        )
+        .is_err()
+    );
+
+    let sse_chunks = [json!({
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "server_tool_event": { "type": "search_start", "query": "rust" },
+                "server_tool_calls": [{ "type": "search", "query": "rust" }],
+                "annotations": [{ "type": "url_citation", "url": "https://example.com" }],
+                "title": "Rust Chat",
+                "refusal": "Policy block"
+            },
+            "finish_reason": "content_filter"
+        }],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 3,
+            "safety_tokens": 5,
+            "server_tool_use": {
+                "tool_search": 1,
+                "tool_fetch": 1,
+                "tool_image_search": 0
+            }
+        }
+    })
+    .to_string()];
+    let refs: Vec<&str> = sse_chunks.iter().map(String::as_str).collect();
+    let events = decode_chunks_with_style(&refs, ReasoningStreamStyle::SeparateField);
+    assert!(events.iter().any(|ev| matches!(
+        ev,
+        StreamEvent::ContentBlockStart {
+            content_block: ContentBlockStart::ServerToolCalls { .. },
+            ..
+        }
+    )));
+    assert!(events.iter().any(|ev| matches!(
+        ev,
+        StreamEvent::ContentBlockDelta {
+            delta: Delta::CitationsDelta { .. },
+            ..
+        }
+    )));
+    assert!(events.iter().any(|ev| matches!(
+        ev,
+        StreamEvent::ContentBlockDelta {
+            delta: Delta::RefusalDelta { refusal }, ..
+        } if refusal == "Policy block"
+    )));
+    assert!(events.iter().any(|ev| matches!(
+        ev,
+        StreamEvent::MessageDelta { delta, usage }
+            if delta.stop_reason.as_deref() == Some("content_filter")
+            && delta.title.as_deref() == Some("Rust Chat")
+            && usage.as_ref().and_then(|u| u.safety_tokens) == Some(5)
+    )));
 }

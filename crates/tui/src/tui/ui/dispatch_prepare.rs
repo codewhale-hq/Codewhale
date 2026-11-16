@@ -264,6 +264,7 @@ pub(crate) struct UserDispatchPrepare {
     pub(super) hook_executor: Option<Arc<HookExecutor>>,
     pub(super) verbosity: Option<String>,
     pub(super) provenance: UserInputProvenance,
+    pub(super) input_authorship: codewhale_engine::core::ops::TurnInputAuthorship,
     pub(super) auto_router_context: String,
     pub(super) should_auto_resolve: bool,
     pub(super) auto_compact_user_configured: bool,

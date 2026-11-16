@@ -94,6 +94,8 @@ pub enum AttachFrontend {
 #[derive(Debug, Clone, Deserialize)]
 pub struct AttachParams {
     #[serde(default)]
+    pub native_runtime: Option<crate::native_runtime::NativeSelection>,
+    #[serde(default)]
     pub frontend: AttachFrontend,
     #[serde(default)]
     pub listener: Option<crate::RuntimeListenerSelection>,
@@ -211,6 +213,7 @@ impl ConnectionRegistry {
 /// Releases the registry slot (and the owner claim) on drop, whichever
 /// way the connection ends.
 struct ConnectionGuard {
+    native_runtime: Option<crate::native_runtime::NativeSelection>,
     frontend: AttachFrontend,
     listener: Option<crate::RuntimeListenerSelection>,
     scope: Option<crate::RuntimeFrontendScope>,
@@ -415,6 +418,36 @@ async fn attach(
         ));
     }
 
+    if let Some(native) = params.native_runtime.as_ref() {
+        native
+            .validate()
+            .map_err(|_| DispatchError::invalid_params("invalid native capability selection"))?;
+        if params.frontend != AttachFrontend::Control
+            || params.mode != AttachMode::Attach
+            || params.scope.is_some()
+            || params.listener.is_some()
+            || params.acp_model.is_some()
+            || context.owner.is_none()
+        {
+            return Err(DispatchError::invalid_params(
+                "native Runtime requires captured attach-only Control",
+            ));
+        }
+        let frontend = context
+            .state
+            .owner_frontend
+            .as_ref()
+            .ok_or_else(|| DispatchError::invalid_params("captured Runtime unavailable"))?;
+        frontend
+            .execute(crate::RuntimeOwnerRequest::Native {
+                workspace: native.workspace.clone(),
+                request: codewhale_app_server_protocol::runtime::NativeRuntimeRequest::Capabilities(
+                    codewhale_app_server_protocol::runtime::NativeEmpty {},
+                ),
+            })
+            .await
+            .map_err(|_| DispatchError::invalid_params("native workspace refused"))?;
+    }
     if let Some(frontend) = context.state.owner_frontend.as_ref() {
         let selection = match params.frontend {
             AttachFrontend::Listener => Some(crate::RuntimeOwnerFrontendSelection::Listener(
@@ -474,10 +507,12 @@ async fn attach(
         "connections": connections,
         "owner_receipt": context.owner,
         "runtime_routing": context.state.captured_routing,
+        "native_runtime": params.native_runtime,
     });
     Ok((
         result,
         ConnectionGuard {
+            native_runtime: params.native_runtime,
             frontend: params.frontend,
             listener: params.listener,
             scope: params.scope,
@@ -582,6 +617,20 @@ pub(crate) async fn run_authorized_connection<R, W>(
     };
     let check = peer.clone();
     if owner_work(move || check.check()).await.is_err() {
+        return;
+    }
+    if let Some(native) = guard.native_runtime.as_ref() {
+        let Some(frontend) = context.state.owner_frontend.clone() else {
+            return;
+        };
+        let _ = crate::native_runtime::serve(
+            frontend,
+            native.workspace.clone(),
+            lines,
+            &mut writer,
+            peer.clone(),
+        )
+        .await;
         return;
     }
     if guard.frontend != AttachFrontend::Control || guard.scope.is_some() {

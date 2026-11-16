@@ -2123,7 +2123,7 @@ fn html_character_reference(source: &str) -> Option<(char, usize)> {
             }
             char::from_u32(u32::from_str_radix(digits, radix).ok()?).filter(|ch| {
                 !ch.is_control()
-                    && codewhale_secrets::sanitize::hidden_chars(ch.encode_utf8(&mut [0; 4]))
+                    && codewhale_sanitize::sanitize::hidden_chars(ch.encode_utf8(&mut [0; 4]))
                         .is_empty()
             })?
         }

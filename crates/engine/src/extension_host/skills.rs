@@ -8,7 +8,7 @@ use codewhale_skills::NativeSkillRef;
 use super::ManagerShared;
 use super::protocol::{RegisterParams, RegisterResult};
 use super::supervisor::HostRequestContext;
-use super::tier::HostTier;
+use super::tier::{HostCohort, HostTier};
 use codewhale_config::OwnerRef;
 use codewhale_config::PluginAuthority;
 use codewhale_plugins::activation::PluginActivationCapability;
@@ -69,7 +69,7 @@ pub fn snapshot_bytes(skill: &PluginSkillSnapshot) -> usize {
 /// registry lock; final admission rechecks cancellation and exact lifetimes.
 pub(super) async fn admit_root(
     shared: &Arc<ManagerShared>,
-    tier: HostTier,
+    cohort: &HostCohort,
     host_generation: u64,
     params: RegisterParams,
     cx: &HostRequestContext,
@@ -80,11 +80,11 @@ pub(super) async fn admit_root(
             return Err("skill root has no description".to_string());
         }
         let relative = root_path(&params.spec.name)?;
-        if tier != HostTier::Plugin {
+        if cohort.tier() != HostTier::Plugin {
             return Err("skill roots require a reviewed plugin bundle".to_string());
         }
         let authority = shared
-            .live_owner_authority(tier, |registry| {
+            .live_owner_authority(cohort, |registry| {
                 registry
                     .authority_for(&params.owner)
                     .ok_or_else(|| "stale or unknown skill owner".to_string())?;
@@ -110,9 +110,11 @@ pub(super) async fn admit_root(
             })
             .await?;
         shared
-            .ready_host(tier)
+            .ready_host(cohort)
             .map_err(|status| status.to_string())?;
-        let runtime = shared.tier_runtime(tier);
+        let runtime = shared
+            .cohort_runtime(cohort)
+            .ok_or_else(|| "cohort runtime gone".to_string())?;
         let _slot = runtime.host.lock().expect("host lock");
         if runtime.host_generation.load(Ordering::SeqCst) != host_generation
             || cx.cancel.is_cancelled()
@@ -188,9 +190,16 @@ fn live(
     if !super::activation::extension_host_policy_enabled() {
         return Err("extension host is disabled".to_string());
     }
+    let cohort = manager
+        .shared
+        .registry
+        .lock()
+        .expect("registry lock")
+        .cohort_of_plugin_id(authority.plugin_id.as_str())
+        .ok_or_else(|| "native skill owner has no cohort".to_string())?;
     let host = manager
         .shared
-        .ready_host(HostTier::Plugin)
+        .ready_host(&cohort)
         .map_err(|status| status.to_string())?;
     if host.generation != reference.host_generation {
         return Err("native skill host restarted; select the skill again".to_string());
@@ -349,7 +358,7 @@ mod tests {
     fn owner(registry: &mut OwnerRegistry, id: &str) -> OwnerRef {
         registry
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 id,
                 id,
                 Some(fake_authority(id)),
@@ -532,9 +541,9 @@ mod tests {
                 )
                 .is_err()
         );
-        registry.host_exited(HostTier::Builtin, "builtin crash");
+        registry.host_exited(HostCohort::Builtin, "builtin crash");
         assert_eq!(registry.live_skill_roots().len(), MAX_ROOTS_PER_HOST);
-        registry.host_exited(HostTier::Plugin, "plugin crash");
+        registry.host_exited(HostCohort::reviewed(), "plugin crash");
         assert!(registry.live_skill_roots().is_empty());
         let replacement = owner(&mut registry, "replacement");
         registry
@@ -544,7 +553,7 @@ mod tests {
                 8,
             )
             .unwrap();
-        registry.revoke_all(HostTier::Plugin, "shutdown");
+        registry.revoke_all(HostCohort::reviewed(), "shutdown");
         let restarted = owner(&mut registry, "replacement");
         registry
             .register_skill_root(

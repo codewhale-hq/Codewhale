@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fd76d718e3a2 -->
+<!-- source: README.md sha256:c66c04179a4e -->
 <div align="center">
 
 <picture>
@@ -79,7 +79,7 @@ Fix the failing tests and explain what changed.
 
 ### 扩展
 
-连接 [MCP 服务器](../MCP.md)，添加[技能](../SKILLS.md)和[插件](../PLUGINS.md)，并在会话和工具事件上运行[钩子](../HOOKS.md)。代码模式（实验性，默认开启）让模型编写一个调用多个 MCP 和插件工具的 `execute_tools` 程序；每次调用仍需遵守你的批准规则，并保留回执。v0.10.2 内置的 Computer Use 插件（实验性，仅限 macOS）可以观察并操作其他应用，在你审查其权限并启用之前一直处于关闭状态（[指南](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)）。即将在 0.10.3 推出：该插件将[单独发布](https://github.com/codewhale-hq/codewhale-cu-plugin)。
+连接 [MCP 服务器](../MCP.md)，添加[技能](../SKILLS.md)和[插件](../PLUGINS.md)，并在会话和工具事件上运行[钩子](../HOOKS.md)。代码模式（实验性，默认开启）让模型编写一个调用多个 MCP 和插件工具的 `execute_tools` 程序；每次调用仍需遵守你的批准规则，并保留回执。[Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) 是单独发布的独立插件（实验性，仅限 macOS），在你审查其权限并开启之前一直处于关闭状态。
 
 ### 运行方式
 

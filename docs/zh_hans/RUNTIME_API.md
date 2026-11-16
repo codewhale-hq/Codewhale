@@ -660,7 +660,11 @@ shell 工具，外加已审查的插件工具（`extension_host` 功能）和 Co
 MCP 服务器的工具（`mcp` 功能），均受同一权限设置约束；这一点见于 0.10.2 之后的 main，0.10.2 本身不含。Shell 同时要求编辑器声明
 terminal 支持、操作者允许 `allow_shell`；指定的外部沙箱不可用时不提供 shell。此接口
 不提供客户端传入的 MCP 服务器、动态工具、任务、PTY、后台 shell、解释器、子智能体
-或 RLM 生命周期。内置工具覆盖会移除整个兼容别名族。
+或 RLM 生命周期。ACP 没有工具搜索，因此每个已连接的 MCP 工具及其 schema 都会随每个请求
+发送，标记为 `lazy = true` 的服务器永不启动；MCP 集合很大时每回合都会消耗令牌，并可能超出
+提供商的工具数量上限。模型在运行时启动的 MCP 服务器不会进入 ACP profile 宿主；但当
+`serve --acp` 附着到正在运行的 Runtime owner 时（见下文），其回合使用该 owner 的 MCP 池，
+其中包含同一工作区其他会话在运行时启动的服务器。内置工具覆盖会移除整个兼容别名族。
 最终派发再次校验 profile；伪造别名、hook 改写或目录中缺失的工具不能绕过限制。
 Full Access 下 Plan 仍只读。Full Access 与普通审批姿态是服务端拥有的只读选项，
 编辑器不能放宽。`approval_policy = "never"` 不是 ACP 审批姿态，服务端会拒绝
@@ -669,7 +673,9 @@ Full Access 下 Plan 仍只读。Full Access 与普通审批姿态是服务端�
 
 工具首先显示 `pending`；只有 Core 到达最终派发才显示 `in_progress`。
 `completed`/`failed` 和类型化图片块来自实际 Core 结果。审批请求的私有 JSON-RPC ID
-绑定同一个 Runtime 铸造的待决审批与 Core 执行 ID。只有精确匹配、仍有效的
+绑定同一个 Runtime 铸造的待决审批与 Core 执行 ID。插件工具通过 `exec.core` 请求核心运行
+需要审批的工具时，请求显示在该插件工具的调用上，写明嵌套工具及其输入，答复释放嵌套调用，嵌套调用在会话的
+权限设置下决定。只有精确匹配、仍有效的
 `allow-once` 响应能释放等待器；错误 ID 被忽略，无效选项拒绝，取消会撤销等待器。
 ACP 不授予记忆权限或 Native 能力。
 
@@ -904,6 +910,20 @@ bootstrap URL。该能力会创建一个 30 分钟的进程内
 在 Runtime 拥有 TLS 或经过验证的传输边界之前，
 不要直接将它暴露给其他设备或公网。
 
+#### 远程配对授权（DSH remote 服务）
+
+获得 `remote` 宿主机服务授权的插件可通过 Engine `dsh_remote` 请求绑定单一对话的配对。
+Runtime 复用现有的 HTTP/SSE 表面提供宿主机管理与回环兑换（不新增监听器或 WebSocket）：
+
+- `GET /v1/dsh/remote/pairings` — 仅接受主 `Authorization: Bearer` 令牌（不接受移动端/Web cookie 或设备 Watch/Drive 令牌；未开启认证时返回 `409`）。返回 JSON 数组，每项包含 `grant`、`plugin_id`、`plugin_name`（来自已审核插件记录）、`session_id`、`state`（`"awaiting_host"` 或 `"paired"`）、`plugin_label`、`client_label` 与 `expires_in_seconds`，永不包含配对密钥或设备令牌。
+- `POST /v1/dsh/remote/pairings/{grant}/present` — 仅限主 bearer。生成并返回 `{ "grant", "url", "expires_in_seconds" }`（响应头带 `Cache-Control: no-store`），其中 `url` 为 `http://<bind>/__codewhale/mobile/pair/<secret>`。每次调用都会使此前生成的链接失效，因此必须仅在人工明确操作时调用，严禁轮询。未知或已配对授权返回不带细节的 `404`；若未启用移动端控制，或 `session_id` 不是活动的 Runtime HTTP 对话（例如终端会话或已归档线程），则拒绝并返回 `409 Conflict` 且不生成密钥。
+- `DELETE /v1/dsh/remote/pairings/{grant}` — 仅限主 bearer。撤销等待中的配对或终止已配对设备；无论授权是否存在或已结束，均统一返回 `204 No Content`。
+- `GET /__codewhale/mobile/pair/{secret}` — 无需 bearer 的一次性回环兑换端点（非回环对端忽略 `X-Forwarded-For` 并返回 `403`；未知、过期、重放、已撤销或格式错误均统一返回 `401` 固定文本）。成功后签发绑定到该授权的移动端会话（`HttpOnly; SameSite=Strict` cookie，TTL 不超过授权剩余有效期，并附带同源 fragment 证明与流票据），设备令牌与配对密钥绝不写入 cookie、fragment、URL、响应体或日志。
+
+来自配对授权的移动端会话会在每次 HTTP 请求与每次 SSE 流票据校验时向 Engine 实时校验；一旦授权被撤销、过期、插件被禁用/吊销信任或对话被归档/删除，会话将立即失效并删除（后续请求直接返回 `401`，已打开的 `GET /v1/threads/{id}/events` SSE 流也会立即发送 `stream.end { "reason": "remote_access_revoked", "retryable": false }` 并关闭，绝不泄漏撤销后的事件）。该会话仅允许读取并向其唯一绑定的对话发送/引导/中断消息（`GET /v1/threads` 与 `GET /v1/threads/summary` 仅返回该对话；仅放行该对话的 `GET /v1/threads/{id}`、`GET /v1/threads/{id}/events`、`POST /v1/threads/{id}/turns`、`/steer`、`/interrupt` 以及 `POST /__codewhale/mobile/stream-ticket` 和 `/mobile`）。在 `POST /v1/threads/{id}/turns` 上，已配对设备不得覆盖 `mode`、`permission_posture`、`allowed_tools`、`dynamic_tools`、`model`、`model_provider`、`model_provider_id`、`account_model_owner`、`profile_constitution`、`reasoning_effort`、`max_output_tokens` 或 `environment_id`（返回 `403 Forbidden`），也不得将 `allow_shell`、`trust_mode` 或 `auto_approve` 设为 `true`（`403`）；显式传入 `false` 会归一化为 `None`，以保留对话原有权限姿态。其他线程、新建线程、设置/凭据/终端/文件、配对管理以及审批路由（`POST /v1/approvals/{approval_id}`）均返回 `403 Forbidden`，审批卡仅能在宿主机上操作。
+
+客户端在界面上展示 `plugin_label` 或 `client_label` 时，必须将其放在方向隔离容器（如 HTML `<bdi>`）中，作为带引号的第三方文本显示在已审核的 `plugin_name` 旁，绝不能将其渲染为标题或宿主自身文案内文。
+
 ### 端点
 
 **健康检查**
@@ -1032,7 +1052,8 @@ Runtime 前缀恢复验证与后续写入所需的完整文档条件保持独立
   "model_provider": "openai-codex",
   "model": "gpt-5.6",
   "reasoning_effort": "high",
-  "allowed_tools": ["read_file", "search"]
+  "allowed_tools": ["read_file", "search"],
+  "disallowed_tools": ["shell"]
 }
 ```
 
@@ -1040,8 +1061,10 @@ Runtime 前缀恢复验证与后续写入所需的完整文档条件保持独立
 `low`、`medium`、`high`、`xhigh`、`ultra` 或 `max`；已记录的兼容
 别名会被接受，并以规范形式持久化）。`allowed_tools` 是一份对模型可见的允许名单。
 省略它会保留常规的已配置目录；显式空数组（`"allowed_tools": []`）
-则不会向模型暴露任何工具。
-两个字段都是加性（additive）的：省略它们的旧线程记录与客户端
+则不会向模型暴露任何工具。`disallowed_tools`（也接受 `disallowedTools`）
+为线程记录持久化的工具禁用规则（为空时从存储记录中省略）；被禁用的工具即使列在
+`allowed_tools` 中也仍会被拦截，非空规则会参与创建幂等性指纹计算。
+这些字段都是加性（additive）的：省略它们的旧线程记录与客户端
 保持之前的行为。
 
 `GET /v1/threads/summary` 是 VS Code Agent View 使用的只读摘要表面。
@@ -1377,6 +1400,24 @@ Runtime 重启后，线程的授权保持暂停，匹配的调用会再次提示
 恢复该线程。无法读取的授权存储不含任何授权，因此每次调用都会提示。一个强制的
 （不可绕过的）提示永不会被授权回答。
 
+**Auto-Review 阻断与一次性重试授权**
+- `GET /v1/threads/{id}/auto-review/blocks` 返回 `{ thread_id, blocks[] }`，
+  列出线程上记录的 Auto-Review 阻断回执（`receipt_id`、`call_digest`、
+  `tool_id`、`tool_name`、`action_summary`、`rule`、`reason`、`gate`、
+  `verdict`、`approved`、`approvable`）。
+- `POST /v1/threads/{id}/auto-review/approve` 请求体为
+  `{ "target": "<receipt_id_or_call_digest>", "client"?: "desktop"|"tui"|"web"|"phone"|"acp" }`，
+  要求已附着所有者运行时且调用方为所有者界面（否则返回 `403 owner_required`，
+  浏览器 cookie 的 `"desktop"`/`"phone"` 亦被拒绝），要求线程仍处于 Auto-Review
+  （否则返回 `409 not_in_auto_review`）；找不到目标时返回 `404`，已批准或
+  不可批准时返回 `409`；成功后铸造一条绑定到精确 `(tool_name, call_digest)` 的
+  一次性重试授权并返回 `{ ok, thread_id, grant }`，同时发出
+  `auto_review.retry_approved`。重试用完即失效，并仍走全部非 Auto-Review 关卡
+  （在守护者审查时附带 `person_approved_retry`，守护者明确拒绝或不可用时仍阻断）。
+  子智能体与扩展调用不可创建、读取或消费重试授权。若所有者在场的交互式运行时
+  触发阈值（连续 3 次阻断、累计 20 次阻断或连续 3 次审查不可用），会自动将线程的
+  `permission_posture` 切至 `ask` 并发出 `auto_review.paused` 与 `thread.updated`。
+
 **用户输入**
 - `POST /v1/user-input/{thread_id}/{input_id}`，请求体
   `{ "answers": [{ "id": "question-id", "label": "Choice", "value": "Choice" }] }`
@@ -1678,12 +1719,12 @@ direction 为空、等待 lead 计划、缺少凭据或有
 `scripts/auto-merge-pr.py`。不要再发明第二个检查器。
 
 **工作区信任**（持久化的项目决定）
-- `GET /v1/workspace/status` 返回 `workspace_trusted`：服务器工作区是否已在发现的用户配置中被设为可信。项目技能、命令和 MCP 配置会检查这个决定。项目钩子还需要单独批准钩子文件的精确摘要。
+- `GET /v1/workspace/status` 返回 `workspace_trusted`：服务器工作区是否已在发现的用户配置中被设为可信。项目技能和命令会检查这个决定。项目钩子和项目 MCP 配置还需要单独批准对应文件的精确摘要（`/hooks review`、`/mcp review`）。
 - `POST /v1/workspace/trust` 接受 `{"trusted": true|false}`，记录决定并返回 `{workspace, workspace_trusted, config_path, message}`。
 
 处理器复用 `/trust on|off --save` 使用的 `config::set_workspace_trust`，再通过 `is_workspace_trusted` 读回结果。请求不接受路径，只作用于服务器已接纳的工作区。`config_path` 标识实际写入的文档。读写都使用默认配置发现规则，包括已配置的环境变量覆盖；启动运行时的显式 `--config` 参数不会选择这个信任文档。
 
-项目技能和命令会在各自现有的加载或回合边界检查信任。项目钩子还需要单独的摘要批准，并在执行前重新检查权限。重启引擎可重新建立项目 MCP 连接；本请求不会断开已有连接池或中断正在运行的回合。现有上下文加载器会独立于此标志加载 `AGENTS.md` 等项目指令文件和项目规则，因此撤销工作区信任不会移除这些指令或已持久化的历史。
+项目技能和命令会在各自现有的加载或回合边界检查信任。项目钩子和项目 MCP 服务器还需要单独的摘要批准（`.codewhale/mcp.json` 需经 `/mcp approve <digest>` 批准），并在执行前重新检查权限；已获批准时可重启引擎或重载连接池来重新建立项目 MCP 连接，本请求不会断开已有连接池或中断正在运行的回合。现有上下文加载器会独立于此标志加载 `AGENTS.md` 等项目指令文件和项目规则，因此撤销工作区信任不会移除这些指令或已持久化的历史。
 
 这个持久化的项目决定与线程的 `trust_mode` / Full Access，以及 `/trust add <path>` 的外部路径授权分别独立。`/trust on|off --save` 同时修改会话文件工具信任和持久化项目记录；本 HTTP 路由只修改项目记录。POST 使用其他状态变更路由相同的运行时写权限；watch 设备令牌可以读取状态，但不能写入信任。
 
@@ -1986,6 +2027,19 @@ POST 前保留预期指纹，并在响应及按键 GET 恢复时核对，之后�
   `false`：文本仍是命令的回答，但没有任何客户端能代宿主执行该操作。这些执行不
   保留命令回执——每个提供的处理器对快照都是纯函数——因此客户端不应寻找回执。
   任何会修改会话的操作仍是终端侧命令。
+
+**插件索引**
+- `GET /v1/apps/plugin-index` — `{workspace, items: [...], unavailable: [...],
+  problems: [...]}`：跨所有插件、技能、连接器、钩子和手写命令的统一列表。它只是投影：每个条目的
+  `row` 就是其所属路由（`/v1/apps/plugins`、`/v1/apps/plugins/catalog`、`/v1/skills`、
+  `/v1/apps/mcp/servers`、`/v1/hooks`、`/v1/commands`）返回的那一行，`owner` 给出该路由。
+  每个条目有 `id`、`kind`（`plugin`、`skill`、`connector`、`hook`、`command`）、`name`、
+  `description`、`source`（`built_in`、`user`、`project`、`other_app`、`runtime`、`plugin`）、
+  `state`（`enabled`、`disabled`、`needs_review`、`needs_sign_in`、`unavailable`）和
+  `labels`（它添加的内容：`skill`、`connector`、`hook`、`command`、`tool`、`profile`）。插件条目另有 `adds`（`skills`、`connectors`、`hooks`、`commands`、
+  `profiles`：只含名称），插件所添加的内容不会再作为独立条目重复列出。内置开关是带 `tier`、无 `labels` 的
+  `plugin` 条目。`/v1/commands` 的行对插件添加的命令带有 `plugin_id`（与 `/v1/apps/plugins` 的 id 相同，即 `plugin:<id>` 条目），对从项目读取的命令带有 `workspace_sourced`；命令条目的 `plugin` 即该 id。某个所属路由失败时记入 `unavailable`，其余种类照常列出；`problems`
+  汇总各所属路由的加载警告。`adds` 中的名称是文件名，因此档案文件内部的 `id` 可能不同；通过扩展宿主注册的命令是 `source` 为 `plugin` 的条目。对已启用的插件，`adds.commands` 取自 `/v1/commands` 的行；其他插件以及 `hooks`、`profiles` 取自包内的文件名，每类最多 512 个，含控制字符的名称被略去，列表被截断时在 `problems` 中说明。钩子的行不带插件名，因此 `adds.hooks` 仍是文件名。`tool` 表示插件声明了原生或语言服务器组件；插件绘制的界面暂无标签。
 
 **钩子**
 - `GET /v1/hooks[?thread_id=...]` — `{workspace, enabled, hooks: [...],
@@ -2677,6 +2731,7 @@ data: {"schema_version":1,"event":"stream.end","kind":"stream.end","thread_id":"
 | `replay_failed` | 为开头回放提供数据的持久历史读取失败，包括第一个游标之后回放 worker 崩溃 | `true` |
 | `catch_up_failed` | 广播落后之后，从流的游标开始的持久重读无法打开或失败 | `true` |
 | `runtime_shutdown` | Runtime API 服务器正在停止（SIGINT、SIGTERM 或 SIGHUP；Windows 上为 Ctrl+C 或 Ctrl+Break）。打开的流会在进程退出前的一个有界排空窗口内收到此帧 | `true` |
+| `remote_access_revoked` | 已配对远程设备的授权会话结束（配对被撤销、插件被吊销、会话 TTL 到期或绑定对话已归档/删除） | `false` |
 
 每个 `200` 响应都带有 `x-codewhale-stream-end: 1`。有这个头时，**没有** `stream.end`
 的 EOF 意味着连接或 Runtime 进程在服务器没有选择结束流的情况下死掉了：网络或代理

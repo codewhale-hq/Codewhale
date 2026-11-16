@@ -254,26 +254,11 @@ impl SessionWriteReceipt {
 
     pub fn project_usage_record(
         &self,
-        scope: crate::cost_status::CostScopeToken,
         record: &crate::cost_status::RuntimeUsageRecord,
         cost: &mut SessionCostSnapshot,
     ) -> io::Result<Option<(u64, u64)>> {
-        if !record.has_captured_origin() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "usage projection has no captured native origin",
-            ));
-        }
-        if record.is_acknowledged() && !record.has_live_projection() {
-            return Ok(None);
-        }
-        let (store, session) = self.session_scope(false)?;
-        if !record.matches_session_projection(&store, &session)? {
-            return Ok(None);
-        }
         let mut candidate = cost.clone();
         let delta = candidate.project_usage_record(record)?;
-        crate::cost_status::acknowledge_usage_projection(scope, record)?;
         *cost = candidate;
         Ok(Some(delta))
     }
@@ -1393,16 +1378,6 @@ pub struct SessionCostSnapshot {
     pub usage_source_fingerprints: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub accounted_usage_sources: BTreeMap<String, crate::cost_status::UsageSourceContribution>,
-    #[serde(
-        default,
-        skip_serializing_if = "BTreeMap::is_empty",
-        deserialize_with = "crate::cost_status::deserialize_missing_usage_sources"
-    )]
-    pub missing_usage_sources: BTreeMap<String, crate::cost_status::MissingUsageCoverage>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub missing_usage_overflowed: bool,
-    #[serde(skip)]
-    pub in_flight_usage_sources: BTreeSet<String>,
     /// Written by builds that track coverage, so a reader can tell "this session
     /// genuinely had zero money-metered turns" apart from "this session predates
     /// coverage tracking". Absent on legacy rows.
@@ -1415,15 +1390,16 @@ impl SessionCostSnapshot {
         &mut self,
         record: &crate::cost_status::RuntimeUsageRecord,
     ) -> io::Result<(u64, u64)> {
-        self.project_usage_record_inner(record, false)
+        let key = crate::cost_status::usage_source_fingerprint(&record.source_id);
+        self.project_usage_record_by_key(&key, record)
     }
 
-    pub(crate) fn project_usage_record_inner(
+    pub(crate) fn project_usage_record_by_key(
         &mut self,
+        key: &str,
         record: &crate::cost_status::RuntimeUsageRecord,
-        protected_ledger: bool,
     ) -> io::Result<(u64, u64)> {
-        let key = crate::cost_status::usage_source_fingerprint(&record.source_id);
+        let key = key.to_string();
         let previous = self.accounted_usage_sources.get(&key);
         if let Some(previous) = previous {
             previous.validate()?;
@@ -1432,30 +1408,34 @@ impl SessionCostSnapshot {
             return Ok((0, 0));
         }
         if self.usage_source_fingerprints.contains(&key) && previous.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "legacy accounted usage has no provable prior contribution; correction retained",
-            ));
+            return Ok((0, 0));
         }
-        if !protected_ledger {
-            if !record.has_live_projection() {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "usage source has no admitted live publication",
-                ));
-            }
-            record.permits_replacement(previous.map(|previous| &previous.record))?;
+        if record.route_conflicts_with(previous.map(|previous| &previous.record)) {
+            tracing::warn!(
+                source_id = %record.source_id,
+                "usage source changed its captured route; recording unknown cost"
+            );
+            self.unpriced_reasons
+                .insert("request_outcome_unknown".to_string());
+            self.cny_unpriced_reasons
+                .insert("request_outcome_unknown".to_string());
+            return Ok((0, 0));
+        }
+        if !record.supersedes(previous.map(|previous| &previous.record)) {
+            return Ok((0, 0));
+        }
+        let unknown_fallback;
+        let record = if let Err(error) = record.validate() {
+            tracing::warn!(%error, source_id = %record.source_id, "usage record validation failed; continuing with unknown cost");
+            unknown_fallback = crate::cost_status::unknown_cost_record(
+                &record.source_id,
+                &record.usage.route,
+                record.usage.usage.clone(),
+            );
+            &unknown_fallback
         } else {
-            record.validate()?;
-            if let Some(previous) = previous
-                && !record.follows_protected(&previous.record)?
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "protected usage projection changed route or spend owner",
-                ));
-            }
-        }
+            record
+        };
         let next = crate::cost_status::UsageSourceContribution::for_record(record);
         let old_tokens =
             previous.map_or(0, crate::cost_status::UsageSourceContribution::total_tokens);
@@ -1544,108 +1524,34 @@ impl SessionCostSnapshot {
             self.unpriced_reasons.insert(reason.label().to_string());
             self.cny_unpriced_reasons.insert(reason.label().to_string());
         }
-        if let Some(revision) = record.settlement.as_ref() {
-            if matches!(
+        if let Some(revision) = record.settlement.as_ref()
+            && matches!(
                 revision.coverage,
                 crate::llm_client::ProviderUsageCoverage::Missing
                     | crate::llm_client::ProviderUsageCoverage::Incomplete
-            ) {
-                let label = if revision.is_reservation() {
-                    self.in_flight_usage_sources.insert(key.clone());
-                    crate::pricing::UnpricedReason::RequestInProgress.label()
-                } else {
-                    self.in_flight_usage_sources.remove(&key);
-                    revision.reason.label()
-                };
-                self.unpriced_reasons.insert(label.to_string());
-                self.cny_unpriced_reasons.insert(label.to_string());
-                if self.missing_usage_sources.len() < crate::cost_status::MAX_MISSING_USAGE_SOURCES
-                    || self.missing_usage_sources.contains_key(&key)
-                {
-                    self.missing_usage_sources.insert(
-                        key.clone(),
-                        crate::cost_status::MissingUsageCoverage::for_route(
-                            &record.usage.route,
-                            revision.reason,
-                        ),
-                    );
-                } else {
-                    self.missing_usage_overflowed = true;
-                }
+            )
+        {
+            let label = if revision.is_reservation() {
+                crate::pricing::UnpricedReason::RequestInProgress.label()
             } else {
-                self.missing_usage_sources.remove(&key);
-                self.in_flight_usage_sources.remove(&key);
-            }
+                revision.reason.label()
+            };
+            self.unpriced_reasons.insert(label.to_string());
+            self.cny_unpriced_reasons.insert(label.to_string());
         }
+        self.usage_source_fingerprints.insert(key.clone());
+        self.accounted_usage_sources.insert(key, next);
         crate::cost_status::prune_settled_missing_reasons(
-            &self.missing_usage_sources,
-            self.missing_usage_overflowed,
-            &mut self.in_flight_usage_sources,
+            &self.accounted_usage_sources,
             self.unpriced_turns,
             self.cny_unpriced_turns,
             &mut self.unpriced_reasons,
             &mut self.cny_unpriced_reasons,
         );
-        self.usage_source_fingerprints.insert(key.clone());
-        self.accounted_usage_sources.insert(key, next);
         let total = self.total_estimate();
         self.displayed_cost_high_water_usd = self.displayed_cost_high_water_usd.max(total.usd);
         self.displayed_cost_high_water_cny = self.displayed_cost_high_water_cny.max(total.cny);
         Ok((old_tokens, new_tokens))
-    }
-
-    fn absorb_late_background_cost(&mut self, pool: &crate::cost_status::PendingBackgroundCost) {
-        let pool = crate::cost_status::project_missing_usage_ledger(
-            &mut self.missing_usage_sources,
-            &mut self.missing_usage_overflowed,
-            &mut self.unpriced_turns,
-            &mut self.cny_unpriced_turns,
-            pool,
-        );
-        let estimate = crate::pricing::CostEstimate {
-            usd: self.subagent_cost_usd,
-            cny: self.subagent_cost_cny,
-        }
-        .saturating_add(pool.estimate);
-        self.subagent_cost_usd = estimate.usd;
-        self.subagent_cost_cny = estimate.cny;
-        self.priced_turns = self.priced_turns.saturating_add(pool.priced_turns);
-        self.unpriced_turns = self.unpriced_turns.saturating_add(pool.unpriced_turns);
-        self.cny_priced_turns = self.cny_priced_turns.saturating_add(pool.cny_priced_turns);
-        self.cny_unpriced_turns = self
-            .cny_unpriced_turns
-            .saturating_add(pool.cny_unpriced_turns);
-        self.unpriced_reasons
-            .extend(pool.unpriced_reasons.iter().map(ToString::to_string));
-        self.cny_unpriced_reasons
-            .extend(pool.cny_unpriced_reasons.iter().map(ToString::to_string));
-        crate::cost_status::prune_settled_missing_reasons(
-            &self.missing_usage_sources,
-            self.missing_usage_overflowed,
-            &mut self.in_flight_usage_sources,
-            self.unpriced_turns,
-            self.cny_unpriced_turns,
-            &mut self.unpriced_reasons,
-            &mut self.cny_unpriced_reasons,
-        );
-        self.unpriced_classes
-            .extend(pool.unpriced_classes.iter().map(ToString::to_string));
-        self.pricing_provenances
-            .extend(pool.pricing_provenances.iter().map(ToString::to_string));
-        self.live_pricing_defects
-            .extend(pool.live_pricing_defects.iter().map(ToString::to_string));
-        self.live_pricing_unusable_defects.extend(
-            pool.live_pricing_unusable_defects
-                .iter()
-                .map(ToString::to_string),
-        );
-        self.route_receipts
-            .extend(pool.route_receipts.iter().cloned());
-        self.usage_source_fingerprints
-            .extend(pool.usage_source_fingerprints.iter().cloned());
-        let total = self.total_estimate();
-        self.displayed_cost_high_water_usd = self.displayed_cost_high_water_usd.max(total.usd);
-        self.displayed_cost_high_water_cny = self.displayed_cost_high_water_cny.max(total.cny);
     }
 
     /// Session + subagent spend as **one** dual-currency accumulator.
@@ -2009,7 +1915,7 @@ impl SavedTurnOutcome {
     /// Build the persisted record for a failed turn. Redacts before bounding
     /// so a cut can never leave half a secret behind.
     pub fn failed(error: &str, after_message_count: usize) -> Self {
-        let redacted = codewhale_secrets::redact::redact_secrets(error.trim());
+        let redacted = codewhale_sanitize::redact::redact_secrets(error.trim());
         let error = if redacted.chars().count() > MAX_SAVED_TURN_OUTCOME_ERROR_CHARS {
             let mut cut: String = redacted
                 .chars()
@@ -2090,9 +1996,29 @@ pub struct SavedSession {
     /// record resume, export, and the Runtime API read back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub turn_outcomes: Vec<SavedTurnOutcome>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub delegated_writes: std::collections::BTreeMap<u64, Vec<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "read_saved_agent_preset"
+    )]
     pub agent_preset: Option<String>,
 }
+
+fn read_saved_agent_preset<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(
+        match <Option<serde_json::Value> as serde::Deserialize>::deserialize(deserializer)? {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(id)) => Some(id),
+            Some(other) => Some(other.to_string()),
+        },
+    )
+}
+
 impl SavedSession {
     pub fn capture_publication(
         &mut self,
@@ -2304,6 +2230,7 @@ impl SavedSession {
             composer_color: None,
             last_auto_route: None,
             turn_outcomes: Vec::new(),
+            delegated_writes: std::collections::BTreeMap::new(),
             agent_preset: None,
         })
     }
@@ -3156,7 +3083,6 @@ impl SessionManager {
         let _guard = lock.write()?;
         if Self::late_usage_is_deleted(&path)? {
             Self::sync_late_usage_ledger(&path.with_extension("deleted"))?;
-            crate::cost_status::retire_session_usage_records(&self.sessions_dir, session_id)?;
             return Ok(None);
         }
         write().map(Some)
@@ -3371,87 +3297,15 @@ impl SessionManager {
             .collect())
     }
 
-    pub fn flush_pending_usage(&self, session_id: &str) -> io::Result<()> {
-        self.with_session_write_admission(session_id, || {
-            self.flush_pending_usage_admitted(session_id)
-        })
-        .map(|_| ())
-    }
-
-    fn flush_pending_usage_admitted(&self, session_id: &str) -> io::Result<()> {
-        for record in
-            crate::cost_status::retained_session_usage_records(&self.sessions_dir, session_id)
-        {
-            let Some((store, session, operation, scope)) = record.captured_session_origin()? else {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "retained usage lacks its native Session origin",
-                ));
-            };
-            if store != self.sessions_dir || session != session_id {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "retained usage belongs to another Session origin",
-                ));
-            }
-            if !record.is_acknowledged() {
-                self.persist_runtime_usage_record_admitted(session_id, &operation, &record)?;
-                record.acknowledge_persisted()?;
-                record.acknowledge_live_projection()?;
-                crate::cost_status::record_interactive_runtime_usage(scope, record.clone());
-            }
-            crate::cost_status::retire_session_usage_record(
-                &self.sessions_dir,
-                session_id,
-                &record,
-            );
-        }
-        Ok(())
-    }
-
     pub fn persist_runtime_usage_record(
         &self,
         session_id: &str,
         record: &crate::cost_status::RuntimeUsageRecord,
     ) -> io::Result<bool> {
-        if !record.has_native_producer() {
-            return self
-                .with_session_write_admission(session_id, || {
-                    let (path, _) = self.late_usage_paths(session_id)?;
-                    let ledger = Self::load_late_usage_unlocked(&path)?;
-                    if ledger
-                        .records
-                        .iter()
-                        .any(|old| !old.diagnostic_only && old.runtime_record() == *record)
-                    {
-                        Self::sync_late_usage_ledger(&path)?;
-                        return Ok(true);
-                    }
-                    Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "serialized usage cannot admit a new source or correction",
-                    ))
-                })
-                .map(|handled| handled.unwrap_or(true));
-        }
-        let (store, origin_session, operation) = record.session_destination()?;
-        if store != self.sessions_dir || origin_session != session_id {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "usage source belongs to another captured session origin",
-            ));
-        }
-        let handled = self.with_session_write_admission(session_id, || {
-            let handled =
-                self.persist_runtime_usage_record_admitted(session_id, &operation, record)?;
-            record.acknowledge_persisted()?;
-            record.acknowledge_live_projection()?;
-            Ok(handled)
-        })?;
-        if handled.is_none() {
-            record.acknowledge_persisted()?;
-        }
-        Ok(handled.unwrap_or(true))
+        self.with_session_write_admission(session_id, || {
+            self.persist_runtime_usage_record_admitted(session_id, session_id, record)
+        })
+        .map(|handled| handled.unwrap_or(true))
     }
 
     pub(crate) fn persist_runtime_usage_record_admitted(
@@ -3489,7 +3343,7 @@ impl SessionManager {
             record.settlement = old.settlement.clone();
             record
         });
-        if !record.permits_replacement(previous_record.as_ref())? {
+        if !record.supersedes(previous_record.as_ref()) {
             Self::sync_late_usage_ledger(&path)?;
             return Ok(true);
         }
@@ -3694,7 +3548,10 @@ impl SessionManager {
                     },
                 );
                 source.settlement = record.settlement.clone();
-                match metadata.cost.project_usage_record_inner(&source, true) {
+                match metadata
+                    .cost
+                    .project_usage_record_by_key(&record.source_fingerprint, &source)
+                {
                     Ok((old, new)) => {
                         metadata.total_tokens = metadata
                             .total_tokens
@@ -3702,7 +3559,7 @@ impl SessionManager {
                             .saturating_add(new)
                     }
                     Err(error) => {
-                        tracing::warn!(%error, "saved usage projection refused an unprovable correction");
+                        tracing::warn!(%error, "saved usage projection skipped invalid entry");
                         metadata
                             .cost
                             .unpriced_reasons
@@ -3711,7 +3568,6 @@ impl SessionManager {
                             .cost
                             .cny_unpriced_reasons
                             .insert("usage_correction_unverified".into());
-                        metadata.cost.missing_usage_overflowed = true;
                     }
                 }
                 continue;
@@ -3719,75 +3575,40 @@ impl SessionManager {
             if record.usage.as_ref() == Some(&codewhale_models::Usage::default()) {
                 record.usage = None;
             }
-            if let Some(receipt) = &record.decision
-                && receipt.is_bounded()
-            {
-                metadata
-                    .cost
-                    .route_receipts
-                    .insert(receipt.diagnostic_receipt());
-            }
-            let coverage =
-                crate::cost_status::MissingUsageCoverage::for_route(&record.route, record.reason);
             let source_fingerprint = record.source_fingerprint.clone();
-            let source_id = format!("late:{}", record.source_fingerprint);
-            let mut pending = if let Some(usage) = record.usage.as_ref() {
-                crate::cost_status::background_cost_for_runtime_usage(
-                    &crate::cost_status::RuntimeUsageRecord::legacy(
-                        source_id,
-                        crate::cost_status::EffectiveRouteUsage {
-                            route: record.route,
-                            usage: usage.clone(),
-                        },
-                    ),
+            let source = if let Some(usage) = record.usage.clone() {
+                crate::cost_status::NativeUsageSource::capture(
+                    source_fingerprint.clone(),
+                    crate::cost_status::UsageSpendOwner::Auxiliary,
+                )
+                .prepare(
+                    &record.route,
+                    &usage,
+                    crate::llm_client::ProviderUsageCoverage::Reported,
+                    record.reason,
                 )
             } else {
-                crate::cost_status::background_cost_for_runtime_drop(
-                    &crate::cost_status::RuntimeUsageDropRecord {
-                        reason: record.reason,
-                        source_id,
-                        route: record.route,
-                    },
-                )
+                crate::cost_status::RuntimeUsageDropRecord {
+                    reason: record.reason,
+                    source_id: source_fingerprint.clone(),
+                    route: record.route.clone(),
+                }
+                .as_usage_record()
             };
-            // The sidecar already stores the canonical SHA-256 identity. Do
-            // not hash it again while projecting the receipt into the saved
-            // session, or a concurrent main-snapshot writer that already
-            // contains the response would not dedupe against this overlay.
-            pending.usage_source_fingerprints.clear();
-            pending
-                .usage_source_fingerprints
-                .insert(source_fingerprint.clone());
-            let was_missing = metadata
+            match metadata
                 .cost
-                .missing_usage_sources
-                .contains_key(&source_fingerprint);
-            if metadata
-                .cost
-                .usage_source_fingerprints
-                .contains(&source_fingerprint)
-                && (!was_missing || record.usage.is_none())
+                .project_usage_record_by_key(&source_fingerprint, &source)
             {
-                continue;
+                Ok((old, new)) => {
+                    metadata.total_tokens = metadata
+                        .total_tokens
+                        .saturating_sub(old)
+                        .saturating_add(new);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "saved late usage projection skipped invalid entry");
+                }
             }
-            pending.missing_usage_sources.clear();
-            pending.resolved_missing_usage_sources.clear();
-            if record.usage.is_some() {
-                pending
-                    .resolved_missing_usage_sources
-                    .insert(source_fingerprint.clone());
-            } else {
-                pending
-                    .missing_usage_sources
-                    .insert(source_fingerprint.clone(), coverage);
-            }
-            if let Some(usage) = record.usage {
-                metadata.total_tokens = metadata
-                    .total_tokens
-                    .saturating_add(u64::from(usage.input_tokens))
-                    .saturating_add(u64::from(usage.output_tokens));
-            }
-            metadata.cost.absorb_late_background_cost(&pending);
         }
         if ledger.overflowed {
             let fingerprint = crate::cost_status::usage_source_fingerprint(&format!(
@@ -4131,7 +3952,6 @@ impl SessionManager {
         let result = self
             .with_session_write_admission(&id, || {
                 let base = self.validate_publication_admitted(&session, &receipt)?;
-                self.flush_pending_usage_admitted(&id)?;
                 let persisted = self.load_session_write_metadata(&id)?;
                 session.make_storage_compatible();
                 let checkpoint_receipt = Self::publication_receipt(&session)?;
@@ -4174,7 +3994,6 @@ impl SessionManager {
             .with_session_write_admission(&id, || {
                 let base = self.validate_publication_admitted(&session, &receipt)?;
                 Self::validate_checkpoint_authority(&base)?;
-                self.flush_pending_usage_admitted(&id)?;
                 let persisted = self.load_session_write_metadata(&id)?;
                 Self::prepare_session_write(&mut session, &persisted, true)?;
                 let session_path = self.validated_session_path(&id)?;
@@ -4256,7 +4075,6 @@ impl SessionManager {
                         ));
                     }
                 }
-                self.flush_pending_usage_admitted(&id)?;
                 let persisted = self.load_session_write_metadata(&id)?;
                 session.make_storage_compatible();
                 let checkpoint_receipt = Self::publication_receipt(&session)?;
@@ -4307,23 +4125,6 @@ impl SessionManager {
     #[cfg(any(test, feature = "test-support"))]
     pub fn save_session_bounded(&self, session: SavedSession) -> std::io::Result<PathBuf> {
         self.save_session_inner(session, JournalPrune::Excess, true)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn commit_completed_session(&self, session: SavedSession) -> io::Result<io::Result<()>> {
-        let session_id = session.metadata.id.clone();
-        let exec_mode = session.metadata.mode.as_deref() == Some("exec");
-        let clear = self
-            .with_session_write_admission(&session_id, || {
-                let persisted = self.load_session_write_metadata(&session_id)?;
-                self.write_session_admitted(session, JournalPrune::Excess, true, &persisted)?;
-                Ok(self.clear_session_checkpoint_admitted(&session_id))
-            })?
-            .ok_or_else(Self::retired_session_write_error)?;
-        if let Err(error) = self.cleanup_old_sessions_for_mode(None, Some(exec_mode)) {
-            tracing::warn!(session_id = %session_id, %error, "completion was committed but retention could not be inspected");
-        }
-        Ok(clear)
     }
 
     /// Make a saved document whose file exceeds the full-history transport
@@ -7082,6 +6883,7 @@ fn create_saved_session_inner(
         composer_color: None,
         last_auto_route: None,
         turn_outcomes: Vec::new(),
+        delegated_writes: std::collections::BTreeMap::new(),
         agent_preset: None,
     }
 }

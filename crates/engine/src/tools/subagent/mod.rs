@@ -404,11 +404,7 @@ fn child_compaction_config(
         image_input,
         effective_context_window: Some(window),
         focus: None,
-        runtime_cost_owner: runtime
-            .runtime_usage_lease
-            .as_ref()
-            .map(|lease| lease.owner().to_string())
-            .or_else(|| parent.runtime_cost_owner.clone()),
+        runtime_cost_owner: parent.runtime_cost_owner.clone(),
         workspace: Some(runtime.context.workspace.clone()),
         ..parent.clone()
     }
@@ -499,7 +495,6 @@ const SUBAGENT_TRANSCRIPT_ARTIFACT_DIR: &str = "subagent-transcripts";
 const SUBAGENT_STATE_SCHEMA_VERSION: u32 = 1;
 const SUBAGENT_STATE_FILE: &str = "subagents.v3.json";
 const LEGACY_SUBAGENT_STATE_FILE: &str = "subagents.v1.json";
-const SUBAGENT_STATE_LOCK_FILE: &str = "subagents.v1.lock";
 const SUBAGENT_RESTART_REASON: &str = "Interrupted by process restart";
 const SUBAGENT_SESSION_CLOSED_REASON: &str = "Interrupted: parent session closed";
 #[cfg(test)]
@@ -988,14 +983,6 @@ pub struct AgentWorkerRecord {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub source_usage_records:
         BTreeMap<String, (crate::cost_status::RuntimeUsageRecord, Option<u64>)>,
-    #[serde(
-        default,
-        skip_serializing_if = "BTreeMap::is_empty",
-        deserialize_with = "crate::cost_status::deserialize_missing_usage_sources"
-    )]
-    pub missing_usage_sources: BTreeMap<String, crate::cost_status::MissingUsageCoverage>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub missing_usage_overflowed: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub legacy_unreported_usage: bool,
     /// A decoded response omitted usable usage, or a logical provider call
@@ -1112,8 +1099,6 @@ impl AgentWorkerRecord {
             usage: default_agent_run_usage(),
             usage_source_fingerprints: BTreeSet::new(),
             source_usage_records: BTreeMap::new(),
-            missing_usage_sources: BTreeMap::new(),
-            missing_usage_overflowed: false,
             legacy_unreported_usage: false,
             has_unreported_usage: false,
             delivery_evidence,
@@ -1268,24 +1253,9 @@ pub(crate) fn priced_usd_microusd(audit: &crate::pricing::TurnCostAudit) -> Opti
 /// Captured once, when the runtime is built (`SubAgentRuntime::new`: the
 /// engine's per-turn runtime, its off-turn continuation runtime, the direct
 /// Workflow runtime), and inherited unchanged by every `child_runtime` /
-/// `background_runtime` descendant and by the child tool registry's guardian
-/// runtime. It replaces the completion-time `cost_status::scope_token()` read
-/// `record_provider_response_usage` used to perform: a provider response that
-/// lands after `/new` or a session load settles against the session it was
-/// dispatched from, never against whichever session is live when it arrives.
-///
-/// Runtime-owned dispatches (a `RuntimeUsageLease`) already carry their origin
-/// inside the owner sink. This origin governs the ownerless paths: off-turn
-/// continuations, direct Workflow runtimes, and their missing-usage receipts.
 #[derive(Debug, Clone)]
 pub struct SubAgentAccountingOrigin {
-    /// Cost-scope generation at dispatch. The live pool rejects a stale token;
-    /// it is never re-derived at completion.
     cost_scope: crate::cost_status::CostScopeToken,
-    /// Root session of the dispatch: the tool context's state namespace, the
-    /// same identity the terminal fan-in and coordination paths use. A receipt
-    /// whose scope has been retired is appended to this session's durable
-    /// late-usage sidecar.
     session_id: String,
 }
 
@@ -1329,31 +1299,12 @@ async fn record_provider_response_usage(
         .accounting_origin
         .clone()
         .expect("fixture origin captured before dispatch");
-    let prior = runtime
-        .manager
-        .read()
-        .await
-        .worker_records
-        .get(agent_id)
-        .and_then(|worker| {
-            worker
-                .source_usage_records
-                .get(&crate::cost_status::usage_source_fingerprint(source_id))
-        })
-        .map(|record| record.0.clone());
-    let source = if let Some(prior) = prior {
-        crate::cost_status::NativeUsageSource::resume_admitted(&prior, Some(origin))
-            .expect("fixture native predecessor")
-    } else {
-        crate::cost_status::NativeUsageSource::capture_with_origin(
-            source_id,
-            crate::cost_status::UsageSpendOwner::Auxiliary,
-            Some(origin),
-        )
-    };
-    let record = source
-        .reported(&route, usage)
-        .expect("fixture usage revision");
+    let source = crate::cost_status::NativeUsageSource::capture_with_origin(
+        source_id,
+        crate::cost_status::UsageSpendOwner::Auxiliary,
+        Some(origin),
+    );
+    let record = source.reported(&route, usage);
     let accounting = engine::ChildAccountingProjection::capture(runtime, agent_id);
     accounting
         .publish(&record)
@@ -1729,10 +1680,16 @@ fn worker_profile_for_spawn(
 }
 
 fn normalize_worker_record(mut record: AgentWorkerRecord) -> AgentWorkerRecord {
-    if record.has_unreported_usage
-        && record.missing_usage_sources.is_empty()
-        && !record.missing_usage_overflowed
-    {
+    let has_missing_sources = record.source_usage_records.values().any(|(src, _)| {
+        src.settlement.as_ref().is_some_and(|revision| {
+            matches!(
+                revision.coverage,
+                crate::llm_client::ProviderUsageCoverage::Missing
+                    | crate::llm_client::ProviderUsageCoverage::Incomplete
+            )
+        })
+    });
+    if record.has_unreported_usage && !has_missing_sources {
         record.legacy_unreported_usage = true;
     }
     record.spec = normalize_worker_spec(record.spec);
@@ -2706,6 +2663,7 @@ fn send_terminal_event_with_delivery<T: Send + 'static>(
 }
 
 fn terminal_mailbox_message(result: &SubAgentResult, report_ref: Option<&str>) -> MailboxMessage {
+    let (warning, _) = split_subagent_return_warning(result.result.as_deref());
     match &result.status {
         SubAgentStatus::Completed => {
             let (summary, _) =
@@ -2717,11 +2675,17 @@ fn terminal_mailbox_message(result: &SubAgentResult, report_ref: Option<&str>) -
         }
         SubAgentStatus::Interrupted(reason) => MailboxMessage::Interrupted {
             agent_id: result.agent_id.clone(),
-            reason: reason.clone(),
+            reason: warning.map_or_else(
+                || reason.clone(),
+                |w| crate::core::authority::auto_review::prepend_subagent_return_warning(reason, w),
+            ),
         },
         SubAgentStatus::Failed(error) => MailboxMessage::Failed {
             agent_id: result.agent_id.clone(),
-            error: error.clone(),
+            error: warning.map_or_else(
+                || error.clone(),
+                |w| crate::core::authority::auto_review::prepend_subagent_return_warning(error, w),
+            ),
         },
         SubAgentStatus::Cancelled => MailboxMessage::Cancelled {
             agent_id: result.agent_id.clone(),
@@ -3092,11 +3056,6 @@ pub struct SubAgentRuntime {
     /// without full parent auto-approve. Shell/network/MCP still gated.
     /// Set for Workflow-spawned children.
     pub accept_edits: bool,
-    /// Allow the built-in, non-custom verification tools after a worker
-    /// start has crossed the parent's approval boundary. This is not a
-    /// general shell grant: arbitrary commands and custom verifier programs
-    /// remain blocked unless the parent session is auto-approved.
-    pub accept_verification: bool,
     /// Native Agent-mode tool surface inherited from the parent turn. Carries
     /// feature/config-dependent families such as web search, patch, memory,
     /// vision, notify, and FIM so child catalogs stay in parity with the parent.
@@ -3134,10 +3093,6 @@ pub struct SubAgentRuntime {
     /// whole spawn tree publishes into one ordered, fan-out-able mailbox.
     /// `None` only when no consumer is wired (legacy entry points / tests).
     pub mailbox: Option<Mailbox>,
-    /// Lease on the durable runtime-turn accounting sink. Detached child
-    /// runtimes clone this guard, keeping the sink alive after the parent UI
-    /// mailbox closes until the final child response has been persisted.
-    pub runtime_usage_lease: Option<crate::cost_status::RuntimeUsageLease>,
     /// Dispatch-time accounting ownership for every provider response this
     /// runtime or its descendants settle. Captured in [`Self::new`], cloned
     /// by [`Self::child_runtime`], never refreshed from the live cost scope.
@@ -3202,6 +3157,19 @@ pub struct SubAgentRuntime {
     /// Whether the host can answer an approval prompt for a child (an
     /// interactive TUI). Headless hosts keep the fail-closed denial.
     pub parent_can_prompt: bool,
+    pub parent_run_origin: crate::core::authority::auto_review::RunOrigin,
+    pub parent_owner_present: bool,
+    pub parent_person_messages: std::sync::Arc<Vec<String>>,
+    pub parent_approved_plan: Option<String>,
+    pub root_person_messages: std::sync::Arc<Vec<String>>,
+    pub root_approved_plan: Option<String>,
+    pub parent_pinned_project_instructions:
+        std::sync::Arc<crate::project_context::PinnedProjectInstructions>,
+    pub parent_auto_review_state: Option<
+        std::sync::Arc<
+            parking_lot::Mutex<crate::core::authority::auto_review::AutoReviewConversationState>,
+        >,
+    >,
     /// Durable approval evidence inherited from the parent session. Legacy
     /// runtimes that do not install a store cannot open child approval prompts.
     approval_receipt_store: Option<Result<crate::approval_log::ApprovalReceiptStore, String>>,
@@ -3260,7 +3228,6 @@ impl SubAgentRuntime {
             context,
             allow_shell,
             accept_edits: false,
-            accept_verification: false,
             agent_tool_surface_options: AgentToolSurfaceOptions::new(
                 ShellPolicy::from_legacy_allow_shell(allow_shell),
             ),
@@ -3274,7 +3241,6 @@ impl SubAgentRuntime {
             cancel_token: CancellationToken::new(),
             foreground_children: None,
             mailbox: None,
-            runtime_usage_lease: None,
             accounting_origin,
             parent_completion_tx: None,
             fork_context: None,
@@ -3292,6 +3258,14 @@ impl SubAgentRuntime {
                 crate::core::authority::auto_review::AutoReviewPolicy::default(),
             ),
             parent_can_prompt: false,
+            parent_run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+            parent_owner_present: false,
+            parent_person_messages: std::sync::Arc::default(),
+            parent_approved_plan: None,
+            root_person_messages: std::sync::Arc::default(),
+            root_approved_plan: None,
+            parent_pinned_project_instructions: std::sync::Arc::default(),
+            parent_auto_review_state: None,
             approval_receipt_store: None,
             compaction: crate::compaction::CompactionConfig::default(),
             activation: None,
@@ -3332,6 +3306,47 @@ impl SubAgentRuntime {
     ) -> Self {
         self.auto_review_policy = auto_review_policy;
         self.parent_can_prompt = parent_can_prompt;
+        self
+    }
+
+    #[must_use]
+    pub fn with_parent_origin(
+        mut self,
+        parent_run_origin: crate::core::authority::auto_review::RunOrigin,
+        parent_owner_present: bool,
+    ) -> Self {
+        let owner_present = parent_run_origin
+            == crate::core::authority::auto_review::RunOrigin::Interactive
+            && parent_owner_present;
+        self.parent_run_origin = parent_run_origin;
+        self.parent_owner_present = owner_present;
+        self
+    }
+
+    #[must_use]
+    pub fn with_parent_review_context(
+        mut self,
+        person_messages: Vec<String>,
+        approved_plan: Option<String>,
+        pinned_project_instructions: crate::project_context::PinnedProjectInstructions,
+    ) -> Self {
+        let person_messages = std::sync::Arc::new(person_messages);
+        self.parent_person_messages = std::sync::Arc::clone(&person_messages);
+        self.root_person_messages = person_messages;
+        self.parent_approved_plan = approved_plan.clone();
+        self.root_approved_plan = approved_plan;
+        self.parent_pinned_project_instructions = std::sync::Arc::new(pinned_project_instructions);
+        self
+    }
+
+    #[must_use]
+    pub fn with_parent_auto_review_state(
+        mut self,
+        state: std::sync::Arc<
+            parking_lot::Mutex<crate::core::authority::auto_review::AutoReviewConversationState>,
+        >,
+    ) -> Self {
+        self.parent_auto_review_state = Some(state);
         self
     }
 
@@ -3442,19 +3457,11 @@ impl SubAgentRuntime {
         self
     }
 
-    /// Inherit the parent session's compaction policy, and bind descendants
-    /// to the durable accounting owner it names (created by a runtime host).
-    /// Interactive TUI turns have no owner and continue using mailbox
-    /// delivery only.
     #[must_use]
     pub fn with_parent_compaction(
         mut self,
         compaction: &crate::compaction::CompactionConfig,
     ) -> Self {
-        self.runtime_usage_lease = compaction
-            .runtime_cost_owner
-            .as_deref()
-            .and_then(crate::cost_status::acquire_runtime_usage_lease);
         self.compaction = compaction.clone();
         self
     }
@@ -3547,6 +3554,10 @@ impl SubAgentRuntime {
         runtime.cancel_token = token.clone();
         runtime.context.cancel_token = Some(token);
         runtime.foreground_children = None;
+        runtime.parent_run_origin = crate::core::authority::auto_review::RunOrigin::Background;
+        runtime.parent_owner_present = false;
+        runtime.parent_person_messages = std::sync::Arc::default();
+        runtime.parent_approved_plan = None;
         runtime
     }
 
@@ -3598,10 +3609,6 @@ impl SubAgentRuntime {
             context: child_context,
             allow_shell: self.allow_shell,
             accept_edits: self.accept_edits,
-            // A parent-approved verification lease belongs to its
-            // direct worker only; nested children must cross their own
-            // approval boundary instead of silently inheriting it.
-            accept_verification: self.accept_verification && self.spawn_depth == 0,
             agent_tool_surface_options: self.agent_tool_surface_options.clone(),
             worker_profile: self.worker_profile.clone(),
             event_tx: self.event_tx.clone(),
@@ -3615,7 +3622,6 @@ impl SubAgentRuntime {
             cancel_token,
             foreground_children: self.foreground_children.clone(),
             mailbox: self.mailbox.clone(),
-            runtime_usage_lease: self.runtime_usage_lease.clone(),
             accounting_origin: self.accounting_origin.clone(),
             parent_completion_tx: self.parent_completion_tx.clone(),
             fork_context: self.fork_context.clone(),
@@ -3641,9 +3647,19 @@ impl SubAgentRuntime {
             parent_mode: self.parent_mode,
             auto_review_policy: Arc::clone(&self.auto_review_policy),
             parent_can_prompt: self.parent_can_prompt,
+            parent_run_origin: self.parent_run_origin,
+            parent_owner_present: self.parent_owner_present,
             approval_receipt_store: self.approval_receipt_store.clone(),
             compaction: self.compaction.clone(),
             activation: None,
+            parent_person_messages: std::sync::Arc::clone(&self.parent_person_messages),
+            parent_approved_plan: self.parent_approved_plan.clone(),
+            root_person_messages: std::sync::Arc::clone(&self.root_person_messages),
+            root_approved_plan: self.root_approved_plan.clone(),
+            parent_pinned_project_instructions: std::sync::Arc::clone(
+                &self.parent_pinned_project_instructions,
+            ),
+            parent_auto_review_state: self.parent_auto_review_state.clone(),
         }
     }
 
@@ -3697,23 +3713,6 @@ impl SubAgentWorkLifecycle {
             return Ok(None);
         }
 
-        // A root verification lease is provenance, not delegated
-        // authority. Nested workers cannot inherit this bit.
-        if runtime.accept_verification && runtime.spawn_depth == 1 {
-            let reference = format!("operate-verification:{agent_id}");
-            if let Err(err) = lifecycle.work.record_operation_approval(
-                &lifecycle.session_id,
-                &lifecycle.external,
-                &reference,
-                "agent",
-                &format!("agent:{agent_id}:approval"),
-            ) {
-                let _ = lifecycle.reconcile_state(OwnerState::Failed, 1, None);
-                return Err(anyhow!(
-                    "failed to record sub-agent verification approval: {err}"
-                ));
-            }
-        }
         Ok(Some(lifecycle))
     }
 
@@ -3839,6 +3838,9 @@ pub struct SubAgent {
     unsettled_launch: Option<Vec<governor::DynamicGatePermit>>,
     unsettled_foreground: Option<ForegroundChildRegistration>,
     activation: Option<Arc<ChildActivationState>>,
+    executed_actions:
+        Arc<std::sync::Mutex<Vec<crate::core::authority::auto_review::AutoReviewChildAction>>>,
+    return_review_warning: Option<String>,
 }
 
 impl SubAgent {
@@ -3892,6 +3894,8 @@ impl SubAgent {
             unsettled_launch: None,
             unsettled_foreground: None,
             activation: None,
+            executed_actions: Arc::default(),
+            return_review_warning: None,
         }
     }
 
@@ -3933,12 +3937,6 @@ impl SubAgent {
     }
 }
 
-/// Manager for active sub-agents.
-struct CoordinationProcessLock {
-    release: Option<std::sync::mpsc::SyncSender<()>>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
 /// Marker prefix retained for presentation compatibility with same-process
 /// handover notes from earlier hosts. It does not control lock acquisition
 /// or retry.
@@ -3953,123 +3951,6 @@ pub const COORDINATION_LOCK_TIMEOUT_MARKER: &str =
     "timed out acquiring delegated coordination lock";
 
 pub const SESSION_PRIVATE_COORDINATION: &str = "another Codewhale session still uses this folder's older delegated-agent store, so its upgrade waits; sub-agents in this session keep private state that other sessions do not see and that is not saved, and the store upgrades when a session starts after the other one exits";
-
-#[derive(Debug)]
-struct SubAgentCutoverBlocked(anyhow::Error);
-
-impl std::fmt::Display for SubAgentCutoverBlocked {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::error::Error for SubAgentCutoverBlocked {}
-
-impl CoordinationProcessLock {
-    fn acquire(state_root: &Path, exclusive: bool) -> Result<Self> {
-        let requested_root = normalize_subagent_workspace(state_root);
-        // Root and path for the lock. A non-home workspace keeps itself as the
-        // root, so a repository-supplied `.codewhale` link is walked and
-        // refused before `create_dir_all` could follow it into the target. A
-        // home workspace resolves its own junction once and still walks
-        // everything below it.
-        let (walk_root, lock_path) = codewhale_util::files::workspace_state_path(
-            &requested_root,
-            &Path::new("state").join(SUBAGENT_STATE_LOCK_FILE),
-        );
-        let lock_dir = lock_path
-            .parent()
-            .map_or_else(|| walk_root.clone(), Path::to_path_buf);
-        // Refuse a linked `.codewhale` or `state` before creating anything:
-        // `create_dir_all` follows links and would populate the target.
-        reject_root_relative_symlinks(&walk_root, &lock_path)?;
-        fs::create_dir_all(&lock_dir)?;
-        let ignore = lock_dir.join(".gitignore");
-        let ignored = reject_root_relative_symlinks(&walk_root, &ignore).and_then(|()| {
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&ignore)
-            {
-                Ok(mut file) => file.write_all(b"*\n").map_err(Into::into),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-                Err(error) => Err(error.into()),
-            }
-        });
-        if let Err(error) = ignored {
-            tracing::warn!(target: "subagent", %error, "could not write {}", ignore.display());
-        }
-        // Creating a missing root can change its canonical spelling on
-        // Windows (for example by adding a `\\?\` prefix). Re-resolve both
-        // sides before checking containment.
-        let state_root = normalize_subagent_workspace(state_root);
-        let (walk_root, lock_path) = codewhale_util::files::workspace_state_path(
-            &state_root,
-            &Path::new("state").join(SUBAGENT_STATE_LOCK_FILE),
-        );
-        reject_root_relative_symlinks(&walk_root, &lock_path)?;
-        let lock_file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&lock_path)?;
-        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
-        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
-        let thread = std::thread::spawn(move || {
-            let mut lock = fd_lock::RwLock::new(lock_file);
-            let acquired = if exclusive {
-                lock.try_write().map(|guard| {
-                    let _ = ready_tx.send(Ok::<(), String>(()));
-                    let _guard = guard;
-                    let _ = release_rx.recv();
-                })
-            } else {
-                lock.try_read().map(|guard| {
-                    let _ = ready_tx.send(Ok::<(), String>(()));
-                    let _guard = guard;
-                    let _ = release_rx.recv();
-                })
-            };
-            match acquired {
-                Ok(()) => {}
-                Err(error) => {
-                    let _ = ready_tx.send(Err(error.to_string()));
-                }
-            }
-        });
-        match ready_rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(Ok(())) => Ok(Self {
-                release: Some(release_tx),
-                thread: Some(thread),
-            }),
-            Ok(Err(error)) => {
-                let _ = thread.join();
-                Err(anyhow!(
-                    "delegated coordination lock is unavailable for {}: {error}; close any other running or suspended Codewhale session using this workspace, then restart this Runtime if admission was refused",
-                    state_root.display()
-                ))
-            }
-            Err(error) => {
-                drop(release_tx);
-                let _ = thread.join();
-                Err(anyhow!(
-                    "{COORDINATION_LOCK_TIMEOUT_MARKER} for {}: {error}",
-                    state_root.display()
-                ))
-            }
-        }
-    }
-}
-
-impl Drop for CoordinationProcessLock {
-    fn drop(&mut self) {
-        self.release.take();
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
 
 /// Only the captured Runtime owner admits roots. Held handles are not serialized;
 /// a restored attributed claim must be re-admitted before it can authorize work.
@@ -4106,19 +3987,12 @@ pub struct SubAgentManager {
     worker_origins: HashMap<String, WorkerOrigin>,
     worker_origin_schema: u32,
     workspace: PathBuf,
-    /// Root that owns the delegated-agent ledger, complete transcript
-    /// artifacts and coordination lock. Defaults to `workspace`; embedders may
+    /// Root that owns the delegated-agent ledger and complete transcript
+    /// artifacts. Defaults to `workspace`; embedders may
     /// isolate it without changing child execution cwd or file authority.
     state_root: PathBuf,
     state_path: Option<PathBuf>,
     state_unreachable_warned: bool,
-    coordination_process_lock: std::sync::Mutex<Option<Arc<CoordinationProcessLock>>>,
-    coordination_process_lock_required: bool,
-    coordination_exclusive: bool,
-    coordination_snapshot_read_only: bool,
-    store_cutover_blocked: bool,
-    session_private: bool,
-    workspace_writer_locks: HashMap<PathBuf, Arc<CoordinationProcessLock>>,
     /// Configured default per-child model-turn budget (`[subagents]
     /// default_max_steps`, #5324). `None` keeps the unbounded Fleet default;
     /// an explicit spawn `max_steps` still wins. Zero means unbounded.
@@ -4759,13 +4633,6 @@ impl SubAgentManager {
             state_root,
             state_path: None,
             state_unreachable_warned: false,
-            coordination_process_lock: std::sync::Mutex::new(None),
-            coordination_process_lock_required: false,
-            coordination_exclusive: false,
-            coordination_snapshot_read_only: false,
-            store_cutover_blocked: false,
-            session_private: false,
-            workspace_writer_locks: HashMap::new(),
             max_steps: None,
             wall_time: None,
             max_agents,
@@ -4831,22 +4698,6 @@ impl SubAgentManager {
         return Err("coordination workspace identity is unsupported on this platform".into());
         #[cfg(any(unix, windows))]
         {
-            if self.coordination_exclusive
-                && !self.coordination_snapshot_read_only
-                && normalize_subagent_workspace(&lexical)
-                    != normalize_subagent_workspace(&self.state_root)
-                && !self.workspace_writer_locks.contains_key(&canonical_root)
-            {
-                match CoordinationProcessLock::acquire(&lexical, true) {
-                    Ok(lock) => {
-                        self.workspace_writer_locks
-                            .insert(canonical_root.clone(), Arc::new(lock));
-                    }
-                    Err(error) => {
-                        tracing::warn!(target: "subagent", %error, "admitted coordination workspace without its writer lock; shared-workspace writers there stay refused until it is free");
-                    }
-                }
-            }
             let receipt = CoordinationClaimScope {
                 canonical_root,
                 platform: platform.into(),
@@ -4866,44 +4717,61 @@ impl SubAgentManager {
         }
     }
 
-    fn ensure_origin_writer_lock(&mut self, origin: &WorkerOrigin) -> Result<(), String> {
-        let (Some(selected), Some(scope)) = (&origin.selected_workspace, &origin.scope) else {
+    fn refuse_live_selected_store_writers(&self, origin: &WorkerOrigin) -> Result<(), String> {
+        let (Some(selected), Some(_)) = (&origin.selected_workspace, &origin.scope) else {
             return Ok(());
         };
-        if !self.coordination_exclusive
-            || normalize_subagent_workspace(selected)
-                == normalize_subagent_workspace(&self.state_root)
-            || self
-                .workspace_writer_locks
-                .contains_key(&scope.canonical_root)
+        if normalize_subagent_workspace(selected) == normalize_subagent_workspace(&self.state_root)
         {
             return Ok(());
         }
-        let lock =
-            CoordinationProcessLock::acquire(selected, true).map_err(|error| error.to_string())?;
-        self.workspace_writer_locks
-            .insert(scope.canonical_root.clone(), Arc::new(lock));
+        let path = default_state_path(selected).map_err(|error| error.to_string())?;
+        let unreadable = |error: std::io::Error| {
+            format!(
+                "cannot check {} for another open Codewhale session ({error}); shared-workspace writers there stay refused, or launch the builder in an isolated worktree",
+                selected.display()
+            )
+        };
+        let directory = path
+            .parent()
+            .ok_or_else(|| "delegated store has no parent".to_string())?;
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(unreadable(error)),
+        };
+        for entry in entries {
+            let name = entry.map_err(unreadable)?.file_name();
+            let Some(writer) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix("subagents.v3.writer."))
+                .and_then(|name| name.strip_suffix(".lock"))
+            else {
+                continue;
+            };
+            if valid_store_writer(writer) && store_writer_is_live(&path, writer) {
+                return Err(format!(
+                    "another Codewhale session ({writer}) has {} open; shared-workspace writers there stay refused until it exits, or launch the builder in an isolated worktree",
+                    selected.display()
+                ));
+            }
+        }
         Ok(())
     }
 
-    fn ensure_worker_coordination_locks(
-        &mut self,
+    fn admit_worker_shared_writes(
+        &self,
         spec: &AgentWorkerSpec,
         origin: &WorkerOrigin,
     ) -> Result<(), String> {
-        let claim = worker_coordination_claim(spec)?;
-        if claim.as_ref().is_some_and(|(_, isolated)| *isolated) {
-            return Ok(());
+        match worker_coordination_claim(spec)? {
+            Some((_, false)) => self.refuse_live_selected_store_writers(origin),
+            _ => Ok(()),
         }
-        self.ensure_coordination_process_lock()?;
-        if claim.is_some() {
-            self.ensure_origin_writer_lock(origin)?;
-        }
-        Ok(())
     }
 
     pub fn ensure_registered_worker_coordination_locks(
-        &mut self,
+        &self,
         worker_id: &str,
     ) -> Result<(), String> {
         let spec = self
@@ -4918,7 +4786,7 @@ impl SubAgentManager {
             .cloned()
             .ok_or_else(|| "worker origin is missing from the owner journal".to_string())?;
         self.validate_worker_origin(&origin)?;
-        self.ensure_worker_coordination_locks(&spec, &origin)
+        self.admit_worker_shared_writes(&spec, &origin)
     }
 
     fn admitted_coordination_root(&self, workspace: &Path) -> Option<&AdmittedCoordinationRoot> {
@@ -5316,7 +5184,6 @@ impl SubAgentManager {
                 .map_err(|error| error.to_string());
         }
 
-        self.ensure_coordination_process_lock()?;
         if let Some(root) = self.admitted_coordination_root(workspace) {
             root.validate()?;
         }
@@ -5395,7 +5262,6 @@ impl SubAgentManager {
                 .map_err(|error| error.to_string());
         }
 
-        self.ensure_coordination_process_lock()?;
         self.coordination
             .update_decision_status(decision_id, status, owner, expected_version)
     }
@@ -5442,7 +5308,6 @@ impl SubAgentManager {
                 .map_err(|error| error.to_string());
         }
 
-        self.ensure_coordination_process_lock()?;
         let expected_owner = self.nearest_common_fan_in_owner(&input_decisions)?;
         if owner != expected_owner {
             return Err(format!(
@@ -5714,19 +5579,13 @@ impl SubAgentManager {
             },
             bounded: true,
             limit,
-            process_lock_held: !self.session_private && {
-                // Retry acquire on each projection so a session that lost the
-                // flock at construction recovers once the previous owner exits.
-                let _ = self.coordination_process_lock_status();
-                self.holds_coordination_process_lock()
-            },
-            process_lock_note: if self.session_private {
-                Some(SESSION_PRIVATE_COORDINATION.to_string())
-            } else if self.holds_coordination_process_lock() {
-                None
-            } else {
-                self.coordination_process_lock_status().err()
-            },
+            process_lock_held: self.state_path.is_none() || self.store_authority.is_some(),
+            process_lock_note: (self.state_path.is_some() && self.store_authority.is_none()).then(
+                || {
+                    "delegated store admission failed; it is retried on the next delegated write"
+                        .to_string()
+                },
+            ),
         }
     }
 
@@ -5861,7 +5720,6 @@ impl SubAgentManager {
                 .and_then(|outcome| outcome);
         }
 
-        self.ensure_coordination_process_lock()?;
         let Some(existing) = self
             .coordination
             .write_claims
@@ -5948,7 +5806,6 @@ impl SubAgentManager {
                 .map_err(|error| error.to_string());
         }
 
-        self.ensure_coordination_process_lock()?;
         let active = self.active_coordination_owners();
         let released = self
             .coordination
@@ -6073,107 +5930,10 @@ impl SubAgentManager {
         match SubAgentStoreAuthority::open(&self.state_root, &path, &self.current_session_boot_id) {
             Ok(authority) => self.store_authority = Some(authority),
             Err(error) => {
-                self.coordination_snapshot_read_only = true;
-                self.store_cutover_blocked = error
-                    .chain()
-                    .any(|cause| cause.is::<SubAgentCutoverBlocked>());
-                tracing::warn!(target: "subagent", %error, "delegated store admission failed; writable state remains refused");
+                tracing::warn!(target: "subagent", %error, "delegated store admission failed; it is retried on the next delegated write");
             }
         }
         self
-    }
-
-    fn into_session_private(mut self) -> Self {
-        self.state_path = None;
-        self.store_authority = None;
-        self.coordination_snapshot_read_only = false;
-        self.coordination_process_lock_required = false;
-        self.session_private = true;
-        tracing::warn!(target: "subagent", "{SESSION_PRIVATE_COORDINATION}");
-        self
-    }
-
-    fn require_coordination_process_lock(mut self) -> Self {
-        self.coordination_process_lock_required = true;
-        if self.store_authority.is_none()
-            && let Some(path) = self.state_path.as_ref()
-        {
-            match SubAgentStoreAuthority::open(
-                &self.state_root,
-                path,
-                &self.current_session_boot_id,
-            ) {
-                Ok(authority) => self.store_authority = Some(authority),
-                Err(error) => {
-                    self.coordination_snapshot_read_only = true;
-                    tracing::warn!(target: "subagent", %error, "delegated store migration or admission failed; no durable writes are admitted");
-                    return self;
-                }
-            }
-        }
-        let acquired =
-            CoordinationProcessLock::acquire(&self.state_root, self.coordination_exclusive)
-                .ok()
-                .map(Arc::new);
-        if acquired.is_none() {
-            return self.into_session_private();
-        }
-        *self
-            .coordination_process_lock
-            .get_mut()
-            .expect("coordination lock slot poisoned") = acquired;
-        self
-    }
-
-    /// Terminal sessions retry failed acquisition when the previous owner
-    /// exits. A Runtime loaded without its writer lock must restart rather
-    /// than publish its stale snapshot. The flock is held on an open fd —
-    /// deleting the lock file does not release it (#5036).
-    fn ensure_coordination_process_lock(&self) -> Result<(), String> {
-        if self.coordination_snapshot_read_only {
-            return Err(
-                "Runtime coordination was opened without its writer lock; stop and restart this Runtime process after the other session exits"
-                    .into(),
-            );
-        }
-        if !self.coordination_process_lock_required {
-            return Ok(());
-        }
-        let mut slot = self
-            .coordination_process_lock
-            .lock()
-            .expect("coordination lock slot poisoned");
-        if slot.is_some() {
-            return Ok(());
-        }
-        match CoordinationProcessLock::acquire(&self.state_root, self.coordination_exclusive) {
-            Ok(lock) => {
-                *slot = Some(Arc::new(lock));
-                Ok(())
-            }
-            Err(error) => Err(error.to_string()),
-        }
-    }
-
-    /// Whether this process currently owns the workspace coordination flock.
-    /// Read-only inspection of the in-process slot — does not attempt acquire.
-    #[must_use]
-    pub fn holds_coordination_process_lock(&self) -> bool {
-        if !self.coordination_process_lock_required {
-            // Tests and non-durable managers do not require the flock.
-            return true;
-        }
-        self.coordination_process_lock
-            .lock()
-            .expect("coordination lock slot poisoned")
-            .is_some()
-    }
-
-    /// Probe lock ownership for UI/inspect surfaces. Retries acquire when the
-    /// slot is empty so a terminal session can recover after the previous
-    /// owner exits (#2.6 / #5036); read-only Runtime snapshots require restart.
-    pub fn coordination_process_lock_status(&self) -> Result<(), String> {
-        self.ensure_coordination_process_lock()
     }
 
     #[must_use]
@@ -6223,18 +5983,31 @@ impl SubAgentManager {
                 .is_some_and(|authority| authority.owned.lock().contains(id))
     }
 
+    fn admitted_store_authority(&mut self) -> Result<Option<Arc<SubAgentStoreAuthority>>> {
+        let Some(path) = self.state_path.as_ref() else {
+            return Ok(None);
+        };
+        if let Some(authority) = self.store_authority.as_ref() {
+            return Ok(Some(authority.clone()));
+        }
+        let authority =
+            SubAgentStoreAuthority::open(&self.state_root, path, &self.current_session_boot_id)
+                .map_err(|error| {
+                    anyhow!(
+                        "delegated durable store admission failed ({error:#}); it is retried on the next delegated write"
+                    )
+                })?;
+        self.store_authority = Some(authority.clone());
+        Ok(Some(authority))
+    }
+
     pub(crate) fn with_store_transaction<T>(
         &mut self,
         operation: impl FnOnce(&mut Self) -> Result<T>,
     ) -> Result<T> {
-        if self.state_path.is_none() {
+        let Some(authority) = self.admitted_store_authority()? else {
             return operation(self);
-        }
-        self.ensure_coordination_process_lock()
-            .map_err(anyhow::Error::msg)?;
-        let authority = self.store_authority.clone().ok_or_else(|| {
-            anyhow!("delegated durable store admission failed; inspect before retrying")
-        })?;
+        };
         if authority.is_current_transaction() {
             return operation(self);
         }
@@ -6435,8 +6208,6 @@ impl SubAgentManager {
         worker_id: &str,
         payload: PersistedSubAgentState,
     ) -> Result<Option<AgentWorkerRecord>> {
-        self.ensure_coordination_process_lock()
-            .map_err(anyhow::Error::msg)?;
         if self.state_path.is_none() {
             return Ok(None);
         }
@@ -6534,8 +6305,6 @@ impl SubAgentManager {
     /// completes.  Callers may `.join()` for synchronous semantics or drop it
     /// for fire-and-forget.
     fn persist_state(&self) -> Result<std::thread::JoinHandle<()>> {
-        self.ensure_coordination_process_lock()
-            .map_err(anyhow::Error::msg)?;
         let Some((_, payload)) = self.build_persist_payload()? else {
             return Ok(std::thread::spawn(|| {}));
         };
@@ -6543,16 +6312,7 @@ impl SubAgentManager {
             .store_authority
             .clone()
             .ok_or_else(|| anyhow!("delegated store authority is unavailable"))?;
-        let writer_locks = self
-            .coordination_process_lock
-            .lock()
-            .expect("coordination lock slot poisoned")
-            .iter()
-            .cloned()
-            .chain(self.workspace_writer_locks.values().cloned())
-            .collect::<Vec<_>>();
         Ok(std::thread::spawn(move || {
-            let _writer_locks = writer_locks;
             if let Err(error) = authority.publish(&payload, None, None) {
                 tracing::warn!(target: "subagent", %error, "failed to persist sub-agent checkpoint");
             }
@@ -6560,8 +6320,6 @@ impl SubAgentManager {
     }
 
     fn persist_state_synchronously(&self) -> Result<()> {
-        self.ensure_coordination_process_lock()
-            .map_err(anyhow::Error::msg)?;
         let Some((_, payload)) = self.build_persist_payload()? else {
             return Ok(());
         };
@@ -6624,8 +6382,6 @@ impl SubAgentManager {
     /// Unlike `persist_state`, this performs disk I/O **synchronously** to
     /// guarantee data is flushed before the process exits.
     pub fn flush_pending_persist(&mut self) -> Result<()> {
-        self.ensure_coordination_process_lock()
-            .map_err(anyhow::Error::msg)?;
         if self.persist_pending {
             self.persist_state_synchronously()?;
             self.last_persist_at = Some(Instant::now());
@@ -6702,6 +6458,8 @@ impl SubAgentManager {
             unsettled_launch: None,
             unsettled_foreground: None,
             activation: None,
+            executed_actions: Arc::default(),
+            return_review_warning: None,
         }
     }
 
@@ -6848,8 +6606,7 @@ impl SubAgentManager {
     }
 
     pub fn finalize_session_close_for_session(&mut self, active_session_id: &str) -> Result<usize> {
-        if !self.coordination_snapshot_read_only
-            && (self.state_path.is_none() || self.store_authority.is_some())
+        if (self.state_path.is_none() || self.store_authority.is_some())
             && !self.agents.values().any(|agent| {
                 self.owns_store_record(&agent.id)
                     && self.agent_is_owned_by_session(agent, active_session_id)
@@ -7108,10 +6865,9 @@ impl SubAgentManager {
         let Some((claim, isolated_worktree)) = worker_coordination_claim(spec)? else {
             return Ok(());
         };
-        // Isolated-worktree builders mutate their own checkout, not the
-        // shared workspace, so they must not contend for the per-workspace
-        // coordination process lock (#5036).
-        self.ensure_worker_coordination_locks(spec, origin)?;
+        if !isolated_worktree {
+            self.refuse_live_selected_store_writers(origin)?;
+        }
         let claim = self.namespace_write_claim(&origin_workspace, isolated_worktree, claim)?;
         let scope = if isolated_worktree {
             None
@@ -7191,11 +6947,7 @@ impl SubAgentManager {
         let previous_origins = self.worker_origins.clone();
         let previous_schema = self.worker_origin_schema;
         let claim = worker_coordination_claim(&spec)?;
-        // Same isolation rule as `preflight_worker_coordination` (#5036).
-        let isolated_worktree = claim
-            .as_ref()
-            .is_some_and(|(_, isolated_worktree)| *isolated_worktree);
-        self.ensure_worker_coordination_locks(&spec, &origin)?;
+        self.admit_worker_shared_writes(&spec, &origin)?;
         let previous_worker_records = self.worker_records.clone();
         let previous_coordination = self.coordination.clone();
         let persisted_claim = claim
@@ -7247,18 +6999,6 @@ impl SubAgentManager {
         let worker_id_for_log = spec.worker_id.clone();
         self.register_worker_for_session(spec, &origin.owner_session_id, None);
         self.install_worker_origin(&worker_id_for_log, origin);
-        if isolated_worktree && self.ensure_coordination_process_lock().is_err() {
-            // This process does not own the durable coordination state and an
-            // isolated-worktree builder must not be blocked on it: register
-            // in memory only and leave the durable ledger to the lock owner.
-            // The persist-layer lock check stays intact (#5036).
-            tracing::warn!(
-                target: "subagent",
-                worker = %worker_id_for_log,
-                "registered isolated-worktree worker in memory only; delegated coordination lock is owned elsewhere"
-            );
-            return Ok(());
-        }
         if let Err(error) = self.persist_state_synchronously() {
             self.worker_records = previous_worker_records;
             self.coordination = previous_coordination;
@@ -7684,7 +7424,6 @@ impl SubAgentManager {
                 .map_err(|error| error.to_string());
         }
 
-        self.ensure_coordination_process_lock()?;
         let worker_id = spec.worker_id.clone();
         let previous = self
             .worker_records
@@ -7907,53 +7646,75 @@ impl SubAgentManager {
             .worker_records
             .get_mut(worker_id)
             .ok_or_else(|| anyhow!("usage worker is unavailable"))?;
-        if record
-            .missing_usage_sources
-            .get(&key)
-            .is_some_and(|coverage| !coverage.matches_route(&source.usage.route))
-        {
-            return Err(anyhow!("worker usage source changed its captured route"));
-        }
         let previous = record.source_usage_records.get(&key);
+        if source.route_conflicts_with(previous.map(|old| &old.0)) {
+            tracing::warn!(
+                worker_id = %worker_id,
+                source_id = %source.source_id,
+                "worker usage source changed its captured route; recording unknown cost"
+            );
+            record.legacy_unreported_usage = true;
+            record.usage_source_fingerprints.insert(key);
+            record.has_unreported_usage = true;
+            record.updated_at_ms = epoch_millis_now();
+            refresh_usage_note(&mut record.usage);
+            return Ok(true);
+        }
         if record.usage_source_fingerprints.contains(&key) && previous.is_none() {
-            return Err(anyhow!(
-                "legacy worker source has no provable prior contribution"
-            ));
+            tracing::warn!(
+                worker_id = %worker_id,
+                source_id = %source.source_id,
+                "legacy worker source has no provable prior contribution; recording unknown cost"
+            );
+            record.legacy_unreported_usage = true;
+            let unknown = crate::cost_status::unknown_cost_record(
+                &source.source_id,
+                &source.usage.route,
+                source.usage.usage.clone(),
+            );
+            record.source_usage_records.insert(key, (unknown, None));
+            record.has_unreported_usage = true;
+            record.updated_at_ms = epoch_millis_now();
+            refresh_usage_note(&mut record.usage);
+            return Ok(true);
         }
-        if !source.permits_replacement(previous.map(|old| &old.0))? {
+        if !source.supersedes(previous.map(|old| &old.0)) {
             return Ok(false);
         }
-        if !source.is_acknowledged() {
-            tracing::warn!("worker usage source has no durable acknowledgement; not counted");
-            return Ok(false);
-        }
-        let revision = source
-            .settlement
-            .as_ref()
-            .ok_or_else(|| anyhow!("worker source has no revision"))?;
+        let Some(revision) = source.settlement.as_ref() else {
+            tracing::warn!(
+                worker_id = %worker_id,
+                source_id = %source.source_id,
+                "worker source has no revision; recording unknown cost"
+            );
+            record.legacy_unreported_usage = true;
+            record.usage_source_fingerprints.insert(key.clone());
+            let unknown = crate::cost_status::unknown_cost_record(
+                &source.source_id,
+                &source.usage.route,
+                source.usage.usage.clone(),
+            );
+            record.source_usage_records.insert(key, (unknown, None));
+            record.has_unreported_usage = true;
+            record.updated_at_ms = epoch_millis_now();
+            refresh_usage_note(&mut record.usage);
+            return Ok(true);
+        };
         let reported = revision.coverage == crate::llm_client::ProviderUsageCoverage::Reported;
         let incomplete = revision.coverage == crate::llm_client::ProviderUsageCoverage::Incomplete;
         let old_usage = previous.map(|old| &old.0.usage.usage);
         let old_cost = previous.and_then(|old| old.1);
         if let Some((prior, cost)) = previous {
-            prior.validate()?;
+            if let Err(error) = prior.validate() {
+                tracing::warn!(%error, "worker prior usage receipt validation failed; continuing");
+            }
             let expected_cost = crate::cost_status::UsageSourceContribution::for_record(prior);
             let expected_cost = (expected_cost.priced > 0)
                 .then(|| priced_usd_microusd(&prior.usage.route.audit_frozen(&prior.usage.usage)))
                 .flatten();
-            anyhow::ensure!(
-                *cost == expected_cost,
-                "worker prior cost does not match its frozen receipt"
-            );
-            anyhow::ensure!(
-                record.usage.input_tokens.unwrap_or(0) >= u64::from(prior.usage.usage.input_tokens)
-                    && record.usage.output_tokens.unwrap_or(0)
-                        >= u64::from(prior.usage.usage.output_tokens)
-                    && record.usage.total_tokens.unwrap_or(0)
-                        >= usage_total_tokens(&prior.usage.usage)
-                    && record.usage.cost_microusd.unwrap_or(0) >= cost.unwrap_or(0),
-                "worker projection is missing its prior source contribution"
-            );
+            if *cost != expected_cost {
+                tracing::warn!("worker prior cost does not match its frozen receipt; continuing");
+            }
         }
         let contribution = crate::cost_status::UsageSourceContribution::for_record(source);
         let priced = (contribution.priced > 0)
@@ -8002,34 +7763,20 @@ impl SubAgentManager {
                 priced.unwrap_or(0),
             );
         }
-        if matches!(
-            revision.coverage,
-            crate::llm_client::ProviderUsageCoverage::Missing
-                | crate::llm_client::ProviderUsageCoverage::Incomplete
-        ) {
-            if record.missing_usage_sources.len() < crate::cost_status::MAX_MISSING_USAGE_SOURCES
-                || record.missing_usage_sources.contains_key(&key)
-            {
-                record.missing_usage_sources.insert(
-                    key.clone(),
-                    crate::cost_status::MissingUsageCoverage::for_route(
-                        &source.usage.route,
-                        revision.reason,
-                    ),
-                );
-            } else {
-                record.missing_usage_overflowed = true;
-            }
-        } else {
-            record.missing_usage_sources.remove(&key);
-        }
         record.usage_source_fingerprints.insert(key.clone());
         record
             .source_usage_records
             .insert(key, (source.persisted(), priced));
         record.has_unreported_usage = record.legacy_unreported_usage
-            || record.missing_usage_overflowed
-            || !record.missing_usage_sources.is_empty();
+            || record.source_usage_records.values().any(|(src, _)| {
+                src.settlement.as_ref().is_some_and(|rev| {
+                    matches!(
+                        rev.coverage,
+                        crate::llm_client::ProviderUsageCoverage::Missing
+                            | crate::llm_client::ProviderUsageCoverage::Incomplete
+                    )
+                })
+            });
         record.updated_at_ms = epoch_millis_now();
         refresh_usage_note(&mut record.usage);
         Ok(true)
@@ -8045,17 +7792,15 @@ impl SubAgentManager {
         priced_cost_microusd: Option<u64>,
     ) {
         let fingerprint = crate::cost_status::usage_source_fingerprint(source_id);
-        if self
+        let route_conflict = self
             .worker_records
             .get(worker_id)
-            .and_then(|record| record.missing_usage_sources.get(&fingerprint))
-            .is_some_and(|coverage| {
-                !coverage.route_sha256.is_empty() && !coverage.matches_route(route)
-            })
-        {
+            .and_then(|record| record.source_usage_records.get(&fingerprint))
+            .is_some_and(|(existing, _)| existing.usage.route != *route);
+        if route_conflict {
             return;
         }
-        self.record_worker_usage(worker_id, source_id, usage, priced_cost_microusd);
+        self.record_worker_usage_on_route(worker_id, source_id, route, usage, priced_cost_microusd);
     }
     #[cfg(test)]
     fn record_worker_usage(
@@ -8065,16 +7810,33 @@ impl SubAgentManager {
         usage: &Usage,
         priced_cost_microusd: Option<u64>,
     ) {
+        let route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
+            codewhale_config::ProviderKind::Deepseek,
+            "deepseek",
+            "deepseek-v4-flash",
+            Some("https://api.deepseek.com/v1"),
+            chrono::Utc::now(),
+        );
+        self.record_worker_usage_on_route(
+            worker_id,
+            source_id,
+            &route,
+            usage,
+            priced_cost_microusd,
+        );
+    }
+
+    #[cfg(test)]
+    fn record_worker_usage_on_route(
+        &mut self,
+        worker_id: &str,
+        source_id: &str,
+        route: &crate::cost_status::EffectiveRouteEnvelope,
+        usage: &Usage,
+        priced_cost_microusd: Option<u64>,
+    ) {
         if !usage_has_reported_data(usage) {
-            self.record_worker_missing_usage(
-                worker_id,
-                source_id,
-                crate::cost_status::MissingUsageCoverage {
-                    reason: crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
-                    money_metered: true,
-                    route_sha256: String::new(),
-                },
-            );
+            self.record_worker_missing_usage(worker_id, source_id, route);
             return;
         }
         let now_ms = epoch_millis_now();
@@ -8084,15 +7846,43 @@ impl SubAgentManager {
         };
         let source_fingerprint = crate::cost_status::usage_source_fingerprint(source_id);
         let promoted = record
-            .missing_usage_sources
-            .remove(&source_fingerprint)
-            .is_some();
-        if !record.usage_source_fingerprints.insert(source_fingerprint) && !promoted {
+            .source_usage_records
+            .get(&source_fingerprint)
+            .is_some_and(|(existing, _)| {
+                existing.settlement.as_ref().is_some_and(|rev| {
+                    matches!(
+                        rev.coverage,
+                        crate::llm_client::ProviderUsageCoverage::Missing
+                            | crate::llm_client::ProviderUsageCoverage::Incomplete
+                    )
+                })
+            });
+        if !record
+            .usage_source_fingerprints
+            .insert(source_fingerprint.clone())
+            && !promoted
+        {
             return;
         }
+        let settled = crate::cost_status::NativeUsageSource::capture(
+            source_id,
+            crate::cost_status::UsageSpendOwner::Auxiliary,
+        )
+        .reported(route, usage)
+        .persisted();
+        record
+            .source_usage_records
+            .insert(source_fingerprint, (settled, priced_cost_microusd));
         record.has_unreported_usage = record.legacy_unreported_usage
-            || record.missing_usage_overflowed
-            || !record.missing_usage_sources.is_empty();
+            || record.source_usage_records.values().any(|(src, _)| {
+                src.settlement.as_ref().is_some_and(|rev| {
+                    matches!(
+                        rev.coverage,
+                        crate::llm_client::ProviderUsageCoverage::Missing
+                            | crate::llm_client::ProviderUsageCoverage::Incomplete
+                    )
+                })
+            });
         record.updated_at_ms = now_ms;
         record.usage.input_tokens = Some(
             record
@@ -8133,7 +7923,7 @@ impl SubAgentManager {
         &mut self,
         worker_id: &str,
         source_id: &str,
-        coverage: crate::cost_status::MissingUsageCoverage,
+        route: &crate::cost_status::EffectiveRouteEnvelope,
     ) {
         let Some(record) = self.worker_records.get_mut(worker_id) else {
             return;
@@ -8142,12 +7932,16 @@ impl SubAgentManager {
         if record.usage_source_fingerprints.contains(&fingerprint) {
             return;
         }
-        if record.missing_usage_sources.len() < crate::cost_status::MAX_MISSING_USAGE_SOURCES {
-            record.usage_source_fingerprints.insert(fingerprint.clone());
-            record.missing_usage_sources.insert(fingerprint, coverage);
-        } else {
-            record.missing_usage_overflowed = true;
+        record.usage_source_fingerprints.insert(fingerprint.clone());
+        let unknown = crate::cost_status::RuntimeUsageDropRecord {
+            reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            source_id: source_id.to_string(),
+            route: route.clone(),
         }
+        .as_usage_record();
+        record
+            .source_usage_records
+            .insert(fingerprint, (unknown, None));
         record.has_unreported_usage = true;
         record.updated_at_ms = epoch_millis_now();
         self.persist_state_debounced();
@@ -9708,6 +9502,27 @@ impl SubAgentManager {
         Ok(id)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn register_test_write_claim(
+        &mut self,
+        owner: &str,
+        roots: Vec<String>,
+        workspace: &Path,
+    ) -> Result<(), String> {
+        let claim = self.namespace_write_claim(
+            workspace,
+            false,
+            WriteScopeClaim {
+                owner: owner.to_string(),
+                roots,
+                exact_files: Vec::new(),
+                contracts: Vec::new(),
+            },
+        )?;
+        self.register_claim_with_presence(claim, false, workspace)?;
+        Ok(())
+    }
+
     /// Test helper: seed a settled direct child whose result has not yet been
     /// delivered to the parent.
     #[cfg(any(test, feature = "test-support"))]
@@ -10327,28 +10142,14 @@ impl SubAgentManager {
                 ));
             }
         }
-        if write_capable {
-            // Isolated-worktree children mutate their own checkout, so they
-            // do not contend for the shared-workspace process lock (#5036).
-            if !options.isolated_worktree {
-                self.ensure_coordination_process_lock()
-                    .map_err(anyhow::Error::msg)?;
-                self.ensure_origin_writer_lock(&origin)
-                    .map_err(anyhow::Error::msg)?;
-            }
-            if self.coordination_process_lock_required && self.state_path.is_none() {
-                return Err(anyhow!(
-                    "write-capable sub-agent launch requires a durable coordination state path"
-                ));
-            }
+        if write_capable && !options.isolated_worktree {
+            self.refuse_live_selected_store_writers(&origin)
+                .map_err(anyhow::Error::msg)?;
         }
         let runtime_origin_turn_id = if runtime.context.runtime.active_thread_id.as_deref()
             == Some(runtime.context.state_namespace.as_str())
         {
-            runtime
-                .runtime_usage_lease
-                .as_ref()
-                .map(|lease| lease.owner().to_string())
+            runtime.compaction.runtime_cost_owner.clone()
         } else {
             None
         };
@@ -10574,7 +10375,9 @@ impl SubAgentManager {
                 self.resume_targets.insert(source.clone(), agent_id.clone());
             }
             self.agents.insert(agent_id.clone(), agent);
-            let persist_result = self.persist_state_synchronously();
+            let persist_result = self
+                .admitted_store_authority()
+                .and_then(|_| self.persist_state_synchronously());
             agent = self
                 .agents
                 .remove(&agent_id)
@@ -10887,8 +10690,6 @@ impl SubAgentManager {
         identity: &ChildActivationIdentity,
     ) -> Result<impl FnOnce() -> Result<()> + Send + 'static + use<>> {
         self.exact_activation(identity)?;
-        self.ensure_coordination_process_lock()
-            .map_err(anyhow::Error::msg)?;
         let (path, payload) = self
             .build_persist_payload()?
             .ok_or_else(|| anyhow!("child activation has no durable worker store"))?;
@@ -10913,16 +10714,7 @@ impl SubAgentManager {
             .clone()
             .ok_or_else(|| anyhow!("child activation has no store authority"))?;
         let identity = identity.clone();
-        let writer_locks = self
-            .coordination_process_lock
-            .lock()
-            .expect("coordination lock slot poisoned")
-            .iter()
-            .cloned()
-            .chain(self.workspace_writer_locks.values().cloned())
-            .collect::<Vec<_>>();
         Ok(move || {
-            let _writer_locks = writer_locks;
             store_authority.publish(&payload, None, None)?;
             let persisted = read_durable_subagent_store(&state_root, &path)?.state;
             let worker = persisted
@@ -10948,6 +10740,31 @@ impl SubAgentManager {
             }
             Ok(())
         })
+    }
+
+    pub(super) fn executed_actions_handle(
+        &self,
+        agent_id: &str,
+    ) -> Option<
+        Arc<std::sync::Mutex<Vec<crate::core::authority::auto_review::AutoReviewChildAction>>>,
+    > {
+        self.agents
+            .get(agent_id)
+            .map(|agent| Arc::clone(&agent.executed_actions))
+    }
+
+    fn take_executed_actions(
+        &self,
+        agent_id: &str,
+    ) -> Vec<crate::core::authority::auto_review::AutoReviewChildAction> {
+        let Some(agent) = self.agents.get(agent_id) else {
+            return Vec::new();
+        };
+        let mut guard = agent
+            .executed_actions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut *guard)
     }
 
     /// Get the current snapshot for an agent.
@@ -11509,13 +11326,10 @@ impl SubAgentManager {
             }
         }
         // Deliberately NOT here: a pass that terminalized every Running agent
-        // without a live task handle whenever this process lacked the
-        // coordination flock (#2.6). Two Codewhale sessions in one workspace is
-        // ordinary usage, and failure to append to a shared bookkeeping ledger
-        // is not evidence that live work has stopped. Liveness is decided by
-        // the heartbeat above — which is actual evidence — never by who owns
-        // the flock (owner report, 2026-08-04). See `docs/architecture/
-        // delegated-coordination.md` for what lock loss legitimately costs.
+        // without a live task handle because another session shares the
+        // workspace (#2.6). Two Codewhale sessions in one workspace is ordinary
+        // usage, and liveness is decided by the heartbeat above — which is
+        // actual evidence (owner report, 2026-08-04).
 
         // The retained lineage owns continuation lookup and descendant
         // control. Keep the agents projection while live work references it.
@@ -11645,11 +11459,12 @@ impl SubAgentManager {
     }
 
     /// #3803: whether the next sidebar refresh should attempt cleanup.
-    /// Read-only managers without a process lock only render their refusal.
-    /// Other managers use the last attempt's interval to bound cleanup locking.
+    /// A manager whose durable store is not admitted only renders its refusal;
+    /// admission is retried on the next delegated write. Other managers use the
+    /// last attempt's interval to bound cleanup locking.
     #[must_use]
     pub fn cleanup_due(&self, min_interval: Duration) -> bool {
-        (!self.coordination_snapshot_read_only || self.holds_coordination_process_lock())
+        (self.state_path.is_none() || self.store_authority.is_some())
             && self
                 .last_cleanup_at
                 .is_none_or(|last| last.elapsed() >= min_interval)
@@ -12169,7 +11984,7 @@ pub async fn resolve_child_activation_output(
     manager: &SharedSubAgentManager,
     identity: &ChildActivationIdentity,
 ) -> Result<(Vec<ContentBlock>, ChildActivationStopReason)> {
-    let (state_root, admission, output, stop_reason) = {
+    let (state_root, admission, output, stop_reason, return_review_warning) = {
         let held = manager.read().await;
         let agent = held.exact_activation(identity)?;
         if !agent
@@ -12200,15 +12015,25 @@ pub async fn resolve_child_activation_output(
             activation
                 .stop_reason
                 .ok_or_else(|| anyhow!("child output has no terminal reason"))?,
+            agent.return_review_warning.clone(),
         )
     };
     let checked_identity = identity.clone();
-    let content = tokio::task::spawn_blocking(move || {
+    let mut content = tokio::task::spawn_blocking(move || {
         read_child_activation_output(&state_root, &checked_identity, &admission, output.as_ref())
     })
     .await
     .map_err(|error| anyhow!("child output reader failed: {error}"))??;
     manager.read().await.exact_activation(identity)?;
+    if let Some(warning) = return_review_warning {
+        let mut updated = Vec::with_capacity(content.len() + 1);
+        updated.push(ContentBlock::Text {
+            text: warning,
+            cache_control: None,
+        });
+        updated.extend(content);
+        content = updated;
+    }
     Ok((content, stop_reason))
 }
 
@@ -13790,22 +13615,6 @@ fn ensure_subagent_store_cutover(root: &Path, path: &Path) -> Result<()> {
         let _ = codewhale_config::private_directory::PrivateDirectory::inspect(&legacy)?;
         return Ok(());
     }
-    let _migration = if legacy.is_dir() {
-        None
-    } else {
-        Some(
-            CoordinationProcessLock::acquire(root, true)
-                .map_err(|error| anyhow::Error::new(SubAgentCutoverBlocked(error)))?,
-        )
-    };
-    if path.exists() {
-        read_durable_subagent_store(root, path)?;
-        anyhow::ensure!(
-            legacy.is_dir(),
-            "delegated migration did not retain its legacy-write tombstone"
-        );
-        return Ok(());
-    }
     let staging = parent.join("subagents.v1.cutover");
     let backup_name = "legacy.json";
     let original_name = "original.json";
@@ -13882,6 +13691,20 @@ fn ensure_subagent_store_cutover(root: &Path, path: &Path) -> Result<()> {
     write_json_atomic(root, path, &DurableSubAgentStore::from_legacy(state))
 }
 
+fn write_state_gitignore(root: &Path, path: &Path) -> Result<()> {
+    let ignore = checked_subagent_state_path(root, &path.with_file_name(".gitignore"))?;
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&ignore)
+    {
+        Ok(mut file) => file.write_all(b"*\n")?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 fn store_writer_is_live(path: &Path, writer: &str) -> bool {
     if !valid_store_writer(writer) {
         return true;
@@ -13954,6 +13777,9 @@ impl SubAgentStoreAuthority {
         let _opening = acquire_store_transaction(root, path)?;
         ensure_subagent_store_cutover(root, path)?;
         let image = read_durable_subagent_store(root, path)?;
+        if let Err(error) = write_state_gitignore(root, path) {
+            tracing::warn!(target: "subagent", %error, "could not ignore the delegated state directory");
+        }
         sync_subagent_store_directory(
             path.parent()
                 .ok_or_else(|| anyhow!("delegated store has no parent"))?,
@@ -14102,8 +13928,6 @@ impl SubAgentStoreAuthority {
                         "usage",
                         "usage_source_fingerprints",
                         "source_usage_records",
-                        "missing_usage_sources",
-                        "missing_usage_overflowed",
                         "legacy_unreported_usage",
                         "has_unreported_usage",
                         "updated_at_ms",
@@ -14494,24 +14318,16 @@ pub fn new_shared_subagent_manager_with_timeout(
     )
 }
 
-pub fn new_shared_runtime_subagent_manager(
-    workspace: PathBuf,
-    workers: usize,
-) -> Result<SharedSubAgentManager> {
-    new_runtime_subagent_manager(workspace, workers, false)
-}
-
 pub fn new_exclusive_runtime_subagent_manager(
     workspace: PathBuf,
     workers: usize,
 ) -> Result<SharedSubAgentManager> {
-    new_runtime_subagent_manager(workspace, workers, true)
+    new_shared_runtime_subagent_manager(workspace, workers)
 }
 
-fn new_runtime_subagent_manager(
+pub fn new_shared_runtime_subagent_manager(
     workspace: PathBuf,
     workers: usize,
-    exclusive: bool,
 ) -> Result<SharedSubAgentManager> {
     type RuntimeManagerRegistry =
         parking_lot::Mutex<HashMap<PathBuf, (usize, std::sync::Weak<RwLock<SubAgentManager>>)>>;
@@ -14536,12 +14352,6 @@ fn new_runtime_subagent_manager(
         .with_admission_limit(workers)
         .with_launch_concurrency(workers)
         .with_state_path(state_path);
-    manager.coordination_exclusive = exclusive;
-    manager = manager.require_coordination_process_lock();
-    if let Err(error) = manager.ensure_coordination_process_lock() {
-        manager.coordination_snapshot_read_only = true;
-        tracing::warn!(target: "subagent", %error, "Runtime coordination is read-only; stop and restart this Runtime process after the other session exits to load current state and regain delegated writes");
-    }
     manager.load_state()?;
     let manager = Arc::new(RwLock::new(manager));
     managers.insert(key, (workers, Arc::downgrade(&manager)));
@@ -14551,7 +14361,7 @@ fn new_runtime_subagent_manager(
 /// Create a shared sub-agent manager with an explicit control-plane state root.
 ///
 /// `workspace` remains the child execution and file-authority root. The worker
-/// ledger, complete transcript artifacts and coordination lock live under
+/// ledger and complete transcript artifacts live under
 /// `state_root/.codewhale/state`. Distinct state roots intentionally do not
 /// share write claims; an embedding host that runs them against the same
 /// workspace must provide any required cross-session write coordination.
@@ -14594,25 +14404,8 @@ pub fn new_shared_subagent_manager_with_state_root_and_timeout(
     if let Some(state_path) = state_path {
         manager = manager.with_state_path(state_path);
     }
-    manager = if manager.store_cutover_blocked {
-        manager.into_session_private()
-    } else {
-        manager.require_coordination_process_lock()
-    };
-    if let Err(error) = manager.ensure_coordination_process_lock() {
-        tracing::warn!(target: "subagent", %error, "this session cannot append to the shared coordination ledger");
-    }
-    // Loading is a read. It was previously gated behind the *write* flock,
-    // which left a second session in the same workspace blind to every
-    // decision and write claim already recorded — and holding a default,
-    // empty ledger that would be written straight over the real one the
-    // moment the first session exited and the flock became acquirable
-    // (owner report, 2026-08-04). Read unconditionally; the write gate on
-    // `persist_state`/`persist_state_synchronously` still checks this
-    // manager's coordinator admission before publishing.
     if let Err(err) = manager.load_state() {
-        manager.coordination_snapshot_read_only = true;
-        tracing::warn!(target: "subagent", ?err, "failed to load sub-agent state; durable writes remain refused");
+        tracing::warn!(target: "subagent", ?err, "failed to load sub-agent state");
     }
     Arc::new(RwLock::new(manager))
 }
@@ -15911,9 +15704,6 @@ async fn spawn_subagent_from_input(
     let reserved_agent_id = member.and_then(|(_, agent_id)| agent_id.map(str::to_string));
     let exact_fleet_binding =
         workflow_identity.and_then(|identity| identity.exact_fleet_binding.as_ref());
-    if start_requests_read_only_role(&input) {
-        runtime.accept_verification = false;
-    }
     if exact_fleet_binding.is_none() {
         refresh_spawn_route_sources(&mut runtime);
     }
@@ -16981,9 +16771,11 @@ async fn run_subagent_task(mut task: SubAgentTask) {
         }
         None
     };
-    let outcome = std::panic::AssertUnwindSafe(supervise_subagent_task_body(
+    let runtime_for_supervision = task.runtime.clone();
+    let outcome = std::panic::AssertUnwindSafe(supervise_subagent_task_body_with_runtime(
         manager_handle.clone(),
         agent_id.clone(),
+        Some(runtime_for_supervision),
         run_subagent_task_inner(task),
     ))
     .catch_unwind()
@@ -17052,9 +16844,19 @@ async fn finish_terminal_result_owned(
     .await
 }
 
+#[cfg(test)]
 async fn supervise_subagent_task_body(
     manager_handle: SharedSubAgentManager,
     agent_id: String,
+    body: impl std::future::Future<Output = ()> + Send,
+) {
+    supervise_subagent_task_body_with_runtime(manager_handle, agent_id, None, body).await;
+}
+
+async fn supervise_subagent_task_body_with_runtime(
+    manager_handle: SharedSubAgentManager,
+    agent_id: String,
+    runtime: Option<SubAgentRuntime>,
     body: impl std::future::Future<Output = ()> + Send,
 ) {
     use futures_util::FutureExt;
@@ -17080,6 +16882,14 @@ async fn supervise_subagent_task_body(
     result.needs_input = None;
     // Verification precedes the write lock like the natural epilogue (#6210).
     ensure_worker_delivery_verified(&manager_handle, &agent_id, &result).await;
+    let return_review_warning = if let Some(runtime) = runtime.as_ref() {
+        apply_auto_review_return_check(runtime, &manager_handle, &agent_id, &mut result).await
+    } else {
+        None
+    };
+    if let Some(agent) = manager_handle.write().await.agents.get_mut(&agent_id) {
+        agent.return_review_warning = return_review_warning;
+    }
     // Arbitrated exactly like the natural terminal commit: when a
     // cancel or another terminal outcome already won, this is a
     // no-op rather than a second result.
@@ -17658,7 +17468,7 @@ async fn run_subagent_task_inner(mut task: SubAgentTask) {
     // Verification runs here too, so the fan-in completion and the terminal
     // persist both carry fresh verdicts with no git subprocess under the lock
     // (#6210).
-    let terminal = match result {
+    let mut terminal = match result {
         Ok(result) if backstop_budget => budget_partial_result(
             result,
             &child_wall_time_exhausted_reason(
@@ -17704,10 +17514,13 @@ async fn run_subagent_task_inner(mut task: SubAgentTask) {
         }
     };
     ensure_worker_delivery_verified(&task.manager_handle, &agent_id, &terminal).await;
-    // Every terminal path — successful/fatal model exit, explicit Stop,
-    // coordination interrupt, and stale cleanup — arbitrates and publishes
-    // through `finish_terminal_result`. Cancellation that already won leaves
-    // this late epilogue with no claim and therefore no duplicate fan-in.
+    let return_review_warning = apply_auto_review_return_check(
+        &task.runtime,
+        &task.manager_handle,
+        &agent_id,
+        &mut terminal,
+    )
+    .await;
     {
         let mut manager = task.manager_handle.write().await;
         if let Some(agent) = manager.agents.get_mut(&agent_id) {
@@ -17717,6 +17530,7 @@ async fn run_subagent_task_inner(mut task: SubAgentTask) {
             if let Some(foreground) = task._foreground_child_registration.take() {
                 agent.unsettled_foreground = Some(foreground);
             }
+            agent.return_review_warning = return_review_warning;
         }
     }
     match finish_terminal_result_owned(task.manager_handle.clone(), terminal).await {
@@ -17731,6 +17545,245 @@ async fn run_subagent_task_inner(mut task: SubAgentTask) {
             "child terminal receipt is uncertain; ownership retained"
         ),
     }
+}
+
+fn parent_in_auto_review(runtime: &SubAgentRuntime) -> bool {
+    runtime.parent_mode == AppMode::Agent
+        && runtime.context.approval_mode == codewhale_execpolicy::ApprovalMode::Auto
+}
+
+fn prepend_warning_to_terminal_result(terminal: &mut SubAgentResult, warning: &str) {
+    terminal.result = Some(
+        crate::core::authority::auto_review::prepend_subagent_return_warning(
+            terminal.result.as_deref().unwrap_or(""),
+            warning,
+        ),
+    );
+}
+
+async fn emit_return_review_gate_event(
+    runtime: &SubAgentRuntime,
+    agent_id: &str,
+    tool_id: &str,
+    decision: crate::core::events::ToolGateVerdict,
+    risk: Option<&str>,
+    reviewer_model: Option<String>,
+    reason: &str,
+    rule: Option<&str>,
+    action_summary: &str,
+) {
+    let Some(tx) = runtime.event_tx.as_ref() else {
+        return;
+    };
+    let event = Event::ToolGateDecision {
+        agent_id: Some(agent_id.to_string()),
+        tool_id: tool_id.to_string(),
+        tool_name: "subagent_return".to_string(),
+        gate: crate::core::events::ToolGate::AutoReviewGuardian,
+        decision,
+        risk: risk.map(str::to_string),
+        reviewer_model,
+        reason: crate::core::events::bounded_gate_reason(reason),
+        rule: rule.map(str::to_string),
+        receipt_id: None,
+        call_digest: None,
+        action_summary: Some(action_summary.to_string()),
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(2), tx.send(event)).await;
+}
+
+async fn record_return_check_usage(
+    runtime: &SubAgentRuntime,
+    agent_id: &str,
+    reviewer_model: &str,
+    usage: Option<&Usage>,
+) {
+    let Some(usage) = usage else {
+        return;
+    };
+    let review_route = runtime
+        .client
+        .effective_route_envelope(reviewer_model, chrono::Utc::now());
+    let origin = runtime.context.accounting_origin.clone();
+    #[cfg(any(test, feature = "test-support"))]
+    let origin = origin.or_else(|| runtime.accounting_origin.test_session_origin());
+    let source = crate::cost_status::NativeUsageSource::capture_with_origin(
+        format!("auto-review-return:{agent_id}"),
+        crate::cost_status::UsageSpendOwner::Auxiliary,
+        origin,
+    );
+    let record = source.reported(&review_route, usage);
+    let accounting = engine::ChildAccountingProjection::capture(runtime, agent_id);
+    accounting.publish_auxiliary_usage(&record).await;
+}
+
+async fn apply_auto_review_return_check(
+    runtime: &SubAgentRuntime,
+    manager: &SharedSubAgentManager,
+    agent_id: &str,
+    terminal: &mut SubAgentResult,
+) -> Option<String> {
+    use crate::core::authority::auto_review::{
+        build_subagent_return_reviewer_context, format_subagent_return_warning_flagged,
+        format_subagent_return_warning_unavailable,
+    };
+    use crate::core::engine::reviewer::{
+        ReviewerOutcome, consult_subagent_return_reviewer, resolve_reviewer_model,
+    };
+    use crate::core::events::ToolGateVerdict;
+
+    let actions = manager.read().await.take_executed_actions(agent_id);
+    if !parent_in_auto_review(runtime)
+        || matches!(
+            terminal.status,
+            SubAgentStatus::Cancelled | SubAgentStatus::Running
+        )
+        || actions.is_empty()
+    {
+        return None;
+    }
+
+    let env_text = match runtime.auto_review_policy.formatted_environment() {
+        Some(configured) => format!(
+            "Workspace: {}\n{configured}",
+            runtime.context.workspace.display()
+        ),
+        None => format!("Workspace: {}", runtime.context.workspace.display()),
+    };
+    let context_result = build_subagent_return_reviewer_context(
+        &runtime.root_person_messages,
+        runtime.root_approved_plan.as_deref(),
+        Some(runtime.parent_pinned_project_instructions.as_ref()),
+        Some(&env_text),
+        agent_id,
+        terminal.agent_type.as_str(),
+        subagent_status_name(&terminal.status),
+        &actions,
+    );
+
+    let configured_model = runtime.auto_review_policy.reviewer_model.as_deref();
+    let return_tool_id = format!("subagent-return:{agent_id}");
+    let return_summary = format!("return review ({} actions)", actions.len());
+    let (warning, verdict, verdict_label, risk, reviewer_model, rule, reason, usage) =
+        match context_result {
+            Err(reason) => (
+                format_subagent_return_warning_unavailable(reason),
+                ToolGateVerdict::Unavailable,
+                "unavailable",
+                None,
+                Some(resolve_reviewer_model(configured_model, &runtime.client)),
+                Some("guardian-unavailable"),
+                reason.to_string(),
+                None,
+            ),
+            Ok(context_text) => {
+                let review = consult_subagent_return_reviewer(
+                    &runtime.client,
+                    configured_model,
+                    &context_text,
+                    &runtime.cancel_token,
+                )
+                .await;
+                match review.outcome {
+                    ReviewerOutcome::Allow { risk, reason } => {
+                        record_return_check_usage(
+                            runtime,
+                            agent_id,
+                            &review.reviewer_model,
+                            review.usage.as_ref(),
+                        )
+                        .await;
+                        emit_return_review_gate_event(
+                            runtime,
+                            agent_id,
+                            &return_tool_id,
+                            ToolGateVerdict::Allowed,
+                            Some(risk.as_str()),
+                            Some(review.reviewer_model),
+                            &reason,
+                            Some("subagent-return"),
+                            &return_summary,
+                        )
+                        .await;
+                        return None;
+                    }
+                    ReviewerOutcome::Deny { risk, reason } => (
+                        format_subagent_return_warning_flagged(risk, &reason),
+                        ToolGateVerdict::Denied,
+                        "denied",
+                        Some(risk.as_str()),
+                        Some(review.reviewer_model),
+                        Some("subagent-return"),
+                        reason,
+                        review.usage,
+                    ),
+                    ReviewerOutcome::Unavailable { reason } => (
+                        format_subagent_return_warning_unavailable(&reason),
+                        ToolGateVerdict::Unavailable,
+                        "unavailable",
+                        None,
+                        Some(review.reviewer_model),
+                        Some("guardian-unavailable"),
+                        reason,
+                        review.usage,
+                    ),
+                    ReviewerOutcome::Cancelled => {
+                        let reason = "the return review was cancelled".to_string();
+                        (
+                            format_subagent_return_warning_unavailable(&reason),
+                            ToolGateVerdict::Unavailable,
+                            "unavailable",
+                            None,
+                            Some(review.reviewer_model),
+                            Some("guardian-unavailable"),
+                            reason,
+                            review.usage,
+                        )
+                    }
+                }
+            }
+        };
+
+    record_return_check_usage(
+        runtime,
+        agent_id,
+        reviewer_model.as_deref().unwrap_or(&runtime.model),
+        usage.as_ref(),
+    )
+    .await;
+
+    let return_input = serde_json::json!({
+        "agent_id": agent_id,
+        "role": terminal.agent_type.as_str(),
+        "action_count": actions.len(),
+    });
+    if let Some(parent_state) = runtime.parent_auto_review_state.as_ref() {
+        parent_state.lock().record_child_block(
+            agent_id,
+            &return_tool_id,
+            "subagent_return",
+            &return_input,
+            &return_summary,
+            rule,
+            &reason,
+            "auto_review_guardian",
+            verdict_label,
+        );
+    }
+    emit_return_review_gate_event(
+        runtime,
+        agent_id,
+        &return_tool_id,
+        verdict,
+        risk,
+        reviewer_model,
+        &reason,
+        rule,
+        &return_summary,
+    )
+    .await;
+    prepend_warning_to_terminal_result(terminal, &warning);
+    Some(warning)
 }
 
 /// Queued-row reason (addendum F5): why the child waits — a free slot, or the
@@ -18450,6 +18503,25 @@ fn checkpoint_messages_to_text(messages: &[Message]) -> String {
                     content,
                     ..
                 } => parts.push(format!("[code execution result {tool_use_id}: {content}]")),
+                ContentBlock::WebSearchToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } => parts.push(format!("[web search result {tool_use_id}: {content}]")),
+                ContentBlock::WebFetchToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } => parts.push(format!("[web fetch result {tool_use_id}: {content}]")),
+                ContentBlock::WebSearchCall { id, kind, .. } => parts.push(format!(
+                    "[web search call {} ({})]",
+                    id,
+                    kind.as_deref().unwrap_or("search")
+                )),
+                ContentBlock::ServerToolCalls { steps } => {
+                    parts.push(format!("[server tool calls: {} steps]", steps.len()))
+                }
+                ContentBlock::File { file_id } => parts.push(format!("[file {file_id}]")),
                 ContentBlock::ImageUrl { .. } => parts.push("[image]".to_string()),
                 ContentBlock::Thinking { .. } => {}
             }
@@ -19191,35 +19263,6 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
             )));
         }
     }
-    // Enforce the declared workspace policy: `worktree` materializes a real
-    // worktree request (the separate `worktree` field is the mechanism that
-    // actually creates one), and `shared` must not contradict an explicit
-    // worktree ask.
-    let worktree = match workspace_policy_str
-        .map(|policy| policy.trim().to_ascii_lowercase())
-        .as_deref()
-    {
-        None => worktree,
-        Some("worktree") => worktree.or(Some(SubAgentWorktreeRequest {
-            branch: None,
-            path: None,
-            base_ref: None,
-        })),
-        Some("shared") => {
-            if worktree.is_some() {
-                return Err(ToolError::invalid_input(
-                    "workspace_policy 'shared' conflicts with worktree isolation options; \
-                     use workspace_policy 'worktree' or drop the worktree fields.",
-                ));
-            }
-            worktree
-        }
-        Some(other) => {
-            return Err(ToolError::invalid_input(format!(
-                "Invalid workspace_policy '{other}'. Use shared or worktree."
-            )));
-        }
-    };
     let write_authority = match write_authority_str
         .map(|auth| auth.trim().to_ascii_lowercase())
         .as_deref()
@@ -21541,14 +21584,38 @@ fn parse_optional_worktree_request(
             "worktree=false conflicts with worktree isolation options".to_string(),
         ));
     }
-    if worktree_flag.unwrap_or(false) || isolation_wants_worktree || has_worktree_details {
-        Ok(Some(SubAgentWorktreeRequest {
-            branch,
-            path,
-            base_ref,
-        }))
-    } else {
-        Ok(None)
+    let requested =
+        if worktree_flag.unwrap_or(false) || isolation_wants_worktree || has_worktree_details {
+            Some(SubAgentWorktreeRequest {
+                branch,
+                path,
+                base_ref,
+            })
+        } else {
+            None
+        };
+
+    let workspace_policy = optional_input_str(input, &["workspace_policy", "workspacePolicy"])?
+        .map(|policy| policy.trim().to_ascii_lowercase());
+    match workspace_policy.as_deref() {
+        None => Ok(requested),
+        Some("worktree") => Ok(requested.or(Some(SubAgentWorktreeRequest {
+            branch: None,
+            path: None,
+            base_ref: None,
+        }))),
+        Some("shared") => {
+            if requested.is_some() {
+                return Err(ToolError::invalid_input(
+                    "workspace_policy 'shared' conflicts with worktree isolation options; \
+                     use workspace_policy 'worktree' or drop the worktree fields.",
+                ));
+            }
+            Ok(None)
+        }
+        Some(other) => Err(ToolError::invalid_input(format!(
+            "Invalid workspace_policy '{other}'. Use shared or worktree."
+        ))),
     }
 }
 
@@ -22089,13 +22156,15 @@ fn is_internal_coordination_state_tool(name: &str) -> bool {
 
 /// Raw target paths of a write-capable call, before claim normalization:
 /// the patch preflight's touched files for `apply_patch`/`File.patch`, else
-/// the `path`/`output_path` field. Feeds the child write carve-out (#5186);
+/// the field the tool writes through. Feeds the child write carve-out (#5186);
 /// claim enforcement keeps using the normalized [`mutation_paths`].
 fn raw_mutation_target_paths(name: &str, input: &Value) -> Vec<String> {
-    if name == "apply_patch"
+    let canonical = codewhale_execpolicy::canonical_action::canonical_action_alias(name, input);
+    if canonical == "apply_patch"
         || (name == "File" && input.get("action").and_then(Value::as_str) == Some("patch"))
     {
-        let mut patch_input = input.clone();
+        let mut patch_input =
+            codewhale_tools::param_alias::with_canonical_path_argument(input).into_owned();
         if let Some(object) = patch_input.as_object_mut() {
             object.remove("action");
         }
@@ -22103,33 +22172,24 @@ fn raw_mutation_target_paths(name: &str, input: &Value) -> Vec<String> {
             .map(|preflight| preflight.touched_files)
             .unwrap_or_default();
     }
-    input
-        .get("path")
-        .or_else(|| input.get("output_path"))
-        .and_then(Value::as_str)
-        .map(|path| vec![path.to_string()])
-        .unwrap_or_default()
+    crate::tools::registry::mutation_target_paths(name, input)
 }
 
 fn mutation_paths(name: &str, input: &Value, workspace: &Path) -> Result<Vec<String>> {
-    let raw_paths = if name == "apply_patch"
+    let canonical = codewhale_execpolicy::canonical_action::canonical_action_alias(name, input);
+    let raw_paths = if canonical == "apply_patch"
         || (name == "File" && input.get("action").and_then(Value::as_str) == Some("patch"))
     {
-        let mut patch_input = input.clone();
+        let mut patch_input =
+            codewhale_tools::param_alias::with_canonical_path_argument(input).into_owned();
         if let Some(object) = patch_input.as_object_mut() {
             object.remove("action");
         }
         codewhale_tools::patch_preflight::preflight_apply_patch(&patch_input)
             .map_err(|err| anyhow!(err.to_string()))?
             .touched_files
-    } else if let Some(path) = input
-        .get("path")
-        .or_else(|| input.get("output_path"))
-        .and_then(Value::as_str)
-    {
-        vec![path.to_string()]
     } else {
-        Vec::new()
+        crate::tools::registry::mutation_target_paths(name, input)
     };
     // One normalization per batch, not per path: every absolute spelling
     // below strips against the same canonical workspace.
@@ -22453,23 +22513,46 @@ pub fn spill_subagent_final_report(session_id: &str, result: &SubAgentResult) ->
         .map(|_| artifact_id)
 }
 
-fn summarize_subagent_result(result: &SubAgentResult) -> String {
-    if let Some(needs_input) = result.needs_input.as_ref() {
-        return format!("Needs input: {}", needs_input.question);
+fn split_subagent_return_warning(text: Option<&str>) -> (Option<&str>, Option<&str>) {
+    let Some(text) = text else {
+        return (None, None);
+    };
+    if !text.starts_with(crate::core::authority::auto_review::SUBAGENT_RETURN_WARNING_PREFIX) {
+        return (None, Some(text));
     }
-    match (&result.status, result.result.as_ref()) {
-        (SubAgentStatus::Completed, Some(text)) => text.clone(),
-        (SubAgentStatus::Completed, None) => "Completed (no final summary returned)".to_string(),
-        (SubAgentStatus::Interrupted(error), _) => format!("Interrupted: {error}"),
-        (SubAgentStatus::Cancelled, _) => "Cancelled".to_string(),
-        (SubAgentStatus::BudgetExhausted, Some(text)) => format!(
-            "Child budget exhausted before finishing; partial output preserved below.\n{text}"
-        ),
-        (SubAgentStatus::BudgetExhausted, None) => {
-            "Child budget exhausted before returning a final summary; inspect the checkpoint and split the work.".to_string()
+    match text.split_once("\n\n") {
+        Some((warning, rest)) => (Some(warning), (!rest.is_empty()).then_some(rest)),
+        None => (Some(text), None),
+    }
+}
+
+fn summarize_subagent_result(result: &SubAgentResult) -> String {
+    let (warning, body) = split_subagent_return_warning(result.result.as_deref());
+    let summary = if let Some(needs_input) = result.needs_input.as_ref() {
+        format!("Needs input: {}", needs_input.question)
+    } else {
+        match (&result.status, body) {
+            (SubAgentStatus::Completed, Some(text)) => text.to_string(),
+            (SubAgentStatus::Completed, None) if warning.is_some() => String::new(),
+            (SubAgentStatus::Completed, None) => {
+                "Completed (no final summary returned)".to_string()
+            }
+            (SubAgentStatus::Interrupted(error), _) => format!("Interrupted: {error}"),
+            (SubAgentStatus::Cancelled, _) => "Cancelled".to_string(),
+            (SubAgentStatus::BudgetExhausted, Some(text)) => format!(
+                "Child budget exhausted before finishing; partial output preserved below.\n{text}"
+            ),
+            (SubAgentStatus::BudgetExhausted, None) => {
+                "Child budget exhausted before returning a final summary; inspect the checkpoint and split the work.".to_string()
+            }
+            (SubAgentStatus::Failed(error), _) => format!("Failed: {error}"),
+            (SubAgentStatus::Running, _) => "Running".to_string(),
         }
-        (SubAgentStatus::Failed(error), _) => format!("Failed: {error}"),
-        (SubAgentStatus::Running, _) => "Running".to_string(),
+    };
+    match (warning, summary.is_empty()) {
+        (Some(warning), true) => warning.to_string(),
+        (Some(warning), false) => format!("{warning}\n\n{summary}"),
+        (None, _) => summary,
     }
 }
 
@@ -23153,10 +23236,29 @@ mod owner_scoped_coordination_tests {
         let mut manager = authority.try_write().unwrap();
         admit(&mut manager, &original);
         admit(&mut manager, &selected);
-        let independent =
-            SubAgentManager::new(selected.clone(), 2).require_coordination_process_lock();
-        assert!(independent.session_private);
-        assert!(independent.ensure_coordination_process_lock().is_ok());
+        let independent = SubAgentManager::new(selected.clone(), 2)
+            .with_state_path(default_state_path(&selected).unwrap());
+        assert!(independent.store_authority.is_some());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let state_directory = default_state_path(&selected)
+                .unwrap()
+                .parent()
+                .unwrap()
+                .to_path_buf();
+            let mode = fs::metadata(&state_directory).unwrap().permissions().mode();
+            fs::set_permissions(&state_directory, fs::Permissions::from_mode(0o000)).unwrap();
+            let unreadable =
+                manager.preflight_worker_coordination(&writer("selected", &selected, "src"));
+            fs::set_permissions(&state_directory, fs::Permissions::from_mode(mode)).unwrap();
+            assert!(unreadable.is_err(), "an unlistable store must fail closed");
+        }
+        let refused = manager
+            .preflight_worker_coordination(&writer("selected", &selected, "src"))
+            .unwrap_err();
+        assert!(refused.contains("another Codewhale session"), "{refused}");
+        drop(independent);
         manager
             .preflight_worker_coordination(&writer("original", &original, "src"))
             .unwrap();

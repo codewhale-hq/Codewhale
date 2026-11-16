@@ -206,8 +206,9 @@ pub(super) fn project_shell_jobs(
         while retained.len() > MAX_FINISHED_SHELLS {
             retained.pop_front();
         }
+        let label = FinishedWork::shell_display_label(&job.command, job.description.as_deref());
         let (outcome, summary) = shell_outcome(app.ui_locale, job);
-        let toast = format!("shell · {} · {summary}", job.command.trim());
+        let toast = format!("shell · {label} · {summary}");
         let level = if outcome == FinishedOutcome::Done {
             crate::tui::app::StatusToastLevel::Info
         } else {
@@ -218,6 +219,7 @@ pub(super) fn project_shell_jobs(
         app.background_finished.push(
             FinishedWork::shell(
                 &job.command,
+                job.description.as_deref(),
                 outcome,
                 summary,
                 std::time::Duration::from_millis(job.elapsed_ms),
@@ -232,20 +234,23 @@ pub(super) fn project_shell_jobs(
         .flatten()
         .cloned()
         .collect::<Vec<_>>();
-    let shell_entry = |job: &codewhale_engine::tools::shell::ShellJobSnapshot| TaskPanelEntry {
-        id: job.id.clone(),
-        status: shell_status_token(&job.status).to_string(),
-        prompt_summary: format!("shell: {}", job.command),
-        duration_ms: Some(job.elapsed_ms),
-        kind: TaskPanelEntryKind::Shell,
-        stale: job.stale,
-        elapsed_since_output_ms: job.elapsed_since_output_ms,
-        owner_agent_id: job.owner_agent_id.clone(),
-        owner_agent_name: job.owner_agent_name.clone(),
-        current_tool: None,
-        role: None,
-        files_touched: 0,
-        exit_code: job.exit_code,
+    let shell_entry = |job: &codewhale_engine::tools::shell::ShellJobSnapshot| {
+        let label = FinishedWork::shell_display_label(&job.command, job.description.as_deref());
+        TaskPanelEntry {
+            id: job.id.clone(),
+            status: shell_status_token(&job.status).to_string(),
+            prompt_summary: format!("shell: {label}"),
+            duration_ms: Some(job.elapsed_ms),
+            kind: TaskPanelEntryKind::Shell,
+            stale: job.stale,
+            elapsed_since_output_ms: job.elapsed_since_output_ms,
+            owner_agent_id: job.owner_agent_id.clone(),
+            owner_agent_name: job.owner_agent_name.clone(),
+            current_tool: None,
+            role: None,
+            files_touched: 0,
+            exit_code: job.exit_code,
+        }
     };
     // Only shells that really run in the background are jobs. A foreground
     // Bash wait is already the live tool card in the transcript; listing it

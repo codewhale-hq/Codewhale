@@ -38,20 +38,21 @@
 //!   does not execute `plugin.json` plugin runtimes or custom command bundles.
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
+use crate::bounded_tar::{
+    MAX_ENTRY_NAME_BYTES, entry_names_within_bound, map_stream_limit, open_bounded_tarball,
+    read_body_within, stream_cap,
+};
 use anyhow::{Context, Result, bail};
-use flate2::read::GzDecoder;
 use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use codewhale_net::guard::{
-    DnsPin, fetch_target_host, guarded_reqwest_client_builder, validate_fetch_destination,
-};
-use codewhale_net::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider, host_from_url};
+use codewhale_net::guard::{GuardedGet, PrivateTargets};
+use codewhale_net::network_policy::{Decision, NetworkPolicy, host_from_url};
 
 const MAX_INSTALL_REDIRECTS: usize = 5;
 
@@ -72,81 +73,24 @@ fn install_http_timeouts() -> (std::time::Duration, std::time::Duration) {
     }
 }
 
-fn reqwest_client(proxy: Option<reqwest::Proxy>, pin: DnsPin) -> reqwest::Client {
-    let (connect_timeout, total_timeout) = install_http_timeouts();
-    let mut builder = guarded_reqwest_client_builder()
-        .redirect(reqwest::redirect::Policy::none())
-        // The shared platform builder sets no timeouts; without a bound, a
-        // connection that opens but stalls (dead proxy, black-holed route)
-        // hangs installs and registry sync forever. Connect is bounded tightly;
-        // the total budget is generous for 5 MiB tarballs on slow links
-        // (registry sync fans out `SYNC_REGISTRY_CONCURRENCY` of these in
-        // parallel).
-        .connect_timeout(connect_timeout)
-        .timeout(total_timeout);
-    if let Some(proxy) = proxy {
-        builder = builder.proxy(proxy);
-    } else if let Some((host, ip)) = pin {
-        builder = builder.resolve(&host, std::net::SocketAddr::new(ip, 0));
-    }
-    builder.build().expect("build platform HTTP client")
-}
-
 async fn guarded_get(
     url: &str,
     network: &NetworkPolicy,
     if_none_match: Option<&str>,
 ) -> Result<reqwest::Response> {
-    let decider = NetworkPolicyDecider::new(network.clone(), None);
-    let mut current = reqwest::Url::parse(url).with_context(|| format!("invalid url: {url}"))?;
-    let mut initial_pin: Option<DnsPin> = (cfg!(any(test, feature = "test-support"))
-        && current.host_str() == Some("127.0.0.1"))
-    .then_some(None);
-    for _ in 0..=MAX_INSTALL_REDIRECTS {
-        let host = fetch_target_host(&current)?;
-        if matches!(network.decide(&host), Decision::Deny) {
-            bail!("network policy denies {host}");
-        }
-        let proxy = if initial_pin.is_some() {
-            None
+    let (connect_timeout, total_timeout) = install_http_timeouts();
+    let request = GuardedGet::new(url, network, "skill_install", PrivateTargets::Refuse)
+        .if_none_match(if_none_match)
+        .timeouts(connect_timeout, total_timeout)
+        .max_redirects(MAX_INSTALL_REDIRECTS);
+    #[cfg(any(test, feature = "test-support"))]
+    let request =
+        if reqwest::Url::parse(url).is_ok_and(|parsed| parsed.host_str() == Some("127.0.0.1")) {
+            request.trust_first_hop()
         } else {
-            codewhale_net::proxy::configured_mcp_proxy(&current, false, |key| std::env::var(key))?
+            request
         };
-        let pin = match initial_pin.take() {
-            Some(pin) => pin,
-            None => {
-                validate_fetch_destination(host, Some(&decider), "skill_install", proxy.is_none())
-                    .await?
-            }
-        };
-        let mut request = reqwest_client(proxy, pin).get(current.clone());
-        if let Some(etag) = if_none_match {
-            request = request.header(reqwest::header::IF_NONE_MATCH, etag);
-        }
-        let response = request
-            .send()
-            .await
-            .with_context(|| format!("failed to GET {current}"))?;
-        if !response.status().is_redirection() {
-            return Ok(response);
-        }
-        let Some(location) = response
-            .headers()
-            .get(reqwest::header::LOCATION)
-            .and_then(|value| value.to_str().ok())
-        else {
-            return Ok(response);
-        };
-        let next = response
-            .url()
-            .join(location)
-            .with_context(|| format!("invalid redirect location from {current}"))?;
-        if current.scheme() == "https" && next.scheme() != "https" {
-            bail!("redirect from {current} would downgrade HTTPS");
-        }
-        current = next;
-    }
-    bail!("{url} exceeded {MAX_INSTALL_REDIRECTS} redirects")
+    request.send().await
 }
 
 /// Cache directory for registry-synced skills.
@@ -334,6 +278,8 @@ pub enum InstallError {
     PathTraversal(String),
     #[error("entry is too large; uncompressed total would exceed {limit} bytes")]
     OversizedTarball { limit: u64 },
+    #[error("archive entry name is longer than {limit} bytes")]
+    EntryNameTooLong { limit: usize },
     #[error("missing SKILL.md in archive")]
     MissingSkillMd,
     #[error("symlinks are not allowed in skill tarballs")]
@@ -976,6 +922,8 @@ pub struct InstalledFromMarker {
     #[serde(default)]
     #[expect(dead_code)]
     content_digest: Option<String>,
+    #[serde(default)]
+    install_nonce: Option<String>,
 }
 
 impl InstalledFromMarker {
@@ -984,6 +932,10 @@ impl InstalledFromMarker {
             .as_deref()
             .filter(|s| !s.is_empty())
             .unwrap_or(self.checksum.as_str())
+    }
+
+    pub fn install_nonce(&self) -> Option<&str> {
+        self.install_nonce.as_deref().filter(|s| !s.is_empty())
     }
 }
 
@@ -1003,7 +955,47 @@ pub fn write_installed_from_v2(
     content_digest: &str,
     installed_name: &str,
 ) -> Result<()> {
-    let body = serde_json::json!({
+    write_installed_from_marker_v2(
+        skill_dir,
+        spec,
+        url,
+        source_checksum,
+        content_digest,
+        installed_name,
+        None,
+    )
+}
+
+pub fn write_installed_from_v2_with_nonce(
+    skill_dir: &Path,
+    spec: &str,
+    url: Option<&str>,
+    source_checksum: &str,
+    content_digest: &str,
+    installed_name: &str,
+    install_nonce: &str,
+) -> Result<()> {
+    write_installed_from_marker_v2(
+        skill_dir,
+        spec,
+        url,
+        source_checksum,
+        content_digest,
+        installed_name,
+        Some(install_nonce),
+    )
+}
+
+fn write_installed_from_marker_v2(
+    skill_dir: &Path,
+    spec: &str,
+    url: Option<&str>,
+    source_checksum: &str,
+    content_digest: &str,
+    installed_name: &str,
+    install_nonce: Option<&str>,
+) -> Result<()> {
+    let mut body = serde_json::json!({
         "schema_version": 2,
         "spec": spec,
         "url": url,
@@ -1012,6 +1004,12 @@ pub fn write_installed_from_v2(
         "installed_name": installed_name,
         "registry_version": null,
     });
+    if let (Some(nonce), Some(object)) = (install_nonce, body.as_object_mut()) {
+        object.insert(
+            "install_nonce".to_string(),
+            serde_json::Value::String(nonce.to_string()),
+        );
+    }
     fs::write(skill_dir.join(INSTALLED_FROM_MARKER), body.to_string()).with_context(|| {
         format!(
             "failed to write {} for {}",
@@ -1230,8 +1228,9 @@ enum DownloadAttempt {
 }
 
 /// Stream a URL into memory with a size cap. Aborts on the first read that
-/// would push the buffer over `max_size * 4` (the *4 accounts for compression;
-/// the unpack step still enforces `max_size` on the *uncompressed* bytes).
+/// would push the buffer over `(max_size * 4).min(4 GiB)` (accounting for
+/// compression while capping compressed downloads at 4 GiB; the unpack step
+/// still enforces `max_size` on the *uncompressed* bytes).
 async fn download_with_cap(
     url: &str,
     network: &NetworkPolicy,
@@ -1257,7 +1256,7 @@ async fn download_with_cap(
 /// Soft cap on the *compressed* download — well above `max_size` to allow for
 /// highly compressible payloads but still bounded.
 fn compressed_download_cap(max_size: u64) -> usize {
-    usize::try_from(max_size.saturating_mul(4)).unwrap_or(usize::MAX)
+    usize::try_from(stream_cap(max_size)).unwrap_or(usize::MAX)
 }
 
 struct StagedSkill {
@@ -1320,9 +1319,17 @@ struct TarballScan {
 /// reject path-traversal entries and symlinks inside the selected install
 /// subtree. We do not write anything in this pass; that's the second pass's job.
 fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
-    let cursor = std::io::Cursor::new(bytes);
-    let gz = GzDecoder::new(cursor);
-    let mut archive = tar::Archive::new(gz);
+    scan_tarball_entries(bytes, max_size).map_err(|err| oversized_if_stream_limit(err, max_size))
+}
+
+fn oversized_if_stream_limit(err: anyhow::Error, max_size: u64) -> anyhow::Error {
+    map_stream_limit(err, || {
+        InstallError::OversizedTarball { limit: max_size }.into()
+    })
+}
+
+fn scan_tarball_entries(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
+    let mut archive = open_bounded_tarball(bytes, max_size);
 
     let mut total_size: u64 = 0;
     let mut prefix: Option<(String, bool)> = None;
@@ -1337,6 +1344,12 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
         .context("failed to read tar entries (corrupt archive?)")?
     {
         let mut entry = entry.context("failed to read tar entry")?;
+        if !entry_names_within_bound(&entry) {
+            return Err(InstallError::EntryNameTooLong {
+                limit: MAX_ENTRY_NAME_BYTES,
+            }
+            .into());
+        }
         let header = entry.header().clone();
         let entry_type = header.entry_type();
         let path = entry
@@ -1351,15 +1364,9 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
             has_claude_plugin_manifest = true;
         }
 
-        // Track total size against `max_size` (uncompressed). We honor `header
-        // .size` rather than streaming-read every file; tar archives are
-        // self-describing so this is reliable for non-malicious inputs and
-        // catches the gzip-bomb case.
-        if let Ok(size) = header.size() {
-            total_size = total_size.saturating_add(size);
-            if total_size > max_size {
-                return Err(InstallError::OversizedTarball { limit: max_size }.into());
-            }
+        total_size = total_size.saturating_add(entry.size());
+        if total_size > max_size {
+            return Err(InstallError::OversizedTarball { limit: max_size }.into());
         }
 
         if entry_type == tar::EntryType::XGlobalHeader {
@@ -1394,10 +1401,9 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
                 .file_name()
                 .is_some_and(|name| name.eq_ignore_ascii_case("SKILL.md"))
         {
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .context("failed to read SKILL.md from archive")?;
+            let buf = read_body_within(&mut entry, max_size)
+                .context("failed to read SKILL.md from archive")?
+                .ok_or(InstallError::OversizedTarball { limit: max_size })?;
             skill_md_files.push((path_str, buf));
         }
     }
@@ -1508,9 +1514,12 @@ fn is_claude_plugin_manifest_path(path: &Path) -> bool {
 }
 
 fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) -> Result<()> {
-    let cursor = std::io::Cursor::new(bytes);
-    let gz = GzDecoder::new(cursor);
-    let mut archive = tar::Archive::new(gz);
+    extract_entries(scan, bytes, dest, max_size)
+        .map_err(|err| oversized_if_stream_limit(err, max_size))
+}
+
+fn extract_entries(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) -> Result<()> {
+    let mut archive = open_bounded_tarball(bytes, max_size);
 
     let mut total_size: u64 = 0;
     let prefix_with_root = if scan.skill_root.is_empty() {
@@ -1526,6 +1535,12 @@ fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) ->
         .context("failed to read tar entries (corrupt archive?)")?
     {
         let mut entry = entry.context("failed to read tar entry")?;
+        if !entry_names_within_bound(&entry) {
+            return Err(InstallError::EntryNameTooLong {
+                limit: MAX_ENTRY_NAME_BYTES,
+            }
+            .into());
+        }
         let header = entry.header().clone();
         let entry_type = header.entry_type();
         let path = entry
@@ -1583,14 +1598,10 @@ fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) ->
             }
             // Read into a buffer so we can enforce `max_size`. Files inside
             // a SKILL bundle are small; copying through a buffer is fine.
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .with_context(|| format!("failed to read {}", path.display()))?;
+            let buf = read_body_within(&mut entry, max_size.saturating_sub(total_size))
+                .with_context(|| format!("failed to read {}", path.display()))?
+                .ok_or(InstallError::OversizedTarball { limit: max_size })?;
             total_size = total_size.saturating_add(buf.len() as u64);
-            if total_size > max_size {
-                return Err(InstallError::OversizedTarball { limit: max_size }.into());
-            }
             let mut options = fs::OpenOptions::new();
             options.create_new(true).write(true);
             #[cfg(unix)]
@@ -1754,6 +1765,7 @@ fn hex_bytes(bytes: impl AsRef<[u8]>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bounded_tar::test_archives;
 
     fn skill_tarball(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
@@ -1766,6 +1778,92 @@ mod tests {
             builder.append_data(&mut header, path, *body).unwrap();
         }
         builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    const SKILL_MD: &[u8] = b"---\nname: demo\ndescription: test\n---\nbody";
+    const SMALL_CAP: u64 = 64 * 1024;
+    const HUGE_BODY: u64 = 16 * 1024 * 1024;
+
+    fn assert_oversized(err: &anyhow::Error) {
+        assert!(
+            matches!(
+                err.downcast_ref::<InstallError>(),
+                Some(InstallError::OversizedTarball { .. })
+            ),
+            "got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn scan_counts_the_size_a_pax_record_gives_an_entry() {
+        let bytes = test_archives::pax_size_record_archive(("SKILL.md", SKILL_MD), HUGE_BODY);
+        assert_oversized(&scan_tarball(&bytes, SMALL_CAP).err().unwrap());
+        let tmp = tempfile::tempdir().unwrap();
+        assert_oversized(
+            &stage_tarball(&bytes, tmp.path(), SMALL_CAP)
+                .map(|staged| staged.skill_name)
+                .unwrap_err(),
+        );
+    }
+
+    #[test]
+    fn scan_and_extract_bound_the_decoded_stream_for_extension_entries() {
+        let benign = skill_tarball(&[("SKILL.md", SKILL_MD, 0o644)]);
+        let benign_scan = scan_tarball(&benign, SMALL_CAP).unwrap();
+        for kind in [tar::EntryType::GNULongName, tar::EntryType::XHeader] {
+            let bytes =
+                test_archives::extension_body_archive(("SKILL.md", SKILL_MD), kind, HUGE_BODY);
+            assert_oversized(&scan_tarball(&bytes, SMALL_CAP).err().unwrap());
+            let tmp = tempfile::tempdir().unwrap();
+            assert_oversized(
+                &extract_into(&benign_scan, &bytes, tmp.path(), SMALL_CAP).unwrap_err(),
+            );
+        }
+    }
+
+    fn assert_name_too_long(err: &anyhow::Error) {
+        assert!(
+            matches!(
+                err.downcast_ref::<InstallError>(),
+                Some(InstallError::EntryNameTooLong { .. })
+            ),
+            "got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn entry_names_longer_than_the_bound_are_rejected_before_any_copy() {
+        let benign = skill_tarball(&[("SKILL.md", SKILL_MD, 0o644)]);
+        let benign_scan = scan_tarball(&benign, SMALL_CAP).unwrap();
+        let archives = [
+            test_archives::long_name_archive(("SKILL.md", SKILL_MD), MAX_ENTRY_NAME_BYTES + 1),
+            test_archives::long_name_archive(("SKILL.md", SKILL_MD), 100 * 1024),
+            test_archives::long_link_target_archive(
+                ("SKILL.md", SKILL_MD),
+                MAX_ENTRY_NAME_BYTES + 1,
+            ),
+        ];
+        for bytes in &archives {
+            assert_name_too_long(&scan_tarball(bytes, SMALL_CAP).err().unwrap());
+            let tmp = tempfile::tempdir().unwrap();
+            assert_name_too_long(
+                &extract_into(&benign_scan, bytes, tmp.path(), SMALL_CAP).unwrap_err(),
+            );
+        }
+        let at_bound =
+            test_archives::long_name_archive(("SKILL.md", SKILL_MD), MAX_ENTRY_NAME_BYTES);
+        assert_eq!(
+            scan_tarball(&at_bound, SMALL_CAP).unwrap().skill_name,
+            "demo"
+        );
+    }
+
+    #[test]
+    fn scan_bounds_the_decoded_stream_for_many_empty_entries() {
+        let bytes = test_archives::empty_entries_archive(("SKILL.md", SKILL_MD), 600);
+        assert_oversized(&scan_tarball(&bytes, SMALL_CAP).err().unwrap());
+        let few = test_archives::empty_entries_archive(("SKILL.md", SKILL_MD), 20);
+        assert_eq!(scan_tarball(&few, SMALL_CAP).unwrap().skill_name, "demo");
     }
 
     #[test]
@@ -2026,6 +2124,61 @@ mod tests {
             Err(err) => format!("{err:#}"),
         };
         assert!(err.contains("timed out"), "{err}");
+    }
+
+    async fn counting_server(
+        response: String,
+    ) -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&hits);
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let response = response.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        (addr, hits)
+    }
+
+    #[tokio::test]
+    async fn an_allow_listed_hop_to_a_local_address_is_refused() {
+        use std::sync::atomic::Ordering;
+        let (internal, internal_hits) = counting_server(
+            "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\ninternal-only"
+                .to_string(),
+        )
+        .await;
+        let location = format!("http://127.0.0.1:{}/secret", internal.port());
+        let (entry, _) = counting_server(format!(
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ))
+        .await;
+        let policy = NetworkPolicy {
+            default: Decision::Prompt.into(),
+            allow: vec!["127.0.0.1".to_string()],
+            deny: Vec::new(),
+            proxy: Vec::new(),
+            proxy_fake_ip_cidrs: Vec::new(),
+            audit: false,
+        };
+        let outcome = guarded_get(&format!("http://{entry}/start"), &policy, None).await;
+        assert!(
+            outcome.is_err(),
+            "the hop to an allow-listed local name must be refused"
+        );
+        assert_eq!(internal_hits.load(Ordering::SeqCst), 0);
     }
 
     #[test]

@@ -9,8 +9,8 @@ use crate::tools::todo::{SharedTodoList, TodoList, TodoListSnapshot, TodoStatus}
 use codewhale_lane::LaneRegistry;
 
 use super::{
-    BindingId, ChangeCtx, CompatPlanMetadata, CompatProjectionState, CompatTodoBinding, EdgeKind,
-    IdempotencyKey, NodeKind, NodeState, OperationBinding, OperationIntent, OperationObservation,
+    BindingId, ChangeCtx, CompatPlanMetadata, CompatTodoBinding, EdgeKind, IdempotencyKey,
+    NodeKind, NodeState, OperationBinding, OperationIntent, OperationObservation,
     OperationOwnerSnapshot, Provenance, WorkActivityEvent, WorkEdge, WorkEdgeId, WorkGraph,
     WorkGraphChange, WorkGraphSnapshot, WorkNode, WorkNodeId, WorkNodePatch,
     external_identity_is_well_formed, fleet_task_owner_snapshot, import_legacy,

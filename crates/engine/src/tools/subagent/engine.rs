@@ -6,17 +6,27 @@ use super::*;
 /// carries no ChildGrant, tool/config authority, job, kernel or new ledger.
 #[derive(Clone)]
 pub struct ChildAccountingProjection {
-    origin: SubAgentAccountingOrigin,
-    runtime_usage_lease: Option<crate::cost_status::RuntimeUsageLease>,
+    cost_scope: crate::cost_status::CostScopeToken,
+    accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
     manager: SharedSubAgentManager,
     mailbox: Option<Mailbox>,
     owner: String,
 }
 impl ChildAccountingProjection {
     pub(super) fn capture(runtime: &SubAgentRuntime, owner: &str) -> Self {
+        let accounting_origin = {
+            let origin = runtime.context.accounting_origin.clone();
+            #[cfg(any(test, feature = "test-support"))]
+            let origin = origin.or_else(|| runtime.accounting_origin.test_session_origin());
+            origin
+        };
+        let cost_scope = accounting_origin.as_ref().map_or(
+            runtime.accounting_origin.cost_scope,
+            crate::cost_status::NativeUsageOrigin::scope,
+        );
         Self {
-            origin: runtime.accounting_origin.clone(),
-            runtime_usage_lease: runtime.runtime_usage_lease.clone(),
+            cost_scope,
+            accounting_origin,
             manager: runtime.manager.clone(),
             mailbox: runtime.mailbox.clone(),
             owner: owner.to_owned(),
@@ -26,11 +36,11 @@ impl ChildAccountingProjection {
         &self,
         record: &crate::cost_status::RuntimeUsageRecord,
     ) -> std::io::Result<Option<u64>> {
-        let owner = self
-            .runtime_usage_lease
-            .as_ref()
-            .map(crate::cost_status::RuntimeUsageLease::owner);
-        crate::cost_status::report_runtime_usage_record(self.origin.cost_scope, owner, record)?;
+        crate::cost_status::record_runtime_usage(
+            self.cost_scope,
+            self.accounting_origin.as_ref(),
+            record,
+        );
         let reported = record.settlement.as_ref().is_some_and(|revision| {
             revision.coverage == crate::llm_client::ProviderUsageCoverage::Reported
                 || (revision.coverage == crate::llm_client::ProviderUsageCoverage::Incomplete
@@ -76,6 +86,14 @@ impl ChildAccountingProjection {
         .await
         .map_err(std::io::Error::other)
     }
+
+    pub(super) async fn publish_auxiliary_usage(
+        &self,
+        record: &crate::cost_status::RuntimeUsageRecord,
+    ) {
+        let _ = self.publish_async(record).await;
+        let _ = self.project_settled(record).await;
+    }
 }
 
 #[derive(Clone)]
@@ -90,6 +108,8 @@ pub struct ChildAuthority {
     pub(super) enforce_write_claim: bool,
     pub runtime: SubAgentRuntime,
     pub person_wait: Arc<PersonWaitClock>,
+    pub executed_actions:
+        Arc<std::sync::Mutex<Vec<crate::core::authority::auto_review::AutoReviewChildAction>>>,
 }
 impl std::fmt::Debug for ChildAuthority {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -123,6 +143,12 @@ impl ChildAuthority {
             scope,
             !runtime.would_exceed_depth(),
         );
+        let executed_actions = runtime
+            .manager
+            .try_read()
+            .ok()
+            .and_then(|manager| manager.executed_actions_handle(&owner_agent_id))
+            .unwrap_or_default();
         Arc::new(Self {
             grant,
             disallowed_tools: effective.denied_tools,
@@ -134,6 +160,7 @@ impl ChildAuthority {
             enforce_write_claim: true,
             runtime,
             person_wait: Arc::new(PersonWaitClock::default()),
+            executed_actions,
         })
     }
     /// One child builder used by Core's actual turn registry. The supplied
@@ -389,15 +416,12 @@ impl ChildAuthority {
         input: &Value,
     ) -> Result<Vec<String>> {
         self.validate(registry, name, input)?;
+        let canonical = codewhale_execpolicy::canonical_action::canonical_action_alias(name, input);
         let scope_aware_write = matches!(
-            name,
+            canonical,
             "write" | "edit" | "write_file" | "edit_file" | "apply_patch" | "fim_edit"
-        ) || (name == "File"
-            && input
-                .get("action")
-                .and_then(Value::as_str)
-                .is_some_and(|action| matches!(action, "write" | "edit" | "patch")))
-            || (name == "pandoc_convert" && input.get("output_path").is_some());
+        ) || (name == "pandoc_convert"
+            && input.get("output_path").is_some());
         if scope_aware_write && self.enforce_write_claim {
             let paths = mutation_paths(name, input, &self.runtime.context.workspace)?;
             if paths.is_empty() {
@@ -475,6 +499,20 @@ impl ChildAuthority {
             return;
         }
         let mut manager = self.coordination_manager.write().await;
+        let shared_checkout = manager
+            .worker_records
+            .get(&self.owner_agent_id)
+            .is_some_and(|record| {
+                normalize_subagent_workspace(&record.spec.workspace)
+                    == normalize_subagent_workspace(&manager.workspace)
+            });
+        if shared_checkout && let Some(mailbox) = self.runtime.mailbox.as_ref() {
+            let _ = mailbox.send(MailboxMessage::FileWrites {
+                agent_id: self.owner_agent_id.clone(),
+                turn_seq: 0,
+                paths: paths.clone(),
+            });
+        }
         if let Some(record) = manager.worker_records.get_mut(&self.owner_agent_id) {
             record.delivery_evidence.observed_writes.extend(paths);
         }
@@ -493,10 +531,7 @@ impl ChildAuthority {
                             || Self::role_can_delegate_writes(&self.agent_type)
                             || self.workspace_write_carve_out_permits(registry, name, input))
                 }
-                ApprovalRequirement::Required => {
-                    self.runtime.accept_verification
-                        && Self::is_delegated_builtin_verification(name, input)
-                }
+                ApprovalRequirement::Required => false,
             })
     }
     pub fn role_can_delegate_writes(agent_type: &FleetRole) -> bool {
@@ -520,17 +555,6 @@ impl ChildAuthority {
         crate::core::authority::paths_within_workspace_write_carve_out(
             &registry.context().workspace,
             &raw_mutation_target_paths(name, input),
-        )
-    }
-
-    pub fn is_delegated_builtin_verification(name: &str, input: &Value) -> bool {
-        use crate::tools::execution_envelope::{VerificationBound, classify_verification};
-
-        // Reuse the same classifier as the execution envelope. This prevents a
-        // second, looser notion of "test command" from growing in this module.
-        matches!(
-            classify_verification(canonical_action_alias(name, input), input),
-            Some(VerificationBound::Default | VerificationBound::Filter)
         )
     }
 
@@ -819,6 +843,11 @@ impl ChildAuthority {
             .collect::<Vec<_>>();
 
         for tool in &mut tools {
+            if tool.name == "bash"
+                && self.grant.shell == codewhale_agent_contract::worker_profile::ShellGrant::Inspect
+            {
+                crate::tools::shell::strip_readonly_bash_schema_properties(&mut tool.input_schema);
+            }
             if !is_action_family(&tool.name) {
                 continue;
             }
@@ -1181,8 +1210,6 @@ impl ChildJob {
             job: self.clone(),
             route,
             settled: None,
-            refused: false,
-            projected: false,
         }
     }
     pub fn record_activation_provider_stop(&self, reason: Option<&str>, failed: bool) {
@@ -1459,8 +1486,6 @@ pub struct ChildDispatchedRequest {
     job: Arc<ChildJob>,
     route: crate::cost_status::EffectiveRouteEnvelope,
     settled: Option<crate::cost_status::RuntimeUsageRecord>,
-    refused: bool,
-    projected: bool,
 }
 /// Only a typed authoritative rejection proves the dispatched operation
 /// produced no billable response. Network/body/cancellation ambiguity does not.
@@ -1482,24 +1507,6 @@ pub fn provider_request_refusal_proven(error: &anyhow::Error) -> bool {
     )
 }
 impl ChildDispatchedRequest {
-    pub(crate) fn settlement_acknowledged(&self) -> bool {
-        self.refused || self.projected
-    }
-    pub(crate) async fn bind_dispatch(
-        &mut self,
-        observation: &crate::llm_client::RequestRetryObservation,
-    ) -> std::io::Result<()> {
-        self.accounting_source
-            .bind_dispatch(&self.route, observation)?;
-        if let Some(record) = self.accounting_source.admit_dispatch(&self.route).await? {
-            self.job
-                .authority
-                .accounting_projection()
-                .project_settled(&record)
-                .await?;
-        }
-        Ok(())
-    }
     pub async fn settle_open_error(&mut self, error: &anyhow::Error) {
         let wire = self.accounting_source.observed_wire();
         let coverage = if wire.last_transmission.is_some() {
@@ -1515,34 +1522,19 @@ impl ChildDispatchedRequest {
                 _ => crate::llm_client::ProviderUsageCoverage::Missing,
             }
         };
-        let record = match self.accounting_source.prepare_observed(
+        let record = self.accounting_source.prepare_record(
             &self.route,
             &Usage::default(),
             coverage,
             crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
             &wire,
-        ) {
-            Ok(record) => record,
-            Err(error) => {
-                tracing::warn!(%error, "child refusal receipt was not admitted");
-                return;
-            }
-        };
+        );
         let accounting = self.job.authority.accounting_projection();
-        let published = accounting.publish_async(&record).await;
-        let projected = if published.is_ok() {
-            accounting.project_settled(&record).await
-        } else {
-            Err(std::io::Error::other("child refusal persistence failed"))
-        };
+        let _ = accounting.publish_async(&record).await;
+        if let Err(error) = accounting.project_settled(&record).await {
+            tracing::warn!(%error, "worker usage projection failed");
+        }
         self.settled = Some(record);
-        self.projected = projected.is_ok();
-        self.refused = self.projected
-            && matches!(
-                coverage,
-                crate::llm_client::ProviderUsageCoverage::Rejected
-                    | crate::llm_client::ProviderUsageCoverage::NotDispatched
-            );
     }
     pub async fn settle(&mut self, usage: &Usage, complete: bool) {
         let reason = if complete {
@@ -1557,31 +1549,19 @@ impl ChildDispatchedRequest {
         } else {
             crate::llm_client::ProviderUsageCoverage::Missing
         };
-        let record = match self.accounting_source.prepare_observed(
+        let record = self.accounting_source.prepare_record(
             &self.route,
             usage,
             coverage,
             reason,
             &self.accounting_source.observed_wire(),
-        ) {
-            Ok(record) => record,
-            Err(error) => {
-                tracing::warn!(%error, "child usage predecessor remains unsettled");
-                return;
-            }
-        };
+        );
         let accounting = self.job.authority.accounting_projection();
-        if let Err(error) = accounting.publish_async(&record).await {
-            tracing::warn!(%error, "child provider usage remains unacknowledged");
-        }
+        let _ = accounting.publish_async(&record).await;
         self.settled = Some(record.clone());
-        self.projected = match accounting.project_settled(&record).await {
-            Ok(()) => record.is_acknowledged(),
-            Err(error) => {
-                tracing::warn!(%error, "worker usage publication failed");
-                false
-            }
-        };
+        if let Err(error) = accounting.project_settled(&record).await {
+            tracing::warn!(%error, "worker usage publication failed");
+        }
     }
 }
 
@@ -1657,18 +1637,19 @@ pub(super) async fn run_child_agent(
     } else {
         prepare_child_membership(runtime, &assignment, &agent_id).await?
     };
-    let owner_agent_name = runtime
-        .manager
-        .read()
-        .await
-        .get_result(&agent_id)
-        .map(|agent| subagent_result_display_name(&agent))
-        .unwrap_or_else(|_| {
-            assignment
-                .role
-                .clone()
-                .unwrap_or_else(|| agent_type.as_str().to_owned())
-        });
+    let (owner_agent_name, executed_actions) = {
+        let manager = runtime.manager.read().await;
+        let name = manager
+            .get_result(&agent_id)
+            .map(|agent| subagent_result_display_name(&agent))
+            .unwrap_or_else(|_| {
+                assignment
+                    .role
+                    .clone()
+                    .unwrap_or_else(|| agent_type.as_str().to_owned())
+            });
+        (name, manager.executed_actions_handle(&agent_id))
+    };
     let identity = format!(
         "You are {owner_agent_name}. Scope: {}. Your final answer is delivered to the parent automatically; include the result and its evidence.",
         if runtime.worker_profile.permissions.write {
@@ -1677,13 +1658,18 @@ pub(super) async fn run_child_agent(
             "read-only"
         }
     );
-    let authority = ChildAuthority::capture(
+    let mut authority = ChildAuthority::capture(
         runtime.clone(),
         agent_type.clone(),
         agent_id.clone(),
         owner_agent_name,
         allowed_tools.clone(),
     );
+    if let Some(actions) = executed_actions
+        && let Some(auth) = Arc::get_mut(&mut authority)
+    {
+        auth.executed_actions = actions;
+    }
     let mut system =
         build_subagent_system_prompt_with_skills(&agent_type, &assignment, &runtime.context);
     if let Some(persona) = runtime
@@ -1816,12 +1802,20 @@ pub async fn forward_child_gate_observation(
     cancel: &CancellationToken,
     deadline: Option<tokio::time::Instant>,
 ) {
-    let Event::ToolGateDecision { agent_id, .. } = &mut event else {
+    let Event::ToolGateDecision {
+        agent_id,
+        receipt_id,
+        call_digest,
+        ..
+    } = &mut event
+    else {
         return;
     };
     if agent_id.is_none() {
         *agent_id = Some(owner.to_owned());
     }
+    *receipt_id = None;
+    *call_digest = None;
     let Some(tx) = runtime.event_tx.as_ref() else {
         return;
     };

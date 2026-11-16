@@ -24,7 +24,6 @@ use crate::tools::fetch_url::FetchUrlTool;
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
-use codewhale_repl::PythonRuntime;
 
 /// Registered name of the persistent RLM session tool.
 pub const RLM_TOOL_NAME: &str = "rlm";
@@ -417,21 +416,16 @@ impl RlmTool {
                 }
             }
 
-            let context_path = codewhale_repl::write_context_file(&body).map_err(|e| {
-                ToolError::execution_failed(format!("rlm_open: failed to stage context: {e}"))
-            })?;
-            let context_path = tempfile::TempPath::try_from_path(context_path).map_err(|e| {
-                ToolError::execution_failed(format!("rlm_open: failed to own staged context: {e}"))
-            })?;
-            let kernel = PythonRuntime::spawn_with_context(&context_path, &context.workspace)
+            let kernel = crate::rlm::kernel::spawn_kernel(context, Some(&body), None)
                 .await
                 .map_err(|e| ToolError::execution_failed(format!("rlm_open: {e}")))?;
-            // PythonRuntime now owns cleanup; a dropped startup kept the TempPath.
-            let context_path = context_path.keep().map_err(|e| {
-                ToolError::execution_failed(format!("rlm_open: context handoff failed: {e}"))
-            })?;
             let context_meta = ContextMeta::from_body(&body, source_type);
-            let session = RlmSession::new(name.clone(), kernel, context_meta.clone(), context_path);
+            let session = RlmSession::new(
+                name.clone(),
+                kernel,
+                context_meta.clone(),
+                context.elevated_sandbox_policy.clone(),
+            );
             let id = session.id.clone();
 
             let mut sessions = context.runtime.rlm_sessions.lock().await;
@@ -498,6 +492,14 @@ impl RlmTool {
             } => result?,
         };
         let config = session.config.clone();
+        if session.sandbox_policy != context.elevated_sandbox_policy {
+            session.kernel = None;
+            drop(session);
+            context.runtime.rlm_sessions.lock().await.remove(name);
+            return Err(ToolError::invalid_input(format!(
+                "rlm_eval: context `{name}` was closed because the sandbox policy changed after it was opened; open it again"
+            )));
+        }
 
         if let Some(caller) = context.rlm_caller.as_deref() {
             caller.validate_context(context)?;
@@ -759,7 +761,6 @@ impl RlmTool {
             "total_duration_ms": session.total_duration.as_millis() as u64,
             "peak_var_count": session.peak_var_count,
             "created_ms_ago": session.created_at.elapsed().as_millis() as u64,
-            "context_path": session.context_path,
         });
         drop(session);
 
@@ -1844,7 +1845,7 @@ mod tests {
             let marker = workspace.path().join("started.txt");
             let effect = workspace.path().join("must-not-run.txt");
             let code = format!(
-                "import pathlib, time\nstarted = pathlib.Path({})\nstarted_temporary = started.with_suffix('.tmp')\nstarted_temporary.write_text(_ctx_file)\nstarted_temporary.replace(started)\ntime.sleep(1)\npathlib.Path({}).write_text('effect after cancellation')",
+                "import pathlib, time\nstarted = pathlib.Path({})\nstarted_temporary = started.with_suffix('.tmp')\nstarted_temporary.write_text('started')\nstarted_temporary.replace(started)\ntime.sleep(1)\npathlib.Path({}).write_text('effect after cancellation')",
                 serde_json::to_string(&marker.to_string_lossy()).unwrap(),
                 serde_json::to_string(&effect.to_string_lossy()).unwrap(),
             );
@@ -1860,8 +1861,6 @@ mod tests {
                     } => {},
                 }
             }).await.expect("actual persistent Python round starts");
-            let context_path = PathBuf::from(std::fs::read_to_string(&marker).unwrap());
-            assert!(context_path.exists());
             if cancel_original {
                 cancel.cancel();
                 let result = tokio::time::timeout(Duration::from_secs(1), &mut call)
@@ -1874,10 +1873,6 @@ mod tests {
             drop(call);
             let session = get_session(&context, "running").await.unwrap();
             assert!(session.lock().await.kernel.is_none());
-            assert!(
-                !context_path.exists(),
-                "dropped interpreter releases its owned context file"
-            );
             drop(context);
             assert!(weak_caller.upgrade().is_none());
             tokio::time::sleep(Duration::from_millis(1200)).await;

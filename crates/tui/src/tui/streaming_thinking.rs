@@ -30,15 +30,17 @@ use crate::tui::history::HistoryCell;
 /// frame cap (see `frame_rate_limiter`) yet imperceptible as lag.
 ///
 /// Correctness: this only skips *intermediate* repaints. Appended content is
-/// never dropped — it lands in the cell immediately — and finalize always
-/// forces a bump so the final reasoning text is fully rendered.
+/// never dropped — it lands in the cell immediately — the display beat renders
+/// a skipped bump once the window has passed, and finalize always forces a
+/// bump so the final reasoning text is fully rendered.
 const THINKING_REVISION_THROTTLE: Duration = Duration::from_millis(100);
 
 /// Bump the active-cell revision for a streaming thinking mutation, but at
 /// most once per [`THINKING_REVISION_THROTTLE`] window. Returns whether a bump
-/// was actually emitted. Skipped bumps coalesce into the next one (or into the
-/// forced finalize bump), so no content is ever lost — only redundant
-/// intermediate re-wraps are dropped.
+/// was actually emitted. Skipped bumps coalesce into the next one, into
+/// [`render_owed_revision`] on a later display beat, or into the forced
+/// finalize bump, so no content is ever lost — only redundant intermediate
+/// re-wraps are dropped.
 fn bump_thinking_revision_throttled(app: &mut App, now: Instant) -> bool {
     let due = app
         .thinking_revision_last_bump_at
@@ -47,7 +49,15 @@ fn bump_thinking_revision_throttled(app: &mut App, now: Instant) -> bool {
         app.thinking_revision_last_bump_at = Some(now);
         app.bump_active_cell_revision();
     }
+    app.thinking_revision_owed = !due;
     due
+}
+
+pub(super) fn render_owed_revision(app: &mut App, now: Instant) -> bool {
+    if app.streaming_thinking_active_entry.is_none() {
+        app.thinking_revision_owed = false;
+    }
+    app.thinking_revision_owed && bump_thinking_revision_throttled(app, now)
 }
 
 /// Ensure an in-flight Thinking entry exists in `active_cell` and return its
@@ -76,7 +86,8 @@ pub(super) fn ensure_active_entry(app: &mut App) -> usize {
 /// committed to the cell immediately; the active-cell revision bump that
 /// triggers a re-wrap of the live tail is debounced to at most one per
 /// [`THINKING_REVISION_THROTTLE`] window (#1620). Skipped bumps coalesce into
-/// the next append or the forced finalize bump, so no content is ever lost.
+/// the next append, a later display beat or the forced finalize bump, so no
+/// content is ever lost.
 pub(super) fn append(app: &mut App, entry_idx: usize, text: &str) {
     append_at(app, entry_idx, text, Instant::now());
 }
@@ -308,6 +319,7 @@ pub(super) fn finalize_active_entry(app: &mut App, duration: Option<f32>, remain
     // the debounce window so the next thinking block's first chunk renders
     // immediately rather than being coalesced into a stale window.
     app.thinking_revision_last_bump_at = None;
+    app.thinking_revision_owed = false;
     app.bump_active_cell_revision();
     true
 }
@@ -424,6 +436,34 @@ mod tests {
             app.thinking_revision_last_bump_at.is_none(),
             "finalize should reset the throttle window for the next block"
         );
+    }
+
+    #[test]
+    fn a_paused_stream_renders_the_reasoning_it_already_received() {
+        let mut app = test_app();
+        let entry = ensure_active_entry(&mut app);
+        app.thinking_revision_last_bump_at = None;
+        let t0 = Instant::now();
+        append_at(&mut app, entry, "first slice ", t0);
+        let shown = app.active_cell_revision;
+        append_at(&mut app, entry, "held back", t0 + Duration::from_millis(16));
+        assert_eq!(app.active_cell_revision, shown);
+
+        assert!(!render_owed_revision(
+            &mut app,
+            t0 + Duration::from_millis(32)
+        ));
+        assert_eq!(app.active_cell_revision, shown);
+        assert!(render_owed_revision(
+            &mut app,
+            t0 + THINKING_REVISION_THROTTLE
+        ));
+        assert_eq!(app.active_cell_revision, shown.wrapping_add(1));
+        assert!(!render_owed_revision(
+            &mut app,
+            t0 + THINKING_REVISION_THROTTLE * 3
+        ));
+        assert_eq!(app.active_cell_revision, shown.wrapping_add(1));
     }
 
     /// #7123: a reasoning block that opens while the display beat still holds

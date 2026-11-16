@@ -4,8 +4,6 @@
 //! observe work through this trait without knowing whether the worker is a
 //! local child process or an SSH-backed remote command.
 
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -218,7 +216,7 @@ struct LocalWorkerProcess {
     #[cfg(unix)]
     session_id: libc::pid_t,
     #[cfg(unix)]
-    parent_death_writer: Option<std::io::PipeWriter>,
+    _parent_death_writer: Option<std::io::PipeWriter>,
     #[cfg(windows)]
     windows_job: FleetWindowsJob,
     host_kind: FleetHostKind,
@@ -387,7 +385,7 @@ impl LocalProcessFleetHostAdapter {
                 #[cfg(unix)]
                 session_id: pid as libc::pid_t,
                 #[cfg(unix)]
-                parent_death_writer,
+                _parent_death_writer: parent_death_writer,
                 #[cfg(windows)]
                 windows_job,
                 host_kind,
@@ -1520,7 +1518,7 @@ fn signal_unix_session(
     Ok(errors)
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 fn unix_pid_is_running(pid: libc::pid_t) -> bool {
     if !unix_pid_exists(pid) {
         return false;

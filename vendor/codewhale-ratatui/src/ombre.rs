@@ -45,6 +45,8 @@
 //! The palette is atmosphere, never state: no state word or mark is given a
 //! new hue, and nothing here runs on a clock or animates by itself.
 
+use std::time::Duration;
+
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -52,7 +54,7 @@ use ratatui::{
 };
 
 use crate::{
-    Paint, Role, Theme,
+    MotionMode, Paint, Role, Theme,
     color::{ColorDepth, blend, relative_luminance, rgb, tint_keeping_luminance},
     detect::Appearance,
     theme::{Ground, LOGO_BOTTOM, LOGO_TOP},
@@ -202,6 +204,17 @@ impl Ombre {
     /// colors it would have had at full size. Areas that do not intersect the
     /// buffer, zero-sized areas and `u16::MAX` extents are all safe.
     pub fn apply(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+        self.apply_at(area, buf, theme, Duration::ZERO, MotionMode::Still);
+    }
+
+    pub fn apply_at(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        theme: &Theme,
+        elapsed: Duration,
+        motion: MotionMode,
+    ) {
         // Only truecolor on a measured appearance has audited grounds to
         // move; every other profile keeps the theme exactly as it is.
         if theme.depth() != ColorDepth::TrueColor || !theme.caps().paints_tokens() {
@@ -216,13 +229,22 @@ impl Ombre {
             WaterPalette::Graphite if matches!(theme.caps().appearance, Appearance::Light) => {}
             WaterPalette::Graphite if theme.ground_kind() == Ground::Graphite => {}
             WaterPalette::Graphite => remap_graphite(area, visible, buf, theme),
-            _ => self.wash(area, visible, buf, theme),
+            _ => {
+                let drift = if motion.animates() {
+                    let seconds = (elapsed.as_secs() % 24) as f64
+                        + f64::from(elapsed.subsec_nanos()) / 1_000_000_000.;
+                    (seconds * std::f64::consts::TAU / 24.).sin() as f32 * 0.16
+                } else {
+                    0.
+                };
+                self.wash(area, visible, buf, theme, drift);
+            }
         }
     }
 
     /// Tint each structural ground toward the palette hue at its own ramp
     /// position.
-    fn wash(&self, requested: Rect, visible: Rect, buf: &mut Buffer, theme: &Theme) {
+    fn wash(&self, requested: Rect, visible: Rect, buf: &mut Buffer, theme: &Theme, drift: f32) {
         let Some((start, end)) = self.palette.stops(theme) else {
             return;
         };
@@ -259,6 +281,11 @@ impl Ombre {
                     0.0
                 } else {
                     sample.min(den) as f32 / den as f32
+                };
+                let t = if drift == 0. || t == 0. || t == 1. {
+                    t
+                } else {
+                    (t + drift * (std::f32::consts::PI * t).sin()).clamp(0., 1.)
                 };
                 let Some(hue) = hex_of(blend(rgb(end), rgb(start), t)) else {
                     continue;
