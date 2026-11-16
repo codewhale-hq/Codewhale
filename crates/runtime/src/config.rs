@@ -2366,7 +2366,7 @@ pub struct Config {
     /// Runtime API server tuning (`codewhale serve --http`). Currently only
     /// hosts the CORS allow-list extension (whalescale#255 / #561). When the
     /// table is absent, the daemon ships with localhost:3000 / localhost:1420
-    /// / tauri://localhost as the only allowed dev origins.
+    /// as the only allowed dev origins.
     #[serde(default)]
     pub runtime_api: Option<RuntimeApiConfig>,
 
@@ -2709,8 +2709,7 @@ pub struct VisionModelConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct RuntimeApiConfig {
     /// Additional CORS origins to allow on top of the built-in defaults
-    /// (`http://localhost:{3000,1420}`, `http://127.0.0.1:{3000,1420}`,
-    /// `tauri://localhost`). Useful when developing a UI against a non-default
+    /// (`http://localhost:{3000,1420}`, `http://127.0.0.1:{3000,1420}`). Useful when developing a UI against a non-default
     /// dev server port (e.g. Vite's default `:5173`).
     ///
     /// Resolution order (highest priority first): `--cors-origin` CLI flag,

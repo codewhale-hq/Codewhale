@@ -2870,7 +2870,7 @@ Fleet 流（`/v1/fleet/runs/{run_id}/events`）保留自己的结束帧，
 
 运行时 API 自带一份内置的开发源站允许名单：
 `http://localhost:3000`、`http://127.0.0.1:3000`、`http://localhost:1420`、
-`http://127.0.0.1:1420`、`tauri://localhost`。要添加更多源站（例如
+`http://127.0.0.1:1420`。要添加更多源站（例如
 在 Vite 默认的 `:5173` 上开发 UI 时），可用以下任一方式：
 
 - CLI 标志（可重复）：`codewhale serve --http --cors-origin http://localhost:5173`

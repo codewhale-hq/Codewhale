@@ -1213,8 +1213,8 @@ pub struct RuntimeApiOptions {
     pub port: u16,
     pub workers: usize,
     /// Additional CORS origins to allow on top of the built-in defaults
-    /// (`http://localhost:{3000,1420}`, `http://127.0.0.1:{3000,1420}`,
-    /// `tauri://localhost`). Populated by `--cors-origin` (repeatable),
+    /// (`http://localhost:{3000,1420}`, `http://127.0.0.1:{3000,1420}`).
+    /// Populated by `--cors-origin` (repeatable),
     /// `CODEWHALE_CORS_ORIGINS` (comma-separated, `DEEPSEEK_CORS_ORIGINS`
     /// as alias), and `[runtime_api] cors_origins` in `config.toml`.
     /// Whalescale#255 / #561.
@@ -15330,7 +15330,6 @@ const DEFAULT_CORS_ORIGINS: &[&str] = &[
     "http://127.0.0.1:3000",
     "http://localhost:1420",
     "http://127.0.0.1:1420",
-    "tauri://localhost",
 ];
 
 fn cors_layer(extra_origins: &[String]) -> CorsLayer {

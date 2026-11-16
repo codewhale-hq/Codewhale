@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use super::{ApiError, RuntimeApiState, map_thread_err};
 
-/// Live context-window posture for one thread — the facts the GPUI usage
+/// Live context-window posture for one thread — the facts a usage
 /// panel cannot reconstruct from turn receipts. `input_tokens` is the same
 /// conservative estimate the in-app context meter shows; `billed_input_tokens`
 /// is the last provider-counted prompt size when one exists.

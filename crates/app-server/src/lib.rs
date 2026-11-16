@@ -92,7 +92,6 @@ const DEFAULT_CORS_ORIGINS: &[&str] = &[
     "http://localhost:5173",
     "http://127.0.0.1",
     "http://127.0.0.1:1420",
-    "tauri://localhost",
 ];
 
 #[derive(Clone)]

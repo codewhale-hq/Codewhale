@@ -3901,7 +3901,7 @@ refusal.
 
 The runtime API ships with a built-in dev-origin allow-list:
 `http://localhost:3000`, `http://127.0.0.1:3000`, `http://localhost:1420`,
-`http://127.0.0.1:1420`, `tauri://localhost`. To add additional origins (e.g.
+`http://127.0.0.1:1420`. To add additional origins (e.g.
 when developing a UI on Vite's default `:5173`), use any of:
 
 - CLI flag (repeatable): `codewhale serve --http --cors-origin http://localhost:5173`

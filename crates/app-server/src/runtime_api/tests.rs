@@ -25401,7 +25401,7 @@ async fn provider_models_refresh_with_vllm_base_url_env_persists_across_restart(
     wiremock::Mock::given(wiremock::matchers::method("GET"))
         .and(wiremock::matchers::path("/v1/models"))
         .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
-            json!({"object": "list", "data": [{"id": "gpui-fixture", "object": "model"}]}),
+            json!({"object": "list", "data": [{"id": "fixture-model", "object": "model"}]}),
         ))
         .expect(1)
         .mount(&upstream)
@@ -25457,8 +25457,8 @@ async fn provider_models_refresh_with_vllm_base_url_env_persists_across_restart(
             .as_array()
             .context("models array")?
             .iter()
-            .any(|model| model["id"] == "gpui-fixture"),
-        "expected gpui-fixture immediately after refresh, got {immediate}"
+            .any(|model| model["id"] == "fixture-model"),
+        "expected fixture-model immediately after refresh, got {immediate}"
     );
 
     let providers_before_restart: Value = client
@@ -25518,8 +25518,8 @@ async fn provider_models_refresh_with_vllm_base_url_env_persists_across_restart(
             .as_array()
             .context("models array after restart")?
             .iter()
-            .any(|model| model["id"] == "gpui-fixture"),
-        "expected gpui-fixture after restart, got {after_restart}"
+            .any(|model| model["id"] == "fixture-model"),
+        "expected fixture-model after restart, got {after_restart}"
     );
 
     let providers_after_restart: Value = client
@@ -27533,7 +27533,7 @@ mod thread_snapshot_ownership {
 async fn switch_provider_away_and_back_keeps_the_root_default_with_its_route() -> Result<()> {
     // Device-test regression: `provider = "openai"` with the model only in the
     // root `default_text_model`. Switching to a pass-through route used to leave
-    // the alias at the root, so that route inherited `gpui-fixture`, the
+    // the alias at the root, so that route inherited `fixture-model`, the
     // provider list advertised OpenAI's catalog default (`gpt-5.6`), and the
     // desktop model chip landed there.
     let root = std::env::temp_dir().join(format!("codewhale-switch-root-alias-{}", Uuid::new_v4()));
@@ -27542,7 +27542,7 @@ async fn switch_provider_away_and_back_keeps_the_root_default_with_its_route() -
     fs::write(
         &config_file,
         r#"provider = "openai"
-default_text_model = "gpui-fixture"
+default_text_model = "fixture-model"
 
 [providers.openai]
 api_key = "sk-test"
@@ -27565,7 +27565,7 @@ api_key = "sk-or-test"
     assert_eq!(status, StatusCode::OK, "body: {away}");
     assert_ne!(
         away["model"].as_str(),
-        Some("gpui-fixture"),
+        Some("fixture-model"),
         "openrouter must not inherit openai's root default: {away}"
     );
     let persisted = fs::read_to_string(&config_file)?;
@@ -27587,15 +27587,19 @@ api_key = "sk-or-test"
         .unwrap_or_default();
     assert_eq!(
         openai["default_model"].as_str(),
-        Some("gpui-fixture"),
+        Some("fixture-model"),
         "the inactive openai entry must keep its configured model, not the catalog default: {openai}"
     );
 
     let (status, back) =
         post_switch_provider(&client, &addr, "openai", &serde_json::json!({})).await;
     assert_eq!(status, StatusCode::OK, "body: {back}");
-    assert_eq!(back["model"].as_str(), Some("gpui-fixture"), "body: {back}");
-    assert_eq!(get_config(&client, &addr).await["model"], "gpui-fixture");
+    assert_eq!(
+        back["model"].as_str(),
+        Some("fixture-model"),
+        "body: {back}"
+    );
+    assert_eq!(get_config(&client, &addr).await["model"], "fixture-model");
 
     handle.abort();
     Ok(())
@@ -27612,7 +27616,7 @@ async fn switch_provider_does_not_resurrect_a_shadowed_legacy_root_model() -> Re
     fs::write(
         &config_file,
         r#"model = "deepseek-v4-flash"
-default_text_model = "gpui-fixture"
+default_text_model = "fixture-model"
 provider = "openai"
 
 [providers.openai]
@@ -27642,12 +27646,20 @@ api_key = "sk-or-test"
             .contains("deepseek-v4-flash"),
         "body: {away}"
     );
-    assert_ne!(away["model"].as_str(), Some("gpui-fixture"), "body: {away}");
+    assert_ne!(
+        away["model"].as_str(),
+        Some("fixture-model"),
+        "body: {away}"
+    );
 
     let (status, back) =
         post_switch_provider(&client, &addr, "openai", &serde_json::json!({})).await;
     assert_eq!(status, StatusCode::OK, "body: {back}");
-    assert_eq!(back["model"].as_str(), Some("gpui-fixture"), "body: {back}");
+    assert_eq!(
+        back["model"].as_str(),
+        Some("fixture-model"),
+        "body: {back}"
+    );
 
     handle.abort();
     Ok(())
