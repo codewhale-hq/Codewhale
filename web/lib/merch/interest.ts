@@ -138,7 +138,7 @@ export async function handleMerchInterest(request: Request, env?: MerchInterestE
 }
 async function requireAdmin(request: Request, auth: CommunityAgentEnv) {
   const sid = request.headers.get("cookie")?.split(";").map(cookie => cookie.trim()).find(cookie => cookie.startsWith("mt_sid="))?.slice(7);
-  if (!auth.MAINTAINER_TOKEN || !await validateSession(auth.CURATED_KV, sid)) throw new InterestError(401, "unauthorized", "Maintainer sign-in is required.");
+  if (!await validateSession(auth.CURATED_KV, sid, auth.MAINTAINER_TOKEN)) throw new InterestError(401, "unauthorized", "Maintainer sign-in is required.");
 }
 export async function handleAdminMerchInterest(request: Request, env?: MerchInterestEnv, authEnv?: CommunityAgentEnv): Promise<Response> {
   try {

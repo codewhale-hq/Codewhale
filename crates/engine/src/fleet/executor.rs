@@ -18,8 +18,6 @@
 //! never render a child session, which is what keeps the orchestrator light at
 //! high fanout.
 
-#![allow(dead_code)]
-
 use anyhow::Result;
 use codewhale_config::FleetExecConfig;
 use codewhale_protocol::fleet::{
@@ -529,7 +527,7 @@ fn parse_exec_terminal_route(value: &serde_json::Value) -> ParsedTerminalRoute {
     route.map_or(ParsedTerminalRoute::Invalid, ParsedTerminalRoute::Valid)
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 fn map_exec_terminal_route(line: &str) -> Option<FleetWorkerReportedRoute> {
     let value: serde_json::Value = serde_json::from_str(line).ok()?;
     match parse_exec_terminal_route(&value) {

@@ -2,7 +2,22 @@
 //!
 //! Tracks conversation history, token usage, and session metadata.
 
-use crate::project_context::ProjectContext;
+use crate::project_context::{PinnedProjectInstructions, ProjectContext};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MessageAuthorship {
+    Person,
+    ApprovedPlan,
+    #[default]
+    NotPerson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedIntentMessage {
+    pub authorship: MessageAuthorship,
+    pub text: String,
+    pub message_index: Option<usize>,
+}
 use codewhale_core::prefix_cache::PrefixStabilityManager;
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_models::{Message, SystemPrompt, Usage};
@@ -377,6 +392,8 @@ pub struct Session {
 
     /// Project context loaded from AGENTS.md, etc.
     pub project_context: Option<ProjectContext>,
+    pub pinned_project_instructions: PinnedProjectInstructions,
+    pub recorded_intents: Vec<RecordedIntentMessage>,
 
     /// Repo-aware working set for context management.
     pub working_set: WorkingSet,
@@ -408,6 +425,8 @@ pub struct Session {
     /// boundaries so the next send can compact on last-turn pressure
     /// (#5577). Cleared when history is rewritten (compaction, restore).
     pub latest_parent_input_tokens: Option<u32>,
+
+    pub agent_preset: Option<String>,
 }
 
 /// Cumulative usage statistics for a session.
@@ -471,6 +490,8 @@ impl Session {
             snapshot_source: None,
             id: uuid::Uuid::new_v4().to_string(),
             project_context: None,
+            pinned_project_instructions: PinnedProjectInstructions::default(),
+            recorded_intents: Vec::new(),
             last_system_prompt_hash: None,
             pending_prefix_change_reason: None,
             pinned_prompt_context: None,
@@ -481,6 +502,7 @@ impl Session {
             tool_activation_cache: ToolActivationCache::default(),
             messages_revision: 0,
             latest_parent_input_tokens: None,
+            agent_preset: None,
         }
     }
 
@@ -496,8 +518,60 @@ impl Session {
     /// atomically.
     pub fn replace_messages(&mut self, messages: Vec<Message>) {
         self.messages = messages.into();
+        for intent in &mut self.recorded_intents {
+            intent.message_index = None;
+        }
         self.messages_revision = self.messages_revision.saturating_add(1);
         self.latest_parent_input_tokens = None;
+    }
+
+    pub fn record_person_message(&mut self, text: impl Into<String>, message_index: Option<usize>) {
+        let text = text.into();
+        if text.trim().is_empty() {
+            return;
+        }
+        self.recorded_intents.push(RecordedIntentMessage {
+            authorship: MessageAuthorship::Person,
+            text,
+            message_index,
+        });
+    }
+
+    pub fn record_approved_plan(&mut self, text: impl Into<String>, message_index: Option<usize>) {
+        let text = text.into();
+        if text.trim().is_empty() {
+            return;
+        }
+        self.recorded_intents.push(RecordedIntentMessage {
+            authorship: MessageAuthorship::ApprovedPlan,
+            text,
+            message_index,
+        });
+    }
+
+    pub fn person_messages(&self) -> Vec<String> {
+        self.recorded_intents
+            .iter()
+            .filter(|intent| intent.authorship == MessageAuthorship::Person)
+            .map(|intent| intent.text.clone())
+            .collect()
+    }
+
+    pub fn approved_plan(&self) -> Option<&str> {
+        self.recorded_intents
+            .iter()
+            .rev()
+            .find(|intent| intent.authorship == MessageAuthorship::ApprovedPlan)
+            .map(|intent| intent.text.as_str())
+    }
+
+    pub fn truncate_intents_to(&mut self, message_len: usize) {
+        self.recorded_intents
+            .retain(|intent| intent.message_index.is_none_or(|index| index < message_len));
+    }
+
+    pub fn clear_recorded_intents(&mut self) {
+        self.recorded_intents.clear();
     }
 
     /// Bump `messages_revision` without otherwise mutating the message list.
@@ -559,6 +633,7 @@ mod tests {
             output_audio_tokens: None,
 
             request_usages: Vec::new(),
+            safety_tokens: None,
         };
         usage.add(&api_usage);
         assert!(usage.cache_creation_input_tokens.is_none());
@@ -582,6 +657,7 @@ mod tests {
             output_audio_tokens: None,
 
             request_usages: Vec::new(),
+            safety_tokens: None,
         };
         usage.add(&api_usage);
         assert_eq!(usage.cache_read_input_tokens, Some(30));
@@ -608,6 +684,7 @@ mod tests {
             output_audio_tokens: None,
 
             request_usages: Vec::new(),
+            safety_tokens: None,
         };
         usage.add(&api_usage);
         // 0 is a valid observed value, must NOT be converted to None

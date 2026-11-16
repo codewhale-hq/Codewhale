@@ -37,6 +37,8 @@ pub(super) fn end_turn_scoped_denials(app: &mut App) {
 pub(super) fn reset_approval_scope_for_new_conversation(app: &mut App) {
     app.approval_session_denied.clear();
     app.approval_session_approved.clear();
+    app.auto_review_blocked_receipts.clear();
+    app.pending_auto_review_retry = None;
     crate::tui::pending_requests::clear_all(app);
 }
 
@@ -113,7 +115,7 @@ pub(super) fn app_auto_approve_enabled(app: &App) -> bool {
 /// Shell/trust bits do not affect disposition; mode + approval_mode + the
 /// full-access shape (Bypass) are what the shared resolver consults.
 fn app_turn_authority_for_approvals(app: &App) -> codewhale_engine::core::authority::TurnAuthority {
-    codewhale_engine::core::authority::TurnAuthority::from_effective_fields(
+    codewhale_engine::core::authority::TurnAuthority::for_tui_surface(
         app.mode,
         true,
         false,

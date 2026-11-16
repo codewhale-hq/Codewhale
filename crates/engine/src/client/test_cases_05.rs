@@ -118,6 +118,8 @@
             stream: Some(stream),
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         };
         let client = if custom {
             custom_mock_client_for_identity(&server, "aicraft")
@@ -542,6 +544,8 @@
                     messages: vec![], max_tokens: 64, system: None, tool_choice: None,
                     metadata: None, thinking: None, reasoning_effort: None, stream: None,
                     temperature: None, top_p: None,
+                    safety_check: None,
+                    title: None,
                 },
                 ProviderKind::Openai, "https://api.openai.com/v1", false, None,
             ).expect("chat projection").body["tools"][0].clone();
@@ -575,6 +579,8 @@
                     messages: vec![], max_tokens: 64, system: None, tool_choice: None,
                     metadata: None, thinking: None, reasoning_effort: None, stream: None,
                     temperature: None, top_p: None,
+                    safety_check: None,
+                    title: None,
                 },
                 ProviderKind::Openai, "https://api.fireworks.ai/inference/v1", false, None,
             ).expect("chat projection").body["tools"][0].clone();
@@ -606,6 +612,8 @@
                     messages: vec![], max_tokens: 64, system: None, tool_choice: None,
                     metadata: None, thinking: None, reasoning_effort: None, stream: None,
                     temperature: None, top_p: None,
+                    safety_check: None,
+                    title: None,
                 },
                 ProviderKind::Openai, "https://api.deepseek.com/v1", false, None,
             ).expect("chat projection").body["tools"][0].clone();
@@ -643,6 +651,8 @@
                     messages: vec![], max_tokens: 64, system: None, tool_choice: None,
                     metadata: None, thinking: None, reasoning_effort: None, stream: None,
                     temperature: None, top_p: None,
+                    safety_check: None,
+                    title: None,
                 },
                 ProviderKind::Openai, base_url, false, None,
             ).expect("chat projection").body["tools"][0].clone();

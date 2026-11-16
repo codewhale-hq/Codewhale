@@ -444,7 +444,7 @@ impl ModalView for AccountLoginView {
                     .get(index)
                     .map(|model| {
                         let mut clean = String::new();
-                        codewhale_tui_kit::osc8::strip_ansi_into(
+                        codewhale_sanitize::sanitize::strip_ansi_into(
                             &format!("{} · {}", model.label, model.provider),
                             &mut clean,
                         );

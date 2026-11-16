@@ -35,11 +35,13 @@ const {
   firstPartyReleaseSources,
   githubReleaseBaseUrl,
   openHarmonyDirections,
+  redactUrl,
   releaseAssetUrl,
   releaseAssetUrlFromBase,
   releaseBinaryDirectory,
   shouldRaceFirstPartyMirrors,
   usesCnbMirror,
+  validateReleaseUrl,
 } = require("./artifacts");
 const { preflightGlibc, detectHostGlibc, detectBinaryRequiredGlibc, _internal: glibc } = require("./preflight-glibc");
 const compiledHosts = require("./compiled-hosts");
@@ -78,7 +80,7 @@ class NonRetryableError extends Error {
 
 class HttpStatusError extends Error {
   constructor(status, url) {
-    super(`Request failed with status ${status}: ${url}`);
+    super(`Request failed with status ${status}: ${redactUrl(url)}`);
     this.name = "HttpStatusError";
     this.status = status;
   }
@@ -254,7 +256,7 @@ function installFailureHint(error) {
   if (releaseBase) {
     return [
       "codewhale install hint:",
-      `  CODEWHALE_RELEASE_BASE_URL resolves to ${releaseBase}`,
+      `  CODEWHALE_RELEASE_BASE_URL resolves to ${redactUrl(releaseBase)}`,
       "  Verify that this directory contains codewhale-artifacts-sha256.txt",
       "  plus the codewhale/codew binary assets for your platform (single binary).",
     ].join("\n");
@@ -549,7 +551,7 @@ function httpRequest(rawUrl, opts = {}) {
     try {
       url = new URL(rawUrl);
     } catch (err) {
-      reject(new NonRetryableError(`Invalid URL: ${rawUrl} (${err.message})`));
+      reject(new NonRetryableError(`Invalid URL: ${redactUrl(rawUrl)} (${err.message})`));
       return;
     }
     if (url.protocol !== "https:" && url.protocol !== "http:") {
@@ -998,18 +1000,28 @@ async function followRedirects(url, opts = {}) {
   const maxRedirects = 10;
   let current = url;
   for (let hop = 0; hop < maxRedirects; hop++) {
+    try {
+      validateReleaseUrl(current, {
+        env: opts.env,
+        allowLoopbackHttp: opts.allowLoopbackHttp,
+      });
+    } catch (err) {
+      throw new NonRetryableError(err.message);
+    }
     const result = await httpRequest(current, opts);
     if (result.redirect) {
       try {
         current = new URL(result.redirect, current).toString();
-      } catch {
-        current = result.redirect;
+      } catch (err) {
+        throw new NonRetryableError(
+          `Invalid redirect URL from ${redactUrl(current)}: ${err.message}`,
+        );
       }
       continue;
     }
     return result;
   }
-  throw new NonRetryableError(`too many redirects starting at ${url}`);
+  throw new NonRetryableError(`too many redirects starting at ${redactUrl(url)}`);
 }
 
 function streamToFile(response, destination, progress, signal) {
@@ -1063,6 +1075,8 @@ async function download(url, destination, options = {}) {
   await withRetry(`download ${assetName}`, async (attempt) => {
     const result = await followRedirects(url, {
       context,
+      env: options.env,
+      allowLoopbackHttp: options.allowLoopbackHttp,
       totalTimeoutMs: downloadTimeoutMs(context),
       stallMs: downloadStallMs(context),
       signal: options.signal,
@@ -1100,9 +1114,11 @@ async function downloadText(url, options = {}) {
     options.stallMs === undefined || options.stallMs === null
       ? downloadStallMs(context)
       : options.stallMs;
-  return withRetry(`fetch ${url}`, async () => {
+  return withRetry(`fetch ${redactUrl(url)}`, async () => {
     const result = await followRedirects(url, {
       context,
+      env: options.env,
+      allowLoopbackHttp: options.allowLoopbackHttp,
       totalTimeoutMs,
       stallMs,
       signal: options.signal,
@@ -1258,6 +1274,7 @@ async function fetchChecksumManifest(url, options) {
   const fetchText = options.fetchText || downloadText;
   const text = await fetchText(url, {
     context: options.context,
+    env: options.env,
     signal: options.signal,
     totalTimeoutMs:
       options.totalTimeoutMs === undefined || options.totalTimeoutMs === null
@@ -1370,6 +1387,7 @@ async function raceFirstPartyManifests(sources, options) {
       const source = sources[i];
       loadSourceManifest(source, {
         context: options.context,
+        env: options.env,
         fetchText: options.fetchText,
         requiredAssets: options.requiredAssets,
         signal: controllers[i].signal,
@@ -1408,6 +1426,7 @@ async function selectReleaseSource(options) {
       },
       {
         context,
+        env,
         fetchText,
         requiredAssets,
       },
@@ -1424,6 +1443,7 @@ async function selectReleaseSource(options) {
       },
       {
         context,
+        env,
         fetchText,
         requiredAssets,
       },
@@ -1434,6 +1454,7 @@ async function selectReleaseSource(options) {
     return raceFirstPartyManifests(sources, {
       version,
       context,
+      env,
       fetchText,
       requiredAssets,
     });
@@ -1447,6 +1468,7 @@ async function selectReleaseSource(options) {
     },
     {
       context,
+      env,
       fetchText,
       requiredAssets,
     },
@@ -1542,7 +1564,7 @@ async function ensureBinary(targetPath, assetName, version, repo, getChecksums, 
   const progressName = locked.sourceLabel
     ? `${assetName} from ${locked.sourceLabel}`
     : assetName;
-  await downloadFn(url, destination, { assetName: progressName, context: options.context });
+  await downloadFn(url, destination, { assetName: progressName, context: options.context, env });
   try {
     await verifyChecksum(destination, assetName, checksums, locked.sourceLabel);
     preflightGlibc(destination);
@@ -1792,6 +1814,7 @@ module.exports = {
     adoptExistingBinaryIfValid,
     shouldIgnoreInstallFailure,
     shouldSkipOptionalPostinstall,
+    followRedirects,
     httpRequest,
     defaultTimeoutMs,
     defaultStallMs,

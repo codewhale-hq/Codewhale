@@ -325,7 +325,7 @@ pub fn selected_route(path: &Path) -> Result<(String, String, codewhale_config::
 pub fn list_models(
     store: &codewhale_config::ConfigStore,
     filter: Option<ProviderKind>,
-) -> Result<Vec<(ProviderKind, Vec<String>)>> {
+) -> Result<Vec<(String, Vec<String>)>> {
     crate::models_dev_live::maybe_load_persisted_cache();
     let mut config = saved_config(store)?;
     config.base_url_env_receipt = config
@@ -333,42 +333,33 @@ pub fn list_models(
         .map_or(BaseUrlEnvReceipt::NoOwner, |identity| {
             BaseUrlEnvReceipt::Route(identity.provider, identity.key.to_string())
         });
+    let mut custom_routes: Vec<String> = config
+        .providers
+        .as_ref()
+        .map(|providers| providers.custom.keys().cloned().collect())
+        .unwrap_or_default();
+    custom_routes.sort();
     let providers = filter
         .as_ref()
         .map_or(ProviderKind::all(), std::slice::from_ref);
     let mut catalogs = Vec::with_capacity(providers.len());
     for provider in providers {
-        if *provider == ProviderKind::Custom
-            && config
-                .providers
-                .as_ref()
-                .and_then(|providers| providers.custom_provider_config(provider.as_str()))
-                .is_none()
-        {
-            continue;
+        let routes = if *provider == ProviderKind::Custom {
+            custom_routes.clone()
+        } else {
+            vec![provider.as_str().to_string()]
+        };
+        for route in routes {
+            let identity = config
+                .legacy_selection_identity(&route)
+                .map_err(anyhow::Error::msg)?;
+            let mut route_config = config.clone();
+            route_config
+                .scope_to_provider_identity(&identity)
+                .map_err(anyhow::Error::msg)?;
+            let models = crate::provider_lake::listed_models_for_route(&route_config, &identity);
+            catalogs.push((route, models));
         }
-        let identity = config
-            .legacy_selection_identity(provider.as_str())
-            .map_err(anyhow::Error::msg)?;
-        let mut route_config = config.clone();
-        route_config
-            .scope_to_provider_identity(&identity)
-            .map_err(anyhow::Error::msg)?;
-        let mut models = crate::provider_lake::configured_catalog_models_for_route(
-            &route_config,
-            identity.provider,
-            identity.key.as_str(),
-            &route_config.active_route_base_url(),
-        );
-        if identity.provider != ProviderKind::OpenaiCodex {
-            let default_model = route_config.default_model();
-            if !default_model.is_empty() && !default_model.eq_ignore_ascii_case("auto") {
-                models.push(default_model);
-            }
-            models.sort();
-            models.dedup();
-        }
-        catalogs.push((*provider, models));
     }
     Ok(catalogs)
 }
@@ -410,20 +401,82 @@ pub fn resolve_model(
         )?
         .is_some_and(|entry| entry.fetched_at > 0)
         {
-            return Err(
-                codewhale_agent::ModelResolutionError::ModelNotAvailableForProvider {
-                    provider: identity.provider,
-                    requested: model.unwrap_or("auto").to_string(),
-                }
-                .into(),
-            );
+            return Err(model_not_available(
+                identity.provider,
+                model.unwrap_or("auto"),
+            ));
         }
-        codewhale_agent::ModelRegistry::default().resolve(
-            model.filter(|model| *model != "auto"),
-            Some(identity.provider),
-        )?;
+        if !crate::provider_catalog_live::provider_owns_live_catalog(identity.provider, base_url) {
+            admit_reviewed_selection(identity.provider, model.filter(|model| *model != "auto"))?;
+        }
     }
     Ok(route?.candidate)
+}
+
+fn model_not_available(provider: ProviderKind, requested: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "model '{requested}' is not available from provider '{}'",
+        provider.as_str()
+    )
+}
+
+fn admit_reviewed_selection(provider: ProviderKind, requested: Option<&str>) -> Result<()> {
+    let selections = &codewhale_config::catalog::reviewed::bundled_reviewed().selections;
+    let rows = || {
+        selections
+            .iter()
+            .filter(move |row| ProviderKind::parse_config_identity(&row.provider) == Some(provider))
+    };
+    let normalize = |value: &str| value.trim().to_ascii_lowercase();
+    let row_matches = |row: &codewhale_config::catalog::reviewed::ModelSelection, wanted: &str| {
+        let wanted = normalize(wanted);
+        normalize(&row.id) == wanted || row.aliases.iter().any(|alias| normalize(alias) == wanted)
+    };
+    let default_model = provider.provider().default_model();
+    let requested = requested.filter(|name| !name.trim().is_empty());
+
+    let Some(name) = requested else {
+        if rows().any(|row| row_matches(row, default_model)) {
+            return Ok(());
+        }
+        if !default_model.trim().is_empty() && provider != ProviderKind::Ollama {
+            return Ok(());
+        }
+        if rows().next().is_none() {
+            anyhow::bail!(
+                "provider '{}' has no registered default model",
+                provider.as_str()
+            );
+        }
+        anyhow::bail!(
+            "provider '{}' declares default model '{default_model}', but that model is not registered for the provider",
+            provider.as_str()
+        );
+    };
+
+    let trimmed = name.trim();
+    let admitted = match provider {
+        ProviderKind::Ollama | ProviderKind::OllamaCloud => true,
+        ProviderKind::OpencodeGo => codewhale_config::opencode_go_model_id(name)
+            .is_some_and(|canonical| rows().any(|row| row.id.eq_ignore_ascii_case(canonical))),
+        _ => rows().any(|row| row_matches(row, name)),
+    } || match provider {
+        ProviderKind::Atlascloud => !trimmed.is_empty() && trimmed.contains('/'),
+        ProviderKind::Arcee => !trimmed.is_empty(),
+        ProviderKind::XiaomiMimo => !trimmed.is_empty() && !trimmed.chars().any(char::is_control),
+        _ => false,
+    } || (!default_model.trim().is_empty()
+        && trimmed.eq_ignore_ascii_case(default_model.trim()));
+    if admitted {
+        return Ok(());
+    }
+    if rows().next().is_none() {
+        anyhow::bail!(
+            "provider '{}' has no registered model for '{name}'",
+            provider.as_str()
+        );
+    }
+    Err(model_not_available(provider, name))
 }
 
 /// Save one explicit route preference after atomically adopting legacy choices.
@@ -1088,5 +1141,46 @@ model = "Other-X"
         assert_ne!(loaded.default_model(), "GLM-5.1");
         assert_eq!(loaded.default_model(), selected_route(&path)?.1);
         Ok(())
+    }
+
+    #[test]
+    fn reviewed_admission_keeps_passthrough_and_default_contracts() {
+        for (provider, model) in [
+            (ProviderKind::Atlascloud, Some("Qwen/Qwen3-Coder")),
+            (ProviderKind::Arcee, Some("trinity-future-thinking")),
+            (ProviderKind::XiaomiMimo, Some("mimo-custom-id")),
+            (ProviderKind::Ollama, Some("qwen2.5-coder:7b")),
+            (ProviderKind::OpencodeGo, Some("deepseek-v4-pro")),
+            (ProviderKind::OllamaCloud, None),
+            (ProviderKind::Deepseek, None),
+        ] {
+            admit_reviewed_selection(provider, model)
+                .unwrap_or_else(|error| panic!("{provider:?} {model:?}: {error}"));
+        }
+        for kind in ProviderKind::all() {
+            let default = kind.provider().default_model();
+            if default.trim().is_empty() {
+                continue;
+            }
+            admit_reviewed_selection(*kind, Some(default))
+                .unwrap_or_else(|error| panic!("default of {kind:?}: {error}"));
+        }
+    }
+
+    #[test]
+    fn reviewed_admission_fails_closed_without_borrowing_another_provider() {
+        let error = admit_reviewed_selection(ProviderKind::Atlascloud, Some("not-in-atlas"))
+            .expect_err("unknown model must not become the provider default");
+        assert_eq!(
+            error.to_string(),
+            "model 'not-in-atlas' is not available from provider 'atlascloud'"
+        );
+        let error = admit_reviewed_selection(ProviderKind::Ollama, None)
+            .expect_err("the placeholder default must not resolve");
+        assert!(
+            error.to_string().contains("default model 'unknown'"),
+            "{error}"
+        );
+        assert!(admit_reviewed_selection(ProviderKind::Moonshot, Some("glm-5.2")).is_err());
     }
 }

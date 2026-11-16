@@ -37,10 +37,10 @@ use self::constitution::repo_constitution_candidate_paths;
 pub use self::constitution::{RepoLawAction, RepoLawRule, load_repo_law_rules};
 use self::pack::generate_bounded_project_overview;
 pub use self::pack::generate_project_context_pack;
-pub use self::types::ProjectContext;
 use self::types::ProjectContextError;
 pub use self::types::project_instructions_source_label;
 use self::types::repo_relative_source_label;
+pub use self::types::{PinnedProjectInstructions, ProjectContext};
 use codewhale_config::instruction_budget::DEFAULT_FILE_MAX_BYTES;
 
 /// Names of project context files to look for, in priority order.
@@ -1240,6 +1240,7 @@ fn load_project_context_with_settings_uncached(
     );
     ctx.notices.extend(rules.notices);
     ctx.rules_block = rules.block;
+    ctx.loaded_rule_paths = rules.paths;
 
     // `source_path` names the most specific source — the workspace file when
     // there is one, otherwise the nearest ancestor that contributed.
@@ -1299,6 +1300,7 @@ fn load_rules_block(
 ) -> RulesLoad {
     let mut block = String::new();
     let mut notices = Vec::new();
+    let mut paths = Vec::new();
     for rules_dir in rules_dirs_for(imports) {
         let rules = load_rules_from_dir(workspace, rules_dir, file_max_bytes);
         notices.extend(rules.notices);
@@ -1311,11 +1313,13 @@ fn load_rules_block(
                 repo_relative_source_label(&path, Some(label_root)),
                 content.trim()
             ));
+            paths.push(path);
         }
     }
     RulesLoad {
         block: if block.is_empty() { None } else { Some(block) },
         notices,
+        paths,
     }
 }
 
@@ -1331,6 +1335,7 @@ struct RulesDirLoad {
 struct RulesLoad {
     block: Option<String>,
     notices: Vec<InstructionNotice>,
+    paths: Vec<PathBuf>,
 }
 
 pub fn project_context_cache_candidate_paths(

@@ -516,8 +516,7 @@ impl<'a> Collector<'a> {
             if !metadata.cost.coverage_recorded {
                 checked_sum(&mut self.report.coverage.legacy_session_projections, 1)?;
             }
-            if metadata.cost.missing_usage_overflowed || !metadata.cost.unpriced_reasons.is_empty()
-            {
+            if !metadata.cost.unpriced_reasons.is_empty() {
                 self.report.coverage.gap("session_usage_coverage_gap");
             }
         }
@@ -941,25 +940,26 @@ impl<'a> Collector<'a> {
             for entry in versions.values() {
                 conflict |= entry.conflict;
                 if let Some(previous) = selected {
-                    let prior_revision = previous
-                        .contribution
-                        .record
+                    let prev_rec = &previous.contribution.record;
+                    let curr_rec = &entry.contribution.record;
+                    let prior_rev = prev_rec
                         .settlement
                         .as_ref()
-                        .map(|revision| revision.revision());
-                    let current_revision = entry
-                        .contribution
-                        .record
+                        .map(|r| (r.lineage(), r.owner, r.revision()));
+                    let curr_rev = curr_rec
                         .settlement
                         .as_ref()
-                        .map(|revision| revision.revision());
-                    conflict |= prior_revision.and_then(|revision| revision.checked_add(1))
-                        != current_revision;
-                    conflict |= !entry
-                        .contribution
-                        .record
-                        .follows_protected(&previous.contribution.record)
-                        .unwrap_or(false);
+                        .map(|r| (r.lineage(), r.owner, r.revision()));
+                    let valid_advance = match (prior_rev, curr_rev) {
+                        (Some((pl, po, pr)), Some((cl, co, cr))) => {
+                            prev_rec.usage.route == curr_rec.usage.route
+                                && pl == cl
+                                && po == co
+                                && pr.checked_add(1) == Some(cr)
+                        }
+                        _ => false,
+                    };
+                    conflict |= !valid_advance;
                 }
                 selected = Some(entry);
             }

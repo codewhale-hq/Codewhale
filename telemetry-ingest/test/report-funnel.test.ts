@@ -49,6 +49,19 @@ describe("existing-pipeline owner funnel report", () => {
     expect(buildFunnelReport(input, { now: NOW }).native.seven_day_initialization_cohort.unavailable_reason).toContain("incomplete");
   });
 
+  it("excludes fleet worker, agent and scripted starts like CI, and accepts v6 model usage", () => {
+    for (const source of ["fleet_worker", "agent", "scripted"]) {
+      const input = receipt();
+      input.native_rows.push({ ...native("session_start", "2026-10-04T00:00:00Z"), session_source: source });
+      input.native_rows.push({ ...native("model_usage", "2026-10-04T00:00:00Z"), schema_version: 6 });
+      const report = buildFunnelReport(input, { now: NOW });
+      expect(report.native.excluded_ci_ids, source).toBe(1);
+      expect(report.native.observed_completed_ids, source).toBe(0);
+    }
+    const input = receipt(); input.native_rows.push({ ...native("model_usage", "2026-10-04T00:00:00Z"), schema_version: 5 });
+    expect(() => buildFunnelReport(input, { now: NOW })).toThrow(/version/);
+  });
+
   it("does not compute a cohort fraction from sampled native records", () => {
     const input = receipt(); input.native_rows[0].weight = 4;
     expect(buildFunnelReport(input, { now: NOW }).native.seven_day_initialization_cohort).toMatchObject({ fraction: null, sampled: true });

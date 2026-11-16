@@ -291,6 +291,8 @@ pub struct QueuedMessage {
         codewhale_engine::extension_host::command::ExtensionCommandRef,
         String,
     )>,
+    pub approved_plan: Option<String>,
+    pub owner_input: bool,
     /// True once this turn has been painted into `history` as `HistoryCell::User`.
     /// Queue/offline submit echoes before the model runs; Immediate prepare skips
     /// a second paint when this is set so drained queued turns do not double.
@@ -416,8 +418,25 @@ impl QueuedMessage {
             skill_instruction,
             skill_provenance: None,
             extension_command: None,
+            approved_plan: None,
+            owner_input: true,
             history_echoed: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_approved_plan(mut self, approved_plan: Option<String>) -> Self {
+        self.approved_plan = approved_plan;
+        if self.approved_plan.is_some() {
+            self.owner_input = false;
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn without_owner_input(mut self) -> Self {
+        self.owner_input = false;
+        self
     }
 
     #[must_use]
@@ -551,6 +570,7 @@ pub enum AppAction {
     NewSession {
         sync: codewhale_command_contract::facets::SessionSyncPayload,
         force: bool,
+        draft: Option<String>,
     },
     SyncSession {
         session_id: Option<String>,
@@ -559,6 +579,10 @@ pub enum AppAction {
         model: String,
         workspace: PathBuf,
         mode: AppMode,
+        agent_preset: Option<String>,
+    },
+    SetConversationMode {
+        id: String,
     },
     OpenConfigView,
     /// Open this workspace's `.codewhale/hooks.toml` in `$EDITOR`, creating
@@ -616,6 +640,9 @@ pub enum AppAction {
     /// Reload the active user permission rules after `/permissions` safely
     /// removes one from the sibling `permissions.toml`.
     PermissionRulesChanged,
+    ApproveAutoReviewRetry {
+        target: String,
+    },
     /// Rebuild the engine's Skill/MCP catalogue from the App's newly replaced
     /// immutable plugin snapshot after trust, enable, revoke, or reload.
     PluginRegistryChanged,
@@ -807,6 +834,9 @@ pub enum AppAction {
     UpdatePromptSuggestion {
         enabled: bool,
     },
+    SetAutoReviewReviewerModel {
+        reviewer_model: Option<String>,
+    },
     /// Apply one `/config notifications` scalar to the live Config.
     UpdateNotification {
         update: codewhale_config::notifications::NotificationConfigUpdate,
@@ -940,6 +970,11 @@ pub enum McpUiAction {
     ImportDecline {
         name: String,
     },
+    ProjectReview,
+    ProjectApprove {
+        digest: String,
+    },
+    ProjectRevoke,
     Validate,
     /// Report this server's last observed state without starting a new pool.
     Diagnose {

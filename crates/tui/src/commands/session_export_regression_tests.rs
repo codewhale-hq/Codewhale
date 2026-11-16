@@ -763,6 +763,8 @@ fn baseline_golden_messages() -> Vec<Message> {
                 id: "srv-1".to_string(),
                 name: "web_search".to_string(),
                 input: serde_json::json!({"query": "secret token"}),
+                kind: None,
+                caller: None,
             }],
         },
         Message {

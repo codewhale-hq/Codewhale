@@ -9,7 +9,7 @@ export async function POST(request: Request) {
   try {
     const authEnv = await getAgentEnv();
     const sid = request.headers.get("cookie")?.split(";").map(c => c.trim()).find(c => c.startsWith("mt_sid="))?.slice(7);
-    if (!authEnv.MAINTAINER_TOKEN || !await validateSession(authEnv.CURATED_KV, sid)) throw new MerchError(401, "unauthorized", "Maintainer sign-in is required.");
+    if (!await validateSession(authEnv.CURATED_KV, sid, authEnv.MAINTAINER_TOKEN)) throw new MerchError(401, "unauthorized", "Maintainer sign-in is required.");
     const env = await merchEnv(), config = parseConfig(env.MERCH_CONFIG_JSON);
     if (!config || request.headers.get("origin") !== new URL(config.siteOrigin).origin || !request.headers.get("content-type")?.startsWith("application/json")) throw new MerchError(403, "request_blocked", "Use the approved store origin.");
     const raw = await readBoundedBody(request, 8192);

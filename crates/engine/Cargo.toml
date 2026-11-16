@@ -79,7 +79,6 @@ codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.
 codewhale-sanitize = { path = "../sanitize", version = "0.10.3" }
 codewhale-memory = { path = "../memory", version = "0.10.3" }
 anyhow.workspace = true
-codewhale-agent = { path = "../agent", version = "0.10.3" }
 codewhale-agent-contract = { path = "../agent-contract", version = "0.10.3" }
 codewhale-config = { path = "../config", version = "0.10.3" }
 codewhale-command-contract = { path = "../command-contract", version = "0.10.3" }
@@ -172,6 +171,7 @@ sha2.workspace = true
 # Reuse the locked cryptographic implementation for exact-call user decisions.
 ring = "0.17"
 codewhale-localization = { path = "../localization", version = "0.10.3" }
+codewhale-ratatui = { path = "../../vendor/codewhale-ratatui", version = "0.2.0" }
 shell-words = "1.1.1"
 
 wiremock = { version = "0.6", optional = true }
@@ -197,20 +197,16 @@ codewhale-runtime = { path = "../runtime", version = "0.10.3", features = [
     "test-thread-scoped-state",
 ] }
 codewhale-sandbox = { path = "../sandbox", version = "0.10.3", features = ["test-support"] }
+codewhale-repl = { path = "../repl", version = "0.10.3", features = ["test-support"] }
 codewhale-plugins = { path = "../plugins", version = "0.10.3", features = ["test-support"] }
 codewhale-skill-install = { path = "../skill-install", version = "0.10.3", features = ["test-support"] }
 codewhale-util = { path = "../util", version = "0.10.3", features = ["test-support"] }
 codewhale-models = { path = "../models", version = "0.10.3", features = [
     "test-support",
 ] }
-cucumber = "0.23.0"
 wiremock = "0.6"
-tiny_http = "0.12"
-pretty_assertions = "1.4"
-rio-vt = "0.5.1"
 rusqlite.workspace = true
 schemars = { version = "1.2.1", features = ["derive", "preserve_order"] }
-tokio-tungstenite = "0.30"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -218,9 +214,6 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Wdk_Storage_FileSystem", "Win32_System_IO", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_SystemServices", "Win32_System_WindowsProgramming"] }
 
-
-[target.'cfg(any(target_os = "macos", target_os = "windows", all(target_os = "linux", not(target_env = "ohos"))))'.dependencies]
-arboard = { version = "3.4", features = ["wayland-data-control"] }
 
 [target.'cfg(not(target_env = "ohos"))'.dependencies]
 portable-pty = "0.9"

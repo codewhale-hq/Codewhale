@@ -1,7 +1,5 @@
 //! Fleet profile vocabulary, local profile discovery, and config-facing aliases.
 
-#![allow(dead_code)]
-
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -10,7 +8,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::reasoning_preference::ReasoningEffort;
 
-#[allow(unused_imports)]
 pub use codewhale_config::{
     FleetDelegationHints, FleetLoadout, FleetProfile, FleetProfilePermissions, FleetRole, FleetSlot,
 };

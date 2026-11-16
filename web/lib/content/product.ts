@@ -80,8 +80,8 @@ export const PRODUCT_COPY = {
     {
       title: { en: "Skills and plugins", zh: "技能与插件" },
       body: {
-        en: "Save a checklist or report format in a Markdown skill, then share it as a plugin.",
-        zh: "用 Markdown 技能保存清单或报告格式，再打包为插件分享。",
+        en: "Save a checklist or report format in a Markdown skill, then share it inside a plugin.",
+        zh: "用 Markdown 技能保存清单或报告格式，再放进插件中分享。",
       },
       href: "/docs/skills",
       command: "SKILL.md",

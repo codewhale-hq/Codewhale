@@ -26,3 +26,6 @@ toml.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 webpki-roots = "1"
+
+[dev-dependencies]
+tokio.workspace = true

@@ -1106,9 +1106,9 @@ mod tests {
 
         // Visible glyph stream is unchanged by link insertion.
         let mut baseline_visible = String::new();
-        codewhale_tui_kit::osc8::strip_ansi_into(&baseline_out, &mut baseline_visible);
+        codewhale_sanitize::sanitize::strip_ansi_into(&baseline_out, &mut baseline_visible);
         let mut linked_visible = String::new();
-        codewhale_tui_kit::osc8::strip_ansi_into(&out, &mut linked_visible);
+        codewhale_sanitize::sanitize::strip_ansi_into(&out, &mut linked_visible);
         assert_eq!(
             baseline_visible, linked_visible,
             "link emission must not move or alter visible cells"
@@ -1266,9 +1266,9 @@ mod tests {
 
         let baseline_out = String::from_utf8_lossy(&baseline_capture.borrow()).to_string();
         let mut baseline_visible = String::new();
-        osc8::strip_ansi_into(&baseline_out, &mut baseline_visible);
+        codewhale_sanitize::sanitize::strip_ansi_into(&baseline_out, &mut baseline_visible);
         let mut linked_visible = String::new();
-        osc8::strip_ansi_into(&out, &mut linked_visible);
+        codewhale_sanitize::sanitize::strip_ansi_into(&out, &mut linked_visible);
         assert_eq!(
             linked_visible, baseline_visible,
             "OSC 8 insertion must not move or alter any rendered cell"

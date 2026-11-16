@@ -4,8 +4,6 @@
 //! foreground and coordinate logical local workers while later host adapters
 //! add real process and SSH execution behind the same records.
 
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -1748,11 +1746,7 @@ impl FleetManager {
                 return Err(start_error);
             }
         };
-        if !started {
-            return Ok(false);
-        }
-
-        Ok(true)
+        Ok(started)
     }
 
     fn start_leased_workers(
@@ -2364,6 +2358,7 @@ impl FleetManager {
         }
     }
 
+    #[cfg(test)]
     fn append_worker_event(
         &self,
         run_id: &FleetRunId,

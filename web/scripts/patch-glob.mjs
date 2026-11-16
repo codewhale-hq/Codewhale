@@ -30,6 +30,18 @@ const reviewed = {
       "original": "3e15af549ecc74d8691982d571168fd4b0e38b494c2cbb3edcfb8f97d4036ac6",
       "patched": "8afedbdf3bb2bddaf37ee3ef4b393b76a5a99c80ef12aaedd2160a77c2effadb"
     }
+  ],
+  "13.0.7": [
+    {
+      "file": "dist/commonjs/walker.js",
+      "original": "4eca6e1f2fd9c9ef7469977a12c7e9bd6503bc7a9257ccdc8e79b346ec34fccd",
+      "patched": "4eca6e1f2fd9c9ef7469977a12c7e9bd6503bc7a9257ccdc8e79b346ec34fccd"
+    },
+    {
+      "file": "dist/esm/walker.js",
+      "original": "8afedbdf3bb2bddaf37ee3ef4b393b76a5a99c80ef12aaedd2160a77c2effadb",
+      "patched": "8afedbdf3bb2bddaf37ee3ef4b393b76a5a99c80ef12aaedd2160a77c2effadb"
+    }
   ]
 };
 const edits = [

@@ -1,15 +1,35 @@
 //! Workspace trust prompt for onboarding.
 //!
 //! One decision: trust the instructions and files in this folder, or
-//! continue without trust. The explicit 1/Y · 2/U · 3/N keys stay — trusting
+//! continue without trust. The explicit 1 · 2 · 3 keys stay — trusting
 //! a workspace is a security boundary and must never happen by reflex.
 
+use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::tui::app::App;
 use codewhale_localization::MessageId;
 use codewhale_palette as palette;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrustChoice {
+    Trust,
+    ContinueUntrusted,
+    Quit,
+}
+
+pub(crate) fn choice_for_key(code: KeyCode, modifiers: KeyModifiers) -> Option<TrustChoice> {
+    if !(modifiers - KeyModifiers::SHIFT).is_empty() {
+        return None;
+    }
+    match code {
+        KeyCode::Char('1') => Some(TrustChoice::Trust),
+        KeyCode::Char('2') => Some(TrustChoice::ContinueUntrusted),
+        KeyCode::Char('3') | KeyCode::Esc => Some(TrustChoice::Quit),
+        _ => None,
+    }
+}
 
 /// Wrap a path-bearing line at `/` boundaries so a deep workspace never
 /// hard-splits mid-component under ratatui's whitespace-only `Wrap`.
@@ -114,6 +134,50 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn only_the_digits_and_esc_act_on_the_trust_screen() {
+        for sentence in [
+            "not yet",
+            "no thank you",
+            "nope, maybe later",
+            "Let me look first. No thanks, n N y Y u U",
+        ] {
+            for ch in sentence.chars() {
+                assert_eq!(
+                    choice_for_key(KeyCode::Char(ch), KeyModifiers::NONE),
+                    None,
+                    "{ch:?} in {sentence:?}"
+                );
+            }
+        }
+        for modifier in [KeyModifiers::SUPER, KeyModifiers::META] {
+            assert_eq!(choice_for_key(KeyCode::Char('1'), modifier), None);
+        }
+        for ch in ['y', 'Y'] {
+            assert_eq!(
+                choice_for_key(KeyCode::Char(ch), KeyModifiers::CONTROL),
+                None
+            );
+            assert_eq!(choice_for_key(KeyCode::Char(ch), KeyModifiers::ALT), None);
+        }
+        assert_eq!(
+            choice_for_key(KeyCode::Char('1'), KeyModifiers::NONE),
+            Some(TrustChoice::Trust)
+        );
+        assert_eq!(
+            choice_for_key(KeyCode::Char('2'), KeyModifiers::NONE),
+            Some(TrustChoice::ContinueUntrusted)
+        );
+        assert_eq!(
+            choice_for_key(KeyCode::Char('3'), KeyModifiers::NONE),
+            Some(TrustChoice::Quit)
+        );
+        assert_eq!(
+            choice_for_key(KeyCode::Esc, KeyModifiers::NONE),
+            Some(TrustChoice::Quit)
+        );
+    }
+
+    #[test]
     fn prompt_names_the_workspace_boundary_and_effects() {
         let options = TuiOptions {
             model: "test-model".to_string(),
@@ -163,7 +227,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
 
-        for expected in ["1/Y", "2/U", "3/N"] {
+        for expected in ["1", "2", "3"] {
             assert!(
                 rail.contains(expected),
                 "missing {expected} in rail: {rail}"

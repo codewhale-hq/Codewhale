@@ -189,6 +189,38 @@ fn render() -> String {
     let _ = writeln!(out, "export const HEADER_LEN = {HEADER_LEN}");
     let _ = writeln!(out, "export const MAX_FRAME = {MAX_FRAME}");
     let _ = writeln!(out, "export const MAX_INFLIGHT = {MAX_INFLIGHT}");
+    let media_types: Vec<String> = crate::image_attach::ACCEPTED_IMAGE_MEDIA_TYPES
+        .iter()
+        .map(|kind| quote(kind))
+        .collect();
+    out.push_str("\nexport const IMAGE_LIMITS = {\n");
+    let _ = writeln!(
+        out,
+        "  maxImageBytes: {},",
+        crate::image_attach::MAX_IMAGE_BYTES
+    );
+    let _ = writeln!(
+        out,
+        "  maxImagesPerMessage: {},",
+        crate::image_attach::MAX_TOOL_RESULT_IMAGES
+    );
+    let _ = writeln!(
+        out,
+        "  maxMessageImageBytes: {},",
+        codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_TOTAL_BYTES
+    );
+    let _ = writeln!(
+        out,
+        "  maxImagePixels: {},",
+        crate::image_attach::MAX_IMAGE_PIXELS
+    );
+    let _ = writeln!(
+        out,
+        "  maxImageDimension: {},",
+        crate::image_attach::MAX_IMAGE_DIMENSION
+    );
+    let _ = writeln!(out, "  mediaTypes: [{}] as const,", media_types.join(", "));
+    out.push_str("} as const\n");
     out.push_str(
         "\n/** JSON-RPC error codes used on this channel. */\nexport const ErrorCode = {\n",
     );
@@ -196,7 +228,7 @@ fn render() -> String {
         let _ = writeln!(out, "  {name}: {code},");
     }
     out.push_str("} as const\n\nexport type Direction = 'core_to_host' | 'host_to_core'\n");
-    let services: Vec<String> = DshService::ALL
+    let services: Vec<String> = DshService::EVERY
         .iter()
         .map(|service| quote(service.name()))
         .collect();
@@ -247,6 +279,32 @@ fn typescript_protocol_is_generated_from_the_rust_types() {
             "{drift}\nThe TypeScript protocol is generated from protocol.rs; rebuild dist/ after re-recording."
         );
     }
+}
+
+#[test]
+fn the_generated_image_limits_match_the_engines_own_constants() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("extension-host")
+        .join("src")
+        .join("protocol.generated.ts");
+    let generated = std::fs::read_to_string(&path).expect("read protocol.generated.ts");
+    let media_types: Vec<String> = crate::image_attach::ACCEPTED_IMAGE_MEDIA_TYPES
+        .iter()
+        .map(|kind| quote(kind))
+        .collect();
+    let expected = format!(
+        "export const IMAGE_LIMITS = {{\n  maxImageBytes: {},\n  maxImagesPerMessage: {},\n  maxMessageImageBytes: {},\n  maxImagePixels: {},\n  maxImageDimension: {},\n  mediaTypes: [{}] as const,\n}} as const",
+        crate::image_attach::MAX_IMAGE_BYTES,
+        crate::image_attach::MAX_TOOL_RESULT_IMAGES,
+        codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_TOTAL_BYTES,
+        crate::image_attach::MAX_IMAGE_PIXELS,
+        crate::image_attach::MAX_IMAGE_DIMENSION,
+        media_types.join(", ")
+    );
+    assert!(
+        generated.contains(&expected),
+        "protocol.generated.ts IMAGE_LIMITS drifted from image_attach/runtime constants:\n{expected}"
+    );
 }
 
 /// Authority only the core may hold (CURRENT_DECISIONS §26): the event
@@ -676,7 +734,7 @@ fn dsh_broker_is_one_strict_envelope_and_names_only_the_closed_service_list() {
         unknown["params"]["service"] = json!("vault");
         assert!(parse_host_message(unknown, tier).is_ok());
     }
-    let names: Vec<&str> = DshService::ALL
+    let names: Vec<&str> = DshService::EVERY
         .iter()
         .map(|service| service.name())
         .collect();
@@ -689,10 +747,18 @@ fn dsh_broker_is_one_strict_envelope_and_names_only_the_closed_service_list() {
             "settings",
             "catalog",
             "terminal",
-            "remote"
+            "remote",
+            "attachments",
+            "plugins"
         ]
     );
-    for service in DshService::ALL {
+    assert_eq!(DshService::BUILTIN_ONLY, [DshService::Plugins]);
+    assert!(
+        DshService::ALL
+            .iter()
+            .all(|service| !service.builtin_only())
+    );
+    for service in DshService::EVERY {
         assert_eq!(DshService::parse(service.name()), Some(service));
     }
     assert_eq!(DshService::parse("Workspace"), None);

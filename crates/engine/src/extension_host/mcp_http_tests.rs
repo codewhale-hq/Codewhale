@@ -1,8 +1,8 @@
 //! Committed official SDK + real Rust FetchProxy/tickets + guarded loopback
 //! HTTP peer. No provider, credentials, SDK-side fetch or user filesystem.
 use super::*;
-use crate::extension_host::TestManagerGuard;
 use crate::extension_host::test_support::{FixturePlugins, node_for_tests};
+use crate::extension_host::{HostTier, TestManagerGuard};
 use crate::mcp::McpPool;
 use codewhale_config::McpBackend;
 use codewhale_mcp::config::McpConfig;

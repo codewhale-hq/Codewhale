@@ -296,6 +296,53 @@ async fn dead_owner_whose_store_was_deleted_is_discarded_and_startup_proceeds() 
     fixture.bind_replacement(None).await.unwrap();
 }
 
+async fn assert_gone_store_spelled_as_is_discarded(
+    label: &str,
+    spell: impl FnOnce(&Path) -> PathBuf,
+) {
+    let fixture = BootstrapPublicationFixture::new(label, true, false).await;
+    std::fs::remove_dir(&fixture.owner.data_dir).unwrap();
+    let spelled = spell(&fixture.harness.root);
+    assert_ne!(spelled, fixture.owner.data_dir);
+    assert!(matches!(
+        codewhale_app_server::daemon_client::probe_owner_for_host_startup(
+            fixture.owner.config_path.clone(),
+            Some(fixture.owner.socket_path.clone()),
+            &spelled,
+        )
+        .await
+        .unwrap(),
+        codewhale_app_server::daemon_client::HostOwnerProbe::Absent
+    ));
+    assert!(
+        fixture
+            .parent
+            .read_private_receipt("daemon.sock.owner.json", 16384)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn dead_owner_is_discarded_when_the_selected_store_is_spelled_through_a_symlink() {
+    assert_gone_store_spelled_as_is_discarded("boot-gone-link", |root| {
+        std::os::unix::fs::symlink(root, root.join("alias")).unwrap();
+        root.join("alias").join("runtime")
+    })
+    .await;
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn dead_owner_is_discarded_when_the_selected_store_is_spelled_in_another_letter_case() {
+    assert_gone_store_spelled_as_is_discarded("boot-gone-case", |root| {
+        let upper = PathBuf::from(root.to_string_lossy().to_uppercase());
+        assert!(upper.exists(), "this test needs a case-insensitive volume");
+        upper.join("RUNTIME")
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn live_owner_with_a_missing_store_is_never_discarded() {
     let fixture = BootstrapPublicationFixture::new("boot-gone-live", false, false).await;

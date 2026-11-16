@@ -967,8 +967,18 @@ pub enum Event {
         /// Reviewer risk tier when a guardian answered (`low`, `medium`,
         /// `high`, `critical`); `None` for deterministic gates and failures.
         risk: Option<String>,
+        reviewer_model: Option<String>,
         /// Bounded, control-stripped rationale safe to render as one line.
         reason: String,
+        rule: Option<String>,
+        receipt_id: Option<String>,
+        call_digest: Option<String>,
+        action_summary: Option<String>,
+    },
+
+    AutoReviewPaused {
+        reason: String,
+        approval_mode: codewhale_execpolicy::ApprovalMode,
     },
 
     /// Fired fire-and-forget after `TurnComplete` when the advisor is enabled
@@ -1014,6 +1024,15 @@ pub enum Event {
         /// `<context_update>` snapshots appended this session.
         context_updates: u64,
     },
+
+    ConversationTitle {
+        title: String,
+    },
+
+    ContentFilterRefusal {
+        reason: String,
+        refusal: Option<String>,
+    },
 }
 
 /// Render the already-bounded name sample, marking an incomplete sample with
@@ -1044,7 +1063,7 @@ pub fn tool_projection_warning_message(
     omitted_tool_count: usize,
 ) -> String {
     format!(
-        "Warning: {provider} omitted incompatible tools for this request: {}",
+        "Warning: {provider} omitted tools for this request: {}. A tool is omitted when its input schema is incompatible with this route or when its encoded name is longer than the provider's tool-name limit (64 characters on OpenAI-style routes, 128 on Anthropic-style routes and DeepSeek); a name ending in … is cut for display. Shorten the tool's name (dots, hyphens and other special characters each add characters) or remove it.",
         tool_projection_warning_tool_list(omitted_tool_names, omitted_tool_count)
     )
 }
@@ -1250,6 +1269,15 @@ mod tool_projection_warning_tests {
         TOOL_PROJECTION_WARNING_MAX_NAME_CHARS, TOOL_PROJECTION_WARNING_MAX_NAMES,
         bounded_tool_projection_warning_names,
     };
+
+    #[test]
+    fn projection_warning_message_names_the_tool_and_the_name_limit() {
+        let names = vec!["web-x00002E-run".to_string()];
+        let message = tool_projection_warning_message("OpenAI", &names, 1);
+        assert!(message.contains("web-x00002E-run"), "{message}");
+        assert!(message.contains("64 characters"), "{message}");
+        assert!(message.contains("128 on Anthropic-style"), "{message}");
+    }
 
     #[test]
     fn projection_warning_names_are_count_and_length_bounded() {

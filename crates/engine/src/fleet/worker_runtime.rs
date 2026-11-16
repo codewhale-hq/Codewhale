@@ -11,8 +11,6 @@
 //! - Mailbox events stream into the Fleet ledger as `FleetWorkerEventPayload`
 //! - `FleetWorkerInspection` reads both ledger state and sub-agent worker records
 
-#![allow(dead_code)]
-
 use std::borrow::Cow;
 use std::path::PathBuf;
 

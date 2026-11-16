@@ -48,6 +48,30 @@ export const INSTALL_COPY = {
   scriptLink: { en: "View install script", zh: "查看安装脚本" },
   releaseLine: { en: "This installs the latest published release, v{version}.", zh: "这会安装最新已发布版本 v{version}。" },
 
+  newTitle: { en: "New to the terminal?", zh: "第一次使用终端？" },
+  newLead: {
+    en: "You install Codewhale by pasting one command into a terminal. These steps show how to open one and how to check that it worked.",
+    zh: "你在终端中粘贴一条命令来安装 Codewhale。下面的步骤说明如何打开终端，以及如何确认安装成功。",
+  },
+  newMacTitle: { en: "macOS", zh: "macOS" },
+  newMac1: { en: "Press Cmd+Space, type Terminal and press Return.", zh: "按 Cmd+空格键，输入 Terminal，然后按回车键。" },
+  newMac2: { en: "Paste this command with Cmd+V and press Return:", zh: "用 Cmd+V 粘贴下面这条命令，然后按回车键：" },
+  newMac3: {
+    en: "When it finishes, open a new window with Cmd+N, type `codewhale --version` and press Return. A version number means it worked.",
+    zh: "安装完成后，按 Cmd+N 打开一个新窗口，输入 `codewhale --version` 并按回车键。显示版本号就说明安装成功了。",
+  },
+  newWinTitle: { en: "Windows", zh: "Windows" },
+  newWin1: { en: "Open the Start menu, type PowerShell and press Enter.", zh: "打开“开始”菜单，输入 PowerShell，然后按回车键。" },
+  newWin2: { en: "Paste this command with Ctrl+V and press Enter:", zh: "用 Ctrl+V 粘贴下面这条命令，然后按回车键：" },
+  newWin3: {
+    en: "When it finishes, close the window, open PowerShell again, type `codewhale --version` and press Enter. A version number means it worked.",
+    zh: "安装完成后，关闭窗口，重新打开 PowerShell，输入 `codewhale --version` 并按回车键。显示版本号就说明安装成功了。",
+  },
+  newNext: {
+    en: "Read the first-time guide: which folder to work in, your first task, and how to undo",
+    zh: "阅读首次使用指南：在哪个文件夹工作、第一个任务，以及如何撤回",
+  },
+
   pathTitle: { en: "What the installer does to your PATH", zh: "安装程序对 PATH 做了什么" },
   pathPlaces: {
     en: "The installer puts `codewhale` and `codew` in `~/.local/bin`. When that folder is not on your PATH, it adds three marked lines to the startup file for your shell:",

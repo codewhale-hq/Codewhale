@@ -26,7 +26,11 @@ files or use the network.
    its answer in the transcript with its origin, `extension:hello-extension`.
 
 An authoring agent should stop after installation and validation and present
-the review to the person. Do not trust or enable a bundle automatically.
+the review to the person, unless it runs in Full Access and the plugin is one
+it wrote and installed from a folder in its project: then it may trust and
+enable it for that project with `codewhale plugins trust` and `enable`. Those
+shell commands go through the session's approval like any other: Ask asks the
+person, Auto-Review's reviewer judges, and Full Access runs them.
 
 ## Locations, installation and trust
 
@@ -490,12 +494,14 @@ shared process, and resolve relative paths against `exec.workspace` yourself.
 Reading a workspace file is your code's own filesystem access, under the host's
 sandbox, not something the core checks per file.
 
-`dataDir` is `~/.codewhale/extension-host/data/plugins/<name>-<id>`, created by
+`dataDir` is `~/.codewhale/extension-host/data/plugins/<name>-<id>` for plugins you reviewed,
+or `~/.codewhale/extension-host/data-agent/<digest>/plugins/<name>-<id>` for plugins the agent approved
+(where `<digest>` is a 128-bit hex digest of the normalized project path), created by
 Codewhale (mode 0700 on Unix) before the plugin activates, and the same
 directory for every generation and every entry of that plugin, so it keeps
 files across restarts and updates. It sits inside the host's one writable
 root, which is where the sandbox allows writes. It is not a boundary between
-plugins: they share a process, and one can write into another's directory.
+plugins in the same host: they share a process, and one can write into another's directory.
 Codewhale never deletes it, including on uninstall.
 
 ## Configuration
@@ -541,7 +547,7 @@ Return `{kind:'deny', reason}`, `{kind:'ask', reason?}`, `{kind:'revise', input}
 
 Native hooks run first, then mod listeners in core registration order. Denial always wins; the last accepted input revision wins. Rust re-prepares revised arguments and reruns the existing authority, policy, and approval checks. Input revisions use the existing 32 KiB hook limit; context and reasons use the existing sanitizers. Unloading a fiber removes its listener, and disabling or revoking an owner retires its admitted handles before host teardown. Other workspaces do not receive the call.
 
-This bridge runs on Engine sessions, including model tools, gated code-mode calls, and `exec.core` calls. Sessions an editor drives over ACP (`codewhale serve --acp`) get the same extension host, under the same `[features]` flags (`extension_host`, `mcp`): reviewed plugin tools (TypeScript and DSH) and the MCP servers configured in Codewhale appear as ACP tool calls and ask through the session's permission setting; Plan stays read-only. The ACP server's capabilities say so (`agentCapabilities._meta.codewhale`). Servers an ACP client passes in `mcpServers` and configured shell hooks are not attached. Prepend/global listener ordering, DSH runtime/agent handles, around-execution wrappers, and post-result rewriting are not provided. Native `tool_call_after` remains an observer contract.
+This bridge runs on Engine sessions, including model tools, gated code-mode calls, and `exec.core` calls. Sessions an editor drives over ACP (`codewhale serve --acp`) get the same extension host, under the same `[features]` flags (`extension_host`, `mcp`): reviewed plugin tools (TypeScript and DSH) and the MCP servers configured in Codewhale appear as ACP tool calls and ask through the session's permission setting; Plan stays read-only. When a plugin tool asks the core to run a tool that needs approval (`exec.core`), the editor's permission request is shown on the plugin tool's call and names the nested tool and its input. The ACP server's capabilities say so (`agentCapabilities._meta.codewhale`). Servers an ACP client passes in `mcpServers` and configured shell hooks are not attached. Prepend/global listener ordering, DSH runtime/agent handles, around-execution wrappers, and post-result rewriting are not provided. Native `tool_call_after` remains an observer contract.
 
 ## Asking the core to run a tool
 
@@ -598,7 +604,12 @@ build: a grant the user gave the model for a tool never covers your call of it,
 and a grant for your call never covers the model's. **Shell and network calls
 force a prompt**: a session grant is not consulted. Ask and Full Access
 both ask the user every time; explicit session denials still refuse the call.
-Auto-Review and Never refuse it without opening a card. In Full Access every
+Under Auto-Review, held extension calls (whether from `core/call`, broker acts,
+or plugin host tools) route to the Auto-Review reviewer with the extension's
+host-minted plugin identity and cannot bypass review via routine tiers,
+`auto_review.allow` rules, or typed `allow` rules, while independent typed
+`deny`/`ask` rules, hook holds, and safety-floor blocks still apply. Never
+refuses them without opening a card. In Full Access every
 other call an extension makes is auto-approved, as it is for the model.
 `error.code === 'denied'` is the user's "no": do not retry it.
 
@@ -646,17 +657,33 @@ a plugin's trust shows it:
 
 | Approver | How it happens | Reach |
 | --- | --- | --- |
-| You | the Plugins page, `/plugin trust`, or an approval card | every project |
+| You | the Plugins page, `/plugin trust`, an approval card, or the prompt of `codewhale plugins trust` in your terminal | every project |
 | The agent, in Full Access or Auto-Review | the agent's plugin tool, bound to the token of the review composed for that call and to the thread, turn and tool call that made it | only the project named in the record |
 | The agent, from a shell command | `codewhale plugins trust … --yes` run by a process that carries the agent's mark | only the project named in the record |
 | The command line | `codewhale plugins trust … --yes` without the mark: no review was shown there, so it grants no service | every project |
 
-The agent's mark is a label on the agent's shell commands, not a lock: in Full
-Access the agent can remove it, and the record then says "the command line".
+The agent's mark is `CODEWHALE_AGENT_PROJECT`, which Codewhale sets to the
+session's project on every command the agent runs (shell, persistent terminal,
+verifier and test runs, the Python kernel, MCP servers it starts), whatever the sandbox or
+permission mode; under Auto-Review, shell and verifier runs also set
+`CODEWHALE_AGENT_POSTURE=auto_review` together with `CODEWHALE_AGENT_THREAD_ID`,
+`CODEWHALE_AGENT_TURN_ID`, and `CODEWHALE_AGENT_TOOL_CALL_ID` so `plugins trust`
+and `plugins enable` record the agent in Auto-Review rather than `CommandLine`.
+Hooks, MCP servers from your configuration and the terminal
+app's `/plugin trust` carry no mark. With it, the command records the agent, even for a prompt
+answered through a terminal, and trusts only a plugin installed from a folder
+inside that project (the bundle's `.installed-from` record). It is a label, not
+a lock: in Full Access the agent could remove it, and the record then says "the
+command line". The `--review-token` that the command
+takes is the bundle review token (`<content-hash>.<capability-hash>`), not the
+host-service review token: an unmarked trust passes no host-service token, and
+a marked one passes the token of the review composed for the agent.
 A plugin the agent approved is active only in the project its record names,
-and its code does not run in the host process of the plugins you reviewed:
-until it has a host of its own, its native code is refused with a diagnostic
-that asks you to review it. Your own review replaces the agent's record. Who
+and runs in an agent host process of its own for that project, apart from the
+plugins you reviewed. When you review it, it moves into the reviewed host process
+and its data folder moves with it; if a data folder for it is already there, the
+move is refused and the plugin stays off until you resolve it. Your own review
+replaces the agent's record. Who
 turned a plugin on is recorded the same way, separately from who approved it.
 The agent never approves a built-in plugin, never replaces a review that holds
 for every project (yours, the command line's, or one from an earlier version)
@@ -665,17 +692,38 @@ whose folder resolves outside the project.
 It turns on only a plugin whose record it made for this project. Everything
 else is left to you.
 
-**One process, one rule.** Extensions share one host process and cannot be
-isolated from each other inside it. A service is therefore given to a tool call
-only while every extension loaded in that process holds the same grant. The
-rule, and the list of plugins a review says a service is shared with, cover
-only plugins of the same kind: the plugins you reviewed are counted together,
-and a plugin the agent approved is never counted with them. If one
+**One process, one rule.** Extensions in the same host process cannot be
+isolated from each other inside it. Plugins you reviewed share one host process;
+plugins the agent approved share a separate host process per project. A service
+is therefore given to a tool call only while every extension loaded in that cohort's
+process holds the same grant. The rule, and the list of plugins a review says a
+service is shared with, cover only plugins in the same cohort: the plugins you
+reviewed are counted together, and plugins in an agent cohort are counted only
+within their project's host. If one
 does not, the service is off for all of them, and the host diagnostics name the
 extension without it. Code that was loaded cannot be unloaded, so after an
 extension is turned off, changed or fails, every service stays off until the
 host process has restarted, which Codewhale does by itself once the host is
 idle.
+
+**Using a service.** A grant says a plugin may ask; the session's permission
+mode decides each act, like any other action the agent takes. An act that
+changes something or reaches outside the session is asked through the normal
+approval card in Ask and Accept Edits, judged by the reviewer model in
+Auto-Review, run in Full Access, denied in Never, and refused in Plan. In a
+sub-agent such an act is never delegated with the sub-agent's file writes: it
+needs that same decision, and the sub-agent's shell permission, plus write
+permission for a change or network permission for a reach. A read runs without
+a card. Acts a service makes through a core tool (a file read, a terminal
+command) pass that tool's own gate instead. When the tool call ends, every act,
+allowed or not, is recorded in the result's `core_calls` metadata under
+`broker_acts` (the first 50, with the total). A tool call that fails after
+making an act returns a failed result with the error text and that record. Acts
+count toward the tool call's one limit of 50 nested calls, shared with its
+`core/call`s, and at most four wait on the gate at once; a further act waits
+for a slot. The `plugins` service is never granted by a review: only
+Codewhale's own built-in creator module holds it, and only for the session's
+own agent, not a sub-agent.
 
 **What a refused call receives.** `REFUSED` with `data.dsh_refusal`:
 `not_granted` (the same answer whether your own review lacks the service or
@@ -716,9 +764,11 @@ Dispose within 2 seconds and avoid leaving background work behind.
 
 ## Sandbox
 
-Trust is not a complete security boundary. Native plugins share one process
-and data-access cohort and can interfere with each other. Owner labels and
-JavaScript method locks do not isolate mutually untrusted plugins.
+Trust is not a complete security boundary. Native plugins reviewed by a person
+share one process and data-access cohort, while agent-approved plugins run in their
+own host process per project with data isolated under `data-agent/<digest>`.
+Plugins within the same host process can interfere with each other; owner labels and
+JavaScript method locks do not isolate mutually untrusted plugins in the same process.
 
 Native hosts use a positive filesystem-read policy on macOS Seatbelt and
 Linux bubblewrap (`/usr/bin/bwrap`). Grants cover the selected runtime and

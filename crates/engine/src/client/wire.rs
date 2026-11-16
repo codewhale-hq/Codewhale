@@ -6,11 +6,38 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use codewhale_models::{ServerToolUsage, SystemPrompt, Usage};
+use codewhale_config::ProviderKind;
+use codewhale_models::{ContentBlock, MessageRequest, ServerToolUsage, SystemPrompt, Usage};
 use std::sync::{Mutex as StdMutex, OnceLock};
 
 pub fn saturating_u32(value: u64) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+pub fn parse_server_tool_usage(usage: Option<&Value>) -> Option<ServerToolUsage> {
+    usage.and_then(|u| u.get("server_tool_use")).map(|server| {
+        let counter = |key: &str| server.get(key).and_then(Value::as_u64).map(saturating_u32);
+        ServerToolUsage {
+            code_execution_requests: counter("code_execution_requests"),
+            tool_search_requests: counter("tool_search_requests"),
+            web_search_requests: counter("web_search_requests"),
+            web_fetch_requests: counter("web_fetch_requests"),
+            tool_search: counter("tool_search"),
+            tool_fetch: counter("tool_fetch"),
+            tool_image_search: counter("tool_image_search"),
+        }
+    })
+}
+
+pub fn parse_safety_tokens(usage: Option<&Value>) -> Option<u32> {
+    usage
+        .and_then(|u| {
+            u.pointer("/output_tokens_details/safety_tokens")
+                .or_else(|| u.pointer("/completion_tokens_details/safety_tokens"))
+                .or_else(|| u.get("safety_tokens"))
+        })
+        .and_then(Value::as_u64)
+        .map(saturating_u32)
 }
 
 pub fn parse_usage(usage: Option<&Value>) -> Usage {
@@ -88,20 +115,8 @@ pub fn parse_usage(usage: Option<&Value>) -> Usage {
         .filter(|reasoning| *reasoning <= output_tokens)
         .map(saturating_u32);
 
-    let server_tool_use = usage.and_then(|u| u.get("server_tool_use")).map(|server| {
-        let code_execution_requests = server
-            .get("code_execution_requests")
-            .and_then(Value::as_u64)
-            .map(saturating_u32);
-        let tool_search_requests = server
-            .get("tool_search_requests")
-            .and_then(Value::as_u64)
-            .map(saturating_u32);
-        ServerToolUsage {
-            code_execution_requests,
-            tool_search_requests,
-        }
-    });
+    let server_tool_use = parse_server_tool_usage(usage);
+    let safety_tokens = parse_safety_tokens(usage);
 
     Usage {
         input_tokens: saturating_u32(input_tokens),
@@ -112,6 +127,7 @@ pub fn parse_usage(usage: Option<&Value>) -> Usage {
         reasoning_tokens,
         reasoning_replay_tokens: None,
         server_tool_use,
+        safety_tokens,
 
         input_audio_tokens: usage
             .and_then(|usage| {
@@ -315,7 +331,7 @@ pub fn to_api_tool_name(name: &str) -> String {
     out
 }
 
-pub fn from_api_tool_name(name: &str) -> String {
+fn decode_delimited_tool_name(name: &str) -> String {
     let mut out = String::new();
     let mut iter = name.chars().peekable();
     while let Some(ch) = iter.next() {
@@ -357,12 +373,87 @@ pub fn from_api_tool_name(name: &str) -> String {
         }
         out.push('-');
     }
+    out
+}
 
-    // Second pass: decode bare hex escapes (e.g. `x00002E`) that the model
-    // may produce when it mangles the `-x00002E-` delimiter form.  Only
-    // decode when the resulting character is one that `to_api_tool_name`
-    // would have encoded (not alphanumeric, not `_`, not `-`).
-    decode_bare_hex_escapes(&out)
+pub fn from_api_tool_name(name: &str) -> String {
+    let exact = decode_delimited_tool_name(name);
+    if to_api_tool_name(&exact) == name {
+        return exact;
+    }
+    decode_bare_hex_escapes(&exact)
+}
+
+pub const TOOL_NAME_LIMIT_64: usize = 64;
+pub const TOOL_NAME_LIMIT_128: usize = 128;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolNameWire {
+    AnthropicMessages,
+    OpenAiCompatible,
+}
+
+pub fn documented_tool_name_limit(provider: ProviderKind, wire: ToolNameWire) -> Option<usize> {
+    match (provider, wire) {
+        (ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic, _) => Some(TOOL_NAME_LIMIT_128),
+        (ProviderKind::Anthropic, ToolNameWire::AnthropicMessages) => Some(TOOL_NAME_LIMIT_128),
+        (ProviderKind::Openai | ProviderKind::OpenaiCodex, ToolNameWire::OpenAiCompatible) => {
+            Some(TOOL_NAME_LIMIT_64)
+        }
+        _ => None,
+    }
+}
+
+pub fn tool_name_limit(provider: ProviderKind, wire: ToolNameWire) -> usize {
+    if let Some(limit) = documented_tool_name_limit(provider, wire) {
+        return limit;
+    }
+    match (provider, wire) {
+        (_, ToolNameWire::AnthropicMessages) => TOOL_NAME_LIMIT_128,
+        (
+            ProviderKind::Ollama
+            | ProviderKind::OllamaCloud
+            | ProviderKind::Vllm
+            | ProviderKind::Sglang
+            | ProviderKind::Custom,
+            _,
+        ) => TOOL_NAME_LIMIT_128,
+        (_, ToolNameWire::OpenAiCompatible) => TOOL_NAME_LIMIT_64,
+    }
+}
+
+pub fn check_history_tool_names(request: &MessageRequest, documented: Option<usize>) -> Result<()> {
+    let Some(limit) = documented else {
+        return Ok(());
+    };
+    for message in &request.messages {
+        for block in &message.content {
+            if let ContentBlock::ToolUse { name, .. } = block
+                && tool_name_exceeds_limit(name, limit)
+            {
+                anyhow::bail!(over_limit_history_tool_name_message(name, limit));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn tool_name_exceeds_limit(name: &str, limit: usize) -> bool {
+    to_api_tool_name(name).len() > limit
+}
+
+pub fn over_limit_tool_name_message(name: &str, limit: usize) -> String {
+    format!(
+        "tool name `{name}` encodes to {} characters but this provider accepts at most {limit}; rename the tool (shorter name, fewer dots, hyphens or other special characters) or remove it",
+        to_api_tool_name(name).len()
+    )
+}
+
+pub fn over_limit_history_tool_name_message(name: &str, limit: usize) -> String {
+    format!(
+        "tool `{name}` was called earlier in this session and its encoded name is {} characters, but this provider accepts at most {limit}; switch to a route with a larger limit or start a new session",
+        to_api_tool_name(name).len()
+    )
 }
 
 pub const SSE_BACKPRESSURE_HIGH_WATERMARK: usize = 1024 * 1024; // 1 MB
@@ -415,6 +506,29 @@ pub async fn bounded_error_text(response: reqwest::Response, max_bytes: usize) -
     String::from_utf8_lossy(&buf).into_owned()
 }
 
+pub(super) async fn read_bounded_response_bytes(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> anyhow::Result<Vec<u8>> {
+    use futures_util::StreamExt;
+    if response
+        .content_length()
+        .is_some_and(|len| len > max_bytes as u64)
+    {
+        anyhow::bail!("response body exceeds {max_bytes} byte limit");
+    }
+    let mut stream = response.bytes_stream();
+    let mut buf = Vec::with_capacity(max_bytes.min(8192));
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if buf.len().saturating_add(chunk.len()) > max_bytes {
+            anyhow::bail!("response body exceeds {max_bytes} byte limit");
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
+
 pub fn system_to_instructions(system: Option<SystemPrompt>) -> Option<String> {
     match system {
         Some(SystemPrompt::Text(text)) => Some(text),
@@ -464,6 +578,98 @@ fn decode_bare_hex_escapes(input: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn tool_name_encoding_is_collision_free_for_hostile_names() {
+        let names = [
+            "web.run",
+            "web-x00002E-run",
+            "web--x00002E--run",
+            "webx00002Erun",
+            "web_x00002Erun",
+            "web_.run",
+            "a-b",
+            "a--b",
+            "a_b",
+            "a.b",
+            "ax00002Eb",
+            "a-x00002E-b",
+            "mcp__srv__tool.name",
+            "mcp__srv__tool-x00002E-name",
+        ];
+        let mut seen = std::collections::HashMap::new();
+        for name in names {
+            let encoded = to_api_tool_name(name);
+            assert!(
+                encoded
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+                "{encoded}"
+            );
+            if let Some(previous) = seen.insert(encoded.clone(), name) {
+                panic!("{previous} and {name} both encode to {encoded}");
+            }
+            assert_eq!(from_api_tool_name(&encoded), name, "round trip of {name}");
+        }
+    }
+
+    #[test]
+    fn tool_name_limit_follows_the_wire_unless_the_provider_documents_one() {
+        use ToolNameWire::{AnthropicMessages, OpenAiCompatible};
+        assert_eq!(
+            tool_name_limit(ProviderKind::Anthropic, AnthropicMessages),
+            128
+        );
+        assert_eq!(
+            tool_name_limit(ProviderKind::MinimaxAnthropic, AnthropicMessages),
+            128
+        );
+        assert_eq!(
+            tool_name_limit(
+                ProviderKind::ModelstudioTokenPlanAnthropic,
+                AnthropicMessages
+            ),
+            128
+        );
+        assert_eq!(
+            tool_name_limit(ProviderKind::Deepseek, OpenAiCompatible),
+            128
+        );
+        assert_eq!(
+            tool_name_limit(ProviderKind::DeepseekAnthropic, AnthropicMessages),
+            128
+        );
+        assert_eq!(tool_name_limit(ProviderKind::Openai, OpenAiCompatible), 64);
+        assert_eq!(tool_name_limit(ProviderKind::Minimax, OpenAiCompatible), 64);
+        assert_eq!(tool_name_limit(ProviderKind::Ollama, OpenAiCompatible), 128);
+        assert_eq!(
+            documented_tool_name_limit(ProviderKind::Ollama, OpenAiCompatible),
+            None
+        );
+        assert_eq!(
+            documented_tool_name_limit(ProviderKind::Custom, OpenAiCompatible),
+            None
+        );
+    }
+
+    #[test]
+    fn tool_name_limit_counts_the_encoded_form() {
+        let dotted = "mcp__tracker__projects.v2.issues.list-by-assignee";
+        assert!(dotted.len() <= 64);
+        assert!(tool_name_exceeds_limit(dotted, TOOL_NAME_LIMIT_64));
+        assert!(!tool_name_exceeds_limit(dotted, TOOL_NAME_LIMIT_128));
+        let plain = "a".repeat(64);
+        assert!(!tool_name_exceeds_limit(&plain, TOOL_NAME_LIMIT_64));
+        assert!(tool_name_exceeds_limit(
+            &format!("{plain}a"),
+            TOOL_NAME_LIMIT_64
+        ));
+        let message = over_limit_tool_name_message(dotted, TOOL_NAME_LIMIT_64);
+        assert!(
+            message.contains("at most 64") && message.contains(dotted),
+            "{message}"
+        );
+    }
 
     #[test]
     fn sse_line_limit_rejects_oversized_pending_complete_and_final_lines() {
@@ -976,5 +1182,34 @@ mod tests {
             assert_eq!(extract_sse_data_value("event: message"), None);
             assert_eq!(extract_sse_data_value(": heartbeat"), None);
         }
+    }
+
+    #[test]
+    fn parse_usage_extracts_deepseek_server_tool_and_safety_counters() {
+        let usage = parse_usage(Some(&serde_json::json!({
+            "prompt_tokens": 120,
+            "completion_tokens": 40,
+            "completion_tokens_details": {
+                "reasoning_tokens": 10,
+                "safety_tokens": 6
+            },
+            "server_tool_use": {
+                "tool_search": 2,
+                "tool_fetch": 1,
+                "tool_image_search": 3,
+                "web_search_requests": 2,
+                "web_fetch_requests": 1
+            }
+        })));
+        assert_eq!(usage.input_tokens, 120);
+        assert_eq!(usage.output_tokens, 40);
+        assert_eq!(usage.reasoning_tokens, Some(10));
+        assert_eq!(usage.safety_tokens, Some(6));
+        let server = usage.server_tool_use.expect("server_tool_use");
+        assert_eq!(server.tool_search, Some(2));
+        assert_eq!(server.tool_fetch, Some(1));
+        assert_eq!(server.tool_image_search, Some(3));
+        assert_eq!(server.web_search_requests, Some(2));
+        assert_eq!(server.web_fetch_requests, Some(1));
     }
 }

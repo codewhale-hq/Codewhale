@@ -59,7 +59,7 @@ pub fn check_config_toml_choice(key: &str, value: &str) -> Result<()> {
     } else {
         ""
     };
-    let value = codewhale_secrets::redact::redact_secrets(value);
+    let value = codewhale_sanitize::redact::redact_secrets(value);
     bail!(
         "invalid value '{value}' for '{key}': config.toml accepts {}.{settings_note} \
          No value was changed.\nfix: codewhale config set {key} {}",
@@ -205,7 +205,7 @@ pub fn load_project_config_outcome(workspace: &Path) -> ProjectConfigOutcome {
                             // echoed; an ordinary typo stays readable.
                             Some(name) => format!(
                                 "unknown provider '{}'",
-                                codewhale_secrets::redact::redact_secrets(&name)
+                                codewhale_sanitize::redact::redact_secrets(&name)
                             ),
                             None => "unknown provider".to_string(),
                         },

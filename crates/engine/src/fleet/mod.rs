@@ -11,6 +11,8 @@ pub mod executor;
 pub mod host;
 pub mod identity;
 pub mod ledger;
+#[cfg(all(test, unix))]
+mod link_tests;
 pub mod manager;
 pub mod members;
 pub mod placement;

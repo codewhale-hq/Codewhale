@@ -3,13 +3,13 @@ mod acp_support;
 use acp_support::{Client, fixture_config, text_of, updates};
 use anyhow::{Result, anyhow};
 use codewhale_app_server::acp_server::capture_frontend;
-use codewhale_engine::llm_client::mock::{MockLlmClient, canned};
+use codewhale_engine::llm_client::mock::{CannedTurn, MockLlmClient, canned};
 use codewhale_engine::runtime_threads::RuntimeTurnStatus;
 use codewhale_engine::runtime_threads::manager::{
     RuntimeThreadManager, RuntimeThreadManagerConfig,
 };
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -493,6 +493,349 @@ async fn extension_journey() -> Result<()> {
         first.contains("ctx_probe") && first.contains("mcp_fixture_echo"),
         "the first model request carries both extension tools"
     );
+    manager.shutdown_and_wait().await?;
+    host.shutdown().await;
+    Ok(())
+}
+
+const GATES_MCP_FIXTURE: &str = r#"import readline from 'node:readline';
+readline.createInterface({input:process.stdin}).on('line', line => {
+  const r = JSON.parse(line); if (r.id === undefined) return;
+  let result = {};
+  if (r.method === 'initialize') result = {protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}};
+  if (r.method === 'tools/list') result = {tools:['echo','hidden'].map(name => ({name,description:'Echo text',inputSchema:{type:'object',properties:{text:{type:'string'}},required:['text']}}))};
+  if (r.method === 'tools/call') result = {content:[{type:'text',text:'mcp-ran:' + r.params.name + ':' + r.params.arguments.text}]};
+  process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result}) + '\n');
+});
+"#;
+
+struct Outcome {
+    response: Value,
+    frames: Vec<Value>,
+    asked: Vec<Value>,
+}
+
+impl Outcome {
+    fn rendered(&self) -> String {
+        serde_json::to_string(&self.frames).unwrap_or_default()
+    }
+    fn completed(&self) -> usize {
+        updates(&self.frames, "tool_call_update")
+            .iter()
+            .filter(|frame| frame.pointer("/params/update/status") == Some(&json!("completed")))
+            .count()
+    }
+    fn titles(&self) -> Vec<String> {
+        self.asked
+            .iter()
+            .map(|frame| {
+                frame["params"]["toolCall"]["title"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
+    }
+    fn announced_ids(&self) -> Vec<String> {
+        updates(&self.frames, "tool_call")
+            .iter()
+            .filter_map(|frame| frame.pointer("/params/update/toolCallId")?.as_str())
+            .map(str::to_string)
+            .collect()
+    }
+}
+
+async fn run_prompt(
+    client: &mut Client,
+    session: &str,
+    allow: &dyn Fn(usize) -> bool,
+) -> Result<Outcome> {
+    client.next_id += 1;
+    let prompt_id = client.next_id;
+    client
+        .send(
+            json!({"jsonrpc":"2.0","id":prompt_id,"method":"session/prompt","params":{
+            "sessionId":session,"prompt":[{"type":"text","text":"go"}]}}),
+        )
+        .await?;
+    let mut frames = Vec::new();
+    let mut asked = Vec::new();
+    let response = loop {
+        let frame = client.recv().await?;
+        if frame["method"] == "session/request_permission" {
+            let option = if allow(asked.len()) {
+                "allow-once"
+            } else {
+                "reject-once"
+            };
+            client
+                .send(json!({"jsonrpc":"2.0","id":frame["id"],
+                    "result":{"outcome":{"outcome":"selected","optionId":option}}}))
+                .await?;
+            asked.push(frame);
+        } else if frame["id"] == json!(prompt_id) && frame.get("method").is_none() {
+            break frame;
+        } else {
+            frames.push(frame);
+        }
+    };
+    Ok(Outcome {
+        response,
+        frames,
+        asked,
+    })
+}
+
+async fn new_session(
+    client: &mut Client,
+    manager: &RuntimeThreadManager,
+    workspace: &Path,
+    turns: Vec<CannedTurn>,
+    plan: bool,
+) -> Result<String> {
+    manager.set_test_model_client(Arc::new(MockLlmClient::new(turns)));
+    let (created, _) = client
+        .request("session/new", json!({"cwd":workspace}))
+        .await?;
+    let session = created["result"]["sessionId"]
+        .as_str()
+        .ok_or_else(|| anyhow!("session/new returned no sessionId: {created}"))?
+        .to_string();
+    if plan {
+        let (set, _) = client
+            .request(
+                "session/set_mode",
+                json!({"sessionId":session,"modeId":"plan"}),
+            )
+            .await?;
+        assert!(set.get("error").is_none(), "{set}");
+    }
+    Ok(session)
+}
+
+#[test]
+fn extension_tools_keep_the_permission_boundary_in_an_acp_session() -> Result<()> {
+    std::thread::Builder::new()
+        .stack_size(64 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(async {
+                    tokio::time::timeout(Duration::from_secs(180), gates())
+                        .await
+                        .map_err(|_| anyhow!("extension gates exceeded 180s"))?
+                })
+        })?
+        .join()
+        .map_err(|_| anyhow!("extension gates thread panicked"))?
+}
+
+async fn gates() -> Result<()> {
+    use codewhale_engine::extension_host::test_support::{FixturePlugins, node_for_tests};
+    let Some(node) = node_for_tests("extension_tools_keep_the_permission_boundary") else {
+        return Ok(());
+    };
+    let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(true);
+    let fixture = FixturePlugins::new(&["plugin-context", "core-call"]).await;
+    let host = fixture.manager(node.clone());
+    let _host = codewhale_engine::extension_host::TestManagerGuard::install(Arc::clone(&host));
+    let dir = tempfile::tempdir()?;
+    let _home = codewhale_engine::test_support::SealedHome::at(dir.path());
+    let workspace = fixture.workspace().to_path_buf();
+    std::fs::write(workspace.join("seed.txt"), "seed-content-xyz")?;
+    let server = dir.path().join("fixture-mcp.mjs");
+    std::fs::write(&server, GATES_MCP_FIXTURE)?;
+    let mcp_config = dir.path().join("mcp.json");
+    std::fs::write(
+        &mcp_config,
+        serde_json::to_vec(&json!({"servers":{
+            "fixture":{"command":node,"args":[server],"disabled_tools":["hidden"]},
+            "off":{"command":node,"args":[server],"disabled":true}
+        }}))?,
+    )?;
+    let runtime_dir = dir.path().join("runtime");
+    let mut config = fixture_config();
+    config.set_feature("mcp", true).unwrap();
+    config.set_feature("extension_host", true).unwrap();
+    config.mcp_config_path = Some(mcp_config.to_string_lossy().into_owned());
+    let manager = Arc::new(RuntimeThreadManager::open_host(
+        config.clone(),
+        workspace.clone(),
+        RuntimeThreadManagerConfig {
+            mcp_auth_context: Default::default(),
+            data_dir: runtime_dir.clone(),
+            task_data_dir: runtime_dir,
+            sessions_dir: None,
+            max_active_threads: 16,
+        },
+        fixture.registry(),
+        codewhale_engine::core::engine::EngineHostProfile::Acp,
+        None,
+        None,
+    )?);
+    let frontend = capture_frontend(
+        config,
+        "fixture-model".into(),
+        workspace.clone(),
+        Arc::clone(&manager),
+        codewhale_engine::session_manager::default_sessions_dir()?,
+        None,
+        None,
+    )?;
+    let (mut client, agent_read, agent_write) = Client::connect(false);
+    let connection = frontend.serve(Box::new(BufReader::new(agent_read)), Box::new(agent_write));
+    let manager_for_script = Arc::clone(&manager);
+    let script =
+        async {
+            let manager = manager_for_script;
+            let result = async {
+            client
+                .request(
+                    "initialize",
+                    json!({"protocolVersion":1,"clientCapabilities":{}}),
+                )
+                .await?;
+
+            let session = new_session(
+                &mut client,
+                &manager,
+                &workspace,
+                vec![
+                    canned::tool_call_turn(
+                        "n1",
+                        "cc_call",
+                        r#"{"name":"write","input":{"path":"nested.txt","content":"via-plugin"}}"#,
+                    ),
+                    canned::simple_text_turn("nested allowed"),
+                ],
+                false,
+            )
+            .await?;
+            let allowed = run_prompt(&mut client, &session, &|_| true).await?;
+            assert!(allowed.response.get("error").is_none(), "{}", allowed.response);
+            assert_eq!(allowed.response["result"]["stopReason"], "end_turn");
+            assert_eq!(allowed.asked.len(), 2, "{:?}", allowed.titles());
+            assert!(allowed.titles()[0].starts_with("cc_call"));
+            let announced = allowed.announced_ids();
+            for request in &allowed.asked {
+                let id = request["params"]["toolCall"]["toolCallId"]
+                    .as_str()
+                    .unwrap_or_default();
+                assert!(
+                    announced.iter().any(|known| known == id),
+                    "a nested approval is shown on a tool call the editor knows: {id} {announced:?}"
+                );
+            }
+            let nested = &allowed.asked[1]["params"]["toolCall"];
+            assert_eq!(nested["title"], "write: nested.txt", "{nested}");
+            assert_eq!(nested["kind"], "edit", "{nested}");
+            assert_eq!(nested["rawInput"]["path"], "nested.txt", "{nested}");
+            assert!(nested.get("status").is_none(), "{nested}");
+            assert_eq!(
+                std::fs::read_to_string(workspace.join("nested.txt"))?,
+                "via-plugin"
+            );
+
+            std::fs::remove_file(workspace.join("nested.txt"))?;
+            let session = new_session(
+                &mut client,
+                &manager,
+                &workspace,
+                vec![
+                    canned::tool_call_turn(
+                        "n2",
+                        "cc_call",
+                        r#"{"name":"write","input":{"path":"nested.txt","content":"via-plugin"}}"#,
+                    ),
+                    canned::simple_text_turn("nested denied"),
+                ],
+                false,
+            )
+            .await?;
+            let denied = run_prompt(&mut client, &session, &|index| index == 0).await?;
+            assert!(denied.response.get("error").is_none(), "{}", denied.response);
+            assert_eq!(denied.response["result"]["stopReason"], "end_turn");
+            assert_eq!(denied.asked.len(), 2, "{:?}", denied.titles());
+            assert!(
+                !workspace.join("nested.txt").exists(),
+                "a rejected nested write must not run"
+            );
+
+            let session = new_session(
+                &mut client,
+                &manager,
+                &workspace,
+                vec![
+                    canned::tool_call_turn("r1", "ctx_probe", "{}"),
+                    canned::tool_call_turn("r2", "mcp_fixture_echo", r#"{"text":"control"}"#),
+                    canned::tool_call_turn("r3", "ctx_note", r#"{"text":"must-not-be-written"}"#),
+                    canned::tool_call_turn("r4", "mcp_fixture_echo", r#"{"text":"rejected"}"#),
+                    canned::simple_text_turn("rejections done"),
+                ],
+                false,
+            )
+            .await?;
+            let rejected = run_prompt(&mut client, &session, &|index| index < 2).await?;
+            assert_eq!(rejected.asked.len(), 4, "{:?}", rejected.titles());
+            let rendered = rejected.rendered();
+            assert!(rendered.contains("mcp-ran:echo:control"), "{rendered}");
+            assert!(!rendered.contains("mcp-ran:echo:rejected"), "{rendered}");
+            assert!(!rendered.contains("note.txt"), "{rendered}");
+
+            let session = new_session(
+                &mut client,
+                &manager,
+                &workspace,
+                vec![
+                    canned::tool_call_turn("p1", "ctx_probe", "{}"),
+                    canned::tool_call_turn("p2", "mcp_fixture_echo", r#"{"text":"plan"}"#),
+                    canned::simple_text_turn("plan done"),
+                ],
+                true,
+            )
+            .await?;
+            let plan = run_prompt(&mut client, &session, &|_| true).await?;
+            assert!(plan.asked.is_empty(), "{:?}", plan.titles());
+            assert_eq!(plan.completed(), 0, "{}", plan.rendered());
+            assert!(!plan.rendered().contains("mcp-ran:"));
+
+            let session = new_session(
+                &mut client,
+                &manager,
+                &workspace,
+                vec![
+                    canned::tool_call_turn("f1", "mcp_fixture_hidden", r#"{"text":"hid"}"#),
+                    canned::tool_call_turn("f2", "mcp_off_echo", r#"{"text":"off"}"#),
+                    canned::tool_call_turn("f3", "mcp_evil_echo", r#"{"text":"evil"}"#),
+                    canned::tool_call_turn(
+                        "f4",
+                        "start_mcp_server",
+                        r#"{"name":"evil","command":"node","args":["-e","0"]}"#,
+                    ),
+                    canned::tool_call_turn("f5", "agent", r#"{"action":"start","prompt":"p"}"#),
+                    canned::simple_text_turn("fabricated done"),
+                ],
+                false,
+            )
+            .await?;
+            let fabricated = run_prompt(&mut client, &session, &|_| true).await?;
+            assert!(fabricated.asked.is_empty(), "{:?}", fabricated.titles());
+            assert_eq!(fabricated.completed(), 0, "{}", fabricated.rendered());
+            assert!(!fabricated.rendered().contains("mcp-ran:"));
+
+            client.request("shutdown", json!({})).await?;
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+            if result.is_err() {
+                let _ = client.write.shutdown().await;
+            }
+            result
+        };
+    let (served, scripted) = tokio::join!(connection, script);
+    served?;
+    scripted?;
     manager.shutdown_and_wait().await?;
     host.shutdown().await;
     Ok(())

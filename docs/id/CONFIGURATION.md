@@ -1,5 +1,7 @@
 # Konfigurasi Codewhale
 
+> Terjemahan ini belum mencakup seluruh kunci terbaru termasuk `[auto_review]` dan `auto_review.reviewer_model`; rujuk [docs/CONFIGURATION.md](../CONFIGURATION.md) untuk spesifikasi terbaru.
+
 Codewhale membaca konfigurasi dari berkas TOML ditambah variabel lingkungan (environment variables). Saat startup proses, Codewhale juga dapat membaca kredensial penyedia dari berkas `.env` lokal di ruang kerja. Gunakan contoh templat `.env.example` yang tersedia; salin ke `.env`, lalu tambahkan hanya nilai kredensial.
 
 ---

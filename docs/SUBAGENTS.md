@@ -120,7 +120,11 @@ callable, and a tool that is denied never appears.
 The session's **permission posture** applies inside every child exactly as
 it applies to the parent turn: under Auto-Review the same deterministic
 floor and one-shot model guardian decide a worker's held calls (never a
-prompt; an unavailable guardian denies, fail closed); under Ask a held call
+prompt; an unavailable guardian denies, fail closed), and on return a child
+that ran tool calls has its calls-only action list reviewed once against the
+root owner's requests — prepending a sanitized `[Auto-Review warning: ...]`
+notice to the returned report on a concern or unavailable check and surfacing
+child blocks (without retry grants) in the parent's blocked-actions list; under Ask a held call
 the role cannot delegate is raised as an approval prompt in the parent's
 UI and the worker waits visibly (`waiting for user`), or is denied with the
 reason on hosts that cannot prompt; Full Access applies
@@ -228,9 +232,10 @@ Optional fields:
 - `worktree_branch`: exact branch to create.
 - `worktree_base`: git ref to branch from; defaults to `HEAD`.
 - `worktree_path`: exact checkout path. Relative and absolute paths must stay
-  under the default sibling `.codewhale-worktrees/<repo>/` root (symlinks are
-  resolved before the check). Any worktree request keeps the approval card,
-  even for a read-only role.
+  under the default sibling `.codewhale-worktrees/<repo>/` root, and a link
+  anywhere on the way down to the checkout, including at the root itself, is
+  refused. Any worktree request keeps the approval card, even for a read-only
+  role, and that includes `workspace_policy: "worktree"`.
 
 `cwd` may be combined with `worktree`: the requested directory becomes the
 discovery anchor the repo root (and the new checkout) is resolved from

@@ -148,7 +148,15 @@ async fn admit_remote(
     proposal.spec.description = json!({"type":transport,"url":url}).to_string();
     let generation = manager.shared.plugin.host_generation.load(Ordering::SeqCst);
     let (cx, _violations, _cancel) = HostRequestContext::for_test(1);
-    match admit(&manager.shared, HostTier::Plugin, generation, proposal, &cx).await {
+    match admit(
+        &manager.shared,
+        &HostCohort::reviewed(),
+        generation,
+        proposal,
+        &cx,
+    )
+    .await
+    {
         RegisterResult::Admitted { handle } => handle,
         RegisterResult::Refused { refused } => panic!("remote proposal refused: {refused}"),
     }
@@ -288,7 +296,7 @@ async fn native_remote_network_deny_and_credential_refusal_prevent_requests() {
         assert!(matches!(
             admit(
                 &manager.shared,
-                HostTier::Plugin,
+                &HostCohort::reviewed(),
                 definition.registration.host_generation,
                 proposal,
                 &cx

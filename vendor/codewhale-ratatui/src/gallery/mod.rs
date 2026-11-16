@@ -31,6 +31,7 @@ mod approval;
 mod artifacts;
 mod atmosphere;
 mod attention;
+mod chart;
 mod chrome;
 mod display;
 mod habitat;
@@ -104,6 +105,7 @@ pub fn entries() -> Vec<Entry> {
         lists::entries(),
         chrome::entries(),
         display::entries(),
+        chart::entries(),
         approval::entries(),
         motion::entries(),
         workspace::entries(),

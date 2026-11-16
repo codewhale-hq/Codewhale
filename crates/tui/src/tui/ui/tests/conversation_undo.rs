@@ -70,6 +70,7 @@ fn sync_snapshot(
         model: snapshot.model.clone(),
         workspace: snapshot.workspace.clone(),
         mode: AppMode::parse(&snapshot.mode).unwrap(),
+        agent_preset: snapshot.agent_preset.clone(),
     }
 }
 
@@ -477,6 +478,7 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
             model: app.model.clone(),
             workspace: app.workspace.clone(),
             mode: app.mode,
+            agent_preset: app.agent_preset(),
         };
         for action in [restore, AppAction::SendMessage("after reopen".into())] {
             apply_command_result(
@@ -793,4 +795,253 @@ async fn refused_edit_rollback_returns_the_revision_to_the_composer() {
         "nothing reached the engine"
     );
     tasks.shutdown_and_wait().await.unwrap();
+}
+
+#[test]
+fn range_undo_refuses_in_flight_child_and_restores_settled_delegated_writes_across_resume() {
+    const PROBE: &str = "CODEWHALE_DELEGATED_UNDO_PROBE";
+    if std::env::var_os(PROBE).is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tui::ui::tests::conversation_undo::range_undo_refuses_in_flight_child_and_restores_settled_delegated_writes_across_resume",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(PROBE, "1")
+            .output()
+            .expect("isolated delegated undo lifecycle");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+
+    let _environment = crate::test_support::lock_test_env();
+    let home = TempDir::new().unwrap();
+    let workspace = TempDir::new().unwrap();
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
+    let child_files = [
+        "agent_a_1.txt",
+        "agent_a_2.txt",
+        "agent_b_1.txt",
+        "agent_b_2.txt",
+        "agent_c_1.txt",
+        "agent_c_2.txt",
+    ];
+    for path in child_files {
+        std::fs::write(workspace.path().join(path), "before").unwrap();
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut config = Config::default().with_legacy_root(
+            Some("mock-credential".into()),
+            Some("http://127.0.0.1:1/v1".into()),
+        );
+        config.set_feature("mcp", false).unwrap();
+        config.set_feature("subagents", true).unwrap();
+        let mut app = App::new(
+            crate::tui::test_support::test_tui_options(workspace.path()),
+            &config,
+        );
+        app.onboarding_needs_api_key = false;
+        app.offline_mode = false;
+        app.set_agent_approval_posture(ApprovalMode::Bypass);
+
+        let mock = Arc::new(MockLlmClient::new(vec![canned::tool_call_turn(
+            "call-lead-write",
+            "write_file",
+            r#"{"path":"lead.txt","content":"lead"}"#,
+        )]));
+        let child_workspace = workspace.path().to_path_buf();
+        mock.push_factory(move |_| {
+            for path in child_files {
+                std::fs::write(child_workspace.join(path), "after").unwrap();
+            }
+            canned::simple_text_turn("delegated work settled")
+        });
+
+        let (engine, mut handle) = Engine::new_with_model_client(
+            EngineConfig {
+                workspace: workspace.path().to_path_buf(),
+                model: app.model.clone(),
+                snapshots_enabled: true,
+                record_restore_points: true,
+                subagents_enabled: true,
+                terminal_chrome_enabled: false,
+                ..EngineConfig::default()
+            },
+            &config,
+            mock.clone(),
+        );
+        let engine_task = tokio::spawn(engine.run());
+        let manager = SessionManager::default_location().unwrap();
+        let initial_id = handle.get_session_snapshot().await.unwrap().session_id;
+        app.set_current_session_id(Some(initial_id.clone()));
+        super::super::session_state::expect_fresh_session(&mut app, &initial_id).unwrap();
+        let (actor, actor_task) =
+            persistence_actor::spawn_persistence_actor(SessionManager::default_location().unwrap());
+        persistence_actor::init_actor(actor.clone());
+        let tasks = TaskManager::start(
+            TaskManagerConfig::from_runtime(&config, workspace.path().into(), None, Some(1)),
+            config.clone(),
+            app.plugin_registry.clone(),
+            "delegated-undo-tasks",
+            None,
+        )
+        .await
+        .unwrap();
+        let mut backend = ColorCompatBackend::new(
+            std::io::stdout(),
+            codewhale_palette::ColorDepth::Monochrome,
+            codewhale_palette::PaletteMode::Dark,
+        );
+        backend.set_terminal_size(Size::new(80, 24));
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        apply_command_result(
+            &mut terminal,
+            &mut app,
+            &mut handle,
+            &tasks,
+            &mut config,
+            commands::CommandResult {
+                message: None,
+                action: Some(AppAction::SendMessage("delegate 6 edits".into())),
+                is_error: false,
+            },
+        )
+        .await
+        .unwrap();
+        settled(&mut app, &handle, "delegated work settled").await;
+
+        for (seq, agent_id, pair) in [
+            (1u64, "agent-a", ["agent_a_1.txt", "agent_a_2.txt"]),
+            (2u64, "agent-b", ["agent_b_1.txt", "agent_b_2.txt"]),
+            (3u64, "agent-c", ["agent_c_1.txt", "agent_c_2.txt"]),
+        ] {
+            let msg = codewhale_engine::tools::subagent::MailboxMessage::FileWrites {
+                agent_id: agent_id.into(),
+                turn_seq: 1,
+                paths: pair.into_iter().map(str::to_string).collect(),
+            };
+            crate::tui::subagent_routing::handle_subagent_mailbox_for_turn(
+                &mut app, "turn-1", seq, &msg,
+            );
+        }
+
+        let subagent_mgr = handle.subagent_manager();
+        let running_id = {
+            let mut mgr = subagent_mgr.write().await;
+            let id = mgr.insert_test_running_direct_child("live-worker", workspace.path());
+            mgr.assign_test_session_owner(&id, &initial_id);
+            id
+        };
+        let in_flight_err = apply_range_undo(&mut terminal, &mut app, &handle, &config, 0)
+            .await
+            .unwrap_err();
+        assert!(
+            in_flight_err
+                .to_string()
+                .contains("Wait for delegated work to settle; nothing was undone."),
+            "{in_flight_err:#}"
+        );
+        for path in child_files {
+            assert_eq!(
+                std::fs::read_to_string(workspace.path().join(path)).unwrap(),
+                "after"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("lead.txt")).unwrap(),
+            "lead"
+        );
+
+        subagent_mgr
+            .write()
+            .await
+            .cancel_agent(&running_id)
+            .unwrap();
+
+        let completed = build_session_snapshot(&mut app, &manager).unwrap();
+        assert!(super::super::session_state::try_persist_session(
+            &mut app,
+            PersistRequest::CompletedCommit { session: completed }
+        ));
+        flush_persistence(&actor).await;
+        let saved = manager.load_session_snapshot(&initial_id).unwrap();
+        let saved_paths = saved
+            .delegated_writes
+            .get(&1)
+            .expect("persisted delegated writes");
+        assert_eq!(saved_paths.len(), 6);
+        app.delegated_writes.clear();
+        apply_loaded_session(&mut app, &mut config, &saved).unwrap();
+        assert_eq!(
+            app.delegated_writes
+                .get(&(initial_id.clone(), 1))
+                .expect("restored delegated writes")
+                .len(),
+            6
+        );
+        handle
+            .send(Op::SyncSession {
+                expected: None,
+                control: app.session_sync_control(),
+                session_id: app.current_session_id.clone(),
+                messages: app.api_messages.as_ref().clone(),
+                system_prompt: app.system_prompt.clone(),
+                system_prompt_override: false,
+                model: app.model.clone(),
+                workspace: app.workspace.clone(),
+                mode: app.mode,
+                agent_preset: saved.agent_preset.clone(),
+            })
+            .await
+            .unwrap();
+        loop {
+            let event = handle.rx_event.write().await.recv().await.unwrap();
+            if matches!(event, EngineEvent::SessionUpdated { .. }) {
+                break;
+            }
+        }
+        let synced = handle.get_session_snapshot().await.unwrap();
+        app.system_prompt = synced.system_prompt;
+        app.model = synced.model;
+
+        apply_range_undo(&mut terminal, &mut app, &handle, &config, 0)
+            .await
+            .unwrap();
+        flush_persistence(&actor).await;
+        for path in child_files {
+            assert_eq!(
+                std::fs::read_to_string(workspace.path().join(path)).unwrap(),
+                "before"
+            );
+        }
+        assert!(!workspace.path().join("lead.txt").exists());
+        assert!(app.api_messages.is_empty());
+        assert!(app.delegated_writes.is_empty());
+        assert!(
+            manager
+                .load_session_snapshot(&initial_id)
+                .unwrap()
+                .delegated_writes
+                .is_empty()
+        );
+
+        tasks.shutdown_and_wait().await.unwrap();
+        handle.send(Op::Shutdown).await.unwrap();
+        engine_task.await.unwrap();
+        assert!(actor.try_send(PersistRequest::Shutdown));
+        actor_task.await.unwrap();
+    });
 }

@@ -33,7 +33,7 @@ jobs:
         with:
           ref: ${{ inputs.expected_sha }}
           fetch-depth: 1
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
       - uses: taiki-e/install-action@nextest
       - name: Run focused tests
         shell: bash

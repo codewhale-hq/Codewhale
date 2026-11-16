@@ -31,7 +31,6 @@ pub(crate) const ADVANCED_DISCOVERY_COMMANDS: &[&str] = &[
     "modeldb",
     "models",
     "network",
-    "plugin",
     "preview-request",
     "profile",
     "purge",

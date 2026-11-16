@@ -701,6 +701,7 @@ impl AutomationEditor {
                 trust_mode: None,
                 auto_approve: None,
                 delivery_mode: None,
+                disallowed_tools: Vec::new(),
             })
         }
     }

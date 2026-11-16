@@ -30,6 +30,12 @@ pub enum PluginMutationRequest {
         source: PluginInstallSource,
         expected_content_hash: String,
     },
+    /// Install a previously prepared remote tarball only after final approval
+    /// and when the re-staged content hash still matches the previewed hash.
+    InstallRemoteExact {
+        prepared: install::PreparedRemote,
+        expected_content_hash: String,
+    },
     /// Refresh a previously installed bundle by name or id. A changed
     /// bundle automatically invalidates its trust receipt at next discovery.
     Update { selector: String },
@@ -84,22 +90,52 @@ pub async fn execute(
 ) -> Result<PluginMutationReceipt> {
     match request {
         PluginMutationRequest::Install { source } => {
-            install_plugin(source, None, ctx, registry).await
+            install_plugin(InstallKind::Source(source), None, ctx, registry).await
         }
         PluginMutationRequest::InstallExact {
             source,
             expected_content_hash,
-        } => install_plugin(source, Some(expected_content_hash.as_str()), ctx, registry).await,
+        } => {
+            install_plugin(
+                InstallKind::Source(source),
+                Some(expected_content_hash.as_str()),
+                ctx,
+                registry,
+            )
+            .await
+        }
+        PluginMutationRequest::InstallRemoteExact {
+            prepared,
+            expected_content_hash,
+        } => {
+            install_plugin(
+                InstallKind::PreparedRemote(prepared),
+                Some(expected_content_hash.as_str()),
+                ctx,
+                registry,
+            )
+            .await
+        }
         PluginMutationRequest::Update { selector } => update_plugin(&selector, ctx, registry).await,
         PluginMutationRequest::Uninstall { selector } => uninstall_plugin(&selector, registry),
     }
 }
 
-pub async fn install_from_cli(
+pub fn check_network_outcome(outcome: &PluginMutationOutcome) -> Result<()> {
+    match outcome {
+        PluginMutationOutcome::NeedsApproval(host) => {
+            bail!("Network approval required for {host}; use /network allow {host}, then retry")
+        }
+        PluginMutationOutcome::NetworkDenied(host) => bail!("Network access denied for {host}"),
+        _ => Ok(()),
+    }
+}
+
+pub async fn install_from_cli_receipt(
     source: String,
     config: codewhale_runtime::config::Config,
     mut registry: PluginRegistry,
-) -> Result<()> {
+) -> Result<PluginMutationReceipt> {
     let runtime = tokio::runtime::Handle::current();
     let policy = crate::activation::extension_host_policy_enabled();
     let receipt = tokio::task::spawn_blocking(move || {
@@ -119,6 +155,16 @@ pub async fn install_from_cli(
         ))
     })
     .await??;
+    check_network_outcome(&receipt.outcome)?;
+    Ok(receipt)
+}
+
+pub async fn install_from_cli(
+    source: String,
+    config: codewhale_runtime::config::Config,
+    registry: PluginRegistry,
+) -> Result<()> {
+    let receipt = install_from_cli_receipt(source, config, registry).await?;
     match receipt.outcome {
         PluginMutationOutcome::Installed => {
             println!("Installed {} (disabled, untrusted).", receipt.name);
@@ -128,10 +174,6 @@ pub async fn install_from_cli(
             );
             Ok(())
         }
-        PluginMutationOutcome::NeedsApproval(host) => {
-            bail!("Network approval required for {host}; use /network allow {host}, then retry")
-        }
-        PluginMutationOutcome::NetworkDenied(host) => bail!("Network access denied for {host}"),
         _ => bail!("Unexpected plugin install outcome"),
     }
 }
@@ -143,8 +185,13 @@ fn user_plugins_dir(registry: &PluginRegistry) -> Result<PathBuf> {
         .context("plugin registry has no user plugins root; install is fail-closed")
 }
 
+enum InstallKind {
+    Source(PluginInstallSource),
+    PreparedRemote(install::PreparedRemote),
+}
+
 async fn install_plugin(
-    source: PluginInstallSource,
+    kind: InstallKind,
     expected_content_hash: Option<&str>,
     ctx: &PluginMutationContext<'_>,
     registry: &mut PluginRegistry,
@@ -162,28 +209,42 @@ async fn install_plugin(
             )
         })
     };
-    let outcome = match expected_content_hash {
-        Some(expected) => {
-            install::install_with_expected_content_hash(
-                source,
+    let outcome = match kind {
+        InstallKind::Source(source) => match expected_content_hash {
+            Some(expected) => {
+                install::install_with_expected_content_hash(
+                    source,
+                    &plugins_dir,
+                    ctx.max_size,
+                    ctx.network,
+                    &name_conflict,
+                    expected,
+                )
+                .await?
+            }
+            None => {
+                install::install(
+                    source,
+                    &plugins_dir,
+                    ctx.max_size,
+                    ctx.network,
+                    false,
+                    &name_conflict,
+                )
+                .await?
+            }
+        },
+        InstallKind::PreparedRemote(prepared) => {
+            let expected = expected_content_hash
+                .context("prepared remote install requires an expected content hash")?;
+            install::install_prepared_remote(
+                &prepared,
                 &plugins_dir,
                 ctx.max_size,
                 ctx.network,
                 &name_conflict,
                 expected,
-            )
-            .await?
-        }
-        None => {
-            install::install(
-                source,
-                &plugins_dir,
-                ctx.max_size,
-                ctx.network,
-                false,
-                &name_conflict,
-            )
-            .await?
+            )?
         }
     };
     Ok(match outcome {

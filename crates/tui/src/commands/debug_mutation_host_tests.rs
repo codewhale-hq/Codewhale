@@ -741,6 +741,137 @@ fn patch_undo_refuses_when_a_changed_path_changed_since() {
 }
 
 #[test]
+fn undo_range_counts_settled_subagent_writes_for_three_agents_and_refuses_foreign_edits() {
+    let child_files = [
+        "agent_a_1.txt",
+        "agent_a_2.txt",
+        "agent_b_1.txt",
+        "agent_b_2.txt",
+        "agent_c_1.txt",
+        "agent_c_2.txt",
+    ];
+    let make_agent_turn = |prompt: &str, call_id: &str| {
+        vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: prompt.to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    execution_id: Some(call_id.to_string()),
+                    id: call_id.to_string(),
+                    name: "agent".to_string(),
+                    input: serde_json::json!({"action": "start"}),
+                    caller: None,
+                    thought_signature: None,
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    execution_id: Some(call_id.to_string()),
+                    tool_use_id: call_id.to_string(),
+                    content: "started".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "done".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ]
+    };
+
+    {
+        let fx = UndoFixture::new();
+        for path in child_files {
+            fx.write(path, "before");
+        }
+        fx.snapshot("pre-turn:1: delegate edit", "s1");
+        fx.snapshot("tool:agent-start-1", "s1");
+        fx.snapshot("post-tool:agent-start-1", "s1");
+        for path in child_files {
+            fx.write(path, "after");
+        }
+        fx.snapshot("post-turn:1: delegate edit", "s1");
+
+        let mut app = fx.app("s1");
+        push_recorded_turn(&mut app, make_agent_turn("delegate edit", "agent-start-1"));
+
+        let refused_without_attribution = patch_undo(&mut app);
+        assert!(
+            refused_without_attribution.is_error,
+            "{:?}",
+            refused_without_attribution.message
+        );
+        assert!(refused_without_attribution.action.is_none());
+        for path in child_files {
+            assert_eq!(fx.read(path), "after");
+        }
+
+        app.delegated_writes.insert(
+            ("s1".to_string(), 1),
+            child_files.iter().map(|path| (*path).to_string()).collect(),
+        );
+        let undone = patch_undo(&mut app);
+        assert!(!undone.is_error, "{:?}", undone.message);
+        assert!(matches!(
+            undone.action,
+            Some(AppAction::ConversationUndo { .. })
+        ));
+        for path in child_files {
+            assert_eq!(fx.read(path), "before");
+        }
+        acknowledge_file_undo(&mut app, &undone);
+        assert!(app.api_messages.is_empty());
+    }
+
+    {
+        let foreign_fx = UndoFixture::new();
+        for path in child_files {
+            foreign_fx.write(path, "before");
+        }
+        foreign_fx.write("editor.txt", "editor-before");
+        foreign_fx.snapshot("pre-turn:1: foreign check", "s1");
+        foreign_fx.snapshot("tool:agent-start-2", "s1");
+        foreign_fx.snapshot("post-tool:agent-start-2", "s1");
+        for path in child_files {
+            foreign_fx.write(path, "after");
+        }
+        foreign_fx.write("editor.txt", "editor-during-turn");
+        foreign_fx.snapshot("post-turn:1: foreign check", "s1");
+
+        let mut foreign_app = foreign_fx.app("s1");
+        push_recorded_turn(
+            &mut foreign_app,
+            make_agent_turn("foreign check", "agent-start-2"),
+        );
+        foreign_app.delegated_writes.insert(
+            ("s1".to_string(), 1),
+            child_files.iter().map(|path| (*path).to_string()).collect(),
+        );
+        let refused = patch_undo(&mut foreign_app);
+        assert!(refused.is_error, "{:?}", refused.message);
+        assert!(refused.action.is_none());
+        let refusal_message = refused.message.expect("refusal message");
+        assert!(refusal_message.contains("editor.txt"), "{refusal_message}");
+        for path in child_files {
+            assert!(!refusal_message.contains(path), "{refusal_message}");
+            assert_eq!(foreign_fx.read(path), "after");
+        }
+        assert_eq!(foreign_fx.read("editor.txt"), "editor-during-turn");
+    }
+}
+
+#[test]
 fn undo_takes_back_a_whole_request_in_one_step_without_trust() {
     let fx = UndoFixture::new();
     fx.write("duration.mjs", "v0");

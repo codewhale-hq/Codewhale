@@ -296,6 +296,11 @@ impl codewhale_engine::command_catalog::CommandCatalog for CommandTable {
                     takes_arguments: metadata.takes_arguments(),
                     hidden: metadata.hidden,
                     extension: metadata.extension.is_some(),
+                    plugin_id: metadata
+                        .plugin_authority
+                        .as_ref()
+                        .map(|authority| authority.plugin_id.as_str().to_string()),
+                    workspace_sourced: metadata.workspace_sourced,
                     builtin_bindings: bindings.remove(&metadata.name).unwrap_or_default(),
                 })
                 .collect()
@@ -436,7 +441,7 @@ fn execute_in_context(
     }
 
     if let Some(command_object) = registry().get(command.as_str()) {
-        let command_arg = if command_object.info().name == "preview-request" {
+        let command_arg = if matches!(command_object.info().name, "preview-request" | "plugin") {
             Some(raw_remainder)
         } else {
             arg
@@ -1355,6 +1360,25 @@ mod tests {
                 "/{name} must not stay on the Advanced discovery list"
             );
         }
+    }
+
+    #[test]
+    fn plugin_command_is_primary_discovery() {
+        use codewhale_engine::command_catalog::CommandCatalog;
+
+        assert!(!traits::ADVANCED_DISCOVERY_COMMANDS.contains(&"plugin"));
+        let info = registry().get_info("plugin").expect("/plugin registered");
+        assert!(info.show_in_empty_discovery());
+        let row = CommandTable
+            .builtins()
+            .into_iter()
+            .find(|row| row.name == "plugin")
+            .expect("/plugin in the built-in catalog");
+        assert_eq!(
+            row.discovery,
+            codewhale_command_contract::CommandDiscovery::Primary
+        );
+        assert!(row.show_in_empty_discovery);
     }
 
     #[test]
@@ -2987,7 +3011,7 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join("skills")).unwrap();
         feat022_write_skill(&tmp.path().join("skills"), "demo");
 
-        // Bare /skills opens Extensions; explicit manage retains the mutation surface.
+        // Bare /skills opens Plugins; explicit manage retains the mutation surface.
         let result = execute("/skills", &mut app);
         assert!(!result.is_error, "{result:?}");
         assert!(
@@ -3131,7 +3155,8 @@ mod tests {
         };
         let expected = codewhale_command_contract::handler::CommandCapabilities::WORKSPACE
             .union(codewhale_command_contract::handler::CommandCapabilities::PRESENTATION)
-            .union(codewhale_command_contract::handler::CommandCapabilities::PLUGIN);
+            .union(codewhale_command_contract::handler::CommandCapabilities::PLUGIN)
+            .union(codewhale_command_contract::handler::CommandCapabilities::SESSION_LIFECYCLE);
         assert_eq!(capabilities, expected, "/{name} exact capability set");
         // Undeclared facets stay absent.
         assert!(

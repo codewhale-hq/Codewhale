@@ -567,7 +567,8 @@ done
     expect(text("web/lib/i18n/links.ts")).toContain(
       'export const REPO_URL = "https://github.com/codewhale-hq/CodeWhale"',
     );
-    expect(footer).toContain("GITEE_ENABLED &&");
+    // Mirrors are listed on /install#mirrors, not in the footer.
+    expect(footer).not.toMatch(/gitee|cnb\.cool|npmmirror/i);
   });
 
   it("keeps supplied terminal screenshots and website dimensions truthful", () => {
@@ -595,15 +596,20 @@ done
 
     const readme = text("README.md");
     const homePage = text("web/app/[locale]/page.tsx");
+    const guidePage = text("web/app/[locale]/docs/guide/page.tsx");
     expect(readme).toContain(matrix.screenshot.readme);
     expect(`web/public${TERMINAL_SCREENSHOT.src}`).toBe(matrix.screenshot.website);
     expect(imageDimensions(websiteImage)).toEqual([TERMINAL_SCREENSHOT.width, TERMINAL_SCREENSHOT.height]);
-    expect(homePage).toContain("<NativeTerminalGallery");
+    // The home shows frames from the released version only; the
+    // development-build gallery lives on the docs guide.
+    expect(homePage).toContain("RELEASED_CAPTURE_FRAMES");
+    expect(homePage).not.toContain("NativeTerminalGallery");
+    expect(guidePage).toContain("<NativeTerminalGallery");
     expect(TERMINAL_SCREENSHOT.capture).toBe("web/lib/terminal-captures/website-home-100x24.json");
     expect(matrix.screenshot.sources).toContain(TERMINAL_SCREENSHOT.capture);
     // Every locale describes the actual capture; build identity comes from
     // the media manifest instead of a stale version embedded in translations.
-    expect(homePage).toContain("label={fill(d.screenshotAlt, { version: TERMINAL_SCREENSHOT.version })}");
+    expect(guidePage).toContain("label={fill(home.screenshotAlt, { version: TERMINAL_SCREENSHOT.version })}");
     for (const locale of ["en", "zh", "ja", "vi", "ko", "ru", "uk", "es", "pt-BR", "id", "fr", "de", "ca", "hi", "tr", "it", "pl", "ar"]) {
       const home = getHome(locale);
       expect(home.screenshotAlt, `${locale} alt`).toContain("{version}");

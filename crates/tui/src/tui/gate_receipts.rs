@@ -28,6 +28,7 @@ pub fn tool_gate_receipt(
     gate: ToolGate,
     decision: ToolGateVerdict,
     risk: Option<&str>,
+    reviewer_model: Option<&str>,
     reason: &str,
 ) -> String {
     let id = match (gate, decision) {
@@ -48,12 +49,55 @@ pub fn tool_gate_receipt(
             ToolGateVerdict::Denied | ToolGateVerdict::Allowed | ToolGateVerdict::Unavailable,
         ) => MessageId::AutoReviewReceiptDeterministicBlocked,
     };
-    fill(
+    let mut rendered = fill(
         tr(locale, id),
         tool_name,
         risk.unwrap_or("unknown"),
         &bounded_gate_reason(reason),
-    )
+    );
+    if gate == ToolGate::AutoReviewGuardian
+        && let Some(model) = reviewer_model
+            .map(bounded_gate_reason)
+            .filter(|m| !m.is_empty())
+    {
+        rendered.push_str(&format!(" [reviewer: {model}]"));
+    }
+    rendered
+}
+
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn tool_gate_receipt_with_retry_info(
+    locale: Locale,
+    tool_name: &str,
+    gate: ToolGate,
+    decision: ToolGateVerdict,
+    risk: Option<&str>,
+    reviewer_model: Option<&str>,
+    reason: &str,
+    receipt_id: Option<&str>,
+) -> String {
+    let mut receipt = tool_gate_receipt(
+        locale,
+        tool_name,
+        gate,
+        decision,
+        risk,
+        reviewer_model,
+        reason,
+    );
+    if let Some(id) = receipt_id {
+        let hint = tr(locale, MessageId::AutoReviewReceiptRetryHint)
+            .replace("{id}", &bounded_gate_reason(id));
+        receipt.push_str(". ");
+        receipt.push_str(&hint);
+    }
+    receipt
+}
+
+#[must_use]
+pub fn auto_review_paused_receipt(locale: Locale, reason: &str) -> String {
+    tr(locale, MessageId::AutoReviewPausedReceipt).replace("{reason}", &bounded_gate_reason(reason))
 }
 
 /// The `tool.gate.decision` record `audit.log` keeps for the same decision.
@@ -67,6 +111,7 @@ pub fn tool_gate_audit_record(
     gate: ToolGate,
     decision: ToolGateVerdict,
     risk: Option<&str>,
+    reviewer_model: Option<&str>,
     reason: &str,
 ) -> serde_json::Value {
     serde_json::json!({
@@ -76,8 +121,51 @@ pub fn tool_gate_audit_record(
         "gate": gate.as_str(),
         "decision": decision.as_str(),
         "risk": risk,
-        "reason": codewhale_secrets::redact::redact_secrets(reason),
+        "reviewer_model": reviewer_model,
+        "reason": codewhale_sanitize::redact::redact_secrets(reason),
     })
+}
+
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn tool_gate_audit_record_with_metadata(
+    agent_id: Option<&str>,
+    tool_id: &str,
+    tool_name: &str,
+    gate: ToolGate,
+    decision: ToolGateVerdict,
+    risk: Option<&str>,
+    reviewer_model: Option<&str>,
+    reason: &str,
+    rule: Option<&str>,
+    receipt_id: Option<&str>,
+    call_digest: Option<&str>,
+    action_summary: Option<&str>,
+) -> serde_json::Value {
+    let mut record = tool_gate_audit_record(
+        agent_id,
+        tool_id,
+        tool_name,
+        gate,
+        decision,
+        risk,
+        reviewer_model,
+        reason,
+    );
+    if let Some(rule) = rule {
+        record["rule"] = serde_json::json!(rule);
+    }
+    if let Some(receipt_id) = receipt_id {
+        record["receipt_id"] = serde_json::json!(receipt_id);
+    }
+    if let Some(call_digest) = call_digest {
+        record["call_digest"] = serde_json::json!(call_digest);
+    }
+    if let Some(action_summary) = action_summary {
+        record["action_summary"] =
+            serde_json::json!(codewhale_sanitize::redact::redact_secrets(action_summary));
+    }
+    record
 }
 
 /// The receipt for a safety-floor hold that Auto-Review denied without
@@ -122,6 +210,7 @@ mod tests {
             ToolGate::AutoReviewDeterministic,
             ToolGateVerdict::Denied,
             None,
+            None,
             "blocked `curl -H 'Authorization: Bearer sk-live-abcdefghijklmnopqrstuv' x`",
         );
         assert_eq!(record["gate"], "auto_review_deterministic");
@@ -152,6 +241,7 @@ mod tests {
             ToolGate::AutoReviewGuardian,
             ToolGateVerdict::Allowed,
             Some("low"),
+            None,
             "reads a log file inside the workspace",
         );
         assert_eq!(
@@ -168,6 +258,7 @@ mod tests {
             ToolGate::AutoReviewGuardian,
             ToolGateVerdict::Denied,
             Some("high"),
+            None,
             "would push to a remote",
         );
         assert!(denied.starts_with("Auto-Review denied 'bash' (high risk, model guardian): "));
@@ -176,6 +267,7 @@ mod tests {
             "File",
             ToolGate::AutoReviewGuardian,
             ToolGateVerdict::Unavailable,
+            None,
             None,
             "guardian request timed out",
         );
@@ -195,6 +287,7 @@ mod tests {
             ToolGate::AutoReviewDeterministic,
             ToolGateVerdict::Denied,
             None,
+            None,
             "publish-like command",
         );
         assert_eq!(
@@ -212,6 +305,7 @@ mod tests {
             ToolGate::AutoReviewGuardian,
             ToolGateVerdict::Denied,
             Some("medium"),
+            None,
             &format!("evil\u{1b}]0;title\u{7}  {long}"),
         );
         assert!(!line.contains('\u{1b}'));
@@ -239,11 +333,158 @@ mod tests {
                 ToolGate::AutoReviewGuardian,
                 ToolGateVerdict::Allowed,
                 Some("low"),
+                None,
                 "REASON-SENTINEL",
             );
             assert!(line.contains("'bash'"), "{locale:?}: {line}");
             assert!(line.contains("REASON-SENTINEL"), "{locale:?}: {line}");
             assert!(!line.contains('{'), "{locale:?}: {line}");
         }
+    }
+
+    #[test]
+    fn guardian_receipt_and_audit_record_include_reviewer_model() {
+        let allowed = tool_gate_receipt(
+            Locale::En,
+            "bash",
+            ToolGate::AutoReviewGuardian,
+            ToolGateVerdict::Allowed,
+            Some("low"),
+            Some("claude-sonnet-5-5"),
+            "workspace test",
+        );
+        assert!(
+            allowed.ends_with("[reviewer: claude-sonnet-5-5]"),
+            "{allowed}"
+        );
+
+        let unavailable = tool_gate_receipt(
+            Locale::En,
+            "File",
+            ToolGate::AutoReviewGuardian,
+            ToolGateVerdict::Unavailable,
+            None,
+            Some("gpt-5.6"),
+            "timed out",
+        );
+        assert!(unavailable.contains("[reviewer: gpt-5.6]"), "{unavailable}");
+
+        let deterministic = tool_gate_receipt(
+            Locale::En,
+            "bash",
+            ToolGate::AutoReviewDeterministic,
+            ToolGateVerdict::Denied,
+            None,
+            Some("should-not-print"),
+            "blocked",
+        );
+        assert!(!deterministic.contains("[reviewer:"), "{deterministic}");
+
+        let audit = tool_gate_audit_record(
+            None,
+            "call-2",
+            "bash",
+            ToolGate::AutoReviewGuardian,
+            ToolGateVerdict::Denied,
+            Some("high"),
+            Some("deepseek-v4-pro"),
+            "blocked by reviewer",
+        );
+        assert_eq!(audit["reviewer_model"], "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn retry_receipt_includes_and_omits_retry_hint_cleanly() {
+        let with_hint = tool_gate_receipt_with_retry_info(
+            Locale::En,
+            "bash",
+            ToolGate::AutoReviewGuardian,
+            ToolGateVerdict::Denied,
+            Some("high"),
+            Some("claude-sonnet-5-5"),
+            "dangerous delete",
+            Some("ar-7\x1b[2J"),
+        );
+        assert!(with_hint.contains("ar-7"), "{with_hint}");
+        assert!(!with_hint.contains('\x1b'), "{with_hint}");
+        assert!(with_hint.contains("Press r"), "{with_hint}");
+        assert!(
+            with_hint.contains("/permissions blocked approve ar-7"),
+            "{with_hint}"
+        );
+
+        let without_hint = tool_gate_receipt_with_retry_info(
+            Locale::En,
+            "bash",
+            ToolGate::AutoReviewGuardian,
+            ToolGateVerdict::Denied,
+            Some("high"),
+            None,
+            "dangerous delete",
+            None,
+        );
+        assert!(!without_hint.contains("Press r"), "{without_hint}");
+        assert!(
+            !without_hint.contains("/permissions blocked approve"),
+            "{without_hint}"
+        );
+    }
+
+    #[test]
+    fn paused_receipt_renders_across_shipped_locales_without_controls() {
+        for locale in Locale::shipped_complete() {
+            let line =
+                auto_review_paused_receipt(*locale, "\x1b[31m3 blocked actions in a row\x07");
+            assert!(
+                line.contains("3 blocked actions in a row"),
+                "{locale:?}: {line}"
+            );
+            assert!(!line.contains('\x1b'), "{locale:?}: {line}");
+            assert!(!line.contains('\x07'), "{locale:?}: {line}");
+            assert!(!line.contains('{'), "{locale:?}: {line}");
+        }
+    }
+
+    #[test]
+    fn audit_record_with_metadata_redacts_secrets_and_sets_optional_fields() {
+        let full = tool_gate_audit_record_with_metadata(
+            Some("sub-1"),
+            "call-9",
+            "Bash",
+            ToolGate::AutoReviewGuardian,
+            ToolGateVerdict::Denied,
+            Some("high"),
+            Some("deepseek-v4-pro"),
+            "held",
+            Some("guardian"),
+            Some("ar-3"),
+            Some("digest-abc"),
+            Some("curl -H 'Authorization: Bearer sk-secret1234567890abcdef'"),
+        );
+        assert_eq!(full["rule"], "guardian");
+        assert_eq!(full["receipt_id"], "ar-3");
+        assert_eq!(full["call_digest"], "digest-abc");
+        assert_eq!(full["reviewer_model"], "deepseek-v4-pro");
+        let summary = full["action_summary"].as_str().unwrap();
+        assert!(!summary.contains("sk-secret1234567890abcdef"), "{summary}");
+
+        let minimal = tool_gate_audit_record_with_metadata(
+            None,
+            "call-10",
+            "Read",
+            ToolGate::AutoReviewDeterministic,
+            ToolGateVerdict::Denied,
+            None,
+            None,
+            "blocked",
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(minimal.get("rule").is_none());
+        assert!(minimal.get("receipt_id").is_none());
+        assert!(minimal.get("call_digest").is_none());
+        assert!(minimal.get("action_summary").is_none());
     }
 }

@@ -29,9 +29,7 @@ use uuid::Uuid;
 
 use crate::compaction::CompactionConfig;
 use crate::core::engine::handle::SteerOutcome;
-use crate::core::engine::{
-    EngineConfig, EngineHandle, spawn_engine_with_authoritative_route_config,
-};
+use crate::core::engine::{EngineConfig, EngineHandle};
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
 use crate::core::ops::{Op, TurnSpec};
 use crate::cost_status::{
@@ -227,7 +225,16 @@ const IMAGE_RUNTIME_SCHEMA_VERSION: u32 = 3;
 const OUTPUT_LIMIT_RUNTIME_SCHEMA_VERSION: u32 = 4;
 const PREFIX_CHECKPOINT_RUNTIME_SCHEMA_VERSION: u32 = 5;
 const SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION: u32 = 6;
-const MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION: u32 = SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION;
+const DISALLOWED_TOOLS_RUNTIME_SCHEMA_VERSION: u32 = 7;
+const MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION: u32 = DISALLOWED_TOOLS_RUNTIME_SCHEMA_VERSION;
+
+pub(crate) const fn required_thread_schema_version(disallowed_tools: &[String]) -> u32 {
+    if disallowed_tools.is_empty() {
+        CURRENT_RUNTIME_SCHEMA_VERSION
+    } else {
+        DISALLOWED_TOOLS_RUNTIME_SCHEMA_VERSION
+    }
+}
 
 fn is_zero_u64(value: &u64) -> bool {
     *value == 0
@@ -386,6 +393,8 @@ pub struct ThreadRecord {
     /// normal configured tool catalog; `Some([])` deliberately exposes none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
     /// Extra roots the file tools may read and write outside the workspace.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub add_dirs: Vec<PathBuf>,
@@ -430,6 +439,8 @@ pub struct ThreadRecord {
     pub executor: Option<ExecutorRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<ThreadEnvironment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_preset: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1139,6 +1150,8 @@ pub struct TurnRecord {
     /// carry none, and so have no restore point.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_snapshots: Vec<codewhale_snapshot::WorkspaceSnapshotRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delegated_writes: Vec<String>,
 }
 
 impl TurnRecord {
@@ -1220,6 +1233,7 @@ impl TurnRecord {
                     && self.artifacts.is_empty()
                     && self.workspace.is_none()
                     && self.workspace_snapshots.is_empty()
+                    && self.delegated_writes.is_empty()
                     && self.source_accounting
                     && self.source_usage_records.len() == 1
                     && self
@@ -2524,6 +2538,19 @@ impl RuntimeThreadStore {
 
     pub fn save_thread(&self, thread: &ThreadRecord) -> Result<()> {
         let path = self.thread_path(&thread.id)?;
+        let min_version = required_thread_schema_version(&thread.disallowed_tools);
+        if thread.schema_version < min_version {
+            let mut updated = thread.clone();
+            updated.schema_version = min_version;
+            return write_json_atomic(&path, &updated).with_context(|| {
+                RuntimeStoreRecordFailure::new(
+                    RuntimeStoreOperation::Write,
+                    RuntimeStoreRecordKind::Thread,
+                    &updated.id,
+                    &path,
+                )
+            });
+        }
         write_json_atomic(&path, thread).with_context(|| {
             RuntimeStoreRecordFailure::new(
                 RuntimeStoreOperation::Write,

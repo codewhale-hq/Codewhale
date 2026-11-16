@@ -74,7 +74,7 @@ pub(super) struct PendingProviderRequestReceipt {
     pub(super) request_id: String,
     pub(super) accounting_source: crate::cost_status::NativeUsageSource,
     pub(super) accounting_scope: crate::cost_status::CostScopeToken,
-    pub(super) accounting_owner: Option<String>,
+    pub(super) accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
     pub(super) route: crate::cost_status::EffectiveRouteEnvelope,
     pub(super) primary: bool,
     pub(super) accounting_owned_elsewhere: bool,
@@ -128,8 +128,9 @@ enum ToolCallSource {
     /// Issued by an `execute_tools` program through its nested-call gate.
     CodeMode,
     /// Issued by an extension tool through its `core/call` gate. Planned
-    /// exactly like the others, then its approval is raised to an extension's
-    /// (`extension_host::core_call::origin_approval`).
+    /// through the same gates as a model call; under Auto-Review its held
+    /// calls go to the reviewer, and in other postures its approval is raised
+    /// through `extension_host::core_call::origin_approval`.
     Extension,
 }
 
@@ -160,11 +161,13 @@ struct StreamOutcome {
     /// blocks are parked here instead of being overwritten by the next one.
     /// Redacted thinking blocks park here the moment they arrive.
     completed_thinking: Vec<ContentBlock>,
+    server_blocks: Vec<ContentBlock>,
     tool_uses: Vec<ToolUseState>,
     usage: Usage,
     usage_reported: bool,
     accounting: Option<crate::cost_status::RuntimeUsageRecord>,
     stop_reason: Option<String>,
+    refusal_text: Option<String>,
     pending_message_complete: bool,
     last_text_index: Option<usize>,
     stream_errors: u32,
@@ -494,10 +497,10 @@ fn approval_intent_summary(text: &str) -> Option<String> {
 
 /// Tell the model how to proceed after a deterministic Auto-Review denial.
 /// Keeping the original reason first preserves the audit trail.
-pub(super) fn auto_review_block_tool_error(reason: &str) -> ToolError {
-    ToolError::permission_denied(format!(
-        "{reason}. This block is automatic - do not work around it; take a safer approach inside the current permissions, or stop and tell the user."
-    ))
+pub(super) fn auto_review_block_tool_error(reason: &str, rule: Option<&str>) -> ToolError {
+    ToolError::permission_denied(
+        crate::core::authority::auto_review::format_auto_review_block_message(reason, rule),
+    )
 }
 
 pub(super) fn registered_tool_approval_required(
@@ -564,14 +567,17 @@ pub(super) fn call_forces_prompt(
         || crate::tools::approval_cache::computer_use_user_gate(tool_name, input).is_some()
 }
 
-/// Repo-law `ask` rules require a human decision. Only Ask and Accept Edits
-/// can open that decision; every autonomous or no-prompt posture must fail
-/// closed.
+/// Repo-law `ask` rules require a human decision. Ask, Accept Edits, and
+/// interactive Auto-Review with an attached owner can open that decision;
+/// every autonomous or unattended posture fails closed.
 pub(super) fn repo_law_must_block_without_prompt(
     approval_mode: ApprovalMode,
     auto_approve: bool,
+    owner_present: bool,
 ) -> bool {
-    auto_approve || !approval_mode.is_ask_family()
+    auto_approve
+        || !(approval_mode.is_ask_family()
+            || (approval_mode == ApprovalMode::Auto && owner_present))
 }
 
 pub(super) fn requested_sandbox_escalation(
@@ -714,6 +720,7 @@ fn merge_stream_usage(total: &mut Usage, update: Usage) {
         &mut total.reasoning_replay_tokens,
         update.reasoning_replay_tokens,
     );
+    max_optional(&mut total.safety_tokens, update.safety_tokens);
     if let Some(update) = update.server_tool_use {
         let current = total.server_tool_use.get_or_insert_default();
         max_optional(
@@ -724,6 +731,11 @@ fn merge_stream_usage(total: &mut Usage, update: Usage) {
             &mut current.tool_search_requests,
             update.tool_search_requests,
         );
+        max_optional(&mut current.web_search_requests, update.web_search_requests);
+        max_optional(&mut current.web_fetch_requests, update.web_fetch_requests);
+        max_optional(&mut current.tool_search, update.tool_search);
+        max_optional(&mut current.tool_fetch, update.tool_fetch);
+        max_optional(&mut current.tool_image_search, update.tool_image_search);
     }
 }
 
@@ -894,6 +906,7 @@ impl Engine {
                 mode,
                 fleet_denial_guard,
                 ToolCallSource::CodeMode,
+                None,
             )
             .await;
         let Some(plan) = plans.into_iter().next() else {
@@ -927,7 +940,7 @@ impl Engine {
                 approval_grouping_key: approval_grouping_key.0,
                 input: plan.input,
                 description: format!(
-                    "Run {what_runs} (a local subprocess, not OS-sandboxed): {}",
+                    "Run {what_runs} (a local subprocess under this session's sandbox policy): {}",
                     plan.approval_description
                 ),
                 intent_summary: None,
@@ -1027,8 +1040,6 @@ impl Engine {
         catalog: &mut Vec<Tool>,
         active: &mut std::collections::HashSet<String>,
     ) {
-        // A pending ordinary connection keeps its own catalog authority. An
-        // ACP turn cannot drain or import it; the next ordinary turn can.
         if self.is_acp_turn() {
             return;
         }
@@ -1361,20 +1372,145 @@ impl Engine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn record_auto_review_block(
+        &self,
+        in_auto_mode: bool,
+        owner_present: bool,
+        is_child_host: bool,
+        allow_retry_receipt: bool,
+        tool_id: &str,
+        tool_name: &str,
+        tool_input: &Value,
+        rule: Option<&str>,
+        reason: &str,
+        gate: &str,
+        verdict: &str,
+    ) -> crate::core::authority::auto_review::RecordedAutoReviewBlock {
+        let recorded = self.auto_review_state.lock().record_block(
+            in_auto_mode,
+            owner_present,
+            is_child_host,
+            allow_retry_receipt,
+            tool_id,
+            tool_name,
+            tool_input,
+            rule,
+            reason,
+            gate,
+            verdict,
+        );
+        if in_auto_mode
+            && is_child_host
+            && let Some(child_host) = self.child_host.as_ref()
+            && let Some(parent_state) = child_host
+                .authority
+                .runtime
+                .parent_auto_review_state
+                .as_ref()
+        {
+            parent_state.lock().record_child_block(
+                &child_host.authority.owner_agent_id,
+                tool_id,
+                tool_name,
+                tool_input,
+                &recorded.action_summary,
+                rule,
+                reason,
+                gate,
+                verdict,
+            );
+        }
+        recorded
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn consult_auto_review_guardian(
         &self,
         client: &dyn crate::core::model_client::ModelClient,
         context: &crate::core::authority::auto_review::AutoReviewContext<'_>,
         tool_input: &Value,
         held_reason: &str,
+        soft_rule: Option<&str>,
         tool_id: &str,
         turn: &mut TurnContext,
-    ) -> Result<(), ToolError> {
-        let context_text = crate::core::authority::auto_review::build_reviewer_context(
-            context,
-            held_reason,
-            tool_input,
+        in_auto_mode: bool,
+        allow_retry_receipt: bool,
+        person_approved_retry: bool,
+    ) -> Result<
+        (),
+        Box<(
+            ToolError,
+            crate::core::authority::auto_review::AutoReviewOutcomeEffect,
+        )>,
+    > {
+        use crate::core::authority::auto_review::AutoReviewOutcomeEffect;
+        let reviewer_model = super::reviewer::resolve_reviewer_model(
+            self.config.auto_review_policy.reviewer_model.as_deref(),
+            client,
         );
+        let context_text =
+            match crate::core::authority::auto_review::build_reviewer_context_for_retry(
+                context,
+                held_reason,
+                tool_input,
+                person_approved_retry,
+            ) {
+                Ok(text) => text,
+                Err(reason) => {
+                    let outcome = super::reviewer::ReviewerOutcome::Unavailable {
+                        reason: reason.to_string(),
+                    };
+                    let decision = outcome.audit_decision();
+                    let risk = outcome.audit_risk();
+                    let is_child_host = self.child_host.is_some();
+                    let owner_present = self.current_turn_authority().owner_present();
+                    let recorded = self.record_auto_review_block(
+                        in_auto_mode,
+                        owner_present,
+                        is_child_host,
+                        allow_retry_receipt,
+                        tool_id,
+                        context.tool_name.as_ref(),
+                        tool_input,
+                        Some("guardian-unavailable"),
+                        reason,
+                        "auto_review_guardian",
+                        "unavailable",
+                    );
+                    let result = outcome.into_tool_result(context.tool_name.as_ref());
+                    emit_tool_audit(json!({
+                    "event": "tool.auto_review",
+                    "gate": "guardian",
+                    "tool_id": tool_id,
+                    "reviewer_model": reviewer_model.as_str(),
+                    "decision": decision,
+                    "risk": risk,
+                    "reason": result.as_ref().map_or_else(|error| error.to_string(), Clone::clone),
+                }))
+                .await;
+                    let _ = self
+                        .send_event(Event::ToolGateDecision {
+                            agent_id: None,
+                            tool_id: tool_id.to_string(),
+                            tool_name: context.tool_name.to_string(),
+                            gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                            decision: crate::core::events::ToolGateVerdict::Unavailable,
+                            risk: None,
+                            reviewer_model: Some(reviewer_model),
+                            reason: crate::core::events::bounded_gate_reason(reason),
+                            rule: Some("guardian-unavailable".to_string()),
+                            receipt_id: recorded.receipt_id,
+                            call_digest: recorded.call_digest,
+                            action_summary: (!recorded.action_summary.is_empty())
+                                .then_some(recorded.action_summary),
+                        })
+                        .await;
+                    return result
+                        .map(|_| ())
+                        .map_err(|error| Box::new((error, recorded.effect)));
+                }
+            };
         let _ = self
             .send_event(Event::status(format!(
                 "Auto-Review checking '{}'",
@@ -1385,52 +1521,33 @@ impl Engine {
             .child_host
             .as_ref()
             .map(|child| child.authority.clone());
-        let cost_scope = child_accounting
-            .as_ref()
-            .map_or_else(crate::cost_status::scope_token, |child| {
-                child.accounting_origin().0
-            });
-        let review_route = client.effective_route_envelope(client.model(), chrono::Utc::now());
+        let review_route = client.effective_route_envelope(&reviewer_model, chrono::Utc::now());
         let origin = if let Some(child) = child_accounting.as_ref() {
             child.usage_origin()
         } else {
-            self.config
-                .compaction
-                .runtime_cost_owner
-                .as_deref()
-                .map(|owner| crate::cost_status::NativeUsageOrigin::runtime(cost_scope, owner))
-                .transpose()
-                .map_err(|error| {
-                    ToolError::execution_failed(format!(
-                        "review accounting admission failed: {error}"
-                    ))
-                })?
-                .or_else(|| self.config.runtime_services.accounting_origin.clone())
+            self.turn_accounting_origin()
         };
+        let cost_scope = origin.as_ref().map_or_else(
+            crate::cost_status::scope_token,
+            crate::cost_status::NativeUsageOrigin::scope,
+        );
         let source = crate::cost_status::NativeUsageSource::capture_with_origin(
             format!("auto-review:{}:{tool_id}", turn.id),
             crate::cost_status::UsageSpendOwner::Auxiliary,
             origin,
         );
-        let observation = source
-            .observe_route(&review_route)
-            .map_err(|error| ToolError::execution_failed(error.to_string()))?;
-        if let Some(record) = source
-            .admit_dispatch(&review_route)
-            .await
-            .map_err(|error| ToolError::execution_failed(error.to_string()))?
-            && let Some(child) = child_accounting.as_ref()
-        {
-            child
-                .project_settled_response(&record)
-                .await
-                .map_err(|error| ToolError::execution_failed(error.to_string()))?;
-        }
+        let observation = source.observation();
         let wire = observation.wire_observations.clone();
         let started = Instant::now();
         let review = crate::llm_client::observe_request_retries(
             Some(observation),
-            super::reviewer::consult_reviewer(client, &context_text, &self.cancel_token),
+            super::reviewer::consult_reviewer_with_model_and_retry(
+                client,
+                self.config.auto_review_policy.reviewer_model.as_deref(),
+                &context_text,
+                &self.cancel_token,
+                person_approved_retry,
+            ),
         )
         .await;
         let wire = wire.drain();
@@ -1438,34 +1555,24 @@ impl Engine {
         let usage = review.usage.as_ref().unwrap_or(&empty);
         let has_response = review.usage.is_some();
         let coverage = wire.usage_coverage(usage_has_reported_data(usage), has_response);
-        let record = source
-            .prepare_observed(
-                &review_route,
-                usage,
-                coverage,
-                if has_response {
-                    crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
-                } else {
-                    crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
-                },
-                &wire,
-            )
-            .map_err(|error| ToolError::execution_failed(error.to_string()))?;
+        let record = source.prepare_record(
+            &review_route,
+            usage,
+            coverage,
+            if has_response {
+                crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
+            } else {
+                crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+            },
+            &wire,
+        );
         if let Some(child) = child_accounting.as_ref() {
-            child
-                .settle_response(&record)
-                .await
-                .map_err(|error| ToolError::execution_failed(error.to_string()))?;
+            if let Err(error) = child.settle_response(&record).await {
+                tracing::warn!(%error, "auto-review child usage settlement failed; continuing");
+            }
         } else {
-            crate::cost_status::settle_runtime_usage_record(
-                cost_scope,
-                self.config.compaction.runtime_cost_owner.as_deref(),
-                &record,
-            )
-            .await
-            .map_err(|error| {
-                ToolError::execution_failed(format!("review usage remains unacknowledged: {error}"))
-            })?;
+            crate::cost_status::record_runtime_usage_async(cost_scope, source.origin(), &record)
+                .await;
         }
         if let Some(usage) = &review.usage {
             turn.add_usage(usage);
@@ -1481,43 +1588,98 @@ impl Engine {
                     .await;
             }
         }
-        match &review.outcome {
-            super::reviewer::ReviewerOutcome::Allow { .. } => {
-                turn.auto_review_denials.record(false)
-            }
-            super::reviewer::ReviewerOutcome::Deny { .. } => turn.auto_review_denials.record(true),
-            super::reviewer::ReviewerOutcome::Unavailable { .. }
-            | super::reviewer::ReviewerOutcome::Cancelled => {}
-        }
         let decision = review.outcome.audit_decision();
         let risk = review.outcome.audit_risk();
-        // The transcript receipt names the verdict a person never saw a
-        // prompt for. Cancellation is not a decision and gets no receipt.
-        let receipt = match &review.outcome {
-            super::reviewer::ReviewerOutcome::Allow { reason, .. } => Some((
-                crate::core::events::ToolGateVerdict::Allowed,
-                reason.clone(),
-            )),
-            super::reviewer::ReviewerOutcome::Deny { reason, .. } => {
-                Some((crate::core::events::ToolGateVerdict::Denied, reason.clone()))
+        let is_child_host = self.child_host.is_some();
+        let owner_present = self.current_turn_authority().owner_present();
+        let (receipt, effect) = match &review.outcome {
+            super::reviewer::ReviewerOutcome::Allow { reason, .. } => {
+                self.auto_review_state.lock().record_allow();
+                (
+                    Some((
+                        crate::core::events::ToolGateVerdict::Allowed,
+                        reason.clone(),
+                        None,
+                        None,
+                        None,
+                        None,
+                    )),
+                    AutoReviewOutcomeEffect::Continue,
+                )
             }
-            super::reviewer::ReviewerOutcome::Unavailable { reason } => Some((
-                crate::core::events::ToolGateVerdict::Unavailable,
-                reason.clone(),
-            )),
-            super::reviewer::ReviewerOutcome::Cancelled => None,
+            super::reviewer::ReviewerOutcome::Deny { reason, .. } => {
+                let effective_rule = soft_rule.unwrap_or("guardian");
+                let recorded = self.record_auto_review_block(
+                    in_auto_mode,
+                    owner_present,
+                    is_child_host,
+                    allow_retry_receipt,
+                    tool_id,
+                    context.tool_name.as_ref(),
+                    tool_input,
+                    Some(effective_rule),
+                    reason,
+                    "auto_review_guardian",
+                    "denied",
+                );
+                (
+                    Some((
+                        crate::core::events::ToolGateVerdict::Denied,
+                        reason.clone(),
+                        Some(effective_rule.to_string()),
+                        recorded.receipt_id,
+                        recorded.call_digest,
+                        (!recorded.action_summary.is_empty()).then_some(recorded.action_summary),
+                    )),
+                    recorded.effect,
+                )
+            }
+            super::reviewer::ReviewerOutcome::Unavailable { reason } => {
+                let recorded = self.record_auto_review_block(
+                    in_auto_mode,
+                    owner_present,
+                    is_child_host,
+                    allow_retry_receipt,
+                    tool_id,
+                    context.tool_name.as_ref(),
+                    tool_input,
+                    Some("guardian-unavailable"),
+                    reason,
+                    "auto_review_guardian",
+                    "unavailable",
+                );
+                (
+                    Some((
+                        crate::core::events::ToolGateVerdict::Unavailable,
+                        reason.clone(),
+                        Some("guardian-unavailable".to_string()),
+                        recorded.receipt_id,
+                        recorded.call_digest,
+                        (!recorded.action_summary.is_empty()).then_some(recorded.action_summary),
+                    )),
+                    recorded.effect,
+                )
+            }
+            super::reviewer::ReviewerOutcome::Cancelled => {
+                (None, AutoReviewOutcomeEffect::Continue)
+            }
         };
-        let result = review.outcome.into_tool_result(context.tool_name.as_ref());
+        let result = review.outcome.into_tool_result_with_rule(
+            context.tool_name.as_ref(),
+            Some(soft_rule.unwrap_or("guardian")),
+        );
         emit_tool_audit(json!({
             "event": "tool.auto_review",
             "gate": "guardian",
             "tool_id": tool_id,
+            "rule_id": soft_rule,
+            "reviewer_model": review.reviewer_model.as_str(),
             "decision": decision,
             "risk": risk,
             "reason": result.as_ref().map_or_else(|error| error.to_string(), Clone::clone),
         }))
         .await;
-        if let Some((verdict, reason)) = receipt {
+        if let Some((verdict, reason, rule, receipt_id, call_digest, action_summary)) = receipt {
             let _ = self
                 .send_event(Event::ToolGateDecision {
                     agent_id: None,
@@ -1526,11 +1688,18 @@ impl Engine {
                     gate: crate::core::events::ToolGate::AutoReviewGuardian,
                     decision: verdict,
                     risk: risk.map(str::to_string),
+                    reviewer_model: Some(review.reviewer_model),
                     reason: crate::core::events::bounded_gate_reason(&reason),
+                    rule,
+                    receipt_id,
+                    call_digest,
+                    action_summary,
                 })
                 .await;
         }
-        result.map(|_| ())
+        result
+            .map(|_| ())
+            .map_err(|error| Box::new((error, effect)))
     }
 
     pub(super) async fn run_turn(
@@ -1857,6 +2026,7 @@ impl Engine {
         mode: AppMode,
         fleet_denial_guard: Option<&FleetDenialGuard>,
         source: ToolCallSource,
+        extension_caller: Option<&crate::tools::codemode::ExtensionCaller>,
     ) -> PlannedToolCalls {
         let _timing = codewhale_runtime::logging::PhaseTimer::start("tool_planning");
         // Definitions and services remain captured, while preparation reads
@@ -1880,11 +2050,11 @@ impl Engine {
         // Resolve the batch's effective policy once. Ordinary approval
         // preserves it; an explicit sandbox escalation can replace it for
         // only the exact call that receives separate user approval.
-        let batch_approval_mode = crate::core::authority::agent_approval_mode_for_turn(
+        let mut batch_approval_mode = crate::core::authority::agent_approval_mode_for_turn(
             self.session.auto_approve,
             self.session.approval_mode,
         );
-        let batch_sandbox_policy = crate::core::authority::sandbox_policy_for_turn(
+        let mut batch_sandbox_policy = crate::core::authority::sandbox_policy_for_turn(
             self.current_mode,
             batch_approval_mode,
             self.api_config.sandbox_mode.as_deref(),
@@ -1893,7 +2063,7 @@ impl Engine {
                 self.api_config.sandbox_network_access,
             ),
         );
-        let batch_sandbox_read_only = matches!(
+        let mut batch_sandbox_read_only = matches!(
             &batch_sandbox_policy,
             codewhale_sandbox::SandboxPolicy::ReadOnly { .. }
         );
@@ -1961,7 +2131,8 @@ impl Engine {
             }
 
             if blocked_error.is_none()
-                && let Some(stop) = turn.auto_review_denials.stop()
+                && batch_approval_mode == ApprovalMode::Auto
+                && let Some(stop) = self.auto_review_stop_reason()
             {
                 blocked_error = Some(ToolError::permission_denied(format!(
                     "{stop} This call was not run."
@@ -2136,6 +2307,18 @@ impl Engine {
                 )));
             }
 
+            let registered_spec = tool_registry.and_then(|registry| registry.get(&tool_name));
+            let direct_extension_caller = (source == ToolCallSource::Model)
+                .then(|| {
+                    registered_spec
+                        .as_ref()
+                        .and_then(|spec| spec.extension_caller())
+                })
+                .flatten();
+            let preserve_extension_approval_for_auto_review = batch_approval_mode
+                == ApprovalMode::Auto
+                && (source == ToolCallSource::Extension || direct_extension_caller.is_some());
+
             let mut mcp_always_binding = None;
             if let Some(mut prepared) = prepared_policy {
                 if source == ToolCallSource::Model
@@ -2173,6 +2356,7 @@ impl Engine {
                 // law) can still force a prompt; none of them is weakened.
                 if approval_required
                     && !approval_force_prompt
+                    && !preserve_extension_approval_for_auto_review
                     && !self.is_acp_turn()
                     && workspace_write_carve_out_applies(
                         mode,
@@ -2240,6 +2424,7 @@ impl Engine {
                                 crate::tools::subagent::engine::ChildAuthority::typed_error(error),
                             );
                         } else if !approval_force_prompt
+                            && !preserve_extension_approval_for_auto_review
                             && child
                                 .authority
                                 .delegated_call(registry, &tool_name, &tool_input)
@@ -2271,53 +2456,107 @@ impl Engine {
                 )));
             }
 
-            // #3026: a hook `ask` decision forces the approval prompt even
-            // for tools the registry would auto-run. Must stay after the
-            // registry-based computation above, which assigns rather than
-            // ORs `approval_required`.
-            if hook_requires_approval && !self.session.auto_approve {
-                approval_required = true;
-                approval_force_prompt = true;
+            let owner_can_prompt = self.current_turn_authority().owner_present()
+                && !detached_start
+                && self
+                    .child_host
+                    .as_ref()
+                    .is_none_or(|child| child.authority.runtime.parent_can_prompt);
+
+            if blocked_error.is_none()
+                && batch_approval_mode == ApprovalMode::Auto
+                && approval_force_prompt
+                && !owner_can_prompt
+                && crate::tools::approval_cache::computer_use_user_gate(&tool_name, &tool_input)
+                    .is_none()
+            {
+                approval_required = false;
+                approval_force_prompt = false;
+                blocked_error = Some(ToolError::permission_denied(format!(
+                    "Tool '{tool_name}' requires user confirmation in Auto-Review, and there is no interactive owner surface to ask."
+                )));
             }
 
+            if hook_requires_approval && !self.session.auto_approve {
+                if batch_approval_mode == ApprovalMode::Auto && !owner_can_prompt {
+                    approval_required = false;
+                    approval_force_prompt = false;
+                    if blocked_error.is_none() {
+                        blocked_error = Some(ToolError::permission_denied(format!(
+                            "Tool '{tool_name}' blocked in Auto-Review: tool_call_before hook requires approval, and there is no interactive owner surface to ask."
+                        )));
+                    }
+                } else {
+                    approval_required = true;
+                    approval_force_prompt = true;
+                }
+            }
+
+            let is_extension_invocation = source == ToolCallSource::Extension
+                || direct_extension_caller.is_some()
+                || preserve_extension_approval_for_auto_review
+                || registered_spec
+                    .as_deref()
+                    .is_some_and(|spec| spec.approval_scope().is_some());
+            let mut typed_narrow_allow = false;
             if blocked_error.is_none() {
-                let ask_rule_decision = exec_shell_ask_rule_decision(
+                let ask_rule_eval = exec_shell_ask_rule_evaluation(
                     &self.config,
                     &tool_name,
                     &tool_input,
                     &self.session.workspace,
-                    self.session.approval_mode,
+                    batch_approval_mode,
                 )
                 .or_else(|| {
-                    file_tool_ask_rule_decision(
+                    file_tool_ask_rule_evaluation(
                         &self.config,
                         &tool_name,
                         &tool_input,
                         &self.session.workspace,
-                        self.session.approval_mode,
+                        batch_approval_mode,
+                    )
+                })
+                .or_else(|| {
+                    other_tool_ask_rule_evaluation(
+                        &self.config,
+                        &tool_name,
+                        &tool_input,
+                        &self.session.workspace,
+                        batch_approval_mode,
                     )
                 });
-                if let Some(decision) = ask_rule_decision {
+                if let Some(ask_rule_eval) = ask_rule_eval
+                    && let Some(decision) = ask_rule_eval.decision
+                {
                     match decision {
                         ToolAskRuleDecision::Allow => {
-                            // Remembered grants bypass ordinary registry
-                            // approval only. Hook asks and non-bypassable
-                            // tool requirements remain monotonic, while
-                            // auto-review and repo-law floors below can
-                            // still force review or block.
-                            if !hook_requires_approval && !approval_force_prompt {
+                            if batch_approval_mode == ApprovalMode::Auto {
+                                if ask_rule_eval.typed_narrow_allow
+                                    && !hook_requires_approval
+                                    && !approval_force_prompt
+                                    && !preserve_extension_approval_for_auto_review
+                                    && !is_extension_invocation
+                                {
+                                    typed_narrow_allow = true;
+                                }
+                            } else if !hook_requires_approval
+                                && !approval_force_prompt
+                                && !preserve_extension_approval_for_auto_review
+                            {
                                 approval_required = false;
                             }
                         }
                         ToolAskRuleDecision::Prompt(reason) => {
-                            // #3790: the mode is the sole authority — a typed
-                            // ask-rule prompts in Agent/Plan but never in YOLO
-                            // (auto_approve). A typed deny rule still blocks
-                            // hard, in every mode.
                             if !self.session.auto_approve {
-                                approval_required = true;
-                                approval_description = reason;
-                                approval_force_prompt = true;
+                                if batch_approval_mode == ApprovalMode::Auto && !owner_can_prompt {
+                                    approval_required = false;
+                                    approval_force_prompt = false;
+                                    blocked_error = Some(ToolError::permission_denied(reason));
+                                } else {
+                                    approval_required = true;
+                                    approval_description = reason;
+                                    approval_force_prompt = true;
+                                }
                             }
                         }
                         ToolAskRuleDecision::Block(reason) => {
@@ -2329,26 +2568,82 @@ impl Engine {
                 }
             }
 
+            let repo_law_decision = if blocked_error.is_none() {
+                crate::repo_law::repo_law_plan_decision(
+                    &self.session.workspace,
+                    &tool_name,
+                    &tool_input,
+                )
+            } else {
+                None
+            };
+            let repo_law_blocks_now = matches!(
+                repo_law_decision,
+                Some(crate::repo_law::RepoLawPlanDecision::Block(_))
+            ) || (matches!(
+                repo_law_decision,
+                Some(crate::repo_law::RepoLawPlanDecision::ForcePrompt(_))
+            ) && repo_law_must_block_without_prompt(
+                batch_approval_mode,
+                self.session.auto_approve,
+                owner_can_prompt,
+            ));
+            let repo_law_forces_prompt = matches!(
+                repo_law_decision,
+                Some(crate::repo_law::RepoLawPlanDecision::ForcePrompt(_))
+            ) && !repo_law_blocks_now;
+
+            let mut grants_outside_workspace_read = false;
             if blocked_error.is_none() {
+                let outside_workspace_read_approved = self
+                    .auto_review_state
+                    .lock()
+                    .outside_workspace_read_approved();
                 let review_context =
-                    crate::core::authority::auto_review::AutoReviewContext::from_tool_call_async(
+                    crate::core::authority::auto_review::AutoReviewContext::from_turn_authority_with_options_async(
                         &tool_name,
                         &tool_input,
-                        if self.is_acp_turn() {
-                            RunOrigin::Headless
-                        } else if self.child_host.as_ref().is_some_and(|child| {
-                            !child.authority.runtime.has_foreground_ownership()
-                        }) {
-                            // A detached child's caller remains background even
-                            // for a synchronous tool.
-                            RunOrigin::Background
-                        } else {
-                            auto_review_run_origin_for_plan(detached_start)
-                        },
-                        self.session.approval_mode,
+                        &self.current_turn_authority(),
+                        detached_start,
                         Some(&self.session.workspace),
+                        self.session.person_messages(),
+                        self.session.approved_plan().map(str::to_string),
+                        turn.recent_actions.clone(),
+                        Some(self.session.pinned_project_instructions.clone()),
+                        self.config.auto_review_policy.formatted_environment(),
+                        self.config.snapshots_enabled,
+                        outside_workspace_read_approved,
+                        owner_can_prompt,
                     )
                     .await;
+                let effective_extension_caller =
+                    extension_caller.or(direct_extension_caller.as_ref());
+                let extension_held = if source == ToolCallSource::Extension {
+                    crate::extension_host::core_call::auto_review_held(
+                        &tool_name,
+                        &tool_input,
+                        approval_required,
+                        registered_spec.as_deref(),
+                    )
+                } else {
+                    direct_extension_caller.is_some() && approval_required
+                };
+                let review_context = review_context.map(|review_context| {
+                    let review_context = review_context.with_typed_narrow_allow(typed_narrow_allow);
+                    if let Some(caller) = effective_extension_caller {
+                        review_context.with_extension_origin(
+                            crate::core::authority::auto_review::ExtensionReviewOrigin {
+                                origin: caller.origin.clone(),
+                                tool: caller.tool.clone(),
+                                plugin_id: caller.plugin_id().map(str::to_string),
+                                nested_call: source == ToolCallSource::Extension,
+                                held: extension_held,
+                            },
+                        )
+                    } else {
+                        review_context
+                    }
+                });
                 match review_context {
                     Err(error) => blocked_error = Some(error),
                     Ok(review_context) => {
@@ -2363,25 +2658,101 @@ impl Engine {
                             "auto_review": audit_event,
                         }))
                         .await;
+                        let extension_forces_prompt = batch_approval_mode != ApprovalMode::Auto
+                            && source == ToolCallSource::Extension
+                            && matches!(
+                                crate::extension_host::core_call::origin_approval(
+                                    &tool_name,
+                                    &tool_input,
+                                    approval_required,
+                                    registered_spec.as_deref(),
+                                ),
+                                crate::extension_host::core_call::OriginApproval::ForcePrompt
+                            );
+                        let forced_human_prompt = approval_force_prompt
+                            || crate::tools::approval_cache::computer_use_user_gate(
+                                &tool_name,
+                                &tool_input,
+                            )
+                            .is_some()
+                            || extension_forces_prompt;
+                        let hard_auto_review_block = audit_event
+                            .get("decision")
+                            .and_then(serde_json::Value::as_str)
+                            == Some("block");
+                        let registered_tool =
+                            tool_registry.and_then(|registry| registry.get(&tool_name));
+                        let is_extension_call = source == ToolCallSource::Extension
+                            || effective_extension_caller.is_some()
+                            || registered_tool
+                                .as_deref()
+                                .is_some_and(|spec| spec.approval_scope().is_some());
+                        let allow_retry_receipt = batch_approval_mode == ApprovalMode::Auto
+                            && self.child_host.is_none()
+                            && !is_extension_call;
+                        let person_approved_retry = if allow_retry_receipt {
+                            self.auto_review_state
+                                .lock()
+                                .take_retry_grant(&tool_name, &tool_input)
+                                .is_some()
+                        } else {
+                            false
+                        };
+                        let mut pending_pause_reason = None;
                         match decision {
                             AutoReviewPlanDecision::NoChange => {}
                             AutoReviewPlanDecision::Allow => {
-                                if !hook_requires_approval && !approval_force_prompt {
+                                if !hook_requires_approval
+                                    && !approval_force_prompt
+                                    && !preserve_extension_approval_for_auto_review
+                                {
                                     approval_required = false;
                                 }
                             }
-                            AutoReviewPlanDecision::ForcePrompt(reason) => {
-                                // The built-in safety floor holds outside Full
-                                // Access. Ask surfaces the hold as a real
-                                // decision; the non-interactive postures turn
-                                // this disposition into a hard block below.
+                            AutoReviewPlanDecision::ForcePrompt(reason)
+                                if batch_approval_mode != ApprovalMode::Auto
+                                    || owner_can_prompt =>
+                            {
                                 approval_required = true;
                                 approval_description = reason;
                                 approval_force_prompt = true;
+                                grants_outside_workspace_read =
+                                    audit_event.get("rule_id").and_then(Value::as_str)
+                                        == Some("outside_workspace_shell_read");
                             }
-                            AutoReviewPlanDecision::Block(reason) => {
+                            AutoReviewPlanDecision::Block(reason)
+                                if batch_approval_mode == ApprovalMode::Auto
+                                    && owner_can_prompt
+                                    && forced_human_prompt
+                                    && !hard_auto_review_block =>
+                            {
+                                approval_required = true;
+                                approval_force_prompt = true;
+                                if approval_description == "Tool execution requires approval" {
+                                    approval_description = reason;
+                                }
+                            }
+                            AutoReviewPlanDecision::ForcePrompt(reason)
+                            | AutoReviewPlanDecision::Block(reason) => {
                                 approval_required = false;
                                 approval_force_prompt = false;
+                                let rule =
+                                    crate::core::authority::auto_review::deterministic_rule_label(
+                                        &audit_event,
+                                    );
+                                let recorded = self.record_auto_review_block(
+                                    batch_approval_mode == ApprovalMode::Auto,
+                                    self.current_turn_authority().owner_present(),
+                                    self.child_host.is_some(),
+                                    allow_retry_receipt,
+                                    &tool_id,
+                                    &tool_name,
+                                    &tool_input,
+                                    rule.as_deref(),
+                                    &reason,
+                                    "auto_review_deterministic",
+                                    "denied",
+                                );
                                 let _ = self
                                     .send_event(Event::ToolGateDecision {
                                         agent_id: None,
@@ -2391,10 +2762,23 @@ impl Engine {
                                             crate::core::events::ToolGate::AutoReviewDeterministic,
                                         decision: crate::core::events::ToolGateVerdict::Denied,
                                         risk: None,
+                                        reviewer_model: None,
                                         reason: crate::core::events::bounded_gate_reason(&reason),
+                                        rule: rule.clone(),
+                                        receipt_id: recorded.receipt_id,
+                                        call_digest: recorded.call_digest,
+                                        action_summary: (!recorded.action_summary.is_empty())
+                                            .then_some(recorded.action_summary),
                                     })
                                     .await;
-                                blocked_error = Some(auto_review_block_tool_error(&reason));
+                                blocked_error =
+                                    Some(auto_review_block_tool_error(&reason, rule.as_deref()));
+                                if let crate::core::authority::auto_review::AutoReviewOutcomeEffect::PauseToAsk {
+                                    reason: pause_reason,
+                                } = recorded.effect
+                                {
+                                    pending_pause_reason = Some(pause_reason);
+                                }
                             }
                             AutoReviewPlanDecision::ConsultReviewer(held_reason)
                                 if self.is_acp_turn() =>
@@ -2405,23 +2789,73 @@ impl Engine {
                                 approval_required = false;
                                 approval_force_prompt = false;
                             }
+                            AutoReviewPlanDecision::ConsultReviewer(_)
+                                if batch_approval_mode == ApprovalMode::Auto
+                                    && (forced_human_prompt
+                                        || repo_law_forces_prompt
+                                        || repo_law_blocks_now) =>
+                            {
+                                if owner_can_prompt
+                                    && (forced_human_prompt || repo_law_forces_prompt)
+                                {
+                                    approval_required = true;
+                                    approval_force_prompt = true;
+                                }
+                            }
                             AutoReviewPlanDecision::ConsultReviewer(held_reason) => {
-                                if let Err(error) = self
+                                let soft_rule = audit_event
+                                    .get("rule_id")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::trim)
+                                    .filter(|id| !id.is_empty());
+                                if let Err(failure) = self
                                     .consult_auto_review_guardian(
                                         client,
                                         &review_context,
                                         &tool_input,
                                         &held_reason,
+                                        soft_rule,
                                         &tool_id,
                                         turn,
+                                        batch_approval_mode == ApprovalMode::Auto,
+                                        allow_retry_receipt,
+                                        person_approved_retry,
                                     )
                                     .await
                                 {
+                                    let (error, effect) = *failure;
                                     blocked_error = Some(error);
+                                    if let crate::core::authority::auto_review::AutoReviewOutcomeEffect::PauseToAsk {
+                                        reason: pause_reason,
+                                    } = effect
+                                    {
+                                        pending_pause_reason = Some(pause_reason);
+                                    }
                                 } else if !hook_requires_approval && !approval_force_prompt {
                                     approval_required = false;
                                 }
                             }
+                        }
+                        if let Some(pause_reason) = pending_pause_reason {
+                            self.pause_auto_review_to_ask(&pause_reason).await;
+                            batch_approval_mode =
+                                crate::core::authority::agent_approval_mode_for_turn(
+                                    self.session.auto_approve,
+                                    self.session.approval_mode,
+                                );
+                            batch_sandbox_policy = crate::core::authority::sandbox_policy_for_turn(
+                                self.current_mode,
+                                batch_approval_mode,
+                                self.api_config.sandbox_mode.as_deref(),
+                                &self.session.workspace,
+                                crate::core::authority::SandboxNetworkAccess::from_config(
+                                    self.api_config.sandbox_network_access,
+                                ),
+                            );
+                            batch_sandbox_read_only = matches!(
+                                &batch_sandbox_policy,
+                                codewhale_sandbox::SandboxPolicy::ReadOnly { .. }
+                            );
                         }
                     }
                 }
@@ -2432,11 +2866,7 @@ impl Engine {
             // bypassable by mode — it can only add holds, never remove
             // one, so this cannot weaken any gate above.
             if blocked_error.is_none()
-                && let Some(decision) = crate::repo_law::repo_law_plan_decision(
-                    &self.session.workspace,
-                    &tool_name,
-                    &tool_input,
-                )
+                && let Some(decision) = repo_law_decision
             {
                 emit_tool_audit(json!({
                     "event": "tool.repo_law_decision",
@@ -2454,14 +2884,15 @@ impl Engine {
                 match decision {
                     crate::repo_law::RepoLawPlanDecision::ForcePrompt(reason) => {
                         if repo_law_must_block_without_prompt(
-                            self.session.approval_mode,
+                            batch_approval_mode,
                             self.session.auto_approve,
+                            owner_can_prompt,
                         ) {
                             approval_required = false;
                             approval_force_prompt = false;
                             blocked_error = Some(ToolError::permission_denied(format!(
                                 "Repository law blocked tool '{tool_name}' in {}: {reason}. Switch to Ask to review this protected change.",
-                                self.session.approval_mode.permission_chip_label(),
+                                batch_approval_mode.permission_chip_label(),
                             )));
                         } else {
                             approval_required = true;
@@ -2567,8 +2998,6 @@ impl Engine {
 
             // Consent is an exact human decision, never a standing grant or
             // autonomous approval. Keep existing hard blocks authoritative.
-            // Ask and Full Access both have a person at the card; Auto-Review
-            // and Never do not, and keep failing closed.
             if blocked_error.is_none()
                 && crate::tools::approval_cache::computer_use_user_gate(&tool_name, &tool_input)
                     .is_some()
@@ -2576,7 +3005,8 @@ impl Engine {
                 if matches!(
                     batch_approval_mode,
                     ApprovalMode::Suggest | ApprovalMode::AcceptEdits | ApprovalMode::Bypass
-                ) {
+                ) || (batch_approval_mode == ApprovalMode::Auto && owner_can_prompt)
+                {
                     approval_required = true;
                     approval_force_prompt = true;
                 } else {
@@ -2612,11 +3042,15 @@ impl Engine {
                 );
             }
 
-            // An extension's call needs more than the model's would: approval
-            // unless the tool is a read-only workspace one, and a prompt no
-            // grant or posture may satisfy for shell and network. Only ever
-            // raised, after every gate above has had its say.
-            if source == ToolCallSource::Extension && blocked_error.is_none() {
+            // An extension's call needs more than the model's would outside
+            // Auto-Review: approval unless the tool is a read-only workspace
+            // one, and a prompt no grant or non-Auto-Review posture may
+            // satisfy for shell and network (Auto-Review routes held calls
+            // through its reviewer above).
+            if source == ToolCallSource::Extension
+                && blocked_error.is_none()
+                && batch_approval_mode != ApprovalMode::Auto
+            {
                 match crate::extension_host::core_call::origin_approval(
                     &tool_name,
                     &tool_input,
@@ -2630,8 +3064,16 @@ impl Engine {
                         approval_required = true;
                     }
                     crate::extension_host::core_call::OriginApproval::ForcePrompt => {
-                        approval_required = true;
-                        approval_force_prompt = true;
+                        if batch_approval_mode == ApprovalMode::Auto && !owner_can_prompt {
+                            approval_required = false;
+                            approval_force_prompt = false;
+                            blocked_error = Some(ToolError::permission_denied(format!(
+                                "Extension call '{tool_name}' requires user confirmation in Auto-Review, and there is no interactive owner surface to ask."
+                            )));
+                        } else {
+                            approval_required = true;
+                            approval_force_prompt = true;
+                        }
                     }
                 }
             }
@@ -2662,6 +3104,7 @@ impl Engine {
                 resources,
                 blocked_error,
                 guard_result,
+                grants_outside_workspace_read,
             });
         }
         let cache = &mut self.session.tool_activation_cache;
@@ -3436,6 +3879,11 @@ impl Engine {
                             .await
                         {
                             Ok(ApprovalResult::Approved(by)) => {
+                                if plan.grants_outside_workspace_read {
+                                    self.auto_review_state
+                                        .lock()
+                                        .mark_outside_workspace_read_approved();
+                                }
                                 let decision = if model_requested_policy.is_some() {
                                     "approved_with_requested_policy"
                                 } else {
@@ -4232,6 +4680,7 @@ impl Engine {
                 mode,
                 nested_gate_env.fleet_denial_guard,
                 source,
+                extension,
             )
             .await;
         let Some(plan) = plans.into_iter().next() else {
@@ -4663,12 +5112,60 @@ impl Engine {
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(true);
                     if tool_was_executed {
+                        if let Some(child_host) = self.child_host.as_ref() {
+                            child_host.record_executed_action(&tool_name_for_ws, &tool_input);
+                        }
                         self.session.working_set.observe_tool_call(
                             &tool_name_for_ws,
                             &tool_input,
                             Some(&output_for_context),
                             &self.session.workspace,
                         );
+                        let category = crate::core::authority::get_tool_category_for_call(
+                            &tool_name_for_ws,
+                            &tool_input,
+                        );
+                        let action_kind =
+                            crate::core::authority::auto_review::ToolActionKind::from_tool_call(
+                                &tool_name_for_ws,
+                                &tool_input,
+                                category,
+                                Some(&self.session.workspace),
+                            );
+                        if action_kind != crate::core::authority::auto_review::ToolActionKind::Read
+                        {
+                            let redacted_input =
+                                codewhale_sanitize::redact::redact_json_model_bound_secrets(
+                                    &tool_input,
+                                );
+                            let raw_summary = if let Some(cmd) = redacted_input
+                                .get("command")
+                                .or_else(|| redacted_input.get("cmd"))
+                                .and_then(serde_json::Value::as_str)
+                            {
+                                cmd.to_string()
+                            } else if let Some(path) = redacted_input
+                                .get("path")
+                                .or_else(|| redacted_input.get("file_path"))
+                                .and_then(serde_json::Value::as_str)
+                            {
+                                path.to_string()
+                            } else {
+                                serde_json::to_string(&redacted_input).unwrap_or_default()
+                            };
+                            let summary = self.redact_tool_output_for_transcript(&summarize_text(
+                                &raw_summary,
+                                240,
+                            ));
+                            if turn.recent_actions.len() >= 20 {
+                                turn.recent_actions.remove(0);
+                            }
+                            turn.recent_actions
+                                .push(crate::core::turn::RecentReviewAction {
+                                    tool_name: tool_name_for_ws.clone(),
+                                    summary,
+                                });
+                        }
                     }
 
                     // #136: post-edit LSP diagnostics hook. We only run
@@ -4825,48 +5322,30 @@ impl Engine {
                 _ => crate::llm_client::ProviderUsageCoverage::Missing,
             }
         };
-        let mut accounting_record = None;
-        let accounting_error = if pending.primary && !pending.accounting_owned_elsewhere {
+        let accounting_error: Option<String> = None;
+        let accounting_record = if pending.primary && !pending.accounting_owned_elsewhere {
             let reason = if matches!(outcome, "completed" | "review_response") {
                 crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
             } else {
                 crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
             };
-            let prepared = pending.accounting_source.prepare_observed(
+            let record = pending.accounting_source.prepare_record(
                 &pending.route,
                 usage.unwrap_or(&Usage::default()),
                 coverage,
                 reason,
                 &wire,
             );
-            match prepared {
-                Ok(record) => {
-                    accounting_record = Some(record.clone());
-                    match crate::cost_status::settle_runtime_usage_record(
-                        pending.accounting_scope,
-                        pending.accounting_owner.as_deref(),
-                        &record,
-                    )
-                    .await
-                    {
-                        Ok(()) => None,
-                        Err(error) => Some(error.to_string()),
-                    }
-                }
-                Err(error) => Some(error.to_string()),
-            }
+            crate::cost_status::record_runtime_usage_async(
+                pending.accounting_scope,
+                pending.accounting_origin.as_ref(),
+                &record,
+            )
+            .await;
+            Some(record)
         } else {
             None
         };
-        if let Some(error) = accounting_error.as_ref() {
-            tracing::error!(%error, "provider usage has no durable acknowledgement");
-            let _ = self
-                .send_event(Event::status(format!(
-                    "Provider usage settlement is uncertain: {error}"
-                )))
-                .await;
-        }
-        let failed = accounting_error.clone();
         let _ = self.send_event(Event::ProviderRequestReceipt {
             receipt: json!({
                 "source_accounting": pending.primary,
@@ -4894,10 +5373,7 @@ impl Engine {
                 "cache_attribution": "Local prefix changes and wire schema measurements are context for reported usage, not proof that eviction caused a miss or that unreported retries were free.",
             }),
         }).await;
-        match failed {
-            Some(error) => Err(error),
-            None => Ok(accounting_record),
-        }
+        Ok(accounting_record)
     }
 
     async fn process_stream(
@@ -4925,7 +5401,10 @@ impl Engine {
         // it arrives. Anthropic replays the whole sequence unmodified, so a
         // later block must never overwrite an earlier one.
         let mut completed_thinking: Vec<ContentBlock> = Vec::new();
+        let mut server_blocks: Vec<(u32, ContentBlock)> = Vec::new();
         let mut tool_uses: Vec<ToolUseState> = Vec::new();
+        let mut conversation_title: Option<String> = None;
+        let mut refusal_text = String::new();
         let mut usage = Usage {
             input_tokens: 0,
             output_tokens: 0,
@@ -5140,6 +5619,17 @@ impl Engine {
                     usage_reported |= reported;
                     attempt_usage_reported |= reported;
                     merge_stream_usage(&mut usage, message.usage);
+                    if let Some(title) = message.title.filter(|t| !t.trim().is_empty())
+                        && conversation_title.as_deref() != Some(title.as_str())
+                    {
+                        conversation_title = Some(title.clone());
+                        let _ = self
+                            .send_stream_event(Event::ConversationTitle { title })
+                            .await;
+                    }
+                    if let Some(refusal) = message.refusal.filter(|r| !r.is_empty()) {
+                        refusal_text.push_str(&refusal);
+                    }
                 }
                 StreamEvent::ContentBlockStart {
                     index,
@@ -5269,22 +5759,103 @@ impl Engine {
                             input_parse_error: None,
                         });
                     }
-                    ContentBlockStart::ServerToolUse { id, name, input } => {
-                        codewhale_runtime::logging::info(format!(
-                            "Server tool '{name}' block start. Initial input: {input:?}"
+                    ContentBlockStart::ServerToolUse {
+                        id,
+                        name,
+                        input,
+                        kind,
+                        caller,
+                    } => {
+                        if matches!(
+                            name.as_str(),
+                            crate::client::DEEPSEEK_WEB_SEARCH_TOOL
+                                | crate::client::DEEPSEEK_READ_URL_TOOL
+                        ) {
+                            current_block_kind = None;
+                            server_blocks.push((
+                                index,
+                                ContentBlock::ServerToolUse {
+                                    id,
+                                    name,
+                                    input,
+                                    kind,
+                                    caller,
+                                },
+                            ));
+                        } else {
+                            codewhale_runtime::logging::info(format!(
+                                "Server tool '{name}' block start. Initial input: {input:?}"
+                            ));
+                            current_block_kind = Some(ContentBlockKind::ToolUse);
+                            current_tool_indices.insert(index, tool_uses.len());
+                            tool_uses.push(ToolUseState {
+                                execution_id: self.new_tool_execution_id(),
+                                id,
+                                name,
+                                input,
+                                caller,
+                                thought_signature: None,
+                                input_buffer: String::new(),
+                                input_parse_error: None,
+                            });
+                        }
+                    }
+                    ContentBlockStart::WebSearchToolResult {
+                        tool_use_id,
+                        content,
+                        kind,
+                    } => {
+                        current_block_kind = None;
+                        server_blocks.push((
+                            index,
+                            ContentBlock::WebSearchToolResult {
+                                tool_use_id,
+                                content,
+                                kind,
+                            },
                         ));
-                        current_block_kind = Some(ContentBlockKind::ToolUse);
-                        current_tool_indices.insert(index, tool_uses.len());
-                        tool_uses.push(ToolUseState {
-                            execution_id: self.new_tool_execution_id(),
-                            id,
-                            name,
-                            input,
-                            caller: None,
-                            thought_signature: None,
-                            input_buffer: String::new(),
-                            input_parse_error: None,
-                        });
+                    }
+                    ContentBlockStart::WebFetchToolResult {
+                        tool_use_id,
+                        content,
+                        kind,
+                        signature,
+                    } => {
+                        current_block_kind = None;
+                        server_blocks.push((
+                            index,
+                            ContentBlock::WebFetchToolResult {
+                                tool_use_id,
+                                content,
+                                kind,
+                                signature,
+                            },
+                        ));
+                    }
+                    ContentBlockStart::WebSearchCall {
+                        id,
+                        status,
+                        kind,
+                        action,
+                    } => {
+                        current_block_kind = None;
+                        server_blocks.push((
+                            index,
+                            ContentBlock::WebSearchCall {
+                                id,
+                                status,
+                                kind,
+                                action,
+                                sources: None,
+                                page: None,
+                                signature: None,
+                                error: None,
+                            },
+                        ));
+                    }
+                    ContentBlockStart::ServerToolCalls { steps } => {
+                        current_block_kind = None;
+                        server_blocks.push((index, ContentBlock::ServerToolCalls { steps }));
                     }
                 },
                 StreamEvent::ContentBlockDelta { index, delta } => match delta {
@@ -5357,6 +5928,66 @@ impl Engine {
                             // unconditionally overwrote (#6213 T4).
                         }
                     }
+                    Delta::CitationsDelta { .. } => {}
+                    Delta::RefusalDelta { refusal } => {
+                        refusal_text.push_str(&refusal);
+                    }
+                    Delta::WebSearchCallDelta {
+                        status,
+                        kind,
+                        action,
+                        sources,
+                        page,
+                        signature,
+                        error,
+                    } => {
+                        if let Some((
+                            _,
+                            ContentBlock::WebSearchCall {
+                                status: existing_status,
+                                kind: existing_kind,
+                                action: existing_action,
+                                sources: existing_sources,
+                                page: existing_page,
+                                signature: existing_signature,
+                                error: existing_error,
+                                ..
+                            },
+                        )) = server_blocks.iter_mut().rev().find(|(idx, blk)| {
+                            *idx == index && matches!(blk, ContentBlock::WebSearchCall { .. })
+                        }) {
+                            if let Some(status) = status {
+                                *existing_status = status;
+                            }
+                            if kind.is_some() {
+                                *existing_kind = kind;
+                            }
+                            if action.is_some() {
+                                *existing_action = action;
+                            }
+                            if sources.is_some() {
+                                *existing_sources = sources;
+                            }
+                            if page.is_some() {
+                                *existing_page = page;
+                            }
+                            if signature.is_some() {
+                                *existing_signature = signature;
+                            }
+                            if error.is_some() {
+                                *existing_error = error;
+                            }
+                        }
+                    }
+                    Delta::ServerToolCallsDelta { steps } => {
+                        if let Some((_, ContentBlock::ServerToolCalls { steps: existing })) =
+                            server_blocks.iter_mut().rev().find(|(idx, blk)| {
+                                *idx == index && matches!(blk, ContentBlock::ServerToolCalls { .. })
+                            })
+                        {
+                            *existing = steps;
+                        }
+                    }
                 },
                 StreamEvent::ContentBlockStop { index } => {
                     let stopped_kind = current_block_kind.take();
@@ -5417,6 +6048,17 @@ impl Engine {
                 } => {
                     if let Some(reason) = delta.stop_reason {
                         stop_reason = Some(reason);
+                    }
+                    if let Some(title) = delta.title.filter(|t| !t.trim().is_empty())
+                        && conversation_title.as_deref() != Some(title.as_str())
+                    {
+                        conversation_title = Some(title.clone());
+                        let _ = self
+                            .send_stream_event(Event::ConversationTitle { title })
+                            .await;
+                    }
+                    if let Some(refusal) = delta.refusal.filter(|r| !r.is_empty()) {
+                        refusal_text.push_str(&refusal);
                     }
                     if let Some(u) = delta_usage {
                         let reported = usage_has_reported_data(&u);
@@ -5507,11 +6149,13 @@ impl Engine {
             current_thinking_signature,
             current_thinking_state,
             completed_thinking,
+            server_blocks: server_blocks.into_iter().map(|(_, block)| block).collect(),
             tool_uses,
             usage,
             usage_reported,
             accounting,
             stop_reason,
+            refusal_text: (!refusal_text.trim().is_empty()).then_some(refusal_text),
             pending_message_complete,
             last_text_index,
             stream_errors,
@@ -5968,7 +6612,9 @@ fn mode_blocks_write_capable_tool(
         && (matches!(
             canonical_action_alias(tool_name, input),
             "write_file" | "edit_file" | "apply_patch"
-        ) || (McpPool::is_mcp_tool(tool_name) && !read_only))
+        ) || ((McpPool::is_mcp_tool(tool_name)
+            || crate::extension_host::dsh_broker::is_gate_tool(tool_name))
+            && !read_only))
 }
 
 /// Synthesize the tool result recorded for a tool call that never executed
@@ -6644,14 +7290,23 @@ fn stream_event_has_actionable_content(event: &StreamEvent) -> bool {
             // A redacted thinking block is provider-owned encrypted content —
             // its arrival is actionable reasoning output even without text.
             ContentBlockStart::RedactedThinking { .. } => true,
-            ContentBlockStart::ToolUse { .. } | ContentBlockStart::ServerToolUse { .. } => true,
+            ContentBlockStart::ToolUse { .. }
+            | ContentBlockStart::ServerToolUse { .. }
+            | ContentBlockStart::WebSearchToolResult { .. }
+            | ContentBlockStart::WebFetchToolResult { .. }
+            | ContentBlockStart::WebSearchCall { .. }
+            | ContentBlockStart::ServerToolCalls { .. } => true,
         },
         StreamEvent::ContentBlockDelta { delta, .. } => match delta {
             Delta::TextDelta { text } => !text.is_empty(),
             Delta::ThinkingDelta { thinking } => !thinking.is_empty(),
             Delta::InputJsonDelta { partial_json } => !partial_json.is_empty(),
             Delta::SignatureDelta { signature } => !signature.is_empty(),
-            Delta::ReasoningStateDelta { .. } => true,
+            Delta::ReasoningStateDelta { .. }
+            | Delta::CitationsDelta { .. }
+            | Delta::WebSearchCallDelta { .. }
+            | Delta::ServerToolCallsDelta { .. } => true,
+            Delta::RefusalDelta { refusal } => !refusal.is_empty(),
         },
         StreamEvent::ToolProjectionWarning { .. }
         | StreamEvent::MessageStart { .. }
@@ -6682,8 +7337,32 @@ fn stream_event_content_bytes(event: &StreamEvent) -> usize {
             ContentBlockStart::ToolUse {
                 id, name, input, ..
             }
-            | ContentBlockStart::ServerToolUse { id, name, input } => {
-                id.len() + name.len() + initial_input_bytes(input)
+            | ContentBlockStart::ServerToolUse {
+                id, name, input, ..
+            } => id.len() + name.len() + initial_input_bytes(input),
+            ContentBlockStart::WebSearchToolResult {
+                tool_use_id,
+                content,
+                ..
+            }
+            | ContentBlockStart::WebFetchToolResult {
+                tool_use_id,
+                content,
+                ..
+            } => tool_use_id.len() + content.to_string().len(),
+            ContentBlockStart::WebSearchCall {
+                id,
+                status,
+                kind,
+                action,
+            } => {
+                id.len()
+                    + status.len()
+                    + kind.as_ref().map_or(0, String::len)
+                    + action.as_ref().map_or(0, |v| v.to_string().len())
+            }
+            ContentBlockStart::ServerToolCalls { steps } => {
+                steps.iter().map(|s| s.to_string().len()).sum()
             }
         },
         StreamEvent::ContentBlockDelta { delta, .. } => match delta {
@@ -6691,7 +7370,11 @@ fn stream_event_content_bytes(event: &StreamEvent) -> usize {
             Delta::ThinkingDelta { thinking } => thinking.len(),
             Delta::InputJsonDelta { partial_json } => partial_json.len(),
             Delta::SignatureDelta { signature } => signature.len(),
-            Delta::ReasoningStateDelta { .. } => 0,
+            Delta::RefusalDelta { refusal } => refusal.len(),
+            Delta::ReasoningStateDelta { .. }
+            | Delta::CitationsDelta { .. }
+            | Delta::WebSearchCallDelta { .. }
+            | Delta::ServerToolCallsDelta { .. } => 0,
         },
         _ => 0,
     }
@@ -7057,6 +7740,8 @@ mod tests {
                             id: format!("call_{index}"),
                             name: "web_search".into(),
                             input: json!({}),
+                            kind: None,
+                            caller: None,
                         }
                     } else {
                         ContentBlockStart::ToolUse {
@@ -8852,7 +9537,17 @@ impl Engine {
         surface: &mut child_host::ChildSurfaceProbe,
         call: child_host::ChildProbeCall,
     ) -> Result<RichToolResult> {
+        let client = self
+            .model_client
+            .clone()
+            .ok_or_else(|| anyhow!("captured child client unavailable"))?;
         let control = self.begin_turn_control_for_provenance(UserInputProvenance::Runtime);
+        let previous = std::mem::replace(&mut self.turn_narrowing, control.narrowing);
+        let (turn_run_origin, turn_owner_present) =
+            self.mint_turn_origin(control.origin, UserInputProvenance::Runtime);
+        let previous_origin = std::mem::replace(&mut self.turn_run_origin, turn_run_origin);
+        let previous_owner_present =
+            std::mem::replace(&mut self.turn_owner_present, turn_owner_present);
         let mut turn = TurnContext::new(1);
         let mut uses = [ToolUseState {
             execution_id: call.execution_id,
@@ -8864,10 +9559,6 @@ impl Engine {
             input_buffer: String::new(),
             input_parse_error: None,
         }];
-        let client = self
-            .model_client
-            .clone()
-            .ok_or_else(|| anyhow!("captured child client unavailable"))?;
         let policy = &surface.policy;
         self.session.tool_activation_cache = surface.cache.clone();
         let mut catalog = policy.catalog.clone();
@@ -8886,6 +9577,7 @@ impl Engine {
                 AppMode::Agent,
                 None,
                 ToolCallSource::Model,
+                None,
             )
             .await;
         let mut mode = AppMode::Agent;
@@ -8913,35 +9605,35 @@ impl Engine {
                 &mut gate,
             )
             .await;
-        let answer = outcomes
-            .iter()
-            .flatten()
-            .next()
-            .ok_or_else(|| anyhow!("Core did not produce a terminal tool result"))?;
-        let answer = answer
-            .terminal
-            .legacy_result()
-            .map(|result| RichToolResult {
+        let answer = if let Some(entry) = outcomes.iter().flatten().next() {
+            let answer = entry.terminal.legacy_result().map(|result| RichToolResult {
                 result,
-                content_blocks: answer.content_blocks.clone(),
+                content_blocks: entry.content_blocks.clone(),
             });
-        // Finish through the same result owner as run_tool_batch_phase so
-        // result dependencies are observed once.
-        self.process_tool_results(
-            gate.client,
-            gate.tool_policy.strict_tool_mode,
-            outcomes,
-            gate.turn,
-            &mut catalog,
-            &mut active,
-            &planned.hook_contexts,
-            None,
-        )
-        .await;
-        surface.cache = self.session.tool_activation_cache.clone();
-        surface.policy.catalog = catalog;
-        surface.policy.active_names = active;
+            // Finish through the same result owner as run_tool_batch_phase so
+            // result dependencies are observed once.
+            self.process_tool_results(
+                gate.client,
+                gate.tool_policy.strict_tool_mode,
+                outcomes,
+                gate.turn,
+                &mut catalog,
+                &mut active,
+                &planned.hook_contexts,
+                None,
+            )
+            .await;
+            surface.cache = self.session.tool_activation_cache.clone();
+            surface.policy.catalog = catalog;
+            surface.policy.active_names = active;
+            answer.map_err(anyhow::Error::new)
+        } else {
+            Err(anyhow!("Core did not produce a terminal tool result"))
+        };
+        self.turn_owner_present = previous_owner_present;
+        self.turn_run_origin = previous_origin;
+        self.turn_narrowing = previous;
         drop(control);
-        answer.map_err(anyhow::Error::new)
+        answer
     }
 }

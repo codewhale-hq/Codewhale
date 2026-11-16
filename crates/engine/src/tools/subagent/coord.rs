@@ -1721,7 +1721,7 @@ mod tests {
             .expect_err("mutation must fail when its receipt cannot persist")
             .to_string();
         assert!(
-            error.contains("Runtime coordination was opened without its writer lock"),
+            error.contains("delegated durable store admission failed"),
             "{error}"
         );
         assert!(

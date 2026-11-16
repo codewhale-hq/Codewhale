@@ -60,6 +60,7 @@ codewhale-lane = { path = "../lane", version = "0.10.3" }
 codewhale-memory = { path = "../memory", version = "0.10.3" }
 codewhale-models = { path = "../models", version = "0.10.3" }
 codewhale-palette = { path = "../palette", version = "0.10.3", default-features = false }
+codewhale-sanitize = { path = "../sanitize", version = "0.10.3" }
 codewhale-secrets = { path = "../secrets", version = "0.10.3" }
 colored = "3.0.0"
 fd-lock = "4.0.4"
@@ -80,7 +81,6 @@ uuid.workspace = true
 wait-timeout = "0.2"
 
 [dev-dependencies]
-futures-util = "0.3"
 ring = "0.17"
 wiremock = "0.6"
 codewhale-models = { path = "../models", version = "0.10.3", features = [

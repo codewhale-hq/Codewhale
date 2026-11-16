@@ -248,7 +248,7 @@ assert.match(nightly, /startsWith\(matrix\.target, 'aarch64-'\).*runner\.arch ==
 const nightlyArmMuslSetup = namedStep(nightly, "Install Linux ARM64 musl toolchain");
 assert.match(nightlyArmMuslSetup, /matrix\.target == 'aarch64-unknown-linux-musl'/);
 assert.match(nightlyArmMuslSetup, /apt-get install -y binutils musl-tools/);
-assert.match(nightlyArmMuslSetup, /rustup target add --toolchain stable aarch64-unknown-linux-musl/);
+assert.match(nightlyArmMuslSetup, /rustup target add aarch64-unknown-linux-musl/);
 const nightlyArmStaticSmoke = namedStep(
   nightly,
   "Verify static Linux ARM64 binary and launch",
@@ -373,7 +373,7 @@ assert.deepEqual([...new Set(valuesForKey(artifacts, "target"))].sort(), expecte
 const releaseMuslBuild = namedStep(artifacts, "Build static Linux binaries (musl)");
 assert.match(releaseMuslBuild, /endsWith\(matrix\.target, '-unknown-linux-musl'\)/);
 assert.match(releaseMuslBuild, /apt-get install -y binutils musl-tools/);
-assert.match(releaseMuslBuild, /rustup target add --toolchain stable \$\{\{ matrix\.target \}\}/);
+assert.match(releaseMuslBuild, /rustup target add \$\{\{ matrix\.target \}\}/);
 assert.match(
   releaseMuslBuild,
   /cargo build --profile dist --locked --target \$\{\{ matrix\.target \}\} -p codewhale-cli/,
@@ -810,6 +810,20 @@ assert.doesNotMatch(
 // A job that calls a reusable workflow (`uses:`) cannot carry the key at all —
 // GitHub rejects it — so the callee owns its own caps. That is why the artifact
 // bounds live in release-artifacts.yml rather than in its callers.
+function timeoutMinutes(value) {
+  const literal = /^\d+$/.test(value);
+  const conditional = value.match(
+    /^\$\{\{\s*startsWith\(matrix\.os,\s*'macos-'\)\s*&&\s*(\d+)\s*\|\|\s*(\d+)\s*\}\}$/,
+  );
+  if (!literal && !conditional) return null;
+  const macos = Number(literal ? value : conditional[1]);
+  const other = Number(literal ? value : conditional[2]);
+  if (![macos, other].every((cap) => Number.isInteger(cap) && cap > 0 && cap <= 360)) {
+    return null;
+  }
+  return { macos, other };
+}
+
 function jobsWithoutTimeout(source) {
   const lines = source.split("\n");
   const jobsAt = lines.findIndex((line) => /^jobs:\s*$/.test(line));
@@ -823,7 +837,8 @@ function jobsWithoutTimeout(source) {
     for (let j = i + 1; j < lines.length; j += 1) {
       if (/^  [A-Za-z0-9_-]+:\s*$/.test(lines[j])) break;
       if (/^    uses:/.test(lines[j])) reusable = true;
-      if (/^    timeout-minutes:\s*\d+\s*$/.test(lines[j])) capped = true;
+      const timeout = lines[j].match(/^    timeout-minutes:\s*(.+?)\s*$/);
+      if (timeout && timeoutMinutes(timeout[1])) capped = true;
     }
     if (!reusable && !capped) offenders.push(header[1]);
   }
@@ -862,26 +877,41 @@ for (const [name, source] of [
   );
 }
 
-// The Windows artifact build historically runs 40-45 minutes, so its cap has to
-// keep real margin — a tight bound here fails healthy releases.
-const buildTimeout = artifacts.match(/^  build:\n(?:.*\n)*?    timeout-minutes: (\d+)$/m);
-assert.ok(buildTimeout, "release-artifacts build job must be capped");
-assert.ok(
-  Number(buildTimeout[1]) >= 60,
-  `artifact build cap ${buildTimeout[1]}m leaves no margin over a healthy 40-45m Windows build`,
-);
-
-function jobTimeout(source, job) {
+function jobTimeout(source, job, platform = "other") {
   const match = source.match(
-    new RegExp(`^  ${job}:\\n(?:.*\\n)*?    timeout-minutes: (\\d+)$`, "m"),
+    new RegExp(`^  ${job}:\\n(?:.*\\n)*?    timeout-minutes: (.+)$`, "m"),
   );
   assert.ok(match, `${job} must declare timeout-minutes`);
-  return Number(match[1]);
+  const caps = timeoutMinutes(match[1].trim());
+  assert.ok(caps, `${job} must declare a bounded timeout`);
+  return caps[platform];
 }
 
-// Fast setup and packaging fail quickly. Native builds need the same finite
-// cold-build allowance as full CI: both 0.10.1 macOS artifacts hit the old
-// 90m compilation cap before reaching their launch and inventory checks.
+const macosTimeout = "${{ startsWith(matrix.os, 'macos-') && 360 || 210 }}";
+assert.deepEqual(timeoutMinutes(macosTimeout), { macos: 360, other: 210 });
+for (const invalid of [
+  "0", "361", "Infinity", "${{ matrix.timeout }}",
+  "${{ startsWith(matrix.os, 'macos-') && 361 || 210 }}",
+  "${{ startsWith(matrix.os, 'macos-') && 360 || 0 }}",
+]) {
+  assert.equal(timeoutMinutes(invalid), null, `${invalid} must not count as a bounded cap`);
+}
+assert.deepEqual(
+  jobsWithoutTimeout(`jobs:\n  capped:\n    timeout-minutes: ${macosTimeout}\n`),
+  [],
+);
+assert.equal(jobTimeout(artifacts, "build", "macos"), 360);
+assert.equal(jobTimeout(artifacts, "build"), 210);
+const artifactCacheSetup = artifacts.match(
+  /      - uses: mozilla-actions\/sccache-action@[^\n]+\n(?:(?!      - ).*\n)*/,
+);
+assert.ok(artifactCacheSetup, "artifact compiler cache setup must be explicit");
+assert.match(artifactCacheSetup[0], /^        if: runner\.os == 'Linux'$/m);
+assert.match(
+  namedStep(artifacts, "Enable sccache"),
+  /^        if: steps\.sccache\.outcome == 'success' && runner\.os == 'Linux'$/m,
+);
+
 assert.equal(jobTimeout(candidate, "resolve"), 10);
 assert.equal(jobTimeout(candidate, "web"), 15);
 assert.equal(jobTimeout(artifacts, "pin"), 10);
@@ -894,7 +924,7 @@ for (const job of ["bundle", "windows-installer", "assemble", "smoke"]) {
 }
 assert.equal(
   jobTimeout(nightly, "build"), jobTimeout(artifacts, "build"),
-  "nightly and release must share the native cold-build allowance",
+  "nightly and non-macOS release builds must share the cold-build allowance",
 );
 assert.equal(jobTimeout(release, "resolve"), 10);
 // The 0.10.1 cold parity build exhausted 45 minutes before tests started.
@@ -903,6 +933,76 @@ assert.ok(
   jobTimeout(parityWorkflow, "parity") >= jobTimeout(ci, "test"),
   "release parity must allow the full CI suite's cold-build budget",
 );
+
+const pinnedToolchain = read("rust-toolchain.toml").match(/^channel\s*=\s*"([^"]+)"/m)[1];
+assert.match(pinnedToolchain, /^\d+\.\d+\.\d+$/, "rust-toolchain.toml must pin an exact Rust release");
+const msrv = read("Cargo.toml").match(/^rust-version\s*=\s*"([^"]+)"/m)[1];
+assert.match(msrv, /^\d+\.\d+$/, "Cargo.toml must declare a minor MSRV");
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const stripWorkflowComments = (source) =>
+  source
+    .split("\n")
+    .map((line) => line.replace(/(^|\s)#.*$/, ""))
+    .join("\n");
+const workflowDir = path.join(repoRoot, ".github", "workflows");
+const workflowSources = new Map();
+for (const file of fs.readdirSync(workflowDir).filter((name) => /\.ya?ml$/.test(name)).sort()) {
+  workflowSources.set(file, stripWorkflowComments(read(`.github/workflows/${file}`)));
+}
+const ciSource = workflowSources.get("ci.yml");
+const msrvHeader = /^  msrv:[ \t]*$/m.exec(ciSource);
+assert.ok(msrvHeader, "ci.yml must keep an MSRV job");
+const msrvStart = msrvHeader.index;
+const afterMsrvHeader = msrvStart + msrvHeader[0].length;
+const nextJob = /^  \S/m.exec(ciSource.slice(afterMsrvHeader));
+const msrvEnd = nextJob ? afterMsrvHeader + nextJob.index : ciSource.length;
+const selectorValue = (value) => value.trim().replace(/^(["'])(.*)\1$/, "$2");
+const inMsrvJob = (index) => index >= msrvStart && index < msrvEnd;
+for (const [file, source] of workflowSources) {
+  const selectors = [
+    ...[...source.matchAll(/dtolnay\/rust-toolchain@([^\s]+)/g)].map((m) => ["action ref", m[1], m.index]),
+    ...[...source.matchAll(/^[ \t]+toolchain:[ \t]*([^\r\n]*)$/gm)].map((m) => ["toolchain input", selectorValue(m[1]), m.index]),
+    ...[...source.matchAll(/^[ \t]+rust-version:[ \t]*([^\r\n]*)$/gm)].map((m) => ["rust-version input", selectorValue(m[1]), m.index]),
+    ...[...source.matchAll(/^[ \t]+RUSTUP_TOOLCHAIN:[ \t]*([^\r\n]*)$/gm)].map((m) => ["RUSTUP_TOOLCHAIN", selectorValue(m[1]), m.index]),
+    ...[...source.matchAll(/\bcargo\s+\+\s*["']?([^\s"']+)/g)].map((m) => ["cargo + selector", m[1], m.index]),
+  ];
+  for (const [kind, value, index] of selectors) {
+    if (kind === "action ref" && (/^[0-9a-f]{40}$/.test(value) || value === "master")) continue;
+    const expected = file === "ci.yml" && inMsrvJob(index) ? msrv : pinnedToolchain;
+    assert.equal(value, expected, `${file}: ${kind} ${value} must equal ${expected}`);
+  }
+  assert.doesNotMatch(source, /rustup (?:target|component) add --toolchain/, `${file}: rustup adds must follow rust-toolchain.toml`);
+}
+const msrvJob = ciSource.slice(msrvStart, msrvEnd);
+assert.match(msrvJob, new RegExp(`RUSTUP_TOOLCHAIN: "${escapeRegExp(msrv)}"`), "the MSRV job must override rust-toolchain.toml for every step");
+assert.match(msrvJob, new RegExp(`toolchain: "?${escapeRegExp(msrv)}"?`));
+assert.match(msrvJob, new RegExp(`cargo \\+${escapeRegExp(msrv)} check --workspace --locked`));
+assert.doesNotMatch(msrvJob, new RegExp(`\\b${escapeRegExp(pinnedToolchain)}\\b`), "the MSRV job must not select the pinned release toolchain");
+
+const rootDockerfile = read("Dockerfile");
+const devcontainerDockerfile = read(".devcontainer/Dockerfile");
+const devcontainerConfig = read(".devcontainer/devcontainer.json");
+const tencentCnb = read("deploy/tencent-lighthouse/cnb/cnb.yml.example");
+const pinnedTag = `${pinnedToolchain}-bookworm`;
+for (const [label, source] of [
+  ["Dockerfile", rootDockerfile],
+  [".devcontainer/Dockerfile", devcontainerDockerfile],
+]) {
+  assert.match(source, new RegExp(`^ARG RUST_VERSION=${escapeRegExp(pinnedToolchain)}$`, "m"), `${label} must default RUST_VERSION to the pinned toolchain`);
+  assert.match(source, /^FROM .*\brust:\$\{RUST_VERSION\}/m, `${label} must build from the RUST_VERSION image`);
+}
+assert.match(devcontainerConfig, new RegExp(`"RUST_VERSION":\\s*"${escapeRegExp(pinnedToolchain)}"`), ".devcontainer/devcontainer.json must pass the pinned RUST_VERSION build arg");
+for (const [label, source] of [
+  [".cnb.yml", cnb],
+  ["deploy/tencent-lighthouse/cnb/cnb.yml.example", tencentCnb],
+]) {
+  const tags = [...stripWorkflowComments(source).matchAll(/^[ \t]*image:[ \t]*([^\r\n]*)$/gm)]
+    .map((m) => selectorValue(m[1]))
+    .filter((value) => value.startsWith("rust:"))
+    .map((value) => value.slice("rust:".length));
+  assert.ok(tags.length > 0, `${label} must declare a Rust build image`);
+  assert.deepEqual([...new Set(tags)], [pinnedTag], `${label}: Rust build images must match rust-toolchain.toml`);
+}
 
 console.log(
   "Workflow contracts OK: 6-target/12-asset single-runtime nightly and exact-head 8-target/38-asset release candidate.",

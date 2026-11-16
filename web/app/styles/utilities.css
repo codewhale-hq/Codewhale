@@ -4,8 +4,7 @@
 
 /* ---------- focus + selection ---------- */
 /* The one focus treatment on the site: a 2px ring at a 3px offset in the
-   accent of whatever depth the control sits in (the stage re-declares
-   --ring). Components may add the bioluminescent halo (--glow-focus) as a
+   accent. Components may add the bioluminescent halo (--glow-focus) as a
    box-shadow; none restyles or removes the ring. */
 ::selection { background: var(--selection); }
 :focus-visible { outline: var(--gpui-focus-width) solid var(--ring); outline-offset: var(--gpui-focus-offset); }

@@ -51,6 +51,7 @@ struct Permissions {
     reads: Cell<usize>,
     removals: Vec<(usize, String)>,
     failure: bool,
+    blocked: Vec<BlockedPermissionAction>,
 }
 impl Permissions {
     fn new() -> Self {
@@ -74,6 +75,7 @@ impl Permissions {
             reads: Cell::new(0),
             removals: vec![],
             failure: false,
+            blocked: vec![],
         }
     }
 }
@@ -96,6 +98,9 @@ impl CommandPermissionsContext for Permissions {
             action: rule.action,
             tool: rule.tool,
         })
+    }
+    fn blocked_actions(&self) -> Vec<BlockedPermissionAction> {
+        self.blocked.clone()
     }
 }
 fn permission(p: &mut Permissions, arg: Option<&str>) -> CommandResult {
@@ -434,4 +439,74 @@ fn permissions_quote_non_utf8_paths_without_losing_bytes_or_emitting_controls() 
     assert!(text.contains("\"bad\\xff\\x1b\""), "{text}");
     assert!(!text.contains('\u{1b}'));
     assert!(permissions.removals.is_empty());
+}
+
+#[test]
+fn permissions_blocked_lists_escapes_and_approves_retry() {
+    let mut permissions = Permissions::new();
+    let empty = permission(&mut permissions, Some("blocked"));
+    assert!(!empty.is_error);
+    let empty_msg = empty.message.unwrap();
+    assert!(empty_msg.contains("No blocked"), "{empty_msg}");
+
+    let no_latest = permission(&mut permissions, Some("blocked approve"));
+    assert!(no_latest.is_error);
+
+    permissions.blocked = vec![
+        BlockedPermissionAction {
+            receipt_id: Some("ar-1".into()),
+            tool_name: "Bash".into(),
+            rule: "guardian".into(),
+            reason: "rm\x1b[31m blocked".into(),
+            action_summary: "rm -rf\n/tmp/x".into(),
+            approvable: true,
+            approved: true,
+        },
+        BlockedPermissionAction {
+            receipt_id: Some("ar-2".into()),
+            tool_name: "Bash".into(),
+            rule: "guardian".into(),
+            reason: "chmod 777".into(),
+            action_summary: "chmod 777 /tmp/y".into(),
+            approvable: true,
+            approved: false,
+        },
+        BlockedPermissionAction {
+            receipt_id: None,
+            tool_name: "MCPTool".into(),
+            rule: "guardian".into(),
+            reason: "unapprovable".into(),
+            action_summary: "ext:run".into(),
+            approvable: false,
+            approved: false,
+        },
+    ];
+
+    let listed = permission(&mut permissions, Some("blocked"));
+    assert!(!listed.is_error);
+    let msg = listed.message.unwrap();
+    assert!(!msg.contains('\x1b'), "{msg}");
+    assert!(msg.contains("ar-2"), "{msg}");
+    assert!(msg.contains("/permissions blocked approve"), "{msg}");
+
+    let latest = permission(&mut permissions, Some("blocked approve"));
+    assert!(!latest.is_error);
+    assert_eq!(
+        latest.action,
+        Some(ConfigPolicyAction::ApproveAutoReviewRetry {
+            target: "ar-2".into(),
+        })
+    );
+
+    let explicit = permission(&mut permissions, Some("blocked approve ar-1"));
+    assert!(!explicit.is_error);
+    assert_eq!(
+        explicit.action,
+        Some(ConfigPolicyAction::ApproveAutoReviewRetry {
+            target: "ar-1".into(),
+        })
+    );
+
+    let bad = permission(&mut permissions, Some("blocked unknown"));
+    assert!(bad.is_error);
 }

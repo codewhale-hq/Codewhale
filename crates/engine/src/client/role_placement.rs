@@ -44,6 +44,7 @@ pub enum RolePlacement {
     /// The assistant channel, with the interrupted-output prefix prepended to
     /// the replayed text so the model can see the turn was cut short.
     InterruptedAssistant,
+    LatestReminder,
     /// A system-role entry inside the transcript body (not the top-level
     /// system prompt, which every dialect carries separately).
     System,
@@ -97,6 +98,11 @@ pub fn role_placement(role: &Role, dialect: WireDialect) -> RolePlacement {
         }
         (Role::Developer, WireDialect::AnthropicMessages) => RolePlacement::User,
 
+        (Role::LatestReminder, WireDialect::ChatCompletions | WireDialect::AnthropicMessages) => {
+            RolePlacement::LatestReminder
+        }
+        (Role::LatestReminder, WireDialect::OpenAiResponses) => RolePlacement::Rejected,
+
         // A role this build does not know, e.g. from a transcript written by
         // a newer build. The OpenAI-shaped dialects already dropped these;
         // Anthropic sent them verbatim for the provider to reject.
@@ -139,6 +145,61 @@ pub fn reject_unsupported_roles(
                 role: message.role.to_string(),
                 dialect: dialect.as_str(),
             });
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_latest_reminder_messages(messages: &[Message]) -> anyhow::Result<()> {
+    for (index, message) in messages.iter().enumerate() {
+        if message.role != Role::LatestReminder {
+            continue;
+        }
+        let mut has_text = false;
+        for block in &message.content {
+            match block {
+                codewhale_models::ContentBlock::Text { text, .. } => {
+                    if !text.trim().is_empty() {
+                        has_text = true;
+                    }
+                }
+                _ => anyhow::bail!(
+                    "latest_reminder message at index {index} must contain text content only"
+                ),
+            }
+        }
+        if !has_text {
+            anyhow::bail!("latest_reminder message at index {index} must contain string content");
+        }
+        let Some(next) = messages.get(index + 1) else {
+            anyhow::bail!(
+                "latest_reminder message at index {index} must be placed directly before a user message"
+            );
+        };
+        if next.role != Role::User {
+            anyhow::bail!(
+                "latest_reminder message at index {index} must be placed directly before a user message"
+            );
+        }
+        if next
+            .content
+            .iter()
+            .any(|block| matches!(block, codewhale_models::ContentBlock::ToolResult { .. }))
+        {
+            anyhow::bail!(
+                "latest_reminder message at index {index} cannot be placed before a tool_result message"
+            );
+        }
+        if index > 0
+            && messages[index - 1].role.is_assistant_like()
+            && messages[index - 1]
+                .content
+                .iter()
+                .any(|block| matches!(block, codewhale_models::ContentBlock::ToolUse { .. }))
+        {
+            anyhow::bail!(
+                "latest_reminder message at index {index} cannot be placed between tool_use and tool_result"
+            );
         }
     }
     Ok(())
@@ -314,6 +375,8 @@ mod adapter_agreement_tests {
             stream: Some(false),
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         }
     }
 
@@ -432,5 +495,70 @@ mod adapter_agreement_tests {
             value["content"][0]["text"].as_str().expect("text block"),
             format!("{INTERRUPTED_ASSISTANT_CONTEXT_PREFIX}half an answer"),
         );
+    }
+
+    #[test]
+    fn latest_reminder_validates_position_and_content() {
+        use super::super::role_placement::{
+            RolePlacement, WireDialect, role_placement, validate_latest_reminder_messages,
+        };
+
+        let valid = vec![
+            message(Role::LatestReminder, "remember concise citations"),
+            message(Role::User, "summarize the results"),
+        ];
+        validate_latest_reminder_messages(&valid)
+            .expect("latest_reminder immediately before user is valid");
+
+        assert_eq!(
+            role_placement(&Role::LatestReminder, WireDialect::AnthropicMessages),
+            RolePlacement::LatestReminder
+        );
+        assert_eq!(
+            role_placement(&Role::LatestReminder, WireDialect::ChatCompletions),
+            RolePlacement::LatestReminder
+        );
+        assert!(matches!(
+            role_placement(&Role::LatestReminder, WireDialect::OpenAiResponses),
+            RolePlacement::Rejected
+        ));
+
+        let empty = vec![
+            message(Role::LatestReminder, "   "),
+            message(Role::User, "hi"),
+        ];
+        assert!(validate_latest_reminder_messages(&empty).is_err());
+
+        let trailing = vec![
+            message(Role::User, "hi"),
+            message(Role::LatestReminder, "too late"),
+        ];
+        assert!(validate_latest_reminder_messages(&trailing).is_err());
+
+        let between_tools = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "call_1".to_string(),
+                    name: "read_file".to_string(),
+                    input: json!({"path": "a.txt"}),
+                    caller: None,
+                    thought_signature: None,
+                    execution_id: None,
+                }],
+            },
+            message(Role::LatestReminder, "do not inject here"),
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_1".to_string(),
+                    content: "ok".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                    execution_id: None,
+                }],
+            },
+        ];
+        assert!(validate_latest_reminder_messages(&between_tools).is_err());
     }
 }

@@ -2,7 +2,7 @@ import { ALL_LOCALES } from "./config";
 
 export type ReviewState = "native" | "machine";
 
-const NATIVE_LOCALES: readonly string[] = ["en", "zh"];
+const NATIVE_LOCALES: readonly string[] = ["en"];
 
 export function reviewState(locale: string): ReviewState {
   return NATIVE_LOCALES.includes(locale) ? "native" : "machine";

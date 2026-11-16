@@ -22,8 +22,8 @@ use crate::tui::views::{
 };
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 use codewhale_engine::session_manager::{
-    SavedSession, SessionListFilter, SessionManager, SessionMetadata, extract_title,
-    extract_user_prompt, strip_thinking_tags,
+    MAX_SESSION_TITLE_CHARS, SavedSession, SessionListFilter, SessionManager, SessionMetadata,
+    extract_title, extract_user_prompt, strip_thinking_tags,
 };
 use codewhale_engine::session_projection::{MAX_PROJECTED_SESSIONS, SessionQuery, SessionSortMode};
 use codewhale_localization::{Locale, MessageId, tr};
@@ -787,7 +787,7 @@ impl SessionPickerView {
             self.status = Some(tr(self.locale, MessageId::SessionsNoSelection).into_owned());
             return ViewAction::None;
         };
-        if new_title.is_empty() || new_title.len() > 100 {
+        if new_title.is_empty() || new_title.chars().count() > MAX_SESSION_TITLE_CHARS {
             self.status = Some(tr(self.locale, MessageId::SessionsTitleLength).into_owned());
             return ViewAction::None;
         }
@@ -1707,10 +1707,23 @@ fn message_text_for_history(message: &codewhale_models::Message, locale: Locale)
                     .replace("{input}", &truncate(&input.to_string(), 180))
             }
             codewhale_models::ContentBlock::ToolSearchToolResult { content, .. }
-            | codewhale_models::ContentBlock::CodeExecutionToolResult { content, .. } => {
+            | codewhale_models::ContentBlock::CodeExecutionToolResult { content, .. }
+            | codewhale_models::ContentBlock::WebSearchToolResult { content, .. }
+            | codewhale_models::ContentBlock::WebFetchToolResult { content, .. } => {
                 tr(locale, MessageId::SessionsToolResult)
                     .replace("{content}", &truncate(&content.to_string(), 220))
             }
+            codewhale_models::ContentBlock::WebSearchCall { kind, .. } => {
+                tr(locale, MessageId::SessionsServerTool)
+                    .replace("{name}", kind.as_deref().unwrap_or("web_search"))
+                    .replace("{input}", "")
+            }
+            codewhale_models::ContentBlock::ServerToolCalls { steps } => {
+                tr(locale, MessageId::SessionsServerTool)
+                    .replace("{name}", "server_tool_calls")
+                    .replace("{input}", &steps.len().to_string())
+            }
+            codewhale_models::ContentBlock::File { file_id } => format!("[file: {file_id}]"),
             codewhale_models::ContentBlock::ImageUrl { .. } => {
                 tr(locale, MessageId::SessionsImage).into_owned()
             }
@@ -2042,6 +2055,28 @@ mod tests {
                 .metadata
                 .title,
             "Recovered"
+        );
+    }
+
+    #[test]
+    fn rename_selected_limits_title_by_characters() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
+        let manager = SessionManager::default_location().expect("session manager");
+        let mut saved = saved_session_with_messages(vec![text_message("user", "hello")]);
+        saved.metadata.id = "session-cjk".to_string();
+        manager.save_session(&saved).expect("save session");
+        let mut view = picker_with(vec![saved.metadata.clone()], None);
+
+        let title = "中文会话标题".repeat(6);
+        assert!(matches!(
+            view.rename_selected(&title),
+            ViewAction::Emit(ViewEvent::SessionRenamed { .. })
+        ));
+        assert_eq!(
+            manager.load_session("session-cjk").unwrap().metadata.title,
+            title
         );
     }
 

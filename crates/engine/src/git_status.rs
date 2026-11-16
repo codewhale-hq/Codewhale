@@ -843,11 +843,8 @@ pub fn normalize_observed_git_repo(input: &str) -> Option<String> {
 }
 
 pub fn observed_git_repo(workspace: &Path) -> Option<String> {
-    let mut command = std::process::Command::new("git");
-    command
-        .arg("-C")
-        .arg(workspace)
-        .args(["remote", "get-url", "origin"]);
+    let mut command = Git::review_base(workspace).ok()?;
+    command.args(["remote", "get-url", "origin"]);
     let output = run_bounded_git_with_timeout(&mut command, "remote", GIT_READ_TIMEOUT).ok()?;
     if !output.status.success() {
         return None;
