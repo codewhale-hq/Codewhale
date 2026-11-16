@@ -3331,7 +3331,6 @@ fn kit_decision_band_keeps_parent_child_and_default_deny_authority() {
 
 #[test]
 fn kit_decision_band_never_paints_outside_its_region() {
-    use crate::tui::widgets::Renderable;
     use ratatui::{
         buffer::Buffer,
         layout::Rect,

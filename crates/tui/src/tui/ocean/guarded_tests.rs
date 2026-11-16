@@ -1,6 +1,6 @@
 use super::*;
 use crate::tui::color_compat::ColorCompatBackend;
-use codewhale_ratatui::ocean::{OceanPaintFacts, ocean_semantic_surfaces};
+use codewhale_ratatui::ocean::ocean_semantic_surfaces;
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},

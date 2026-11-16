@@ -32,11 +32,7 @@ use codewhale_ratatui::{
 use codewhale_tui_kit::menu_style;
 use codewhale_tui_kit::scrolling::TranscriptLineMeta;
 use codewhale_tui_kit::ui_text::grapheme_display_width;
-#[cfg(test)]
-use codewhale_tui_kit::ui_text::text_display_width;
 use codewhale_tui_kit::ui_text::truncate_line_to_width;
-#[cfg(test)]
-use ratatui::widgets::BorderType;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -44,8 +40,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap},
 };
-#[cfg(test)]
-use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const SEND_FLASH_DURATION: Duration = Duration::from_millis(500);
