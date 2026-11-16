@@ -2305,6 +2305,106 @@ mod spools {
         assert!(exec_path.exists(), "taking one spool leaves the other");
     }
 
+    const LOCK_CHILD_ROOT: &str = "CODEWHALE_TEST_SPOOL_LOCK_CHILD_ROOT";
+
+    #[test]
+    fn lock_holder_child() {
+        let Some(root) = std::env::var_os(LOCK_CHILD_ROOT) else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let (path, _) = spool::open(&root, &header(Surface::Exec, "0.10.3"));
+        buffer::append(&root, &path, &event_line(SessionSource::Ci)).expect("append");
+        std::fs::write(
+            root.join("child-ready.tmp"),
+            path.to_string_lossy().as_bytes(),
+        )
+        .expect("ready marker");
+        std::fs::rename(root.join("child-ready.tmp"), root.join("child-ready"))
+            .expect("publish ready marker");
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+    }
+
+    #[test]
+    fn the_spool_lock_holds_across_processes_stale_locks_and_crashes() {
+        let home = temp_home();
+        let root = root_of(&home);
+        std::fs::create_dir_all(&root).expect("root");
+        let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", "tests::spools::lock_holder_child", "--nocapture"])
+            .env(LOCK_CHILD_ROOT, &root)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn lock holder");
+        let ready = root.join("child-ready");
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while !ready.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "lock holder never became ready"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let child_spool = PathBuf::from(std::fs::read_to_string(&ready).expect("ready path"));
+        let child_lines = buffer::read_lines(&child_spool);
+        assert_eq!(child_lines.len(), 2);
+        assert!(spool::is_header_line(&child_lines[0]));
+
+        let own = "c".repeat(32);
+        assert!(
+            spool::take_dead(&root, &own, std::time::SystemTime::now()).is_empty(),
+            "a spool locked by a live process is not dead"
+        );
+        assert_eq!(buffer::read_lines(&child_spool), child_lines);
+
+        let stale = plant(
+            &root,
+            'b',
+            &header_line(Surface::Serve, "0.10.3"),
+            &[event_line(SessionSource::Interactive)],
+        );
+        let stale_lock = stale.with_extension("lock");
+        std::fs::write(&stale_lock, b"").expect("stale lock");
+        let orphan_lock = spool::dir(&root).join(format!("{}.lock", "d".repeat(32)));
+        std::fs::write(&orphan_lock, b"").expect("orphan lock");
+        let headerless = plant(
+            &root,
+            'e',
+            &event_line(SessionSource::Interactive),
+            &[event_line(SessionSource::Interactive)],
+        );
+
+        let taken = spool::take_dead(&root, &own, std::time::SystemTime::now());
+        assert_eq!(taken.len(), 1, "only the stale spool is recovered");
+        assert_eq!(taken[0].context.surface, Surface::Serve);
+        for gone in [&stale, &stale_lock, &orphan_lock, &headerless] {
+            assert!(!gone.exists(), "{} must be gone", gone.display());
+        }
+        assert_eq!(buffer::read_lines(&child_spool), child_lines);
+
+        child.kill().expect("kill lock holder");
+        let _ = child.wait();
+
+        let crashed_before_send = spool::take_dead(&root, &own, std::time::SystemTime::now());
+        assert_eq!(crashed_before_send.len(), 1);
+        assert_eq!(crashed_before_send[0].context.surface, Surface::Exec);
+        assert_eq!(crashed_before_send[0].lines.len(), 1);
+        assert!(!child_spool.exists());
+        drop(crashed_before_send);
+
+        assert!(
+            spool::take_dead(&root, &own, std::time::SystemTime::now()).is_empty(),
+            "a spool deleted before a send that never happened is not sent again"
+        );
+        assert!(
+            spool::data_files(&root).is_empty(),
+            "{:?}",
+            spool::data_files(&root)
+        );
+    }
+
     #[test]
     fn the_ring_keeps_the_header() {
         let home = temp_home();

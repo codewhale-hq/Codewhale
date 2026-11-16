@@ -220,7 +220,6 @@ fn append_under_lock(root: &Path, path: &Path, buf: &[u8]) -> Result<bool> {
     Ok(true)
 }
 
-/// Write a spool header line, while the caller holds the blocking privacy lock.
 pub(crate) fn append_header(root: &Path, path: &Path, line: &str) -> Result<bool> {
     let mut buf = Vec::with_capacity(line.len() + 1);
     buf.extend_from_slice(line.as_bytes());
@@ -228,7 +227,6 @@ pub(crate) fn append_header(root: &Path, path: &Path, line: &str) -> Result<bool
     append_under_lock(root, path, &buf)
 }
 
-/// Re-attach the spool header that a ring cut dropped, keeping the newest events.
 fn keep_spool_header(path: &Path, mut lines: Vec<String>) -> Vec<String> {
     use std::io::BufRead as _;
     let Ok(file) = File::open(path) else {

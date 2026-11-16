@@ -330,11 +330,6 @@ fn deliver(
     }
 }
 
-/// Send what dead processes left behind, once each, on their own thread so a
-/// slow request never holds up this session's writer.
-///
-/// Consent and the tombstone are decided before anything is read, and again by
-/// the sender for every batch. Each spool is deleted before its request.
 pub(crate) fn spawn_recovery(context: Context) {
     if !matches!(
         context.surface,
