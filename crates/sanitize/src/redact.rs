@@ -1878,6 +1878,51 @@ mod bare_token_tests {
     }
 
     #[test]
+    fn a_bare_token_next_to_cjk_text_or_full_width_punctuation_is_masked() {
+        let key = ["sk-", "Z7qX4mNb2Vc9Lk3PwR8t"].concat();
+        let jwt = ["eyJhbGciOiJIUzI1NiJ9", ".eyJzdWIiOiIxIn0", ".c2lnbmF0dXJl"].concat();
+        for (input, expected) in [
+            (format!("密钥：{key}"), "密钥：[redacted]"),
+            (
+                format!("我的密钥是{key}，请保管"),
+                "我的密钥是[redacted]，请保管",
+            ),
+            (format!("（{jwt}）"), "（[redacted]）"),
+            (format!("key\u{3000}{key}"), "key\u{3000}[redacted]"),
+            (format!("甲{key}乙{key}"), "甲[redacted]乙[redacted]"),
+        ] {
+            assert_eq!(redact_secrets(&input), expected);
+            assert_eq!(redact_model_bound_secrets(&input), expected);
+        }
+    }
+
+    #[test]
+    fn a_keyed_secret_after_a_cjk_adjacent_token_in_the_same_word_is_still_masked() {
+        let token = "ABCDEFGH12345678";
+        for (out, secret) in [
+            (
+                redact_secrets(
+                    "https://h/s?q=见xai-ABCDEFGH12345678乙&access_token=hunter2hunter2",
+                ),
+                "hunter2hunter2",
+            ),
+            (
+                redact_secrets(r#"{"msg":"见xai-ABCDEFGH12345678乙","api_key":"hunter2"}"#),
+                "hunter2",
+            ),
+            (
+                redact_model_bound_secrets(
+                    r#"{"password":"Zx9qLm2Vb7Nc4Rt8Wp3K","msg":"见xai-ABCDEFGH12345678乙"}"#,
+                ),
+                "Zx9qLm2Vb7Nc4Rt8Wp3K",
+            ),
+        ] {
+            assert!(!out.contains(secret), "{out}");
+            assert!(!out.contains(token), "{out}");
+        }
+    }
+
+    #[test]
     fn lowercase_opaque_keys_with_separators_are_still_masked() {
         // Lowercase letters and separators are also valid random key material;
         // their shape alone does not establish that this is an identifier.

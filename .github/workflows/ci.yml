@@ -38,7 +38,7 @@ jobs:
   changes:
     name: Change detection
     timeout-minutes: 10
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       heavy: ${{ steps.detect.outputs.heavy }}
       workflow: ${{ steps.detect.outputs.workflow }}
@@ -198,7 +198,7 @@ jobs:
   versions:
     name: Version drift
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -275,7 +275,7 @@ jobs:
   plugin-conversion:
     name: Plugin conversion
     timeout-minutes: 5
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -294,7 +294,7 @@ jobs:
   integrations:
     name: Integrations
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Check Lighthouse SSH policy
@@ -355,7 +355,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     defaults:
       run:
         working-directory: crates/engine/extension-host
@@ -389,7 +389,7 @@ jobs:
   vscode-extension:
     name: VS Code extension
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: extensions/vscode
@@ -423,13 +423,15 @@ jobs:
     needs: changes
     if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.heavy == 'true'
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.100.0
       - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.19.0"
         id: sccache
         # The GitHub Actions cache backend is main-only, mirroring
         # rust-cache's save-if: PR runs wrote thousands of refs/pull/N
@@ -443,6 +445,7 @@ jobs:
           echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
           echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
           echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "${GITHUB_ENV}"
+          echo "SCCACHE_IDLE_TIMEOUT=0" >> "${GITHUB_ENV}"
       - name: Install Linux system dependencies
         run: |
           bash scripts/ci-apt-install.sh libdbus-1-dev pkg-config bubblewrap apparmor-profiles
@@ -454,7 +457,9 @@ jobs:
         with:
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@b6620ca104fb7b50dafa1109be9622abc1fdd381
+        with:
+          tool: cargo-nextest@0.9.151
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
@@ -479,7 +484,7 @@ jobs:
     # budget 16 min, and persistence-backlog still running at the old 45-minute
     # cancellation. Commands, filters and budgets are unchanged.
     timeout-minutes: 75
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -490,6 +495,8 @@ jobs:
           toolchain: 1.100.0
           components: rustfmt, clippy
       - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.19.0"
         id: sccache
         # Cache bootstrap failures (e.g. GitHub 504s fetching the sccache
         # binary) degrade to an uncached build instead of failing product CI.
@@ -503,6 +510,7 @@ jobs:
           echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
           echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
           echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "${GITHUB_ENV}"
+          echo "SCCACHE_IDLE_TIMEOUT=0" >> "${GITHUB_ENV}"
       - name: Install Linux system dependencies
         if: needs.changes.outputs.heavy == 'true'
         run: |
@@ -732,7 +740,7 @@ jobs:
     needs: changes
     if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.heavy == 'true'
     timeout-minutes: 45
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       RUSTUP_TOOLCHAIN: "1.89"
     steps:
@@ -755,11 +763,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.workflow == 'true'
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.100.0
       - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.19.0"
         id: sccache
         # Main-only GitHub Actions cache backend; see the Safety gate job.
         if: github.ref == 'refs/heads/main'
@@ -771,6 +781,7 @@ jobs:
           echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
           echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
           echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "${GITHUB_ENV}"
+          echo "SCCACHE_IDLE_TIMEOUT=0" >> "${GITHUB_ENV}"
       - uses: Swatinem/rust-cache@v2
         with:
           cache-bin: false
@@ -803,7 +814,7 @@ jobs:
     # switch: unset it and every leg falls back to GitHub-hosted runners
     # immediately, with no commit — important because an offline
     # self-hosted runner queues jobs forever, which is worse than a slow one.
-    runs-on: ${{ needs.changes.outputs.heavy != 'true' && 'ubuntu-latest' || (matrix.os == 'macos-latest' && needs.changes.outputs.trusted == 'true' && vars.CW_SELF_HOSTED_MAC == 'true' && fromJSON('["self-hosted","macOS","ARM64","codewhale-mac"]')) || matrix.os }}
+    runs-on: ${{ needs.changes.outputs.heavy != 'true' && 'ubuntu-24.04' || (matrix.os == 'macos-latest' && needs.changes.outputs.trusted == 'true' && vars.CW_SELF_HOSTED_MAC == 'true' && fromJSON('["self-hosted","macOS","ARM64","codewhale-mac"]')) || (matrix.os == 'ubuntu-latest' && 'ubuntu-24.04') || matrix.os }}
     strategy:
       # A failure on one desktop platform must not erase evidence from the
       # other one. We need both conclusions to diagnose and release safely.
@@ -844,6 +855,8 @@ jobs:
         # every test; only disposable build debug tables change on this lane.
         run: printf '%s\n' 'CARGO_PROFILE_DEV_DEBUG=0' 'CARGO_PROFILE_TEST_DEBUG=0' >> "$GITHUB_ENV"
       - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.19.0"
         id: sccache
         continue-on-error: true
         # Main-only GitHub Actions cache backend; see the Safety gate job.
@@ -855,6 +868,7 @@ jobs:
           echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
           echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
           echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "${GITHUB_ENV}"
+          echo "SCCACHE_IDLE_TIMEOUT=0" >> "${GITHUB_ENV}"
       - name: Install Linux system dependencies
         if: needs.changes.outputs.heavy == 'true' && matrix.os == 'ubuntu-latest' && (github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
         run: |
@@ -871,8 +885,10 @@ jobs:
         with:
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@b6620ca104fb7b50dafa1109be9622abc1fdd381
         if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
+        with:
+          tool: cargo-nextest@0.9.151
       - name: Check portable config policy boundary
         if: needs.changes.outputs.heavy == 'true' && matrix.os == 'ubuntu-latest' && (github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
         shell: bash
@@ -1218,7 +1234,7 @@ jobs:
     needs: changes
     if: github.event_name == 'pull_request'
     timeout-minutes: 60
-    runs-on: ${{ needs.changes.outputs.heavy == 'true' && 'windows-latest' || 'ubuntu-latest' }}
+    runs-on: ${{ needs.changes.outputs.heavy == 'true' && 'windows-latest' || 'ubuntu-24.04' }}
     steps:
       - name: Skip Windows check for light change
         if: needs.changes.outputs.heavy != 'true'
@@ -1302,7 +1318,7 @@ jobs:
     # A cold Windows compile can take 42 minutes; leave room for cache save
     # after the separately bounded five-minute install/entrypoint smoke test.
     timeout-minutes: 60
-    runs-on: ${{ needs.changes.outputs.heavy == 'true' && matrix.os || 'ubuntu-latest' }}
+    runs-on: ${{ needs.changes.outputs.heavy == 'true' && (matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os) || 'ubuntu-24.04' }}
     strategy:
       matrix:
         os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || github.event_name == 'workflow_dispatch' && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest","windows-latest"]') }}
@@ -1315,6 +1331,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.100.0
         if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
       - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.19.0"
         id: sccache
         continue-on-error: true
         # Main-only GitHub Actions cache backend; see the Safety gate job.
@@ -1326,6 +1344,7 @@ jobs:
           echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
           echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
           echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "${GITHUB_ENV}"
+          echo "SCCACHE_IDLE_TIMEOUT=0" >> "${GITHUB_ENV}"
       - uses: actions/setup-node@v7.1.0
         if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
         with:
@@ -1368,11 +1387,13 @@ jobs:
     # Manual (workflow_dispatch) only; the release candidate builds android-arm64.
     if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.heavy == 'true'
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.100.0
       - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.19.0"
         id: sccache
         # Main-only GitHub Actions cache backend; see the Safety gate job.
         if: github.ref == 'refs/heads/main'
@@ -1384,6 +1405,7 @@ jobs:
           echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
           echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
           echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "${GITHUB_ENV}"
+          echo "SCCACHE_IDLE_TIMEOUT=0" >> "${GITHUB_ENV}"
       - name: Install Linux system dependencies
         run: |
           bash scripts/ci-apt-install.sh libdbus-1-dev pkg-config
@@ -1410,7 +1432,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.actions == 'true'
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Run actionlint
@@ -1427,7 +1449,7 @@ jobs:
     name: Documentation
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 60
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.100.0

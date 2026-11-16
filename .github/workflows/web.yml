@@ -13,7 +13,7 @@ concurrency:
 jobs:
   lint:
     name: Lint & Type Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
       run:
@@ -44,7 +44,7 @@ jobs:
 
   deploy-reminder:
     name: Deployment approval needed
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: lint
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -64,7 +64,7 @@ jobs:
 
   deploy:
     name: Deploy to Cloudflare
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: lint
     # Deploy is MANUAL ONLY: an authorized dispatch on main runs `lint`

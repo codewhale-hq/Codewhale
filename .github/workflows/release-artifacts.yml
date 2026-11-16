@@ -52,7 +52,7 @@ jobs:
   pin:
     name: Pin caller SHA to this run
     timeout-minutes: 10
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require source_sha equals github.sha
         env:
@@ -162,7 +162,7 @@ jobs:
             cli_artifact: codewhale-ohos-arm64
             shim_artifact: codew-ohos-arm64
             compat_tui_artifact: codewhale-tui-ohos-arm64
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     needs: pin
     steps:
       # No ref: — GITHUB_SHA only. CodeQL treats workflow_call checkout-with-ref
@@ -173,6 +173,8 @@ jobs:
           toolchain: 1.100.0
           targets: ${{ matrix.target }}
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: "v0.19.0"
         if: runner.os == 'Linux'
         id: sccache
         continue-on-error: true
@@ -184,6 +186,7 @@ jobs:
             echo "SCCACHE_GHA_ENABLED=true"
             echo "RUSTC_WRAPPER=sccache"
             echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1"
+            echo "SCCACHE_IDLE_TIMEOUT=0"
           } >> "${GITHUB_ENV}"
       # Restore after the trusted lockfile is on disk. Key is OS + arch +
       # explicit stable toolchain + rust-cache's Cargo.lock / rust-toolchain
@@ -496,7 +499,7 @@ jobs:
     timeout-minutes: 15
     needs: build
     if: ${{ !cancelled() && needs.build.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -626,7 +629,7 @@ jobs:
     timeout-minutes: 15
     needs: [bundle, windows-installer]
     if: ${{ !cancelled() && needs.bundle.result == 'success' && needs.windows-installer.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -666,7 +669,7 @@ jobs:
     timeout-minutes: 15
     needs: assemble
     if: ${{ !cancelled() && needs.assemble.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

@@ -377,17 +377,39 @@ impl NetworkPolicy {
 /// `host_matches` can detect the wildcard intent).
 fn normalize_host(host: &str) -> String {
     let trimmed = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    if let Some(rest) = trimmed.strip_prefix("*.") {
-        return format!(".{rest}");
+    let (wildcard, name) = match trimmed.strip_prefix("*.") {
+        Some(rest) => (".", rest),
+        None => match trimmed.strip_prefix('.') {
+            Some(rest) => (".", rest),
+            None => ("", trimmed.as_str()),
+        },
+    };
+    if wildcard.is_empty() {
+        let unbracketed = name
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+            .unwrap_or(name);
+        if let Ok(v6) = unbracketed.parse::<std::net::Ipv6Addr>() {
+            return v6.to_string();
+        }
     }
-    let unbracketed = trimmed
-        .strip_prefix('[')
-        .and_then(|rest| rest.strip_suffix(']'))
-        .unwrap_or(&trimmed);
-    if let Ok(v6) = unbracketed.parse::<std::net::Ipv6Addr>() {
-        return v6.to_string();
+    // Only a bare host goes through the URL parser: an entry with URL syntax
+    // in it would otherwise turn into a different host (`例子.com@evil.com`
+    // into `evil.com`), so it keeps matching nothing, as it did before.
+    if name.is_ascii()
+        || name.contains(['@', '/', '\\', '?', '#', ':'])
+        || name.chars().any(char::is_whitespace)
+    {
+        return format!("{wildcard}{name}");
     }
-    trimmed
+    let ascii = reqwest::Url::parse(&format!("http://{name}/"))
+        .ok()
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| host.trim_end_matches('.').to_owned())
+        })
+        .unwrap_or_else(|| name.to_string());
+    format!("{wildcard}{ascii}")
 }
 
 /// Match a single allow/deny entry against an already-normalized host.
@@ -826,6 +848,41 @@ mod tests {
             proxy: Vec::new(),
             proxy_fake_ip_cidrs: Vec::new(),
             audit: false,
+        }
+    }
+
+    #[test]
+    fn deny_entries_match_internationalized_domain_names() {
+        let policy = mk(Decision::Allow, &[], &["例子.com", "*.中国", "BÜCHER.de"]);
+        for url in [
+            "https://例子.com/",
+            "https://www.例子.中国/",
+            "https://bücher.de/",
+        ] {
+            let host = host_from_url(url).expect("host");
+            assert_eq!(policy.decide(&host), Decision::Deny, "{url}");
+        }
+
+        // A full stop typed with an IME still names the same host.
+        let policy = mk(Decision::Allow, &[], &["例子.com。"]);
+        let host = host_from_url("https://例子.com/").expect("host");
+        assert_eq!(policy.decide(&host), Decision::Deny);
+
+        // An entry with URL syntax in it must not turn into another host.
+        for entry in [
+            "例子.com@evil.com",
+            "evil.com/例",
+            "evil.com#例",
+            "evil.com?例",
+            "evil.com\\例",
+            "例子.com:8080",
+            "evil\t.com。",
+        ] {
+            let policy = mk(Decision::Prompt, &[entry], &[]);
+            for url in ["https://evil.com/", "https://例子.com/"] {
+                let host = host_from_url(url).expect("host");
+                assert_eq!(policy.decide(&host), Decision::Prompt, "{entry} {url}");
+            }
         }
     }
 
