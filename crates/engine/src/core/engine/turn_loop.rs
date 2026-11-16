@@ -2539,15 +2539,13 @@ impl Engine {
                 }
                 if blocked_error.is_none() {
                     if let Some(gate_context) = self.live_tool_context(tool_registry) {
-                        let can_prompt_outside_scope = self.current_turn_authority().run_origin()
-                            != RunOrigin::Background
-                            && (matches!(
+                        let can_prompt_outside_scope =
+                            matches!(
                                 batch_approval_mode,
                                 ApprovalMode::Suggest
                                     | ApprovalMode::AcceptEdits
                                     | ApprovalMode::Bypass
-                            ) || (batch_approval_mode == ApprovalMode::Auto
-                                && owner_can_prompt));
+                            ) || (batch_approval_mode == ApprovalMode::Auto && owner_can_prompt);
                         match crate::extension_host::creator_policy::plan_change_for_turn_async(
                             &gate_context,
                             &tool_input,
@@ -2565,17 +2563,7 @@ impl Engine {
                                         batch_approval_mode,
                                         ApprovalMode::Bypass | ApprovalMode::Auto
                                     );
-                                if self.current_turn_authority().run_origin()
-                                    == RunOrigin::Background
-                                    && requires_human_card
-                                {
-                                    approval_required = false;
-                                    approval_force_prompt = false;
-                                    blocked_error = Some(ToolError::permission_denied(format!(
-                                        "Plugin change `{}` requires user confirmation, which is unavailable in background runs.",
-                                        plan.action.as_str()
-                                    )));
-                                } else if requires_human_card {
+                                if requires_human_card {
                                     if !plan.in_agent_scope || plan.unseen_network_fetch {
                                         if !(matches!(
                                             batch_approval_mode,

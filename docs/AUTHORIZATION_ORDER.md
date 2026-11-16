@@ -114,9 +114,10 @@ two should not be interpreted independently.
   zero timeout waits indefinitely, the same way an Ask-posture approval parks.
 - Creator `plugin_manager` read queries (`list_plugins`, `list_bundles`,
   `list_version_exemptions`) execute across postures without prompts. State-changing
-  calls (`install_bundle`, `remove_bundle`, `set_bundle`, `set_plugin`) require an
-  interactive top-level direct call (`Plan`, `sandbox_mode = "read-only"`, `Never`,
-  `Background`, sub-agents, and nested `execute_tools` refuse with `PermissionDenied`):
+  calls (`install_bundle`, `remove_bundle`, `set_bundle`, `set_plugin`) must be
+  top-level direct calls and are refused with `PermissionDenied` in `Plan`,
+  `sandbox_mode = "read-only"`, `Never`, `Background` runs, sub-agents, and nested
+  `execute_tools`:
   inside-workspace local changes route through the human card in `Ask`/`Accept Edits`,
   through the Auto-Review guardian (or configured `auto_review.allow` rules) in
   `Auto-Review`, and run under `Full Access` (recording agent posture in

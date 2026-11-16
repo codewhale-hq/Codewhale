@@ -634,6 +634,10 @@ async fn background_run_origin_refuses_plugin_install_even_in_scope() {
     shutdown_engine(handle, task).await;
     assert!(outcome.cards.is_empty());
     assert_permission_denied(&outcome);
+    let Err(ToolError::PermissionDenied { message }) = &outcome.tool_results[0].1 else {
+        panic!("expected PermissionDenied");
+    };
+    assert!(message.contains("background runs"), "{message}");
     assert!(f.discover().get("bg-skill").is_none());
     assert!(!f.state_path.exists());
 
