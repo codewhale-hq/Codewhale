@@ -2537,9 +2537,9 @@ fn plugin_show_lists_added_commands_and_profiles() {
     let show = plugins_with_kimi_home_override(&mut app, Some("show toolkit"), None)
         .message
         .expect("show output");
-    assert!(show.contains("Commands: [/deploy, /ship-it]"), "{show}");
+    assert!(show.contains("Commands: [/deploy, /ship\\-it]"), "{show}");
     assert!(
-        show.contains("Profiles: [scout, security-reviewer]"),
+        show.contains("Profiles: [scout, security\\-reviewer]"),
         "{show}"
     );
 }
