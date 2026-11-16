@@ -113,7 +113,7 @@ across [sub-agents](docs/SUBAGENTS.md), run a [Fleet](docs/FLEET.md) of agents
 with their own roles and models, or follow a
 [workflow](docs/WORKFLOW_AUTHORING.md) checked into the repository.
 
-### Extensions
+### Plugins
 
 Connect [MCP servers](docs/MCP.md), add [skills](docs/SKILLS.md) and
 [plugins](docs/PLUGINS.md), and run [hooks](docs/HOOKS.md) on session and tool

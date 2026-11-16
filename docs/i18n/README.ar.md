@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c66c04179a4e -->
+<!-- source: README.md sha256:ed570d48723d -->
 <div align="center">
 
 <picture>
@@ -77,7 +77,7 @@ Fix the failing tests and explain what changed.
 
 يحدد `/goal` هدفًا يستمر عبر الأدوار. يستطيع Codewhale توزيع العمل على [وكلاء فرعيين](../SUBAGENTS.md)، أو تشغيل [Fleet](../FLEET.md) من الوكلاء لكل منهم دوره ونموذجه، أو اتباع [سير عمل](../WORKFLOW_AUTHORING.md) محفوظ في المستودع.
 
-### الإضافات
+### الإضافات البرمجية
 
 صِل [خوادم MCP](../MCP.md)، وأضف [المهارات](../SKILLS.md) و[الإضافات البرمجية](../PLUGINS.md)، وشغّل [الخطافات](../HOOKS.md) عند أحداث الجلسة والأدوات. يتيح وضع الشيفرة (تجريبي، ومفعّل افتراضيًا) للنموذج كتابة برنامج `execute_tools` واحد يستدعي عدة أدوات MCP وأدوات إضافات؛ ويظل كل استدعاء خاضعًا لقواعد الموافقة لديك ويحتفظ بإيصاله. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) إضافة منفصلة تصدر بشكل مستقل (تجريبية، على macOS فقط)، وتبقى معطّلة حتى تراجع صلاحياتها وتفعّلها.
 

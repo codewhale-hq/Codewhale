@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c66c04179a4e -->
+<!-- source: README.md sha256:ed570d48723d -->
 <div align="center">
 
 <picture>
@@ -77,7 +77,7 @@ Anthropic、OpenAI、DeepSeek、Google、Mistral、Moonshot、OpenRouter、xAI �
 
 `/goal` はターンをまたいで続く目標を設定します。Codewhale は作業を[サブエージェント](../SUBAGENTS.md)に分け、それぞれの役割とモデルを持つエージェントの [Fleet](../FLEET.md) を動かし、リポジトリにコミットされた[ワークフロー](../WORKFLOW_AUTHORING.md)に従うこともできます。
 
-### 拡張
+### プラグイン
 
 [MCP サーバー](../MCP.md)を接続し、[スキル](../SKILLS.md)と[プラグイン](../PLUGINS.md)を追加し、セッションやツールのイベントで[フック](../HOOKS.md)を実行できます。コードモード（実験的、既定で有効）では、モデルが複数の MCP ツールやプラグインツールを呼び出す `execute_tools` プログラムを 1 つ書けます。各呼び出しはあなたの承認ルールに従い、レシートも残ります。[Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) は独立してリリースされる別のプラグイン（実験的、macOS のみ）で、アクセス権を確認して有効にするまでオフのままです。
 

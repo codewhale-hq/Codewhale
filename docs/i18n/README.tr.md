@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c66c04179a4e -->
+<!-- source: README.md sha256:ed570d48723d -->
 <div align="center">
 
 <picture>
@@ -77,7 +77,7 @@ Anthropic, OpenAI, DeepSeek, Google, Mistral, Moonshot, OpenRouter ve xAI dahil 
 
 `/goal`, turlar boyunca süren bir hedef belirler. Codewhale işi [alt ajanlara](../SUBAGENTS.md) bölebilir, kendi rolleri ve modelleri olan ajanlardan oluşan bir [Fleet](../FLEET.md) çalıştırabilir veya depoya kaydedilmiş bir [iş akışını](../WORKFLOW_AUTHORING.md) izleyebilir.
 
-### Uzantılar
+### Eklentiler
 
 [MCP sunucularını](../MCP.md) bağlayın, [beceriler](../SKILLS.md) ve [eklentiler](../PLUGINS.md) ekleyin, oturum ve araç olaylarında [kancalar](../HOOKS.md) çalıştırın. Kod modu (deneysel, varsayılan olarak açık), modelin birkaç MCP ve eklenti aracını çağıran tek bir `execute_tools` programı yazmasına izin verir; her çağrı yine onay kurallarınıza uyar ve makbuzunu korur. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) bağımsız olarak yayımlanan ayrı bir eklentidir (deneysel, yalnızca macOS) ve siz erişimini inceleyip etkinleştirene kadar kapalı kalır.
 

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c66c04179a4e -->
+<!-- source: README.md sha256:ed570d48723d -->
 <div align="center">
 
 <picture>
@@ -77,7 +77,7 @@ Wbudowano ponad 40 dostawców, w tym Anthropic, OpenAI, DeepSeek, Google, Mistra
 
 `/goal` ustawia cel, który trwa przez kolejne tury. Codewhale może podzielić pracę między [podagentów](../SUBAGENTS.md), uruchomić [Fleet](../FLEET.md) agentów z własnymi rolami i modelami albo wykonać [przepływ pracy](../WORKFLOW_AUTHORING.md) zapisany w repozytorium.
 
-### Rozszerzenia
+### Wtyczki
 
 Podłączaj [serwery MCP](../MCP.md), dodawaj [umiejętności](../SKILLS.md) i [wtyczki](../PLUGINS.md) oraz uruchamiaj [hooki](../HOOKS.md) przy zdarzeniach sesji i narzędzi. Tryb kodu (eksperymentalny, domyślnie włączony) pozwala modelowi napisać jeden program `execute_tools`, który wywołuje kilka narzędzi MCP i wtyczek; każde wywołanie nadal podlega twoim regułom zatwierdzania i zachowuje potwierdzenie. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) to osobna wtyczka wydawana niezależnie (eksperymentalna, tylko macOS) i pozostaje wyłączona, dopóki nie sprawdzisz jej dostępu i jej nie włączysz.
 

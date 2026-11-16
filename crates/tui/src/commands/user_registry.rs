@@ -455,7 +455,7 @@ impl UserCommandRegistry {
         &self.load_errors
     }
 
-    fn dispatch_error(&self, name: &str) -> Option<String> {
+    pub(crate) fn dispatch_error(&self, name: &str) -> Option<String> {
         let key = normalize_name(name);
         self.invalid_commands.get(&key).cloned().or_else(|| {
             self.aliases
@@ -464,6 +464,10 @@ impl UserCommandRegistry {
                 .cloned()
         })
     }
+}
+
+pub(crate) fn resolved_command_name(name: String, content: &str, path: &Path) -> String {
+    parse_metadata(name, content, path).0.name
 }
 
 fn parse_metadata(

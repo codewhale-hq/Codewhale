@@ -788,7 +788,7 @@ fn plugin_command_opens_plugins_screen_with_kind_filters() {
         tui.wait_for_idle(Duration::from_millis(300), WAIT).unwrap();
         let frame = tui.frame();
         println!("--- /plugin at {cols}x{rows} ---\n{}", frame.text());
-        for label in ["Hooks", "Installed", "Skills", "Connectors"] {
+        for label in ["Hooks", "Installed", "Skills", "Connectors", "Command"] {
             assert!(
                 frame.contains(label),
                 "missing filter {label:?} at {cols}x{rows}\n{}",

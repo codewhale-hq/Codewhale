@@ -76,14 +76,34 @@ pub(super) fn render_bundle_detail(
         .iter()
         .map(|skill| escape_review_text(skill, context))
         .collect::<Vec<_>>();
+    let commands = detail
+        .commands
+        .iter()
+        .map(|command| escape_review_text(command, context))
+        .collect::<Vec<_>>();
+    let profiles = detail
+        .profiles
+        .iter()
+        .map(|profile| escape_review_text(profile, context))
+        .collect::<Vec<_>>();
     let _ = write!(
         output,
-        "\nCompatibility: {}\nActive components: [{active_components}]\nInactive components: [{unsupported}]\nQualified skills: [{}]\nActivation boundary: trust stages the exact reviewed content but does not activate it; enable rebuilds this workspace's Skills, MCP, Commands, Agents, and Hooks immediately. Every plugin command dispatch, Agent spawn, Hook process start, Skill use, and MCP call rechecks current authority. {}",
+        "\nCompatibility: {}\nActive components: [{active_components}]\nInactive components: [{unsupported}]\nQualified skills: [{}]\nCommands: [{}]\nProfiles: [{}]\nActivation boundary: trust stages the exact reviewed content but does not activate it; enable rebuilds this workspace's Skills, MCP, Commands, Agents, and Hooks immediately. Every plugin command dispatch, Agent spawn, Hook process start, Skill use, and MCP call rechecks current authority. {}",
         detail.compatibility,
         if skills.is_empty() {
             "none".to_string()
         } else {
             skills.join(", ")
+        },
+        if commands.is_empty() {
+            "none".to_string()
+        } else {
+            commands.join(", ")
+        },
+        if profiles.is_empty() {
+            "none".to_string()
+        } else {
+            profiles.join(", ")
         },
         if extension_host {
             "Native host code (JavaScript) runs in the experimental extension host with your user permissions (sandboxed where the OS sandbox is available); extension tools are never auto-approved by the plugin itself, and each call needs approval under your approval mode. LSP, filesystem-roots, and lifecycle-mutation stay inventoried and inactive."

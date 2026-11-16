@@ -48,15 +48,17 @@ pub enum ExtensionsTab {
     Marketplace,
     Skills,
     Mcp,
+    Command,
 }
 
 impl ExtensionsTab {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Hooks,
         Self::Plugins,
         Self::Marketplace,
         Self::Skills,
         Self::Mcp,
+        Self::Command,
     ];
 
     #[must_use]
@@ -67,6 +69,7 @@ impl ExtensionsTab {
             Self::Marketplace => tr(locale, MessageId::ExtensionsTabMarketplace),
             Self::Skills => tr(locale, MessageId::HelpSkills),
             Self::Mcp => tr(locale, MessageId::ExtensionsTabConnectors),
+            Self::Command => tr(locale, MessageId::CommandPaletteTitle),
         }
         .into_owned()
     }
@@ -78,6 +81,7 @@ impl ExtensionsTab {
             Self::Marketplace => 2,
             Self::Skills => 3,
             Self::Mcp => 4,
+            Self::Command => 5,
         }
     }
 
@@ -289,7 +293,7 @@ pub struct ExtensionsTabModel {
 /// network and no extension process is started while building it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExtensionsSnapshot {
-    tabs: [ExtensionsTabModel; 5],
+    tabs: [ExtensionsTabModel; 6],
     /// MCP manager generation and initializing flag at capture time. The
     /// open panel reports these on its bounded poll so the host rebuilds the
     /// model only when live state actually moved.
@@ -310,6 +314,7 @@ impl ExtensionsSnapshot {
         snapshot.tabs[ExtensionsTab::Marketplace.index()] = marketplace_model(app, app.ui_locale);
         snapshot.tabs[ExtensionsTab::Skills.index()] = skills_model(app, app.ui_locale);
         snapshot.tabs[ExtensionsTab::Mcp.index()] = mcp_model(app, app.ui_locale);
+        snapshot.tabs[ExtensionsTab::Command.index()] = commands_model(app, app.ui_locale);
         snapshot
             .with_recommendations(reviewed_product_catalog(app.ui_locale), app.ui_locale)
             .with_recommended_actions(app)
@@ -1585,6 +1590,90 @@ fn mcp_groups(locale: Locale, items: Vec<ExtensionItem>) -> Vec<ExtensionGroup> 
     .collect()
 }
 
+fn commands_model(app: &App, locale: Locale) -> ExtensionsTabModel {
+    crate::commands::user_registry::with_registry_for_app(app, |registry| {
+        let mut user = Vec::new();
+        let mut workspace = Vec::new();
+        let mut entries: Vec<_> = registry
+            .iter()
+            .filter(|metadata| {
+                metadata.plugin_authority.is_none()
+                    && metadata.extension.is_none()
+                    && !metadata.hidden
+            })
+            .collect();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        for metadata in entries {
+            let error = registry.dispatch_error(&metadata.name);
+            let scope = tr(
+                locale,
+                if metadata.workspace_sourced {
+                    MessageId::ExtensionsScopeProject
+                } else {
+                    MessageId::ExtensionsScopeGlobal
+                },
+            );
+            let mut detail_parts = vec![scope.into_owned()];
+            if let Some(usage) = metadata.display_usage() {
+                detail_parts.push(usage.to_string());
+            }
+            if !metadata.aliases.is_empty() {
+                let aliases = metadata
+                    .aliases
+                    .iter()
+                    .map(|alias| format!("/{alias}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                detail_parts.push(aliases);
+            }
+            if let Some(reason) = error.as_deref() {
+                detail_parts.push(reason.to_string());
+            }
+            let item = ExtensionItem {
+                id: format!("command:{}", metadata.name),
+                label: format!("/{}", metadata.name),
+                description: metadata.description.clone().unwrap_or_default(),
+                tone: if error.is_some() {
+                    ExtensionTone::Failure
+                } else {
+                    ExtensionTone::Ready
+                },
+                state: if error.is_some() {
+                    tr(locale, MessageId::ExtensionsStateInvalid)
+                } else {
+                    tr(locale, MessageId::ExtensionsStateEnabled)
+                }
+                .into_owned(),
+                detail: detail_parts.join(" · "),
+                action: None,
+                toggle: None,
+                remove: None,
+            };
+            if metadata.workspace_sourced {
+                workspace.push(item);
+            } else {
+                user.push(item);
+            }
+        }
+        let groups = [
+            ("user", MessageId::ExtensionsGroupUser, user),
+            ("workspace", MessageId::ExtensionsGroupWorkspace, workspace),
+        ]
+        .into_iter()
+        .filter(|(_, _, items)| !items.is_empty())
+        .map(|(id, label, items)| ExtensionGroup {
+            id: id.into(),
+            label: tr(locale, label).into_owned(),
+            items,
+        })
+        .collect();
+        ExtensionsTabModel {
+            groups,
+            problem: None,
+        }
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExtensionsFocus {
     Tabs,
@@ -1633,8 +1722,8 @@ pub struct ExtensionsView {
     active_tab: ExtensionsTab,
     focus: ExtensionsFocus,
     query: String,
-    selected: [usize; 5],
-    scroll: [usize; 5],
+    selected: [usize; 6],
+    scroll: [usize; 6],
     folded_groups: BTreeSet<String>,
     /// The live theme, captured at open so row ink resolves through the same
     /// grammar the rest of the chrome uses instead of raw palette constants.
@@ -1670,8 +1759,8 @@ impl ExtensionsView {
             active_tab: tab,
             focus: ExtensionsFocus::List,
             query: String::new(),
-            selected: [0; 5],
-            scroll: [0; 5],
+            selected: [0; 6],
+            scroll: [0; 6],
             folded_groups: BTreeSet::new(),
             theme: codewhale_palette::UI_THEME,
             hits: RefCell::new(HitAreas::default()),
@@ -2865,7 +2954,14 @@ mod tests {
             view.render(area, &mut buf);
             let text = painted_text(&buf, area);
             assert!(text.contains("Plugins"), "{width}x{height}: {text}");
-            for label in ["Hooks", "Installed", "Marketplace", "Skills", "Connectors"] {
+            for label in [
+                "Hooks",
+                "Installed",
+                "Marketplace",
+                "Skills",
+                "Connectors",
+                "Command",
+            ] {
                 assert!(
                     text.contains(label),
                     "{width}x{height} is missing the {label} filter: {text}"
@@ -3241,6 +3337,8 @@ mod tests {
 
         // Wraps: the last tab's next is the first.
         view.set_tab(ExtensionsTab::Mcp);
+        view.handle_key(key(KeyCode::Tab));
+        assert_eq!(view.active_tab, ExtensionsTab::Command);
         view.handle_key(key(KeyCode::Tab));
         assert_eq!(view.active_tab, ExtensionsTab::Hooks);
     }
@@ -3632,5 +3730,103 @@ mod tests {
             view.selected_item().map(|item| item.id.as_str()),
             Some("alpha")
         );
+    }
+
+    #[test]
+    fn command_filter_lists_hand_written_commands_and_omits_plugin_commands() {
+        let _env = crate::test_support::lock_test_env();
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let codewhale_home = home.join(".codewhale");
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(codewhale_home.join("commands")).unwrap();
+        std::fs::create_dir_all(workspace.join(".codewhale/commands")).unwrap();
+        let _home = crate::test_support::EnvVarGuard::set("HOME", &home);
+        let _userprofile = crate::test_support::EnvVarGuard::set("USERPROFILE", &home);
+        let _cw_home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &codewhale_home);
+        crate::test_support::trust_workspace(&workspace);
+
+        std::fs::write(
+            codewhale_home.join("commands/personal.md"),
+            "---\ndescription: Personal checklist\nusage: /personal <target>\naliases: pcheck\n---\nCheck $ARGUMENTS\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join(".codewhale/commands/deploy.md"),
+            "---\ndescription: Project deploy helper\n---\nDeploy now\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join(".codewhale/commands/secret.md"),
+            "---\nhidden: true\n---\nHidden\n",
+        )
+        .unwrap();
+
+        let plugin_dir = workspace.join(".codewhale/plugins/bundle");
+        std::fs::create_dir_all(plugin_dir.join("commands")).unwrap();
+        std::fs::write(
+            plugin_dir.join("plugin.toml"),
+            "schema_version = 1\n[plugin]\nname = \"bundle\"\nversion = \"1.0.0\"\n[commands]\npath = \"commands\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_dir.join("commands/ship.md"),
+            "---\ndescription: Plugin command\n---\nShip it\n",
+        )
+        .unwrap();
+
+        let mut registry = codewhale_plugins::PluginDiscoveryContext::capture_pre_dotenv()
+            .registry_for_workspace(&workspace);
+        let token = registry.get("bundle").unwrap().review_token();
+        registry
+            .trust_reviewed(
+                "bundle",
+                codewhale_plugins::host_services::ReviewApproval::person_without_services(
+                    codewhale_plugins::host_services::PersonVia::ApprovalCard,
+                ),
+                &token,
+            )
+            .unwrap();
+        registry.set_enabled("bundle", true).unwrap();
+        crate::commands::user_registry::install_plugin_registry(&workspace, &registry);
+
+        let app = App::new_with_plugin_registry(
+            crate::tui::test_support::test_tui_options(&workspace),
+            &codewhale_runtime::config::Config::default(),
+            registry,
+        );
+        let mut view = ExtensionsView::new(&app, ExtensionsTab::Command);
+        let model = view.snapshot.tab(ExtensionsTab::Command);
+        assert_eq!(model.groups.len(), 2);
+        assert_eq!(model.groups[0].id, "user");
+        assert_eq!(model.groups[0].items.len(), 1);
+        assert_eq!(model.groups[0].items[0].label, "/personal");
+        assert_eq!(model.groups[0].items[0].description, "Personal checklist");
+        assert!(
+            model.groups[0].items[0]
+                .detail
+                .contains("/personal <target>")
+        );
+        assert!(model.groups[0].items[0].detail.contains("/pcheck"));
+
+        assert_eq!(model.groups[1].id, "workspace");
+        assert_eq!(model.groups[1].items.len(), 1);
+        assert_eq!(model.groups[1].items[0].label, "/deploy");
+
+        let all_labels: Vec<&str> = model
+            .groups
+            .iter()
+            .flat_map(|group| group.items.iter().map(|item| item.label.as_str()))
+            .collect();
+        assert!(!all_labels.contains(&"/ship"));
+        assert!(!all_labels.contains(&"/secret"));
+
+        let ViewAction::Emit(ViewEvent::OpenTextPager { title, content }) =
+            view.activate_selected()
+        else {
+            panic!("activating a command row must open its details pager without running a turn");
+        };
+        assert_eq!(title, "/personal");
+        assert!(content.contains("Personal checklist"));
     }
 }

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c66c04179a4e -->
+<!-- source: README.md sha256:ed570d48723d -->
 <div align="center">
 
 <picture>
@@ -77,7 +77,7 @@ Lebih dari 40 penyedia sudah terpasang, termasuk Anthropic, OpenAI, DeepSeek, Go
 
 `/goal` menetapkan sasaran yang berlanjut lintas giliran. Codewhale dapat membagi pekerjaan ke [sub-agen](../SUBAGENTS.md), menjalankan [Fleet](../FLEET.md) agen dengan peran dan model masing-masing, atau mengikuti [alur kerja](../WORKFLOW_AUTHORING.md) yang disimpan di repositori.
 
-### Ekstensi
+### Plugin
 
 Hubungkan [server MCP](../MCP.md), tambahkan [skill](../SKILLS.md) dan [plugin](../PLUGINS.md), dan jalankan [hook](../HOOKS.md) pada peristiwa sesi dan alat. Mode kode (eksperimental, aktif secara bawaan) memungkinkan model menulis satu program `execute_tools` yang memanggil beberapa alat MCP dan plugin; setiap panggilan tetap mengikuti aturan persetujuan Anda dan menyimpan tanda terimanya. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) adalah plugin terpisah yang dirilis sendiri (eksperimental, hanya macOS), dan tetap mati sampai Anda meninjau aksesnya dan mengaktifkannya.
 

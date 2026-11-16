@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c66c04179a4e -->
+<!-- source: README.md sha256:ed570d48723d -->
 <div align="center">
 
 <picture>
@@ -77,7 +77,7 @@ Hơn 40 nhà cung cấp được tích hợp sẵn, gồm Anthropic, OpenAI, Dee
 
 `/goal` đặt một mục tiêu kéo dài qua nhiều lượt. Codewhale có thể chia việc cho các [sub-agent](../SUBAGENTS.md), chạy một [Fleet](../FLEET.md) gồm các agent với vai trò và mô hình riêng, hoặc làm theo một [quy trình làm việc](../WORKFLOW_AUTHORING.md) được commit trong kho.
 
-### Tiện ích mở rộng
+### Plugin
 
 Kết nối [máy chủ MCP](../MCP.md), thêm [kỹ năng](../SKILLS.md) và [plugin](../PLUGINS.md), và chạy [hook](../HOOKS.md) trên các sự kiện phiên và công cụ. Chế độ mã (thử nghiệm, bật mặc định) cho phép mô hình viết một chương trình `execute_tools` gọi nhiều công cụ MCP và plugin; mỗi lời gọi vẫn tuân theo quy tắc phê duyệt của bạn và giữ biên nhận. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) là một plugin riêng được phát hành độc lập (thử nghiệm, chỉ macOS) và luôn tắt cho đến khi bạn xem lại quyền truy cập và bật nó.
 

@@ -762,6 +762,8 @@ pub struct PluginDetail {
     pub unsupported_labels: Vec<String>,
     pub supported_labels: Vec<String>,
     pub skills: Vec<String>,
+    pub commands: Vec<String>,
+    pub profiles: Vec<String>,
     pub filesystem_roots: Vec<String>,
     pub network_hosts: Vec<String>,
     pub stdio_mcp_servers: usize,

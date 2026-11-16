@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c66c04179a4e -->
+<!-- source: README.md sha256:ed570d48723d -->
 <div align="center">
 
 <picture>
@@ -77,7 +77,7 @@ Fix the failing tests and explain what changed.
 
 `/goal` 设置一个跨回合延续的目标。Codewhale 可以把工作分给[子智能体](../SUBAGENTS.md)，运行一组各有角色和模型的智能体 [Fleet](../FLEET.md)，或者按照提交在仓库中的[工作流](../WORKFLOW_AUTHORING.md)执行。
 
-### 扩展
+### 插件
 
 连接 [MCP 服务器](../MCP.md)，添加[技能](../SKILLS.md)和[插件](../PLUGINS.md)，并在会话和工具事件上运行[钩子](../HOOKS.md)。代码模式（实验性，默认开启）让模型编写一个调用多个 MCP 和插件工具的 `execute_tools` 程序；每次调用仍需遵守你的批准规则，并保留回执。[Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) 是单独发布的独立插件（实验性，仅限 macOS），在你审查其权限并开启之前一直处于关闭状态。
 

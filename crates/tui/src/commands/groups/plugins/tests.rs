@@ -2498,3 +2498,48 @@ fn a_failed_fresh_session_drops_the_draft_and_restores_the_earlier_input() {
     assert_eq!(app.current_session_id.as_deref(), Some("old-session"));
     assert_eq!(app.conversation_mode, None);
 }
+
+#[test]
+fn plugin_show_lists_added_commands_and_profiles() {
+    let _lock = crate::test_support::lock_test_env();
+    let root = TempDir::new().unwrap();
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path().join("home"));
+    let bundle = root.path().join(".codewhale/plugins/toolkit");
+    fs::create_dir_all(bundle.join("commands")).unwrap();
+    fs::create_dir_all(bundle.join("agents")).unwrap();
+    fs::write(
+        bundle.join("plugin.toml"),
+        "schema_version = 1\n[plugin]\nname = \"toolkit\"\nversion = \"1.0.0\"\n[commands]\npath = \"commands\"\n[agents]\npath = \"agents\"\n",
+    )
+    .unwrap();
+    fs::write(
+        bundle.join("commands/deploy.md"),
+        "---\ndescription: Deploy release\n---\nDeploy\n",
+    )
+    .unwrap();
+    fs::write(
+        bundle.join("commands/custom_file.md"),
+        "---\nname: ship-it\ndescription: Named command\n---\nShip\n",
+    )
+    .unwrap();
+    fs::write(
+        bundle.join("agents/reviewer.toml"),
+        "name = \"security-reviewer\"\ndescription = \"Reviews changes\"\n",
+    )
+    .unwrap();
+    fs::write(
+        bundle.join("agents/scout.toml"),
+        "description = \"Explores code\"\n",
+    )
+    .unwrap();
+
+    let (mut app, _temp) = create_test_app(root.path());
+    let show = plugins_with_kimi_home_override(&mut app, Some("show toolkit"), None)
+        .message
+        .expect("show output");
+    assert!(show.contains("Commands: [/deploy, /ship-it]"), "{show}");
+    assert!(
+        show.contains("Profiles: [scout, security-reviewer]"),
+        "{show}"
+    );
+}

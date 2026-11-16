@@ -1375,6 +1375,8 @@ impl FakePlugin {
                 unsupported_labels: Vec::new(),
                 supported_labels: vec!["skills".to_string()],
                 skills: vec!["demo:demo-skill".to_string()],
+                commands: Vec::new(),
+                profiles: Vec::new(),
                 filesystem_roots: Vec::new(),
                 network_hosts: Vec::new(),
                 stdio_mcp_servers: 0,

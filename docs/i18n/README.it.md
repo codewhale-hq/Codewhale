@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c66c04179a4e -->
+<!-- source: README.md sha256:ed570d48723d -->
 <div align="center">
 
 <picture>
@@ -77,7 +77,7 @@ Più di 40 provider sono integrati, tra cui Anthropic, OpenAI, DeepSeek, Google,
 
 `/goal` imposta un obiettivo che prosegue tra i turni. Codewhale può dividere il lavoro tra [sub-agenti](../SUBAGENTS.md), eseguire una [Fleet](../FLEET.md) di agenti con ruoli e modelli propri, oppure seguire un [workflow](../WORKFLOW_AUTHORING.md) salvato nel repository.
 
-### Estensioni
+### Plugin
 
 Collega [server MCP](../MCP.md), aggiungi [skill](../SKILLS.md) e [plugin](../PLUGINS.md), ed esegui [hook](../HOOKS.md) sugli eventi di sessione e degli strumenti. La modalità codice (sperimentale, attiva per impostazione predefinita) permette al modello di scrivere un programma `execute_tools` che chiama più strumenti MCP e di plugin; ogni chiamata rispetta comunque le tue regole di approvazione e conserva la sua ricevuta. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) è un plugin separato rilasciato autonomamente (sperimentale, solo macOS) e resta spento finché non ne controlli l’accesso e lo attivi.
 

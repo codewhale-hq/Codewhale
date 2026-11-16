@@ -3866,6 +3866,70 @@ fn portable_summary(plugin: &codewhale_plugins::types::LoadedPlugin) -> PluginSu
     }
 }
 
+fn plugin_command_names(plugin: &codewhale_plugins::types::LoadedPlugin) -> Vec<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for path in &plugin.components.commands {
+        let entries = crate::commands::user_commands::load_command_entries_from_component(path);
+        if !entries.is_empty() {
+            for (stem, content, file_path) in entries {
+                let resolved = crate::commands::user_registry::resolved_command_name(
+                    stem, &content, &file_path,
+                );
+                if !resolved.is_empty() {
+                    names.insert(format!("/{resolved}"));
+                }
+            }
+            continue;
+        }
+        if path.is_file()
+            && path.extension().and_then(|ext| ext.to_str()) == Some("md")
+            && let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+        {
+            let lower = stem.to_lowercase();
+            if !lower.is_empty() {
+                names.insert(format!("/{lower}"));
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
+fn plugin_profile_names(plugin: &codewhale_plugins::types::LoadedPlugin) -> Vec<String> {
+    let authority = codewhale_config::PluginAuthority {
+        plugin_id: plugin.id.clone(),
+        plugin_name: plugin.name().to_string(),
+        workspace: plugin.canonical_root.clone(),
+        state_path: plugin.canonical_root.clone(),
+        managed_policy_path: None,
+        managed_policy_source: None,
+        source_manifest: plugin.canonical_root.clone(),
+        staged_manifest: plugin.canonical_root.clone(),
+        content_hash: plugin.content_hash.clone(),
+        capability_hash: plugin.capability_hash.clone(),
+        state_generation: plugin.state_generation,
+    };
+    let mut names = std::collections::BTreeSet::new();
+    for path in &plugin.components.agents {
+        if let Ok((profiles, issues)) =
+            codewhale_engine::fleet::profile::load_plugin_agent_profiles_from_component(
+                path, &authority,
+            )
+        {
+            for profile in profiles {
+                names.insert(profile.id);
+            }
+            for issue in issues {
+                names.insert(issue.id);
+            }
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("toml")
+            && let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+        {
+            names.insert(stem.to_string());
+        }
+    }
+    names.into_iter().collect()
+}
+
 /// Convert one TUI MCP server config into the portable review detail.
 fn portable_mcp_server(
     name: &str,
@@ -3958,6 +4022,8 @@ pub(crate) fn portable_detail(plugin: &codewhale_plugins::types::LoadedPlugin) -
             .iter()
             .map(|skill| format!("{}:{}", plugin.name(), skill.name))
             .collect(),
+        commands: plugin_command_names(plugin),
+        profiles: plugin_profile_names(plugin),
         filesystem_roots: plugin.inventory.filesystem_roots.clone(),
         network_hosts: plugin.inventory.network_hosts.clone(),
         stdio_mcp_servers: plugin.inventory.stdio_mcp_servers,
@@ -4401,7 +4467,32 @@ impl CommandPluginContext for PluginAdapter<'_> {
             .plugin_registry
             .get(selector)
             .ok_or_else(|| format!("no plugin named {selector}"))?;
-        Ok(portable_detail(plugin))
+        let mut detail = portable_detail(plugin);
+        let mut commands: std::collections::BTreeSet<String> =
+            detail.commands.into_iter().collect();
+        for entry in
+            codewhale_engine::extension_host::live_commands_for_plugins(&app.plugin_registry)
+        {
+            if entry.authority.plugin_id == plugin.id {
+                commands.insert(format!("/{}", entry.registration.name.to_ascii_lowercase()));
+            }
+        }
+        detail.commands = commands.into_iter().collect();
+        let mut profiles: std::collections::BTreeSet<String> =
+            detail.profiles.into_iter().collect();
+        for (preset, authority) in
+            codewhale_engine::extension_host::native_presets_for_plugins(&app.plugin_registry)
+        {
+            if authority.plugin_id == plugin.id {
+                let label =
+                    codewhale_plugins::native_presets::metadata(&app.plugin_registry, &preset)
+                        .map(|data| data.name.unwrap_or(data.id))
+                        .unwrap_or_else(|| preset.entry.path.clone());
+                profiles.insert(label);
+            }
+        }
+        detail.profiles = profiles.into_iter().collect();
+        Ok(detail)
     }
 
     fn registry_diagnostics(&self) -> Vec<PluginDiagnostic> {
