@@ -16488,6 +16488,7 @@ var STORAGE_LIMITS, MAX_RECORD_BYTES;
 var init_storage = __esm({
   "src/shims/storage.ts"() {
     "use strict";
+    init_canonical_path();
     init_json();
     STORAGE_LIMITS = Object.freeze({ keyBytes: 128, valueBytes: 128 * 1024, totalBytes: 4 * 1024 * 1024, keys: 1024 });
     MAX_RECORD_BYTES = STORAGE_LIMITS.valueBytes + STORAGE_LIMITS.keyBytes * 6 + 128;

@@ -18544,7 +18544,7 @@ var init_hooks = __esm({
 
 // src/shims/storage.ts
 import { constants as constants2 } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath, rename as rename2, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, rename as rename2, unlink } from "node:fs/promises";
 import { isAbsolute as isAbsolute3, join as join2 } from "node:path";
 import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -18623,7 +18623,7 @@ function createStorage({ dataDir, isActive, onWarning }) {
   async function directory() {
     const stat = await lstat(dataDir);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new StorageError("invalid", "plugin storage dataDir must be a real directory");
-    return join2(await realpath(dataDir), "storage-v1");
+    return join2(canonicalPath(dataDir), "storage-v1");
   }
   async function prepare(directory2) {
     await mkdir(directory2, { mode: 448 }).catch((error) => {
@@ -18752,6 +18752,7 @@ var init_storage = __esm({
   "src/shims/storage.ts"() {
     "use strict";
     init_define_BUILTIN_MODULE_DIGESTS();
+    init_canonical_path();
     init_json();
     STORAGE_LIMITS = Object.freeze({ keyBytes: 128, valueBytes: 128 * 1024, totalBytes: 4 * 1024 * 1024, keys: 1024 });
     RECORD_NAME = /^[a-f0-9]{64}\.json$/u;
