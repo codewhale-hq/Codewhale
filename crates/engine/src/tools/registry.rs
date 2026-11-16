@@ -31,6 +31,7 @@ use codewhale_models::schema_sanitize;
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn ToolSpec>>,
     context: ToolContext,
+    read_only_shell: bool,
     /// Memoised serialised tool catalog. Rebuilt lazily on first
     /// `to_api_tools` call after a mutation; pinned across reads so the
     /// description and schema bytes stay byte-stable for DeepSeek's KV
@@ -54,6 +55,7 @@ impl ToolRegistry {
         Self {
             tools: HashMap::new(),
             context,
+            read_only_shell: false,
             api_cache: OnceLock::new(),
         }
     }
@@ -314,6 +316,12 @@ impl ToolRegistry {
                 let mut schema = tool.input_schema();
                 if evidence_only {
                     project_readonly_evidence_schema(tool.name(), &mut schema);
+                } else if tool.name() == "bash"
+                    && (self.read_only_shell
+                        || self.context.shell_policy
+                            == codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly)
+                {
+                    super::shell::strip_readonly_bash_schema_properties(&mut schema);
                 }
                 schema_sanitize::sanitize(&mut schema);
                 schema_canonicalize::canonicalize_schema(&mut schema);
@@ -493,13 +501,23 @@ impl ToolRegistry {
         for (tool_name, override_cfg) in overrides {
             match override_cfg {
                 codewhale_runtime::config::ToolOverride::Disabled => {
-                    if self.remove_tool(tool_name) {
+                    let canonical = crate::conversation_modes::CREATOR_TOOL_NAMES
+                        .iter()
+                        .copied()
+                        .find(|reserved| reserved.eq_ignore_ascii_case(tool_name));
+                    let removed = self.remove_tool(tool_name)
+                        || canonical.is_some_and(|reserved| self.remove_tool(reserved));
+                    if removed {
                         tracing::info!("Tool '{}' disabled via config override", tool_name);
                     } else {
                         tracing::warn!("Cannot disable tool '{}': not registered", tool_name);
                     }
                 }
-                _ if builtin_names.contains(tool_name) => {
+                _ if builtin_names.contains(tool_name)
+                    || crate::conversation_modes::CREATOR_TOOL_NAMES
+                        .iter()
+                        .any(|reserved| reserved.eq_ignore_ascii_case(tool_name)) =>
+                {
                     tracing::error!("{}", override_refusal_notice(tool_name));
                     refused.push(tool_name.clone());
                 }
@@ -572,6 +590,18 @@ impl ToolRegistry {
                 );
                 continue;
             }
+            if crate::conversation_modes::CREATOR_TOOL_NAMES
+                .iter()
+                .any(|reserved| reserved.eq_ignore_ascii_case(tool.name()))
+            {
+                tracing::error!(
+                    previous_origin = "reserved built-in tool",
+                    plugin_origin = ?tool.registration_origin(),
+                    "Cannot load plugin tool '{}': name is already registered; script tools cannot replace a registered tool, so give the script its own name",
+                    codewhale_runtime::safe_label::SafeLabel::identifier(tool.name())
+                );
+                continue;
+            }
             self.register(tool);
             count += 1;
         }
@@ -613,6 +643,10 @@ pub fn readonly_evidence_tool(tool: &dyn ToolSpec) -> bool {
 }
 
 fn project_readonly_evidence_schema(name: &str, schema: &mut Value) {
+    if name == "bash" {
+        super::shell::strip_readonly_bash_schema_properties(schema);
+        return;
+    }
     if name == "Bash" {
         *schema = super::shell::readonly_bash_input_schema();
         return;
@@ -859,7 +893,8 @@ fn authority_mutation_paths(name: &str, input: &Value) -> Result<Option<Vec<Stri
     let is_patch = canonical == "apply_patch"
         || (name == "File" && input.get("action").and_then(Value::as_str) == Some("patch"));
     if is_patch {
-        let mut patch_input = input.clone();
+        let mut patch_input =
+            codewhale_tools::param_alias::with_canonical_path_argument(input).into_owned();
         if let Some(object) = patch_input.as_object_mut() {
             object.remove("action");
         }
@@ -878,19 +913,33 @@ fn authority_mutation_paths(name: &str, input: &Value) -> Result<Option<Vec<Stri
     if !path_bound {
         return Ok(None);
     }
-    Ok(Some(
-        input
-            .get("path")
-            .or_else(|| input.get("output_path"))
+    Ok(Some(mutation_target_paths(name, input)))
+}
+
+pub(crate) fn mutation_target_paths(name: &str, input: &Value) -> Vec<String> {
+    if name == "pandoc_convert" {
+        return input
+            .get("output_path")
             .and_then(Value::as_str)
-            .map(|path| vec![path.to_string()])
-            .unwrap_or_default(),
-    ))
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+    }
+    let mut paths = Vec::new();
+    for key in codewhale_tools::param_alias::path_argument_keys() {
+        if let Some(path) = input.get(key).and_then(Value::as_str)
+            && !paths.iter().any(|seen| seen == path)
+        {
+            paths.push(path.to_string());
+        }
+    }
+    paths
 }
 
 /// Builder for constructing a `ToolRegistry` with common tools.
 pub struct ToolRegistryBuilder {
     tools: Vec<Arc<dyn ToolSpec>>,
+    read_only_shell: bool,
 }
 
 /// Feature/config-dependent native Agent-mode tool surface.
@@ -946,7 +995,10 @@ impl ToolRegistryBuilder {
     /// Create a new builder.
     #[must_use]
     pub fn new() -> Self {
-        Self { tools: Vec::new() }
+        Self {
+            tools: Vec::new(),
+            read_only_shell: false,
+        }
     }
 
     /// Add a custom tool.
@@ -1070,8 +1122,9 @@ impl ToolRegistryBuilder {
 
     /// Include only the foreground, direct-argv read-only shell surface.
     #[must_use]
-    pub fn with_read_only_shell_tool(self) -> Self {
+    pub fn with_read_only_shell_tool(mut self) -> Self {
         use super::shell::{BashTool, LowercaseBashTool};
+        self.read_only_shell = true;
         self.with_tool(Arc::new(LowercaseBashTool))
             .with_tool(Arc::new(BashTool::read_only("Bash")))
     }
@@ -1743,6 +1796,7 @@ impl ToolRegistryBuilder {
         let blind = context.route_capabilities.image_input
             == codewhale_config::route::CapabilityState::Unsupported;
         let mut registry = ToolRegistry::new(context);
+        registry.read_only_shell = self.read_only_shell;
         registry.register_all(
             self.tools
                 .into_iter()

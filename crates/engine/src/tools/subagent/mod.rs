@@ -2705,6 +2705,7 @@ fn send_terminal_event_with_delivery<T: Send + 'static>(
 }
 
 fn terminal_mailbox_message(result: &SubAgentResult, report_ref: Option<&str>) -> MailboxMessage {
+    let (warning, _) = split_subagent_return_warning(result.result.as_deref());
     match &result.status {
         SubAgentStatus::Completed => {
             let (summary, _) =
@@ -2716,11 +2717,17 @@ fn terminal_mailbox_message(result: &SubAgentResult, report_ref: Option<&str>) -
         }
         SubAgentStatus::Interrupted(reason) => MailboxMessage::Interrupted {
             agent_id: result.agent_id.clone(),
-            reason: reason.clone(),
+            reason: warning.map_or_else(
+                || reason.clone(),
+                |w| crate::core::authority::auto_review::prepend_subagent_return_warning(reason, w),
+            ),
         },
         SubAgentStatus::Failed(error) => MailboxMessage::Failed {
             agent_id: result.agent_id.clone(),
-            error: error.clone(),
+            error: warning.map_or_else(
+                || error.clone(),
+                |w| crate::core::authority::auto_review::prepend_subagent_return_warning(error, w),
+            ),
         },
         SubAgentStatus::Cancelled => MailboxMessage::Cancelled {
             agent_id: result.agent_id.clone(),
@@ -3198,6 +3205,17 @@ pub struct SubAgentRuntime {
     pub parent_can_prompt: bool,
     pub parent_run_origin: crate::core::authority::auto_review::RunOrigin,
     pub parent_owner_present: bool,
+    pub parent_person_messages: std::sync::Arc<Vec<String>>,
+    pub parent_approved_plan: Option<String>,
+    pub root_person_messages: std::sync::Arc<Vec<String>>,
+    pub root_approved_plan: Option<String>,
+    pub parent_pinned_project_instructions:
+        std::sync::Arc<crate::project_context::PinnedProjectInstructions>,
+    pub parent_auto_review_state: Option<
+        std::sync::Arc<
+            parking_lot::Mutex<crate::core::authority::auto_review::AutoReviewConversationState>,
+        >,
+    >,
     /// Durable approval evidence inherited from the parent session. Legacy
     /// runtimes that do not install a store cannot open child approval prompts.
     approval_receipt_store: Option<Result<crate::approval_log::ApprovalReceiptStore, String>>,
@@ -3289,6 +3307,12 @@ impl SubAgentRuntime {
             parent_can_prompt: false,
             parent_run_origin: crate::core::authority::auto_review::RunOrigin::Background,
             parent_owner_present: false,
+            parent_person_messages: std::sync::Arc::default(),
+            parent_approved_plan: None,
+            root_person_messages: std::sync::Arc::default(),
+            root_approved_plan: None,
+            parent_pinned_project_instructions: std::sync::Arc::default(),
+            parent_auto_review_state: None,
             approval_receipt_store: None,
             compaction: crate::compaction::CompactionConfig::default(),
             activation: None,
@@ -3343,6 +3367,33 @@ impl SubAgentRuntime {
             && parent_owner_present;
         self.parent_run_origin = parent_run_origin;
         self.parent_owner_present = owner_present;
+        self
+    }
+
+    #[must_use]
+    pub fn with_parent_review_context(
+        mut self,
+        person_messages: Vec<String>,
+        approved_plan: Option<String>,
+        pinned_project_instructions: crate::project_context::PinnedProjectInstructions,
+    ) -> Self {
+        let person_messages = std::sync::Arc::new(person_messages);
+        self.parent_person_messages = std::sync::Arc::clone(&person_messages);
+        self.root_person_messages = person_messages;
+        self.parent_approved_plan = approved_plan.clone();
+        self.root_approved_plan = approved_plan;
+        self.parent_pinned_project_instructions = std::sync::Arc::new(pinned_project_instructions);
+        self
+    }
+
+    #[must_use]
+    pub fn with_parent_auto_review_state(
+        mut self,
+        state: std::sync::Arc<
+            parking_lot::Mutex<crate::core::authority::auto_review::AutoReviewConversationState>,
+        >,
+    ) -> Self {
+        self.parent_auto_review_state = Some(state);
         self
     }
 
@@ -3560,6 +3611,8 @@ impl SubAgentRuntime {
         runtime.foreground_children = None;
         runtime.parent_run_origin = crate::core::authority::auto_review::RunOrigin::Background;
         runtime.parent_owner_present = false;
+        runtime.parent_person_messages = std::sync::Arc::default();
+        runtime.parent_approved_plan = None;
         runtime
     }
 
@@ -3655,6 +3708,14 @@ impl SubAgentRuntime {
             approval_receipt_store: self.approval_receipt_store.clone(),
             compaction: self.compaction.clone(),
             activation: None,
+            parent_person_messages: std::sync::Arc::clone(&self.parent_person_messages),
+            parent_approved_plan: self.parent_approved_plan.clone(),
+            root_person_messages: std::sync::Arc::clone(&self.root_person_messages),
+            root_approved_plan: self.root_approved_plan.clone(),
+            parent_pinned_project_instructions: std::sync::Arc::clone(
+                &self.parent_pinned_project_instructions,
+            ),
+            parent_auto_review_state: self.parent_auto_review_state.clone(),
         }
     }
 
@@ -3833,6 +3894,9 @@ pub struct SubAgent {
     unsettled_launch: Option<Vec<governor::DynamicGatePermit>>,
     unsettled_foreground: Option<ForegroundChildRegistration>,
     activation: Option<Arc<ChildActivationState>>,
+    executed_actions:
+        Arc<std::sync::Mutex<Vec<crate::core::authority::auto_review::AutoReviewChildAction>>>,
+    return_review_warning: Option<String>,
 }
 
 impl SubAgent {
@@ -3886,6 +3950,8 @@ impl SubAgent {
             unsettled_launch: None,
             unsettled_foreground: None,
             activation: None,
+            executed_actions: Arc::default(),
+            return_review_warning: None,
         }
     }
 
@@ -6448,6 +6514,8 @@ impl SubAgentManager {
             unsettled_launch: None,
             unsettled_foreground: None,
             activation: None,
+            executed_actions: Arc::default(),
+            return_review_warning: None,
         }
     }
 
@@ -9435,6 +9503,27 @@ impl SubAgentManager {
         Ok(id)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn register_test_write_claim(
+        &mut self,
+        owner: &str,
+        roots: Vec<String>,
+        workspace: &Path,
+    ) -> Result<(), String> {
+        let claim = self.namespace_write_claim(
+            workspace,
+            false,
+            WriteScopeClaim {
+                owner: owner.to_string(),
+                roots,
+                exact_files: Vec::new(),
+                contracts: Vec::new(),
+            },
+        )?;
+        self.register_claim_with_presence(claim, false, workspace)?;
+        Ok(())
+    }
+
     /// Test helper: seed a settled direct child whose result has not yet been
     /// delivered to the parent.
     #[cfg(any(test, feature = "test-support"))]
@@ -10657,6 +10746,31 @@ impl SubAgentManager {
         })
     }
 
+    pub(super) fn executed_actions_handle(
+        &self,
+        agent_id: &str,
+    ) -> Option<
+        Arc<std::sync::Mutex<Vec<crate::core::authority::auto_review::AutoReviewChildAction>>>,
+    > {
+        self.agents
+            .get(agent_id)
+            .map(|agent| Arc::clone(&agent.executed_actions))
+    }
+
+    fn take_executed_actions(
+        &self,
+        agent_id: &str,
+    ) -> Vec<crate::core::authority::auto_review::AutoReviewChildAction> {
+        let Some(agent) = self.agents.get(agent_id) else {
+            return Vec::new();
+        };
+        let mut guard = agent
+            .executed_actions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut *guard)
+    }
+
     /// Get the current snapshot for an agent.
     pub fn get_result(&self, agent_id: &str) -> Result<SubAgentResult> {
         let agent = self
@@ -11874,7 +11988,7 @@ pub async fn resolve_child_activation_output(
     manager: &SharedSubAgentManager,
     identity: &ChildActivationIdentity,
 ) -> Result<(Vec<ContentBlock>, ChildActivationStopReason)> {
-    let (state_root, admission, output, stop_reason) = {
+    let (state_root, admission, output, stop_reason, return_review_warning) = {
         let held = manager.read().await;
         let agent = held.exact_activation(identity)?;
         if !agent
@@ -11905,15 +12019,25 @@ pub async fn resolve_child_activation_output(
             activation
                 .stop_reason
                 .ok_or_else(|| anyhow!("child output has no terminal reason"))?,
+            agent.return_review_warning.clone(),
         )
     };
     let checked_identity = identity.clone();
-    let content = tokio::task::spawn_blocking(move || {
+    let mut content = tokio::task::spawn_blocking(move || {
         read_child_activation_output(&state_root, &checked_identity, &admission, output.as_ref())
     })
     .await
     .map_err(|error| anyhow!("child output reader failed: {error}"))??;
     manager.read().await.exact_activation(identity)?;
+    if let Some(warning) = return_review_warning {
+        let mut updated = Vec::with_capacity(content.len() + 1);
+        updated.push(ContentBlock::Text {
+            text: warning,
+            cache_control: None,
+        });
+        updated.extend(content);
+        content = updated;
+    }
     Ok((content, stop_reason))
 }
 
@@ -16653,9 +16777,11 @@ async fn run_subagent_task(mut task: SubAgentTask) {
         }
         None
     };
-    let outcome = std::panic::AssertUnwindSafe(supervise_subagent_task_body(
+    let runtime_for_supervision = task.runtime.clone();
+    let outcome = std::panic::AssertUnwindSafe(supervise_subagent_task_body_with_runtime(
         manager_handle.clone(),
         agent_id.clone(),
+        Some(runtime_for_supervision),
         run_subagent_task_inner(task),
     ))
     .catch_unwind()
@@ -16724,9 +16850,19 @@ async fn finish_terminal_result_owned(
     .await
 }
 
+#[cfg(test)]
 async fn supervise_subagent_task_body(
     manager_handle: SharedSubAgentManager,
     agent_id: String,
+    body: impl std::future::Future<Output = ()> + Send,
+) {
+    supervise_subagent_task_body_with_runtime(manager_handle, agent_id, None, body).await;
+}
+
+async fn supervise_subagent_task_body_with_runtime(
+    manager_handle: SharedSubAgentManager,
+    agent_id: String,
+    runtime: Option<SubAgentRuntime>,
     body: impl std::future::Future<Output = ()> + Send,
 ) {
     use futures_util::FutureExt;
@@ -16752,6 +16888,14 @@ async fn supervise_subagent_task_body(
     result.needs_input = None;
     // Verification precedes the write lock like the natural epilogue (#6210).
     ensure_worker_delivery_verified(&manager_handle, &agent_id, &result).await;
+    let return_review_warning = if let Some(runtime) = runtime.as_ref() {
+        apply_auto_review_return_check(runtime, &manager_handle, &agent_id, &mut result).await
+    } else {
+        None
+    };
+    if let Some(agent) = manager_handle.write().await.agents.get_mut(&agent_id) {
+        agent.return_review_warning = return_review_warning;
+    }
     // Arbitrated exactly like the natural terminal commit: when a
     // cancel or another terminal outcome already won, this is a
     // no-op rather than a second result.
@@ -17330,7 +17474,7 @@ async fn run_subagent_task_inner(mut task: SubAgentTask) {
     // Verification runs here too, so the fan-in completion and the terminal
     // persist both carry fresh verdicts with no git subprocess under the lock
     // (#6210).
-    let terminal = match result {
+    let mut terminal = match result {
         Ok(result) if backstop_budget => budget_partial_result(
             result,
             &child_wall_time_exhausted_reason(
@@ -17376,10 +17520,13 @@ async fn run_subagent_task_inner(mut task: SubAgentTask) {
         }
     };
     ensure_worker_delivery_verified(&task.manager_handle, &agent_id, &terminal).await;
-    // Every terminal path — successful/fatal model exit, explicit Stop,
-    // coordination interrupt, and stale cleanup — arbitrates and publishes
-    // through `finish_terminal_result`. Cancellation that already won leaves
-    // this late epilogue with no claim and therefore no duplicate fan-in.
+    let return_review_warning = apply_auto_review_return_check(
+        &task.runtime,
+        &task.manager_handle,
+        &agent_id,
+        &mut terminal,
+    )
+    .await;
     {
         let mut manager = task.manager_handle.write().await;
         if let Some(agent) = manager.agents.get_mut(&agent_id) {
@@ -17389,6 +17536,7 @@ async fn run_subagent_task_inner(mut task: SubAgentTask) {
             if let Some(foreground) = task._foreground_child_registration.take() {
                 agent.unsettled_foreground = Some(foreground);
             }
+            agent.return_review_warning = return_review_warning;
         }
     }
     match finish_terminal_result_owned(task.manager_handle.clone(), terminal).await {
@@ -17403,6 +17551,257 @@ async fn run_subagent_task_inner(mut task: SubAgentTask) {
             "child terminal receipt is uncertain; ownership retained"
         ),
     }
+}
+
+fn parent_in_auto_review(runtime: &SubAgentRuntime) -> bool {
+    runtime.parent_mode == AppMode::Agent
+        && runtime.context.approval_mode == codewhale_execpolicy::ApprovalMode::Auto
+}
+
+fn prepend_warning_to_terminal_result(terminal: &mut SubAgentResult, warning: &str) {
+    terminal.result = Some(
+        crate::core::authority::auto_review::prepend_subagent_return_warning(
+            terminal.result.as_deref().unwrap_or(""),
+            warning,
+        ),
+    );
+}
+
+async fn emit_return_review_gate_event(
+    runtime: &SubAgentRuntime,
+    agent_id: &str,
+    tool_id: &str,
+    decision: crate::core::events::ToolGateVerdict,
+    risk: Option<&str>,
+    reviewer_model: Option<String>,
+    reason: &str,
+    rule: Option<&str>,
+    action_summary: &str,
+) {
+    let Some(tx) = runtime.event_tx.as_ref() else {
+        return;
+    };
+    let event = Event::ToolGateDecision {
+        agent_id: Some(agent_id.to_string()),
+        tool_id: tool_id.to_string(),
+        tool_name: "subagent_return".to_string(),
+        gate: crate::core::events::ToolGate::AutoReviewGuardian,
+        decision,
+        risk: risk.map(str::to_string),
+        reviewer_model,
+        reason: crate::core::events::bounded_gate_reason(reason),
+        rule: rule.map(str::to_string),
+        receipt_id: None,
+        call_digest: None,
+        action_summary: Some(action_summary.to_string()),
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(2), tx.send(event)).await;
+}
+
+async fn record_return_check_usage(
+    runtime: &SubAgentRuntime,
+    agent_id: &str,
+    reviewer_model: &str,
+    usage: Option<&Usage>,
+) {
+    let Some(usage) = usage else {
+        return;
+    };
+    let review_route = runtime
+        .client
+        .effective_route_envelope(reviewer_model, chrono::Utc::now());
+    let origin = runtime
+        .compaction
+        .runtime_cost_owner
+        .as_deref()
+        .and_then(|owner| {
+            crate::cost_status::NativeUsageOrigin::runtime(
+                runtime.accounting_origin.cost_scope,
+                owner,
+            )
+            .ok()
+        })
+        .or_else(|| runtime.context.accounting_origin.clone());
+    #[cfg(any(test, feature = "test-support"))]
+    let origin = origin.or_else(|| runtime.accounting_origin.test_session_origin());
+    let source = crate::cost_status::NativeUsageSource::capture_with_origin(
+        format!("auto-review-return:{agent_id}"),
+        crate::cost_status::UsageSpendOwner::Auxiliary,
+        origin,
+    );
+    if let Ok(record) = source.reported(&review_route, usage) {
+        let accounting = engine::ChildAccountingProjection::capture(runtime, agent_id);
+        accounting.publish_auxiliary_usage(&record).await;
+    }
+}
+
+async fn apply_auto_review_return_check(
+    runtime: &SubAgentRuntime,
+    manager: &SharedSubAgentManager,
+    agent_id: &str,
+    terminal: &mut SubAgentResult,
+) -> Option<String> {
+    use crate::core::authority::auto_review::{
+        build_subagent_return_reviewer_context, format_subagent_return_warning_flagged,
+        format_subagent_return_warning_unavailable,
+    };
+    use crate::core::engine::reviewer::{
+        ReviewerOutcome, consult_subagent_return_reviewer, resolve_reviewer_model,
+    };
+    use crate::core::events::ToolGateVerdict;
+
+    let actions = manager.read().await.take_executed_actions(agent_id);
+    if !parent_in_auto_review(runtime)
+        || matches!(
+            terminal.status,
+            SubAgentStatus::Cancelled | SubAgentStatus::Running
+        )
+        || actions.is_empty()
+    {
+        return None;
+    }
+
+    let env_text = match runtime.auto_review_policy.formatted_environment() {
+        Some(configured) => format!(
+            "Workspace: {}\n{configured}",
+            runtime.context.workspace.display()
+        ),
+        None => format!("Workspace: {}", runtime.context.workspace.display()),
+    };
+    let context_result = build_subagent_return_reviewer_context(
+        &runtime.root_person_messages,
+        runtime.root_approved_plan.as_deref(),
+        Some(runtime.parent_pinned_project_instructions.as_ref()),
+        Some(&env_text),
+        agent_id,
+        terminal.agent_type.as_str(),
+        subagent_status_name(&terminal.status),
+        &actions,
+    );
+
+    let configured_model = runtime.auto_review_policy.reviewer_model.as_deref();
+    let return_tool_id = format!("subagent-return:{agent_id}");
+    let return_summary = format!("return review ({} actions)", actions.len());
+    let (warning, verdict, verdict_label, risk, reviewer_model, rule, reason, usage) =
+        match context_result {
+            Err(reason) => (
+                format_subagent_return_warning_unavailable(reason),
+                ToolGateVerdict::Unavailable,
+                "unavailable",
+                None,
+                Some(resolve_reviewer_model(configured_model, &runtime.client)),
+                Some("guardian-unavailable"),
+                reason.to_string(),
+                None,
+            ),
+            Ok(context_text) => {
+                let review = consult_subagent_return_reviewer(
+                    &runtime.client,
+                    configured_model,
+                    &context_text,
+                    &runtime.cancel_token,
+                )
+                .await;
+                match review.outcome {
+                    ReviewerOutcome::Allow { risk, reason } => {
+                        record_return_check_usage(
+                            runtime,
+                            agent_id,
+                            &review.reviewer_model,
+                            review.usage.as_ref(),
+                        )
+                        .await;
+                        emit_return_review_gate_event(
+                            runtime,
+                            agent_id,
+                            &return_tool_id,
+                            ToolGateVerdict::Allowed,
+                            Some(risk.as_str()),
+                            Some(review.reviewer_model),
+                            &reason,
+                            Some("subagent-return"),
+                            &return_summary,
+                        )
+                        .await;
+                        return None;
+                    }
+                    ReviewerOutcome::Deny { risk, reason } => (
+                        format_subagent_return_warning_flagged(risk, &reason),
+                        ToolGateVerdict::Denied,
+                        "denied",
+                        Some(risk.as_str()),
+                        Some(review.reviewer_model),
+                        Some("subagent-return"),
+                        reason,
+                        review.usage,
+                    ),
+                    ReviewerOutcome::Unavailable { reason } => (
+                        format_subagent_return_warning_unavailable(&reason),
+                        ToolGateVerdict::Unavailable,
+                        "unavailable",
+                        None,
+                        Some(review.reviewer_model),
+                        Some("guardian-unavailable"),
+                        reason,
+                        review.usage,
+                    ),
+                    ReviewerOutcome::Cancelled => {
+                        let reason = "the return review was cancelled".to_string();
+                        (
+                            format_subagent_return_warning_unavailable(&reason),
+                            ToolGateVerdict::Unavailable,
+                            "unavailable",
+                            None,
+                            Some(review.reviewer_model),
+                            Some("guardian-unavailable"),
+                            reason,
+                            review.usage,
+                        )
+                    }
+                }
+            }
+        };
+
+    record_return_check_usage(
+        runtime,
+        agent_id,
+        reviewer_model.as_deref().unwrap_or(&runtime.model),
+        usage.as_ref(),
+    )
+    .await;
+
+    let return_input = serde_json::json!({
+        "agent_id": agent_id,
+        "role": terminal.agent_type.as_str(),
+        "action_count": actions.len(),
+    });
+    if let Some(parent_state) = runtime.parent_auto_review_state.as_ref() {
+        parent_state.lock().record_child_block(
+            agent_id,
+            &return_tool_id,
+            "subagent_return",
+            &return_input,
+            &return_summary,
+            rule,
+            &reason,
+            "auto_review_guardian",
+            verdict_label,
+        );
+    }
+    emit_return_review_gate_event(
+        runtime,
+        agent_id,
+        &return_tool_id,
+        verdict,
+        risk,
+        reviewer_model,
+        &reason,
+        rule,
+        &return_summary,
+    )
+    .await;
+    prepend_warning_to_terminal_result(terminal, &warning);
+    Some(warning)
 }
 
 /// Queued-row reason (addendum F5): why the child waits — a free slot, or the
@@ -21775,13 +22174,15 @@ fn is_internal_coordination_state_tool(name: &str) -> bool {
 
 /// Raw target paths of a write-capable call, before claim normalization:
 /// the patch preflight's touched files for `apply_patch`/`File.patch`, else
-/// the `path`/`output_path` field. Feeds the child write carve-out (#5186);
+/// the field the tool writes through. Feeds the child write carve-out (#5186);
 /// claim enforcement keeps using the normalized [`mutation_paths`].
 fn raw_mutation_target_paths(name: &str, input: &Value) -> Vec<String> {
-    if name == "apply_patch"
+    let canonical = codewhale_execpolicy::canonical_action::canonical_action_alias(name, input);
+    if canonical == "apply_patch"
         || (name == "File" && input.get("action").and_then(Value::as_str) == Some("patch"))
     {
-        let mut patch_input = input.clone();
+        let mut patch_input =
+            codewhale_tools::param_alias::with_canonical_path_argument(input).into_owned();
         if let Some(object) = patch_input.as_object_mut() {
             object.remove("action");
         }
@@ -21789,33 +22190,24 @@ fn raw_mutation_target_paths(name: &str, input: &Value) -> Vec<String> {
             .map(|preflight| preflight.touched_files)
             .unwrap_or_default();
     }
-    input
-        .get("path")
-        .or_else(|| input.get("output_path"))
-        .and_then(Value::as_str)
-        .map(|path| vec![path.to_string()])
-        .unwrap_or_default()
+    crate::tools::registry::mutation_target_paths(name, input)
 }
 
 fn mutation_paths(name: &str, input: &Value, workspace: &Path) -> Result<Vec<String>> {
-    let raw_paths = if name == "apply_patch"
+    let canonical = codewhale_execpolicy::canonical_action::canonical_action_alias(name, input);
+    let raw_paths = if canonical == "apply_patch"
         || (name == "File" && input.get("action").and_then(Value::as_str) == Some("patch"))
     {
-        let mut patch_input = input.clone();
+        let mut patch_input =
+            codewhale_tools::param_alias::with_canonical_path_argument(input).into_owned();
         if let Some(object) = patch_input.as_object_mut() {
             object.remove("action");
         }
         codewhale_tools::patch_preflight::preflight_apply_patch(&patch_input)
             .map_err(|err| anyhow!(err.to_string()))?
             .touched_files
-    } else if let Some(path) = input
-        .get("path")
-        .or_else(|| input.get("output_path"))
-        .and_then(Value::as_str)
-    {
-        vec![path.to_string()]
     } else {
-        Vec::new()
+        crate::tools::registry::mutation_target_paths(name, input)
     };
     // One normalization per batch, not per path: every absolute spelling
     // below strips against the same canonical workspace.
@@ -22139,23 +22531,46 @@ pub fn spill_subagent_final_report(session_id: &str, result: &SubAgentResult) ->
         .map(|_| artifact_id)
 }
 
-fn summarize_subagent_result(result: &SubAgentResult) -> String {
-    if let Some(needs_input) = result.needs_input.as_ref() {
-        return format!("Needs input: {}", needs_input.question);
+fn split_subagent_return_warning(text: Option<&str>) -> (Option<&str>, Option<&str>) {
+    let Some(text) = text else {
+        return (None, None);
+    };
+    if !text.starts_with(crate::core::authority::auto_review::SUBAGENT_RETURN_WARNING_PREFIX) {
+        return (None, Some(text));
     }
-    match (&result.status, result.result.as_ref()) {
-        (SubAgentStatus::Completed, Some(text)) => text.clone(),
-        (SubAgentStatus::Completed, None) => "Completed (no final summary returned)".to_string(),
-        (SubAgentStatus::Interrupted(error), _) => format!("Interrupted: {error}"),
-        (SubAgentStatus::Cancelled, _) => "Cancelled".to_string(),
-        (SubAgentStatus::BudgetExhausted, Some(text)) => format!(
-            "Child budget exhausted before finishing; partial output preserved below.\n{text}"
-        ),
-        (SubAgentStatus::BudgetExhausted, None) => {
-            "Child budget exhausted before returning a final summary; inspect the checkpoint and split the work.".to_string()
+    match text.split_once("\n\n") {
+        Some((warning, rest)) => (Some(warning), (!rest.is_empty()).then_some(rest)),
+        None => (Some(text), None),
+    }
+}
+
+fn summarize_subagent_result(result: &SubAgentResult) -> String {
+    let (warning, body) = split_subagent_return_warning(result.result.as_deref());
+    let summary = if let Some(needs_input) = result.needs_input.as_ref() {
+        format!("Needs input: {}", needs_input.question)
+    } else {
+        match (&result.status, body) {
+            (SubAgentStatus::Completed, Some(text)) => text.to_string(),
+            (SubAgentStatus::Completed, None) if warning.is_some() => String::new(),
+            (SubAgentStatus::Completed, None) => {
+                "Completed (no final summary returned)".to_string()
+            }
+            (SubAgentStatus::Interrupted(error), _) => format!("Interrupted: {error}"),
+            (SubAgentStatus::Cancelled, _) => "Cancelled".to_string(),
+            (SubAgentStatus::BudgetExhausted, Some(text)) => format!(
+                "Child budget exhausted before finishing; partial output preserved below.\n{text}"
+            ),
+            (SubAgentStatus::BudgetExhausted, None) => {
+                "Child budget exhausted before returning a final summary; inspect the checkpoint and split the work.".to_string()
+            }
+            (SubAgentStatus::Failed(error), _) => format!("Failed: {error}"),
+            (SubAgentStatus::Running, _) => "Running".to_string(),
         }
-        (SubAgentStatus::Failed(error), _) => format!("Failed: {error}"),
-        (SubAgentStatus::Running, _) => "Running".to_string(),
+    };
+    match (warning, summary.is_empty()) {
+        (Some(warning), true) => warning.to_string(),
+        (Some(warning), false) => format!("{warning}\n\n{summary}"),
+        (None, _) => summary,
     }
 }
 

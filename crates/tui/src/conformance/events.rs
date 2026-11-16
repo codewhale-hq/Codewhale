@@ -238,6 +238,7 @@ pub(super) fn send_message_op(case: &Value, config: &Config) -> Op {
         hook_executor: None,
         verbosity: None,
         provenance: UserInputProvenance::ExternalUser,
+        input_authorship: codewhale_engine::core::ops::TurnInputAuthorship::NotPerson,
     })
 }
 

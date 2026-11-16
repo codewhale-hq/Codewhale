@@ -1280,6 +1280,10 @@ code_mode = true # execute_tools composes MCP/plugin/native calls; false defers 
                         # (#4196). On by default; the agent decides when to spend
                         # the extra reasoning, so cost is only incurred on demand.
                         # Set false to remove it from the model's tool catalog.
+# plugin_creator = true # Beta, on by default. Enable the built-in `plugin_manager`
+                        # tool and Creator mode host module independently of
+                        # `extension_host` when Node.js or Bun is available.
+                        # Set false to disable the built-in Creator host module.
 # extension_host = false # EXPERIMENTAL. Run reviewed plugins' `native` host code
                         # (TypeScript/JavaScript, Cordis/DSH plugin model) in a
                         # separate Node.js (or, opt-in, Bun) process. Tools and

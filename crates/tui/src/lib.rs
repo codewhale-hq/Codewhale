@@ -129,6 +129,10 @@ struct Cli {
     /// Recover the exact durable Resume/Fork intent without repeating its mutation.
     #[arg(long, global = true, value_name = "KEY")]
     operation_key: Option<String>,
+    /// Conversation mode for a new interactive session (for example `creator`).
+    /// With `--resume` or `--continue` it must match the session's saved mode.
+    #[arg(long = "conversation-mode", value_name = "MODE")]
+    conversation_mode: Option<String>,
 }
 
 impl std::ops::Deref for Cli {
@@ -509,6 +513,10 @@ struct ExecArgs {
     /// prompts past the OS per-argument limit (~128 KiB on Linux).
     #[arg(long, value_name = "PATH", conflicts_with = "prompt")]
     prompt_file: Option<PathBuf>,
+    /// Conversation mode for a new session (for example `creator`). With a
+    /// resumed session it must match the session's saved mode.
+    #[arg(long = "conversation-mode", value_name = "MODE")]
+    conversation_mode: Option<String>,
     #[arg(
         value_name = "PROMPT",
         trailing_var_arg = true,
@@ -3068,6 +3076,17 @@ async fn run_async_main_dispatch(
                     .as_deref()
                     .map(load_exec_resume_session)
                     .transpose()?;
+                let exec_conversation_mode = match tui::conversation_mode::launch_conversation_mode(
+                    &config,
+                    codewhale_localization::resolve_locale("auto"),
+                    args.conversation_mode.as_deref(),
+                    resume_session.as_ref(),
+                )
+                .await
+                {
+                    Ok(mode) => mode,
+                    Err(message) => exit_refused("codewhale exec", &message),
+                };
                 let explicit_model = args
                     .model
                     .as_deref()
@@ -3129,6 +3148,12 @@ async fn run_async_main_dispatch(
                 // CODEWHALE_YOLO env var (which the config loader folds into
                 // `config.yolo`), not as a CLI flag. Honour either source.
                 let yolo = cli.yolo || config.yolo.unwrap_or(false);
+                validate_cli_permission_mode(
+                    cli.permission_mode,
+                    &config,
+                    args.auto || yolo,
+                    "--permission-mode cannot be combined with --auto, --full-access, or --yolo",
+                )?;
                 let env_tool_surface = exec_tool_surface_from_env();
                 // #6510: every exec runs on the Engine — one turn loop, one
                 // prompt authority (BASE_PROMPT, AGENTS.md, skills). Without
@@ -3151,7 +3176,10 @@ async fn run_async_main_dispatch(
                         || config.max_subagents_for_provider(&identity),
                         |value| value.clamp(1, MAX_SUBAGENTS),
                     );
-                    let auto_mode = args.auto || yolo;
+                    let auto_mode = args.auto
+                        || yolo
+                        || cli.permission_mode
+                            == Some(codewhale_engine::runtime_options::PermissionMode::FullAccess);
                     // A zero-tool run only spends model steps on output-limit
                     // continuations; without `--max-turns` those would run to
                     // the turn wall clock, so it gets a small default ceiling.
@@ -3198,7 +3226,9 @@ async fn run_async_main_dispatch(
                         args.tool_authority_json.clone(),
                         args.hooks,
                         std::sync::Arc::clone(&plugin_registry),
+                        cli.permission_mode,
                         !tool_surface_requested,
+                        exec_conversation_mode,
                     )
                     .await
                 }
@@ -3362,6 +3392,13 @@ async fn run_async_main_dispatch(
                 let plugin_registry = policy_current_registry(plugin_registry);
                 let prepared = prepare_interactive_config(&cli, &config, true)?;
                 let source_id = resolve_session_id(session_id, last, &prepared.workspace)?;
+                refuse_resume_mode_mismatch(
+                    &cli,
+                    &prepared.config,
+                    &source_id,
+                    &prepared.workspace,
+                )
+                .await;
                 let (prepared, new_session_id) = prepare_mounted_session(
                     &cli,
                     prepared,
@@ -9812,15 +9849,25 @@ async fn run_speech(config: &Config, args: SpeechArgs) -> Result<()> {
     let identity = config
         .active_provider_identity()
         .map_err(anyhow::Error::msg)?;
-    if identity.provider != ProviderKind::XiaomiMimo {
+    if !matches!(
+        identity.provider,
+        ProviderKind::XiaomiMimo | ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
+    ) {
         bail!(
-            "`speech` requires provider = \"xiaomi-mimo\" (current: {}). Run with `--provider xiaomi-mimo` or set it in config.",
+            "`speech` requires provider = \"xiaomi-mimo\" or \"deepseek\" (current: {}). Run with `--provider xiaomi-mimo` or `--provider deepseek` or set it in config.",
             identity.key.as_str()
         );
     }
 
     if text.trim().is_empty() {
         bail!("Speech text cannot be empty");
+    }
+    let is_deepseek = matches!(
+        identity.provider,
+        ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
+    );
+    if is_deepseek && (clone_voice.is_some() || instruction.is_some() || voice_prompt.is_some()) {
+        bail!("DeepSeek TTS does not support --clone-voice, --voice-prompt, or --instruction");
     }
     let features = config.features();
     let workspace = std::env::current_dir()?;
@@ -9845,22 +9892,49 @@ async fn run_speech(config: &Config, args: SpeechArgs) -> Result<()> {
     )
     .await
     .map_err(adapter_error)?;
-    let model = plan.model;
+    let mut model = plan.model;
+    if is_deepseek && (model == "mimo-v2.5-tts" || model == "mimo-v2-tts") {
+        model = codewhale_engine::deepseek_media::DEEPSEEK_TTS_MODEL.to_string();
+    }
     let instruction = plan.instruction;
     // Clone sample/voice data stays inside the existing Core/provider path.
-    let voice = match plan.voice {
-        SpeechVoice::Clone => Some(encode_voice_clone_sample_data_uri(
-            clone_voice
-                .as_deref()
-                .context("speech adapter requested an uncaptured clone sample")?,
-        )?),
-        SpeechVoice::Omit => None,
-        SpeechVoice::Raw => Some(voice.context("speech adapter requested an uncaptured voice")?),
-        SpeechVoice::Default => Some(DEFAULT_VOICE.to_string()),
+    let voice = if is_deepseek {
+        match plan.voice {
+            SpeechVoice::Clone => bail!("DeepSeek TTS does not support --clone-voice"),
+            SpeechVoice::Omit | SpeechVoice::Default => None,
+            SpeechVoice::Raw => {
+                let raw = voice.context("speech adapter requested an uncaptured voice")?;
+                let normalized =
+                    codewhale_engine::deepseek_media::normalize_deepseek_voice_id(Some(&raw))
+                        .map_err(anyhow::Error::msg)?;
+                Some(normalized.to_string())
+            }
+        }
+    } else {
+        match plan.voice {
+            SpeechVoice::Clone => Some(encode_voice_clone_sample_data_uri(
+                clone_voice
+                    .as_deref()
+                    .context("speech adapter requested an uncaptured clone sample")?,
+            )?),
+            SpeechVoice::Omit => None,
+            SpeechVoice::Raw => {
+                Some(voice.context("speech adapter requested an uncaptured voice")?)
+            }
+            SpeechVoice::Default => Some(DEFAULT_VOICE.to_string()),
+        }
     };
     let format = prepare_speech_format(&format, SpeechSurface::Cli, &context)
         .await
         .map_err(adapter_error)?;
+    let format = if is_deepseek {
+        let (wire_format, _) =
+            codewhale_engine::deepseek_media::normalize_deepseek_tts_format(&format)
+                .map_err(anyhow::Error::msg)?;
+        wire_format.to_string()
+    } else {
+        format
+    };
     let output = output.unwrap_or_else(|| {
         output_dir
             .or_else(|| config.speech_output_dir())
@@ -14389,7 +14463,15 @@ fn merge_project_config_with_approval_baseline(
             .approval_policy
             .as_deref()
             .or(saved_approval_baseline);
-        if codewhale_config::project_approval_policy_is_allowed(approval_baseline, v) {
+        let auto_review_refused = config.auto_review_disabled()
+            && codewhale_execpolicy::ApprovalMode::from_config_value(v)
+                == Some(codewhale_execpolicy::ApprovalMode::Auto);
+        if auto_review_refused {
+            eprintln!(
+                "warning: project-scope `approval_policy = \"{v}\"` is ignored — \
+                 Auto-Review is disabled by managed configuration."
+            );
+        } else if codewhale_config::project_approval_policy_is_allowed(approval_baseline, v) {
             config.approval_policy = Some(v.to_string());
         } else {
             eprintln!(
@@ -14448,6 +14530,12 @@ fn merge_project_config_with_approval_baseline(
             "warning: project-scope `instruction_budget` is ignored — \
              set instruction budgets in user config instead. \
              (See #417.)"
+        );
+    }
+    if table.contains_key("auto_review") {
+        eprintln!(
+            "warning: project-scope `auto_review` is ignored — \
+             set Auto-Review settings and `auto_review.environment` in user or managed config instead."
         );
     }
     Ok(())
@@ -14667,6 +14755,7 @@ async fn run_interactive_with_notice(
     let plugin_registry = policy_current_registry(plugin_registry);
     let prepared = prepare_interactive_config(cli, config, resume_session_id.is_some())?;
     let (prepared, resume_session_id) = if let Some(selector) = resume_session_id {
+        refuse_resume_mode_mismatch(cli, &prepared.config, &selector, &prepared.workspace).await;
         let (prepared, id) = prepare_mounted_session(
             cli,
             prepared,
@@ -14689,6 +14778,33 @@ async fn run_interactive_with_notice(
         plugin_registry,
     ))
     .await
+}
+
+fn exit_refused(program: &str, message: &str) -> ! {
+    eprintln!("{program}: {message}");
+    std::process::exit(2)
+}
+
+async fn refuse_resume_mode_mismatch(cli: &Cli, config: &Config, selector: &str, workspace: &Path) {
+    if cli.conversation_mode.is_none() {
+        return;
+    }
+    let locale = codewhale_localization::resolve_locale("auto");
+    let outcome = match tui::conversation_mode::load_saved_for_resume(locale, selector, workspace) {
+        Ok(saved) => {
+            tui::conversation_mode::launch_conversation_mode(
+                config,
+                locale,
+                cli.conversation_mode.as_deref(),
+                Some(&saved),
+            )
+            .await
+        }
+        Err(message) => Err(message),
+    };
+    if let Err(message) = outcome {
+        exit_refused("codewhale", &message);
+    }
 }
 
 struct PreparedInteractiveConfig {
@@ -14749,6 +14865,32 @@ async fn run_interactive_prepared(
 ) -> Result<()> {
     let PreparedInteractiveConfig { config, workspace } = prepared;
     let config = &config;
+    let launch_conversation_mode = {
+        let locale = codewhale_localization::resolve_locale("auto");
+        let resumed = match (
+            cli.conversation_mode.as_deref(),
+            resume_session_id.as_deref(),
+        ) {
+            (Some(_), Some(id)) => {
+                match tui::conversation_mode::load_saved_for_resume(locale, id, &workspace) {
+                    Ok(saved) => Some(saved),
+                    Err(message) => exit_refused("codewhale", &message),
+                }
+            }
+            _ => None,
+        };
+        match tui::conversation_mode::launch_conversation_mode(
+            config,
+            locale,
+            cli.conversation_mode.as_deref(),
+            resumed.as_ref(),
+        )
+        .await
+        {
+            Ok(mode) => mode,
+            Err(message) => exit_refused("codewhale", &message),
+        }
+    };
     let initial_input = if cli.remote_control {
         Some(tui::InitialInput::RemoteControl)
     } else {
@@ -14867,7 +15009,16 @@ async fn run_interactive_prepared(
 
     // A launcher can forward `--yolo` to this binary via the CODEWHALE_YOLO
     // env var (config.yolo), not as a CLI flag. Honour either.
-    let yolo = cli.yolo || config.yolo.unwrap_or(false);
+    let base_yolo = cli.yolo || config.yolo.unwrap_or(false);
+    validate_cli_permission_mode(
+        cli.permission_mode,
+        config,
+        base_yolo,
+        "--permission-mode cannot be combined with --full-access or --yolo",
+    )?;
+    let yolo = base_yolo
+        || cli.permission_mode
+            == Some(codewhale_engine::runtime_options::PermissionMode::FullAccess);
 
     Box::pin(tui::run_tui(
         config,
@@ -14896,8 +15047,30 @@ async fn run_interactive_prepared(
         },
         plugin_registry,
         pending_telemetry_notice,
+        launch_conversation_mode,
+        cli.permission_mode,
     ))
     .await
+}
+
+fn validate_cli_permission_mode(
+    permission_mode: Option<codewhale_engine::runtime_options::PermissionMode>,
+    config: &Config,
+    conflicting_full_access: bool,
+    conflict_msg: &str,
+) -> Result<()> {
+    let Some(mode) = permission_mode else {
+        return Ok(());
+    };
+    if conflicting_full_access {
+        bail!("{conflict_msg}");
+    }
+    if mode == codewhale_engine::runtime_options::PermissionMode::AutoReview
+        && config.auto_review_disabled()
+    {
+        bail!("Auto-Review is disabled by managed configuration (`auto_review.disabled = true`)");
+    }
+    Ok(())
 }
 
 /// Review-pass reasoning effort: resolve `Auto` from the prompt exactly as the
@@ -19623,6 +19796,36 @@ instructions = ["./AGENTS.md", "./extra.md"]
             Some(user.as_slice()),
             "project overlay must not replace user-owned instructions"
         );
+    }
+
+    #[test]
+    fn project_overlay_ignores_auto_review_and_environment() {
+        let tmp = workspace_with_project_config(
+            r#"
+[auto_review]
+disabled = true
+review_all_shell = true
+environment = ["attacker.example.com"]
+"#,
+        );
+        let user_env = vec!["trusted.example.internal".to_string()];
+        let mut config = Config::default();
+        config.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+            disabled: false,
+            review_all_shell: false,
+            environment: user_env.clone(),
+            ..Default::default()
+        });
+        merge_project_config(&mut config, tmp.path());
+        assert!(!config.auto_review_disabled());
+        assert!(!config.auto_review_review_all_shell());
+        assert_eq!(config.auto_review_environment(), user_env.as_slice());
+
+        let mut empty_user = Config::default();
+        merge_project_config(&mut empty_user, tmp.path());
+        assert!(empty_user.auto_review.is_none());
+        assert!(!empty_user.auto_review_review_all_shell());
+        assert!(empty_user.auto_review_environment().is_empty());
     }
 
     #[test]

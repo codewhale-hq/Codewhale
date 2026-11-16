@@ -1,51 +1,44 @@
-//! Voice/dictation HTTP for native clients (APPS-98).
-//!
-//! The runtime owns the host microphone and the ASR dispatch — recording and
-//! transcription are the same implementation the TUI's `/voice` commands run,
-//! exposed headlessly so a desktop client gets text back instead of driving a
-//! terminal. There is deliberately no second speech stack and no audio upload
-//! path: dictate means "record on the host this runtime runs on".
-//!
-//! Fail-closed as data: no recorder, no speech, missing provider auth, or an
-//! ASR failure all answer `200` with `ok: false` + a machine-readable
-//! `reason` — a desktop client reads `GET /v1/voice` first and disables its
-//! dictation affordance when `available` is false.
-//!
-//! Routes:
-//!   GET  /v1/voice          — capability: recorder, ASR selection, send phrases
-//!   POST /v1/voice/dictate  — record + transcribe → insert text
-//!   POST /v1/voice/send     — record + transcribe + send-suffix detection
-//!   POST /v1/voice/control  — record + assisted dictation; body {"composer"}
-
 use axum::Json;
 use axum::extract::State;
+use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{ApiError, RuntimeApiState};
+use codewhale_engine::deepseek_media::DEEPSEEK_TTS_MAX_CHARS;
 use codewhale_engine::voice as voice_core;
-use voice_core::{DictateError, DictateMode};
+use voice_core::{DictateError, DictateMode, UPLOAD_AUDIO_MAX_BYTES};
 
-/// One mic per host — serialize captures so concurrent dictate requests get
-/// an honest "no speech" for the loser rather than fighting over the device.
 static DICTATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// `GET /v1/voice` — what this host can do: whether a recorder exists, which
-/// ASR backend the live config resolves to, and the send-suffix contract.
 pub(super) async fn voice_status(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<Value>, ApiError> {
-    let (asr_kind, asr_model) = {
+    let (asr_kind, asr_model, upload_available, tts_available, tts_voices) = {
         let config = state.config.read();
-        voice_core::asr_choice(&config)
+        let (asr_kind, asr_model) = voice_core::asr_choice(&config);
+        let upload_available = voice_core::upload_available(&config);
+        let tts_available = voice_core::tts_available(&config);
+        let tts_voices = voice_core::tts_voices(&config);
+        (
+            asr_kind,
+            asr_model,
+            upload_available,
+            tts_available,
+            tts_voices,
+        )
     };
     Ok(Json(json!({
         "available": voice_core::is_available(),
+        "upload_available": upload_available,
+        "tts_available": tts_available,
         "recorder": voice_core::recorder_command(),
         "asr": { "kind": asr_kind, "model": asr_model },
         "modes": ["insert", "send", "control"],
         "send_phrases": voice_core::SEND_PHRASES,
         "max_record_seconds": voice_core::MAX_RECORD_SECS,
+        "max_upload_bytes": UPLOAD_AUDIO_MAX_BYTES,
+        "tts_voices": tts_voices,
     })))
 }
 
@@ -57,32 +50,31 @@ fn dictate_failure(error: DictateError) -> Json<Value> {
     }))
 }
 
+fn dictate_success(outcome: voice_core::DictationOutcome) -> Json<Value> {
+    Json(json!({
+        "ok": true,
+        "text": outcome.text,
+        "send": outcome.send,
+        "assisted": outcome.assisted,
+        "asr": { "kind": outcome.asr_kind, "model": outcome.asr_model },
+    }))
+}
+
 async fn dictate(state: &RuntimeApiState, mode: DictateMode) -> Result<Json<Value>, ApiError> {
-    // Clone before recording: holding the config lock across a ~10s capture
-    // would stall unrelated config writes for the duration.
     let config = state.config.read().clone();
     let _permit = DICTATE_LOCK.lock().await;
     match voice_core::dictate_once(&config, mode).await {
-        Ok(outcome) => Ok(Json(json!({
-            "ok": true,
-            "text": outcome.text,
-            "send": outcome.send,
-            "assisted": outcome.assisted,
-            "asr": { "kind": outcome.asr_kind, "model": outcome.asr_model },
-        }))),
+        Ok(outcome) => Ok(dictate_success(outcome)),
         Err(error) => Ok(dictate_failure(error)),
     }
 }
 
-/// `POST /v1/voice/dictate` — record + transcribe → text to insert.
 pub(super) async fn voice_dictate(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<Value>, ApiError> {
     dictate(&state, DictateMode::Insert).await
 }
 
-/// `POST /v1/voice/send` — dictate with send-suffix detection; the client
-/// submits when `send` is true (empty `text` = submit the current draft).
 pub(super) async fn voice_send(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<Value>, ApiError> {
@@ -92,15 +84,10 @@ pub(super) async fn voice_send(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct VoiceControlRequest {
-    /// The client's current composer text — the model sees it for
-    /// AI-assisted dictation (the `/voice-control` pipeline).
     #[serde(default)]
     composer: String,
 }
 
-/// `POST /v1/voice/control` — assisted dictation with composer context.
-/// `assisted: false` in the response means a free ASR kind handled the audio
-/// and the composer text was never seen.
 pub(super) async fn voice_control(
     State(state): State<RuntimeApiState>,
     body: Option<Json<VoiceControlRequest>>,
@@ -109,4 +96,121 @@ pub(super) async fn voice_control(
         .map(|Json(request)| request.composer)
         .unwrap_or_default();
     dictate(&state, DictateMode::Control(composer)).await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct VoiceTranscribeRequest {
+    audio_base64: String,
+    #[serde(default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    composer: Option<String>,
+    #[serde(default)]
+    language: Option<String>,
+}
+
+pub(super) async fn voice_transcribe(
+    State(state): State<RuntimeApiState>,
+    Json(request): Json<VoiceTranscribeRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let max_encoded_len = (UPLOAD_AUDIO_MAX_BYTES / 3 + 2) * 4 + 16;
+    if request.audio_base64.len() > max_encoded_len {
+        return Ok(dictate_failure(DictateError::InvalidInput(format!(
+            "encoded audio exceeds maximum size for {UPLOAD_AUDIO_MAX_BYTES} byte upload"
+        ))));
+    }
+    let Ok(audio_bytes) =
+        base64::engine::general_purpose::STANDARD.decode(request.audio_base64.trim())
+    else {
+        return Ok(dictate_failure(DictateError::InvalidInput(
+            "audio_base64 is not valid base64".to_string(),
+        )));
+    };
+    let mode = match request.mode.as_deref().unwrap_or("insert").trim() {
+        "" | "insert" => DictateMode::Insert,
+        "send" => DictateMode::Send,
+        "control" => DictateMode::Control(request.composer.unwrap_or_default()),
+        other => {
+            return Ok(dictate_failure(DictateError::InvalidInput(format!(
+                "unsupported voice mode '{other}'"
+            ))));
+        }
+    };
+    let mime_type = request.mime_type.as_deref().unwrap_or("audio/wav");
+    let config = state.config.read().clone();
+    match voice_core::transcribe_uploaded_audio(
+        &config,
+        &audio_bytes,
+        mime_type,
+        mode,
+        request.language.as_deref(),
+    )
+    .await
+    {
+        Ok(outcome) => Ok(dictate_success(outcome)),
+        Err(error) => Ok(dictate_failure(error)),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct VoiceTtsRequest {
+    text: String,
+    #[serde(default)]
+    voice: Option<String>,
+    #[serde(default)]
+    voice_id: Option<String>,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default)]
+    filter_markdown: Option<bool>,
+}
+
+fn tts_failure(reason: &str, message: impl Into<String>) -> Json<Value> {
+    Json(json!({
+        "ok": false,
+        "reason": reason,
+        "message": message.into(),
+    }))
+}
+
+pub(super) async fn voice_tts(
+    State(state): State<RuntimeApiState>,
+    Json(request): Json<VoiceTtsRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if request.text.trim().is_empty() {
+        return Ok(tts_failure("invalid_input", "speech text cannot be empty"));
+    }
+    if request.text.chars().count() > DEEPSEEK_TTS_MAX_CHARS {
+        return Ok(tts_failure(
+            "invalid_input",
+            format!("speech text exceeds maximum of {DEEPSEEK_TTS_MAX_CHARS} characters"),
+        ));
+    }
+    let voice = request.voice.as_deref().or(request.voice_id.as_deref());
+    let filter_markdown = request.filter_markdown.unwrap_or(true);
+    let config = state.config.read().clone();
+    match voice_core::synthesize_voice_tts_with_options(
+        &config,
+        &request.text,
+        voice,
+        request.format.as_deref(),
+        filter_markdown,
+    )
+    .await
+    {
+        Ok(outcome) => Ok(Json(json!({
+            "ok": true,
+            "mime_type": outcome.content_type,
+            "audio_base64": base64::engine::general_purpose::STANDARD.encode(&outcome.audio_bytes),
+            "voice_id": outcome.voice,
+            "provider": outcome.provider,
+            "model": outcome.model,
+            "format": outcome.format,
+        }))),
+        Err(err) => Ok(tts_failure(err.reason(), err.to_string())),
+    }
 }

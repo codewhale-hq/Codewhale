@@ -23,6 +23,7 @@ use codewhale_runtime::config::Config;
 /// Transcription model requested from the provider's chat-completions API.
 const ASR_MODEL: &str = "mimo-v2.5-asr";
 const GROQ_ASR_MODEL: &str = "whisper-large-v3-turbo";
+pub const UPLOAD_AUDIO_MAX_BYTES: usize = crate::deepseek_media::DEEPSEEK_ASR_MAX_BYTES;
 /// Local whisper binary names to probe (whisper.cpp, faster-whisper, OpenAI whisper).
 const LOCAL_WHISPER_BINS: &[&str] = &["whisper", "whisper.cpp", "whisper-cpp", "faster-whisper"];
 /// Model used for the AI-assisted voice-control pipeline.
@@ -39,55 +40,62 @@ struct Recorder {
 }
 
 fn detect_recorder() -> Option<Recorder> {
-    // Operator kill-switch: a headless `serve --http` host has no business
-    // opening a microphone; disabling voice here makes `GET /v1/voice`
-    // report `available: false` and every dictate call fail closed.
-    if std::env::var_os("CODEWHALE_DISABLE_VOICE").is_some() {
-        return None;
-    }
-    let candidates: &[Recorder] = if cfg!(target_os = "macos") {
-        &[
-            Recorder {
+    let probe = || {
+        if std::env::var_os("CODEWHALE_DISABLE_VOICE").is_some() {
+            return None;
+        }
+        let candidates: &[Recorder] = if cfg!(target_os = "macos") {
+            &[
+                Recorder {
+                    cmd: "sox",
+                    pipe_args: &["-d", "-r", "16000", "-c", "1", "-b", "16", "-t", "raw", "-"],
+                },
+                Recorder {
+                    cmd: "rec",
+                    pipe_args: &["-r", "16000", "-c", "1", "-b", "16", "-t", "raw", "-"],
+                },
+            ]
+        } else if cfg!(target_os = "linux") {
+            &[
+                Recorder {
+                    cmd: "arecord",
+                    pipe_args: &["-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "raw"],
+                },
+                Recorder {
+                    cmd: "sox",
+                    pipe_args: &["-d", "-r", "16000", "-c", "1", "-b", "16", "-t", "raw", "-"],
+                },
+            ]
+        } else if cfg!(target_os = "windows") {
+            &[Recorder {
                 cmd: "sox",
                 pipe_args: &["-d", "-r", "16000", "-c", "1", "-b", "16", "-t", "raw", "-"],
-            },
-            Recorder {
-                cmd: "rec",
-                pipe_args: &["-r", "16000", "-c", "1", "-b", "16", "-t", "raw", "-"],
-            },
-        ]
-    } else if cfg!(target_os = "linux") {
-        &[
-            Recorder {
-                cmd: "arecord",
-                pipe_args: &["-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "raw"],
-            },
-            Recorder {
-                cmd: "sox",
-                pipe_args: &["-d", "-r", "16000", "-c", "1", "-b", "16", "-t", "raw", "-"],
-            },
-        ]
-    } else if cfg!(target_os = "windows") {
-        &[Recorder {
-            cmd: "sox",
-            pipe_args: &["-d", "-r", "16000", "-c", "1", "-b", "16", "-t", "raw", "-"],
-        }]
-    } else {
-        &[]
-    };
+            }]
+        } else {
+            &[]
+        };
 
-    candidates
-        .iter()
-        .find(|r| {
-            Command::new(r.cmd)
-                .arg("--version")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .is_ok()
-        })
-        .cloned()
+        candidates
+            .iter()
+            .find(|r| {
+                Command::new(r.cmd)
+                    .arg("--version")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .is_ok()
+            })
+            .cloned()
+    };
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        crate::test_support::with_test_env_lock(probe)
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        probe()
+    }
 }
 
 /// Check whether voice recording is available on this system.
@@ -99,8 +107,11 @@ pub fn is_available() -> bool {
 
 /// Encode raw 16kHz mono S16_LE PCM samples as a WAV buffer.
 fn encode_wav(samples: &[i16]) -> Vec<u8> {
+    encode_wav_with_rate(samples, 16000)
+}
+
+fn encode_wav_with_rate(samples: &[i16], sample_rate: u32) -> Vec<u8> {
     let data_size = (samples.len() * 2) as u32;
-    let sample_rate: u32 = 16000;
     let mut buf = Vec::with_capacity(44 + data_size as usize);
 
     // RIFF header
@@ -114,7 +125,7 @@ fn encode_wav(samples: &[i16]) -> Vec<u8> {
     buf.extend_from_slice(&1u16.to_le_bytes()); // PCM
     buf.extend_from_slice(&1u16.to_le_bytes()); // mono
     buf.extend_from_slice(&sample_rate.to_le_bytes());
-    buf.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate
+    buf.extend_from_slice(&(sample_rate.saturating_mul(2)).to_le_bytes());
     buf.extend_from_slice(&2u16.to_le_bytes()); // block align
     buf.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
 
@@ -472,28 +483,38 @@ pub async fn transcribe_groq(audio_samples: &[i16]) -> Result<String, String> {
     transcribe_with_model(&api_key, base_url, audio_samples, GROQ_ASR_MODEL, None).await
 }
 
-/// Resolve ASR model/provider preference.
-/// Priority: env `CODEWHALE_ASR_MODEL` > auto-detect (local-whisper > groq >
-/// provider). Known limitation (C01-10): there is no config-file ASR setting
-/// yet — `config` is accepted for the day one exists and is not read, so the
-/// env var is the only explicit override.
-pub fn resolve_asr_choice(_config: &Config) -> (String, String) {
-    let explicit = std::env::var("CODEWHALE_ASR_MODEL")
-        .ok()
-        .and_then(|value| explicit_asr_choice(&value));
-    // Auto-detect best free: local whisper (offline, no key) > Groq free
-    // tier > provider ASR (needs key).
-    let (kind, model) = explicit.unwrap_or_else(|| match detect_free_asr() {
-        "local-whisper" => ("local-whisper", "tiny"),
-        "groq" => ("groq", GROQ_ASR_MODEL),
-        _ => ("provider", ASR_MODEL),
-    });
-    (kind.to_string(), model.to_string())
+pub fn resolve_asr_choice(config: &Config) -> (String, String) {
+    let read = || {
+        let explicit = std::env::var("CODEWHALE_ASR_MODEL")
+            .ok()
+            .and_then(|value| explicit_asr_choice(&value));
+        let (kind, model) = explicit.unwrap_or_else(|| match detect_free_asr() {
+            "local-whisper" => ("local-whisper", "tiny"),
+            "groq" => ("groq", GROQ_ASR_MODEL),
+            _ if config.active_provider_identity().is_ok_and(|identity| {
+                matches!(
+                    identity.provider,
+                    codewhale_config::ProviderKind::Deepseek
+                        | codewhale_config::ProviderKind::DeepseekAnthropic
+                )
+            }) =>
+            {
+                ("deepseek", crate::deepseek_media::DEEPSEEK_ASR_MODEL)
+            }
+            _ => ("provider", ASR_MODEL),
+        });
+        (kind.to_string(), model.to_string())
+    };
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        crate::test_support::with_test_env_lock(read)
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        read()
+    }
 }
 
-/// Map an explicit `CODEWHALE_ASR_MODEL` value to (kind, model). Local
-/// spellings are tested first: `local-whisper` and `whisper.cpp` both contain
-/// "whisper", which on its own names Groq's hosted Whisper (C01-10).
 fn explicit_asr_choice(value: &str) -> Option<(&'static str, &'static str)> {
     let m = value.trim().to_ascii_lowercase();
     if m.contains("local") || m.contains("whisper.cpp") || m.contains("whisper-cpp") {
@@ -501,6 +522,9 @@ fn explicit_asr_choice(value: &str) -> Option<(&'static str, &'static str)> {
     }
     if m.contains("groq") || m.contains("whisper") {
         return Some(("groq", GROQ_ASR_MODEL));
+    }
+    if m.contains("deepseek") {
+        return Some(("deepseek", crate::deepseek_media::DEEPSEEK_ASR_MODEL));
     }
     if m.contains("mimo") || m.contains("xiaomi") {
         return Some(("provider", ASR_MODEL));
@@ -529,13 +553,10 @@ pub enum DictateMode {
 /// localize by `reason` rather than parsing message text.
 #[derive(Debug)]
 pub enum DictateError {
-    /// No supported recorder binary on this host.
     NoRecorder,
-    /// Recording produced no usable speech segment.
     NoSpeech,
-    /// The selected provider ASR needs an API key that is not configured.
     NoProviderAuth,
-    /// ASR request or transcription failed.
+    InvalidInput(String),
     Transcription(String),
 }
 
@@ -545,6 +566,7 @@ impl DictateError {
             Self::NoRecorder => "no_recorder",
             Self::NoSpeech => "no_speech",
             Self::NoProviderAuth => "no_provider_auth",
+            Self::InvalidInput(_) => "invalid_input",
             Self::Transcription(_) => "transcription_failed",
         }
     }
@@ -558,7 +580,7 @@ impl std::fmt::Display for DictateError {
             Self::NoProviderAuth => {
                 write!(f, "provider ASR requires a configured API key")
             }
-            Self::Transcription(e) => write!(f, "{e}"),
+            Self::InvalidInput(e) | Self::Transcription(e) => write!(f, "{e}"),
         }
     }
 }
@@ -643,6 +665,21 @@ pub async fn transcribe_selected(
     let text = match kind {
         "local-whisper" => transcribe_local_whisper(samples).await,
         "groq" => transcribe_groq(samples).await,
+        "deepseek" => {
+            let (base_url, api_key) = crate::deepseek_media::resolve_deepseek_config_auth(config)
+                .ok_or(DictateError::NoProviderAuth)?;
+            let wav = encode_wav(samples);
+            crate::deepseek_media::transcribe_deepseek_bytes(
+                &base_url,
+                &api_key,
+                &wav,
+                "voice.wav",
+                "audio/wav",
+                None,
+            )
+            .await
+            .map(|response| response.text)
+        }
         _ => {
             let key = config
                 .active_route_api_key()
@@ -660,6 +697,365 @@ pub async fn transcribe_selected(
         }
     };
     text.map_err(DictateError::Transcription)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceTtsOutcome {
+    pub audio_bytes: Vec<u8>,
+    pub content_type: String,
+    pub format: String,
+    pub provider: String,
+    pub model: String,
+    pub voice: String,
+}
+
+pub const MIMO_TTS_VOICES: &[&str] = &["mimo_default", "Mia", "Chloe", "Milo", "Dean"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VoiceTtsError {
+    NoProviderAuth(String),
+    InvalidInput(String),
+    SynthesisFailed(String),
+}
+
+impl VoiceTtsError {
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::NoProviderAuth(_) => "no_provider_auth",
+            Self::InvalidInput(_) => "invalid_input",
+            Self::SynthesisFailed(_) => "synthesis_failed",
+        }
+    }
+}
+
+impl std::fmt::Display for VoiceTtsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoProviderAuth(msg) | Self::InvalidInput(msg) | Self::SynthesisFailed(msg) => {
+                write!(f, "{msg}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for VoiceTtsError {}
+
+fn active_mimo_tts_ready(config: &Config) -> bool {
+    config
+        .active_provider_identity()
+        .is_ok_and(|identity| identity.provider == codewhale_config::ProviderKind::XiaomiMimo)
+        && config
+            .active_route_api_key_read_only()
+            .is_ok_and(|value| !value.trim().is_empty())
+}
+
+fn resample_pcm16_mono(samples: &[i16], src_rate: u32, dst_rate: u32) -> Vec<i16> {
+    if samples.is_empty() || src_rate == dst_rate {
+        return samples.to_vec();
+    }
+    let out_len = ((samples.len() as u64).saturating_mul(dst_rate as u64) / (src_rate as u64))
+        .max(1) as usize;
+    if out_len == 1 || samples.len() == 1 {
+        return vec![samples[0]; out_len];
+    }
+    let ratio = (samples.len() as f64) / (out_len as f64);
+    let max_idx = samples.len() - 1;
+    (0..out_len)
+        .map(|i| {
+            let pos = (i as f64) * ratio;
+            let idx = (pos.floor() as usize).min(max_idx);
+            let next = (idx + 1).min(max_idx);
+            let frac = pos - (idx as f64);
+            let a = samples[idx] as f64;
+            let b = samples[next] as f64;
+            (a + (b - a) * frac)
+                .round()
+                .clamp(i16::MIN as f64, i16::MAX as f64) as i16
+        })
+        .collect()
+}
+
+pub fn decode_wav_pcm16_mono(wav_bytes: &[u8]) -> Result<Vec<i16>, String> {
+    if wav_bytes.len() < 12 || &wav_bytes[0..4] != b"RIFF" || &wav_bytes[8..12] != b"WAVE" {
+        return Err("invalid WAV header: expected RIFF/WAVE".to_string());
+    }
+    let mut sample_rate: Option<u32> = None;
+    let mut data_chunk: Option<&[u8]> = None;
+    let mut offset = 12usize;
+    while offset + 8 <= wav_bytes.len() {
+        let chunk_id = &wav_bytes[offset..offset + 4];
+        let chunk_size = u32::from_le_bytes([
+            wav_bytes[offset + 4],
+            wav_bytes[offset + 5],
+            wav_bytes[offset + 6],
+            wav_bytes[offset + 7],
+        ]) as usize;
+        let data_start = offset + 8;
+        let Some(data_end) = data_start.checked_add(chunk_size) else {
+            return Err("invalid WAV chunk length".to_string());
+        };
+        if data_end > wav_bytes.len() {
+            return Err("truncated WAV chunk".to_string());
+        }
+        let chunk = &wav_bytes[data_start..data_end];
+        if chunk_id == b"fmt " {
+            if chunk.len() < 16 {
+                return Err("truncated WAV fmt chunk".to_string());
+            }
+            let audio_format = u16::from_le_bytes([chunk[0], chunk[1]]);
+            let channels = u16::from_le_bytes([chunk[2], chunk[3]]);
+            let parsed_rate = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+            let bits_per_sample = u16::from_le_bytes([chunk[14], chunk[15]]);
+            if audio_format != 1 || channels != 1 || bits_per_sample != 16 {
+                return Err(format!(
+                    "unsupported WAV encoding: expected PCM16 mono, got format={audio_format} channels={channels} bits={bits_per_sample}"
+                ));
+            }
+            if !(8_000..=192_000).contains(&parsed_rate) {
+                return Err(format!(
+                    "unsupported WAV sample rate {parsed_rate} Hz (expected 8000..=192000 Hz)"
+                ));
+            }
+            sample_rate = Some(parsed_rate);
+        } else if chunk_id == b"data" {
+            data_chunk = Some(chunk);
+        }
+        offset = data_end.saturating_add(chunk_size & 1);
+    }
+    let Some(sample_rate) = sample_rate else {
+        return Err("missing WAV fmt chunk".to_string());
+    };
+    let Some(data) = data_chunk else {
+        return Err("missing WAV data chunk".to_string());
+    };
+    if data.len() % 2 != 0 {
+        return Err("WAV PCM16 data length must be even".to_string());
+    }
+    let raw_samples: Vec<i16> = data
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .copied()
+        .map(i16::from_le_bytes)
+        .collect();
+    Ok(resample_pcm16_mono(&raw_samples, sample_rate, 16_000))
+}
+
+pub fn upload_available(config: &Config) -> bool {
+    let (asr_kind, _) = resolve_asr_choice(config);
+    match asr_kind.as_str() {
+        "local-whisper" => true,
+        "groq" => {
+            let has_groq_key =
+                || std::env::var("GROQ_API_KEY").is_ok_and(|value| !value.trim().is_empty());
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                crate::test_support::with_test_env_lock(has_groq_key)
+            }
+            #[cfg(not(any(test, feature = "test-support")))]
+            {
+                has_groq_key()
+            }
+        }
+        "deepseek" => crate::deepseek_media::resolve_deepseek_config_auth(config).is_some(),
+        _ => config
+            .active_route_api_key_read_only()
+            .is_ok_and(|value| !value.trim().is_empty()),
+    }
+}
+
+pub fn tts_available(config: &Config) -> bool {
+    active_mimo_tts_ready(config)
+        || crate::deepseek_media::resolve_deepseek_config_auth(config).is_some()
+}
+
+pub fn tts_voices(config: &Config) -> &'static [&'static str] {
+    if active_mimo_tts_ready(config) {
+        MIMO_TTS_VOICES
+    } else if crate::deepseek_media::resolve_deepseek_config_auth(config).is_some() {
+        crate::deepseek_media::DEEPSEEK_TTS_VOICES
+    } else {
+        &[]
+    }
+}
+
+pub async fn transcribe_uploaded_audio(
+    config: &Config,
+    audio_bytes: &[u8],
+    mime_type: &str,
+    mode: DictateMode,
+    language: Option<&str>,
+) -> Result<DictationOutcome, DictateError> {
+    if audio_bytes.is_empty() {
+        return Err(DictateError::InvalidInput(
+            "audio payload cannot be empty".to_string(),
+        ));
+    }
+    if audio_bytes.len() > UPLOAD_AUDIO_MAX_BYTES {
+        return Err(DictateError::InvalidInput(format!(
+            "audio payload exceeds maximum of {UPLOAD_AUDIO_MAX_BYTES} bytes"
+        )));
+    }
+    let canonical_mime = crate::deepseek_media::normalize_deepseek_asr_mime(mime_type)
+        .map_err(DictateError::InvalidInput)?;
+    let (asr_kind, asr_model) = resolve_asr_choice(config);
+    let assisted = asr_kind == "provider" && matches!(&mode, DictateMode::Control(_));
+    let text = if asr_kind == "deepseek" {
+        let (base_url, api_key) = crate::deepseek_media::resolve_deepseek_config_auth(config)
+            .ok_or(DictateError::NoProviderAuth)?;
+        let file_name = if canonical_mime == "audio/ogg" {
+            "voice.ogg"
+        } else {
+            "voice.wav"
+        };
+        crate::deepseek_media::transcribe_deepseek_bytes(
+            &base_url,
+            &api_key,
+            audio_bytes,
+            file_name,
+            canonical_mime,
+            language,
+        )
+        .await
+        .map(|response| response.text)
+        .map_err(DictateError::Transcription)?
+    } else {
+        if canonical_mime != "audio/wav" {
+            return Err(DictateError::InvalidInput(format!(
+                "mime type '{canonical_mime}' requires DeepSeek ASR; send audio/wav for '{asr_kind}'"
+            )));
+        }
+        let samples = decode_wav_pcm16_mono(audio_bytes).map_err(DictateError::InvalidInput)?;
+        if samples.is_empty() {
+            return Err(DictateError::NoSpeech);
+        }
+        let composer = match &mode {
+            DictateMode::Control(composer) => Some(composer.as_str()),
+            _ => None,
+        };
+        transcribe_selected(config, &asr_kind, &samples, composer).await?
+    };
+
+    let clean = text.trim().to_string();
+    let (text, send) = match mode {
+        DictateMode::Send => {
+            let (remainder, wants_send) = split_send_suffix(&clean);
+            (remainder.to_string(), wants_send)
+        }
+        _ => (clean, false),
+    };
+    Ok(DictationOutcome {
+        text,
+        send,
+        assisted,
+        asr_kind,
+        asr_model,
+    })
+}
+
+pub async fn synthesize_voice_tts(
+    config: &Config,
+    text: &str,
+    voice: Option<&str>,
+    format: Option<&str>,
+) -> Result<VoiceTtsOutcome, VoiceTtsError> {
+    synthesize_voice_tts_with_options(config, text, voice, format, true).await
+}
+
+pub async fn synthesize_voice_tts_with_options(
+    config: &Config,
+    text: &str,
+    voice: Option<&str>,
+    format: Option<&str>,
+    filter_markdown: bool,
+) -> Result<VoiceTtsOutcome, VoiceTtsError> {
+    if text.trim().is_empty() {
+        return Err(VoiceTtsError::InvalidInput(
+            "speech text cannot be empty".to_string(),
+        ));
+    }
+    if text.chars().count() > crate::deepseek_media::DEEPSEEK_TTS_MAX_CHARS {
+        return Err(VoiceTtsError::InvalidInput(format!(
+            "speech text exceeds maximum of {} characters",
+            crate::deepseek_media::DEEPSEEK_TTS_MAX_CHARS
+        )));
+    }
+    if active_mimo_tts_ready(config) {
+        let req_format = format.unwrap_or("wav").trim();
+        let format_value = if req_format.is_empty() {
+            "wav".to_string()
+        } else {
+            crate::tools::speech::normalize_speech_format(req_format).ok_or_else(|| {
+                VoiceTtsError::InvalidInput(format!(
+                    "unsupported speech format '{req_format}' (allowed: wav, mp3, pcm16)"
+                ))
+            })?
+        };
+        let requested_voice = voice
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("mimo_default");
+        let client = crate::client::CodewhaleClient::new(config)
+            .map_err(|err| VoiceTtsError::SynthesisFailed(err.to_string()))?;
+        let response = client
+            .synthesize_speech(crate::client::SpeechSynthesisRequest {
+                model: "mimo-v2.5-tts".to_string(),
+                text: text.to_string(),
+                instruction: None,
+                audio_format: format_value,
+                voice: Some(requested_voice.to_string()),
+            })
+            .await
+            .map_err(|err| VoiceTtsError::SynthesisFailed(err.to_string()))?;
+        let content_type = match response.audio_format.as_str() {
+            "mp3" => "audio/mpeg",
+            "pcm" | "pcm16" => "audio/pcm",
+            _ => "audio/wav",
+        };
+        return Ok(VoiceTtsOutcome {
+            audio_bytes: response.audio_bytes,
+            content_type: content_type.to_string(),
+            format: response.audio_format,
+            provider: "xiaomi-mimo".to_string(),
+            model: response.model,
+            voice: response
+                .voice
+                .unwrap_or_else(|| requested_voice.to_string()),
+        });
+    }
+
+    if let Some((base_url, api_key)) = crate::deepseek_media::resolve_deepseek_config_auth(config) {
+        crate::deepseek_media::validate_deepseek_tts_inputs(
+            Some(crate::deepseek_media::DEEPSEEK_TTS_MODEL),
+            text,
+            None,
+            voice,
+            format.unwrap_or("wav"),
+        )
+        .map_err(VoiceTtsError::InvalidInput)?;
+        let outcome = crate::deepseek_media::synthesize_deepseek_bytes_with_options(
+            &base_url,
+            &api_key,
+            text,
+            voice,
+            format.unwrap_or("wav"),
+            filter_markdown,
+        )
+        .await
+        .map_err(VoiceTtsError::SynthesisFailed)?;
+        return Ok(VoiceTtsOutcome {
+            audio_bytes: outcome.audio_bytes,
+            content_type: outcome.content_type,
+            format: outcome.format,
+            provider: "deepseek".to_string(),
+            model: outcome.model,
+            voice: outcome.voice,
+        });
+    }
+
+    Err(VoiceTtsError::NoProviderAuth(
+        "voice TTS requires a configured DeepSeek or Xiaomi MiMo API key".to_string(),
+    ))
 }
 
 #[cfg(test)]
@@ -789,7 +1185,100 @@ mod tests {
 
     #[test]
     fn recorder_detection_does_not_crash() {
-        // Just verify the function runs without panicking
+        let _lock = crate::test_support::lock_test_env();
         let _ = is_available();
+    }
+
+    #[test]
+    fn explicit_deepseek_asr_choice_resolves_model() {
+        assert_eq!(
+            explicit_asr_choice("deepseek"),
+            Some(("deepseek", crate::deepseek_media::DEEPSEEK_ASR_MODEL))
+        );
+        assert_eq!(
+            explicit_asr_choice("DeepSeek-ASR"),
+            Some(("deepseek", crate::deepseek_media::DEEPSEEK_ASR_MODEL))
+        );
+    }
+
+    #[test]
+    fn wav_decoder_roundtrips_pcm16_mono_and_rejects_bad_headers() {
+        let wav = encode_wav(&[10, -250, 1234, -4096]);
+        let decoded = decode_wav_pcm16_mono(&wav).expect("valid wav");
+        assert_eq!(decoded, vec![10, -250, 1234, -4096]);
+        assert!(decode_wav_pcm16_mono(b"not-wav").is_err());
+
+        let zero_rate = encode_wav_with_rate(&[1, 2, 3], 0);
+        assert!(decode_wav_pcm16_mono(&zero_rate).is_err());
+
+        let wav_48k = encode_wav_with_rate(&vec![1000i16; 480], 48_000);
+        let resampled = decode_wav_pcm16_mono(&wav_48k).expect("48kHz wav decodes");
+        assert_eq!(resampled.len(), 160);
+    }
+
+    #[tokio::test]
+    async fn deepseek_uploaded_audio_and_tts_work_with_deepseek_config() {
+        use crate::test_support::{EnvVarGuard, lock_test_env};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/tools/asr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "request_id": "req-upload",
+                "text": "commit the slice send it",
+                "duration_ms": 950
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/tools/tts"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"RIFF_TTS".to_vec()))
+            .mount(&server)
+            .await;
+
+        let _lock = lock_test_env();
+        let _asr_env = EnvVarGuard::remove("CODEWHALE_ASR_MODEL");
+        let _groq_env = EnvVarGuard::remove("GROQ_API_KEY");
+        let _cli_source = EnvVarGuard::remove(codewhale_config::CLI_API_KEY_SOURCE_ENV);
+        let _legacy_cli_source =
+            EnvVarGuard::remove(codewhale_config::LEGACY_CLI_API_KEY_SOURCE_ENV);
+        let _cli_key = EnvVarGuard::remove(codewhale_config::CLI_API_KEY_ENV);
+        let _ds_key = EnvVarGuard::remove("DEEPSEEK_API_KEY");
+        let _ds_base = EnvVarGuard::remove("DEEPSEEK_BASE_URL");
+        let _cw_base = EnvVarGuard::remove("CODEWHALE_BASE_URL");
+        let _path = EnvVarGuard::set("PATH", "/nonexistent-voice-path");
+
+        let config: Config = toml::from_str(&format!(
+            "provider = \"deepseek\"\n\n[providers.deepseek]\napi_key = \"ds-voice-key\"\nbase_url = \"{}/v1\"\n",
+            server.uri()
+        ))
+        .expect("deepseek config parses");
+
+        assert_eq!(
+            resolve_asr_choice(&config),
+            ("deepseek".to_string(), "deepseek-asr".to_string())
+        );
+        assert!(upload_available(&config));
+        assert!(tts_available(&config));
+
+        let wav = encode_wav(&[0; 320]);
+        let outcome =
+            transcribe_uploaded_audio(&config, &wav, "audio/wav", DictateMode::Send, None)
+                .await
+                .expect("upload transcription");
+        assert_eq!(outcome.text, "commit the slice");
+        assert!(outcome.send);
+        assert!(!outcome.assisted);
+        assert_eq!(outcome.asr_kind, "deepseek");
+        assert_eq!(outcome.asr_model, "deepseek-asr");
+
+        let tts = synthesize_voice_tts(&config, "All tests passed", Some("tide"), Some("wav"))
+            .await
+            .expect("voice tts");
+        assert_eq!(tts.audio_bytes, b"RIFF_TTS");
+        assert_eq!(tts.provider, "deepseek");
+        assert_eq!(tts.voice, "tide");
     }
 }

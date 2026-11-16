@@ -1,24 +1,27 @@
 # 语音、翻译与视频模型
 
 > 英文原文：[MEDIA_MODELS.md](../MEDIA_MODELS.md)。
-> 源码与厂商官方文档核查：2026-10-06。下表区分现有能力与候选，不宣称候选已接入或经过真实服务验证。
+> 源码与厂商官方文档核查：2026-11-13。下表区分现有能力与候选，不宣称候选已接入或经过真实服务验证。
 
 ## 当前源码已有能力
 
 | 任务 | Codewhale 入口 | 限制 |
 | --- | --- | --- |
-| 文本转语音（TTS） | `speech` 工具；`codewhale --provider xiaomi-mimo speech "你好，Codewhale"`；CLI 别名 `tts` | 客户端要求 Xiaomi MiMo。支持 `mimo-v2.5-tts`、`mimo-v2.5-tts-voicedesign`、`mimo-v2.5-tts-voiceclone` 及旧 `mimo-v2-tts`。设计/克隆需对应输入。 |
-| 语音转文字（STT/ASR） | 终端语音输入、Runtime `/v1/voice/*`；GPUI 复用该路径 | 显式 `CODEWHALE_ASR_MODEL` 优先，否则检测本地 Whisper → Groq → 配置的提供商。本地 `tiny`；Groq `whisper-large-v3-turbo`；提供商 `mimo-v2.5-asr`。聊天端点不一定支持 ASR。 |
+| 文本转语音（TTS） | `speech` 工具；`codewhale --provider xiaomi-mimo speech "你好，Codewhale"`；`codewhale --provider deepseek speech "你好，Codewhale"`；CLI 别名 `tts`；Runtime `POST /v1/voice/tts` | 支持 Xiaomi MiMo（`mimo-v2.5-tts`、`mimo-v2.5-tts-voicedesign`、`mimo-v2.5-tts-voiceclone` 及旧 `mimo-v2-tts`）与 DeepSeek Tools `/v1/tools/tts`（`deepseek-tts`，音色 `stella` / `tide`，格式 `wav` / `pcm`）。音色设计与克隆仍仅支持 Xiaomi MiMo，并需对应输入。 |
+| 语音转文字（STT/ASR） | 终端语音输入、Runtime `/v1/voice/*`（含上传音频 `POST /v1/voice/transcribe`，WAV/OGG）；GPUI 复用该路径 | 显式 `CODEWHALE_ASR_MODEL` 优先，否则检测本地 Whisper → Groq → 当前激活 DeepSeek（`/v1/tools/asr`，`deepseek-asr`）→ 配置的提供商（`mimo-v2.5-asr`）。本地 `tiny`；Groq `whisper-large-v3-turbo`；DeepSeek `deepseek-asr`。聊天端点不一定支持 ASR。 |
 | 视频理解 | 媒体附件/读取及适用提供商能力 | 读取视频、翻译字幕与生成视频是不同任务。 |
 | 视频生成 | 本次核查未发现一等生成工具/客户端 | 远程目录列出模型不等于有可执行生成路由。 |
 
 `CODEWHALE_ASR_MODEL=local-whisper` 显式选择离线识别，需先安装本地程序/模型。
-`groq` 需 `GROQ_API_KEY`；`mimo` 使用当前配置的提供商端点。没有配置文件 ASR
-选择器或任意模型 ID 覆盖。选定本地/Groq 后失败，不会静默上传给另一提供商；
-把变量设为 Qwen/Index 模型名也不会安装后端。
+`groq` 需 `GROQ_API_KEY`；`deepseek` 使用 DeepSeek Tools `/v1/tools/asr`（`deepseek-asr`）；
+`mimo` 使用当前配置的提供商端点。未设置 `CODEWHALE_ASR_MODEL` 且本机无本地 Whisper
+或 `GROQ_API_KEY` 时，当前激活的 `deepseek` 或 `deepseek-anthropic` 提供商会自动选择
+`deepseek-asr`。没有配置文件 ASR 选择器或任意模型 ID 覆盖。选定本地/Groq/DeepSeek 后失败，
+不会静默上传给另一提供商；把变量设为 Qwen/Index 模型名也不会安装后端。
 
 源码 owner：[语音工具](../../crates/engine/src/tools/speech.rs)、
-[合成客户端](../../crates/engine/src/client.rs)、[语音选择](../../crates/engine/src/voice.rs)、
+[合成客户端](../../crates/engine/src/client.rs)、[DeepSeek 媒体客户端](../../crates/engine/src/deepseek_media.rs)、
+[语音选择](../../crates/engine/src/voice.rs)、
 [Runtime 语音](../../crates/app-server/src/runtime_api/voice.rs)。真实麦克风、合成请求及完整
 用户语音旅程仍需独立验收。
 

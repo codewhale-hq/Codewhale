@@ -58,6 +58,7 @@ pub fn clear(app: &mut App) -> CommandResult {
             model: app.model.clone(),
             workspace: app.workspace.clone(),
             mode: app.mode,
+            agent_preset: app.agent_preset(),
         },
     )
 }
@@ -138,6 +139,8 @@ pub(crate) fn reset_conversation_state(app: &mut App) -> bool {
     // "approve for session" grants (UX-8).
     app.approval_session_denied.clear();
     app.approval_session_approved.clear();
+    app.auto_review_blocked_receipts.clear();
+    app.pending_auto_review_retry = None;
     // Nor this one's child-agent approval cards, footer rows, or web-mirror
     // copies: the reset finalizes those children engine-side.
     crate::tui::pending_requests::clear_all(app);

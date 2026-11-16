@@ -102,6 +102,7 @@ pub enum SessionAction {
     NewSession {
         sync: SessionSyncPayload,
         force: bool,
+        draft: Option<String>,
     },
     SendMessage(String),
     RemoteControl(SessionRemoteControlAction),
@@ -128,6 +129,9 @@ pub type SessionCommandResult = CommandResult<SessionAction>;
 pub enum ConfigAction {
     /// A permission rule was safely removed; the host reloads active rules.
     PermissionRulesChanged,
+    ApproveAutoReviewRetry {
+        target: String,
+    },
     // Auth flows (no host observation needed).
     OpenModelConnectionSetup,
     StartAccountConnect,
@@ -141,6 +145,9 @@ pub enum ConfigAction {
     // Views and pickers.
     OpenConfigView,
     OpenModePicker,
+    SetConversationMode {
+        id: String,
+    },
     OpenThemePicker,
     OpenStatusPicker,
     OpenProviderPicker,
@@ -170,6 +177,9 @@ pub enum ConfigAction {
     SearchProviderChanged(crate::config::CommandSearchProvider),
     PromptSuggestionChanged {
         enabled: bool,
+    },
+    AutoReviewReviewerModelChanged {
+        reviewer_model: Option<String>,
     },
     NotificationChanged(crate::config::CommandNotificationUpdate),
 }

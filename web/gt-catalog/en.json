@@ -2227,7 +2227,7 @@
             "rows": [
               [
                 "Never sent",
-                "Prompts, responses, code, diffs, file contents, file or repository or branch names, paths, model ids, MCP server names, API keys or tokens, error message text, keystrokes, or any per-turn or per-tool timeline."
+                "Prompts, responses, code, diffs, file contents, file or repository or branch names, paths, model ids outside the bundled public catalog, MCP server names, API keys or tokens, error message text, keystrokes, or any per-turn or per-tool timeline."
               ],
               [
                 "Sent while on",
@@ -2235,7 +2235,7 @@
               ],
               [
                 "Where it goes",
-                "`https://telemetry.codewhale.net/v1/telemetry`, a first-party service whose source is in the repository. It stores no IP address, country, or location, keeps no request logs, and holds data for three months."
+                "`https://telemetry.codewhale.net/v1/telemetry`, a first-party service whose source is in the repository. It stores no IP address, country, or location, keeps no request logs, and holds raw data for three months; only aggregate daily totals with no install id are kept longer."
               ],
               [
                 "PostHog",

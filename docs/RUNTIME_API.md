@@ -1195,6 +1195,63 @@ steer or interrupt an active turn, and resolve normal tool approvals through
 do not expose it directly to another device or public network until Runtime has
 a TLS or verified transport boundary.
 
+#### Remote pairing grants (DSH remote service)
+
+Plugins granted the `remote` host service can request conversation-scoped
+pairings via Engine `dsh_remote`. Runtime exposes host management and loopback
+redemption over existing HTTP/SSE transport (no separate listener or WebSocket):
+
+- `GET /v1/dsh/remote/pairings` — requires the master `Authorization: Bearer`
+  header (never mobile/web cookies or device Watch/Drive tokens; returns `409`
+  if auth is off). Returns a JSON array with `grant`, `plugin_id`,
+  `plugin_name` (from the reviewed record), `session_id`, `state`
+  (`"awaiting_host"` or `"paired"`), `plugin_label`, `client_label`, and
+  `expires_in_seconds`. No pairing secret or client token is ever included.
+- `POST /v1/dsh/remote/pairings/{grant}/present` — master bearer only. Mints
+  and returns `{ "grant", "url", "expires_in_seconds" }` (`Cache-Control: no-store`)
+  where `url` is `http://<bind>/__codewhale/mobile/pair/<secret>`. Calling this
+  again replaces and invalidates the prior link; callers must only invoke it on
+  explicit human action, never by polling. Returns `404` with no detail when
+  unknown or already paired, and `409 Conflict` without minting a secret when
+  mobile control is off or `session_id` is not an active Runtime HTTP thread
+  (for example a terminal session or archived thread).
+- `DELETE /v1/dsh/remote/pairings/{grant}` — master bearer only. Ends a waiting
+  pairing or paired device session, returning `204 No Content` identically for
+  known and unknown grants.
+- `GET /__codewhale/mobile/pair/{secret}` — unauthenticated single-use loopback
+  redemption (`403` for non-loopback peers ignoring `X-Forwarded-For`; uniform
+  `401` fixed text for unknown, expired, replayed, withdrawn, or malformed
+  links). Issues a grant-backed mobile session (`HttpOnly; SameSite=Strict`
+  cookie clamped to the grant TTL plus origin-bound fragment proof and stream
+  ticket) without ever exposing the Engine client token or pairing secret in
+  cookies, fragments, URLs, response bodies, or logs.
+
+Grant-backed mobile sessions are validated against the Engine on every HTTP
+request and every SSE stream ticket, drop immediately (`401`) if withdrawn,
+revoked, expired, or if the bound conversation is archived/deleted (and terminate
+any already-open `GET /v1/threads/{id}/events` SSE stream cleanly with
+`stream.end { "reason": "remote_access_revoked", "retryable": false }` without
+delivering post-revocation events), and are strictly restricted to reading and
+sending/steering/interrupting turns in their single bound conversation
+(`GET /v1/threads` and `GET /v1/threads/summary` are filtered to that thread,
+`GET /v1/threads/{id}`, `GET /v1/threads/{id}/events`,
+`POST /v1/threads/{id}/turns`, `/steer`, `/interrupt`, and
+`POST /__codewhale/mobile/stream-ticket`). On `POST /v1/threads/{id}/turns`,
+paired device sessions cannot override `mode`, `permission_posture`,
+`allowed_tools`, `dynamic_tools`, `model`, `model_provider`,
+`model_provider_id`, `account_model_owner`, `profile_constitution`,
+`reasoning_effort`, `max_output_tokens`, or `environment_id` (`403 Forbidden`),
+nor pass `true` for `allow_shell`, `trust_mode`, or `auto_approve` (`403`);
+explicit `false` values on those three boolean flags are normalized to `None`
+so the conversation's existing posture is preserved. Foreign threads, thread
+creation, settings/secrets/terminals/files, pairing routes, and approval routes
+(`POST /v1/approvals/{approval_id}`) return `403 Forbidden`: approval cards are
+answered on the computer only.
+
+When UI clients render `plugin_label` or `client_label`, they MUST present them
+as quoted third-party text inside a directional isolate (such as `<bdi>`) beside
+`plugin_name`, and never as a heading or host-authored prose.
+
 ### Endpoints
 
 **Health**
@@ -1882,6 +1939,28 @@ restore them). Grants are stored in the Runtime data directory
 suspended, and matching calls prompt again, until an authenticated client
 resumes the thread. A grant store that cannot be read holds no grants, so every
 call prompts. A forced (non-bypassable) prompt is never answered by a grant.
+
+**Auto-Review blocks and one-use retry grants**
+- `GET /v1/threads/{id}/auto-review/blocks` returns `{ thread_id, blocks[] }`
+  listing recorded Auto-Review blocks on the thread (`receipt_id`,
+  `call_digest`, `tool_id`, `tool_name`, `action_summary`, `rule`, `reason`,
+  `gate`, `verdict`, `approved`, `approvable`).
+- `POST /v1/threads/{id}/auto-review/approve` with body
+  `{ "target": "<receipt_id_or_call_digest>", "client"?: "desktop"|"tui"|"web"|"phone"|"acp" }`
+  requires an attached owner runtime and an owner caller (`403 owner_required`
+  otherwise; `"desktop"`/`"phone"` web/cookie callers are also rejected), requires
+  the thread to remain in Auto-Review (`409 not_in_auto_review`), returns `404`
+  when no matching block exists or `409` when already approved or not
+  approvable, and otherwise mints one exact-call retry grant bound to
+  `(tool_name, call_digest)` returning `{ ok, thread_id, grant }` and emitting
+  `auto_review.retry_approved`. The retried call consumes the grant on one use
+  and still runs every non-Auto-Review gate (with `person_approved_retry` on
+  guardian review so high/critical risk may pass if guardian allows, while an
+  explicit guardian deny or failure still blocks). Child agents and extension
+  calls cannot create, read, or consume retry grants. If Auto-Review trips its
+  interactive thresholds (3 consecutive blocks, 20 total blocks, or 3
+  consecutive unavailable checks), it switches thread `permission_posture` to
+  `ask` and emits `auto_review.paused` + `thread.updated`.
 
 **User input**
 - `POST /v1/user-input/{thread_id}/{input_id}` with body
@@ -3035,32 +3114,44 @@ answers `200` with `ok: false` and a machine-readable `reason`
 (`no_server`, `lsp_disabled`, `lsp_error`); malformed input is a 400 and a
 missing file a 404.
 
-**Voice** (host dictation, APPS-98)
-- `GET /v1/voice` — capability: `available`, detected `recorder` command,
-  resolved `asr` `{kind, model}`, `modes`, `send_phrases`,
-  `max_record_seconds`
+**Voice** (host dictation & uploaded voice / TTS, CW-8218)
+- `GET /v1/voice` — capability: `available` (host mic recorder),
+  `upload_available`, `tts_available`, detected `recorder` command, resolved
+  `asr` `{kind, model}`, `modes`, `send_phrases`, `max_record_seconds`,
+  `max_upload_bytes`, `tts_voices`
 - `POST /v1/voice/dictate` — record then transcribe → `{ ok, text }`
 - `POST /v1/voice/send` — same capture with the "send it" / 发送/發送
   suffix contract: `send: true` tells the client to submit (empty `text`
   with `send: true` means submit the client's current draft)
 - `POST /v1/voice/control` `{ "composer": "draft text" }` — assisted
   dictation that shows the model the composer text; `assisted: false` in the
-  response means a free ASR backend (local whisper/Groq) handled the audio
-  and the composer context was never seen
+  response means local whisper, Groq, or DeepSeek ASR handled the audio and the
+  composer context was never seen
+- `POST /v1/voice/transcribe` `{ "audio_base64", "mime_type", "mode",
+  "composer", "language" }` — transcribe client-uploaded WAV/OGG audio without
+  requiring a host microphone (`CODEWHALE_DISABLE_VOICE=1` does not block
+  uploaded audio)
+- `POST /v1/voice/tts` `{ "text", "voice", "voice_id", "format",
+  "filter_markdown" }` — synthesize speech audio via the active Xiaomi MiMo or
+  configured DeepSeek Tools TTS route and answer JSON `{ ok: true, mime_type,
+  audio_base64, voice_id, provider, model, format }` or `{ ok: false, reason,
+  message }`
 
-The runtime owns the host microphone and the ASR dispatch — the same
-implementation the TUI's `/voice` commands run, headless. Recording is one
-blocking capture per host (requests serialize; the loser gets
-`ok:false`/`no_speech`, not a fought-over device). Provider ASR resolves its
-key lazily so local-whisper and Groq paths work without provider auth.
-Interim and final transcription use the selected ASR backend. If local whisper
-or Groq fails, the error stays on that backend: the runtime never retries the
-recording or composer text with the active model provider. Select provider ASR
-explicitly to use that route.
+The runtime owns the host microphone, uploaded audio decoding, TTS synthesis,
+and ASR dispatch — the same implementation the TUI's `/voice` commands run,
+headless. Recording is one blocking capture per host (requests serialize; the
+loser gets `ok:false`/`no_speech`, not a fought-over device). Provider ASR
+resolves its key lazily so local-whisper and Groq paths work without provider
+auth; uploaded audio and TTS support DeepSeek `/v1/tools/asr` and
+`/v1/tools/tts` when configured. Interim and final transcription use the
+selected ASR backend. If local whisper or Groq fails, the error stays on that
+backend: the runtime never retries the recording or composer text with the
+active model provider. Select provider ASR explicitly to use that route.
 Failure is data: `no_recorder`, `no_speech`, `no_provider_auth`,
-`transcription_failed`. `CODEWHALE_DISABLE_VOICE=1` is an operator
-kill-switch — a headless `serve --http` host reports `available: false` and
-every dictate call fails closed.
+`invalid_input`, `transcription_failed`, `synthesis_failed`.
+`CODEWHALE_DISABLE_VOICE=1` is an operator kill-switch for host microphone
+recording (`available: false`), while uploaded audio continues to follow
+`upload_available`.
 
 ## Provider and model selection
 
@@ -3638,6 +3729,7 @@ data: {"schema_version":1,"event":"stream.end","kind":"stream.end","thread_id":"
 | `replay_failed` | The durable history read that feeds the opening replay failed, including a replay worker crash after the first cursor | `true` |
 | `catch_up_failed` | After broadcast lag, the durable re-read from the stream's cursor could not be opened or failed | `true` |
 | `runtime_shutdown` | The Runtime API server is stopping (SIGINT, SIGTERM, or SIGHUP; Ctrl+C or Ctrl+Break on Windows). Open streams get this frame within a bounded drain window before the process exits | `true` |
+| `remote_access_revoked` | A grant-backed paired remote device session ended because the pairing was withdrawn, the plugin was revoked, the session TTL expired, or the bound conversation was archived/deleted | `false` |
 
 Every `200` response carries `x-codewhale-stream-end: 1`. With that header, an
 EOF **without** `stream.end` means the connection or the Runtime process died

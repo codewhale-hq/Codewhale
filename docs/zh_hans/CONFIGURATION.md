@@ -1290,7 +1290,7 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
   **这是纵深防御，不是安全边界。** 它无法阻止指向被拒绝文件的硬链接、已经复制进工作区的机密、间接读取（`ssh-agent`、`security find-generic-password`、`aws sts …`）、`danger-full-access` 下 shell 命令的读取、MCP 服务器或其他未被包裹的子进程的读取，也无法阻止对*已经被*读取的内容的外泄。真正起作用的仍应是最小权限的凭据和短期令牌。
 
-- `permissions.toml`(同级文件，可选)：与 `config.toml` 相邻加载的类型化权限规则记录，例如 `~/.codewhale/permissions.toml`。这个活动用户文件是今天唯一的权限规则来源；项目配置覆盖不加载项目本地的 `permissions.toml`。规则的 `workspace` 可选字段是它的仓库作用域，不是第二个来源。手工编写的 `[[rules]]` 条目接受 `tool`、可选 `command` 或 `path`、可选绝对 `workspace`、可选 `command_exact = true` 和可选 `action = "deny" | "ask" | "allow"`；省略 `action` 默认 `"ask"`。`workspace` 把规则限制到该仓库，而 `command_exact = true` 把命令规则从历史的 arity 感知前缀匹配改为完整命令匹配。`deny` 在基于模式的审批处理之前阻止匹配调用，`allow` 跳过匹配调用的审批，`ask` 只在可以提示的模式中强制审批。在 TUI 自动批准路径之外，`approval_policy = "never"` 下匹配的 `ask` 规则被拒绝，因为没有提示可显示。在 Full Access / 自动批准会话中，`ask` 规则不会将会话降级为提示或阻断；显式 `deny` 规则仍按当前执行策略逻辑阻断。
+- `permissions.toml`(同级文件，可选)：与 `config.toml` 相邻加载的类型化权限规则记录，例如 `~/.codewhale/permissions.toml`。这个活动用户文件是今天唯一的权限规则来源；项目配置覆盖不加载项目本地的 `permissions.toml`。规则的 `workspace` 可选字段是它的仓库作用域，不是第二个来源。手工编写的 `[[rules]]` 条目接受 `tool`、可选 `command` 或 `path`、可选绝对 `workspace`、可选 `command_exact = true` 和可选 `action = "deny" | "ask" | "allow"`；省略 `action` 默认 `"ask"`。`workspace` 把规则限制到该仓库，而 `command_exact = true` 把命令规则从历史的 arity 感知前缀匹配改为完整命令匹配。`deny` 在基于模式的审批处理之前阻止匹配调用，`allow` 跳过匹配调用的审批，`ask` 只在可以提示的模式中强制审批。在 Auto-Review 中，宽泛的带类型 `allow` 规则（不带 `command` 的 `exec_shell`/`bash`、`*`/`python*`/`npm run *` 等通配命令、`python`/`node`/`npm run`/`cargo run` 等脚本运行器前缀、`agent`/`subagent`/`spawn_agent`、`*`，以及不带 `path` 的写文件/编辑/补丁规则）会在不修改 `permissions.toml` 的情况下暂停，并在离开 Auto-Review 时自动恢复；进入 Auto-Review 且存在被暂停的宽泛允许规则时会显示一行提示。窄范围带类型 `allow`（所有静态展开片段均无包装或标志参数的 `exec_shell`/`bash` 命令，或非智能体/非扩展且文件工具带显式 `path` 的精确工具规则）在未命中安全底线、软规则、钩子/扩展拦截或 `auto_review.review_all_shell` 时跳过 Auto-Review 审查模型。在 TUI 自动批准路径之外，`approval_policy = "never"` 下匹配的 `ask` 规则被拒绝，因为没有提示可显示。在 Full Access / 自动批准会话中，`ask` 规则不会将会话降级为提示或阻断；显式 `deny` 规则仍按当前执行策略逻辑阻断。
 
   在受支持的审批卡片中，按 `S` 允许该请求一次，并把精确的 `action = "ask"` 规则追加到这个文件。对于符合条件的安全请求，选择**始终允许本仓库中的这条确切规则**(快捷键 `P`)来追加带当前绝对 `workspace` 作用域的 `action = "allow"` 规则。记住的 shell 授予设置 `command_exact = true`，所以之后带额外参数的命令不会继承该授予。文件和补丁授予保留现有验证路径产生的精确工作区相对路径。受支持的保存刻意很窄：`exec_shell` 存储确切批准的命令字符串；`write_file` 和 `edit_file` 存储确切工作区相对文件路径；`apply_patch` 为 apply-patch 预检验证过的每个触碰文件存储一条确切的工作区相对 `path` 规则。现有 exec 命令匹配对手工编写的前缀规则保持 arity 感知；审批卡片允许授予使用完整命令匹配。文件路径规范化为运行时匹配使用的同一工作区相对形式。
 
@@ -1315,9 +1315,16 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
   action = "session.compact"
   ```
 
-- `[auto_review]`(表，可选)：工具调用审查策略——确定性底线加模型守卫层。这一层位于现有权限档位之上；它可以拦住或阻断工具调用，但不是自动推送、自动合并或托管审查服务。先检查阻断规则，然后是内置安全底线，再是允许规则。在 Ask 中，安全拦阻打开审批，会话授权或 allow 规则都无法应答它；在 Auto-Review 或非交互 `never` 档位中，它作为硬阻断失败关闭。Full Access 跳过内置底线。即使 allow 规则匹配，安全底线仍覆盖类似发布的动作、破坏性的后台/无头动作，以及请求体携带凭据文件或名称表明是机密的变量、或读取由这两者或 `env`/`printenv` 送入的 stdin 的 `curl`/`wget` 上传；超过 64 KiB 或 4,096 个词、且文本中任意位置含有 `curl` 或 `wget` 的 shell 命令、shell 输入或校验器，以及嵌套过深而无法读取的调用，同样会被拦住。在 Full Access 之外，它还会在每个档位拒绝含有隐藏 Unicode 字符（双向控制符、零宽及其他不可见字符、标签字符、孤立的变体选择符，以及 shell 输入中 ASCII 控制键之外的终端控制字符）的 shell 命令、shell 输入或校验器，并写出该码位及其位置。
+- `[auto_review]`(表，可选)：工具调用审查策略——确定性底线加模型守卫层。这一层位于现有权限档位之上；它可以拦住或阻断工具调用，但不是自动推送、自动合并或托管审查服务。`auto_review.reviewer_model`(字符串，可选，亦可通过 `/config auto_review.reviewer_model <model|default> [--save]` 设置)指定守卫模型，必须留在当前会话的提供商路由内；未设置时会为主要提供商路由自动选择有能力的目录模型或回退到当前会话模型，从不跨越提供商或账户。`auto_review.environment`（字符串数组，可选，仅限用户与受管配置）记录受信任的环境范围说明（例如受信任的仓库远端、账户、主机或存储桶），在守卫审查推送与出站网络请求时作为 `environment` 字段传入上下文；条目不能为空白且不能包含控制字符，项目级 `.codewhale/config.toml` 不能设置或修改 `[auto_review]` 或 `auto_review.environment`（遇到项目级 `[auto_review]` 表会带警告忽略）。评估顺序为：先检查阻断规则，然后是内置安全底线，再是 Auto-Review 命名软规则（`force-push`、`git-tag`、`deploy-branch`、`git-discard`、`infra-destroy`、`ci-or-pr-bypass`、`print-credentials`、`secret-commit`、`deploy-wrapper`）和受保护指令文件修改，最后才检查允许规则。在 Ask 与 Accept Edits 中，安全拦阻打开审批，会话授权或 allow 规则都无法应答它；在 Auto-Review 或非交互 `never` 档位中，它作为硬阻断失败关闭。Full Access 跳过内置底线。在 Auto-Review 下，包发布与发行版发布（如 `npm publish`、`cargo publish`、`gh release` 及发布工具）、破坏性的后台/无头工作、检测到的凭据上传与隐藏 Unicode 仍由内置安全底线硬阻断；仓库远端 `git push` 在 `owner_present` 为真的交互回合交由守卫结合你的请求和 `auto_review.environment` 审查，在无人值守回合（`!owner_present`）由安全底线硬阻断。命名软规则在 `allow` 规则之前对常见的 git/shell/部署形态保持拦截，并在阻断原因与回执中写出规则名称，需要用户对当前动作提出具体请求才能放行。在 Full Access 之外，安全检查还会在每个档位拒绝含有隐藏 Unicode 字符（双向控制符、零宽及其他不可见字符、标签字符、孤立变体选择符及 shell 输入中 ASCII 控制键之外的终端控制字符）的 shell 命令、shell 输入或校验器，并写出码位与位置。
 
   ```toml
+  [auto_review]
+  reviewer_model = "claude-sonnet-4-6"
+  environment = [
+    "trusted git remote: github.com/org/repo",
+    "trusted staging API: https://staging.example.internal",
+  ]
+
   [[auto_review.allow]]
   id = "read-only-inspection"
   action_kind = "read"
@@ -1329,9 +1336,10 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
   reason = "Release and publish actions require maintainer review."
   ```
 
-  规则匹配器是精确 `tool` 和/或 `action_kind`。至少需要一个匹配器。`action_kind` 接受六个决策相关种类 `read`、`write`、`shell`、`external`、`publish` 和 `destructive`。无效名称让配置验证失败，而不是静默扩大到另一个策略类。在阻断规则中，旧名称保持保守兼容别名：`network`、`git`、`mcp_action`、`browser` 和 `unknown` 映射到 `external`；`secret` 映射到 `destructive`；`mcp_read` 映射到 `read`。允许规则中退役的窄种类验证失败，而不是扩大到更宽类别。退役的 `text_contains` 匹配器同样验证失败，而不是静默扩大旧的意图依赖规则。交互式 Auto-Review 中的回退拦阻升级为一次无状态守卫请求。请求包含确切被拦调用和确定性观察作为独立 JSON 字段。对话历史、技能指令、附加文件内容和其它展开的模型上下文被排除。守卫不推断用户意图，不算授权分数。它不暴露工具，返回风险级别、允许/拒绝和理由。高或关键风险即使模型说允许也不能自动运行。过大的确切调用被拒绝而不是截断。只做一次审查请求；不完整或格式错误的输出、超时、取消、provider 失败或空理由都失败关闭。确定性底线从不被模型审查，无头适配器使用仅确定性层级。固定的 Codex、Kimi 和 DeepSeek 源边界从[权限档位](MODES.md#权限姿态)链接。审查结果发出 `tool.auto_review` 审计事件，`gate = "guardian"`。
+  规则匹配器是精确 `tool` 和/或 `action_kind`。至少需要一个匹配器。`action_kind` 接受六个决策相关种类 `read`、`write`、`shell`、`external`、`publish` 和 `destructive`。无效名称让配置验证失败，而不是静默扩大到另一个策略类。在 Auto-Review 中，宽泛的 `[[auto_review.allow]]` 规则——即 `action_kind` 归一化为 `shell`、`external`、`write`、`destructive` 或 `publish`（且未指定非 shell/非智能体工具），或 `tool` 匹配 `exec_shell`、`bash`、`agent`、`*`——会被带警告忽略，仅保留具体的非 shell/非智能体工具允许规则。设置 `auto_review.review_all_shell = true`（仅限用户与受管配置，项目级 `.codewhale/config.toml` 会忽略）可在底线、阻断、命名软规则与扩展拦截之后，将每一条 shell 命令（包括普通只读命令与窄带类型允许命令）送往 Auto-Review 审查模型。在阻断规则中，旧名称保持保守兼容别名：`network`、`git`、`mcp_action`、`browser` 和 `unknown` 映射到 `external`；`secret` 映射到 `destructive`；`mcp_read` 映射到 `read`。允许规则中退役的窄种类验证失败，而不是扩大到更宽类别。退役的 `text_contains` 匹配器同样验证失败，而不是静默扩大旧的意图依赖规则。Auto-Review 中的回退拦阻升级为一次 64 KiB 预算内的无状态守卫请求，作为不受信任证据的独立 JSON 字段传入：由 Rust 记录的交互式用户输入(`person_messages`，最新在前)、已批准计划(`approved_plan`)、本回合此前经脱敏的非只读动作(`recent_actions`)、会话启动时固定的用户级与仓库级指令(附哈希，回合途中不重读)、确定性观察以及确切被拦调用(保留 `description`)。工具输出、助手文本、附加 `@` 文件内容、技能正文与非所有者/自动生成的提示均排除在 `person_messages` 之外。高或严重风险即使模型说允许也不能自动运行；过大的当前请求或确切调用直接返回不可用并失败关闭而不是截断。只做一次审查请求；不完整或格式错误的输出、超时、取消、provider 失败或空理由都失败关闭。确定性底线从不被模型审查，无头适配器使用仅确定性层级。固定的 Codex、Kimi 和 DeepSeek 源边界从[权限档位](MODES.md#权限姿态)链接。审查结果发出 `tool.auto_review` 审计事件(`gate = "guardian"`，并记录 `reviewer_model`)，对话记录回执也会显示解析出的审查模型。
 
   Auto-Review 决策在启用工具审计日志时发出 `tool.auto_review` 审计事件，`gate = "deterministic"`。未来的 PreToolUse/PostToolUse hooks 可以在这层周围添加观察者输入，但配置的 Auto-Review 策略在工具调用被允许继续之前评估。
+  在受管配置的 `[auto_review]` 下设置 `disabled = true` 可关闭 Auto-Review：`Shift+Tab` 会跳过 Auto-Review，且 `--permission-mode auto-review`、`/auto` 和 `approval_policy = "auto"` 都会被拒绝。受管 `[auto_review]` 表会整体替换用户的 `[auto_review]` 表，而不是逐键合并。
 
 - `managed_config_path`(字符串，可选)：用户/环境配置之后加载的受管配置文件。
 

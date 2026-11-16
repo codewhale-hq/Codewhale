@@ -12,6 +12,7 @@ use super::super::dsh_broker::{BrokerActTool, BrokerContext, TABLE, TestGrants};
 use super::super::protocol::{self, DshBrokerParams, RpcErrorWire, error_code};
 use super::super::supervisor::{HostEvents, HostRequestContext};
 use super::super::test_support::{FixturePlugins, fake_authority, node_for_tests, plugin_id};
+use super::super::tier::HostCohort;
 use super::super::{Events, ExtensionHostOptions, TestManagerGuard};
 use super::*;
 use crate::runtime_threads::manager::{
@@ -165,7 +166,7 @@ fn seam(plugin: &str) -> Seam {
         let mut registry = manager.shared.registry.lock().unwrap();
         let owner = registry
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 plugin,
                 "Reviewed Name",
                 Some(fake_authority(plugin)),
@@ -214,7 +215,7 @@ impl Seam {
             .shared
             .core_calls
             .begin(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 HOST_GENERATION,
                 &self.owner,
                 "call-1",
@@ -245,7 +246,7 @@ impl Seam {
             .serve_broker_in(
                 TABLE,
                 &self.manager.shared,
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 HOST_GENERATION,
                 DshBrokerParams {
                     owner: self.owner.clone(),
@@ -1095,7 +1096,7 @@ async fn a_faulted_plugin_loses_its_pairings_and_clients() {
 
     Events {
         shared: Arc::downgrade(&s.manager.shared),
-        tier: HostTier::Plugin,
+        cohort: HostCohort::reviewed(),
         generation: HOST_GENERATION,
     }
     .faulted(&protocol::FaultedParams {
@@ -1131,7 +1132,7 @@ async fn a_host_exit_ends_its_plugins_pairings_and_clients() {
         .registry
         .lock()
         .unwrap()
-        .host_exited(HostTier::Plugin, "fixture exit");
+        .host_exited(HostCohort::reviewed(), "fixture exit");
 
     assert!(
         s.manager

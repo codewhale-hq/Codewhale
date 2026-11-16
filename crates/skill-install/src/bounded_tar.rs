@@ -251,6 +251,20 @@ pub mod test_archives {
         }
         finish(archive)
     }
+
+    pub fn archive_from_entries(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut archive = builder();
+        for &(path, body) in entries {
+            add(
+                &mut archive,
+                tar::EntryType::Regular,
+                path,
+                body.len() as u64,
+                body,
+            );
+        }
+        finish(archive)
+    }
 }
 
 #[cfg(test)]

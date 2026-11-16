@@ -12,13 +12,14 @@ import { credentialsAdapter } from './network.ts'
 import { settingsAdapter } from './settings.ts'
 import { pluginManagerAdapter, deepseekAccountAdapter } from './catalog.ts'
 import { terminalAdapter } from './terminal.ts'
+export { BUILTIN_DSH_ADAPTERS } from './plugin-manager.ts'
 
 export interface AdapterHost {
   readonly tier: HostTier
   readonly rpc: RpcPeer
   ownerOf(ctx: unknown): OwnerRecord | undefined
   liveInvocation(ctx: unknown): ToolInvocation | undefined
-  broker(ctx: unknown, service: DshService, method: string, input: unknown): Promise<unknown>
+  broker(ctx: unknown, service: DshService, method: string, input: unknown, signal?: AbortSignal): Promise<unknown>
   log(level: 'info' | 'warn' | 'error', message: string, owner?: OwnerRecord): void
 }
 

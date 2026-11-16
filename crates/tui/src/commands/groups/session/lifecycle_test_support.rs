@@ -32,6 +32,7 @@ pub(crate) struct CannedLifecycle {
     pub save_paths: Vec<Option<String>>,
     pub fork_sources: Vec<String>,
     pub fresh_forces: Vec<bool>,
+    pub fresh_modes: Vec<Option<String>>,
     pub load_paths: Vec<String>,
     pub picker_calls: Vec<Option<String>>,
     pub archive_calls: Vec<(String, bool)>,
@@ -58,6 +59,7 @@ impl Default for CannedLifecycle {
             save_paths: Vec::new(),
             fork_sources: Vec::new(),
             fresh_forces: Vec::new(),
+            fresh_modes: Vec::new(),
             load_paths: Vec::new(),
             picker_calls: Vec::new(),
             archive_calls: Vec::new(),
@@ -74,6 +76,7 @@ pub(crate) fn sync_payload(session_id: &str) -> SessionSyncPayload {
         model: "test-model".to_string(),
         workspace: PathBuf::from("/workspace"),
         mode: codewhale_command_contract::types::CommandMode::Agent,
+        agent_preset: None,
     }
 }
 
@@ -107,8 +110,13 @@ impl CommandSessionLifecycleContext for CannedLifecycle {
         self.fork_sources.push(id.to_string());
         self.fork_from.clone()
     }
-    fn fresh_session(&mut self, force: bool) -> Result<SessionNewReceipt, String> {
+    fn fresh_session(
+        &mut self,
+        force: bool,
+        conversation_mode: Option<&str>,
+    ) -> Result<SessionNewReceipt, String> {
         self.fresh_forces.push(force);
+        self.fresh_modes.push(conversation_mode.map(str::to_string));
         self.fresh.clone()
     }
     fn load_session(&mut self, path: &str) -> Result<PathBuf, String> {

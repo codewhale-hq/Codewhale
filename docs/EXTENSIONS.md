@@ -494,12 +494,14 @@ shared process, and resolve relative paths against `exec.workspace` yourself.
 Reading a workspace file is your code's own filesystem access, under the host's
 sandbox, not something the core checks per file.
 
-`dataDir` is `~/.codewhale/extension-host/data/plugins/<name>-<id>`, created by
+`dataDir` is `~/.codewhale/extension-host/data/plugins/<name>-<id>` for plugins you reviewed,
+or `~/.codewhale/extension-host/data-agent/<digest>/plugins/<name>-<id>` for plugins the agent approved
+(where `<digest>` is a 128-bit hex digest of the normalized project path), created by
 Codewhale (mode 0700 on Unix) before the plugin activates, and the same
 directory for every generation and every entry of that plugin, so it keeps
 files across restarts and updates. It sits inside the host's one writable
 root, which is where the sandbox allows writes. It is not a boundary between
-plugins: they share a process, and one can write into another's directory.
+plugins in the same host: they share a process, and one can write into another's directory.
 Codewhale never deletes it, including on uninstall.
 
 ## Configuration
@@ -602,7 +604,12 @@ build: a grant the user gave the model for a tool never covers your call of it,
 and a grant for your call never covers the model's. **Shell and network calls
 force a prompt**: a session grant is not consulted. Ask and Full Access
 both ask the user every time; explicit session denials still refuse the call.
-Auto-Review and Never refuse it without opening a card. In Full Access every
+Under Auto-Review, held extension calls (whether from `core/call`, broker acts,
+or plugin host tools) route to the Auto-Review reviewer with the extension's
+host-minted plugin identity and cannot bypass review via routine tiers,
+`auto_review.allow` rules, or typed `allow` rules, while independent typed
+`deny`/`ask` rules, hook holds, and safety-floor blocks still apply. Never
+refuses them without opening a card. In Full Access every
 other call an extension makes is auto-approved, as it is for the model.
 `error.code === 'denied'` is the user's "no": do not retry it.
 
@@ -658,7 +665,11 @@ a plugin's trust shows it:
 The agent's mark is `CODEWHALE_AGENT_PROJECT`, which Codewhale sets to the
 session's project on every command the agent runs (shell, persistent terminal,
 verifier and test runs, the Python kernel, MCP servers it starts), whatever the sandbox or
-permission mode. Hooks, MCP servers from your configuration and the terminal
+permission mode; under Auto-Review, shell and verifier runs also set
+`CODEWHALE_AGENT_POSTURE=auto_review` together with `CODEWHALE_AGENT_THREAD_ID`,
+`CODEWHALE_AGENT_TURN_ID`, and `CODEWHALE_AGENT_TOOL_CALL_ID` so `plugins trust`
+and `plugins enable` record the agent in Auto-Review rather than `CommandLine`.
+Hooks, MCP servers from your configuration and the terminal
 app's `/plugin trust` carry no mark. With it, the command records the agent, even for a prompt
 answered through a terminal, and trusts only a plugin installed from a folder
 inside that project (the bundle's `.installed-from` record). It is a label, not
@@ -668,9 +679,11 @@ takes is the bundle review token (`<content-hash>.<capability-hash>`), not the
 host-service review token: an unmarked trust passes no host-service token, and
 a marked one passes the token of the review composed for the agent.
 A plugin the agent approved is active only in the project its record names,
-and its code does not run in the host process of the plugins you reviewed:
-until it has a host of its own, its native code is refused with a diagnostic
-that asks you to review it. Your own review replaces the agent's record. Who
+and runs in an agent host process of its own for that project, apart from the
+plugins you reviewed. When you review it, it moves into the reviewed host process
+and its data folder moves with it; if a data folder for it is already there, the
+move is refused and the plugin stays off until you resolve it. Your own review
+replaces the agent's record. Who
 turned a plugin on is recorded the same way, separately from who approved it.
 The agent never approves a built-in plugin, never replaces a review that holds
 for every project (yours, the command line's, or one from an earlier version)
@@ -679,12 +692,14 @@ whose folder resolves outside the project.
 It turns on only a plugin whose record it made for this project. Everything
 else is left to you.
 
-**One process, one rule.** Extensions share one host process and cannot be
-isolated from each other inside it. A service is therefore given to a tool call
-only while every extension loaded in that process holds the same grant. The
-rule, and the list of plugins a review says a service is shared with, cover
-only plugins of the same kind: the plugins you reviewed are counted together,
-and a plugin the agent approved is never counted with them. If one
+**One process, one rule.** Extensions in the same host process cannot be
+isolated from each other inside it. Plugins you reviewed share one host process;
+plugins the agent approved share a separate host process per project. A service
+is therefore given to a tool call only while every extension loaded in that cohort's
+process holds the same grant. The rule, and the list of plugins a review says a
+service is shared with, cover only plugins in the same cohort: the plugins you
+reviewed are counted together, and plugins in an agent cohort are counted only
+within their project's host. If one
 does not, the service is off for all of them, and the host diagnostics name the
 extension without it. Code that was loaded cannot be unloaded, so after an
 extension is turned off, changed or fails, every service stays off until the
@@ -749,9 +764,11 @@ Dispose within 2 seconds and avoid leaving background work behind.
 
 ## Sandbox
 
-Trust is not a complete security boundary. Native plugins share one process
-and data-access cohort and can interfere with each other. Owner labels and
-JavaScript method locks do not isolate mutually untrusted plugins.
+Trust is not a complete security boundary. Native plugins reviewed by a person
+share one process and data-access cohort, while agent-approved plugins run in their
+own host process per project with data isolated under `data-agent/<digest>`.
+Plugins within the same host process can interfere with each other; owner labels and
+JavaScript method locks do not isolate mutually untrusted plugins in the same process.
 
 Native hosts use a positive filesystem-read policy on macOS Seatbelt and
 Linux bubblewrap (`/usr/bin/bwrap`). Grants cover the selected runtime and

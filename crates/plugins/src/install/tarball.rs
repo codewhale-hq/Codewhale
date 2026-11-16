@@ -70,7 +70,7 @@ pub(super) fn stage_tarball_with_network(
 #[derive(Debug)]
 pub(super) struct TarballScan {
     plugin_root: String,
-    is_dsh: bool,
+    pub(super) is_dsh: bool,
 }
 
 #[cfg(test)]
@@ -84,7 +84,7 @@ fn oversized_if_stream_limit(err: anyhow::Error, max_size: u64) -> anyhow::Error
     })
 }
 
-fn scan_tarball_for_bundle(
+pub(super) fn scan_tarball_for_bundle(
     bytes: &[u8],
     max_size: u64,
     bundle_path: Option<&str>,
@@ -140,10 +140,12 @@ fn scan_bundle_entries(
                     .components()
                     .any(|part| part.as_os_str() == std::ffi::OsStr::new("node_modules"))
             {
-                let raw = read_body_within(&mut entry, 65_536)
-                    .context("failed to read package.json from archive")?;
-                if let Some(raw) = raw
-                    && let Ok(text) = std::str::from_utf8(&raw)
+                let raw = read_body_within(&mut entry, 1_048_576)
+                    .context("failed to read package.json from archive")?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("package.json in archive exceeds the 1 MiB metadata limit")
+                    })?;
+                if let Ok(text) = std::str::from_utf8(&raw)
                     && let Ok(parsed) = super::dsh::parse_package_json(text)
                     && parsed
                         .get("dsh")
@@ -176,28 +178,26 @@ fn scan_bundle_entries(
     };
 
     let roots = filter_roots(&manifest_paths);
-    if roots.is_empty() {
-        let dsh_roots = filter_roots(&dsh_manifest_paths);
-        if dsh_roots.len() == 1 {
-            let plugin_root = dsh_roots.into_iter().next().unwrap_or_default();
-            return Ok(TarballScan {
-                plugin_root,
-                is_dsh: true,
-            });
-        }
+    let dsh_roots = filter_roots(&dsh_manifest_paths);
+    let all_roots: BTreeSet<String> = roots.union(&dsh_roots).cloned().collect();
+    if all_roots.len() != 1 {
+        return Err(PluginInstallError::PluginTomlRoots(all_roots.len()).into());
     }
-    if roots.len() != 1 {
-        return Err(PluginInstallError::PluginTomlRoots(roots.len()).into());
-    }
-    let plugin_root = roots.into_iter().next().unwrap_or_default();
+    let plugin_root = all_roots.into_iter().next().unwrap_or_default();
+    let is_dsh = dsh_roots.contains(&plugin_root);
     Ok(TarballScan {
         plugin_root,
-        is_dsh: false,
+        is_dsh,
     })
 }
 
 /// Second pass: extract only entries under the scanned bundle root.
-fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) -> Result<()> {
+pub(super) fn extract_into(
+    scan: &TarballScan,
+    bytes: &[u8],
+    dest: &Path,
+    max_size: u64,
+) -> Result<()> {
     extract_entries(scan, bytes, dest, max_size)
         .map_err(|err| oversized_if_stream_limit(err, max_size))
 }

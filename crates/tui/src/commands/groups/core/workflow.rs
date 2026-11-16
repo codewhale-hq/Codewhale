@@ -502,6 +502,10 @@ pub fn auto(app: &mut App, arg: Option<&str>) -> CommandResult {
         message.push(' ');
         message.push_str(app.tr(MessageId::AutoReceiptPlanNote).as_ref());
     }
+    if app.has_suspended_broad_allows() {
+        message.push(' ');
+        message.push_str(app.tr(MessageId::AutoReceiptBroadAllowsPaused).as_ref());
+    }
     CommandResult::message(message)
 }
 
@@ -542,6 +546,63 @@ mod tests {
         let result = auto(&mut app, Some("now"));
         assert!(result.is_error);
         assert!(result.message.as_deref().unwrap().contains("Usage: /auto"));
+    }
+
+    #[test]
+    fn auto_errors_when_managed_auto_review_is_disabled() {
+        let mut app = test_app();
+        app.auto_review_disabled = true;
+        app.set_agent_approval_posture(ApprovalMode::Suggest);
+
+        let result = auto(&mut app, None);
+        assert!(result.is_error);
+        assert!(
+            result
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("auto_review.disabled = true")
+        );
+        assert_eq!(app.approval_mode, ApprovalMode::Suggest);
+    }
+
+    #[test]
+    fn auto_emits_broad_allow_pause_note_only_when_broad_rules_are_suspended() {
+        let mut plain_app = test_app();
+        plain_app.ui_locale = codewhale_localization::Locale::En;
+        plain_app.set_agent_approval_posture(ApprovalMode::Suggest);
+        let plain_result = auto(&mut plain_app, None);
+        assert!(!plain_result.is_error);
+        assert!(
+            !plain_result
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Broad allow rules are paused"),
+            "{:?}",
+            plain_result.message
+        );
+
+        let mut broad_app = test_app();
+        broad_app.ui_locale = codewhale_localization::Locale::En;
+        broad_app.set_agent_approval_posture(ApprovalMode::Suggest);
+        broad_app.exec_policy_engine.set_ruleset(
+            codewhale_execpolicy::Ruleset::user(vec![], vec![]).with_ask_rules(vec![
+                codewhale_execpolicy::ToolAskRule {
+                    tool: "exec_shell".to_string(),
+                    command: Some("*".to_string()),
+                    action: codewhale_execpolicy::PermissionAction::Allow,
+                    ..codewhale_execpolicy::ToolAskRule::new("")
+                },
+            ]),
+        );
+        let broad_result = auto(&mut broad_app, None);
+        assert!(!broad_result.is_error);
+        let broad_msg = broad_result.message.as_deref().unwrap_or_default();
+        assert!(
+            broad_msg.contains("Broad allow rules are paused while Auto-Review is on"),
+            "{broad_msg}"
+        );
     }
 
     #[test]

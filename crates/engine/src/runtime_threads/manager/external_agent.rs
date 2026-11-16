@@ -1081,6 +1081,7 @@ impl RuntimeThreadManager {
             artifacts: Vec::new(),
             workspace: None,
             workspace_snapshots: Vec::new(),
+            delegated_writes: Vec::new(),
         };
         let mut active = self.active.lock().await;
         let Some(state) = active.external.get_mut(&thread.id) else {
@@ -2040,6 +2041,7 @@ impl RuntimeThreadManager {
                     proposed: None,
                     responder: None,
                     agent_settled: Some(settled_rx),
+                    owner_only: false,
                 });
                 return (id, rx, settled_tx);
             }

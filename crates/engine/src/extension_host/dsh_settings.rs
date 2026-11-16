@@ -627,8 +627,7 @@ mod tests {
     use super::super::protocol::{DshBrokerParams, RpcErrorWire, error_code};
     use super::super::supervisor::HostRequestContext;
     use super::super::test_support::fake_authority;
-    use super::super::tier::HostTier;
-    use super::super::{ExtensionHostManager, ExtensionHostOptions};
+    use super::super::{ExtensionHostManager, ExtensionHostOptions, HostCohort};
     use super::*;
     use crate::core::engine::LivePosture;
     use crate::tools::codemode::{
@@ -685,7 +684,13 @@ model = "theirs"
                 let mut registry = manager.shared.registry.lock().unwrap();
                 let mut begin = |id: &str| {
                     let owner = registry
-                        .begin_owner(HostTier::Plugin, id, id, Some(fake_authority(id)), "hash")
+                        .begin_owner(
+                            HostCohort::reviewed(),
+                            id,
+                            id,
+                            Some(fake_authority(id)),
+                            "hash",
+                        )
                         .unwrap();
                     registry.mark_active(&owner);
                     owner
@@ -763,7 +768,7 @@ model = "theirs"
                 .shared
                 .core_calls
                 .begin(
-                    HostTier::Plugin,
+                    HostCohort::reviewed(),
                     7,
                     &self.owner,
                     "call-1",
@@ -802,7 +807,7 @@ model = "theirs"
                 .serve_broker_in(
                     table,
                     &self.manager.shared,
-                    HostTier::Plugin,
+                    HostCohort::reviewed(),
                     7,
                     DshBrokerParams {
                         owner: owner.clone(),

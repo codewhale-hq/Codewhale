@@ -17,15 +17,22 @@ function walk(dir) {
   })
 }
 
-test('every pinned creator file equals its recorded hash and is verbatim', () => {
+test('every pinned creator file equals its recorded hash and is verbatim or marked excerpt', () => {
   assert.equal(manifest.version, '0.2.2-rc.1')
-  assert.ok(manifest.files.length >= 2)
+  assert.equal((manifest.pending ?? []).length, 0)
+  assert.ok(manifest.files.length >= 3)
   for (const entry of manifest.files) {
-    assert.equal(entry.verbatim, true, entry.path)
     const bytes = readFileSync(join(pin, entry.path))
     assert.equal(bytes.length, entry.bytes, `${entry.path} size`)
     assert.equal(sha256(bytes), entry.sha256, `${entry.path} hash`)
     assert.ok(!bytes.includes(13), `${entry.path} must keep LF line endings`)
+    if (entry.verbatim) continue
+    assert.equal(entry.excerpt, true, entry.path)
+    const text = bytes.toString('utf8')
+    for (const range of entry.lines) {
+      assert.ok(text.includes(`// ---- VERBATIM ${entry.package}@${manifest.version} ${entry.upstream_path}:${range} ----`), `${entry.path} missing start marker for ${range}`)
+    }
+    assert.equal(text.match(/\/\/ ---- END VERBATIM ----/g)?.length, entry.lines.length, `${entry.path} end markers`)
   }
 })
 

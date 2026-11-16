@@ -124,50 +124,13 @@ pub struct TurnContext {
     /// request (capability, auth, unreachable). The turn then fails on that
     /// cause, not on the context budget the recovery was trying to fix.
     pub context_recovery_rejection: Option<anyhow::Error>,
-
-    pub auto_review_denials: AutoReviewDenials,
+    pub recent_actions: Vec<RecentReviewAction>,
 }
 
-#[derive(Debug, Default)]
-pub struct AutoReviewDenials {
-    consecutive: usize,
-    recent: std::collections::VecDeque<bool>,
-    stop: Option<String>,
-}
-
-impl AutoReviewDenials {
-    const CONSECUTIVE: usize = 3;
-    const WINDOW: usize = 50;
-    const WINDOW_DENIALS: usize = 10;
-
-    pub fn record(&mut self, denied: bool) {
-        if self.stop.is_some() {
-            return;
-        }
-        self.consecutive = if denied { self.consecutive + 1 } else { 0 };
-        if self.recent.len() == Self::WINDOW {
-            self.recent.pop_front();
-        }
-        self.recent.push_back(denied);
-        let denials = self.recent.iter().filter(|denied| **denied).count();
-        let summary = if self.consecutive >= Self::CONSECUTIVE {
-            format!("Auto-Review denied {} actions in a row", self.consecutive)
-        } else if denials >= Self::WINDOW_DENIALS {
-            format!(
-                "Auto-Review denied {denials} of the last {} actions",
-                self.recent.len()
-            )
-        } else {
-            return;
-        };
-        self.stop = Some(format!(
-            "{summary}, so the turn was stopped. Change the request, or switch to Ask."
-        ));
-    }
-
-    pub fn stop(&self) -> Option<&str> {
-        self.stop.as_deref()
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentReviewAction {
+    pub tool_name: String,
+    pub summary: String,
 }
 
 impl TurnContext {
@@ -207,7 +170,7 @@ impl TurnContext {
             compaction_refusal_notified: false,
             pending_route: None,
             context_recovery_rejection: None,
-            auto_review_denials: AutoReviewDenials::default(),
+            recent_actions: Vec::new(),
         }
     }
 

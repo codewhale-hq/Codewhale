@@ -2565,7 +2565,18 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   arity-aware prefix match to a complete-command match. `deny` blocks matching
   invocations before mode-based
   approval handling, `allow` skips approval for matching invocations, and
-  `ask` forces approval only in modes that can prompt. Outside the TUI
+  `ask` forces approval only in modes that can prompt. In Auto-Review, broad
+  typed `allow` rules (`exec_shell`/`bash` without a command, globs such as
+  `*`, `python*`, or `npm run *`, bare script/package runner prefixes such as
+  `python`, `node`, `npm run`, or `cargo run`, `agent`/`subagent`/`spawn_agent`,
+  `*`, and write/edit/patch file rules without `path`) are paused without
+  changing `permissions.toml` and resume when leaving Auto-Review; entering
+  Auto-Review displays a one-line note when broad allow rules are paused.
+  Narrow typed `allow` rules (statically expanded, unwrapped `exec_shell`/`bash`
+  calls whose extra operands have no flags, or exact non-agent non-extension
+  tools with explicit `path` for file tools) skip the Auto-Review reviewer when
+  no safety floor, soft rule, hook hold, extension hold, or
+  `auto_review.review_all_shell` applies. Outside the TUI
   auto-approve path, a matching `ask` rule under `approval_policy = "never"`
   is rejected because no prompt can be shown. In Full Access / auto-approval sessions,
   `ask` rules do not downgrade the session into prompting or blocking; explicit
@@ -2642,25 +2653,45 @@ reasoning contract, and all four membership ids omit generic sampling fields.
 - `[auto_review]` (table, optional): tool-call review policy — a deterministic floor plus a model guardian tier.
   This layer sits on top of the existing permission posture; it can hold or block a
   tool call, but it is not an auto-push, auto-merge, or hosted review service.
-  Block rules are checked first, then the built-in safety floor, then allow
-  rules. In Ask, a safety hold opens approval that no session grant or allow
+  `auto_review.reviewer_model` (string, optional; also settable live or saved
+  with `/config auto_review.reviewer_model <model|default> [--save]`) selects the
+  model for guardian reviews on your active provider route; when unset,
+  Codewhale selects a capable catalog model on that provider route (or falls
+  back to the active session model) without crossing providers or accounts.
+  `auto_review.environment` (array of strings, optional; user and managed config
+  only) lists trusted environment context lines (such as trusted remotes,
+  accounts, hosts, or buckets) passed in the guardian's `environment` field to
+  judge pushes and outbound network requests in context. Entries cannot be
+  blank or contain control characters, and project `.codewhale/config.toml`
+  files cannot set or alter `[auto_review]` or `auto_review.environment` (a
+  project-scope `[auto_review]` table is ignored with a warning).
+  Block rules are checked first, then the built-in safety floor, then named
+  soft rules in Auto-Review (`force-push`, `git-tag`, `deploy-branch`,
+  `git-discard`, `infra-destroy`, `ci-or-pr-bypass`, `print-credentials`,
+  `secret-commit`, and `deploy-wrapper`) and instruction-file writes, then allow
+  rules. In Ask and Accept Edits, a safety hold opens approval that no session grant or allow
   rule can answer; in Auto-Review or a non-interactive `never` posture it
-  fails closed as a hard block. Full Access skips the built-in floor. The
-  safety floor covers publish-like actions, destructive background/headless
-  actions, and `curl`/`wget` uploads whose request body carries a credential
-  file or a secret-named variable, or reads stdin fed from one of those or
-  from `env`/`printenv`, even if an allow rule matches; a shell command,
-  shell input or verifier over 64 KiB or 4,096 words whose text contains
-  `curl` or `wget` anywhere, or one nested too deeply to read, is held too.
-  Outside Full
-  Access it also refuses, in every posture, a
-  shell command, shell input or verifier containing a hidden Unicode character
-  (bidirectional controls, zero-width and other invisible characters, tag
-  characters, stray variation selectors, and terminal control characters
-  except ASCII control keys in shell input), naming the code point and its
-  position.
+  fails closed as a hard block. Full Access skips the built-in floor. In
+  Auto-Review, package and release publishing (`npm publish`, `cargo publish`,
+  `gh release`, and release tools), destructive unattended work, and
+  detected credential uploads or hidden Unicode remain on the deterministic
+  safety floor; repository-remote `git push` calls are judged by the guardian
+  against your request and `auto_review.environment` when `owner_present` is
+  true, and are hard-blocked on unattended turns (`!owner_present`). Soft rules
+  hold common shell and git forms before `allow` rules, carry the rule name in
+  block reasons and receipts, and require a specific person request rather than
+  broad authorization. Outside Full Access, hidden Unicode checks also refuse
+  shell commands, shell input, or verifiers containing invisible or
+  bidirectional control characters, naming the code point and its position.
 
   ```toml
+  [auto_review]
+  reviewer_model = "claude-sonnet-4-6" # optional; stays on your active provider route
+  environment = [
+    "trusted git remote: github.com/org/repo",
+    "trusted staging API: https://staging.example.internal",
+  ]
+
   [[auto_review.allow]]
   id = "read-only-inspection"
   action_kind = "read"
@@ -2676,33 +2707,51 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   required. `action_kind` accepts the six decision-relevant kinds `read`,
   `write`, `shell`, `external`, `publish`, and `destructive`. Invalid names
   fail config validation instead of silently broadening into another policy
-  class. In block rules, the old names remain conservative compatibility
+  class. In Auto-Review, broad `[[auto_review.allow]]` rules whose
+  `action_kind` normalizes to `shell`, `external`, `write`, `destructive`, or
+  `publish` (without a specific non-shell/non-agent tool) or whose `tool`
+  matches `exec_shell`, `bash`, `agent`, or `*` are omitted with a warning while
+  specific non-shell/non-agent tool allow rules remain active. Set
+  `auto_review.review_all_shell = true` (user and managed config only; ignored
+  in `.codewhale/config.toml`) to send every shell command — including benign
+  reads and narrow-allowed shell commands — to the Auto-Review reviewer after
+  deterministic safety-floor, block, soft-rule, and extension checks. In block
+  rules, the old names remain conservative compatibility
   aliases: `network`, `git`, `mcp_action`, `browser`, and `unknown` map to
   `external`; `secret` maps to `destructive`; and `mcp_read` maps to `read`.
   Retired narrow kinds in allow rules fail validation rather than widening to
   a broader class. The retired `text_contains` matcher likewise fails
   validation instead of silently broadening an old intent-dependent rule.
-  Fallback holds in interactive Auto-Review escalate to one stateless guardian
-  request. The request contains the exact held call and deterministic
-  observations as separate JSON fields. Conversation history, skill
-  instructions, attached file contents, and other expanded model context are
-  excluded. The guardian does not infer user intent or compute an authorization
-  score. It exposes no tools and returns a risk level, allow/deny, and a
-  rationale. High or critical risk cannot auto-run even if the model says
-  allow. An oversized exact call is denied rather than truncated. Exactly one
-  reviewer request is made; incomplete or malformed output, timeout,
-  cancellation, provider failure, or an empty rationale all fail closed. The
-  deterministic floor is never model-reviewed, and headless adapters use the
-  deterministic-only tier. The pinned Codex, Kimi, and DeepSeek source
-  boundaries are linked from [Permission Posture](MODES.md#permission-posture).
-  Reviewer outcomes emit `tool.auto_review` audit events with
-  `gate = "guardian"`.
+  Fallback holds in Auto-Review escalate to one stateless guardian request
+  within a 64 KiB context budget. The request passes untrusted-evidence JSON
+  fields containing the session-recorded typed owner composer prompts (newest
+  first), any approved plan text, earlier redacted non-read actions from the
+  same turn, session-start pinned user-level and repository-level instructions
+  with SHA-256 hashes (never re-read mid-session), deterministic observations,
+  and the exact held call (preserving `description`). Tool outputs, assistant
+  prose, attached `@`-file contents, skill bodies, and non-owner or generated
+  prompts (tasks, automations, `send_later`, goal continuations, subagent
+  briefs, reviews, and chat relays) are excluded from `person_messages`. High or
+  critical risk cannot auto-run even if the model says allow. An oversized
+  current request or exact held call returns unavailable (failing closed)
+  rather than being truncated. Exactly one reviewer request is made;
+  incomplete or malformed output, timeout, cancellation, provider failure, or an
+  empty rationale all fail closed. The deterministic floor is never
+  model-reviewed, and headless adapters use the deterministic-only tier. The
+  pinned Codex, Kimi, and DeepSeek source boundaries are linked from
+  [Permission Posture](MODES.md#permission-posture). Reviewer outcomes emit
+  `tool.auto_review` audit events with `gate = "guardian"` and `reviewer_model`,
+  and transcript receipts show the resolved reviewer model.
 
   Auto-review decisions emit `tool.auto_review` audit events with
   `gate = "deterministic"` when tool
   audit logging is enabled. Future PreToolUse/PostToolUse hooks can add
   observer input around this layer, but the configured auto-review policy is
   evaluated before a tool call is allowed to proceed.
+  Set `disabled = true` under `[auto_review]` in managed config to turn
+  Auto-Review off: `Shift+Tab` skips Auto-Review, and `--permission-mode auto-review`,
+  `/auto`, and `approval_policy = "auto"` are refused. A managed `[auto_review]`
+  table replaces the user's whole `[auto_review]` table rather than merging keys.
 - `managed_config_path` (string, optional): managed config file loaded after user/env config. `CODEWHALE_MANAGED_CONFIG_PATH` outranks it. A named file that is missing or unreadable is a load error, and it cannot replace an existing file at the default managed path.
 - `requirements_path` (string, optional): requirements file used to enforce allowed approval/sandbox values.
 - `max_subagents` (int, optional): defaults to `64` and is clamped to `1..=128`.
@@ -3604,6 +3653,7 @@ code_mode = true # execute_tools composes MCP/plugin/native calls; false defers 
 verify_tool = true # agent-callable `verify` self-critique; false removes it from the tool catalog
 vision_model = false # true routes image analysis to the [vision_model] model (see above)
 extension_host = false # experimental: run reviewed plugins' native code (see EXTENSIONS.md)
+plugin_creator = true # beta, on by default: built-in plugin_manager tool and Creator mode host module
 ```
 
 `code_mode` is on by default: `execute_tools` is advertised from the first
@@ -3618,6 +3668,12 @@ changes the plugin activation policy, so every plugin is reviewed again after a
 restart. Its `[extension_host]` table (`runtime`, `node`, `bun`) and what the
 host's sandbox does on each platform are in
 [Writing an extension tool](EXTENSIONS.md).
+
+`plugin_creator` is beta and on by default. Keeping it on enables the
+built-in `plugin_manager` tool and Creator mode host module independently of
+`extension_host` (when a supported Node.js or Bun runtime is present and
+Creator availability admits it). Setting `plugin_creator = false` turns off
+the built-in Creator host module and marks Creator mode unavailable.
 
 `[extension_host] mcp_backend` (user config only) chooses the MCP client
 independently of the `extension_host` flag: `"host"` (default) uses the official

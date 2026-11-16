@@ -302,7 +302,7 @@ fn mcp_definition_bounds_are_owner_wide_and_exact_unregister_cancels_only_its_ha
     let mut registry = OwnerRegistry::default();
     let owner = registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "fixture",
             "fixture",
             Some(fake_authority("fixture")),

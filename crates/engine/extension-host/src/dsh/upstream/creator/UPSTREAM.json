@@ -26,14 +26,21 @@
       "sha256": "ce0cd4d8983532c920cab7713dc51874f6d710c2c46c4a095167bfa980becdb0",
       "bytes": 3687,
       "verbatim": true
-    }
-  ],
-  "pending": [
+    },
     {
       "path": "sandbox/escalation.js",
       "package": "@deepseek-ai/dsh-sandbox",
-      "reason": "excerpt of approveEscalation and its mode table; needs the published tarball, not yet fetched"
+      "upstream_path": "lib/index.js",
+      "source_sha256": "9ece3e7b04d5526441e2439431d769acf67abc46fa49de000dd9c792893eb5e7",
+      "tarball_sha256": "495631c75a9ab4d88cf54898547c67b050f581383623f986df9acc0f511343d9",
+      "integrity": "sha512-rCZHKvyIxbQjYbmZa0LmNomBukrIOLPeecNKs7R0JAbOfixHOXBaSaYrHZa+M0a2hTLqPS73WPEoyto+7yTLNQ==",
+      "lines": ["9-42", "68-71", "137-158"],
+      "sha256": "e27788ce9747a4ffd68ae4411eab12bc197924721473549d9a863de5af5553cc",
+      "bytes": 4404,
+      "verbatim": false,
+      "excerpt": true
     }
   ],
+  "pending": [],
   "skills_pin": "crates/skills/assets/dsh-creator/UPSTREAM.json"
 }

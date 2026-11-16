@@ -616,6 +616,7 @@ fn make_plan_at(
         )))],
         blocked_error: None,
         guard_result: None,
+        grants_outside_workspace_read: false,
     }
 }
 
@@ -697,6 +698,7 @@ fn active_goal_message_op(
         hook_executor: None,
         verbosity: None,
         provenance: UserInputProvenance::ExternalUser,
+        input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
         submission_id: None,
     })
 }
@@ -741,6 +743,7 @@ fn external_user_message_op(content: &str, mode: AppMode, config: &Config) -> Op
         hook_executor: None,
         verbosity: None,
         provenance: UserInputProvenance::ExternalUser,
+        input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
         submission_id: None,
     })
 }
@@ -791,6 +794,7 @@ fn auto_review_message_op(content: &str, config: &Config) -> Op {
         hook_executor: None,
         verbosity: None,
         provenance: UserInputProvenance::ExternalUser,
+        input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
         submission_id: None,
     })
 }

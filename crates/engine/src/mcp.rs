@@ -48,7 +48,8 @@ use self::stdio::StdioTransport;
 pub use self::wire::MAX_MCP_RESPONSE_BYTES;
 pub use self::wire::read_line_capped;
 use self::wire::{
-    is_mcp_connection_lost_error, is_mcp_session_rejected_error, is_mcp_stale_session_body,
+    is_mcp_connection_lost_error, is_mcp_server_reply_unsupported_error,
+    is_mcp_session_rejected_error, is_mcp_stale_session_body,
 };
 use codewhale_mcp::config::{
     McpConfig, McpProvenance, McpServerConfig, McpServerOAuthConfig, McpTimeouts,
@@ -2267,6 +2268,7 @@ impl McpConnection {
             .await
             .with_context(|| format!("MCP server '{name}' discovery failed"))?;
 
+        conn.ensure_not_disconnected()?;
         conn.state = ConnectionState::Ready;
         Ok(conn)
     }
@@ -2377,8 +2379,20 @@ impl McpConnection {
         Ok(())
     }
 
+    fn ensure_not_disconnected(&mut self) -> Result<()> {
+        if self.cancel_token.is_cancelled() {
+            self.state = ConnectionState::Disconnected;
+            anyhow::bail!("MCP connection '{}' was cancelled", self.name);
+        }
+        if self.state == ConnectionState::Disconnected {
+            anyhow::bail!("MCP connection '{}' is disconnected", self.name);
+        }
+        Ok(())
+    }
+
     /// Discover and admit one complete tools/resources/prompts generation.
     async fn discover_all(&mut self) -> Result<()> {
+        self.ensure_not_disconnected()?;
         let capabilities = self.server_capabilities;
         let server = self.name.clone();
         let discovery_timeout = self.discovery_timeout;
@@ -2418,6 +2432,7 @@ impl McpConnection {
                 self.discover_resources(&mut budget),
             )
             .await;
+            self.ensure_not_disconnected()?;
             resource_templates = run_optional_discovery(
                 &server,
                 "resources/templates/list",
@@ -2425,6 +2440,7 @@ impl McpConnection {
                 self.discover_resource_templates(&mut budget),
             )
             .await;
+            self.ensure_not_disconnected()?;
         }
         if capabilities.is_none_or(|capabilities| capabilities.prompts) {
             prompts = run_optional_discovery(
@@ -2434,6 +2450,7 @@ impl McpConnection {
                 self.discover_prompts(&mut budget),
             )
             .await;
+            self.ensure_not_disconnected()?;
         }
         if self.skills_extension {
             skills = run_optional_discovery(
@@ -2443,6 +2460,7 @@ impl McpConnection {
                 self.discover_skills(&mut budget),
             )
             .await;
+            self.ensure_not_disconnected()?;
         }
         // Ordinary optional-method errors remain best effort. Admit only the
         // freshly staged families; do not mix them with an old generation.
@@ -3106,6 +3124,7 @@ impl McpConnection {
         decision: Option<&crate::core::engine::HumanDecision>,
         timeout: Duration,
     ) -> Result<()> {
+        self.ensure_not_disconnected()?;
         anyhow::ensure!(
             self.runtime_registration_is_current(),
             "MCP runtime registration changed before dispatch; retry against the current config"
@@ -3113,6 +3132,7 @@ impl McpConnection {
         let bytes = serde_json::to_vec(&msg).context("Failed to serialize MCP JSON-RPC message")?;
         let cancel_token = self.cancel_token.clone();
         let name = self.name.clone();
+        let prev_state = std::mem::replace(&mut self.state, ConnectionState::Disconnected);
         let result = tokio::select! {
             biased;
             _ = cancel_token.cancelled() => {
@@ -3120,37 +3140,71 @@ impl McpConnection {
             }
             result = self.transport.send_decided(bytes, decision, timeout) => result,
         };
-        if result.is_err() {
+        if result.is_ok() {
             // A dead write side is as fatal as a dead read side: the pool
             // reuses any connection whose `is_ready()` is true, so leaving
             // this one in `Ready` would hand the same broken transport back
             // on every later call instead of rebuilding it.
-            self.state = ConnectionState::Disconnected;
+            self.state = prev_state;
         }
         result
     }
 
-    async fn answer_server_request(&mut self, reply: &serde_json::Value) {
-        let result = match serde_json::to_vec(reply) {
-            Ok(bytes) => {
-                let cancel_token = self.cancel_token.clone();
-                tokio::select! {
-                    biased;
-                    _ = cancel_token.cancelled() => {
-                        Err(anyhow::anyhow!("MCP connection was cancelled"))
-                    }
-                    result = self.transport.send_reply(bytes) => result,
-                }
+    async fn answer_server_request(&mut self, reply: &serde_json::Value) -> Result<()> {
+        self.ensure_not_disconnected()?;
+        let bytes = match serde_json::to_vec(reply) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracing::debug!(
+                    target: "mcp",
+                    server = %self.name,
+                    error = %err,
+                    "could not serialize an MCP server request reply"
+                );
+                return Ok(());
             }
-            Err(err) => Err(err.into()),
         };
-        if let Err(err) = result {
-            tracing::debug!(
-                target: "mcp",
-                server = %self.name,
-                error = %err,
-                "could not answer an MCP server request"
-            );
+        let prev_state = std::mem::replace(&mut self.state, ConnectionState::Disconnected);
+        let cancel_token = self.cancel_token.clone();
+        let name = self.name.clone();
+        let (result, cancelled) = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                (Err(anyhow::anyhow!("MCP connection '{name}' was cancelled")), true)
+            }
+            result = self.transport.send_reply(bytes) => (result, false),
+        };
+        match result {
+            Ok(()) if !cancelled => {
+                self.state = prev_state;
+                Ok(())
+            }
+            Err(err) if !cancelled && is_mcp_server_reply_unsupported_error(&err) => {
+                self.state = prev_state;
+                tracing::debug!(
+                    target: "mcp",
+                    server = %self.name,
+                    error = %err,
+                    "could not answer an MCP server request"
+                );
+                Ok(())
+            }
+            other => {
+                let err = match other {
+                    Ok(()) => anyhow::anyhow!("MCP connection '{}' was cancelled", self.name),
+                    Err(err) => err,
+                };
+                tracing::debug!(
+                    target: "mcp",
+                    server = %self.name,
+                    error = %err,
+                    "could not answer an MCP server request"
+                );
+                anyhow::bail!(
+                    "MCP connection '{}' failed while answering server request: {err:#}",
+                    self.name
+                );
+            }
         }
     }
 
@@ -3243,7 +3297,7 @@ impl McpConnection {
                             "error": {"code": -32601, "message": format!("Method not found: {method}")}
                         })
                     };
-                    self.answer_server_request(&reply).await;
+                    self.answer_server_request(&reply).await?;
                 }
                 continue;
             }

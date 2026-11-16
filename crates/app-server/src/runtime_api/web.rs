@@ -27,7 +27,7 @@ const BOOTSTRAP_PREFIX: &str = "cwwb_";
 const WEB_SESSION_PREFIX: &str = "cwws_";
 pub(super) const WEB_REQUEST_HEADER: &str = "x-codewhale-web-request";
 pub(super) const WEB_STREAM_TICKET_QUERY: &str = "web_stream_ticket";
-const WEB_SESSION_COOKIE_NAME: &str = "codewhale_web_session";
+pub(super) const WEB_SESSION_COOKIE_NAME: &str = "codewhale_web_session";
 const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'";
 
 #[derive(Clone)]

@@ -119,7 +119,11 @@
     "path_canonicalize": 2
   },
   "crates/engine/src/core/authority/auto_review.rs": {
-    "path_canonicalize": 3
+    "path_canonicalize": 5,
+    "std_fs": 1
+  },
+  "crates/engine/src/core/authority/auto_review/routine.rs": {
+    "path_canonicalize": 2
   },
   "crates/engine/src/core/engine/tool_execution.rs": {
     "std_fs": 1
@@ -132,7 +136,7 @@
   },
   "crates/engine/src/extension_host/supervisor.rs": {
     "path_canonicalize": 7,
-    "std_fs": 5
+    "std_fs": 6
   },
   "crates/engine/src/extension_host/windows.rs": {
     "path_canonicalize": 1
@@ -247,7 +251,7 @@
     "std_fs": 1
   },
   "crates/engine/src/tools/spec.rs": {
-    "path_canonicalize": 8
+    "path_canonicalize": 10
   },
   "crates/engine/src/tools/speech.rs": {
     "std_fs": 1
@@ -580,8 +584,5 @@
   },
   "crates/workflow/src/named_fleet.rs": {
     "std_fs": 3
-  },
-  "crates/workflow/src/reasoning_router.rs": {
-    "std_fs": 1
   }
 }

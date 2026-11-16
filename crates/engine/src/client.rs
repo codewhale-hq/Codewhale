@@ -4573,9 +4573,22 @@ impl CodewhaleClient {
     ) -> Result<SpeechSynthesisResponse> {
         let _inference = self.acquire_remote_control_inference_permit().await;
         let _permit = self.acquire_provider_request_permit().await;
+        if matches!(
+            self.api_provider,
+            codewhale_config::ProviderKind::Deepseek
+                | codewhale_config::ProviderKind::DeepseekAnthropic
+        ) {
+            return crate::deepseek_media::synthesize_deepseek_with_client(
+                &self.http_client,
+                &self.base_url,
+                &self.api_key,
+                request,
+            )
+            .await;
+        }
         if self.api_provider != codewhale_config::ProviderKind::XiaomiMimo {
             anyhow::bail!(
-                "speech synthesis requires provider 'xiaomi-mimo' (current: {})",
+                "speech synthesis requires provider 'xiaomi-mimo' or 'deepseek' (current: {})",
                 self.api_provider.as_str()
             );
         }
@@ -5467,6 +5480,13 @@ impl LlmClient for CodewhaleClient {
         dispatched_at: chrono::DateTime<chrono::Utc>,
     ) -> crate::cost_status::EffectiveRouteEnvelope {
         CodewhaleClient::effective_route_envelope(self, requested_model, dispatched_at)
+    }
+
+    fn supports_catalog_reviewer_model(&self, candidate: &str) -> bool {
+        codewhale_config::provider_base_url_is_official(self.api_provider, &self.base_url)
+            && self
+                .resolve_model_route(candidate)
+                .is_ok_and(|resolved| resolved.protocol() == self.wire_format)
     }
 
     async fn health_check(&self) -> Result<bool> {

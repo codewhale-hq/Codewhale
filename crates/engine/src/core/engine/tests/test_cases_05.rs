@@ -93,6 +93,7 @@ async fn host_managed_engine_defers_idle_subagent_completion_to_explicit_turn() 
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -1405,6 +1406,7 @@ async fn user_steer_during_parent_answer_still_gets_a_reply_with_healthy_childre
                     replace_pending: false,
                     turn_id,
                     content: "Also read state.txt and include its evidence.".to_string(),
+                    person_text: None,
                     outcome: Some(outcome),
                     owner_steer: false,
                 })

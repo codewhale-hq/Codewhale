@@ -44,7 +44,10 @@ Computer Use 通过官方插件目录安装为普通用户级插件，独立于 
 
 每次信任都会记录批准者，`plugins status` 会显示。agent 运行的每条命令（shell 命令、持久终端、
 验证与测试运行、Python 内核里运行的代码、它用 `start_mcp_server` 启动的 MCP 服务器）都带有 agent 标记
-`CODEWHALE_AGENT_PROJECT`，值为会话所在项目，与沙箱和权限模式无关；钩子、配置文件中的 MCP
+`CODEWHALE_AGENT_PROJECT`，值为会话所在项目，与沙箱和权限模式无关；在 Auto-Review 下的
+shell 与验证器命令还会设置 `CODEWHALE_AGENT_POSTURE=auto_review` 及
+`CODEWHALE_AGENT_THREAD_ID`、`CODEWHALE_AGENT_TURN_ID` 与 `CODEWHALE_AGENT_TOOL_CALL_ID`，
+使记录显示为 Auto-Review 下的 agent 并保留来源信息，而不是普通命令行；钩子、配置文件中的 MCP
 服务器和终端应用里的 `/plugin trust` 不带标记。带有标记时，信任和
 `enable` 都记为该 agent，仅限该项目，即使提示是通过终端回答的也一样，绝不记为本人；agent
 只能信任它从该项目内的文件夹用 `codewhale install` 安装的插件（依据 `.installed-from` 记录，
@@ -236,6 +239,14 @@ lifecycle_mutation = true
   参见[宿主服务](../EXTENSIONS.md#host-services)。
 
 环境检查或健康检查通过，永远不等于信任。
+
+### 带有 Codewhale 自有类型的 DeepSeek Harness 包
+
+当本地目录包含 DeepSeek Harness 的 `package.json`（声明了 `dsh.bundle`）时，新的本地安装和预览会进入 DSH 导入流程，即使旁边同时存在 `plugin.json`。此时旁边的 `plugin.json` 只能声明 Codewhale 自有的声明式类型（`extensions["net.codewhale"]` 下的 `commands`、`agents` 与 `hooks`）以及标准根元数据字段；其中的描述性字段会被忽略（以 `package.json` 为准），并在 `CONVERSION.md` 与诊断信息中留下一行说明。
+
+- **名称与版本：** `plugin.json` 的 `name` 必须等于从 `package.json` 推导出的插件名；若两份文件都提供了 `version`，两者必须一致。
+- **禁止重名或越界声明：** 拒绝在 `plugin.json` 中声明 `skills`、`native`、`lsp`、`providers`、`capabilities`、`when`、`display_name`、`icon`，拒绝与 `plugin.json` 同级的 `mcp.json`、未在 DSH patch 行中声明的根目录 `skills/`，以及任何其他清单文件名（`kimi.plugin.json`、`plugin.toml`、`.claude-plugin/plugin.json`、`.plugin/plugin.json`、`.github/plugin/plugin.json`）。同时在 DSH patch 的 hook 桥接行与 `plugin.json` 的 `hooks` 中声明 hooks 也会被拒绝。
+- **项目级插件暂不变：** `.codewhale/plugins/<name>/` 下的项目级插件目前仍仅按 `plugin.json` 发现；已按 `path:` 安装的 Codewhale 插件在执行 `/plugin update` 时即使源目录后来加入了 `package.json`，也仍按其 Codewhale 清单更新。
 
 ## 审查、信任与启用
 

@@ -76,6 +76,14 @@ impl ChildAccountingProjection {
         .await
         .map_err(std::io::Error::other)
     }
+
+    pub(super) async fn publish_auxiliary_usage(
+        &self,
+        record: &crate::cost_status::RuntimeUsageRecord,
+    ) {
+        let _ = self.publish_async(record).await;
+        let _ = self.project_settled(record).await;
+    }
 }
 
 #[derive(Clone)]
@@ -90,6 +98,8 @@ pub struct ChildAuthority {
     pub(super) enforce_write_claim: bool,
     pub runtime: SubAgentRuntime,
     pub person_wait: Arc<PersonWaitClock>,
+    pub executed_actions:
+        Arc<std::sync::Mutex<Vec<crate::core::authority::auto_review::AutoReviewChildAction>>>,
 }
 impl std::fmt::Debug for ChildAuthority {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -123,6 +133,12 @@ impl ChildAuthority {
             scope,
             !runtime.would_exceed_depth(),
         );
+        let executed_actions = runtime
+            .manager
+            .try_read()
+            .ok()
+            .and_then(|manager| manager.executed_actions_handle(&owner_agent_id))
+            .unwrap_or_default();
         Arc::new(Self {
             grant,
             disallowed_tools: effective.denied_tools,
@@ -134,6 +150,7 @@ impl ChildAuthority {
             enforce_write_claim: true,
             runtime,
             person_wait: Arc::new(PersonWaitClock::default()),
+            executed_actions,
         })
     }
     /// One child builder used by Core's actual turn registry. The supplied
@@ -389,15 +406,12 @@ impl ChildAuthority {
         input: &Value,
     ) -> Result<Vec<String>> {
         self.validate(registry, name, input)?;
+        let canonical = codewhale_execpolicy::canonical_action::canonical_action_alias(name, input);
         let scope_aware_write = matches!(
-            name,
+            canonical,
             "write" | "edit" | "write_file" | "edit_file" | "apply_patch" | "fim_edit"
-        ) || (name == "File"
-            && input
-                .get("action")
-                .and_then(Value::as_str)
-                .is_some_and(|action| matches!(action, "write" | "edit" | "patch")))
-            || (name == "pandoc_convert" && input.get("output_path").is_some());
+        ) || (name == "pandoc_convert"
+            && input.get("output_path").is_some());
         if scope_aware_write && self.enforce_write_claim {
             let paths = mutation_paths(name, input, &self.runtime.context.workspace)?;
             if paths.is_empty() {
@@ -475,6 +489,20 @@ impl ChildAuthority {
             return;
         }
         let mut manager = self.coordination_manager.write().await;
+        let shared_checkout = manager
+            .worker_records
+            .get(&self.owner_agent_id)
+            .is_some_and(|record| {
+                normalize_subagent_workspace(&record.spec.workspace)
+                    == normalize_subagent_workspace(&manager.workspace)
+            });
+        if shared_checkout && let Some(mailbox) = self.runtime.mailbox.as_ref() {
+            let _ = mailbox.send(MailboxMessage::FileWrites {
+                agent_id: self.owner_agent_id.clone(),
+                turn_seq: 0,
+                paths: paths.clone(),
+            });
+        }
         if let Some(record) = manager.worker_records.get_mut(&self.owner_agent_id) {
             record.delivery_evidence.observed_writes.extend(paths);
         }
@@ -805,6 +833,11 @@ impl ChildAuthority {
             .collect::<Vec<_>>();
 
         for tool in &mut tools {
+            if tool.name == "bash"
+                && self.grant.shell == codewhale_agent_contract::worker_profile::ShellGrant::Inspect
+            {
+                crate::tools::shell::strip_readonly_bash_schema_properties(&mut tool.input_schema);
+            }
             if !is_action_family(&tool.name) {
                 continue;
             }
@@ -1643,18 +1676,19 @@ pub(super) async fn run_child_agent(
     } else {
         prepare_child_membership(runtime, &assignment, &agent_id).await?
     };
-    let owner_agent_name = runtime
-        .manager
-        .read()
-        .await
-        .get_result(&agent_id)
-        .map(|agent| subagent_result_display_name(&agent))
-        .unwrap_or_else(|_| {
-            assignment
-                .role
-                .clone()
-                .unwrap_or_else(|| agent_type.as_str().to_owned())
-        });
+    let (owner_agent_name, executed_actions) = {
+        let manager = runtime.manager.read().await;
+        let name = manager
+            .get_result(&agent_id)
+            .map(|agent| subagent_result_display_name(&agent))
+            .unwrap_or_else(|_| {
+                assignment
+                    .role
+                    .clone()
+                    .unwrap_or_else(|| agent_type.as_str().to_owned())
+            });
+        (name, manager.executed_actions_handle(&agent_id))
+    };
     let identity = format!(
         "You are {owner_agent_name}. Scope: {}. Your final answer is delivered to the parent automatically; include the result and its evidence.",
         if runtime.worker_profile.permissions.write {
@@ -1663,13 +1697,18 @@ pub(super) async fn run_child_agent(
             "read-only"
         }
     );
-    let authority = ChildAuthority::capture(
+    let mut authority = ChildAuthority::capture(
         runtime.clone(),
         agent_type.clone(),
         agent_id.clone(),
         owner_agent_name,
         allowed_tools.clone(),
     );
+    if let Some(actions) = executed_actions
+        && let Some(auth) = Arc::get_mut(&mut authority)
+    {
+        auth.executed_actions = actions;
+    }
     let mut system =
         build_subagent_system_prompt_with_skills(&agent_type, &assignment, &runtime.context);
     if let Some(persona) = runtime
@@ -1802,12 +1841,20 @@ pub async fn forward_child_gate_observation(
     cancel: &CancellationToken,
     deadline: Option<tokio::time::Instant>,
 ) {
-    let Event::ToolGateDecision { agent_id, .. } = &mut event else {
+    let Event::ToolGateDecision {
+        agent_id,
+        receipt_id,
+        call_digest,
+        ..
+    } = &mut event
+    else {
         return;
     };
     if agent_id.is_none() {
         *agent_id = Some(owner.to_owned());
     }
+    *receipt_id = None;
+    *call_digest = None;
     let Some(tx) = runtime.event_tx.as_ref() else {
         return;
     };

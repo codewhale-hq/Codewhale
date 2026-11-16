@@ -610,10 +610,7 @@ fn start_background_gates(
 
         let command = render_gate_command(program, &gate.args)?;
         let mut env: HashMap<String, String> = gate.env.into_iter().collect();
-        env.insert(
-            crate::tools::shell::AGENT_PROJECT_ENV.to_string(),
-            context.workspace.to_string_lossy().into_owned(),
-        );
+        crate::tools::shell::insert_agent_mark_env(&mut env, context);
         let spawn_result = {
             let mut manager = context
                 .shell_manager

@@ -5,6 +5,7 @@
 use super::turn_loop::usage_has_reported_data;
 use super::*;
 use crate::core::authority::auto_review::AutoReviewPolicy;
+use crate::core::ops::TurnInputAuthorship;
 use crate::rlm::bridge::{RlmUsageAccumulator, RlmUsageReservation, wait_for_deadline};
 use crate::rlm::turn::{RlmRoundTrace, RlmTermination, RlmTurnResult};
 use anyhow::anyhow;
@@ -549,6 +550,7 @@ impl Engine {
             hook_executor: self.config.hook_executor.clone(),
             verbosity: None,
             provenance: UserInputProvenance::Runtime,
+            input_authorship: TurnInputAuthorship::NotPerson,
             submission_id: None,
             max_output_tokens,
         })

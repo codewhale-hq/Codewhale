@@ -1053,7 +1053,12 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             gate,
             decision,
             risk,
+            reviewer_model,
             reason,
+            rule,
+            receipt_id,
+            call_digest,
+            action_summary,
         } => wire::EventMsg::ToolGateDecision {
             thread_id,
             session_id,
@@ -1063,7 +1068,21 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             gate: gate_to_wire(*gate),
             decision: verdict_to_wire(*decision),
             risk: risk.clone(),
+            reviewer_model: reviewer_model.clone(),
             reason: reason.clone(),
+            rule: rule.clone(),
+            receipt_id: receipt_id.clone(),
+            call_digest: call_digest.clone(),
+            action_summary: action_summary.clone(),
+        },
+        Event::AutoReviewPaused {
+            reason,
+            approval_mode,
+        } => wire::EventMsg::AutoReviewPaused {
+            thread_id,
+            session_id,
+            reason: reason.clone(),
+            approval_mode: approval_mode_str(*approval_mode).to_string(),
         },
         Event::AdvisoryNote {
             turn_id,
@@ -1236,6 +1255,11 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
         Op::SetStreamChunkTimeout { timeout_secs } => wire_op::Op::SetStreamChunkTimeout {
             timeout_secs: *timeout_secs,
         },
+        Op::SetAutoReviewReviewerModel { reviewer_model } => {
+            wire_op::Op::SetAutoReviewReviewerModel {
+                reviewer_model: reviewer_model.clone(),
+            }
+        }
         Op::SetSubagentRuntimeConfig {
             enabled,
             max_subagents,
@@ -1272,6 +1296,7 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
             model,
             workspace,
             mode,
+            agent_preset,
             ..
         } => wire_op::Op::SyncSession {
             expected: expected.as_ref().map(to_value),
@@ -1282,6 +1307,7 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
             model: model.clone(),
             workspace: workspace.clone(),
             mode: app_mode_str(*mode).to_string(),
+            agent_preset: agent_preset.clone(),
         },
         Op::RewindConversation {
             expected, messages, ..
@@ -1667,7 +1693,16 @@ mod tests {
                 gate: ToolGate::AutoReviewGuardian,
                 decision: ToolGateVerdict::Unavailable,
                 risk: None,
+                reviewer_model: None,
                 reason: "timeout".into(),
+                rule: Some("guardian-unavailable".into()),
+                receipt_id: Some("ar-1".into()),
+                call_digest: Some("d1".into()),
+                action_summary: Some("bash: ls".into()),
+            },
+            Event::AutoReviewPaused {
+                reason: "Auto-Review paused after 3 blocked calls in a row; Shift+Tab or /auto to resume".into(),
+                approval_mode: ApprovalMode::Suggest,
             },
             Event::WorkflowUi {
                 owner_session_id: "owner".into(),
@@ -1750,6 +1785,7 @@ mod tests {
             system_prompt: None,
             instruction_assembly: None,
             mode: "agent".into(),
+            agent_preset: None,
         };
         let (tx, mut receive) = tokio::sync::oneshot::channel();
         let op = Op::RewindConversation {
@@ -1792,6 +1828,9 @@ mod tests {
                 text: "go".into(),
             },
             Op::SetStreamChunkTimeout { timeout_secs: 30 },
+            Op::SetAutoReviewReviewerModel {
+                reviewer_model: Some("claude-sonnet-5-5".into()),
+            },
             Op::SetSubagentRuntimeConfig {
                 enabled: true,
                 max_subagents: 4,
@@ -1850,8 +1889,12 @@ mod tests {
             serde_json::to_value(ops[0].to_protocol()).unwrap(),
             json!({"kind": "set_goal_status", "status": "paused", "clear": false})
         );
+        let snapshot = ops
+            .iter()
+            .find(|op| matches!(op, Op::GetSessionSnapshot { .. }))
+            .unwrap();
         assert_eq!(
-            serde_json::to_value(ops[8].to_protocol()).unwrap(),
+            serde_json::to_value(snapshot.to_protocol()).unwrap(),
             json!({"kind": "get_session_snapshot"}),
             "reply channels must not leak onto the wire"
         );

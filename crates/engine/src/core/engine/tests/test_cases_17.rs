@@ -251,6 +251,7 @@ async fn run_headless_turn_with_flaky_network(
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -612,6 +613,7 @@ async fn terminal_output_limit_followed_by_stream_error_is_charged_and_not_retri
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -709,6 +711,7 @@ async fn error_frame_turn_events(turns: Vec<Vec<StreamEvent>>) -> (Vec<Event>, u
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -917,6 +920,7 @@ async fn midstream_error_frame_stops_the_stream_and_drops_trailing_deltas() {
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -1186,6 +1190,7 @@ async fn run_interactive_turn_with_flaky_network(
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await

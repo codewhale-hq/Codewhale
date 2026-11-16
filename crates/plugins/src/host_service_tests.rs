@@ -564,6 +564,36 @@ fn the_agent_is_an_approver_only_with_the_token_of_its_own_review_and_in_its_own
         alphas.lines[0].shared_with.is_empty(),
         "a reviewed plugin shares nothing with an agent-approved one"
     );
+
+    let auto_review_agent = PluginApprover::auto_review(
+        &config.workspace,
+        Some("th".into()),
+        Some("tr".into()),
+        Some("tc".into()),
+    );
+    assert_eq!(
+        crate::host_services::approver_label(Some(&auto_review_agent)),
+        "approved by the agent in Auto-Review"
+    );
+    let missing_call_id = PluginApprover::auto_review(
+        &config.workspace,
+        Some("th".into()),
+        Some("tr".into()),
+        None,
+    );
+    let missing_err = registry
+        .trust_reviewed(
+            "beta",
+            ReviewApproval {
+                approved_by: missing_call_id,
+                host_services: Some(agents_review.token.clone()),
+            },
+        )
+        .unwrap_err();
+    assert!(
+        missing_err.contains("must name the thread, turn and tool call"),
+        "{missing_err}"
+    );
 }
 
 #[test]
@@ -1172,4 +1202,198 @@ fn v0_10_2_reads_this_state_file_until_a_plugin_is_reviewed_or_turned_on_here() 
     registry.trust("beta").unwrap();
     let refused = older(&config).unwrap_err().to_string();
     assert!(refused.contains("unknown field `version`"), "{refused}");
+}
+
+#[test]
+fn an_identical_reinstall_cannot_match_a_registry_read_before_the_removal() {
+    let _policy = TestPolicyGuard::extension_host(true);
+    let tmp = tempfile::tempdir().unwrap();
+    let config = config(tmp.path());
+
+    write_plugin(&config, "alpha", &[], "export function apply() {}\n");
+    let by_agent = agent(&config, AgentPosture::FullAccess);
+    let mut first = discover_with_config(&config);
+    approve(&mut first, "alpha", by_agent.clone());
+
+    let stale = discover_with_config(&config);
+    let stale_staged = stale.get("alpha").unwrap().staged_root.clone().unwrap();
+    assert!(stale_staged.is_dir());
+
+    discover_with_config(&config)
+        .prune_state_entry("alpha")
+        .unwrap();
+    let mut fresh = discover_with_config(&config);
+    approve(&mut fresh, "alpha", person());
+    assert!(stale_staged.is_dir());
+
+    let before_state = fs::read(&config.state_path).unwrap();
+    let mut stale_review = stale.clone();
+    let shown = stale_review
+        .host_service_review_for("alpha", &by_agent)
+        .map(|review| review.token);
+    let review_refused = stale_review
+        .trust_reviewed(
+            "alpha",
+            ReviewApproval {
+                approved_by: by_agent.clone(),
+                host_services: shown,
+            },
+        )
+        .unwrap_err();
+    assert!(
+        review_refused.contains("state or review changed"),
+        "{review_refused}"
+    );
+    assert_eq!(fs::read(&config.state_path).unwrap(), before_state);
+
+    let mut stale_enable = stale;
+    let enable_refused = stale_enable
+        .enable_by("alpha", by_agent.clone())
+        .unwrap_err();
+    assert!(
+        enable_refused.contains("state or review changed"),
+        "{enable_refused}"
+    );
+    assert_eq!(fs::read(&config.state_path).unwrap(), before_state);
+
+    let install_tmp = tempfile::tempdir().unwrap();
+    let source = install_tmp.path().join("beta-src");
+    fs::create_dir_all(source.join("native")).unwrap();
+    fs::write(
+        source.join("native/index.mjs"),
+        "export function apply() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        source.join("plugin.toml"),
+        "schema_version = 1\n[plugin]\nname = \"beta\"\nversion = \"1.0.0\"\n[native]\npath = \"native/index.mjs\"\n",
+    )
+    .unwrap();
+    let install_config = super::discovery::DiscoveryConfig {
+        workspace: install_tmp.path().join("project"),
+        user_plugins_dir: install_tmp.path().join("user"),
+        workspace_plugins_dir: install_tmp.path().join("workspace"),
+        builtin_plugin_dirs: Vec::new(),
+        state_path: install_tmp.path().join("state/plugin-state.json"),
+    };
+    fs::create_dir_all(&install_config.workspace).unwrap();
+    fs::create_dir_all(&install_config.user_plugins_dir).unwrap();
+    fs::create_dir_all(&install_config.workspace_plugins_dir).unwrap();
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let network = codewhale_net::network_policy::NetworkPolicy::default();
+    let mut reg = discover_with_config(&install_config);
+    let installed_first = runtime
+        .block_on(super::mutation::execute(
+            super::mutation::PluginMutationRequest::Install {
+                source: super::install::PluginInstallSource::parse(source.to_str().unwrap())
+                    .unwrap(),
+            },
+            &super::mutation::PluginMutationContext {
+                network: &network,
+                max_size: super::install::DEFAULT_MAX_SIZE_BYTES,
+            },
+            &mut reg,
+        ))
+        .unwrap();
+    assert_eq!(
+        installed_first.outcome,
+        super::mutation::PluginMutationOutcome::Installed
+    );
+    let same_agent = agent(&install_config, AgentPosture::FullAccess);
+    let mut reg = discover_with_config(&install_config);
+    approve(&mut reg, "beta", same_agent.clone());
+
+    let pre_removal = discover_with_config(&install_config);
+    let first_nonce = pre_removal.get("beta").unwrap().install_nonce.clone();
+    assert!(first_nonce.is_some());
+    let first_staged = pre_removal
+        .get("beta")
+        .unwrap()
+        .staged_root
+        .clone()
+        .unwrap();
+    assert!(first_staged.is_dir());
+
+    let mut deleter = discover_with_config(&install_config);
+    deleter.disable("beta").unwrap();
+    let mut deleter = discover_with_config(&install_config);
+    runtime
+        .block_on(super::mutation::execute(
+            super::mutation::PluginMutationRequest::Uninstall {
+                selector: "beta".to_string(),
+            },
+            &super::mutation::PluginMutationContext {
+                network: &network,
+                max_size: super::install::DEFAULT_MAX_SIZE_BYTES,
+            },
+            &mut deleter,
+        ))
+        .unwrap();
+    assert!(first_staged.is_dir());
+
+    let mut reinstaller = discover_with_config(&install_config);
+    let installed_second = runtime
+        .block_on(super::mutation::execute(
+            super::mutation::PluginMutationRequest::Install {
+                source: super::install::PluginInstallSource::parse(source.to_str().unwrap())
+                    .unwrap(),
+            },
+            &super::mutation::PluginMutationContext {
+                network: &network,
+                max_size: super::install::DEFAULT_MAX_SIZE_BYTES,
+            },
+            &mut reinstaller,
+        ))
+        .unwrap();
+    assert_eq!(
+        installed_second.outcome,
+        super::mutation::PluginMutationOutcome::Installed
+    );
+    let mut after_reinstall = discover_with_config(&install_config);
+    let second_nonce = after_reinstall.get("beta").unwrap().install_nonce.clone();
+    assert_ne!(second_nonce, first_nonce);
+    assert_ne!(
+        after_reinstall.get("beta").unwrap().content_hash,
+        pre_removal.get("beta").unwrap().content_hash
+    );
+    approve(&mut after_reinstall, "beta", same_agent.clone());
+    assert!(first_staged.is_dir());
+
+    let before_reinstall_state = fs::read(&install_config.state_path).unwrap();
+    let mut stale_review = pre_removal.clone();
+    let shown = stale_review
+        .host_service_review_for("beta", &same_agent)
+        .map(|review| review.token);
+    let review_err = stale_review
+        .trust_reviewed(
+            "beta",
+            ReviewApproval {
+                approved_by: same_agent.clone(),
+                host_services: shown,
+            },
+        )
+        .unwrap_err();
+    assert!(
+        review_err.contains("state or review changed"),
+        "{review_err}"
+    );
+    assert_eq!(
+        fs::read(&install_config.state_path).unwrap(),
+        before_reinstall_state
+    );
+
+    let mut stale_enable = pre_removal;
+    let enable_err = stale_enable.enable_by("beta", same_agent).unwrap_err();
+    assert!(
+        enable_err.contains("state or review changed"),
+        "{enable_err}"
+    );
+    assert_eq!(
+        fs::read(&install_config.state_path).unwrap(),
+        before_reinstall_state
+    );
 }

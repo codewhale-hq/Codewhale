@@ -1150,6 +1150,8 @@ pub struct TurnRecord {
     /// carry none, and so have no restore point.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_snapshots: Vec<codewhale_snapshot::WorkspaceSnapshotRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delegated_writes: Vec<String>,
 }
 
 impl TurnRecord {
@@ -1231,6 +1233,7 @@ impl TurnRecord {
                     && self.artifacts.is_empty()
                     && self.workspace.is_none()
                     && self.workspace_snapshots.is_empty()
+                    && self.delegated_writes.is_empty()
                     && self.source_accounting
                     && self.source_usage_records.len() == 1
                     && self

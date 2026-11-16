@@ -6,15 +6,34 @@ use anyhow::{Result, anyhow, bail};
 use codewhale_command_contract::facets::CommandPresentationContext;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_plugins::PluginRegistry;
-use codewhale_plugins::host_services::{PersonVia, PluginApprover, ReviewApproval, approver_label};
-use codewhale_plugins::install::PluginInstallSource;
+use codewhale_plugins::host_services::{
+    AgentPosture, PersonVia, PluginApprover, ReviewApproval, approver_label,
+};
 use codewhale_plugins::types::LoadedPlugin;
 
 use super::render::{ReviewTextContext, escape_review_text, render_bundle_detail};
 use crate::commands::contract::{apply_named_replacements, portable_detail, resolve_message_id};
 
 const AGENT_MARK: &str = "CODEWHALE_AGENT_PROJECT";
-const INSTALLED_FROM: &str = ".installed-from";
+const AGENT_POSTURE: &str = "CODEWHALE_AGENT_POSTURE";
+const AGENT_THREAD_ID: &str = "CODEWHALE_AGENT_THREAD_ID";
+const AGENT_TURN_ID: &str = "CODEWHALE_AGENT_TURN_ID";
+const AGENT_TOOL_CALL_ID: &str = "CODEWHALE_AGENT_TOOL_CALL_ID";
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AgentRunProvenance {
+    pub(crate) posture: Option<AgentPosture>,
+    pub(crate) thread_id: Option<String>,
+    pub(crate) turn_id: Option<String>,
+    pub(crate) tool_call_id: Option<String>,
+}
+
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
 
 pub(crate) fn agent_project() -> Option<PathBuf> {
     std::env::var_os(AGENT_MARK)
@@ -25,6 +44,9 @@ pub(crate) fn agent_project() -> Option<PathBuf> {
 pub(crate) trait Console {
     fn interactive(&self) -> bool;
     fn agent_marked(&self) -> bool;
+    fn agent_provenance(&self) -> Result<AgentRunProvenance> {
+        Ok(AgentRunProvenance::default())
+    }
     fn print(&mut self, text: &str);
     fn confirm(&mut self, prompt: &str) -> bool;
 }
@@ -38,6 +60,20 @@ impl Console for ProcessConsole {
 
     fn agent_marked(&self) -> bool {
         agent_project().is_some()
+    }
+
+    fn agent_provenance(&self) -> Result<AgentRunProvenance> {
+        let posture = match non_empty_env(AGENT_POSTURE).as_deref() {
+            None | Some("command_line") => Some(AgentPosture::CommandLine),
+            Some("auto_review") => Some(AgentPosture::AutoReview),
+            Some(other) => bail!("Unsupported {AGENT_POSTURE} value `{other}`"),
+        };
+        Ok(AgentRunProvenance {
+            posture,
+            thread_id: non_empty_env(AGENT_THREAD_ID),
+            turn_id: non_empty_env(AGENT_TURN_ID),
+            tool_call_id: non_empty_env(AGENT_TOOL_CALL_ID),
+        })
     }
 
     fn print(&mut self, text: &str) {
@@ -90,21 +126,48 @@ fn find<'a>(registry: &'a PluginRegistry, locale: Locale, name: &str) -> Result<
     })
 }
 
-fn command_line_approver(registry: &PluginRegistry, marked: bool) -> PluginApprover {
-    PluginApprover::command_line(marked.then(|| registry.workspace()))
+fn agent_approver(registry: &PluginRegistry, console: &dyn Console) -> Result<PluginApprover> {
+    if !console.agent_marked() {
+        return Ok(PluginApprover::CommandLine);
+    }
+    if let Some(env_path) = agent_project() {
+        let norm_env = codewhale_config::normalize_project_workspace(&env_path)?;
+        let norm_reg = codewhale_config::normalize_project_workspace(registry.workspace())?;
+        if norm_env != norm_reg {
+            bail!(
+                "Agent environment workspace `{}` does not match current workspace `{}`",
+                env_path.display(),
+                registry.workspace().display()
+            );
+        }
+    }
+    let provenance = console.agent_provenance()?;
+    Ok(match provenance.posture {
+        None | Some(AgentPosture::CommandLine) => {
+            PluginApprover::command_line(Some(registry.workspace()))
+        }
+        Some(AgentPosture::AutoReview) => PluginApprover::auto_review(
+            registry.workspace(),
+            provenance.thread_id,
+            provenance.turn_id,
+            provenance.tool_call_id,
+        ),
+        Some(AgentPosture::FullAccess) => bail!(
+            "Unsupported {AGENT_POSTURE} value for a shell command: `full_access` is reserved for direct agent tool calls"
+        ),
+    })
 }
 
 fn host_service_lines(
     registry: &PluginRegistry,
     plugin: &LoadedPlugin,
-    marked: bool,
+    approver: &PluginApprover,
 ) -> Vec<String> {
-    let approver = command_line_approver(registry, marked);
     let mut lines = registry
-        .host_service_review_for(plugin.name(), &approver)
+        .host_service_review_for(plugin.name(), approver)
         .map(|review| review.text())
         .unwrap_or_default();
-    if !lines.is_empty() && !marked {
+    if !lines.is_empty() && approver.agent_workspace().is_none() {
         lines.push("A trust from the command line grants none of these host services.".to_string());
     }
     lines
@@ -114,7 +177,7 @@ fn review_text(
     registry: &PluginRegistry,
     plugin: &LoadedPlugin,
     locale: Locale,
-    marked: bool,
+    approver: &PluginApprover,
 ) -> String {
     let mut output = render_bundle_detail(
         &mut Presentation(locale),
@@ -125,7 +188,7 @@ fn review_text(
     if !output.ends_with('\n') {
         output.push('\n');
     }
-    for line in host_service_lines(registry, plugin, marked) {
+    for line in host_service_lines(registry, plugin, approver) {
         output.push_str(&text(&line));
         output.push('\n');
     }
@@ -145,7 +208,7 @@ fn review_json(
     registry: &PluginRegistry,
     plugin: &LoadedPlugin,
     locale: Locale,
-    marked: bool,
+    approver: &PluginApprover,
 ) -> serde_json::Value {
     let mut record = crate::plugin_cli_record(plugin);
     if let Some(object) = record.as_object_mut() {
@@ -157,7 +220,7 @@ fn review_json(
         );
         object.insert(
             "review".to_string(),
-            review_text(registry, plugin, locale, marked).into(),
+            review_text(registry, plugin, locale, approver).into(),
         );
     }
     record
@@ -169,14 +232,25 @@ fn trust_as(
     name: &str,
     approver: PluginApprover,
 ) -> Result<()> {
-    let host_services = match approver {
-        PluginApprover::Agent(_) => {
-            installed_by_the_agent(find(registry, locale, name)?, registry.workspace())?;
-            registry
-                .host_service_review_for(name, &approver)
-                .map(|review| review.token)
+    let host_services = if let PluginApprover::Agent(ref agent) = approver {
+        if let Some(env_project) = agent_project() {
+            let norm_env = codewhale_config::normalize_project_workspace(&env_project)?;
+            let norm_agent =
+                codewhale_config::normalize_project_workspace(Path::new(&agent.workspace))?;
+            if norm_env != norm_agent {
+                bail!(
+                    "Agent approval workspace `{}` does not match environment `{}`",
+                    agent.workspace,
+                    env_project.display()
+                );
+            }
         }
-        PluginApprover::Person { .. } | PluginApprover::CommandLine => None,
+        installed_by_the_agent(find(registry, locale, name)?, registry.workspace())?;
+        registry
+            .host_service_review_for(name, &approver)
+            .map(|review| review.token)
+    } else {
+        None
     };
     Arc::make_mut(registry)
         .trust_reviewed(
@@ -190,29 +264,7 @@ fn trust_as(
 }
 
 fn installed_by_the_agent(plugin: &LoadedPlugin, project: &Path) -> Result<()> {
-    let source = std::fs::read_to_string(plugin.canonical_root.join(INSTALLED_FROM))
-        .ok()
-        .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
-        .and_then(|marker| marker.get("spec")?.as_str().map(str::to_string))
-        .and_then(|spec| PluginInstallSource::parse(&spec).ok());
-    let folder = match source {
-        Some(PluginInstallSource::LocalPath(folder) | PluginInstallSource::Dsh(folder))
-            if folder.is_absolute() =>
-        {
-            Some(folder)
-        }
-        _ => None,
-    };
-    let inside = folder.is_some_and(|folder| {
-        match (
-            std::fs::canonicalize(folder),
-            std::fs::canonicalize(project),
-        ) {
-            (Ok(folder), Ok(project)) => folder.starts_with(project),
-            _ => false,
-        }
-    });
-    if !inside {
+    if !codewhale_plugins::install::installed_by_the_agent(&plugin.canonical_root, project) {
         bail!(
             "The agent may approve only a plugin it installed with `codewhale install` from a folder inside its project, and `{}` was not installed that way. Nothing was changed; ask the person to review it.",
             text(plugin.name())
@@ -302,14 +354,14 @@ pub(crate) fn show(
     json: bool,
     console: &mut dyn Console,
 ) -> Result<()> {
-    let marked = console.agent_marked();
+    let approver = agent_approver(registry, console)?;
     let plugin = find(registry, locale, name)?;
     if json {
         console.print(&serde_json::to_string_pretty(&review_json(
-            registry, plugin, locale, marked,
+            registry, plugin, locale, &approver,
         ))?);
     } else {
-        console.print(&review_text(registry, plugin, locale, marked));
+        console.print(&review_text(registry, plugin, locale, &approver));
     }
     Ok(())
 }
@@ -333,14 +385,14 @@ pub(crate) fn trust(
         yes,
         json,
     } = request;
-    let marked = console.agent_marked();
+    let resolved_agent_approver = agent_approver(registry, console)?;
     let plugin = find(registry, locale, &name)?;
     let review_again = format!(
         "run `codewhale plugins trust {}` and read the new review",
         shell_word(&text(&name))
     );
-    let prompted = if marked {
-        command_line_approver(registry, true)
+    let prompted = if resolved_agent_approver.agent_workspace().is_some() {
+        resolved_agent_approver.clone()
     } else {
         PluginApprover::person(PersonVia::Terminal)
     };
@@ -358,7 +410,7 @@ pub(crate) fn trust(
         if !console.interactive() {
             console.print(&format!(
                 "\nNot trusted. The bundle review token ties trust to exactly the content shown above; it does not record that anyone read this review. A trust made with it is recorded as {}. To trust, run:\n  {}",
-                approver_label(Some(&command_line_approver(registry, marked))),
+                approver_label(Some(&resolved_agent_approver)),
                 trust_command(plugin)
             ));
             return Ok(());
@@ -384,7 +436,7 @@ pub(crate) fn trust(
         );
     }
     let approver = if yes {
-        command_line_approver(registry, marked)
+        resolved_agent_approver
     } else {
         if json || !console.interactive() {
             bail!(
@@ -554,6 +606,7 @@ pub(crate) fn enable(
     json: bool,
     console: &mut dyn Console,
 ) -> Result<()> {
+    let approver = agent_approver(registry, console)?;
     let plugin = find(registry, locale, name)?;
     if !plugin.trusted() {
         if let Some(error) = registry.state_error() {
@@ -570,7 +623,6 @@ pub(crate) fn enable(
             shell_word(&text(name))
         );
     }
-    let approver = command_line_approver(registry, console.agent_marked());
     Arc::make_mut(registry)
         .enable_by(name, approver)
         .map_err(|error| failed(locale, &error))?;

@@ -3350,4 +3350,992 @@ mod tests {
             "the yes is not for the act that asked: {answer}"
         );
     }
+
+    struct DirectPluginHostTool;
+
+    #[async_trait::async_trait]
+    impl ToolSpec for DirectPluginHostTool {
+        fn name(&self) -> &str {
+            "direct_plugin_host_tool"
+        }
+
+        fn description(&self) -> &str {
+            "Direct plugin host tool requiring approval."
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+
+        fn approval_requirement(&self) -> ApprovalRequirement {
+            ApprovalRequirement::Required
+        }
+
+        fn extension_caller(&self) -> Option<crate::tools::codemode::ExtensionCaller> {
+            Some(crate::tools::codemode::ExtensionCaller {
+                origin: "extension:direct-plugin".to_string(),
+                tool: "direct_plugin_host_tool".to_string(),
+                scope: "ext:user/abcd/direct-plugin@hash99:entry.js@sha:1:1".to_string(),
+            })
+        }
+
+        async fn execute(
+            &self,
+            _input: Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success(r#"{"ran":true}"#.to_string()))
+        }
+    }
+
+    type WorkspaceExecPolicyBuilder =
+        Arc<dyn Fn(&std::path::Path) -> codewhale_execpolicy::ExecPolicyEngine + Send + Sync>;
+
+    struct ExtensionAutoReviewSpec {
+        tool_call_name: String,
+        tool_call_input: Value,
+        config: Config,
+        exec_policy_for_workspace: Option<WorkspaceExecPolicyBuilder>,
+        hook_executor: Option<Arc<crate::hooks::HookExecutor>>,
+        run_origin: crate::core::authority::RunOrigin,
+        owner_present: bool,
+        guardian_verdicts: Vec<(bool, &'static str)>,
+        auto_approve: bool,
+        approval_mode: codewhale_execpolicy::ApprovalMode,
+        app_mode: AppMode,
+    }
+
+    impl Default for ExtensionAutoReviewSpec {
+        fn default() -> Self {
+            Self {
+                tool_call_name: FAKE_EXT.to_string(),
+                tool_call_input: json!({"calls": []}),
+                config: Config::default(),
+                exec_policy_for_workspace: None,
+                hook_executor: None,
+                run_origin: crate::core::authority::RunOrigin::Interactive,
+                owner_present: true,
+                guardian_verdicts: Vec::new(),
+                auto_approve: false,
+                approval_mode: codewhale_execpolicy::ApprovalMode::Auto,
+                app_mode: AppMode::Agent,
+            }
+        }
+    }
+
+    struct ExtensionAutoReviewOutcome {
+        tmp: tempfile::TempDir,
+        seen: Vec<Event>,
+        guardian_docs: Vec<Value>,
+        tool_result: Option<Value>,
+        session_id: String,
+        turn_id: String,
+    }
+
+    async fn run_extension_auto_review_fixture(
+        spec: ExtensionAutoReviewSpec,
+    ) -> ExtensionAutoReviewOutcome {
+        let tmp = tempfile::tempdir().expect("fixture directory");
+        std::fs::write(tmp.path().join("a.txt"), "alpha").expect("fixture file");
+        let guardian_docs = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let mock = Arc::new(MockLlmClient::new(vec![canned::tool_call_turn(
+            "ext-1",
+            &spec.tool_call_name,
+            &spec.tool_call_input.to_string(),
+        )]));
+        for (allow, reason) in spec.guardian_verdicts {
+            let docs = guardian_docs.clone();
+            mock.push_factory(move |request| {
+                assert_eq!(request.stream, Some(false), "expected guardian request");
+                let text = match &request.messages[0].content[0] {
+                    ContentBlock::Text { text, .. } => text.as_str(),
+                    _ => panic!("expected guardian text"),
+                };
+                let doc: Value = serde_json::from_str(text).expect("guardian json");
+                docs.lock().expect("docs lock").push(doc);
+                let payload = if allow {
+                    json!({
+                        "risk_level": "low",
+                        "decision": "allow",
+                        "reason": reason,
+                    })
+                } else {
+                    json!({
+                        "risk_level": "high",
+                        "decision": "deny",
+                        "reason": reason,
+                    })
+                };
+                canned::simple_text_turn(&payload.to_string())
+            });
+        }
+        mock.push_factory(|request| {
+            assert_ne!(
+                request.stream,
+                Some(false),
+                "unexpected extra guardian request"
+            );
+            canned::simple_text_turn("Extension finished.")
+        });
+
+        let mut engine_config = EngineConfig {
+            workspace: tmp.path().to_path_buf(),
+            snapshots_enabled: false,
+            subagents_enabled: false,
+            terminal_chrome_enabled: false,
+            hook_executor: spec.hook_executor,
+            auto_review_policy: crate::core::authority::auto_review::AutoReviewPolicy::from_config(
+                &spec.config,
+            ),
+            ..EngineConfig::default()
+        };
+        if let Some(build_policy) = spec.exec_policy_for_workspace {
+            engine_config.exec_policy_engine = build_policy(tmp.path());
+        }
+        let (mut engine, handle) = Engine::new_with_model_client(engine_config, &spec.config, mock);
+        engine.session.auto_approve = spec.auto_approve;
+        engine.session.approval_mode = spec.approval_mode;
+        engine.turn_run_origin = spec.run_origin;
+        engine.turn_owner_present = spec.owner_present;
+        engine.session.mcp_config_path = tmp.path().join("mcp.json");
+        engine.session.add_message(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "Run the extension action.".into(),
+                cache_control: None,
+            }],
+        });
+        let store = crate::approval_log::ApprovalReceiptStore::new(tmp.path().join("sessions"));
+        engine.approval_receipt_store = Ok(store);
+        let session_id = engine.session.id.clone();
+        let mut context = ToolContext::new(tmp.path()).with_state_namespace(session_id.clone());
+        context.auto_approve = spec.auto_approve;
+        let withdraw = Arc::new(tokio::sync::Notify::new());
+        let mut registry = crate::tools::registry::ToolRegistryBuilder::new()
+            .with_file_tools()
+            .with_shell_tools()
+            .with_web_tools()
+            .build(context);
+        registry.register(Arc::new(FakeExtensionTool { withdraw }));
+        registry.register(Arc::new(DirectPluginHostTool));
+        for gate in crate::extension_host::dsh_broker::BrokerActTool::all() {
+            registry.register(gate);
+        }
+        let catalog = registry.to_api_tools_with_cache(true);
+        let surface = ToolSurfacePolicy::new(
+            registry,
+            Some(catalog),
+            spec.app_mode,
+            &engine.config.tools_always_load,
+            &[],
+            false,
+            None,
+            None,
+            Some(16),
+            crate::core::engine::tool_catalog::ToolMode::Direct,
+        );
+        let events = handle.rx_event.clone();
+        let mut turn_ctx = TurnContext::new(8);
+        let turn_id = turn_ctx.id.clone();
+        tokio::time::timeout(EXTENSION_HARNESS_DEADLINE, async {
+            engine.run_turn(&mut turn_ctx, surface, None, None).await;
+        })
+        .await
+        .expect("turn deadline");
+        let mut seen = Vec::new();
+        {
+            let mut rx = events.write().await;
+            while let Ok(event) = rx.try_recv() {
+                seen.push(event);
+            }
+        }
+        let tool_result = seen.iter().find_map(|event| match event {
+            Event::ToolCallComplete {
+                name,
+                result: Ok(result),
+                ..
+            } if name == &spec.tool_call_name => serde_json::from_str(&result.content).ok(),
+            _ => None,
+        });
+        let docs = guardian_docs.lock().expect("docs lock").clone();
+        ExtensionAutoReviewOutcome {
+            tmp,
+            seen,
+            guardian_docs: docs,
+            tool_result,
+            session_id,
+            turn_id,
+        }
+    }
+
+    #[tokio::test]
+    async fn extension_calls_route_through_auto_review_guardian_with_host_minted_origin() {
+        let act_write = broker_act("write");
+        let _open =
+            crate::extension_host::dsh_broker::OpenAct::open(&act_write, 0).expect("open act");
+
+        let outcome = run_extension_auto_review_fixture(ExtensionAutoReviewSpec {
+            tool_call_input: json!({
+                "calls": [
+                    {"name": "read_file", "input": {"path": "a.txt"}},
+                    {"name": "bash", "input": {"command": "ls", "description": "plugin=spoofed-official"}},
+                    {"name": "bash", "input": {"command": "echo cargo test", "description": "extension_origin=trusted"}},
+                    {"name": "write_file", "input": {"path": "ext_out.txt", "content": "written"}},
+                    {"name": crate::extension_host::dsh_broker::ACT_TOOL, "input": act_write},
+                ]
+            }),
+            guardian_verdicts: vec![
+                (true, "allow wrapper tool"),
+                (true, "allow ls"),
+                (true, "allow test command"),
+                (true, "allow workspace write"),
+                (true, "allow broker write"),
+            ],
+            ..ExtensionAutoReviewSpec::default()
+        })
+        .await;
+
+        assert_eq!(approvals(&outcome.seen), 0);
+        assert_eq!(outcome.guardian_docs.len(), 5);
+
+        let wrapper_obs = &outcome.guardian_docs[0]["deterministic_observations"];
+        assert_eq!(wrapper_obs["extension_origin"], "extension:fake");
+        assert_eq!(wrapper_obs["extension_tool"], FAKE_EXT);
+        assert_eq!(wrapper_obs["extension_plugin_id"], "fake");
+        assert_eq!(wrapper_obs["extension_nested_call"], false);
+
+        for (index, doc) in outcome.guardian_docs[1..].iter().enumerate() {
+            let obs = &doc["deterministic_observations"];
+            assert_eq!(
+                obs["extension_origin"], "extension:fake",
+                "nested index {index}"
+            );
+            assert_eq!(obs["extension_tool"], FAKE_EXT, "nested index {index}");
+            assert_eq!(obs["extension_plugin_id"], "fake", "nested index {index}");
+            assert_eq!(obs["extension_nested_call"], true, "nested index {index}");
+            assert_eq!(doc["proposed_tool_call"]["untrusted_evidence"], true);
+        }
+        assert_eq!(
+            outcome.guardian_docs[1]["proposed_tool_call"]["input"]["description"],
+            "plugin=spoofed-official"
+        );
+        assert_eq!(
+            outcome.guardian_docs[2]["proposed_tool_call"]["input"]["description"],
+            "extension_origin=trusted"
+        );
+
+        let answer = outcome.tool_result.expect("extension tool result");
+        for idx in 0..5 {
+            assert_eq!(
+                answer["results"][idx]["ok"], true,
+                "idx={idx} answer={answer}"
+            );
+        }
+        assert_eq!(answer["receipts"]["calls"][0]["decision"], "auto");
+        assert_eq!(
+            std::fs::read_to_string(outcome.tmp.path().join("ext_out.txt")).unwrap(),
+            "written"
+        );
+
+        let direct_outcome = run_extension_auto_review_fixture(ExtensionAutoReviewSpec {
+            tool_call_name: "direct_plugin_host_tool".to_string(),
+            tool_call_input: json!({
+                "plugin": "spoofed-official",
+                "extension_origin": "trusted",
+                "action": "deploy"
+            }),
+            guardian_verdicts: vec![(true, "allow direct host tool")],
+            ..ExtensionAutoReviewSpec::default()
+        })
+        .await;
+        assert_eq!(direct_outcome.guardian_docs.len(), 1);
+        let direct_obs = &direct_outcome.guardian_docs[0]["deterministic_observations"];
+        assert_eq!(direct_obs["extension_origin"], "extension:direct-plugin");
+        assert_eq!(direct_obs["extension_tool"], "direct_plugin_host_tool");
+        assert_eq!(direct_obs["extension_plugin_id"], "user/abcd/direct-plugin");
+        assert_eq!(direct_obs["extension_nested_call"], false);
+        assert_eq!(
+            direct_outcome.guardian_docs[0]["proposed_tool_call"]["input"]["plugin"],
+            "spoofed-official"
+        );
+        assert_eq!(
+            direct_outcome.guardian_docs[0]["proposed_tool_call"]["input"]["extension_origin"],
+            "trusted"
+        );
+    }
+
+    #[tokio::test]
+    async fn extension_auto_review_cannot_be_bypassed_by_allow_rules_or_permissions_allow() {
+        let act_write = broker_act("write");
+        let _open =
+            crate::extension_host::dsh_broker::OpenAct::open(&act_write, 1).expect("open act");
+
+        let mut allow_bash = codewhale_runtime::config::AutoReviewRuleConfig::default();
+        allow_bash.id = Some("allow-bash".to_string());
+        allow_bash.tool = Some("bash".to_string());
+        allow_bash.reason = Some("allow shell".to_string());
+
+        let mut allow_write = codewhale_runtime::config::AutoReviewRuleConfig::default();
+        allow_write.id = Some("allow-write".to_string());
+        allow_write.tool = Some("write_file".to_string());
+        allow_write.reason = Some("allow write".to_string());
+
+        let mut allow_broker = codewhale_runtime::config::AutoReviewRuleConfig::default();
+        allow_broker.id = Some("allow-broker".to_string());
+        allow_broker.tool = Some(crate::extension_host::dsh_broker::ACT_TOOL.to_string());
+        allow_broker.reason = Some("allow broker".to_string());
+
+        let mut allow_direct = codewhale_runtime::config::AutoReviewRuleConfig::default();
+        allow_direct.id = Some("allow-direct".to_string());
+        allow_direct.tool = Some("direct_plugin_host_tool".to_string());
+        allow_direct.reason = Some("allow direct".to_string());
+
+        let mut config = Config::default();
+        config.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+            disabled: false,
+            reviewer_model: None,
+            allow: vec![allow_bash, allow_write, allow_broker, allow_direct],
+            block: Vec::new(),
+            environment: Vec::new(),
+            ..Default::default()
+        });
+
+        let exec_policy_for_workspace: WorkspaceExecPolicyBuilder =
+            Arc::new(|workspace: &std::path::Path| {
+                let ws = workspace.to_string_lossy().into_owned();
+                codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
+                    codewhale_execpolicy::Ruleset::user(vec![], vec![]).with_ask_rules(vec![
+                        codewhale_execpolicy::ToolAskRule::exec_shell("echo hi")
+                            .into_exact_workspace_allow(ws.clone()),
+                        codewhale_execpolicy::ToolAskRule::file_path("write_file", "b.txt")
+                            .into_exact_workspace_allow(ws),
+                    ]),
+                ])
+            });
+
+        let outcome = run_extension_auto_review_fixture(ExtensionAutoReviewSpec {
+            tool_call_input: json!({
+                "calls": [
+                    {"name": "bash", "input": {"command": "echo hi"}},
+                    {"name": "write_file", "input": {"path": "b.txt", "content": "nope"}},
+                    {"name": crate::extension_host::dsh_broker::ACT_TOOL, "input": act_write},
+                ]
+            }),
+            config: config.clone(),
+            exec_policy_for_workspace: Some(exec_policy_for_workspace.clone()),
+            guardian_verdicts: vec![
+                (true, "allow wrapper tool"),
+                (false, "guardian refused extension shell"),
+                (false, "guardian refused extension write"),
+                (true, "guardian allowed broker act"),
+            ],
+            ..ExtensionAutoReviewSpec::default()
+        })
+        .await;
+
+        let verify_cfg = EngineConfig {
+            exec_policy_engine: exec_policy_for_workspace(outcome.tmp.path()),
+            ..EngineConfig::default()
+        };
+        assert_eq!(
+            crate::core::engine::exec_shell_ask_rule_decision(
+                &verify_cfg,
+                "bash",
+                &json!({"command": "echo hi"}),
+                outcome.tmp.path(),
+                codewhale_execpolicy::ApprovalMode::Auto,
+            ),
+            Some(crate::core::engine::ToolAskRuleDecision::Allow)
+        );
+        assert_eq!(
+            crate::core::engine::file_tool_ask_rule_decision(
+                &verify_cfg,
+                "write_file",
+                &json!({"path": "b.txt", "content": "nope"}),
+                outcome.tmp.path(),
+                codewhale_execpolicy::ApprovalMode::Auto,
+            ),
+            Some(crate::core::engine::ToolAskRuleDecision::Allow)
+        );
+
+        assert_eq!(outcome.guardian_docs.len(), 4);
+        assert_eq!(approvals(&outcome.seen), 0);
+        let answer = outcome.tool_result.expect("extension result");
+        assert_eq!(answer["results"][0]["rejected"], "Refused", "{answer}");
+        assert_eq!(answer["results"][1]["rejected"], "Refused", "{answer}");
+        assert_eq!(answer["results"][2]["ok"], true, "{answer}");
+        assert!(!outcome.tmp.path().join("b.txt").exists());
+
+        let direct_outcome = run_extension_auto_review_fixture(ExtensionAutoReviewSpec {
+            tool_call_name: "direct_plugin_host_tool".to_string(),
+            tool_call_input: json!({}),
+            config,
+            guardian_verdicts: vec![(false, "direct plugin tool requires guardian consent")],
+            ..ExtensionAutoReviewSpec::default()
+        })
+        .await;
+        assert_eq!(direct_outcome.guardian_docs.len(), 1);
+        assert_eq!(
+            direct_outcome.guardian_docs[0]["deterministic_observations"]["extension_origin"],
+            "extension:direct-plugin"
+        );
+        assert_eq!(
+            direct_outcome.guardian_docs[0]["deterministic_observations"]["extension_plugin_id"],
+            "user/abcd/direct-plugin"
+        );
+        assert_eq!(
+            direct_outcome.guardian_docs[0]["deterministic_observations"]["extension_nested_call"],
+            false
+        );
+        assert!(direct_outcome.seen.iter().any(|event| matches!(
+            event,
+            Event::ToolGateDecision {
+                tool_name,
+                gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                decision: crate::core::events::ToolGateVerdict::Denied,
+                receipt_id: None,
+                call_digest: None,
+                ..
+            } if tool_name == "direct_plugin_host_tool"
+        )));
+    }
+
+    #[tokio::test]
+    async fn extension_auto_review_runaway_denials_stop_after_three_consecutive_denials() {
+        let input = json!({
+            "calls": [
+                {"name": "bash", "input": {"command": "echo 1"}},
+                {"name": "bash", "input": {"command": "echo 2"}},
+                {"name": "bash", "input": {"command": "echo 3"}},
+                {"name": "bash", "input": {"command": "echo 4"}},
+            ]
+        });
+        let tmp = tempfile::tempdir().expect("fixture directory");
+        std::fs::write(tmp.path().join("a.txt"), "alpha").expect("fixture file");
+        let guardian_docs = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let mock = Arc::new(MockLlmClient::new(vec![canned::tool_call_turn(
+            "ext-1",
+            FAKE_EXT,
+            &input.to_string(),
+        )]));
+        for (allow, reason) in [
+            (true, "allow wrapper tool"),
+            (false, "deny 1"),
+            (false, "deny 2"),
+            (false, "deny 3"),
+        ] {
+            let docs = guardian_docs.clone();
+            mock.push_factory(move |request| {
+                assert_eq!(request.stream, Some(false), "expected guardian request");
+                let text = match &request.messages[0].content[0] {
+                    ContentBlock::Text { text, .. } => text.as_str(),
+                    _ => panic!("expected guardian text"),
+                };
+                docs.lock()
+                    .expect("docs lock")
+                    .push(serde_json::from_str(text).expect("guardian json"));
+                canned::simple_text_turn(
+                    &json!({
+                        "risk_level": if allow { "low" } else { "high" },
+                        "decision": if allow { "allow" } else { "deny" },
+                        "reason": reason,
+                    })
+                    .to_string(),
+                )
+            });
+        }
+        mock.push_factory(|request| {
+            assert_ne!(
+                request.stream,
+                Some(false),
+                "unexpected extra guardian request after PauseToAsk"
+            );
+            canned::simple_text_turn("Extension finished.")
+        });
+        let (mut engine, handle) = Engine::new_with_model_client(
+            EngineConfig {
+                workspace: tmp.path().to_path_buf(),
+                snapshots_enabled: false,
+                subagents_enabled: false,
+                terminal_chrome_enabled: false,
+                ..EngineConfig::default()
+            },
+            &Config::default(),
+            mock,
+        );
+        engine.session.approval_mode = codewhale_execpolicy::ApprovalMode::Auto;
+        engine.turn_run_origin = crate::core::authority::RunOrigin::Interactive;
+        engine.turn_owner_present = true;
+        engine.approval_receipt_store = Ok(crate::approval_log::ApprovalReceiptStore::new(
+            tmp.path().join("sessions"),
+        ));
+        let session_id = engine.session.id.clone();
+        let store = engine.approval_receipt_store.as_ref().unwrap().clone();
+        let withdraw = Arc::new(tokio::sync::Notify::new());
+        let mut reg = crate::tools::registry::ToolRegistryBuilder::new()
+            .with_file_tools()
+            .with_shell_tools()
+            .build(ToolContext::new(tmp.path()));
+        reg.register(Arc::new(FakeExtensionTool {
+            withdraw: withdraw.clone(),
+        }));
+        let cat = reg.to_api_tools_with_cache(true);
+        let surface = ToolSurfacePolicy::new(
+            reg,
+            Some(cat),
+            AppMode::Agent,
+            &engine.config.tools_always_load,
+            &[],
+            false,
+            None,
+            None,
+            Some(8),
+            crate::core::engine::tool_catalog::ToolMode::Direct,
+        );
+        let events = handle.rx_event.clone();
+        let task = tokio::spawn(async move {
+            let mut turn_ctx = TurnContext::new(8);
+            engine.run_turn(&mut turn_ctx, surface, None, None).await
+        });
+        let mut turn = ExtensionTurn {
+            tmp,
+            task,
+            events: events.clone(),
+            handle,
+            store,
+            session_id,
+            withdraw,
+        };
+        let mut seen = Vec::new();
+        let approval_ev = next_approval_event(&events, &mut seen).await;
+        assert!(seen.iter().any(|event| matches!(
+            event,
+            Event::AutoReviewPaused {
+                approval_mode: codewhale_execpolicy::ApprovalMode::Suggest,
+                ..
+            }
+        )));
+        let (id, tool, _, key, _, force) = approval_fields(&approval_ev);
+        assert_eq!(tool, "bash");
+        assert!(force);
+        assert!(key.starts_with("extcall:ext:fake@h1:"), "{key}");
+        assert_eq!(guardian_docs.lock().expect("docs lock").len(), 4);
+        turn.handle.approve_tool_call(id).await.expect("approve");
+        let answer = finish_extension_turn(&mut turn, &mut seen).await;
+        for idx in 0..3 {
+            assert_eq!(
+                answer["results"][idx]["rejected"], "Refused",
+                "idx={idx} {answer}"
+            );
+        }
+        assert_eq!(answer["results"][3]["ok"], true, "{answer}");
+
+        let unattended = run_extension_auto_review_fixture(ExtensionAutoReviewSpec {
+            tool_call_input: input,
+            run_origin: crate::core::authority::RunOrigin::Headless,
+            owner_present: false,
+            guardian_verdicts: vec![
+                (true, "allow wrapper tool"),
+                (false, "deny 1"),
+                (false, "deny 2"),
+                (false, "deny 3"),
+                (false, "deny 4"),
+            ],
+            ..ExtensionAutoReviewSpec::default()
+        })
+        .await;
+        assert_eq!(unattended.guardian_docs.len(), 5);
+        assert_eq!(approvals(&unattended.seen), 0);
+        assert!(
+            !unattended
+                .seen
+                .iter()
+                .any(|event| matches!(event, Event::AutoReviewPaused { .. }))
+        );
+        let unattended_answer = unattended.tool_result.expect("unattended result");
+        for idx in 0..4 {
+            assert_eq!(
+                unattended_answer["results"][idx]["rejected"], "Refused",
+                "idx={idx} {unattended_answer}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn extension_auto_review_preserves_forced_prompts_blocks_and_unattended_refusal() {
+        let mut block_write = codewhale_runtime::config::AutoReviewRuleConfig::default();
+        block_write.id = Some("block-ext-write".to_string());
+        block_write.tool = Some("write_file".to_string());
+        block_write.reason = Some("block extension write".to_string());
+
+        let mut config = Config::default();
+        config.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+            disabled: false,
+            reviewer_model: None,
+            allow: Vec::new(),
+            block: vec![block_write],
+            environment: Vec::new(),
+            ..Default::default()
+        });
+
+        let hooks = tempfile::tempdir().expect("hook directory");
+        let hook = codewhale_config::hooks::Hook::new(
+            codewhale_config::hooks::HookEvent::ToolCallBefore,
+            r#"printf '%s' '{"decision":"ask","reason":"hook asks for confirmation"}'"#,
+        )
+        .with_condition(codewhale_config::hooks::HookCondition::ToolName {
+            name: "bash".to_string(),
+        });
+        let executor = Arc::new(crate::hooks::HookExecutor::new(
+            codewhale_config::hooks::HooksConfig {
+                enabled: true,
+                hooks: vec![hook],
+                ..codewhale_config::hooks::HooksConfig::default()
+            },
+            hooks.path().to_path_buf(),
+        ));
+
+        let unattended = run_extension_auto_review_fixture(ExtensionAutoReviewSpec {
+            tool_call_input: json!({
+                "calls": [
+                    {"name": "write_file", "input": {"path": "blocked.txt", "content": "nope"}},
+                    {"name": "bash", "input": {"command": "echo gated"}},
+                    {"name": "bash", "input": {"command": "echo allowed_unattended"}},
+                ]
+            }),
+            config: config.clone(),
+            hook_executor: None,
+            run_origin: crate::core::authority::RunOrigin::Headless,
+            owner_present: false,
+            guardian_verdicts: vec![
+                (true, "allow wrapper tool"),
+                (true, "allow headless bash 1"),
+                (true, "allow headless bash 2"),
+            ],
+            ..ExtensionAutoReviewSpec::default()
+        })
+        .await;
+        assert_eq!(approvals(&unattended.seen), 0);
+        let unattended_answer = unattended.tool_result.expect("unattended answer");
+        assert_eq!(unattended_answer["results"][0]["rejected"], "Refused");
+        assert_eq!(unattended_answer["results"][1]["ok"], true);
+        assert_eq!(unattended_answer["results"][2]["ok"], true);
+
+        let unattended_hooked = run_extension_auto_review_fixture(ExtensionAutoReviewSpec {
+            tool_call_input: json!({
+                "calls": [
+                    {"name": "bash", "input": {"command": "echo hooked"}},
+                ]
+            }),
+            config: Config::default(),
+            hook_executor: Some(executor.clone()),
+            run_origin: crate::core::authority::RunOrigin::Headless,
+            owner_present: false,
+            guardian_verdicts: vec![(true, "allow wrapper tool")],
+            ..ExtensionAutoReviewSpec::default()
+        })
+        .await;
+        assert_eq!(approvals(&unattended_hooked.seen), 0);
+        assert_eq!(unattended_hooked.guardian_docs.len(), 1);
+        let unattended_hook_ans = unattended_hooked
+            .tool_result
+            .expect("hooked unattended answer");
+        assert_eq!(unattended_hook_ans["results"][0]["rejected"], "Refused");
+        assert!(
+            unattended_hook_ans["results"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("interactive owner surface"),
+            "{unattended_hook_ans}"
+        );
+
+        let interactive_tmp = tempfile::tempdir().expect("fixture directory");
+        std::fs::write(interactive_tmp.path().join("a.txt"), "alpha").expect("fixture file");
+        let interactive_mock = Arc::new(MockLlmClient::new(vec![
+            canned::tool_call_turn(
+                "ext-1",
+                FAKE_EXT,
+                &json!({"calls": [{"name": "bash", "input": {"command": "echo interactive-hook"}}]}).to_string(),
+            ),
+            canned::simple_text_turn(
+                r#"{"risk_level":"low","decision":"allow","reason":"allow wrapper"}"#,
+            ),
+            canned::simple_text_turn("Extension finished."),
+        ]));
+        let (mut interactive_engine, interactive_handle) = Engine::new_with_model_client(
+            EngineConfig {
+                workspace: interactive_tmp.path().to_path_buf(),
+                snapshots_enabled: false,
+                subagents_enabled: false,
+                terminal_chrome_enabled: false,
+                hook_executor: Some(executor),
+                ..EngineConfig::default()
+            },
+            &Config::default(),
+            interactive_mock,
+        );
+        interactive_engine.session.approval_mode = codewhale_execpolicy::ApprovalMode::Auto;
+        interactive_engine.turn_run_origin = crate::core::authority::RunOrigin::Interactive;
+        interactive_engine.turn_owner_present = true;
+        interactive_engine.approval_receipt_store = Ok(
+            crate::approval_log::ApprovalReceiptStore::new(interactive_tmp.path().join("sessions")),
+        );
+        let ctx = ToolContext::new(interactive_tmp.path());
+        let withdraw = Arc::new(tokio::sync::Notify::new());
+        let mut reg = crate::tools::registry::ToolRegistryBuilder::new()
+            .with_file_tools()
+            .with_shell_tools()
+            .build(ctx);
+        reg.register(Arc::new(FakeExtensionTool {
+            withdraw: withdraw.clone(),
+        }));
+        let cat = reg.to_api_tools_with_cache(true);
+        let surface = ToolSurfacePolicy::new(
+            reg,
+            Some(cat),
+            AppMode::Agent,
+            &interactive_engine.config.tools_always_load,
+            &[],
+            false,
+            None,
+            None,
+            Some(8),
+            crate::core::engine::tool_catalog::ToolMode::Direct,
+        );
+        let events = interactive_handle.rx_event.clone();
+        let store = interactive_engine
+            .approval_receipt_store
+            .as_ref()
+            .unwrap()
+            .clone();
+        let session_id = interactive_engine.session.id.clone();
+        let task = tokio::spawn(async move {
+            let mut turn_ctx = TurnContext::new(8);
+            interactive_engine
+                .run_turn(&mut turn_ctx, surface, None, None)
+                .await
+        });
+        let mut turn = ExtensionTurn {
+            tmp: interactive_tmp,
+            task,
+            events: events.clone(),
+            handle: interactive_handle,
+            store,
+            session_id,
+            withdraw,
+        };
+        let mut seen = Vec::new();
+        let approval_ev = next_approval_event(&events, &mut seen).await;
+        let (id, tool, description, key, _, force) = approval_fields(&approval_ev);
+        assert_eq!(tool, "bash");
+        assert!(force, "hook ask opens forced interactive approval card");
+        assert!(description.contains("extension:fake"), "{description}");
+        assert!(key.starts_with("extcall:ext:fake@h1:"), "{key}");
+        turn.handle.approve_tool_call(id).await.expect("approve");
+        let interactive_answer = finish_extension_turn(&mut turn, &mut seen).await;
+        assert_eq!(
+            interactive_answer["results"][0]["ok"], true,
+            "{interactive_answer}"
+        );
+    }
+
+    #[tokio::test]
+    async fn extension_calls_in_accept_edits_and_plan_keep_existing_behavior() {
+        let accept_turn = ExtensionAutoReviewSpec {
+            tool_call_input: json!({
+                "calls": [
+                    {"name": "read_file", "input": {"path": "a.txt"}},
+                    {"name": "write_file", "input": {"path": "b.txt", "content": "beta"}},
+                ]
+            }),
+            approval_mode: codewhale_execpolicy::ApprovalMode::AcceptEdits,
+            ..ExtensionAutoReviewSpec::default()
+        };
+        let tmp = tempfile::tempdir().expect("fixture directory");
+        std::fs::write(tmp.path().join("a.txt"), "alpha").expect("fixture file");
+        let mock = Arc::new(MockLlmClient::new(vec![
+            canned::tool_call_turn("ext-1", FAKE_EXT, &accept_turn.tool_call_input.to_string()),
+            canned::simple_text_turn("Extension finished."),
+        ]));
+        let (mut engine, handle) = Engine::new_with_model_client(
+            EngineConfig {
+                workspace: tmp.path().to_path_buf(),
+                snapshots_enabled: false,
+                subagents_enabled: false,
+                terminal_chrome_enabled: false,
+                ..EngineConfig::default()
+            },
+            &Config::default(),
+            mock,
+        );
+        engine.session.approval_mode = accept_turn.approval_mode;
+        engine.approval_receipt_store = Ok(crate::approval_log::ApprovalReceiptStore::new(
+            tmp.path().join("sessions"),
+        ));
+        let mut reg = crate::tools::registry::ToolRegistryBuilder::new()
+            .with_file_tools()
+            .with_shell_tools()
+            .build(ToolContext::new(tmp.path()));
+        let withdraw = Arc::new(tokio::sync::Notify::new());
+        reg.register(Arc::new(FakeExtensionTool {
+            withdraw: withdraw.clone(),
+        }));
+        let cat = reg.to_api_tools_with_cache(true);
+        let surface = ToolSurfacePolicy::new(
+            reg,
+            Some(cat),
+            AppMode::Agent,
+            &engine.config.tools_always_load,
+            &[],
+            false,
+            None,
+            None,
+            Some(8),
+            crate::core::engine::tool_catalog::ToolMode::Direct,
+        );
+        let events = handle.rx_event.clone();
+        let store = engine.approval_receipt_store.as_ref().unwrap().clone();
+        let session_id = engine.session.id.clone();
+        let task = tokio::spawn(async move {
+            engine
+                .run_turn(&mut TurnContext::new(8), surface, None, None)
+                .await
+        });
+        let mut turn = ExtensionTurn {
+            tmp,
+            task,
+            events: events.clone(),
+            handle,
+            store,
+            session_id,
+            withdraw,
+        };
+        let mut seen = Vec::new();
+        let approval_ev = next_approval_event(&events, &mut seen).await;
+        let (id, tool, _, _, _, _) = approval_fields(&approval_ev);
+        assert_eq!(tool, "write_file");
+        turn.handle.approve_tool_call(id).await.expect("approve");
+        let accept_answer = finish_extension_turn(&mut turn, &mut seen).await;
+        assert_eq!(accept_answer["results"][0]["ok"], true);
+        assert_eq!(accept_answer["results"][1]["ok"], true);
+
+        let mut plan_turn = start_extension_turn(
+            json!({"calls": [
+                {"name": "read_file", "input": {"path": "a.txt"}},
+                {"name": "write_file", "input": {"path": "plan_no.txt", "content": "no"}},
+                {"name": "bash", "input": {"command": "echo no"}},
+            ]}),
+            Posture::Plan,
+        );
+        let mut plan_seen = Vec::new();
+        let plan_answer = finish_extension_turn(&mut plan_turn, &mut plan_seen).await;
+        assert_eq!(approvals(&plan_seen), 0);
+        assert_eq!(plan_answer["results"][0]["ok"], true, "{plan_answer}");
+        assert_eq!(
+            plan_answer["results"][1]["rejected"], "Refused",
+            "{plan_answer}"
+        );
+        assert_eq!(
+            plan_answer["results"][2]["rejected"], "Refused",
+            "{plan_answer}"
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_review_shell_propagates_agent_posture_and_provenance_env_while_ask_and_full_access_keep_command_line()
+     {
+        let cmd = {
+            let kind = codewhale_sandbox::shell_dispatcher::global_dispatcher().kind();
+            if kind.is_powershell() {
+                "Write-Output ('{0}|{1}|{2}|{3}|{4}' -f $env:CODEWHALE_AGENT_PROJECT,$env:CODEWHALE_AGENT_POSTURE,$env:CODEWHALE_AGENT_THREAD_ID,$env:CODEWHALE_AGENT_TURN_ID,$env:CODEWHALE_AGENT_TOOL_CALL_ID)"
+            } else if matches!(kind, codewhale_sandbox::shell_dispatcher::ShellKind::Cmd) {
+                "powershell -NoProfile -Command \"Write-Output ('{0}|{1}|{2}|{3}|{4}' -f $env:CODEWHALE_AGENT_PROJECT,$env:CODEWHALE_AGENT_POSTURE,$env:CODEWHALE_AGENT_THREAD_ID,$env:CODEWHALE_AGENT_TURN_ID,$env:CODEWHALE_AGENT_TOOL_CALL_ID)\""
+            } else {
+                "printf '%s|%s|%s|%s|%s' \"$CODEWHALE_AGENT_PROJECT\" \"$CODEWHALE_AGENT_POSTURE\" \"$CODEWHALE_AGENT_THREAD_ID\" \"$CODEWHALE_AGENT_TURN_ID\" \"$CODEWHALE_AGENT_TOOL_CALL_ID\""
+            }
+        };
+
+        let auto_outcome = run_extension_auto_review_fixture(ExtensionAutoReviewSpec {
+            tool_call_name: "bash".to_string(),
+            tool_call_input: json!({ "command": cmd }),
+            guardian_verdicts: vec![(true, "inspect shell env markers")],
+            ..ExtensionAutoReviewSpec::default()
+        })
+        .await;
+        let (auto_call_id, auto_content) = auto_outcome
+            .seen
+            .iter()
+            .find_map(|event| match event {
+                Event::ToolCallComplete {
+                    id,
+                    name,
+                    result: Ok(result),
+                    ..
+                } if name == "bash" => Some((id.clone(), result.content.clone())),
+                _ => None,
+            })
+            .expect("auto bash result");
+        let auto_parts: Vec<&str> = auto_content.trim().split('|').collect();
+        assert_eq!(auto_parts.len(), 5, "{auto_content:?}");
+        assert!(
+            !auto_parts[0].is_empty(),
+            "CODEWHALE_AGENT_PROJECT set: {auto_content:?}"
+        );
+        assert_eq!(auto_parts[1], "auto_review", "{auto_content:?}");
+        assert_eq!(auto_parts[2], auto_outcome.session_id, "{auto_content:?}");
+        assert_eq!(auto_parts[3], auto_outcome.turn_id, "{auto_content:?}");
+        assert_eq!(auto_parts[4], auto_call_id, "{auto_content:?}");
+
+        let mut ask_turn = start_extension_turn(
+            json!({"calls": [{"name": "bash", "input": {"command": cmd}}]}),
+            Posture::Ask,
+        );
+        let ask_events = ask_turn.events.clone();
+        let mut ask_seen = Vec::new();
+        let ask_ev = next_approval_event(&ask_events, &mut ask_seen).await;
+        let (ask_id, _, _, _, _, _) = approval_fields(&ask_ev);
+        ask_turn
+            .handle
+            .approve_tool_call(ask_id)
+            .await
+            .expect("approve");
+        let ask_answer = finish_extension_turn(&mut ask_turn, &mut ask_seen).await;
+        let ask_content = ask_answer["results"][0]["result"]["content"]
+            .as_str()
+            .unwrap();
+        let ask_parts: Vec<&str> = ask_content.trim().split('|').collect();
+        assert_eq!(ask_parts.len(), 5, "{ask_content:?}");
+        assert!(!ask_parts[0].is_empty(), "{ask_content:?}");
+        assert_eq!(ask_parts[1], "", "{ask_content:?}");
+
+        let full_outcome = run_extension_auto_review_fixture(ExtensionAutoReviewSpec {
+            tool_call_name: "bash".to_string(),
+            tool_call_input: json!({ "command": cmd }),
+            auto_approve: true,
+            approval_mode: codewhale_execpolicy::ApprovalMode::Bypass,
+            ..ExtensionAutoReviewSpec::default()
+        })
+        .await;
+        let full_content = full_outcome
+            .seen
+            .iter()
+            .find_map(|event| match event {
+                Event::ToolCallComplete {
+                    name,
+                    result: Ok(result),
+                    ..
+                } if name == "bash" => Some(result.content.clone()),
+                _ => None,
+            })
+            .expect("full access bash result");
+        let full_parts: Vec<&str> = full_content.trim().split('|').collect();
+        assert_eq!(full_parts.len(), 5, "{full_content:?}");
+        assert!(!full_parts[0].is_empty(), "{full_content:?}");
+        assert_eq!(full_parts[1], "", "{full_content:?}");
+        assert_eq!(full_parts[2], "", "{full_content:?}");
+    }
 }

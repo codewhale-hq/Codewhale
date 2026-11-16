@@ -6,6 +6,15 @@ pub(super) fn resolve(key: &str) -> Option<MessageId> {
         "app_mode_agent" => MessageId::AppModeAgent,
         "app_mode_plan" => MessageId::AppModePlan,
         "permissions_applies_here" => MessageId::PermissionsAppliesHere,
+        "permissions_blocked_empty" => MessageId::PermissionsBlockedEmpty,
+        "permissions_blocked_entry" => MessageId::PermissionsBlockedEntry,
+        "permissions_blocked_header" => MessageId::PermissionsBlockedHeader,
+        "permissions_blocked_hint" => MessageId::PermissionsBlockedHint,
+        "permissions_blocked_status_approvable" => MessageId::PermissionsBlockedStatusApprovable,
+        "permissions_blocked_status_approved" => MessageId::PermissionsBlockedStatusApproved,
+        "permissions_blocked_status_not_approvable" => {
+            MessageId::PermissionsBlockedStatusNotApprovable
+        }
         "permissions_file_empty" => MessageId::PermissionsFileEmpty,
         "permissions_file_missing" => MessageId::PermissionsFileMissing,
         "permissions_file_present" => MessageId::PermissionsFilePresent,

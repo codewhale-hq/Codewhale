@@ -2261,7 +2261,7 @@ pub(super) struct CatalogRowEnvelope {
     pub(super) row: CatalogRow,
 }
 
-const CATALOG_BUILTIN_KEYS: &[&str] = &["subagents", "web_search", "shell_tool"];
+const CATALOG_BUILTIN_KEYS: &[&str] = &["subagents", "web_search", "shell_tool", "plugin_creator"];
 const AGENT_LOOP_ID: &str = "agent_loop";
 
 fn catalog_title(key: &str) -> String {
@@ -2269,6 +2269,7 @@ fn catalog_title(key: &str) -> String {
         "subagents" => "Subagent".to_string(),
         "web_search" => "Web search".to_string(),
         "shell_tool" => "Shell".to_string(),
+        "plugin_creator" => "Plugin creator".to_string(),
         other => super::humanize_schema_key(other),
     }
 }
@@ -2278,6 +2279,7 @@ fn catalog_description(key: &str) -> Option<String> {
         "subagents" => "Delegate bounded tasks to focused child agents with isolated context.",
         "web_search" => "Search and fetch live web pages while answering.",
         "shell_tool" => "Run commands in your workspace terminal with approval controls.",
+        "plugin_creator" => "Enable the built-in plugin_manager tool and Creator mode host module.",
         "apply_patch" => "Apply structured multi-file patches as one reviewed change.",
         "mcp" => "Connect Model Context Protocol servers and their tools.",
         "exec_policy" => "Check shell commands against your exec policy before they run.",
@@ -2325,12 +2327,18 @@ fn subagents_settings(config: &codewhale_runtime::config::Config) -> (Value, Val
 fn catalog_feature_row(
     config: &codewhale_runtime::config::Config,
     spec: &codewhale_runtime::features::FeatureSpec,
+    creator_reason: Option<&str>,
 ) -> CatalogRow {
     let (settings_schema, settings) = if spec.key == "subagents" {
         let (schema, settings) = subagents_settings(config);
         (Some(schema), Some(settings))
     } else {
         (None, None)
+    };
+    let (available, unavailable_reason) = if spec.key == "plugin_creator" {
+        (creator_reason.is_none(), creator_reason.map(str::to_string))
+    } else {
+        (true, None)
     };
     CatalogRow {
         id: spec.key.to_string(),
@@ -2339,8 +2347,8 @@ fn catalog_feature_row(
         icon: Some(spec.key.to_string()),
         experimental: spec.stage == codewhale_runtime::features::Stage::Experimental,
         enabled: config.features().enabled(spec.id),
-        available: true,
-        unavailable_reason: None,
+        available,
+        unavailable_reason,
         settings_schema,
         settings,
         restart_required: spec.key == "extension_host",
@@ -2370,12 +2378,15 @@ fn agent_loop_row() -> CatalogRow {
     }
 }
 
-fn build_catalog(config: &codewhale_runtime::config::Config) -> CatalogResponse {
+fn build_catalog(
+    config: &codewhale_runtime::config::Config,
+    creator_reason: Option<&str>,
+) -> CatalogResponse {
     let mut builtin = Vec::new();
     let mut experimental = Vec::new();
     let mut more = Vec::new();
     for spec in codewhale_runtime::features::FEATURES {
-        let row = catalog_feature_row(config, spec);
+        let row = catalog_feature_row(config, spec, creator_reason);
         if CATALOG_BUILTIN_KEYS.contains(&spec.key) {
             builtin.push(row);
         } else if spec.stage == codewhale_runtime::features::Stage::Experimental {
@@ -2398,8 +2409,12 @@ fn build_catalog(config: &codewhale_runtime::config::Config) -> CatalogResponse 
     }
 }
 
-fn find_catalog_row(config: &codewhale_runtime::config::Config, id: &str) -> Option<CatalogRow> {
-    let catalog = build_catalog(config);
+fn find_catalog_row(
+    config: &codewhale_runtime::config::Config,
+    creator_reason: Option<&str>,
+    id: &str,
+) -> Option<CatalogRow> {
+    let catalog = build_catalog(config, creator_reason);
     catalog
         .builtin
         .into_iter()
@@ -2408,12 +2423,29 @@ fn find_catalog_row(config: &codewhale_runtime::config::Config, id: &str) -> Opt
         .find(|row| row.id == id)
 }
 
+async fn catalog_creator_reason_for(state: &RuntimeApiState, id: Option<&str>) -> Option<String> {
+    if matches!(id, Some(other) if other != "plugin_creator") {
+        return None;
+    }
+    let plugin_creator_enabled = state
+        .config
+        .read()
+        .features()
+        .enabled(codewhale_runtime::features::Feature::PluginCreator);
+    codewhale_engine::conversation_modes::creator_unavailable_reason(
+        state.runtime_threads.extension_host_options(),
+        plugin_creator_enabled,
+    )
+    .await
+}
+
 /// `GET /v1/apps/plugins/catalog`
 pub(super) async fn list_plugin_catalog(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<CatalogResponse>, ApiError> {
+    let creator_reason = catalog_creator_reason_for(&state, None).await;
     let config = state.config.read();
-    Ok(Json(build_catalog(&config)))
+    Ok(Json(build_catalog(&config, creator_reason.as_deref())))
 }
 
 async fn reload_after_catalog_write(state: RuntimeApiState) -> Result<(), ApiError> {
@@ -2468,8 +2500,9 @@ async fn set_catalog_enabled(
     )
     .map_err(|e| ApiError::internal(format!("Failed to persist setting: {e}")))?;
     reload_after_catalog_write(state.clone()).await?;
+    let creator_reason = catalog_creator_reason_for(&state, Some(&id)).await;
     let config = state.config.read();
-    let row = find_catalog_row(&config, &id).ok_or_else(|| {
+    let row = find_catalog_row(&config, creator_reason.as_deref(), &id).ok_or_else(|| {
         ApiError::internal(format!("catalog plugin '{id}' vanished after reload"))
     })?;
     Ok(Json(CatalogRowEnvelope { row }))
@@ -2502,9 +2535,10 @@ pub(super) async fn put_catalog_settings(
     Path(id): Path<String>,
     Json(req): Json<CatalogSettingsRequest>,
 ) -> Result<Json<CatalogRowEnvelope>, ApiError> {
+    let creator_reason = catalog_creator_reason_for(&state, Some(&id)).await;
     {
         let config = state.config.read();
-        if find_catalog_row(&config, &id).is_none() {
+        if find_catalog_row(&config, creator_reason.as_deref(), &id).is_none() {
             return Err(ApiError::not_found(format!(
                 "catalog plugin '{id}' not found"
             )));
@@ -2545,8 +2579,9 @@ pub(super) async fn put_catalog_settings(
         .map_err(|e| ApiError::internal(format!("Failed to persist setting: {e}")))?;
         reload_after_catalog_write(state.clone()).await?;
     }
+    let creator_reason = catalog_creator_reason_for(&state, Some(&id)).await;
     let config = state.config.read();
-    let row = find_catalog_row(&config, &id).ok_or_else(|| {
+    let row = find_catalog_row(&config, creator_reason.as_deref(), &id).ok_or_else(|| {
         ApiError::internal(format!("catalog plugin '{id}' vanished after reload"))
     })?;
     Ok(Json(CatalogRowEnvelope { row }))

@@ -946,6 +946,8 @@ pub(crate) async fn build_preview_request_inputs(
         skill_instruction: app.active_skill.clone(),
         skill_provenance: app.active_skill_provenance.clone(),
         extension_command: None,
+        approved_plan: None,
+        owner_input: false,
         history_echoed: false,
     };
     let mut git_cache = crate::tui::git_mention::GitMentionCache::default();
@@ -1066,7 +1068,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         mcp_oauth_callback_url: config.mcp_oauth_callback_url.clone(),
         skills_dir: app.skills_dir.clone(),
         skills_config: app.skills_config.clone(),
-        agent_preset: None,
+        agent_preset: app.agent_preset(),
         plugin_registry: Some(std::sync::Arc::clone(&app.plugin_registry)),
         instructions: configured_instruction_sources(config),
         project_context_pack_enabled: config.project_context_pack_enabled(),
@@ -1362,6 +1364,7 @@ pub(crate) fn build_session_snapshot(
         app.system_prompt.as_ref(),
         Some(app.mode.as_setting()),
     );
+    session.agent_preset = app.agent_preset();
     session.write_receipt = if app.current_session_id.is_none() {
         Some(
             manager
@@ -1419,6 +1422,12 @@ pub(crate) fn build_session_snapshot(
     session.context_references = app.session_context_references.clone();
     session.artifacts = app.session_artifacts.clone();
     session.turn_outcomes = app.session_turn_outcomes.clone();
+    session.delegated_writes = app
+        .delegated_writes
+        .iter()
+        .filter(|((owner, _), _)| owner == &session.metadata.id)
+        .map(|((_, seq), paths)| (*seq, paths.iter().cloned().collect()))
+        .collect();
     session.work_state = work_state;
     session.last_auto_route = app.auto_route_for_persistence();
     session.window_title.clone_from(&app.window_title);
