@@ -530,7 +530,8 @@ impl ExecPolicyEngine {
         let (trusted_prefixes, denied_prefixes) = self.resolve_prefixes(&rulesets);
         let expansion = shell_expand::expand_command(ctx.command);
         let prefix_eligible = command_safety::prefix_grant_is_eligible(ctx.command, &expansion);
-        let mut deny_targets = expansion.commands.clone();
+        let mut deny_targets: Vec<String> =
+            expansion.deny_commands().map(ToOwned::to_owned).collect();
         let raw_command = ctx.command.trim();
         if !raw_command.is_empty() && !deny_targets.iter().any(|t| t == raw_command) {
             deny_targets.push(raw_command.to_string());
@@ -1027,7 +1028,10 @@ impl ExecPolicyEngine {
 /// shell stdin remain executable policy targets.
 #[cfg(test)]
 fn deny_scan_targets(command: &str) -> Vec<String> {
-    shell_expand::expanded_commands(command)
+    shell_expand::expand_command(command)
+        .deny_commands()
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 /// `command` with a path-qualified first word replaced by its basename, or

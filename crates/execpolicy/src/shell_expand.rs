@@ -794,6 +794,435 @@ static WRAPPERS: &[Wrapper] = &[
         long_switches: &["skip-chdir"],
         operands: 1,
     },
+    Wrapper {
+        name: "toybox",
+        short_values: "",
+        short_switches: "",
+        long_values: &[],
+        long_switches: &[],
+        operands: 0,
+    },
+    Wrapper {
+        name: "script",
+        short_values: "cIOB",
+        short_switches: "adefkpqr",
+        long_values: &[
+            "command",
+            "log-in",
+            "log-out",
+            "log-io",
+            "log-timing",
+            "logging-format",
+        ],
+        long_switches: &[
+            "append", "echo", "flush", "force", "quiet", "return", "help", "version",
+        ],
+        operands: 1,
+    },
+    Wrapper {
+        name: "parallel",
+        short_values: "ajdnILNPSt",
+        short_switches: "kmquX0",
+        long_values: &[
+            "arg-file",
+            "colsep",
+            "delay",
+            "delimiter",
+            "halt",
+            "header",
+            "jobs",
+            "load",
+            "max-args",
+            "memfree",
+            "nice",
+            "res",
+            "results",
+            "retries",
+            "slf",
+            "sshlogin",
+            "sshloginfile",
+            "tagstring",
+            "timeout",
+            "tmpdir",
+            "wd",
+            "workdir",
+            "block",
+            "recstart",
+            "recend",
+        ],
+        long_switches: &[
+            "bar",
+            "citation",
+            "dry-run",
+            "eta",
+            "files",
+            "gnu",
+            "group",
+            "help",
+            "keep-order",
+            "lb",
+            "line-buffer",
+            "noswap",
+            "null",
+            "pipe",
+            "pipepart",
+            "plain",
+            "progress",
+            "quote",
+            "regexp",
+            "remove-rec-sep",
+            "shebang",
+            "tag",
+            "ungroup",
+            "version",
+            "will-cite",
+            "xargs",
+        ],
+        operands: 0,
+    },
+    Wrapper {
+        name: "bwrap",
+        short_values: "",
+        short_switches: "",
+        long_values: &[
+            "remount-ro",
+            "proc",
+            "dev",
+            "tmpfs",
+            "mqueue",
+            "dir",
+            "unsetenv",
+            "chdir",
+            "hostname",
+            "uid",
+            "gid",
+            "seccomp",
+            "add-seccomp-fd",
+            "exec-label",
+            "file-label",
+            "block-fd",
+            "userns-block-fd",
+            "info-fd",
+            "json-status-fd",
+            "sync-fd",
+            "userns",
+            "userns2",
+            "pidns",
+            "cap-add",
+            "cap-drop",
+            "perms",
+            "size",
+            "argv0",
+            "lock-file",
+            "args",
+        ],
+        long_switches: &[
+            "help",
+            "version",
+            "level-prefix",
+            "clearenv",
+            "unshare-all",
+            "unshare-user",
+            "unshare-user-try",
+            "unshare-ipc",
+            "unshare-pid",
+            "unshare-net",
+            "unshare-uts",
+            "unshare-cgroup",
+            "unshare-cgroup-try",
+            "share-net",
+            "disable-userns",
+            "assert-userns-disabled",
+            "new-session",
+            "die-with-parent",
+            "as-pid-1",
+        ],
+        operands: 0,
+    },
+    Wrapper {
+        name: "setarch",
+        short_values: "",
+        short_switches: "vRFZLBI3SThV",
+        long_values: &[],
+        long_switches: &[
+            "verbose",
+            "addr-no-randomize",
+            "fdpic-funcptrs",
+            "mmap-page-zero",
+            "addr-compat-layout",
+            "read-implies-exec",
+            "32bit",
+            "short-inode",
+            "whole-seconds",
+            "unlimited",
+            "3gb",
+            "4gb",
+            "uname-2.6",
+            "list",
+            "help",
+            "version",
+        ],
+        operands: 1,
+    },
+    Wrapper {
+        name: "linux64",
+        short_values: "",
+        short_switches: "vRFZLBI3SThV",
+        long_values: &[],
+        long_switches: &[
+            "verbose",
+            "addr-no-randomize",
+            "fdpic-funcptrs",
+            "mmap-page-zero",
+            "addr-compat-layout",
+            "read-implies-exec",
+            "32bit",
+            "short-inode",
+            "whole-seconds",
+            "unlimited",
+            "3gb",
+            "4gb",
+            "uname-2.6",
+            "list",
+            "help",
+            "version",
+        ],
+        operands: 0,
+    },
+    Wrapper {
+        name: "faketime",
+        short_values: "",
+        short_switches: "fmv",
+        long_values: &[],
+        long_switches: &["help", "version", "exclude-monotonic"],
+        operands: 1,
+    },
+    Wrapper {
+        name: "rlwrap",
+        short_values: "bCDefgHlMOPqsStwz",
+        short_switches: "AcInNorRvWh",
+        long_values: &[
+            "break-chars",
+            "command-name",
+            "history-no-dupes",
+            "extra-char-after-completion",
+            "file",
+            "forget-matching",
+            "history-filename",
+            "logfile",
+            "multi-line-ext",
+            "filter",
+            "only-cook",
+            "pre-given",
+            "quote-characters",
+            "histsize",
+            "substitute-prompt",
+            "set-term-name",
+            "polling",
+        ],
+        long_switches: &[
+            "ansi-colour-aware",
+            "complete-filenames",
+            "case-insensitive",
+            "no-warnings",
+            "pass-sigint-as-sigterm",
+            "remember",
+            "renice",
+            "mirror-arguments",
+            "version",
+            "help",
+        ],
+        operands: 0,
+    },
+    Wrapper {
+        name: "chronic",
+        short_values: "",
+        short_switches: "ev",
+        long_values: &[],
+        long_switches: &[],
+        operands: 0,
+    },
+    Wrapper {
+        name: "ifne",
+        short_values: "",
+        short_switches: "n",
+        long_values: &[],
+        long_switches: &[],
+        operands: 0,
+    },
+    Wrapper {
+        name: "runcon",
+        short_values: "urtl",
+        short_switches: "c",
+        long_values: &["user", "role", "type", "range"],
+        long_switches: &["compute", "help", "version"],
+        operands: 1,
+    },
+    Wrapper {
+        name: "chpst",
+        short_values: "uUbe/nlLmdopfc",
+        short_switches: "vP012",
+        long_values: &[],
+        long_switches: &[],
+        operands: 0,
+    },
+    Wrapper {
+        name: "softlimit",
+        short_values: "mdopfcrsalt",
+        short_switches: "",
+        long_values: &[],
+        long_switches: &[],
+        operands: 0,
+    },
+    Wrapper {
+        name: "valgrind",
+        short_values: "",
+        short_switches: "hqvd",
+        long_values: &[],
+        long_switches: &[],
+        operands: 0,
+    },
+    Wrapper {
+        name: "watchexec",
+        short_values: "weifosd",
+        short_switches: "rcpnqv",
+        long_values: &[
+            "watch",
+            "exts",
+            "ignore",
+            "filter",
+            "on-busy-update",
+            "shell",
+            "signal",
+            "debounce",
+            "wrap-process",
+            "project-origin",
+            "workdir",
+            "poll",
+            "stop-signal",
+            "stop-timeout",
+            "delay-run",
+            "fs-events",
+        ],
+        long_switches: &[
+            "restart",
+            "clear",
+            "postpone",
+            "no-shell",
+            "quiet",
+            "verbose",
+            "stdin-quit",
+            "no-vcs-ignore",
+            "no-project-ignore",
+            "no-global-ignore",
+            "no-default-ignore",
+            "only-emit-events",
+            "print-events",
+            "no-meta",
+            "no-process-group",
+            "watch-file",
+            "help",
+            "version",
+        ],
+        operands: 0,
+    },
+    Wrapper {
+        name: "entr",
+        short_values: "",
+        short_switches: "acdnprsxz",
+        long_values: &[],
+        long_switches: &[],
+        operands: 0,
+    },
+    Wrapper {
+        name: "systemd-inhibit",
+        short_values: "",
+        short_switches: "h",
+        long_values: &["what", "who", "why", "mode"],
+        long_switches: &["list", "no-legend", "no-pager", "help", "version"],
+        operands: 0,
+    },
+    Wrapper {
+        name: "cgexec",
+        short_values: "g",
+        short_switches: "h",
+        long_values: &[],
+        long_switches: &["sticky", "help"],
+        operands: 0,
+    },
+    Wrapper {
+        name: "daemonize",
+        short_values: "ceoplu",
+        short_switches: "av",
+        long_values: &[],
+        long_switches: &[],
+        operands: 0,
+    },
+    Wrapper {
+        name: "nsjail",
+        short_values: "McRBTEugtlCDpH",
+        short_switches: "eqQvdNi",
+        long_values: &[
+            "mode",
+            "chroot",
+            "bindmount_ro",
+            "bindmount",
+            "tmpfsmount",
+            "env",
+            "user",
+            "group",
+            "time_limit",
+            "log",
+            "config",
+            "cwd",
+            "port",
+            "hostname",
+            "max_cpus",
+            "rlimit_as",
+            "rlimit_cpu",
+            "rlimit_fsize",
+            "rlimit_nofile",
+            "exec_file",
+        ],
+        long_switches: &[
+            "keep_env",
+            "quiet",
+            "really_quiet",
+            "verbose",
+            "daemon",
+            "keep_caps",
+            "disable_clone_newnet",
+            "disable_no_new_privs",
+            "disable_proc",
+            "skip_setsid",
+            "help",
+        ],
+        operands: 0,
+    },
+    Wrapper {
+        name: "torify",
+        short_values: "Paup",
+        short_switches: "idqh",
+        long_values: &["port", "address", "user", "password"],
+        long_switches: &["isolate", "debug", "quiet", "shell", "help", "version"],
+        operands: 0,
+    },
+    Wrapper {
+        name: "ld.so",
+        short_values: "",
+        short_switches: "",
+        long_values: &[
+            "library-path",
+            "inhibit-rpath",
+            "audit",
+            "preload",
+            "argv0",
+            "glibc-hwcaps-prepend",
+            "glibc-hwcaps-mask",
+        ],
+        long_switches: &["inhibit-cache", "help", "version", "list-diagnostics"],
+        operands: 0,
+    },
 ];
 
 /// Shell reserved words that can lead a simple command without being it:
@@ -809,7 +1238,7 @@ const REBINDING_BUILTINS: &[&str] = &[
 /// Shells whose `-c` argument is a command line to be parsed, not an operand.
 const SHELL_NAMES: &[&str] = &[
     "sh", "bash", "zsh", "dash", "ksh", "ksh93", "mksh", "ash", "fish", "csh", "tcsh", "rbash",
-    "yash",
+    "yash", "elvish", "nu", "xonsh", "oksh", "posh", "osh",
 ];
 
 /// The commands a shell line would run, plus what could not be resolved.
@@ -818,6 +1247,7 @@ pub struct Expansion {
     /// Every command line found, as [`expanded_commands`] returns them.
     pub commands: Vec<String>,
     pub words: Vec<Vec<String>>,
+    pub extra_deny_commands: Vec<String>,
     /// A command word (or a shell's script) is only known at run time, so no
     /// deny rule can be matched against it reliably.
     pub dynamic: bool,
@@ -835,6 +1265,15 @@ pub struct Expansion {
     /// Unquoted redirection syntax, including descriptor duplication and
     /// heredocs. Quoted operator characters and heredoc body data are excluded.
     pub redirects: bool,
+}
+
+impl Expansion {
+    pub fn deny_commands(&self) -> impl Iterator<Item = &str> {
+        self.commands
+            .iter()
+            .chain(&self.extra_deny_commands)
+            .map(String::as_str)
+    }
 }
 
 /// Returns every command line the shell would execute for `command`.
@@ -860,13 +1299,16 @@ fn expand_for_platform(command: &str, windows: bool) -> Expansion {
     let mut expander = Expander {
         out: Vec::new(),
         out_words: Vec::new(),
+        extra_deny: Vec::new(),
         seen: HashSet::new(),
+        seen_extra_deny: HashSet::new(),
         literal_backslashes: windows,
         dynamic: false,
         nested: false,
         arguments_dynamic: false,
         control: false,
         redirects: false,
+        deny_only: false,
     };
     // Native Windows shells preserve path separators. Also retain the POSIX
     // interpretation for Bash/WSL commands. Both passes use the same bounded,
@@ -879,6 +1321,7 @@ fn expand_for_platform(command: &str, windows: bool) -> Expansion {
     Expansion {
         commands: expander.out,
         words: expander.out_words,
+        extra_deny_commands: expander.extra_deny,
         dynamic: expander.dynamic,
         nested: expander.nested,
         arguments_dynamic: expander.arguments_dynamic,
@@ -890,13 +1333,16 @@ fn expand_for_platform(command: &str, windows: bool) -> Expansion {
 struct Expander {
     out: Vec<String>,
     out_words: Vec<Vec<String>>,
+    extra_deny: Vec<String>,
     seen: HashSet<String>,
+    seen_extra_deny: HashSet<String>,
     literal_backslashes: bool,
     dynamic: bool,
     nested: bool,
     arguments_dynamic: bool,
     control: bool,
     redirects: bool,
+    deny_only: bool,
 }
 
 /// The word being read, with what the parser learned about it.
@@ -930,6 +1376,7 @@ impl WordBuf {
                 line.words.push(std::mem::take(&mut self.text));
                 line.dynamic.push(dynamic);
                 line.odd.push(self.odd);
+                line.quoted.push(self.quoted);
             }
             self.started = false;
         }
@@ -948,6 +1395,7 @@ struct Line {
     words: Vec<String>,
     dynamic: Vec<bool>,
     odd: Vec<bool>,
+    quoted: Vec<bool>,
     heredoc: bool,
 }
 
@@ -955,6 +1403,7 @@ struct Line {
 enum ShellInput {
     /// `-c` / `--command`: the word at each offset may be the command line.
     Command(Vec<usize>),
+    Inline(String, bool),
     /// A script file operand at this offset.
     Script(usize),
     /// The script is read from stdin.
@@ -962,6 +1411,18 @@ enum ShellInput {
 }
 
 impl Expander {
+    fn emit_extra_deny(&mut self, joined: String) {
+        if joined.is_empty()
+            || self.seen.contains(&joined)
+            || self.seen_extra_deny.contains(&joined)
+            || self.extra_deny.len() >= MAX_COMMANDS
+        {
+            return;
+        }
+        self.seen_extra_deny.insert(joined.clone());
+        self.extra_deny.push(joined);
+    }
+
     fn emit(&mut self, tokens: &[String]) {
         let joined = tokens
             .iter()
@@ -969,6 +1430,10 @@ impl Expander {
             .cloned()
             .collect::<Vec<_>>()
             .join(" ");
+        if self.deny_only {
+            self.emit_extra_deny(joined);
+            return;
+        }
         if joined.is_empty() || self.seen.contains(&joined) {
             return;
         }
@@ -1435,6 +1900,41 @@ impl Expander {
                         self.code_payload(&tokens[inner..].join(" "), inner_dynamic, depth);
                     }
                 }
+                "watchexec" => {
+                    let shell_off = tokens[head + 1..].iter().any(|t| {
+                        t == "--no-shell"
+                            || t == "--shell=none"
+                            || (t.starts_with('-') && !t.starts_with("--") && t.contains('n'))
+                    });
+                    if !shell_off {
+                        for &inner in heads.heads.iter().filter(|&&inner| inner > head) {
+                            let inner_dynamic = dynamic[inner..].iter().any(|dynamic| *dynamic);
+                            self.code_payload(&tokens[inner..].join(" "), inner_dynamic, depth);
+                        }
+                    }
+                }
+                "entr" => {
+                    for &inner in heads.heads.iter().filter(|&&inner| inner > head) {
+                        let has_s = tokens[head + 1..inner]
+                            .iter()
+                            .any(|t| t.starts_with('-') && !t.starts_with("--") && t.contains('s'));
+                        if has_s {
+                            self.code_payload(&tokens[inner], dynamic[inner], depth);
+                        }
+                    }
+                }
+                "parallel" => {
+                    for &inner in heads.heads.iter().filter(|&&inner| inner > head) {
+                        if tokens[inner] == ":::" {
+                            for at in inner + 1..tokens.len() {
+                                if tokens[at].starts_with(":::") {
+                                    break;
+                                }
+                                self.code_payload(&tokens[at], dynamic[at], depth);
+                            }
+                        }
+                    }
+                }
                 // `cmd /c …` parses the rest as a cmd.exe command line, which
                 // expands `%VAR%` and `!VAR!` and strips `^` escapes itself.
                 "cmd" => {
@@ -1449,7 +1949,7 @@ impl Expander {
                 }
                 "powershell" | "pwsh" => self.record_powershell(tokens, head, &dynamic, depth),
                 _ if SHELL_NAMES.contains(&name.as_str()) => {
-                    match shell_input(&tokens[head..]) {
+                    match shell_input(&name, &tokens[head..], &dynamic[head..]) {
                         ShellInput::Command(offsets) => {
                             for offset in offsets {
                                 self.code_payload(
@@ -1458,6 +1958,9 @@ impl Expander {
                                     depth,
                                 );
                             }
+                        }
+                        ShellInput::Inline(payload, payload_dynamic) => {
+                            self.code_payload(&payload, payload_dynamic, depth);
                         }
                         ShellInput::Script(offset) => {
                             self.dynamic |= dynamic[head + offset]
@@ -1468,8 +1971,256 @@ impl Expander {
                         ShellInput::Stdin => self.dynamic |= !line.heredoc,
                     }
                 }
-                _ => {}
+                _ => self.record_launcher_commands(line, head, &dynamic, &name, depth),
             }
+        }
+        for at in 0..tokens.len() {
+            if tokens[at] == "--" && !line.quoted[at] && at + 1 < tokens.len() {
+                self.record_extra_deny(&slice_line(line, at + 1), depth + 1);
+            }
+        }
+    }
+
+    fn record_extra_deny(&mut self, sub: &Line, depth: usize) {
+        if depth > MAX_DEPTH || self.extra_deny.len() >= MAX_COMMANDS {
+            return;
+        }
+        let mut child = Expander {
+            out: Vec::new(),
+            out_words: Vec::new(),
+            extra_deny: Vec::new(),
+            seen: HashSet::new(),
+            seen_extra_deny: HashSet::new(),
+            literal_backslashes: self.literal_backslashes,
+            dynamic: false,
+            nested: false,
+            arguments_dynamic: false,
+            control: false,
+            redirects: false,
+            deny_only: true,
+        };
+        child.record(sub, depth);
+        for cmd in child.extra_deny {
+            self.emit_extra_deny(cmd);
+        }
+    }
+
+    fn record_launcher_commands(
+        &mut self,
+        line: &Line,
+        head: usize,
+        dynamic: &[bool],
+        name: &str,
+        depth: usize,
+    ) {
+        let tokens = &line.words;
+        match name {
+            "nix" => {
+                for verb_idx in resolve_wrapper_targets(tokens, head + 1, &NIX_GLOBAL_SPEC) {
+                    let verb = tokens[verb_idx].as_str();
+                    if matches!(verb, "develop" | "shell")
+                        && let Some(at) = (verb_idx + 1..tokens.len())
+                            .take_while(|&i| tokens[i] != "--")
+                            .find(|&i| matches!(tokens[i].as_str(), "-c" | "--command"))
+                        && at + 1 < tokens.len()
+                    {
+                        self.record(&slice_line(line, at + 1), depth + 1);
+                    }
+                }
+            }
+            "nix-shell" => {
+                for (payload, payload_dynamic) in
+                    option_payloads(tokens, head, dynamic, None, &["run", "command"], true)
+                {
+                    self.code_payload(&payload, payload_dynamic, depth);
+                }
+            }
+            "npx" => {
+                for (payload, payload_dynamic) in
+                    option_payloads(tokens, head, dynamic, Some('c'), &["call"], true)
+                {
+                    self.code_payload(&payload, payload_dynamic, depth);
+                }
+            }
+            "npm" => {
+                if let Some(sub) = tokens.get(head + 1)
+                    && matches!(sub.as_str(), "exec" | "x")
+                {
+                    for (payload, payload_dynamic) in
+                        option_payloads(tokens, head + 1, dynamic, Some('c'), &["call"], true)
+                    {
+                        self.code_payload(&payload, payload_dynamic, depth);
+                    }
+                } else {
+                    for verb_idx in resolve_wrapper_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC) {
+                        if matches!(tokens[verb_idx].as_str(), "exec" | "x") {
+                            for (payload, payload_dynamic) in option_payloads(
+                                tokens,
+                                verb_idx,
+                                dynamic,
+                                Some('c'),
+                                &["call"],
+                                true,
+                            ) {
+                                self.code_payload(&payload, payload_dynamic, depth);
+                            }
+                        }
+                    }
+                }
+            }
+            "ssh" => {
+                if ssh_skips_remote_command(&tokens[head + 1..]) {
+                    return;
+                }
+                for landing in resolve_wrapper_targets(tokens, head + 1, &SSH_SPEC) {
+                    if landing < tokens.len() {
+                        let rest = &tokens[landing..];
+                        let rest_dynamic = dynamic[landing..].iter().any(|d| *d);
+                        self.code_payload(&rest.join(" "), rest_dynamic, depth);
+                        if rest.len() > 1 {
+                            self.record(&slice_line(line, landing), depth + 1);
+                        }
+                    }
+                }
+            }
+            "screen" => {
+                if screen_attaches_only(&tokens[head + 1..]) {
+                    return;
+                }
+                for landing in resolve_wrapper_targets(tokens, head + 1, &SCREEN_SPEC) {
+                    if landing < tokens.len() {
+                        self.record(&slice_line(line, landing), depth + 1);
+                    }
+                }
+            }
+            "start-stop-daemon" => {
+                self.record_start_stop_daemon(line, head, depth);
+            }
+            _ => {
+                if name == "launchctl" {
+                    for verb_idx in resolve_wrapper_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC) {
+                        if tokens[verb_idx] == "submit" {
+                            self.record_exec_flag_command(line, verb_idx, &['p'], &[], depth);
+                        }
+                    }
+                }
+                for launcher in VERB_LAUNCHERS {
+                    if launcher.program != name {
+                        continue;
+                    }
+                    for verb_idx in resolve_wrapper_targets(tokens, head + 1, launcher.global) {
+                        if !launcher.verbs.contains(&tokens[verb_idx].as_str()) {
+                            continue;
+                        }
+                        let is_container_run =
+                            matches!(name, "docker" | "podman") && tokens[verb_idx] == "run";
+                        let entrypoint = if is_container_run {
+                            find_entrypoint(&tokens[verb_idx + 1..], verb_idx + 1)
+                        } else {
+                            None
+                        };
+                        for landing in
+                            resolve_wrapper_targets(tokens, verb_idx + 1, launcher.subcmd)
+                        {
+                            if let Some((ep_val, ep_idx)) = entrypoint.as_ref()
+                                && !ep_val.is_empty()
+                            {
+                                let combined = build_prefixed_line(ep_val, *ep_idx, line, landing);
+                                self.record(&combined, depth + 1);
+                            }
+                            if landing < tokens.len() {
+                                if launcher.shell_string {
+                                    let rest = &tokens[landing..];
+                                    let rest_dynamic = dynamic[landing..].iter().any(|d| *d);
+                                    self.code_payload(&rest.join(" "), rest_dynamic, depth);
+                                    if rest.len() > 1 {
+                                        self.record(&slice_line(line, landing), depth + 1);
+                                    }
+                                } else {
+                                    self.record(&slice_line(line, landing), depth + 1);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn record_start_stop_daemon(&mut self, line: &Line, head: usize, depth: usize) {
+        let tokens = &line.words;
+        let stop = tokens[head + 1..]
+            .iter()
+            .take_while(|t| t.as_str() != "--")
+            .any(|t| {
+                matches!(t.as_str(), "--stop" | "--status" | "--help" | "--version")
+                    || (t.starts_with('-')
+                        && !t.starts_with("--")
+                        && t[1..].contains(['K', 'T', 'H', 'V']))
+            });
+        let explicit_start = tokens[head + 1..]
+            .iter()
+            .take_while(|t| t.as_str() != "--")
+            .any(|t| {
+                t == "--start"
+                    || (t.starts_with('-') && !t.starts_with("--") && t[1..].contains('S'))
+            });
+        if stop && !explicit_start {
+            return;
+        }
+        self.record_exec_flag_command(line, head, &['x', 'a'], &["exec", "startas"], depth);
+    }
+
+    fn record_exec_flag_command(
+        &mut self,
+        line: &Line,
+        head: usize,
+        short_flags: &[char],
+        long_flags: &[&str],
+        depth: usize,
+    ) {
+        let tokens = &line.words;
+        let dash_dash = (head + 1..tokens.len()).find(|&i| tokens[i] == "--" && !line.quoted[i]);
+        let opt_end = dash_dash.unwrap_or(tokens.len());
+        let args_start = dash_dash.map_or(tokens.len(), |i| i + 1);
+        let mut found: Option<(String, usize)> = None;
+        let mut i = head + 1;
+        while i < opt_end {
+            let token = tokens[i].as_str();
+            if let Some(long) = token.strip_prefix("--") {
+                let (name, inline) = match long.split_once('=') {
+                    Some((k, v)) => (k, Some(v)),
+                    None => (long, None),
+                };
+                if long_flags.contains(&name) {
+                    if let Some(val) = inline {
+                        found = Some((val.to_string(), i));
+                    } else if i + 1 < opt_end {
+                        found = Some((tokens[i + 1].clone(), i + 1));
+                        i += 1;
+                    }
+                }
+            } else if let Some(flags) = token.strip_prefix('-') {
+                for (at, ch) in flags.char_indices() {
+                    if short_flags.contains(&ch) {
+                        let rest = &flags[at + ch.len_utf8()..];
+                        if !rest.is_empty() {
+                            found = Some((rest.to_string(), i));
+                        } else if i + 1 < opt_end {
+                            found = Some((tokens[i + 1].clone(), i + 1));
+                            i += 1;
+                        }
+                        break;
+                    }
+                }
+            }
+            i += 1;
+        }
+        if let Some((prog, prog_idx)) = found
+            && !prog.is_empty()
+        {
+            let combined = build_prefixed_line(&prog, prog_idx, line, args_start);
+            self.record(&combined, depth + 1);
         }
     }
 
@@ -1556,6 +2307,7 @@ impl Expander {
                             .map(|at| line.dynamic[at] || tokens[at].contains("{}"))
                             .collect(),
                         odd: line.odd[start..end].to_vec(),
+                        quoted: line.quoted[start..end].to_vec(),
                         heredoc: false,
                     };
                     self.record(&payload, depth + 1);
@@ -1567,6 +2319,659 @@ impl Expander {
     }
 }
 
+struct VerbLauncher {
+    program: &'static str,
+    verbs: &'static [&'static str],
+    global: &'static Wrapper,
+    subcmd: &'static Wrapper,
+    shell_string: bool,
+}
+
+const EMPTY_WRAPPER_SPEC: Wrapper = Wrapper {
+    name: "",
+    short_values: "",
+    short_switches: "",
+    long_values: &[],
+    long_switches: &[],
+    operands: 0,
+};
+
+const ONE_OPERAND_SPEC: Wrapper = Wrapper {
+    name: "",
+    short_values: "",
+    short_switches: "",
+    long_values: &[],
+    long_switches: &[],
+    operands: 1,
+};
+
+const NIX_GLOBAL_SPEC: Wrapper = Wrapper {
+    name: "nix",
+    short_values: "",
+    short_switches: "v",
+    long_values: &[
+        "extra-experimental-features",
+        "experimental-features",
+        "accept-flake-config",
+        "access-tokens",
+        "builders",
+        "cores",
+        "eval-store",
+        "extra-substituters",
+        "extra-trusted-public-keys",
+        "flake-registry",
+        "keep-going",
+        "log-format",
+        "max-jobs",
+        "override-input",
+        "store",
+        "substituters",
+        "trusted-public-keys",
+    ],
+    long_switches: &[
+        "debug",
+        "help",
+        "impure",
+        "no-net",
+        "offline",
+        "quiet",
+        "refresh",
+        "show-trace",
+        "verbose",
+        "version",
+    ],
+    operands: 0,
+};
+
+const UV_GLOBAL_SPEC: Wrapper = Wrapper {
+    name: "uv",
+    short_values: "Cpo",
+    short_switches: "qvn",
+    long_values: &[
+        "cache-dir",
+        "config-file",
+        "python-preference",
+        "directory",
+        "project",
+        "index-url",
+        "default-index",
+        "index",
+        "extra-index-url",
+        "find-links",
+        "python",
+    ],
+    long_switches: &[
+        "no-cache",
+        "offline",
+        "no-offline",
+        "no-config",
+        "quiet",
+        "verbose",
+        "no-progress",
+        "managed-python",
+        "no-managed-python",
+        "native-tls",
+    ],
+    operands: 0,
+};
+
+const UV_RUN_SPEC: Wrapper = Wrapper {
+    name: "uv-run",
+    short_values: "wpCm",
+    short_switches: "sqvnU",
+    long_values: &[
+        "with",
+        "with-editable",
+        "with-requirements",
+        "python",
+        "module",
+        "index-url",
+        "default-index",
+        "index",
+        "extra-index-url",
+        "find-links",
+        "group",
+        "only-group",
+        "no-group",
+        "extra",
+        "package",
+        "env-file",
+        "directory",
+        "project",
+        "refresh-package",
+        "upgrade-package",
+        "config-setting",
+        "index-strategy",
+        "keyring-provider",
+        "resolution",
+        "prerelease",
+        "exclude-newer",
+        "link-mode",
+        "python-platform",
+        "cache-dir",
+        "config-file",
+    ],
+    long_switches: &[
+        "no-sync",
+        "isolated",
+        "no-project",
+        "no-default-groups",
+        "all-extras",
+        "all-groups",
+        "no-dev",
+        "dev",
+        "gui-script",
+        "script",
+        "frozen",
+        "locked",
+        "offline",
+        "no-offline",
+        "refresh",
+        "upgrade",
+        "no-build",
+        "no-binary",
+        "compile-bytecode",
+        "no-config",
+        "quiet",
+        "verbose",
+        "no-cache",
+        "managed-python",
+        "no-managed-python",
+        "show-resolution",
+        "no-env-file",
+    ],
+    operands: 0,
+};
+
+const POETRY_SPEC: Wrapper = Wrapper {
+    name: "poetry",
+    short_values: "CP",
+    short_switches: "qvnVh",
+    long_values: &["directory", "project"],
+    long_switches: &[
+        "quiet",
+        "verbose",
+        "no-interaction",
+        "ansi",
+        "no-ansi",
+        "version",
+        "help",
+    ],
+    operands: 0,
+};
+
+const PIPX_RUN_SPEC: Wrapper = Wrapper {
+    name: "pipx-run",
+    short_values: "i",
+    short_switches: "qv",
+    long_values: &["spec", "index-url", "pip-args", "python"],
+    long_switches: &[
+        "fetch-missing-python",
+        "no-cache",
+        "path",
+        "verbose",
+        "quiet",
+        "help",
+    ],
+    operands: 0,
+};
+
+const BUNDLE_GLOBAL_SPEC: Wrapper = Wrapper {
+    name: "bundle",
+    short_values: "",
+    short_switches: "V",
+    long_values: &[],
+    long_switches: &["no-color", "verbose"],
+    operands: 0,
+};
+
+const BUNDLE_EXEC_SPEC: Wrapper = Wrapper {
+    name: "bundle-exec",
+    short_values: "",
+    short_switches: "",
+    long_values: &["gemfile"],
+    long_switches: &["keep-file-descriptors"],
+    operands: 0,
+};
+
+const PERF_GLOBAL_SPEC: Wrapper = Wrapper {
+    name: "perf",
+    short_values: "",
+    short_switches: "vhp",
+    long_values: &["debug", "buildid-dir", "exec-path", "html-path"],
+    long_switches: &[
+        "version",
+        "help",
+        "paginate",
+        "no-pager",
+        "no-replace-objects",
+        "bare",
+    ],
+    operands: 0,
+};
+
+const PERF_SUB_SPEC: Wrapper = Wrapper {
+    name: "perf-sub",
+    short_values: "erIoptCuGFCcD",
+    short_switches: "aABdgsTnvq",
+    long_values: &[
+        "event",
+        "repeat",
+        "interval-print",
+        "output",
+        "pid",
+        "tid",
+        "cpu",
+        "cgroup",
+        "uid",
+        "delay",
+        "freq",
+        "count",
+        "call-graph",
+        "field-separator",
+        "graph-opts",
+        "sort",
+    ],
+    long_switches: &[
+        "all-cpus",
+        "append",
+        "null",
+        "sync",
+        "metric-only",
+        "json",
+        "table",
+        "per-core",
+        "per-socket",
+        "per-node",
+        "per-thread",
+        "topdown",
+        "no-big-num",
+        "detailed",
+        "verbose",
+        "quiet",
+    ],
+    operands: 0,
+};
+
+const DOCKER_GLOBAL_SPEC: Wrapper = Wrapper {
+    name: "docker",
+    short_values: "Hcl",
+    short_switches: "Dv",
+    long_values: &[
+        "host",
+        "context",
+        "config",
+        "log-level",
+        "tlscacert",
+        "tlscert",
+        "tlskey",
+    ],
+    long_switches: &["debug", "tls", "tlsverify"],
+    operands: 0,
+};
+
+const DOCKER_RUN_SPEC: Wrapper = Wrapper {
+    name: "docker-run",
+    short_values: "acelmpuvw",
+    short_switches: "ditPq",
+    long_values: &[
+        "attach",
+        "add-host",
+        "blkio-weight",
+        "cap-add",
+        "cap-drop",
+        "cgroupns",
+        "cgroup-parent",
+        "cidfile",
+        "cpu-period",
+        "cpu-quota",
+        "cpu-rt-period",
+        "cpu-rt-runtime",
+        "cpu-shares",
+        "cpus",
+        "cpuset-cpus",
+        "cpuset-mems",
+        "detach-keys",
+        "device",
+        "device-cgroup-rule",
+        "dns",
+        "dns-option",
+        "dns-search",
+        "domainname",
+        "entrypoint",
+        "env",
+        "env-file",
+        "expose",
+        "gpus",
+        "group-add",
+        "health-cmd",
+        "health-interval",
+        "health-retries",
+        "health-start-interval",
+        "health-start-period",
+        "health-timeout",
+        "hostname",
+        "ip",
+        "ip6",
+        "ipc",
+        "isolation",
+        "kernel-memory",
+        "label",
+        "label-file",
+        "link",
+        "log-driver",
+        "log-opt",
+        "mac-address",
+        "memory",
+        "memory-reservation",
+        "memory-swap",
+        "memory-swappiness",
+        "mount",
+        "name",
+        "network",
+        "net",
+        "network-alias",
+        "oom-score-adj",
+        "pid",
+        "pids-limit",
+        "platform",
+        "publish",
+        "pull",
+        "restart",
+        "runtime",
+        "security-opt",
+        "shm-size",
+        "stop-signal",
+        "stop-timeout",
+        "storage-opt",
+        "sysctl",
+        "tmpfs",
+        "user",
+        "ulimit",
+        "userns",
+        "uts",
+        "volume",
+        "volume-driver",
+        "volumes-from",
+        "workdir",
+    ],
+    long_switches: &[
+        "detach",
+        "interactive",
+        "tty",
+        "publish-all",
+        "rm",
+        "privileged",
+        "read-only",
+        "init",
+        "no-healthcheck",
+        "oom-kill-disable",
+        "sig-proxy",
+        "help",
+        "quiet",
+    ],
+    operands: 1,
+};
+
+const DOCKER_EXEC_SPEC: Wrapper = Wrapper {
+    name: "docker-exec",
+    short_values: "euw",
+    short_switches: "dit",
+    long_values: &["detach-keys", "env", "env-file", "user", "workdir"],
+    long_switches: &["detach", "interactive", "tty", "privileged"],
+    operands: 1,
+};
+
+const TMUX_GLOBAL_SPEC: Wrapper = Wrapper {
+    name: "tmux",
+    short_values: "cfLST",
+    short_switches: "28CDlNuvV",
+    long_values: &[],
+    long_switches: &[],
+    operands: 0,
+};
+
+const TMUX_SUB_SPEC: Wrapper = Wrapper {
+    name: "tmux-sub",
+    short_values: "ceFntxypP",
+    short_switches: "AdDEPXhbkvI",
+    long_values: &[],
+    long_switches: &[],
+    operands: 0,
+};
+
+const SSH_SPEC: Wrapper = Wrapper {
+    name: "ssh",
+    short_values: "BbcDEeFIiJLlmOopQRSwW",
+    short_switches: "46AaCfGgKkMNnqsTtVvXxYy",
+    long_values: &[],
+    long_switches: &[],
+    operands: 1,
+};
+
+const SCREEN_SPEC: Wrapper = Wrapper {
+    name: "screen",
+    short_values: "cehpsStT",
+    short_switches: "aAdDfilmOqUvx46",
+    long_values: &["Logfile"],
+    long_switches: &["ls", "list", "wipe", "help", "version"],
+    operands: 0,
+};
+
+static VERB_LAUNCHERS: &[VerbLauncher] = &[
+    VerbLauncher {
+        program: "uv",
+        verbs: &["run"],
+        global: &UV_GLOBAL_SPEC,
+        subcmd: &UV_RUN_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "poetry",
+        verbs: &["run"],
+        global: &POETRY_SPEC,
+        subcmd: &POETRY_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "pipx",
+        verbs: &["run"],
+        global: &PIPX_RUN_SPEC,
+        subcmd: &PIPX_RUN_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "bundle",
+        verbs: &["exec"],
+        global: &BUNDLE_GLOBAL_SPEC,
+        subcmd: &BUNDLE_EXEC_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "bundler",
+        verbs: &["exec"],
+        global: &BUNDLE_GLOBAL_SPEC,
+        subcmd: &BUNDLE_EXEC_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "perf",
+        verbs: &["stat", "record", "trace", "ftrace"],
+        global: &PERF_GLOBAL_SPEC,
+        subcmd: &PERF_SUB_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "docker",
+        verbs: &["run"],
+        global: &DOCKER_GLOBAL_SPEC,
+        subcmd: &DOCKER_RUN_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "docker",
+        verbs: &["exec"],
+        global: &DOCKER_GLOBAL_SPEC,
+        subcmd: &DOCKER_EXEC_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "podman",
+        verbs: &["run"],
+        global: &DOCKER_GLOBAL_SPEC,
+        subcmd: &DOCKER_RUN_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "podman",
+        verbs: &["exec"],
+        global: &DOCKER_GLOBAL_SPEC,
+        subcmd: &DOCKER_EXEC_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "launchctl",
+        verbs: &["asuser", "bsexec"],
+        global: &EMPTY_WRAPPER_SPEC,
+        subcmd: &ONE_OPERAND_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "tmux",
+        verbs: &[
+            "new-session",
+            "new",
+            "new-window",
+            "neww",
+            "split-window",
+            "splitw",
+            "respawn-pane",
+            "respawnp",
+            "respawn-window",
+            "respawnw",
+        ],
+        global: &TMUX_GLOBAL_SPEC,
+        subcmd: &TMUX_SUB_SPEC,
+        shell_string: true,
+    },
+];
+
+fn slice_line(line: &Line, start: usize) -> Line {
+    Line {
+        words: line.words[start..].to_vec(),
+        dynamic: line.dynamic[start..].to_vec(),
+        odd: line.odd[start..].to_vec(),
+        quoted: line.quoted[start..].to_vec(),
+        heredoc: false,
+    }
+}
+
+fn build_prefixed_line(prefix: &str, prefix_idx: usize, line: &Line, rest_start: usize) -> Line {
+    let prefix_odd = !prefix
+        .chars()
+        .enumerate()
+        .all(|(i, c)| is_plain_word_char(c, i == 0));
+    let mut words = vec![prefix.to_string()];
+    let mut dynamic = vec![line.dynamic[prefix_idx]];
+    let mut odd = vec![prefix_odd];
+    let mut quoted = vec![line.quoted[prefix_idx]];
+    if rest_start < line.words.len() {
+        words.extend_from_slice(&line.words[rest_start..]);
+        dynamic.extend_from_slice(&line.dynamic[rest_start..]);
+        odd.extend_from_slice(&line.odd[rest_start..]);
+        quoted.extend_from_slice(&line.quoted[rest_start..]);
+    }
+    Line {
+        words,
+        dynamic,
+        odd,
+        quoted,
+        heredoc: false,
+    }
+}
+
+fn find_entrypoint(tokens: &[String], base: usize) -> Option<(String, usize)> {
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let token = tokens[i].as_str();
+        if token == "--" {
+            break;
+        }
+        if token == "--entrypoint" {
+            return tokens.get(i + 1).map(|v| (v.clone(), base + i + 1));
+        }
+        if let Some(val) = token.strip_prefix("--entrypoint=") {
+            return Some((val.to_string(), base + i));
+        }
+        i += 1;
+    }
+    None
+}
+
+fn ssh_skips_remote_command(args: &[String]) -> bool {
+    let mut i = 0usize;
+    while i < args.len() {
+        let token = args[i].as_str();
+        if token == "--" || !token.starts_with('-') || token.len() == 1 {
+            return false;
+        }
+        let flags = &token[1..];
+        let mut consumes_next = false;
+        for (at, flag) in flags.char_indices() {
+            if matches!(flag, 'N' | 'G' | 'V' | 'Q' | 'O') {
+                return true;
+            }
+            if SSH_SPEC.short_values.contains(flag) {
+                consumes_next = at + flag.len_utf8() == flags.len();
+                break;
+            }
+        }
+        i += if consumes_next { 2 } else { 1 };
+    }
+    false
+}
+
+fn screen_attaches_only(args: &[String]) -> bool {
+    let mut has_m = false;
+    let mut attach = false;
+    let mut i = 0usize;
+    while i < args.len() {
+        let token = args[i].as_str();
+        if token == "--" || !token.starts_with('-') || token.len() == 1 {
+            break;
+        }
+        if let Some(long) = token.strip_prefix("--") {
+            if matches!(long, "ls" | "list" | "wipe") {
+                return true;
+            }
+            if SCREEN_SPEC.long_values.contains(&long) {
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if matches!(token, "-ls" | "-list" | "-wipe") {
+            return true;
+        }
+        let flags = &token[1..];
+        let mut consumes_next = false;
+        for (at, flag) in flags.char_indices() {
+            if flag == 'm' {
+                has_m = true;
+            } else if matches!(flag, 'r' | 'R' | 'X' | 'Q') {
+                attach = true;
+            }
+            if SCREEN_SPEC.short_values.contains(flag) {
+                consumes_next = at + flag.len_utf8() == flags.len();
+                break;
+            }
+        }
+        i += if consumes_next { 2 } else { 1 };
+    }
+    attach && !has_m
+}
+
 /// Values of `-c CMD`, `-cCMD`, `--command CMD`, `--command=CMD` and
 /// `--session-command` after `tokens[head]`, with whether each is dynamic:
 /// the code `su`, `runuser`, `flock` and `script` hand to a shell.
@@ -1575,8 +2980,29 @@ fn command_option_payloads(
     head: usize,
     dynamic: &[bool],
 ) -> Vec<(String, bool)> {
+    option_payloads(
+        tokens,
+        head,
+        dynamic,
+        Some('c'),
+        &["command", "session-command"],
+        false,
+    )
+}
+
+fn option_payloads(
+    tokens: &[String],
+    head: usize,
+    dynamic: &[bool],
+    short_flag: Option<char>,
+    long_names: &[&str],
+    stop_at_double_dash: bool,
+) -> Vec<(String, bool)> {
     let mut payloads = Vec::new();
     for (at, token) in tokens.iter().enumerate().skip(head + 1) {
+        if stop_at_double_dash && token == "--" {
+            break;
+        }
         let next = || {
             tokens
                 .get(at + 1)
@@ -1587,14 +3013,15 @@ fn command_option_payloads(
                 Some((name, value)) => (name, Some(value)),
                 None => (long, None),
             };
-            if matches!(name, "command" | "session-command") {
+            if long_names.contains(&name) {
                 payloads.extend(match inline {
                     Some(value) => Some((value.to_string(), dynamic[at])),
                     None => next(),
                 });
             }
-        } else if let Some(flags) = token.strip_prefix('-')
-            && let Some(offset) = flags.find('c')
+        } else if let Some(short) = short_flag
+            && let Some(flags) = token.strip_prefix('-')
+            && let Some(offset) = flags.find(short)
         {
             let value = &flags[offset + 1..];
             payloads.extend(if value.is_empty() {
@@ -1615,7 +3042,7 @@ fn mark_replacement_operands(tokens: &[String], heads: &[usize], dynamic: &mut [
         return;
     };
     for &head in heads {
-        if command_name(&tokens[head]) != "xargs" {
+        if canonical_wrapper_name(&command_name(&tokens[head])) != "xargs" {
             continue;
         }
         let mut replacements: Vec<String> = Vec::new();
@@ -1766,7 +3193,13 @@ fn end_command(commands: &mut Vec<Line>, line: &mut Line) {
         heredoc: line.heredoc,
         ..Line::default()
     };
-    for ((word, dynamic), odd) in line.words.into_iter().zip(line.dynamic).zip(line.odd) {
+    for (((word, dynamic), odd), quoted) in line
+        .words
+        .into_iter()
+        .zip(line.dynamic)
+        .zip(line.odd)
+        .zip(line.quoted)
+    {
         if matches!(word.as_str(), "{" | "}") {
             push_command(commands, &mut piece);
             continue;
@@ -1777,6 +3210,7 @@ fn end_command(commands: &mut Vec<Line>, line: &mut Line) {
         piece.words.push(word);
         piece.dynamic.push(dynamic);
         piece.odd.push(odd);
+        piece.quoted.push(quoted);
     }
     push_command(commands, &mut piece);
 }
@@ -2167,9 +3601,209 @@ fn command_name(token: &str) -> String {
     }
 }
 
+fn is_dynamic_loader(name: &str) -> bool {
+    name == "ld.so"
+        || name.starts_with("ld.so.")
+        || name.starts_with("ld-linux")
+        || name.starts_with("ld-musl")
+}
+
+fn canonical_wrapper_name(name: &str) -> &str {
+    match name {
+        "genv" => "env",
+        "gxargs" => "xargs",
+        "gtime" => "time",
+        "gsetsid" => "setsid",
+        "gruncon" => "runcon",
+        "linux32" | "uname26" => "linux64",
+        _ if is_dynamic_loader(name) => "ld.so",
+        _ => name,
+    }
+}
+
+fn long_option_extra_values(wrapper: &str, option: &str) -> usize {
+    match wrapper {
+        "bwrap"
+            if matches!(
+                option,
+                "bind"
+                    | "bind-try"
+                    | "dev-bind"
+                    | "dev-bind-try"
+                    | "ro-bind"
+                    | "ro-bind-try"
+                    | "setenv"
+                    | "symlink"
+                    | "chmod"
+                    | "file"
+                    | "bind-data"
+                    | "ro-bind-data"
+            ) =>
+        {
+            2
+        }
+        "nix" if option == "option" => 2,
+        _ => 0,
+    }
+}
+
+enum WrapperStep {
+    Advance {
+        steps: [Option<usize>; 2],
+        operands: u8,
+        options_done: bool,
+    },
+    Stop,
+    Landing,
+}
+
+fn step_wrapper_option(
+    tokens: &[String],
+    index: usize,
+    spec: &Wrapper,
+    operands: u8,
+    options_done: bool,
+    payloads: Option<&mut Vec<String>>,
+) -> WrapperStep {
+    let token = tokens[index].as_str();
+    if !options_done && token == "--" {
+        return WrapperStep::Advance {
+            steps: [Some(index + 1), None],
+            operands,
+            options_done: true,
+        };
+    }
+    if !options_done && token.len() > 1 && token.starts_with('-') {
+        let mut next_operands = operands;
+        if let Some(long) = token.strip_prefix("--") {
+            let (name, inline) = match long.split_once('=') {
+                Some((name, value)) => (name, Some(value)),
+                None => (long, None),
+            };
+            if spec.name == "ld.so" && matches!(name, "list" | "verify") {
+                return WrapperStep::Stop;
+            }
+            if spec.name == "runcon"
+                && matches!(name, "compute" | "user" | "role" | "type" | "range")
+            {
+                next_operands = 0;
+            }
+            if let Some(payloads) = payloads
+                && spec.name == "env"
+                && name == "split-string"
+            {
+                match inline {
+                    Some(value) => payloads.push(value.to_string()),
+                    None => payloads.extend(tokens.get(index + 1).cloned()),
+                }
+            }
+            let extra = long_option_extra_values(spec.name, name);
+            let steps = if inline.is_some() || spec.long_switches.contains(&name) {
+                [Some(index + 1), None]
+            } else if extra > 0 {
+                [Some(index + 1 + extra), None]
+            } else if spec.long_values.contains(&name) {
+                [Some(index + 2), None]
+            } else {
+                [Some(index + 1), Some(index + 2)]
+            };
+            return WrapperStep::Advance {
+                steps,
+                operands: next_operands,
+                options_done: false,
+            };
+        }
+        let flags = &token[1..];
+        if spec.name == "command" && flags.contains(['v', 'V']) {
+            return WrapperStep::Stop;
+        }
+        if spec.name == "runcon" && flags.contains(['c', 'u', 'r', 't', 'l']) {
+            next_operands = 0;
+        }
+        if let Some(payloads) = payloads
+            && spec.name == "env"
+            && let Some(at) = flags.find('S')
+        {
+            let value = &flags[at + 1..];
+            if value.is_empty() {
+                payloads.extend(tokens.get(index + 1).cloned());
+            } else {
+                payloads.push(value.to_string());
+            }
+        }
+        let mut step = Some(1);
+        for (at, flag) in flags.char_indices() {
+            if spec.short_values.contains(flag) {
+                if at + flag.len_utf8() == flags.len() {
+                    step = Some(2);
+                }
+                break;
+            }
+            if !flag.is_ascii_digit() && !spec.short_switches.contains(flag) {
+                step = None;
+                break;
+            }
+        }
+        let steps = match step {
+            Some(step) => [Some(index + step), None],
+            None => [Some(index + 1), Some(index + 2)],
+        };
+        return WrapperStep::Advance {
+            steps,
+            operands: next_operands,
+            options_done: false,
+        };
+    }
+    if operands > 0 {
+        return WrapperStep::Advance {
+            steps: [Some(index + 1), None],
+            operands: operands - 1,
+            options_done,
+        };
+    }
+    WrapperStep::Landing
+}
+
+fn resolve_wrapper_targets(tokens: &[String], start: usize, spec: &Wrapper) -> Vec<usize> {
+    let mut landings = Vec::new();
+    let mut seen = HashSet::new();
+    let mut stack = vec![(start, spec.operands, false)];
+    while let Some((index, operands, options_done)) = stack.pop() {
+        if !seen.insert((index, operands, options_done)) || seen.len() >= MAX_HEAD_STATES {
+            continue;
+        }
+        if index >= tokens.len() {
+            if operands == 0 && !landings.contains(&tokens.len()) {
+                landings.push(tokens.len());
+            }
+            continue;
+        }
+        match step_wrapper_option(tokens, index, spec, operands, options_done, None) {
+            WrapperStep::Advance {
+                steps,
+                operands,
+                options_done,
+            } => {
+                for next_idx in steps.into_iter().flatten() {
+                    stack.push((next_idx, operands, options_done));
+                }
+            }
+            WrapperStep::Stop => {}
+            WrapperStep::Landing => {
+                if !landings.contains(&index) {
+                    landings.push(index);
+                }
+            }
+        }
+    }
+    landings.sort_unstable();
+    landings
+}
+
 /// Index into [`WRAPPERS`] when `token` names a wrapper word.
 fn wrapper_index(token: &str) -> Option<usize> {
-    let name = command_name(token);
+    let raw = command_name(token);
+    let name = canonical_wrapper_name(&raw);
     WRAPPERS.iter().position(|wrapper| wrapper.name == name)
 }
 
@@ -2245,84 +3879,44 @@ fn command_heads(tokens: &[String]) -> Heads {
                 options_done,
             } => {
                 let spec = &WRAPPERS[wrapper];
-                let next = |operands, options_done| State::Wrapper {
-                    wrapper,
+                match step_wrapper_option(
+                    tokens,
+                    index,
+                    spec,
                     operands,
                     options_done,
-                };
-                if !options_done && token == "--" {
-                    stack.push((index + 1, next(operands, true)));
-                } else if !options_done && token.len() > 1 && token.starts_with('-') {
-                    let same = next(operands, false);
-                    if let Some(long) = token.strip_prefix("--") {
-                        let (name, inline) = match long.split_once('=') {
-                            Some((name, value)) => (name, Some(value)),
-                            None => (long, None),
-                        };
-                        if spec.name == "env" && name == "split-string" {
-                            match inline {
-                                Some(value) => payloads.push(value.to_string()),
-                                None => payloads.extend(tokens.get(index + 1).cloned()),
-                            }
-                        }
-                        if inline.is_some() || spec.long_switches.contains(&name) {
-                            stack.push((index + 1, same));
-                        } else if spec.long_values.contains(&name) {
-                            stack.push((index + 2, same));
-                        } else {
-                            // Unknown long option: it may or may not take
-                            // the next word as its value.
-                            stack.push((index + 1, same));
-                            stack.push((index + 2, same));
-                        }
-                    } else {
-                        let flags = &token[1..];
-                        // `command -v NAME` / `-V` only looks NAME up.
-                        if spec.name == "command" && flags.contains(['v', 'V']) {
-                            continue;
-                        }
-                        if spec.name == "env"
-                            && let Some(at) = flags.find('S')
-                        {
-                            let value = &flags[at + 1..];
-                            if value.is_empty() {
-                                payloads.extend(tokens.get(index + 1).cloned());
-                            } else {
-                                payloads.push(value.to_string());
-                            }
-                        }
-                        // Walk the cluster: a switch continues it, a value
-                        // option takes the rest of the word or the next word,
-                        // and an option missing from the table is read both
-                        // ways (`env -P DIR cmd`, `xargs -J % cmd %`).
-                        let mut step = Some(1);
-                        for (at, flag) in flags.char_indices() {
-                            if spec.short_values.contains(flag) {
-                                if at + flag.len_utf8() == flags.len() {
-                                    step = Some(2);
-                                }
-                                break;
-                            }
-                            if !flag.is_ascii_digit() && !spec.short_switches.contains(flag) {
-                                step = None;
-                                break;
-                            }
-                        }
-                        match step {
-                            Some(step) => stack.push((index + step, same)),
-                            None => {
-                                stack.push((index + 1, same));
-                                stack.push((index + 2, same));
-                            }
+                    Some(&mut payloads),
+                ) {
+                    WrapperStep::Advance {
+                        steps,
+                        operands,
+                        options_done,
+                    } => {
+                        for next_idx in steps.into_iter().flatten() {
+                            stack.push((
+                                next_idx,
+                                State::Wrapper {
+                                    wrapper,
+                                    operands,
+                                    options_done,
+                                },
+                            ));
                         }
                     }
-                } else if operands > 0 {
-                    stack.push((index + 1, next(operands - 1, options_done)));
-                } else {
-                    if is_scalar_operand(token) {
-                        stack.push((index + 1, next(0, options_done)));
+                    WrapperStep::Stop => {}
+                    WrapperStep::Landing => {
+                        if is_scalar_operand(token) {
+                            stack.push((
+                                index + 1,
+                                State::Wrapper {
+                                    wrapper,
+                                    operands: 0,
+                                    options_done,
+                                },
+                            ));
+                        }
+                        stack.push((index, State::Command));
                     }
-                    stack.push((index, State::Command));
                 }
             }
         }
@@ -2386,7 +3980,7 @@ fn script_read_at_run_time(script: &str, line: &Line) -> bool {
 /// (`bash -c -e 'cmd'`, `sh -c -- 'cmd'`, `bash -c -o pipefail 'cmd'` all run
 /// `cmd`). Shells that read `-c`'s value as the very next word (fish) run
 /// that word instead, so both candidates are reported when they differ.
-fn shell_input(tokens: &[String]) -> ShellInput {
+fn shell_input(shell: &str, tokens: &[String], dynamic: &[bool]) -> ShellInput {
     let mut script = None;
     let mut from_stdin = false;
     let mut options_done = false;
@@ -2402,13 +3996,24 @@ fn shell_input(tokens: &[String]) -> ShellInput {
             from_stdin |= command.is_empty();
             options_done = true;
         } else if let Some(long) = token.strip_prefix("--").filter(|_| !options_done) {
-            if long.eq_ignore_ascii_case("command") {
-                return match tokens.get(index + 1) {
-                    Some(_) => ShellInput::Command(vec![index + 1]),
-                    None => ShellInput::Stdin,
+            let (name, inline) = match long.split_once('=') {
+                Some((name, value)) => (name, Some(value)),
+                None => (long, None),
+            };
+            if name.eq_ignore_ascii_case("command")
+                || (shell == "nu"
+                    && (name.eq_ignore_ascii_case("commands")
+                        || name.eq_ignore_ascii_case("execute")))
+            {
+                return match inline {
+                    Some(value) => ShellInput::Inline(value.to_string(), dynamic[index]),
+                    None => match tokens.get(index + 1) {
+                        Some(_) => ShellInput::Command(vec![index + 1]),
+                        None => ShellInput::Stdin,
+                    },
                 };
             }
-            if matches!(long, "rcfile" | "init-file") {
+            if matches!(name, "rcfile" | "init-file") && inline.is_none() {
                 index += 1;
             }
         } else if !options_done
@@ -2416,7 +4021,10 @@ fn shell_input(tokens: &[String]) -> ShellInput {
             && (token.starts_with('-') || token.starts_with('+'))
         {
             let flags = &token[1..];
-            if token.starts_with('-') && flags.contains('c') && command.is_empty() {
+            if token.starts_with('-')
+                && (flags.contains('c') || (shell == "nu" && flags.contains('e')))
+                && command.is_empty()
+            {
                 command.push(index + 1);
             }
             from_stdin |= token.starts_with('-') && flags.contains('s');

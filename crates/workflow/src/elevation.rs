@@ -468,19 +468,84 @@ fn merge_permissions(
     }
     for tool in &permissions.allowed_tools {
         let name = tool.trim();
-        if is_write_tool(name) {
+        let authority = tool_name_authority(name);
+        if is_write_tool(name) || authority.writes {
             *writes = true;
         }
-        if is_shell_tool(name) {
+        if is_shell_tool(name) || authority.shell {
             *shell = true;
         }
-        if is_network_tool(name) {
+        if is_network_tool(name) || authority.network {
             *network = true;
         }
-        if is_secret_tool(name) {
+        if is_secret_tool(name) || authority.secrets {
             *secrets = true;
         }
     }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ToolAuthority {
+    pub shell: bool,
+    pub network: bool,
+    pub writes: bool,
+    pub secrets: bool,
+}
+
+#[must_use]
+pub fn tool_name_authority(raw: &str) -> ToolAuthority {
+    let name = raw
+        .split('(')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let name = name.as_str();
+    let mut authority = ToolAuthority::default();
+    if name.contains("shell")
+        || name.contains("exec")
+        || name.contains("bash")
+        || name == "run"
+        || name.starts_with("run_")
+        || name == "rlm"
+    {
+        authority.shell = true;
+    }
+    if name.contains("secret") || name.contains("credential") || name == "read_env" {
+        authority.secrets = true;
+    }
+    if matches!(
+        name,
+        "web" | "web_search" | "web_run" | "web.run" | "fetch_url" | "rlm" | "git_fetch"
+    ) || name.starts_with("mcp_")
+    {
+        authority.network = true;
+    }
+    if matches!(
+        name,
+        "file" | "write" | "edit" | "write_file" | "edit_file" | "apply_patch"
+    ) {
+        authority.writes = true;
+    }
+    if matches!(name, "git" | "github" | "gh") || name.starts_with("github_") {
+        authority.network = true;
+        authority.writes = true;
+    }
+    if name.starts_with("computer") || name.starts_with("browser") {
+        authority.network = true;
+        authority.writes = true;
+    }
+    if name.starts_with("computer") {
+        authority.shell = true;
+    }
+    if matches!(
+        name,
+        "task" | "tasks" | "task_create" | "automation" | "automations" | "automation_create"
+    ) {
+        authority.shell = true;
+        authority.writes = true;
+    }
+    authority
 }
 
 /// True for a tool that can modify files.
@@ -818,6 +883,27 @@ mod tests {
         assert_eq!(
             labels,
             vec!["Goal", "Children", "Writes", "Shell", "Network", "Budget"]
+        );
+    }
+
+    #[test]
+    fn read_only_leaf_with_canonical_tool_families_elevates() {
+        let mut inspect = leaf("inspect", TaskMode::ReadOnly);
+        inspect.permissions.allowed_tools =
+            vec!["Bash".to_string(), "Web".to_string(), "File".to_string()];
+        let spec = spec_with(vec![WorkflowNode::Leaf(inspect)], Some("read_only"));
+        let elevation = assess_workflow_elevation(&spec, ElevationOptions::default());
+        assert!(elevation.elevated, "{elevation:?}");
+        assert!(elevation.writes, "{elevation:?}");
+        assert!(elevation.shell, "{elevation:?}");
+        assert!(elevation.network, "{elevation:?}");
+        assert_eq!(
+            elevation.reasons,
+            vec![
+                "writes".to_string(),
+                "shell".to_string(),
+                "network".to_string()
+            ]
         );
     }
 }
