@@ -1577,7 +1577,8 @@ async fn extension_creator_install_in_full_access_answers_applied() {
     cfg.plugin_registry = Some(Arc::clone(&registry));
     cfg.agent_preset = Some("creator".to_string());
 
-    let (engine, handle) = Engine::new_with_model_client(cfg, &Config::default(), mock);
+    let (mut engine, mut handle) = Engine::new_with_model_client(cfg, &Config::default(), mock);
+    engine.attach_owner_surface_for_tests(&mut handle);
     let config = Config::default();
     let task = tokio::spawn(engine.run());
 

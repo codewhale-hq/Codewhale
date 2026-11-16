@@ -1423,12 +1423,15 @@ async fn the_installing_call_survives_its_own_refresh() {
         .id
         .as_str()
         .to_string();
-    assert!(matches!(
-        f.manager
-            .owner_report(&victim_plugin_id)
-            .and_then(|r| r.state),
-        Some(OwnerState::Active)
-    ));
+    let victim_state = f
+        .manager
+        .owner_report(&victim_plugin_id)
+        .and_then(|r| r.state);
+    assert!(
+        matches!(victim_state, Some(OwnerState::Active)),
+        "{victim_state:?} after {:?}",
+        setup_out.tool_results
+    );
     let ready_file = crate::extension_host::supervisor::owner_data_dir(
         &f.temp.path().join("ext-root"),
         crate::extension_host::tier::HostCohort::reviewed(),
