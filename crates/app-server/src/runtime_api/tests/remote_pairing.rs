@@ -396,7 +396,25 @@ impl NodeRemoteHarness {
                 return Ok(grant);
             }
             if Instant::now() >= deadline {
-                anyhow::bail!("pairing grant never appeared for thread {thread_id}");
+                let mut replay = self
+                    .state
+                    .runtime_threads
+                    .replay_events(thread_id, None, None)
+                    .await?;
+                let mut items = Vec::new();
+                while let Some(batch) = replay.batches.recv().await {
+                    for ev in batch.map_err(anyhow::Error::msg)? {
+                        if ev.event.starts_with("item.") && ev.event != "item.delta" {
+                            let mut line = format!("{} {}", ev.event, ev.payload);
+                            line.truncate(600);
+                            items.push(line);
+                        }
+                    }
+                }
+                anyhow::bail!(
+                    "pairing grant never appeared for thread {thread_id}; items: {}",
+                    items.join(" | ")
+                );
             }
             sleep(Duration::from_millis(25)).await;
         }
