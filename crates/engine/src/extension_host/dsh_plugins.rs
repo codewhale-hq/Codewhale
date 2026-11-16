@@ -493,11 +493,14 @@ fn posture(
     };
     let app_mode = authority.mode();
     let approval_mode = authority.approval_mode();
-    let mode = if app_mode == AppMode::Plan {
-        "read-only"
-    } else {
-        approval_mode.agent_baseline_sandbox_mode()
-    };
+    let mode = crate::core::authority::sandbox_policy_for_turn(
+        app_mode,
+        approval_mode,
+        authority.configured_sandbox_mode(),
+        &tool.workspace,
+        crate::core::authority::SandboxNetworkAccess::Restricted,
+    )
+    .config_value();
     let permission_mode = if app_mode == AppMode::Plan {
         "plan"
     } else if approval_mode == ApprovalMode::Never {

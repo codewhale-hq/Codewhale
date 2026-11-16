@@ -2897,8 +2897,7 @@ var inspect_catalog_default = {
             },
             failOnStartupError: {
               type: "boolean",
-              const: false,
-              description: "Only false: the Engine connects lazily and reports failures through /mcp."
+              description: "When true, install and enable connect the server first and report failure if it cannot start; when false or absent, the Engine connects lazily and reports failures through /mcp."
             }
           }
         }

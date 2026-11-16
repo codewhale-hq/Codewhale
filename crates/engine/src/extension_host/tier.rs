@@ -311,7 +311,7 @@ pub static BUILTIN_MODULES: &[BuiltinModule] = &[
     },
     BuiltinModule {
         id: "creator",
-        source_sha256: "876599587ccadf2c79b17a8650312d25bd0d46a13f3cb6fcb2f3aa45e6d5ec0e",
+        source_sha256: "41bf97f29fad606ae1d92c8937031233094dcbae96e43da90437b86895404923",
         tools: &[
             Tier0Tool {
                 name: "cordis_inspect_list",

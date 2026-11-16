@@ -1384,6 +1384,18 @@ impl LiveRuntimeAuthority {
     pub(crate) fn approval_mode(&self) -> ApprovalMode {
         self.approval_mode
     }
+
+    pub(crate) fn allow_shell(&self) -> bool {
+        self.allow_shell
+    }
+
+    pub(crate) fn configured_sandbox_mode(&self) -> Option<&str> {
+        self.configured_sandbox_mode.as_deref()
+    }
+
+    pub(crate) fn is_read_only_sandbox(&self) -> bool {
+        self.mode == AppMode::Plan || self.configured_sandbox_mode.as_deref() == Some("read-only")
+    }
 }
 
 #[derive(Debug)]
@@ -9113,12 +9125,14 @@ impl Engine {
 
     async fn ensure_mcp_pool(&mut self) -> Result<Arc<AsyncMutex<McpPool>>, ToolError> {
         if let Some(pool) = self.mcp_pool.clone() {
+            let current_network = self.current_network_decider();
             let mut held = pool.lock().await;
             if !Arc::ptr_eq(&held.auth_context(), &self.config.mcp_auth_context.0) {
                 return Err(ToolError::not_available(
                     "MCP pool belongs to another credential authority",
                 ));
             }
+            held.set_network_policy(current_network);
             held.bind_caller_plugins(Arc::clone(&self.plugin_registry))
                 .map_err(|error| ToolError::not_available(error.to_string()))?;
             self.config.runtime_services.runtime_mcp_servers = held.runtime_server_scope();
@@ -9956,6 +9970,9 @@ impl Engine {
                 let _ = done_tx.send(true);
             },
         );
+        if let Some(previous) = self.mcp_boot_task.take() {
+            previous.abort();
+        }
         self.mcp_boot_task = Some(boot_task.abort_handle());
 
         Ok(generation)

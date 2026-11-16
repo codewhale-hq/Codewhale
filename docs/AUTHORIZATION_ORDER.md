@@ -115,14 +115,15 @@ two should not be interpreted independently.
 - Creator `plugin_manager` read queries (`list_plugins`, `list_bundles`,
   `list_version_exemptions`) execute across postures without prompts. State-changing
   calls (`install_bundle`, `remove_bundle`, `set_bundle`, `set_plugin`) require an
-  interactive top-level direct call (`Plan`, `Never`, `Background`, sub-agents,
-  and nested `execute_tools` refuse with `PermissionDenied`): inside-workspace
-  local changes route through the human card in `Ask`/`Accept Edits`, through the
-  Auto-Review guardian (or configured `auto_review.allow` rules) in
+  interactive top-level direct call (`Plan`, `sandbox_mode = "read-only"`, `Never`,
+  `Background`, sub-agents, and nested `execute_tools` refuse with `PermissionDenied`):
+  inside-workspace local changes route through the human card in `Ask`/`Accept Edits`,
+  through the Auto-Review guardian (or configured `auto_review.allow` rules) in
   `Auto-Review`, and run under `Full Access` (recording agent posture in
   `plugins/state.json`), whereas outside-scope targets (paths outside the project,
   remote specs or local folders with unresolved npm dependencies fetched from a
-  registry, person-approved plugins, or built-in switches) skip the Auto-Review
+  registry, bundles declaring stdio MCP connectors or hooks while shell execution is
+  disabled, person-approved plugins, or built-in switches) skip the Auto-Review
   guardian and require a forced human `creator-human:` card even under
   `Auto-Review` allow rules or `Full Access`. Remembered non-user grants, hooks,
   and typed `allow` rules never waive that card, and unseen remote/npm-dependency

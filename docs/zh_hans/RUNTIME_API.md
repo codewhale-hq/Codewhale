@@ -2045,7 +2045,7 @@ POST 前保留预期指纹，并在响应及按键 GET 恢复时核对，之后�
     由智能体批准的插件留在限定于单个项目工作区的隔离队列中，不会与人审查的插件混入同一队列。
   - `outside_reach`（`bool`）：当智能体批准的插件属于其他项目工作区时为 `true`，此时在当前工作区保持 `active: false`。
   - `host_services`：`{"service", "state": "can_use" | "not_offered", "withheld_by"?:
-    [{ "id", "name" }]}` 的数组。`withheld_by` 为空时省略；非空时表示该服务当前因这些已开启的对等插件未在其自身审查中包含该宿主服务，或处于不同队列而被暂时禁用（off for now）。
+    [{ "id", "name" }]}` 的数组。`withheld_by` 为空时省略；非空时表示该服务当前因这些已开启的对等插件未在其自身审查中包含该宿主服务而被暂时禁用（off for now）。
 - `GET /v1/apps/plugins/{selector}` — 展平上述摘要条目，并附带插件包元数据
   （`repository`、`license`、`keywords`、`staged`）、`review`（确认 `token`、能力清单，以及交互式人工审查可选的 `host_services` 预览）、`reviewed_at`（`string | null`，最近一次记录审查的 RFC 3339 时间戳，区别于开启时间）以及 `review_history`（按时间倒序的 `{"reviewed_at": "<rfc3339>", "approved_by"?: PluginApprover}` 历史列表）。通过 `POST /v1/apps/plugins/{selector}/trust` 由人重新审查后，`approved_by` 更新为人、`cohort` 切回 `{"kind": "reviewed"}`，原有智能体审查记录仍保留在 `review_history` 中。
 

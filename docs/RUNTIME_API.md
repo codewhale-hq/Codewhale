@@ -2796,7 +2796,7 @@ thread deletion.
     "not_offered", "withheld_by"?: [{ "id", "name" }]}`. `withheld_by` is
     omitted when empty; when present, `withheld_by` means the service is off for
     now because those active peers do not include that host service in their own
-    review or sit in a separate cohort.
+    review.
 - `GET /v1/apps/plugins/{selector}` — flattens the summary entry with bundle
   metadata (`repository`, `license`, `keywords`, `staged`), `review` (confirmation
   `token`, capabilities, and optional `host_services` preview for interactive

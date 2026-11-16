@@ -3978,7 +3978,6 @@ mod tests {
             AgentApproval, AgentPosture, PersonVia, PluginApprover, ReviewApproval,
         };
 
-        let _env = crate::test_support::lock_test_env();
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");
         let workspace = root.path().join("project");
@@ -3986,7 +3985,7 @@ mod tests {
         for dir in [&home, &workspace, &other_workspace] {
             std::fs::create_dir_all(dir).unwrap();
         }
-        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home);
+        let _home = crate::test_support::SealedHome::at(&home);
         let ctx = codewhale_plugins::PluginDiscoveryContext::capture_pre_dotenv();
         for (dir_root, name) in [
             (workspace.join(".codewhale/plugins"), "ag"),

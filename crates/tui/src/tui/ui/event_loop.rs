@@ -9112,8 +9112,10 @@ mod plugin_change_tests {
 
     #[test]
     fn plugin_change_adds_one_line_with_the_name_defanged() {
+        let _home = crate::test_support::SealedHome::new();
+        let temp = tempfile::tempdir().expect("tempdir");
         let mut app = crate::tui::test_support::test_app_with_options(
-            crate::tui::test_support::test_tui_options(std::env::temp_dir()),
+            crate::tui::test_support::test_tui_options(temp.path()),
         );
         let before = app.history.len();
         apply_plugin_changed_notice(
@@ -9327,8 +9329,10 @@ mod telemetry_notice_tests {
 
     #[test]
     fn telemetry_notice_waits_for_the_launch_card_to_leave() {
+        let _home = crate::test_support::SealedHome::new();
+        let temp = tempfile::tempdir().expect("tempdir");
         let mut app = crate::tui::test_support::test_app_with_options(
-            crate::tui::test_support::test_tui_options(std::env::temp_dir()),
+            crate::tui::test_support::test_tui_options(temp.path()),
         );
         app.launch.visible = true;
         app.launch.dissolve_started_ms = None;

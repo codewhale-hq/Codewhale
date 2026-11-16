@@ -2520,6 +2520,11 @@ impl Engine {
                         "'{tool_name}' changes plugin state and is not available in Plan mode: Plan has no write-capable plugin actions (read-only list_* actions remain available). The user can change modes with /mode."
                     )));
                 }
+                if blocked_error.is_none() && batch_sandbox_read_only {
+                    blocked_error = Some(ToolError::permission_denied(format!(
+                        "'{tool_name}' changes plugin state and is not permitted while sandbox_mode is read-only."
+                    )));
+                }
                 if blocked_error.is_none() && batch_approval_mode == ApprovalMode::Never {
                     blocked_error = Some(ToolError::permission_denied(
                         "Changing plugins is not permitted in Never approval mode.".to_string(),
@@ -2527,9 +2532,20 @@ impl Engine {
                 }
                 if blocked_error.is_none() {
                     if let Some(gate_context) = self.live_tool_context(tool_registry) {
-                        match crate::extension_host::creator_policy::plan_change_async(
+                        let can_prompt_outside_scope = self.current_turn_authority().run_origin()
+                            != RunOrigin::Background
+                            && (matches!(
+                                batch_approval_mode,
+                                ApprovalMode::Suggest
+                                    | ApprovalMode::AcceptEdits
+                                    | ApprovalMode::Bypass
+                            ) || (batch_approval_mode == ApprovalMode::Auto
+                                && owner_can_prompt));
+                        match crate::extension_host::creator_policy::plan_change_for_turn_async(
                             &gate_context,
                             &tool_input,
+                            can_prompt_outside_scope,
+                            self.config.allow_shell,
                             &self.cancel_token,
                         )
                         .await
@@ -4270,12 +4286,13 @@ impl Engine {
                         let live_authority = self.applied_runtime_authority();
                         let decider = match approval_stamp {
                             Some(ToolApprovalStamp::ApprovedByUser)
-                                if live_authority.mode() != AppMode::Plan
+                                if !live_authority.is_read_only_sandbox()
                                     && live_authority.approval_mode() != ApprovalMode::Never =>
                             {
                                 Ok(crate::extension_host::creator_policy::CreatorDecider::Person)
                             }
                             None if live_authority.mode() == AppMode::Agent
+                                && !live_authority.is_read_only_sandbox()
                                 && live_authority.approval_mode() == ApprovalMode::Bypass =>
                             {
                                 Ok(crate::extension_host::creator_policy::CreatorDecider::Agent(
@@ -4283,6 +4300,7 @@ impl Engine {
                                 ))
                             }
                             None if live_authority.mode() == AppMode::Agent
+                                && !live_authority.is_read_only_sandbox()
                                 && live_authority.approval_mode() == ApprovalMode::Auto =>
                             {
                                 Ok(crate::extension_host::creator_policy::CreatorDecider::Agent(
@@ -5250,18 +5268,23 @@ impl Engine {
             };
 
         if let Some(pool) = self.mcp_pool.as_ref().cloned() {
+            let current_network = self.current_network_decider();
             let rebound = {
                 let mut pool = pool.lock().await;
+                pool.set_network_policy(current_network);
                 pool.bind_caller_plugins(Arc::clone(&fresh_plugins)).is_ok()
             };
             if rebound {
                 self.refresh_current_mcp_catalog(tool_policy, tool_catalog, active_tool_names)
                     .await;
-                if !self.mcp_boot_in_flight {
-                    let _ = self
-                        .start_mcp_session_boot(super::McpConnectRefresh::IfChanged)
-                        .await;
+                if let Some(previous) = self.mcp_boot_task.take() {
+                    previous.abort();
                 }
+                self.mcp_boot_in_flight = false;
+                self.mcp_boot_generation = None;
+                let _ = self
+                    .start_mcp_session_boot(super::McpConnectRefresh::IfChanged)
+                    .await;
             }
         }
 

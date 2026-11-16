@@ -4334,21 +4334,16 @@ async fn ask_defers_external_non_bundle_and_symlink_ancestor_until_after_write_g
         let parent_link = f._temp.path().join("parent-symlink");
         std::os::unix::fs::symlink(&via_ancestor_link, &parent_link).unwrap();
         let linked_path = parent_link.join("nested").to_string_lossy().into_owned();
-        let linked_plan = plan_change_async(
-            &f.context,
-            &broker_to_pm_input("install", &json!({"target": linked_path})),
-            &CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-        assert!(!linked_plan.in_agent_scope);
-        let linked_res = f
-            .call_admitted(&f.context, "install", json!({"target": linked_path}))
+        assert!(
+            plan_change_async(
+                &f.context,
+                &broker_to_pm_input("install", &json!({"target": linked_path})),
+                &CancellationToken::new(),
+            )
             .await
-            .unwrap();
-        assert_eq!(linked_res["application"], "failed", "{linked_res}");
-        assert_eq!(linked_res["changed"], false);
-        assert_eq!(linked_res["error"]["code"], "operation-error");
+            .is_err(),
+            "{linked_path}"
+        );
         Some(linked_path)
     };
     #[cfg(not(unix))]

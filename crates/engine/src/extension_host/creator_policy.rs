@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use codewhale_config::AppMode;
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_paths::{codewhale_home_override, user_home};
 use codewhale_plugins::activation::{PolicyScope, extension_host_policy_enabled};
@@ -242,6 +241,11 @@ impl CreatorGatePlan {
         decider: CreatorDecider,
         admitted_authority: LiveRuntimeAuthority,
     ) -> Result<CreatorDecisionCarrier, ToolError> {
+        if admitted_authority.is_read_only_sandbox() {
+            return Err(ToolError::permission_denied(
+                "plugin changes are not permitted while sandbox_mode is read-only",
+            ));
+        }
         if matches!(decider, CreatorDecider::Agent(_))
             && (!self.in_agent_scope || self.unseen_network_fetch)
         {
@@ -500,7 +504,7 @@ pub(crate) fn admit_broker_act(
     let Some(live) = live_authority else {
         return Err("runtime authority is unavailable for this plugin change".to_string());
     };
-    if live.mode() == AppMode::Plan || live.approval_mode() == ApprovalMode::Never {
+    if live.is_read_only_sandbox() || live.approval_mode() == ApprovalMode::Never {
         return Err("cannot change plugins in this mode".to_string());
     }
     if live.narrows(&carrier.admitted_authority) {
@@ -805,6 +809,16 @@ pub async fn plan_change_async(
     input: &Value,
     cancel: &CancellationToken,
 ) -> Result<CreatorGatePlan, ToolError> {
+    plan_change_for_turn_async(tool, input, true, tool.shell_policy.allows_shell(), cancel).await
+}
+
+pub async fn plan_change_for_turn_async(
+    tool: &ToolContext,
+    input: &Value,
+    can_prompt_outside_scope: bool,
+    allow_shell: bool,
+    cancel: &CancellationToken,
+) -> Result<CreatorGatePlan, ToolError> {
     let parsed = parse_change_input(input)?;
     let Some(base_registry) = tool.plugin_registry.as_ref().cloned() else {
         return Err(ToolError::not_available(
@@ -861,6 +875,8 @@ pub async fn plan_change_async(
         parsed,
         workspace,
         base_registry,
+        can_prompt_outside_scope,
+        allow_shell,
         policy,
         #[cfg(any(test, feature = "test-support"))]
         env_scope,
@@ -1141,6 +1157,8 @@ enum BlockingPolicyJob {
         parsed: ParsedChangeInput,
         workspace: PathBuf,
         base_registry: Arc<PluginRegistry>,
+        can_prompt_outside_scope: bool,
+        allow_shell: bool,
         policy: bool,
         #[cfg(any(test, feature = "test-support"))]
         env_scope: Option<crate::test_support::EnvScopeTicket>,
@@ -1180,6 +1198,8 @@ fn spawn_blocking_policy_job(
             parsed: ParsedChangeInput,
             workspace: &Path,
             base_registry: &PluginRegistry,
+            can_prompt_outside_scope: bool,
+            allow_shell: bool,
         ) -> Result<CreatorGatePlan, ToolError> {
             let source = parse_install_target_syntax(&parsed.target)
                 .map_err(|(_, msg)| ToolError::invalid_input(msg))?;
@@ -1196,6 +1216,55 @@ fn spawn_blocking_policy_job(
             let canon_user_plugins = fresh
                 .user_plugins_dir()
                 .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));
+
+            if !can_prompt_outside_scope {
+                let inside_ws_lexically = canon_ws.is_some()
+                    && !canon_ws
+                        .as_deref()
+                        .is_some_and(workspace_is_root_or_home_sync)
+                    && !canon_ws.as_deref().is_some_and(path_has_dot_git_component)
+                    && !raw_path
+                        .components()
+                        .any(|c| matches!(c, Component::ParentDir))
+                    && !path_has_dot_git_component(&raw_path)
+                    && (path_is_within(workspace, &raw_path, false)
+                        || canon_ws
+                            .as_deref()
+                            .is_some_and(|cw| path_is_within(cw, &raw_path, false)))
+                    && !fresh
+                        .user_plugins_dir()
+                        .is_some_and(|dir| path_is_within(dir, &raw_path, true))
+                    && !canon_user_plugins
+                        .as_deref()
+                        .is_some_and(|dir| path_is_within(dir, &raw_path, true));
+                if !inside_ws_lexically {
+                    return Err(ToolError::permission_denied(
+                        "folder is outside this project".to_string(),
+                    ));
+                }
+            }
+
+            match check_symlink_ancestors_sync(&raw_path) {
+                Ok(true) => {
+                    return Err(ToolError::invalid_input(
+                        "local plugin install path cannot traverse symbolic links",
+                    ));
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    let scrubbed = scrub_path_error(
+                        &error.to_string(),
+                        workspace,
+                        canon_ws.as_deref(),
+                        None,
+                        fresh.user_plugins_dir(),
+                        fresh.state_path(),
+                    );
+                    return Err(ToolError::invalid_input(format!(
+                        "cannot inspect local install folder: {scrubbed}"
+                    )));
+                }
+            }
 
             let src_meta = std::fs::metadata(&raw_path).map_err(|error| {
                 let scrubbed = scrub_path_error(
@@ -1334,13 +1403,23 @@ fn spawn_blocking_policy_job(
                 (validated, None, Vec::new())
             };
 
-            let (in_agent_scope, outside_scope_reason) = check_local_install_scope(
+            let (mut in_agent_scope, mut outside_scope_reason) = check_local_install_scope(
                 &raw_path,
                 &canon_src,
                 canon_ws.as_deref(),
                 fresh.user_plugins_dir(),
                 canon_user_plugins.as_deref(),
             );
+            if in_agent_scope
+                && !allow_shell
+                && (validated.inventory.stdio_mcp_servers > 0 || validated.inventory.hooks > 0)
+            {
+                in_agent_scope = false;
+                outside_scope_reason = Some(
+                    "bundle declares stdio MCP connectors or hooks while shell execution is disabled"
+                        .to_string(),
+                );
+            }
 
             let mut truncated = false;
             let raw_name = validated.manifest.plugin.name.clone();
@@ -1462,6 +1541,7 @@ fn spawn_blocking_policy_job(
             parsed: ParsedChangeInput,
             workspace: &Path,
             base_registry: &PluginRegistry,
+            allow_shell: bool,
         ) -> Result<CreatorGatePlan, ToolError> {
             let fresh = base_registry.rediscover_for_workspace(workspace);
             let canon_ws = std::fs::canonicalize(workspace).ok();
@@ -1511,12 +1591,23 @@ fn spawn_blocking_policy_job(
                 }
             }
 
-            let (in_agent_scope, outside_scope_reason) = check_existing_scope(
+            let (mut in_agent_scope, mut outside_scope_reason) = check_existing_scope(
                 &fresh,
                 plugin,
                 canon_ws.as_deref(),
                 canon_user_plugins.as_deref(),
             );
+            if in_agent_scope
+                && parsed.action == CreatorAction::Enable
+                && !allow_shell
+                && (plugin.inventory.stdio_mcp_servers > 0 || plugin.inventory.hooks > 0)
+            {
+                in_agent_scope = false;
+                outside_scope_reason = Some(
+                    "bundle declares stdio MCP connectors or hooks while shell execution is disabled"
+                        .to_string(),
+                );
+            }
 
             if parsed.action == CreatorAction::Remove {
                 let expected_gate_target = format!("{raw_name} {plugin_id}");
@@ -2016,6 +2107,8 @@ fn spawn_blocking_policy_job(
                 parsed,
                 workspace,
                 base_registry,
+                can_prompt_outside_scope,
+                allow_shell,
                 policy,
                 #[cfg(any(test, feature = "test-support"))]
                 env_scope,
@@ -2028,11 +2121,15 @@ fn spawn_blocking_policy_job(
                 #[cfg(any(test, feature = "test-support"))]
                 let _offer = TestOffer::only(&test_offered);
                 let res = match parsed.action {
-                    CreatorAction::Install => {
-                        plan_local_install_blocking(parsed, &workspace, &base_registry)
-                    }
+                    CreatorAction::Install => plan_local_install_blocking(
+                        parsed,
+                        &workspace,
+                        &base_registry,
+                        can_prompt_outside_scope,
+                        allow_shell,
+                    ),
                     CreatorAction::Remove | CreatorAction::Enable | CreatorAction::Disable => {
-                        plan_existing_blocking(parsed, &workspace, &base_registry)
+                        plan_existing_blocking(parsed, &workspace, &base_registry, allow_shell)
                     }
                 };
                 BlockingPolicyResult::Plan(Box::new(res))

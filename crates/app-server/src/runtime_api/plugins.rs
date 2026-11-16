@@ -432,10 +432,18 @@ fn summary_host_services(
         return review
             .lines
             .into_iter()
-            .map(|line| PluginHostServiceEntry {
-                service: line.service.name(),
-                state: host_service_wire_state(&plugin.host_services, &line),
-                withheld_by: line.withheld_by,
+            .map(|line| {
+                let state = host_service_wire_state(&plugin.host_services, &line);
+                let withheld_by = if state == HostServiceWireState::CanUse {
+                    line.withheld_by
+                } else {
+                    Vec::new()
+                };
+                PluginHostServiceEntry {
+                    service: line.service.name(),
+                    state,
+                    withheld_by,
+                }
             })
             .collect();
     }
@@ -1857,7 +1865,9 @@ pub(super) async fn get_plugin_ui(
     let selector_for_prepare = selector.clone();
     let seat = slot.clone();
     let requested_key = query.dsh_slot.clone();
+    let policy = codewhale_plugins::activation::extension_host_policy_enabled();
     let prepared = tokio::task::spawn_blocking(move || {
+        let _scope = codewhale_plugins::activation::PolicyScope::propagate(policy);
         prepare_plugin_ui(
             &state_for_prepare,
             &selector_for_prepare,
@@ -1918,7 +1928,9 @@ pub(super) async fn plugin_route_bridge(
     }
     let (grant, revision) = grant_for_request(&state, &selector, &headers)?;
     let state_for_route = state.clone();
+    let policy = codewhale_plugins::activation::extension_host_policy_enabled();
     tokio::task::spawn_blocking(move || {
+        let _scope = codewhale_plugins::activation::PolicyScope::propagate(policy);
         codewhale_plugins::registry::verify_plugin_authority(&grant.authority)
             .map_err(|_| ui_stale_revision())?;
         admit_ui_grant(&state_for_route, &grant)?;
@@ -1974,7 +1986,9 @@ pub(super) async fn get_plugin_ui_asset(
         );
     }
     let state_for_asset = state.clone();
+    let policy = codewhale_plugins::activation::extension_host_policy_enabled();
     let bytes = tokio::task::spawn_blocking(move || {
+        let _scope = codewhale_plugins::activation::PolicyScope::propagate(policy);
         codewhale_plugins::registry::verify_plugin_authority(&grant.authority)
             .map_err(|_| ui_stale_revision())?;
         let bytes = if let Some(dsh) = &grant.dsh {
@@ -2052,7 +2066,9 @@ pub(super) async fn preview_dsh_plugin_api(
             .map(codewhale_net::network_policy::NetworkPolicy::from)
             .unwrap_or_default()
     };
+    let policy = codewhale_plugins::activation::extension_host_policy_enabled();
     let preview = tokio::task::spawn_blocking(move || {
+        let _scope = codewhale_plugins::activation::PolicyScope::propagate(policy);
         let canonical = path
             .canonicalize()
             .map_err(|_| format!("DSH package not found at {}", path.display()))?;

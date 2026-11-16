@@ -2181,6 +2181,7 @@ fn tally(actions: &[ReceiptAction], totals: &mut ReceiptTotals) {
     let mut created: BTreeSet<&str> = BTreeSet::new();
     let mut deleted: BTreeSet<&str> = BTreeSet::new();
     let mut outside: BTreeSet<&str> = BTreeSet::new();
+    let mut seen_approval_calls: BTreeSet<&str> = BTreeSet::new();
     for action in actions {
         let ran = !matches!(
             action.status,
@@ -2236,7 +2237,13 @@ fn tally(actions: &[ReceiptAction], totals: &mut ReceiptTotals) {
             ActionKind::Subagent { .. } if ran => totals.subagents += 1,
             _ => {}
         }
-        if let Some(fact) = action.approval {
+        if let Some(fact) = action.approval.filter(|_| {
+            action
+                .call_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+                .is_none_or(|id| seen_approval_calls.insert(id))
+        }) {
             let approvals = &mut totals.approvals;
             approvals.total += 1;
             match fact.decision {

@@ -2586,24 +2586,27 @@ fn plugin_list_and_show_name_the_approver_and_who_turned_it_on() {
         AGENT_PROCESS_NOTE, AgentApproval, AgentPosture, PersonVia, PluginApprover, ReviewApproval,
     };
 
-    let _lock = crate::test_support::lock_test_env();
     let root = TempDir::new().unwrap();
     let home = root.path().join("home");
     let other_project = root.path().join("otherproject");
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&other_project).unwrap();
-    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home);
+    let sealed = crate::test_support::SealedHome::at(&home);
 
     write_native_service_bundle(root.path(), "agentsvc", &["workspace", "attachments"]);
     write_native_service_bundle(root.path(), "peer-plain", &[]);
     write_skill_bundle(root.path(), "personplug", "");
     write_skill_bundle(root.path(), "preplug", "");
-    let other_bundle = home.join("plugins/otherproj");
+    let other_bundle = sealed.codewhale_home().join("plugins/otherproj");
     fs::create_dir_all(other_bundle.join("skills/hello")).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(home.join("plugins"), fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(
+            sealed.codewhale_home().join("plugins"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
     }
     fs::write(
         other_bundle.join("plugin.toml"),
@@ -2879,11 +2882,10 @@ fn plugin_list_and_show_name_the_approver_and_who_turned_it_on() {
 
 #[test]
 fn command_line_trust_never_reads_as_reviewed_by_you() {
-    let _lock = crate::test_support::lock_test_env();
     let root = TempDir::new().unwrap();
     let home = root.path().join("home");
     fs::create_dir_all(&home).unwrap();
-    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home);
+    let _home = crate::test_support::SealedHome::at(&home);
 
     write_skill_bundle(root.path(), "cmdplug", "");
     let (mut app, _temp) = create_test_app(root.path());
@@ -2937,11 +2939,10 @@ fn an_agent_approved_plugin_a_person_turned_on_still_reads_not_reviewed() {
         AGENT_PROCESS_NOTE, AgentApproval, AgentPosture, PersonVia, PluginApprover, ReviewApproval,
     };
 
-    let _lock = crate::test_support::lock_test_env();
     let root = TempDir::new().unwrap();
     let home = root.path().join("home");
     fs::create_dir_all(&home).unwrap();
-    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home);
+    let _home = crate::test_support::SealedHome::at(&home);
 
     write_skill_bundle(root.path(), "hybridplug", "");
     let (mut app, _temp) = create_test_app(root.path());
@@ -3010,11 +3011,10 @@ fn the_approval_date_is_never_shown_as_the_turned_on_date() {
         AgentApproval, AgentPosture, PluginApprover, ReviewApproval,
     };
 
-    let _lock = crate::test_support::lock_test_env();
     let root = TempDir::new().unwrap();
     let home = root.path().join("home");
     fs::create_dir_all(&home).unwrap();
-    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home);
+    let _home = crate::test_support::SealedHome::at(&home);
 
     write_skill_bundle(root.path(), "datedplug", "");
     let (mut app, _temp) = create_test_app(root.path());
@@ -3183,11 +3183,10 @@ fn a_manifest_cannot_forge_an_approver_line() {
         AgentApproval, AgentPosture, PluginApprover, ReviewApproval,
     };
 
-    let _lock = crate::test_support::lock_test_env();
     let root = TempDir::new().unwrap();
     let home = root.path().join("home");
     fs::create_dir_all(&home).unwrap();
-    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home);
+    let _home = crate::test_support::SealedHome::at(&home);
 
     write_skill_bundle(root.path(), "forged", "");
     let (base_app, _temp) = create_test_app(root.path());

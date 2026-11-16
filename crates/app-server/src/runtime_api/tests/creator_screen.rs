@@ -25,7 +25,7 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
 
 #[tokio::test]
 async fn creator_screen_template_seat_is_admitted_and_served() -> Result<()> {
-    codewhale_plugins::activation::install_extension_host_policy(true);
+    let _home = codewhale_engine::test_support::SealedHome::new();
     let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(true);
     let root = tempdir()?;
     let workspace = root.path().join("workspace");

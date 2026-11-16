@@ -4140,10 +4140,18 @@ pub(crate) fn portable_detail(
         Some(review) => review
             .lines
             .into_iter()
-            .map(|line| PluginHostServiceDetail {
-                service: format!("{} ({})", line.service.name(), line.service.label()),
-                can_use: line.offered && plugin.host_services.contains(&line.service),
-                withheld_by: line.withheld_by.into_iter().map(|peer| peer.name).collect(),
+            .map(|line| {
+                let can_use = line.offered && plugin.host_services.contains(&line.service);
+                let withheld_by = if can_use {
+                    line.withheld_by.into_iter().map(|peer| peer.name).collect()
+                } else {
+                    Vec::new()
+                };
+                PluginHostServiceDetail {
+                    service: format!("{} ({})", line.service.name(), line.service.label()),
+                    can_use,
+                    withheld_by,
+                }
             })
             .collect(),
         None => plugin

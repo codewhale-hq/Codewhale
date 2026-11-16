@@ -3950,6 +3950,10 @@ impl McpPool {
         self
     }
 
+    pub fn set_network_policy(&mut self, policy: Option<NetworkPolicyDecider>) {
+        self.network_policy = policy;
+    }
+
     /// Configure the OAuth callback overrides (`mcp_oauth_callback_port` /
     /// `mcp_oauth_callback_url`) for installations whose OAuth client has a
     /// pre-registered redirect URI. The synthetic self-serve login tool must

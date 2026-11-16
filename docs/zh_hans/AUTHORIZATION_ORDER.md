@@ -90,11 +90,11 @@ Codewhale 把工具（tool）可用性、钩子（hook）、带类型的权限�
   与 Ask 姿态下审批挂起的方式相同。
 - 创作者 `plugin_manager` 的只读查询（`list_plugins`、`list_bundles`、`list_version_exemptions`）
   在各姿态下均无需提示直接执行。变更类调用（`install_bundle`、`remove_bundle`、`set_bundle`、`set_plugin`）
-  必须发生在交互式顶层直接调用中（`Plan`、`Never`、`Background`、子智能体以及嵌套的 `execute_tools`
+  必须发生在交互式顶层直接调用中（`Plan`、`sandbox_mode = "read-only"`、`Never`、`Background`、子智能体以及嵌套的 `execute_tools`
   都会以 `PermissionDenied` 拒绝）：工作区作用域内的本地变更在 `Ask`／`Accept Edits` 中弹出人工卡片、
   在 `Auto-Review` 中经由守护者（或配置的 `auto_review.allow` 规则）审查、在 `Full Access`
   下运行（并将智能体姿态记入 `plugins/state.json`）；而作用域外目标（项目外路径、远端源或含未解析 npm
-  依赖的本地目录、由人批准过的插件以及内置开关）会跳过 Auto-Review 守护者，即使在配置了 `Auto-Review`
+  依赖的本地目录、禁用 shell 执行时声明了 stdio MCP 连接器或钩子的插件包、由人批准过的插件以及内置开关）会跳过 Auto-Review 守护者，即使在配置了 `Auto-Review`
   allow 规则或 `Full Access` 下也强制弹出 `creator-human:` 人工卡片。记忆的非用户授权、钩子和带类型
   `allow` 规则均不能豁免该卡片；未见远端或含 npm 依赖的拉取在收到 `"yes"` 前绝不执行，且落地后默认禁用
   （`enabled = false`）并保持未受信任状态，直至经显式审查后再启用。
