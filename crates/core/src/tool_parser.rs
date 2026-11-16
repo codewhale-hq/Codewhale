@@ -418,6 +418,7 @@ fn parse_arrow_syntax(inner: &str, name: String, id_counter: &mut u32) -> Option
 /// Parse CLI-style arguments: --`arg_name` "value" or --`arg_name` value
 fn parse_cli_style_args(content: &str) -> Value {
     let mut map = serde_json::Map::new();
+    let mut key_value_content = std::borrow::Cow::Borrowed(content);
 
     // Pattern: --arg_name "value" or --arg_name 'value' or --arg_name value
     let arg_regex =
@@ -440,13 +441,14 @@ fn parse_cli_style_args(content: &str) -> Value {
                 map.insert(arg_name.to_string(), json_value);
             }
         }
+        key_value_content = regex.replace_all(content, " ");
     }
 
     // Also try simple key=value format
     let kv_regex =
         Regex::new(r#"([a-zA-Z_][a-zA-Z0-9_]*)\s*[:=]\s*(?:"([^"]*)"|'([^']*)'|(\S+))"#).ok();
     if let Some(regex) = kv_regex {
-        for cap in regex.captures_iter(content) {
+        for cap in regex.captures_iter(&key_value_content) {
             if let Some(key) = cap.get(1) {
                 let key = key.as_str();
                 if !map.contains_key(key) {
@@ -570,6 +572,25 @@ pub fn has_tool_call_markers(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_argument_values_do_not_create_extra_key_value_arguments() {
+        let text = r#"[TOOL_CALL]{tool => "exec", args => {--command "MODE=dev node app.js"}}[/TOOL_CALL]"#;
+        let result = parse_tool_calls(text);
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(
+            result.tool_calls[0].args,
+            json!({"command": "MODE=dev node app.js"})
+        );
+
+        let mixed = r#"[TOOL_CALL]{tool => "write_file", args => {--content "mode=dev" path=out.txt}}[/TOOL_CALL]"#;
+        let result = parse_tool_calls(mixed);
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(
+            result.tool_calls[0].args,
+            json!({"content": "mode=dev", "path": "out.txt"})
+        );
+    }
 
     #[test]
     fn xml_parameters_preserve_multiline_content() {
