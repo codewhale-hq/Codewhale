@@ -859,7 +859,7 @@ assert.doesNotMatch(
 let hermeticInvocations = 0;
 for (const [label, workflow, expected] of [
   ["CI", ci, 5],
-  ["CI test suite", ciSuite, 3],
+  ["CI test suite", ciSuite, 4],
   ["release", release, 0],
   ["release parity", parityWorkflow, 4],
   ["CNB", cnb, 3],

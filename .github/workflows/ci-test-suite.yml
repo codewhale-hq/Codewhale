@@ -280,6 +280,18 @@ jobs:
             --workspace-remap . --profile ci -E "$NATIVE_FILTER"
           cp target/nextest/ci/junit.xml "$RUNNER_TEMP/native-junit.xml"
           python3 -I scripts/ci/nextest-shard-count.py junit "$RUNNER_TEMP/native-junit.xml" > "$RUNNER_TEMP/native-count.txt"
+      - name: Warm the Windows Native host launch before the loaded partition
+        if: inputs.os == 'windows-latest' && matrix.shard != 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nextest-extract"
+          sh scripts/with-hermetic-test-home.sh cargo nextest run \
+            --archive-file "$RUNNER_TEMP/test-archive/nextest-archive.tar.zst" \
+            --extract-to "$RUNNER_TEMP/nextest-extract" --extract-overwrite \
+            --workspace-remap . --profile ci \
+            -E 'package(codewhale-engine) & kind(lib) & test(=extension_host::windows::tests::windows_native_lpac_node_owner_boundary)'
+          rm -f target/nextest/ci/junit.xml
       - name: Run tests
         # Same test binaries as `cargo test`, run by cargo-nextest: one
         # process per test, all runner cores busy, slow tests named instead
