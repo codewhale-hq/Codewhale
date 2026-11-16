@@ -1263,21 +1263,13 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   macos-budget:
-    # Fork PRs build cold on a GitHub-hosted Mac, and the RSS budget and the
-    # offline eval each rebuild codewhale-tui there. Inside Test that cost
-    # cancelled fork PRs at the 90-minute limit (jobs 106749104684 and
-    # 106235312282) before Test could report. Running both here, in parallel
-    # with Test and under their own timeout, keeps the coverage without
-    # holding the required Test (macos-latest) context hostage. When Test's
-    # macOS leg runs on the self-hosted Mac (trusted event and
-    # CW_SELF_HOSTED_MAC == 'true'), it runs these two steps on the warm
-    # build instead. The name keeps "(fork PR)" so check contexts stay stable.
-    # Hosted macOS allows only five concurrent jobs per account, and the macOS
-    # test build and shards already take most of them, so pull requests skip
-    # this job and every dispatch (main-landing issues one per push to main)
-    # still runs it; a regression shows up on the merge that caused it. The
-    # sharded macOS suite never runs on the self-hosted Mac, so these gates no
-    # longer depend on CW_SELF_HOSTED_MAC.
+    # The RSS budget and the offline eval each rebuild codewhale-tui on a cold
+    # hosted Mac, so they run here under their own timeout instead of inside
+    # the sharded macOS suite. The name keeps "(fork PR)" so check contexts
+    # stay stable. Hosted macOS allows only five concurrent jobs per account
+    # and the macOS test build and shards take most of them, so pull requests
+    # skip this job; every dispatch (main-landing issues one per push to main)
+    # still runs it.
     name: macOS budget and eval (fork PR)
     needs: changes
     if: needs.changes.outputs.heavy == 'true' && needs.changes.outputs.scoped != 'true' && github.event_name != 'pull_request'
