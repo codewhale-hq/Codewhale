@@ -1237,7 +1237,7 @@ impl NativeUsageOrigin {
                     retain_runtime_usage_record(owner, record)?;
                     tracing::warn!(
                         owner = %owner,
-                        "captured usage receipt retained for a later flush; the turn continues"
+                        "captured usage receipt was not persisted; the turn continues"
                     );
                     return Ok(());
                 }
@@ -1403,6 +1403,7 @@ struct NativeUsageJournalSlot {
     source_fingerprint: String,
     lineage: String,
     active: std::sync::atomic::AtomicBool,
+    retention_declined: std::sync::atomic::AtomicBool,
     #[cfg(any(test, feature = "test-support"))]
     test_origin: std::thread::ThreadId,
 }
@@ -1468,6 +1469,7 @@ impl NativeUsageSource {
             source_fingerprint: usage_source_fingerprint(&state.source_id),
             lineage: state.lineage.clone(),
             active: std::sync::atomic::AtomicBool::new(false),
+            retention_declined: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "test-support"))]
             test_origin: state
                 .origin
@@ -1521,6 +1523,8 @@ impl NativeUsageSource {
             if !occupied.contains(&slot.source_fingerprint)
                 && occupied.len() >= MAX_RUNTIME_USAGE_RECORDS_PER_OWNER
             {
+                slot.retention_declined
+                    .store(true, std::sync::atomic::Ordering::Release);
                 tracing::warn!(
                     owner,
                     occupied = occupied.len(),
@@ -1530,6 +1534,8 @@ impl NativeUsageSource {
             }
             slot.active
                 .store(true, std::sync::atomic::Ordering::Release);
+            slot.retention_declined
+                .store(false, std::sync::atomic::Ordering::Release);
             entry
                 .native_slots
                 .insert(slot.source_fingerprint.clone(), Arc::downgrade(slot));
@@ -3539,6 +3545,14 @@ fn retain_runtime_usage_record(owner: &str, record: &RuntimeUsageRecord) -> std:
         }
         let entry = journal.entry(owner.to_string()).or_default();
         let key = usage_source_fingerprint(&record.source_id);
+        if proof.slot.owner.as_deref() == Some(owner)
+            && proof
+                .slot
+                .retention_declined
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(());
+        }
         if proof.slot.owner.as_deref() != Some(owner)
             || !proof.slot.active.load(std::sync::atomic::Ordering::Acquire)
             || !entry
@@ -5992,6 +6006,81 @@ mod tests {
         assert_eq!(batch.records.len(), MAX_RUNTIME_USAGE_RECORDS_PER_OWNER);
         assert_eq!(batch.dropped_records, 3);
         assert!(drain().is_empty(), "runtime fallback must stay out of TUI");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_dispatch_continues_when_retention_is_full_and_recovers_capacity() {
+        let _scope = test_scope();
+        let owner = "native-bounded";
+        let route = deepseek_envelope();
+        let origin = NativeUsageOrigin::captured_runtime(
+            scope_token(),
+            owner.to_string(),
+            Arc::new(|_| false),
+        );
+        let mut sources = Vec::new();
+        for index in 0..MAX_RUNTIME_USAGE_RECORDS_PER_OWNER {
+            let source = NativeUsageSource::capture_with_origin(
+                format!("response-{index}"),
+                UsageSpendOwner::Primary,
+                Some(origin.clone()),
+            );
+            source.admit_dispatch(&route).await.unwrap().unwrap();
+            sources.push(source);
+        }
+        let conflict = NativeUsageSource::capture_with_origin(
+            "response-0",
+            UsageSpendOwner::Primary,
+            Some(origin.clone()),
+        );
+        assert_eq!(
+            conflict.admit_dispatch(&route).await.unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+
+        let overflow = NativeUsageSource::capture_with_origin(
+            "response-overflow",
+            UsageSpendOwner::Primary,
+            Some(origin),
+        );
+        let record = overflow.admit_dispatch(&route).await.unwrap().unwrap();
+        assert!(!record.is_acknowledged());
+        let batch = take_runtime_usage(owner);
+        assert_eq!(batch.records.len(), MAX_RUNTIME_USAGE_RECORDS_PER_OWNER);
+        assert!(batch.records.iter().all(|prior| prior != &record));
+        assert_eq!(
+            overflow.admit_dispatch(&route).await.unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            retain_runtime_usage_record("another-owner", &record)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        let mut forged = record.clone();
+        forged.source_id = "forged".to_string();
+        assert_eq!(
+            retain_runtime_usage_record(owner, &forged)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+
+        batch.records[0].acknowledge_persisted().unwrap();
+        drop(sources.remove(0));
+        let retried = overflow.reported(&route, &small_usage()).unwrap();
+        assert_eq!(retried, record);
+        let recovered = take_runtime_usage(owner);
+        assert_eq!(recovered.records.len(), MAX_RUNTIME_USAGE_RECORDS_PER_OWNER);
+        assert!(recovered.records.contains(&record));
+        record.acknowledge_persisted().unwrap();
+        assert_eq!(
+            take_runtime_usage(owner).records.len(),
+            MAX_RUNTIME_USAGE_RECORDS_PER_OWNER - 1
+        );
+        assert!(drain().is_empty());
+        drop(sources);
     }
 
     #[test]
