@@ -65,7 +65,7 @@ codewhale-secrets = { path = "../secrets", version = "0.10.3" }
 colored = "3.0.0"
 fd-lock = "4.0.4"
 ignore = "0.4"
-lru = "0.18"
+lru = "0.19"
 regex = "1.11"
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
