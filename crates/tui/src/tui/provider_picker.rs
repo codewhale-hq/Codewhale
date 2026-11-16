@@ -1173,6 +1173,9 @@ impl ProviderDashboardRow {
     /// posture belong against the surface that actually shows them.
     #[cfg(test)]
     fn detail_facts(&self) -> String {
+        if self.is_custom_placeholder() {
+            return "needs endpoint | OpenAI-compatible endpoint".to_string();
+        }
         let self_hosted = if codewhale_runtime::config::provider_route_is_keyless_self_hosted(
             self.provider,
             &self.base_url,
@@ -1228,6 +1231,9 @@ impl ProviderDashboardRow {
     /// soooooo busy and it doesn't need to be at all". `compact_hint` keeps
     /// the full pipe-delimited form for surfaces that have no Details pane.
     fn list_row_hint(&self, view: ProviderListView) -> String {
+        if self.is_custom_placeholder() {
+            return "needs endpoint".to_string();
+        }
         match view {
             // `readiness` already reads as prose ("key saved · not checked",
             // "needs key"); `auth_status` said the same thing again in
@@ -1237,9 +1243,6 @@ impl ProviderDashboardRow {
                 // A row you cannot use yet says what it needs, once. The
                 // bundled-model count beside it only repeated itself down a
                 // fifty-row list; the Details pane still carries it.
-                if self.is_custom_placeholder() {
-                    return "needs endpoint".to_string();
-                }
                 match self.readiness {
                     ResolvedProviderReadiness::MissingKey => return "needs key".to_string(),
                     ResolvedProviderReadiness::MissingLogin => return "needs sign-in".to_string(),
@@ -1265,6 +1268,9 @@ impl ProviderDashboardRow {
     }
 
     fn catalog_label(&self) -> String {
+        if self.is_custom_placeholder() {
+            return String::new();
+        }
         match self.catalog_status {
             ProviderCatalogStatus::Bundled => format!("{} models", self.available_model_count),
             ProviderCatalogStatus::DefaultOnly => "default-only".to_string(),
@@ -3544,6 +3550,18 @@ impl ProviderPickerView {
         width: u16,
         full: bool,
     ) -> Vec<Line<'static>> {
+        if row.is_custom_placeholder() {
+            return vec![
+                Line::from(Span::styled(
+                    row.detail_state_line(),
+                    Style::default().fg(palette::TEXT_MUTED),
+                )),
+                Line::from(Span::styled(
+                    "OpenAI-compatible endpoint · press Enter to configure",
+                    Style::default().fg(palette::TEXT_PRIMARY),
+                )),
+            ];
+        }
         let route = if row.default_route.logical_model == row.default_route.wire_model {
             row.default_route.logical_model.clone()
         } else {
@@ -6408,6 +6426,133 @@ mod tests {
             "{:?}",
             row.messages
         );
+    }
+
+    #[test]
+    fn custom_placeholder_in_configured_search_and_after_named_custom_route_reads_cleanly() {
+        let _lock = crate::test_support::lock_test_env();
+        let _deepseek_key = EnvVarGuard::set("DEEPSEEK_API_KEY", "sk-deepseek-test");
+        let _acme_key = EnvVarGuard::set("ACME_API_KEY", "sk-acme-test");
+
+        let mut fresh = ProviderPickerView::new(ProviderKind::Deepseek, &Config::default());
+        assert_eq!(fresh.view, ProviderListView::Configured);
+        fresh.update_query("custom".to_string());
+        let fresh_idx = fresh
+            .rows
+            .iter()
+            .position(|row| row.provider_id == ProviderKind::Custom.as_str())
+            .expect("custom slot");
+        fresh.selected_idx = fresh_idx;
+        let fresh_row = &fresh.rows[fresh_idx];
+        assert!(fresh_row.is_custom_placeholder());
+        assert_eq!(
+            fresh_row.list_row_hint(ProviderListView::Configured),
+            "needs endpoint"
+        );
+        assert_eq!(
+            fresh_row.list_row_hint(ProviderListView::Catalog),
+            "needs endpoint"
+        );
+        assert!(fresh_row.catalog_label().is_empty());
+        assert_eq!(fresh_row.detail_state_line(), "needs endpoint");
+        assert!(!fresh_row.detail_facts().contains("legacy"));
+        assert!(!fresh_row.detail_facts().contains("unresolved"));
+
+        let fresh_rendered = render_text(&fresh, 120, 24);
+        assert!(
+            fresh_rendered.contains("needs endpoint"),
+            "{fresh_rendered}"
+        );
+        assert!(!fresh_rendered.contains("legacy"), "{fresh_rendered}");
+        assert!(!fresh_rendered.contains("unadmitted"), "{fresh_rendered}");
+        assert!(!fresh_rendered.contains("unresolved"), "{fresh_rendered}");
+        assert!(!fresh_rendered.contains("! "), "{fresh_rendered}");
+        let ViewAction::Emit(ViewEvent::OpenTextPager {
+            content: fresh_pager,
+            ..
+        }) = fresh.open_provider_details()
+        else {
+            panic!("expected pager details for placeholder")
+        };
+        assert!(fresh_pager.contains("needs endpoint"), "{fresh_pager}");
+        assert!(!fresh_pager.contains("legacy"), "{fresh_pager}");
+        assert!(!fresh_pager.contains("unadmitted"), "{fresh_pager}");
+        assert!(!fresh_pager.contains("unresolved"), "{fresh_pager}");
+
+        let mut custom_config = Config::default();
+        custom_config.provider = Some("acme".to_string());
+        custom_config.providers = Some(codewhale_runtime::config::ProvidersConfig {
+            custom: std::collections::HashMap::from([(
+                "acme".to_string(),
+                codewhale_runtime::config::ProviderConfig {
+                    kind: Some("openai-compatible".to_string()),
+                    base_url: Some("https://api.acme.example/v1".to_string()),
+                    model: Some("acme/code-1".to_string()),
+                    api_key_env: Some("ACME_API_KEY".to_string()),
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        });
+        let saved_picker = ProviderPickerView::new(ProviderKind::Custom, &custom_config);
+        assert_eq!(saved_picker.view, ProviderListView::Configured);
+        let saved_row = saved_picker
+            .rows
+            .iter()
+            .find(|row| row.provider_id == "acme")
+            .expect("saved named custom route");
+        assert!(!saved_row.is_custom_placeholder());
+        assert_eq!(
+            saved_row.list_row_hint(ProviderListView::Configured),
+            "key saved · not checked"
+        );
+        assert!(!saved_row.detail_state_line().contains("legacy"));
+        let saved_rendered = render_text(&saved_picker, 120, 24);
+        assert!(!saved_rendered.contains("legacy"), "{saved_rendered}");
+        assert!(!saved_rendered.contains("unadmitted"), "{saved_rendered}");
+        assert!(!saved_rendered.contains("unresolved"), "{saved_rendered}");
+
+        let remaining_slot = ProviderDashboardRow::from_config(
+            ProviderKind::Custom,
+            ProviderKind::Custom,
+            &custom_config,
+        );
+        assert!(remaining_slot.is_custom_placeholder());
+        assert!(
+            remaining_slot.messages.is_empty(),
+            "{:?}",
+            remaining_slot.messages
+        );
+        assert_eq!(
+            remaining_slot.list_row_hint(ProviderListView::Configured),
+            "needs endpoint"
+        );
+        assert_eq!(remaining_slot.detail_state_line(), "needs endpoint");
+        let slot_detail_text = saved_picker
+            .provider_detail_lines(&remaining_slot, 80, false)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            slot_detail_text.contains("needs endpoint"),
+            "{slot_detail_text}"
+        );
+        assert!(!slot_detail_text.contains("legacy"), "{slot_detail_text}");
+        assert!(
+            !slot_detail_text.contains("unadmitted"),
+            "{slot_detail_text}"
+        );
+        assert!(
+            !slot_detail_text.contains("unresolved"),
+            "{slot_detail_text}"
+        );
+        assert!(!slot_detail_text.contains("! "), "{slot_detail_text}");
     }
 
     #[test]

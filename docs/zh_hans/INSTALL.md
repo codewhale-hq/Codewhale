@@ -133,9 +133,9 @@ curl -fsSL https://codewhale.net/install.sh | sh
   时，两个命令名会复用同一次下载；摘要不同时才会单独下载并校验
   `codew-<platform>`。只要有一个摘要不匹配，就会在安装任何东西之前停止
   （`codewhale install: checksum mismatch for …`）。
-* 使用校验过的发布内容分别安装 `~/.local/bin/codewhale` 和
-  `~/.local/bin/codew`。当两个清单摘要相同时，下载暂存阶段尽量使用硬链接，
-  失败时使用临时副本。
+* 先安装 `~/.local/bin/codewhale`，然后在两者字节一致且文件系统支持硬链接时，
+  将 `~/.local/bin/codew` 安装为指向 `~/.local/bin/codewhale` 的硬链接（不支
+  持或失败时退回单独副本），确保更新后两者不会停留在不同版本。
 * **从不使用 sudo。** 当安装目录不在 `PATH` 上时，它会向你的 shell 配置文件追加一个带标记的三行块（见[把它加入 PATH](#把它加入-path)），原样打印它加了什么，并可用 `--no-modify-path` 跳过。它拒绝安装到系统或包管理器目录（`/usr/bin`、`~/.cargo/bin`、Homebrew 与 MacPorts 的 bin 目录、`node_modules`、`/nix/store` 等）、你的主目录或 `/`，以及其他用户或用户组可写的目录（你自己的目录可用 `chmod go-w <目录>` 修复）；也拒绝覆盖一个*不同的*已有 `codewhale`。
 
 预期输出：

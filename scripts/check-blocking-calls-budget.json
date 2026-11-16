@@ -64,7 +64,7 @@
   },
   "crates/cli/src/update.rs": {
     "path_canonicalize": 3,
-    "std_fs": 22,
+    "std_fs": 26,
     "thread_sleep": 1
   },
   "crates/cli/src/update/uninstall.rs": {
@@ -450,9 +450,6 @@
   },
   "crates/tui/src/commands/groups/core/acceptance.rs": {
     "std_fs": 1
-  },
-  "crates/tui/src/commands/groups/plugins/headless.rs": {
-    "std_fs": 3
   },
   "crates/tui/src/commands/groups/project/init.rs": {
     "std_fs": 13

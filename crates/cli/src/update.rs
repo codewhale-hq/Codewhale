@@ -1149,6 +1149,13 @@ fn protected_update_path(path: &Path) -> bool {
         })
 }
 
+fn replacement_parent(target: &Path) -> &Path {
+    target
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
 fn replace_verified_downloads<F>(
     target_paths: &[PathBuf],
     verified_bytes: &[u8],
@@ -1162,14 +1169,27 @@ where
     for path in target_paths {
         validate_target(path)?;
     }
+    #[cfg(unix)]
+    let mut replaced_by_parent: Vec<PathBuf> = Vec::new();
     for path in target_paths.iter().rev() {
-        replace_binary_with_validation(path, verified_bytes, || {
+        #[cfg(unix)]
+        let linked_from = replaced_by_parent
+            .iter()
+            .find(|existing| replacement_parent(existing) == replacement_parent(path))
+            .map(PathBuf::as_path);
+        #[cfg(not(unix))]
+        let linked_from: Option<&Path> = None;
+        replace_binary_with_validation_and_link_source(path, verified_bytes, linked_from, || {
             // Re-check after each temp file is fully staged and immediately
             // before every destructive rename. The running command is first
             // in the plan and therefore replaced last, after its colocated
             // compatibility names have received the same verified bytes.
             validate_target(path)
         })?;
+        #[cfg(unix)]
+        if linked_from.is_none() {
+            replaced_by_parent.push(path.clone());
+        }
     }
     Ok(())
 }
@@ -2436,6 +2456,109 @@ fn replace_binary(target: &Path, new_bytes: &[u8]) -> Result<()> {
     replace_binary_with_validation(target, new_bytes, || Ok(()))
 }
 
+#[cfg(unix)]
+struct LinkedTempPath(Option<PathBuf>);
+
+#[cfg(unix)]
+impl LinkedTempPath {
+    fn path(&self) -> &Path {
+        self.0.as_deref().expect("staged hard-link path")
+    }
+
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+#[cfg(unix)]
+impl Drop for LinkedTempPath {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+enum StagedReplacement {
+    Written(tempfile::NamedTempFile),
+    #[cfg(unix)]
+    Linked(LinkedTempPath),
+}
+
+impl StagedReplacement {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Written(file) => file.path(),
+            #[cfg(unix)]
+            Self::Linked(file) => file.path(),
+        }
+    }
+
+    fn metadata(&self) -> std::io::Result<std::fs::Metadata> {
+        match self {
+            Self::Written(file) => file.as_file().metadata(),
+            #[cfg(unix)]
+            Self::Linked(file) => std::fs::metadata(file.path()),
+        }
+    }
+
+    fn is_linked(&self) -> bool {
+        match self {
+            Self::Written(_) => false,
+            #[cfg(unix)]
+            Self::Linked(_) => true,
+        }
+    }
+
+    fn sync_written(&self) -> std::io::Result<()> {
+        match self {
+            Self::Written(file) => file.as_file().sync_all(),
+            #[cfg(unix)]
+            Self::Linked(_) => Ok(()),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn try_stage_hard_link(source: &Path, parent: &Path) -> Option<LinkedTempPath> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LINK_SEQ: AtomicU64 = AtomicU64::new(0);
+    for _ in 0..8 {
+        let seq = LINK_SEQ.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            ".codewhale-update-link-{}-{seq}",
+            std::process::id()
+        ));
+        if std::fs::hard_link(source, &candidate).is_ok() {
+            return Some(LinkedTempPath(Some(candidate)));
+        }
+    }
+    None
+}
+
+fn stage_replacement_binary(
+    parent: &Path,
+    new_bytes: &[u8],
+    link_source: Option<&Path>,
+) -> Result<StagedReplacement> {
+    #[cfg(unix)]
+    if let Some(source) = link_source
+        && let Some(linked) = try_stage_hard_link(source, parent)
+    {
+        return Ok(StagedReplacement::Linked(linked));
+    }
+    #[cfg(not(unix))]
+    let _ = link_source;
+    let mut tmp = tempfile::Builder::new()
+        .prefix(".codewhale-update-")
+        .tempfile_in(parent)
+        .with_context(|| format!("failed to create temp file in {}", parent.display()))?;
+    tmp.write_all(new_bytes)
+        .with_context(|| format!("failed to write temp file at {}", tmp.path().display()))?;
+    Ok(StagedReplacement::Written(tmp))
+}
+
+#[cfg(test)]
 fn replace_binary_with_validation<F>(
     target: &Path,
     new_bytes: &[u8],
@@ -2444,9 +2567,22 @@ fn replace_binary_with_validation<F>(
 where
     F: FnOnce() -> Result<()>,
 {
-    replace_binary_with_validation_and_permission_setter(
+    replace_binary_with_validation_and_link_source(target, new_bytes, None, validate_before_replace)
+}
+
+fn replace_binary_with_validation_and_link_source<F>(
+    target: &Path,
+    new_bytes: &[u8],
+    link_source: Option<&Path>,
+    validate_before_replace: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    replace_binary_with_validation_and_link_permission_setter(
         target,
         new_bytes,
+        link_source,
         validate_before_replace,
         |path, permissions| std::fs::set_permissions(path, permissions),
     )
@@ -2454,6 +2590,7 @@ where
 
 /// `apply_permissions` is a seam for `std::fs::set_permissions` so tests can
 /// exercise permission-setup failures without host-specific filesystem state.
+#[cfg(test)]
 fn replace_binary_with_validation_and_permission_setter<F, P>(
     target: &Path,
     new_bytes: &[u8],
@@ -2464,17 +2601,28 @@ where
     F: FnOnce() -> Result<()>,
     P: Fn(&Path, std::fs::Permissions) -> std::io::Result<()>,
 {
-    let parent = target
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+    replace_binary_with_validation_and_link_permission_setter(
+        target,
+        new_bytes,
+        None,
+        validate_before_replace,
+        apply_permissions,
+    )
+}
 
-    let mut tmp = tempfile::Builder::new()
-        .prefix(".codewhale-update-")
-        .tempfile_in(parent)
-        .with_context(|| format!("failed to create temp file in {}", parent.display()))?;
-    tmp.write_all(new_bytes)
-        .with_context(|| format!("failed to write temp file at {}", tmp.path().display()))?;
+fn replace_binary_with_validation_and_link_permission_setter<F, P>(
+    target: &Path,
+    new_bytes: &[u8],
+    link_source: Option<&Path>,
+    validate_before_replace: F,
+    apply_permissions: P,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+    P: Fn(&Path, std::fs::Permissions) -> std::io::Result<()>,
+{
+    let parent = replacement_parent(target);
+    let staged = stage_replacement_binary(parent, new_bytes, link_source)?;
 
     // Permission setup is part of pre-replacement validation: a staged binary
     // that cannot receive correct permissions must never replace a working
@@ -2487,26 +2635,39 @@ where
                 target.display()
             )
         })?;
-        apply_permissions(tmp.path(), meta.permissions()).with_context(|| {
-            format!(
-                "failed to set permissions on staged update {} before replacing {}",
-                tmp.path().display(),
-                target.display()
-            )
-        })?;
+        let needs_apply = !staged.is_linked()
+            || staged
+                .metadata()
+                .map(|current| current.permissions() != meta.permissions())
+                .unwrap_or(true);
+        if needs_apply {
+            apply_permissions(staged.path(), meta.permissions()).with_context(|| {
+                format!(
+                    "failed to set permissions on staged update {} before replacing {}",
+                    staged.path().display(),
+                    target.display()
+                )
+            })?;
+        }
     } else {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            apply_permissions(tmp.path(), std::fs::Permissions::from_mode(0o755)).with_context(
-                || {
-                    format!(
-                        "failed to set permissions on staged update {} before installing {}",
-                        tmp.path().display(),
-                        target.display()
-                    )
-                },
-            )?;
+            let needs_apply = !staged.is_linked()
+                || staged
+                    .metadata()
+                    .map(|current| current.permissions().mode() & 0o7777 != 0o755)
+                    .unwrap_or(true);
+            if needs_apply {
+                apply_permissions(staged.path(), std::fs::Permissions::from_mode(0o755))
+                    .with_context(|| {
+                        format!(
+                            "failed to set permissions on staged update {} before installing {}",
+                            staged.path().display(),
+                            target.display()
+                        )
+                    })?;
+            }
         }
     }
 
@@ -2516,13 +2677,12 @@ where
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let staged_mode = tmp
-            .as_file()
+        let staged_mode = staged
             .metadata()
             .with_context(|| {
                 format!(
                     "failed to inspect staged update at {}",
-                    tmp.path().display()
+                    staged.path().display()
                 )
             })?
             .permissions()
@@ -2530,21 +2690,25 @@ where
         if staged_mode & 0o111 == 0 {
             bail!(
                 "staged update {} is not executable (mode {:03o}); refusing to replace {}",
-                tmp.path().display(),
+                staged.path().display(),
                 staged_mode & 0o7777,
                 target.display()
             );
         }
     }
 
-    tmp.as_file()
-        .sync_all()
-        .with_context(|| format!("failed to sync staged update at {}", tmp.path().display()))?;
+    staged.sync_written().with_context(|| {
+        format!(
+            "failed to sync staged update at {}",
+            staged.path().display()
+        )
+    })?;
 
     validate_before_replace()?;
 
     #[cfg(windows)]
     {
+        let StagedReplacement::Written(tmp) = staged;
         let tmp = match tmp.persist(target) {
             Ok(_) => return Ok(()),
             Err(error) if !target.exists() => bail!(
@@ -2585,9 +2749,22 @@ where
 
     #[cfg(not(windows))]
     {
-        tmp.persist(target)
-            .map_err(|err| err.error)
-            .with_context(|| format!("failed to rename temp file to {}", target.display()))?;
+        match staged {
+            StagedReplacement::Written(tmp) => {
+                tmp.persist(target)
+                    .map_err(|err| err.error)
+                    .with_context(|| {
+                        format!("failed to rename temp file to {}", target.display())
+                    })?;
+            }
+            #[cfg(unix)]
+            StagedReplacement::Linked(mut linked) => {
+                std::fs::rename(linked.path(), target).with_context(|| {
+                    format!("failed to rename temp file to {}", target.display())
+                })?;
+                linked.disarm();
+            }
+        }
     }
 
     Ok(())
@@ -3860,6 +4037,143 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             "the working binary must survive a non-executable staged update"
         );
         assert_no_staged_temp_files(dir.path());
+    }
+
+    #[cfg(all(unix, not(target_os = "android")))]
+    #[test]
+    fn replace_verified_downloads_hard_links_same_directory_targets() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let bin_dir = dir.path().join("bin");
+        let other_dir = dir.path().join("other");
+        std::fs::create_dir(&bin_dir).unwrap();
+        std::fs::create_dir(&other_dir).unwrap();
+        std::fs::set_permissions(&bin_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&other_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let old_bytes = b"old-release-bytes";
+        let new_bytes = b"new-release-bytes";
+        let primary = bin_dir.join("codewhale");
+        let sibling = bin_dir.join("codew");
+        let alias = bin_dir.join("codewhale-tui");
+        let outside = other_dir.join("codewhale");
+        for path in [&primary, &sibling, &alias, &outside] {
+            write_installed_binary(path, old_bytes);
+        }
+
+        replace_verified_downloads(
+            &[
+                primary.clone(),
+                sibling.clone(),
+                alias.clone(),
+                outside.clone(),
+            ],
+            new_bytes,
+            |path| {
+                let bytes = std::fs::read(path)?;
+                anyhow::ensure!(bytes == old_bytes);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let primary_meta = std::fs::metadata(&primary).unwrap();
+        let sibling_meta = std::fs::metadata(&sibling).unwrap();
+        let alias_meta = std::fs::metadata(&alias).unwrap();
+        let outside_meta = std::fs::metadata(&outside).unwrap();
+        assert_eq!(std::fs::read(&primary).unwrap(), new_bytes);
+        assert_eq!(std::fs::read(&sibling).unwrap(), new_bytes);
+        assert_eq!(std::fs::read(&alias).unwrap(), new_bytes);
+        assert_eq!(std::fs::read(&outside).unwrap(), new_bytes);
+        assert_eq!(
+            (primary_meta.dev(), primary_meta.ino()),
+            (sibling_meta.dev(), sibling_meta.ino())
+        );
+        assert_eq!(
+            (primary_meta.dev(), primary_meta.ino()),
+            (alias_meta.dev(), alias_meta.ino())
+        );
+        assert_eq!(primary_meta.nlink(), 3);
+        assert_ne!(
+            (outside_meta.dev(), outside_meta.ino()),
+            (primary_meta.dev(), primary_meta.ino())
+        );
+        assert_eq!(outside_meta.nlink(), 1);
+        assert_no_staged_temp_files(&bin_dir);
+        assert_no_staged_temp_files(&other_dir);
+    }
+
+    #[cfg(all(unix, not(target_os = "android")))]
+    #[test]
+    fn hard_linked_receipted_install_updates_and_renews_and_rejects_external_link() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let bin_dir = dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).unwrap();
+        std::fs::set_permissions(&bin_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let old_bytes = b"old-receipted-binary";
+        let new_bytes = b"new-receipted-binary";
+        let old_hash = crate::hashing::sha256_hex(old_bytes);
+        let new_hash = crate::hashing::sha256_hex(new_bytes);
+        let primary = bin_dir.join("codewhale");
+        let sibling = bin_dir.join("codew");
+        write_installed_binary(&primary, old_bytes);
+        std::fs::hard_link(&primary, &sibling).unwrap();
+        let receipt_path = bin_dir.join(codewhale_release::installs::RECEIPT_FILE);
+        std::fs::write(
+            &receipt_path,
+            format!("{old_hash}  codewhale\n{old_hash}  codew\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&receipt_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let old_inode = (
+            std::fs::metadata(&primary).unwrap().dev(),
+            std::fs::metadata(&primary).unwrap().ino(),
+        );
+        let mut receipt = uninstall::CommandReceipt::capture(&primary)
+            .unwrap()
+            .expect("receipted hard-linked pair should capture");
+        replace_verified_downloads(&[primary.clone(), sibling.clone()], new_bytes, |path| {
+            let bytes = std::fs::read(path)?;
+            anyhow::ensure!(crate::hashing::sha256_hex(&bytes) == old_hash);
+            Ok(())
+        })
+        .unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        receipt.renew_in(new_bytes, Ok(home.clone())).unwrap();
+        assert!(home.join("recovery").is_dir());
+
+        let primary_meta = std::fs::metadata(&primary).unwrap();
+        let sibling_meta = std::fs::metadata(&sibling).unwrap();
+        assert_eq!(std::fs::read(&primary).unwrap(), new_bytes);
+        assert_eq!(std::fs::read(&sibling).unwrap(), new_bytes);
+        assert_eq!(
+            (primary_meta.dev(), primary_meta.ino()),
+            (sibling_meta.dev(), sibling_meta.ino())
+        );
+        assert_ne!((primary_meta.dev(), primary_meta.ino()), old_inode);
+        assert_eq!(primary_meta.nlink(), 2);
+        let renewed_receipt = std::fs::read_to_string(&receipt_path).unwrap();
+        assert_eq!(
+            renewed_receipt,
+            format!("{new_hash}  codew\n{new_hash}  codewhale\n")
+        );
+        assert!(
+            uninstall::CommandReceipt::capture(&primary)
+                .unwrap()
+                .is_some()
+        );
+
+        let foreign = dir.path().join("foreign-link");
+        std::fs::hard_link(&primary, &foreign).unwrap();
+        assert!(uninstall::CommandReceipt::capture(&primary).is_err());
+        assert_eq!(std::fs::read(&primary).unwrap(), new_bytes);
+        assert_eq!(std::fs::read(&sibling).unwrap(), new_bytes);
     }
 
     /// Mocked GitHub release payload covering the sole implementation binary

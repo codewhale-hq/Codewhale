@@ -506,8 +506,20 @@ install_binary() {
   fi
   stage_dir="$(mktemp -d "$install_dir/.codewhale-install.XXXXXX")"
   stage="$stage_dir/$(basename "$destination")"
-  cp "$source" "$stage"
-  chmod "${3:-755}" "$stage"
+  if [ "$(basename "$destination")" = "codew" ] \
+    && [ ! -L "$install_dir/codewhale" ] \
+    && [ -f "$install_dir/codewhale" ] \
+    && [ -x "$install_dir/codewhale" ] \
+    && cmp -s "$source" "$install_dir/codewhale"; then
+    if ! ln "$install_dir/codewhale" "$stage" 2>/dev/null; then
+      rm -f "$stage"
+      cp "$source" "$stage"
+      chmod "${3:-755}" "$stage"
+    fi
+  else
+    cp "$source" "$stage"
+    chmod "${3:-755}" "$stage"
+  fi
   # Pass the intended parent as the directory operand. Passing destination
   # itself would make ln treat a raced-in directory/symlink as a container.
   ln "$stage" "$install_dir/" || fail "destination appeared during install: $destination; it was not replaced"

@@ -113,6 +113,11 @@ for (const kind of ["website", "archive"]) {
       assert.equal(fs.readFileSync(installed, "utf8"), bytes);
       assert.ok(fs.statSync(installed).mode & 0o111);
     }
+    assert.equal(
+      fs.statSync(path.join(f.destination, "codewhale")).ino,
+      fs.statSync(path.join(f.destination, "codew")).ino,
+      "codew should be hard-linked to codewhale"
+    );
     const receipt = fs.readFileSync(path.join(f.destination, ".codewhale-install.sha256"), "utf8");
     const hash = crypto.createHash("sha256").update(bytes).digest("hex");
     assert.equal(receipt, `${hash}  codewhale
@@ -171,11 +176,60 @@ ${hash}  codew
     const f = fixture(t, kind);
     assert.equal(f.run().status, 0);
     const file = path.join(f.destination, "codewhale");
+    const alias = path.join(f.destination, "codew");
     const before = fs.statSync(file);
+    assert.equal(fs.statSync(alias).ino, before.ino);
     const result = f.run();
     assert.equal(result.status, 0, result.stderr);
     assert.equal(fs.statSync(file).ino, before.ino);
+    assert.equal(fs.statSync(alias).ino, before.ino);
     assert.equal(fs.readFileSync(file, "utf8"), bytes);
+    f.untouched();
+  });
+
+  test(`${kind}: hard-link fallback copies codew when staging link from codewhale fails`, t => {
+    const f = fixture(t, kind);
+    executable(path.join(f.bin, "ln"), `#!/bin/sh
+case "$1:$2" in
+  */codewhale:*/.codewhale-install.*/codew) exit 1 ;;
+esac
+exec /bin/ln "$@"
+`);
+    const result = f.run();
+    assert.equal(result.status, 0, result.stderr);
+    const primary = path.join(f.destination, "codewhale");
+    const alias = path.join(f.destination, "codew");
+    assert.equal(fs.readFileSync(primary, "utf8"), bytes);
+    assert.equal(fs.readFileSync(alias, "utf8"), bytes);
+    assert.notEqual(fs.statSync(primary).ino, fs.statSync(alias).ino);
+    assert.ok(fs.statSync(alias).mode & 0o111);
+    f.untouched();
+  });
+
+  test(`${kind}: upgrading a hard-linked Codewhale binary moves old entries to recovery and links the new pair`, t => {
+    const f = fixture(t, kind);
+    f.prepare();
+    const olderBytes = `${bytes}# codewhale-updater old-build\n`;
+    const primary = path.join(f.destination, "codewhale");
+    const alias = path.join(f.destination, "codew");
+    executable(primary, olderBytes);
+    fs.linkSync(primary, alias);
+    const oldIno = fs.statSync(primary).ino;
+    assert.equal(fs.statSync(alias).ino, oldIno);
+
+    const result = f.run();
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(primary, "utf8"), bytes);
+    assert.equal(fs.readFileSync(alias, "utf8"), bytes);
+    const newIno = fs.statSync(primary).ino;
+    assert.notEqual(newIno, oldIno);
+    assert.equal(fs.statSync(alias).ino, newIno);
+    const recoveryRoot = path.join(f.home, ".codewhale", "recovery");
+    const batches = fs.readdirSync(recoveryRoot);
+    assert.equal(batches.length, 1);
+    const manifest = fs.readFileSync(path.join(recoveryRoot, batches[0], "manifest.tsv"), "utf8");
+    assert.ok(manifest.includes("001-codewhale"), manifest);
+    assert.ok(manifest.includes("002-codew"), manifest);
     f.untouched();
   });
 
