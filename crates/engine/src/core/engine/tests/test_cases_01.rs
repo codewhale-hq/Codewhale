@@ -620,17 +620,45 @@ async fn event_capacity_cancelled_repl_child_keeps_unknown_cost_and_discards_ker
         cost.unpriced_turns, 2,
         "the cancelled child's unknown outcome and the root turn's unpriced mock-model usage"
     );
-    assert_eq!(cost.accounted_usage_sources.len(), 1);
-    assert!(cost.accounted_usage_sources.values().all(|entry| {
-        entry.record.settlement.as_ref().is_some_and(|settlement| {
-            settlement.reason == crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
-        }) && entry
+    assert_eq!(cost.accounted_usage_sources.len(), 2);
+    assert!(
+        cost.accounted_usage_sources
+            .values()
+            .all(|entry| entry.priced == 0 && entry.unpriced == 1 && entry.usd == 0.0),
+        "{:?}",
+        cost.accounted_usage_sources
+    );
+    let (unknown, root): (Vec<_>, Vec<_>) =
+        cost.accounted_usage_sources.values().partition(|entry| {
+            entry.record.settlement.as_ref().is_some_and(|settlement| {
+                settlement.reason
+                    == crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+            })
+        });
+    assert_eq!(unknown.len(), 1, "{:?}", cost.accounted_usage_sources);
+    assert_eq!(
+        (
+            unknown[0].record.usage.usage.input_tokens,
+            unknown[0].record.usage.usage.output_tokens
+        ),
+        (0, 0)
+    );
+    assert!(
+        unknown[0]
             .record
             .usage
             .route
-            .audit_frozen(&entry.record.usage.usage)
+            .audit_frozen(&unknown[0].record.usage.usage)
             .counts_toward_money_coverage()
-    }));
+    );
+    assert_eq!(root.len(), 1, "{:?}", cost.accounted_usage_sources);
+    assert_eq!(
+        (
+            root[0].record.usage.usage.input_tokens,
+            root[0].record.usage.usage.output_tokens
+        ),
+        (11, 5)
+    );
     assert_eq!(
         client.inner.call_count(),
         1,
@@ -1439,13 +1467,12 @@ async fn a_completed_turn_stays_completed_when_usage_cannot_be_retained() {
     let client: crate::core::model_client::SharedModelClient = mock.clone();
     let config = Config::default();
     let mut engine_config = deterministic_engine_config(workspace.path());
-    engine_config.runtime_services.accounting_origin = Some(
-        crate::cost_status::NativeUsageOrigin::session(
+    engine_config.runtime_services.accounting_origin =
+        Some(crate::cost_status::NativeUsageOrigin::session(
             crate::cost_status::scope_token(),
             broken_sessions_file,
             "unretained-session".to_string(),
-        ),
-    );
+        ));
     let (engine, handle) = Engine::new_with_model_client(engine_config, &config, client);
     let task = tokio::spawn(engine.run());
 
