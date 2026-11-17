@@ -59,6 +59,8 @@ const MAX_TIMEOUT_SECS: u64 = 600;
 const CANCEL_CONFIRM_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(unix)]
 const CANCEL_SENTINEL_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+#[cfg(unix)]
+const CANCEL_INTERRUPT_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
 #[cfg(unix)]
 pub struct TerminalSession {
@@ -1079,10 +1081,12 @@ fn wait_shared_session(
 /// Interrupt a foreground command and wait until the persistent shell confirms
 /// that it is ready again.
 ///
-/// Canonical PTYs may flush queued input when they process ETX. Resubmit the
-/// completion sentinel until the shell acknowledges it so a busy host cannot
-/// strand the session merely because the one post-interrupt write raced that
-/// flush.
+/// Canonical PTYs may flush queued input when they process ETX, and an ETX
+/// sent before the foreground child owns the terminal never interrupts it.
+/// Resubmit the completion sentinel until the shell acknowledges it, and
+/// resubmit the interrupt on a slower cadence only while the terminal's
+/// foreground group is not the shell's own, so a re-interrupt cannot flush or
+/// abort a sentinel the shell is about to run.
 #[cfg(unix)]
 fn cancel_shared_session(session: &SharedSession) -> Result<(i32, String), ToolError> {
     let marker = {
@@ -1104,6 +1108,7 @@ fn cancel_shared_session(session: &SharedSession) -> Result<(i32, String), ToolE
             .clone()
     };
     let deadline = Instant::now() + CANCEL_CONFIRM_TIMEOUT;
+    let mut last_interrupt = Instant::now();
 
     loop {
         std::thread::sleep(CANCEL_SENTINEL_RETRY_INTERVAL);
@@ -1117,6 +1122,19 @@ fn cancel_shared_session(session: &SharedSession) -> Result<(i32, String), ToolE
             return Err(ToolError::execution_failed(
                 "terminal interrupt was sent, but cancellation was not confirmed within 2 seconds",
             ));
+        }
+        if last_interrupt.elapsed() >= CANCEL_INTERRUPT_RETRY_INTERVAL {
+            let shell_foreground = session
+                .master
+                .process_group_leader()
+                .and_then(|leader| u32::try_from(leader).ok())
+                .is_some_and(|foreground| Some(foreground) == session.child.process_id());
+            if !shell_foreground {
+                write_bytes(&session, &[3]).map_err(|error| {
+                    ToolError::execution_failed(format!("PTY write failed: {error}"))
+                })?;
+                last_interrupt = Instant::now();
+            }
         }
         write_completion_sentinel(&session, &marker, 130).map_err(ToolError::execution_failed)?;
     }
