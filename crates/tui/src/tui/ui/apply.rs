@@ -1535,7 +1535,7 @@ pub(super) async fn apply_range_undo(
     app.push_status_toast_record(
         StatusToast::new(progress, StatusToastLevel::Info, Some(4_000)).for_command_receipt(),
     );
-    draw_app_frame_inner(terminal, app, config, false)?;
+    draw_app_frame_inner(terminal, app, config, FrameRepaint::Diff)?;
     let input = commands::undo_range_input(app, cut)?;
     #[cfg(test)]
     let env_scope = crate::test_support::env_scope_ticket();
@@ -1555,7 +1555,7 @@ pub(super) async fn apply_range_undo(
     app.push_status_toast_record(
         StatusToast::new(progress, StatusToastLevel::Info, Some(4_000)).for_command_receipt(),
     );
-    draw_app_frame_inner(terminal, app, config, false)?;
+    draw_app_frame_inner(terminal, app, config, FrameRepaint::Diff)?;
     #[cfg(test)]
     let env_scope = crate::test_support::env_scope_ticket();
     let (restored, _restore_guard) = tokio::task::spawn_blocking(move || {
@@ -1582,7 +1582,7 @@ pub(super) async fn apply_range_undo(
     app.push_status_toast_record(
         StatusToast::new(progress, StatusToastLevel::Info, Some(4_000)).for_command_receipt(),
     );
-    let _ = draw_app_frame_inner(terminal, app, config, false);
+    let _ = draw_app_frame_inner(terminal, app, config, FrameRepaint::Diff);
     match apply_conversation_undo(app, engine, ConversationRewind::FileRange(depth)).await {
         Ok(None) => {
             let message = format!("Undid {} request(s). {summary}", depth + 1);
