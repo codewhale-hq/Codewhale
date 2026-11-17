@@ -2911,7 +2911,10 @@ const HOOK_PIPE_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
 /// blocks forever if the kill did not take (a `SIGKILL`-immune uninterruptible
 /// state on Unix, a `TerminateJobObject` that a protected process survived on
 /// Windows), and that turned "this hook has a 30s budget" into a hung turn.
+#[cfg(not(windows))]
 const HOOK_REAP_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(windows)]
+const HOOK_REAP_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(windows)]
 const WINDOWS_TASKKILL_TIMEOUT: Duration = Duration::from_secs(2);
 
