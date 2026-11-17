@@ -183,13 +183,23 @@ const SNAPSHOT_LOCK_FILE: &str = "codewhale-snapshot.lock";
 const SNAPSHOT_LOCK_WAIT: Duration = Duration::from_secs(30);
 
 /// How often a waiting writer retries the lock.
-const SNAPSHOT_LOCK_POLL: Duration = Duration::from_millis(25);
+const SNAPSHOT_LOCK_POLL: Duration = Duration::from_millis(5);
+
+const SNAPSHOT_LOCK_REACQUIRE_DELAY: Duration = Duration::from_millis(50);
 
 thread_local! {
     /// Side repos whose write lock this thread already holds, so a locked
     /// operation that calls another (restore takes a safety snapshot, a
     /// snapshot runs the size prune) does not wait on its own lock.
     static HELD_SNAPSHOT_LOCKS: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+}
+
+static SNAPSHOT_LOCK_RELEASED_AT: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<PathBuf, std::time::Instant>>,
+> = std::sync::OnceLock::new();
+
+fn snapshot_lock_released_at() -> &'static std::sync::Mutex<HashMap<PathBuf, std::time::Instant>> {
+    SNAPSHOT_LOCK_RELEASED_AT.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
 /// Maximum total snapshot storage in megabytes before pruning kicks in at
@@ -1885,6 +1895,14 @@ impl SnapshotRepo {
         if held {
             return op();
         }
+        let reacquire_delay = snapshot_lock_released_at()
+            .lock()
+            .ok()
+            .and_then(|released| released.get(&self.git_dir).copied())
+            .and_then(|at| SNAPSHOT_LOCK_REACQUIRE_DELAY.checked_sub(at.elapsed()));
+        if let Some(remaining) = reacquire_delay {
+            std::thread::sleep(remaining);
+        }
         let file = open_snapshot_lock_file(&self.git_dir.join(SNAPSHOT_LOCK_FILE))?;
         let mut lock = fd_lock::RwLock::new(file);
         let deadline = std::time::Instant::now() + wait;
@@ -1906,7 +1924,13 @@ impl SnapshotRepo {
         // Declared after the guard, so it is dropped (and the thread's claim
         // released) before the file lock is.
         let _held = HeldSnapshotLock::claim(&self.git_dir);
-        op()
+        let result = op();
+        drop(_held);
+        drop(_guard);
+        if let Ok(mut released) = snapshot_lock_released_at().lock() {
+            released.insert(self.git_dir.clone(), std::time::Instant::now());
+        }
+        result
     }
 
     /// Stage every tracked and untracked path the workspace exposes.
@@ -1939,19 +1963,7 @@ impl SnapshotRepo {
     ) -> io::Result<()> {
         let mut prev_sha: Option<String> = None;
         for s in survivors.iter().rev() {
-            let tree = run_git(
-                &self.git_dir,
-                &self.work_tree,
-                &["rev-parse", &format!("{}^{{tree}}", s.id.as_str())],
-            )?;
-            if !tree.status.success() {
-                return Err(io_other(format!(
-                    "rev-parse {}^{{tree}} failed: {}",
-                    s.id.as_str(),
-                    String::from_utf8_lossy(&tree.stderr).trim()
-                )));
-            }
-            let tree_hash = String::from_utf8_lossy(&tree.stdout).trim().to_string();
+            let tree_hash = s.tree.as_str().to_string();
 
             let mut args = vec![
                 "commit-tree".to_string(),
@@ -3075,6 +3087,17 @@ mod tests {
     /// all succeed and leave a history whose every snapshot still restores.
     #[test]
     fn concurrent_snapshot_and_prune_keep_the_side_repo_consistent() {
+        fn eventually<T>(mut op: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+            let mut attempts = 0;
+            loop {
+                match op() {
+                    Err(err) if err.kind() == io::ErrorKind::TimedOut && attempts < 5 => {
+                        attempts += 1;
+                    }
+                    other => return other,
+                }
+            }
+        }
         let tmp = tempdir().unwrap();
         let (repo, _home) = make_repo(tmp.path());
         std::fs::write(repo.work_tree().join("seed.txt"), b"seed").unwrap();
@@ -3092,8 +3115,8 @@ mod tests {
                             repo.work_tree().join(format!("w{writer}.txt")),
                             format!("{writer}-{turn}"),
                         )?;
-                        repo.snapshot(&format!("post-turn:{writer}-{turn}"))?;
-                        repo.prune_keep_last_n(2)?;
+                        eventually(|| repo.snapshot(&format!("post-turn:{writer}-{turn}")))?;
+                        eventually(|| repo.prune_keep_last_n(2))?;
                     }
                     Ok(())
                 })
@@ -3137,6 +3160,21 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_secs(10),
             "the wait ends near its bound"
+        );
+    }
+
+    #[test]
+    fn side_repo_lock_reacquire_waits_out_the_courtesy_delay() {
+        let tmp = tempdir().unwrap();
+        let (repo, _home) = make_repo(tmp.path());
+        repo.with_write_lock(|| Ok(())).unwrap();
+        let started = std::time::Instant::now();
+        for _ in 0..3 {
+            repo.with_write_lock(|| Ok(())).unwrap();
+        }
+        assert!(
+            started.elapsed() >= SNAPSHOT_LOCK_REACQUIRE_DELAY,
+            "an immediate reacquire yields a poll window to a waiting writer"
         );
     }
 
