@@ -120,7 +120,7 @@ jobs:
           node-version: 22
       - name: Build canonical executable for acceptance tests
         shell: bash
-        run: cargo build -p codewhale-cli --bin codewhale --all-features --locked
+        run: sh scripts/with-hermetic-test-home.sh cargo test --workspace --all-features --locked --no-run --test help_dispatch
         env:
           RUSTC_WRAPPER: ${{ inputs.os != 'windows-latest' && env.RUSTC_WRAPPER || '' }}
       - name: Windows Terminal clipboard-to-draft acceptance

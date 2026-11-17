@@ -75,8 +75,8 @@ assert.match(
 );
 assert.match(
   namedStep(ciSuite, "Build canonical executable for acceptance tests"),
-  /cargo build -p codewhale-cli --bin codewhale --all-features --locked/,
-  "Engine acceptance must build the canonical executable first",
+  /sh scripts\/with-hermetic-test-home.sh cargo test --workspace --all-features --locked --no-run --test help_dispatch/,
+  "Engine acceptance must build the canonical executable first, with the test build's features",
 );
 assert.match(
   namedStep(ciSuite, "Run doctests"),
@@ -859,7 +859,7 @@ assert.doesNotMatch(
 let hermeticInvocations = 0;
 for (const [label, workflow, expected] of [
   ["CI", ci, 5],
-  ["CI test suite", ciSuite, 4],
+  ["CI test suite", ciSuite, 5],
   ["release", release, 0],
   ["release parity", parityWorkflow, 4],
   ["CNB", cnb, 3],
