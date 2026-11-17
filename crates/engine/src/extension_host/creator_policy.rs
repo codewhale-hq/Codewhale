@@ -54,7 +54,7 @@ pub const MAX_DIAGNOSTIC_BYTES: usize = 2048;
 pub const MAX_WARNING_ENTRIES: usize = 12;
 pub const MAX_PREVIEW_TREE_BYTES: u64 = DEFAULT_MAX_SIZE_BYTES;
 pub const MAX_PREVIEW_TREE_ENTRIES: usize = 4_096;
-pub const PREVIEW_TIMEOUT: Duration = Duration::from_secs(10);
+pub const PREVIEW_TIMEOUT: Duration = Duration::from_secs(60);
 
 const CREATOR_SCOPE_PREFIX: &str = "ext:host:creator@";
 

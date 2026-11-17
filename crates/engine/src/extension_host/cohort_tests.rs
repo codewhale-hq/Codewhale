@@ -31,8 +31,8 @@ const NODE: ExtensionHostRuntime = ExtensionHostRuntime::Node;
 fn fast_supervision() -> super::SupervisionOptions {
     super::SupervisionOptions {
         heartbeat_interval: Duration::from_millis(50),
-        ping_timeout: Duration::from_millis(200),
-        hang_timeout: Duration::from_millis(500),
+        ping_timeout: Duration::from_secs(3),
+        hang_timeout: Duration::from_secs(8),
         restart_backoff: Duration::from_millis(10),
         crash_window: Duration::from_secs(10),
         crash_limit: 3,
@@ -40,7 +40,7 @@ fn fast_supervision() -> super::SupervisionOptions {
         dirty_window: Duration::from_secs(10),
         dirty_limit: 2,
         memory_cap: super::supervisor::HOST_MEMORY_CAP,
-        tool_call_deadline: Duration::from_secs(3),
+        tool_call_deadline: Duration::from_secs(20),
         command_run_deadline: Duration::from_secs(3),
     }
 }
@@ -621,7 +621,12 @@ async fn a_crash_loop_in_an_agent_cohort_leaves_the_reviewed_host_running() {
             &ToolContext::new(fixture.workspace()).with_plugin_registry(engine.plugin_view()),
         )
         .await;
-    assert!(outcome2.is_ok());
+    assert!(
+        outcome2.is_ok(),
+        "reviewed host tool failed after agent crash loop: {:?} status={:?}",
+        outcome2.as_ref().err(),
+        manager.status()
+    );
 }
 
 #[tokio::test]

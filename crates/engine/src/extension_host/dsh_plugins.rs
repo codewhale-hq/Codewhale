@@ -900,10 +900,15 @@ type PostInstallTestHook = Box<dyn FnOnce(&Path, &tokio_util::sync::Cancellation
 type PostDisableTestHook = Box<dyn FnOnce(&LoadedPlugin) + Send>;
 
 #[cfg(test)]
+type PreConnectTestHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
 thread_local! {
     static POST_INSTALL_TEST_HOOK: std::cell::RefCell<Option<PostInstallTestHook>> =
         const { std::cell::RefCell::new(None) };
     static POST_DISABLE_TEST_HOOK: std::cell::RefCell<Option<PostDisableTestHook>> =
+        const { std::cell::RefCell::new(None) };
+    static PRE_CONNECT_TEST_HOOK: std::cell::RefCell<Option<PreConnectTestHook>> =
         const { std::cell::RefCell::new(None) };
     static MCP_CONNECT_DEADLINE_FOR_TEST: std::cell::Cell<Option<Duration>> =
         const { std::cell::Cell::new(None) };
@@ -965,6 +970,20 @@ fn fire_post_install_hook_for_test(
 fn fire_post_disable_hook_for_test(plugin: &LoadedPlugin) {
     if let Some(hook) = POST_DISABLE_TEST_HOOK.with(|cell| cell.borrow_mut().take()) {
         hook(plugin);
+    }
+}
+
+#[cfg(test)]
+pub(super) fn set_pre_connect_hook_for_test(hook: PreConnectTestHook) {
+    PRE_CONNECT_TEST_HOOK.with(|cell| {
+        *cell.borrow_mut() = Some(hook);
+    });
+}
+
+#[cfg(test)]
+fn fire_pre_connect_hook_for_test() {
+    if let Some(hook) = PRE_CONNECT_TEST_HOOK.with(|cell| cell.borrow_mut().take()) {
+        hook();
     }
 }
 
@@ -1550,6 +1569,7 @@ async fn settle_non_active_change(
 enum McpActivationError {
     Cancelled,
     Failed(String),
+    HostRestarting(String),
 }
 
 struct EnableActivation<'a> {
@@ -1648,16 +1668,51 @@ fn format_connected_tools_warning(
     scrub_warning(&summary, scrub)
 }
 
+fn plugin_host_cohort(registry: &PluginRegistry, plugin: &LoadedPlugin) -> super::tier::HostCohort {
+    if matches!(plugin.approved_by, Some(PluginApprover::Agent(_))) {
+        super::tier::HostCohort::agent(registry.workspace())
+    } else {
+        super::tier::HostCohort::reviewed()
+    }
+}
+
+fn host_generation(shared: &super::ManagerShared, cohort: &super::tier::HostCohort) -> Option<u64> {
+    shared.cohort_runtime(cohort).map(|runtime| {
+        runtime
+            .host_generation
+            .load(std::sync::atomic::Ordering::SeqCst)
+    })
+}
+
+fn host_recycling(
+    shared: &super::ManagerShared,
+    cohort: &super::tier::HostCohort,
+    since_generation: Option<u64>,
+) -> bool {
+    match shared.ready_host(cohort) {
+        Ok(_) => since_generation.is_some() && host_generation(shared, cohort) != since_generation,
+        Err(
+            super::HostStatus::Starting
+            | super::HostStatus::Restarting { .. }
+            | super::HostStatus::Unresponsive { .. },
+        ) => true,
+        Err(_) => false,
+    }
+}
+
 async fn connect_required_plugin_mcp_servers(
     call: &BrokerCall,
     forked: &mut McpPool,
     plugin_name: &str,
     required_servers: &[(&str, &McpServerConfig)],
+    cohort: &super::tier::HostCohort,
+    since_generation: Option<u64>,
     deadline: tokio::time::Instant,
     scrub: &ScrubContext<'_>,
 ) -> Result<Vec<String>, McpActivationError> {
     let mut connected_warnings = Vec::new();
     let mut failures = Vec::new();
+    let mut deadline_hit = false;
     for (index, (server_name, server_config)) in required_servers.iter().enumerate() {
         let qualified = qualified_plugin_server_name(plugin_name, server_name);
         if call.context.cancel().is_cancelled() {
@@ -1684,6 +1739,7 @@ async fn connect_required_plugin_mcp_servers(
                 "call deadline elapsed before connecting",
                 &mut failures,
             );
+            deadline_hit = true;
             break;
         }
         let attempt_cancel = tokio_util::sync::CancellationToken::new();
@@ -1720,6 +1776,7 @@ async fn connect_required_plugin_mcp_servers(
                 "timed out waiting for required MCP connector response",
                 &mut failures,
             );
+            deadline_hit = true;
             break;
         }
         match connect_res {
@@ -1755,11 +1812,14 @@ async fn connect_required_plugin_mcp_servers(
             format!("required MCP connectors failed: {}", failures.join("; "))
         };
         let mut truncated = false;
-        return Err(McpActivationError::Failed(cap_text(
-            joined,
-            MAX_DIAGNOSTIC_BYTES,
-            &mut truncated,
-        )));
+        let capped = cap_text(joined, MAX_DIAGNOSTIC_BYTES, &mut truncated);
+        let recycling =
+            !deadline_hit && host_recycling(&super::manager().shared, cohort, since_generation);
+        return Err(if recycling {
+            McpActivationError::HostRestarting(capped)
+        } else {
+            McpActivationError::Failed(capped)
+        });
     }
     Ok(connected_warnings)
 }
@@ -1797,6 +1857,8 @@ async fn resolve_plugin_enabled_servers(
     call: &BrokerCall,
     registry: &Arc<PluginRegistry>,
     plugin: &LoadedPlugin,
+    cohort: &super::tier::HostCohort,
+    since_generation: Option<u64>,
     remaining: Duration,
     deadline: tokio::time::Instant,
     scrub: &ScrubContext<'_>,
@@ -1828,6 +1890,12 @@ async fn resolve_plugin_enabled_servers(
             .collect()
     };
     if live_native.is_empty() {
+        if host_recycling(shared, cohort, since_generation) {
+            return Err(McpActivationError::HostRestarting(scrub_message(
+                "native MCP definitions were not admitted by the extension host while it was restarting",
+                scrub,
+            )));
+        }
         return Ok((Arc::clone(registry), servers.into_iter().collect()));
     }
 
@@ -1904,7 +1972,12 @@ async fn resolve_plugin_enabled_servers(
                 let qualified = qualified_plugin_server_name(plugin.name(), req_name);
                 record_mcp_attempt(call, plugin.name(), req_name, &qualified, "failed");
             }
-            return Err(McpActivationError::Failed(scrub_message(&error, scrub)));
+            let diag = scrub_message(&error, scrub);
+            return Err(if host_recycling(shared, cohort, since_generation) {
+                McpActivationError::HostRestarting(diag)
+            } else {
+                McpActivationError::Failed(diag)
+            });
         }
     };
 
@@ -1935,13 +2008,18 @@ async fn resolve_plugin_enabled_servers(
         }
     }
     if !missing_required.is_empty() {
-        return Err(McpActivationError::Failed(scrub_message(
+        let diag = scrub_message(
             &format!(
                 "required native MCP connector(s) were not admitted by the extension host: {}",
                 missing_required.join(", ")
             ),
             scrub,
-        )));
+        );
+        return Err(if host_recycling(shared, cohort, since_generation) {
+            McpActivationError::HostRestarting(diag)
+        } else {
+            McpActivationError::Failed(diag)
+        });
     }
 
     Ok((registry_for_fork, servers.into_iter().collect()))
@@ -1956,8 +2034,119 @@ async fn activate_plugin_mcp_connectors(
 ) -> Result<(), McpActivationError> {
     let remaining = mcp_connect_deadline();
     let deadline = tokio::time::Instant::now() + remaining;
-    let (registry_for_fork, enabled_servers) =
-        resolve_plugin_enabled_servers(call, registry, plugin, remaining, deadline, scrub).await?;
+    loop {
+        match activate_plugin_mcp_connectors_once(
+            call, registry, plugin, remaining, deadline, scrub, warnings,
+        )
+        .await
+        {
+            Ok(()) => return Ok(()),
+            Err(McpActivationError::HostRestarting(diag)) => {
+                if call.context.cancel().is_cancelled() {
+                    return Err(McpActivationError::Cancelled);
+                }
+                if remaining.is_zero() || tokio::time::Instant::now() >= deadline {
+                    return Err(McpActivationError::Failed(diag));
+                }
+                let cohort = plugin_host_cohort(registry, plugin);
+                wait_for_host_recycle(call, registry, plugin, &cohort, deadline, scrub, diag)
+                    .await?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+async fn wait_for_host_recycle(
+    call: &BrokerCall,
+    registry: &Arc<PluginRegistry>,
+    plugin: &LoadedPlugin,
+    cohort: &super::tier::HostCohort,
+    deadline: tokio::time::Instant,
+    scrub: &ScrubContext<'_>,
+    diag: String,
+) -> Result<(), McpActivationError> {
+    let manager = super::manager();
+    let shared = &manager.shared;
+    let expected_authority = registry.authority_for(plugin.id.as_str());
+    loop {
+        if call.context.cancel().is_cancelled() {
+            return Err(McpActivationError::Cancelled);
+        }
+        let settled = shared.reconcile_settled.notified();
+        tokio::pin!(settled);
+        settled.as_mut().enable();
+        let report = manager.owner_report_for(plugin.id.as_str(), expected_authority.as_ref());
+        if let Some(report) = &report {
+            match report.state.as_ref() {
+                Some(OwnerState::Failed(reason)) | Some(OwnerState::Faulted(reason)) => {
+                    return Err(McpActivationError::Failed(scrub_message(reason, scrub)));
+                }
+                Some(OwnerState::Revoked) => {
+                    return Err(McpActivationError::Failed(
+                        "the extension host revoked the plugin owner".to_string(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        match shared.ready_host(cohort) {
+            Ok(_) => {
+                let owner_active = plugin.inventory.native == 0
+                    || matches!(
+                        report.as_ref().and_then(|report| report.state.as_ref()),
+                        Some(OwnerState::Active)
+                    );
+                if owner_active {
+                    return Ok(());
+                }
+            }
+            Err(super::HostStatus::Failed { reason, .. }) => {
+                return Err(McpActivationError::Failed(scrub_message(&reason, scrub)));
+            }
+            Err(super::HostStatus::Disabled) => {
+                return Err(McpActivationError::Failed(HOST_OFF_DIAGNOSTIC.to_string()));
+            }
+            Err(_) => {}
+        }
+        tokio::select! {
+            biased;
+            () = call.context.cancel().cancelled() => {
+                return Err(McpActivationError::Cancelled);
+            }
+            () = tokio::time::sleep_until(deadline) => {
+                return Err(McpActivationError::Failed(diag));
+            }
+            () = settled => {}
+            () = tokio::time::sleep(HOST_POLL_INTERVAL) => {}
+        }
+    }
+}
+
+async fn activate_plugin_mcp_connectors_once(
+    call: &BrokerCall,
+    registry: &Arc<PluginRegistry>,
+    plugin: &LoadedPlugin,
+    remaining: Duration,
+    deadline: tokio::time::Instant,
+    scrub: &ScrubContext<'_>,
+    warnings: &mut Vec<String>,
+) -> Result<(), McpActivationError> {
+    #[cfg(test)]
+    fire_pre_connect_hook_for_test();
+    let cohort = plugin_host_cohort(registry, plugin);
+    let since_generation = host_generation(&super::manager().shared, &cohort);
+    let (registry_for_fork, enabled_servers) = resolve_plugin_enabled_servers(
+        call,
+        registry,
+        plugin,
+        &cohort,
+        since_generation,
+        remaining,
+        deadline,
+        scrub,
+    )
+    .await?;
     if enabled_servers.is_empty() {
         return Ok(());
     }
@@ -2041,7 +2230,13 @@ async fn activate_plugin_mcp_connectors(
                         let qualified = qualified_plugin_server_name(plugin.name(), server_name);
                         record_mcp_attempt(call, plugin.name(), server_name, &qualified, "failed");
                     }
-                    return Err(McpActivationError::Failed(diag));
+                    return Err(
+                        if host_recycling(&super::manager().shared, &cohort, since_generation) {
+                            McpActivationError::HostRestarting(diag)
+                        } else {
+                            McpActivationError::Failed(diag)
+                        },
+                    );
                 }
             }
         };
@@ -2051,6 +2246,8 @@ async fn activate_plugin_mcp_connectors(
             &mut forked,
             plugin.name(),
             &required_servers,
+            &cohort,
+            since_generation,
             deadline,
             scrub,
         )
@@ -2200,6 +2397,7 @@ async fn finish_enabled_activation(
             "operation cancelled before required MCP connector verification finished".to_string(),
         ),
         Err(McpActivationError::Failed(diag)) => ("failed", diag),
+        Err(McpActivationError::HostRestarting(diag)) => ("failed", diag),
     };
     record_outcome(
         call,

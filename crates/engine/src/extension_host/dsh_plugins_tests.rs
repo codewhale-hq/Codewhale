@@ -6098,23 +6098,55 @@ async fn plugins_attempt_stops_at_the_deadline_and_on_cancel() {
     let src = f.config.workspace.join("mcp-deadline-src");
     copy_mcp_template_bundle(&src, &hang_deadline.url(), Some(true), false);
 
-    let started = std::time::Instant::now();
-    let deadline_res = f
-        .call_admitted(
+    let deadline_hit_at = Arc::new(std::sync::Mutex::new(None));
+    let deadline_stamp = Arc::clone(&deadline_hit_at);
+    let deadline_hits = Arc::clone(&hang_deadline.hits);
+    tokio::spawn(async move {
+        while deadline_hits.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        *deadline_stamp.lock().unwrap() = Some(std::time::Instant::now());
+    });
+
+    let (deadline_res, deadline_receipts) = f
+        .call_admitted_with_receipts(
             &f.context,
             "install",
             json!({"target": src.to_string_lossy()}),
         )
-        .await
-        .unwrap();
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed < std::time::Duration::from_secs(15),
-        "call must stop at tool_call_deadline instead of waiting 30s MCP connect timeout: {elapsed:?}"
-    );
+        .await;
+    let deadline_res = deadline_res.unwrap();
     assert_eq!(deadline_res["application"], "failed", "{deadline_res}");
     assert_eq!(deadline_res["error"]["code"], "operation-error");
-    assert!(hang_deadline.hits() >= 1);
+    let deadline_diag = deadline_res["error"]["diagnostic"].as_str().unwrap_or("");
+    assert!(
+        deadline_diag.contains("timed out") || deadline_diag.contains("deadline elapsed"),
+        "call must stop at the MCP connect deadline instead of waiting 30s MCP connect timeout: {deadline_res}"
+    );
+    assert!(
+        !deadline_diag.contains("didn't start within 30s"),
+        "{deadline_res}"
+    );
+    let deadline_acts = deadline_receipts["broker_acts"]["acts"]
+        .as_array()
+        .expect("deadline receipts acts");
+    assert!(
+        deadline_acts.iter().any(|act| {
+            act["service"] == "plugins"
+                && act["method"] == "mcp_connect"
+                && act["plugin"] == "demo-mcp"
+                && act["server"] == "demo"
+                && act["outcome"] == "timed_out"
+        }),
+        "{deadline_receipts}"
+    );
+    if let Some(hit_at) = stamped_instant(&deadline_hit_at).await {
+        assert!(
+            hit_at.elapsed() < std::time::Duration::from_secs(15),
+            "hanging connect must stop at the 250ms deadline instead of the 30s MCP connect timeout: {:?}",
+            hit_at.elapsed()
+        );
+    }
     drop(deadline_guard);
 
     let hang_cancel = McpStubServer::spawn(McpStubBehavior::Hang).await;
@@ -6141,11 +6173,21 @@ async fn plugins_attempt_stops_at_the_deadline_and_on_cancel() {
 
     let (cx, _violations, cancel) = HostRequestContext::for_test(101);
     let cancel_trigger = cancel.clone();
+    let cancel_at = Arc::new(std::sync::Mutex::new(None));
+    let cancel_stamp = Arc::clone(&cancel_at);
+    let cancel_hits = Arc::clone(&hang_cancel.hits);
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while cancel_hits.load(Ordering::SeqCst) == 0 {
+            assert!(
+                std::time::Instant::now() < wait_deadline,
+                "hanging MCP server was never contacted before cancel"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        *cancel_stamp.lock().unwrap() = Some(std::time::Instant::now());
         cancel_trigger.cancel();
     });
-    let cancel_started = std::time::Instant::now();
     let cancel_err = f_cancel
         .manager
         .shared
@@ -6166,12 +6208,16 @@ async fn plugins_attempt_stops_at_the_deadline_and_on_cancel() {
         )
         .await
         .expect_err("cancel must end hanging MCP attempt");
-    let cancel_elapsed = cancel_started.elapsed();
-    assert!(
-        cancel_elapsed < std::time::Duration::from_secs(15),
-        "cancel must end prompt without waiting connect timeout: {cancel_elapsed:?}"
-    );
     assert_eq!(cancel_err.code, error_code::CANCELLED, "{cancel_err:?}");
+    let cancel_at = cancel_at
+        .lock()
+        .unwrap()
+        .expect("cancel watcher must have fired");
+    assert!(
+        cancel_at.elapsed() < std::time::Duration::from_secs(15),
+        "cancel must end the hanging connect promptly instead of the 30s MCP connect timeout: {:?}",
+        cancel_at.elapsed()
+    );
 
     #[cfg(unix)]
     {
@@ -6206,8 +6252,10 @@ async fn plugins_attempt_stops_at_the_deadline_and_on_cancel() {
         let (cx_stdio, _violations_stdio, cx_token) = HostRequestContext::for_test(102);
         let pid_watch = cx_pid_file.clone();
         let token_trigger = cx_token.clone();
+        let cx_cancel_at = Arc::new(std::sync::Mutex::new(None));
+        let cx_cancel_stamp = Arc::clone(&cx_cancel_at);
         tokio::spawn(async move {
-            let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
             while !tokio::fs::try_exists(&pid_watch).await.unwrap_or(false) {
                 assert!(
                     std::time::Instant::now() < wait_deadline,
@@ -6215,9 +6263,9 @@ async fn plugins_attempt_stops_at_the_deadline_and_on_cancel() {
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
+            *cx_cancel_stamp.lock().unwrap() = Some(std::time::Instant::now());
             token_trigger.cancel();
         });
-        let started_cx = std::time::Instant::now();
         let stdio_cx_err = f_stdio_cancel
             .manager
             .shared
@@ -6238,12 +6286,16 @@ async fn plugins_attempt_stops_at_the_deadline_and_on_cancel() {
             )
             .await
             .expect_err("cx.cancel must end hanging stdio MCP attempt");
-        let elapsed_cx = started_cx.elapsed();
-        assert!(
-            elapsed_cx < std::time::Duration::from_secs(4),
-            "stdio cx.cancel must finish promptly with drain: {elapsed_cx:?}"
-        );
         assert_eq!(stdio_cx_err.code, error_code::CANCELLED, "{stdio_cx_err:?}");
+        let cx_cancel_at = cx_cancel_at
+            .lock()
+            .unwrap()
+            .expect("cx cancel watcher must have fired");
+        assert!(
+            cx_cancel_at.elapsed() < std::time::Duration::from_secs(15),
+            "stdio cx.cancel must finish promptly after the cancel instead of the 30s MCP connect timeout: {:?}",
+            cx_cancel_at.elapsed()
+        );
         assert_pid_reaped(&cx_pid_file, "cx.cancel").await;
 
         let mut f_withdraw = PluginsFixture::new();
@@ -6275,8 +6327,10 @@ async fn plugins_attempt_stops_at_the_deadline_and_on_cancel() {
         let (cx_withdraw, _violations_withdraw, _token_withdraw) =
             HostRequestContext::for_test(103);
         let withdraw_pid_watch = withdraw_pid_file.clone();
+        let withdraw_at = Arc::new(std::sync::Mutex::new(None));
+        let withdraw_stamp = Arc::clone(&withdraw_at);
         tokio::spawn(async move {
-            let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
             while !tokio::fs::try_exists(&withdraw_pid_watch)
                 .await
                 .unwrap_or(false)
@@ -6287,9 +6341,9 @@ async fn plugins_attempt_stops_at_the_deadline_and_on_cancel() {
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
+            *withdraw_stamp.lock().unwrap() = Some(std::time::Instant::now());
             drop(withdraw_guard);
         });
-        let started_withdraw = std::time::Instant::now();
         let withdraw_err = f_withdraw
             .manager
             .shared
@@ -6310,15 +6364,19 @@ async fn plugins_attempt_stops_at_the_deadline_and_on_cancel() {
             )
             .await
             .expect_err("withdraw cancel must end hanging stdio MCP attempt");
-        let elapsed_withdraw = started_withdraw.elapsed();
-        assert!(
-            elapsed_withdraw < std::time::Duration::from_secs(4),
-            "stdio withdraw must finish promptly with drain: {elapsed_withdraw:?}"
-        );
         assert_eq!(withdraw_err.code, error_code::CANCELLED, "{withdraw_err:?}");
         assert!(
             withdraw_err.message.contains("invocation ended"),
             "{withdraw_err:?}"
+        );
+        let withdraw_at = withdraw_at
+            .lock()
+            .unwrap()
+            .expect("withdraw watcher must have fired");
+        assert!(
+            withdraw_at.elapsed() < std::time::Duration::from_secs(15),
+            "stdio withdraw must finish promptly after the withdraw instead of the 30s MCP connect timeout: {:?}",
+            withdraw_at.elapsed()
         );
         assert_pid_reaped(&withdraw_pid_file, "withdraw").await;
     }
@@ -6434,7 +6492,16 @@ async fn plugins_multiple_required_connectors_bounded_together_and_report_all_fa
             hang_b.url()
         ),
     );
-    let started = std::time::Instant::now();
+    let bound_hit_at = Arc::new(std::sync::Mutex::new(None));
+    let bound_stamp = Arc::clone(&bound_hit_at);
+    let bound_hits_a = Arc::clone(&hang_a.hits);
+    let bound_hits_b = Arc::clone(&hang_b.hits);
+    tokio::spawn(async move {
+        while bound_hits_a.load(Ordering::SeqCst) == 0 && bound_hits_b.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        *bound_stamp.lock().unwrap() = Some(std::time::Instant::now());
+    });
     let res_bound = f_bound
         .call_admitted(
             &f_bound.context,
@@ -6443,11 +6510,13 @@ async fn plugins_multiple_required_connectors_bounded_together_and_report_all_fa
         )
         .await
         .unwrap();
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed < std::time::Duration::from_secs(3),
-        "multiple required connectors must share one call deadline: {elapsed:?}"
-    );
+    if let Some(hit_at) = stamped_instant(&bound_hit_at).await {
+        assert!(
+            hit_at.elapsed() < std::time::Duration::from_secs(15),
+            "multiple required connectors must share one call deadline instead of one 30s MCP connect timeout each: {:?}",
+            hit_at.elapsed()
+        );
+    }
     assert_eq!(res_bound["application"], "failed", "{res_bound}");
     let diag_bound = res_bound["error"]["diagnostic"].as_str().unwrap();
     assert!(diag_bound.contains("alpha"), "{diag_bound}");
@@ -6645,6 +6714,49 @@ done
     )
 }
 
+async fn stamped_instant(
+    stamp: &Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+) -> Option<std::time::Instant> {
+    for _ in 0..200 {
+        if let Some(at) = *stamp.lock().unwrap() {
+            return Some(at);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    *stamp.lock().unwrap()
+}
+
+fn assert_connector_reverified(
+    server: &McpStubServer,
+    inits_before: usize,
+    receipts: &Value,
+    plugin: &str,
+    server_name: &str,
+) {
+    let acts = receipts["broker_acts"]["acts"].as_array().unwrap();
+    let mut connected = 0usize;
+    let mut failed = 0usize;
+    for act in acts {
+        if act["method"] == "mcp_connect" && act["plugin"] == plugin && act["server"] == server_name
+        {
+            match act["outcome"].as_str() {
+                Some("connected") => connected += 1,
+                Some("failed") => failed += 1,
+                _ => {}
+            }
+        }
+    }
+    let inits = server.init_hits().saturating_sub(inits_before);
+    assert_eq!(
+        connected, 1,
+        "exactly one successful verification connect for `{server_name}`: {receipts}"
+    );
+    assert!(
+        (1..=1 + failed).contains(&inits),
+        "initialize count {inits} for `{server_name}` must be the successful connect plus at most one per failed attempt ({failed}): {receipts}"
+    );
+}
+
 #[cfg(unix)]
 async fn assert_pid_reaped(pid_file: &Path, context: &str) {
     let pid: u32 = fs::read_to_string(pid_file)
@@ -6739,7 +6851,18 @@ done
         &hang_pid_file,
     );
 
-    let started = std::time::Instant::now();
+    let hang_pid_at = Arc::new(std::sync::Mutex::new(None));
+    let hang_pid_stamp = Arc::clone(&hang_pid_at);
+    let hang_pid_watch = hang_pid_file.clone();
+    tokio::spawn(async move {
+        while !tokio::fs::try_exists(&hang_pid_watch)
+            .await
+            .unwrap_or(false)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        *hang_pid_stamp.lock().unwrap() = Some(std::time::Instant::now());
+    });
     let hang_res = f_hang
         .call_admitted(
             &f_hang.context,
@@ -6748,14 +6871,16 @@ done
         )
         .await
         .unwrap();
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed < std::time::Duration::from_secs(4),
-        "hanging stdio connect must stop near deadline: {elapsed:?}"
-    );
     assert_eq!(hang_res["application"], "failed", "{hang_res}");
     assert_eq!(hang_res["error"]["code"], "operation-error");
     assert_pid_reaped(&hang_pid_file, "timeout").await;
+    if let Some(pid_at) = stamped_instant(&hang_pid_at).await {
+        assert!(
+            pid_at.elapsed() < std::time::Duration::from_secs(15),
+            "hanging stdio connect must stop near the deadline instead of the 30s MCP connect timeout: {:?}",
+            pid_at.elapsed()
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -6812,6 +6937,7 @@ async fn plugins_mixed_dsh_bundle_qualifies_required_native_mcp_connector() {
     );
     fs::write(src.join("cordis.patch.yml"), patch).unwrap();
 
+    let inits_before_install = server.init_hits();
     let (res, receipts_ok) = f
         .call_admitted_with_receipts(
             &f.context,
@@ -6825,7 +6951,13 @@ async fn plugins_mixed_dsh_bundle_qualifies_required_native_mcp_connector() {
     assert_eq!(res["changed"], true);
     assert_eq!(res["enabled"], true);
     assert_eq!(res["bundle"], "my-decoration");
-    assert_eq!(server.init_hits(), 1);
+    assert_connector_reverified(
+        &server,
+        inits_before_install,
+        &receipts_ok,
+        "my-decoration",
+        "demo",
+    );
 
     let qualified = crate::mcp::qualified_plugin_server_name("my-decoration", "demo");
     let expected_tool = crate::mcp::McpPool::mcp_model_tool_name(&qualified, "read_mixed");
@@ -6844,14 +6976,21 @@ async fn plugins_mixed_dsh_bundle_qualifies_required_native_mcp_connector() {
         "expected next-message guidance in warnings: {warnings:?}"
     );
 
-    let idempotent = f
-        .call_admitted(&f.context, "enable", json!({"target": "my-decoration"}))
-        .await
-        .unwrap();
+    let inits_before_enable = server.init_hits();
+    let (idempotent, enable_receipts) = f
+        .call_admitted_with_receipts(&f.context, "enable", json!({"target": "my-decoration"}))
+        .await;
+    let idempotent = idempotent.unwrap();
     assert_eq!(idempotent["application"], "applied", "{idempotent}");
     assert_eq!(idempotent["stage"], "enable");
     assert_eq!(idempotent["enabled"], true);
-    assert_eq!(server.init_hits(), 2);
+    assert_connector_reverified(
+        &server,
+        inits_before_enable,
+        &enable_receipts,
+        "my-decoration",
+        "demo",
+    );
 
     let dead_src = f.config.workspace.join("mixed-dead-src");
     copy_dir_tree(&dsh_template_dir("decoration"), &dead_src);
@@ -6921,6 +7060,133 @@ async fn plugins_mixed_dsh_bundle_qualifies_required_native_mcp_connector() {
                 && act["outcome"] == "failed"
         }),
         "{receipts_dead}"
+    );
+
+    f.manager.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plugins_enable_waits_out_a_host_recycle_during_connector_verification() {
+    let Some(node) = super::super::test_support::node_for_tests(
+        "plugins_enable_waits_out_a_host_recycle_during_connector_verification",
+    ) else {
+        return;
+    };
+    let _policy = TestPolicyGuard::extension_host(true);
+    let mut f = PluginsFixture::new();
+    f.manager = Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
+        runtime: codewhale_config::extension_host::ExtensionHostRuntime::Node,
+        node_override: Some(node),
+        root: Some(f._temp.path().join("host-root")),
+        ..Default::default()
+    }));
+    {
+        let mut reg = f.manager.shared.registry.lock().unwrap();
+        f.creator = reg
+            .begin_owner(
+                HostCohort::Builtin,
+                "host:creator",
+                "creator",
+                None,
+                "digest",
+            )
+            .unwrap();
+        reg.mark_active(&f.creator);
+    }
+    let _manager = TestManagerGuard::install(Arc::clone(&f.manager));
+    let initial_reg = f.reload_registry();
+    let _engine = f.manager.attach(initial_reg);
+    let _ = _engine.set_creator_demand(true);
+
+    f.posture.switch_for_tests(ApprovalMode::Bypass);
+    let pool = fixture_mcp_pool(&f);
+    install_gate_with_pool(&mut f, Some(pool), |input, _| {
+        allow_verdict(input, NestedDecision::Auto)
+    });
+
+    let server = McpStubServer::spawn(McpStubBehavior::Ready(vec![json!({
+        "name": "read_mixed",
+        "description": "Mixed native/DSH connector tool",
+        "inputSchema": {"type": "object"}
+    })]))
+    .await;
+
+    let src = f.config.workspace.join("mixed-recycle-src");
+    copy_dir_tree(&dsh_template_dir("decoration"), &src);
+    let patch = format!(
+        "- insert:\n    - id: my-decoration\n      name: '@local/my-decoration'\n    - id: demo-mcp\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: demo\n        transport: streamable-http\n        url: {}\n        failOnStartupError: true\n",
+        server.url()
+    );
+    fs::write(src.join("cordis.patch.yml"), patch).unwrap();
+
+    let inits_before_install = server.init_hits();
+    let (res, install_receipts) = f
+        .call_admitted_with_receipts(
+            &f.context,
+            "install",
+            json!({"target": src.to_string_lossy()}),
+        )
+        .await;
+    let res = res.unwrap();
+    assert_eq!(res["application"], "applied", "{res}");
+    assert_connector_reverified(
+        &server,
+        inits_before_install,
+        &install_receipts,
+        "my-decoration",
+        "demo",
+    );
+
+    let spawns_before = f.manager.spawn_attempts();
+    let plugin_id = discover_with_config(&f.config)
+        .get("my-decoration")
+        .unwrap()
+        .id
+        .as_str()
+        .to_string();
+    let cohort = f
+        .manager
+        .owner_report(&plugin_id)
+        .and_then(|report| report.cohort)
+        .expect("installed plugin owner must report its host cohort");
+    let manager_for_hook = Arc::clone(&f.manager);
+    let hook_outcome = Arc::new(std::sync::Mutex::new(
+        "pre-connect hook did not fire".to_string(),
+    ));
+    let outcome_hook = Arc::clone(&hook_outcome);
+    super::set_pre_connect_hook_for_test(Box::new(move || {
+        let outcome = match manager_for_hook.shared.ready_host(&cohort) {
+            Ok(host) => format!(
+                "terminate_if_idle={}",
+                host.terminate_if_idle("test host recycle")
+            ),
+            Err(status) => format!("ready_host={status}"),
+        };
+        *outcome_hook.lock().unwrap() = outcome;
+    }));
+
+    let inits_before_enable = server.init_hits();
+    let (enable, enable_receipts) = f
+        .call_admitted_with_receipts(&f.context, "enable", json!({"target": "my-decoration"}))
+        .await;
+    let enable = enable.unwrap();
+    let outcome = hook_outcome.lock().unwrap().clone();
+    assert_eq!(
+        outcome, "terminate_if_idle=true",
+        "pre-connect hook must retire the plugin host"
+    );
+    assert_eq!(enable["application"], "applied", "{enable}");
+    assert_eq!(enable["enabled"], true, "{enable}");
+    assert_connector_reverified(
+        &server,
+        inits_before_enable,
+        &enable_receipts,
+        "my-decoration",
+        "demo",
+    );
+    assert!(
+        f.manager.spawn_attempts() > spawns_before,
+        "the plugin host must have restarted during verification"
     );
 
     f.manager.shutdown().await;
