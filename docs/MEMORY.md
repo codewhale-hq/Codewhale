@@ -78,6 +78,13 @@ Changes discovered during the session are appended as history, as described
 in [CACHE.md](CACHE.md); neither a native note update nor an external recall
 may rewrite the system prompt or tool catalog on every turn.
 
+Sub-agents inherit the same packet: a child's system prompt carries the
+parent session's block plus the `## Memory Hygiene` guidance, so pinned rules
+reach the agent that actually edits files. The child re-composes the packet
+from the inherited `memory_path` (no separate flag, no empty envelope) and
+records no context receipt of its own. See
+[SUBAGENTS.md](SUBAGENTS.md#memory-and-the-remember-tool-489).
+
 ## Three ways to add to memory
 
 ### 1. The `# ` composer prefix (#492)

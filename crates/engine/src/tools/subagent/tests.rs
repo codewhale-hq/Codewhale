@@ -13223,6 +13223,163 @@ fn build_subagent_system_prompt_skips_role_when_blank() {
     assert!(!prompt.contains("You are operating in the role of"));
 }
 
+/// Native memory fixture: every note becomes a reviewed global entry, and the
+/// returned handles let a test pin or suppress one exactly as Context Lens
+/// would. The first element is the `memory_path` a session inherits.
+fn native_memory_fixture(
+    root: &std::path::Path,
+    notes: &[&str],
+) -> (
+    std::path::PathBuf,
+    codewhale_memory::Store,
+    codewhale_memory::Access,
+) {
+    let memory_root = root.join("memory");
+    std::fs::create_dir_all(memory_root.join("global")).expect("memory layout");
+    let native = codewhale_runtime::native_memory::NativeMemoryStore::new(&memory_root);
+    for note in notes {
+        native
+            .remember_reviewed(
+                codewhale_runtime::native_memory::MemoryScope::Global,
+                None,
+                note,
+            )
+            .expect("reviewed memory");
+    }
+    let store = codewhale_memory::Store::open(memory_root.join("store.sqlite3")).expect("store");
+    let access = codewhale_memory::Access::operator(vec![
+        codewhale_runtime::native_memory::NativeMemoryStore::owner_scope(),
+    ])
+    .expect("operator access");
+    (memory_root.join("global/MEMORY.md"), store, access)
+}
+
+/// Apply a Context Lens preference to the note whose body is `body`.
+fn set_note_preferences(
+    store: &codewhale_memory::Store,
+    access: &codewhale_memory::Access,
+    body: &str,
+    pinned: bool,
+    suppressed: bool,
+) {
+    let entries = store.list(access, None, 16).expect("list memories");
+    let entry = entries
+        .iter()
+        .find(|m| m.draft.body == body)
+        .unwrap_or_else(|| panic!("captured note {body:?} is missing from the store"));
+    store
+        .set_preferences(access, &entry.id, 0, pinned, suppressed)
+        .expect("memory preference");
+}
+
+#[test]
+fn child_system_prompt_inherits_the_sessions_reviewed_memory_packet() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let deploy = "云端的任何部署操作都要得到用户的许可，线上系统一定要谨慎";
+    let checkout = "修改代码一定在开发目录进行，不要在运行目录做";
+    let (memory_path, store, access) = native_memory_fixture(tmp.path(), &[deploy, checkout]);
+    set_note_preferences(&store, &access, deploy, true, false);
+
+    let mut context = ToolContext::new(&workspace);
+    context.memory_path = Some(memory_path);
+    let assignment = SubAgentAssignment::new("deploy check".to_string(), None);
+    let system = build_subagent_system_prompt_with_skills(&FleetRole::Scout, &assignment, &context);
+
+    assert!(system.contains("codewhale.memory.context.v1"), "{system}");
+    assert!(system.contains(deploy), "{system}");
+    assert!(system.contains(checkout), "{system}");
+    assert_eq!(
+        system.matches("codewhale.memory.context.v1").count(),
+        1,
+        "a child gets exactly one memory packet: {system}"
+    );
+    let pinned_at = system.find(deploy).expect("pinned rule");
+    let regular_at = system.find(checkout).expect("unpinned rule");
+    assert!(
+        pinned_at < regular_at,
+        "explicit pins must lead the inherited packet: {system}"
+    );
+    let packet_at = system.find("codewhale.memory.context.v1").expect("packet");
+    let guidance_at = system.find("## Memory Hygiene").expect("hygiene guidance");
+    assert!(
+        packet_at < guidance_at,
+        "the packet keeps its guidance and the guidance follows it: {system}"
+    );
+    // The role contract still leads, so inherited memory cannot displace it.
+    assert!(
+        system.find("background sub-agent").expect("role framing") < packet_at,
+        "{system}"
+    );
+
+    // A nested child inherits the same packet through its runtime context, not
+    // only a directly built prompt.
+    let mut parent_runtime = runtime_with_depth(1, None);
+    parent_runtime.context = context.clone();
+    let (nested, _nested_rx) = runtime_for_nested_agent_tools(
+        &parent_runtime,
+        "agent_parent",
+        SubAgentForkContext {
+            messages: Vec::new(),
+            structured_state_block: None,
+            work_source: None,
+        },
+    );
+    assert_eq!(nested.context.memory_path, context.memory_path);
+    let nested_system =
+        build_subagent_system_prompt_with_skills(&FleetRole::Scout, &assignment, &nested.context);
+    assert!(
+        nested_system.contains("codewhale.memory.context.v1"),
+        "nested children read the same memory packet: {nested_system}"
+    );
+    assert!(nested_system.contains(deploy), "{nested_system}");
+}
+
+#[test]
+fn child_system_prompt_omits_memory_when_the_session_has_none() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let assignment = SubAgentAssignment::new("review".to_string(), None);
+
+    // Memory disabled for the session: the context carries no path at all.
+    let disabled = ToolContext::new(&workspace);
+    let system =
+        build_subagent_system_prompt_with_skills(&FleetRole::Scout, &assignment, &disabled);
+    assert!(!system.contains("codewhale.memory.context.v1"), "{system}");
+    assert!(!system.contains("## Memory Hygiene"), "{system}");
+
+    // Memory enabled but empty: no empty envelope is injected either.
+    let (memory_path, _store, _access) = native_memory_fixture(tmp.path(), &[]);
+    let mut enabled = ToolContext::new(&workspace);
+    enabled.memory_path = Some(memory_path);
+    let system = build_subagent_system_prompt_with_skills(&FleetRole::Scout, &assignment, &enabled);
+    assert!(!system.contains("codewhale.memory.context.v1"), "{system}");
+    assert!(!system.contains("## Memory Hygiene"), "{system}");
+}
+
+#[test]
+fn child_system_prompt_honours_a_reviewed_off_memory() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let rule = "云端的任何部署操作都要得到用户的许可";
+    let (memory_path, store, access) = native_memory_fixture(tmp.path(), &[rule]);
+    set_note_preferences(&store, &access, rule, false, true);
+
+    let mut context = ToolContext::new(&workspace);
+    context.memory_path = Some(memory_path);
+    let assignment = SubAgentAssignment::new("review".to_string(), None);
+    let system = build_subagent_system_prompt_with_skills(&FleetRole::Scout, &assignment, &context);
+
+    assert!(
+        !system.contains(rule),
+        "a suppressed memory must not reach a child: {system}"
+    );
+    assert!(!system.contains("codewhale.memory.context.v1"), "{system}");
+}
+
 #[test]
 fn fresh_forked_and_nested_subagents_share_authority_bound_skill_catalogs() {
     let _env = crate::test_support::lock_test_env();

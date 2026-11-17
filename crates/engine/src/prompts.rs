@@ -252,6 +252,21 @@ pub fn render_environment_block(_workspace: &Path, locale_tag: &str) -> String {
     format_environment_block(locale_tag, &platform, &shell, npm_launcher_fact())
 }
 
+/// Pair a memory packet with the hygiene rules that say how to read it.
+///
+/// One rule for every host: the root session and an inherited child prompt
+/// must never ship the packet without its guidance, or the same bytes would
+/// arrive with different statements about their authority. The block is
+/// inserted verbatim — trimming it would break the byte-stable prefix.
+#[must_use]
+pub fn memory_prompt_section(memory_block: Option<&str>) -> Option<String> {
+    let block = memory_block?;
+    if block.trim().is_empty() {
+        return None;
+    }
+    Some(format!("{block}\n\n{MEMORY_GUIDANCE}"))
+}
+
 /// Format the `## Environment` block from already-resolved facts. Pure, so
 /// the plain and npm-launcher shapes can both be tested on any host.
 fn format_environment_block(
@@ -1350,10 +1365,8 @@ pub fn system_prompt_with_instruction_assembly_for_host(
         workspace,
         session_context.locale_tag,
     )];
-    if let Some(memory_block) = session_context.user_memory_block
-        && !memory_block.trim().is_empty()
-    {
-        workspace_parts.push(format!("{memory_block}\n\n{MEMORY_GUIDANCE}"));
+    if let Some(section) = memory_prompt_section(session_context.user_memory_block) {
+        workspace_parts.push(section);
     }
     if prompt_host == PromptHost::Interactive
         && let Some(harness_block) = codewhale_runtime::continual_harness::prompt_block(workspace)

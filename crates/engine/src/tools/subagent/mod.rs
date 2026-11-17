@@ -16616,12 +16616,41 @@ fn build_subagent_system_prompt_with_skills(
     context: &ToolContext,
 ) -> String {
     let mut prompt = build_subagent_system_prompt(agent_type, assignment);
+    // A child runs under the same session as its parent, so it reads the same
+    // reviewed memory packet the root prompt carries. Without this, a rule the
+    // user pinned (a deployment gate, a working-directory rule) would bind the
+    // parent and silently not the child that actually edits the files.
+    if let Some(section) = subagent_memory_section(context) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&section);
+    }
     let catalog = subagent_skill_catalog(context);
     if !catalog.is_empty() {
         prompt.push_str("\n\n");
         prompt.push_str(&catalog);
     }
     prompt
+}
+
+/// The inherited memory packet for a child, paired with the hygiene guidance
+/// exactly as the root session pairs them.
+///
+/// `memory_path` is inherited from the parent's `ToolContext`, so this is
+/// `None` when the session never enabled memory — the child seam needs no
+/// separate flag and cannot drift from the parent's setting. The packet is
+/// re-composed instead of copied out of the parent prompt: an isolated
+/// worktree resolves to the same workspace scope through its shared git
+/// remote, and re-composition keeps the child honest about a memory edited
+/// since the parent's last header refresh. No receipt is recorded here; the
+/// root session's own preparation is the receipt for these bytes.
+fn subagent_memory_section(context: &ToolContext) -> Option<String> {
+    let memory_path = context.memory_path.as_deref()?;
+    let block = codewhale_runtime::native_memory::native_prompt_block(
+        true,
+        memory_path,
+        &context.workspace,
+    )?;
+    crate::prompts::memory_prompt_section(Some(&block))
 }
 
 /// Render the same workspace/plugin-qualified Skill authority available to
