@@ -20555,6 +20555,86 @@ async fn fork_at_user_message_depth_one_drops_two_turns() -> Result<()> {
 }
 
 #[tokio::test]
+async fn named_turn_undo_reads_turn_store_once_and_drops_anchor() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let turn_ids =
+        seed_turns_with_user_messages(&manager, &thread.id, &["first", "second", "third"])?;
+    let anchor = manager.store.load_turn(&turn_ids[1])?;
+    let compaction_at = anchor.created_at + chrono::Duration::microseconds(500);
+    let mut compaction_item = sample_item(
+        "turn_compaction_between",
+        "item_compaction_between",
+        TurnItemLifecycleStatus::Completed,
+    );
+    compaction_item.kind = TurnItemKind::ContextCompaction;
+    compaction_item.detail = Some("summary of first and second".to_string());
+    manager.store.save_item(&compaction_item)?;
+    let mut compaction_turn = anchor.clone();
+    compaction_turn.id = compaction_item.turn_id.clone();
+    compaction_turn.input_summary = "Context compacted".to_string();
+    compaction_turn.created_at = compaction_at;
+    compaction_turn.started_at = Some(compaction_at);
+    compaction_turn.ended_at = Some(compaction_at);
+    compaction_turn.item_ids = vec![compaction_item.id];
+    manager.store.save_turn(&compaction_turn)?;
+    let other_thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    manager.store.save_turn(&sample_turn(
+        &other_thread.id,
+        "turn_other_thread",
+        RuntimeTurnStatus::Completed,
+    ))?;
+    let source_before = manager.get_thread(&thread.id).await?;
+    let turns_before = manager.store.list_turns_for_thread(&thread.id)?;
+
+    manager.reset_whole_store_scan_file_reads();
+    let prepared = manager
+        .prepare_fork_dropping_user_turn_in_sessions_dir(
+            &thread.id,
+            &turn_ids[1],
+            manager.sessions_dir(),
+        )
+        .await?;
+    assert_eq!(manager.whole_store_scan_file_reads().0, 5);
+    assert_eq!(
+        prepared.dropped_turn_id.as_deref(),
+        Some(turn_ids[1].as_str())
+    );
+    assert_eq!(prepared.depth_from_tail, 1);
+    assert_eq!(prepared.original_user_text.as_deref(), Some("second"));
+    assert_eq!(
+        prepared
+            .records
+            .iter()
+            .map(|(turn, _)| turn.input_summary.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first"]
+    );
+    assert_eq!(
+        prepared
+            .dropped_turns
+            .iter()
+            .map(|turn| turn.turn_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            turn_ids[1].as_str(),
+            compaction_turn.id.as_str(),
+            turn_ids[2].as_str()
+        ]
+    );
+    assert_eq!(
+        serde_json::to_value(manager.store.list_turns_for_thread(&thread.id)?)?,
+        serde_json::to_value(turns_before)?
+    );
+    assert_eq!(manager.get_thread(&thread.id).await?, source_before);
+    Ok(())
+}
+
+#[tokio::test]
 async fn fork_at_user_turn_leaves_a_running_turn_alone() -> Result<()> {
     // A conversation can be branched while it is working: a person watching a
     // turn go the wrong way should not have to stop it (and lose what it has

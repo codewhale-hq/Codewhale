@@ -11692,12 +11692,35 @@ impl RuntimeThreadManager {
         turn_id: &str,
         sessions_dir: &Path,
     ) -> Result<PreparedThreadFork> {
-        let turns = self.store.list_turns_for_thread(id)?;
-        let items_by_turn = self.prepared_items_for_turns(&turns)?;
-        let (_, _, depth_from_tail) =
-            self.fork_cut_for_user_turn(&turns, &items_by_turn, turn_id)?;
-        self.prepare_fork_at_user_message_in_sessions_dir(id, depth_from_tail, sessions_dir)
-            .await
+        let source = self.get_thread(id).await?;
+        anyhow::ensure!(
+            source.executor.is_none(),
+            "a session with another agent cannot be forked; its history lives in the agent"
+        );
+        let source_turns = self.store.list_turns_for_thread(&source.id)?;
+        let items_by_turn = self.prepared_items_for_turns(&source_turns)?;
+        let user_turn_indices = Self::user_turn_indices(&source_turns, &items_by_turn);
+        let position = user_turn_indices
+            .iter()
+            .position(|index| source_turns[*index].id == turn_id)
+            .with_context(|| {
+                format!("fork_at_user_turn: turn {turn_id} is not a user turn of this thread")
+            })?;
+        let target_turn_idx = user_turn_indices[position];
+        let depth_from_tail = user_turn_indices.len() - 1 - position;
+        let (captured_source, saved_prefix) = self
+            .capture_native_fork_source(&source, &source_turns, sessions_dir)
+            .await?;
+        self.prepare_fork_from_cutoff(
+            source,
+            captured_source,
+            saved_prefix,
+            source_turns,
+            items_by_turn,
+            target_turn_idx,
+            Some(target_turn_idx),
+            depth_from_tail,
+        )
     }
 
     pub async fn prepare_fork_at_user_turn_in_sessions_dir(
