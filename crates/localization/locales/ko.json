@@ -1652,6 +1652,7 @@
   "SessionsDeleteOpenElsewhere": "삭제할 수 없음: 이 세션은 다른 Codewhale 창에서 열려 있습니다.",
   "SessionSaveFailed": "세션 {id}을(를) 저장하지 못했습니다 ({error}). 최근 작업이 저장되지 않았을 수 있습니다.",
   "SessionSaveFailedAtExit": "codewhale: 세션 {id}의 마지막 저장에 실패했습니다 ({error}). 최근 작업이 저장되지 않았을 수 있습니다.",
+  "SessionSnapshotPending": "Engine 세션 스냅샷이 아직 준비 중이며, 복구 체크포인트는 유지됩니다.",
   "SessionsDeleted": "세션 {id} 삭제됨",
   "SessionsNoSelection": "선택된 세션 없음",
   "SessionsTitleLength": "제목은 1–100자여야 합니다",

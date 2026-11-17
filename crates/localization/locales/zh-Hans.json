@@ -1652,6 +1652,7 @@
   "SessionsDeleteOpenElsewhere": "无法删除：此会话已在另一个 Codewhale 窗口中打开。",
   "SessionSaveFailed": "无法保存会话 {id}（{error}）。最近的工作可能尚未保存。",
   "SessionSaveFailedAtExit": "codewhale: 会话 {id} 的最近一次保存失败（{error}）；最近的工作可能尚未保存。",
+  "SessionSnapshotPending": "Engine 会话快照仍在等待完成；恢复检查点已保留。",
   "SessionsDeleted": "已删除会话 {id}",
   "SessionsNoSelection": "未选择会话",
   "SessionsTitleLength": "标题长度须为 1–100 个字符",

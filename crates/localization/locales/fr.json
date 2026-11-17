@@ -1633,6 +1633,7 @@
   "SessionsDeleteOpenElsewhere": "Suppression impossible : cette session est ouverte dans une autre fenêtre Codewhale.",
   "SessionSaveFailed": "Impossible d'enregistrer la session {id} ({error}). Le travail récent n'est peut-être pas enregistré.",
   "SessionSaveFailedAtExit": "codewhale : le dernier enregistrement de la session {id} a échoué ({error}) ; le travail récent n'a peut-être pas été enregistré.",
+  "SessionSnapshotPending": "L'instantané de session de l'Engine est toujours en attente ; le point de contrôle de récupération est conservé.",
   "SessionsDeleted": "Session {id} supprimée",
   "SessionsNoSelection": "Aucune session sélectionnée",
   "SessionsTitleLength": "Le titre doit faire 1 à 100 caractères",

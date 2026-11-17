@@ -2084,7 +2084,7 @@ pub(crate) fn poll_fresh_session(app: &mut App, engine: &EngineHandle) -> bool {
         Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
     }
     if !pending.deadline_reported
-        && pending.started.elapsed() >= super::event_loop::LAUNCH_SESSION_SYNC_WAIT
+        && pending.started.elapsed() >= super::event_loop::SESSION_SNAPSHOT_WAIT
     {
         if matches!(pending.phase, FreshSessionPhase::Inspecting(_)) {
             surface_session_load_failure(app, "Session inspection timed out; no new session was requested and the current input is preserved.".to_string());

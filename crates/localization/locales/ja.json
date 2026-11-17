@@ -1652,6 +1652,7 @@
   "SessionsDeleteOpenElsewhere": "削除できません: このセッションは別の Codewhale ウィンドウで開かれています。",
   "SessionSaveFailed": "セッション {id} を保存できませんでした ({error})。最近の作業が保存されていない可能性があります。",
   "SessionSaveFailedAtExit": "codewhale: セッション {id} の最後の保存に失敗しました ({error})。最近の作業が保存されていない可能性があります。",
+  "SessionSnapshotPending": "Engine のセッションスナップショットはまだ準備中です。復旧用チェックポイントは保持されています。",
   "SessionsDeleted": "セッション {id} を削除しました",
   "SessionsNoSelection": "セッションが選択されていません",
   "SessionsTitleLength": "タイトルは 1〜100 文字にしてください",

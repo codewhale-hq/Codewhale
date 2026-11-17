@@ -1652,6 +1652,7 @@
   "SessionsDeleteOpenElsewhere": "Não é possível excluir: esta sessão está aberta em outra janela do Codewhale.",
   "SessionSaveFailed": "Não foi possível salvar a sessão {id} ({error}). O trabalho recente pode não estar salvo.",
   "SessionSaveFailedAtExit": "codewhale: o último salvamento da sessão {id} falhou ({error}); o trabalho recente pode não ter sido salvo.",
+  "SessionSnapshotPending": "O snapshot da sessão do Engine ainda está pendente; o checkpoint de recuperação foi mantido.",
   "SessionsDeleted": "Sessão {id} excluída",
   "SessionsNoSelection": "Nenhuma sessão selecionada",
   "SessionsTitleLength": "O título deve ter de 1 a 100 caracteres",

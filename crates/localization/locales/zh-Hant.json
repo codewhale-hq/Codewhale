@@ -1650,6 +1650,7 @@
   "SessionsDeleteOpenElsewhere": "無法刪除：此工作階段已在另一個 Codewhale 視窗中開啟。",
   "SessionSaveFailed": "無法儲存工作階段 {id}（{error}）。最近的工作可能尚未儲存。",
   "SessionSaveFailedAtExit": "codewhale: 工作階段 {id} 的最近一次儲存失敗（{error}）；最近的工作可能尚未儲存。",
+  "SessionSnapshotPending": "Engine 工作階段快照仍在等待完成；復原檢查點已保留。",
   "SessionsDeleted": "已刪除工作階段 {id}",
   "SessionsNoSelection": "未選擇工作階段",
   "SessionsTitleLength": "標題長度須為 1–100 個字元",

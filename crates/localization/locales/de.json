@@ -1633,6 +1633,7 @@
   "SessionsDeleteOpenElsewhere": "Löschen nicht möglich: Diese Sitzung ist in einem anderen Codewhale-Fenster geöffnet.",
   "SessionSaveFailed": "Sitzung {id} konnte nicht gespeichert werden ({error}). Neuere Arbeit ist möglicherweise nicht gespeichert.",
   "SessionSaveFailedAtExit": "codewhale: Das letzte Speichern der Sitzung {id} ist fehlgeschlagen ({error}); neuere Arbeit wurde möglicherweise nicht gespeichert.",
+  "SessionSnapshotPending": "Der Engine-Sitzungssnapshot steht noch aus; der Wiederherstellungspunkt bleibt erhalten.",
   "SessionsDeleted": "Sitzung {id} gelöscht",
   "SessionsNoSelection": "Keine Sitzung ausgewählt",
   "SessionsTitleLength": "Titel muss 1–100 Zeichen haben",

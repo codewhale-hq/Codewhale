@@ -1633,6 +1633,7 @@
   "SessionsDeleteOpenElsewhere": "हटाया नहीं जा सकता: यह सत्र किसी दूसरी Codewhale विंडो में खुला है।",
   "SessionSaveFailed": "सत्र {id} सहेजा नहीं जा सका ({error})। हाल का काम शायद सहेजा नहीं गया है।",
   "SessionSaveFailedAtExit": "codewhale: सत्र {id} को पिछली बार सहेजना विफल रहा ({error}); हाल का काम शायद सहेजा नहीं गया।",
+  "SessionSnapshotPending": "Engine सत्र का स्नैपशॉट अभी लंबित है; पुनर्प्राप्ति चेकपॉइंट सुरक्षित रखा गया है।",
   "SessionsDeleted": "सत्र {id} हटाया गया",
   "SessionsNoSelection": "कोई सत्र चुना नहीं गया",
   "SessionsTitleLength": "शीर्षक 1–100 अक्षरों का होना चाहिए",

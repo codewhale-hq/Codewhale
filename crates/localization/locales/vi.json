@@ -1652,6 +1652,7 @@
   "SessionsDeleteOpenElsewhere": "Không thể xóa: phiên này đang mở trong một cửa sổ Codewhale khác.",
   "SessionSaveFailed": "Không thể lưu phiên {id} ({error}). Công việc gần đây có thể chưa được lưu.",
   "SessionSaveFailedAtExit": "codewhale: lần lưu gần nhất của phiên {id} thất bại ({error}); công việc gần đây có thể chưa được lưu.",
+  "SessionSnapshotPending": "Ảnh chụp trạng thái phiên của Engine vẫn đang chờ hoàn tất; điểm kiểm tra khôi phục được giữ lại.",
   "SessionsDeleted": "Đã xóa phiên {id}",
   "SessionsNoSelection": "Chưa chọn phiên",
   "SessionsTitleLength": "Tiêu đề phải từ 1–100 ký tự",

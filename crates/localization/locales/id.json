@@ -1633,6 +1633,7 @@
   "SessionsDeleteOpenElsewhere": "Tidak dapat dihapus: sesi ini terbuka di jendela Codewhale lain.",
   "SessionSaveFailed": "Sesi {id} tidak dapat disimpan ({error}). Pekerjaan terbaru mungkin belum tersimpan.",
   "SessionSaveFailedAtExit": "codewhale: penyimpanan terakhir sesi {id} gagal ({error}); pekerjaan terbaru mungkin belum tersimpan.",
+  "SessionSnapshotPending": "Snapshot sesi Engine masih tertunda; checkpoint pemulihan tetap disimpan.",
   "SessionsDeleted": "Sesi {id} dihapus",
   "SessionsNoSelection": "Tidak ada sesi terpilih",
   "SessionsTitleLength": "Judul harus 1–100 karakter",

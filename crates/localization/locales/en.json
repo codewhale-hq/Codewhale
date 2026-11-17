@@ -1652,6 +1652,7 @@
   "SessionsDeleteOpenElsewhere": "Can't delete: this session is open in another Codewhale window.",
   "SessionSaveFailed": "Session {id} could not be saved ({error}). Recent work may not be saved.",
   "SessionSaveFailedAtExit": "codewhale: the latest save of session {id} failed ({error}); recent work may not have been saved.",
+  "SessionSnapshotPending": "The Engine session snapshot is still pending; the recovery checkpoint is retained.",
   "SessionsDeleted": "Deleted {id}",
   "SessionsNoSelection": "No session selected",
   "SessionsTitleLength": "Title must be 1–100 characters",

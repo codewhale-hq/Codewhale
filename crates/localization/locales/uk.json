@@ -1633,6 +1633,7 @@
   "SessionsDeleteOpenElsewhere": "Видалення неможливе: ця сесія відкрита в іншому вікні Codewhale.",
   "SessionSaveFailed": "Не вдалося зберегти сесію {id} ({error}). Останні зміни можуть бути не збережені.",
   "SessionSaveFailedAtExit": "codewhale: останнє збереження сесії {id} не вдалося ({error}); останні зміни могли не зберегтися.",
+  "SessionSnapshotPending": "Знімок сесії Engine ще не готовий; контрольну точку відновлення збережено.",
   "SessionsDeleted": "Сесію {id} видалено",
   "SessionsNoSelection": "Сесію не вибрано",
   "SessionsTitleLength": "Назва має містити 1–100 символів",

@@ -1633,6 +1633,7 @@
   "SessionsDeleteOpenElsewhere": "No es pot eliminar: aquesta sessió està oberta en una altra finestra de Codewhale.",
   "SessionSaveFailed": "No s'ha pogut desar la sessió {id} ({error}). És possible que la feina recent no estigui desada.",
   "SessionSaveFailedAtExit": "codewhale: l'últim desament de la sessió {id} ha fallat ({error}); és possible que la feina recent no s'hagi desat.",
+  "SessionSnapshotPending": "La instantània de la sessió de l'Engine encara està pendent; es conserva el punt de control de recuperació.",
   "SessionsDeleted": "Sessió {id} eliminada",
   "SessionsNoSelection": "Cap sessió seleccionada",
   "SessionsTitleLength": "El títol ha de tenir entre 1 i 100 caràcters",

@@ -522,7 +522,7 @@ pub(crate) fn ensure_runtime_session_id(app: &mut App) -> String {
 }
 
 /// How long session confirmation may wait before the UI reports it pending.
-pub(super) const LAUNCH_SESSION_SYNC_WAIT: Duration = Duration::from_secs(2);
+pub(super) const SESSION_SNAPSHOT_WAIT: Duration = Duration::from_secs(2);
 
 /// Require the exact Engine identity before a startup submit consumes its draft.
 pub(crate) async fn await_engine_session_sync(
@@ -530,14 +530,14 @@ pub(crate) async fn await_engine_session_sync(
     session_id: Option<&str>,
     owner: Option<&codewhale_engine::session_manager::SessionWriteOwner>,
 ) -> Result<()> {
-    let snapshot = tokio::time::timeout(
-        LAUNCH_SESSION_SYNC_WAIT,
-        engine_handle.get_session_snapshot(),
-    )
-    .await
-    .map_err(|_| {
-        anyhow::anyhow!("The Engine session has not been confirmed; the draft is preserved.")
-    })??;
+    let snapshot =
+        tokio::time::timeout(SESSION_SNAPSHOT_WAIT, engine_handle.get_session_snapshot())
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "The Engine session has not been confirmed; the draft is preserved."
+                )
+            })??;
     anyhow::ensure!(
         session_id == Some(snapshot.session_id.as_str())
             && owner
@@ -546,6 +546,29 @@ pub(crate) async fn await_engine_session_sync(
         "The Engine session acknowledgement does not match this UI; the draft is preserved."
     );
     Ok(())
+}
+
+async fn completed_turn_snapshot(
+    app: &App,
+    engine_handle: &EngineHandle,
+    terminal_source: Option<&codewhale_engine::core::ops::SessionSnapshotSource>,
+) -> Result<Option<codewhale_engine::core::ops::SessionSnapshot>> {
+    let snapshot =
+        tokio::time::timeout(SESSION_SNAPSHOT_WAIT, engine_handle.get_session_snapshot())
+            .await
+            .map_err(|_| anyhow::anyhow!(app.tr(MessageId::SessionSnapshotPending)))??;
+    Ok(Some(snapshot).filter(|snapshot| {
+        snapshot.source.as_ref() == terminal_source
+            && app.session_write_owner.as_ref().is_some_and(|owner| {
+                snapshot
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| owner.matches_source(source))
+            })
+            && app.current_session_id.as_deref() == Some(snapshot.session_id.as_str())
+            && snapshot.workspace == app.workspace
+            && snapshot.messages.as_slice() == app.api_messages.as_slice()
+    }))
 }
 
 fn persist_current_session_goal(app: &App) -> Result<(), String> {
@@ -3888,35 +3911,30 @@ pub(crate) async fn run_event_loop(
                         let terminal_snapshot = if terminal_owner_matches
                             && !newer_dispatch_owns_turn_state
                         {
-                            let snapshot = match engine_handle.get_session_snapshot().await {
-                                Ok(snapshot) => Some(snapshot),
+                            match completed_turn_snapshot(
+                                app,
+                                &engine_handle,
+                                terminal_source.as_ref(),
+                            )
+                            .await
+                            {
+                                Ok(snapshot) => snapshot,
                                 Err(error) => {
                                     tracing::warn!(%error, "terminal session snapshot could not be read; checkpoint retained");
                                     snapshot_error = Some(error.to_string());
                                     None
                                 }
-                            };
-                            snapshot.filter(|snapshot| {
-                                snapshot.source.as_ref() == terminal_source.as_ref()
-                                    && app.session_write_owner.as_ref().is_some_and(|owner| {
-                                        snapshot
-                                            .source
-                                            .as_ref()
-                                            .is_some_and(|source| owner.matches_source(source))
-                                    })
-                                    && app.current_session_id.as_deref()
-                                        == Some(snapshot.session_id.as_str())
-                                    && snapshot.workspace == app.workspace
-                                    && snapshot.messages.as_slice() == app.api_messages.as_slice()
-                            })
+                            }
                         } else {
                             None
                         };
                         if terminal_owner_matches && terminal_snapshot.is_none() {
-                            tracing::warn!(
-                                ?terminal_source,
-                                "terminal session source no longer matches; checkpoint retained"
-                            );
+                            if snapshot_error.is_none() {
+                                tracing::warn!(
+                                    ?terminal_source,
+                                    "terminal session source no longer matches; checkpoint retained"
+                                );
+                            }
                             let session_id = app.current_session_id.clone();
                             let error = snapshot_error
                                 .unwrap_or_else(|| std::io::ErrorKind::ResourceBusy.to_string());
@@ -8980,6 +8998,54 @@ mod session_boot_event_tests {
             .expect("translation must run without an admitted usage origin");
         let settled = accounting.settle(Ok(response));
         assert_eq!(settled.translated.expect("translated text"), "Hola");
+    }
+}
+
+#[cfg(test)]
+mod completed_turn_snapshot_tests {
+    use super::{SESSION_SNAPSHOT_WAIT, completed_turn_snapshot};
+    use codewhale_engine::core::engine::mock_engine_handle;
+    use codewhale_engine::core::ops::Op;
+    use codewhale_localization::MessageId;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn completed_turn_snapshot_wait_is_bounded_for_a_busy_engine() {
+        let app = crate::tui::test_support::test_app_with_options(
+            crate::tui::test_support::test_tui_options("."),
+        );
+        for full_mailbox in [false, true] {
+            let mut engine = mock_engine_handle();
+            if full_mailbox {
+                while engine.handle.try_send(Op::ListSubAgents).is_ok() {}
+                assert_eq!(engine.rx_op.capacity(), 0);
+            }
+
+            let error = tokio::time::timeout(
+                SESSION_SNAPSHOT_WAIT + Duration::from_secs(1),
+                completed_turn_snapshot(&app, &engine.handle, None),
+            )
+            .await
+            .expect("completion must not wait for the next turn to finish")
+            .expect_err("an unresponsive Engine must leave completion pending");
+            assert_eq!(error.to_string(), app.tr(MessageId::SessionSnapshotPending));
+
+            if !full_mailbox {
+                let Op::GetSessionSnapshot { tx } =
+                    engine.rx_op.try_recv().expect("snapshot request")
+                else {
+                    panic!("completion must request a session snapshot");
+                };
+                assert!(
+                    tx.lock()
+                        .expect("snapshot sender")
+                        .as_ref()
+                        .unwrap()
+                        .is_closed(),
+                    "a late snapshot must not resume the timed-out completion"
+                );
+            }
+        }
     }
 }
 
