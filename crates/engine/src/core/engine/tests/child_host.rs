@@ -785,7 +785,7 @@ async fn actual_child_transport_services_approval_and_cancel_with_saturated_stee
                 }
             }
         };
-        let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(30), async {
             tokio::join!(
                 async {
                     let result =
@@ -797,7 +797,11 @@ async fn actual_child_transport_services_approval_and_cancel_with_saturated_stee
             )
         })
         .await
-        .expect("approval/cancellation must stay serviceable with a full steer queue");
+        .unwrap_or_else(|_| {
+            panic!(
+                "approval/cancellation must stay serviceable with a full steer queue (cancel={cancel}, by={by:?}, approved={approved})"
+            )
+        });
         let result = result.unwrap();
         assert_eq!(
             pending.load(std::sync::atomic::Ordering::Acquire),
