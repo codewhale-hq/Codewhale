@@ -44,6 +44,7 @@ changelog or release notes, and this contributor record.
 
 **Contributions**
 
+- **[deosiree](https://github.com/deosiree)** — bounded the terminal's wait for the session snapshot at turn end, so a newly started turn no longer freezes the UI ([#7360](https://github.com/codewhale-hq/Codewhale/pull/7360)).
 - **[MannXo](https://github.com/MannXo)** — added Qwen Code to the external agent registry so an installed Qwen Code CLI runs as a session over ACP ([#7293](https://github.com/codewhale-hq/Codewhale/pull/7293)).
 - **[Aboysky](https://github.com/Aboysky)** — added GitHub Copilot CLI to the external agent registry so an installed Copilot CLI runs as a session over ACP ([#7326](https://github.com/codewhale-hq/Codewhale/pull/7326)).
 - **[SamhandsomeLee](https://github.com/SamhandsomeLee)** — drove Responses request, URL and stream behavior from one checked dialect profile table ([#7261](https://github.com/codewhale-hq/Codewhale/pull/7261)).
