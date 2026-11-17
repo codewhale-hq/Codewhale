@@ -6082,17 +6082,16 @@ async fn a_foreground_command_past_its_wait_moves_to_the_background_alive() {
         .expect("bash");
     assert!(result.success, "{}", result.content);
     assert!(result.content.contains("not killed"), "{}", result.content);
-    assert!(result.content.contains("started"), "{}", result.content);
-    let task_id = result.metadata.as_ref().expect("metadata")["task_id"]
-        .as_str()
-        .expect("task_id")
-        .to_string();
+    let metadata = result.metadata.as_ref().expect("metadata");
+    assert_eq!(metadata["status"], "Running");
+    assert_eq!(metadata["backgrounded"], true);
+    let task_id = metadata["task_id"].as_str().expect("task_id").to_string();
     let mut manager = ctx.shell_manager.lock().expect("shell manager lock");
-    assert_eq!(
-        manager.poll_status(&task_id).expect("status"),
-        ShellStatus::Running
-    );
     assert!(manager.processes.get(&task_id).expect("tracked").background);
+    let completed = wait_for_completed_shell(&mut manager, &task_id);
+    assert_eq!(completed.status, ShellStatus::Completed);
+    assert!(completed.stdout.contains("started"), "{completed:?}");
+    assert!(completed.stdout.contains("finished"), "{completed:?}");
 }
 
 #[test]
