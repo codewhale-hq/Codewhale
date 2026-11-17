@@ -13,6 +13,8 @@ unsound = "all"
 # in docs/dependency-maintenance.md. No vulnerability/unsoundness ignore is added.
 ignore = [
     "RUSTSEC-2025-0141",  # bincode 1.3.3: syntect's embedded syntax/theme dumps
+    { id = "RUSTSEC-2026-0543", reason = "chrono 0.4.45 unmaintained notice only, no vulnerability; workspace-wide dependency with no safe upgrade during the 0.10.3 freeze; review by 2027-02-15 and migrate to jiff or time" },
+    { id = "RUSTSEC-2026-0542", reason = "humantime 2.4.0 unmaintained only because it wraps chrono; reached solely via the cucumber 0.23 test-only dependency of codewhale-tui, which requires it; review by 2027-02-15 with the chrono migration" },
 ]
 
 [bans]
