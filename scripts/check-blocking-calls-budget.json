@@ -436,7 +436,7 @@
   "crates/snapshot/src/repo.rs": {
     "path_canonicalize": 4,
     "std_fs": 18,
-    "thread_sleep": 1
+    "thread_sleep": 2
   },
   "crates/telemetry/src/envelope.rs": {
     "std_fs": 2
