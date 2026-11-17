@@ -26889,7 +26889,7 @@ async fn async_completion_wake_monitors_background_shell_after_turn_settlement()
         }
     });
 
-    manager
+    let first_turn = manager
         .start_turn(
             &thread.id,
             StartTurnRequest {
@@ -26899,8 +26899,26 @@ async fn async_completion_wake_monitors_background_shell_after_turn_settlement()
         )
         .await?;
 
-    let turns =
-        wait_for_terminal_turn_count(&manager, &thread.id, 2, Duration::from_secs(5)).await?;
+    let settled_first = wait_for_terminal_turn(&manager, &first_turn.id).await?;
+    assert_eq!(settled_first.status, RuntimeTurnStatus::Completed);
+
+    let wake_deadline = Instant::now() + TURN_SETTLEMENT_DEADLOCK_TIMEOUT;
+    let wake_turn_id = loop {
+        let turns = manager.store.list_turns_for_thread(&thread.id)?;
+        if let Some(wake_turn) = turns.iter().find(|turn| turn.id != first_turn.id) {
+            break wake_turn.id.clone();
+        }
+        if Instant::now() > wake_deadline {
+            anyhow::bail!(
+                "expected async completion wake turn after first turn settlement: {turns:?}"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let settled_second = wait_for_terminal_turn(&manager, &wake_turn_id).await?;
+    assert_eq!(settled_second.status, RuntimeTurnStatus::Completed);
+
+    let turns = manager.store.list_turns_for_thread(&thread.id)?;
     assert_eq!(turns.len(), 2);
     assert_eq!(turns[0].status, RuntimeTurnStatus::Completed);
     assert_eq!(turns[1].status, RuntimeTurnStatus::Completed);
