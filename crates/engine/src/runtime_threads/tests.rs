@@ -26372,7 +26372,7 @@ async fn async_completion_wake_coalesces_rapid_idle_subagent_completions() -> Re
             .await?;
     }
 
-    let op = tokio::time::timeout(Duration::from_secs(2), rx_op.recv())
+    let op = tokio::time::timeout(TURN_SETTLEMENT_DEADLOCK_TIMEOUT, rx_op.recv())
         .await
         .context("expected coalesced wake turn")?;
     let Some(Op::SendMessage(spec)) = op else {
@@ -26422,7 +26422,8 @@ async fn async_completion_wake_coalesces_rapid_idle_subagent_completions() -> Re
         .await?;
 
     let turns =
-        wait_for_terminal_turn_count(&manager, &thread.id, 1, Duration::from_secs(2)).await?;
+        wait_for_terminal_turn_count(&manager, &thread.id, 1, TURN_SETTLEMENT_DEADLOCK_TIMEOUT)
+            .await?;
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].status, RuntimeTurnStatus::Completed);
     let items = manager.store.list_items_for_turn(&turns[0].id)?;
@@ -26652,7 +26653,7 @@ async fn async_completion_wake_waits_for_busy_turn_settlement_and_wakes_once() -
     assert_eq!(settled_first.status, RuntimeTurnStatus::Completed);
 
     let Some(Op::SendMessage(wake_spec)) =
-        tokio::time::timeout(Duration::from_secs(2), rx_op.recv()).await?
+        tokio::time::timeout(TURN_SETTLEMENT_DEADLOCK_TIMEOUT, rx_op.recv()).await?
     else {
         bail!("missing deferred wake operation");
     };
@@ -26700,7 +26701,8 @@ async fn async_completion_wake_waits_for_busy_turn_settlement_and_wakes_once() -
         .await?;
 
     let turns =
-        wait_for_terminal_turn_count(&manager, &thread.id, 2, Duration::from_secs(2)).await?;
+        wait_for_terminal_turn_count(&manager, &thread.id, 2, TURN_SETTLEMENT_DEADLOCK_TIMEOUT)
+            .await?;
     assert_eq!(turns.len(), 2);
     assert_eq!(turns[1].status, RuntimeTurnStatus::Completed);
     let second_items = manager.store.list_items_for_turn(&turns[1].id)?;
