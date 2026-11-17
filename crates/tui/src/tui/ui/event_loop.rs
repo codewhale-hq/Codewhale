@@ -524,6 +524,20 @@ pub(crate) fn ensure_runtime_session_id(app: &mut App) -> String {
 /// How long session confirmation may wait before the UI reports it pending.
 pub(super) const LAUNCH_SESSION_SYNC_WAIT: Duration = Duration::from_secs(2);
 
+const TURN_COMPLETE_SNAPSHOT_WAIT: Duration = LAUNCH_SESSION_SYNC_WAIT;
+
+async fn await_terminal_snapshot_with_timeout<T>(
+    timeout: Duration,
+    snapshot: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    tokio::time::timeout(timeout, snapshot).await.map_err(|_| {
+        anyhow::anyhow!(
+            "Engine session snapshot timed out after {} ms",
+            timeout.as_millis()
+        )
+    })?
+}
+
 /// Require the exact Engine identity before a startup submit consumes its draft.
 pub(crate) async fn await_engine_session_sync(
     engine_handle: &EngineHandle,
@@ -3888,15 +3902,19 @@ pub(crate) async fn run_event_loop(
                         let terminal_snapshot = if terminal_owner_matches
                             && !newer_dispatch_owns_turn_state
                         {
-                            let snapshot = match engine_handle.get_session_snapshot().await {
+                            let snapshot = match await_terminal_snapshot_with_timeout(
+                                TURN_COMPLETE_SNAPSHOT_WAIT,
+                                engine_handle.get_session_snapshot(),
+                            )
+                            .await
+                            {
                                 Ok(snapshot) => Some(snapshot),
                                 Err(error) => {
-                                    tracing::warn!(%error, "terminal session snapshot could not be read; checkpoint retained");
                                     snapshot_error = Some(error.to_string());
                                     None
                                 }
                             };
-                            snapshot.filter(|snapshot| {
+                            let snapshot = snapshot.filter(|snapshot| {
                                 snapshot.source.as_ref() == terminal_source.as_ref()
                                     && app.session_write_owner.as_ref().is_some_and(|owner| {
                                         snapshot
@@ -3908,18 +3926,24 @@ pub(crate) async fn run_event_loop(
                                         == Some(snapshot.session_id.as_str())
                                     && snapshot.workspace == app.workspace
                                     && snapshot.messages.as_slice() == app.api_messages.as_slice()
-                            })
+                            });
+                            if snapshot.is_none() && snapshot_error.is_none() {
+                                snapshot_error = Some(
+                                    "Engine session snapshot no longer matches the active terminal session"
+                                        .to_string(),
+                                );
+                            }
+                            snapshot
                         } else {
                             None
                         };
                         if terminal_owner_matches && terminal_snapshot.is_none() {
-                            tracing::warn!(
-                                ?terminal_source,
-                                "terminal session source no longer matches; checkpoint retained"
-                            );
                             let session_id = app.current_session_id.clone();
-                            let error = snapshot_error
-                                .unwrap_or_else(|| std::io::ErrorKind::ResourceBusy.to_string());
+                            let error = snapshot_error.unwrap_or_else(|| {
+                                "Engine session snapshot was unavailable; checkpoint retained"
+                                    .to_string()
+                            });
+                            tracing::warn!(%error, "terminal session save skipped; checkpoint retained");
                             surface_session_save_failure(app, session_id.as_deref(), &error);
                         }
                         if terminal_snapshot.is_some()
@@ -9062,6 +9086,38 @@ mod launch_session_sync_tests {
         assert!(caller_view(workspace.path(), Some("startup-session"), None).is_none());
 
         run.abort();
+    }
+}
+
+#[cfg(test)]
+mod terminal_snapshot_wait_tests {
+    use super::await_terminal_snapshot_with_timeout;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn pending_terminal_snapshot_times_out() {
+        let error = await_terminal_snapshot_with_timeout(
+            Duration::ZERO,
+            std::future::pending::<anyhow::Result<()>>(),
+        )
+        .await
+        .expect_err("a pending snapshot must not hold the UI indefinitely");
+
+        assert_eq!(
+            error.to_string(),
+            "Engine session snapshot timed out after 0 ms"
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_terminal_snapshot_is_returned() {
+        let snapshot = await_terminal_snapshot_with_timeout(Duration::from_secs(1), async {
+            Ok::<_, anyhow::Error>("snapshot")
+        })
+        .await
+        .expect("a ready snapshot must pass through");
+
+        assert_eq!(snapshot, "snapshot");
     }
 }
 
