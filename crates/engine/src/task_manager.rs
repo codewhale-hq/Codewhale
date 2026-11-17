@@ -965,9 +965,16 @@ pub enum TaskExecutionEvent {
     /// engine executor emits the pair only where `human_waits_answerable`
     /// armed the window; a custom executor that emits it is self-declaring
     /// its waits answerable, and the supervisor honors the pair regardless
-    /// of that flag.
-    HumanWaitStarted,
-    HumanWaitEnded,
+    /// of that flag. `at` is when the prompt was recorded — the journal
+    /// timestamp for the built-in executor — so the supervisor can open
+    /// and close the window at the recorded instant rather than at
+    /// channel-consumption time.
+    HumanWaitStarted {
+        at: DateTime<Utc>,
+    },
+    HumanWaitEnded {
+        at: DateTime<Utc>,
+    },
     ToolCompleted {
         id: String,
         name: String,
@@ -1213,7 +1220,9 @@ async fn drive_engine_turn(
     answerable_waits: bool,
 ) -> TaskExecutionResult {
     let mut subscription = runtime_threads.subscribe_events();
-    let mut guard = ExecutionGuard::new(limits, Instant::now());
+    let guard_started_at = Instant::now();
+    let guard_started_wall = Utc::now();
+    let mut guard = ExecutionGuard::new(limits, guard_started_at);
     let mut final_text = RuntimeTaskOutput::default();
     let mut cursor = 0u64;
     let mut terminal_status: Option<RuntimeTurnStatus> = None;
@@ -1331,8 +1340,19 @@ async fn drive_engine_turn(
                 // open; the guard's fail-safe cap bounds the pathological
                 // case regardless.
                 "approval.required" | "user_input.required" if answerable_waits => {
-                    guard.begin_human_wait(Instant::now());
-                    emit_task_event(&events, TaskExecutionEvent::HumanWaitStarted).await;
+                    guard.begin_human_wait(journal_instant(
+                        guard_started_at,
+                        guard_started_wall,
+                        event.timestamp,
+                        Instant::now(),
+                    ));
+                    emit_task_event(
+                        &events,
+                        TaskExecutionEvent::HumanWaitStarted {
+                            at: event.timestamp,
+                        },
+                    )
+                    .await;
                 }
                 "approval.decided"
                 | "approval.timeout"
@@ -1340,8 +1360,19 @@ async fn drive_engine_turn(
                 | "user_input.canceled"
                     if answerable_waits =>
                 {
-                    guard.end_human_wait(Instant::now());
-                    emit_task_event(&events, TaskExecutionEvent::HumanWaitEnded).await;
+                    guard.end_human_wait(journal_instant(
+                        guard_started_at,
+                        guard_started_wall,
+                        event.timestamp,
+                        Instant::now(),
+                    ));
+                    emit_task_event(
+                        &events,
+                        TaskExecutionEvent::HumanWaitEnded {
+                            at: event.timestamp,
+                        },
+                    )
+                    .await;
                 }
                 _ => {}
             }
@@ -1446,6 +1477,19 @@ async fn drive_engine_turn(
         }
     };
     guard.preserve_timeout_reason(result)
+}
+
+fn journal_instant(
+    anchor: Instant,
+    anchor_wall: DateTime<Utc>,
+    timestamp: DateTime<Utc>,
+    now: Instant,
+) -> Instant {
+    let mapped = match timestamp.signed_duration_since(anchor_wall).to_std() {
+        Ok(offset) => anchor.checked_add(offset).unwrap_or(now),
+        Err(_) => anchor,
+    };
+    mapped.min(now)
 }
 
 async fn emit_task_event(events: &mpsc::Sender<TaskExecutionEvent>, event: TaskExecutionEvent) {
@@ -3039,7 +3083,9 @@ impl TaskManager {
             .execute(request.clone(), event_tx, cancel.clone());
         tokio::pin!(exec_fut);
 
-        let mut guard = ExecutionGuard::new(self.cfg.execution_limits, Instant::now());
+        let guard_started_at = Instant::now();
+        let guard_started_wall = Utc::now();
+        let mut guard = ExecutionGuard::new(self.cfg.execution_limits, guard_started_at);
         let mut dirty = false;
         let mut accumulated_result_text = String::new();
         let persist_debounce = self.cfg.execution_limits.persist_debounce;
@@ -3072,6 +3118,8 @@ impl TaskManager {
                             &task_id,
                             event.clone(),
                             &mut guard,
+                            guard_started_at,
+                            guard_started_wall,
                             &mut accumulated_result_text,
                             &mut dirty,
                         )
@@ -3111,6 +3159,8 @@ impl TaskManager {
                             &task_id,
                             event.clone(),
                             &mut guard,
+                            guard_started_at,
+                            guard_started_wall,
                             &mut accumulated_result_text,
                             &mut dirty,
                         )
@@ -3169,8 +3219,8 @@ impl TaskManager {
                         maybe_event = event_rx.recv(), if blocked_event.is_none() => {
                             if let Some(event) = maybe_event
                                 && self.process_execution_event(
-                                    &task_id, event.clone(), &mut guard,
-                                    &mut accumulated_result_text, &mut dirty,
+                                    &task_id, event.clone(), &mut guard, guard_started_at,
+                                    guard_started_wall, &mut accumulated_result_text, &mut dirty,
                                 ).await.is_err() {
                                 blocked_event = Some(event);
                                 cancel.cancel();
@@ -3200,6 +3250,8 @@ impl TaskManager {
                     &task_id,
                     event.clone(),
                     &mut guard,
+                    guard_started_at,
+                    guard_started_wall,
                     &mut accumulated_result_text,
                     &mut dirty,
                 )
@@ -3238,6 +3290,8 @@ impl TaskManager {
         task_id: &str,
         event: TaskExecutionEvent,
         guard: &mut ExecutionGuard,
+        guard_started_at: Instant,
+        guard_started_wall: DateTime<Utc>,
         accumulated_result_text: &mut String,
         dirty: &mut bool,
     ) -> Result<()> {
@@ -3252,12 +3306,22 @@ impl TaskManager {
         // with the turn loop's own guard. In-memory only, like the
         // heartbeat: it never touches the record or its persistence.
         match event {
-            TaskExecutionEvent::HumanWaitStarted => {
-                guard.begin_human_wait(Instant::now());
+            TaskExecutionEvent::HumanWaitStarted { at } => {
+                guard.begin_human_wait(journal_instant(
+                    guard_started_at,
+                    guard_started_wall,
+                    at,
+                    Instant::now(),
+                ));
                 return Ok(());
             }
-            TaskExecutionEvent::HumanWaitEnded => {
-                guard.end_human_wait(Instant::now());
+            TaskExecutionEvent::HumanWaitEnded { at } => {
+                guard.end_human_wait(journal_instant(
+                    guard_started_at,
+                    guard_started_wall,
+                    at,
+                    Instant::now(),
+                ));
                 return Ok(());
             }
             _ => {}
@@ -3407,7 +3471,8 @@ impl TaskManager {
             // timeline entry behind every poll tick of a silent build.
             TaskExecutionEvent::ToolHeartbeat => {}
             // Supervisor-side wall-clock signal only (see the variant doc).
-            TaskExecutionEvent::HumanWaitStarted | TaskExecutionEvent::HumanWaitEnded => {}
+            TaskExecutionEvent::HumanWaitStarted { .. }
+            | TaskExecutionEvent::HumanWaitEnded { .. } => {}
             TaskExecutionEvent::ToolCompleted {
                 id,
                 name,
@@ -4115,8 +4180,8 @@ fn execution_event_persist_urgent(event: &TaskExecutionEvent) -> bool {
             | TaskExecutionEvent::ToolHeartbeat
             // Supervisor-side wall-clock signal for human waits (see the
             // variant doc): carries no record state.
-            | TaskExecutionEvent::HumanWaitStarted
-            | TaskExecutionEvent::HumanWaitEnded
+            | TaskExecutionEvent::HumanWaitStarted { .. }
+            | TaskExecutionEvent::HumanWaitEnded { .. }
     )
 }
 
@@ -7675,6 +7740,77 @@ mod tests {
     }
 
     #[test]
+    fn human_wait_recorded_before_the_wall_deadline_survives_late_consumption() {
+        let start = Instant::now();
+        let start_wall = Utc::now();
+        let limits = TaskExecutionLimits {
+            wall_time: Duration::from_millis(400),
+            idle_progress: Duration::from_secs(30),
+            cancel_grace: Duration::from_millis(50),
+            persist_debounce: Duration::from_millis(10),
+            human_wait_cap: Duration::from_secs(30),
+        };
+        let consumed_at = start + Duration::from_millis(500);
+        assert_eq!(
+            journal_instant(
+                start,
+                start_wall,
+                start_wall + chrono::Duration::milliseconds(100),
+                consumed_at,
+            ),
+            start + Duration::from_millis(100)
+        );
+        assert_eq!(
+            journal_instant(
+                start,
+                start_wall,
+                start_wall - chrono::Duration::seconds(5),
+                consumed_at,
+            ),
+            start
+        );
+        assert_eq!(
+            journal_instant(
+                start,
+                start_wall,
+                start_wall + chrono::Duration::seconds(5),
+                consumed_at,
+            ),
+            consumed_at
+        );
+
+        let mut guard = ExecutionGuard::new(limits, start);
+        guard.begin_human_wait(journal_instant(
+            start,
+            start_wall,
+            start_wall + chrono::Duration::milliseconds(100),
+            consumed_at,
+        ));
+        match guard.evaluate(consumed_at, false, false) {
+            GuardAction::Run { .. } => {}
+            other => panic!(
+                "a prompt recorded before the wall deadline must survive late consumption, got {other:?}"
+            ),
+        }
+
+        let mut late = ExecutionGuard::new(limits, start);
+        late.begin_human_wait(journal_instant(
+            start,
+            start_wall,
+            start_wall + chrono::Duration::milliseconds(450),
+            consumed_at,
+        ));
+        match late.evaluate(consumed_at, false, false) {
+            GuardAction::Interrupt { reason } => {
+                assert_eq!(reason, TaskTerminalReason::WallTimeout);
+            }
+            other => panic!(
+                "a prompt recorded after the wall deadline must still time out, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
     fn from_runtime_defaults_to_unanswerable_human_waits() {
         // The safe default: the TUI builds its private task runtime through
         // `from_runtime` and must never arm the human-wait window — no host
@@ -7702,6 +7838,26 @@ mod tests {
             .create_thread(CreateThreadRequest::default())
             .await?;
         let (tx, mut rx) = mpsc::channel(64);
+        runtime
+            .emit_event_for_test(
+                &thread.id,
+                Some("turn_human_wait"),
+                "item.started",
+                json!({
+                    "item": { "id": "item_human_wait", "status": "in_progress" },
+                    "tool": { "id": "call_1", "name": "request_user_input", "input": {} }
+                }),
+            )
+            .await?;
+        runtime
+            .emit_event_for_test(
+                &thread.id,
+                Some("turn_human_wait"),
+                "user_input.required",
+                json!({ "id": "ui_1", "request": {} }),
+            )
+            .await?;
+
         let runtime_for_drive = Arc::clone(&runtime);
         let thread_id = thread.id.clone();
         let drive = tokio::spawn(async move {
@@ -7723,45 +7879,31 @@ mod tests {
             .await
         });
 
-        runtime
-            .emit_event_for_test(
-                &thread.id,
-                Some("turn_human_wait"),
-                "item.started",
-                json!({
-                    "item": { "id": "item_human_wait", "status": "in_progress" },
-                    "tool": { "id": "call_1", "name": "request_user_input", "input": {} }
-                }),
-            )
-            .await?;
-        runtime
-            .emit_event_for_test(
-                &thread.id,
-                Some("turn_human_wait"),
-                "user_input.required",
-                json!({ "id": "ui_1", "request": {} }),
-            )
-            .await?;
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+                .await
+                .expect("the human-wait window must be published on the task event channel")
+                .expect("the task event channel closed before the window was published");
+            assert!(
+                !matches!(&event, TaskExecutionEvent::Status { message }
+                    if message.contains("wall-time")),
+                "wall-time interrupt fired while a human decision was pending"
+            );
+            if matches!(event, TaskExecutionEvent::HumanWaitStarted { .. }) {
+                break;
+            }
+        }
 
         // Far past the wall budget the decision is still pending: no
-        // wall-time interrupt may fire, and the window must be published
-        // for the worker supervisor's guard.
+        // wall-time interrupt may fire while the window is open.
         tokio::time::sleep(Duration::from_millis(900)).await;
-        let mut saw_window_signal = false;
         while let Ok(event) = rx.try_recv() {
-            if matches!(event, TaskExecutionEvent::HumanWaitStarted) {
-                saw_window_signal = true;
-            }
             assert!(
                 !matches!(event, TaskExecutionEvent::Status { message }
                     if message.contains("wall-time")),
                 "wall-time interrupt fired while a human decision was pending"
             );
         }
-        assert!(
-            saw_window_signal,
-            "the human-wait window must be published on the task event channel"
-        );
 
         // The answer arrives past the budget: the window closes, the tool
         // completes, and the turn completes with no wall-time anywhere.
@@ -7862,9 +8004,13 @@ mod tests {
             events: mpsc::Sender<TaskExecutionEvent>,
             _cancel: CancellationToken,
         ) -> TaskExecutionResult {
-            let _ = events.send(TaskExecutionEvent::HumanWaitStarted).await;
+            let _ = events
+                .send(TaskExecutionEvent::HumanWaitStarted { at: Utc::now() })
+                .await;
             tokio::time::sleep(self.delay).await;
-            let _ = events.send(TaskExecutionEvent::HumanWaitEnded).await;
+            let _ = events
+                .send(TaskExecutionEvent::HumanWaitEnded { at: Utc::now() })
+                .await;
             TaskExecutionResult {
                 status: TaskStatus::Completed,
                 result_text: None,
@@ -7954,7 +8100,7 @@ mod tests {
         assert_eq!(result.terminal_reason, TaskTerminalReason::WallTimeout);
         let mut saw_window_signal = false;
         while let Ok(event) = rx.try_recv() {
-            if matches!(event, TaskExecutionEvent::HumanWaitStarted) {
+            if matches!(event, TaskExecutionEvent::HumanWaitStarted { .. }) {
                 saw_window_signal = true;
             }
         }
