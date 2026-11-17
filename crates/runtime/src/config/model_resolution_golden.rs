@@ -49,19 +49,6 @@ const IDENTITY_COLUMNS: [(&str, usize); 7] = [
     ("route_wire", 10),
 ];
 
-const DEEPSEEK_HOSTING_AGGREGATORS: [ProviderKind; 10] = [
-    ProviderKind::NvidiaNim,
-    ProviderKind::Novita,
-    ProviderKind::Fireworks,
-    ProviderKind::Siliconflow,
-    ProviderKind::SiliconflowCN,
-    ProviderKind::Sglang,
-    ProviderKind::Vllm,
-    ProviderKind::Deepinfra,
-    ProviderKind::WanjieArk,
-    ProviderKind::Volcengine,
-];
-
 const PROVIDER_ENV_SUFFIXES: [&str; 8] = [
     "_MODEL",
     "_BASE_URL",
@@ -139,79 +126,18 @@ fn targets() -> Vec<Target> {
         .collect()
 }
 
-fn alias_group_applies(group: &str, kind: ProviderKind) -> bool {
-    match group {
-        "canonical_model_name"
-        | "canonical_direct_deepseek_model_id"
-        | "legacy_deepseek_alias_reasoning_effort" => {
-            matches!(
-                kind,
-                ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
-            )
-        }
-        "canonical_openrouter_recent_model_id" => kind == ProviderKind::Openrouter,
-        "canonical_xiaomi_mimo_model_id" => kind == ProviderKind::XiaomiMimo,
-        "canonical_arcee_model_id" => kind == ProviderKind::Arcee,
-        "canonical_moonshot_model_id" => kind == ProviderKind::Moonshot,
-        "canonical_zai_model_id" => kind == ProviderKind::Zai,
-        "canonical_minimax_model_id" => {
-            matches!(kind, ProviderKind::Minimax | ProviderKind::MinimaxAnthropic)
-        }
-        other => panic!("alias group {other} has no provider mapping in this golden"),
-    }
-}
-
-fn alias_constant_values() -> BTreeMap<String, String> {
+fn provider_model_rules(provider_id: &str) -> Option<serde_json::Value> {
     let descriptors: serde_json::Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../config/assets/provider_descriptors.json"
     )))
     .expect("provider_descriptors.json parses");
-    let mut values = BTreeMap::new();
-    for (name, value) in descriptors["compatibility_constants"]
-        .as_object()
-        .expect("compatibility constants")
-    {
-        values.insert(name.clone(), value.as_str().expect("constant").to_string());
-    }
-    let providers = descriptors["providers"].as_array().expect("provider rows");
-    for (name, reference) in descriptors["constant_refs"]
-        .as_object()
-        .expect("constant refs")
-    {
-        let provider = providers
-            .iter()
-            .find(|row| row["id"] == reference["provider"])
-            .expect("constant provider");
-        let field = reference["field"].as_str().expect("constant field");
-        let value = if field == "credential_url" {
-            &provider["credential_help"][field]
-        } else {
-            &provider[field]
-        };
-        values.insert(
-            name.clone(),
-            value.as_str().expect("constant value").to_string(),
-        );
-    }
-    for (name, value) in &bundled_reviewed().constants {
-        values.insert(name.clone(), value.clone());
-    }
-    values
-}
-
-fn hard_coded_route_aliases(kind: ProviderKind) -> &'static [(&'static str, &'static str)] {
-    match kind {
-        ProviderKind::Together => &[
-            ("inkling", "thinkingmachines/inkling"),
-            ("together-inkling", "thinkingmachines/inkling"),
-        ],
-        ProviderKind::Openrouter => &[
-            ("qwen3.7-plus", "qwen/qwen3.7-plus"),
-            ("qwen-3.7-plus", "qwen/qwen3.7-plus"),
-        ],
-        _ => &[],
-    }
+    descriptors["providers"]
+        .as_array()
+        .expect("provider rows")
+        .iter()
+        .find(|row| row["id"] == provider_id)
+        .map(|row| row["models"].clone())
 }
 
 fn offering_ids_by_provider() -> BTreeMap<String, BTreeSet<String>> {
@@ -229,9 +155,31 @@ fn offering_ids_by_provider() -> BTreeMap<String, BTreeSet<String>> {
     ids
 }
 
+fn committed_inputs() -> BTreeMap<String, BTreeSet<String>> {
+    let mut inputs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let text = fs::read_to_string(GOLDEN_PATH).unwrap_or_default();
+    for line in text.lines().skip(1) {
+        let mut cells = line.split('\t');
+        let (Some(provider), Some(input)) = (cells.next(), cells.next()) else {
+            continue;
+        };
+        let input = if input.starts_with('"') {
+            serde_json::from_str::<String>(input).expect("quoted golden input")
+        } else {
+            input.to_string()
+        };
+        inputs
+            .entry(provider.to_string())
+            .or_default()
+            .insert(input);
+    }
+    inputs
+}
+
 fn inputs_for(
     target: &Target,
     offerings: &BTreeMap<String, BTreeSet<String>>,
+    committed: &BTreeMap<String, BTreeSet<String>>,
 ) -> BTreeMap<String, BTreeSet<&'static str>> {
     let mut inputs: BTreeMap<String, BTreeSet<&'static str>> = BTreeMap::new();
     let mut add = |input: &str, kind: &'static str| {
@@ -246,41 +194,15 @@ fn inputs_for(
         add(id, "offering");
     }
 
+    if is_builtin && let Some(rules) = provider_model_rules(&target.catalog_provider_id) {
+        for table in ["aliases", "wire_slugs"] {
+            for (key, value) in rules[table].as_object().expect("models table") {
+                add(key, "alias-key");
+                add(value.as_str().expect("models target"), "alias-target");
+            }
+        }
+    }
     if is_builtin {
-        let constants = alias_constant_values();
-        let resolve = |value: &str| match value.strip_prefix('$') {
-            Some(name) => constants
-                .get(name)
-                .unwrap_or_else(|| panic!("alias constant {name} has no value"))
-                .clone(),
-            None => value.to_string(),
-        };
-        for (group, table) in &reviewed.compatibility_aliases {
-            if alias_group_applies(group, target.kind) {
-                for (key, value) in table {
-                    add(&resolve(key), "alias-key");
-                    if group != "legacy_deepseek_alias_reasoning_effort" {
-                        add(&resolve(value), "alias-target");
-                    }
-                }
-            }
-        }
-        if target.kind == ProviderKind::OpencodeGo {
-            for (key, value) in &reviewed.go_aliases {
-                add(key, "alias-key");
-                add(value, "alias-target");
-            }
-        }
-        if matches!(
-            target.kind,
-            ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
-        ) || DEEPSEEK_HOSTING_AGGREGATORS.contains(&target.kind)
-        {
-            for (key, value) in &reviewed.official_deepseek_aliases {
-                add(key, "alias-key");
-                add(value, "alias-target");
-            }
-        }
         for selection in reviewed
             .selections
             .iter()
@@ -290,10 +212,6 @@ fn inputs_for(
             for alias in &selection.aliases {
                 add(alias, "alias-key");
             }
-        }
-        for (key, value) in hard_coded_route_aliases(target.kind) {
-            add(key, "alias-key");
-            add(value, "alias-target");
         }
     }
 
@@ -321,6 +239,11 @@ fn inputs_for(
         ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
     ) {
         add("deepseek-v4-pro", "foreign-deepseek");
+    }
+    for input in committed.get(&target.label).into_iter().flatten() {
+        inputs
+            .entry(input.clone())
+            .or_insert_with(|| BTreeSet::from(["carried"]));
     }
     inputs
 }
@@ -406,13 +329,14 @@ fn render_row(cells: &[String]) -> String {
 
 fn golden_table(config_path: &Path) -> String {
     let offerings = offering_ids_by_provider();
+    let committed = committed_inputs();
     let mut targets = targets();
     targets.sort_by(|a, b| a.label.cmp(&b.label));
 
     let mut out = COLUMNS.join("\t");
     out.push('\n');
     for target in &targets {
-        for (input, kinds) in inputs_for(target, &offerings) {
+        for (input, kinds) in inputs_for(target, &offerings, &committed) {
             let mut cells: Vec<String> = Vec::with_capacity(COLUMNS.len());
             cells.push(target.label.clone());
             cells.push(input.clone());

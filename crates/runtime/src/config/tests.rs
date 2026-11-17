@@ -5444,7 +5444,7 @@ fn normalize_model_scenario() {
     {
         assert_eq!(
             normalize_model_for_provider(ProviderKind::Deepseek, "DeepSeek-V4-Pro").as_deref(),
-            Some("DeepSeek-V4-Pro")
+            Some("deepseek-v4-pro")
         );
         assert_eq!(
             normalize_model_for_provider(ProviderKind::NvidiaNim, "DeepSeek-V4-Pro").as_deref(),
@@ -7307,7 +7307,7 @@ fn xiaomi_mimo_env_token_plan_mode_uses_token_plan_key_and_endpoint() -> Result<
         config.active_route_base_url(),
         XIAOMI_MIMO_TOKEN_PLAN_CN_BASE_URL
     );
-    assert_eq!(config.default_model(), "voiceclone");
+    assert_eq!(config.default_model(), "mimo-v2.5-tts-voiceclone");
     Ok(())
 }
 

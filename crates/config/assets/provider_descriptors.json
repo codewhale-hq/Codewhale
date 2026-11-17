@@ -47,7 +47,36 @@
         "deepseek_official"
       ],
       "table_field": "deepseek",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "strict",
+        "accept": [
+          "deepseek*",
+          "*/deepseek*"
+        ],
+        "strip_prefixes": [],
+        "aliases": {
+          "deepseek-ai/deepseek-flash": "deepseek-flash",
+          "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek-ai/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek-chat": "deepseek-flash",
+          "deepseek-reasoner": "deepseek-flash",
+          "deepseek-v4flash": "deepseek-flash",
+          "deepseek-v4flashvisionexp": "deepseek-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek/deepseek-flash": "deepseek-flash",
+          "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro",
+          "flash": "deepseek-flash",
+          "flash-vision": "deepseek-flash",
+          "pro": "deepseek-v4-pro"
+        },
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "DeepseekAnthropic",
@@ -92,7 +121,36 @@
         "deepseek_anthropic",
         "deepseek-claude",
         "deepseek_claude"
-      ]
+      ],
+      "models": {
+        "ids": "strict",
+        "accept": [
+          "deepseek*",
+          "*/deepseek*"
+        ],
+        "strip_prefixes": [],
+        "aliases": {
+          "deepseek-ai/deepseek-flash": "deepseek-flash",
+          "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek-ai/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek-chat": "deepseek-flash",
+          "deepseek-reasoner": "deepseek-flash",
+          "deepseek-v4flash": "deepseek-flash",
+          "deepseek-v4flashvisionexp": "deepseek-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek/deepseek-flash": "deepseek-flash",
+          "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro",
+          "flash": "deepseek-flash",
+          "flash-vision": "deepseek-flash",
+          "pro": "deepseek-v4-pro"
+        },
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "NvidiaNim",
@@ -131,7 +189,31 @@
       "catalog_source_id": "nvidia-nim",
       "subagent_aliases": [],
       "table_field": "nvidia_nim",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "deepseek-ai/deepseek-flash": "deepseek-flash",
+          "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek-ai/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek-v4flash": "deepseek-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek/deepseek-flash": "deepseek-flash",
+          "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+        },
+        "wire_slugs": {
+          "deepseek-flash": "deepseek-ai/deepseek-v4-flash",
+          "deepseek-v4-flash": "deepseek-ai/deepseek-v4-flash",
+          "deepseek-v4-pro": "deepseek-ai/deepseek-v4-pro"
+        }
+      }
     },
     {
       "kind": "Openai",
@@ -167,7 +249,14 @@
       "catalog_source_id": "openai",
       "subagent_aliases": [],
       "table_field": "openai",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Atlascloud",
@@ -205,7 +294,14 @@
       "catalog_source_id": "atlascloud",
       "subagent_aliases": [],
       "table_field": "atlascloud",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "WanjieArk",
@@ -250,7 +346,27 @@
       "catalog_source_id": "wanjie-ark",
       "subagent_aliases": [],
       "table_field": "wanjie_ark",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "deepseek-ai/deepseek-flash": "deepseek-flash",
+          "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek-ai/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek-v4flash": "deepseek-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek/deepseek-flash": "deepseek-flash",
+          "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+        },
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Volcengine",
@@ -292,7 +408,27 @@
       "catalog_source_id": "volcengine",
       "subagent_aliases": [],
       "table_field": "volcengine",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "deepseek-ai/deepseek-flash": "deepseek-flash",
+          "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek-ai/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek-v4flash": "deepseek-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek/deepseek-flash": "deepseek-flash",
+          "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+        },
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Openrouter",
@@ -331,7 +467,137 @@
         "open_router"
       ],
       "table_field": "openrouter",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "arcee-ai/trinity-large-thinking": "arcee-ai/trinity-large-thinking",
+          "arcee-trinity": "arcee-ai/trinity-large-thinking",
+          "arcee-trinity-large-thinking": "arcee-ai/trinity-large-thinking",
+          "deepseek-v4flash": "deepseek-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "gemma-4-26b-a4b": "google/gemma-4-26b-a4b-it",
+          "gemma-4-26b-a4b-it": "google/gemma-4-26b-a4b-it",
+          "gemma-4-31b": "google/gemma-4-31b-it",
+          "gemma-4-31b-it": "google/gemma-4-31b-it",
+          "glm-5-1": "z-ai/glm-5.1",
+          "glm-5-2": "z-ai/glm-5.2",
+          "glm-5-3": "z-ai/glm-5.3",
+          "glm-5-3-flash": "z-ai/glm-5.3-flash",
+          "glm-5-turbo": "z-ai/glm-5-turbo",
+          "glm-5.1": "z-ai/glm-5.1",
+          "glm-5.2": "z-ai/glm-5.2",
+          "glm-5.3": "z-ai/glm-5.3",
+          "glm-5.3-flash": "z-ai/glm-5.3-flash",
+          "glm-5turbo": "z-ai/glm-5-turbo",
+          "google/gemma-4-26b-a4b-it": "google/gemma-4-26b-a4b-it",
+          "google/gemma-4-31b-it": "google/gemma-4-31b-it",
+          "hunyuan": "tencent/hy3-preview",
+          "hunyuan-hy3": "tencent/hy3-preview",
+          "hunyuan-hy4": "tencent/hy4",
+          "hy3": "tencent/hy3-preview",
+          "hy3-preview": "tencent/hy3-preview",
+          "hy4": "tencent/hy4",
+          "kimi": "moonshotai/kimi-k2.7-code",
+          "kimi-code": "moonshotai/kimi-k2.7-code",
+          "kimi-k2": "moonshotai/kimi-k2.7-code",
+          "kimi-k2-6": "moonshotai/kimi-k2.6",
+          "kimi-k2-7": "moonshotai/kimi-k2.7-code",
+          "kimi-k2-7-code": "moonshotai/kimi-k2.7-code",
+          "kimi-k2.6": "moonshotai/kimi-k2.6",
+          "kimi-k2.7": "moonshotai/kimi-k2.7-code",
+          "kimi-k2.7-code": "moonshotai/kimi-k2.7-code",
+          "mimo-v2-5": "xiaomi/mimo-v2.5",
+          "mimo-v2-5-pro": "xiaomi/mimo-v2.5-pro",
+          "mimo-v2.5": "xiaomi/mimo-v2.5",
+          "mimo-v2.5-pro": "xiaomi/mimo-v2.5-pro",
+          "minimax-2-7": "minimax/minimax-m2.7",
+          "minimax-2.7": "minimax/minimax-m2.7",
+          "minimax-m-2-7": "minimax/minimax-m2.7",
+          "minimax-m-2.7": "minimax/minimax-m2.7",
+          "minimax-m-3": "minimax/minimax-m3",
+          "minimax-m2-7": "minimax/minimax-m2.7",
+          "minimax-m2.7": "minimax/minimax-m2.7",
+          "minimax-m3": "minimax/minimax-m3",
+          "minimax/minimax-m2.7": "minimax/minimax-m2.7",
+          "minimax/minimax-m3": "minimax/minimax-m3",
+          "moonshot-kimi-k2.6": "moonshotai/kimi-k2.6",
+          "moonshot-kimi-k2.7-code": "moonshotai/kimi-k2.7-code",
+          "moonshotai/kimi-k2.6": "moonshotai/kimi-k2.6",
+          "moonshotai/kimi-k2.7-code": "moonshotai/kimi-k2.7-code",
+          "nemotron-3-nano-omni": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+          "nemotron-3-nano-omni-reasoning": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+          "nemotron-3-ultra": "nvidia/nemotron-3-ultra-550b-a55b",
+          "nemotron-3-ultra-550b-a55b": "nvidia/nemotron-3-ultra-550b-a55b",
+          "nvidia-nemotron-3-ultra": "nvidia/nemotron-3-ultra-550b-a55b",
+          "nvidia-nemotron-3-ultra-550b-a55b": "nvidia/nemotron-3-ultra-550b-a55b",
+          "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+          "nvidia/nemotron-3-ultra": "nvidia/nemotron-3-ultra-550b-a55b",
+          "nvidia/nemotron-3-ultra-550b-a55b": "nvidia/nemotron-3-ultra-550b-a55b",
+          "openrouter-kimi-k2.7-code": "moonshotai/kimi-k2.7-code",
+          "qwen-3.6-27b": "qwen/qwen3.6-27b",
+          "qwen-3.6-35b-a3b": "qwen/qwen3.6-35b-a3b",
+          "qwen-3.6-flash": "qwen/qwen3.6-flash",
+          "qwen-3.6-max-preview": "qwen/qwen3.6-max-preview",
+          "qwen-3.6-plus": "qwen/qwen3.6-plus",
+          "qwen-3.7-max": "qwen/qwen3.7-max",
+          "qwen-3.7-plus": "qwen/qwen3.7-plus",
+          "qwen-3.8-flash": "qwen/qwen3.8-flash",
+          "qwen-max-preview": "qwen/qwen3.6-max-preview",
+          "qwen/qwen3.6-27b": "qwen/qwen3.6-27b",
+          "qwen/qwen3.6-35b-a3b": "qwen/qwen3.6-35b-a3b",
+          "qwen/qwen3.6-flash": "qwen/qwen3.6-flash",
+          "qwen/qwen3.6-max-preview": "qwen/qwen3.6-max-preview",
+          "qwen/qwen3.6-plus": "qwen/qwen3.6-plus",
+          "qwen/qwen3.7-max": "qwen/qwen3.7-max",
+          "qwen/qwen3.7-plus": "qwen/qwen3.7-plus",
+          "qwen/qwen3.8-flash": "qwen/qwen3.8-flash",
+          "qwen3-6-27b": "qwen/qwen3.6-27b",
+          "qwen3-6-35b-a3b": "qwen/qwen3.6-35b-a3b",
+          "qwen3.6-27b": "qwen/qwen3.6-27b",
+          "qwen3.6-35b-a3b": "qwen/qwen3.6-35b-a3b",
+          "qwen3.6-flash": "qwen/qwen3.6-flash",
+          "qwen3.6-max-preview": "qwen/qwen3.6-max-preview",
+          "qwen3.6-plus": "qwen/qwen3.6-plus",
+          "qwen3.7-max": "qwen/qwen3.7-max",
+          "qwen3.7-plus": "qwen/qwen3.7-plus",
+          "qwen3.8-flash": "qwen/qwen3.8-flash",
+          "tencent-hunyuan": "tencent/hy3-preview",
+          "tencent-hy3-preview": "tencent/hy3-preview",
+          "tencent-hy4": "tencent/hy4",
+          "tencent/hy3-preview": "tencent/hy3-preview",
+          "tencent/hy4": "tencent/hy4",
+          "trinity": "arcee-ai/trinity-large-thinking",
+          "trinity-large-thinking": "arcee-ai/trinity-large-thinking",
+          "xiaomi-mimo-v2-5": "xiaomi/mimo-v2.5",
+          "xiaomi-mimo-v2-5-pro": "xiaomi/mimo-v2.5-pro",
+          "xiaomi-mimo-v2.5": "xiaomi/mimo-v2.5",
+          "xiaomi-mimo-v2.5-pro": "xiaomi/mimo-v2.5-pro",
+          "xiaomi/mimo-v2.5": "xiaomi/mimo-v2.5",
+          "xiaomi/mimo-v2.5-pro": "xiaomi/mimo-v2.5-pro",
+          "z-ai/glm-5-turbo": "z-ai/glm-5-turbo",
+          "z-ai/glm-5.1": "z-ai/glm-5.1",
+          "z-ai/glm-5.2": "z-ai/glm-5.2",
+          "z-ai/glm-5.3": "z-ai/glm-5.3",
+          "z-ai/glm-5.3-flash": "z-ai/glm-5.3-flash",
+          "zai-glm-5-1": "z-ai/glm-5.1",
+          "zai-glm-5-2": "z-ai/glm-5.2",
+          "zai-glm-5-3": "z-ai/glm-5.3",
+          "zai-glm-5-3-flash": "z-ai/glm-5.3-flash",
+          "zai-glm-5-turbo": "z-ai/glm-5-turbo",
+          "zai-glm-5.1": "z-ai/glm-5.1",
+          "zai-glm-5.2": "z-ai/glm-5.2",
+          "zai-glm-5.3": "z-ai/glm-5.3",
+          "zai-glm-5.3-flash": "z-ai/glm-5.3-flash"
+        },
+        "wire_slugs": {
+          "deepseek-flash": "deepseek/deepseek-v4-flash",
+          "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+          "deepseek-v4-pro": "deepseek/deepseek-v4-pro"
+        }
+      }
     },
     {
       "kind": "Orcarouter",
@@ -370,7 +636,23 @@
         "orca_router"
       ],
       "table_field": "orcarouter",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "deepseek-v4flash": "deepseek-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "orca-auto": "orcarouter/auto",
+          "orcarouter-auto": "orcarouter/auto"
+        },
+        "wire_slugs": {
+          "deepseek-flash": "deepseek/deepseek-v4-flash",
+          "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+          "deepseek-v4-pro": "deepseek/deepseek-v4-pro"
+        }
+      }
     },
     {
       "kind": "XiaomiMimo",
@@ -413,7 +695,71 @@
       "catalog_source_id": "xiaomi-mimo",
       "subagent_aliases": [],
       "table_field": "xiaomi_mimo",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "asr": "mimo-v2.5-asr",
+          "mimo": "mimo-v2.6-pro",
+          "mimo-asr": "mimo-v2.5-asr",
+          "mimo-omni": "mimo-v2.6-flash",
+          "mimo-tts": "mimo-v2.5-tts",
+          "mimo-tts-voiceclone": "mimo-v2.5-tts-voiceclone",
+          "mimo-tts-voicedesign": "mimo-v2.5-tts-voicedesign",
+          "mimo-v2-5": "mimo-v2.6-flash",
+          "mimo-v2-5-omni": "mimo-v2.6-flash",
+          "mimo-v2-5-pro": "mimo-v2.6-pro",
+          "mimo-v2-5-pro-ultraspeed": "mimo-v2.5-pro-ultraspeed",
+          "mimo-v2-6-flash": "mimo-v2.6-flash",
+          "mimo-v2-6-pro": "mimo-v2.6-pro",
+          "mimo-v2-tts": "mimo-v2-tts",
+          "mimo-v2.5": "mimo-v2.6-flash",
+          "mimo-v2.5-asr": "mimo-v2.5-asr",
+          "mimo-v2.5-omni": "mimo-v2.6-flash",
+          "mimo-v2.5-pro": "mimo-v2.6-pro",
+          "mimo-v2.5-pro-ultraspeed": "mimo-v2.5-pro-ultraspeed",
+          "mimo-v2.5-tts": "mimo-v2.5-tts",
+          "mimo-v2.5-tts-voiceclone": "mimo-v2.5-tts-voiceclone",
+          "mimo-v2.5-tts-voicedesign": "mimo-v2.5-tts-voicedesign",
+          "mimo-v2.6-flash": "mimo-v2.6-flash",
+          "mimo-v2.6-pro": "mimo-v2.6-pro",
+          "mimo-v25": "mimo-v2.6-flash",
+          "mimo-v25-omni": "mimo-v2.6-flash",
+          "mimo-v25-tts": "mimo-v2.5-tts",
+          "mimo-v25-tts-voiceclone": "mimo-v2.5-tts-voiceclone",
+          "mimo-v25-tts-voicedesign": "mimo-v2.5-tts-voicedesign",
+          "mimo-voice-clone": "mimo-v2.5-tts-voiceclone",
+          "mimo-voice-design": "mimo-v2.5-tts-voicedesign",
+          "omni": "mimo-v2.6-flash",
+          "pro-ultraspeed": "mimo-v2.5-pro-ultraspeed",
+          "speech": "mimo-v2.5-tts",
+          "speech-to-text": "mimo-v2.5-asr",
+          "transcribe": "mimo-v2.5-asr",
+          "tts": "mimo-v2.5-tts",
+          "ultraspeed": "mimo-v2.5-pro-ultraspeed",
+          "v2.5-omni": "mimo-v2.6-flash",
+          "v25-omni": "mimo-v2.6-flash",
+          "voice-clone": "mimo-v2.5-tts-voiceclone",
+          "voice-design": "mimo-v2.5-tts-voicedesign",
+          "voiceclone": "mimo-v2.5-tts-voiceclone",
+          "voicedesign": "mimo-v2.5-tts-voicedesign",
+          "xiaomi-mimo-v2-5": "mimo-v2.6-flash",
+          "xiaomi-mimo-v2-5-omni": "mimo-v2.6-flash",
+          "xiaomi-mimo-v2-5-pro": "mimo-v2.6-pro",
+          "xiaomi-mimo-v2-5-pro-ultraspeed": "mimo-v2.5-pro-ultraspeed",
+          "xiaomi-mimo-v2-6-flash": "mimo-v2.6-flash",
+          "xiaomi-mimo-v2-6-pro": "mimo-v2.6-pro",
+          "xiaomi-mimo-v2.5": "mimo-v2.6-flash",
+          "xiaomi-mimo-v2.5-omni": "mimo-v2.6-flash",
+          "xiaomi-mimo-v2.5-pro": "mimo-v2.6-pro",
+          "xiaomi-mimo-v2.5-pro-ultraspeed": "mimo-v2.5-pro-ultraspeed",
+          "xiaomi-mimo-v2.6-flash": "mimo-v2.6-flash",
+          "xiaomi-mimo-v2.6-pro": "mimo-v2.6-pro"
+        },
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Novita",
@@ -450,7 +796,31 @@
       "catalog_source_id": "novita",
       "subagent_aliases": [],
       "table_field": "novita",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "deepseek-ai/deepseek-flash": "deepseek-flash",
+          "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek-ai/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek-v4flash": "deepseek-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek/deepseek-flash": "deepseek-flash",
+          "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+        },
+        "wire_slugs": {
+          "deepseek-flash": "deepseek/deepseek-v4-flash",
+          "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+          "deepseek-v4-pro": "deepseek/deepseek-v4-pro"
+        }
+      }
     },
     {
       "kind": "Fireworks",
@@ -486,7 +856,30 @@
       "catalog_source_id": "fireworks",
       "subagent_aliases": [],
       "table_field": "fireworks",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "deepseek-ai/deepseek-flash": "deepseek-flash",
+          "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek-ai/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek-v4flash": "deepseek-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek/deepseek-flash": "deepseek-flash",
+          "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+        },
+        "wire_slugs": {
+          "deepseek-flash": "deepseek-v4-flash",
+          "deepseek-v4-pro": "accounts/fireworks/models/deepseek-v4-pro"
+        }
+      }
     },
     {
       "kind": "Siliconflow",
@@ -523,7 +916,35 @@
       "catalog_source_id": "siliconflow",
       "subagent_aliases": [],
       "table_field": "siliconflow",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "deepseek-ai/deepseek-flash": "deepseek-flash",
+          "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek-ai/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek-chat": "deepseek-v4-flash",
+          "deepseek-r1": "deepseek-v4-pro",
+          "deepseek-reasoner": "deepseek-v4-pro",
+          "deepseek-v3": "deepseek-v4-flash",
+          "deepseek-v4flash": "deepseek-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek/deepseek-flash": "deepseek-flash",
+          "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+        },
+        "wire_slugs": {
+          "deepseek-flash": "deepseek-ai/DeepSeek-V4-Flash",
+          "deepseek-v4-flash": "deepseek-ai/DeepSeek-V4-Flash",
+          "deepseek-v4-pro": "deepseek-ai/DeepSeek-V4-Pro"
+        }
+      }
     },
     {
       "kind": "Arcee",
@@ -560,7 +981,23 @@
       "catalog_source_id": "arcee",
       "subagent_aliases": [],
       "table_field": "arcee",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "arcee-trinity": "trinity-large-thinking",
+          "arcee-trinity-large-preview": "trinity-large-preview",
+          "arcee-trinity-large-thinking": "trinity-large-thinking",
+          "arcee-trinity-mini": "trinity-mini",
+          "trinity": "trinity-large-thinking",
+          "trinity-large-preview": "trinity-large-preview",
+          "trinity-large-thinking": "trinity-large-thinking",
+          "trinity-mini": "trinity-mini"
+        },
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "SiliconflowCN",
@@ -602,7 +1039,35 @@
       "subagent_aliases": [],
       "table_field": "siliconflow_cn",
       "selector_aliases": [],
-      "base_url_config_key": "siliconflow"
+      "base_url_config_key": "siliconflow",
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "deepseek-ai/deepseek-flash": "deepseek-flash",
+          "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek-ai/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek-chat": "deepseek-v4-flash",
+          "deepseek-r1": "deepseek-v4-pro",
+          "deepseek-reasoner": "deepseek-v4-pro",
+          "deepseek-v3": "deepseek-v4-flash",
+          "deepseek-v4flash": "deepseek-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek/deepseek-flash": "deepseek-flash",
+          "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+        },
+        "wire_slugs": {
+          "deepseek-flash": "deepseek-ai/DeepSeek-V4-Flash",
+          "deepseek-v4-flash": "deepseek-ai/DeepSeek-V4-Flash",
+          "deepseek-v4-pro": "deepseek-ai/DeepSeek-V4-Pro"
+        }
+      }
     },
     {
       "kind": "Moonshot",
@@ -643,7 +1108,26 @@
       "catalog_source_id": "moonshot",
       "subagent_aliases": [],
       "table_field": "moonshot",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "kimi": "kimi-k2.7-code",
+          "kimi-code": "kimi-k2.7-code",
+          "kimi-k2": "kimi-k2.7-code",
+          "kimi-k2-6": "kimi-k2.6",
+          "kimi-k2-7": "kimi-k2.7-code",
+          "kimi-k2-7-code": "kimi-k2.7-code",
+          "kimi-k2.6": "kimi-k2.6",
+          "kimi-k2.7": "kimi-k2.7-code",
+          "kimi-k2.7-code": "kimi-k2.7-code",
+          "moonshot-kimi-k2.6": "kimi-k2.6",
+          "moonshot-kimi-k2.7-code": "kimi-k2.7-code"
+        },
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Sglang",
@@ -679,7 +1163,31 @@
       "catalog_source_id": "sglang",
       "subagent_aliases": [],
       "table_field": "sglang",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "deepseek-ai/deepseek-flash": "deepseek-flash",
+          "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek-ai/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek-v4flash": "deepseek-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek/deepseek-flash": "deepseek-flash",
+          "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+        },
+        "wire_slugs": {
+          "deepseek-flash": "deepseek-ai/DeepSeek-V4-Flash",
+          "deepseek-v4-flash": "deepseek-ai/DeepSeek-V4-Flash",
+          "deepseek-v4-pro": "deepseek-ai/DeepSeek-V4-Pro"
+        }
+      }
     },
     {
       "kind": "Vllm",
@@ -715,7 +1223,31 @@
       "catalog_source_id": "vllm",
       "subagent_aliases": [],
       "table_field": "vllm",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "deepseek-ai/deepseek-flash": "deepseek-flash",
+          "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek-ai/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek-v4flash": "deepseek-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek/deepseek-flash": "deepseek-flash",
+          "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+        },
+        "wire_slugs": {
+          "deepseek-flash": "deepseek-ai/DeepSeek-V4-Flash",
+          "deepseek-v4-flash": "deepseek-ai/DeepSeek-V4-Flash",
+          "deepseek-v4-pro": "deepseek-ai/DeepSeek-V4-Pro"
+        }
+      }
     },
     {
       "kind": "Ollama",
@@ -751,7 +1283,14 @@
       "catalog_source_id": "ollama",
       "subagent_aliases": [],
       "table_field": "ollama",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "OllamaCloud",
@@ -788,7 +1327,14 @@
       "catalog_source_id": "ollama-cloud",
       "subagent_aliases": [],
       "table_field": "ollama_cloud",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Huggingface",
@@ -827,7 +1373,31 @@
       "catalog_source_id": "huggingface",
       "subagent_aliases": [],
       "table_field": "huggingface",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "deepseek-ai/deepseek-flash": "deepseek-flash",
+          "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek-ai/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek-v4flash": "deepseek-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek/deepseek-flash": "deepseek-flash",
+          "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+        },
+        "wire_slugs": {
+          "deepseek-flash": "deepseek-ai/DeepSeek-V4-Flash",
+          "deepseek-v4-flash": "deepseek-ai/DeepSeek-V4-Flash",
+          "deepseek-v4-pro": "deepseek-ai/DeepSeek-V4-Pro"
+        }
+      }
     },
     {
       "kind": "Modelscope",
@@ -866,7 +1436,14 @@
       "catalog_source_id": "modelscope",
       "subagent_aliases": [],
       "table_field": "modelscope",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Together",
@@ -904,7 +1481,35 @@
       "catalog_source_id": "together",
       "subagent_aliases": [],
       "table_field": "together",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "deepseek-ai/deepseek-flash": "deepseek-flash",
+          "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek-ai/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek-chat": "deepseek-v4-flash",
+          "deepseek-reasoner": "deepseek-v4-flash",
+          "deepseek-v4flash": "deepseek-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek/deepseek-flash": "deepseek-flash",
+          "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro",
+          "together-inkling": "inkling"
+        },
+        "wire_slugs": {
+          "deepseek-flash": "deepseek-ai/DeepSeek-V4-Flash",
+          "deepseek-v4-flash": "deepseek-ai/DeepSeek-V4-Flash",
+          "deepseek-v4-pro": "deepseek-ai/DeepSeek-V4-Pro",
+          "inkling": "thinkingmachines/inkling"
+        }
+      }
     },
     {
       "kind": "Qianfan",
@@ -943,7 +1548,14 @@
       "catalog_source_id": "qianfan",
       "subagent_aliases": [],
       "table_field": "qianfan",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "OpenaiCodex",
@@ -993,7 +1605,14 @@
         "openai_chatgpt"
       ],
       "table_field": "openai_codex",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Anthropic",
@@ -1005,7 +1624,9 @@
         "ANTHROPIC_API_KEY"
       ],
       "config_key": "anthropic",
-      "aliases": ["claude"],
+      "aliases": [
+        "claude"
+      ],
       "wire_policy": "anthropic_messages",
       "credential_help": {
         "acquisition": "api_key",
@@ -1031,7 +1652,14 @@
         "anthropic_api"
       ],
       "table_field": "anthropic",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Openmodel",
@@ -1068,7 +1696,14 @@
       "catalog_source_id": "openmodel",
       "subagent_aliases": [],
       "table_field": "openmodel",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Zai",
@@ -1126,7 +1761,34 @@
         "zhipu_glm"
       ],
       "table_field": "zai",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "glm-5-1": "GLM-5.1",
+          "glm-5-2": "GLM-5.2",
+          "glm-5-3": "GLM-5.3",
+          "glm-5-3-flash": "GLM-5.3-Flash",
+          "glm-5-turbo": "GLM-5-Turbo",
+          "glm-5.1": "GLM-5.1",
+          "glm-5.2": "GLM-5.2",
+          "glm-5.3": "GLM-5.3",
+          "glm-5.3-flash": "GLM-5.3-Flash",
+          "glm-5turbo": "GLM-5-Turbo",
+          "zai-glm-5-1": "GLM-5.1",
+          "zai-glm-5-2": "GLM-5.2",
+          "zai-glm-5-3": "GLM-5.3",
+          "zai-glm-5-3-flash": "GLM-5.3-Flash",
+          "zai-glm-5-turbo": "GLM-5-Turbo",
+          "zai-glm-5.1": "GLM-5.1",
+          "zai-glm-5.2": "GLM-5.2",
+          "zai-glm-5.3": "GLM-5.3",
+          "zai-glm-5.3-flash": "GLM-5.3-Flash"
+        },
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Stepfun",
@@ -1168,7 +1830,14 @@
       "catalog_source_id": "stepfun",
       "subagent_aliases": [],
       "table_field": "stepfun",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Minimax",
@@ -1209,7 +1878,45 @@
       "catalog_source_id": "minimax",
       "subagent_aliases": [],
       "table_field": "minimax",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "minimax": "MiniMax-M3",
+          "minimax-m-2": "MiniMax-M2",
+          "minimax-m-2-1": "MiniMax-M2.1",
+          "minimax-m-2-1-highspeed": "MiniMax-M2.1-highspeed",
+          "minimax-m-2-5": "MiniMax-M2.5",
+          "minimax-m-2-5-highspeed": "MiniMax-M2.5-highspeed",
+          "minimax-m-2-7": "MiniMax-M2.7",
+          "minimax-m-2-7-highspeed": "MiniMax-M2.7-highspeed",
+          "minimax-m-2.1": "MiniMax-M2.1",
+          "minimax-m-2.1-highspeed": "MiniMax-M2.1-highspeed",
+          "minimax-m-2.5": "MiniMax-M2.5",
+          "minimax-m-2.5-highspeed": "MiniMax-M2.5-highspeed",
+          "minimax-m-2.7": "MiniMax-M2.7",
+          "minimax-m-2.7-highspeed": "MiniMax-M2.7-highspeed",
+          "minimax-m-3": "MiniMax-M3",
+          "minimax-m-3-thinking": "MiniMax-M3",
+          "minimax-m2": "MiniMax-M2",
+          "minimax-m2-1": "MiniMax-M2.1",
+          "minimax-m2-1-highspeed": "MiniMax-M2.1-highspeed",
+          "minimax-m2-5": "MiniMax-M2.5",
+          "minimax-m2-5-highspeed": "MiniMax-M2.5-highspeed",
+          "minimax-m2-7": "MiniMax-M2.7",
+          "minimax-m2-7-highspeed": "MiniMax-M2.7-highspeed",
+          "minimax-m2.1": "MiniMax-M2.1",
+          "minimax-m2.1-highspeed": "MiniMax-M2.1-highspeed",
+          "minimax-m2.5": "MiniMax-M2.5",
+          "minimax-m2.5-highspeed": "MiniMax-M2.5-highspeed",
+          "minimax-m2.7": "MiniMax-M2.7",
+          "minimax-m2.7-highspeed": "MiniMax-M2.7-highspeed",
+          "minimax-m3": "MiniMax-M3"
+        },
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "MinimaxAnthropic",
@@ -1249,7 +1956,45 @@
         "minimax_anthropic",
         "mini-max-anthropic",
         "mini_max_anthropic"
-      ]
+      ],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "minimax": "MiniMax-M3",
+          "minimax-m-2": "MiniMax-M2",
+          "minimax-m-2-1": "MiniMax-M2.1",
+          "minimax-m-2-1-highspeed": "MiniMax-M2.1-highspeed",
+          "minimax-m-2-5": "MiniMax-M2.5",
+          "minimax-m-2-5-highspeed": "MiniMax-M2.5-highspeed",
+          "minimax-m-2-7": "MiniMax-M2.7",
+          "minimax-m-2-7-highspeed": "MiniMax-M2.7-highspeed",
+          "minimax-m-2.1": "MiniMax-M2.1",
+          "minimax-m-2.1-highspeed": "MiniMax-M2.1-highspeed",
+          "minimax-m-2.5": "MiniMax-M2.5",
+          "minimax-m-2.5-highspeed": "MiniMax-M2.5-highspeed",
+          "minimax-m-2.7": "MiniMax-M2.7",
+          "minimax-m-2.7-highspeed": "MiniMax-M2.7-highspeed",
+          "minimax-m-3": "MiniMax-M3",
+          "minimax-m-3-thinking": "MiniMax-M3",
+          "minimax-m2": "MiniMax-M2",
+          "minimax-m2-1": "MiniMax-M2.1",
+          "minimax-m2-1-highspeed": "MiniMax-M2.1-highspeed",
+          "minimax-m2-5": "MiniMax-M2.5",
+          "minimax-m2-5-highspeed": "MiniMax-M2.5-highspeed",
+          "minimax-m2-7": "MiniMax-M2.7",
+          "minimax-m2-7-highspeed": "MiniMax-M2.7-highspeed",
+          "minimax-m2.1": "MiniMax-M2.1",
+          "minimax-m2.1-highspeed": "MiniMax-M2.1-highspeed",
+          "minimax-m2.5": "MiniMax-M2.5",
+          "minimax-m2.5-highspeed": "MiniMax-M2.5-highspeed",
+          "minimax-m2.7": "MiniMax-M2.7",
+          "minimax-m2.7-highspeed": "MiniMax-M2.7-highspeed",
+          "minimax-m3": "MiniMax-M3"
+        },
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Deepinfra",
@@ -1287,7 +2032,33 @@
       "catalog_source_id": "deepinfra",
       "subagent_aliases": [],
       "table_field": "deepinfra",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {
+          "deepseek-ai/deepseek-flash": "deepseek-flash",
+          "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek-ai/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek-chat": "deepseek-v4-flash",
+          "deepseek-reasoner": "deepseek-v4-flash",
+          "deepseek-v4flash": "deepseek-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek/deepseek-flash": "deepseek-flash",
+          "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+        },
+        "wire_slugs": {
+          "deepseek-flash": "deepseek-ai/DeepSeek-V4-Flash",
+          "deepseek-v4-flash": "deepseek-ai/DeepSeek-V4-Flash",
+          "deepseek-v4-pro": "deepseek-ai/DeepSeek-V4-Pro"
+        }
+      }
     },
     {
       "kind": "Sakana",
@@ -1327,7 +2098,14 @@
       "catalog_source_id": "sakana",
       "subagent_aliases": [],
       "table_field": "sakana",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "LongCat",
@@ -1370,7 +2148,14 @@
         "meituan"
       ],
       "table_field": "longcat",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "OpencodeGo",
@@ -1410,7 +2195,27 @@
         "opencodego"
       ],
       "table_field": "opencode_go",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "roster",
+        "accept": [],
+        "strip_prefixes": [
+          "opencode-go/"
+        ],
+        "aliases": {
+          "deepseek-flash": "deepseek-v4.1-flash",
+          "deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "glm-5-1": "glm-5.1",
+          "glm-5-2": "glm-5.2",
+          "grok-4-5": "grok-4.5",
+          "kimi-k2-6": "kimi-k2.6",
+          "kimi-k2-7-code": "kimi-k2.7-code",
+          "mimo-v2-5": "mimo-v2.5",
+          "mimo-v2-5-pro": "mimo-v2.5-pro"
+        },
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "OpencodeZen",
@@ -1455,7 +2260,17 @@
         "opencode"
       ],
       "table_field": "opencode_zen",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [
+          "opencode/",
+          "opencode-zen/"
+        ],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Meta",
@@ -1503,7 +2318,14 @@
         "muse_spark"
       ],
       "table_field": "meta",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Xai",
@@ -1545,7 +2367,14 @@
         "grok"
       ],
       "table_field": "xai",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Mistral",
@@ -1585,7 +2414,14 @@
       "catalog_source_id": "mistral",
       "subagent_aliases": [],
       "table_field": "mistral",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Telecomjs",
@@ -1624,7 +2460,14 @@
       "catalog_source_id": "telecomjs",
       "subagent_aliases": [],
       "table_field": "telecomjs",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Edenai",
@@ -1664,7 +2507,14 @@
         "eden_ai"
       ],
       "table_field": "edenai",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Zenmux",
@@ -1704,7 +2554,14 @@
         "zen_mux"
       ],
       "table_field": "zenmux",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Csdn",
@@ -1750,7 +2607,14 @@
         "starmap"
       ],
       "table_field": "csdn",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Concentrate",
@@ -1792,7 +2656,16 @@
         "concentrateai"
       ],
       "table_field": "concentrate",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [
+          "concentrate/"
+        ],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Codewhale",
@@ -1836,7 +2709,14 @@
         "codewhale_cloud"
       ],
       "table_field": "codewhale",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "ModelstudioTokenPlan",
@@ -1891,7 +2771,14 @@
       "catalog_source_id": "modelstudio-token-plan",
       "subagent_aliases": [],
       "table_field": "modelstudio_token_plan",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "ModelstudioTokenPlanAnthropic",
@@ -1928,7 +2815,14 @@
       "catalog_source_id": "modelstudio-token-plan-anthropic",
       "subagent_aliases": [],
       "table_field": "modelstudio_token_plan_anthropic",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "ModelstudioCodingPlan",
@@ -1965,7 +2859,14 @@
       "catalog_source_id": "modelstudio-coding-plan",
       "subagent_aliases": [],
       "table_field": "modelstudio_coding_plan",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "ModelstudioCodingPlanAnthropic",
@@ -2002,7 +2903,14 @@
       "catalog_source_id": "modelstudio-coding-plan-anthropic",
       "subagent_aliases": [],
       "table_field": "modelstudio_coding_plan_anthropic",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Google",
@@ -2045,7 +2953,16 @@
       "catalog_source_id": "google",
       "subagent_aliases": [],
       "table_field": "google",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [
+          "models/"
+        ],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Antigravity",
@@ -2076,7 +2993,14 @@
       "catalog_source_id": "antigravity",
       "subagent_aliases": [],
       "table_field": "antigravity",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "kind": "Custom",
@@ -2105,7 +3029,14 @@
       "catalog_source_id": "custom",
       "subagent_aliases": [],
       "table_field": "custom",
-      "selector_aliases": []
+      "selector_aliases": [],
+      "models": {
+        "ids": "verbatim",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     }
   ],
   "schema": "codewhale.provider_descriptors.v2",
@@ -2122,7 +3053,17 @@
       "docs_url": "https://tinker-docs.thinkingmachines.ai/tinker/compatible-apis/openai/",
       "credential_url": "https://tinker-docs.thinkingmachines.ai/tinker/quickstart/",
       "guidance": "Tinker serverless and its OpenAI-compatible API are beta. Model-list and key verification are unavailable through this route; configure a documented serverless model ID. A successful model call is needed to verify access.",
-      "aliases": ["thinking-machines", "thinkingmachines"]
+      "aliases": [
+        "thinking-machines",
+        "thinkingmachines"
+      ],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "id": "aicraft",
@@ -2138,7 +3079,14 @@
       "aliases": [
         "ai-craft",
         "ai_craft"
-      ]
+      ],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "id": "baseten",
@@ -2153,7 +3101,14 @@
       "aliases": [
         "base-ten",
         "base_ten"
-      ]
+      ],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "id": "cerebras",
@@ -2164,7 +3119,14 @@
       "default_model": "llama-3.3-70b",
       "discovery": "models_endpoint",
       "docs_url": "https://inference-docs.cerebras.ai/quickstart",
-      "credential_url": "https://cloud.cerebras.ai"
+      "credential_url": "https://cloud.cerebras.ai",
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "id": "cheaperinference",
@@ -2179,7 +3141,14 @@
       "guidance": "OpenAI-compatible host (Chat Completions + GET /v1/models). Live /v1/models is the model authority: ids are bare, such as gpt-5.4-mini, claude-sonnet-5 and gemini-3.1-pro. Store CHEAPER_INFERENCE_API_KEY, not a raw key.",
       "aliases": [
         "cheaper-inference"
-      ]
+      ],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "id": "command-code",
@@ -2195,7 +3164,14 @@
       "aliases": [
         "commandcode",
         "cmd-code"
-      ]
+      ],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "id": "dashscope",
@@ -2213,7 +3189,14 @@
         "alibaba-model-studio",
         "model-studio",
         "qwen"
-      ]
+      ],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "id": "groq",
@@ -2224,7 +3207,14 @@
       "default_model": "llama-3.3-70b-versatile",
       "discovery": "models_endpoint",
       "docs_url": "https://console.groq.com/docs/quickstart",
-      "credential_url": "https://console.groq.com/keys"
+      "credential_url": "https://console.groq.com/keys",
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "id": "wafer",
@@ -2236,7 +3226,14 @@
       "discovery": "public_models_endpoint",
       "docs_url": "https://docs.wafer.ai/serverless",
       "credential_url": "https://app.wafer.ai",
-      "guidance": "OpenAI-compatible serverless catalog (Chat Completions + public GET /v1/models). Model ids are case-sensitive, such as GLM-5.3. Zero data retention is on for every request; no extra header is required. Store WAFER_API_KEY, not a raw key. A public listing does not verify the key."
+      "guidance": "OpenAI-compatible serverless catalog (Chat Completions + public GET /v1/models). Model ids are case-sensitive, such as GLM-5.3. Zero data retention is on for every request; no extra header is required. Store WAFER_API_KEY, not a raw key. A public listing does not verify the key.",
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "id": "runcrate",
@@ -2248,7 +3245,14 @@
       "discovery": "public_models_endpoint",
       "docs_url": "https://www.runcrate.ai/docs/getting-started/quickstart",
       "credential_url": "https://www.runcrate.ai/dashboard",
-      "guidance": "OpenAI-compatible host (Chat Completions + GET /v1/models, which is public). Model ids are case-sensitive org/Name ids such as deepseek-ai/DeepSeek-V4.1-Flash. Live /v1/models is the model authority. Store RUNCRATE_API_KEY, not a raw key."
+      "guidance": "OpenAI-compatible host (Chat Completions + GET /v1/models, which is public). Model ids are case-sensitive org/Name ids such as deepseek-ai/DeepSeek-V4.1-Flash. Live /v1/models is the model authority. Store RUNCRATE_API_KEY, not a raw key.",
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "id": "tencent",
@@ -2265,7 +3269,14 @@
         "tencent-tokenhub",
         "tokenhub",
         "hunyuan"
-      ]
+      ],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "id": "opper",
@@ -2280,7 +3291,14 @@
       "guidance": "OpenAI-compatible gateway (Chat Completions + GET /v3/compat/models). Bare pool names such as claude-sonnet-4-6 let Opper pick the route; provider/model ids such as anthropic/claude-sonnet-4-6 pin one route. Live /v3/compat/models is the model authority. Store OPPER_API_KEY, not a raw key.",
       "aliases": [
         "opper-ai"
-      ]
+      ],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "id": "sensenova",
@@ -2294,7 +3312,14 @@
         "sense-nova",
         "meituan-sensenova",
         "meituan-sensenova-cn"
-      ]
+      ],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "id": "standardcompute",
@@ -2309,7 +3334,14 @@
       "guidance": "OpenAI-compatible host (Chat Completions + GET /v1/models). The standardcompute model id routes each request across models and providers; vendor-prefixed ids such as deepseek/deepseek-v4-pro pin one model. Live /v1/models is the model authority. Store STANDARDCOMPUTE_API_KEY, not a raw key.",
       "aliases": [
         "standard-compute"
-      ]
+      ],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "id": "tsubasa",
@@ -2320,7 +3352,14 @@
       "default_model": "tsubasa-pro",
       "discovery": "models_endpoint",
       "docs_url": "https://tsubasa.sh/docs",
-      "guidance": "OpenAI-compatible host (Chat Completions + GET /v1/models only). Public model ids: tsubasa-pro and tsubasa-fast, both with a 32,768-token context, so set context_window = 32768 on [providers.tsubasa]. Store TSUBASA_API_KEY, not a raw key."
+      "guidance": "OpenAI-compatible host (Chat Completions + GET /v1/models only). Public model ids: tsubasa-pro and tsubasa-fast, both with a 32,768-token context, so set context_window = 32768 on [providers.tsubasa]. Store TSUBASA_API_KEY, not a raw key.",
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     },
     {
       "id": "yolo-auto",
@@ -2333,7 +3372,14 @@
       "docs_url": "https://yolo-auto.com/docs",
       "aliases": [
         "yolo"
-      ]
+      ],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     }
   ],
   "constant_refs": {
@@ -2812,6 +3858,35 @@
       "deepseekcn",
       "deepseek-china"
     ],
-    "base_url_config_key": "deepseek"
+    "base_url_config_key": "deepseek",
+    "models": {
+      "ids": "strict",
+      "accept": [
+        "deepseek*",
+        "*/deepseek*"
+      ],
+      "strip_prefixes": [],
+      "aliases": {
+        "deepseek-ai/deepseek-flash": "deepseek-flash",
+        "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
+        "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
+        "deepseek-ai/deepseek-v4flash": "deepseek-v4-flash",
+        "deepseek-ai/deepseek-v4pro": "deepseek-v4-pro",
+        "deepseek-chat": "deepseek-flash",
+        "deepseek-reasoner": "deepseek-flash",
+        "deepseek-v4flash": "deepseek-flash",
+        "deepseek-v4flashvisionexp": "deepseek-flash",
+        "deepseek-v4pro": "deepseek-v4-pro",
+        "deepseek/deepseek-flash": "deepseek-flash",
+        "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+        "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
+        "deepseek/deepseek-v4flash": "deepseek-v4-flash",
+        "deepseek/deepseek-v4pro": "deepseek-v4-pro",
+        "flash": "deepseek-flash",
+        "flash-vision": "deepseek-flash",
+        "pro": "deepseek-v4-pro"
+      },
+      "wire_slugs": {}
+    }
   }
 }

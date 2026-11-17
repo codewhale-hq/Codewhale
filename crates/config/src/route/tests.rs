@@ -761,14 +761,15 @@ fn resolver_openrouter_keeps_provider_for_every_namespace_prefix() {
 #[test]
 fn resolver_no_explicit_provider_does_not_infer_deepseek_from_prefix() {
     let r = RouteResolver::new();
-    // explicit_provider=None => default scope (Deepseek). A prefixed selector
-    // is foreign for the strict-direct default, so it ERRORS rather than being
-    // silently accepted as a deepseek model: the prefix never *selects* it.
-    let out = r.resolve(&req(None, Some("deepseek/deepseek-v4-pro")));
-    match out {
+    let out = r
+        .resolve(&req(None, Some("deepseek/deepseek-v4-pro")))
+        .expect("the official DeepSeek alias resolves in the default scope");
+    assert_eq!(out.provider_kind(), ProviderKind::Deepseek);
+    assert_eq!(out.wire_model_id().as_str(), "deepseek-v4-pro");
+    match r.resolve(&req(None, Some("openai/gpt-5.6"))) {
         Err(RouteError::ForeignModelForDirectProvider { provider, model }) => {
             assert_eq!(provider.as_str(), "deepseek");
-            assert_eq!(model, "deepseek/deepseek-v4-pro");
+            assert_eq!(model, "openai/gpt-5.6");
         }
         other => panic!("expected ForeignModelForDirectProvider, got {other:?}"),
     }
@@ -1219,7 +1220,7 @@ fn wire_override_is_ignored_for_builtin_kinds() {
     let r = RouteResolver::new();
     let request = RouteRequest {
         explicit_provider: Some(ProviderKind::Deepseek),
-        model_selector: Some(LogicalModelRef::from("deepseek-chat")),
+        model_selector: Some(LogicalModelRef::from("deepseek-v4-pro")),
         saved_provider_model: None,
         base_url_override: None,
         limit_overrides: Vec::new(),

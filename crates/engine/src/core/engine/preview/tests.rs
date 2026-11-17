@@ -2056,7 +2056,7 @@ async fn fixed_route_with_a_prompt_describes_the_exact_next_turn() {
     let route = manifest.route.exact().expect("a fixed route is exact");
     assert_eq!(route.provider_id.as_str(), "deepseek");
     assert_eq!(route.routing_source, "active-fixed-route");
-    assert_eq!(route.dialect, "chat-completions");
+    assert_eq!(route.dialect, "openai-responses");
     assert_eq!(route.caller_entrypoint, "streaming");
     assert_eq!(route.body_stream_field, Some(true));
     assert_eq!(route.context_limit_tokens, 123_456);

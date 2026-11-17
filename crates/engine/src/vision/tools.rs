@@ -214,8 +214,11 @@ impl ImageAnalyzeTool {
         if !Self::is_xiaomi_mimo_model(model) || model.contains('/') {
             return self.config.model.clone();
         }
-        codewhale_runtime::config::canonical_xiaomi_mimo_model_id(model)
-            .map_or_else(|| self.config.model.clone(), str::to_string)
+        codewhale_config::descriptors::provider_model_alias(
+            codewhale_config::ProviderKind::XiaomiMimo,
+            model,
+        )
+        .map_or_else(|| self.config.model.clone(), str::to_string)
     }
 
     fn request_payload(&self, prompt: &str, image_data: &str, mime_type: &str) -> Value {

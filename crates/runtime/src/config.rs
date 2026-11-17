@@ -242,25 +242,14 @@ pub fn deepseek_alias_deprecation(model_lower: &str) -> Option<ModelAliasDepreca
     }
 }
 
-/// Canonicalize compact DeepSeek model aliases to stable IDs.
-///
-/// Already-valid model IDs pass through unchanged. The compact `v4pro`
-/// spelling is rewritten to its hyphenated form, and the Flash and retired
-/// vision shorthands select `deepseek-flash`.
 #[must_use]
 pub fn canonical_model_name(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "canonical_model_name",
-        &model.trim().to_ascii_lowercase(),
-    )
+    if model.contains('/') || legacy_deepseek_alias_reasoning_effort(model).is_some() {
+        return None;
+    }
+    codewhale_config::descriptors::provider_model_alias(ProviderKind::Deepseek, model)
 }
 
-/// Normalize a configured/runtime model name.
-///
-/// Trims whitespace, preserves caller-provided case for already-valid model
-/// IDs, and only canonicalizes compact aliases like `deepseek-v4pro`.
-/// Non-DeepSeek or malformed names return `None`; DeepSeek's `/v1/models`
-/// endpoint is the authority on valid model IDs.
 #[must_use]
 pub fn normalize_model_name(model: &str) -> Option<String> {
     let trimmed = model.trim();
@@ -270,19 +259,16 @@ pub fn normalize_model_name(model: &str) -> Option<String> {
     if let Some(canonical) = canonical_model_name(trimmed) {
         return Some(canonical.to_string());
     }
-
     let normalized = trimmed.to_ascii_lowercase();
     if !normalized.starts_with("deepseek") && !normalized.contains("/deepseek") {
         return None;
     }
-
     if trimmed
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':' | '/'))
     {
         return Some(trimmed.to_string());
     }
-
     None
 }
 
@@ -296,19 +282,9 @@ pub fn normalize_custom_model_id(model: &str) -> Option<String> {
     }
 }
 
-/// Validate a user-requested model id against the active provider (#3018).
-///
-/// DeepSeek providers use the strict `normalize_model_name` gate (the official
-/// API only accepts DeepSeek IDs). OpenCode Go uses its documented model-scoped
-/// protocol roster. Other providers pass any non-empty,
-/// non-control-character string through — the provider API is the authority.
 #[must_use]
 pub fn requested_model_for_provider(provider: ProviderKind, model: &str) -> Option<String> {
-    match provider {
-        ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic => normalize_model_name(model),
-        ProviderKind::OpencodeGo => opencode_go_model_id(model).map(str::to_string),
-        _ => normalize_custom_model_id(model),
-    }
+    canonical_model_id_for_provider(provider, model)
 }
 
 /// Reject a provider/model tuple that we can be confident is invalid *before*
@@ -390,188 +366,32 @@ pub fn validate_route(provider: ProviderKind, model: &str) -> Result<(), String>
     Ok(())
 }
 
-use codewhale_models::canonical_official_deepseek_model_id;
-
-/// Resolve model names accepted by DeepSeek's first-party endpoints.
-///
-/// The legacy aliases are intentionally handled only in this direct-provider
-/// layer. Aggregators and custom endpoints own their model namespaces; for
-/// example, Wanjie Ark still documents `deepseek-reasoner` as its native id.
-fn canonical_direct_deepseek_model_id(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "canonical_direct_deepseek_model_id",
-        &model.trim().to_ascii_lowercase(),
-    )
-    .or_else(|| canonical_official_deepseek_model_id(model))
-}
-
 fn legacy_deepseek_alias_reasoning_effort(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "legacy_deepseek_alias_reasoning_effort",
-        &model.trim().to_ascii_lowercase(),
-    )
-}
-
-fn canonical_openrouter_recent_model_id(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "canonical_openrouter_recent_model_id",
-        &model.trim().to_ascii_lowercase().replace(['_', ' '], "-"),
-    )
+    codewhale_config::legacy_deepseek_alias_reasoning_effort(model)
 }
 
 pub fn opencode_go_model_id(model: &str) -> Option<&'static str> {
     codewhale_config::opencode_go_model_id(model)
 }
 
-pub fn canonical_xiaomi_mimo_model_id(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "canonical_xiaomi_mimo_model_id",
-        &model.trim().to_ascii_lowercase().replace(['_', ' '], "-"),
-    )
-}
-
-fn canonical_arcee_model_id(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "canonical_arcee_model_id",
-        &model.trim().to_ascii_lowercase().replace(['_', ' '], "-"),
-    )
-}
-
-fn canonical_moonshot_model_id(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "canonical_moonshot_model_id",
-        &model.trim().to_ascii_lowercase().replace(['_', ' '], "-"),
-    )
-}
-
-fn canonical_zai_model_id(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "canonical_zai_model_id",
-        &model.trim().to_ascii_lowercase().replace(['_', ' '], "-"),
-    )
-}
-
-fn canonical_minimax_model_id(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "canonical_minimax_model_id",
-        &model.trim().to_ascii_lowercase().replace(['_', ' '], "-"),
-    )
-}
-
-/// Resolve a user-entered model id to the canonical family id a provider
-/// understands, without any wire-id translation.
-///
-/// Most provider-owned families (GLM via Z.ai/Zhipu, Kimi, Xiaomi MiMo,
-/// MiniMax, Arcee, OpenRouter slugs, …) resolve through the same "apply the
-/// family's canonical map, else pass the input through" path. OpenCode Go is
-/// deliberately stricter because one provider roster spans two incompatible
-/// wire protocols; only its Chat Completions rows may resolve here.
-///
-/// This is the canonicalization half of what [`normalize_model_name_for_provider`]
-/// used to fuse together. Wire-id translation (e.g. `deepseek-v4-pro` → an
-/// aggregator's `accounts/…/deepseek-v4-pro` slug) belongs to the route
-/// resolver at request time, not to a name typed into `/provider`, so it is
-/// deliberately kept out of here.
-///
-/// Returns `None` for empty or control-character input and for ids outside the
-/// OpenCode Go documented protocol roster. Other provider ids pass through so a
-/// custom/self-hosted endpoint is never wrongly rejected.
 #[must_use]
 pub fn canonical_model_id_for_provider(provider: ProviderKind, model: &str) -> Option<String> {
-    let trimmed = model.trim();
-    if trimmed.is_empty() || trimmed.chars().any(char::is_control) {
+    if model.trim().chars().any(char::is_control) {
         return None;
     }
-
-    // Go resolves aliases only within its documented protocol roster.
-    if provider == ProviderKind::OpencodeGo {
-        return opencode_go_model_id(trimmed).map(str::to_string);
-    }
-
-    // Provider-owned model families resolve through their own canonical map,
-    // which defines the authoritative casing (`glm-5.1` → `GLM-5.1`,
-    // `minimax-m2.7` → `MiniMax-M2.7`). Each map recognizes only *its own*
-    // aliases, so an unknown id falls through to passthrough — no family acts
-    // as a gate against any other.
-    let family_canonical: Option<&'static str> = match provider {
-        ProviderKind::Openrouter => canonical_openrouter_recent_model_id(trimmed),
-        ProviderKind::XiaomiMimo => canonical_xiaomi_mimo_model_id(trimmed),
-        ProviderKind::Arcee => canonical_arcee_model_id(trimmed),
-        ProviderKind::Moonshot => canonical_moonshot_model_id(trimmed),
-        ProviderKind::Zai => canonical_zai_model_id(trimmed),
-        ProviderKind::Minimax | ProviderKind::MinimaxAnthropic => {
-            canonical_minimax_model_id(trimmed)
-        }
-        _ => None,
-    };
-    if let Some(canonical) = family_canonical {
-        return Some(canonical.to_string());
-    }
-
-    // The official DeepSeek API is the one legitimate per-family gate: it serves
-    // only its own ids (and 400s anything else), so reject an id it does not
-    // recognize. Compact aliases are rewritten (deepseek-v4pro → deepseek-v4-pro)
-    // and the caller's casing is kept for an already-valid id (`DeepSeek-V4-Flash`
-    // stays as-is). Custom/self-hosted DeepSeek endpoints take the
-    // accepts-custom-model-ids path, so they never reach this gate.
-    if matches!(
-        provider,
-        ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
-    ) {
-        let normalized = normalize_model_name(trimmed)?;
-        if let Some(canonical) = canonical_direct_deepseek_model_id(&normalized) {
-            if canonical.eq_ignore_ascii_case(&normalized)
-                || normalized.to_ascii_lowercase() == canonical
-            {
-                return Some(normalized);
-            }
-            return Some(canonical.to_string());
-        }
-        return Some(normalized);
-    }
-
-    // Aggregators that host DeepSeek (NIM, Novita, Fireworks, SiliconFlow, SGLang,
-    // vLLM, DeepInfra, Wanjie Ark, Volcengine) canonicalize recognized DeepSeek
-    // ids but pass everything else through — they serve more than DeepSeek, so
-    // the upstream API stays the authority. A name is never rejected here.
-    if matches!(
-        provider,
-        ProviderKind::NvidiaNim
-            | ProviderKind::Novita
-            | ProviderKind::Fireworks
-            | ProviderKind::Siliconflow
-            | ProviderKind::SiliconflowCN
-            | ProviderKind::Sglang
-            | ProviderKind::Vllm
-            | ProviderKind::Deepinfra
-            | ProviderKind::WanjieArk
-            | ProviderKind::Volcengine
-    ) && let Some(canonical) = canonical_official_deepseek_model_id(
-        &normalize_model_name(trimmed).unwrap_or_else(|| trimmed.to_string()),
-    ) {
-        return Some(canonical.to_string());
-    }
-
-    // Everything else (HuggingFace, OpenAI-compatible, Qianfan, StepFun, Codex,
-    // Anthropic) owns no canonical map — the id the user typed is authoritative.
-    Some(trimmed.to_string())
+    codewhale_config::route::resolve_model(provider, model, None)
+        .ok()
+        .map(|resolved| resolved.logical)
 }
 
-/// Normalize a model selected through the TUI for the active provider, applying
-/// the provider's wire-slug translation on top of the canonical family id.
-///
-/// This is the wire-id half of the split (canonicalization lives in
-/// [`canonical_model_id_for_provider`]). Used by config-file normalization,
-/// where vendor-prefixed ids (e.g. `deepseek-ai/DeepSeek-V4-Pro` on SiliconFlow)
-/// are the stored form. `/provider` deliberately uses the canonical half instead.
 #[must_use]
 pub fn normalize_model_name_for_provider(provider: ProviderKind, model: &str) -> Option<String> {
-    let canonical = canonical_model_id_for_provider(provider, model)?;
-    // Translate the canonical family id to the provider's wire slug when the
-    // provider's API uses vendor-prefixed ids (Together, Siliconflow, NIM, …).
-    // `model_for_provider` is a no-op for providers without a wire-slug map, so
-    // this is one uniform layer over the equal-treatment canonical resolver.
-    Some(model_for_provider(provider, canonical))
+    if model.trim().chars().any(char::is_control) {
+        return None;
+    }
+    codewhale_config::route::resolve_model(provider, model, None)
+        .ok()
+        .map(|resolved| resolved.wire_id)
 }
 
 #[must_use]
@@ -580,27 +400,10 @@ pub fn wire_model_for_provider(provider: ProviderKind, model: &str) -> String {
     if trimmed.is_empty() {
         return trimmed.to_string();
     }
-    if provider == ProviderKind::OpencodeGo {
-        // Keep an unknown ID unchanged so validation can reject it by name.
-        return opencode_go_model_id(trimmed)
-            .map(str::to_string)
-            .unwrap_or_else(|| trimmed.to_string());
-    }
-    if matches!(provider, ProviderKind::XiaomiMimo) {
-        return normalize_model_name_for_provider(provider, trimmed)
-            .unwrap_or_else(|| trimmed.to_string());
-    }
-    if provider_passes_model_through(provider) {
-        return trimmed.to_string();
-    }
-    normalize_model_name_for_provider(provider, trimmed).unwrap_or_else(|| trimmed.to_string())
+    codewhale_config::route::resolve_model(provider, trimmed, None)
+        .map_or_else(|_| trimmed.to_string(), |resolved| resolved.wire_id)
 }
 
-/// Resolve the final request model while respecting custom endpoint
-/// namespaces. Provider-only normalization cannot distinguish DeepSeek's
-/// first-party API from a self-hosted OpenAI-compatible endpoint configured
-/// under the legacy `deepseek` provider name, so actual HTTP clients use this
-/// route-aware boundary.
 #[must_use]
 pub fn wire_model_for_provider_route(
     provider: ProviderKind,
@@ -611,14 +414,8 @@ pub fn wire_model_for_provider_route(
     if trimmed.is_empty() {
         return trimmed.to_string();
     }
-    // A custom endpoint still uses the documented Go model and wire contract.
-    if provider == ProviderKind::OpencodeGo {
-        return wire_model_for_provider(provider, trimmed);
-    }
-    if base_url_is_custom_for_provider(provider, base_url) {
-        return trimmed.to_string();
-    }
-    wire_model_for_provider(provider, trimmed)
+    codewhale_config::route::resolve_model(provider, trimmed, Some(base_url))
+        .map_or_else(|_| trimmed.to_string(), |resolved| resolved.wire_id)
 }
 
 /// Reconcile a remembered `/model` pick with the model the config file names.
@@ -5559,7 +5356,9 @@ impl Config {
         if provider == ProviderKind::XiaomiMimo
             && let Some(model) = self.default_text_model.as_deref()
         {
-            if let Some(canonical) = canonical_xiaomi_mimo_model_id(model) {
+            if let Some(canonical) =
+                codewhale_config::descriptors::provider_model_alias(ProviderKind::XiaomiMimo, model)
+            {
                 return canonical.to_string();
             }
             // Non-empty root value that is not a known foreign DeepSeek id is
@@ -7936,6 +7735,9 @@ fn root_deepseek_model_is_foreign_to_direct_provider(provider: ProviderKind, mod
             | ProviderKind::Atlascloud
             | ProviderKind::OpencodeGo
             | ProviderKind::WanjieArk
+            | ProviderKind::Huggingface
+            | ProviderKind::XiaomiMimo
+            | ProviderKind::Moonshot
     ) {
         return false;
     }
@@ -9240,11 +9042,6 @@ pub fn normalize_model_config_for_test(config: &mut Config) {
 }
 
 fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> Option<String> {
-    if matches!(provider, ProviderKind::XiaomiMimo)
-        && let Some(canonical) = canonical_xiaomi_mimo_model_id(model)
-    {
-        return Some(canonical.to_string());
-    }
     if provider_passes_model_through(provider) {
         return None;
     }
@@ -9252,40 +9049,7 @@ fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> Option<S
 }
 
 pub fn provider_passes_model_through(provider: ProviderKind) -> bool {
-    matches!(
-        provider,
-        ProviderKind::Openai
-            | ProviderKind::Atlascloud
-            | ProviderKind::WanjieArk
-            | ProviderKind::Volcengine
-            | ProviderKind::XiaomiMimo
-            | ProviderKind::Moonshot
-            | ProviderKind::Qianfan
-            | ProviderKind::Openmodel
-            | ProviderKind::Ollama
-            | ProviderKind::OllamaCloud
-            | ProviderKind::Huggingface
-            | ProviderKind::Modelscope
-            | ProviderKind::Meta
-            | ProviderKind::Xai
-            | ProviderKind::Telecomjs
-            | ProviderKind::Edenai
-            | ProviderKind::Zenmux
-            | ProviderKind::Csdn
-            // Concentrate ids are gateway-owned (plain, `provider/model`, or the
-            // gateway's own `auto`); the resolver strips only `concentrate/`.
-            | ProviderKind::Concentrate
-            // Codewhale API ids are `provider/model` exactly as the account
-            // catalog returns them; never normalize or rewrite them.
-            | ProviderKind::Codewhale
-            | ProviderKind::ModelstudioTokenPlan
-            | ProviderKind::ModelstudioTokenPlanAnthropic
-            | ProviderKind::ModelstudioCodingPlan
-            | ProviderKind::ModelstudioCodingPlanAnthropic
-            // Custom OpenAI-compatible endpoints preserve user-supplied model
-            // ids verbatim (#1519); never normalize/rewrite them.
-            | ProviderKind::Custom
-    )
+    codewhale_config::descriptors::provider_passes_model_through(provider)
 }
 
 fn provider_entry_uses_custom_base_url(provider: ProviderKind, entry: &ProviderConfig) -> bool {
@@ -9998,75 +9762,6 @@ pub fn base_url_uses_local_host(base_url: &str) -> bool {
     }
     host.parse::<std::net::IpAddr>()
         .is_ok_and(|addr| addr.is_loopback() || addr.is_unspecified())
-}
-
-fn model_for_provider(provider: ProviderKind, normalized: String) -> String {
-    let lowered = normalized.to_ascii_lowercase();
-    match (provider, lowered.as_str()) {
-        (ProviderKind::NvidiaNim, "deepseek-v4-pro") => DEFAULT_NVIDIA_NIM_MODEL.to_string(),
-        (ProviderKind::NvidiaNim, "deepseek-flash" | "deepseek-v4-flash") => {
-            DEFAULT_NVIDIA_NIM_FLASH_MODEL.to_string()
-        }
-        (ProviderKind::Openrouter, "deepseek-v4-pro") => DEFAULT_OPENROUTER_MODEL.to_string(),
-        (ProviderKind::Openrouter, "deepseek-flash" | "deepseek-v4-flash") => {
-            DEFAULT_OPENROUTER_FLASH_MODEL.to_string()
-        }
-        (ProviderKind::Novita, "deepseek-v4-pro") => DEFAULT_NOVITA_MODEL.to_string(),
-        (ProviderKind::Novita, "deepseek-flash" | "deepseek-v4-flash") => {
-            DEFAULT_NOVITA_FLASH_MODEL.to_string()
-        }
-        (ProviderKind::Fireworks, "deepseek-v4-pro") => DEFAULT_FIREWORKS_MODEL.to_string(),
-        (ProviderKind::Fireworks, "deepseek-flash") => "deepseek-v4-flash".to_string(),
-        (
-            ProviderKind::Siliconflow | ProviderKind::SiliconflowCN,
-            "deepseek-v4-pro" | "deepseek-reasoner" | "deepseek-r1",
-        ) => DEFAULT_SILICONFLOW_MODEL.to_string(),
-        (
-            ProviderKind::Siliconflow | ProviderKind::SiliconflowCN,
-            "deepseek-flash" | "deepseek-v4-flash" | "deepseek-chat" | "deepseek-v3",
-        ) => DEFAULT_SILICONFLOW_FLASH_MODEL.to_string(),
-        (ProviderKind::Sglang, "deepseek-v4-pro") => DEFAULT_SGLANG_MODEL.to_string(),
-        (ProviderKind::Sglang, "deepseek-flash" | "deepseek-v4-flash") => {
-            DEFAULT_SGLANG_FLASH_MODEL.to_string()
-        }
-        (ProviderKind::Vllm, "deepseek-v4-pro") => DEFAULT_VLLM_MODEL.to_string(),
-        (ProviderKind::Vllm, "deepseek-flash" | "deepseek-v4-flash") => {
-            DEFAULT_VLLM_FLASH_MODEL.to_string()
-        }
-        (ProviderKind::Deepinfra, "deepseek-v4-pro" | "deepseek-v4pro") => {
-            DEFAULT_DEEPINFRA_MODEL.to_string()
-        }
-        (
-            ProviderKind::Deepinfra,
-            "deepseek-flash" | "deepseek-v4-flash" | "deepseek-chat" | "deepseek-reasoner",
-        ) => DEFAULT_DEEPINFRA_FLASH_MODEL.to_string(),
-        (ProviderKind::Together, "deepseek-v4-pro" | "deepseek-v4pro") => {
-            DEFAULT_TOGETHER_MODEL.to_string()
-        }
-        (
-            ProviderKind::Together,
-            "deepseek-flash" | "deepseek-v4-flash" | "deepseek-v4flash" | "deepseek-chat"
-            | "deepseek-reasoner",
-        ) => DEFAULT_TOGETHER_FLASH_MODEL.to_string(),
-        (ProviderKind::Together, "inkling" | "together-inkling" | "thinkingmachines/inkling") => {
-            TOGETHER_INKLING_MODEL.to_string()
-        }
-        (
-            ProviderKind::Moonshot,
-            "kimi"
-            | "kimi-k2"
-            | "kimi-k2.7"
-            | "kimi-k2-7"
-            | "kimi-k2.7-code"
-            | "kimi-k2-7-code"
-            | "kimi-code"
-            | "moonshot-kimi-k2.7-code",
-        ) => DEFAULT_MOONSHOT_MODEL.to_string(),
-        (ProviderKind::Moonshot, "kimi-k2.6" | "kimi-k2-6" | "moonshot-kimi-k2.6") => {
-            MOONSHOT_KIMI_K2_6_MODEL.to_string()
-        }
-        _ => normalized,
-    }
 }
 
 pub fn normalize_base_url(base: &str) -> String {

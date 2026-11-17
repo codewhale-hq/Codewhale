@@ -2484,7 +2484,7 @@ mod tests {
             __cw_config_init_3_value.provider = __cw_config_init_3_0;
             __cw_config_init_3_value
         };
-        let model = "unlisted-future-direct-model";
+        let model = "deepseek-unlisted-future-model";
         let before = resolve_runtime_route(&config, ProviderKind::Deepseek, Some(model)).unwrap();
         let endpoint = "https://other-provider.catalog.invalid/v1";
         let ticket = crate::provider_catalog_live::begin_refresh_for_identity(

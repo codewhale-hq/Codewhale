@@ -5997,8 +5997,16 @@ fn canonical_model_for_set(model: &str) -> &str {
     if lower == "auto" {
         return "auto";
     }
-    codewhale_config::catalog::reviewed::compatibility_alias("canonical_model_name", &lower)
-        .unwrap_or(model)
+    if lower.contains('/')
+        || codewhale_config::legacy_deepseek_alias_reasoning_effort(&lower).is_some()
+    {
+        return model;
+    }
+    codewhale_config::descriptors::provider_model_alias(
+        codewhale_config::ProviderKind::Deepseek,
+        &lower,
+    )
+    .unwrap_or(model)
 }
 
 /// The provider (and its endpoint) whose model `model set` writes.

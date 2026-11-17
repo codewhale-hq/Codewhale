@@ -6,6 +6,7 @@ use std::{
     path::PathBuf,
 };
 
+use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
 
 #[path = "src/responses_dialect_data.rs"]
@@ -74,6 +75,177 @@ fn wire(row: &Value) -> &'static str {
     }
 }
 
+fn pair_slices(map: &Value) -> String {
+    let entries = map
+        .as_object()
+        .expect("missing object map")
+        .iter()
+        .map(|(k, v)| {
+            format!(
+                "({}, {})",
+                quoted(k),
+                quoted(v.as_str().expect("string value"))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("&[{entries}]")
+}
+
+fn model_rules(row: &Value) -> String {
+    let rules = &row["models"];
+    let ids = match text(rules, "ids") {
+        "strict" => "ModelIdsPolicy::Strict",
+        "roster" => "ModelIdsPolicy::Roster",
+        "catalog" => "ModelIdsPolicy::Catalog",
+        "verbatim" => "ModelIdsPolicy::Verbatim",
+        other => panic!("unknown model ids policy {other}"),
+    };
+    format!(
+        "ModelRules {{ ids: {ids}, accept: {}, strip_prefixes: {}, aliases: {}, wire_slugs: {} }}",
+        strings(rules, "accept"),
+        strings(rules, "strip_prefixes"),
+        pair_slices(&rules["aliases"]),
+        pair_slices(&rules["wire_slugs"]),
+    )
+}
+
+struct UniqueKeys;
+
+impl<'de> Deserialize<'de> for UniqueKeys {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(UniqueKeys)
+    }
+}
+
+impl<'de> Visitor<'de> for UniqueKeys {
+    type Value = UniqueKeys;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("JSON without duplicate object keys")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self, A::Error> {
+        let mut seen = BTreeSet::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if !seen.insert(key.clone()) {
+                return Err(serde::de::Error::custom(format!("duplicate key {key}")));
+            }
+            map.next_value::<UniqueKeys>()?;
+        }
+        Ok(UniqueKeys)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self, A::Error> {
+        while seq.next_element::<UniqueKeys>()?.is_some() {}
+        Ok(UniqueKeys)
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<Self, E> {
+        Ok(UniqueKeys)
+    }
+    fn visit_i64<E>(self, _: i64) -> Result<Self, E> {
+        Ok(UniqueKeys)
+    }
+    fn visit_u64<E>(self, _: u64) -> Result<Self, E> {
+        Ok(UniqueKeys)
+    }
+    fn visit_f64<E>(self, _: f64) -> Result<Self, E> {
+        Ok(UniqueKeys)
+    }
+    fn visit_str<E>(self, _: &str) -> Result<Self, E> {
+        Ok(UniqueKeys)
+    }
+    fn visit_unit<E>(self) -> Result<Self, E> {
+        Ok(UniqueKeys)
+    }
+}
+
+fn model_key(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace(['_', ' '], "-")
+}
+
+fn glob(pattern: &[u8], value: &[u8]) -> bool {
+    match (pattern.first(), value.first()) {
+        (None, None) => true,
+        (Some(b'*'), _) => {
+            glob(&pattern[1..], value)
+                || value.first().is_some_and(|c| *c != b'/') && glob(pattern, &value[1..])
+        }
+        (Some(p), Some(v)) if p == v => glob(&pattern[1..], &value[1..]),
+        _ => false,
+    }
+}
+
+fn validate_model_rules(id: &str, rules: &Value, offerings: &BTreeMap<String, BTreeSet<String>>) {
+    let object = rules
+        .as_object()
+        .unwrap_or_else(|| panic!("{id}: models block missing"));
+    let allowed = ["ids", "accept", "strip_prefixes", "aliases", "wire_slugs"];
+    for key in object.keys() {
+        assert!(
+            allowed.contains(&key.as_str()),
+            "{id}: unknown models field {key}"
+        );
+    }
+    let ids = text(rules, "ids");
+    assert!(
+        matches!(ids, "strict" | "roster" | "catalog" | "verbatim"),
+        "{id}: unknown models.ids {ids}"
+    );
+    let accept: Vec<&str> = rules["accept"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{id}: models.accept"))
+        .iter()
+        .map(|value| value.as_str().expect("accept glob"))
+        .collect();
+    assert!(
+        ids == "strict" || accept.is_empty(),
+        "{id}: accept needs ids = strict"
+    );
+    let own = offerings.get(id);
+    let is_offering = |model: &str| {
+        own.is_some_and(|set| {
+            set.iter()
+                .any(|offered| offered.eq_ignore_ascii_case(model))
+        })
+    };
+    for table in ["aliases", "wire_slugs"] {
+        let map = rules[table]
+            .as_object()
+            .unwrap_or_else(|| panic!("{id}: models.{table}"));
+        for (key, target) in map {
+            let target = target.as_str().expect("models target");
+            assert!(
+                *key == model_key(key) && !key.is_empty(),
+                "{id}: models.{table} key {key} is not in lookup form"
+            );
+            assert!(
+                !target.is_empty() && target.trim() == target,
+                "{id}: models.{table} target for {key} is empty or padded"
+            );
+            if table == "aliases" {
+                let lower = target.to_ascii_lowercase();
+                match ids {
+                    "strict" => assert!(
+                        is_offering(target)
+                            || accept
+                                .iter()
+                                .any(|pattern| glob(pattern.as_bytes(), lower.as_bytes())),
+                        "{id}: alias {key} targets {target}, neither an offering nor accepted"
+                    ),
+                    "roster" => assert!(
+                        is_offering(target),
+                        "{id}: alias {key} targets {target}, which is not on the roster"
+                    ),
+                    "verbatim" => panic!("{id}: verbatim providers take no aliases"),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=assets/provider_descriptors.json");
     let file: Value = serde_json::from_str(
@@ -84,6 +256,45 @@ fn main() {
         file["schema_version"].as_u64(),
         Some(3),
         "unsupported provider schema"
+    );
+    let descriptor_text =
+        fs::read_to_string("assets/provider_descriptors.json").expect("provider data");
+    serde_json::from_str::<UniqueKeys>(&descriptor_text).expect("provider data has unique keys");
+    println!("cargo:rerun-if-changed=assets/models_dev.bundled.json");
+    let seed: Value = serde_json::from_str(
+        &fs::read_to_string("assets/models_dev.bundled.json").expect("bundled catalog"),
+    )
+    .expect("bundled catalog JSON");
+    let corrections: Value = serde_json::from_str(
+        &fs::read_to_string("assets/catalog_corrections.json").expect("catalog data"),
+    )
+    .expect("catalog data JSON");
+    let mut offerings: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (provider, row) in seed["providers"].as_object().expect("seed providers") {
+        for (model, offering) in row["models"].as_object().expect("seed models") {
+            let set = offerings.entry(provider.clone()).or_default();
+            set.insert(model.clone());
+            if let Some(wire) = offering["id"].as_str() {
+                set.insert(wire.to_string());
+            }
+        }
+    }
+    for transport in corrections["reviewed"]["transports"]
+        .as_array()
+        .expect("reviewed transports")
+    {
+        offerings
+            .entry(text(transport, "provider").to_string())
+            .or_default()
+            .insert(text(transport, "id").to_string());
+    }
+    for row in file["descriptors"].as_array().expect("descriptor rows") {
+        validate_model_rules(text(row, "id"), &row["models"], &offerings);
+    }
+    validate_model_rules(
+        text(&file["legacy_tui"], "id"),
+        &file["legacy_tui"]["models"],
+        &offerings,
     );
     let rows = file["providers"].as_array().expect("built-in rows");
     let mut ids = BTreeSet::new();
@@ -101,6 +312,7 @@ fn main() {
             kind.chars().all(|c| c.is_ascii_alphanumeric()),
             "invalid Rust kind"
         );
+        validate_model_rules(id, &row["models"], &offerings);
         let selectable = row["selectable"].as_bool().expect("selectable status");
         let retired = row["retired"].as_bool().expect("retired status");
         assert!(
@@ -118,8 +330,8 @@ fn main() {
         } else {
             assert!(row["selection_order"].is_null(), "non-selectable order");
         }
-        output.push_str(&format!("BuiltinProviderDescriptor {{ kind: crate::ProviderKind::{kind}, id: {}, label: {}, base_url: {}, default_model: {}, env_vars: {}, aliases: {}, config_key: {}, secret_store_slot: {}, family: {}, selectable: {selectable}, retired: {retired}, wire_policy: {}, credential_help: {} }},\n",
-            quoted(id),quoted(text(row,"label")),quoted(text(row,"base_url")),quoted(text(row,"default_model")),strings(row,"env_vars"),strings(row,"aliases"),quoted(text(row,"config_key")),quoted(text(row,"secret_store_slot")),quoted(text(row,"family")),wire(row),credential(&row["credential_help"])));
+        output.push_str(&format!("BuiltinProviderDescriptor {{ kind: crate::ProviderKind::{kind}, id: {}, label: {}, base_url: {}, default_model: {}, env_vars: {}, aliases: {}, config_key: {}, secret_store_slot: {}, family: {}, selectable: {selectable}, retired: {retired}, wire_policy: {}, credential_help: {}, models: {} }},\n",
+            quoted(id),quoted(text(row,"label")),quoted(text(row,"base_url")),quoted(text(row,"default_model")),strings(row,"env_vars"),strings(row,"aliases"),quoted(text(row,"config_key")),quoted(text(row,"secret_store_slot")),quoted(text(row,"family")),wire(row),credential(&row["credential_help"]),model_rules(row)));
     }
     output.push_str("];\n");
     // Generated exhaustive projection makes a new/missing enum variant a
@@ -521,28 +733,7 @@ fn main() {
                 .collect(),
         );
     }
-    catalog_constants.push_str("#[must_use]\npub fn compatibility_alias(group: &str, model: &str) -> Option<&'static str> { match (group, model) {\n");
-    for (group, aliases) in reviewed["compatibility_aliases"]
-        .as_object()
-        .expect("aliases")
-    {
-        let mut selectors = BTreeSet::new();
-        for (alias, target) in aliases.as_object().expect("alias map") {
-            let alias = resolve(alias);
-            let target = resolve(target.as_str().expect("alias target"));
-            assert!(
-                selectors.insert(alias.clone()),
-                "duplicate resolved selector {alias}"
-            );
-            catalog_constants.push_str(&format!(
-                "({}, {}) => Some({}),\n",
-                quoted(group),
-                quoted(&alias),
-                quoted(&target)
-            ));
-        }
-    }
-    catalog_constants.push_str("_ => None, } }\n#[must_use]\npub fn completion_names(provider: &str) -> &'static [&'static str] { match provider {\n");
+    catalog_constants.push_str("#[must_use]\npub fn completion_names(provider: &str) -> &'static [&'static str] { match provider {\n");
     for (provider, roster) in reviewed["completion_rosters"]
         .as_object()
         .expect("completion rosters")

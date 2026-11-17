@@ -15,8 +15,7 @@ use crate::display_redaction::{
 use crate::env_overrides::EnvRuntimeOverrides;
 use crate::extension_toml::HookSinksToml;
 use crate::model_normalization::{
-    default_model_for_provider, normalize_model_for_provider,
-    root_default_model_is_foreign_to_provider,
+    default_model_for_provider, root_default_model_is_foreign_to_provider,
 };
 use crate::project_config::check_config_toml_choice;
 use crate::provider_config_keys::CUSTOM_PROVIDER_FIELD_HINT;
@@ -1035,7 +1034,6 @@ impl ConfigToml {
         } else {
             ModelSource::ProviderDefault
         };
-        let explicit_model = model_source.is_explicit();
         let model = cli
             .model
             .clone()
@@ -1058,17 +1056,8 @@ impl ConfigToml {
                         .unwrap_or_else(|| default_model_for_provider(provider).to_string())
                 }
             });
-        let model = if provider == ProviderKind::OpencodeGo {
-            // OpenCode Go's `/models` response also contains models that only
-            // speak Anthropic Messages. This provider is deliberately bound to
-            // Chat Completions, so even custom endpoint/env overrides cannot
-            // promote an incompatible id onto `/chat/completions`.
-            normalize_model_for_provider(provider, &model)
-        } else if explicit_model && provider_preserves_custom_base_url_model(provider, &base_url) {
-            model.trim().to_string()
-        } else {
-            normalize_model_for_provider(provider, &model)
-        };
+        let model = crate::route::resolve_model(provider, &model, Some(&base_url))
+            .map_or_else(|_| model.trim().to_string(), |resolved| resolved.wire_id);
 
         // RouteResolver is the runtime path: the executable wire model,
         // protocol, and endpoint come from a ReadyRouteCandidate. Auth/key

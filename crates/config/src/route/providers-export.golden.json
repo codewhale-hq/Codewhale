@@ -357,6 +357,10 @@
           "canonical": "google/gemini-4-carbon"
         },
         {
+          "id": "gemini-4-hydrogen",
+          "canonical": "google/gemini-4-hydrogen"
+        },
+        {
           "id": "gemini-flash-latest"
         },
         {

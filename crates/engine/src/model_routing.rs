@@ -3410,7 +3410,7 @@ mod tests {
                 .await
                 .expect("declared-default Volcengine route should resolve");
             assert_eq!(route.provider.provider, ProviderKind::Volcengine);
-            assert_eq!(route.model, "deepseek-v4-pro");
+            assert_eq!(route.model, "DeepSeek-V4-Pro");
             assert_eq!(route.source, AutoRouteSource::Heuristic);
         }
     }

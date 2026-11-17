@@ -159,8 +159,6 @@ pub struct ReviewedCatalog {
     #[serde(default)]
     pub intrinsic: BTreeMap<String, IntrinsicModel>,
     #[serde(default)]
-    pub official_deepseek_aliases: BTreeMap<String, String>,
-    #[serde(default)]
     pub openai_reasoning_ids: BTreeMap<String, String>,
     #[serde(default)]
     pub snapshot_prefixes: BTreeMap<String, String>,
@@ -177,11 +175,7 @@ pub struct ReviewedCatalog {
     #[serde(default)]
     pub groups: BTreeMap<String, Vec<String>>,
     #[serde(default)]
-    pub compatibility_aliases: BTreeMap<String, BTreeMap<String, String>>,
-    #[serde(default)]
     pub completion_rosters: BTreeMap<String, Vec<String>>,
-    #[serde(default)]
-    pub go_aliases: BTreeMap<String, String>,
     #[serde(default)]
     pub search_models: BTreeMap<String, Vec<String>>,
     #[serde(default)]
@@ -264,15 +258,6 @@ impl ReviewedCatalog {
                 return Err(format!("malformed reference price {id}"));
             }
         }
-        for (alias, target) in self
-            .official_deepseek_aliases
-            .iter()
-            .chain(&self.go_aliases)
-        {
-            if !identifier(alias) || !identifier(target) {
-                return Err("malformed exact alias".into());
-            }
-        }
         for (prefix, target) in &self.snapshot_prefixes {
             if !identifier(prefix) || !self.intrinsic.contains_key(target) {
                 return Err("missing snapshot target".into());
@@ -303,15 +288,6 @@ impl ReviewedCatalog {
                 })
             {
                 return Err(format!("missing public model {}", row.id));
-            }
-        }
-        for (group, aliases) in &self.compatibility_aliases {
-            if !identifier(group)
-                || aliases
-                    .iter()
-                    .any(|(alias, target)| !identifier(alias) || !identifier(target))
-            {
-                return Err("malformed compatibility selector".into());
             }
         }
         for (provider, entries) in &self.completion_rosters {
@@ -486,17 +462,15 @@ pub fn public_model_identifier(model: &str) -> bool {
 
 #[must_use]
 pub fn official_deepseek_model_id(model: &str) -> Option<&'static str> {
-    bundled_reviewed()
-        .official_deepseek_aliases
-        .get(&model.trim().to_ascii_lowercase())
-        .map(String::as_str)
-}
-
-/// Exact data-owned compatibility selector. Provider/endpoint policy remains
-/// at the caller; this projection cannot choose or authorize a route.
-#[must_use]
-pub fn compatibility_alias(group: &str, model: &str) -> Option<&'static str> {
-    constants::compatibility_alias(group, model)
+    let key = model.trim().to_ascii_lowercase();
+    if !key.starts_with("deepseek") && !key.contains("/deepseek")
+        || crate::legacy_deepseek_alias_reasoning_effort(&key).is_some()
+    {
+        return None;
+    }
+    let target = crate::descriptors::provider_model_alias(crate::ProviderKind::Deepseek, &key)
+        .unwrap_or(&key);
+    crate::route::bundled_offering_wire_id(crate::ProviderKind::Deepseek, target)
 }
 
 #[must_use]
@@ -613,7 +587,7 @@ mod tests {
     fn reviewed_selection_and_transport_preserve_separate_scopes() {
         let reviewed = bundled_reviewed();
         reviewed.validate().expect("committed data");
-        assert_eq!(reviewed.selections.len(), 188);
+        assert_eq!(reviewed.selections.len(), 189);
         assert_eq!(reviewed.transports.len(), 123);
         let go = reviewed_transport("opencode-go", "gpt-5.6-luna").unwrap();
         assert_eq!(go.endpoint_key, "responses");
@@ -632,11 +606,11 @@ mod tests {
         assert!(constants::completion_names("custom").is_empty());
         assert!(constants::completion_names("antigravity").is_empty());
         assert_eq!(
-            compatibility_alias("canonical_zai_model_id", "glm-5.2"),
+            crate::descriptors::provider_model_alias(crate::ProviderKind::Zai, "glm-5.2"),
             Some("GLM-5.2")
         );
         assert_eq!(
-            compatibility_alias("canonical_zai_model_id", "glm-5.3"),
+            crate::descriptors::provider_model_alias(crate::ProviderKind::Zai, "glm-5.3"),
             Some("GLM-5.3")
         );
     }

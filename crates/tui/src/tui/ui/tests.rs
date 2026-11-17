@@ -12075,7 +12075,7 @@ api_key = "arcee-key"
     // The save decision is pending for the route-save prompt.
     let pending = app.pending_route_save.as_ref().expect("pending save");
     assert_eq!(pending.provider_identity, "xiaomi-mimo");
-    assert_eq!(pending.model, "mimo-v2.5-pro");
+    assert_eq!(pending.model, "mimo-v2.6-pro");
 }
 
 /// The first-run Ollama probe answers in the background. Once the person has

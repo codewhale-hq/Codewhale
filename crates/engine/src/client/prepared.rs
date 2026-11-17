@@ -1375,15 +1375,15 @@ mod dialect_seam_tests {
     #[test]
     fn chat_completions_preview_matches_the_production_chat_builder() {
         let client = client("deepseek", |providers| {
-            providers.deepseek = configured("sk-test-deepseek", None, "deepseek-chat");
+            providers.deepseek = configured("sk-test-deepseek", None, "deepseek-v4-pro");
         });
         let prepared = client
-            .prepare_outbound_request(request("deepseek-chat"), true)
+            .prepare_outbound_request(request("deepseek-v4-pro"), true)
             .expect("chat request prepares");
         assert_eq!(prepared.dialect, WireDialect::ChatCompletions);
 
         let reference = super::super::chat::build_chat_wire_body(
-            &preprocessed(&client, request("deepseek-chat")),
+            &preprocessed(&client, request("deepseek-v4-pro")),
             client.api_provider(),
             client.base_url(),
             true,
@@ -1501,9 +1501,9 @@ mod dialect_seam_tests {
     #[test]
     fn seam_lets_the_openai_shaped_dialects_keep_dropping_unknown_roles() {
         let client = client("deepseek", |providers| {
-            providers.deepseek = configured("sk-test-deepseek", None, "deepseek-chat");
+            providers.deepseek = configured("sk-test-deepseek", None, "deepseek-v4-pro");
         });
-        let mut request = request("deepseek-chat");
+        let mut request = request("deepseek-v4-pro");
         request.messages.push(message(
             Role::Unrecognized("future_role".to_string()),
             "from a newer build",
@@ -1704,9 +1704,9 @@ mod dialect_seam_tests {
         // Guards against the reviewed failure mode: projecting every route
         // through the Chat builder would make these collide.
         let chat = client("deepseek", |providers| {
-            providers.deepseek = configured("sk-test-deepseek", None, "deepseek-chat");
+            providers.deepseek = configured("sk-test-deepseek", None, "deepseek-v4-pro");
         })
-        .prepare_outbound_request(request("deepseek-chat"), true)
+        .prepare_outbound_request(request("deepseek-v4-pro"), true)
         .expect("chat prepares");
         let codex = codex_client();
         let responses = codex
@@ -1720,13 +1720,13 @@ mod dialect_seam_tests {
     #[test]
     fn streaming_and_blocking_bodies_are_distinguished_not_conflated() {
         let client = client("deepseek", |providers| {
-            providers.deepseek = configured("sk-test-deepseek", None, "deepseek-chat");
+            providers.deepseek = configured("sk-test-deepseek", None, "deepseek-v4-pro");
         });
         let streaming = client
-            .prepare_outbound_request(request("deepseek-chat"), true)
+            .prepare_outbound_request(request("deepseek-v4-pro"), true)
             .expect("streaming prepares");
         let blocking = client
-            .prepare_outbound_request(request("deepseek-chat"), false)
+            .prepare_outbound_request(request("deepseek-v4-pro"), false)
             .expect("blocking prepares");
 
         assert_eq!(streaming.entrypoint, CallerStreamMode::Streaming);
@@ -1771,15 +1771,27 @@ mod dialect_seam_tests {
     #[test]
     fn preparation_is_deterministic_across_repeated_calls() {
         let client = client("deepseek", |providers| {
-            providers.deepseek = configured("sk-test-deepseek", None, "deepseek-chat");
+            providers.deepseek = configured("sk-test-deepseek", None, "deepseek-v4-pro");
         });
         let first = client
-            .prepare_outbound_request(request("deepseek-chat"), true)
+            .prepare_outbound_request(request("deepseek-v4-pro"), true)
             .expect("first prepares");
         let second = client
-            .prepare_outbound_request(request("deepseek-chat"), true)
+            .prepare_outbound_request(request("deepseek-v4-pro"), true)
             .expect("second prepares");
         assert_eq!(first.body_sha256(), second.body_sha256());
         assert_eq!(first.endpoint_fingerprint(), second.endpoint_fingerprint());
+    }
+
+    #[test]
+    fn legacy_deepseek_chat_alias_resolves_to_flash_responses_route() {
+        let client = client("deepseek", |providers| {
+            providers.deepseek = configured("sk-test-deepseek", None, "deepseek-chat");
+        });
+        let prepared = client
+            .prepare_outbound_request(request("deepseek-chat"), true)
+            .expect("legacy alias prepares");
+        assert_eq!(prepared.dialect, WireDialect::OpenAiResponses);
+        assert_eq!(prepared.wire_model, "deepseek-flash");
     }
 }

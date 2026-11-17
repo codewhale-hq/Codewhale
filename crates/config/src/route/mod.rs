@@ -64,7 +64,9 @@ pub use offering::{
     opencode_zen_endpoint_key_for_npm, opencode_zen_picker_models,
 };
 pub use policy::{CatalogPolicy, PolicyAction, PolicyEffect, PolicyRule};
-pub use resolver::{RouteRequest, RouteResolver};
+pub use resolver::{
+    ResolvedModel, RouteRequest, RouteResolver, bundled_offering_wire_id, resolve_model,
+};
 
 #[cfg(test)]
 mod conformance_tests;

@@ -42,7 +42,7 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-11-13T04:43:39.245Z",
+  "generatedAt": "2026-11-17T22:35:34.658Z",
   "sourceRevision": null,
   "sourceCommittedAt": null,
   "version": "0.10.3",
@@ -350,6 +350,14 @@ export const FACTS: RepoFacts = {
     }
   ],
   "models": [
+    {
+      "id": "gemini-4-hydrogen",
+      "provider": "Google",
+      "contextWindow": 1048576,
+      "maxOutput": 65536,
+      "reasoning": true,
+      "addedAt": "2026-11-12"
+    },
     {
       "id": "gemini-4-carbon",
       "provider": "Google",

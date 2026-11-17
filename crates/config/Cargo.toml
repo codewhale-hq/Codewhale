@@ -42,4 +42,5 @@ tracing.workspace = true
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [build-dependencies]
+serde.workspace = true
 serde_json.workspace = true

@@ -2236,7 +2236,7 @@ fn explicit_launch_provider_overrides_saved_startup_provider() {
     let app = App::new(options, &config);
 
     assert_eq!(app.api_provider, ProviderKind::XiaomiMimo);
-    assert_eq!(app.model, "mimo-v2.5-pro");
+    assert_eq!(app.model, "mimo-v2.6-pro");
 }
 
 #[test]

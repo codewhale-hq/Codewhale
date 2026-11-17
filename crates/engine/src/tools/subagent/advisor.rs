@@ -859,7 +859,7 @@ mod tests {
             let __cw_config_init_0_1 = Some(ProvidersConfig {
                 deepseek: ProviderConfig {
                     api_key: Some("sk-deepseek-advisor-test".to_string()),
-                    model: Some("deepseek-chat".to_string()),
+                    model: Some("deepseek-v4-pro".to_string()),
                     ..ProviderConfig::default()
                 },
                 zai: ProviderConfig {
@@ -901,7 +901,7 @@ mod tests {
             let __cw_config_init_1_1 = Some(ProvidersConfig {
                 deepseek: ProviderConfig {
                     api_key: Some("sk-deepseek-advisor-test".to_string()),
-                    model: Some("deepseek-chat".to_string()),
+                    model: Some("deepseek-v4-pro".to_string()),
                     ..ProviderConfig::default()
                 },
                 custom: [(
@@ -992,7 +992,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut provider_response = serde_json::json!({
             "id": "advisor-provider-response",
-            "model": "deepseek-chat",
+            "model": "deepseek-v4-pro",
             "choices": [{
                 "index": 0,
                 "message": {"role": "assistant", "content": note},
@@ -1017,7 +1017,7 @@ mod tests {
             let __cw_config_init_3_1 = Some(ProvidersConfig {
                 deepseek: ProviderConfig {
                     api_key: Some("sk-deepseek-advisor-test".to_string()),
-                    model: Some("deepseek-chat".to_string()),
+                    model: Some("deepseek-v4-pro".to_string()),
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
@@ -1053,7 +1053,7 @@ mod tests {
             },
             client,
             route_config,
-            "deepseek-chat".to_string(),
+            "deepseek-v4-pro".to_string(),
             AdvisorUsageContext::capture(Some(origin)),
             guard,
             tx,
