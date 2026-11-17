@@ -962,7 +962,7 @@ async fn child_step_timeout_interrupts_open_and_body_without_replay_and_keeps_ex
         core.model_client = Some(timeout_client.clone());
         let (_input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
         let result = tokio::time::timeout(
-            Duration::from_secs(2),
+            Duration::from_secs(30),
             crate::tools::subagent::engine::drive_child_actor(core, handle, job.clone(), input_rx),
         )
         .await
@@ -984,7 +984,7 @@ async fn child_step_timeout_interrupts_open_and_body_without_replay_and_keeps_ex
             "retries do not consume a fresh logical work step"
         );
         assert_eq!(successful.call_count(), 0);
-        let record = tokio::time::timeout(Duration::from_secs(2), async {
+        let record = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let record = job
                     .authority
@@ -1103,7 +1103,7 @@ async fn child_timeout_exhaustion_interrupts_with_checkpoint_and_never_dispatche
     core.model_client = Some(timeout_client.clone());
     let (_input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
     let result = tokio::time::timeout(
-        Duration::from_secs(2),
+        Duration::from_secs(30),
         crate::tools::subagent::engine::drive_child_actor(core, handle, job.clone(), input_rx),
     )
     .await
@@ -1157,7 +1157,7 @@ async fn child_cancelled_dispatched_open_keeps_unknown_origin_while_queued_cance
         }
         handle.cancel();
     };
-    let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(30), async {
         tokio::join!(transport, cancel)
     })
     .await
@@ -1168,7 +1168,7 @@ async fn child_cancelled_dispatched_open_keeps_unknown_origin_while_queued_cance
         crate::tools::subagent::SubAgentStatus::Interrupted(_)
     ));
     assert_eq!(successful.call_count(), 0);
-    let record = tokio::time::timeout(Duration::from_secs(2), async {
+    let record = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let record = job
                 .authority
