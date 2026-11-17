@@ -107,7 +107,12 @@ function derOid(bytes) {
 }
 
 function derInt(bytes) {
-  const buf = Buffer.from(bytes);
+  let buf = Buffer.from(bytes);
+  let start = 0;
+  while (start < buf.length - 1 && buf[start] === 0) {
+    start += 1;
+  }
+  buf = buf.subarray(start);
   return derTag(0x02, buf[0] & 0x80 ? Buffer.concat([Buffer.from([0]), buf]) : buf);
 }
 
