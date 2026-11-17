@@ -2541,7 +2541,7 @@ async fn detached_interactive_usage_after_mailbox_seal_reaches_session_accountin
     release_usage_tx
         .send(())
         .expect("detached child remains live after mailbox seal");
-    let cases = tokio::time::timeout(Duration::from_secs(2), child)
+    let cases = tokio::time::timeout(HANG_GUARD, child)
         .await
         .expect("detached usage settles after the sealed parent turn")
         .expect("detached usage task exits cleanly");

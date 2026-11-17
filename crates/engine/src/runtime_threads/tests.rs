@@ -2410,7 +2410,7 @@ const EVENT_PROCESS_COUNT_ENV: &str = "CODEWHALE_TEST_EVENT_PROCESS_COUNT";
 const EVENT_PROCESS_HELPER: &str = "runtime_threads::tests::runtime_event_process_child_helper";
 // Deadlock ceiling for monitor settlement in the 10k-test lib binary. This is
 // a test watchdog, not an expected runtime latency or a customer-facing SLO.
-const TURN_SETTLEMENT_DEADLOCK_TIMEOUT: Duration = Duration::from_secs(10);
+const TURN_SETTLEMENT_DEADLOCK_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Durable record ids carry a full UUID: records live in flat per-kind
 /// directories and a save replaces by id, so a short suffix would let one
@@ -17105,7 +17105,7 @@ async fn terminal_turn_cancels_pending_dynamic_tool_exactly_once() -> Result<()>
         )
         .await
     });
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(TURN_SETTLEMENT_DEADLOCK_TIMEOUT, async {
         loop {
             if !manager
                 .get_thread_detail(&thread.id)
@@ -17143,7 +17143,7 @@ async fn terminal_turn_cancels_pending_dynamic_tool_exactly_once() -> Result<()>
         .context("dynamic tool task panicked")?
         .expect_err("terminal turn unexpectedly resolved the dynamic tool");
 
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(TURN_SETTLEMENT_DEADLOCK_TIMEOUT, async {
         loop {
             let detail = manager.get_thread_detail(&thread.id).await?;
             let canceled = manager
@@ -19237,7 +19237,7 @@ async fn steer_receipts_outlive_caller_cancellation_after_engine_acceptance() ->
             .await
     });
     assert_eq!(
-        tokio::time::timeout(Duration::from_secs(2), rx_steer.recv())
+        tokio::time::timeout(TURN_SETTLEMENT_DEADLOCK_TIMEOUT, rx_steer.recv())
             .await?
             .map(|steer| steer.into_pending().commit()),
         Some("keep the accepted steer".to_string())
@@ -19251,7 +19251,7 @@ async fn steer_receipts_outlive_caller_cancellation_after_engine_acceptance() ->
     );
     drop(emit_guard);
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + TURN_SETTLEMENT_DEADLOCK_TIMEOUT;
     loop {
         let events = manager.events_since(&thread.id, None)?;
         let steered = events.iter().any(|event| event.event == "turn.steered");
@@ -19270,7 +19270,7 @@ async fn steer_receipts_outlive_caller_cancellation_after_engine_acceptance() ->
         if Instant::now() >= deadline {
             bail!("detached steer receipts were not persisted after caller cancellation");
         }
-        tokio::task::yield_now().await;
+        sleep(Duration::from_millis(10)).await;
     }
 
     let persisted_turn = manager.store.load_turn(&turn.id)?;
