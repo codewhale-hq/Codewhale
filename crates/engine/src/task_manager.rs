@@ -3146,6 +3146,15 @@ impl TaskManager {
                 // deadline race. Drain only the events queued at this instant
                 // so a producer cannot keep the watchdog from re-evaluating
                 // wall time, shutdown, or explicit cancellation indefinitely.
+                execution_started = true;
+                let polled_result = tokio::select! {
+                    biased;
+                    result = &mut exec_fut => Some(result),
+                    _ = std::future::ready(()) => None,
+                };
+                if let Some(result) = polled_result {
+                    break (guard.preserve_timeout_reason(result), false);
+                }
                 let queued = event_rx.len();
                 for _ in 0..queued {
                     if blocked_event.is_some() {
