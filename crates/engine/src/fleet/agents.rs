@@ -406,6 +406,7 @@ pub fn version_token(text: &str) -> Option<String> {
                 .take(MAX_VERSION_CHARS)
                 .collect::<String>()
                 .trim()
+                .trim_end_matches('.')
                 .to_string()
         })
 }
@@ -792,6 +793,8 @@ mod tests {
             "echo \"agent v1.5.2 (build)\"; echo noise >&2",
         );
         assert_eq!(cli_version(&good).await.as_deref(), Some("1.5.2"));
+        let sentence = script(&dir, "sentence", "echo \"GitHub Copilot CLI 1.0.82.\"");
+        assert_eq!(cli_version(&sentence).await.as_deref(), Some("1.0.82"));
         let flood = script(
             &dir,
             "flood",
