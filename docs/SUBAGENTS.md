@@ -1046,6 +1046,28 @@ append durable notes via the `remember` tool — handy for a
 scout that discovers a project convention worth carrying across
 sessions, or a verifier that learns "this test is flaky".
 
+A child also *reads* the same reviewed memory the parent reads. Its system
+prompt carries the parent session's `codewhale.memory.context.v1` packet,
+followed by the same `## Memory Hygiene` guidance the root prompt uses
+(`crates/engine/src/tools/subagent/mod.rs`, `subagent_memory_section`), so a
+rule the user pinned — a deployment gate, a working-directory rule — binds the
+child that actually edits files rather than only the orchestrator. The packet
+is re-composed from the inherited `memory_path` instead of copied out of the
+parent's prompt, so a memory edited mid-session reaches a later spawn, and an
+isolated worktree still resolves to the same workspace scope through its
+shared git remote. Children record no context receipt of their own; the root
+session's preparation is the receipt for those bytes. With memory disabled,
+path absent, empty store, or every entry reviewed off, nothing is injected —
+no empty envelope.
+
+Consequences worth knowing: the packet is untrusted evidence with the same
+standing it has for the parent (it is not an authority channel), and it sits
+in the child's stable prefix, so a memory edit changes child prompt bytes the
+same way it changes the parent's pinned header. A workspace identity is
+resolved from the child's own workspace; a non-git workspace with a child
+`cwd` in a subdirectory resolves to a different identity and therefore misses
+workspace-scoped memory (global memory still applies).
+
 `remember` takes a `scope` of `global` or `workspace`
 (`crates/engine/src/tools/remember.rs`, schema enum plus scope handling) and
 writes through `NativeMemoryStore` to `~/.codewhale/memory/global/MEMORY.md`
