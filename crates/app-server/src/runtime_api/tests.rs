@@ -1784,6 +1784,24 @@ fn parse_sse_frame(frame: &str) -> Result<(String, serde_json::Value)> {
     Ok((event_name, payload))
 }
 
+async fn poll_thread_detail(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    thread_id: &str,
+) -> Result<serde_json::Value> {
+    let response = client
+        .get(format!("http://{addr}/v1/threads/{thread_id}"))
+        .send()
+        .await?;
+    let status = response.status();
+    if !status.is_success() {
+        let url = response.url().clone();
+        let body = response.text().await.unwrap_or_default();
+        bail!("HTTP {status} for {url}: {body}");
+    }
+    Ok(response.json().await?)
+}
+
 /// Polls until the turn is terminal. `timeout` only bounds how long a stuck
 /// turn takes to fail the test, so keep it generous: a loaded shared-process
 /// `cargo test` run can take seconds to settle a mock turn (#6698).
@@ -1795,29 +1813,33 @@ async fn wait_for_terminal_turn_status(
     timeout: Duration,
 ) -> Result<String> {
     let deadline = tokio::time::Instant::now() + ci_scaled(timeout);
+    let mut last_poll_error: Option<String> = None;
     loop {
-        let detail: serde_json::Value = client
-            .get(format!("http://{addr}/v1/threads/{thread_id}"))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        let status = detail["turns"]
-            .as_array()
-            .and_then(|turns| turns.iter().find(|turn| turn["id"] == turn_id))
-            .and_then(|turn| turn.get("status"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        if matches!(
-            status.as_str(),
-            "completed" | "failed" | "interrupted" | "canceled"
-        ) {
-            return Ok(status);
+        match poll_thread_detail(client, addr, thread_id).await {
+            Ok(detail) => {
+                let status = detail["turns"]
+                    .as_array()
+                    .and_then(|turns| turns.iter().find(|turn| turn["id"] == turn_id))
+                    .and_then(|turn| turn.get("status"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if matches!(
+                    status.as_str(),
+                    "completed" | "failed" | "interrupted" | "canceled"
+                ) {
+                    return Ok(status);
+                }
+            }
+            Err(error) => last_poll_error = Some(format!("{error:#}")),
         }
         if tokio::time::Instant::now() >= deadline {
-            bail!("timed out waiting for terminal turn status for {turn_id}");
+            match &last_poll_error {
+                Some(error) => bail!(
+                    "timed out waiting for terminal turn status for {turn_id}; last thread poll failed: {error}"
+                ),
+                None => bail!("timed out waiting for terminal turn status for {turn_id}"),
+            }
         }
         sleep(Duration::from_millis(25)).await;
     }
@@ -1830,22 +1852,26 @@ async fn wait_for_in_progress_item(
     timeout: Duration,
 ) -> Result<()> {
     let deadline = tokio::time::Instant::now() + ci_scaled(timeout);
+    let mut last_poll_error: Option<String> = None;
     loop {
-        let detail: serde_json::Value = client
-            .get(format!("http://{addr}/v1/threads/{thread_id}"))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        if detail["items"]
-            .as_array()
-            .is_some_and(|items| items.iter().any(|item| item["status"] == "in_progress"))
-        {
-            return Ok(());
+        match poll_thread_detail(client, addr, thread_id).await {
+            Ok(detail) => {
+                if detail["items"]
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(|item| item["status"] == "in_progress"))
+                {
+                    return Ok(());
+                }
+            }
+            Err(error) => last_poll_error = Some(format!("{error:#}")),
         }
         if tokio::time::Instant::now() >= deadline {
-            bail!("timed out waiting for in-progress item in thread {thread_id}");
+            match &last_poll_error {
+                Some(error) => bail!(
+                    "timed out waiting for in-progress item in thread {thread_id}; last thread poll failed: {error}"
+                ),
+                None => bail!("timed out waiting for in-progress item in thread {thread_id}"),
+            }
         }
         sleep(Duration::from_millis(25)).await;
     }
