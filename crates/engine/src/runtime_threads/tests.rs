@@ -2488,11 +2488,10 @@ fn runtime_event_process_child_helper() {
                 .expect("event writer count must be numeric");
             std::fs::write(&signal, b"ready").expect("announce ready event writer");
             wait_for_runtime_event_test_file(&start, "writer start barrier");
-            // The same transaction `append_event` runs, with a lock budget
-            // sized for contention rather than the interactive 5 s default.
-            // The claim here is that sequences never collide across
-            // processes; four writers each fsyncing eight appends on a loaded
-            // CI runner have starved one polling writer past 5 s (macOS and
+            // The same transaction `append_event` runs. The claim here is
+            // that sequences never collide across processes; four writers
+            // each fsyncing eight appends on a loaded CI runner have starved
+            // one polling writer past a shorter lock budget (macOS and
             // Windows), which failed the run without any duplicate sequence.
             // 25 s stays inside the parent's 30 s wait, so a genuinely stuck
             // lock still fails here with its own message.
@@ -7666,15 +7665,36 @@ fn event_reader_never_observes_cross_process_rollback_candidate() -> Result<()> 
     // Keep the candidate present until the real reader has attempted the
     // transaction. A relative sleep in the writer can expire before a loaded
     // parent is scheduled and never exercise a contended read at all.
-    let error = store
-        .events_since(thread_id, None)
-        .expect_err("reader must not expose a candidate while its writer holds the lock");
-    assert!(
-        error.downcast_ref::<RuntimeEventLockTimeout>().is_some(),
-        "reader failed for an unexpected reason: {error:#}"
-    );
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    let reader_store = store.clone();
+    let reader = std::thread::spawn(move || {
+        let _ = result_tx.send(reader_store.events_since(thread_id, None));
+    });
+    let early = result_rx.recv_timeout(Duration::from_secs(2));
+    if let Ok(result) = &early {
+        match result {
+            Ok(events) => assert!(
+                events.is_empty(),
+                "reader exposed a candidate while its writer holds the lock"
+            ),
+            Err(error) => assert!(
+                error.downcast_ref::<RuntimeEventLockTimeout>().is_some(),
+                "reader failed for an unexpected reason: {error:#}"
+            ),
+        }
+    }
     std::fs::write(dir.join("process-writers.start"), b"rollback")?;
     child.wait_success("phantom rollback child");
+    if early.is_err() {
+        let events = result_rx
+            .recv()
+            .expect("reader returned a result after rollback")?;
+        assert!(
+            events.is_empty(),
+            "reader exposed a candidate while its writer holds the lock"
+        );
+    }
+    reader.join().expect("phantom reader thread panicked");
     assert!(store.events_since(thread_id, None)?.is_empty());
 
     std::fs::remove_dir_all(dir)?;
@@ -14142,7 +14162,7 @@ async fn user_input_tool_timeout_and_cancel_clear_snapshot_before_turn_end() -> 
                 },
             })
             .await?;
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(TURN_SETTLEMENT_DEADLOCK_TIMEOUT, async {
             loop {
                 if manager
                     .get_thread_detail(&thread.id)

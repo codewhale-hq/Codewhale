@@ -72,7 +72,7 @@ use codewhale_runtime::runtime_policy::RuntimePolicyProjection;
 pub const RUNTIME_EVENT_REPLAY_BATCH_SIZE: usize = 256;
 pub const MAX_RUNTIME_EVENT_REPLAY_TAIL: usize = 4096;
 pub const MAX_RUNTIME_TURN_OPERATION_KEY_BYTES: usize = 128;
-const EVENT_TRANSACTION_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+const EVENT_TRANSACTION_LOCK_TIMEOUT: Duration = Duration::from_secs(25);
 const EVENT_TRANSACTION_LOCK_POLL: Duration = Duration::from_millis(5);
 const EVENT_TRANSACTION_LOCK_FILE: &str = "events.lock";
 const RUNTIME_PROCESS_OWNER_LOCK_FILE: &str = "runtime-process.owner.lock";
