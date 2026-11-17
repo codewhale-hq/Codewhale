@@ -1,8 +1,5 @@
-mod acp_support;
-#[path = "../../engine/tests/support/acp_conformance.rs"]
-mod conformance;
-
-use acp_support::{Client, fixture_config, text_of, updates};
+use crate::acp_support::{Client, fixture_config, text_of, updates};
+use crate::conformance::{Allowed, Conformance, Side};
 use agent_client_protocol_schema::ProtocolVersion;
 use agent_client_protocol_schema::v1 as acp;
 use anyhow::{Result, anyhow};
@@ -11,7 +8,6 @@ use codewhale_engine::llm_client::mock::{MockLlmClient, canned};
 use codewhale_engine::runtime_threads::manager::{
     RuntimeThreadManager, RuntimeThreadManagerConfig,
 };
-use conformance::{Allowed, Conformance, Side};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::sync::Arc;

@@ -1096,7 +1096,7 @@ codewhale --version
 codewhale doctor
 ```
 
-`rquickjs` 的 FreeBSD 绑定在构建时通过 `bindgen` 生成（见 `1582ba965`/`5eb0385e8`）。目前还没有单独的 `pkg install codewhale` 端口——原生端口作为 #1097 的后续工作，记录在 `packaging/freebsd/` 之下（欢迎贡献）。请在 release 分支上用 `cargo check --target x86_64-unknown-freebsd -p codewhale-cli --locked` 验证；7×1 发布矩阵（Linux musl x64/arm64、Android arm64、macOS x64/arm64、Windows x64/arm64）仍是 7 个目标——FreeBSD 是源码构建目标，不是预编译资源。
+`rquickjs` 的 FreeBSD 绑定在构建时通过 `bindgen` 生成（见 `1582ba965`/`5eb0385e8`）。目前还没有单独的 `pkg install codewhale` 端口——原生端口作为 #1097 的后续工作，记录在 `packaging/freebsd/` 之下（欢迎贡献）。请在 release 分支上用 `cargo check --target x86_64-unknown-freebsd -p codewhale-cli --locked` 验证；8×1 发布矩阵（Linux musl x64/arm64、Android arm64、macOS x64/arm64、Windows x64/arm64、OpenHarmony arm64）仍是 8 个目标——FreeBSD 是源码构建目标，不是预编译资源。
 
 #### 从 x64 交叉编译到 ARM64 Linux
 

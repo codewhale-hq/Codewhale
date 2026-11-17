@@ -1667,8 +1667,8 @@ The `rquickjs` FreeBSD bindings are generated at build time via `bindgen` (see
 `1582ba965`/`5eb0385e8`). No separate `pkg install codewhale` port exists yet —
 a native port is tracked as the follow-up to #1097 under `packaging/freebsd/`
 (contributions welcome). Validate with `cargo check --target x86_64-unknown-freebsd -p codewhale-cli --locked`
-on the release branch; the 7×1 release matrix (Linux musl x64/arm64,
-Android arm64, macOS x64/arm64, Windows x64/arm64) stays 7 targets — FreeBSD is a
+on the release branch; the 8×1 release matrix (Linux musl x64/arm64,
+Android arm64, macOS x64/arm64, Windows x64/arm64, OpenHarmony arm64) stays 8 targets — FreeBSD is a
 source-build target, not a prebuilt asset.
 
 #### Cross-compiling from x64 to ARM64 Linux

@@ -104,7 +104,7 @@ jobs:
         # does not run them.
         # The runner has been shut down during this step's build on several
         # candidates (exit 143, no test result). The same headroom trace as
-        # ci.yml's test step records whether memory or disk ran out, starting
+        # ci-test-suite.yml's shard step records whether memory or disk ran out, starting
         # with what the earlier check and clippy steps left behind.
         shell: bash
         run: |
@@ -121,7 +121,7 @@ jobs:
           CARGO_BUILD_JOBS: '1'
           # Match the CI test lane: test threads get the same stack the product
           # gives itself (main.rs CODEWHALE_MAIN_STACK_BYTES). See the note in
-          # ci.yml's "Run tests" step. Without it this gate runs the deep
+          # ci-test-suite.yml's "Run tests" step. Without it this gate runs the deep
           # engine/runtime futures on a stack that never ships.
           RUST_MIN_STACK: '16777216'
       - name: Workspace doctests

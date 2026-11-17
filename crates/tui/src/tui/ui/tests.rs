@@ -8,8 +8,8 @@ use super::observer_hooks::{
     turn_end_observer_metadata,
 };
 use super::task_projection::{
-    ShellExecLiveUpdate, active_rlm_task_entries, newly_terminal, refresh_shell_exec_live_output,
-    shell_exec_live_update,
+    LiveRefresh, ShellExecLiveUpdate, active_rlm_task_entries, apply_shell_job_snapshots,
+    newly_terminal, refresh_shell_exec_live_output, shell_exec_live_update,
 };
 use super::*;
 use crate::tui::active_cell::ActiveCell;
@@ -10173,14 +10173,18 @@ fn shell_live_output_refresh_does_not_block_on_contended_lock() {
 
     let guard = shell_mgr.lock().expect("hold shell lock");
     let changed = refresh_shell_exec_live_output(&mut app);
-    assert!(
-        !changed,
+    assert_eq!(
+        changed,
+        LiveRefresh::Unchanged,
         "contended live-output refresh should skip this frame, not block or update"
     );
     drop(guard);
 
     // With the lock free again the path runs normally (no jobs → no change).
-    assert!(!refresh_shell_exec_live_output(&mut app));
+    assert_eq!(
+        refresh_shell_exec_live_output(&mut app),
+        LiveRefresh::Unchanged
+    );
 }
 
 #[test]
@@ -10276,7 +10280,11 @@ fn refresh_shell_exec_live_output_finalizes_restored_missing_shell_job() {
 
     let changed = refresh_shell_exec_live_output(&mut app);
 
-    assert!(changed, "detached shell exec should be finalized");
+    assert_eq!(
+        changed,
+        LiveRefresh::Changed,
+        "detached shell exec should be finalized"
+    );
     let HistoryCell::Tool(ToolCell::Exec(exec)) = &app.history[0] else {
         panic!("expected exec cell");
     };
@@ -35066,11 +35074,17 @@ async fn background_review_fast_durable_completion_survives_inventory_failures()
     let queue = root.path().join("queue.json");
     let saved = std::fs::read(&queue)?;
     std::fs::write(&queue, b"{corrupt")?;
-    assert!(super::task_projection::refresh_active_task_panel(&mut app, &tasks).await);
+    assert_eq!(
+        super::task_projection::refresh_active_task_panel(&mut app, &tasks).await,
+        LiveRefresh::Changed
+    );
     assert!(app.task_panel_unavailable);
     assert!(app.task_panel.iter().any(|row| row.id == record.id));
     app.current_session_id = Some("session-b".into());
-    assert!(super::task_projection::refresh_active_task_panel(&mut app, &tasks).await);
+    assert_eq!(
+        super::task_projection::refresh_active_task_panel(&mut app, &tasks).await,
+        LiveRefresh::Changed
+    );
     assert!(app.task_panel_unavailable);
     assert!(
         app.task_panel.is_empty(),
@@ -36683,4 +36697,259 @@ fn the_terminal_sends_with_auto_routing_and_no_usage_origin() {
     );
     assert!(prepared.should_auto_resolve);
     assert!(prepared.accounting_origin.is_none());
+}
+
+#[test]
+fn a_running_background_shell_job_ticking_its_elapsed_time_lets_the_loop_go_quiet() {
+    let mut app = create_test_app();
+    app.current_session_id = Some("quiet-session".to_string());
+    let manager = app
+        .runtime_services
+        .shell_manager
+        .clone()
+        .expect("shell manager");
+    let task_id = manager
+        .lock()
+        .unwrap()
+        .execute_with_options_env_for_session(
+            "sleep 60",
+            None,
+            1_000,
+            true,
+            None,
+            false,
+            None,
+            std::collections::HashMap::new(),
+            "quiet-session",
+        )
+        .expect("spawn background sleep")
+        .task_id
+        .expect("background task id");
+    app.push_history_cell(HistoryCell::Tool(ToolCell::Exec(ExecCell {
+        command: "sleep 60".to_string(),
+        status: ToolStatus::Running,
+        output: None,
+        live_output: None,
+        shell_task_id: Some(task_id.clone()),
+        owner_agent_id: None,
+        owner_agent_name: None,
+        started_at: None,
+        duration_ms: None,
+        stale_elapsed_since_output_ms: None,
+        waiting: None,
+        source: ExecSource::Assistant,
+        description: None,
+        interaction: None,
+        output_summary: None,
+    })));
+
+    assert_eq!(
+        refresh_shell_exec_live_output(&mut app),
+        LiveRefresh::ElapsedOnly
+    );
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(
+        refresh_shell_exec_live_output(&mut app),
+        LiveRefresh::ElapsedOnly,
+        "elapsed time alone must not count as UI activity"
+    );
+    let HistoryCell::Tool(ToolCell::Exec(exec)) = &app.history[0] else {
+        panic!("expected exec cell");
+    };
+    assert!(exec.duration_ms.is_some_and(|ms| ms >= 30));
+
+    manager.lock().unwrap().kill(&task_id).expect("kill sleep");
+    assert_eq!(
+        refresh_shell_exec_live_output(&mut app),
+        LiveRefresh::Changed,
+        "the job finishing is a real change"
+    );
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct SilentJobWindow {
+    wakes: u32,
+    redraws: u32,
+    changes: u32,
+    shortest_idle_poll: Option<Duration>,
+}
+
+fn simulate_silent_background_job(
+    fancy_animations: bool,
+    windows: &[(u64, u64)],
+) -> Vec<SilentJobWindow> {
+    let mut app = create_test_app();
+    app.onboarding = OnboardingState::None;
+    app.low_motion = false;
+    app.fancy_animations = fancy_animations;
+    app.current_session_id = Some("quiet-session".to_string());
+    app.push_history_cell(HistoryCell::Tool(ToolCell::Exec(ExecCell {
+        command: "sleep 600".to_string(),
+        status: ToolStatus::Running,
+        output: None,
+        live_output: None,
+        shell_task_id: Some("shell_quiet".to_string()),
+        owner_agent_id: None,
+        owner_agent_name: None,
+        started_at: None,
+        duration_ms: None,
+        stale_elapsed_since_output_ms: None,
+        waiting: None,
+        source: ExecSource::Assistant,
+        description: None,
+        interaction: None,
+        output_summary: None,
+    })));
+    app.needs_redraw = false;
+    let job_at = |elapsed: Duration| {
+        let ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        let mut jobs = std::collections::HashMap::new();
+        jobs.insert(
+            "shell_quiet".to_string(),
+            ShellJobSnapshot {
+                id: "shell_quiet".to_string(),
+                job_id: "shell_quiet".to_string(),
+                command: "sleep 600".to_string(),
+                description: None,
+                cwd: PathBuf::from("/tmp/repo"),
+                status: ShellStatus::Running,
+                exit_code: None,
+                elapsed_ms: ms,
+                started_at: Some(chrono::Utc::now()),
+                cause: None,
+                producer_reported: false,
+                stdout_tail: String::new(),
+                stderr_tail: String::new(),
+                stdout_len: 0,
+                stderr_len: 0,
+                stdin_available: false,
+                stale: false,
+                elapsed_since_output_ms: Some(ms),
+                linked_task_id: None,
+                owner_agent_id: None,
+                owner_agent_name: None,
+                origin_tool_call_id: None,
+                origin_turn_id: None,
+                owner_session_id: "quiet-session".to_string(),
+                background: true,
+                finished_at: None,
+            },
+        );
+        jobs
+    };
+
+    let start = Instant::now();
+    let end = Duration::from_secs(windows.iter().map(|(_, to)| *to).max().unwrap_or(0));
+    let mut clock = IdleClock::new(start);
+    let mut stats = vec![SilentJobWindow::default(); windows.len()];
+    let mut last_task_refresh: Option<Duration> = None;
+    let mut last_status_frame: Option<Duration> = None;
+    let mut t = Duration::ZERO;
+    while t < end {
+        let now = start + t;
+        let in_windows: Vec<usize> = windows
+            .iter()
+            .enumerate()
+            .filter(|(_, (from, to))| {
+                t >= Duration::from_secs(*from) && t < Duration::from_secs(*to)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        if last_task_refresh
+            .is_none_or(|last| t.saturating_sub(last) >= Duration::from_millis(2500))
+        {
+            let jobs = job_at(t);
+            let snapshots = jobs.values().cloned().collect::<Vec<_>>();
+            let mut rows = Vec::new();
+            let finished =
+                super::task_projection::project_shell_jobs(&mut app, &mut rows, &snapshots);
+            let panel = super::task_projection::fold_task_panel(&mut app, rows, finished);
+            match apply_shell_job_snapshots(&mut app, &jobs).max(panel) {
+                LiveRefresh::Changed => {
+                    app.needs_redraw = true;
+                    for &index in &in_windows {
+                        stats[index].changes += 1;
+                    }
+                }
+                LiveRefresh::ElapsedOnly => clock.note_elapsed_only_change(),
+                LiveRefresh::Unchanged => {}
+            }
+            last_task_refresh = Some(t);
+        }
+        let status_motion = super::motion::should_tick_status_animation(
+            &app,
+            false,
+            super::motion::history_has_live_motion(&app.history),
+            false,
+            false,
+        );
+        let animation_interval =
+            Duration::from_millis(super::motion::status_animation_interval_ms(&app));
+        let facts = IdleFacts {
+            animation_active: status_motion
+                && animation_interval < Duration::from_millis(UI_QUIESCENT_POLL_MS),
+            ..IdleFacts::default()
+        };
+        clock.settle(&mut app, &facts, now, false, status_motion);
+        if status_motion
+            && last_status_frame.is_none_or(|last| t.saturating_sub(last) >= animation_interval)
+        {
+            app.needs_redraw = true;
+            last_status_frame = Some(t);
+        }
+        if std::mem::take(&mut app.needs_redraw) {
+            for &index in &in_windows {
+                stats[index].redraws += 1;
+            }
+        }
+        let idle_poll = clock.poll(&app, &facts, now);
+        let mut poll = idle_poll;
+        if status_motion && let Some(last) = last_status_frame {
+            poll = poll.min((last + animation_interval).saturating_sub(t));
+        }
+        for &index in &in_windows {
+            stats[index].wakes += 1;
+            let shortest = stats[index].shortest_idle_poll.get_or_insert(idle_poll);
+            *shortest = (*shortest).min(idle_poll);
+        }
+        t += poll.max(Duration::from_millis(1));
+    }
+    stats
+}
+
+#[test]
+fn a_silent_background_shell_job_keeps_the_quiet_poll_for_its_whole_life() {
+    let windows = [(0, 10), (59, 69), (61, 71), (300, 310), (600, 610)];
+    let quiet = Duration::from_millis(UI_QUIESCENT_POLL_MS);
+    for fancy_animations in [true, false] {
+        let stats = simulate_silent_background_job(fancy_animations, &windows);
+        let settle = stats[0];
+        assert_eq!(
+            settle.changes, 1,
+            "fancy={fancy_animations}: only the job's row appearing in the jobs panel is a change: {settle:?}"
+        );
+        assert!(
+            settle.wakes <= 5_000 / 48 + 5_000 / 250 + 12,
+            "fancy={fancy_animations}: the first 10 s is 5 s on the idle poll, then quiet: {settle:?}"
+        );
+        for ((from, _), window) in windows.iter().zip(&stats).skip(1) {
+            assert_eq!(
+                window.changes, 0,
+                "fancy={fancy_animations} t={from}s: elapsed and no-output labels are not changes: {window:?}"
+            );
+            assert_eq!(
+                window.shortest_idle_poll,
+                Some(quiet),
+                "fancy={fancy_animations} t={from}s: the idle poll stays quiet: {window:?}"
+            );
+            assert!(
+                window.wakes <= 10_000 / 250 + 10,
+                "fancy={fancy_animations} t={from}s: at most the quiet poll plus one label tick a second: {window:?}"
+            );
+            assert!(
+                (1..=10).contains(&window.redraws),
+                "fancy={fancy_animations} t={from}s: the label repaints at most once a second: {window:?}"
+            );
+        }
+    }
 }

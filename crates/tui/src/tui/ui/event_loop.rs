@@ -10,7 +10,7 @@ use super::observer_hooks::{
     execute_turn_end_observer_hook, surface_observer_hook_submission_failure,
 };
 use super::task_projection::{
-    AUTOMATION_SCAN_BUSY_INTERVAL, automation_scan_is_due, refresh_active_task_panel,
+    AUTOMATION_SCAN_BUSY_INTERVAL, LiveRefresh, automation_scan_is_due, refresh_active_task_panel,
     refresh_automation_panel, refresh_automation_panel_blocking, refresh_shell_exec_live_output,
 };
 use super::*;
@@ -2104,20 +2104,9 @@ pub(crate) async fn run_event_loop(
     let mut last_status_frame = Instant::now()
         .checked_sub(Duration::from_millis(UI_STATUS_ANIMATION_MS))
         .unwrap_or_else(Instant::now);
-    // #6728: the last moment anything happened that wanted a prompt reaction:
-    // a terminal event, an engine event, or any non-quiescent UI state. The
-    // idle poll and the automation scan back off from it and return to full
-    // cadence the moment it moves. The git probe backs off from
-    // `last_input_or_engine_event` instead, which a ticking label or an open
-    // card does not move.
-    let mut last_ui_activity = Instant::now();
-    let mut last_input_or_engine_event = Instant::now();
+    let mut idle_clock = IdleClock::new(Instant::now());
     let mut skill_registry_epoch = None;
     let mut skill_cache_refresh: Option<SkillCacheRefresh> = None;
-    // Whether the previous iteration found the UI quiescent and quiet (see
-    // `ui_state_is_quiescent`). The 2.5 s task block runs before this
-    // iteration's facts exist, so it reads the previous one.
-    let mut ui_quiet = false;
     let mut last_automation_scan = Instant::now()
         .checked_sub(AUTOMATION_SCAN_BUSY_INTERVAL)
         .unwrap_or_else(Instant::now);
@@ -2569,8 +2558,10 @@ pub(crate) async fn run_event_loop(
         }
 
         if last_task_refresh.elapsed() >= Duration::from_millis(2500) {
-            if refresh_active_task_panel(app, &task_manager).await {
-                app.needs_redraw = true;
+            match refresh_active_task_panel(app, &task_manager).await {
+                LiveRefresh::Changed => app.needs_redraw = true,
+                LiveRefresh::ElapsedOnly => idle_clock.note_elapsed_only_change(),
+                LiveRefresh::Unchanged => {}
             }
             // Shells and tasks that finished join the batched notice; a batch
             // held for finite work or a busy parent turn goes out once that
@@ -2581,7 +2572,7 @@ pub(crate) async fn run_event_loop(
             // rescans on the long cadence (#6728).
             let automation_scan_due = automation_scan_is_due(
                 app,
-                ui_quiet,
+                idle_clock.ui_quiet(),
                 Instant::now().saturating_duration_since(last_automation_scan),
             );
             if refresh_automation_panel(app, automation_scan_due).await {
@@ -2590,8 +2581,10 @@ pub(crate) async fn run_event_loop(
             if automation_scan_due {
                 last_automation_scan = Instant::now();
             }
-            if refresh_shell_exec_live_output(app) {
-                app.needs_redraw = true;
+            match refresh_shell_exec_live_output(app) {
+                LiveRefresh::Changed => app.needs_redraw = true,
+                LiveRefresh::ElapsedOnly => idle_clock.note_elapsed_only_change(),
+                LiveRefresh::Unchanged => {}
             }
             if crate::tui::shell_job_routing::refresh_live_shell_job_pager(app) {
                 app.needs_redraw = true;
@@ -5514,9 +5507,6 @@ pub(crate) async fn run_event_loop(
             underwater_motion,
             cadence_tier,
         ));
-        // #6728: what the loop knows about its own quiet. Anything that
-        // wants a prompt reaction moves `last_ui_activity`; the idle poll
-        // and the automation scan back off from it.
         let idle_facts = IdleFacts {
             has_running_agents,
             animation_active: animation_active
@@ -5526,15 +5516,7 @@ pub(crate) async fn run_event_loop(
         };
         {
             let tick_now = Instant::now();
-            if engine_event_seen {
-                last_input_or_engine_event = tick_now;
-            }
-            if engine_event_seen || !ui_state_is_quiescent(app, &idle_facts, tick_now) {
-                last_ui_activity = tick_now;
-            }
-            let quiet_for = tick_now.saturating_duration_since(last_ui_activity);
-            ui_quiet = quiet_for >= UI_QUIESCENT_AFTER
-                && ui_state_is_quiescent(app, &idle_facts, tick_now);
+            idle_clock.settle(app, &idle_facts, tick_now, engine_event_seen, status_motion);
             // The git cache TTL follows the probe's input and engine-event
             // clock, set every iteration so a stale back-off can never outlive
             // the activity that ended it (a turn does not reach the probe
@@ -5542,7 +5524,7 @@ pub(crate) async fn run_event_loop(
             codewhale_engine::git_status::set_probe_backoff(
                 codewhale_engine::git_status::probe_is_backed_off(git_probe_quiet_for(
                     app,
-                    tick_now.saturating_duration_since(last_input_or_engine_event),
+                    idle_clock.input_quiet_for(tick_now),
                 )),
             );
         }
@@ -5691,10 +5673,7 @@ pub(crate) async fn run_event_loop(
             static GIT_PROBE_LOCK: std::sync::OnceLock<std::sync::Mutex<Option<Instant>>> =
                 std::sync::OnceLock::new();
             let slot = GIT_PROBE_LOCK.get_or_init(|| std::sync::Mutex::new(None));
-            let quiet_for = git_probe_quiet_for(
-                app,
-                now.saturating_duration_since(last_input_or_engine_event),
-            );
+            let quiet_for = git_probe_quiet_for(app, idle_clock.input_quiet_for(now));
             let should_probe = slot
                 .lock()
                 .map(|mut last| {
@@ -5784,12 +5763,7 @@ pub(crate) async fn run_event_loop(
             // Relaxes only once the UI has been quiescent and quiet for
             // `UI_QUIESCENT_AFTER` (#6728); every deadline below still
             // shortens it, and input returns the loop at once.
-            idle_poll_duration(
-                app,
-                &idle_facts,
-                now,
-                now.saturating_duration_since(last_ui_activity),
-            )
+            idle_clock.poll(app, &idle_facts, now)
         };
         if let Some(until_flush) = app.paste_burst_next_flush_delay_if_enabled(now) {
             poll_timeout = poll_timeout.min(until_flush);
@@ -5837,8 +5811,7 @@ pub(crate) async fn run_event_loop(
         let maybe_terminal_event =
             next_terminal_event(&terminal_input, &mut pending_terminal_events, poll_timeout)?;
         if maybe_terminal_event.is_some() {
-            last_ui_activity = Instant::now();
-            last_input_or_engine_event = last_ui_activity;
+            idle_clock.note_input(Instant::now());
         }
         if maybe_terminal_event.is_none() {
             let now = Instant::now();

@@ -165,7 +165,7 @@ before starting a change; preserve any local work when updating your branch.
 
 - Write tests for new functionality
 - Run the tests near your change (see [Fast local loop](#fast-local-loop));
-  your pull request runs the Linux workspace suite and a Windows build for
+  your pull request runs the full test suite on Linux, macOS and Windows for
   you (see [What happens after you open a pull request](#what-happens-after-you-open-a-pull-request))
 - Colocate unit tests beside the code they cover (standard Rust `#[cfg(test)]`
   modules), and add integration tests under the owning crate's `tests/`
@@ -174,8 +174,8 @@ before starting a change; preserve any local work when updating your branch.
 
 ### Pre-push verification
 
-These are the Rust commands your pull request runs on Linux (the `Lint` and
-`Test (ubuntu-latest)` checks). You do not need all of them before every
+These are the Rust commands your pull request runs on Linux (the `Lint` check
+and the Linux shards of `Sharded tests (ubuntu-latest)`). You do not need all of them before every
 push: run `cargo fmt`, then check and test the crates you touched (see
 [Fast local loop](#fast-local-loop)). Run the full set locally when a change
 spans many crates, or let the pull request run it for you:
@@ -215,7 +215,7 @@ cargo install cargo-nextest --locked      # once
 scripts/dev-test.sh tui
 scripts/dev-cargo.sh nextest run --workspace --all-features --locked
 
-# 4. The Linux suite your PR runs:
+# 4. The suite your PR runs on Linux (hosted CI runs it as parallel shards):
 cargo test --workspace --all-features --locked
 ```
 
@@ -340,6 +340,9 @@ maintainer to approve the first run for a brand-new GitHub account.
 | --- | --- | --- |
 | `Lint` (required) | `cargo fmt --check`, clippy on every target, and the fast drift checks (locales, READMEs, provider registry, dead-code and blocking-call budgets) | Run `cargo fmt --all` and the clippy command in [Pre-push verification](#pre-push-verification); the log names the file and the check |
 | `Test (windows-latest)` (required) | Compiles every workspace target for Windows with warnings denied, and the installer PATH helper tests | Usually a `cfg(windows)` path or an import only Windows sees; the log has the compiler error |
+| `Sharded tests (ubuntu-latest)`, `(macos-latest)`, `(windows-latest)` | The full workspace test suite, built once per OS and run as parallel shards of one nextest archive, plus the doctests; each OS ends with a `Suite check` that fails if the shards did not run every test exactly once | Open the failing `Shard k/N` job; the log names the test. The same test reproduces locally with `cargo nextest run -E 'test(name)'` |
+| `Safety gate`, `MSRV check (1.89)`, `npm wrapper smoke`, `Portable boundaries` | The hermetic safety and authorization tests, a build on the minimum Rust version, the npm wrapper install smoke and the portable-core boundary checks | The log names the failing test or the compiler error |
+| `Mobile runtime smoke` | The `codewhale serve --mobile` HTTP and event-stream smoke, only when the mobile runtime surface changed | The log shows the failing request |
 | `Version drift` | Version files, the `feat:` release-note rule, release helper tests and contributor credit | The credit step only reports: a maintainer adds your credit when the PR merges |
 
 Smaller checks cover the VS Code extension, integrations, the extension host
@@ -347,11 +350,15 @@ and plugin conversion, plus workflow lint when you change `.github/workflows`.
 A documentation-only change skips the Rust builds but still reports the
 required checks, so it can merge.
 
-Your pull request does not run the test suites, the safety gate, MSRV, the npm
-wrapper smoke, the slow runtime-contract and persistence-backlog measurements,
-the dependency audits or the OpenHarmony build. Maintainers run those once per
-release, on the exact commit being released. If that run finds a problem your
-change introduced, we fix it on `main`; we will not ask you to chase it.
+Only `Lint` and `Test (windows-latest)` are required. Every other job above is
+informational for a contributor's pull request: a red one tells you and the
+maintainers something, and never blocks the merge. Your pull request does not
+run the slow runtime-contract and persistence-backlog measurements, the macOS
+budget and eval job, the dependency audits or the OpenHarmony build; those run
+on `main` and for each release, on the exact commit. If one of them finds a
+problem your change introduced, we fix it on `main`; we will not ask you to
+chase it. A newer push to your branch cancels the older run of the same pull
+request, so the runners always work on your latest commit.
 
 A red check that your change did not cause is not your job to fix. We rerun it
 or fix it on `main`, and we never close a PR because CI is slow or flaky. Your

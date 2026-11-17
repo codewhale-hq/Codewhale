@@ -32,6 +32,7 @@ function namedStep(source, name) {
 }
 
 const ci = read(".github/workflows/ci.yml");
+const ciSuite = read(".github/workflows/ci-test-suite.yml");
 const nightly = read(".github/workflows/nightly.yml");
 const candidate = read(".github/workflows/release-candidate.yml");
 const artifacts = read(".github/workflows/release-artifacts.yml");
@@ -46,28 +47,195 @@ const archiveInstaller = read("scripts/release/install.sh");
 const cliDispatcher = read("crates/cli/src/lib.rs");
 const runbook = read("docs/RELEASE_RUNBOOK.md");
 
-const ciTestJob = ci.slice(ci.indexOf("\n  test:\n"));
-assert.match(
-  ciTestJob,
-  /matrix\.os == 'ubuntu-latest'.*github\.event_name == 'pull_request'/,
-  "heavy pull requests must select the real Ubuntu test lane",
-);
-assert.match(
-  ciTestJob,
-  /cargo nextest run --workspace --all-features --locked --profile ci/,
-  "the Ubuntu pull-request lane must run workspace nextest",
-);
-assert.match(
-  ciTestJob,
-  /name: Linux test location \(CNB\)/,
-  "the non-PR CNB fallback must be named explicitly",
-);
+function jobBlock(source, job) {
+  const match = source.match(new RegExp(`^  ${job}:\\n([\\s\\S]*?)(?=^  \\S|(?![\\s\\S]))`, "m"));
+  assert.ok(match, `missing job: ${job}`);
+  return match[1];
+}
+
+function jobIf(source, job) {
+  const lines = jobBlock(source, job).split("\n");
+  const at = lines.findIndex((line) => /^    if:/.test(line));
+  assert.notEqual(at, -1, `${job} must declare an if`);
+  const first = lines[at].replace(/^    if:\s*/, "");
+  if (first !== ">-") return first.replace(/^'(.*)'$/, "$1");
+  const folded = [];
+  for (let i = at + 1; i < lines.length && /^      \S/.test(lines[i]); i += 1) folded.push(lines[i].trim());
+  return folded.join(" ");
+}
+
+function evaluate(expression, context) {
+  return Boolean(vm.runInNewContext(expression, context));
+}
 
 assert.match(
-  namedStep(ciTestJob, "Build canonical executable for acceptance tests"),
-  /cargo build -p codewhale-cli --bin codewhale --all-features --locked/,
-  "Engine acceptance must build the canonical executable first",
+  namedStep(ciSuite, "Archive test binaries"),
+  /cargo nextest archive --workspace --all-features --locked --profile ci/,
+  "the suite must archive the same workspace, features and profile the old single run used",
 );
+assert.match(
+  namedStep(ciSuite, "Build canonical executable for acceptance tests"),
+  /sh scripts\/with-hermetic-test-home.sh cargo test --workspace --all-features --locked --no-run --test help_dispatch/,
+  "Engine acceptance must build the canonical executable first, with the test build's features",
+);
+assert.match(
+  namedStep(ciSuite, "Run doctests"),
+  /cargo test --workspace --all-features --locked --doc/,
+  "nextest does not run doctests; the suite must run them once per OS",
+);
+const shardRun = namedStep(ciSuite, "Run tests");
+assert.match(shardRun, /--partition "count:\$\{\{ matrix\.shard \}\}\/\$\{\{ inputs\.shards \}\}"/);
+assert.match(shardRun, /-E "not \(\$NATIVE_FILTER\)"/, "every shard must exclude the native tests that shard 1 runs apart");
+assert.match(namedStep(ciSuite, "Run native containment tests"), /-E "\$NATIVE_FILTER"/);
+assert.match(ciSuite, /nextest-shard-count\.py check counts/, "the suite must prove the shards add up to the archive's list");
+for (const name of ["Run tests", "Run native containment tests", "Run doctests"]) {
+  const step = namedStep(ciSuite, name);
+  assert.match(step, /shell: bash/, `${name} must invoke the POSIX helper on Windows too`);
+}
+assert.match(ciSuite, /RUST_MIN_STACK: '16777216'/);
+
+const receiptScript = read("scripts/compiled-host-native-receipt.py");
+const receiptNames = [
+  receiptScript.match(/^COMPILED = "([^"]+)"$/m)[1],
+  receiptScript.match(/^MEMORY = "([^"]+)"$/m)[1],
+  ...[...receiptScript.match(/^WINDOWS = \[([\s\S]*?)^\]/m)[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]),
+];
+const nativeFilter = ciSuite.match(/NATIVE_FILTER: >-\n([\s\S]*?)\n    steps:/)[1];
+assert.deepEqual(
+  [...nativeFilter.matchAll(/test\(=([^)]+)\)/g)].map((m) => m[1]).sort(),
+  receiptNames.sort(),
+  "NATIVE_FILTER must list exactly the tests scripts/compiled-host-native-receipt.py requires",
+);
+
+const suiteCallers = {};
+for (const job of ["test-ubuntu", "test-macos", "test-windows"]) {
+  const block = jobBlock(ci, job);
+  const os = block.match(/^      os: (\S+)$/m)[1];
+  const shards = Number(block.match(/^      shards: (\d+)$/m)[1]);
+  const list = JSON.parse(block.match(/^      shard_list: '(.+)'$/m)[1]);
+  assert.deepEqual(list, Array.from({ length: shards }, (_, i) => i + 1), `${job} shard_list must be 1..shards`);
+  assert.match(block, /uses: \.\/\.github\/workflows\/ci-test-suite\.yml/);
+  assert.equal(jobIf(ci, job), jobIf(ci, "test-ubuntu"), `${job} must share the suite condition`);
+  suiteCallers[os] = shards;
+}
+assert.deepEqual(Object.keys(suiteCallers).sort(), ["macos-latest", "ubuntu-latest", "windows-latest"]);
+
+const jobNames = (source) => [...source.matchAll(/^  [A-Za-z0-9_-]+:\n    name: (.+)$/gm)].map((m) => m[1]);
+assert.deepEqual(
+  [...jobNames(ci), ...jobNames(ciSuite)].filter((name) => /^Test \(/.test(name) || name === "Lint"),
+  ["Lint", "Test (windows-latest)"],
+  "only Lint and the compile-only Windows leg may use the required context names",
+);
+assert.match(jobBlock(ci, "test-windows-pr"), /^    name: Test \(windows-latest\)$/m);
+assert.equal(jobIf(ci, "test-windows-pr"), "github.event_name == 'pull_request'");
+assert.match(jobBlock(ci, "test-windows-pr"), /cargo check --workspace --all-features --all-targets|cargo check --workspace --all-targets --all-features --locked/);
+
+const gates = ["safety-gate", "msrv", "test-ubuntu", "test-macos", "test-windows", "portable-boundaries", "npm-wrapper-smoke", "mobile-smoke"];
+for (const job of gates) {
+  const guard = jobIf(ci, job);
+  const base = { inputs: { workspace_test_mode: "nextest" } };
+  const run = (event, heavy, extra = {}) =>
+    evaluate(guard, {
+      github: { event_name: event },
+      needs: { changes: { outputs: { heavy: String(heavy), mobile: "true", scoped: "false", ...extra } } },
+      ...base,
+    });
+  assert.equal(run("pull_request", true), true, `${job} must run on a heavy pull request`);
+  if (job !== "npm-wrapper-smoke") {
+    assert.equal(run("pull_request", false), false, `${job} must skip a docs-only pull request`);
+  }
+  assert.equal(run("workflow_dispatch", true), true, `${job} must run on a full dispatch`);
+  assert.equal(run("workflow_dispatch", true, { scoped: "true" }), false, `${job} must skip a scoped dispatch`);
+}
+assert.equal(
+  evaluate(jobIf(ci, "mobile-smoke"), {
+    github: { event_name: "pull_request" },
+    needs: { changes: { outputs: { heavy: "true", mobile: "false", scoped: "false" } } },
+  }),
+  false,
+  "mobile smoke keeps its path filter on pull requests",
+);
+for (const job of ["test-ubuntu", "test-macos", "test-windows"]) {
+  assert.equal(
+    evaluate(jobIf(ci, job), {
+      github: { event_name: "workflow_dispatch" },
+      inputs: { workspace_test_mode: "shared-process-twice" },
+      needs: { changes: { outputs: { heavy: "true", scoped: "false" } } },
+    }),
+    false,
+    `${job} must yield to the shared-process qualification`,
+  );
+}
+const sharedGuard = jobIf(ci, "test");
+for (const [event, mode, scoped, expected] of [
+  ["workflow_dispatch", "shared-process-twice", "false", true],
+  ["workflow_dispatch", "nextest", "false", false],
+  ["workflow_dispatch", "shared-process-twice", "true", false],
+  ["pull_request", "nextest", "false", false],
+]) {
+  assert.equal(
+    evaluate(sharedGuard, {
+      github: { event_name: event },
+      inputs: { workspace_test_mode: mode },
+      needs: { changes: { outputs: { heavy: "true", scoped } } },
+    }),
+    expected,
+    `shared-process job: ${event} ${mode} scoped=${scoped}`,
+  );
+}
+assert.equal(
+  evaluate(jobIf(ci, "scoped-test"), { needs: { changes: { outputs: { scoped: "true" } } } }),
+  true,
+);
+assert.equal(
+  evaluate(jobIf(ci, "scoped-test"), { needs: { changes: { outputs: { scoped: "false" } } } }),
+  false,
+);
+assert.match(ci, /^      expected_sha:\n        description: .*\n        required: true\n        type: string$/m, "expected_sha stays required");
+for (const input of ["crate", "filter", "os"]) {
+  assert.match(ci, new RegExp(`^      ${input}:\\n        description: .*\\n        required: false\\n`, "m"), `scoped dispatch input ${input}`);
+}
+
+const concurrency = ci.match(/^concurrency:\n  group: (.+)\n  cancel-in-progress: (.+)$/m);
+assert.ok(concurrency, "ci.yml must declare its concurrency");
+const strip = (value) => value.replace(/^\$\{\{ /, "").replace(/ \}\}$/, "");
+const format = (template, ...args) => template.replace(/\{(\d)\}/g, (_, i) => args[Number(i)]);
+const groupOf = (context) =>
+  vm.runInNewContext(strip(concurrency[1]), { ...context, format });
+const cancelOf = (context) => vm.runInNewContext(strip(concurrency[2]), context);
+const dispatch = (ref, sha, inputs = {}) => ({
+  github: { event_name: "workflow_dispatch", ref, sha, workflow: "CI", run_id: `run-${sha}` },
+  inputs: { crate: "", filter: "", ...inputs },
+});
+const pr = (number, sha) => ({
+  github: { event_name: "pull_request", ref: `refs/pull/${number}/merge`, sha, workflow: "CI", event: { pull_request: { number } }, run_id: `run-${sha}` },
+  inputs: {},
+});
+assert.equal(groupOf(pr(7, "a")), groupOf(pr(7, "b")), "a new push to a pull request shares its group");
+assert.notEqual(groupOf(pr(7, "a")), groupOf(pr(8, "a")));
+assert.equal(cancelOf(pr(7, "a")), true);
+assert.equal(groupOf(dispatch("refs/heads/ci/x", "a")), groupOf(dispatch("refs/heads/ci/x", "b")), "a new dispatch on the same ci branch shares its group");
+assert.notEqual(groupOf(dispatch("refs/heads/ci/x", "a")), groupOf(dispatch("refs/heads/ci/y", "a")));
+assert.equal(cancelOf(dispatch("refs/heads/ci/x", "a")), true);
+assert.notEqual(groupOf(dispatch("refs/heads/main", "a")), groupOf(dispatch("refs/heads/main", "b")), "runs on main never share a group");
+assert.equal(cancelOf(dispatch("refs/heads/main", "a")), false, "runs on main never cancel");
+assert.notEqual(
+  groupOf(dispatch("refs/heads/ci/x", "a", { crate: "codewhale-tui" })),
+  groupOf(dispatch("refs/heads/ci/x", "a")),
+  "a scoped dispatch never shares the full run's group",
+);
+assert.equal(cancelOf(dispatch("refs/heads/ci/x", "a", { filter: "test(x)" })), false, "a scoped dispatch cancels nothing");
+
+for (const [name, source] of [["ci.yml", ci], ["ci-test-suite.yml", ciSuite]]) {
+  assert.doesNotMatch(source, /pull_request_target/, `${name} must not use pull_request_target`);
+  assert.doesNotMatch(source, /\$\{\{\s*secrets\./, `${name} must not read secrets`);
+  assert.match(source, /^permissions:\n  contents: read\n/m, `${name} must keep read-only default permissions`);
+  assert.doesNotMatch(source.replace(/^permissions:\n  contents: read\n/m, ""), /^\s+(?:contents|actions|id-token|pull-requests|packages):\s*write/m, `${name} must not grant write permissions`);
+  for (const match of source.matchAll(/Swatinem\/rust-cache@[^\n]*\n(?:\s+(?:with|cache-bin):[^\n]*\n)*\s+save-if: ([^\n]+)/g)) {
+    assert.match(match[1], /refs\/heads\/main|false/, `${name}: rust-cache must save only on main`);
+  }
+  assert.doesNotMatch(source, /actions\/cache(?:\/save)?@/, `${name} must not write caches outside rust-cache and sccache`);
+}
 const npmSmokeJob = ci.match(/^  npm-wrapper-smoke:\n([\s\S]*?)(?=^  \S)/m)?.[1];
 assert.ok(npmSmokeJob, "CI must retain the npm-wrapper job");
 assert.match(
@@ -79,13 +247,11 @@ assert.match(
   /run: node scripts\/release\/npm-wrapper-smoke\.js/,
 );
 const npmSmokeSteps = npmSmokeJob.split(/(?=^      - )/m).slice(1);
-// Exercise the workflow's actual Boolean guards. The smoke is manual-only
-// (workflow_dispatch); pull requests, pushes and schedules skip the job.
 const npmSmokeCases = [
   // name, event, heavy, OS, trusted, cache success, execute, Linux deps, CNB
-  ["own PR", "pull_request", true, "ubuntu-latest", true, true, false, false, false],
-  ["fork PR", "pull_request", true, "ubuntu-latest", false, true, false, false, false],
-  ["PR cache failure", "pull_request", true, "ubuntu-latest", false, false, false, false, false],
+  ["own PR", "pull_request", true, "ubuntu-latest", true, true, true, true, false],
+  ["fork PR", "pull_request", true, "ubuntu-latest", false, true, true, true, false],
+  ["PR cache failure", "pull_request", true, "ubuntu-latest", false, false, true, true, false],
   ["light PR", "pull_request", false, "ubuntu-latest", true, true, false, false, false],
   ["manual Ubuntu", "workflow_dispatch", true, "ubuntu-latest", true, true, true, true, false],
   ["main Ubuntu", "push", true, "ubuntu-latest", true, true, false, false, false],
@@ -95,15 +261,19 @@ const npmSmokeCases = [
   ["light main", "push", false, "ubuntu-latest", true, true, false, false, false],
   ["schedule", "schedule", true, "ubuntu-latest", true, true, false, false, false],
 ];
-// The sccache GitHub Actions backend is main-only, mirroring rust-cache's
-// save-if: pull requests never install or enable it (cache bloat, PLAN D).
+for (const [name, source] of [["ci.yml", ci], ["ci-test-suite.yml", ciSuite]]) {
+  const enabled = source.match(/SCCACHE_GHA_ENABLED=true/g) ?? [];
+  const modes = source.match(/if \[ "\$\{GITHUB_REF\}" = refs\/heads\/main \]; then rw=READ_WRITE; else rw=READ_ONLY; fi\n(?:\s+\{\n\s+echo "SCCACHE_GHA_ENABLED=true"\n)?\s+echo "SCCACHE_GHA_RW_MODE=\$\{rw\}"/g) ?? [];
+  assert.ok(enabled.length > 0, `${name} must enable sccache`);
+  assert.equal(modes.length, enabled.length, `${name}: every sccache enable must be read-only off main`);
+  assert.doesNotMatch(source, /sccache-action[^\n]*\n(?:[^\n]*\n){0,4}\s+if: [^\n]*github\.ref == 'refs\/heads\/main'/, `${name}: sccache must install on every run`);
+}
 const sccacheInstallStep = "mozilla-actions/sccache-action@v0.0.11";
 for (const [label, event, heavy, os, trusted, cache, execute, linuxDeps, cnb] of npmSmokeCases) {
   const ref = event === "pull_request" ? "refs/pull/1/merge" : "refs/heads/main";
-  const onMain = ref === "refs/heads/main";
-  const installed = execute && onMain;
+  const installed = execute;
   const context = {
-    needs: { changes: { outputs: { heavy: String(heavy), trusted: String(trusted) } } },
+    needs: { changes: { outputs: { heavy: String(heavy), trusted: String(trusted), scoped: "false" } } },
     github: { event_name: event, ref },
     matrix: { os },
     steps: { sccache: { outcome: installed ? (cache ? "success" : "failure") : "skipped" } },
@@ -688,7 +858,8 @@ assert.doesNotMatch(
 // itself runs none: its parity job calls release-parity.yml.
 let hermeticInvocations = 0;
 for (const [label, workflow, expected] of [
-  ["CI", ci, 6],
+  ["CI", ci, 5],
+  ["CI test suite", ciSuite, 5],
   ["release", release, 0],
   ["release parity", parityWorkflow, 4],
   ["CNB", cnb, 3],
@@ -707,20 +878,15 @@ for (const [label, workflow, expected] of [
   }
   hermeticInvocations += commands.length;
 }
-for (const name of ["Run tests", "Run doctests"]) {
-  const step = namedStep(ciTestJob, name);
-  assert.match(step, /shell: bash/, `${name} must invoke the POSIX helper on Windows too`);
-  assert.match(step, /RUST_MIN_STACK: '16777216'/);
-}
 console.log(`Hermetic Rust workflow invocations OK: ${hermeticInvocations} checks passed.`);
 
 const nextest = read(".config/nextest.toml");
-const integrationGroup = nextest.search(/^filter = 'binary\(integration\)'$/m);
+const integrationGroup = nextest.search(/^filter = 'package\(codewhale-tui\) & binary\(integration\)'$/m);
 const telemetryGroup = nextest.indexOf(
-  "filter = 'binary(integration) & test(/^telemetry_contract::/)'",
+  "filter = 'package(codewhale-tui) & binary(integration) & test(/^telemetry_contract::/)'",
 );
 const execGroup = nextest.indexOf(
-  "filter = 'binary(integration) & test(/^exec_persistent_service::/)'",
+  "filter = 'package(codewhale-tui) & binary(integration) & test(/^exec_persistent_service::/)'",
 );
 assert.ok(integrationGroup >= 0, "nextest must bound the integration binary");
 assert.ok(
@@ -868,6 +1034,7 @@ for (const [name, source] of [
   ["release-parity.yml", parityWorkflow],
   ["release-republish.yml", republish],
   ["ci.yml", ci],
+  ["ci-test-suite.yml", ciSuite],
   ["nightly.yml", nightly],
 ]) {
   assert.deepEqual(

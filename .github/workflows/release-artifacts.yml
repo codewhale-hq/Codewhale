@@ -680,7 +680,7 @@ jobs:
         with:
           name: codewhale-release-assets
           path: release-assets
-      - name: Verify 34-asset bridge inventory and checksum manifests (single binary)
+      - name: Verify 38-asset bridge inventory and checksum manifests (single binary)
         run: node scripts/release/assemble-release-assets.js --verify release-assets
       - name: Test release inventory contracts
         run: |
@@ -701,6 +701,6 @@ jobs:
             echo ""
             echo "- Source: \`${{ github.sha }}\`"
             echo "- Version metadata: \`${{ inputs.version }}\`"
-            echo "- Inventory: 7 targets / 34 files (single binary; 7 legacy alias assets)"
+            echo "- Inventory: 8 targets / 38 files (single binary; 8 legacy alias assets)"
             echo "- Publication: none (Actions artifact \`codewhale-release-assets\` only)"
           } >> "${GITHUB_STEP_SUMMARY}"
