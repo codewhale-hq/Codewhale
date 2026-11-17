@@ -228,6 +228,67 @@ cannot introduce a provider implementation, billing owner or wire protocol.
 A cloud `base_url` field is accepted only by the shared static public HTTPS
 endpoint contract; it is not consumed to migrate an execution endpoint.
 
+## Model and provider registry (`registry.json`)
+
+The signed models-and-providers registry (`codewhale.registry.v1`)
+travels in the same `facts/v1` envelope on the `registry`
+channel and is verified by the same pinned-key code
+(`crates/config/src/cloud_facts/registry.rs`); the client is
+`crates/cloud-facts/src/registry.rs`. The envelope's `facts_version` carries
+the registry `revision` and `published_at` its `generated_at`.
+
+A pulled registry is accepted only when a `founder` key signs it (an
+automation key is refused), `schema` is exactly `codewhale.registry.v1`, the
+payload parses (`dialects` is an object, as in CONTRACT §1), `generated_at`
+is not in the future, and `revision` is not below the highest revision this
+client already accepted. The payload may be up to 8 MiB. The floor check and
+the install run under the same overlay lock as facts publication, so
+overlapping pulls cannot install an older revision or lower the cached floor.
+
+Pulled provider rows are admitted only when they are new (no id or alias that
+names a built-in or bundled provider, including its config keys, catalog ids,
+selector and subagent aliases and the legacy TUI row, and no `kind`), use an
+`https` URL on a public host name with the default port and without
+credentials, query or fragment (IP literals, single-label names, `localhost`,
+`*.localhost`, `*.local` and `*.internal` are refused), and declare
+`wire_policy` `openai-compatible`. A row may only
+name its own id as `auth.secret_slot` and its own `<ID>_API_KEY` as
+`auth.env_vars`, and that variable may not belong to a built-in provider.
+Rows for built-in providers are ignored: their address, key and protocol come
+only from the release. Refused rows are kept with a reason.
+
+Wired: the registry follows `[cloud_facts]` (`enabled` and the hard disable)
+and needs a source, `CODEWHALE_REGISTRY_URL` (an HTTP(S) URL) or
+`CODEWHALE_REGISTRY_PATH` (a local envelope). Startup reads a verified
+`facts/registry-cache.json`; a background pull, and `/model refresh`,
+replace it. A failed or rejected pull keeps the copy already in use, and a
+rejected cache is cleared while its revision floor is kept. The cache records
+its source; a body from another source is dropped and only the floor is kept.
+Turning cloud facts off, an invalid facts source, or the hard disable drops
+the registry in the same step. CI suppresses the network pull.
+
+What this does not do yet:
+
+- There is no default URL and no published registry, so nothing is fetched by
+  default and no bundled `registry.json` sets a floor; the floor is the
+  highest revision this client cached.
+- The website relay (`web/app/api/facts/v1/[channel]`) validates facts
+  payloads only and does not serve the `registry` channel.
+- Admitted providers are inert: they are held in memory with the credential
+  slot and variable they may use, but the route resolver, picker and status
+  surface do not read them yet.
+- Models, offerings and dialects are parsed and held but not applied to the
+  catalog.
+- The `base_url` check is static. A public host name that resolves to a
+  private address is not caught here; the client that first calls a pulled
+  provider must use the guarded network client.
+- A pulled id's `<ID>_API_KEY` is checked only against model-provider
+  variables, not other credentials the product reads (for example
+  `CODEWHALE_CLI_API_KEY` or web search keys). This must close before a
+  consumer reads pulled credentials.
+- As for facts, an equal revision replaces the held copy, and a torn cache
+  file loses the floor at the next start.
+
 ## Website transport
 
 `web/app/api/facts/v1/[channel]/route.ts` implements GET/HEAD for the public

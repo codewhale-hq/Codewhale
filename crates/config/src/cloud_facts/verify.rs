@@ -63,6 +63,7 @@ pub enum FactsRejection {
     NotApplicable { applies_to: String },
     Rollback { got: u64, highest_seen: u64 },
     OutOfScope(String),
+    WrongSchema { got: String },
 }
 
 impl std::fmt::Display for FactsRejection {
@@ -89,6 +90,7 @@ impl std::fmt::Display for FactsRejection {
                 write!(f, "rollback (v{got} < seen v{highest_seen})")
             }
             Self::OutOfScope(msg) => write!(f, "outside the automation key's scope: {msg}"),
+            Self::WrongSchema { got } => write!(f, "unsupported registry schema {got:?}"),
         }
     }
 }
@@ -113,6 +115,11 @@ fn hex(bytes: &[u8]) -> String {
         let _ = write!(&mut out, "{byte:02x}");
     }
     out
+}
+
+pub(crate) fn sha256_hex(payload: &[u8]) -> String {
+    use sha2::Digest as _;
+    hex(&sha2::Sha256::digest(payload))
 }
 
 /// The exact bytes an Ed25519 signature covers.
@@ -146,23 +153,27 @@ pub fn parse_rfc3339_utc(value: &str) -> Option<u64> {
     u64::try_from(parsed.timestamp()).ok()
 }
 
-/// Verify a raw envelope document.
-///
-/// * `expected_channel` — the channel the client asked for.
-/// * `current` — the running binary's version (`CARGO_PKG_VERSION`).
-/// * `highest_seen` — highest `facts_version` this client previously accepted
-///   for the channel (rollback protection); equal is accepted.
-/// * `keys` — the pinned trust anchors (normally [`super::keys::TRUSTED_KEYS`]).
-/// * `now_unix` — wall clock, injected for deterministic tests.
-pub fn verify_envelope(
+pub(crate) struct Authenticated {
+    pub envelope: Envelope,
+    pub payload: Vec<u8>,
+    pub key_id: String,
+    pub key_role: KeyRole,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EnvelopeLimits {
+    pub envelope_bytes: usize,
+    pub payload_bytes: usize,
+    pub facts_metadata: bool,
+}
+
+pub(crate) fn authenticate(
     bytes: &[u8],
     expected_channel: &str,
-    current: &semver::Version,
-    highest_seen: Option<u64>,
     keys: &[TrustedKey],
-    now_unix: u64,
-) -> Result<VerifiedFacts, FactsRejection> {
-    if bytes.len() > MAX_ENVELOPE_BYTES {
+    limits: EnvelopeLimits,
+) -> Result<Authenticated, FactsRejection> {
+    if bytes.len() > limits.envelope_bytes {
         return Err(FactsRejection::TooLarge { bytes: bytes.len() });
     }
     let envelope: Envelope = serde_json::from_slice(bytes)
@@ -173,10 +184,11 @@ pub fn verify_envelope(
             envelope.envelope
         )));
     }
-    if envelope.schema_version.is_none()
-        || envelope.applies_to.is_none()
-        || envelope.published_at.is_none()
-        || envelope.sha256.is_none()
+    if limits.facts_metadata
+        && (envelope.schema_version.is_none()
+            || envelope.applies_to.is_none()
+            || envelope.published_at.is_none()
+            || envelope.sha256.is_none())
     {
         return Err(FactsRejection::BadEnvelope(
             "missing signed-payload metadata".into(),
@@ -239,7 +251,7 @@ pub fn verify_envelope(
             "invalid metadata bounds".into(),
         ));
     }
-    if envelope.payload_b64.len() > MAX_PAYLOAD_BYTES * 4 / 3 + 4 {
+    if envelope.payload_b64.len() > limits.payload_bytes * 4 / 3 + 4 {
         return Err(FactsRejection::TooLarge {
             bytes: envelope.payload_b64.len(),
         });
@@ -250,7 +262,7 @@ pub fn verify_envelope(
     if payload.is_empty() {
         return Err(FactsRejection::BadEnvelope("empty payload".into()));
     }
-    if payload.len() > MAX_PAYLOAD_BYTES {
+    if payload.len() > limits.payload_bytes {
         return Err(FactsRejection::TooLarge {
             bytes: payload.len(),
         });
@@ -299,6 +311,46 @@ pub fn verify_envelope(
             key_id: envelope.key_id,
         });
     };
+
+    Ok(Authenticated {
+        envelope,
+        payload,
+        key_id,
+        key_role,
+    })
+}
+
+/// Verify a raw envelope document.
+///
+/// * `expected_channel` — the channel the client asked for.
+/// * `current` — the running binary's version (`CARGO_PKG_VERSION`).
+/// * `highest_seen` — highest `facts_version` this client previously accepted
+///   for the channel (rollback protection); equal is accepted.
+/// * `keys` — the pinned trust anchors (normally [`super::keys::TRUSTED_KEYS`]).
+/// * `now_unix` — wall clock, injected for deterministic tests.
+pub fn verify_envelope(
+    bytes: &[u8],
+    expected_channel: &str,
+    current: &semver::Version,
+    highest_seen: Option<u64>,
+    keys: &[TrustedKey],
+    now_unix: u64,
+) -> Result<VerifiedFacts, FactsRejection> {
+    let Authenticated {
+        envelope,
+        payload,
+        key_id,
+        key_role,
+    } = authenticate(
+        bytes,
+        expected_channel,
+        keys,
+        EnvelopeLimits {
+            envelope_bytes: MAX_ENVELOPE_BYTES,
+            payload_bytes: MAX_PAYLOAD_BYTES,
+            facts_metadata: true,
+        },
+    )?;
 
     // Only now is the payload trusted enough to parse.
     let facts: CloudFacts = serde_json::from_slice(&payload)
@@ -393,8 +445,7 @@ pub fn verify_envelope(
     let stale =
         not_after.is_some_and(|expires| now_unix > expires.saturating_add(NOT_AFTER_GRACE_SECS));
 
-    use sha2::Digest as _;
-    let sha256 = hex(&sha2::Sha256::digest(&payload));
+    let sha256 = sha256_hex(&payload);
     if envelope
         .sha256
         .as_ref()

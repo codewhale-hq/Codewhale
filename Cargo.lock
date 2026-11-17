@@ -1080,12 +1080,15 @@ dependencies = [
 name = "codewhale-cloud-facts"
 version = "0.10.3"
 dependencies = [
+ "base64 0.23.1",
  "codewhale-config",
  "codewhale-release",
  "libc",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "tokio",
  "tracing",

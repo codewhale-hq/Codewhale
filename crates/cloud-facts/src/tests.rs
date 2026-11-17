@@ -8,12 +8,12 @@ use tokio::net::TcpListener;
 use super::*;
 
 // All tests that read or mutate the process overlay/environment hold `lock()`.
-struct TestEnv {
+pub(crate) struct TestEnv {
     name: &'static str,
     previous: Option<std::ffi::OsString>,
 }
 impl TestEnv {
-    fn set(name: &'static str, value: &str) -> Self {
+    pub(crate) fn set(name: &'static str, value: &str) -> Self {
         let previous = std::env::var_os(name);
         // SAFETY: the test module serializes environment-dependent work.
         unsafe { std::env::set_var(name, value) };
@@ -53,7 +53,7 @@ fn test_keys() -> &'static [TrustedKey] {
 }
 
 /// The overlay/status are process-wide; serialize tests that touch them.
-fn lock() -> MutexGuard<'static, ()> {
+pub(crate) fn lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()

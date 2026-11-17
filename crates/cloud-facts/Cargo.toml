@@ -21,6 +21,9 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+base64 = "0.23.1"
+ring = "0.17.14"
+sha2.workspace = true
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]

@@ -18,6 +18,7 @@ pub mod catalog_patch;
 pub mod keys;
 pub mod overlay;
 pub mod provenance;
+pub mod registry;
 pub mod scope;
 pub mod types;
 pub mod verify;
@@ -29,8 +30,13 @@ pub use keys::{
 };
 pub use overlay::{
     DefaultSource, cloud_default_base_url, cloud_default_model, cloud_default_model_for_route,
+    pulled_registry,
 };
 pub use provenance::{CloudFactsState, CloudFactsStatus, FactsOrigin};
+pub use registry::{
+    AdmittedRegistry, BuiltinNames, PulledProvider, REGISTRY_CHANNEL, REGISTRY_SCHEMA, Registry,
+    VerifiedRegistry, admit_registry, verify_registry_envelope,
+};
 pub use scope::{ScopedFacts, scoped_view};
 pub use types::{
     Announcement, AnnouncementLevel, CloudFacts, ModelFact, ModelOp, PricingFact,
