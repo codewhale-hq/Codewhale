@@ -1253,7 +1253,7 @@ dependencies = [
  "shell-words",
  "shellexpand",
  "shlex 2.0.1",
- "similar",
+ "similar 3.2.1",
  "syn 3.0.10",
  "tar",
  "tempfile",
@@ -1540,11 +1540,13 @@ version = "0.2.0"
 dependencies = [
  "codewhale-protocol",
  "crossterm",
+ "insta",
  "libc",
  "ratatui",
  "ratatui-core",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "unicode-segmentation",
  "unicode-width",
 ]
@@ -1915,7 +1917,7 @@ dependencies = [
  "codewhale-sanitize",
  "crossterm",
  "ratatui",
- "similar",
+ "similar 3.2.1",
  "syntect",
  "unicode-segmentation",
  "unicode-width",
@@ -4320,6 +4322,18 @@ checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
  "block-padding",
  "generic-array",
+]
+
+[[package]]
+name = "insta"
+version = "1.49.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b67d3d2e287e4b86c10b3f3b641033d1f89b74bdb39d05f34952e2b9a6fe21cd"
+dependencies = [
+ "console",
+ "once_cell",
+ "similar 2.7.0",
+ "tempfile",
 ]
 
 [[package]]
@@ -7016,6 +7030,12 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "similar"

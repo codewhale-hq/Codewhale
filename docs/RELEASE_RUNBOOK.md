@@ -39,6 +39,16 @@ The complete supporting-crate list and dependency order live in
 the locked workspace graph by the publish helper. Do not maintain a second
 handwritten list here.
 
+`codewhale-ratatui` (`vendor/codewhale-ratatui`) is a workspace member with its
+own version, `0.2.0`, independent of the workspace version (CURRENT_DECISIONS
+§213). It publishes right after `codewhale-protocol`, which it depends on,
+and before the crates that depend on it. `check-versions.sh` exempts only its
+own `0.2.0` pin from the workspace-version rule; its `codewhale-protocol` pin
+still follows the workspace version. Bumping the crate means changing its
+manifest version and the `0.2.0` pins in `codewhale-engine`,
+`codewhale-tui-kit` and `codewhale-tui`, and the exception line in
+`check-versions.sh`, together.
+
 ## Version Coordination
 
 - Rust crates inherit the shared workspace version from [Cargo.toml](../Cargo.toml).
@@ -348,7 +358,8 @@ After publishing, prove the release is visible in both registries:
 ```
 
 Do not mark a Rust release complete until that command sees `codewhale@X.Y.Z`
-on npm and every `codewhale-*` crate at `X.Y.Z` on crates.io. For a rare
+on npm and every `codewhale-*` crate at `X.Y.Z` on crates.io, except
+`codewhale-ratatui`, which it checks at its own version. For a rare
 npm packaging-only release, run with `--allow-npm-binary-mismatch` and keep the
 release notes explicit that no new Rust binary version shipped.
 

@@ -27,6 +27,11 @@ pet/ios/Resources/demo.jsonl text eol=lf
 # always join rows with LF (golden_harness.rs::render_golden_text), so a
 # CRLF checkout failed all eight Windows golden tests with a pure \r\n diff.
 crates/tui/src/tui/goldens/*.txt text eol=lf
+vendor/codewhale-ratatui/tests/**/*.txt text eol=lf
+vendor/codewhale-ratatui/tests/**/*.json text eol=lf
+vendor/codewhale-ratatui/assets/**/*.json text eol=lf
+vendor/codewhale-ratatui/assets/**/*.js text eol=lf
+vendor/codewhale-ratatui/assets/*.scenes text eol=lf
 # FEAT-025 baseline export goldens (crates/tui/src/commands/fixtures/*.md) are
 # include_str!()'d and compared byte for byte against a document the exporter
 # builds with LF, so a CRLF checkout failed the four Windows golden tests with a

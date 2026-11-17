@@ -28,6 +28,7 @@ crates_user_agent="CodeWhale release publish check (https://github.com/codewhale
 
 workspace_version=""
 build_dir=""
+own_versions=""
 
 metadata_inventory="$(
   python3 "${script_dir}/validate-crate-publish-order.py" "${packages[@]}"
@@ -39,6 +40,9 @@ while IFS=$'\t' read -r kind name value; do
       ;;
     build-dir)
       build_dir="${name}"
+      ;;
+    own-version)
+      own_versions+="${name}=${value}"$'\n'
       ;;
   esac
 done <<<"${metadata_inventory}"
@@ -52,12 +56,18 @@ if [[ -z "${build_dir}" ]]; then
   exit 1
 fi
 
+crate_version() {
+  local own
+  own="$(sed -n "s/^$1=//p" <<<"${own_versions}")"
+  echo "${own:-${workspace_version}}"
+}
+
 echo "Crate publication order OK: ${#packages[@]} workspace crates."
 
 cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
 reused=()
 for package in "${packages[@]}"; do
-  for extracted in "${cargo_home}"/registry/src/*/"${package}-${workspace_version}"; do
+  for extracted in "${cargo_home}"/registry/src/*/"${package}-$(crate_version "${package}")"; do
     if [[ -e "${extracted}" && "${extracted}" != "${cargo_home}"/registry/src/index.crates.io-*/* ]]; then
       reused+=("extracted source ${extracted}")
     fi
@@ -69,11 +79,15 @@ if [[ -d "${deps_dirs[0]}" ]]; then
   for package in "${packages[@]}"; do
     include_args+=("--include=${package//-/_}-*.d")
   done
-  crate_pattern="$(IFS='|'; echo "${packages[*]}")"
-  version_pattern="${workspace_version//./\\.}"
-  version_pattern="${version_pattern//+/\\+}"
+  crate_pattern=""
+  for package in "${packages[@]}"; do
+    package_version="$(crate_version "${package}")"
+    package_version="${package_version//./\\.}"
+    package_version="${package_version//+/\\+}"
+    crate_pattern+="${crate_pattern:+|}${package}-${package_version}"
+  done
   units="$(
-    grep -rHoE "${include_args[@]}" -- "[^ ]*/registry/src/[^/ ]+/(${crate_pattern})-${version_pattern}/" "${deps_dirs[@]}" ||
+    grep -rHoE "${include_args[@]}" -- "[^ ]*/registry/src/[^/ ]+/(${crate_pattern})/" "${deps_dirs[@]}" ||
       [[ $? -eq 1 ]]
   )" || {
     echo "Could not scan ${build_dir} for compiled release crates." >&2
@@ -156,11 +170,12 @@ wait_for_crate_version() {
 
 for package in "${packages[@]}"; do
   echo "::group::${mode} ${package}"
-  if crate_version_exists "${package}" "${workspace_version}"; then
-    echo "Skipping ${package} ${workspace_version}; already published."
+  package_version="$(crate_version "${package}")"
+  if crate_version_exists "${package}" "${package_version}"; then
+    echo "Skipping ${package} ${package_version}; already published."
   else
     cargo publish --locked --registry crates-io -p "${package}"
-    wait_for_crate_version "${package}" "${workspace_version}"
+    wait_for_crate_version "${package}" "${package_version}"
   fi
   echo "::endgroup::"
 done
