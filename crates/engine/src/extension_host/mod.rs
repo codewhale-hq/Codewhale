@@ -2114,7 +2114,12 @@ impl ExtensionHostManager {
         if self.attached_engines() == 0 {
             return Ok(None);
         }
-        let deadline = tokio::time::Instant::now() + timeout;
+        let policy = activation::extension_host_policy_enabled();
+        let reconcile_manager = ExtensionHostManager {
+            shared: Arc::clone(&self.shared),
+        };
+        let mut reconcile_task =
+            tokio::spawn(async move { reconcile_manager.reconcile_with_policy(policy).await });
         let reconcile_res = tokio::select! {
             biased;
             () = cancel.cancelled() => {
@@ -2124,15 +2129,12 @@ impl ExtensionHostManager {
                         .to_string(),
                 );
             }
-            () = tokio::time::sleep_until(deadline) => {
-                self.reload_and_reconcile_in_background();
-                return Err(
-                    "the extension host did not finish starting native plugin code in time"
-                        .to_string(),
-                );
-            }
-            res = self.reconcile() => res,
+            res = &mut reconcile_task => match res {
+                Ok(res) => res,
+                Err(error) => Err(format!("extension host reconcile task failed: {error}")),
+            },
         };
+        let deadline = tokio::time::Instant::now() + timeout;
         if !wait_for_owner {
             return Ok(None);
         }

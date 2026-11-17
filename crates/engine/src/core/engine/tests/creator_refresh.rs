@@ -1415,7 +1415,6 @@ async fn the_installing_call_survives_its_own_refresh() {
     )
     .await;
     assert_eq!(setup_out.plugin_changes.len(), 1);
-    shutdown_refresh_engine(h_setup, t_setup).await;
     let victim_plugin_id = f
         .discover()
         .get("victim-slow")
@@ -1432,6 +1431,7 @@ async fn the_installing_call_survives_its_own_refresh() {
         "{victim_state:?} after {:?}",
         setup_out.tool_results
     );
+    shutdown_refresh_engine(h_setup, t_setup).await;
     let ready_file = crate::extension_host::supervisor::owner_data_dir(
         &f.temp.path().join("ext-root"),
         crate::extension_host::tier::HostCohort::reviewed(),
