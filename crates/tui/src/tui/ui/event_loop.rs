@@ -3944,6 +3944,11 @@ pub(crate) async fn run_event_loop(
                                     .to_string()
                             });
                             tracing::warn!(%error, "terminal session save skipped; checkpoint retained");
+                            if let Some(session_id) = session_id.as_deref() {
+                                crate::tui::persistence_actor::record_skipped_session_save(
+                                    session_id,
+                                );
+                            }
                             surface_session_save_failure(app, session_id.as_deref(), &error);
                         }
                         if terminal_snapshot.is_some()
