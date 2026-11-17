@@ -2126,8 +2126,8 @@ mod tests {
         // person deciding an approval would.
         let (context, _asked) = gated_context(
             &workspace,
-            Duration::from_millis(1500),
-            Duration::from_millis(2000),
+            Duration::from_secs(6),
+            Duration::from_secs(7),
             None,
             run_as_asked,
         );
