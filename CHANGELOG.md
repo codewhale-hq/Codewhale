@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Side-repo snapshot lock fairness:** rapid snapshot and prune operations poll every 5 ms and yield for up to 50 ms on immediate same-process re-acquisition after releasing the side-repo write lock, preventing back-to-back acquires from starving waiting writers past the 30-second lock timeout, and skip redundant `git rev-parse` calls when rebuilding survivor chains. (CW-7957)
 - **Thread events under heavy disk load:** reading or appending a thread's runtime events no longer fails with "Runtime event lock timed out after 5s" while another write is still flushing to disk; the event-store lock now waits up to 25 seconds for in-progress writes before giving up. (CW-7957)
 - **Fewer false task idle timeouts while progress is being saved:** when a supervised task's idle deadline passes while the task supervisor is busy saving its previous progress, the supervisor now polls the task once, without waiting, before applying the deadline, so progress the task can report on that single poll is counted. Progress that needs more than one poll to be sent can still end in `idle_timeout`, and a task that is genuinely idle times out as before. (CW-7957)
 - **Timed-out hooks on Windows report the timeout:** on a busy Windows machine, a hook that hits its time limit now reports "Hook timed out" instead of "hook could not be reaped after its timeout". CodeWhale now waits up to 10 seconds, rather than 2, for Windows to finish tearing down the hook's process tree. (CW-7957)
