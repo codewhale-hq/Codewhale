@@ -37,6 +37,8 @@ pub struct Client {
     pub write: WriteHalf<DuplexStream>,
     pub next_id: u64,
     pub log: Option<Vec<(bool, Value)>>,
+    pub step: Duration,
+    received: usize,
 }
 
 impl Client {
@@ -50,6 +52,8 @@ impl Client {
                 write: client_write,
                 next_id: 0,
                 log: record.then(Vec::new),
+                step: STEP,
+                received: 0,
             },
             agent_read,
             agent_write,
@@ -66,10 +70,21 @@ impl Client {
         Ok(())
     }
     pub async fn recv(&mut self) -> Result<Value> {
-        let line = tokio::time::timeout(STEP, self.lines.next_line())
-            .await
-            .map_err(|_| anyhow!("agent produced no frame within {STEP:?}"))??
-            .ok_or_else(|| anyhow!("agent closed the transport"))?;
+        let step = self.step;
+        let line = match tokio::time::timeout(step, self.lines.next_line()).await {
+            Ok(line) => line?.ok_or_else(|| anyhow!("agent closed the transport"))?,
+            Err(_) => {
+                return Err(anyhow!(
+                    "agent produced no frame within {step:?} after {} frames; last traffic (true = sent): {:#?}",
+                    self.received,
+                    self.log
+                        .as_deref()
+                        .map(|log| &log[log.len().saturating_sub(8)..])
+                        .unwrap_or_default()
+                ));
+            }
+        };
+        self.received += 1;
         let frame: Value = serde_json::from_str(&line)?;
         if let Some(log) = &mut self.log {
             log.push((false, frame.clone()));

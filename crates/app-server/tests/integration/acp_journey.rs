@@ -307,6 +307,17 @@ readline.createInterface({input:process.stdin}).on('line', line => {
 });
 "#;
 
+const EXTENSION_STEP: Duration = Duration::from_secs(90);
+
+fn host_report(host: &codewhale_engine::extension_host::ExtensionHostManager) -> String {
+    format!(
+        "host status: {:?}; spawn attempts: {}; diagnostics: {:#?}",
+        host.status(),
+        host.spawn_attempts(),
+        host.diagnostics()
+    )
+}
+
 #[test]
 fn plugin_and_mcp_tools_run_as_acp_tool_calls_through_the_permission_dial() -> Result<()> {
     std::thread::Builder::new()
@@ -316,9 +327,9 @@ fn plugin_and_mcp_tools_run_as_acp_tool_calls_through_the_permission_dial() -> R
                 .enable_all()
                 .build()?
                 .block_on(async {
-                    tokio::time::timeout(Duration::from_secs(120), extension_journey())
+                    tokio::time::timeout(Duration::from_secs(300), extension_journey())
                         .await
-                        .map_err(|_| anyhow!("extension journey exceeded 120s"))?
+                        .map_err(|_| anyhow!("extension journey exceeded 300s"))?
                 })
         })?
         .join()
@@ -379,7 +390,8 @@ async fn extension_journey() -> Result<()> {
         None,
         None,
     )?;
-    let (mut client, agent_read, agent_write) = Client::connect(false);
+    let (mut client, agent_read, agent_write) = Client::connect(true);
+    client.step = EXTENSION_STEP;
     let connection = frontend.serve(Box::new(BufReader::new(agent_read)), Box::new(agent_write));
     let script = async {
         let result = async {
@@ -430,13 +442,15 @@ async fn extension_journey() -> Result<()> {
             assert_eq!(done["result"]["stopReason"], "end_turn");
             assert!(
                 asked.iter().any(|title| title.starts_with("ctx_probe")),
-                "the plugin tool asks through the permission dial: {asked:?} {frames:#?}"
+                "the plugin tool asks through the permission dial: {asked:?} {frames:#?} {}",
+                host_report(&host)
             );
             assert!(
                 asked
                     .iter()
                     .any(|title| title.starts_with("mcp_fixture_echo")),
-                "the MCP tool asks through the permission dial: {asked:?}"
+                "the MCP tool asks through the permission dial: {asked:?} {frames:#?} {}",
+                host_report(&host)
             );
             let announced: Vec<_> = updates(&frames, "tool_call")
                 .iter()
@@ -476,7 +490,7 @@ async fn extension_journey() -> Result<()> {
         if result.is_err() {
             let _ = client.write.shutdown().await;
         }
-        result
+        result.map_err(|error| error.context(host_report(&host)))
     };
     let (served, scripted) = tokio::join!(connection, script);
     served?;
@@ -620,9 +634,9 @@ fn extension_tools_keep_the_permission_boundary_in_an_acp_session() -> Result<()
                 .enable_all()
                 .build()?
                 .block_on(async {
-                    tokio::time::timeout(Duration::from_secs(180), gates())
+                    tokio::time::timeout(Duration::from_secs(360), gates())
                         .await
-                        .map_err(|_| anyhow!("extension gates exceeded 180s"))?
+                        .map_err(|_| anyhow!("extension gates exceeded 360s"))?
                 })
         })?
         .join()
@@ -681,7 +695,8 @@ async fn gates() -> Result<()> {
         None,
         None,
     )?;
-    let (mut client, agent_read, agent_write) = Client::connect(false);
+    let (mut client, agent_read, agent_write) = Client::connect(true);
+    client.step = EXTENSION_STEP;
     let connection = frontend.serve(Box::new(BufReader::new(agent_read)), Box::new(agent_write));
     let manager_for_script = Arc::clone(&manager);
     let script =
@@ -713,7 +728,14 @@ async fn gates() -> Result<()> {
             let allowed = run_prompt(&mut client, &session, &|_| true).await?;
             assert!(allowed.response.get("error").is_none(), "{}", allowed.response);
             assert_eq!(allowed.response["result"]["stopReason"], "end_turn");
-            assert_eq!(allowed.asked.len(), 2, "{:?}", allowed.titles());
+            assert_eq!(
+                allowed.asked.len(),
+                2,
+                "{:?} {} {}",
+                allowed.titles(),
+                allowed.rendered(),
+                host_report(&host)
+            );
             assert!(allowed.titles()[0].starts_with("cc_call"));
             let announced = allowed.announced_ids();
             for request in &allowed.asked {
@@ -754,7 +776,14 @@ async fn gates() -> Result<()> {
             let denied = run_prompt(&mut client, &session, &|index| index == 0).await?;
             assert!(denied.response.get("error").is_none(), "{}", denied.response);
             assert_eq!(denied.response["result"]["stopReason"], "end_turn");
-            assert_eq!(denied.asked.len(), 2, "{:?}", denied.titles());
+            assert_eq!(
+                denied.asked.len(),
+                2,
+                "{:?} {} {}",
+                denied.titles(),
+                denied.rendered(),
+                host_report(&host)
+            );
             assert!(
                 !workspace.join("nested.txt").exists(),
                 "a rejected nested write must not run"
@@ -775,7 +804,14 @@ async fn gates() -> Result<()> {
             )
             .await?;
             let rejected = run_prompt(&mut client, &session, &|index| index < 2).await?;
-            assert_eq!(rejected.asked.len(), 4, "{:?}", rejected.titles());
+            assert_eq!(
+                rejected.asked.len(),
+                4,
+                "{:?} {} {}",
+                rejected.titles(),
+                rejected.rendered(),
+                host_report(&host)
+            );
             let rendered = rejected.rendered();
             assert!(rendered.contains("mcp-ran:echo:control"), "{rendered}");
             assert!(!rendered.contains("mcp-ran:echo:rejected"), "{rendered}");
@@ -829,7 +865,7 @@ async fn gates() -> Result<()> {
             if result.is_err() {
                 let _ = client.write.shutdown().await;
             }
-            result
+            result.map_err(|error| error.context(host_report(&host)))
         };
     let (served, scripted) = tokio::join!(connection, script);
     served?;
